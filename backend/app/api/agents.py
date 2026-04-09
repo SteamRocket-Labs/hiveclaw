@@ -310,6 +310,7 @@ async def create_agent(
         agent_class=data.agent_class,
         security_zone=data.security_zone,
         execution_mode=data.execution_mode,
+        smart_model_routing=data.smart_model_routing.model_dump() if data.smart_model_routing else None,
         status="draft",
         max_triggers=default_max_triggers,
         min_poll_interval_min=default_min_poll,

@@ -1,5 +1,6 @@
 """Background task executor — runs agent tasks through the unified runtime."""
 
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -9,7 +10,10 @@ from sqlalchemy import select
 from app.database import async_session
 from app.kernel.contracts import ExecutionIdentityRef
 from app.models.agent import Agent
+from app.models.audit import ChatMessage
+from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
+from app.models.participant import Participant
 from app.models.task import Task, TaskLog
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
@@ -94,6 +98,14 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
         task_type = task.type  # 'todo' or 'supervision'
         supervision_target = task.supervision_target_name or ""
 
+    user_prompt = _build_task_user_prompt(
+        task_type,
+        task_title,
+        task_description,
+        supervision_target,
+    )
+    runtime_messages = [{"role": "user", "content": user_prompt}]
+
     # Step 2: Load agent + model
     async with async_session() as db:
         agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
@@ -130,18 +142,64 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
 
         agent_name = agent.name
         creator_id = agent.creator_id
+        participant_result = await db.execute(
+            select(Participant).where(Participant.type == "agent", Participant.ref_id == agent_id)
+        )
+        agent_participant = participant_result.scalar_one_or_none()
+        agent_participant_id = agent_participant.id if agent_participant else None
 
-    user_prompt = _build_task_user_prompt(
-        task_type,
-        task_title,
-        task_description,
-        supervision_target,
-    )
-    runtime_messages = [{"role": "user", "content": user_prompt}]
+        reflection_session = ChatSession(
+            agent_id=agent_id,
+            user_id=creator_id,
+            participant_id=agent_participant_id,
+            source_channel="task",
+            title=f"🧾 Task: {task_title}"[:200],
+        )
+        db.add(reflection_session)
+        await db.flush()
+        reflection_session_id = reflection_session.id
+
+        db.add(
+            ChatMessage(
+                agent_id=agent_id,
+                conversation_id=str(reflection_session_id),
+                role="user",
+                content=user_prompt,
+                user_id=creator_id,
+                participant_id=agent_participant_id,
+            )
+        )
+        await db.commit()
 
     # Step 4: Call unified runtime
     try:
         logger.info(f"[TaskExec] Invoking unified runtime for task: {task_title}")
+
+        async def _on_tool_call(data: dict) -> None:
+            if data.get("status") != "done":
+                return
+            async with async_session() as tc_db:
+                tc_db.add(
+                    ChatMessage(
+                        agent_id=agent_id,
+                        conversation_id=str(reflection_session_id),
+                        role="tool_call",
+                        content=json.dumps(
+                            {
+                                "name": data.get("name"),
+                                "args": data.get("args"),
+                                "status": "done",
+                                "result": str(data.get("result", ""))[:2000],
+                            },
+                            ensure_ascii=False,
+                            default=str,
+                        ),
+                        user_id=creator_id,
+                        participant_id=agent_participant_id,
+                    )
+                )
+                await tc_db.commit()
+
         result = await invoke_agent(
             AgentInvocationRequest(
                 model=model,
@@ -161,11 +219,13 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
                 session_context=SessionContext(
                     source="task",
                     channel="task",
+                    session_id=str(reflection_session_id),
                     metadata={
                         "task_id": str(task_id),
                         "task_type": task_type,
                     },
                 ),
+                on_tool_call=_on_tool_call,
                 core_tools_only=True,
                 max_tool_rounds=getattr(agent, "max_tool_rounds", None),
             )
@@ -185,6 +245,16 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
         result = await db.execute(select(Task).where(Task.id == task_id))
         task = result.scalar_one_or_none()
         if task:
+            db.add(
+                ChatMessage(
+                    agent_id=agent_id,
+                    conversation_id=str(reflection_session_id),
+                    role="assistant",
+                    content=reply,
+                    user_id=creator_id,
+                    participant_id=agent_participant_id,
+                )
+            )
             if task_type == 'supervision':
                 # Supervision tasks stay active; just log the result
                 task.status = "pending"

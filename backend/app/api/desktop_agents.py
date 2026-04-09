@@ -17,6 +17,7 @@ from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent import Agent
 from app.models.user import User
+from app.schemas.schemas import SmartModelRoutingConfig
 from app.services.sync_service import bump_sync_version
 
 router = APIRouter(prefix="/desktop", tags=["desktop-agents"])
@@ -35,6 +36,7 @@ class SubAgentCreate(BaseModel):
     bio: str | None = None
     security_zone: SecurityZone = "standard"
     execution_mode: ExecutionMode = "standard"
+    smart_model_routing: SmartModelRoutingConfig | None = None
 
 
 class SubAgentUpdate(BaseModel):
@@ -43,6 +45,7 @@ class SubAgentUpdate(BaseModel):
     bio: str | None = None
     security_zone: SecurityZone | None = None
     execution_mode: ExecutionMode | None = None
+    smart_model_routing: SmartModelRoutingConfig | None = None
 
 
 class SubAgentOut(BaseModel):
@@ -55,6 +58,7 @@ class SubAgentOut(BaseModel):
     config_version: int
     security_zone: str
     execution_mode: ExecutionMode = "standard"
+    smart_model_routing: SmartModelRoutingConfig | None = None
 
     model_config = {"from_attributes": True}
 
@@ -91,6 +95,7 @@ async def create_sub_agent(
         tenant_id=current_user.tenant_id,
         security_zone=body.security_zone,
         execution_mode=body.execution_mode,
+        smart_model_routing=body.smart_model_routing.model_dump() if body.smart_model_routing else None,
         config_version=1,
     )
     db.add(agent)

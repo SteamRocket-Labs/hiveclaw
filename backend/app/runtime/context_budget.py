@@ -29,6 +29,16 @@ class TaskProfile:
 
 
 @dataclass(frozen=True, slots=True)
+class TurnModelRoute:
+    model: object | None
+    fallback_model: object | None
+    supports_vision: bool
+    reason: str
+    task_profile: TaskProfile
+    config_source: str
+
+
+@dataclass(frozen=True, slots=True)
 class ContextBudget:
     task_profile: TaskProfile
     system_prompt_budget_chars: int
@@ -134,6 +144,22 @@ _MCP_EXTENSION_HINTS = (
 
 _FILE_EXTENSION_HINTS = (".py", ".ts", ".tsx", ".js")
 _FILE_EXTENSION_PATTERN = re.compile(r"\b[\w./-]+\.(?:py|ts|tsx|js)\b")
+_URL_PATTERN = re.compile(r"https?://|www\.", re.IGNORECASE)
+_CHEAP_MODEL_HINTS = (
+    "mini",
+    "haiku",
+    "flash",
+    "nano",
+    "lite",
+    "small",
+    "fast",
+    "turbo",
+    "8b",
+    "7b",
+    "3b",
+)
+_NO_CHEAP_ROUTE_SESSION_SOURCES = {"task", "schedule", "heartbeat", "agent"}
+_NO_CHEAP_ROUTE_EXECUTION_MODES = {"task", "heartbeat", "coordinator"}
 
 
 def _contains_keyword(haystack: str, keyword: str) -> bool:
@@ -154,6 +180,89 @@ def _contains_keyword(haystack: str, keyword: str) -> bool:
 
 def _keyword_score(haystack: str, keywords: tuple[str, ...]) -> int:
     return sum(1 for keyword in keywords if _contains_keyword(haystack, keyword))
+
+
+def _model_descriptor(model: object | None) -> str:
+    if model is None:
+        return ""
+    parts = (
+        str(getattr(model, "provider", "") or ""),
+        str(getattr(model, "label", "") or ""),
+        str(getattr(model, "model", "") or ""),
+    )
+    return " ".join(part.strip().lower() for part in parts if part and part.strip())
+
+
+def _cheap_model_signal_score(model: object | None) -> int:
+    descriptor = _model_descriptor(model)
+    if not descriptor:
+        return 0
+
+    score = sum(1 for hint in _CHEAP_MODEL_HINTS if hint in descriptor)
+    max_input_tokens = getattr(model, "max_input_tokens", None)
+    if isinstance(max_input_tokens, int) and 0 < max_input_tokens <= 64000:
+        score += 1
+    return score
+
+
+def _is_clearly_cheaper_model(candidate: object | None, primary: object | None) -> bool:
+    candidate_score = _cheap_model_signal_score(candidate)
+    primary_score = _cheap_model_signal_score(primary)
+    if candidate_score <= primary_score:
+        return False
+    return candidate_score >= 1
+
+
+def _allows_cheap_route(*, execution_mode: str | None, session_source: str | None) -> bool:
+    if execution_mode and execution_mode.lower() in _NO_CHEAP_ROUTE_EXECUTION_MODES:
+        return False
+    if session_source and session_source.lower() in _NO_CHEAP_ROUTE_SESSION_SOURCES:
+        return False
+    return True
+
+
+def _is_simple_turn_candidate(query: str, task_profile: TaskProfile) -> bool:
+    return _is_simple_turn_candidate_with_limits(query, task_profile, max_chars=160, max_words=28)
+
+
+def _is_simple_turn_candidate_with_limits(
+    query: str,
+    task_profile: TaskProfile,
+    *,
+    max_chars: int,
+    max_words: int,
+) -> bool:
+    text = query.strip()
+    if not text:
+        return False
+    if task_profile.name != "general" or task_profile.complexity != "low":
+        return False
+    if len(text) > max_chars:
+        return False
+    if len(text.split()) > max_words:
+        return False
+    if text.count("\n") > 1:
+        return False
+    if "```" in text or "`" in text:
+        return False
+    if _URL_PATTERN.search(text):
+        return False
+    if _FILE_EXTENSION_PATTERN.search(text.lower()):
+        return False
+    return True
+
+
+def _coerce_routing_int(value: object, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _routing_enabled(routing_config: dict[str, object] | None) -> bool | None:
+    if routing_config is None:
+        return None
+    return bool(routing_config.get("enabled", False))
 
 
 def infer_task_profile(query: str, messages: list[dict] | None = None) -> TaskProfile:
@@ -207,6 +316,102 @@ def infer_task_profile(query: str, messages: list[dict] | None = None) -> TaskPr
         suggested_packs = ("web_pack",)
 
     return TaskProfile(name=name, complexity=complexity, suggested_pack_names=suggested_packs)
+
+
+def resolve_turn_model_route(
+    *,
+    primary_model: object | None,
+    fallback_model: object | None,
+    query: str,
+    messages: list[dict] | None = None,
+    execution_mode: str | None = None,
+    session_source: str | None = None,
+    supports_vision: bool = False,
+    routing_config: dict[str, object] | None = None,
+) -> TurnModelRoute:
+    """Resolve the effective model for the current turn.
+
+    Conservative by design:
+    - Only route to a cheaper fallback when the turn looks like a simple
+      low-stakes conversation request.
+    - Task/heartbeat/schedule/delegation paths always stay on the primary model.
+    """
+
+    profile = infer_task_profile(query, messages=messages)
+    primary_supports_vision = bool(supports_vision or getattr(primary_model, "supports_vision", False))
+    config_source = "agent_config" if routing_config is not None else "runtime_default"
+    if primary_model is None:
+        return TurnModelRoute(
+            model=None,
+            fallback_model=fallback_model,
+            supports_vision=primary_supports_vision,
+            reason="primary_model",
+            task_profile=profile,
+            config_source=config_source,
+        )
+
+    if not _allows_cheap_route(execution_mode=execution_mode, session_source=session_source):
+        return TurnModelRoute(
+            model=primary_model,
+            fallback_model=fallback_model,
+            supports_vision=primary_supports_vision,
+            reason="primary_model",
+            task_profile=profile,
+            config_source=config_source,
+        )
+
+    routing_enabled = _routing_enabled(routing_config)
+    if routing_enabled is False:
+        return TurnModelRoute(
+            model=primary_model,
+            fallback_model=fallback_model,
+            supports_vision=primary_supports_vision,
+            reason="primary_model",
+            task_profile=profile,
+            config_source=config_source,
+        )
+
+    if not _is_clearly_cheaper_model(fallback_model, primary_model):
+        return TurnModelRoute(
+            model=primary_model,
+            fallback_model=fallback_model,
+            supports_vision=primary_supports_vision,
+            reason="primary_model",
+            task_profile=profile,
+            config_source=config_source,
+        )
+
+    max_simple_chars = _coerce_routing_int(
+        routing_config.get("max_simple_chars") if routing_config else None,
+        160,
+    )
+    max_simple_words = _coerce_routing_int(
+        routing_config.get("max_simple_words") if routing_config else None,
+        28,
+    )
+    if not _is_simple_turn_candidate_with_limits(
+        query,
+        profile,
+        max_chars=max_simple_chars,
+        max_words=max_simple_words,
+    ):
+        return TurnModelRoute(
+            model=primary_model,
+            fallback_model=fallback_model,
+            supports_vision=primary_supports_vision,
+            reason="primary_model",
+            task_profile=profile,
+            config_source=config_source,
+        )
+
+    return TurnModelRoute(
+        model=fallback_model,
+        fallback_model=primary_model,
+        supports_vision=bool(supports_vision or getattr(fallback_model, "supports_vision", False)),
+        reason="simple_turn_cheap_model",
+        task_profile=profile,
+        config_source=config_source,
+    )
 
 
 def _clamp(value: int, lower: int, upper: int) -> int:

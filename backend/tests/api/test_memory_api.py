@@ -145,3 +145,88 @@ def test_team_memory_api_returns_conflict_on_stale_revision(monkeypatch, tmp_pat
     assert created.status_code == 200
     assert response.status_code == 409
     assert response.json()["detail"]["current_entry"]["revision"] == 1
+
+
+def test_team_memory_api_returns_server_wins_retry_metadata_for_stale_sync_token(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.team_memory.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    client, _user = _build_client(role="org_admin", tmp_path=tmp_path)
+
+    created = client.put(
+        "/enterprise/memory/shared",
+        json={
+            "workspace_key": "workspace-alpha",
+            "key": "deploy-playbook",
+            "title": "Deploy Playbook",
+            "content": "Initial content.",
+            "mode": "replace",
+        },
+    )
+    created_token = created.json()["sync_token"]
+
+    client.put(
+        "/enterprise/memory/shared",
+        json={
+            "workspace_key": "workspace-alpha",
+            "key": "deploy-playbook",
+            "title": "Deploy Playbook",
+            "content": "Server updated content.",
+            "mode": "replace",
+            "sync_token": created_token,
+        },
+    )
+
+    stale = client.put(
+        "/enterprise/memory/shared",
+        json={
+            "workspace_key": "workspace-alpha",
+            "key": "deploy-playbook",
+            "title": "Deploy Playbook",
+            "content": "Client stale content.",
+            "mode": "replace",
+            "sync_token": created_token,
+        },
+    )
+
+    assert stale.status_code == 409
+    detail = stale.json()["detail"]
+    assert detail["retry_action"] == "pull_latest_then_retry"
+    assert detail["sync_hint"] == "server_wins_pull"
+    assert detail["server_sync_token"] == detail["current_entry"]["sync_token"]
+
+
+def test_team_memory_api_lists_tombstones_when_include_deleted_is_requested(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.team_memory.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    client, _user = _build_client(role="org_admin", tmp_path=tmp_path)
+
+    created = client.put(
+        "/enterprise/memory/shared",
+        json={
+            "workspace_key": "workspace-alpha",
+            "key": "deploy-playbook",
+            "title": "Deploy Playbook",
+            "content": "Initial content.",
+            "mode": "replace",
+        },
+    )
+    delete_response = client.delete(
+        "/enterprise/memory/shared/deploy-playbook",
+        params={
+            "workspace_key": "workspace-alpha",
+            "sync_token": created.json()["sync_token"],
+        },
+    )
+    listed = client.get(
+        "/enterprise/memory/shared",
+        params={"workspace_key": "workspace-alpha", "include_deleted": "true"},
+    )
+    fetched = client.get(
+        "/enterprise/memory/shared/deploy-playbook",
+        params={"workspace_key": "workspace-alpha", "include_deleted": "true"},
+    )
+
+    assert delete_response.status_code == 200
+    assert listed.status_code == 200
+    assert fetched.status_code == 200
+    assert listed.json()[0]["deleted"] is True
+    assert listed.json()[0]["sync_token"]
+    assert fetched.json()["deleted"] is True

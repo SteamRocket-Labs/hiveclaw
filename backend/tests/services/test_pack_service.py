@@ -49,6 +49,18 @@ def test_pack_catalog_feishu_has_channel_dependency():
     assert len(feishu["capabilities"]) > 0
 
 
+def test_pack_catalog_feishu_matches_current_tool_surface():
+    catalog = get_pack_catalog()
+    feishu = next(p for p in catalog if p["name"] == "feishu_pack")
+
+    assert "feishu_base_app_create" in feishu["tools"]
+    assert "feishu_base_record_delete" in feishu["tools"]
+    assert "feishu_doc_delete" in feishu["tools"]
+    assert "feishu_approval_create" in feishu["tools"]
+    assert "feishu_approval_query" in feishu["tools"]
+    assert "feishu_approval_get" in feishu["tools"]
+
+
 def test_pack_catalog_system_pack_no_channel_dependency():
     catalog = get_pack_catalog()
     web = next(p for p in catalog if p["name"] == "web_pack")

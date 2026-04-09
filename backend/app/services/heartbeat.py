@@ -757,6 +757,34 @@ async def _touch_last_heartbeat(agent_id: uuid.UUID) -> None:
         logger.debug(f"[Heartbeat] Failed to touch last_heartbeat_at for {agent_id}: {_exc}")
 
 
+async def _maybe_run_skill_distillation(
+    *,
+    agent_id: uuid.UUID,
+    workspace: Path,
+    tenant_id: uuid.UUID | None,
+    runtime_config,
+    model,
+    current_session_id: str | None,
+) -> dict | None:
+    if not getattr(runtime_config, "skill_candidate_loop_enabled", False):
+        return None
+
+    from app.services.skill_distiller import run_skill_distillation_cycle
+
+    try:
+        return await run_skill_distillation_cycle(
+            agent_id=agent_id,
+            workspace=workspace,
+            tenant_id=tenant_id,
+            runtime_config=runtime_config,
+            model=model,
+            current_session_id=current_session_id,
+        )
+    except Exception as exc:
+        logger.warning("[Heartbeat] Skill distillation failed for %s: %s", agent_id, exc)
+        return None
+
+
 async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = False):
     """Execute a single heartbeat for an agent.
 
@@ -1042,6 +1070,23 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
             except Exception as _evo_err:
                 logger.warning(f"[Heartbeat] Evolution writeback failed for {agent_id}: {_evo_err}")
 
+            try:
+                from app.runtime.invoker import _resolve_runtime_config
+                from app.tools.workspace import ensure_workspace
+
+                runtime_config = await _resolve_runtime_config(agent_id)
+                workspace = await ensure_workspace(agent_id, tenant_id=str(agent.tenant_id) if agent.tenant_id else None)
+                await _maybe_run_skill_distillation(
+                    agent_id=agent_id,
+                    workspace=workspace,
+                    tenant_id=agent.tenant_id,
+                    runtime_config=runtime_config,
+                    model=model,
+                    current_session_id=str(session_id),
+                )
+            except Exception as _distill_err:
+                logger.warning("[Heartbeat] Skill distillation setup failed for %s: %s", agent_id, _distill_err)
+
             # Count heartbeat as a session for auto-dream gate so agents with
             # low user-chat but high heartbeat activity still trigger distillation.
             try:
@@ -1212,6 +1257,8 @@ async def _heartbeat_tick():
             agents = result.scalars().all()
 
             # Periodic workspace sync — write DB data to files agents can read
+            # Uses isolated sessions per tenant to prevent one failure from
+            # poisoning the main session (InFailedSQLTransactionError cascade).
             synced_tenants: set[uuid.UUID] = set()
             from app.services.workspace_sync import sync_all_for_tenant
 
@@ -1219,7 +1266,8 @@ async def _heartbeat_tick():
                 if a.tenant_id and a.tenant_id not in synced_tenants:
                     for attempt in range(2):
                         try:
-                            await sync_all_for_tenant(db, a.tenant_id)
+                            async with async_session() as sync_db:
+                                await sync_all_for_tenant(sync_db, a.tenant_id)
                             synced_tenants.add(a.tenant_id)
                             break
                         except Exception as sync_err:

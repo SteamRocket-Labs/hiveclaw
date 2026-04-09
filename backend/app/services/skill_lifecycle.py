@@ -39,6 +39,8 @@ class SkillCandidateRecord:
 
 
 _WINDOW_DAYS = 14
+_PROMOTE_THRESHOLD = 3
+_PATCH_THRESHOLD = 2
 
 
 def _candidate_path(workspace: Path) -> Path:
@@ -75,7 +77,7 @@ def _filter_recent(stamps: list[str], *, anchor: str) -> list[str]:
         parsed = _parse_iso(stamp)
         if parsed is None or parsed >= floor:
             filtered.append(stamp)
-    return filtered[-10:]
+    return list(dict.fromkeys(filtered))[-10:]
 
 
 def _load_candidates(path: Path) -> dict[str, SkillCandidateRecord]:
@@ -140,6 +142,50 @@ def _write_candidates(path: Path, records: dict[str, SkillCandidateRecord]) -> N
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
+def load_skill_candidates(workspace: Path) -> dict[str, SkillCandidateRecord]:
+    return _load_candidates(_candidate_path(workspace))
+
+
+def update_skill_candidate_record(
+    workspace: Path,
+    *,
+    workflow_signature: str,
+    skill_name: str | None = None,
+    blocker: str | None = None,
+    last_status: str | None = None,
+    last_note: str | None = None,
+    last_updated_at: str | None = None,
+) -> SkillCandidateRecord:
+    path = _candidate_path(workspace)
+    records = _load_candidates(path)
+    record = records.get(
+        workflow_signature,
+        SkillCandidateRecord(
+            skill_name=skill_name or workflow_signature,
+            workflow_signature=workflow_signature,
+            promote_candidates=[],
+            patch_candidates=[],
+            last_status="",
+            last_note="",
+            blocker="",
+            last_updated_at="",
+        ),
+    )
+    if skill_name is not None:
+        record.skill_name = skill_name
+    if blocker is not None:
+        record.blocker = blocker.strip()
+    if last_status is not None:
+        record.last_status = last_status.strip()
+    if last_note is not None:
+        record.last_note = last_note.strip()
+    if last_updated_at is not None:
+        record.last_updated_at = last_updated_at
+    records[workflow_signature] = record
+    _write_candidates(path, records)
+    return record
+
+
 def record_skill_execution(
     workspace: Path,
     *,
@@ -186,7 +232,7 @@ def record_skill_execution(
     _write_candidates(candidates_path, records)
 
     decision = "candidate"
-    if used_skill and len(record.patch_candidates) >= 2:
+    if used_skill and len(record.patch_candidates) >= _PATCH_THRESHOLD:
         decision = "patch"
         record_skill_lifecycle_event(
             workspace,
@@ -194,7 +240,7 @@ def record_skill_execution(
             status="patch",
             note=note,
         )
-    elif normalized_status == "success" and not record.blocker and len(record.promote_candidates) >= 2:
+    elif normalized_status == "success" and not record.blocker and len(record.promote_candidates) >= _PROMOTE_THRESHOLD:
         decision = "promote"
         record_skill_lifecycle_event(
             workspace,

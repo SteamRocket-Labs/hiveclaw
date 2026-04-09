@@ -575,6 +575,16 @@ def _collect_runtime_artifact_paths(output_dir: Path) -> list[str]:
     return artifacts
 
 
+def _collect_incomplete_scenarios(scenario_reports: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
+    incomplete_reasons = {"timeout", "timeout_partial", "command_failed", "invalid_json", "unknown_error"}
+    incomplete: list[dict[str, str]] = []
+    for name, details in scenario_reports.items():
+        reason = str(details.get("score_breakdown", {}).get("reason") or "").strip()
+        if reason in incomplete_reasons:
+            incomplete.append({"scenario": name, "reason": reason})
+    return incomplete
+
+
 def run_runtime_bakeoff(target: str, *, output_dir: Path) -> dict[str, Any]:
     executable = "claude" if target == "claude_code" else "hermes" if target == "hermes_agent" else None
     if executable is None:
@@ -651,14 +661,16 @@ def run_runtime_bakeoff(target: str, *, output_dir: Path) -> dict[str, Any]:
         scenario_reports[scenario_name] = _score_runtime_scenario(scenario, payload, result)
 
     fallback: dict[str, Any] | None = None
+    incomplete_scenarios = _collect_incomplete_scenarios(scenario_reports)
     failed_scenarios = [
         name
         for name, details in scenario_reports.items()
         if not details["ready"] and details["score_breakdown"].get("reason") in {"command_failed", "invalid_json", "unknown_error"}
     ]
-    transport = "live_cli"
+    transport = "live_cli_partial" if incomplete_scenarios else "live_cli"
     fallback_used = False
-    benchmark_complete = True
+    benchmark_complete = not incomplete_scenarios
+    runtime_status = "partial" if incomplete_scenarios else "completed"
     if failed_scenarios:
         fallback = _repo_evidence_report(target)
         for name in failed_scenarios:
@@ -674,15 +686,17 @@ def run_runtime_bakeoff(target: str, *, output_dir: Path) -> dict[str, Any]:
         transport = "runtime_mixed"
         fallback_used = True
         benchmark_complete = False
+        runtime_status = "partial"
 
     return {
         "kind": "bakeoff",
         "transport": transport,
         "repo_root": str(_resolve_bakeoff_repo_root(target) or ""),
-        "runtime": {"status": "completed", "executable": executable},
+        "runtime": {"status": runtime_status, "executable": executable},
         "auth_status": "ok",
         "fallback_used": fallback_used,
         "benchmark_complete": benchmark_complete,
+        "incomplete_scenarios": incomplete_scenarios,
         "artifact_paths": _collect_runtime_artifact_paths(output_dir),
         "fallback": fallback,
         "scenarios": scenario_reports,

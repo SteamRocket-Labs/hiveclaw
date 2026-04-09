@@ -45,6 +45,7 @@ _FAKE_MAIN_AGENT = SimpleNamespace(
     security_zone="standard",
     primary_model_id=None,
     fallback_model_id=None,
+    smart_model_routing={"enabled": True, "max_simple_chars": 144, "max_simple_words": 24},
     status="running",
 )
 
@@ -61,6 +62,7 @@ _FAKE_SUB_AGENT = SimpleNamespace(
     security_zone="standard",
     primary_model_id=None,
     fallback_model_id=None,
+    smart_model_routing=None,
     status="idle",
 )
 
@@ -143,6 +145,8 @@ def test_bootstrap_returns_full_payload():
     assert len(data["agents"]) == 2
     agent_names = {a["name"] for a in data["agents"]}
     assert "张三的主 Agent" in agent_names
+    main_agent = next(agent for agent in data["agents"] if agent["name"] == "张三的主 Agent")
+    assert main_agent["smart_model_routing"] == {"enabled": True, "max_simple_chars": 144, "max_simple_words": 24}
     assert isinstance(data["policy"], dict)
     assert isinstance(data["llm_config"], list)
 

@@ -30,7 +30,7 @@ from app.kernel import (
 from app.models.agent import Agent
 from app.models.feature_flag import FeatureFlag
 from app.models.user import User
-from app.runtime.context_budget import ContextBudget, compute_context_budget
+from app.runtime.context_budget import ContextBudget, compute_context_budget, resolve_turn_model_route
 from app.runtime.prompt_builder import build_frozen_prompt_prefix
 from app.runtime.session import SessionContext
 from app.skills import SkillParser, SkillRegistry, WorkspaceSkillLoader
@@ -92,6 +92,7 @@ class AgentInvocationRequest:
     expand_tools: bool = True
     max_tool_rounds: int | None = None
     execution_mode: str | None = None
+    smart_model_routing: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -644,7 +645,66 @@ def _resolve_kernel_for_request(request: AgentInvocationRequest) -> AgentKernel:
     return factory()
 
 
+async def _resolve_agent_smart_model_routing(agent_id: uuid.UUID | None) -> dict[str, Any] | None:
+    if not agent_id:
+        return None
+
+    try:
+        async with async_session() as db:
+            result = await db.execute(select(Agent).where(Agent.id == agent_id))
+            agent = result.scalar_one_or_none()
+            if agent and isinstance(getattr(agent, "smart_model_routing", None), dict):
+                return agent.smart_model_routing
+    except Exception as exc:
+        logger.debug("Failed to resolve smart model routing for agent %s: %s", agent_id, exc)
+    return None
+
+
+def _resolve_effective_turn_route(
+    request: AgentInvocationRequest,
+    *,
+    routing_config: dict[str, Any] | None,
+) -> dict[str, Any]:
+    route = resolve_turn_model_route(
+        primary_model=request.model,
+        fallback_model=request.fallback_model,
+        query=_last_user_query(request.messages),
+        messages=request.messages,
+        execution_mode=request.execution_mode,
+        session_source=request.session_context.source if request.session_context else None,
+        supports_vision=request.supports_vision,
+        routing_config=routing_config,
+    )
+    route_metadata = {
+        "selected_model": getattr(route.model, "model", None),
+        "fallback_model": getattr(route.fallback_model, "model", None),
+        "reason": route.reason,
+        "task_profile": route.task_profile.name,
+        "complexity": route.task_profile.complexity,
+        "config_source": route.config_source,
+    }
+    if request.session_context is not None:
+        session_metadata = _session_metadata(request.session_context)
+        session_metadata["turn_route"] = route_metadata
+    return {
+        "model": route.model,
+        "fallback_model": route.fallback_model,
+        "supports_vision": route.supports_vision,
+        "metadata": route_metadata,
+    }
+
+
 async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult:
+    routing_config = request.smart_model_routing
+    if routing_config is None and request.agent_id is not None and request.fallback_model is not None:
+        routing_config = await _resolve_agent_smart_model_routing(request.agent_id)
+
+    effective_turn_route = _resolve_effective_turn_route(request, routing_config=routing_config)
+    effective_model = effective_turn_route["model"]
+    effective_fallback_model = effective_turn_route["fallback_model"]
+    effective_supports_vision = effective_turn_route["supports_vision"]
+    turn_route_metadata = effective_turn_route["metadata"]
+
     execution_identity = request.execution_identity
     if execution_identity is None:
         try:
@@ -661,8 +721,8 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
             execution_identity = None
 
     kernel_request = InvocationRequest(
-        model=request.model,
-        fallback_model=request.fallback_model,
+        model=effective_model,
+        fallback_model=effective_fallback_model,
         messages=request.messages,
         agent_name=request.agent_name,
         role_description=request.role_description,
@@ -673,7 +733,7 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
         on_tool_call=request.on_tool_call,
         on_thinking=request.on_thinking,
         on_event=request.on_event,
-        supports_vision=request.supports_vision,
+        supports_vision=effective_supports_vision,
         memory_context=request.memory_context,
         memory_session_id=request.memory_session_id,
         memory_messages=request.memory_messages,
@@ -702,7 +762,11 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
             session_id=request.memory_session_id,
             source=_session_source,
             metadata={
-                "model": getattr(request.model, "name", str(request.model)) if request.model else None,
+                "model": getattr(effective_model, "model", str(effective_model)) if effective_model else None,
+                "fallback_model": getattr(effective_fallback_model, "model", str(effective_fallback_model))
+                if effective_fallback_model
+                else None,
+                "turn_route_reason": turn_route_metadata["reason"],
                 "execution_mode": request.execution_mode,
             },
         )

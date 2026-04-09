@@ -937,3 +937,193 @@ async def test_invoke_agent_loads_and_persists_runtime_memory(monkeypatch):
             {"role": "assistant", "content": "done"},
         ],
     }
+
+
+@pytest.mark.asyncio
+async def test_invoke_agent_routes_simple_turn_to_cheap_fallback_model(monkeypatch):
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+
+    captured = {}
+    session_context = SessionContext(session_id="s-route", source="websocket")
+    primary_model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1",
+        api_key="primary-key",
+        base_url=None,
+        max_output_tokens=None,
+        max_input_tokens=128000,
+        supports_vision=True,
+    )
+    fallback_model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1-mini",
+        api_key="cheap-key",
+        base_url=None,
+        max_output_tokens=None,
+        max_input_tokens=32000,
+        supports_vision=False,
+    )
+
+    class _FakeKernel:
+        async def handle(self, request):
+            captured["request"] = request
+            return SimpleNamespace(content="ok", tokens_used=0, final_tools=None, parts=[])
+
+    async def fake_emit_hook(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.runtime.invoker.get_agent_kernel", lambda *_args, **_kwargs: _FakeKernel())
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+
+    result = await invoke_agent(
+        AgentInvocationRequest(
+            model=primary_model,
+            fallback_model=fallback_model,
+            messages=[{"role": "user", "content": "帮我润色这句话，让语气更礼貌。"}],
+            agent_name="Assistant",
+            role_description="desc",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            session_context=session_context,
+        )
+    )
+
+    assert result.content == "ok"
+    assert captured["request"].model is fallback_model
+    assert captured["request"].fallback_model is primary_model
+    assert captured["request"].supports_vision is False
+    assert session_context.metadata["turn_route"] == {
+        "selected_model": "gpt-4.1-mini",
+        "fallback_model": "gpt-4.1",
+        "reason": "simple_turn_cheap_model",
+        "task_profile": "general",
+        "complexity": "low",
+        "config_source": "runtime_default",
+    }
+
+
+@pytest.mark.asyncio
+async def test_invoke_agent_keeps_primary_model_for_task_execution(monkeypatch):
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+
+    captured = {}
+    session_context = SessionContext(session_id="s-task", source="task")
+    primary_model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1",
+        api_key="primary-key",
+        base_url=None,
+        max_output_tokens=None,
+        max_input_tokens=128000,
+        supports_vision=True,
+    )
+    fallback_model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1-mini",
+        api_key="cheap-key",
+        base_url=None,
+        max_output_tokens=None,
+        max_input_tokens=32000,
+        supports_vision=False,
+    )
+
+    class _FakeKernel:
+        async def handle(self, request):
+            captured["request"] = request
+            return SimpleNamespace(content="ok", tokens_used=0, final_tools=None, parts=[])
+
+    async def fake_emit_hook(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.runtime.invoker.get_agent_kernel", lambda *_args, **_kwargs: _FakeKernel())
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+
+    result = await invoke_agent(
+        AgentInvocationRequest(
+            model=primary_model,
+            fallback_model=fallback_model,
+            messages=[{"role": "user", "content": "帮我润色这句话，让语气更礼貌。"}],
+            agent_name="Assistant",
+            role_description="desc",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            execution_mode="task",
+            session_context=session_context,
+        )
+    )
+
+    assert result.content == "ok"
+    assert captured["request"].model is primary_model
+    assert captured["request"].fallback_model is fallback_model
+    assert captured["request"].supports_vision is True
+    assert session_context.metadata["turn_route"] == {
+        "selected_model": "gpt-4.1",
+        "fallback_model": "gpt-4.1-mini",
+        "reason": "primary_model",
+        "task_profile": "general",
+        "complexity": "low",
+        "config_source": "runtime_default",
+    }
+
+
+@pytest.mark.asyncio
+async def test_invoke_agent_respects_explicit_disabled_smart_model_routing(monkeypatch):
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+
+    captured = {}
+    session_context = SessionContext(session_id="s-routing-off", source="websocket")
+    primary_model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1",
+        api_key="primary-key",
+        base_url=None,
+        max_output_tokens=None,
+        max_input_tokens=128000,
+        supports_vision=True,
+    )
+    fallback_model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1-mini",
+        api_key="cheap-key",
+        base_url=None,
+        max_output_tokens=None,
+        max_input_tokens=32000,
+        supports_vision=False,
+    )
+
+    class _FakeKernel:
+        async def handle(self, request):
+            captured["request"] = request
+            return SimpleNamespace(content="ok", tokens_used=0, final_tools=None, parts=[])
+
+    async def fake_emit_hook(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.runtime.invoker.get_agent_kernel", lambda *_args, **_kwargs: _FakeKernel())
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+
+    result = await invoke_agent(
+        AgentInvocationRequest(
+            model=primary_model,
+            fallback_model=fallback_model,
+            messages=[{"role": "user", "content": "帮我润色这句话，让语气更礼貌。"}],
+            agent_name="Assistant",
+            role_description="desc",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            session_context=session_context,
+            smart_model_routing={"enabled": False},
+        )
+    )
+
+    assert result.content == "ok"
+    assert captured["request"].model is primary_model
+    assert captured["request"].fallback_model is fallback_model
+    assert session_context.metadata["turn_route"] == {
+        "selected_model": "gpt-4.1",
+        "fallback_model": "gpt-4.1-mini",
+        "reason": "primary_model",
+        "task_profile": "general",
+        "complexity": "low",
+        "config_source": "agent_config",
+    }

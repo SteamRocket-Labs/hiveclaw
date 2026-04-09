@@ -114,12 +114,14 @@ def test_create_sub_agent_success():
             "name": "代码助手",
             "role_description": "写代码",
             "execution_mode": "coordinator",
+            "smart_model_routing": {"enabled": True, "max_simple_chars": 120, "max_simple_words": 18},
         })
 
     assert resp.status_code == 201
     data = resp.json()
     assert data["name"] == "代码助手"
     assert data["execution_mode"] == "coordinator"
+    assert data["smart_model_routing"] == {"enabled": True, "max_simple_chars": 120, "max_simple_words": 18}
     assert len(fake_db.added) == 1
 
 
@@ -148,17 +150,23 @@ def test_update_own_sub_agent():
         config_version=1,
         security_zone="standard",
         execution_mode="standard",
+        smart_model_routing=None,
     )
     client, _ = _build_client(agents_by_id={_SUB_AGENT_ID: sub})
     with patch.object(agents_mod, "bump_sync_version", new_callable=AsyncMock, return_value=3):
         resp = client.patch(
             f"/desktop/agents/{_SUB_AGENT_ID}",
-            json={"name": "新名", "execution_mode": "coordinator"},
+            json={
+                "name": "新名",
+                "execution_mode": "coordinator",
+                "smart_model_routing": {"enabled": True, "max_simple_chars": 96, "max_simple_words": 16},
+            },
         )
 
     assert resp.status_code == 200
     assert resp.json()["name"] == "新名"
     assert resp.json()["execution_mode"] == "coordinator"
+    assert resp.json()["smart_model_routing"] == {"enabled": True, "max_simple_chars": 96, "max_simple_words": 16}
     assert sub.config_version == 2
 
 

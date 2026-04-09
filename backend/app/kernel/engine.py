@@ -1112,6 +1112,15 @@ class AgentKernel:
                                             budget_profile=budget_profile,
                                         )
                                         api_messages = [LLMMessage(role="system", content=_ptl_system)] + _truncated
+                                        await _emit_event({
+                                            "type": "session_compact",
+                                            "summary": "Prompt too long; dropped oldest round groups before retry.",
+                                            "original_message_count": _before_msgs,
+                                            "kept_message_count": len(api_messages),
+                                            "reason": "prompt_too_long_retry",
+                                            "strategy": "round_group",
+                                            "attempt": ptl_retries,
+                                        })
                                         logger.info(
                                             "[Kernel] PTL round-group: %d→%d msgs (attempt %d/%d)",
                                             _before_msgs, len(api_messages),
@@ -1174,6 +1183,28 @@ class AgentKernel:
 
                             # ── Fallback model retry ──
                             if fallback_model is not None and active_model is request.model:
+                                _fallback_reason = "prompt_too_long" if _is_prompt_too_long(exc) else "llm_error"
+                                await _emit_event({
+                                    "type": "runtime_fallback",
+                                    "reason": _fallback_reason,
+                                    "from_model": getattr(active_model, "model", None),
+                                    "to_model": getattr(fallback_model, "model", None),
+                                    "provider": getattr(fallback_model, "provider", None),
+                                    "part": {
+                                        "type": "event",
+                                        "event_type": "runtime_fallback",
+                                        "title": "Fallback Model Activated",
+                                        "text": (
+                                            f"Switched from {getattr(active_model, 'model', '?')} "
+                                            f"to {getattr(fallback_model, 'model', '?')} after {_fallback_reason}."
+                                        ),
+                                        "status": "info",
+                                        "reason": _fallback_reason,
+                                        "from_model": getattr(active_model, "model", None),
+                                        "to_model": getattr(fallback_model, "model", None),
+                                        "provider": getattr(fallback_model, "provider", None),
+                                    },
+                                })
                                 await client.close()
                                 client = self._deps.create_client(fallback_model)
                                 active_model = fallback_model
@@ -1202,6 +1233,27 @@ class AgentKernel:
                                 str(exc)[:300],
                             )
                             if fallback_model is not None and active_model is request.model:
+                                await _emit_event({
+                                    "type": "runtime_fallback",
+                                    "reason": "unexpected_error",
+                                    "from_model": getattr(active_model, "model", None),
+                                    "to_model": getattr(fallback_model, "model", None),
+                                    "provider": getattr(fallback_model, "provider", None),
+                                    "part": {
+                                        "type": "event",
+                                        "event_type": "runtime_fallback",
+                                        "title": "Fallback Model Activated",
+                                        "text": (
+                                            f"Switched from {getattr(active_model, 'model', '?')} "
+                                            f"to {getattr(fallback_model, 'model', '?')} after unexpected_error."
+                                        ),
+                                        "status": "info",
+                                        "reason": "unexpected_error",
+                                        "from_model": getattr(active_model, "model", None),
+                                        "to_model": getattr(fallback_model, "model", None),
+                                        "provider": getattr(fallback_model, "provider", None),
+                                    },
+                                })
                                 await client.close()
                                 client = self._deps.create_client(fallback_model)
                                 active_model = fallback_model

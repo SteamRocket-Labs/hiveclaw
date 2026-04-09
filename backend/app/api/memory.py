@@ -38,6 +38,18 @@ class TeamMemoryUpsert(BaseModel):
     content: str
     mode: Literal["replace", "append"] = "replace"
     base_revision: int | None = None
+    sync_token: str | None = None
+
+
+def _team_memory_conflict_detail(exc) -> dict:
+    current_entry = asdict(exc.current_entry)
+    return {
+        "message": str(exc),
+        "retry_action": "pull_latest_then_retry",
+        "sync_hint": "server_wins_pull",
+        "server_sync_token": current_entry.get("sync_token"),
+        "current_entry": current_entry,
+    }
 
 
 @router.get("/config")
@@ -168,6 +180,7 @@ async def get_session_summary(
 @router.get("/shared")
 async def list_team_memory(
     workspace_key: str,
+    include_deleted: bool = False,
     tenant_id: str | None = None,
     current_user: User = Depends(get_current_user),
 ):
@@ -176,13 +189,14 @@ async def list_team_memory(
 
     target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
     store = TeamMemoryStore()
-    return [asdict(entry) for entry in store.list_entries(str(target_tenant_id), workspace_key)]
+    return [asdict(entry) for entry in store.list_entries(str(target_tenant_id), workspace_key, include_deleted=include_deleted)]
 
 
 @router.get("/shared/search")
 async def search_team_memory(
     workspace_key: str,
     query: str,
+    include_deleted: bool = False,
     tenant_id: str | None = None,
     current_user: User = Depends(get_current_user),
 ):
@@ -191,13 +205,17 @@ async def search_team_memory(
 
     target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
     store = TeamMemoryStore()
-    return [asdict(entry) for entry in store.search_entries(str(target_tenant_id), workspace_key, query)]
+    return [
+        asdict(entry)
+        for entry in store.search_entries(str(target_tenant_id), workspace_key, query, include_deleted=include_deleted)
+    ]
 
 
 @router.get("/shared/{entry_key}")
 async def get_team_memory_entry(
     entry_key: str,
     workspace_key: str,
+    include_deleted: bool = False,
     tenant_id: str | None = None,
     current_user: User = Depends(get_current_user),
 ):
@@ -206,7 +224,7 @@ async def get_team_memory_entry(
 
     target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
     store = TeamMemoryStore()
-    entry = store.get_entry(str(target_tenant_id), workspace_key, entry_key)
+    entry = store.get_entry(str(target_tenant_id), workspace_key, entry_key, include_deleted=include_deleted)
     if entry is None:
         raise HTTPException(status_code=404, detail="Shared memory entry not found")
     return asdict(entry)
@@ -238,16 +256,14 @@ async def upsert_team_memory(
             mode=data.mode,
             updated_by=str(current_user.id),
             base_revision=data.base_revision,
+            sync_token=data.sync_token,
         )
     except SecretScanError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except InvalidTeamMemoryModeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except TeamMemoryConflictError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"message": str(exc), "current_entry": asdict(exc.current_entry)},
-        ) from exc
+        raise HTTPException(status_code=409, detail=_team_memory_conflict_detail(exc)) from exc
     return asdict(entry)
 
 
@@ -255,6 +271,8 @@ async def upsert_team_memory(
 async def delete_team_memory(
     entry_key: str,
     workspace_key: str,
+    base_revision: int | None = None,
+    sync_token: str | None = None,
     tenant_id: str | None = None,
     current_user: User = Depends(get_current_admin),
 ):
@@ -269,10 +287,9 @@ async def delete_team_memory(
             workspace_key,
             entry_key,
             updated_by=str(current_user.id),
+            base_revision=base_revision,
+            sync_token=sync_token,
         )
     except TeamMemoryConflictError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"message": str(exc), "current_entry": asdict(exc.current_entry)},
-        ) from exc
+        raise HTTPException(status_code=409, detail=_team_memory_conflict_detail(exc)) from exc
     return {"deleted": deleted, "key": entry_key, "workspace_key": workspace_key}

@@ -19,6 +19,7 @@ from app.models.agent import Agent
 from app.models.guard_policy import GuardPolicy
 from app.models.llm import LLMModel
 from app.models.user import User
+from app.schemas.schemas import SmartModelRoutingConfig
 
 router = APIRouter(prefix="/desktop", tags=["desktop-sync"])
 
@@ -38,6 +39,7 @@ class AgentProjection(BaseModel):
     security_zone: str = "standard"
     primary_model_id: uuid.UUID | None = None
     fallback_model_id: uuid.UUID | None = None
+    smart_model_routing: SmartModelRoutingConfig | None = None
     status: str = "creating"
 
     model_config = {"from_attributes": True}

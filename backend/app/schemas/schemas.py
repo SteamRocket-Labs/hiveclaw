@@ -65,6 +65,12 @@ class UserUpdate(BaseModel):
 AgentClass = Literal["internal_system", "internal_tenant", "external_gateway", "external_api"]
 AgentExecutionMode = Literal["standard", "coordinator"]
 
+
+class SmartModelRoutingConfig(BaseModel):
+    enabled: bool = False
+    max_simple_chars: int = Field(default=160, ge=32, le=500)
+    max_simple_words: int = Field(default=28, ge=4, le=80)
+
 class AgentCreate(BaseModel):
     name: str = Field(min_length=2, max_length=100, description="Agent name, 2-100 characters")
     role_description: str = Field(default="", max_length=500, description="Role description, max 500 characters")
@@ -87,6 +93,7 @@ class AgentCreate(BaseModel):
     agent_class: AgentClass = "internal_tenant"
     security_zone: str = "standard"  # public | standard | restricted
     execution_mode: AgentExecutionMode = "standard"
+    smart_model_routing: SmartModelRoutingConfig | None = None
     # Skills to copy into agent workspace
     skill_ids: list[uuid.UUID] = []
 
@@ -120,6 +127,7 @@ class AgentOut(BaseModel):
     agent_class: AgentClass = "internal_tenant"
     security_zone: str = "standard"
     execution_mode: AgentExecutionMode = "standard"
+    smart_model_routing: SmartModelRoutingConfig | None = None
     openclaw_last_seen: datetime | None = None
     created_at: datetime
     last_active_at: datetime | None = None
@@ -145,6 +153,7 @@ class AgentUpdate(BaseModel):
     agent_class: AgentClass | None = None
     security_zone: str | None = None
     execution_mode: AgentExecutionMode | None = None
+    smart_model_routing: SmartModelRoutingConfig | None = None
 
 
 class AgentStatusOut(BaseModel):

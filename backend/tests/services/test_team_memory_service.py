@@ -217,3 +217,43 @@ def test_team_memory_store_rejects_conflicting_base_revision(tmp_path: Path) -> 
 
     assert exc_info.value.current_entry.key == "deploy-playbook"
     assert exc_info.value.current_entry.revision == 1
+
+
+def test_team_memory_store_exposes_sync_token_and_rotates_it_on_update_and_delete(tmp_path: Path) -> None:
+    from app.services.team_memory import TeamMemoryStore
+
+    store = TeamMemoryStore(data_root=tmp_path)
+    created = store.upsert_entry(
+        tenant_id="tenant-1",
+        workspace_key="workspace-alpha",
+        key="deploy-playbook",
+        title="Deploy Playbook",
+        content="Initial content.",
+        updated_by="user-1",
+    )
+    updated = store.upsert_entry(
+        tenant_id="tenant-1",
+        workspace_key="workspace-alpha",
+        key="deploy-playbook",
+        title="Deploy Playbook",
+        content="Initial content.\nAdd rollback checks.",
+        updated_by="user-2",
+        sync_token=created.sync_token,
+    )
+    assert store.delete_entry(
+        "tenant-1",
+        "workspace-alpha",
+        "deploy-playbook",
+        updated_by="user-3",
+        sync_token=updated.sync_token,
+    ) is True
+
+    deleted = store.get_entry("tenant-1", "workspace-alpha", "deploy-playbook", include_deleted=True)
+
+    assert created.sync_token
+    assert updated.sync_token
+    assert deleted is not None
+    assert deleted.sync_token
+    assert created.sync_token != updated.sync_token
+    assert updated.sync_token != deleted.sync_token
+    assert deleted.deleted is True

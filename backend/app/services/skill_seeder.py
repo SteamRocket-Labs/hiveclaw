@@ -227,7 +227,7 @@ Plan would be:
     # ─── MCP Tool Installer (mandatory default) ──────────────
     {
         "name": "MCP Tool Installer",
-        "description": "Guide users through discovering, configuring, and installing MCP tools directly in chat — no Settings page required",
+        "description": "Discover, import, inspect, and read MCP integrations directly in chat when adding or operating external tools",
         "category": "development",
         "icon": "🔌",
         "folder_name": "mcp-installer",
@@ -265,7 +265,7 @@ Plan would be:
     # ─── Standard capability skills (default — every pack has a matching skill) ──
     {
         "name": "Feishu Integration",
-        "description": "Feishu/Lark messaging, calendar, docs, wiki, sheets, base, and task guide",
+        "description": "Feishu/Lark messaging, docs, wiki, sheets, base, approvals, tasks, and calendar guide",
         "category": "system_integration",
         "icon": "🐦",
         "folder_name": "feishu-integration",

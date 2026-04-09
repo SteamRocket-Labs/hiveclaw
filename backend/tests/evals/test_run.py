@@ -152,6 +152,107 @@ def test_run_eval_suite_writes_live_bakeoff_markdown_without_fallback(monkeypatc
     assert "Fallback Transport:" not in report_md
 
 
+def test_run_eval_suite_writes_partial_live_bakeoff_markdown(monkeypatch, tmp_path: Path) -> None:
+    import app.evals.run as eval_run
+
+    monkeypatch.setattr(
+        eval_run,
+        "run_runtime_bakeoff",
+        lambda target, output_dir: {
+            "kind": "bakeoff",
+            "transport": "live_cli_partial",
+            "repo_root": "/tmp/hermes-agent",
+            "auth_status": "ok",
+            "fallback_used": False,
+            "benchmark_complete": False,
+            "artifact_paths": ["/tmp/hermes-agent/runtime/coding/stdout.txt"],
+            "runtime": {"status": "partial", "executable": "hermes"},
+            "incomplete_scenarios": [{"scenario": "coding", "reason": "timeout_partial"}],
+            "fallback": None,
+            "scenarios": {
+                "coding": {
+                    "ready": True,
+                    "score": 80,
+                    "transcript": "partial runtime",
+                    "rubric": "coding assistant maturity",
+                    "score_breakdown": {"transport": "live_cli", "reason": "timeout_partial", "timeout": True},
+                }
+            },
+        },
+    )
+
+    report = eval_run.run_eval_suite(
+        suite="core_v1",
+        target="hermes_agent",
+        mode="bakeoff",
+        ablation="full",
+        output_root=tmp_path,
+    )
+
+    report_md = (Path(report["output_dir"]) / "report.md").read_text(encoding="utf-8")
+    assert "Runtime Status: partial" in report_md
+    assert "Benchmark Complete: no" in report_md
+    assert "Incomplete Scenarios: coding(timeout_partial)" in report_md
+    assert "Fallback Transport:" not in report_md
+
+
+def test_run_eval_suite_writes_route_observations_to_markdown(monkeypatch, tmp_path: Path) -> None:
+    import app.evals.run as eval_run
+
+    monkeypatch.setattr(
+        eval_run,
+        "run_runtime_bakeoff",
+        lambda target, output_dir: {
+            "kind": "bakeoff",
+            "transport": "live_cli",
+            "repo_root": "/tmp/claude-code",
+            "auth_status": "ok",
+            "fallback_used": False,
+            "benchmark_complete": True,
+            "artifact_paths": ["/tmp/claude-code/runtime/coding/stdout.txt"],
+            "runtime": {"status": "completed", "executable": "claude"},
+            "route_observations": [
+                {
+                    "scenario": "coding",
+                    "selected_model": "gpt-4.1-mini",
+                    "fallback_model": "gpt-4.1",
+                    "reason": "simple_turn_cheap_model",
+                    "config_source": "agent_config",
+                },
+                {
+                    "scenario": "research",
+                    "fallback_reason": "prompt_too_long",
+                    "from_model": "gpt-4.1",
+                    "to_model": "claude-sonnet",
+                },
+            ],
+            "fallback": None,
+            "scenarios": {
+                "coding": {
+                    "ready": True,
+                    "score": 100,
+                    "transcript": "live runtime",
+                    "rubric": "coding assistant maturity",
+                    "score_breakdown": {"transport": "live_cli"},
+                }
+            },
+        },
+    )
+
+    report = eval_run.run_eval_suite(
+        suite="core_v1",
+        target="claude_code",
+        mode="bakeoff",
+        ablation="full",
+        output_root=tmp_path,
+    )
+
+    report_md = (Path(report["output_dir"]) / "report.md").read_text(encoding="utf-8")
+    assert "Runtime Routing" in report_md
+    assert "coding: selected=gpt-4.1-mini fallback=gpt-4.1 reason=simple_turn_cheap_model source=agent_config" in report_md
+    assert "research: fallback prompt_too_long gpt-4.1 -> claude-sonnet" in report_md
+
+
 def test_run_eval_suite_supports_continuity_and_skill_internal_suites(tmp_path: Path) -> None:
     from app.evals.run import run_eval_suite
 

@@ -332,6 +332,15 @@ def _skill_scenario_report(output_dir: Path) -> dict[str, Any]:
         note="Second stable deploy checklist run.",
         occurred_at="2026-04-05T10:00:00Z",
     )
+    promote_result = record_skill_execution(
+        workspace,
+        skill_name="deploy-checklist",
+        workflow_signature="deploy-checklist",
+        status="success",
+        used_skill=False,
+        note="Third stable deploy checklist run.",
+        occurred_at="2026-04-09T10:00:00Z",
+    )
     patch_result = record_skill_execution(
         workspace,
         skill_name="incident-response",
@@ -467,6 +476,15 @@ def _write_report(report: dict[str, Any], output_dir: Path) -> None:
         markdown_lines.append(f"- Auth Status: {report['auth_status']}")
     if report.get("benchmark_complete") is not None:
         markdown_lines.append(f"- Benchmark Complete: {'yes' if report['benchmark_complete'] else 'no'}")
+    incomplete_scenarios = report.get("incomplete_scenarios") or []
+    if incomplete_scenarios:
+        rendered = ", ".join(
+            f"{entry.get('scenario', '?')}({entry.get('reason', 'unknown')})"
+            for entry in incomplete_scenarios
+            if isinstance(entry, dict)
+        )
+        if rendered:
+            markdown_lines.append(f"- Incomplete Scenarios: {rendered}")
     fallback = report.get("evidence", {}).get("fallback")
     fallback_transport = fallback.get("transport") if isinstance(fallback, dict) else None
     if fallback_transport:
@@ -474,6 +492,34 @@ def _write_report(report: dict[str, Any], output_dir: Path) -> None:
     artifact_paths = report.get("artifact_paths") or []
     if artifact_paths:
         markdown_lines.append(f"- Artifact Paths: {', '.join(artifact_paths[:4])}")
+    route_observations = report.get("route_observations") or []
+    if route_observations:
+        markdown_lines.extend(["", "## Runtime Routing"])
+        for entry in route_observations:
+            if not isinstance(entry, dict):
+                continue
+            scenario = entry.get("scenario", "?")
+            selected_model = entry.get("selected_model")
+            fallback_model = entry.get("fallback_model")
+            reason = entry.get("reason")
+            config_source = entry.get("config_source")
+            fallback_reason = entry.get("fallback_reason")
+            from_model = entry.get("from_model")
+            to_model = entry.get("to_model")
+            if selected_model:
+                rendered = f"- {scenario}: selected={selected_model}"
+                if fallback_model:
+                    rendered += f" fallback={fallback_model}"
+                if reason:
+                    rendered += f" reason={reason}"
+                if config_source:
+                    rendered += f" source={config_source}"
+                markdown_lines.append(rendered)
+                continue
+            if fallback_reason and from_model and to_model:
+                markdown_lines.append(
+                    f"- {scenario}: fallback {fallback_reason} {from_model} -> {to_model}"
+                )
     markdown_lines.extend(
         [
             "",
@@ -564,7 +610,9 @@ def run_eval_suite(
         "auth_status": scenario_bundle.get("auth_status"),
         "fallback_used": scenario_bundle.get("fallback_used"),
         "benchmark_complete": scenario_bundle.get("benchmark_complete"),
+        "incomplete_scenarios": scenario_bundle.get("incomplete_scenarios", []),
         "artifact_paths": scenario_bundle.get("artifact_paths", []),
+        "route_observations": scenario_bundle.get("route_observations", []),
         "repo_root": scenario_bundle.get("repo_root"),
         "scenarios": scenario_bundle["scenarios"],
         "summary": _summarize_scores(scenario_bundle["scenarios"]),

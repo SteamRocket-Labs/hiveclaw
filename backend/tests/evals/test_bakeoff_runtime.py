@@ -180,6 +180,10 @@ def test_run_runtime_bakeoff_scores_timeout_from_workspace_artifacts(monkeypatch
     assert scenario["ready"] is True
     assert scenario["score_breakdown"]["timeout"] is True
     assert scenario["score_breakdown"]["reason"] == "timeout_partial"
+    assert report["transport"] == "live_cli_partial"
+    assert report["benchmark_complete"] is False
+    assert report["runtime"]["status"] == "partial"
+    assert report["incomplete_scenarios"] == [{"scenario": "coding", "reason": "timeout_partial"}]
 
 
 def test_run_runtime_bakeoff_uses_hermes_runtime_profile(monkeypatch, tmp_path: Path) -> None:

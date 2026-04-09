@@ -19,6 +19,7 @@ class _FakeSession:
         self._execute_values = list(execute_values)
         self.added = []
         self.commits = 0
+        self.flushes = 0
 
     async def __aenter__(self):
         return self
@@ -33,9 +34,14 @@ class _FakeSession:
 
     def add(self, item):
         self.added.append(item)
+        if getattr(item, "id", None) is None:
+            item.id = uuid4()
 
     async def commit(self):
         self.commits += 1
+
+    async def flush(self):
+        self.flushes += 1
 
 
 @pytest.mark.asyncio
@@ -77,7 +83,7 @@ async def test_execute_task_delegates_to_runtime_invoker(monkeypatch):
     )
 
     setup_session = _FakeSession([task])
-    model_session = _FakeSession([agent, model])
+    model_session = _FakeSession([agent, model, None])
     final_session = _FakeSession([task])
     sessions = [setup_session, model_session, final_session]
 
@@ -123,3 +129,84 @@ async def test_execute_task_delegates_to_runtime_invoker(monkeypatch):
     assert task.completed_at is not None
     assert any("✅ 任务完成" in entry.content and "任务已完成" in entry.content for entry in final_session.added)
     assert activity_calls
+
+
+@pytest.mark.asyncio
+async def test_execute_task_persists_reflection_session_and_tool_calls(monkeypatch):
+    from app.services.task_executor import execute_task
+
+    task_id = uuid4()
+    agent_id = uuid4()
+    model_id = uuid4()
+    creator_id = uuid4()
+    participant_id = uuid4()
+
+    task = SimpleNamespace(
+        id=task_id,
+        title="准备竞品分析",
+        description="整理最近 3 家竞品动态",
+        type="todo",
+        status="pending",
+        completed_at=None,
+        supervision_target_name="",
+    )
+    tenant_id = uuid4()
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Research Agent",
+        role_description="Research",
+        primary_model_id=model_id,
+        fallback_model_id=None,
+        creator_id=creator_id,
+        tenant_id=tenant_id,
+        max_tool_rounds=12,
+    )
+    model = SimpleNamespace(
+        id=model_id,
+        provider="openai",
+        model="gpt-4.1",
+        api_key="key",
+        base_url=None,
+        max_output_tokens=None,
+        tenant_id=tenant_id,
+    )
+    participant = SimpleNamespace(id=participant_id)
+
+    setup_session = _FakeSession([task])
+    prepare_session = _FakeSession([agent, model, participant])
+    tool_call_session = _FakeSession([])
+    final_session = _FakeSession([task])
+    sessions = [setup_session, prepare_session, tool_call_session, final_session]
+
+    async def fake_invoke_agent(request):
+        await request.on_tool_call(
+            {
+                "status": "done",
+                "name": "web_search",
+                "args": {"query": "competitor updates"},
+                "result": "3 sources found",
+            }
+        )
+        return SimpleNamespace(content="任务已完成，已整理竞品动态。")
+
+    monkeypatch.setattr("app.services.task_executor.async_session", lambda: sessions.pop(0))
+    monkeypatch.setattr("app.services.task_executor.TaskLog", lambda **kwargs: SimpleNamespace(**kwargs))
+    monkeypatch.setattr("app.services.task_executor.invoke_agent", fake_invoke_agent)
+    async def fake_log_activity(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.activity_logger.log_activity", fake_log_activity)
+
+    await execute_task(task_id, agent_id)
+
+    created_session = next(item for item in prepare_session.added if getattr(item, "source_channel", None) == "task")
+    user_prompt = next(item for item in prepare_session.added if getattr(item, "role", None) == "user")
+    tool_call = next(item for item in tool_call_session.added if getattr(item, "role", None) == "tool_call")
+    assistant_reply = next(item for item in final_session.added if getattr(item, "role", None) == "assistant")
+
+    assert created_session.title.startswith("🧾 Task:")
+    assert user_prompt.conversation_id == str(created_session.id)
+    assert "准备竞品分析" in user_prompt.content
+    assert '"name": "web_search"' in tool_call.content
+    assert assistant_reply.conversation_id == str(created_session.id)
+    assert "任务已完成" in assistant_reply.content

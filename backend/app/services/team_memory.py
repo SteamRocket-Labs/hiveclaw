@@ -50,6 +50,7 @@ class TeamMemoryEntry:
     snippet: str = ""
     content: str | None = None
     deleted: bool = False
+    sync_token: str = ""
 
 
 def _slugify(value: str, *, fallback: str = "entry") -> str:
@@ -119,6 +120,10 @@ def _compute_checksum(body: str) -> str:
     return hashlib.sha256(body.strip().encode("utf-8")).hexdigest()
 
 
+def _compute_sync_token(*, revision: int, checksum: str, deleted: bool) -> str:
+    return f"tm:{revision}:{checksum}:{1 if deleted else 0}"
+
+
 def _coerce_revision(metadata: dict[str, str]) -> int:
     try:
         return max(int(metadata.get("revision", "0") or 0), 0)
@@ -165,6 +170,7 @@ class TeamMemoryStore:
         mode: str = "replace",
         updated_by: str = "system",
         base_revision: int | None = None,
+        sync_token: str | None = None,
     ) -> TeamMemoryEntry:
         if mode not in {"replace", "append"}:
             raise InvalidTeamMemoryModeError(f"Unsupported team memory mode: {mode}")
@@ -172,11 +178,14 @@ class TeamMemoryStore:
         path = self._entry_path(tenant_id, workspace_key, key)
         existing_body = ""
         existing_metadata: dict[str, str] = {}
+        current_entry: TeamMemoryEntry | None = None
         if path.exists():
             existing_metadata, existing_body = _parse_entry_markdown(path)
-        existing_revision = _coerce_revision(existing_metadata)
-        if base_revision is not None and path.exists() and base_revision != existing_revision:
             current_entry = self._entry_from_path(path, include_content=True, include_deleted=True)
+        existing_revision = _coerce_revision(existing_metadata)
+        sync_conflict = bool(sync_token and current_entry and sync_token != current_entry.sync_token)
+        revision_conflict = bool(base_revision is not None and path.exists() and base_revision != existing_revision)
+        if revision_conflict or sync_conflict:
             if current_entry is None:
                 raise TeamMemoryConflictError(
                     TeamMemoryEntry(
@@ -190,6 +199,11 @@ class TeamMemoryStore:
                         updated_by=existing_metadata.get("updated_by", ""),
                         path=str(path),
                         absolute_path=str(path.resolve()),
+                        sync_token=_compute_sync_token(
+                            revision=existing_revision,
+                            checksum=existing_metadata.get("checksum", ""),
+                            deleted=_coerce_deleted(existing_metadata),
+                        ),
                     )
                 )
             raise TeamMemoryConflictError(current_entry)
@@ -242,6 +256,11 @@ class TeamMemoryStore:
             snippet=snippet or body[:160],
             content=body if include_content else None,
             deleted=deleted,
+            sync_token=_compute_sync_token(
+                revision=_coerce_revision(metadata),
+                checksum=metadata.get("checksum", ""),
+                deleted=deleted,
+            ),
         )
 
     def list_entries(self, tenant_id: str, workspace_key: str, *, include_deleted: bool = False) -> list[TeamMemoryEntry]:
@@ -304,6 +323,7 @@ class TeamMemoryStore:
         *,
         updated_by: str = "system",
         base_revision: int | None = None,
+        sync_token: str | None = None,
     ) -> bool:
         path = self._entry_path(tenant_id, workspace_key, key)
         if not path.exists():
@@ -312,8 +332,10 @@ class TeamMemoryStore:
         if _coerce_deleted(metadata):
             return False
         existing_revision = _coerce_revision(metadata)
-        if base_revision is not None and base_revision != existing_revision:
-            current_entry = self._entry_from_path(path, include_content=True, include_deleted=True)
+        current_entry = self._entry_from_path(path, include_content=True, include_deleted=True)
+        revision_conflict = base_revision is not None and base_revision != existing_revision
+        sync_conflict = bool(sync_token and current_entry and sync_token != current_entry.sync_token)
+        if revision_conflict or sync_conflict:
             if current_entry is not None:
                 raise TeamMemoryConflictError(current_entry)
         updated_at = datetime.now(timezone.utc).isoformat()

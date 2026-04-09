@@ -238,6 +238,28 @@ class FeishuService:
                     return uid
             return None
 
+    async def get_contact_user_by_open_id(
+        self,
+        app_id: str,
+        app_secret: str,
+        open_id: str,
+        *,
+        stage: str = "get_contact_user_by_open_id",
+    ) -> dict:
+        """Resolve a Feishu contact record from app-scoped open_id."""
+        if not open_id:
+            return {}
+
+        async with httpx.AsyncClient(timeout=15) as client:
+            app_token = await self.get_tenant_access_token(app_id, app_secret)
+            resp = await client.get(
+                f"https://open.feishu.cn/open-apis/contact/v3/users/{open_id}",
+                params={"user_id_type": "open_id"},
+                headers={"Authorization": f"Bearer {app_token}"},
+            )
+            data = self._parse_api_response(resp, stage=stage)
+        return data.get("data", {}).get("user", {}) or {}
+
     async def send_approval_card(self, app_id: str, app_secret: str,
                                   creator_open_id: str, agent_name: str,
                                   action_type: str, details: str, approval_id: str,

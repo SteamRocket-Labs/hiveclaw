@@ -14,6 +14,7 @@ from app.models.agent import Agent
 from app.models.audit import ApprovalRequest, AuditLog
 from app.models.channel_config import ChannelConfig
 from app.models.user import User
+from app.services.channel_user_service import channel_user_service
 from app.services.feishu_service import feishu_service
 
 
@@ -206,9 +207,13 @@ class ApprovalService:
         if channel and channel.app_id and channel.app_secret:
             creator_result = await db.execute(select(User).where(User.id == agent.creator_id))
             creator = creator_result.scalar_one_or_none()
-            if creator and (creator.feishu_user_id or creator.feishu_open_id):
-                receive_id = creator.feishu_user_id or creator.feishu_open_id
-                id_type = "user_id" if creator.feishu_user_id else "open_id"
+            delivery_target = (
+                await channel_user_service.get_feishu_delivery_target(db, user=creator)
+                if creator
+                else None
+            )
+            if creator and delivery_target:
+                receive_id, id_type = delivery_target
                 await feishu_service.send_approval_card(
                     channel.app_id,
                     channel.app_secret,

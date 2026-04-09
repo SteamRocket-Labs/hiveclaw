@@ -331,37 +331,35 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                     content=content, receive_id_type=id_type,
                 )
 
-            async def _save_outgoing_to_feishu_session(open_id: str):
+            async def _save_outgoing_to_feishu_session(stable_user_id: str | None, stable_open_id: str | None):
                 """Save the outgoing message to the Feishu P2P chat session."""
                 try:
                     from app.models.audit import ChatMessage
                     from app.models.agent import Agent as AgentModel
+                    from app.services.channel_user_service import channel_user_service
                     from app.services.channel_session import find_or_create_channel_session
+                    from app.services.feishu_identity_maintenance import (
+                        build_feishu_p2p_conv_id,
+                        list_legacy_feishu_conv_ids,
+                    )
                     from datetime import datetime as _dt, timezone as _tz
 
                     agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
                     agent_obj = agent_r.scalar_one_or_none()
                     creator_id = agent_obj.creator_id if agent_obj else agent_id
 
-                    # Look up the platform user: prefer external identity, then legacy Feishu fields
-                    from app.models.identity import ExternalIdentity
-                    from app.models.user import User as UserModel
-                    feishu_user = None
-                    if open_id:
-                        ext_r = await db.execute(
-                            select(UserModel)
-                            .join(ExternalIdentity, ExternalIdentity.user_id == UserModel.id)
-                            .where(ExternalIdentity.provider_open_id == open_id)
-                        )
-                        feishu_user = ext_r.scalar_one_or_none()
-                    if not feishu_user and open_id:
-                        u_r = await db.execute(
-                            select(UserModel).where(UserModel.feishu_open_id == open_id)
-                        )
-                        feishu_user = u_r.scalar_one_or_none()
+                    feishu_user = await channel_user_service.resolve_feishu_user(
+                        db,
+                        tenant_id=agent_obj.tenant_id if agent_obj else None,
+                        provider_user_id=stable_user_id or None,
+                        provider_open_id=stable_open_id or None,
+                    )
                     user_id = feishu_user.id if feishu_user else creator_id
 
-                    ext_conv_id = f"feishu_p2p_{open_id}"
+                    ext_conv_id = (
+                        build_feishu_p2p_conv_id(stable_user_id, stable_open_id)
+                        or f"feishu_p2p_{stable_open_id or stable_user_id}"
+                    )
                     sess = await find_or_create_channel_session(
                         db=db,
                         agent_id=agent_id,
@@ -369,6 +367,7 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                         external_conv_id=ext_conv_id,
                         source_channel="feishu",
                         first_message_title=f"[Agent → {member_name}]",
+                        legacy_external_conv_ids=list_legacy_feishu_conv_ids(stable_open_id, ext_conv_id),
                     )
                     db.add(ChatMessage(
                         agent_id=agent_id,
@@ -390,7 +389,7 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
             if stable_user_id:
                 resp = await _try_send(config.app_id, config.app_secret, stable_user_id, "user_id")
                 if resp.get("code") == 0:
-                    await _save_outgoing_to_feishu_session(stable_open_id or stable_user_id)
+                    await _save_outgoing_to_feishu_session(stable_user_id, stable_open_id or stable_user_id)
                     return f"✅ Successfully sent message to {member_name}"
 
             # Step 2: Try resolve open_id via email/phone
@@ -407,14 +406,14 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                             target_member.open_id = resolved
                             target_member.feishu_open_id = resolved
                             await db.commit()
-                            await _save_outgoing_to_feishu_session(resolved)
+                            await _save_outgoing_to_feishu_session(stable_user_id, resolved)
                             return f"✅ Successfully sent message to {member_name}"
                 except Exception as e:
                     logger.debug("Suppressed: %s", e)
             if stable_open_id:
                 resp = await _try_send(config.app_id, config.app_secret, stable_open_id)
                 if resp.get("code") == 0:
-                    await _save_outgoing_to_feishu_session(stable_open_id)
+                    await _save_outgoing_to_feishu_session(stable_user_id, stable_open_id)
                     return f"✅ Successfully sent message to {member_name}"
 
                 # Step 4: If cross-app error, try org sync app as fallback

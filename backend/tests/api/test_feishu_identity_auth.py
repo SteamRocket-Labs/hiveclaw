@@ -37,13 +37,29 @@ def _fake_user(tenant_id=None):
 
 
 class _FakeDB:
-    def __init__(self, session=None):
+    def __init__(self, session=None, execute_results=None):
         self.session = session
+        self.execute_results = list(execute_results or [])
         self.committed = False
         self.flushed = False
 
     async def get(self, model, pk):
         return self.session
+
+    async def execute(self, _stmt):
+        if not self.execute_results:
+            raise AssertionError("Unexpected execute() call")
+
+        value = self.execute_results.pop(0)
+
+        class _Result:
+            def __init__(self, item):
+                self.item = item
+
+            def scalar_one_or_none(self):
+                return self.item
+
+        return _Result(value)
 
     async def commit(self):
         self.committed = True
@@ -138,3 +154,41 @@ def test_bind_feishu_account_uses_provider_binding():
     assert response.status_code == 200
     assert response.json()["id"] == str(current_user.id)
     bind_mock.assert_awaited_once()
+
+
+def test_feishu_card_callback_resolves_user_via_channel_user_service():
+    tenant_id = uuid4()
+    approval_id = uuid4()
+    agent_id = uuid4()
+    current_user = _fake_user(tenant_id)
+    approval = SimpleNamespace(id=approval_id, agent_id=agent_id, action_type="publish")
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
+    db = _FakeDB(execute_results=[approval, agent])
+    app = _build_app(db)
+
+    callback_body = {
+        "open_id": "ou_callback_open",
+        "operator": {"open_id": "ou_callback_open"},
+        "action": {
+            "value": '{"approval_id": "%s", "action": "approve"}' % approval_id
+        },
+    }
+
+    with patch(
+        "app.api.feishu.channel_user_service.resolve_feishu_user",
+        new_callable=AsyncMock,
+        return_value=current_user,
+    ) as resolve_user_mock, patch(
+        "app.services.approval_service.approval_service.resolve_approval",
+        new_callable=AsyncMock,
+        return_value=approval,
+    ) as resolve_approval_mock, patch(
+        "app.core.policy.write_audit_event",
+        new_callable=AsyncMock,
+    ):
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.post("/channel/feishu/card-callback", json=callback_body)
+
+    assert response.status_code == 200
+    resolve_user_mock.assert_awaited_once()
+    resolve_approval_mock.assert_awaited_once()

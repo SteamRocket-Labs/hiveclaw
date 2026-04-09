@@ -1,6 +1,7 @@
 """Feishu WebSocket Long Connection Manager."""
 
 import asyncio
+import json
 from typing import Any, Dict
 import uuid
 
@@ -14,6 +15,17 @@ except ImportError:
     ws = None    # type: ignore
     _HAS_LARK = False
 
+if _HAS_LARK:
+    try:
+        import websockets as _websockets
+
+        _orig_websockets_connect = _websockets.connect
+        _PROXY_PATCH_AVAILABLE = True
+    except ImportError:
+        _PROXY_PATCH_AVAILABLE = False
+else:
+    _PROXY_PATCH_AVAILABLE = False
+
 from app.database import async_session
 from app.models.channel_config import ChannelConfig
 from sqlalchemy import select
@@ -25,6 +37,46 @@ if not _HAS_LARK:
         "Feishu WebSocket features will be disabled. "
         "Install with: pip install lark-oapi"
     )
+
+
+def _make_no_proxy_connect(orig_connect):
+    """Temporarily force `proxy=None` during the WebSocket handshake only."""
+    import contextlib
+
+    class _NoProxyConnect:
+        def __init__(self, *args, **kwargs):
+            kwargs.setdefault("proxy", None)
+            self._coro = orig_connect(*args, **kwargs)
+            self._ws = None
+
+        def __await__(self):
+            return self._coro.__await__()
+
+        async def __aenter__(self):
+            self._ws = await self._coro
+            return self._ws
+
+        async def __aexit__(self, *exc):
+            if self._ws:
+                await self._ws.close()
+            return False
+
+    @contextlib.asynccontextmanager
+    async def _scoped_no_proxy():
+        if not _PROXY_PATCH_AVAILABLE:
+            yield
+            return
+
+        previous_connect = _websockets.connect
+        _websockets.connect = _NoProxyConnect
+        logger.debug("[Feishu WS] Scoped websockets proxy bypass: active")
+        try:
+            yield
+        finally:
+            _websockets.connect = previous_connect
+            logger.debug("[Feishu WS] Scoped websockets proxy bypass: restored")
+
+    return _scoped_no_proxy
 
 
 class FeishuWSManager:
@@ -192,12 +244,17 @@ class FeishuWSManager:
             log_level=lark.LogLevel.INFO,
         )
         self._clients[agent_id] = client
+        no_proxy_ctx = _make_no_proxy_connect(_orig_websockets_connect) if _PROXY_PATCH_AVAILABLE else None
 
         # Direct Async runner bypassing the faulty client.start()
         async def _run_async_client():
             try:
                 # Internally _connect() opens socket and drops _receive_message_loop() onto the global loop
-                await client._connect()
+                if no_proxy_ctx:
+                    async with no_proxy_ctx():
+                        await client._connect()
+                else:
+                    await client._connect()
                 # Start ping loop natively
                 asyncio.create_task(client._ping_loop())
                 

@@ -539,8 +539,11 @@ async def send_message(
             detail=f"Target '{target_name}' not found. Check your relationships list."
         )
 
+    stable_user_id = target_member.external_id or target_member.feishu_user_id
+    stable_open_id = target_member.open_id or target_member.feishu_open_id
+
     # Send via feishu if available
-    if (target_member.feishu_user_id or target_member.feishu_open_id) and (not channel_hint or channel_hint == "feishu"):
+    if (stable_user_id or stable_open_id) and (not channel_hint or channel_hint == "feishu"):
         from app.models.channel_config import ChannelConfig
         from app.services.feishu_service import feishu_service
         import json as _json
@@ -562,18 +565,18 @@ async def send_message(
 
         # Prefer user_id (tenant-stable, works across apps), fallback to open_id
         resp = None
-        if target_member.feishu_user_id:
+        if stable_user_id:
             resp = await feishu_service.send_message(
                 config.app_id, config.app_secret,
-                receive_id=target_member.feishu_user_id,
+                receive_id=stable_user_id,
                 msg_type="text",
                 content=_json.dumps({"text": content}, ensure_ascii=False),
                 receive_id_type="user_id",
             )
-        if (resp is None or resp.get("code") != 0) and target_member.feishu_open_id:
+        if (resp is None or resp.get("code") != 0) and stable_open_id:
             resp = await feishu_service.send_message(
                 config.app_id, config.app_secret,
-                receive_id=target_member.feishu_open_id,
+                receive_id=stable_open_id,
                 msg_type="text",
                 content=_json.dumps({"text": content}, ensure_ascii=False),
                 receive_id_type="open_id",
@@ -596,7 +599,11 @@ async def send_message(
     await db.commit()
     raise HTTPException(
         status_code=400,
-        detail=f"No available channel to reach {target_member.name}. feishu_user_id={'yes' if target_member.feishu_user_id else 'no'}, feishu_open_id={'yes' if target_member.feishu_open_id else 'no'}"
+        detail=(
+            f"No available channel to reach {target_member.name}. "
+            f"feishu_user_id={'yes' if stable_user_id else 'no'}, "
+            f"feishu_open_id={'yes' if stable_open_id else 'no'}"
+        ),
     )
 
 

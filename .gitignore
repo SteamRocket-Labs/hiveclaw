@@ -1,0 +1,31 @@
+# ClawCrew
+node_modules/
+dist/
+*.zip
+build/
+__pycache__/
+*.pyc
+.env
+.venv/
+.vscode/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+*.db
+.DS_Store
+.gstack/
+# Runtime agent data
+backend/data/
+backend/agent_data/
+ss-nodes.json
+.data/
+
+# Ignore Antigravity / Claude Code agent configurations
+.agent/
+.agents/
+_agent/
+_agents/
+
+# Internal docs
+docs/

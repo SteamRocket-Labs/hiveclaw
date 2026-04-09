@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#c0c0c0"/>
+      <stop offset="100%" stop-color="#707070"/>
+    </linearGradient>
+    <linearGradient id="g2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#d0d0d0"/>
+      <stop offset="100%" stop-color="#888"/>
+    </linearGradient>
+  </defs>
+  <!-- Body -->
+  <ellipse cx="256" cy="240" rx="65" ry="90" fill="url(#g1)" stroke="#999" stroke-width="2"/>
+  <!-- Head -->
+  <ellipse cx="256" cy="145" rx="40" ry="35" fill="url(#g2)" stroke="#999" stroke-width="2"/>
+  <!-- Eyes -->
+  <circle cx="242" cy="132" r="5" fill="#555"/>
+  <circle cx="270" cy="132" r="5" fill="#555"/>
+  <!-- Antennae -->
+  <line x1="248" y1="115" x2="230" y2="85" stroke="#999" stroke-width="3" stroke-linecap="round"/>
+  <line x1="264" y1="115" x2="282" y2="85" stroke="#999" stroke-width="3" stroke-linecap="round"/>
+  <!-- Left Claw -->
+  <path d="M190 170 Q140 120 120 140 Q100 160 130 180 Q110 160 115 145 Q100 130 80 150 Q70 175 110 195 L190 200 Z" fill="url(#g2)" stroke="#999" stroke-width="2"/>
+  <!-- Right Claw -->
+  <path d="M322 170 Q372 120 392 140 Q412 160 382 180 Q402 160 397 145 Q412 130 432 150 Q442 175 402 195 L322 200 Z" fill="url(#g2)" stroke="#999" stroke-width="2"/>
+  <!-- Left Arm -->
+  <path d="M195 185 Q170 175 190 170" fill="none" stroke="#999" stroke-width="4" stroke-linecap="round"/>
+  <!-- Right Arm -->
+  <path d="M317 185 Q342 175 322 170" fill="none" stroke="#999" stroke-width="4" stroke-linecap="round"/>
+  <!-- Tail segments -->
+  <path d="M220 325 Q256 335 292 325 L288 355 Q256 365 224 355 Z" fill="url(#g1)" stroke="#999" stroke-width="2"/>
+  <path d="M224 355 Q256 365 288 355 L284 385 Q256 395 228 385 Z" fill="url(#g1)" stroke="#999" stroke-width="2"/>
+  <path d="M228 385 Q256 395 284 385 L280 415 Q256 425 232 415 Z" fill="url(#g1)" stroke="#999" stroke-width="2"/>
+  <!-- Tail fan -->
+  <path d="M232 415 Q256 425 280 415 L290 445 Q256 465 222 445 Z" fill="url(#g2)" stroke="#999" stroke-width="2"/>
+  <path d="M222 445 Q240 440 256 455 Q230 460 215 450 Z" fill="url(#g2)" stroke="#999" stroke-width="1.5"/>
+  <path d="M290 445 Q272 440 256 455 Q282 460 297 450 Z" fill="url(#g2)" stroke="#999" stroke-width="1.5"/>
+  <!-- Left legs -->
+  <line x1="195" y1="220" x2="130" y2="240" stroke="#999" stroke-width="4" stroke-linecap="round"/>
+  <line x1="195" y1="245" x2="125" y2="270" stroke="#999" stroke-width="4" stroke-linecap="round"/>
+  <line x1="195" y1="270" x2="130" y2="300" stroke="#999" stroke-width="4" stroke-linecap="round"/>
+  <!-- Right legs -->
+  <line x1="317" y1="220" x2="382" y2="240" stroke="#999" stroke-width="4" stroke-linecap="round"/>
+  <line x1="317" y1="245" x2="387" y2="270" stroke="#999" stroke-width="4" stroke-linecap="round"/>
+  <line x1="317" y1="270" x2="382" y2="300" stroke="#999" stroke-width="4" stroke-linecap="round"/>
+</svg>

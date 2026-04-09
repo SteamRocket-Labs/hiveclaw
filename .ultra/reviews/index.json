@@ -1,0 +1,28 @@
+{
+  "sessions": [
+    {
+      "id": "20260317-193714-main-iter1",
+      "branch": "main",
+      "iteration": 1,
+      "mode": "full",
+      "timestamp": "2026-03-17T11:37:28Z",
+      "verdict": "REQUEST_CHANGES",
+      "p0": 2,
+      "p1": 14,
+      "total": 36,
+      "parent": null
+    },
+    {
+      "id": "20260320-054339-main-security",
+      "branch": "main",
+      "iteration": 1,
+      "mode": "security",
+      "timestamp": "2026-03-20T05:43:39.454970Z",
+      "verdict": "pending",
+      "p0": null,
+      "p1": null,
+      "total": null,
+      "parent": null
+    }
+  ]
+}

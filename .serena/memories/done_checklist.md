@@ -1,0 +1,1 @@
+After code changes, run the most targeted relevant tests first. For backend logic changes, run affected pytest modules and Ruff if Python files changed. For frontend changes, run the relevant frontend tests/build and ensure i18n keys are updated in both en.json and zh.json when UI text changes. Keep changes tenant-safe and avoid reverting unrelated dirty worktree edits.

@@ -1,0 +1,32 @@
+name: "✨ Feature Request"
+description: Suggest a new feature or improvement
+labels: ["enhancement"]
+body:
+  - type: checkboxes
+    attributes:
+      label: Pre-checks
+      options:
+        - label: I have searched [existing issues](https://github.com/dataelement/hive-agents/issues) and this is not a duplicate.
+          required: true
+
+  - type: textarea
+    attributes:
+      label: What problem does this solve?
+      placeholder: Describe the problem or use case.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Proposed solution
+      placeholder: How would you like this to work? (Optional)
+    validations:
+      required: false
+
+  - type: checkboxes
+    attributes:
+      label: Willing to contribute?
+      description: Not a commitment — just helps us know!
+      options:
+        - label: I'd be interested in working on this.
+          required: false

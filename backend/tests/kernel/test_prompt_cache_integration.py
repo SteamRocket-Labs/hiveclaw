@@ -1,0 +1,106 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
+
+from app.runtime.session import SessionContext
+
+
+class _FakeClient:
+    def __init__(self, responses: list[SimpleNamespace]) -> None:
+        self._responses = list(responses)
+        self.calls: list[dict] = []
+
+    async def stream(self, **kwargs):
+        self.calls.append(kwargs)
+        if not self._responses:
+            raise AssertionError("No fake response prepared")
+        return self._responses.pop(0)
+
+    async def close(self) -> None:
+        return None
+
+
+def _make_model():
+    return SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1",
+        api_key="test-key",
+        base_url=None,
+        max_output_tokens=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_kernel_reuses_frozen_prefix_but_refreshes_dynamic_retrieval():
+    from app.kernel.contracts import InvocationRequest, RuntimeConfig
+    from app.kernel.engine import AgentKernel, KernelDependencies
+
+    build_calls = {"count": 0}
+    retrieval_calls: list[str] = []
+    session_ctx = SessionContext(session_id="s-1", source="chat")
+
+    async def build_system_prompt(request, tenant_id, memory_context, current_user_name):
+        del request, tenant_id, memory_context, current_user_name
+        build_calls["count"] += 1
+        return "FROZEN"
+
+    async def resolve_retrieval_context(request, tenant_id):
+        del request, tenant_id
+        value = f"RETRIEVAL_{len(retrieval_calls) + 1}"
+        retrieval_calls.append(value)
+        return value
+
+    fake_client = _FakeClient([
+        SimpleNamespace(content="first", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
+        SimpleNamespace(content="second", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
+    ])
+
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
+            resolve_current_user_name=lambda _user_id: "Rocky",
+            build_system_prompt=build_system_prompt,
+            resolve_memory_context=lambda *_args, **_kwargs: "SNAPSHOT_BLOCK",
+            resolve_retrieval_context=resolve_retrieval_context,
+            get_tools=lambda *_args, **_kwargs: [],
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda _model: fake_client,
+            execute_tool=lambda *_args, **_kwargs: "OK",
+            persist_memory=lambda **_kwargs: None,
+            record_token_usage=lambda *_args, **_kwargs: None,
+            get_max_tokens=lambda *_args, **_kwargs: 1024,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens"),
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    request = InvocationRequest(
+        model=_make_model(),
+        messages=[{"role": "user", "content": "hello"}],
+        agent_name="Agent",
+        role_description="desc",
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        session_context=session_ctx,
+    )
+
+    result1 = await kernel.handle(request)
+    result2 = await kernel.handle(request)
+
+    assert result1.content == "first"
+    assert result2.content == "second"
+    assert build_calls["count"] == 1
+    assert session_ctx.prompt_prefix == "FROZEN"
+    assert session_ctx.prompt_fingerprint
+
+    first_prompt = fake_client.calls[0]["messages"][0].content
+    second_prompt = fake_client.calls[1]["messages"][0].content
+
+    assert "SNAPSHOT_BLOCK" in first_prompt
+    assert "## Your Memory System" in first_prompt
+    assert second_prompt.count("SNAPSHOT_BLOCK") == 1
+    assert "RETRIEVAL_1" in first_prompt
+    assert "RETRIEVAL_2" in second_prompt

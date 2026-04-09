@@ -1,0 +1,6 @@
+# Ensure shell scripts always use LF line endings on all platforms.
+# This prevents the 'set: Illegal option -' error in Docker containers
+# when scripts are cloned on Windows (which defaults to CRLF).
+*.sh        text eol=lf
+*.bash      text eol=lf
+entrypoint* text eol=lf

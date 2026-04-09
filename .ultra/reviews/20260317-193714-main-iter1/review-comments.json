@@ -1,0 +1,129 @@
+{
+  "$schema": "ultra-review-findings-v1",
+  "agent": "review-comments",
+  "session": "20260317-193714-main-iter1",
+  "timestamp": "2026-03-17T19:40:00+08:00",
+  "scope": {
+    "files_analyzed": [
+      "backend/app/api/agents.py",
+      "backend/app/api/enterprise.py",
+      "backend/app/api/websocket.py",
+      "backend/app/services/agent_tools.py",
+      "backend/app/services/collaboration.py",
+      "backend/app/services/execution/engine.py",
+      "backend/app/api/feature_flags.py"
+    ],
+    "total_lines_analyzed": 975,
+    "diff_only": true
+  },
+  "summary": {
+    "total_findings": 7,
+    "by_severity": { "P0": 0, "P1": 1, "P2": 4, "P3": 2 },
+    "verdict": "COMMENT"
+  },
+  "findings": [
+    {
+      "id": "review-comments-001",
+      "severity": "P1",
+      "confidence": 92,
+      "category": "comments",
+      "subcategory": "misleading-comment",
+      "title": "Comment says L3 approval but code is a no-op pass",
+      "file": "backend/app/services/agent_tools.py",
+      "line": 1084,
+      "line_end": 1085,
+      "code_snippet": "if _zone == \"restricted\" and tool_name in _SENSITIVE_TOOLS:\n    # For restricted zone, sensitive tools require L3 approval via autonomy check below\n    pass",
+      "description": "The comment states that sensitive tools in the restricted zone 'require L3 approval via autonomy check below', implying the code delegates enforcement to a later check. However, the autonomy boundary check below only fires if the tool_name appears in _TOOL_AUTONOMY_MAP. If a tool is in _SENSITIVE_TOOLS but not in _TOOL_AUTONOMY_MAP, neither the security zone nor the autonomy check will block it. The comment creates a false sense of security by implying enforcement that may not exist for all sensitive tools.",
+      "suggestion": "Either verify that every tool in _SENSITIVE_TOOLS also has an entry in _TOOL_AUTONOMY_MAP, or add explicit L3 enforcement inline: `return await _request_human_approval(agent_id, tool_name, ...)`."
+    },
+    {
+      "id": "review-comments-002",
+      "severity": "P2",
+      "confidence": 88,
+      "category": "comments",
+      "subcategory": "uninformative-logging",
+      "title": "Repeated 'Suppressed: %s' debug messages are ungreppable",
+      "file": "backend/app/api/websocket.py",
+      "line": 95,
+      "code_snippet": "logger.debug(\"Suppressed: %s\", e)",
+      "description": "At least 15 exception handlers across websocket.py and agent_tools.py use the identical message 'Suppressed: %s'. When diagnosing production issues, searching logs for 'Suppressed' gives no indication of which code path failed. These replace the former `pass` statements, which is an improvement, but the message provides near-zero diagnostic value since every suppressed exception looks identical.",
+      "suggestion": "Give each log site a unique, descriptive prefix, e.g. `logger.debug('chat_history json parse failed: %s', e)`, `logger.debug('quota increment skipped: %s', e)`. This makes log grep immediately useful."
+    },
+    {
+      "id": "review-comments-003",
+      "severity": "P2",
+      "confidence": 85,
+      "category": "comments",
+      "subcategory": "redundant-comment",
+      "title": "Inline comments on audit blocks restate the obvious",
+      "file": "backend/app/api/agents.py",
+      "line": 240,
+      "code_snippet": "# Audit: openclaw agent created\ntry:\n    from app.core.policy import write_audit_event\n    await write_audit_event(db, event_type=\"agent.created\", ...)",
+      "description": "The comments '# Audit: openclaw agent created', '# Audit: agent created', '# Audit: agent updated', '# Audit: agent deleted', '# Audit: agent.started', '# Audit: agent.stopped' appear before every audit block. The `write_audit_event` call with its `event_type` parameter already communicates this. These comments will rot if the event_type string is changed without updating the comment, and they add no explanatory value beyond what the code states.",
+      "suggestion": "Remove these per-block audit comments. If the audit pattern needs explanation, add a single module-level docstring or a comment at the first occurrence explaining the audit pattern, not on every instance."
+    },
+    {
+      "id": "review-comments-004",
+      "severity": "P2",
+      "confidence": 82,
+      "category": "comments",
+      "subcategory": "deleted-section-headers",
+      "title": "Section header comments removed without replacement",
+      "file": "backend/app/services/agent_tools.py",
+      "line": 2970,
+      "code_snippet": "async def _discover_resources(arguments: dict) -> str:\n    \"\"\"Search Smithery registry for MCP servers.\"\"\"",
+      "description": "Three section header comments were removed in this diff: '# --- Resource Discovery Executors ---', '# --- Email Tool Helpers ---', and '# -- Fallback: try User table --'. In a 4660-line file, these section dividers serve as navigation landmarks. Removing them without adding an alternative (e.g., moving functions to separate modules) makes navigation harder in this very large file.",
+      "suggestion": "Either restore the section headers (they have high ROI in a 4600+ line file) or, preferably, extract these function groups into separate modules (e.g., agent_tools_mcp.py, agent_tools_email.py) which is the real fix for a file this size."
+    },
+    {
+      "id": "review-comments-005",
+      "severity": "P2",
+      "confidence": 80,
+      "category": "comments",
+      "subcategory": "incomplete-docstring",
+      "title": "call_llm_via_engine docstring lacks parameter documentation",
+      "file": "backend/app/api/websocket.py",
+      "line": 112,
+      "code_snippet": "\"\"\"Call LLM via the middleware-based execution engine.\"\"\"",
+      "description": "The function `call_llm_via_engine` is a new 100-line function with 10 parameters (including callbacks). Its single-line docstring 'Call LLM via the middleware-based execution engine' gives no information about the callback contracts, return value semantics, or the middleware stack behavior. The sibling function `call_llm` has proper parameter documentation. As a public function called from `call_llm`, future maintainers need to understand the interface contract.",
+      "suggestion": "Add parameter documentation matching the style of the existing `call_llm` docstring, covering at minimum: what `on_chunk`, `on_tool_call`, `on_thinking` callbacks receive, what the return string contains, and when `[Engine returned empty content]` is returned."
+    },
+    {
+      "id": "review-comments-006",
+      "severity": "P3",
+      "confidence": 78,
+      "category": "comments",
+      "subcategory": "stale-comment",
+      "title": "Removed comment 'Build rich prompt' was the only hint of why",
+      "file": "backend/app/api/websocket.py",
+      "line": 256,
+      "code_snippet": "from app.services.agent_context import build_agent_context\n# Look up current user's display name so the agent knows who it's talking to",
+      "description": "The diff removed the comment '# Build rich prompt with soul, memory, skills, relationships' which explained *why* `build_agent_context` is called and what it aggregates. The function name alone does not convey that it pulls from soul.md, memory.md, skills/, and relationships. The remaining comment 'Look up current user's display name so the agent knows who it's talking to' is good but covers only one sub-step.",
+      "suggestion": "Restore or rephrase the high-level comment, e.g. '# Build system prompt from agent soul, memory, skills, and relationships'."
+    },
+    {
+      "id": "review-comments-007",
+      "severity": "P3",
+      "confidence": 76,
+      "category": "comments",
+      "subcategory": "shadow-logger",
+      "title": "Redundant module-level logger shadowed by local import",
+      "file": "backend/app/api/websocket.py",
+      "line": 113,
+      "line_end": 114,
+      "code_snippet": "import logging\n_logger = logging.getLogger(__name__)",
+      "description": "The function `call_llm_via_engine` creates a local `import logging` and `_logger = logging.getLogger(__name__)` on lines 113-114, despite the module already having `logger = logging.getLogger(__name__)` at module scope (line 20). This creates two loggers with the same name. The local `_logger` variable shadows the module `logger` within this function, adding confusion. The function's internal debug calls use `_logger.debug(...)` while all other functions in the module use `logger.debug(...)`.",
+      "suggestion": "Remove the redundant `import logging` and `_logger = logging.getLogger(__name__)` from inside the function. Use the module-level `logger` like every other function in this module."
+    }
+  ],
+  "positive_observations": [
+    "Systematic replacement of bare `except: pass` with `except Exception as e: logger.debug/warning(...)` across all files is a significant improvement for debuggability.",
+    "The collaboration.py docstring was updated to accurately reflect the new Redis Streams implementation with file-based fallback, keeping documentation in sync with behavior.",
+    "Good use of structured logging with contextual parameters (agent_id, table name) in the new warning/debug messages in agents.py delete flow."
+  ],
+  "metadata": {
+    "duration_ms": 25000,
+    "model": "claude-opus-4-6",
+    "turns_used": 5
+  }
+}

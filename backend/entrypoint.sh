@@ -12,8 +12,10 @@ set -e
 chown -R hive:hive /data 2>/dev/null || true
 
 # Force git to use HTTPS instead of SSH (container has no SSH keys)
-git config --global url."https://github.com/".insteadOf "git@github.com:"
-git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+if command -v git >/dev/null 2>&1; then
+    git config --global url."https://github.com/".insteadOf "git@github.com:"
+    git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+fi
 
 echo "[entrypoint] Step 1: Creating/verifying database tables..."
 

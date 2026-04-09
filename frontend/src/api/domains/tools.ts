@@ -41,6 +41,8 @@ export interface FeishuRuntimeStatus {
   cli_bin: string;
   docs_read_ready: boolean;
   base_tasks_ready: boolean;
+  cardkit_ready?: boolean;
+  tenant_channel_configured?: boolean;
   channel_configured?: boolean;
   office_access?: boolean;
 }

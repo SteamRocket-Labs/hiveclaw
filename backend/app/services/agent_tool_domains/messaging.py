@@ -343,10 +343,18 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                     agent_obj = agent_r.scalar_one_or_none()
                     creator_id = agent_obj.creator_id if agent_obj else agent_id
 
-                    # Look up the platform user: prefer feishu_user_id, then feishu_open_id
+                    # Look up the platform user: prefer external identity, then legacy Feishu fields
+                    from app.models.identity import ExternalIdentity
                     from app.models.user import User as UserModel
                     feishu_user = None
                     if open_id:
+                        ext_r = await db.execute(
+                            select(UserModel)
+                            .join(ExternalIdentity, ExternalIdentity.user_id == UserModel.id)
+                            .where(ExternalIdentity.provider_open_id == open_id)
+                        )
+                        feishu_user = ext_r.scalar_one_or_none()
+                    if not feishu_user and open_id:
                         u_r = await db.execute(
                             select(UserModel).where(UserModel.feishu_open_id == open_id)
                         )
@@ -375,11 +383,14 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                 except Exception as e:
                     logger.error(f"[Feishu] Failed to save outgoing message to history: {e}")
 
-            # Step 1: Try using feishu_user_id (tenant-stable, works across apps)
-            if target_member.feishu_user_id:
-                resp = await _try_send(config.app_id, config.app_secret, target_member.feishu_user_id, "user_id")
+            stable_user_id = target_member.external_id or target_member.feishu_user_id
+            stable_open_id = target_member.open_id or target_member.feishu_open_id
+
+            # Step 1: Try using provider user_id (tenant-stable, works across apps)
+            if stable_user_id:
+                resp = await _try_send(config.app_id, config.app_secret, stable_user_id, "user_id")
                 if resp.get("code") == 0:
-                    await _save_outgoing_to_feishu_session(target_member.feishu_open_id or target_member.feishu_user_id)
+                    await _save_outgoing_to_feishu_session(stable_open_id or stable_user_id)
                     return f"✅ Successfully sent message to {member_name}"
 
             # Step 2: Try resolve open_id via email/phone
@@ -393,16 +404,17 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                     if resolved:
                         resp = await _try_send(config.app_id, config.app_secret, resolved)
                         if resp.get("code") == 0:
+                            target_member.open_id = resolved
                             target_member.feishu_open_id = resolved
                             await db.commit()
                             await _save_outgoing_to_feishu_session(resolved)
                             return f"✅ Successfully sent message to {member_name}"
                 except Exception as e:
                     logger.debug("Suppressed: %s", e)
-            if target_member.feishu_open_id:
-                resp = await _try_send(config.app_id, config.app_secret, target_member.feishu_open_id)
+            if stable_open_id:
+                resp = await _try_send(config.app_id, config.app_secret, stable_open_id)
                 if resp.get("code") == 0:
-                    await _save_outgoing_to_feishu_session(target_member.feishu_open_id)
+                    await _save_outgoing_to_feishu_session(stable_open_id)
                     return f"✅ Successfully sent message to {member_name}"
 
                 # Step 4: If cross-app error, try org sync app as fallback
@@ -419,27 +431,27 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                     org_setting = org_r.scalar_one_or_none()
                     if org_setting and org_setting.value.get("app_id"):
                         # Try user_id with org sync app first
-                        if target_member.feishu_user_id:
+                        if stable_user_id:
                             resp2 = await _try_send(
                                 org_setting.value["app_id"], org_setting.value["app_secret"],
-                                target_member.feishu_user_id, "user_id",
+                                stable_user_id, "user_id",
                             )
                             if resp2.get("code") == 0:
-                                await _save_outgoing_to_feishu_session(target_member.feishu_open_id)
+                                await _save_outgoing_to_feishu_session(stable_open_id or stable_user_id)
                                 return f"✅ Successfully sent message to {member_name}"
                         # Fallback to open_id with org sync app
                         resp2 = await _try_send(
                             org_setting.value["app_id"], org_setting.value["app_secret"],
-                            target_member.feishu_open_id,
+                            stable_open_id,
                         )
                         if resp2.get("code") == 0:
-                            await _save_outgoing_to_feishu_session(target_member.feishu_open_id)
+                            await _save_outgoing_to_feishu_session(stable_open_id)
                             return f"✅ Successfully sent message to {member_name}"
                         return f"❌ Send failed: {resp2.get('msg', str(resp2))}"
 
                 return f"❌ Send failed: {err_msg}"
 
-            return f"❌ {member_name} has no Feishu user_id or open_id and cannot be resolved via email/phone"
+            return f"❌ {member_name} has no Feishu user_id/open_id and cannot be resolved via email/phone"
     except Exception as e:
         return f"❌ Message send error: {str(e)[:200]}"
 

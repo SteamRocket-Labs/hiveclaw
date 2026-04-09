@@ -3,6 +3,8 @@
 import logging
 import uuid
 
+import httpx
+
 from app.services.agent_tool_domains.feishu_cli import (
     FeishuCliError,
     _feishu_cli_api_request,
@@ -10,7 +12,7 @@ from app.services.agent_tool_domains.feishu_cli import (
 )
 from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token
 from app.services.agent_tool_domains.feishu_wiki import _feishu_wiki_get_node, _feishu_wiki_get_node_via_cli
-from app.tools.result_envelope import render_tool_fallback
+from app.tools.result_envelope import render_tool_error, render_tool_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +117,6 @@ async def _feishu_doc_read(agent_id: uuid.UUID, arguments: dict) -> str:
 
 
 async def _feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:
-    import httpx
     from app.services.agent_tools import channel_feishu_sender_open_id
 
     title = arguments.get("title", "").strip()
@@ -340,7 +341,6 @@ def _markdown_to_feishu_blocks(markdown: str) -> list[dict]:
 
 
 async def _feishu_doc_append(agent_id: uuid.UUID, arguments: dict) -> str:
-    import httpx
     document_token = arguments.get("document_token", "").strip()
     content = arguments.get("content", "").strip()
     if not document_token:
@@ -387,3 +387,32 @@ async def _feishu_doc_append(agent_id: uuid.UUID, arguments: dict) -> str:
         f"✅ 已写入 {len(children)} 个段落到文档。\n"
         f"🔗 文档直链（原文发给用户，勿修改）：{doc_url}"
     )
+
+
+async def _feishu_doc_delete(agent_id: uuid.UUID, arguments: dict) -> str:
+    document_token = str(arguments.get("document_token") or "").strip()
+    if not document_token:
+        return "❌ Missing required argument 'document_token'"
+
+    creds = await _get_feishu_token(agent_id)
+    if not creds:
+        return render_tool_error(
+            tool_name="feishu_doc_delete",
+            error_class="not_configured",
+            message="Feishu is not configured for this agent.",
+            provider="feishu_openapi",
+            actionable_hint="Configure Feishu App credentials in Enterprise Settings → Channels.",
+        )
+
+    _, token = creds
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.delete(
+            f"https://open.feishu.cn/open-apis/drive/v1/files/{document_token}",
+            params={"type": "docx"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    data = resp.json()
+    if data.get("code") != 0:
+        return f"❌ Failed to delete document: {data.get('msg')} (code {data.get('code')})"
+    return f"🗑️ 已删除飞书文档 `{document_token}`"

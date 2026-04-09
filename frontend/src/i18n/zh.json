@@ -1167,6 +1167,8 @@
       "cliEnabled": "CLI 已激活",
       "cliAuth": "CLI 已认证",
       "channelAuth": "渠道已认证",
+      "tenantAuth": "租户已认证",
+      "cardkit": "CardKit",
       "docsReady": "文档 / Wiki / 表格",
       "baseReady": "数据库 / 任务"
     }
@@ -1300,6 +1302,8 @@
   "channelGuide": {
     "setupGuide": "配置说明",
     "feishuPermJson": "权限批量导入 JSON",
+    "feishuPermBasic": "基础权限",
+    "feishuPermFull": "完整权限",
     "feishuPermCopy": "复制",
     "feishuPermCopied": "✓ 已复制",
     "slack": {

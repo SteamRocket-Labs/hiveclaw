@@ -14,6 +14,8 @@ from app.core.permissions import check_agent_access
 from app.core.security import get_current_admin, get_current_user
 from app.database import get_db
 from app.models.agent import Agent
+from app.models.tenant_channel_config import TenantChannelConfig
+from app.models.tenant_setting import TenantSetting
 from app.models.tool import AgentTool, Tool
 from app.models.user import User
 from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment
@@ -67,26 +69,77 @@ class EmailTestIn(BaseModel):
     config: dict = Field(default_factory=dict)
 
 
-async def _build_feishu_runtime_status(agent_id: uuid.UUID | None = None) -> dict:
+async def _tenant_has_feishu_channel_config(db: AsyncSession | None, tenant_id: uuid.UUID | None) -> bool:
+    if db is None or tenant_id is None:
+        return False
+    try:
+        result = await db.execute(
+            select(TenantChannelConfig).where(
+                TenantChannelConfig.tenant_id == tenant_id,
+                TenantChannelConfig.channel_type == "feishu",
+                TenantChannelConfig.is_active.is_(True),
+            )
+        )
+    except AssertionError:
+        return False
+    config = result.scalar_one_or_none()
+    return bool(config and config.app_id and config.app_secret)
+
+
+async def _tenant_has_feishu_provider_config(db: AsyncSession | None, tenant_id: uuid.UUID | None) -> bool:
+    if db is None or tenant_id is None:
+        return False
+    try:
+        result = await db.execute(
+            select(TenantSetting).where(
+                TenantSetting.tenant_id == tenant_id,
+                TenantSetting.key == "feishu_org_sync",
+            )
+        )
+    except AssertionError:
+        return False
+    setting = result.scalar_one_or_none()
+    value = getattr(setting, "value", {}) or {}
+    return bool(value.get("app_id") and value.get("app_secret"))
+
+
+async def _build_feishu_runtime_status(
+    agent_id: uuid.UUID | None = None,
+    *,
+    db: AsyncSession | None = None,
+    tenant_id: uuid.UUID | None = None,
+) -> dict:
     from app.services.agent_tool_domains.feishu_cli import _feishu_cli_available
+    from app.services.feishu_service import _HAS_LARK
 
     settings = get_settings()
     cli_enabled = bool(getattr(settings, "FEISHU_CLI_ENABLED", False))
     cli_bin = getattr(settings, "FEISHU_CLI_BIN", "lark-cli")
     cli_available = await _feishu_cli_available()
+    provider_configured = await _tenant_has_feishu_provider_config(db, tenant_id)
+    tenant_channel_configured = await _tenant_has_feishu_channel_config(db, tenant_id)
+    tenant_auth_ready = tenant_channel_configured or provider_configured
 
     payload = {
         "scope": "agent" if agent_id is not None else "global",
         "cli_enabled": cli_enabled,
         "cli_available": cli_available,
         "cli_bin": cli_bin,
+        "tenant_channel_configured": tenant_auth_ready,
+        "cardkit_ready": False,
     }
 
     if agent_id is None:
-        payload["ok"] = cli_available or cli_enabled
-        payload["docs_read_ready"] = cli_available
-        payload["base_tasks_ready"] = cli_available
-        if cli_available:
+        docs_ready = cli_available or tenant_auth_ready
+        payload["docs_read_ready"] = docs_ready
+        payload["base_tasks_ready"] = docs_ready
+        payload["cardkit_ready"] = _HAS_LARK and tenant_auth_ready
+        payload["ok"] = docs_ready or cli_enabled
+        if tenant_auth_ready and cli_available:
+            payload["message"] = "Tenant Feishu auth and CLI auth are both ready. CardKit and office tools can run."
+        elif tenant_auth_ready:
+            payload["message"] = "Tenant Feishu auth is ready. CardKit and OpenAPI-backed office tools can run."
+        elif cli_available:
             payload["message"] = "Feishu CLI is ready. Docs/Wiki/Sheets/Base/Tasks can use lark-cli."
         elif cli_enabled:
             payload["message"] = "Feishu CLI is enabled but not authenticated. Run `lark-cli auth login` inside the cloud container."
@@ -99,18 +152,23 @@ async def _build_feishu_runtime_status(agent_id: uuid.UUID | None = None) -> dic
     channel_configured = await _agent_has_feishu(agent_id)
     office_access = await _agent_has_feishu_office_access(agent_id)
     cli_access = await _agent_has_feishu_cli_access()
+    docs_ready = office_access or tenant_auth_ready
+    base_ready = office_access or tenant_auth_ready
 
     payload.update(
         {
             "channel_configured": channel_configured,
             "office_access": office_access,
-            "docs_read_ready": office_access,
-            "base_tasks_ready": office_access,
-            "ok": channel_configured or office_access or cli_enabled or cli_available,
+            "docs_read_ready": docs_ready,
+            "base_tasks_ready": base_ready,
+            "cardkit_ready": _HAS_LARK and (channel_configured or tenant_auth_ready),
+            "ok": channel_configured or docs_ready or cli_enabled or cli_available,
         }
     )
     if channel_configured:
-        payload["message"] = "Feishu channel auth is ready. All office tools (Docs/Wiki/Sheets/Base/Tasks) can run."
+        payload["message"] = "Feishu channel auth is ready. CardKit and office tools can run for this agent."
+    elif tenant_auth_ready:
+        payload["message"] = "Tenant Feishu auth is ready. Tenant webhook routing and CardKit are available."
     elif cli_access:
         payload["message"] = "lark-cli is ready. Feishu office tools can run even without a channel binding."
     elif cli_enabled:
@@ -257,9 +315,9 @@ async def list_tools(
 @router.get("/tools/runtime/feishu-status")
 async def get_feishu_runtime_status(
     current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
 ):
-    _ = current_user
-    return await _build_feishu_runtime_status()
+    return await _build_feishu_runtime_status(db=db, tenant_id=current_user.tenant_id)
 
 
 @router.get("/tools/agent-installed")
@@ -556,8 +614,12 @@ async def get_agent_feishu_runtime_status(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    _ = await _require_manage_access(db, current_user, agent_id)
-    return await _build_feishu_runtime_status(agent_id)
+    agent = await _require_manage_access(db, current_user, agent_id)
+    return await _build_feishu_runtime_status(
+        agent_id,
+        db=db,
+        tenant_id=getattr(agent, "tenant_id", current_user.tenant_id),
+    )
 
 
 @router.put("/tools/agents/{agent_id}/category-config/{category}")

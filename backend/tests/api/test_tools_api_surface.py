@@ -178,6 +178,7 @@ async def test_get_feishu_runtime_status_reports_global_cli(monkeypatch):
     import app.api.tools as tools_api
 
     current_user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=uuid4())
+    db = _FakeDB([])
 
     async def fake_cli_available() -> bool:
         return True
@@ -185,7 +186,7 @@ async def test_get_feishu_runtime_status_reports_global_cli(monkeypatch):
     monkeypatch.setattr("app.services.agent_tool_domains.feishu_cli._feishu_cli_available", fake_cli_available)
     monkeypatch.setattr("app.api.tools.get_settings", lambda: SimpleNamespace(FEISHU_CLI_ENABLED=True, FEISHU_CLI_BIN="lark-cli"))
 
-    result = await tools_api.get_feishu_runtime_status(current_user=current_user)
+    result = await tools_api.get_feishu_runtime_status(current_user=current_user, db=db)
 
     assert result["ok"] is True
     assert result["scope"] == "global"
@@ -193,6 +194,8 @@ async def test_get_feishu_runtime_status_reports_global_cli(monkeypatch):
     assert result["cli_available"] is True
     assert result["cli_bin"] == "lark-cli"
     assert result["base_tasks_ready"] is True
+    assert "cardkit_ready" in result
+    assert "tenant_channel_configured" in result
 
 
 @pytest.mark.asyncio
@@ -238,6 +241,8 @@ async def test_get_agent_feishu_runtime_status_reports_agent_access(monkeypatch)
     assert result["office_access"] is True
     assert result["cli_available"] is False
     assert result["base_tasks_ready"] is True  # Base/Tasks now use Open API, same as office_access
+    assert "cardkit_ready" in result
+    assert "tenant_channel_configured" in result
 
 
 # ── MCP tool dedup tests ──────────────────────────────────────────────

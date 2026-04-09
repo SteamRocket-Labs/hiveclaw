@@ -224,13 +224,19 @@ _FEISHU_TOOL_NAMES = {
     "feishu_user_search",
     "feishu_wiki_list",
     "feishu_doc_read",
+    "feishu_doc_delete",
     "feishu_sheet_info",
     "feishu_sheet_read",
+    "feishu_base_app_create",
     "feishu_base_field_list",
     "feishu_base_table_list",
     "feishu_base_record_list",
+    "feishu_base_record_delete",
     "feishu_base_record_upload_attachment",
     "feishu_base_record_upsert",
+    "feishu_approval_create",
+    "feishu_approval_query",
+    "feishu_approval_get",
     "feishu_task_comment",
     "feishu_task_complete",
     "feishu_task_create",
@@ -246,11 +252,13 @@ _FEISHU_TOOL_NAMES = {
 _FEISHU_OFFICE_TOOL_NAMES = {
     "feishu_wiki_list",
     "feishu_doc_read",
+    "feishu_base_app_create",
     "feishu_sheet_info",
     "feishu_sheet_read",
     "feishu_base_field_list",
     "feishu_base_table_list",
     "feishu_base_record_list",
+    "feishu_base_record_delete",
     "feishu_base_record_upload_attachment",
     "feishu_base_record_upsert",
     "feishu_task_comment",
@@ -688,17 +696,25 @@ from app.services.agent_tool_domains.feishu_docs import (  # noqa: E402
     _parse_inline_markdown as _parse_inline_markdown,
     _markdown_to_feishu_blocks as _markdown_to_feishu_blocks,
     _feishu_doc_append as _feishu_doc_append,
+    _feishu_doc_delete as _feishu_doc_delete,
 )
 from app.services.agent_tool_domains.feishu_sheets import (  # noqa: E402
     _feishu_sheet_info as _feishu_sheet_info,
     _feishu_sheet_read as _feishu_sheet_read,
 )
 from app.services.agent_tool_domains.feishu_base import (  # noqa: E402
+    _feishu_base_app_create as _feishu_base_app_create,
     _feishu_base_field_list as _feishu_base_field_list,
     _feishu_base_table_list as _feishu_base_table_list,
+    _feishu_base_record_delete as _feishu_base_record_delete,
     _feishu_base_record_list as _feishu_base_record_list,
     _feishu_base_record_upload_attachment as _feishu_base_record_upload_attachment,
     _feishu_base_record_upsert as _feishu_base_record_upsert,
+)
+from app.services.agent_tool_domains.feishu_approval import (  # noqa: E402
+    _feishu_approval_create as _feishu_approval_create,
+    _feishu_approval_query as _feishu_approval_query,
+    _feishu_approval_get as _feishu_approval_get,
 )
 from app.services.agent_tool_domains.feishu_tasks import (  # noqa: E402
     _feishu_task_comment as _feishu_task_comment,

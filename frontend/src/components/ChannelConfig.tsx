@@ -248,9 +248,9 @@ const HIDDEN_CHANNELS = new Set(['teams', 'atlassian', 'agentbay']);
 const VISIBLE_CHANNELS = CHANNEL_REGISTRY.filter(ch => !HIDDEN_CHANNELS.has(ch.id));
 
 // ─── Feishu Permission JSON ─────────────────────────────
-const FEISHU_PERM_JSON = '{"scopes":{"tenant":["contact:contact.base:readonly","contact:user.base:readonly","contact:user.id:readonly","im:chat","im:message","im:message.group_at_msg:readonly","im:message.p2p_msg:readonly","im:message:send_as_bot","im:resource"],"user":[]}}';
+const FEISHU_BASIC_PERM_JSON = '{"scopes":{"tenant":["contact:contact.base:readonly","contact:user.base:readonly","contact:user.id:readonly","im:chat","im:message","im:message.group_at_msg:readonly","im:message.p2p_msg:readonly","im:message:send_as_bot","im:resource"],"user":[]}}';
 
-const FEISHU_PERM_DISPLAY = `{
+const FEISHU_BASIC_PERM_DISPLAY = `{
   "scopes": {
     "tenant": [
       "contact:contact.base:readonly",
@@ -262,6 +262,36 @@ const FEISHU_PERM_DISPLAY = `{
       "im:message.p2p_msg:readonly",
       "im:message:send_as_bot",
       "im:resource"
+    ],
+    "user": []
+  }
+}`;
+
+const FEISHU_FULL_PERM_JSON = '{"scopes":{"tenant":["approval:approval","bitable:app","bitable:record","bitable:table","calendar:calendar","calendar:event","contact:contact.base:readonly","contact:user.base:readonly","contact:user.employee_id:readonly","contact:user.id:readonly","docx:document","docs:document.content","drive:drive","im:chat","im:message","im:message.group_at_msg:readonly","im:message.p2p_msg:readonly","im:message:send_as_bot","im:resource","task:task"],"user":[]}}';
+
+const FEISHU_FULL_PERM_DISPLAY = `{
+  "scopes": {
+    "tenant": [
+      "approval:approval",
+      "bitable:app",
+      "bitable:record",
+      "bitable:table",
+      "calendar:calendar",
+      "calendar:event",
+      "contact:contact.base:readonly",
+      "contact:user.base:readonly",
+      "contact:user.employee_id:readonly",
+      "contact:user.id:readonly",
+      "docx:document",
+      "docs:document.content",
+      "drive:drive",
+      "im:chat",
+      "im:message",
+      "im:message.group_at_msg:readonly",
+      "im:message.p2p_msg:readonly",
+      "im:message:send_as_bot",
+      "im:resource",
+      "task:task"
     ],
     "user": []
   }
@@ -285,7 +315,12 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
     const queryClient = useQueryClient();
 
     // Collapsible state per channel
-    const [openChannels, setOpenChannels] = useState<Record<string, boolean>>({});
+    const [openChannels, setOpenChannels] = useState<Record<string, boolean>>((): Record<string, boolean> => {
+        if (mode === 'edit') {
+            return { feishu: true };
+        }
+        return {};
+    });
     const toggleChannel = (id: string) => setOpenChannels(prev => ({ ...prev, [id]: !prev[id] }));
 
     // Editing state per channel (edit mode only)
@@ -308,6 +343,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
     // Password visibility
     const [showPwds, setShowPwds] = useState<Record<string, boolean>>({});
     const togglePwd = (fieldId: string) => setShowPwds(p => ({ ...p, [fieldId]: !p[fieldId] }));
+    const [feishuPermissionPreset, setFeishuPermissionPreset] = useState<'basic' | 'full'>('full');
 
     // Atlassian test connection state
     const [atlassianTesting, setAtlassianTesting] = useState(false);
@@ -514,6 +550,8 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
         const prefix = isWs && ch.wsGuide ? `${ch.wsGuide.prefix}.ws_step` : `${guide.prefix}.step`;
         const stepCount = isWs && ch.wsGuide ? ch.wsGuide.steps : guide.steps;
         const noteKey = isWs && ch.wsGuide ? `${ch.wsGuide.prefix}.ws_note` : (guide.noteKey || `${guide.prefix}.note`);
+        const permJson = feishuPermissionPreset === 'basic' ? FEISHU_BASIC_PERM_JSON : FEISHU_FULL_PERM_JSON;
+        const permDisplay = feishuPermissionPreset === 'basic' ? FEISHU_BASIC_PERM_DISPLAY : FEISHU_FULL_PERM_DISPLAY;
 
         return (
             <details style={{ marginBottom: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
@@ -528,11 +566,43 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                 {ch.showPermJson && (
                     <div style={{ margin: '8px 0', borderRadius: '6px', border: '1px solid var(--border-color)', overflow: 'hidden' }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 10px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)' }}>
-                            <span style={{ fontSize: '10px', color: 'var(--text-secondary)', fontWeight: 500 }}>{t('channelGuide.feishuPermJson')}</span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                                <span style={{ fontSize: '10px', color: 'var(--text-secondary)', fontWeight: 500 }}>{t('channelGuide.feishuPermJson')}</span>
+                                <button
+                                    type="button"
+                                    style={{
+                                        fontSize: '10px',
+                                        padding: '1px 7px',
+                                        cursor: 'pointer',
+                                        borderRadius: '999px',
+                                        border: '1px solid var(--border-color)',
+                                        background: feishuPermissionPreset === 'basic' ? 'var(--bg-primary)' : 'transparent',
+                                        color: 'var(--text-secondary)',
+                                    }}
+                                    onClick={() => setFeishuPermissionPreset('basic')}
+                                >
+                                    {t('channelGuide.feishuPermBasic', 'Basic Permissions')}
+                                </button>
+                                <button
+                                    type="button"
+                                    style={{
+                                        fontSize: '10px',
+                                        padding: '1px 7px',
+                                        cursor: 'pointer',
+                                        borderRadius: '999px',
+                                        border: '1px solid var(--border-color)',
+                                        background: feishuPermissionPreset === 'full' ? 'var(--bg-primary)' : 'transparent',
+                                        color: 'var(--text-secondary)',
+                                    }}
+                                    onClick={() => setFeishuPermissionPreset('full')}
+                                >
+                                    {t('channelGuide.feishuPermFull', 'Full Permissions')}
+                                </button>
+                            </div>
                             <button type="button" style={{ fontSize: '10px', padding: '1px 7px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-secondary)' }}
                                 onClick={(e) => {
                                     const btn = e.currentTarget;
-                                    navigator.clipboard.writeText(FEISHU_PERM_JSON).then(() => {
+                                    navigator.clipboard.writeText(permJson).then(() => {
                                         const o = btn.textContent;
                                         btn.textContent = t('channelGuide.feishuPermCopied');
                                         btn.style.color = 'rgb(16,185,129)';
@@ -540,7 +610,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                     });
                                 }}>{t('channelGuide.feishuPermCopy')}</button>
                         </div>
-                        <pre style={{ margin: 0, padding: '6px 10px', fontSize: '10px', fontFamily: 'var(--font-mono)', lineHeight: 1.5, background: 'var(--bg-primary)', color: 'var(--text-secondary)', overflowX: 'auto', userSelect: 'all' }}>{FEISHU_PERM_DISPLAY}</pre>
+                        <pre style={{ margin: 0, padding: '6px 10px', fontSize: '10px', fontFamily: 'var(--font-mono)', lineHeight: 1.5, background: 'var(--bg-primary)', color: 'var(--text-secondary)', overflowX: 'auto', userSelect: 'all' }}>{permDisplay}</pre>
                     </div>
                 )}
                 <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: '6px' }}>

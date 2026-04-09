@@ -165,8 +165,7 @@ def test_callback_desktop_redirects_to_deep_link():
     }
 
     with (
-        patch.object(desktop_auth_mod.feishu_service, "exchange_code_for_user", new_callable=AsyncMock, return_value=fake_feishu_user),
-        patch.object(desktop_auth_mod.feishu_service, "login_or_register", new_callable=AsyncMock, return_value=(_FAKE_USER, "jwt_access_token_here")),
+        patch.object(desktop_auth_mod.feishu_auth_provider, "authenticate_with_code", new_callable=AsyncMock, return_value=(_FAKE_USER, "jwt_access_token_here")),
         patch.object(desktop_auth_mod, "create_refresh_token", new_callable=AsyncMock, return_value="raw_refresh_token_here"),
         patch.object(desktop_auth_mod, "settings", SimpleNamespace(DESKTOP_DEEP_LINK_SCHEME="copaw")),
     ):
@@ -203,7 +202,7 @@ def test_callback_desktop_handles_feishu_error_without_leaking():
     app, _ = _build_app()
 
     with (
-        patch.object(desktop_auth_mod.feishu_service, "exchange_code_for_user", new_callable=AsyncMock, side_effect=RuntimeError("secret internal error: API key xxx")),
+        patch.object(desktop_auth_mod.feishu_auth_provider, "authenticate_with_code", new_callable=AsyncMock, side_effect=RuntimeError("secret internal error: API key xxx")),
         patch.object(desktop_auth_mod, "settings", SimpleNamespace(DESKTOP_DEEP_LINK_SCHEME="copaw")),
     ):
         client = TestClient(app, raise_server_exceptions=False)

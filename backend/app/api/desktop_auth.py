@@ -30,7 +30,7 @@ from app.core.security import (
 from app.database import get_db
 from app.models.refresh_token import RefreshToken
 from app.models.user import User
-from app.services.feishu_service import feishu_service
+from app.services.auth_provider import feishu_auth_provider
 
 settings = get_settings()
 
@@ -136,14 +136,12 @@ async def feishu_callback_desktop(
         return RedirectResponse(url=error_url, status_code=status.HTTP_302_FOUND)
 
     try:
-        feishu_user = await feishu_service.exchange_code_for_user(code)
+        user, access_token = await feishu_auth_provider.authenticate_with_code(db, code=code, tenant_id=None)
     except Exception as exc:
         # P0 fix #1: never leak internal exception details to client
         logger.error(f"[desktop-auth] Feishu code exchange failed: {exc}")
         error_url = f"{settings.DESKTOP_DEEP_LINK_SCHEME}://auth/error?reason=auth_failed"
         return RedirectResponse(url=error_url, status_code=status.HTTP_302_FOUND)
-
-    user, access_token = await feishu_service.login_or_register(db, feishu_user)
 
     # P1 fix #8: revoke prior refresh tokens for same (user, device) before issuing new one
     await db.execute(

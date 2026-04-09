@@ -83,6 +83,14 @@ export function FeishuRuntimeStatusCard({ status, compact = false, isAdmin = fal
           </div>
         )}
         <div style={rowStyle}>
+          <span>{t('feishu.runtime.tenantAuth', 'Tenant Auth')}</span>
+          <span>{t(`feishu.runtime.${boolKey(Boolean(status.tenant_channel_configured), 'Configured', 'Missing')}`, Boolean(status.tenant_channel_configured) ? 'Configured' : 'Missing')}</span>
+        </div>
+        <div style={rowStyle}>
+          <span>{t('feishu.runtime.cardkit', 'CardKit')}</span>
+          <span>{t(`feishu.runtime.${boolKey(Boolean(status.cardkit_ready), 'Ready', 'NeedsAttention')}`, Boolean(status.cardkit_ready) ? 'Ready' : 'Needs Attention')}</span>
+        </div>
+        <div style={rowStyle}>
           <span>{t('feishu.runtime.docsReady', 'Docs / Wiki / Sheets')}</span>
           <span>{t(`feishu.runtime.${boolKey(status.docs_read_ready, 'Ready', 'NeedsAttention')}`, status.docs_read_ready ? 'Ready' : 'Needs Attention')}</span>
         </div>

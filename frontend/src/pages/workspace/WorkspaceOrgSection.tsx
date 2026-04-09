@@ -132,6 +132,7 @@ export default function WorkspaceOrgSection({
       app_secret: syncForm.app_secret,
     });
     queryClient.invalidateQueries({ queryKey: ['system-settings', 'feishu_org_sync'] });
+    queryClient.invalidateQueries({ queryKey: ['feishu-runtime-status'] });
   };
 
   const triggerSync = async () => {
@@ -145,6 +146,7 @@ export default function WorkspaceOrgSection({
       setSyncResult(result);
       queryClient.invalidateQueries({ queryKey: ['org-departments'] });
       queryClient.invalidateQueries({ queryKey: ['org-members'] });
+      queryClient.invalidateQueries({ queryKey: ['feishu-runtime-status'] });
     } catch (error: any) {
       setSyncResult({ error: error.message });
     }

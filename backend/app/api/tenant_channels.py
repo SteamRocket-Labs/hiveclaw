@@ -21,6 +21,7 @@ from app.database import get_db
 from app.models.agent import Agent
 from app.models.tenant_channel_config import TenantChannelConfig
 from app.models.user import User
+from app.services.channel_user_service import channel_user_service
 
 router = APIRouter(tags=["tenant-channels"])
 
@@ -235,19 +236,12 @@ async def _resolve_sender_agent(
     Lookup chain: feishu_user_id → User → owned Agent
     Fallback: feishu_open_id → User → owned Agent
     """
-    user = None
-
-    if feishu_user_id:
-        result = await db.execute(
-            select(User).where(User.feishu_user_id == feishu_user_id, User.tenant_id == tenant_id)
-        )
-        user = result.scalar_one_or_none()
-
-    if not user and feishu_open_id:
-        result = await db.execute(
-            select(User).where(User.feishu_open_id == feishu_open_id, User.tenant_id == tenant_id)
-        )
-        user = result.scalar_one_or_none()
+    user = await channel_user_service.resolve_feishu_user(
+        db,
+        tenant_id=tenant_id,
+        provider_user_id=feishu_user_id or None,
+        provider_open_id=feishu_open_id or None,
+    )
 
     if not user:
         return None

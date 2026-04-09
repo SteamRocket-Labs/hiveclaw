@@ -207,6 +207,45 @@ async def feishu_sheet_read(agent_id: uuid.UUID, arguments: dict) -> str:
 # -- feishu_base_table_list ---------------------------------------------------
 
 @tool(ToolMeta(
+    name="feishu_base_app_create",
+    description=(
+        "Create a new Feishu Base app. Use this when you need a fresh Base before adding tables or records."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Human-readable Base name.",
+            },
+            "folder_token": {
+                "type": "string",
+                "description": "Optional parent folder token.",
+            },
+            "time_zone": {
+                "type": "string",
+                "description": "Optional timezone, for example 'Asia/Shanghai'.",
+            },
+        },
+        "required": ["name"],
+    },
+    category="feishu",
+    display_name="Feishu Base Create",
+    icon="🆕",
+    pack="feishu_pack",
+    adapter="agent_args",
+    governance="sensitive",
+))
+async def feishu_base_app_create(agent_id: uuid.UUID, arguments: dict) -> str:
+    if not await _check_feishu_office_access(agent_id):
+        return _FEISHU_NOT_CONFIGURED_MSG
+    from app.services.agent_tools import _feishu_base_app_create
+    return await _feishu_base_app_create(agent_id, arguments)
+
+
+# -- feishu_base_table_list ---------------------------------------------------
+
+@tool(ToolMeta(
     name="feishu_base_table_list",
     description=(
         "List tables inside a Feishu Base (bitable) using the cloud lark-cli adapter. "
@@ -338,6 +377,45 @@ async def feishu_base_record_upsert(agent_id: uuid.UUID, arguments: dict) -> str
         return _FEISHU_NOT_CONFIGURED_MSG
     from app.services.agent_tools import _feishu_base_record_upsert
     return await _feishu_base_record_upsert(agent_id, arguments)
+
+
+# -- feishu_base_record_delete ------------------------------------------------
+
+@tool(ToolMeta(
+    name="feishu_base_record_delete",
+    description=(
+        "Delete one record from a Feishu Base table. Use this when an existing row must be removed permanently."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "base_token": {
+                "type": "string",
+                "description": "Feishu Base token, e.g. 'app_xxx'.",
+            },
+            "table_id": {
+                "type": "string",
+                "description": "Table ID inside the Base.",
+            },
+            "record_id": {
+                "type": "string",
+                "description": "Record ID to delete.",
+            },
+        },
+        "required": ["base_token", "table_id", "record_id"],
+    },
+    category="feishu",
+    display_name="Feishu Base Record Delete",
+    icon="🗑️",
+    pack="feishu_pack",
+    adapter="agent_args",
+    governance="sensitive",
+))
+async def feishu_base_record_delete(agent_id: uuid.UUID, arguments: dict) -> str:
+    if not await _check_feishu_office_access(agent_id):
+        return _FEISHU_NOT_CONFIGURED_MSG
+    from app.services.agent_tools import _feishu_base_record_delete
+    return await _feishu_base_record_delete(agent_id, arguments)
 
 
 # -- feishu_base_field_list ---------------------------------------------------
@@ -626,6 +704,35 @@ async def feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:
     return await _feishu_doc_create(agent_id, arguments)
 
 
+# -- feishu_doc_delete --------------------------------------------------------
+
+@tool(ToolMeta(
+    name="feishu_doc_delete",
+    description="Delete a Feishu document by token. Use this when a generated document should be removed from Drive.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "document_token": {
+                "type": "string",
+                "description": "Feishu document token.",
+            },
+        },
+        "required": ["document_token"],
+    },
+    category="feishu",
+    display_name="Feishu Doc Delete",
+    icon="🗑️",
+    pack="feishu_pack",
+    adapter="agent_args",
+    governance="sensitive",
+))
+async def feishu_doc_delete(agent_id: uuid.UUID, arguments: dict) -> str:
+    if not await _check_feishu_configured(agent_id):
+        return _FEISHU_NOT_CONFIGURED_MSG
+    from app.services.agent_tools import _feishu_doc_delete
+    return await _feishu_doc_delete(agent_id, arguments)
+
+
 # -- feishu_doc_append --------------------------------------------------------
 
 @tool(ToolMeta(
@@ -705,6 +812,91 @@ async def feishu_doc_append(agent_id: uuid.UUID, arguments: dict) -> str:
 async def feishu_doc_share(agent_id: uuid.UUID, arguments: dict) -> str:
     from app.services.agent_tools import _feishu_doc_share
     return await _feishu_doc_share(agent_id, arguments)
+
+
+# -- feishu_approval_create ---------------------------------------------------
+
+@tool(ToolMeta(
+    name="feishu_approval_create",
+    description="Create a Feishu approval instance with the given approval code, submitter user_id, and form payload.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "approval_code": {"type": "string", "description": "Approval definition code."},
+            "user_id": {"type": "string", "description": "Feishu user_id of the submitter."},
+            "form": {
+                "description": "Approval form payload. May be a JSON string or object accepted by Feishu Approval API.",
+            },
+        },
+        "required": ["approval_code", "user_id", "form"],
+    },
+    category="feishu",
+    display_name="Feishu Approval Create",
+    icon="✅",
+    pack="feishu_pack",
+    adapter="agent_args",
+    governance="sensitive",
+))
+async def feishu_approval_create(agent_id: uuid.UUID, arguments: dict) -> str:
+    if not await _check_feishu_configured(agent_id):
+        return _FEISHU_NOT_CONFIGURED_MSG
+    from app.services.agent_tools import _feishu_approval_create
+    return await _feishu_approval_create(agent_id, arguments)
+
+
+# -- feishu_approval_query ----------------------------------------------------
+
+@tool(ToolMeta(
+    name="feishu_approval_query",
+    description="Query Feishu approval instances by approval code and optional status.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "approval_code": {"type": "string", "description": "Approval definition code."},
+            "status": {"type": "string", "description": "Optional approval status filter."},
+        },
+        "required": ["approval_code"],
+    },
+    category="feishu",
+    display_name="Feishu Approval Query",
+    icon="📋",
+    pack="feishu_pack",
+    adapter="agent_args",
+    read_only=True,
+    governance="safe",
+))
+async def feishu_approval_query(agent_id: uuid.UUID, arguments: dict) -> str:
+    if not await _check_feishu_configured(agent_id):
+        return _FEISHU_NOT_CONFIGURED_MSG
+    from app.services.agent_tools import _feishu_approval_query
+    return await _feishu_approval_query(agent_id, arguments)
+
+
+# -- feishu_approval_get ------------------------------------------------------
+
+@tool(ToolMeta(
+    name="feishu_approval_get",
+    description="Get full details of a Feishu approval instance by instance_id.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "instance_id": {"type": "string", "description": "Approval instance ID."},
+        },
+        "required": ["instance_id"],
+    },
+    category="feishu",
+    display_name="Feishu Approval Get",
+    icon="📄",
+    pack="feishu_pack",
+    adapter="agent_args",
+    read_only=True,
+    governance="safe",
+))
+async def feishu_approval_get(agent_id: uuid.UUID, arguments: dict) -> str:
+    if not await _check_feishu_configured(agent_id):
+        return _FEISHU_NOT_CONFIGURED_MSG
+    from app.services.agent_tools import _feishu_approval_get
+    return await _feishu_approval_get(agent_id, arguments)
 
 
 # -- feishu_user_search -------------------------------------------------------

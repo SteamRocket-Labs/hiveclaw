@@ -1,12 +1,22 @@
-"""Feishu (Lark) OAuth and API integration service."""
+"""Feishu API and CardKit integration service."""
+
+from __future__ import annotations
+
+import json
+from collections import OrderedDict
 
 import httpx
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from loguru import logger
 
 from app.config import get_settings
-from app.core.security import create_access_token, hash_password
-from app.models.user import User
+
+try:
+    import lark_oapi as lark
+
+    _HAS_LARK = True
+except ImportError:
+    lark = None  # type: ignore
+    _HAS_LARK = False
 
 settings = get_settings()
 
@@ -17,23 +27,56 @@ FEISHU_SEND_MSG_URL = "https://open.feishu.cn/open-apis/im/v1/messages"
 
 
 class FeishuService:
-    """Service for Feishu OAuth login and message API."""
+    """Service for Feishu message send/patch/resource/CardKit operations."""
+
+    _LARK_CLIENT_CACHE_MAX = 50
 
     def __init__(self):
         self.app_id = settings.FEISHU_APP_ID
         self.app_secret = settings.FEISHU_APP_SECRET
         self._app_access_token: str | None = None
+        self._lark_clients: OrderedDict[str, object] = OrderedDict()
+
+    @staticmethod
+    def _parse_api_response(
+        resp: httpx.Response,
+        *,
+        stage: str,
+        message_id: str | None = None,
+    ) -> dict:
+        try:
+            data = resp.json()
+        except Exception as exc:
+            raise RuntimeError(f"Feishu {stage} returned invalid JSON") from exc
+
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Feishu {stage} HTTP {resp.status_code}")
+
+        if data.get("code") not in (None, 0):
+            raise RuntimeError(
+                f"Feishu {stage} failed: code={data.get('code')}, msg={data.get('msg', '')}, message_id={message_id}"
+            )
+
+        return data
 
     async def get_app_access_token(self) -> str:
-        """Get or refresh the app-level access token."""
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(FEISHU_APP_TOKEN_URL, json={
-                "app_id": self.app_id,
-                "app_secret": self.app_secret,
-            })
-            data = resp.json()
-            self._app_access_token = data.get("app_access_token", "")
-            return self._app_access_token
+        """Backward-compatible wrapper around tenant/app token fetch."""
+        return await self.get_tenant_access_token(self.app_id, self.app_secret)
+
+    async def get_tenant_access_token(self, app_id: str | None = None, app_secret: str | None = None) -> str:
+        """Get tenant_access_token, falling back to app_access_token when needed."""
+        target_app_id = app_id or self.app_id
+        target_app_secret = app_secret or self.app_secret
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                FEISHU_APP_TOKEN_URL,
+                json={"app_id": target_app_id, "app_secret": target_app_secret},
+            )
+            data = self._parse_api_response(resp, stage="get_tenant_access_token")
+        token = data.get("tenant_access_token") or data.get("app_access_token", "")
+        if app_id is None:
+            self._app_access_token = token
+        return token
 
     async def exchange_code_for_user(self, code: str) -> dict:
         """Exchange OAuth authorization code for user info.
@@ -48,14 +91,14 @@ class FeishuService:
                 "grant_type": "authorization_code",
                 "code": code,
             }, headers={"Authorization": f"Bearer {app_token}"})
-            token_data = token_resp.json()
+            token_data = self._parse_api_response(token_resp, stage="exchange_code_for_token")
             user_access_token = token_data.get("data", {}).get("access_token", "")
 
             # Get user info
             info_resp = await client.get(FEISHU_USER_INFO_URL, headers={
                 "Authorization": f"Bearer {user_access_token}",
             })
-            info_data = info_resp.json().get("data", {})
+            info_data = self._parse_api_response(info_resp, stage="exchange_code_for_user_info").get("data", {})
 
             return {
                 "open_id": info_data.get("open_id"),
@@ -66,70 +109,17 @@ class FeishuService:
                 "avatar_url": info_data.get("avatar_url", ""),
             }
 
-    async def login_or_register(self, db: AsyncSession, feishu_user: dict) -> tuple[User, str]:
-        """Login existing user or register new one via Feishu SSO.
-
-        Returns (user, jwt_token)
-        """
-        open_id = feishu_user["open_id"]
-        user_id = feishu_user.get("user_id", "")
-
-        # Prefer user_id (tenant-stable) for user lookup
-        user = None
-        if user_id:
-            result = await db.execute(select(User).where(User.feishu_user_id == user_id))
-            user = result.scalar_one_or_none()
-        if not user and open_id:
-            result = await db.execute(select(User).where(User.feishu_open_id == open_id))
-            user = result.scalar_one_or_none()
-
-        if user:
-            # Existing user — update info
-            user.avatar_url = feishu_user.get("avatar_url") or user.avatar_url
-            # Always update IDs to latest values
-            if open_id:
-                user.feishu_open_id = open_id
-            if user_id:
-                user.feishu_user_id = user_id
-            token = create_access_token(str(user.id), user.role, tenant_id=str(user.tenant_id) if user.tenant_id else None)
-            return user, token
-
-        # New user — create account
-        username = feishu_user.get("email", "").split("@")[0] or f"feishu_{open_id[:8]}"
-        email = feishu_user.get("email") or f"{username}@feishu.local"
-
-        # Ensure unique username
-        existing = await db.execute(select(User).where(User.username == username))
-        if existing.scalar_one_or_none():
-            username = f"{username}_{open_id[:6]}"
-
-        user = User(
-            username=username,
-            email=email,
-            password_hash=hash_password(open_id),  # placeholder password
-            display_name=feishu_user.get("name", username),
-            avatar_url=feishu_user.get("avatar_url"),
-            feishu_open_id=open_id,
-            feishu_union_id=feishu_user.get("union_id"),
-            feishu_user_id=feishu_user.get("user_id"),
-        )
-        db.add(user)
-        await db.flush()
-
-        token = create_access_token(str(user.id), user.role)
-        return user, token
-
-    async def bind_feishu(self, db: AsyncSession, user: User, code: str) -> User:
-        """Bind Feishu account to existing user."""
-        feishu_user = await self.exchange_code_for_user(code)
-        user.feishu_open_id = feishu_user["open_id"]
-        user.feishu_union_id = feishu_user.get("union_id")
-        user.feishu_user_id = feishu_user.get("user_id")
-        await db.flush()
-        return user
-
-    async def send_message(self, app_id: str, app_secret: str, receive_id: str,
-                           msg_type: str, content: str, receive_id_type: str = "open_id") -> dict:
+    async def send_message(
+        self,
+        app_id: str,
+        app_secret: str,
+        receive_id: str,
+        msg_type: str,
+        content: str,
+        receive_id_type: str = "open_id",
+        *,
+        stage: str = "send_message",
+    ) -> dict:
         """Send a message via a specific Feishu bot (per-agent credentials).
 
         Args:
@@ -140,13 +130,8 @@ class FeishuService:
             content: JSON string of message content
             receive_id_type: "open_id" or "chat_id"
         """
-        # Get app access token for this specific agent's bot
         async with httpx.AsyncClient() as client:
-            token_resp = await client.post(FEISHU_APP_TOKEN_URL, json={
-                "app_id": app_id,
-                "app_secret": app_secret,
-            })
-            app_token = token_resp.json().get("app_access_token", "")
+            app_token = await self.get_tenant_access_token(app_id, app_secret)
 
             resp = await client.post(
                 f"{FEISHU_SEND_MSG_URL}?receive_id_type={receive_id_type}",
@@ -157,16 +142,20 @@ class FeishuService:
                 },
                 headers={"Authorization": f"Bearer {app_token}"},
             )
-            return resp.json()
+            return self._parse_api_response(resp, stage=stage)
 
-    async def patch_message(self, app_id: str, app_secret: str, message_id: str, content: str) -> dict:
+    async def patch_message(
+        self,
+        app_id: str,
+        app_secret: str,
+        message_id: str,
+        content: str,
+        *,
+        stage: str = "patch_message",
+    ) -> dict:
         """Patch an existing message (e.g. updating an interactive card for streaming)."""
         async with httpx.AsyncClient() as client:
-            token_resp = await client.post(FEISHU_APP_TOKEN_URL, json={
-                "app_id": app_id,
-                "app_secret": app_secret,
-            })
-            app_token = token_resp.json().get("app_access_token", "")
+            app_token = await self.get_tenant_access_token(app_id, app_secret)
 
             resp = await client.patch(
                 f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}",
@@ -175,7 +164,7 @@ class FeishuService:
                 },
                 headers={"Authorization": f"Bearer {app_token}"},
             )
-            return resp.json()
+            return self._parse_api_response(resp, stage=stage, message_id=message_id)
 
     async def resolve_open_id(self, app_id: str, app_secret: str,
                                email: str | None = None, mobile: str | None = None) -> str | None:
@@ -188,11 +177,7 @@ class FeishuService:
             return None
 
         async with httpx.AsyncClient() as client:
-            token_resp = await client.post(FEISHU_APP_TOKEN_URL, json={
-                "app_id": app_id,
-                "app_secret": app_secret,
-            })
-            app_token = token_resp.json().get("app_access_token", "")
+            app_token = await self.get_tenant_access_token(app_id, app_secret)
 
             body: dict = {}
             if email:
@@ -206,7 +191,7 @@ class FeishuService:
                 headers={"Authorization": f"Bearer {app_token}"},
                 params={"user_id_type": "open_id"},
             )
-            data = resp.json()
+            data = self._parse_api_response(resp, stage="resolve_open_id")
             if data.get("code") != 0:
                 return None
 
@@ -228,11 +213,7 @@ class FeishuService:
             return None
 
         async with httpx.AsyncClient() as client:
-            token_resp = await client.post(FEISHU_APP_TOKEN_URL, json={
-                "app_id": app_id,
-                "app_secret": app_secret,
-            })
-            app_token = token_resp.json().get("app_access_token", "")
+            app_token = await self.get_tenant_access_token(app_id, app_secret)
 
             body: dict = {}
             if email:
@@ -246,7 +227,7 @@ class FeishuService:
                 headers={"Authorization": f"Bearer {app_token}"},
                 params={"user_id_type": "user_id"},
             )
-            data = resp.json()
+            data = self._parse_api_response(resp, stage="resolve_user_id")
             if data.get("code") != 0:
                 return None
 
@@ -324,11 +305,7 @@ class FeishuService:
         Returns raw file bytes.
         """
         async with httpx.AsyncClient(timeout=30) as client:
-            token_resp = await client.post(FEISHU_APP_TOKEN_URL, json={
-                "app_id": app_id,
-                "app_secret": app_secret,
-            })
-            app_token = token_resp.json().get("app_access_token", "")
+            app_token = await self.get_tenant_access_token(app_id, app_secret)
             resp = await client.get(
                 f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/resources/{file_key}",
                 params={"type": resource_type},
@@ -349,11 +326,7 @@ class FeishuService:
         from pathlib import Path as _Path
         fp = _Path(file_path)
         async with httpx.AsyncClient(timeout=60) as client:
-            # Get token
-            token_resp = await client.post(FEISHU_APP_TOKEN_URL, json={
-                "app_id": app_id, "app_secret": app_secret,
-            })
-            app_token = token_resp.json().get("app_access_token", "")
+            app_token = await self.get_tenant_access_token(app_id, app_secret)
             headers = {"Authorization": f"Bearer {app_token}"}
 
             # Upload file
@@ -370,9 +343,7 @@ class FeishuService:
                 data={"file_type": feishu_file_type, "file_name": fp.name},
                 headers=headers,
             )
-            upload_data = upload_resp.json()
-            if upload_data.get("code") != 0:
-                raise RuntimeError(f"Feishu file upload failed: {upload_data.get('msg')}")
+            upload_data = self._parse_api_response(upload_resp, stage="upload_file")
             file_key = upload_data["data"]["file_key"]
 
             # Send text accompany message first if provided
@@ -391,7 +362,153 @@ class FeishuService:
                       "content": _json.dumps({"file_key": file_key})},
                 headers=headers,
             )
-            return resp.json()
+            return self._parse_api_response(resp, stage="send_file")
+
+    async def create_approval_instance(
+        self,
+        app_id: str,
+        app_secret: str,
+        approval_code: str,
+        user_id: str,
+        form_data: str,
+    ) -> dict:
+        tenant_token = await self.get_tenant_access_token(app_id, app_secret)
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                "https://open.feishu.cn/open-apis/approval/v4/instances",
+                json={
+                    "approval_code": approval_code,
+                    "user_id": user_id,
+                    "form": form_data,
+                },
+                headers={"Authorization": f"Bearer {tenant_token}"},
+            )
+        return self._parse_api_response(resp, stage="create_approval_instance").get("data", {})
+
+    async def query_approval_instances(
+        self,
+        app_id: str,
+        app_secret: str,
+        approval_code: str,
+        status: str | None = None,
+    ) -> dict:
+        tenant_token = await self.get_tenant_access_token(app_id, app_secret)
+        body: dict[str, str] = {"approval_code": approval_code}
+        if status:
+            body["status"] = status
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                "https://open.feishu.cn/open-apis/approval/v4/instances/query",
+                json=body,
+                headers={"Authorization": f"Bearer {tenant_token}"},
+            )
+        return self._parse_api_response(resp, stage="query_approval_instances").get("data", {})
+
+    async def get_approval_instance(self, app_id: str, app_secret: str, instance_id: str) -> dict:
+        tenant_token = await self.get_tenant_access_token(app_id, app_secret)
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"https://open.feishu.cn/open-apis/approval/v4/instances/{instance_id}",
+                headers={"Authorization": f"Bearer {tenant_token}"},
+            )
+        return self._parse_api_response(resp, stage="get_approval_instance").get("data", {})
+
+    def _get_lark_client(self, app_id: str, app_secret: str):
+        if not _HAS_LARK:
+            raise RuntimeError("lark-oapi package is not installed. Install with: pip install lark-oapi")
+        cache_key = f"{app_id}:{app_secret}"
+        client = self._lark_clients.get(cache_key)
+        if client is None:
+            if len(self._lark_clients) >= self._LARK_CLIENT_CACHE_MAX:
+                self._lark_clients.popitem(last=False)
+            client = lark.Client.builder().app_id(app_id).app_secret(app_secret).build()
+            self._lark_clients[cache_key] = client
+        else:
+            self._lark_clients.move_to_end(cache_key)
+        return client
+
+    async def create_card_entity(self, app_id: str, app_secret: str, card_dict: dict) -> str:
+        from lark_oapi.api.cardkit.v1.model import CreateCardRequest, CreateCardRequestBody
+
+        client = self._get_lark_client(app_id, app_secret)
+        body = CreateCardRequestBody.builder().type("card_json").data(json.dumps(card_dict)).build()
+        request = CreateCardRequest.builder().request_body(body).build()
+        resp = await client.cardkit.v1.card.acreate(request)
+        if not resp.success():
+            raise RuntimeError(f"Feishu CardKit create_card_entity failed: code={resp.code}, msg={resp.msg}")
+        return resp.data.card_id
+
+    async def send_card_by_card_id(
+        self,
+        app_id: str,
+        app_secret: str,
+        receive_id: str,
+        card_id: str,
+        receive_id_type: str = "open_id",
+    ) -> dict:
+        content = json.dumps({"type": "card", "data": {"card_id": card_id}})
+        return await self.send_message(
+            app_id,
+            app_secret,
+            receive_id,
+            "interactive",
+            content,
+            receive_id_type=receive_id_type,
+            stage="send_card_by_card_id",
+        )
+
+    async def stream_card_content(
+        self,
+        app_id: str,
+        app_secret: str,
+        card_id: str,
+        element_id: str,
+        content: str,
+        sequence: int,
+    ) -> None:
+        from lark_oapi.api.cardkit.v1.model import ContentCardElementRequest, ContentCardElementRequestBody
+
+        client = self._get_lark_client(app_id, app_secret)
+        body = ContentCardElementRequestBody.builder().content(content).sequence(sequence).build()
+        request = ContentCardElementRequest.builder().card_id(card_id).element_id(element_id).request_body(body).build()
+        resp = await client.cardkit.v1.card_element.acontent(request)
+        if not resp.success():
+            raise RuntimeError(f"Feishu CardKit stream_card_content failed: code={resp.code}, msg={resp.msg}")
+
+    async def set_card_streaming_mode(
+        self,
+        app_id: str,
+        app_secret: str,
+        card_id: str,
+        streaming_mode: int,
+        sequence: int,
+    ) -> None:
+        from lark_oapi.api.cardkit.v1.model import SettingsCardRequest, SettingsCardRequestBody
+
+        client = self._get_lark_client(app_id, app_secret)
+        body = SettingsCardRequestBody.builder().settings(json.dumps({"streaming_mode": streaming_mode})).sequence(sequence).build()
+        request = SettingsCardRequest.builder().card_id(card_id).request_body(body).build()
+        resp = await client.cardkit.v1.card.asettings(request)
+        if not resp.success():
+            raise RuntimeError(f"Feishu CardKit set_card_streaming_mode failed: code={resp.code}, msg={resp.msg}")
+
+    async def update_cardkit_card(
+        self,
+        app_id: str,
+        app_secret: str,
+        card_id: str,
+        card_dict: dict,
+        sequence: int,
+    ) -> None:
+        from lark_oapi.api.cardkit.v1.model import Card, UpdateCardRequest, UpdateCardRequestBody
+
+        client = self._get_lark_client(app_id, app_secret)
+        card = Card.builder().type("card_json").data(json.dumps(card_dict)).build()
+        body = UpdateCardRequestBody.builder().card(card).sequence(sequence).build()
+        request = UpdateCardRequest.builder().card_id(card_id).request_body(body).build()
+        resp = await client.cardkit.v1.card.aupdate(request)
+        if not resp.success():
+            raise RuntimeError(f"Feishu CardKit update_cardkit_card failed: code={resp.code}, msg={resp.msg}")
 
 
 feishu_service = FeishuService()

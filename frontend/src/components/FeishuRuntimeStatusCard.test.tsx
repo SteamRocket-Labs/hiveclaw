@@ -27,6 +27,8 @@ describe('FeishuRuntimeStatusCard', () => {
           cli_enabled: true,
           cli_available: true,
           cli_bin: 'lark-cli',
+          cardkit_ready: true,
+          tenant_channel_configured: true,
           base_tasks_ready: true,
           docs_read_ready: true,
         }}
@@ -36,6 +38,7 @@ describe('FeishuRuntimeStatusCard', () => {
     expect(markup).toContain('Feishu Runtime Status');
     expect(markup).toContain('lark-cli');
     expect(markup).toContain('Base / Tasks');
+    expect(markup).toContain('CardKit');
     expect(markup).toContain('Ready');
   });
 
@@ -50,6 +53,8 @@ describe('FeishuRuntimeStatusCard', () => {
           cli_enabled: true,
           cli_available: false,
           cli_bin: 'lark-cli',
+          cardkit_ready: true,
+          tenant_channel_configured: true,
           channel_configured: true,
           office_access: true,
           base_tasks_ready: false,
@@ -59,6 +64,7 @@ describe('FeishuRuntimeStatusCard', () => {
     );
 
     expect(markup).toContain('Channel Auth');
+    expect(markup).toContain('Tenant Auth');
     expect(markup).toContain('Configured');
     expect(markup).toContain('CLI Auth');
     expect(markup).toContain('Needs Attention');

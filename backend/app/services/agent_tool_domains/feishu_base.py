@@ -56,6 +56,18 @@ def _render_base_upsert(table_id: str, payload: dict) -> str:
     return "\n".join(lines)
 
 
+def _render_base_app_create(payload: dict) -> str:
+    app = payload.get("app", payload)
+    app_token = app.get("app_token") or app.get("token", "")
+    url = app.get("url", "")
+    lines = [f"✅ **Feishu Base created** {app.get('name', '')}".rstrip()]
+    if app_token:
+        lines.append(f"- Base Token: `{app_token}`")
+    if url:
+        lines.append(f"- URL: {url}")
+    return "\n".join(lines)
+
+
 def _render_base_fields(table_id: str, items: list[dict], *, total: int | None = None) -> str:
     lines = [f"🧩 **Feishu Base fields** (`{table_id}`)"]
     if total is not None:
@@ -84,6 +96,15 @@ def _render_base_attachment_upload(table_id: str, payload: dict) -> str:
     if name:
         lines.append(f"- File Name: {name}")
     return "\n".join(lines)
+
+
+def _render_base_record_delete(table_id: str, record_id: str) -> str:
+    return "\n".join(
+        [
+            f"🗑️ **Feishu Base record deleted** (`{table_id}`)",
+            f"- Record ID: `{record_id}`",
+        ]
+    )
 
 
 # ── Shared helpers ───────────────────────────────────────────────────
@@ -187,6 +208,19 @@ async def _base_api_put(token: str, path: str, body: dict) -> dict:
     return data.get("data", {})
 
 
+async def _base_api_delete(token: str, path: str) -> dict:
+    """DELETE request to Feishu Bitable API."""
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.delete(
+            f"{FEISHU_API}{path}",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"},
+        )
+    data = resp.json()
+    if data.get("code") != 0:
+        raise RuntimeError(f"Feishu API error: {data.get('msg')} (code {data.get('code')})")
+    return data.get("data", {})
+
+
 # ── Public entry points (OpenAPI first, CLI fallback) ────────────────
 
 async def _feishu_base_table_list(agent_id, arguments: dict) -> str:
@@ -216,6 +250,37 @@ async def _feishu_base_table_list(agent_id, arguments: dict) -> str:
         ["base", "+table-list", "--base-token", base_token, "--offset", str(offset), "--limit", str(limit)]
     )
     return _render_base_tables(base_token, payload.get("items", []), total=payload.get("total"))
+
+
+async def _feishu_base_app_create(agent_id, arguments: dict) -> str:
+    name = str(arguments.get("name") or "").strip()
+    if not name:
+        return _render_invalid_input("Missing required argument 'name'.", tool_name="feishu_base_app_create")
+
+    body: dict = {"name": name}
+    folder_token = str(arguments.get("folder_token") or "").strip()
+    if folder_token:
+        body["folder_token"] = folder_token
+    time_zone = str(arguments.get("time_zone") or "").strip()
+    if time_zone:
+        body["time_zone"] = time_zone
+
+    creds = await _get_feishu_token(agent_id)
+    if creds:
+        _, token = creds
+        data = await _base_api_post(token, "/bitable/v1/apps", body)
+        return _render_base_app_create(data)
+
+    if not await _feishu_cli_available():
+        return _not_configured_error("feishu_base_app_create")
+
+    command = ["base", "+app-create", "--name", name]
+    if folder_token:
+        command.extend(["--folder-token", folder_token])
+    if time_zone:
+        command.extend(["--time-zone", time_zone])
+    payload = await _run_feishu_base_shortcut(command)
+    return _render_base_app_create(payload)
 
 
 async def _feishu_base_field_list(agent_id, arguments: dict) -> str:
@@ -426,3 +491,46 @@ async def _feishu_base_record_upload_attachment(agent_id, arguments: dict) -> st
         command.extend(["--name", display_name])
     payload = await _run_feishu_base_shortcut(command)
     return _render_base_attachment_upload(table_id, payload)
+
+
+async def _feishu_base_record_delete(agent_id, arguments: dict) -> str:
+    base_token = str(arguments.get("base_token") or "").strip()
+    table_id = str(arguments.get("table_id") or "").strip()
+    record_id = str(arguments.get("record_id") or "").strip()
+    tn = "feishu_base_record_delete"
+    if not base_token:
+        return _render_invalid_input("Missing required argument 'base_token'.", tool_name=tn)
+    if not table_id:
+        return _render_invalid_input("Missing required argument 'table_id'.", tool_name=tn)
+    if not record_id:
+        return _render_invalid_input("Missing required argument 'record_id'.", tool_name=tn)
+
+    creds = await _get_feishu_token(agent_id)
+    if creds:
+        _, token = creds
+        try:
+            await _base_api_delete(
+                token,
+                f"/bitable/v1/apps/{base_token}/tables/{table_id}/records/{record_id}",
+            )
+            return _render_base_record_delete(table_id, record_id)
+        except Exception as exc:
+            logger.warning("[FeishuBase] OpenAPI record_delete failed, trying CLI: %s", exc)
+
+    if not await _feishu_cli_available():
+        return _not_configured_error(tn)
+
+    payload = await _run_feishu_base_shortcut(
+        [
+            "base",
+            "+record-delete",
+            "--base-token",
+            base_token,
+            "--table-id",
+            table_id,
+            "--record-id",
+            record_id,
+        ]
+    )
+    deleted_record_id = payload.get("record_id") or record_id
+    return _render_base_record_delete(table_id, deleted_record_id)

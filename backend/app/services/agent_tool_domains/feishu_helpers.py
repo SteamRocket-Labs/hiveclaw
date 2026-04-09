@@ -10,10 +10,11 @@ from app.database import async_session
 logger = logging.getLogger(__name__)
 
 
-async def _get_feishu_token(agent_id: uuid.UUID) -> tuple[str, str] | None:
-    """Get (app_id, app_access_token) for the agent's configured Feishu channel."""
-    import httpx
+async def _get_feishu_app_credentials(agent_id: uuid.UUID) -> tuple[str, str] | None:
+    """Get (app_id, app_secret) from agent channel config or tenant-level bot config."""
+    from app.models.agent import Agent
     from app.models.channel_config import ChannelConfig
+    from app.models.tenant_channel_config import TenantChannelConfig
 
     async with async_session() as db:
         result = await db.execute(
@@ -24,18 +25,43 @@ async def _get_feishu_token(agent_id: uuid.UUID) -> tuple[str, str] | None:
             )
         )
         config = result.scalar_one_or_none()
+        if config and config.app_id and config.app_secret:
+            return config.app_id, config.app_secret
 
-    if not config or not config.app_id or not config.app_secret:
+        agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+        agent = agent_result.scalar_one_or_none()
+        if not agent or not agent.tenant_id:
+            return None
+
+        tenant_result = await db.execute(
+            select(TenantChannelConfig).where(
+                TenantChannelConfig.tenant_id == agent.tenant_id,
+                TenantChannelConfig.channel_type == "feishu",
+                TenantChannelConfig.is_active.is_(True),
+            )
+        )
+        tenant_config = tenant_result.scalar_one_or_none()
+        if tenant_config and tenant_config.app_id and tenant_config.app_secret:
+            return tenant_config.app_id, tenant_config.app_secret
+    return None
+
+
+async def _get_feishu_token(agent_id: uuid.UUID) -> tuple[str, str] | None:
+    """Get (app_id, app_access_token) for the agent's configured Feishu channel."""
+    import httpx
+    creds = await _get_feishu_app_credentials(agent_id)
+    if not creds:
         return None
+    app_id, app_secret = creds
 
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
             "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
-            json={"app_id": config.app_id, "app_secret": config.app_secret},
+            json={"app_id": app_id, "app_secret": app_secret},
         )
         token = resp.json().get("tenant_access_token", "")
 
-    return (config.app_id, token) if token else None
+    return (app_id, token) if token else None
 
 
 async def _get_agent_calendar_id(token: str) -> tuple[str | None, str | None]:

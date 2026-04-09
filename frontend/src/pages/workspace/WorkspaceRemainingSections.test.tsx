@@ -78,6 +78,8 @@ vi.mock('@tanstack/react-query', () => ({
           cli_enabled: true,
           cli_available: true,
           cli_bin: 'lark-cli',
+          cardkit_ready: true,
+          tenant_channel_configured: true,
           docs_read_ready: true,
           base_tasks_ready: true,
         },
@@ -131,6 +133,7 @@ describe('Workspace remaining sections', () => {
     expect(orgMarkup).toContain('Engineering');
     expect(orgMarkup).toContain('Feishu Runtime Status');
     expect(orgMarkup).toContain('Base / Tasks');
+    expect(orgMarkup).toContain('CardKit');
     expect(quotasMarkup).toContain('Employee Token Quotas');
     expect(quotasMarkup).toContain('defaultMaxTriggers');
     expect(toolsMarkup).toContain('Global Tools');

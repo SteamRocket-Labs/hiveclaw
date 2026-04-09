@@ -1176,6 +1176,8 @@
       "cliEnabled": "CLI Active",
       "cliAuth": "CLI Authenticated",
       "channelAuth": "Channel Authenticated",
+      "tenantAuth": "Tenant Authenticated",
+      "cardkit": "CardKit",
       "docsReady": "Docs / Wiki / Sheets",
       "baseReady": "Database / Tasks"
     }
@@ -1309,6 +1311,8 @@
   "channelGuide": {
     "setupGuide": "Setup Guide",
     "feishuPermJson": "Permission JSON (bulk import)",
+    "feishuPermBasic": "Basic Permissions",
+    "feishuPermFull": "Full Permissions",
     "feishuPermCopy": "Copy",
     "feishuPermCopied": "✓ Copied",
     "slack": {

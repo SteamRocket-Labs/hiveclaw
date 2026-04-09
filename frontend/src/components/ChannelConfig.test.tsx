@@ -27,6 +27,8 @@ vi.mock('@tanstack/react-query', () => ({
           cli_enabled: true,
           cli_available: false,
           cli_bin: 'lark-cli',
+          cardkit_ready: true,
+          tenant_channel_configured: true,
           channel_configured: true,
           office_access: true,
           docs_read_ready: true,
@@ -57,5 +59,7 @@ describe('ChannelConfig', () => {
     expect(markup).toContain('Feishu Runtime Status');
     expect(markup).toContain('Base / Tasks');
     expect(markup).toContain('Channel Auth');
+    expect(markup).toContain('Basic Permissions');
+    expect(markup).toContain('Full Permissions');
   });
 });

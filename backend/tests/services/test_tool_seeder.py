@@ -7,6 +7,14 @@ def test_builtin_tool_seed_list_includes_new_kernel_primitives():
     names = {tool["name"] for tool in BUILTIN_TOOLS}
 
     assert {"edit_file", "glob_search", "grep_search", "tool_search"}.issubset(names)
+    assert {
+        "feishu_base_app_create",
+        "feishu_base_record_delete",
+        "feishu_doc_delete",
+        "feishu_approval_create",
+        "feishu_approval_query",
+        "feishu_approval_get",
+    }.issubset(names)
 
 
 def test_builtin_tool_seed_list_tracks_combined_openai_surface():

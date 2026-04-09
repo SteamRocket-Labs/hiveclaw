@@ -16,6 +16,7 @@ from app.models.org import OrgDepartment, OrgMember
 from app.models.tenant_setting import TenantSetting
 from app.models.user import User
 from app.core.security import hash_password
+from app.services.auth_provider import feishu_auth_provider
 
 FEISHU_APP_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
 FEISHU_DEPT_CHILDREN_URL = "https://open.feishu.cn/open-apis/contact/v3/departments"
@@ -255,6 +256,7 @@ class OrgSyncService:
                     select(OrgDepartment).where(OrgDepartment.tenant_id == tenant_id)
                 )
                 departments = all_dept_result.scalars().all()
+                provider = await feishu_auth_provider._ensure_provider(db, tenant_id)
 
                 for dept in departments:
                     if not dept.feishu_id:
@@ -303,9 +305,17 @@ class OrgSyncService:
                                 member.feishu_open_id = open_id
                             if user_id:
                                 member.feishu_user_id = user_id
+                            member.provider_id = provider.id
+                            member.external_id = user_id or member.external_id
+                            member.open_id = open_id or member.open_id
+                            member.unionid = u.get("union_id") or member.unionid
                             member.synced_at = now
                         else:
                             member = OrgMember(
+                                provider_id=provider.id,
+                                external_id=user_id or None,
+                                open_id=open_id or None,
+                                unionid=u.get("union_id") or None,
                                 feishu_open_id=open_id or None,
                                 feishu_user_id=user_id or None,
                                 name=u.get("name", ""),
@@ -381,6 +391,22 @@ class OrgSyncService:
                             )
                             db.add(platform_user)
                             user_count += 1
+
+                        await feishu_auth_provider._upsert_external_identity(
+                            db,
+                            provider,
+                            platform_user,
+                            {
+                                "user_id": user_id or None,
+                                "open_id": open_id or None,
+                                "union_id": u.get("union_id") or None,
+                                "name": member_name,
+                                "email": member_email,
+                                "avatar_url": u.get("avatar", {}).get("avatar_origin", ""),
+                                "mobile": u.get("mobile", ""),
+                                "raw_profile": u,
+                            },
+                        )
             except Exception as e:
                 import traceback
                 traceback.print_exc()

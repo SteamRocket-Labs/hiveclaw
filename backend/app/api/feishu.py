@@ -161,6 +161,14 @@ async def _resolve_feishu_sender_profile(
 FEISHU_AUTHORIZE_URL = "https://open.feishu.cn/open-apis/authen/v1/authorize"
 
 
+@router.get("/auth/feishu/sso/available")
+async def feishu_sso_available():
+    """Check if Feishu SSO login is available (app configured)."""
+    from app.config import get_settings
+    _settings = get_settings()
+    return {"available": bool(_settings.FEISHU_APP_ID)}
+
+
 @router.post("/auth/feishu/sso/init")
 async def feishu_sso_init(
     tenant_id: uuid.UUID | None = None,

@@ -54,6 +54,7 @@ export const authApi = {
   updateMe: (data: ProfileUpdateParams) => patch<User>('/auth/me', data),
   changePassword: (data: PasswordChangeParams) => put<void>('/auth/me/password', data),
   getRegistrationConfig: () => get<RegistrationConfig>('/auth/registration-config'),
+  feishuSsoAvailable: () => get<{ available: boolean }>('/auth/feishu/sso/available'),
   feishuSsoInit: () => post<FeishuSsoInitResponse>('/auth/feishu/sso/init', {}),
   feishuSsoPoll: (sessionId: string) => get<FeishuSsoPollResponse>(`/auth/feishu/sso/poll?session_id=${sessionId}`),
   feishuBindInit: () => post<FeishuSsoInitResponse>('/auth/feishu/bind/init', {}),

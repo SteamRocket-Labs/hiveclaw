@@ -158,6 +158,114 @@ async def _resolve_feishu_sender_profile(
 
 # ─── OAuth ──────────────────────────────────────────────
 
+FEISHU_AUTHORIZE_URL = "https://open.feishu.cn/open-apis/authen/v1/authorize"
+
+
+@router.post("/auth/feishu/sso/init")
+async def feishu_sso_init(
+    tenant_id: uuid.UUID | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Create an SSO scan session and return the Feishu authorize URL."""
+    from datetime import datetime, timedelta, timezone
+    from urllib.parse import urlencode
+
+    from app.config import get_settings
+
+    _settings = get_settings()
+    app_id = _settings.FEISHU_APP_ID
+    if not app_id:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Feishu OAuth not configured")
+
+    session = SSOScanSession(
+        id=uuid.uuid4(),
+        status="pending",
+        tenant_id=tenant_id,
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+    )
+    db.add(session)
+    await db.commit()
+
+    redirect_uri = _settings.FEISHU_REDIRECT_URI
+    if not redirect_uri:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="FEISHU_REDIRECT_URI not configured")
+
+    params = {
+        "app_id": app_id,
+        "redirect_uri": redirect_uri,
+        "state": str(session.id),
+    }
+    authorize_url = f"{FEISHU_AUTHORIZE_URL}?{urlencode(params)}"
+
+    return {"session_id": str(session.id), "authorize_url": authorize_url}
+
+
+@router.get("/auth/feishu/sso/poll")
+async def feishu_sso_poll(
+    session_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Poll SSO session status. Returns token when completed."""
+    session = await db.get(SSOScanSession, session_id)
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+
+    from datetime import datetime, timezone
+
+    if session.expires_at < datetime.now(timezone.utc):
+        return {"status": "expired"}
+
+    if session.status == "completed" and session.access_token and session.user_id:
+        user = await db.get(User, session.user_id)
+        if not user:
+            return {"status": "error", "detail": "User not found"}
+        return {
+            "status": "completed",
+            "access_token": session.access_token,
+            "user": UserOut.model_validate(user).model_dump(),
+        }
+
+    return {"status": session.status}
+
+
+@router.post("/auth/feishu/bind/init")
+async def feishu_bind_init(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create an SSO session for binding Feishu to an existing account."""
+    from datetime import datetime, timedelta, timezone
+    from urllib.parse import urlencode
+
+    from app.config import get_settings
+
+    _settings = get_settings()
+    app_id = _settings.FEISHU_APP_ID
+    if not app_id:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Feishu OAuth not configured")
+
+    session = SSOScanSession(
+        id=uuid.uuid4(),
+        status="pending_bind",
+        user_id=current_user.id,
+        tenant_id=current_user.tenant_id,
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+    )
+    db.add(session)
+    await db.commit()
+
+    redirect_uri = _settings.FEISHU_REDIRECT_URI
+    if not redirect_uri:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="FEISHU_REDIRECT_URI not configured")
+
+    params = {
+        "app_id": app_id,
+        "redirect_uri": redirect_uri,
+        "state": str(session.id),
+    }
+    authorize_url = f"{FEISHU_AUTHORIZE_URL}?{urlencode(params)}"
+    return {"session_id": str(session.id), "authorize_url": authorize_url}
+
 
 @router.get("/auth/feishu/callback", response_class=HTMLResponse)
 async def feishu_oauth_callback_get(code: str, state: str, db: AsyncSession = Depends(get_db)):
@@ -172,11 +280,20 @@ async def feishu_oauth_callback_get(code: str, state: str, db: AsyncSession = De
         return HTMLResponse("<html><body>Invalid or expired SSO session.</body></html>", status_code=400)
 
     try:
-        user, token = await feishu_auth_provider.authenticate_with_code(db, code=code, tenant_id=session.tenant_id)
+        if session.status == "pending_bind" and session.user_id:
+            # Bind mode: link feishu to existing user
+            existing_user = await db.get(User, session.user_id)
+            if not existing_user:
+                return HTMLResponse("<html><body>User not found.</body></html>", status_code=400)
+            user = await feishu_auth_provider.bind_with_code(db, user=existing_user, code=code)
+            token = ""  # not needed for bind
+        else:
+            # Login mode: authenticate or create user
+            user, token = await feishu_auth_provider.authenticate_with_code(db, code=code, tenant_id=session.tenant_id)
         session.status = "completed"
         session.provider_type = "feishu"
         session.user_id = user.id
-        session.access_token = token
+        session.access_token = token or ""
         session.error_msg = None
         await db.commit()
     except Exception as exc:
@@ -1198,7 +1315,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     try:
                         await _heartbeat_task
                     except (Exception, asyncio.CancelledError):
-                        pass
+                        logger.debug("[Feishu] Heartbeat task cancelled during cleanup")
                 _cfs.reset(_cfs_token)
                 _cfso.reset(_cfso_token)
             logger.info(f"[Feishu] LLM reply: {reply_text[:100]}")

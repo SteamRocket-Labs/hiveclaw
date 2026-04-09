@@ -15,6 +15,7 @@ import { ProtectedRoute, WorkspaceGuard, AdminGuard } from './guards';
 import { WORKSPACE_SECTIONS } from './surfaces/workspace/sections';
 
 const Login = lazy(() => import('./pages/Login'));
+const SsoEntry = lazy(() => import('./pages/SsoEntry'));
 const CompanySetup = lazy(() => import('./pages/CompanySetup'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Plaza = lazy(() => import('./pages/Plaza'));
@@ -112,6 +113,7 @@ export default function App() {
                 <Routes>
                     {/* ─── Public surface ─── */}
                     <Route path="/login" element={<Login />} />
+                    <Route path="/sso/entry" element={<SsoEntry />} />
                     <Route path="/setup-company" element={<CompanySetup />} />
 
                     {/* ─── App surface ─── */}

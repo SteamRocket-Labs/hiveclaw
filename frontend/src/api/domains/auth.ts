@@ -35,6 +35,18 @@ export interface RegistrationConfig {
   invitation_code_required: boolean;
 }
 
+export interface FeishuSsoInitResponse {
+  session_id: string;
+  authorize_url: string;
+}
+
+export interface FeishuSsoPollResponse {
+  status: 'pending' | 'completed' | 'expired' | 'error';
+  access_token?: string;
+  user?: User;
+  detail?: string;
+}
+
 export const authApi = {
   login: (data: LoginParams) => post<TokenResponse>('/auth/login', data),
   register: (data: RegisterParams) => post<TokenResponse>('/auth/register', data),
@@ -42,4 +54,7 @@ export const authApi = {
   updateMe: (data: ProfileUpdateParams) => patch<User>('/auth/me', data),
   changePassword: (data: PasswordChangeParams) => put<void>('/auth/me/password', data),
   getRegistrationConfig: () => get<RegistrationConfig>('/auth/registration-config'),
+  feishuSsoInit: () => post<FeishuSsoInitResponse>('/auth/feishu/sso/init', {}),
+  feishuSsoPoll: (sessionId: string) => get<FeishuSsoPollResponse>(`/auth/feishu/sso/poll?session_id=${sessionId}`),
+  feishuBindInit: () => post<FeishuSsoInitResponse>('/auth/feishu/bind/init', {}),
 };

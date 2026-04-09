@@ -81,6 +81,17 @@
     "loginFailed": "Sign in failed",
     "subtitleLogin": "Welcome back. Sign in to continue.",
     "subtitleRegister": "Create your account to get started.",
+    "feishu": {
+      "login": "Login with Feishu",
+      "or": "or",
+      "completing": "Completing login...",
+      "success": "Login successful, redirecting...",
+      "ssoFailed": "Feishu login failed or expired",
+      "ssoTimeout": "Login timed out",
+      "backToLogin": "Back to login",
+      "notConfigured": "Feishu login is not configured. Contact admin.",
+      "initFailed": "Failed to start Feishu login"
+    },
     "invitationCode": "Invitation Code",
     "invitationCodePlaceholder": "Enter your invitation code",
     "invitationHint": "An invitation code is required to register. For the best experience, we recommend deploying your own instance with your preferred AI models.",
@@ -1127,7 +1138,13 @@
     "fillAllPasswordFields": "Please fill in all password fields",
     "minPasswordLength": "Password must be at least 6 characters",
     "passwordsDoNotMatch": "Passwords don't match",
-    "passwordChanged": "Password changed successfully"
+    "passwordChanged": "Password changed successfully",
+    "feishuBind": "Feishu Account",
+    "feishuBound": "Feishu account linked",
+    "feishuBindDesc": "Link your Feishu account to enable Feishu login and seamless identity matching.",
+    "feishuBindBtn": "Link Feishu Account",
+    "feishuBindSuccess": "Feishu account linked successfully",
+    "feishuBindFailed": "Failed to link Feishu account"
   },
   "workspace": {
     "hr": {

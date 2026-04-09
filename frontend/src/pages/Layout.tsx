@@ -24,6 +24,8 @@ function AccountSettingsModal({ user, onClose }: { user: any; onClose: () => voi
     const [saving, setSaving] = useState(false);
     const [msg, setMsg] = useState('');
     const [msgType, setMsgType] = useState<'success' | 'error'>('success');
+    const [feishuBinding, setFeishuBinding] = useState(false);
+    const feishuPollRef = useRef(false);
 
     const showMsg = (text: string, type: 'success' | 'error' = 'success') => {
         setMsg(text); setMsgType(type); setTimeout(() => setMsg(''), 3000);
@@ -85,6 +87,69 @@ function AccountSettingsModal({ user, onClose }: { user: any; onClose: () => voi
                     <div><label style={labelStyle}>{t('account.confirmNewPassword')}</label><input className="form-input" type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} style={inputStyle} /></div>
                     <div style={{ display: 'flex', justifyContent: 'flex-end' }}><button className="btn btn-primary" onClick={handleChangePassword} disabled={saving} style={{ padding: '6px 16px', fontSize: '12px' }}>{saving ? '...' : t('account.changePassword')}</button></div>
                 </div>
+                <div style={{ borderTop: '1px solid var(--border-subtle)', marginTop: '20px', marginBottom: '20px' }} />
+                {/* Feishu Bind */}
+                <h4 style={{ margin: '0 0 12px', fontSize: '13px', color: 'var(--text-secondary)' }}>{t('account.feishuBind', 'Feishu Account')}</h4>
+                {user?.feishu_user_id || user?.feishu_open_id ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 14px', background: 'rgba(0,180,120,0.08)', borderRadius: '8px', border: '1px solid rgba(0,180,120,0.2)' }}>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M3 4.5L10.5 8.5L14 20.5L21 6L10.5 12.5L3 4.5Z" fill="#3370FF"/><path d="M3 4.5L10.5 12.5L14 20.5L10.5 8.5L3 4.5Z" fill="#1456F0" opacity="0.7"/></svg>
+                        <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: '13px', fontWeight: 500, color: 'var(--success)' }}>{t('account.feishuBound', 'Feishu account linked')}</div>
+                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{user.feishu_user_id || user.feishu_open_id}</div>
+                        </div>
+                    </div>
+                ) : (
+                    <div>
+                        <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '10px' }}>
+                            {t('account.feishuBindDesc', 'Link your Feishu account to enable Feishu login and seamless identity matching.')}
+                        </p>
+                        <button
+                            className="btn"
+                            disabled={feishuBinding}
+                            onClick={async () => {
+                                setFeishuBinding(true);
+                                try {
+                                    const { session_id, authorize_url } = await authApi.feishuBindInit();
+                                    const popup = window.open(authorize_url, 'feishu_bind', 'width=600,height=700,popup=yes');
+                                    feishuPollRef.current = true;
+                                    let attempts = 0;
+                                    while (feishuPollRef.current && attempts < 120) {
+                                        await new Promise(r => setTimeout(r, 1500));
+                                        if (!feishuPollRef.current) break;
+                                        try {
+                                            const res = await authApi.feishuSsoPoll(session_id);
+                                            if (res.status === 'completed') {
+                                                popup?.close();
+                                                const updated = await authApi.getMe();
+                                                setUser(updated);
+                                                showMsg(t('account.feishuBindSuccess', 'Feishu account linked successfully'));
+                                                break;
+                                            }
+                                            if (res.status === 'expired' || res.status === 'error') {
+                                                popup?.close();
+                                                showMsg(res.detail || t('account.feishuBindFailed', 'Failed to link Feishu'), 'error');
+                                                break;
+                                            }
+                                        } catch { /* network blip */ }
+                                        if (popup?.closed) break;
+                                        attempts++;
+                                    }
+                                } catch (e: any) {
+                                    showMsg(e.message || 'Failed', 'error');
+                                } finally {
+                                    feishuPollRef.current = false;
+                                    setFeishuBinding(false);
+                                }
+                            }}
+                            style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 16px', fontSize: '13px', border: '1px solid var(--border-subtle)', background: 'var(--bg-secondary)' }}
+                        >
+                            {feishuBinding ? <span className="login-spinner" style={{ width: 14, height: 14 }} /> : (
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 4.5L10.5 8.5L14 20.5L21 6L10.5 12.5L3 4.5Z" fill="#3370FF"/><path d="M3 4.5L10.5 12.5L14 20.5L10.5 8.5L3 4.5Z" fill="#1456F0" opacity="0.7"/></svg>
+                            )}
+                            {t('account.feishuBindBtn', 'Link Feishu Account')}
+                        </button>
+                    </div>
+                )}
             </div>
         </div>
     );

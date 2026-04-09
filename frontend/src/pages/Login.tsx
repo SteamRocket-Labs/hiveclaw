@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores';
@@ -11,6 +11,8 @@ export default function Login() {
     const [isRegister, setIsRegister] = useState(false);
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
+    const [feishuLoading, setFeishuLoading] = useState(false);
+    const feishuPollRef = useRef(false);
 
     const [form, setForm] = useState({
         username: '',
@@ -22,6 +24,53 @@ export default function Login() {
     useEffect(() => {
         document.documentElement.setAttribute('data-theme', 'dark');
     }, []);
+
+    const handleFeishuLogin = useCallback(async () => {
+        setError('');
+        setFeishuLoading(true);
+        try {
+            const { session_id, authorize_url } = await authApi.feishuSsoInit();
+            // Open feishu auth in a popup
+            const popup = window.open(authorize_url, 'feishu_sso', 'width=600,height=700,popup=yes');
+
+            // Poll for completion
+            feishuPollRef.current = true;
+            let attempts = 0;
+            const maxAttempts = 120;
+            while (feishuPollRef.current && attempts < maxAttempts) {
+                await new Promise((r) => setTimeout(r, 1500));
+                if (!feishuPollRef.current) break;
+                try {
+                    const res = await authApi.feishuSsoPoll(session_id);
+                    if (res.status === 'completed' && res.access_token && res.user) {
+                        popup?.close();
+                        setAuth(res.user, res.access_token);
+                        navigate('/');
+                        return;
+                    }
+                    if (res.status === 'expired' || res.status === 'error') {
+                        popup?.close();
+                        setError(res.detail || t('auth.feishu.ssoFailed', 'Feishu login failed'));
+                        break;
+                    }
+                } catch {
+                    // network blip, keep polling
+                }
+                if (popup?.closed) break;
+                attempts++;
+            }
+        } catch (err: any) {
+            const msg = err?.message || '';
+            if (msg.includes('503') || msg.includes('not configured')) {
+                setError(t('auth.feishu.notConfigured', 'Feishu login is not configured. Contact admin.'));
+            } else {
+                setError(msg || t('auth.feishu.initFailed', 'Failed to start Feishu login'));
+            }
+        } finally {
+            feishuPollRef.current = false;
+            setFeishuLoading(false);
+        }
+    }, [navigate, setAuth, t]);
 
     const toggleLang = () => {
         i18n.changeLanguage(i18n.language === 'zh' ? 'en' : 'zh');
@@ -192,6 +241,40 @@ export default function Login() {
                             )}
                         </button>
                     </form>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', margin: '4px 0 8px' }}>
+                        <div style={{ flex: 1, height: '1px', background: 'var(--border-subtle)' }} />
+                        <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>{t('auth.feishu.or', 'or')}</span>
+                        <div style={{ flex: 1, height: '1px', background: 'var(--border-subtle)' }} />
+                    </div>
+
+                    <button
+                        type="button"
+                        className="login-submit"
+                        disabled={feishuLoading || loading}
+                        onClick={handleFeishuLogin}
+                        style={{
+                            background: 'var(--bg-secondary)',
+                            color: 'var(--text-primary)',
+                            border: '1px solid var(--border-subtle)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '8px',
+                        }}
+                    >
+                        {feishuLoading ? (
+                            <span className="login-spinner" />
+                        ) : (
+                            <>
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                                    <path d="M3 4.5L10.5 8.5L14 20.5L21 6L10.5 12.5L3 4.5Z" fill="#3370FF"/>
+                                    <path d="M3 4.5L10.5 12.5L14 20.5L10.5 8.5L3 4.5Z" fill="#1456F0" opacity="0.7"/>
+                                </svg>
+                                {t('auth.feishu.login', 'Login with Feishu')}
+                            </>
+                        )}
+                    </button>
 
                     <div className="login-switch">
                         {isRegister ? t('auth.hasAccount') : t('auth.noAccount')}{' '}

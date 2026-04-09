@@ -10,6 +10,7 @@ export interface User {
     tenant_id?: string;
     department_id?: string;
     title?: string;
+    feishu_user_id?: string;
     feishu_open_id?: string;
     is_active: boolean;
     created_at: string;

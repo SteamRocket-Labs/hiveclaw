@@ -80,6 +80,17 @@
     "loginFailed": "登录失败",
     "subtitleLogin": "欢迎回来，请登录继续。",
     "subtitleRegister": "创建你的账号开始使用。",
+    "feishu": {
+      "login": "飞书登录",
+      "or": "或",
+      "completing": "正在完成登录...",
+      "success": "登录成功，正在跳转...",
+      "ssoFailed": "飞书登录失败或已过期",
+      "ssoTimeout": "登录超时",
+      "backToLogin": "返回登录",
+      "notConfigured": "飞书登录未配置，请联系管理员。",
+      "initFailed": "启动飞书登录失败"
+    },
     "invitationCode": "邀请码",
     "invitationCodePlaceholder": "请输入邀请码",
     "invitationHint": "注册需要邀请码。推荐大家自行部署并配置最前沿的模型，体验最佳效果。",
@@ -1118,7 +1129,13 @@
     "fillAllPasswordFields": "请填写所有密码字段",
     "minPasswordLength": "密码至少 6 个字符",
     "passwordsDoNotMatch": "两次密码不一致",
-    "passwordChanged": "密码修改成功"
+    "passwordChanged": "密码修改成功",
+    "feishuBind": "飞书账号",
+    "feishuBound": "已绑定飞书账号",
+    "feishuBindDesc": "绑定飞书账号后可使用飞书登录，并自动匹配身份信息。",
+    "feishuBindBtn": "绑定飞书账号",
+    "feishuBindSuccess": "飞书账号绑定成功",
+    "feishuBindFailed": "飞书账号绑定失败"
   },
   "workspace": {
     "hr": {

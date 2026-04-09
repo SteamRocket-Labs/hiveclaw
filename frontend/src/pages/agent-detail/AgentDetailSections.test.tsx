@@ -477,6 +477,7 @@ describe('AgentDetail extracted sections', () => {
           max_triggers: 10,
           min_poll_interval_min: 5,
           webhook_rate_limit: 5,
+          smart_model_routing_enabled: false,
         }}
         onSettingsFormChange={vi.fn()}
         settingsSaving={false}

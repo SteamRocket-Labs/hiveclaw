@@ -36,6 +36,7 @@ export interface Agent {
     last_heartbeat_at?: string;
     timezone?: string;
     execution_mode?: 'standard' | 'coordinator';
+    smart_model_routing?: { enabled: boolean; max_simple_chars: number; max_simple_words: number } | null;
     context_window_size?: number;
     agent_type?: 'native' | 'openclaw';
     openclaw_last_seen?: string;

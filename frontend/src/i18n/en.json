@@ -462,6 +462,8 @@
       "modelConfig": "AI Model",
       "primaryModel": "Primary Model",
       "fallbackModel": "Backup Model",
+      "smartRouting": "Smart Model Routing",
+      "smartRoutingDesc": "Automatically use the backup model for simple conversational turns to save costs. Complex tasks always use the primary model.",
       "noFallback": "No backup",
       "conversationContext": "Conversation Memory",
       "maxRounds": "Max Rounds",

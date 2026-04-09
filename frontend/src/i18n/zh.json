@@ -461,6 +461,8 @@
       "modelConfig": "AI 模型",
       "primaryModel": "主模型",
       "fallbackModel": "备用模型",
+      "smartRouting": "智能模型路由",
+      "smartRoutingDesc": "对简单对话自动使用备用模型以节省成本，复杂任务始终使用主模型。",
       "noFallback": "无备用",
       "conversationContext": "对话记忆",
       "maxRounds": "最大轮次",

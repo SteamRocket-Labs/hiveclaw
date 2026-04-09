@@ -12,6 +12,7 @@ type AgentSettingsForm = {
   max_triggers: number;
   min_poll_interval_min: number;
   webhook_rate_limit: number;
+  smart_model_routing_enabled: boolean;
 };
 
 interface AgentSettingsSectionProps {
@@ -75,7 +76,8 @@ export default function AgentSettingsSection({
     settingsForm.fallback_model_id !== (agent?.fallback_model_id || '') ||
     settingsForm.max_triggers !== ((agent as any)?.max_triggers ?? 20) ||
     settingsForm.min_poll_interval_min !== ((agent as any)?.min_poll_interval_min ?? 5) ||
-    settingsForm.webhook_rate_limit !== ((agent as any)?.webhook_rate_limit ?? 5);
+    settingsForm.webhook_rate_limit !== ((agent as any)?.webhook_rate_limit ?? 5) ||
+    settingsForm.smart_model_routing_enabled !== !!((agent as any)?.smart_model_routing?.enabled);
 
   const handleSaveSettings = async () => {
     onSetSettingsSaving(true);
@@ -87,6 +89,9 @@ export default function AgentSettingsSection({
         max_triggers: settingsForm.max_triggers,
         min_poll_interval_min: settingsForm.min_poll_interval_min,
         webhook_rate_limit: settingsForm.webhook_rate_limit,
+        smart_model_routing: settingsForm.smart_model_routing_enabled
+          ? { enabled: true, max_simple_chars: 160, max_simple_words: 28 }
+          : null,
       } as any);
       queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
       onResetSettingsInit();
@@ -264,6 +269,57 @@ export default function AgentSettingsSection({
             )}
             <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('agent.settings.fallbackModel')}</div>
           </div>
+          {settingsForm.fallback_model_id && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '10px 14px',
+                background: 'var(--bg-elevated)',
+                borderRadius: '8px',
+                border: '1px solid var(--border-subtle)',
+              }}
+            >
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 500, fontSize: '13px' }}>{t('agent.settings.smartRouting', 'Smart Model Routing')}</div>
+                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                  {t('agent.settings.smartRoutingDesc', 'Automatically use the fallback model for simple conversational turns to save costs. Complex tasks always use the primary model.')}
+                </div>
+              </div>
+              <label style={{ position: 'relative', display: 'inline-block', width: '36px', height: '20px', flexShrink: 0, marginLeft: '12px' }}>
+                <input
+                  type="checkbox"
+                  checked={settingsForm.smart_model_routing_enabled}
+                  onChange={(e) => onSettingsFormChange((f) => ({ ...f, smart_model_routing_enabled: e.target.checked }))}
+                  style={{ opacity: 0, width: 0, height: 0 }}
+                />
+                <span
+                  style={{
+                    position: 'absolute',
+                    cursor: 'pointer',
+                    inset: 0,
+                    background: settingsForm.smart_model_routing_enabled ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
+                    borderRadius: '10px',
+                    transition: 'background 0.2s',
+                  }}
+                >
+                  <span
+                    style={{
+                      position: 'absolute',
+                      height: '14px',
+                      width: '14px',
+                      left: settingsForm.smart_model_routing_enabled ? '19px' : '3px',
+                      bottom: '3px',
+                      background: 'white',
+                      borderRadius: '50%',
+                      transition: 'left 0.2s',
+                    }}
+                  />
+                </span>
+              </label>
+            </div>
+          )}
         </div>
       </div>
 

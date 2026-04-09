@@ -353,6 +353,7 @@ function AgentDetailInner() {
         max_triggers: 20,
         min_poll_interval_min: 5,
         webhook_rate_limit: 5,
+        smart_model_routing_enabled: false,
     });
     const [settingsSaving, setSettingsSaving] = useState(false);
     const [settingsSaved, setSettingsSaved] = useState(false);
@@ -368,6 +369,7 @@ function AgentDetailInner() {
                 max_triggers: (agent as any).max_triggers ?? 20,
                 min_poll_interval_min: (agent as any).min_poll_interval_min ?? 5,
                 webhook_rate_limit: (agent as any).webhook_rate_limit ?? 5,
+                smart_model_routing_enabled: !!(agent as any).smart_model_routing?.enabled,
             });
             settingsInitRef.current = true;
         }

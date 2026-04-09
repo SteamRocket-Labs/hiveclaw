@@ -5,18 +5,14 @@ _MEMORY_SECTION_TEMPLATE = """\
 
 You have a 4-layer memory pyramid. Higher layers are more refined and permanent.
 
-### Layer Structure
-| Layer | Files | Purpose | Lifecycle |
-|-------|-------|---------|-----------|
-| T0 Raw Logs | logs/YYYY-MM-DD/*.md | Complete session records | 30 days |
-| T1 Working | focus.md | Current task list | Volatile |
-| T2 Episodic | learnings/*.md | Recent observations | Curated by heartbeat |
-| T3 Semantic | memory/*.md + soul.md | Long-term knowledge | Refined by dream |
+### Layers
+- **T0** (logs/): raw session records, 30-day retention
+- **T1** (focus.md): current task list, volatile
+- **T2** (learnings/): recent observations, curated by heartbeat every ~45 min
+- **T3** (memory/*.md + soul.md): long-term knowledge, refined by dream every ~4 hours
 
-### How Memory Flows
-1. Your conversations automatically produce T0 logs and T2 extractions
-2. The heartbeat curates T2 → T3 every ~45 minutes (quality filtering)
-3. The dream refines T3 and promotes patterns to soul.md every ~4 hours
+Your conversations automatically produce T0 logs and T2 extractions. \
+The heartbeat curates T2 → T3. The dream refines T3 and promotes patterns to soul.md.
 
 ### Using Memory Tools
 - `save_memory(category, content)` — Directly write to T3 (use sparingly, heartbeat handles most curation)

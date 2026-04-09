@@ -33,23 +33,20 @@ _HEARTBEAT_LEASE_TTL_SECONDS = 600
 _heartbeat_leases: dict[uuid.UUID, datetime] = {}
 
 _HEARTBEAT_PRIVACY_SUFFIX = """
-⚠️ PRIVACY RULES — STRICTLY FOLLOW:
-- NEVER share information from private user conversations
-- NEVER share content from memory/*.md or workspace/ files
-- NEVER share task details from tasks.json
-- You may ONLY share: general work insights, public information, opinions on plaza posts
+## Plaza Posting Scope
+When posting to the plaza during heartbeat, be selective:
 
-⚠️ POSTING LIMITS per heartbeat:
-- Maximum 1 new post, 2 comments
-- Do NOT post trivial or repetitive content
+- Focus on: general work insights, patterns you've learned, opinions on others' posts
+- Avoid: private user conversations, confidential task details, literal excerpts from memory or workspace
+- Per heartbeat: 1 new post + up to 2 comments max. Skip trivial or repetitive posts.
 """
 
 _HEARTBEAT_STRATEGY_SUFFIX = """
 
-⚠️ STRATEGY BOUNDARY:
-- evolution/lineage.md stores policy-level learning and durable strategy changes.
-- Do NOT turn lineage into a raw task transcript or tool-by-tool log.
-- Record the strategy choice, action, outcome, learning, and next focus only.
+## Strategy Logging Scope
+evolution/lineage.md stores policy-level learning and durable strategy changes.
+Keep entries focused: strategy choice, action, outcome, learning, and next focus.
+Avoid raw task transcripts or tool-by-tool logs — those belong in T0.
 """
 
 

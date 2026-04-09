@@ -267,8 +267,8 @@ Save notes to `{output_path}` as a JSON array of strings:
 - Note patterns that aggregate metrics would hide
 - Provide context that helps interpret the numbers
 
-**DO NOT:**
-- Suggest improvements to the skill (that's for the improvement step, not benchmarking)
-- Make subjective quality judgments ("the output was good/bad")
-- Speculate about causes without evidence
-- Repeat information already in the run_summary aggregates
+**Stay focused on analysis:**
+- Save improvement suggestions for the improvement step — this is benchmarking
+- Report observations, not subjective quality judgments ("good/bad")
+- Support claims with evidence from the data
+- Add insight beyond what the run_summary aggregates already show

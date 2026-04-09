@@ -52,11 +52,11 @@ class TestTasksSection:
     def test_has_header(self) -> None:
         assert "## Doing Tasks" in build_tasks_section()
 
-    def test_has_security_warning(self) -> None:
-        assert "security vulnerabilities" in build_tasks_section()
+    def test_has_verify_before_claiming(self) -> None:
+        assert "verify" in build_tasks_section()
 
-    def test_has_3_fix_rule(self) -> None:
-        assert "3 times" in build_tasks_section()
+    def test_has_faithful_reporting(self) -> None:
+        assert "faithfully" in build_tasks_section()
 
 
 class TestToolsSection:
@@ -73,7 +73,7 @@ class TestToolsSection:
         section = build_tools_section()
         assert "save_skill" in section
         assert "succeeded repeatedly" in section
-        assert "one-off notes" in section
+        assert "One-off notes" in section
 
 
 class TestMemorySection:
@@ -82,10 +82,10 @@ class TestMemorySection:
 
     def test_has_4_layers(self) -> None:
         section = build_memory_section()
-        assert "T0 Raw Logs" in section
-        assert "T1 Working" in section
-        assert "T2 Episodic" in section
-        assert "T3 Semantic" in section
+        assert "**T0**" in section
+        assert "**T1**" in section
+        assert "**T2**" in section
+        assert "**T3**" in section
 
     def test_snapshot_injected(self) -> None:
         section = build_memory_section("feedback: user prefers concise")

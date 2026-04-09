@@ -36,8 +36,8 @@ def build_scenario_section(
 
     if task_profile.name == "research":
         lines.extend([
-            "- Verify sources before concluding. Prefer primary sources and current documents over secondary summaries.",
-            "- Use absolute dates when discussing recency, timelines, releases, or news.",
+            "- Verify sources before concluding — stale or unreliable sources cause hallucination. Prefer primary sources and current documents over secondary summaries.",
+            "- Use absolute dates when discussing recency, timelines, releases, or news — relative dates degrade as context compresses.",
             "- Separate confirmed facts from your own inference, and say when a point is an inference.",
             "- When multiple sources disagree, compare recency and provenance instead of averaging them.",
         ])

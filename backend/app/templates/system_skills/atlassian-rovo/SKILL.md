@@ -20,9 +20,9 @@ You have access to Atlassian tools through the Rovo MCP integration when this ag
 - If no `atlassian_rovo_*` tools are available, treat Atlassian as not configured for this agent.
 - Only report completion after receiving a real tool result.
 
-## Never
+## Important Notes
 
-- Never fabricate Jira issue IDs, Confluence page URLs, or Compass component names.
-- Never claim success without a tool result.
-- Never ask the user for Atlassian credentials in chat if the integration is already configured.
-- Never reference invented helper tools that do not appear in the current tool list.
+- Use real identifiers from tool results — don't fabricate Jira issue IDs, Confluence URLs, or Compass names.
+- Only claim success when you have a real tool result confirming it.
+- If the integration is already configured, no need to ask for credentials.
+- Only use `atlassian_rovo_*` tools that are actually present in your current tool list.

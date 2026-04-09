@@ -59,8 +59,8 @@ Scan memory/feedback.md for high-frequency patterns (entries that appear 3+ time
 
 ## Constraints
 - Maximum 25 tool rounds total
-- NEVER delete a file entirely — only edit entries within files
-- NEVER modify soul.md sections other than `## Learned Behaviors`
+- Edit entries within files — don't delete entire files
+- Only modify the `## Learned Behaviors` section of soul.md — other sections are permanent identity
 - When in doubt, keep entries (false positive better than lost memory)
 
 ## Required Output Format

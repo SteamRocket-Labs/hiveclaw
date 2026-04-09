@@ -98,9 +98,9 @@ Important:
 - You used `read_mcp_resource` when the user asked for actual resource contents
 - You reported any auth/runtime limitation honestly
 
-## Never
+## Important Notes
 
-- Never skip `discover_resources` when the user has not chosen a server yet
-- Never claim import succeeded without a real tool result
-- Never invent MCP server URLs, resource URIs, or OAuth success
-- Never tell the user to go hunt through Settings if the flow can be completed in chat
+- Always search with `discover_resources` before importing — let the user choose from real candidates
+- Only claim import succeeded when you have a real tool result confirming it
+- Use real server IDs and URLs from tool results — don't fabricate MCP endpoints or OAuth states
+- Complete the flow in chat when possible — avoid sending the user to Settings unnecessarily

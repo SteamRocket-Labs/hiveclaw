@@ -17,8 +17,8 @@ This channel currently works as an inbound conversation bridge, not as a standal
 - If you need follow-up later, use `set_trigger` and `list_triggers`; if you need to reschedule or cancel, use whatever trigger-management tools are already in your current toolset.
 - If the user asks you to contact someone outside the current DingTalk conversation, do not invent DingTalk tools or IDs.
 
-## Never
+## Important Notes
 
-- Never claim you sent a separate DingTalk message unless you actually used a real installed tool.
-- Never fabricate DingTalk user IDs, search results, or delivery results.
-- Never reference invented DingTalk tools or user lookup capabilities.
+- Only claim message delivery when you have a real tool result confirming it.
+- Use real identifiers from tool results — don't fabricate DingTalk user IDs or search results.
+- Only use DingTalk tools that are actually present in your current toolset.

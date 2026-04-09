@@ -40,8 +40,8 @@ _sessions_since_dream: dict[str, int] = {}
 # Prompt contract kept for tests/docs. Runtime dream path is programmatic md-only.
 _AUTO_DREAM_SYSTEM_PROMPT = (
     "You consolidate an agent's long-term memory into a clean, deduplicated fact list.\n"
-    "Do NOT preserve transient task state, temporary TODOs, or raw session transcripts.\n"
-    "Keep durable reusable facts, durable strategy lessons, and blocked patterns.\n"
+    "Focus on durable reusable facts, strategy lessons, and blocked patterns.\n"
+    "Skip transient task state, temporary TODOs, and raw session transcripts.\n"
     "Return only a JSON array — no prose, no explanation."
 )
 

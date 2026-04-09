@@ -53,16 +53,14 @@ for them. Include *why* so the agent can judge edge cases later.
 | Project decision / status | project | "we decided", "deadline is", "version X" |
 | Capability gap / wish | request | "if only", "I wish", "can you add" |
 
-## What NOT to save
-Do NOT extract any of the following — they can be derived from the workspace or tools:
-- Code patterns, conventions, architecture, file paths, or project structure
-- Git history, recent changes, or who-changed-what (use git log / git blame)
-- Debugging solutions or fix recipes (the fix is in the code; the commit message has context)
-- Exact tool call sequences or raw tool output (only outcomes matter)
-- Ephemeral task details: in-progress file edits, transient debugging steps, current tool state
-- Information the agent's system prompt or skills already cover
-
-If something is already derivable from reading the workspace, do NOT save it as a memory.
+## What to Skip (already accessible elsewhere)
+These are derivable from the workspace or tools — extracting them wastes memory:
+- Code patterns, file paths, project structure — read the workspace directly
+- Git history, who-changed-what — use git log when needed
+- Debugging steps or fix recipes — the fix is in the code; the commit has context
+- Exact tool call sequences or raw tool output — only outcomes matter
+- Ephemeral in-progress state — belongs in focus.md, not long-term memory
+- Info already in system prompts or skills — don't duplicate what's built in
 
 ## Rules
 1. Only extract from the provided messages — do not infer or fabricate

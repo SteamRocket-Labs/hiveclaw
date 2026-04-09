@@ -60,8 +60,8 @@ _DELEGATION_TOOL_PROFILES: dict[str, DelegationToolProfile] = {
         ),
         memory_policy="isolated_no_long_term_memory",
         memory_rule=(
-            "Do NOT read or write long-term memory unless the runtime explicitly re-enables those tools for this task. "
-            "Do NOT create or update reusable skills from a delegated worker session."
+            "Long-term memory tools are disabled for this worker session. "
+            "Skill creation/update is also disabled — only the parent agent manages skills."
         ),
     ),
     "memory_readonly": DelegationToolProfile(
@@ -75,8 +75,8 @@ _DELEGATION_TOOL_PROFILES: dict[str, DelegationToolProfile] = {
         ),
         memory_policy="read_only_long_term_memory",
         memory_rule=(
-            "You MAY read long-term memory when it materially helps the delegated task, but do NOT write or mutate long-term memory. "
-            "Do NOT create or update reusable skills from a delegated worker session."
+            "You can read long-term memory when it materially helps the delegated task. "
+            "Writing memory and creating/updating skills are disabled for this worker session."
         ),
     ),
     "review_readonly": DelegationToolProfile(
@@ -95,12 +95,12 @@ _DELEGATION_TOOL_PROFILES: dict[str, DelegationToolProfile] = {
         excluded_tools=(),
         tool_policy="worker_review_readonly",
         tool_rule=(
-            "Your tool surface is review-only. Do NOT edit files, write files, run commands, execute code, "
-            "or produce external side effects."
+            "Your tool surface is review-only: read files, search, and recall. "
+            "Editing files, running commands, executing code, and external actions are not available."
         ),
         memory_policy="read_only_long_term_memory",
         memory_rule=(
-            "You MAY read long-term memory when it helps reconstruct context, but do NOT write memory or create/update reusable skills."
+            "You can read long-term memory to reconstruct context. Writing memory and skill creation are disabled."
         ),
     ),
     "research_readonly": DelegationToolProfile(
@@ -128,7 +128,7 @@ _DELEGATION_TOOL_PROFILES: dict[str, DelegationToolProfile] = {
         ),
         memory_policy="read_only_long_term_memory",
         memory_rule=(
-            "You MAY read long-term memory to orient the research task, but do NOT write memory or create/update reusable skills."
+            "You can read long-term memory to orient the research task. Writing memory and skill creation are disabled."
         ),
     ),
 }
@@ -143,11 +143,11 @@ def _build_delegated_worker_prompt(profile: DelegationToolProfile) -> str:
     "## Delegated Worker Mode\n"
     "You are a delegated worker running in an isolated child session.\n"
     "- The delegated task brief is the only authoritative context you have.\n"
-    "- You do NOT have access to the parent agent's full conversation history.\n"
+    "- The parent agent's conversation history is not available to you.\n"
     f"- {profile.memory_rule}\n"
     f"- {profile.tool_rule}\n"
     "- Return a concise execution summary with concrete evidence, files changed, and blockers.\n"
-    "- Do NOT recurse into further delegation unless the runtime explicitly gives you that tool.\n\n"
+    "- Delegation tools are not available in worker sessions — focus on executing the task directly.\n\n"
     "### Return format\n"
     "Completed:\n"
     "- ...\n"

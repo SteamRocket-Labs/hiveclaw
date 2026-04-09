@@ -190,7 +190,7 @@ def _build_heartbeat_template_checks(heartbeat_template: str) -> dict[str, _Chec
             predicate=lambda: (
                 "save_skill" in heartbeat_template
                 and "Do NOT take external-facing autonomous actions" in heartbeat_template
-                and "You MAY create or update internal reusable skills" in heartbeat_template
+                and "create or update internal skills" in heartbeat_template
             ),
             severity="medium",
             remediation="Restore heartbeat guidance that permits internal save_skill curation while still blocking external-facing autonomous actions.",
@@ -281,7 +281,7 @@ def evaluate_runtime_prompt_contracts(inputs: PromptEvalInputs | None = None) ->
             predicate=lambda: (
                 "save_skill" in (resolved.tools_section or "")
                 and "succeeded repeatedly" in (resolved.tools_section or "")
-                and "one-off notes" in (resolved.tools_section or "")
+                and "One-off notes" in (resolved.tools_section or "")
             ),
             severity="medium",
             remediation="Restore tools-section guidance that restricts save_skill to repeated reusable workflows and forbids one-off notes/transcripts.",

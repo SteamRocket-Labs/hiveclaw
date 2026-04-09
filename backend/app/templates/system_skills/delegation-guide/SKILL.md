@@ -74,10 +74,10 @@ If you delegated to several agents:
 
 Your `relationships.md` file lists all digital employees you can delegate to, under "Digital Employee Colleagues". Read it before delegating to confirm the agent exists and what they specialize in.
 
-## Never
+## Common Mistakes to Avoid
 
-- **NEVER** delegate with vague instructions — the worker has no access to your context
-- **NEVER** fire-and-forget — always plan a follow-up check (manual or trigger)
-- **NEVER** delegate to yourself — this creates an infinite loop
-- **NEVER** assume the worker succeeded without checking `check_async_task`
-- **NEVER** set `max_tool_rounds` too low for complex tasks — the worker may get cut off mid-work
+- **Vague instructions** — the worker has no access to your context; be specific
+- **Fire-and-forget** — always plan a follow-up check (manual or trigger)
+- **Self-delegation** — delegating to yourself creates an infinite loop
+- **Skipping verification** — always check `check_async_task` before assuming success
+- **Insufficient tool rounds** — give complex tasks enough `max_tool_rounds` so the worker can finish

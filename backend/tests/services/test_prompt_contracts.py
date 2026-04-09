@@ -56,9 +56,9 @@ async def test_agent_context_exposes_identity_contract_and_context_layers(monkey
     )
 
     assert "## Identity & Mission" in prompt
-    assert "## Operating Contract" in prompt
+    assert "## Core Directives" in prompt
     assert "## Context Material" in prompt
-    assert prompt.index("## Identity & Mission") < prompt.index("## Operating Contract") < prompt.index("## Context Material")
+    assert prompt.index("## Identity & Mission") < prompt.index("## Core Directives") < prompt.index("## Context Material")
 
 
 @pytest.mark.asyncio
@@ -201,7 +201,7 @@ def test_auto_dream_prompt_distinguishes_memory_from_evolution_policy() -> None:
     )
 
     assert "deduplicated fact list" in _AUTO_DREAM_SYSTEM_PROMPT
-    assert "Do NOT preserve transient task state" in _AUTO_DREAM_SYSTEM_PROMPT
+    assert "transient task state" in _AUTO_DREAM_SYSTEM_PROMPT
     assert "Promote durable successful approaches to strategy" in prompt
     assert "Promote repeated failed approaches to blocked_pattern" in prompt
     assert "evolution files remain the home for active policy iteration" in prompt
@@ -231,7 +231,6 @@ def test_runtime_templates_no_longer_reference_jina() -> None:
     assert "jina_" not in skill_vetter.lower()
     assert "web_fetch" in skill_vetter
     assert "jina_" not in heartbeat.lower()
-    assert "web_fetch" in heartbeat
     assert "save_skill" in heartbeat
 
 

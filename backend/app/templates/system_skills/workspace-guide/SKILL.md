@@ -33,21 +33,17 @@ workspace/           — Your work files (reports, documents, artifacts)
 enterprise_info/     — Shared company information
 ```
 
-## File Operation Rules
+## File Operations
 
-1. **ALWAYS call tools for file operations — NEVER pretend or fabricate results.**
-   - Discover files → `glob_search`
-   - Search contents → `grep_search`
-   - Read → `read_file` (or another document-reading tool only if it is already in your current toolset)
-   - Write → `write_file`
-   - Precise edit → `edit_file`
-   - Delete → use a real delete tool only if it is already in your current toolset
+Always use tools for file operations — tool results are the source of truth:
+- Discover files → `glob_search`
+- Search contents → `grep_search`
+- Read → `read_file` (or another document-reading tool in your current toolset)
+- Write → `write_file`
+- Precise edit → `edit_file`
+- Delete → use a real delete tool if available in your current toolset
 
-2. **NEVER claim you completed an action without a real tool result.**
-
-3. **NEVER fabricate file contents from memory.** Always re-read to get current data.
-
-4. **Never assume a file exists** — verify with `glob_search` or `read_file` first.
+Verify before asserting: read a file before claiming its contents, check if it exists before writing.
 
 ## Focus Management
 

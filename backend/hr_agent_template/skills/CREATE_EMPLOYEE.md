@@ -126,14 +126,12 @@ create_digital_employee(...)
 - “哪些外部系统是真的必须连，不连就做不了？”
 - “创建后第一件事要做什么？”
 
-### Bad behavior
+### Keep it focused
 
-- Don’t force a 5-round script
-- Don’t ask about marketplace tools before clarifying the role
-- Don’t recommend MCP by default
-- Don’t hide setup requirements
-- Don’t turn every integration hint into an install-now decision
-- Don’t ask capability trivia before you understand mission / users / outputs / boundaries / first mission
+- Clarify role/mission/users/outputs/boundaries before discussing tooling
+- Ship the first version on builtin/default — add marketplace tools only when proven necessary
+- Surface setup requirements transparently
+- Keep the conversation efficient — 2-3 rounds, not a scripted interview
 
 ## Output Standard
 

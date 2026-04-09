@@ -193,7 +193,7 @@ If no expectations were provided, omit the `expectation_results` field entirely.
 
 ## Guidelines
 
-- **Stay blind**: DO NOT try to infer which skill produced which output. Judge purely on output quality.
+- **Stay blind**: Judge purely on output quality — don't try to infer which skill produced which output.
 - **Be specific**: Cite specific examples when explaining strengths and weaknesses.
 - **Be decisive**: Choose a winner unless outputs are genuinely equivalent.
 - **Output quality first**: Assertion scores are secondary to overall task completion.

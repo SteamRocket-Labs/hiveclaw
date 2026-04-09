@@ -51,10 +51,10 @@ Date format is `DD-Mon-YYYY` (e.g. `01-Mar-2026`, `15-Jan-2026`).
 - Example: `attachments: ["workspace/report.pdf", "workspace/data.xlsx"]`
 - The file must exist in your workspace before sending
 
-## Never
+## Important Notes
 
-- **NEVER** send email without confirming the recipient address in conversation mode
-- **NEVER** guess Message-ID for reply — always `read_emails` first
-- **NEVER** use email for internal agent-to-agent communication
-- **NEVER** include sensitive credentials or API keys in email body
-- **NEVER** assume email is configured — if `send_email` fails with a config error, tell the user to set up email in tool settings
+- Confirm the recipient address with the user in conversation mode before sending
+- Always get Message-ID from `read_emails` before replying — it's a system-generated identifier you can't guess
+- For internal agent-to-agent communication, use `send_message_to_agent` instead of email
+- Keep credentials and API keys out of email body
+- If `send_email` fails with a config error, tell the user to set up email in tool settings

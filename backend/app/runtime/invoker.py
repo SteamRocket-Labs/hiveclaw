@@ -396,6 +396,31 @@ def _infer_active_packs(
     ]
 
 
+def _declared_skill_tool_names(
+    *,
+    declared_tools: tuple[str, ...] | list[str] | None = None,
+    declared_packs: tuple[str, ...] | list[str] | None = None,
+) -> list[str]:
+    requested: list[str] = []
+    seen: set[str] = set()
+
+    for tool_name in declared_tools or ():
+        if tool_name and tool_name not in seen:
+            requested.append(tool_name)
+            seen.add(tool_name)
+
+    for pack_name in declared_packs or ():
+        pack = pack_for_name(pack_name)
+        if not pack:
+            continue
+        for tool_name in pack.tools:
+            if tool_name not in seen:
+                requested.append(tool_name)
+                seen.add(tool_name)
+
+    return requested
+
+
 async def _resolve_tool_expansion(
     request: AgentInvocationRequest,
     tool_name: str,
@@ -435,7 +460,7 @@ async def _resolve_tool_expansion(
         workspace = await ensure_workspace(request.agent_id)
         registry = _build_skill_registry_for_workspace(workspace)
     except Exception:
-        return await get_agent_tools_for_llm(request.agent_id, core_only=False)
+        return None
 
     if tool_name == "load_skill":
         requested = str(args.get("name", "") or "").strip()
@@ -446,12 +471,16 @@ async def _resolve_tool_expansion(
         except KeyError as _ke:
             logger.debug("[Invoker] Skill not found in registry: %s", _ke)
             return None
-        if not skill.metadata.declared_tools:
+        requested_tool_names = _declared_skill_tool_names(
+            declared_tools=skill.metadata.declared_tools,
+            declared_packs=skill.metadata.declared_packs,
+        )
+        if not requested_tool_names:
             return None
         tools = await get_agent_tools_for_llm(
             request.agent_id,
             core_only=False,
-            requested_names=list(skill.metadata.declared_tools),
+            requested_names=requested_tool_names,
         )
         expanded_tool_names = _tool_names_from_openai_tools(tools)
         if not expanded_tool_names:
@@ -487,12 +516,16 @@ async def _resolve_tool_expansion(
             relative_path=skill_path.relative_to(workspace).as_posix(),
             default_name=skill_path.parent.name if skill_path.name.lower() == "skill.md" else skill_path.stem,
         )
-        if not parsed.metadata.declared_tools:
+        requested_tool_names = _declared_skill_tool_names(
+            declared_tools=parsed.metadata.declared_tools,
+            declared_packs=parsed.metadata.declared_packs,
+        )
+        if not requested_tool_names:
             return None
         tools = await get_agent_tools_for_llm(
             request.agent_id,
             core_only=False,
-            requested_names=list(parsed.metadata.declared_tools),
+            requested_names=requested_tool_names,
         )
         expanded_tool_names = _tool_names_from_openai_tools(tools)
         if not expanded_tool_names:

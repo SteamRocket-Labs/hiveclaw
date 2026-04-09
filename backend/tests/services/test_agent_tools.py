@@ -151,6 +151,31 @@ async def test_get_agent_tools_for_llm_db_failure_falls_back_to_combined_tools(m
 
 
 @pytest.mark.asyncio
+async def test_get_agent_tools_for_llm_core_only_matches_first_round_surface(monkeypatch):
+    from app.services import agent_tools as agent_tools_module
+
+    class BrokenSession:
+        async def __aenter__(self):
+            raise RuntimeError("db down")
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    def broken_async_session():
+        return BrokenSession()
+
+    monkeypatch.setattr(agent_tools_module, "async_session", broken_async_session)
+
+    tools = await agent_tools_module.get_agent_tools_for_llm(uuid4(), core_only=True)
+    names = {tool["function"]["name"] for tool in tools}
+
+    assert "search_memory" in names
+    assert "save_memory" in names
+    assert "list_triggers" in names
+    assert "web_search" not in names
+
+
+@pytest.mark.asyncio
 async def test_get_agent_tools_for_llm_db_failure_still_filters_feishu_access(monkeypatch):
     from app.services import agent_tools as agent_tools_module
 

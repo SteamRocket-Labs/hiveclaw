@@ -13,7 +13,7 @@ is_system: true
 | Ask a colleague a quick question | `send_message_to_agent(msg_type="consult")` | Synchronous — reply comes in current round |
 | Notify a colleague about something | `send_message_to_agent(msg_type="notify")` | Fire-and-forget notification |
 | Have a colleague do a task in background | `delegate_to_agent` | Async — returns task_id, check back later |
-| Send a message to a human on web | `send_web_message` | Not for agent-to-agent |
+| Send a message to the human in the current conversation channel | use the channel's outbound messaging tool if one exists | Not for agent-to-agent |
 | Send a file to the current channel | `send_channel_file` | Workspace-relative path |
 
 **Quick decision**: Need the answer right now → `send_message_to_agent`. Work takes multiple steps → `delegate_to_agent`.

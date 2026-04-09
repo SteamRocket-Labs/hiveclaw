@@ -98,7 +98,7 @@ async def test_resolve_retrieval_context_appends_runtime_hints(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_invoke_agent_expands_tools_after_skill_read(monkeypatch):
+async def test_invoke_agent_keeps_core_tools_when_skill_read_has_no_declared_expansion(monkeypatch):
     from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 
     agent_id = uuid4()
@@ -173,9 +173,38 @@ async def test_invoke_agent_expands_tools_after_skill_read(monkeypatch):
     )
 
     assert result.content == "final answer"
-    assert tool_load_calls == [True, False]
+    assert tool_load_calls == [True]
     assert fake_client.calls[0]["tools"][0]["function"]["name"] == "core_tool"
-    assert fake_client.calls[1]["tools"][0]["function"]["name"] == "expanded_tool"
+    assert fake_client.calls[1]["tools"][0]["function"]["name"] == "core_tool"
+
+
+@pytest.mark.asyncio
+async def test_resolve_tool_expansion_does_not_fallback_to_full_tools_when_workspace_fails(monkeypatch):
+    from app.runtime.invoker import AgentInvocationRequest, _resolve_tool_expansion
+
+    async def fake_ensure_workspace(_agent_id):
+        raise RuntimeError("workspace unavailable")
+
+    async def fake_get_agent_tools_for_llm(*_args, **_kwargs):
+        return [{"type": "function", "function": {"name": "web_search", "description": "", "parameters": {"type": "object"}}}]
+
+    monkeypatch.setattr("app.runtime.invoker.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", fake_get_agent_tools_for_llm)
+
+    result = await _resolve_tool_expansion(
+        AgentInvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None),
+            messages=[{"role": "user", "content": "load a skill"}],
+            agent_name="Researcher",
+            role_description="Research agent",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+        ),
+        "load_skill",
+        {"name": "web research"},
+    )
+
+    assert result is None
 
 
 @pytest.mark.asyncio

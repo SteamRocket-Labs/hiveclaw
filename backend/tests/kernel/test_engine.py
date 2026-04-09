@@ -181,9 +181,9 @@ async def test_agent_kernel_handles_tool_round_and_collects_parts():
     )
 
     assert result.content == "final answer"
-    assert tool_load_calls == [True, False]
+    assert tool_load_calls == [True]
     assert fake_client.calls[0]["tools"][0]["function"]["name"] == "core_tool"
-    assert fake_client.calls[1]["tools"][0]["function"]["name"] == "expanded_tool"
+    assert fake_client.calls[1]["tools"][0]["function"]["name"] == "core_tool"
     assert result.parts == [
         {
             "type": "tool_call",
@@ -409,7 +409,7 @@ async def test_agent_kernel_emits_runtime_fallback_event_after_prompt_too_long()
 
 
 @pytest.mark.asyncio
-async def test_agent_kernel_expands_tools_after_load_skill():
+async def test_agent_kernel_keeps_core_tools_when_load_skill_has_no_declared_expansion():
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
 
@@ -478,9 +478,9 @@ async def test_agent_kernel_expands_tools_after_load_skill():
     )
 
     assert result.content == "done"
-    assert tool_load_calls == [True, False]
+    assert tool_load_calls == [True]
     assert fake_client.calls[0]["tools"][0]["function"]["name"] == "core_tool"
-    assert fake_client.calls[1]["tools"][0]["function"]["name"] == "expanded_tool"
+    assert fake_client.calls[1]["tools"][0]["function"]["name"] == "core_tool"
 
 
 @pytest.mark.asyncio

@@ -80,7 +80,10 @@ def test_minimal_kernel_tool_set_stays_small_and_explicit():
         "grep_search",
         "load_skill",
         "save_skill",
+        "search_memory",
+        "save_memory",
         "set_trigger",
+        "list_triggers",
         "send_message_to_agent",
         "delegate_to_agent",
         "check_async_task",
@@ -91,3 +94,4 @@ def test_minimal_kernel_tool_set_stays_small_and_explicit():
         "tool_search",
         "web_fetch",
     }
+    assert "web_search" not in CORE_TOOL_NAMES

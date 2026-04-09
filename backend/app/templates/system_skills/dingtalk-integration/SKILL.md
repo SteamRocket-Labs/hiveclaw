@@ -14,7 +14,7 @@ This channel currently works as an inbound conversation bridge, not as a standal
 ## What To Do
 
 - If the user is already talking to you in DingTalk, reply normally in the current conversation.
-- If you need follow-up later, use triggers such as `set_trigger`, `update_trigger`, `cancel_trigger`, and `list_triggers`.
+- If you need follow-up later, use `set_trigger` and `list_triggers`; if you need to reschedule or cancel, use whatever trigger-management tools are already in your current toolset.
 - If the user asks you to contact someone outside the current DingTalk conversation, do not invent DingTalk tools or IDs.
 
 ## Never

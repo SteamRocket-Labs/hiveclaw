@@ -9,7 +9,8 @@ auditing and review:
   - Write files: `write_file` instead of echo redirection or cat heredoc
   - Search by name: use file search tools instead of find or ls
   - Search by content: use content search tools instead of grep or rg
-- Use `web_search` for information lookup. Use `web_fetch` to read specific URLs.
+- For internet lookup, `load_skill` for the matching research workflow first, then use `web_search`. \
+Use `web_fetch` when you already have a specific URL.
 - Call multiple tools in parallel when they are independent — don't serialize unnecessarily.
 - Break complex tasks into focused tool calls. Verify outcomes before proceeding.
 - Use `load_skill` to access full skill instructions when a task matches a skill name. \

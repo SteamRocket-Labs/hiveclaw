@@ -15,7 +15,7 @@ is_system: true
 | Situation | Use |
 |-----------|-----|
 | Message must land in someone's email inbox | `send_email` |
-| Internal real-time notification to colleague | Feishu or `send_web_message` instead |
+| Internal real-time notification to colleague | use a real-time chat tool already in your current toolset instead |
 | Agent-to-agent communication | `send_message_to_agent` instead |
 | Check what emails you received | `read_emails` |
 | Continue an email thread | `reply_email` |

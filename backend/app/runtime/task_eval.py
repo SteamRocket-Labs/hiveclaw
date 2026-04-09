@@ -4,18 +4,22 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from app.runtime.context_budget import compute_context_budget, infer_task_profile
 from app.runtime.prompt_eval import PromptEvalInputs, evaluate_runtime_prompt_contracts
 from app.runtime.prompt_builder import build_dynamic_prompt_suffix
-from app.services.agent_tools import get_combined_openai_tools
+from app.services.agent_tools import CORE_TOOL_NAMES
+from app.skills.parser import SkillParser
+from app.tools.packs import pack_for_name
 
 
 @dataclass(slots=True, frozen=True)
 class TaskEvalInputs:
     prompt_inputs: PromptEvalInputs | None = None
     tool_names: set[str] | None = None
+    skill_tool_names: set[str] | None = None
     delegation_profiles: dict[str, dict[str, Any]] | None = None
     scenario_prompts: dict[str, str] | None = None
 
@@ -31,6 +35,7 @@ class _BenchmarkCase:
 class _ScenarioSpec:
     query: str
     required_tools: tuple[str, ...]
+    required_skill_tools: tuple[str, ...] = ()
     prompt_checks: tuple[str, ...] = ()
     scenario_checks: tuple[tuple[str, str], ...] = ()
     expected_task_profile: str | None = None
@@ -41,7 +46,8 @@ class _ScenarioSpec:
 _SCENARIO_SPECS: dict[str, _ScenarioSpec] = {
     "research": _ScenarioSpec(
         query="latest market research on agent frameworks and primary sources",
-        required_tools=("web_search", "web_fetch", "search_memory"),
+        required_tools=("load_skill", "web_fetch", "search_memory"),
+        required_skill_tools=("web_search",),
         prompt_checks=("system_trust_boundaries", "knowledge_trust_framing"),
         scenario_checks=(("research", "research_sources"), ("research", "research_dates")),
         expected_task_profile="research",
@@ -184,7 +190,40 @@ _SCENARIO_SPECS: dict[str, _ScenarioSpec] = {
 def _runtime_tool_names(inputs: TaskEvalInputs | None) -> set[str]:
     if inputs and inputs.tool_names is not None:
         return set(inputs.tool_names)
-    return {tool["function"]["name"] for tool in get_combined_openai_tools()}
+    return set(CORE_TOOL_NAMES)
+
+
+def _runtime_skill_tool_names(inputs: TaskEvalInputs | None) -> set[str]:
+    if inputs and inputs.skill_tool_names is not None:
+        return set(inputs.skill_tool_names)
+
+    parser = SkillParser()
+    backend_root = Path(__file__).resolve().parents[2]
+    skill_roots = [
+        backend_root / "app" / "templates" / "system_skills",
+        backend_root / "app" / "templates" / "skills",
+        *sorted(backend_root.glob("*_agent_template/skills")),
+    ]
+
+    declared_tools: set[str] = set()
+    for skill_root in skill_roots:
+        if not skill_root.exists():
+            continue
+        for skill_path in sorted(skill_root.rglob("SKILL.md")):
+            try:
+                parsed = parser.parse_file(
+                    skill_path,
+                    relative_path=skill_path.relative_to(backend_root).as_posix(),
+                    default_name=skill_path.parent.name,
+                )
+            except Exception:
+                continue
+            declared_tools.update(parsed.metadata.declared_tools)
+            for pack_name in parsed.metadata.declared_packs:
+                pack = pack_for_name(pack_name)
+                if pack:
+                    declared_tools.update(pack.tools)
+    return declared_tools
 
 
 def _runtime_delegation_profiles(inputs: TaskEvalInputs | None) -> dict[str, dict[str, Any]]:
@@ -404,6 +443,7 @@ def _evaluate_benchmark_cases(
 def evaluate_task_readiness(inputs: TaskEvalInputs | None = None) -> dict[str, Any]:
     prompt_report = evaluate_runtime_prompt_contracts(inputs.prompt_inputs if inputs else None)
     tool_names = _runtime_tool_names(inputs)
+    skill_tool_names = _runtime_skill_tool_names(inputs)
     delegation_profiles = _runtime_delegation_profiles(inputs)
     scenario_prompts = _runtime_scenario_prompts(inputs)
 
@@ -413,7 +453,12 @@ def evaluate_task_readiness(inputs: TaskEvalInputs | None = None) -> dict[str, A
     benchmark_passed = 0
 
     for name, spec in _SCENARIO_SPECS.items():
-        missing_tools = [tool_name for tool_name in spec.required_tools if tool_name not in tool_names]
+        initial_missing_tools = [tool_name for tool_name in spec.required_tools if tool_name not in tool_names]
+        reachable_skill_tools = skill_tool_names if "load_skill" in tool_names else set()
+        skill_missing_tools = [
+            tool_name for tool_name in spec.required_skill_tools if tool_name not in reachable_skill_tools
+        ]
+        missing_tools = [*initial_missing_tools, *skill_missing_tools]
         failed_prompt_checks = [check_name for check_name in spec.prompt_checks if _top_level_check_failed(prompt_report, check_name)]
         failed_scenario_checks = [
             f"{scenario_name}.{check_name}"
@@ -421,13 +466,22 @@ def evaluate_task_readiness(inputs: TaskEvalInputs | None = None) -> dict[str, A
             if _scenario_check_failed(prompt_report, scenario_name, check_name)
         ]
         runtime_failure_details: list[dict[str, str]] = []
-        if missing_tools:
+        if initial_missing_tools:
             runtime_failure_details.append(
                 {
-                    "name": "missing_tools",
+                    "name": "missing_initial_tools",
                     "severity": "high",
-                    "detail": f"Runtime tool surface is missing: {', '.join(missing_tools)}.",
-                    "remediation": "Register or expose the missing tools before gating this scenario as ready.",
+                    "detail": f"First-round tool surface is missing: {', '.join(initial_missing_tools)}.",
+                    "remediation": "Expose the missing tools in the default core surface before gating this scenario as ready.",
+                }
+            )
+        if skill_missing_tools:
+            runtime_failure_details.append(
+                {
+                    "name": "missing_skill_tools",
+                    "severity": "high",
+                    "detail": f"Skill-reachable tool surface is missing: {', '.join(skill_missing_tools)}.",
+                    "remediation": "Declare the missing tools on the relevant skill or pack so load_skill can activate them.",
                 }
             )
         prompt_failure_details: list[dict[str, str]] = []
@@ -505,6 +559,7 @@ def evaluate_task_readiness(inputs: TaskEvalInputs | None = None) -> dict[str, A
 
         total_conditions = (
             len(spec.required_tools)
+            + len(spec.required_skill_tools)
             + len(spec.prompt_checks)
             + len(spec.scenario_checks)
             + (1 if spec.expected_task_profile is not None else 0)
@@ -513,7 +568,8 @@ def evaluate_task_readiness(inputs: TaskEvalInputs | None = None) -> dict[str, A
             + benchmark_case_summary["total_cases"]
         )
         failed_conditions = (
-            len(missing_tools)
+            len(initial_missing_tools)
+            + len(skill_missing_tools)
             + len(failed_prompt_checks)
             + len(failed_scenario_checks)
             + (0 if task_profile_ok else 1)
@@ -540,11 +596,14 @@ def evaluate_task_readiness(inputs: TaskEvalInputs | None = None) -> dict[str, A
             "scenario_prompt": scenario_prompts.get(name, ""),
             "assembled_prompt": scenario_prompts.get(name, ""),
             "missing_tools": missing_tools,
+            "initial_missing_tools": initial_missing_tools,
+            "skill_missing_tools": skill_missing_tools,
             "failed_prompt_checks": failed_prompt_checks,
             "failed_scenario_checks": failed_scenario_checks,
             "runtime_failure_details": runtime_failure_details,
             "prompt_failure_details": prompt_failure_details,
             "required_tools": list(spec.required_tools),
+            "required_skill_tools": list(spec.required_skill_tools),
         }
 
     return {
@@ -593,6 +652,10 @@ def render_task_readiness_report(
         lines.append(f"- {scenario_name}: {status} score={scenario['score']} {profile_line}")
         if scenario["missing_tools"]:
             lines.append(f"  missing_tools: {', '.join(scenario['missing_tools'])}")
+        if scenario.get("initial_missing_tools"):
+            lines.append(f"  initial_missing_tools: {', '.join(scenario['initial_missing_tools'])}")
+        if scenario.get("skill_missing_tools"):
+            lines.append(f"  skill_missing_tools: {', '.join(scenario['skill_missing_tools'])}")
         if scenario["failed_prompt_checks"]:
             lines.append(f"  failed_prompt_checks: {', '.join(scenario['failed_prompt_checks'])}")
         if scenario["failed_scenario_checks"]:

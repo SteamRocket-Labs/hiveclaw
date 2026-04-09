@@ -1578,12 +1578,13 @@ class AgentKernel:
                                             api_messages[0] = LLMMessage(role="system", content=system_prompt)
                                     elif isinstance(expansion_payload, list):
                                         full_toolset = expansion_payload
-                                    if full_toolset is None:
-                                        full_toolset = await _maybe_await(
-                                            self._deps.get_tools(request.agent_id, False)
+                                    if full_toolset is not None:
+                                        # B-04 fix: re-filter expanded tools if coordinator mode active
+                                        tools_for_llm = (
+                                            filter_tools_for_coordinator(full_toolset)
+                                            if _is_coordinator
+                                            else full_toolset
                                         )
-                                    # B-04 fix: re-filter expanded tools if coordinator mode active
-                                    tools_for_llm = filter_tools_for_coordinator(full_toolset) if _is_coordinator else full_toolset
 
                             done_payload = {
                                 "name": tool_name,

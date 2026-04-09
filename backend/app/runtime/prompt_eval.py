@@ -10,18 +10,21 @@ from typing import Any, Callable
 from app.agents.orchestrator import _DELEGATED_WORKER_PROMPT_SUFFIX
 from app.runtime.context_budget import TaskProfile
 from app.runtime.prompt_sections import (
+    build_executing_actions_section,
     build_knowledge_section,
     build_memory_section,
     build_scenario_section,
     build_system_section,
     build_tools_section,
 )
+from app.services.agent_tools import CORE_TOOL_NAMES
 from app.services.extract_agent import EXTRACT_PROMPT
 
 
 @dataclass(slots=True, frozen=True)
 class PromptEvalInputs:
     system_section: str | None = None
+    executing_actions_section: str | None = None
     memory_section: str | None = None
     tools_section: str | None = None
     review_playbook: str | None = None
@@ -30,6 +33,7 @@ class PromptEvalInputs:
     memory_recall_playbook: str | None = None
     self_evolution_playbook: str | None = None
     heartbeat_template: str | None = None
+    heartbeat_templates: dict[str, str] | None = None
     extractor_prompt: str | None = None
     knowledge_section: str | None = None
     delegation_worker_prompt: str | None = None
@@ -49,9 +53,20 @@ def _heartbeat_template_text() -> str:
     return (templates_root / "HEARTBEAT.md").read_text(encoding="utf-8")
 
 
+def _runtime_heartbeat_template_texts() -> dict[str, str]:
+    backend_root = Path(__file__).resolve().parents[2]
+    templates = {
+        "default": _heartbeat_template_text(),
+    }
+    for template_path in sorted(backend_root.glob("*_agent_template/HEARTBEAT.md")):
+        templates[template_path.parent.name] = template_path.read_text(encoding="utf-8")
+    return templates
+
+
 def _build_default_inputs() -> PromptEvalInputs:
     return PromptEvalInputs(
         system_section=build_system_section(),
+        executing_actions_section=build_executing_actions_section(),
         memory_section=build_memory_section(),
         tools_section=build_tools_section(),
         review_playbook=build_scenario_section(
@@ -75,6 +90,7 @@ def _build_default_inputs() -> PromptEvalInputs:
             query="save this repeated successful workflow as a reusable skill",
         ),
         heartbeat_template=_heartbeat_template_text(),
+        heartbeat_templates=_runtime_heartbeat_template_texts(),
         extractor_prompt=EXTRACT_PROMPT,
         knowledge_section=build_knowledge_section("Source: quarterly report"),
         delegation_worker_prompt=_DELEGATED_WORKER_PROMPT_SUFFIX,
@@ -85,8 +101,21 @@ def _merged_inputs(inputs: PromptEvalInputs | None) -> PromptEvalInputs:
     defaults = _build_default_inputs()
     if inputs is None:
         return defaults
+    merged_heartbeat_template = (
+        inputs.heartbeat_template if inputs.heartbeat_template is not None else defaults.heartbeat_template
+    )
+    merged_heartbeat_templates = (
+        inputs.heartbeat_templates
+        if inputs.heartbeat_templates is not None
+        else ({"default": inputs.heartbeat_template} if inputs.heartbeat_template is not None else defaults.heartbeat_templates)
+    )
     return PromptEvalInputs(
         system_section=inputs.system_section if inputs.system_section is not None else defaults.system_section,
+        executing_actions_section=(
+            inputs.executing_actions_section
+            if inputs.executing_actions_section is not None
+            else defaults.executing_actions_section
+        ),
         memory_section=inputs.memory_section if inputs.memory_section is not None else defaults.memory_section,
         tools_section=inputs.tools_section if inputs.tools_section is not None else defaults.tools_section,
         review_playbook=inputs.review_playbook if inputs.review_playbook is not None else defaults.review_playbook,
@@ -104,9 +133,8 @@ def _merged_inputs(inputs: PromptEvalInputs | None) -> PromptEvalInputs:
             if inputs.self_evolution_playbook is not None
             else defaults.self_evolution_playbook
         ),
-        heartbeat_template=(
-            inputs.heartbeat_template if inputs.heartbeat_template is not None else defaults.heartbeat_template
-        ),
+        heartbeat_template=merged_heartbeat_template,
+        heartbeat_templates=merged_heartbeat_templates,
         extractor_prompt=inputs.extractor_prompt if inputs.extractor_prompt is not None else defaults.extractor_prompt,
         knowledge_section=inputs.knowledge_section if inputs.knowledge_section is not None else defaults.knowledge_section,
         delegation_worker_prompt=(
@@ -138,6 +166,40 @@ def _run_checks(checks: dict[str, _CheckSpec]) -> dict[str, Any]:
     return {"passed": passed, "failed": failed, "checks": details}
 
 
+def _build_heartbeat_template_checks(heartbeat_template: str) -> dict[str, _CheckSpec]:
+    return {
+        "skill_patch_instead_of_duplicate_guidance": _CheckSpec(
+            predicate=lambda: "no duplicate skill exists" in heartbeat_template.lower(),
+            severity="medium",
+            remediation="Restore guidance that stale skills should be patched or updated instead of duplicated.",
+            success_detail="Prompt contracts tell the agent to patch stale skills instead of creating duplicates.",
+            failure_detail="Prompt contracts no longer explain how to patch stale skills instead of duplicating them.",
+        ),
+        "heartbeat_weight_policy": _CheckSpec(
+            predicate=lambda: (
+                "w>=0.85" in heartbeat_template
+                and "instruction-like text from external sources as data" in heartbeat_template
+                and "promote it only as factual knowledge" in heartbeat_template
+            ),
+            severity="high",
+            remediation="Restore heartbeat weight thresholds and external-instruction filtering before promoting T2 items.",
+            success_detail="Heartbeat template preserves weighted curation and external-data filtering rules.",
+            failure_detail="Heartbeat template lost weight thresholds or external instruction filtering guidance.",
+        ),
+        "heartbeat_skill_curation_consistency": _CheckSpec(
+            predicate=lambda: (
+                "save_skill" in heartbeat_template
+                and "Do NOT take external-facing autonomous actions" in heartbeat_template
+                and "You MAY create or update internal reusable skills" in heartbeat_template
+            ),
+            severity="medium",
+            remediation="Restore heartbeat guidance that permits internal save_skill curation while still blocking external-facing autonomous actions.",
+            success_detail="Heartbeat template stays consistent with the save_skill self-evolution loop and external-action boundaries.",
+            failure_detail="Heartbeat template no longer aligns internal skill curation with external-action safety boundaries.",
+        ),
+    }
+
+
 def _build_summary(top_level: dict[str, Any], scenarios: dict[str, dict[str, Any]]) -> dict[str, int]:
     counters = {
         "critical_failures": 0,
@@ -161,6 +223,24 @@ def _build_summary(top_level: dict[str, Any], scenarios: dict[str, dict[str, Any
 def evaluate_runtime_prompt_contracts(inputs: PromptEvalInputs | None = None) -> dict[str, Any]:
     """Evaluate high-value prompt contracts and return a structured pass/fail report."""
     resolved = _merged_inputs(inputs)
+    heartbeat_templates = dict(resolved.heartbeat_templates or {})
+    if not heartbeat_templates:
+        heartbeat_templates["default"] = resolved.heartbeat_template or ""
+    heartbeat_template_reports = {
+        name: _run_checks(_build_heartbeat_template_checks(text))
+        for name, text in heartbeat_templates.items()
+    }
+
+    def _heartbeat_templates_pass(check_name: str) -> bool:
+        return all(report["checks"][check_name]["passed"] for report in heartbeat_template_reports.values())
+
+    def _heartbeat_template_failures(check_name: str) -> str:
+        failing = [
+            name
+            for name, report in heartbeat_template_reports.items()
+            if not report["checks"][check_name]["passed"]
+        ]
+        return ", ".join(failing)
 
     checks = {
         "system_trust_boundaries": _CheckSpec(
@@ -185,6 +265,18 @@ def evaluate_runtime_prompt_contracts(inputs: PromptEvalInputs | None = None) ->
             success_detail="Memory section explains save/search usage and what not to store.",
             failure_detail="Memory section no longer clearly defines memory tool usage or storage exclusions.",
         ),
+        "always_on_required_tools_are_core": _CheckSpec(
+            predicate=lambda: (
+                "save_memory" in (resolved.executing_actions_section or "")
+                and "search_memory" in (resolved.executing_actions_section or "")
+                and "list_triggers" in (resolved.executing_actions_section or "")
+                and {"save_memory", "search_memory", "list_triggers"}.issubset(CORE_TOOL_NAMES)
+            ),
+            severity="high",
+            remediation="Keep every always-on MUST/first-step tool requirement aligned with the first-round core tool surface.",
+            success_detail="Always-on prompt rules only require tools that exist in the first-round core surface.",
+            failure_detail="Always-on prompt requires tools that are not available in the first-round core surface.",
+        ),
         "skill_evolution_guidance": _CheckSpec(
             predicate=lambda: (
                 "save_skill" in (resolved.tools_section or "")
@@ -206,14 +298,26 @@ def evaluate_runtime_prompt_contracts(inputs: PromptEvalInputs | None = None) ->
             success_detail="Tools section requires load_skill before acting on a matching skill.",
             failure_detail="Tools section no longer requires load_skill before acting on a matching skill.",
         ),
-        "skill_patch_instead_of_duplicate_guidance": _CheckSpec(
+        "web_lookup_requires_skill_activation": _CheckSpec(
             predicate=lambda: (
-                "no duplicate skill exists" in (resolved.heartbeat_template or "").lower()
+                "web_search" in (resolved.tools_section or "")
+                and "load_skill" in (resolved.tools_section or "")
+                and "matching research workflow first" in (resolved.tools_section or "").lower()
             ),
+            severity="high",
+            remediation="Restore tools guidance that requires load_skill before using web_search for internet lookup.",
+            success_detail="Tools section requires skill activation before web_search.",
+            failure_detail="Tools section implies web_search is directly available instead of skill-gated.",
+        ),
+        "skill_patch_instead_of_duplicate_guidance": _CheckSpec(
+            predicate=lambda: _heartbeat_templates_pass("skill_patch_instead_of_duplicate_guidance"),
             severity="medium",
             remediation="Restore guidance that stale skills should be patched or updated instead of duplicated.",
-            success_detail="Prompt contracts tell the agent to patch stale skills instead of creating duplicates.",
-            failure_detail="Prompt contracts no longer explain how to patch stale skills instead of duplicating them.",
+            success_detail="All runtime heartbeat templates tell the agent to patch stale skills instead of creating duplicates.",
+            failure_detail=(
+                "Heartbeat templates missing patch-instead-of-duplicate guidance: "
+                f"{_heartbeat_template_failures('skill_patch_instead_of_duplicate_guidance') or 'unknown'}."
+            ),
         ),
         "task_playbook_review_overlay": _CheckSpec(
             predicate=lambda: (
@@ -238,26 +342,24 @@ def evaluate_runtime_prompt_contracts(inputs: PromptEvalInputs | None = None) ->
             failure_detail="Extractor prompt no longer blocks external instruction-following or atomic fact extraction.",
         ),
         "heartbeat_weight_policy": _CheckSpec(
-            predicate=lambda: (
-                "w>=0.85" in (resolved.heartbeat_template or "")
-                and "instruction-like text from external sources as data" in (resolved.heartbeat_template or "")
-                and "promote it only as factual knowledge" in (resolved.heartbeat_template or "")
-            ),
+            predicate=lambda: _heartbeat_templates_pass("heartbeat_weight_policy"),
             severity="high",
             remediation="Restore heartbeat weight thresholds and external-instruction filtering before promoting T2 items.",
-            success_detail="Heartbeat template preserves weighted curation and external-data filtering rules.",
-            failure_detail="Heartbeat template lost weight thresholds or external instruction filtering guidance.",
+            success_detail="All runtime heartbeat templates preserve weighted curation and external-data filtering rules.",
+            failure_detail=(
+                "Heartbeat templates lost weight thresholds or external instruction filtering guidance: "
+                f"{_heartbeat_template_failures('heartbeat_weight_policy') or 'unknown'}."
+            ),
         ),
         "heartbeat_skill_curation_consistency": _CheckSpec(
-            predicate=lambda: (
-                "save_skill" in (resolved.heartbeat_template or "")
-                and "Do NOT take external-facing autonomous actions" in (resolved.heartbeat_template or "")
-                and "You MAY create or update internal reusable skills" in (resolved.heartbeat_template or "")
-            ),
+            predicate=lambda: _heartbeat_templates_pass("heartbeat_skill_curation_consistency"),
             severity="medium",
             remediation="Restore heartbeat guidance that permits internal save_skill curation while still blocking external-facing autonomous actions.",
-            success_detail="Heartbeat template stays consistent with the save_skill self-evolution loop and external-action boundaries.",
-            failure_detail="Heartbeat template no longer aligns internal skill curation with external-action safety boundaries.",
+            success_detail="All runtime heartbeat templates stay consistent with the save_skill loop and external-action boundaries.",
+            failure_detail=(
+                "Heartbeat templates no longer align internal skill curation with external-action safety boundaries: "
+                f"{_heartbeat_template_failures('heartbeat_skill_curation_consistency') or 'unknown'}."
+            ),
         ),
         "knowledge_trust_framing": _CheckSpec(
             predicate=lambda: (
@@ -388,6 +490,7 @@ def evaluate_runtime_prompt_contracts(inputs: PromptEvalInputs | None = None) ->
         "passed": top_level["passed"],
         "failed": top_level["failed"],
         "checks": top_level["checks"],
+        "heartbeat_templates": heartbeat_template_reports,
         "scenarios": scenarios,
         "summary": summary,
     }

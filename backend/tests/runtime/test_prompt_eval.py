@@ -11,7 +11,9 @@ def test_evaluate_runtime_prompt_contracts_has_no_failures() -> None:
     assert report["failed"] == []
     assert "system_trust_boundaries" in report["passed"]
     assert "memory_usage_guidance" in report["passed"]
+    assert "always_on_required_tools_are_core" in report["passed"]
     assert "skill_load_before_act_guidance" in report["passed"]
+    assert "web_lookup_requires_skill_activation" in report["passed"]
     assert "skill_evolution_guidance" in report["passed"]
     assert "skill_patch_instead_of_duplicate_guidance" in report["passed"]
     assert "heartbeat_skill_curation_consistency" in report["passed"]
@@ -27,6 +29,9 @@ def test_evaluate_runtime_prompt_contracts_has_no_failures() -> None:
     assert report["checks"]["system_trust_boundaries"]["detail"]
     assert report["checks"]["system_trust_boundaries"]["severity"] == "critical"
     assert report["checks"]["system_trust_boundaries"]["remediation"]
+    assert "default" in report["heartbeat_templates"]
+    assert "hr_agent_template" in report["heartbeat_templates"]
+    assert report["heartbeat_templates"]["hr_agent_template"]["failed"] == []
     assert report["scenarios"]["research"]["checks"]["research_sources"]["detail"]
     assert report["summary"]["critical_failures"] == 0
     assert report["summary"]["high_failures"] == 0

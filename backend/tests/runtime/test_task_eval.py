@@ -64,6 +64,40 @@ def test_evaluate_task_readiness_detects_missing_tools_and_prompt_failures() -> 
     assert "skill_patch_instead_of_duplicate_guidance" in report["scenarios"]["self_evolution"]["failed_prompt_checks"]
 
 
+def test_evaluate_task_readiness_distinguishes_initial_tools_from_skill_reachable_tools() -> None:
+    from app.runtime.task_eval import TaskEvalInputs, evaluate_task_readiness
+
+    report = evaluate_task_readiness(
+        TaskEvalInputs(
+            tool_names={
+                "read_file",
+                "write_file",
+                "edit_file",
+                "glob_search",
+                "grep_search",
+                "load_skill",
+                "search_memory",
+                "save_memory",
+                "set_trigger",
+                "list_triggers",
+                "web_fetch",
+                "check_async_task",
+                "delegate_to_agent",
+                "list_async_tasks",
+                "get_current_time",
+                "save_skill",
+            },
+            skill_tool_names={"web_search", "web_fetch"},
+        )
+    )
+
+    research = report["scenarios"]["research"]
+    assert research["ready"] is True
+    assert research["missing_tools"] == []
+    assert research["initial_missing_tools"] == []
+    assert research["skill_missing_tools"] == []
+
+
 def test_evaluate_task_readiness_detects_delegation_profile_regressions() -> None:
     from app.runtime.task_eval import TaskEvalInputs, evaluate_task_readiness
 

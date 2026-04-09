@@ -107,6 +107,8 @@ async def main():
         "ALTER TABLE agents DROP COLUMN IF EXISTS autonomy_policy",
         # Context engineering sprint (2026-04-01): coordinator mode + runtime tasks
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS execution_mode VARCHAR(30) NOT NULL DEFAULT 'standard'",
+        # Smart model routing (2026-04-10)
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS smart_model_routing JSONB",
     ]
 
     from sqlalchemy import text

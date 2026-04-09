@@ -42,87 +42,139 @@ def _choose_primary_user(rows: list[dict]) -> dict:
     return max(rows, key=_score)
 
 
+def _table_exists(conn, name: str) -> bool:
+    result = conn.execute(
+        sa.text("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = :name)"),
+        {"name": name},
+    )
+    return result.scalar()
+
+
+def _column_exists(conn, table: str, column: str) -> bool:
+    result = conn.execute(
+        sa.text("SELECT EXISTS (SELECT FROM information_schema.columns WHERE table_name = :table AND column_name = :column)"),
+        {"table": table, "column": column},
+    )
+    return result.scalar()
+
+
+def _index_exists(conn, name: str) -> bool:
+    result = conn.execute(
+        sa.text("SELECT EXISTS (SELECT FROM pg_indexes WHERE indexname = :name)"),
+        {"name": name},
+    )
+    return result.scalar()
+
+
+def _constraint_exists(conn, name: str) -> bool:
+    result = conn.execute(
+        sa.text("SELECT EXISTS (SELECT FROM information_schema.table_constraints WHERE constraint_name = :name)"),
+        {"name": name},
+    )
+    return result.scalar()
+
+
 def upgrade() -> None:
-    op.create_table(
-        "identity_providers",
-        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
-        sa.Column("provider_type", sa.String(length=50), nullable=False),
-        sa.Column("name", sa.String(length=100), nullable=False),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
-        sa.Column("sso_login_enabled", sa.Boolean(), nullable=False, server_default=sa.text("false")),
-        sa.Column("config", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default=sa.text("'{}'::jsonb")),
-        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id"), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-    )
-    op.create_index("ix_identity_providers_provider_type", "identity_providers", ["provider_type"])
-    op.create_index("ix_identity_providers_tenant_id", "identity_providers", ["tenant_id"])
-
-    op.create_table(
-        "external_identities",
-        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
-        sa.Column(
-            "provider_id",
-            postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("identity_providers.id", ondelete="CASCADE"),
-            nullable=False,
-        ),
-        sa.Column(
-            "user_id",
-            postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("users.id", ondelete="CASCADE"),
-            nullable=False,
-        ),
-        sa.Column("provider_user_id", sa.String(length=255), nullable=True),
-        sa.Column("provider_open_id", sa.String(length=255), nullable=True),
-        sa.Column("provider_union_id", sa.String(length=255), nullable=True),
-        sa.Column("email", sa.String(length=255), nullable=True),
-        sa.Column("mobile", sa.String(length=64), nullable=True),
-        sa.Column("raw_profile", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default=sa.text("'{}'::jsonb")),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.UniqueConstraint("provider_id", "provider_user_id", name="uq_external_identities_provider_user_id"),
-        sa.UniqueConstraint("provider_id", "provider_open_id", name="uq_external_identities_provider_open_id"),
-        sa.UniqueConstraint("provider_id", "provider_union_id", name="uq_external_identities_provider_union_id"),
-    )
-    op.create_index("ix_external_identities_provider_id", "external_identities", ["provider_id"])
-    op.create_index("ix_external_identities_user_id", "external_identities", ["user_id"])
-    op.create_index("ix_external_identities_provider_user_id", "external_identities", ["provider_user_id"])
-    op.create_index("ix_external_identities_provider_open_id", "external_identities", ["provider_open_id"])
-    op.create_index("ix_external_identities_provider_union_id", "external_identities", ["provider_union_id"])
-
-    op.create_table(
-        "sso_scan_sessions",
-        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
-        sa.Column("status", sa.String(length=50), nullable=False, server_default=sa.text("'pending'")),
-        sa.Column("provider_type", sa.String(length=50), nullable=True),
-        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id"), nullable=True),
-        sa.Column("user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=True),
-        sa.Column("access_token", sa.Text(), nullable=True),
-        sa.Column("error_msg", sa.Text(), nullable=True),
-        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-    )
-    op.create_index("ix_sso_scan_sessions_tenant_id", "sso_scan_sessions", ["tenant_id"])
-    op.create_index("ix_sso_scan_sessions_user_id", "sso_scan_sessions", ["user_id"])
-
-    op.add_column("org_members", sa.Column("provider_id", postgresql.UUID(as_uuid=True), nullable=True))
-    op.add_column("org_members", sa.Column("external_id", sa.String(length=100), nullable=True))
-    op.add_column("org_members", sa.Column("open_id", sa.String(length=100), nullable=True))
-    op.add_column("org_members", sa.Column("unionid", sa.String(length=100), nullable=True))
-    op.create_foreign_key(
-        "fk_org_members_provider_id_identity_providers",
-        "org_members",
-        "identity_providers",
-        ["provider_id"],
-        ["id"],
-    )
-    op.create_index("ix_org_members_external_id", "org_members", ["external_id"])
-    op.create_index("ix_org_members_open_id", "org_members", ["open_id"])
-    op.create_index("ix_org_members_unionid", "org_members", ["unionid"])
-
     conn = op.get_bind()
+
+    if not _table_exists(conn, "identity_providers"):
+        op.create_table(
+            "identity_providers",
+            sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
+            sa.Column("provider_type", sa.String(length=50), nullable=False),
+            sa.Column("name", sa.String(length=100), nullable=False),
+            sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
+            sa.Column("sso_login_enabled", sa.Boolean(), nullable=False, server_default=sa.text("false")),
+            sa.Column("config", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default=sa.text("'{}'::jsonb")),
+            sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id"), nullable=True),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+            sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        )
+    if not _index_exists(conn, "ix_identity_providers_provider_type"):
+        op.create_index("ix_identity_providers_provider_type", "identity_providers", ["provider_type"])
+    if not _index_exists(conn, "ix_identity_providers_tenant_id"):
+        op.create_index("ix_identity_providers_tenant_id", "identity_providers", ["tenant_id"])
+
+    if not _table_exists(conn, "external_identities"):
+        op.create_table(
+            "external_identities",
+            sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
+            sa.Column(
+                "provider_id",
+                postgresql.UUID(as_uuid=True),
+                sa.ForeignKey("identity_providers.id", ondelete="CASCADE"),
+                nullable=False,
+            ),
+            sa.Column(
+                "user_id",
+                postgresql.UUID(as_uuid=True),
+                sa.ForeignKey("users.id", ondelete="CASCADE"),
+                nullable=False,
+            ),
+            sa.Column("provider_user_id", sa.String(length=255), nullable=True),
+            sa.Column("provider_open_id", sa.String(length=255), nullable=True),
+            sa.Column("provider_union_id", sa.String(length=255), nullable=True),
+            sa.Column("email", sa.String(length=255), nullable=True),
+            sa.Column("mobile", sa.String(length=64), nullable=True),
+            sa.Column("raw_profile", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default=sa.text("'{}'::jsonb")),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+            sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+            sa.UniqueConstraint("provider_id", "provider_user_id", name="uq_external_identities_provider_user_id"),
+            sa.UniqueConstraint("provider_id", "provider_open_id", name="uq_external_identities_provider_open_id"),
+            sa.UniqueConstraint("provider_id", "provider_union_id", name="uq_external_identities_provider_union_id"),
+        )
+    if not _index_exists(conn, "ix_external_identities_provider_id"):
+        op.create_index("ix_external_identities_provider_id", "external_identities", ["provider_id"])
+    if not _index_exists(conn, "ix_external_identities_user_id"):
+        op.create_index("ix_external_identities_user_id", "external_identities", ["user_id"])
+    if not _index_exists(conn, "ix_external_identities_provider_user_id"):
+        op.create_index("ix_external_identities_provider_user_id", "external_identities", ["provider_user_id"])
+    if not _index_exists(conn, "ix_external_identities_provider_open_id"):
+        op.create_index("ix_external_identities_provider_open_id", "external_identities", ["provider_open_id"])
+    if not _index_exists(conn, "ix_external_identities_provider_union_id"):
+        op.create_index("ix_external_identities_provider_union_id", "external_identities", ["provider_union_id"])
+
+    if not _table_exists(conn, "sso_scan_sessions"):
+        op.create_table(
+            "sso_scan_sessions",
+            sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
+            sa.Column("status", sa.String(length=50), nullable=False, server_default=sa.text("'pending'")),
+            sa.Column("provider_type", sa.String(length=50), nullable=True),
+            sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id"), nullable=True),
+            sa.Column("user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=True),
+            sa.Column("access_token", sa.Text(), nullable=True),
+            sa.Column("error_msg", sa.Text(), nullable=True),
+            sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+            sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        )
+    if not _index_exists(conn, "ix_sso_scan_sessions_tenant_id"):
+        op.create_index("ix_sso_scan_sessions_tenant_id", "sso_scan_sessions", ["tenant_id"])
+    if not _index_exists(conn, "ix_sso_scan_sessions_user_id"):
+        op.create_index("ix_sso_scan_sessions_user_id", "sso_scan_sessions", ["user_id"])
+
+    if not _column_exists(conn, "org_members", "provider_id"):
+        op.add_column("org_members", sa.Column("provider_id", postgresql.UUID(as_uuid=True), nullable=True))
+    if not _column_exists(conn, "org_members", "external_id"):
+        op.add_column("org_members", sa.Column("external_id", sa.String(length=100), nullable=True))
+    if not _column_exists(conn, "org_members", "open_id"):
+        op.add_column("org_members", sa.Column("open_id", sa.String(length=100), nullable=True))
+    if not _column_exists(conn, "org_members", "unionid"):
+        op.add_column("org_members", sa.Column("unionid", sa.String(length=100), nullable=True))
+    if not _constraint_exists(conn, "fk_org_members_provider_id_identity_providers"):
+        op.create_foreign_key(
+            "fk_org_members_provider_id_identity_providers",
+            "org_members",
+            "identity_providers",
+            ["provider_id"],
+            ["id"],
+        )
+    if not _index_exists(conn, "ix_org_members_external_id"):
+        op.create_index("ix_org_members_external_id", "org_members", ["external_id"])
+    if not _index_exists(conn, "ix_org_members_open_id"):
+        op.create_index("ix_org_members_open_id", "org_members", ["open_id"])
+    if not _index_exists(conn, "ix_org_members_unionid"):
+        op.create_index("ix_org_members_unionid", "org_members", ["unionid"])
     providers = sa.table(
         "identity_providers",
         sa.column("id", postgresql.UUID(as_uuid=True)),

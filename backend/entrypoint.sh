@@ -109,6 +109,11 @@ async def main():
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS execution_mode VARCHAR(30) NOT NULL DEFAULT 'standard'",
         # Smart model routing (2026-04-10)
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS smart_model_routing JSONB",
+        # Feishu identity provider columns (2026-04-10) — safety net for failed migration
+        "ALTER TABLE org_members ADD COLUMN IF NOT EXISTS provider_id UUID",
+        "ALTER TABLE org_members ADD COLUMN IF NOT EXISTS external_id VARCHAR(100)",
+        "ALTER TABLE org_members ADD COLUMN IF NOT EXISTS open_id VARCHAR(100)",
+        "ALTER TABLE org_members ADD COLUMN IF NOT EXISTS unionid VARCHAR(100)",
     ]
 
     from sqlalchemy import text

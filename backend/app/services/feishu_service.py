@@ -400,7 +400,7 @@ class FeishuService:
                 "https://open.feishu.cn/open-apis/approval/v4/instances",
                 json={
                     "approval_code": approval_code,
-                    "user_id": user_id,
+                    "open_id": user_id,
                     "form": form_data,
                 },
                 headers={"Authorization": f"Bearer {tenant_token}"},

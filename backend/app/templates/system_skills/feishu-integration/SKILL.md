@@ -87,7 +87,7 @@ Use this skill when the user wants real work performed inside Feishu/Lark: send 
 ### Approvals
 | Tool | Purpose | Key Params |
 |------|---------|------------|
-| `feishu_approval_create` | Create an approval instance | `approval_code` (**required**), `user_id` (**required**, Feishu user_id of the submitter), `form` (**required**) |
+| `feishu_approval_create` | Create an approval instance | `approval_code` (**required**), `user_id` (**required**, pass the submitter's `open_id` from `feishu_user_search`), `form` (**required**) |
 | `feishu_approval_query` | Query approval instances | `approval_code` (**required**), optional `status` filter |
 | `feishu_approval_get` | Read one approval instance | `instance_id` |
 

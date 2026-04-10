@@ -8,7 +8,7 @@ Create Date: 2026-04-11
 from alembic import op
 
 revision = "add_wechat_personal_channel_0411"
-down_revision = "add_llm_provider_configs_0410"
+down_revision = "add_agent_smart_model_routing_0410"
 branch_labels = None
 depends_on = None
 

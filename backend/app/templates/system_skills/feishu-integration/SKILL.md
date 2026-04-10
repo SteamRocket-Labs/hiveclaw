@@ -38,12 +38,11 @@ is_system: true
 
 Use this skill when the user wants real work performed inside Feishu/Lark: send an IM, read or create docs, inspect Sheets, mutate Base, submit approvals, manage tasks, or operate calendar events.
 
-## Prerequisites and Runtime Checks
+## Prerequisites
 
-- Admin must configure Feishu App ID **and** App Secret in **Enterprise Settings -> Org Sync**.
-- If a tool returns "not configured" or a permission error, tell the user **exactly** which configuration is missing. Never guess or invent workarounds.
-- Prefer person identifiers in this order: `user_id` -> `open_id` -> exact lookup via `feishu_user_search`.
-- Do not invent Feishu URLs, tokens, table IDs, field IDs, or approval codes. **Read first, then write.**
+- Feishu App ID **and** App Secret must be configured in **Enterprise Settings -> Org Sync** for office tools to work.
+- Person identifiers resolve in this order: `user_id` -> `open_id` -> lookup via `feishu_user_search`.
+- All tokens, IDs, and codes come from tool responses or the user — read or ask first, then act.
 
 ## Tool Reference
 
@@ -114,7 +113,7 @@ Use this skill when the user wants real work performed inside Feishu/Lark: send 
 1. Prefer the exact identifier the user already provided: `user_id` first, then `open_id`
 2. If the user only gave a name, call `feishu_user_search(name="...")` to get their `open_id`
 3. Then call `send_feishu_message(...)` with the resolved identifier
-4. To contact another digital employee, use `send_message_to_agent` instead (NOT `send_feishu_message`)
+4. To contact another digital employee, use `send_message_to_agent` instead
 
 ### Read a Feishu Doc/Wiki
 1. User gives you a link -> `feishu_doc_read(document_token="token from URL")`
@@ -125,8 +124,8 @@ Use this skill when the user wants real work performed inside Feishu/Lark: send 
 1. `feishu_doc_create(title="...")` -> get real token and link
 2. `feishu_doc_append(document_token="token from step 1", content="...")` -> write content
 3. Optional: `feishu_doc_share(document_token="...", action="add", member_names=["Alice"], permission="edit")` if the user asked to share
-4. Send the real link returned by the tool to the user. **Do not construct URLs yourself.**
-5. Only call `feishu_doc_delete` when the user explicitly asks to remove the document
+4. Send the real link returned by the tool to the user
+5. Call `feishu_doc_delete` only when the user explicitly asks to remove the document
 
 ### Work with Base (Bitable)
 1. If the user needs a new Base, call `feishu_base_app_create`
@@ -134,8 +133,8 @@ Use this skill when the user wants real work performed inside Feishu/Lark: send 
 3. `feishu_base_field_list` -> understand field structure (names, types, writable vs read-only)
 4. `feishu_base_field_create` -> add new columns when needed
 5. `feishu_base_record_list` -> query data (use `view_id` to filter by a specific view)
-6. `feishu_base_record_upsert` -> write/update. **Always confirm writable field names first via `feishu_base_field_list`**
-7. `feishu_base_record_delete` only after the user clearly confirms deletion
+6. `feishu_base_record_upsert` -> write/update after confirming writable field names via `feishu_base_field_list`
+7. `feishu_base_record_delete` after the user explicitly confirms deletion
 8. `feishu_base_record_upload_attachment` after you already know the target `record_id` and `field_id`
 
 ### Work with Sheets
@@ -143,13 +142,13 @@ Use this skill when the user wants real work performed inside Feishu/Lark: send 
 2. `feishu_sheet_read` -> read the target range
 
 ### Work with Approvals
-1. Confirm the tenant's real `approval_code` (ask the user if unknown — never guess)
+1. Confirm the tenant's real `approval_code` (ask the user if unknown)
 2. `feishu_approval_create` to submit
 3. `feishu_approval_query(approval_code="...", status="APPROVED")` to filter by status
 4. `feishu_approval_get(instance_id="...")` when you already know the instance
 
 ### Calendar — Scheduling Meetings
-You have **full scheduling capability**. You can check availability, create events, invite people, update, and cancel — all without needing to "receive messages" or "wait for replies". Act proactively.
+You have full scheduling capability: check availability, create events, invite people, reschedule, and cancel.
 
 1. Resolve the person's `open_id`: call `feishu_user_search(name="...")` first
 2. Check availability: `feishu_calendar_list(user_open_id="ou_xxx", start_time="...", end_time="...")`
@@ -158,28 +157,25 @@ You have **full scheduling capability**. You can check availability, create even
 5. Update if needed: `feishu_calendar_update(user_email="...", event_id="...", start_time="...", end_time="...")`
 6. Cancel if asked: `feishu_calendar_delete(user_email="...", event_id="...")`
 
-## Error Handling
+## How to Work Well
 
-When a tool returns an error:
-- **"not configured"**: The Feishu App credentials are missing. Tell the user: "Admin needs to configure Feishu App ID and App Secret in Enterprise Settings -> Org Sync."
-- **Permission errors**: The Feishu app lacks the required API scope. Tell the user which specific permission is needed (e.g., "calendar:calendar" for calendar operations).
-- **"User not found"**: The name/email didn't match any Feishu user. Try `feishu_user_search` with a different spelling, or ask the user for the exact name.
-- **Never say "I cannot do this"** when you have the tool. If the tool fails, report the specific error and suggest the fix.
+### Read Before Write
+- Discover structure first: `feishu_base_field_list` before `feishu_base_record_upsert`, `feishu_sheet_info` before `feishu_sheet_read`, `feishu_wiki_list` before `feishu_doc_read`
+- Use real tokens/IDs from tool responses. Feishu URLs can be passed directly to doc/sheet tools — they parse the token automatically
+- For `feishu_doc_share`, always include the `action` parameter (`add`/`remove`/`list`)
+- For approvals, ask the user for the real `approval_code` when it's unknown
 
-## Common Mistakes to Avoid
+### Be Proactive with Calendar
+You have full scheduling capability — check availability, create events, invite attendees, reschedule, and cancel. When someone asks you to set up a meeting, act on it directly using your calendar tools. Resolve identifiers via `feishu_user_search` when you only have a name. Prefer `user_open_id` over `user_email` for `feishu_calendar_list` — both work, but `open_id` is more reliable. Include `timezone` for users outside Asia/Shanghai.
 
-- **Do NOT say "I cannot schedule meetings" or "I cannot receive messages"** — you CAN. Use calendar tools directly.
-- **Do NOT ask the user to manually check their calendar** — call `feishu_calendar_list` yourself.
-- **Do NOT invent token/ID values** — always read them from tool responses first.
-- **Do NOT call `feishu_doc_share` without `action`** — it is a required parameter.
-- **Prefer `user_open_id` over `user_email` for `feishu_calendar_list`** — both work, but `open_id` is more reliable. Use `feishu_user_search` to resolve if needed.
-- **Do NOT assume field names in Base** — always call `feishu_base_field_list` before writing.
-- **Do NOT guess approval codes** — ask the user for the real code.
+### Surface Actionable Error Details
+When a tool returns an error, read the error message and tell the user exactly what's needed:
+- "not configured" → Admin needs to set Feishu App ID and App Secret in Enterprise Settings → Org Sync
+- Permission error → Name the specific missing Feishu API scope (e.g., `calendar:calendar`)
+- "User not found" → Try `feishu_user_search` with an alternative spelling, or ask the user
 
-## Tips
+### Confirm Before Destructive Actions
+Before calling `feishu_doc_delete` or `feishu_base_record_delete`, restate the target and get explicit confirmation from the user.
 
-- You can pass a full Feishu URL to doc/sheet tools; they parse the token automatically
-- After creating a doc, always use the real link returned by the tool
-- Before deleting docs or Base records, restate the target and get explicit confirmation
-- Approval instances are tenant-specific business objects. If the approval code or approver identity is unclear, ask for the missing business identifier instead of inventing it
-- For calendar events, always include `timezone` if the user is not in Asia/Shanghai
+### Use the Right Channel for the Right Audience
+Send messages to real people via `send_feishu_message`. Reach other digital employees via `send_message_to_agent` instead.

@@ -189,7 +189,7 @@ function CompanyNameEditor() {
             qc.invalidateQueries({ queryKey: ['tenants'] });
             setSaved(true);
             setTimeout(() => setSaved(false), 2000);
-        } catch (e) { }
+        } catch (e: unknown) { console.error('[EnterpriseSettings] save failed:', e); }
         setSaving(false);
     };
 
@@ -258,7 +258,7 @@ function CompanyTimezoneEditor() {
             await systemApi.updateTenant(tenantId, { timezone: tz });
             setSaved(true);
             setTimeout(() => setSaved(false), 2000);
-        } catch (e) { }
+        } catch (e: unknown) { console.error('[EnterpriseSettings] save failed:', e); }
         setSaving(false);
     };
 
@@ -357,7 +357,9 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
     const navigate = useNavigate();
     const setUser = useAuthStore((s) => s.setUser);
     const qc = useQueryClient();
-    const [activeTab, setActiveTab] = useState<EnterpriseSettingsTab>(forcedTab || 'info');
+    // Use forcedTab directly as the source of truth — no intermediate state.
+    // This ensures useQuery enabled checks react immediately to route changes.
+    const activeTab: EnterpriseSettingsTab = forcedTab || 'info';
 
     // Track selected tenant as state so page refreshes on company switch
     const [selectedTenantId, setSelectedTenantId] = useState(
@@ -372,12 +374,6 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
         window.addEventListener('storage', handler);
         return () => window.removeEventListener('storage', handler);
     }, []);
-
-    useEffect(() => {
-        if (forcedTab && forcedTab !== activeTab) {
-            setActiveTab(forcedTab);
-        }
-    }, [forcedTab, activeTab]);
 
     const [companyIntro, setCompanyIntro] = useState('');
     const [companyIntroSaving, setCompanyIntroSaving] = useState(false);
@@ -407,7 +403,7 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
             await enterpriseApi.updateSetting(companyIntroKey, { content: companyIntro });
             setCompanyIntroSaved(true);
             setTimeout(() => setCompanyIntroSaved(false), 2000);
-        } catch (e) { }
+        } catch (e: unknown) { console.error('[EnterpriseSettings] company intro save failed:', e); }
         setCompanyIntroSaving(false);
     };
     const [infoRefresh, setInfoRefresh] = useState(0);
@@ -775,7 +771,7 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
                         ]).flatMap((group, gi) => [
                             ...(gi > 0 ? [<div key={`sep-${gi}`} className="tab-separator" />] : []),
                             ...group.tabs.map(tab => (
-                                <div key={tab} className={`tab ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>
+                                <div key={tab} className={`tab ${activeTab === tab ? 'active' : ''}`} onClick={() => navigate(`/enterprise/${tab === 'invites' ? 'invitations' : tab}`)}>
                                     {t(`enterprise.tabs.${tab}`)}
                                 </div>
                             )),

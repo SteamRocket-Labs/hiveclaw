@@ -3,7 +3,13 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { authApi } from '../api/domains/auth';
-import { enterpriseApi } from '../api/domains/enterprise';
+import {
+    enterpriseApi,
+    type LLMModel,
+    type LLMProviderAuthSession,
+    type LLMProviderConfig,
+    type LLMProviderSpec,
+} from '../api/domains/enterprise';
 import { notificationsApi } from '../api/domains/notifications';
 import { systemApi } from '../api/domains/system';
 import FileBrowser from '../components/FileBrowser';
@@ -14,7 +20,8 @@ import WorkspaceApprovalsSection from './workspace/WorkspaceApprovalsSection';
 import WorkspaceAuditSection from './workspace/WorkspaceAuditSection';
 import WorkspaceInfoSection from './workspace/WorkspaceInfoSection';
 import WorkspaceInvitesSection from './workspace/WorkspaceInvitesSection';
-import WorkspaceLlmSection from './workspace/WorkspaceLlmSection';
+import WorkspaceLlmModelEditor from './workspace/WorkspaceLlmModelEditor';
+import WorkspaceLlmProvidersSection from './workspace/WorkspaceLlmProvidersSection';
 import WorkspaceOrgSection from './workspace/WorkspaceOrgSection';
 import WorkspaceQuotasSection from './workspace/WorkspaceQuotasSection';
 import WorkspaceSkillsSection from './workspace/WorkspaceSkillsSection';
@@ -22,20 +29,6 @@ import WorkspaceHrAgentSection from './workspace/WorkspaceHrAgentSection';
 import WorkspaceMemorySection from './workspace/WorkspaceMemorySection';
 import WorkspaceToolsSection from './workspace/WorkspaceToolsSection';
 import WorkspaceUsersSection from './workspace/WorkspaceUsersSection';
-
-interface LLMModel {
-    id: string; provider: string; model: string; label: string;
-    base_url?: string; api_key_masked?: string; max_tokens_per_day?: number; enabled: boolean; supports_vision?: boolean; max_output_tokens?: number | null; max_input_tokens?: number | null; temperature?: number | null; created_at?: string;
-}
-
-interface LLMProviderSpec {
-    provider: string;
-    display_name: string;
-    protocol: string;
-    default_base_url?: string | null;
-    supports_tool_choice: boolean;
-    default_max_tokens: number;
-}
 
 export type EnterpriseSettingsTab =
     | 'llm'
@@ -57,22 +50,43 @@ interface EnterpriseSettingsProps {
 }
 
 const FALLBACK_LLM_PROVIDERS: LLMProviderSpec[] = [
-    { provider: 'anthropic', display_name: 'Anthropic', protocol: 'anthropic', default_base_url: 'https://api.anthropic.com', supports_tool_choice: false, default_max_tokens: 8192 },
-    { provider: 'openai', display_name: 'OpenAI', protocol: 'openai_compatible', default_base_url: 'https://api.openai.com/v1', supports_tool_choice: true, default_max_tokens: 16384 },
-    { provider: 'azure', display_name: 'Azure OpenAI', protocol: 'openai_compatible', default_base_url: '', supports_tool_choice: true, default_max_tokens: 16384 },
-    { provider: 'deepseek', display_name: 'DeepSeek', protocol: 'openai_compatible', default_base_url: 'https://api.deepseek.com/v1', supports_tool_choice: true, default_max_tokens: 8192 },
-    { provider: 'minimax', display_name: 'MiniMax', protocol: 'openai_compatible', default_base_url: 'https://api.minimaxi.com/v1', supports_tool_choice: true, default_max_tokens: 16384 },
-    { provider: 'qwen', display_name: 'Qwen (DashScope)', protocol: 'openai_compatible', default_base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', supports_tool_choice: true, default_max_tokens: 8192 },
-    { provider: 'zhipu', display_name: 'Zhipu', protocol: 'openai_compatible', default_base_url: 'https://open.bigmodel.cn/api/paas/v4', supports_tool_choice: true, default_max_tokens: 8192 },
-    { provider: 'baidu', display_name: 'Baidu (Qianfan)', protocol: 'openai_compatible', default_base_url: 'https://qianfan.baidubce.com/v2', supports_tool_choice: false, default_max_tokens: 4096 },
-    { provider: 'gemini', display_name: 'Gemini', protocol: 'gemini', default_base_url: 'https://generativelanguage.googleapis.com/v1beta', supports_tool_choice: true, default_max_tokens: 8192 },
-    { provider: 'openrouter', display_name: 'OpenRouter', protocol: 'openai_compatible', default_base_url: 'https://openrouter.ai/api/v1', supports_tool_choice: true, default_max_tokens: 4096 },
-    { provider: 'kimi', display_name: 'Kimi (Moonshot)', protocol: 'openai_compatible', default_base_url: 'https://api.moonshot.cn/v1', supports_tool_choice: true, default_max_tokens: 8192 },
-    { provider: 'vllm', display_name: 'vLLM', protocol: 'openai_compatible', default_base_url: 'http://localhost:8000/v1', supports_tool_choice: true, default_max_tokens: 4096 },
-    { provider: 'ollama', display_name: 'Ollama', protocol: 'openai_compatible', default_base_url: 'http://localhost:11434/v1', supports_tool_choice: true, default_max_tokens: 4096 },
-    { provider: 'sglang', display_name: 'SGLang', protocol: 'openai_compatible', default_base_url: 'http://localhost:30000/v1', supports_tool_choice: true, default_max_tokens: 4096 },
-    { provider: 'custom', display_name: 'Custom', protocol: 'openai_compatible', default_base_url: '', supports_tool_choice: true, default_max_tokens: 4096 },
+    { provider: 'anthropic', display_name: 'Anthropic', protocol: 'anthropic', default_base_url: 'https://api.anthropic.com', supports_tool_choice: false, default_max_tokens: 8192, supported_auth_modes: ['api_key'], supports_model_discovery: false, known_models: [] },
+    { provider: 'openai', display_name: 'OpenAI', protocol: 'openai_compatible', default_base_url: 'https://api.openai.com/v1', supports_tool_choice: true, default_max_tokens: 16384, supported_auth_modes: ['api_key', 'login_bridge'], supports_model_discovery: false, managed_login_label: '使用 ChatGPT 登录', known_models: ['gpt-5.4'] },
+    { provider: 'azure', display_name: 'Azure OpenAI', protocol: 'openai_compatible', default_base_url: '', supports_tool_choice: true, default_max_tokens: 16384, supported_auth_modes: ['api_key'], supports_model_discovery: false, known_models: [] },
+    { provider: 'deepseek', display_name: 'DeepSeek', protocol: 'openai_compatible', default_base_url: 'https://api.deepseek.com/v1', supports_tool_choice: true, default_max_tokens: 8192, supported_auth_modes: ['api_key'], supports_model_discovery: true, known_models: [] },
+    { provider: 'minimax', display_name: 'MiniMax', protocol: 'openai_compatible', default_base_url: 'https://api.minimaxi.com/v1', supports_tool_choice: true, default_max_tokens: 16384, supported_auth_modes: ['api_key', 'oauth_web', 'oauth_device'], supports_model_discovery: true, known_models: [] },
+    { provider: 'qwen', display_name: 'Qwen (DashScope)', protocol: 'openai_compatible', default_base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', supports_tool_choice: true, default_max_tokens: 8192, supported_auth_modes: ['api_key'], supports_model_discovery: true, known_models: [] },
+    { provider: 'zhipu', display_name: 'Zhipu', protocol: 'openai_compatible', default_base_url: 'https://open.bigmodel.cn/api/paas/v4', supports_tool_choice: true, default_max_tokens: 8192, supported_auth_modes: ['api_key'], supports_model_discovery: true, known_models: [] },
+    { provider: 'baidu', display_name: 'Baidu (Qianfan)', protocol: 'openai_compatible', default_base_url: 'https://qianfan.baidubce.com/v2', supports_tool_choice: false, default_max_tokens: 4096, supported_auth_modes: ['api_key'], supports_model_discovery: false, known_models: [] },
+    { provider: 'gemini', display_name: 'Gemini', protocol: 'gemini', default_base_url: 'https://generativelanguage.googleapis.com/v1beta', supports_tool_choice: true, default_max_tokens: 8192, supported_auth_modes: ['api_key'], supports_model_discovery: false, known_models: [] },
+    { provider: 'openrouter', display_name: 'OpenRouter', protocol: 'openai_compatible', default_base_url: 'https://openrouter.ai/api/v1', supports_tool_choice: true, default_max_tokens: 4096, supported_auth_modes: ['api_key'], supports_model_discovery: true, known_models: [] },
+    { provider: 'kimi', display_name: 'Kimi (Moonshot)', protocol: 'openai_compatible', default_base_url: 'https://api.moonshot.cn/v1', supports_tool_choice: true, default_max_tokens: 8192, supported_auth_modes: ['api_key'], supports_model_discovery: true, known_models: [] },
+    { provider: 'vllm', display_name: 'vLLM', protocol: 'openai_compatible', default_base_url: 'http://localhost:8000/v1', supports_tool_choice: true, default_max_tokens: 4096, supported_auth_modes: ['api_key'], supports_model_discovery: false, known_models: [] },
+    { provider: 'ollama', display_name: 'Ollama', protocol: 'openai_compatible', default_base_url: 'http://localhost:11434/v1', supports_tool_choice: true, default_max_tokens: 4096, supported_auth_modes: ['api_key'], supports_model_discovery: true, known_models: [] },
+    { provider: 'sglang', display_name: 'SGLang', protocol: 'openai_compatible', default_base_url: 'http://localhost:30000/v1', supports_tool_choice: true, default_max_tokens: 4096, supported_auth_modes: ['api_key'], supports_model_discovery: false, known_models: [] },
+    { provider: 'custom', display_name: 'Custom', protocol: 'openai_compatible', default_base_url: '', supports_tool_choice: true, default_max_tokens: 4096, supported_auth_modes: ['api_key'], supports_model_discovery: false, known_models: [] },
 ];
+
+function buildFallbackProviderConfigs(providerSpecs: LLMProviderSpec[], models: LLMModel[]): LLMProviderConfig[] {
+    return providerSpecs.map((spec) => {
+        const providerModels = models.filter((model) => model.provider === spec.provider);
+        const latestModel = providerModels[0];
+        return {
+            ...spec,
+            source: providerModels.length > 0 ? 'derived' : 'empty',
+            auth_mode: 'api_key',
+            enabled: true,
+            base_url: latestModel?.base_url || spec.default_base_url || '',
+            api_key_masked: latestModel?.api_key_masked || '',
+            oauth_subject: null,
+            oauth_email: null,
+            connected: Boolean(latestModel?.api_key_masked),
+            model_count: providerModels.length,
+            models: providerModels,
+            metadata_json: {},
+        };
+    });
+}
 
 // ─── Theme Color Picker ────────────────────────────
 function ThemeColorPicker() {
@@ -346,7 +360,9 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
     const [activeTab, setActiveTab] = useState<EnterpriseSettingsTab>(forcedTab || 'info');
 
     // Track selected tenant as state so page refreshes on company switch
-    const [selectedTenantId, setSelectedTenantId] = useState(localStorage.getItem('current_tenant_id') || '');
+    const [selectedTenantId, setSelectedTenantId] = useState(
+        typeof window !== 'undefined' ? localStorage.getItem('current_tenant_id') || '' : '',
+    );
     useEffect(() => {
         const handler = (e: StorageEvent) => {
             if (e.key === 'current_tenant_id') {
@@ -410,19 +426,40 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
     const [showAddModel, setShowAddModel] = useState(false);
     const [editingModelId, setEditingModelId] = useState<string | null>(null);
     const [modelForm, setModelForm] = useState({ provider: 'anthropic', model: '', api_key: '', base_url: '', label: '', supports_vision: false, max_output_tokens: '' as string, max_input_tokens: '' as string, temperature: '' as string });
+    const [selectedProvider, setSelectedProvider] = useState('openai');
+    const [providerConfigForm, setProviderConfigForm] = useState({ auth_mode: 'api_key', api_key: '', base_url: '', enabled: true });
+    const [providerAuthSession, setProviderAuthSession] = useState<LLMProviderAuthSession | null>(null);
     const { data: providerSpecs = [] } = useQuery({
         queryKey: ['llm-provider-specs'],
         queryFn: () => enterpriseApi.getLLMProviders() as Promise<LLMProviderSpec[]>,
         enabled: activeTab === 'llm',
     });
     const providerOptions = providerSpecs.length > 0 ? providerSpecs : FALLBACK_LLM_PROVIDERS;
+    const { data: providerConfigsData = [] } = useQuery({
+        queryKey: ['llm-provider-configs', selectedTenantId],
+        queryFn: () => enterpriseApi.getLLMProviderConfigs(selectedTenantId || undefined) as Promise<LLMProviderConfig[]>,
+        enabled: activeTab === 'llm',
+    });
+    const providerConfigs = providerConfigsData.length > 0
+        ? providerConfigsData
+        : buildFallbackProviderConfigs(providerOptions, models);
     const addModel = useMutation({
         mutationFn: (data: any) => enterpriseApi.createLLMModel(data, selectedTenantId || undefined),
-        onSuccess: () => { qc.invalidateQueries({ queryKey: ['llm-models', selectedTenantId] }); setShowAddModel(false); setEditingModelId(null); },
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ['llm-models', selectedTenantId] });
+            qc.invalidateQueries({ queryKey: ['llm-provider-configs', selectedTenantId] });
+            setShowAddModel(false);
+            setEditingModelId(null);
+        },
     });
     const updateModel = useMutation({
         mutationFn: ({ id, data }: { id: string; data: any }) => enterpriseApi.updateLLMModel(id, data),
-        onSuccess: () => { qc.invalidateQueries({ queryKey: ['llm-models', selectedTenantId] }); setShowAddModel(false); setEditingModelId(null); },
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ['llm-models', selectedTenantId] });
+            qc.invalidateQueries({ queryKey: ['llm-provider-configs', selectedTenantId] });
+            setShowAddModel(false);
+            setEditingModelId(null);
+        },
     });
     const deleteModel = useMutation({
         mutationFn: async ({ id, force = false }: { id: string; force?: boolean }) => {
@@ -440,8 +477,86 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
                 throw err;
             }
         },
-        onSuccess: () => qc.invalidateQueries({ queryKey: ['llm-models', selectedTenantId] }),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ['llm-models', selectedTenantId] });
+            qc.invalidateQueries({ queryKey: ['llm-provider-configs', selectedTenantId] });
+        },
     });
+    const saveProviderConfig = useMutation({
+        mutationFn: (data: any) => enterpriseApi.saveLLMProviderConfig(selectedProvider, data, selectedTenantId || undefined),
+        onSuccess: () => qc.invalidateQueries({ queryKey: ['llm-provider-configs', selectedTenantId] }),
+    });
+    const verifyProviderConfig = useMutation({
+        mutationFn: (data: any) => enterpriseApi.verifyLLMProviderConfig(selectedProvider, data, selectedTenantId || undefined),
+    });
+    const refreshProviderModels = useMutation({
+        mutationFn: () => enterpriseApi.refreshLLMProviderModels(selectedProvider, selectedTenantId || undefined),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ['llm-models', selectedTenantId] });
+            qc.invalidateQueries({ queryKey: ['llm-provider-configs', selectedTenantId] });
+        },
+    });
+    const disconnectProviderAuth = useMutation({
+        mutationFn: () => enterpriseApi.disconnectLLMProviderAuth(selectedProvider, selectedTenantId || undefined),
+        onSuccess: () => {
+            setProviderAuthSession(null);
+            qc.invalidateQueries({ queryKey: ['llm-provider-configs', selectedTenantId] });
+        },
+    });
+
+    useEffect(() => {
+        if (!providerConfigs.length) return;
+        if (!providerConfigs.some((provider) => provider.provider === selectedProvider)) {
+            setSelectedProvider(providerConfigs[0].provider);
+        }
+    }, [providerConfigs, selectedProvider]);
+
+    useEffect(() => {
+        const selected = providerConfigs.find((provider) => provider.provider === selectedProvider);
+        if (!selected) return;
+        setProviderConfigForm({
+            auth_mode: selected.auth_mode || selected.supported_auth_modes?.[0] || 'api_key',
+            api_key: '',
+            base_url: selected.base_url || selected.default_base_url || '',
+            enabled: selected.enabled ?? true,
+        });
+    }, [providerConfigs, selectedProvider]);
+
+    useEffect(() => {
+        if (!providerAuthSession || providerAuthSession.status !== 'pending') return;
+        let cancelled = false;
+        const timer = window.setInterval(async () => {
+            try {
+                const next = await enterpriseApi.getLLMProviderAuthStatus(selectedProvider, providerAuthSession.session_id);
+                if (cancelled) return;
+                setProviderAuthSession(next as LLMProviderAuthSession);
+                if (next.status !== 'pending') {
+                    qc.invalidateQueries({ queryKey: ['llm-provider-configs', selectedTenantId] });
+                }
+            } catch (error) {
+                console.error(error);
+            }
+        }, 2000);
+        return () => {
+            cancelled = true;
+            window.clearInterval(timer);
+        };
+    }, [providerAuthSession, selectedProvider, selectedTenantId, qc]);
+
+    useEffect(() => {
+        const handler = (event: MessageEvent) => {
+            if (event.data?.type === 'hive-llm-provider-auth-complete' && event.data.provider === selectedProvider && providerAuthSession?.session_id) {
+                enterpriseApi.getLLMProviderAuthStatus(selectedProvider, providerAuthSession.session_id)
+                    .then((next) => {
+                        setProviderAuthSession(next as LLMProviderAuthSession);
+                        qc.invalidateQueries({ queryKey: ['llm-provider-configs', selectedTenantId] });
+                    })
+                    .catch((error) => console.error(error));
+            }
+        };
+        window.addEventListener('message', handler);
+        return () => window.removeEventListener('message', handler);
+    }, [providerAuthSession, qc, selectedProvider, selectedTenantId]);
 
     const handleModelFormChange = (patch: Partial<typeof modelForm>) => {
         setModelForm((current) => ({ ...current, ...patch }));
@@ -449,9 +564,9 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
 
     const handleStartCreateModel = () => {
         setEditingModelId(null);
-        const defaultSpec = providerOptions[0];
+        const defaultSpec = providerOptions.find((provider) => provider.provider === selectedProvider) || providerOptions[0];
         setModelForm({
-            provider: defaultSpec?.provider || 'anthropic',
+            provider: defaultSpec?.provider || selectedProvider || 'anthropic',
             model: '',
             api_key: '',
             base_url: defaultSpec?.default_base_url || '',
@@ -474,7 +589,7 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
         const originalText = activeButton?.textContent || '';
         if (activeButton) activeButton.textContent = t('enterprise.llm.testing');
         try {
-            const result = await enterpriseApi.testLLM(testData);
+            const result = await enterpriseApi.testLLM(testData, selectedTenantId || undefined);
             if (result.success) {
                 if (activeButton) {
                     activeButton.textContent = t('enterprise.llm.testSuccess', { latency: result.latency_ms });
@@ -549,6 +664,7 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
     };
 
     const handleEditModel = (model: LLMModel) => {
+        setSelectedProvider(model.provider);
         setEditingModelId(model.id);
         setModelForm({
             provider: model.provider,
@@ -566,6 +682,46 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
 
     const handleDeleteModel = (modelId: string) => {
         deleteModel.mutate({ id: modelId });
+    };
+
+    const handleProviderConfigFormChange = (patch: Partial<typeof providerConfigForm>) => {
+        setProviderConfigForm((current) => ({ ...current, ...patch }));
+    };
+
+    const handleSaveProviderConfig = async () => {
+        await saveProviderConfig.mutateAsync({
+            auth_mode: providerConfigForm.auth_mode,
+            api_key: providerConfigForm.api_key || undefined,
+            base_url: providerConfigForm.base_url || undefined,
+            enabled: providerConfigForm.enabled,
+        });
+        setProviderConfigForm((current) => ({ ...current, api_key: '' }));
+    };
+
+    const handleVerifyProviderConfig = async () => {
+        const result = await verifyProviderConfig.mutateAsync({
+            auth_mode: providerConfigForm.auth_mode,
+            api_key: providerConfigForm.api_key || undefined,
+            base_url: providerConfigForm.base_url || undefined,
+        });
+        if (result.success) {
+            alert(t('enterprise.llm.verifySuccess', 'Configuration verified') + ` (${result.models.length})`);
+            return;
+        }
+        alert(result.error || t('enterprise.llm.verifyFailed', 'Verification failed'));
+    };
+
+    const handleRefreshProviderModels = async () => {
+        const result = await refreshProviderModels.mutateAsync();
+        alert(t('enterprise.llm.refreshSuccess', 'Models refreshed') + ` (${result.models.length})`);
+    };
+
+    const handleStartProviderAuth = async (mode: string) => {
+        const session = await enterpriseApi.startLLMProviderAuth(selectedProvider, mode, selectedTenantId || undefined);
+        setProviderAuthSession(session as LLMProviderAuthSession);
+        if (session.connect_url) {
+            window.open(session.connect_url, '_blank', 'popup,width=540,height=720');
+        }
     };
 
     const handleDeleteCompany = async () => {
@@ -629,25 +785,44 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
 
                 {/* ── LLM Model Pool ── */}
                 {activeTab === 'llm' && (
-                    <WorkspaceLlmSection
+                    <WorkspaceLlmProvidersSection
+                        selectedProvider={selectedProvider}
+                        providerConfigs={providerConfigs}
                         models={models}
-                        providerOptions={providerOptions}
-                        showAddModel={showAddModel}
-                        editingModelId={editingModelId}
-                        modelForm={modelForm}
-                        onStartCreateModel={handleStartCreateModel}
-                        onCancelModelForm={handleCancelModelForm}
-                        onModelFormChange={handleModelFormChange}
-                        onTestDraftModel={handleTestDraftModel}
-                        onCreateModel={handleCreateModel}
-                        onTestExistingModel={handleTestExistingModel}
-                        onUpdateModel={handleUpdateModel}
-                        onToggleModel={handleToggleModel}
+                        configForm={providerConfigForm}
+                        authSession={providerAuthSession}
+                        legacyEditor={showAddModel ? (
+                            <WorkspaceLlmModelEditor
+                                editingModelId={editingModelId}
+                                modelForm={modelForm}
+                                providerOptions={providerOptions}
+                                onCancel={handleCancelModelForm}
+                                onModelFormChange={handleModelFormChange}
+                                onTestDraftModel={handleTestDraftModel}
+                                onCreateModel={handleCreateModel}
+                                onTestExistingModel={handleTestExistingModel}
+                                onUpdateModel={handleUpdateModel}
+                            />
+                        ) : null}
+                        onSelectProvider={(provider: string) => {
+                            setSelectedProvider(provider);
+                            setProviderAuthSession(null);
+                            setShowAddModel(false);
+                            setEditingModelId(null);
+                        }}
+                        onConfigFormChange={handleProviderConfigFormChange}
+                        onSaveConfig={handleSaveProviderConfig}
+                        onVerifyConfig={handleVerifyProviderConfig}
+                        onRefreshModels={handleRefreshProviderModels}
+                        onStartAuth={handleStartProviderAuth}
+                        onDisconnectAuth={() => disconnectProviderAuth.mutate()}
+                        onOpenManualCreate={handleStartCreateModel}
                         onEditModel={handleEditModel}
                         onDeleteModel={handleDeleteModel}
+                        onToggleModel={handleToggleModel}
                         onSetDefaultModel={async (id: string) => {
                             await enterpriseApi.setDefaultModel(id, selectedTenantId);
-                            qc.invalidateQueries({ queryKey: ['llm-models'] });
+                            qc.invalidateQueries({ queryKey: ['llm-models', selectedTenantId] });
                         }}
                     />
                 )}

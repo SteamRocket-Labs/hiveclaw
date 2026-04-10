@@ -1693,6 +1693,10 @@ class ProviderSpec:
     default_max_tokens: int = 8192
     max_input_tokens: int = 256000
     model_max_tokens: dict[str, int] = field(default_factory=dict)
+    supported_auth_modes: list[str] = field(default_factory=lambda: ["api_key"])
+    supports_model_discovery: bool = True
+    managed_login_label: str | None = None
+    known_models: list[str] = field(default_factory=list)
 
 
 # Provider aliases accepted for compatibility
@@ -1720,6 +1724,10 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         default_base_url="https://api.openai.com/v1",
         default_max_tokens=16384,
         max_input_tokens=128000,
+        supported_auth_modes=["api_key", "login_bridge"],
+        supports_model_discovery=False,
+        managed_login_label="使用 ChatGPT 登录",
+        known_models=["gpt-5.4"],
     ),
     "openai-response": ProviderSpec(
         provider="openai-response",
@@ -1758,6 +1766,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
             "qwen-turbo": 8192,
             "qwen-max": 8192,
         },
+        supported_auth_modes=["api_key"],
     ),
     "minimax": ProviderSpec(
         provider="minimax",
@@ -1766,6 +1775,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         default_base_url="https://api.minimaxi.com/v1",
         default_max_tokens=16384,
         max_input_tokens=204800,
+        supported_auth_modes=["api_key", "oauth_web", "oauth_device"],
     ),
     "openrouter": ProviderSpec(
         provider="openrouter",
@@ -1782,6 +1792,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         default_base_url="https://open.bigmodel.cn/api/paas/v4",
         default_max_tokens=8192,
         max_input_tokens=128000,
+        supported_auth_modes=["api_key"],
     ),
     "gemini": ProviderSpec(
         provider="gemini",
@@ -1798,6 +1809,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         default_base_url="https://api.moonshot.cn/v1",
         default_max_tokens=8192,
         max_input_tokens=128000,
+        supported_auth_modes=["api_key"],
     ),
     "vllm": ProviderSpec(
         provider="vllm",
@@ -1806,6 +1818,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         default_base_url="http://localhost:8000/v1",
         default_max_tokens=4096,
         max_input_tokens=32000,
+        supported_auth_modes=["api_key"],
     ),
     "ollama": ProviderSpec(
         provider="ollama",
@@ -1814,6 +1827,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         default_base_url="http://localhost:11434/v1",
         default_max_tokens=4096,
         max_input_tokens=32000,
+        supported_auth_modes=["api_key"],
     ),
     "sglang": ProviderSpec(
         provider="sglang",
@@ -1822,6 +1836,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         default_base_url="http://localhost:30000/v1",
         default_max_tokens=4096,
         max_input_tokens=32000,
+        supported_auth_modes=["api_key"],
     ),
     "custom": ProviderSpec(
         provider="custom",
@@ -1830,6 +1845,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         default_base_url=None,
         default_max_tokens=4096,
         max_input_tokens=128000,
+        supported_auth_modes=["api_key"],
     ),
 }
 
@@ -1858,6 +1874,10 @@ def get_provider_manifest() -> list[dict[str, Any]]:
             "default_max_tokens": spec.default_max_tokens,
             "max_input_tokens": spec.max_input_tokens,
             "model_max_tokens": spec.model_max_tokens,
+            "supported_auth_modes": spec.supported_auth_modes,
+            "supports_model_discovery": spec.supports_model_discovery,
+            "managed_login_label": spec.managed_login_label,
+            "known_models": spec.known_models,
             "aliases": [k for k, v in PROVIDER_ALIASES.items() if v == spec.provider],
         })
     return out

@@ -1053,7 +1053,7 @@ class AgentKernel:
                                 cancel_event=request.cancel_event,
                                 messages=stream_messages,
                                 tools=tools_for_llm if tools_for_llm else None,
-                                temperature=0.7,
+                                temperature=getattr(active_model, "temperature", None) or 0.7,
                                 max_tokens=max_tokens,
                                 on_chunk=_emit_chunk,
                                 on_thinking=_emit_thinking,

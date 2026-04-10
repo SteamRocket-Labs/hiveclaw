@@ -34,6 +34,14 @@ class _DummyAlembicContext:
         self.events.append("run_migrations")
 
 
+class _WriteThroughAlembicContext(_DummyAlembicContext):
+    def run_migrations(self) -> None:
+        self.events.append("run_migrations")
+        assert self.configured_with is not None
+        connection = self.configured_with["connection"]
+        connection.execute(text("INSERT INTO migration_log (message) VALUES ('applied')"))
+
+
 def test_should_bootstrap_when_database_is_empty() -> None:
     from app.db_bootstrap import should_bootstrap_database
 
@@ -162,3 +170,32 @@ def test_run_migrations_with_bootstrap_commits_after_probe_autobegins(tmp_path: 
 
     assert "users" in tables
     assert versions == ["rev_a"]
+
+
+def test_run_migrations_with_bootstrap_commits_normal_migration_path(tmp_path: Path) -> None:
+    from app.db_bootstrap import run_migrations_with_bootstrap
+
+    db_path = tmp_path / "normal_migration_commit.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    metadata = MetaData()
+    Table("alembic_version", metadata, Column("version_num", String(32), primary_key=True))
+    Table("migration_log", metadata, Column("id", Integer, primary_key=True), Column("message", String(64)))
+    context = _WriteThroughAlembicContext()
+
+    with engine.begin() as conn:
+        metadata.create_all(conn)
+        conn.execute(text("INSERT INTO alembic_version (version_num) VALUES ('rev_a')"))
+
+    with engine.connect() as conn:
+        run_migrations_with_bootstrap(
+            conn,
+            alembic_context=context,
+            metadata=metadata,
+            heads=["rev_b"],
+            should_bootstrap_fn=lambda _conn: False,
+        )
+
+    with engine.connect() as verify_conn:
+        messages = [row[0] for row in verify_conn.execute(text("SELECT message FROM migration_log ORDER BY id"))]
+
+    assert messages == ["applied"]

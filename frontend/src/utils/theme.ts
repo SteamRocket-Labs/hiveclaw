@@ -6,11 +6,19 @@
 const STORAGE_KEY = 'hiveclaw-accent-color';
 const LEGACY_KEY = 'clawith-accent-color';
 
+function getStorage(): Storage | null {
+    if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
+        return null;
+    }
+    return window.localStorage;
+}
+
 // One-time migration from old brand name
-const _legacy = localStorage.getItem(LEGACY_KEY);
-if (_legacy && !localStorage.getItem(STORAGE_KEY)) {
-    localStorage.setItem(STORAGE_KEY, _legacy);
-    localStorage.removeItem(LEGACY_KEY);
+const _storage = getStorage();
+const _legacy = _storage?.getItem(LEGACY_KEY);
+if (_legacy && !_storage?.getItem(STORAGE_KEY)) {
+    _storage?.setItem(STORAGE_KEY, _legacy);
+    _storage?.removeItem(LEGACY_KEY);
 }
 
 /** Convert hex to RGB */
@@ -45,6 +53,7 @@ function luminance(rgb: [number, number, number]): number {
 
 /** Apply an accent color to the document */
 export function applyAccentColor(hex: string) {
+    if (typeof document === 'undefined') return;
     const rgb = hexToRgb(hex);
     const lum = luminance(rgb);
     const root = document.documentElement;
@@ -61,13 +70,13 @@ export function applyAccentColor(hex: string) {
 
 /** Save accent color to localStorage */
 export function saveAccentColor(hex: string) {
-    localStorage.setItem(STORAGE_KEY, hex);
+    getStorage()?.setItem(STORAGE_KEY, hex);
     applyAccentColor(hex);
 }
 
 /** Load and apply saved accent color (call on app init) */
 export function loadSavedAccentColor() {
-    const saved = localStorage.getItem(STORAGE_KEY);
+    const saved = getStorage()?.getItem(STORAGE_KEY);
     if (saved) {
         applyAccentColor(saved);
     }
@@ -75,12 +84,13 @@ export function loadSavedAccentColor() {
 
 /** Get the currently saved accent color */
 export function getSavedAccentColor(): string | null {
-    return localStorage.getItem(STORAGE_KEY);
+    return getStorage()?.getItem(STORAGE_KEY) || null;
 }
 
 /** Reset to default (remove override, let CSS file values take effect) */
 export function resetAccentColor() {
-    localStorage.removeItem(STORAGE_KEY);
+    getStorage()?.removeItem(STORAGE_KEY);
+    if (typeof document === 'undefined') return;
     const root = document.documentElement;
     root.style.removeProperty('--accent-primary');
     root.style.removeProperty('--accent-hover');

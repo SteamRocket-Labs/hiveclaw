@@ -3,9 +3,9 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, func
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 
@@ -27,10 +27,17 @@ class LLMModel(Base):
     supports_vision: Mapped[bool] = mapped_column(Boolean, default=False)
     max_output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)  # Per-model output token limit override
     max_input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)  # Context window override
+    temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
+    provider_config_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("llm_provider_configs.id"), nullable=True, index=True
+    )
+    discovered_from_provider: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+    provider_config: Mapped["LLMProviderConfig | None"] = relationship("LLMProviderConfig", back_populates="models")
 
     @property
     def api_key(self) -> str:

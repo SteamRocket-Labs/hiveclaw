@@ -251,6 +251,68 @@ class WeChatPersonalStreamManager:
             except Exception as e:
                 logger.debug(f"[WeChatPersonal Stream] typing indicator failed: {e}")
 
+        # Register channel_file_sender so send_channel_file tool goes via iLink CDN
+        import mimetypes as _mt
+        from pathlib import Path as _P
+
+        from app.services.agent_tools import channel_file_sender as _cfs
+        from app.services.wechat_ilink_client import (
+            MEDIA_TYPE_FILE as _MT_FILE,
+            MEDIA_TYPE_IMAGE as _MT_IMG,
+            MEDIA_TYPE_VIDEO as _MT_VID,
+        )
+
+        async def _wechat_file_sender(file_path, accompany_msg: str = ""):
+            fp = _P(file_path)
+            if not fp.exists():
+                raise FileNotFoundError(f"File not found: {fp}")
+
+            # Determine media type from MIME
+            mime, _ = _mt.guess_type(str(fp))
+            mime = mime or ""
+            if mime.startswith("image/"):
+                media_type = _MT_IMG
+            elif mime.startswith("video/"):
+                media_type = _MT_VID
+            else:
+                media_type = _MT_FILE
+
+            # Fetch fresh context_token for this user
+            ctx_token = await get_context_token(agent_id, from_user) or msg.context_token
+
+            client = ILinkClient(base_url)
+            # Optional caption as separate text message
+            if accompany_msg:
+                try:
+                    await client.send_message(
+                        bot_token=bot_token,
+                        to_user_id=from_user,
+                        context_token=ctx_token,
+                        text=accompany_msg[:TEXT_MESSAGE_MAX_LEN],
+                    )
+                except Exception as e:
+                    logger.warning(f"[WeChatPersonal Stream] caption send failed: {e}")
+
+            # Upload file to iLink CDN
+            file_data = fp.read_bytes()
+            upload = await client.upload_media(
+                bot_token=bot_token,
+                to_user_id=from_user,
+                file_data=file_data,
+                media_type=media_type,
+            )
+            await client.send_media_message(
+                bot_token=bot_token,
+                to_user_id=from_user,
+                context_token=ctx_token,
+                upload=upload,
+                media_type=media_type,
+                file_name=fp.name,
+            )
+            logger.info(f"[WeChatPersonal Stream] File sent via iLink: {fp.name}")
+
+        token_cfs = _cfs.set(_wechat_file_sender)
+
         # Process message through LLM pipeline
         try:
             reply_text = await _process_wechat_message(
@@ -261,6 +323,8 @@ class WeChatPersonalStreamManager:
         except Exception as e:
             logger.error(f"[WeChatPersonal Stream] LLM processing failed: {e}")
             reply_text = "抱歉，处理消息时出现错误，请稍后再试。"
+        finally:
+            _cfs.reset(token_cfs)
 
         # Send reply — split if over 4000 chars
         context_token = await get_context_token(agent_id, from_user) or msg.context_token

@@ -9,6 +9,11 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 
+# Force LLMProviderConfig into the SQLAlchemy registry before LLMModel
+# mapper configuration. Without this, the string "LLMProviderConfig" in
+# the relationship() cannot resolve.
+import app.models.llm_provider_config  # noqa: F401
+
 
 class LLMModel(Base):
     """LLM model in the platform model pool."""

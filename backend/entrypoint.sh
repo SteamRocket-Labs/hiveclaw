@@ -28,6 +28,7 @@ async def main():
     import app.models.user           # noqa
     import app.models.agent          # noqa
     import app.models.task           # noqa
+    import app.models.llm_provider_config  # noqa: must be before llm
     import app.models.llm            # noqa
     import app.models.tool           # noqa
     import app.models.audit          # noqa
@@ -47,7 +48,6 @@ async def main():
     import app.models.gateway_message # noqa
     import app.models.runtime_task    # noqa
     import app.models.capability_install  # noqa
-    import app.models.llm_provider_config  # noqa
 
     # Create all tables that don't exist yet (safe to run on every startup)
     async with engine.begin() as conn:

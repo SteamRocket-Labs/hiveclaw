@@ -146,6 +146,7 @@ async def lifespan(app: FastAPI):
         import app.models.user           # noqa
         import app.models.agent          # noqa
         import app.models.task           # noqa
+        import app.models.llm_provider_config  # noqa: must be before llm
         import app.models.llm            # noqa
         import app.models.tool           # noqa
         import app.models.audit          # noqa
@@ -171,7 +172,6 @@ async def lifespan(app: FastAPI):
         import app.models.refresh_token  # noqa
         import app.models.guard_policy  # noqa
         import app.models.tenant_channel_config  # noqa
-        import app.models.llm_provider_config  # noqa
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             # Add enum values to channel_type_enum if they don't exist yet (idempotent)

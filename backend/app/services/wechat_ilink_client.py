@@ -545,15 +545,19 @@ class ILinkClient:
             errmsg = data.get("errmsg", "unknown")
             raise ILinkAPIError(f"getuploadurl failed: ret={ret} errcode={errcode} errmsg={errmsg}")
 
-        upload_param = data.get("upload_param", "")
-        if not upload_param:
-            raise ILinkAPIError(f"getuploadurl returned empty upload_param, full response: {data}")
+        # iLink returns 'upload_full_url' — a complete CDN URL with all params baked in
+        # (encrypted_query_param, filekey, taskid). Fallback to 'upload_param' for
+        # backward compatibility with older API responses.
+        cdn_url = data.get("upload_full_url", "")
+        if not cdn_url:
+            # Fallback: old-style response with just upload_param
+            upload_param = data.get("upload_param", "")
+            if not upload_param:
+                raise ILinkAPIError(f"getuploadurl returned no upload URL, full response: {data}")
+            cdn_url = f"{cdn_base_url}/upload?encrypted_query_param={quote(upload_param)}&filekey={quote(filekey)}"
 
         # Step 2: Encrypt file
         ciphertext = aes_ecb_encrypt(file_data, aes_key_bytes)
-
-        # Step 3: Upload to CDN
-        cdn_url = f"{cdn_base_url}/upload?encrypted_query_param={quote(upload_param)}&filekey={quote(filekey)}"
         download_param = ""
 
         for attempt in range(CDN_MAX_RETRIES):

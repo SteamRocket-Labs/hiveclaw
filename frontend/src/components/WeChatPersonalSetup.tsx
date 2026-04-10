@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import { QRCodeSVG } from 'qrcode.react';
 import { channelApi } from '../api/domains/channels';
 
 interface WeChatPersonalSetupProps {
@@ -181,10 +182,12 @@ export default function WeChatPersonalSetup({ agentId, onConnected }: WeChatPers
                         {t('wechatPersonal.qr.scanPrompt', 'Scan with WeChat')}
                     </div>
                     <div style={qrContainerStyle}>
-                        <img
-                            src={qrUrl}
-                            alt="WeChat QR Code"
-                            style={{ width: '200px', height: '200px', display: 'block' }}
+                        <QRCodeSVG
+                            value={qrUrl}
+                            size={200}
+                            level="M"
+                            bgColor="#ffffff"
+                            fgColor="#000000"
                         />
                     </div>
                     <div style={statusStyle}>{statusMsg}</div>

@@ -156,9 +156,18 @@ async def test_test_category_config_reports_feishu_cli_status(monkeypatch):
     async def fake_cli_available() -> bool:
         return True
 
+    async def fake_probe(*, agent_id, db, tenant_id):
+        assert agent_id
+        return {
+            "cardkit_verified": True,
+            "cardkit_last_error": None,
+            "cardkit_probe_supported": True,
+        }
+
     monkeypatch.setattr(tools_api, "_require_manage_access", fake_require_manage_access)
     monkeypatch.setattr("app.services.agent_tool_domains.feishu_cli._feishu_cli_available", fake_cli_available)
     monkeypatch.setattr("app.api.tools.get_settings", lambda: SimpleNamespace(FEISHU_CLI_ENABLED=True, FEISHU_CLI_BIN="lark-cli"))
+    monkeypatch.setattr(tools_api, "_probe_feishu_cardkit_status", fake_probe, raising=False)
 
     result = await tools_api.test_category_config(
         agent_id=agent_id,
@@ -171,6 +180,10 @@ async def test_test_category_config_reports_feishu_cli_status(monkeypatch):
     assert result["cli_enabled"] is True
     assert result["cli_available"] is True
     assert result["cli_bin"] == "lark-cli"
+    assert result["cardkit_dependency_ready"] is False
+    assert result["cardkit_ready"] is False
+    assert result["cardkit_verified"] is True
+    assert result["cardkit_probe_supported"] is True
 
 
 @pytest.mark.asyncio
@@ -194,6 +207,11 @@ async def test_get_feishu_runtime_status_reports_global_cli(monkeypatch):
     assert result["cli_available"] is True
     assert result["cli_bin"] == "lark-cli"
     assert result["base_tasks_ready"] is True
+    assert result["cardkit_dependency_ready"] is False
+    assert result["cardkit_verified"] is None
+    assert result["cardkit_last_error"] is None
+    assert result["cardkit_probe_supported"] is True
+    assert result["cardkit_ready"] is result["cardkit_dependency_ready"]
     assert "cardkit_ready" in result
     assert "tenant_channel_configured" in result
 
@@ -241,6 +259,11 @@ async def test_get_agent_feishu_runtime_status_reports_agent_access(monkeypatch)
     assert result["office_access"] is True
     assert result["cli_available"] is False
     assert result["base_tasks_ready"] is True  # Base/Tasks now use Open API, same as office_access
+    assert result["cardkit_dependency_ready"] is True
+    assert result["cardkit_verified"] is None
+    assert result["cardkit_last_error"] is None
+    assert result["cardkit_probe_supported"] is True
+    assert result["cardkit_ready"] is result["cardkit_dependency_ready"]
     assert "cardkit_ready" in result
     assert "tenant_channel_configured" in result
 

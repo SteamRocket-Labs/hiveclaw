@@ -41,6 +41,10 @@ export interface FeishuRuntimeStatus {
   cli_bin: string;
   docs_read_ready: boolean;
   base_tasks_ready: boolean;
+  cardkit_dependency_ready?: boolean;
+  cardkit_verified?: boolean | null;
+  cardkit_last_error?: string | null;
+  cardkit_probe_supported?: boolean;
   cardkit_ready?: boolean;
   tenant_channel_configured?: boolean;
   channel_configured?: boolean;

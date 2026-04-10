@@ -733,6 +733,16 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
     event = body.get("event", {})
     event_type = body.get("header", {}).get("event_type", "")
 
+    if event_type == "card.action.trigger":
+        class _CardActionRequest:
+            def __init__(self, payload: dict):
+                self._payload = payload
+
+            async def json(self):
+                return self._payload
+
+        return await feishu_card_callback(_CardActionRequest(event), db)
+
     if event_type == "im.message.receive_v1":
         message = event.get("message", {})
         sender = event.get("sender", {}).get("sender_id", {})

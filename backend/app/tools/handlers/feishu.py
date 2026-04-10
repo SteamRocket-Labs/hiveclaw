@@ -985,9 +985,8 @@ async def feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(ToolMeta(
     name="feishu_calendar_list",
     description=(
-        "Query Feishu calendar. Automatically reads the current conversation user's "
-        "real freebusy (busy slots), and also lists bot-created events. "
-        "Use to check availability and avoid scheduling conflicts."
+        "Check a candidate attendee's freebusy window and list meetings already created on the "
+        "agent/bot calendar. Use this before scheduling so the agent can pick a conflict-free slot."
     ),
     parameters={
         "type": "object",
@@ -1002,11 +1001,15 @@ async def feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
             },
             "user_open_id": {
                 "type": "string",
-                "description": "open_id of the user to query freebusy for. Default: current conversation sender.",
+                "description": "open_id of the attendee whose freebusy should be checked. Default: current conversation sender.",
+            },
+            "user_email": {
+                "type": "string",
+                "description": "Compatibility alias for attendee lookup when you only know the email.",
             },
             "max_results": {
                 "type": "integer",
-                "description": "Max events to return (default 20)",
+                "description": "Max agent-created calendar events to return (default 20).",
             },
         },
         "required": [],
@@ -1026,7 +1029,10 @@ async def feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
 
 @tool(ToolMeta(
     name="feishu_calendar_create",
-    description="Create a Feishu calendar event immediately. The current user is automatically invited as attendee \u2014 no email or authorization required. Just provide the title and time.",
+    description=(
+        "Create a meeting on the agent/bot calendar and invite attendees. "
+        "Use attendee names, emails, or open_ids when the user asks the agent to arrange a meeting."
+    ),
     parameters={
         "type": "object",
         "properties": {
@@ -1087,11 +1093,17 @@ async def feishu_calendar_create(agent_id: uuid.UUID, arguments: dict) -> str:
 
 @tool(ToolMeta(
     name="feishu_calendar_update",
-    description="Update an existing Feishu calendar event. Provide only the fields you want to change.",
+    description=(
+        "Update an existing meeting previously created on the agent/bot calendar. "
+        "Provide the event_id and only the fields you want to change."
+    ),
     parameters={
         "type": "object",
         "properties": {
-            "user_email": {"type": "string", "description": "Calendar owner's email"},
+            "user_email": {
+                "type": "string",
+                "description": "Compatibility alias only. This does not change ownership; the event still belongs to the agent calendar.",
+            },
             "event_id": {"type": "string", "description": "Event ID from feishu_calendar_list"},
             "summary": {"type": "string", "description": "New title"},
             "description": {"type": "string", "description": "New description"},
@@ -1099,7 +1111,7 @@ async def feishu_calendar_create(agent_id: uuid.UUID, arguments: dict) -> str:
             "end_time": {"type": "string", "description": "New end time (ISO 8601)"},
             "location": {"type": "string", "description": "New location"},
         },
-        "required": ["user_email", "event_id"],
+        "required": ["event_id"],
     },
     category="feishu",
     display_name="Feishu Calendar Update",
@@ -1116,14 +1128,17 @@ async def feishu_calendar_update(agent_id: uuid.UUID, arguments: dict) -> str:
 
 @tool(ToolMeta(
     name="feishu_calendar_delete",
-    description="Delete (cancel) a Feishu calendar event.",
+    description="Delete (cancel) a meeting previously created on the agent/bot calendar.",
     parameters={
         "type": "object",
         "properties": {
-            "user_email": {"type": "string", "description": "Calendar owner's email"},
+            "user_email": {
+                "type": "string",
+                "description": "Compatibility alias only. The event is still deleted from the agent calendar.",
+            },
             "event_id": {"type": "string", "description": "Event ID to delete"},
         },
-        "required": ["user_email", "event_id"],
+        "required": ["event_id"],
     },
     category="feishu",
     display_name="Feishu Calendar Delete",

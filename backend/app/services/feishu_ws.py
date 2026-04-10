@@ -149,7 +149,18 @@ class FeishuWSManager:
             """Handle card.action.trigger events from Feishu WebSocket."""
             try:
                 logger.info(f"[Feishu WS] Card action received for agent {agent_id}")
-                asyncio.run_coroutine_threadsafe(self._async_handle_card_action(agent_id, data), main_loop)
+                coro = self._async_handle_card_action(agent_id, data)
+                loop = asyncio.get_running_loop()
+                if hasattr(loop, "create_task"):
+                    loop.create_task(coro)
+                else:
+                    asyncio.run_coroutine_threadsafe(coro, loop)
+            except RuntimeError:
+                try:
+                    main_loop = [t for t in asyncio.all_tasks() if t.get_name() != "feishu-ws"][0].get_loop()
+                    asyncio.run_coroutine_threadsafe(self._async_handle_card_action(agent_id, data), main_loop)
+                except Exception as e:
+                    logger.error(f"[Feishu WS] Could not dispatch card action to main loop: {e}", exc_info=True)
             except Exception as e:
                 logger.error(f"[Feishu WS] Could not dispatch card action: {e}", exc_info=True)
 

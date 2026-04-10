@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -52,3 +53,43 @@ async def test_make_no_proxy_connect_scopes_override_and_restores(monkeypatch):
 
     assert fake_websockets.connect is original_connect
     assert calls == [{"proxy": None}]
+
+
+def test_card_action_callback_is_scheduled_from_dispatcher(monkeypatch):
+    import app.services.feishu_ws as feishu_ws
+
+    scheduled: dict[str, object] = {}
+    handlers: dict[str, object] = {}
+
+    class _FakeBuilder:
+        def register_p2_customized_event(self, name, handler):
+            handlers[name] = handler
+            return self
+
+        def build(self):
+            return handlers
+
+    class _FakeDispatcherHandler:
+        @staticmethod
+        def builder(*_args, **_kwargs):
+            return _FakeBuilder()
+
+    monkeypatch.setattr(feishu_ws, "lark", SimpleNamespace(EventDispatcherHandler=_FakeDispatcherHandler))
+
+    def fake_run_coroutine_threadsafe(coro, loop):
+        scheduled["coro"] = coro
+        scheduled["loop"] = loop
+        coro.close()
+        return SimpleNamespace()
+
+    monkeypatch.setattr(feishu_ws.asyncio, "run_coroutine_threadsafe", fake_run_coroutine_threadsafe)
+    monkeypatch.setattr(feishu_ws.asyncio, "get_running_loop", lambda: "loop-token")
+
+    manager = feishu_ws.FeishuWSManager()
+    dispatcher = manager._create_event_handler(uuid4())
+
+    assert "card.action.trigger" in dispatcher
+    dispatcher["card.action.trigger"]({"event": {"operator": {"open_id": "ou_test"}}})
+
+    assert scheduled["loop"] == "loop-token"
+    assert scheduled["coro"] is not None

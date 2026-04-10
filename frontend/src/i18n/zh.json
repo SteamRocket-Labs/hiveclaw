@@ -1188,8 +1188,12 @@
       "channelAuth": "渠道已认证",
       "tenantAuth": "租户已认证",
       "cardkit": "CardKit",
+      "cardkitDependencies": "CardKit 依赖状态",
+      "cardkitVerified": "CardKit 已验证",
+      "cardkitLastError": "最近一次 CardKit 探测错误",
       "docsReady": "文档 / Wiki / 表格",
-      "baseReady": "数据库 / 任务"
+      "baseReady": "数据库 / 任务",
+      "NotVerified": "未验证"
     }
   },
   "common": {

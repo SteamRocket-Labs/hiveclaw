@@ -416,6 +416,49 @@ async def test_feishu_task_comment_adds_comment(monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.mark.asyncio
+async def test_feishu_task_comment_uses_current_openapi_comment_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.agent_tool_domains import feishu_tasks
+
+    captured: dict[str, object] = {}
+
+    async def fake_get_feishu_token(_agent_id):
+        return ("app", "tenant-token")
+
+    async def fake_task_api_request(method: str, token: str, path: str, body=None, params=None):
+        captured["method"] = method
+        captured["token"] = token
+        captured["path"] = path
+        captured["body"] = body
+        captured["params"] = params
+        return {"comment": {"id": "comment_openapi_1"}}
+
+    async def fake_cli_available() -> bool:
+        raise AssertionError("CLI fallback should not run when OpenAPI succeeds")
+
+    monkeypatch.setattr(feishu_tasks, "_get_feishu_token", fake_get_feishu_token)
+    monkeypatch.setattr(feishu_tasks, "_task_api_request", fake_task_api_request)
+    monkeypatch.setattr(feishu_tasks, "_feishu_cli_available", fake_cli_available)
+
+    result = await feishu_tasks._feishu_task_comment(
+        "agent-1",
+        {"task_id": "task_1", "content": "已完成初稿，请 review。"},
+    )
+
+    assert captured == {
+        "method": "POST",
+        "token": "tenant-token",
+        "path": "/task/v2/comments",
+        "body": {
+            "content": "已完成初稿，请 review。",
+            "resource_type": "task",
+            "resource_id": "task_1",
+        },
+        "params": None,
+    }
+    assert "comment_openapi_1" in result
+
+
+@pytest.mark.asyncio
 async def test_feishu_base_record_upload_attachment_uses_workspace_file(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     from app.services.agent_tool_domains import feishu_base
 

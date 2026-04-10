@@ -22,6 +22,10 @@ async def _feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
     from app.services.agent_tools import channel_feishu_sender_open_id
 
     user_email = arguments.get("user_email", "").strip()
+    try:
+        max_results = max(1, int(arguments.get("max_results", 20)))
+    except (TypeError, ValueError):
+        max_results = 20
 
     creds = await _get_feishu_token(agent_id)
     if not creds:
@@ -106,11 +110,11 @@ async def _feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
                             busy_lines.append(f"  🔴 {s}–{e}")
                         except Exception:
                             busy_lines.append(f"  🔴 {slot.get('start_time')}–{slot.get('end_time')}")
-                    freebusy_section = "\n📌 **用户真实日历（忙碌时段）**：\n" + "\n".join(busy_lines)
+                    freebusy_section = "📌 **参与人忙碌时段**：\n" + "\n".join(busy_lines)
                 else:
-                    freebusy_section = "\n📌 **用户真实日历**：该时段全部空闲。"
+                    freebusy_section = "📌 **参与人忙碌时段**：该时段全部空闲。"
         except Exception as _fe:
-            freebusy_section = f"\n⚠️ Freebusy 查询异常: {_fe}"
+            freebusy_section = f"⚠️ 参与人忙闲查询异常：{_fe}"
 
     # ── 2. Also list bot's own calendar events ───────────────────────────────
     agent_cal_id, cal_err = await _get_agent_calendar_id(token)
@@ -141,13 +145,20 @@ async def _feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
         return f"❌ Calendar API error: {data.get('msg')} (code {data.get('code')})"
 
     items = data.get("data", {}).get("items", [])
+    limited_items = items[:max_results]
     if not items and not freebusy_section:
-        return "📅 该时间段内没有日程。"
+        return "📅 **Agent 创建的日历事件**：该时间段内没有事件。"
 
     lines = []
-    if items:
-        lines.append(f"📅 Bot 日历共 {len(items)} 个日程：\n")
-    for ev in items:
+    if freebusy_section:
+        lines.append(freebusy_section)
+
+    if limited_items:
+        header = f"📅 **Agent 创建的日历事件**（显示 {len(limited_items)}/{len(items)} 条）："
+        lines.append(header)
+    elif agent_cal_id:
+        lines.append("📅 **Agent 创建的日历事件**：该时间段内没有事件。")
+    for ev in limited_items:
         summary = ev.get("summary", "(no title)")
         start = ev.get("start_time", {}).get("timestamp", "")
         end_t = ev.get("end_time", {}).get("timestamp", "")
@@ -162,10 +173,7 @@ async def _feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
         loc_str = f" | 📍{location}" if location else ""
         lines.append(f"- **{summary}** | 🕐{s}–{e}{loc_str}  (ID: `{event_id}`)")
 
-    if freebusy_section:
-        lines.append(freebusy_section)
-
-    return "\n".join(lines) if lines else "📅 该时间段内没有日程。"
+    return "\n\n".join(lines) if lines else "📅 **Agent 创建的日历事件**：该时间段内没有事件。"
 
 
 async def _feishu_calendar_create(agent_id: uuid.UUID, arguments: dict) -> str:
@@ -280,6 +288,7 @@ async def _feishu_calendar_create(agent_id: uuid.UUID, arguments: dict) -> str:
     invite_note = "\n（已向您发送日历邀请，请在飞书日历中确认）" if attendee_open_ids else ""
     return (
         f"✅ 日历事件已创建！\n"
+        f"**Organizer**: Agent / Bot\n"
         f"**标题**: {summary}\n"
         f"**时间**: {start_time} → {end_time}{att_str}\n"
         f"**Event ID**: `{event_id}`{invite_note}"
@@ -289,19 +298,14 @@ async def _feishu_calendar_create(agent_id: uuid.UUID, arguments: dict) -> str:
 async def _feishu_calendar_update(agent_id: uuid.UUID, arguments: dict) -> str:
     import httpx
 
-    user_email = arguments.get("user_email", "").strip()
     event_id = arguments.get("event_id", "").strip()
-    if not user_email or not event_id:
-        return "❌ Both 'user_email' and 'event_id' are required."
+    if not event_id:
+        return "❌ 'event_id' is required."
 
     creds = await _get_feishu_token(agent_id)
     if not creds:
         return "❌ Agent has no Feishu channel configured."
     _, token = creds
-
-    open_id = await _feishu_resolve_open_id(token, user_email)
-    if not open_id:
-        return f"❌ User '{user_email}' not found."
 
     agent_cal_id, cal_err = await _get_agent_calendar_id(token)
     if not agent_cal_id:
@@ -334,25 +338,20 @@ async def _feishu_calendar_update(agent_id: uuid.UUID, arguments: dict) -> str:
     if data.get("code") != 0:
         return f"❌ Failed to update: {data.get('msg')} (code {data.get('code')})"
 
-    return f"✅ Event `{event_id}` updated. Changed: {', '.join(patch.keys())}."
+    return f"✅ Agent organizer event `{event_id}` updated. Changed: {', '.join(patch.keys())}."
 
 
 async def _feishu_calendar_delete(agent_id: uuid.UUID, arguments: dict) -> str:
     import httpx
 
-    user_email = arguments.get("user_email", "").strip()
     event_id = arguments.get("event_id", "").strip()
-    if not user_email or not event_id:
-        return "❌ Both 'user_email' and 'event_id' are required."
+    if not event_id:
+        return "❌ 'event_id' is required."
 
     creds = await _get_feishu_token(agent_id)
     if not creds:
         return "❌ Agent has no Feishu channel configured."
     _, token = creds
-
-    open_id = await _feishu_resolve_open_id(token, user_email)
-    if not open_id:
-        return f"❌ User '{user_email}' not found."
 
     agent_cal_id, cal_err = await _get_agent_calendar_id(token)
     if not agent_cal_id:
@@ -368,4 +367,4 @@ async def _feishu_calendar_delete(agent_id: uuid.UUID, arguments: dict) -> str:
     if data.get("code") != 0:
         return f"❌ Failed to delete: {data.get('msg')} (code {data.get('code')})"
 
-    return f"✅ Event `{event_id}` deleted successfully."
+    return f"✅ Agent organizer event `{event_id}` deleted successfully."

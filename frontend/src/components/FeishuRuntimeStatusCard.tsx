@@ -13,6 +13,11 @@ function boolKey(value: boolean, positive: string, negative: string) {
   return value ? positive : negative;
 }
 
+function probeKey(value: boolean | null | undefined) {
+  if (value === null || value === undefined) return 'NotVerified';
+  return value ? 'Ready' : 'NeedsAttention';
+}
+
 function statusTone(status: FeishuRuntimeStatus) {
   if (status.base_tasks_ready) return { key: 'Ready', fallback: 'Ready', color: 'var(--success)' };
   if (status.ok) return { key: 'NeedsAttention', fallback: 'Needs Attention', color: 'var(--warning, #f59e0b)' };
@@ -87,8 +92,12 @@ export function FeishuRuntimeStatusCard({ status, compact = false, isAdmin = fal
           <span>{t(`feishu.runtime.${boolKey(Boolean(status.tenant_channel_configured), 'Configured', 'Missing')}`, Boolean(status.tenant_channel_configured) ? 'Configured' : 'Missing')}</span>
         </div>
         <div style={rowStyle}>
-          <span>{t('feishu.runtime.cardkit', 'CardKit')}</span>
-          <span>{t(`feishu.runtime.${boolKey(Boolean(status.cardkit_ready), 'Ready', 'NeedsAttention')}`, Boolean(status.cardkit_ready) ? 'Ready' : 'Needs Attention')}</span>
+          <span>{t('feishu.runtime.cardkitDependencies', 'CardKit Dependencies')}</span>
+          <span>{t(`feishu.runtime.${boolKey(Boolean(status.cardkit_dependency_ready ?? status.cardkit_ready), 'Ready', 'NeedsAttention')}`, Boolean(status.cardkit_dependency_ready ?? status.cardkit_ready) ? 'Ready' : 'Needs Attention')}</span>
+        </div>
+        <div style={rowStyle}>
+          <span>{t('feishu.runtime.cardkitVerified', 'CardKit Verified')}</span>
+          <span>{t(`feishu.runtime.${probeKey(status.cardkit_verified)}`, status.cardkit_verified === null || status.cardkit_verified === undefined ? 'Not Verified' : status.cardkit_verified ? 'Ready' : 'Needs Attention')}</span>
         </div>
         <div style={rowStyle}>
           <span>{t('feishu.runtime.docsReady', 'Docs / Wiki / Sheets')}</span>
@@ -98,6 +107,11 @@ export function FeishuRuntimeStatusCard({ status, compact = false, isAdmin = fal
           <span>{t('feishu.runtime.baseReady', 'Base / Tasks')}</span>
           <span>{t(`feishu.runtime.${boolKey(status.base_tasks_ready, 'Ready', 'NeedsAttention')}`, status.base_tasks_ready ? 'Ready' : 'Needs Attention')}</span>
         </div>
+        {status.cardkit_verified === false && status.cardkit_last_error ? (
+          <div style={{ fontSize: '11px', color: 'var(--warning, #f59e0b)', lineHeight: 1.5 }}>
+            {t('feishu.runtime.cardkitLastError', 'Last CardKit probe error')}: {status.cardkit_last_error}
+          </div>
+        ) : null}
       </div>
     </div>
   );

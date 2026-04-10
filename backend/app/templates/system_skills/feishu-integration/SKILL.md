@@ -43,6 +43,10 @@ Use this skill when the user wants real work performed inside Feishu/Lark: send 
 - Feishu App ID **and** App Secret must be configured in **Enterprise Settings -> Org Sync** for office tools to work.
 - Person identifiers resolve in this order: `user_id` -> `open_id` -> lookup via `feishu_user_search`.
 - All tokens, IDs, and codes come from tool responses or the user — read or ask first, then act.
+- CardKit status has two meanings in the admin/runtime UI:
+  - **CardKit Dependencies** = SDK + auth prerequisites are present.
+  - **CardKit Verified** = the explicit probe succeeded in the current admin session.
+- OpenAPI is the primary path. Some office workflows can still fall back to CLI/runtime helpers, but message send, CardKit, approvals, and calendar depend on real Feishu app auth and scopes.
 
 ## Tool Reference
 
@@ -102,10 +106,10 @@ Use this skill when the user wants real work performed inside Feishu/Lark: send 
 ### Calendar
 | Tool | Purpose | Key Params |
 |------|---------|------------|
-| `feishu_calendar_list` | Query events + freebusy | optional `user_open_id` (check someone's schedule), `start_time`, `end_time` (ISO 8601), `max_results` (default 20) |
-| `feishu_calendar_create` | Create an event + invite attendees | `summary`, `start_time`, `end_time` (ISO 8601), optional `description`, `location`, `timezone` (default Asia/Shanghai), `attendee_names`, `attendee_emails`, `attendee_open_ids` |
-| `feishu_calendar_update` | Update an event | `user_email`, `event_id`, plus fields to change: `summary`, `description`, `location`, `start_time`, `end_time` |
-| `feishu_calendar_delete` | Delete an event | `user_email`, `event_id` |
+| `feishu_calendar_list` | Check a participant's busy windows and list agent-owned meetings | optional `user_open_id` or `user_email`, `start_time`, `end_time` (ISO 8601), `max_results` (default 20) |
+| `feishu_calendar_create` | Create a meeting on the agent calendar and invite attendees | `summary`, `start_time`, `end_time` (ISO 8601), optional `description`, `location`, `timezone` (default Asia/Shanghai), `attendee_names`, `attendee_emails`, `attendee_open_ids` |
+| `feishu_calendar_update` | Update an agent-owned event | `event_id`, plus fields to change: `summary`, `description`, `location`, `start_time`, `end_time` |
+| `feishu_calendar_delete` | Cancel an agent-owned event | `event_id` |
 
 ## Common Workflows
 
@@ -148,14 +152,22 @@ Use this skill when the user wants real work performed inside Feishu/Lark: send 
 4. `feishu_approval_get(instance_id="...")` when you already know the instance
 
 ### Calendar — Scheduling Meetings
-You have full scheduling capability: check availability, create events, invite people, reschedule, and cancel.
+Calendar in this platform is **agent-first**:
+
+- the agent checks attendee availability
+- the meeting is created on the **agent/bot calendar**
+- attendees are invited into that meeting
+- later updates/deletes only apply to meetings created by the agent
 
 1. Resolve the person's `open_id`: call `feishu_user_search(name="...")` first
-2. Check availability: `feishu_calendar_list(user_open_id="ou_xxx", start_time="...", end_time="...")`
-3. Find a free slot from the freebusy data returned
-4. Create and invite: `feishu_calendar_create(summary="...", start_time="...", end_time="...", attendee_names=["John"], attendee_emails=["john@company.com"])`
-5. Update if needed: `feishu_calendar_update(user_email="...", event_id="...", start_time="...", end_time="...")`
-6. Cancel if asked: `feishu_calendar_delete(user_email="...", event_id="...")`
+2. Check availability: `feishu_calendar_list(user_open_id="ou_xxx", start_time="...", end_time="...", max_results=10)`
+3. Read the output in two sections:
+   - attendee busy windows
+   - meetings already created on the agent calendar
+4. Find a free slot from the freebusy data returned
+5. Create and invite: `feishu_calendar_create(summary="...", start_time="...", end_time="...", attendee_names=["John"], attendee_emails=["john@company.com"])`
+6. Update if needed: `feishu_calendar_update(event_id="...", start_time="...", end_time="...")`
+7. Cancel if asked: `feishu_calendar_delete(event_id="...")`
 
 ## How to Work Well
 
@@ -166,13 +178,18 @@ You have full scheduling capability: check availability, create events, invite p
 - For approvals, ask the user for the real `approval_code` when it's unknown
 
 ### Be Proactive with Calendar
-You have full scheduling capability — check availability, create events, invite attendees, reschedule, and cancel. When someone asks you to set up a meeting, act on it directly using your calendar tools. Resolve identifiers via `feishu_user_search` when you only have a name, then pass the `user_open_id` to `feishu_calendar_list`.
+When someone asks you to set up a meeting, act directly:
+- resolve attendee identities with `feishu_user_search`
+- check availability with `feishu_calendar_list`
+- create the meeting on the agent calendar with `feishu_calendar_create`
+- later use `feishu_calendar_update` / `feishu_calendar_delete` only for that agent-owned event
 
 ### Surface Actionable Error Details
 When a tool returns an error, read the error message and tell the user exactly what's needed:
 - "not configured" → Admin needs to set Feishu App ID and App Secret in Enterprise Settings → Org Sync
 - Permission error → Name the specific missing Feishu API scope (e.g., `calendar:calendar`)
 - "User not found" → Try `feishu_user_search` with an alternative spelling, or ask the user
+- CardKit probe failed but dependencies are present → tell the user auth exists but CardKit scopes or app publish state still need attention
 
 ### Confirm Before Destructive Actions
 Before calling `feishu_doc_delete` or `feishu_base_record_delete`, restate the target and get explicit confirmation from the user.

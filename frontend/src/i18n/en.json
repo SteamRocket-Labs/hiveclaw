@@ -1197,8 +1197,12 @@
       "channelAuth": "Channel Authenticated",
       "tenantAuth": "Tenant Authenticated",
       "cardkit": "CardKit",
+      "cardkitDependencies": "CardKit Dependencies",
+      "cardkitVerified": "CardKit Verified",
+      "cardkitLastError": "Last CardKit probe error",
       "docsReady": "Docs / Wiki / Sheets",
-      "baseReady": "Database / Tasks"
+      "baseReady": "Database / Tasks",
+      "NotVerified": "Not Verified"
     }
   },
   "common": {

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -42,6 +43,7 @@ class _FakeDB:
         self.execute_results = list(execute_results or [])
         self.committed = False
         self.flushed = False
+        self.added = []
 
     async def get(self, model, pk):
         return self.session
@@ -66,6 +68,9 @@ class _FakeDB:
 
     async def flush(self):
         self.flushed = True
+
+    def add(self, value):
+        self.added.append(value)
 
 
 def _build_app(db: _FakeDB, current_user=None) -> FastAPI:
@@ -102,6 +107,28 @@ def test_feishu_callback_post_uses_provider_driven_auth():
     assert body["access_token"] == "jwt-token"
     assert body["user"]["id"] == str(user.id)
     auth_mock.assert_awaited_once()
+
+
+def test_feishu_sso_init_uses_current_oauth_authorize_contract(monkeypatch: pytest.MonkeyPatch):
+    db = _FakeDB()
+    app = _build_app(db)
+
+    settings = SimpleNamespace(
+        FEISHU_APP_ID="cli_test_app_id",
+        FEISHU_REDIRECT_URI="https://example.com/api/auth/feishu/callback",
+    )
+    monkeypatch.setattr("app.config.get_settings", lambda: settings)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.post("/auth/feishu/sso/init")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["authorize_url"].startswith("https://accounts.feishu.cn/open-apis/authen/v1/authorize?")
+    assert "client_id=cli_test_app_id" in payload["authorize_url"]
+    assert "response_type=code" in payload["authorize_url"]
+    assert "redirect_uri=https%3A%2F%2Fexample.com%2Fapi%2Fauth%2Ffeishu%2Fcallback" in payload["authorize_url"]
+    assert db.added, "Expected an SSO session row to be created"
 
 
 def test_feishu_callback_get_completes_scan_session_and_returns_html_redirect():
@@ -192,3 +219,34 @@ def test_feishu_card_callback_resolves_user_via_channel_user_service():
     assert response.status_code == 200
     resolve_user_mock.assert_awaited_once()
     resolve_approval_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_process_feishu_event_dispatches_card_action_trigger_to_callback(monkeypatch: pytest.MonkeyPatch):
+    import app.api.feishu as feishu_api
+
+    captured: dict[str, object] = {}
+
+    async def fake_card_callback(request, db):
+        captured["payload"] = await request.json()
+        return {"ok": True}
+
+    monkeypatch.setattr(feishu_api, "feishu_card_callback", fake_card_callback)
+
+    body = {
+        "header": {"event_type": "card.action.trigger", "event_id": "evt_card_1"},
+        "event": {
+            "operator": {"open_id": "ou_card_1"},
+            "action": {"value": "{\"approval_id\": \"123\", \"action\": \"approve\"}"},
+        },
+    }
+
+    result = await feishu_api.process_feishu_event(
+        uuid4(),
+        body,
+        _FakeDB(),
+        tenant_channel_config=SimpleNamespace(),
+    )
+
+    assert result == {"ok": True}
+    assert captured["payload"] == body["event"]

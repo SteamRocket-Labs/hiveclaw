@@ -27,6 +27,10 @@ vi.mock('@tanstack/react-query', () => ({
           cli_enabled: true,
           cli_available: false,
           cli_bin: 'lark-cli',
+          cardkit_dependency_ready: true,
+          cardkit_verified: false,
+          cardkit_last_error: 'missing scope',
+          cardkit_probe_supported: true,
           cardkit_ready: true,
           tenant_channel_configured: true,
           channel_configured: true,
@@ -59,6 +63,8 @@ describe('ChannelConfig', () => {
     expect(markup).toContain('Feishu Runtime Status');
     expect(markup).toContain('Base / Tasks');
     expect(markup).toContain('Channel Auth');
+    expect(markup).toContain('CardKit Dependencies');
+    expect(markup).toContain('CardKit Verified');
     expect(markup).toContain('Basic Permissions');
     expect(markup).toContain('Full Permissions');
   });

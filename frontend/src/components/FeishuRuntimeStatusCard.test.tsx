@@ -27,6 +27,10 @@ describe('FeishuRuntimeStatusCard', () => {
           cli_enabled: true,
           cli_available: true,
           cli_bin: 'lark-cli',
+          cardkit_dependency_ready: true,
+          cardkit_verified: false,
+          cardkit_last_error: 'missing cardkit scope',
+          cardkit_probe_supported: true,
           cardkit_ready: true,
           tenant_channel_configured: true,
           base_tasks_ready: true,
@@ -38,8 +42,10 @@ describe('FeishuRuntimeStatusCard', () => {
     expect(markup).toContain('Feishu Runtime Status');
     expect(markup).toContain('lark-cli');
     expect(markup).toContain('Base / Tasks');
-    expect(markup).toContain('CardKit');
+    expect(markup).toContain('CardKit Dependencies');
+    expect(markup).toContain('CardKit Verified');
     expect(markup).toContain('Ready');
+    expect(markup).toContain('Needs Attention');
   });
 
   it('renders agent access details when channel auth exists but CLI is not ready', () => {
@@ -53,6 +59,10 @@ describe('FeishuRuntimeStatusCard', () => {
           cli_enabled: true,
           cli_available: false,
           cli_bin: 'lark-cli',
+          cardkit_dependency_ready: true,
+          cardkit_verified: true,
+          cardkit_last_error: null,
+          cardkit_probe_supported: true,
           cardkit_ready: true,
           tenant_channel_configured: true,
           channel_configured: true,
@@ -67,6 +77,7 @@ describe('FeishuRuntimeStatusCard', () => {
     expect(markup).toContain('Tenant Auth');
     expect(markup).toContain('Configured');
     expect(markup).toContain('CLI Auth');
-    expect(markup).toContain('Needs Attention');
+    expect(markup).toContain('CardKit Verified');
+    expect(markup).toContain('Ready');
   });
 });

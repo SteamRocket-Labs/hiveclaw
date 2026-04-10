@@ -14,6 +14,7 @@ from app.core.permissions import check_agent_access
 from app.core.security import get_current_admin, get_current_user
 from app.database import get_db
 from app.models.agent import Agent
+from app.models.channel_config import ChannelConfig
 from app.models.tenant_channel_config import TenantChannelConfig
 from app.models.tenant_setting import TenantSetting
 from app.models.tool import AgentTool, Tool
@@ -126,6 +127,10 @@ async def _build_feishu_runtime_status(
         "cli_available": cli_available,
         "cli_bin": cli_bin,
         "tenant_channel_configured": tenant_auth_ready,
+        "cardkit_dependency_ready": False,
+        "cardkit_verified": None,
+        "cardkit_last_error": None,
+        "cardkit_probe_supported": True,
         "cardkit_ready": False,
     }
 
@@ -133,12 +138,13 @@ async def _build_feishu_runtime_status(
         docs_ready = cli_available or tenant_auth_ready
         payload["docs_read_ready"] = docs_ready
         payload["base_tasks_ready"] = docs_ready
-        payload["cardkit_ready"] = _HAS_LARK and tenant_auth_ready
+        payload["cardkit_dependency_ready"] = _HAS_LARK and tenant_auth_ready
+        payload["cardkit_ready"] = payload["cardkit_dependency_ready"]
         payload["ok"] = docs_ready or cli_enabled
         if tenant_auth_ready and cli_available:
-            payload["message"] = "Tenant Feishu auth and CLI auth are both ready. CardKit and office tools can run."
+            payload["message"] = "Tenant Feishu auth and CLI auth are both ready. CardKit dependencies are present and office tools can run."
         elif tenant_auth_ready:
-            payload["message"] = "Tenant Feishu auth is ready. CardKit and OpenAPI-backed office tools can run."
+            payload["message"] = "Tenant Feishu auth is ready. CardKit dependencies are present and OpenAPI-backed office tools can run."
         elif cli_available:
             payload["message"] = "Feishu CLI is ready. Docs/Wiki/Sheets/Base/Tasks can use lark-cli."
         elif cli_enabled:
@@ -161,14 +167,15 @@ async def _build_feishu_runtime_status(
             "office_access": office_access,
             "docs_read_ready": docs_ready,
             "base_tasks_ready": base_ready,
-            "cardkit_ready": _HAS_LARK and (channel_configured or tenant_auth_ready),
+            "cardkit_dependency_ready": _HAS_LARK and (channel_configured or tenant_auth_ready),
             "ok": channel_configured or docs_ready or cli_enabled or cli_available,
         }
     )
+    payload["cardkit_ready"] = payload["cardkit_dependency_ready"]
     if channel_configured:
-        payload["message"] = "Feishu channel auth is ready. CardKit and office tools can run for this agent."
+        payload["message"] = "Feishu channel auth is ready. CardKit dependencies and office tools are available for this agent."
     elif tenant_auth_ready:
-        payload["message"] = "Tenant Feishu auth is ready. Tenant webhook routing and CardKit are available."
+        payload["message"] = "Tenant Feishu auth is ready. Tenant webhook routing is available and CardKit dependencies are present."
     elif cli_access:
         payload["message"] = "lark-cli is ready. Feishu office tools can run even without a channel binding."
     elif cli_enabled:
@@ -176,6 +183,113 @@ async def _build_feishu_runtime_status(
     else:
         payload["message"] = "This agent has no Feishu channel auth. Configure it in Enterprise Settings → Channels."
     return payload
+
+
+async def _get_feishu_probe_credentials(
+    *,
+    db: AsyncSession | None,
+    agent_id: uuid.UUID | None,
+    tenant_id: uuid.UUID | None,
+) -> tuple[str, str] | None:
+    if db is None:
+        return None
+
+    if agent_id is not None:
+        try:
+            result = await db.execute(
+                select(ChannelConfig).where(
+                    ChannelConfig.agent_id == agent_id,
+                    ChannelConfig.channel_type == "feishu",
+                    ChannelConfig.is_configured.is_(True),
+                )
+            )
+        except AssertionError:
+            result = None
+        config = result.scalar_one_or_none() if result else None
+        if config and config.app_id and config.app_secret:
+            return config.app_id, config.app_secret
+
+    if tenant_id is not None:
+        try:
+            result = await db.execute(
+                select(TenantChannelConfig).where(
+                    TenantChannelConfig.tenant_id == tenant_id,
+                    TenantChannelConfig.channel_type == "feishu",
+                    TenantChannelConfig.is_active.is_(True),
+                )
+            )
+        except AssertionError:
+            result = None
+        config = result.scalar_one_or_none() if result else None
+        if config and config.app_id and config.app_secret:
+            return config.app_id, config.app_secret
+
+        try:
+            result = await db.execute(
+                select(TenantSetting).where(
+                    TenantSetting.tenant_id == tenant_id,
+                    TenantSetting.key == "feishu_org_sync",
+                )
+            )
+        except AssertionError:
+            result = None
+        setting = result.scalar_one_or_none() if result else None
+        value = getattr(setting, "value", {}) or {}
+        if value.get("app_id") and value.get("app_secret"):
+            return value["app_id"], value["app_secret"]
+
+    return None
+
+
+async def _probe_feishu_cardkit_status(
+    *,
+    agent_id: uuid.UUID,
+    db: AsyncSession | None,
+    tenant_id: uuid.UUID | None,
+) -> dict:
+    from app.services.feishu_service import _HAS_LARK, feishu_service
+
+    if not _HAS_LARK:
+        return {
+            "cardkit_verified": False,
+            "cardkit_last_error": "lark-oapi package is not installed.",
+            "cardkit_probe_supported": True,
+        }
+
+    creds = await _get_feishu_probe_credentials(db=db, agent_id=agent_id, tenant_id=tenant_id)
+    if not creds:
+        return {
+            "cardkit_verified": False,
+            "cardkit_last_error": "Feishu auth is not configured for CardKit probe.",
+            "cardkit_probe_supported": True,
+        }
+
+    app_id, app_secret = creds
+    probe_card = {
+        "config": {"update_multi": True},
+        "header": {"title": {"tag": "plain_text", "content": "Hive CardKit Probe"}},
+        "elements": [
+            {
+                "tag": "div",
+                "text": {"tag": "plain_text", "content": "This entity is created only to verify CardKit access."},
+            }
+        ],
+    }
+
+    try:
+        await feishu_service.create_card_entity(app_id, app_secret, probe_card)
+    except Exception as exc:
+        return {
+            "cardkit_verified": False,
+            "cardkit_last_error": str(exc),
+            "cardkit_probe_supported": True,
+        }
+
+    return {
+        "cardkit_verified": True,
+        "cardkit_last_error": None,
+        "cardkit_probe_supported": True,
+    }
 
 
 def _serialize_tool(tool: Tool, *, enabled: bool | None = None, config: dict | None = None) -> dict:
@@ -650,9 +764,12 @@ async def test_category_config(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    _ = await _require_manage_access(db, current_user, agent_id)
+    agent = await _require_manage_access(db, current_user, agent_id)
     if category == "feishu":
-        return await _build_feishu_runtime_status(agent_id)
+        tenant_id = getattr(agent, "tenant_id", current_user.tenant_id)
+        payload = await _build_feishu_runtime_status(agent_id, db=db, tenant_id=tenant_id)
+        payload.update(await _probe_feishu_cardkit_status(agent_id=agent_id, db=db, tenant_id=tenant_id))
+        return payload
     config_payload = await get_category_config(agent_id=agent_id, category=category, current_user=current_user, db=db)
     config = config_payload.get("config", {})
     if category == "email":

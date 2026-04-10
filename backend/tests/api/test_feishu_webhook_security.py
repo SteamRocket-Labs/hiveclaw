@@ -202,3 +202,98 @@ async def test_feishu_webhook_decrypts_encrypted_payload_before_processing(monke
     assert result == {"ok": True}
     assert captured["agent_id"] == agent_id
     assert captured["body"] == decrypted_body
+
+
+@pytest.mark.asyncio
+async def test_tenant_feishu_webhook_verifies_signature_before_returning_challenge():
+    import app.api.tenant_channels as tenant_channels
+
+    tenant_id = uuid4()
+    encrypt_key = "tenant-encrypt-key"
+    raw_body = json.dumps({"challenge": "challenge-token"}).encode("utf-8")
+    request = _build_request(
+        raw_body,
+        headers={
+            "X-Lark-Signature": "invalid-signature",
+            "X-Lark-Request-Timestamp": "1711111111",
+            "X-Lark-Request-Nonce": "nonce",
+        },
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await tenant_channels.feishu_tenant_webhook(
+            tenant_id=tenant_id,
+            request=request,
+            db=_FakeDB(
+                SimpleNamespace(
+                    tenant_id=tenant_id,
+                    channel_type="feishu",
+                    is_active=True,
+                    encrypt_key=encrypt_key,
+                )
+            ),
+        )
+
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_tenant_feishu_webhook_decrypts_payload_before_processing(monkeypatch):
+    import app.api.feishu as feishu_api
+    import app.api.tenant_channels as tenant_channels
+
+    captured: dict[str, object] = {}
+
+    async def fake_resolve_sender_agent(db, tenant_id, feishu_user_id, feishu_open_id):
+        assert tenant_id
+        assert feishu_user_id == "u_123"
+        assert feishu_open_id == "ou_123"
+        return uuid4()
+
+    async def fake_process(agent_id, body, db, *, tenant_channel_config=None):
+        captured["body"] = body
+        captured["tenant_channel_config"] = tenant_channel_config
+        return {"ok": True}
+
+    monkeypatch.setattr(tenant_channels, "_resolve_sender_agent", fake_resolve_sender_agent)
+    monkeypatch.setattr(feishu_api, "process_feishu_event", fake_process)
+
+    tenant_id = uuid4()
+    encrypt_key = "tenant-encrypt-key"
+    decrypted_body = {
+        "header": {"event_type": "im.message.receive_v1", "event_id": "evt_1"},
+        "event": {
+            "sender": {"sender_id": {"user_id": "u_123", "open_id": "ou_123"}},
+            "message": {"message_type": "text"},
+        },
+    }
+    raw_body = json.dumps(
+        {"encrypt": _encrypt_feishu_payload(encrypt_key, decrypted_body)},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    timestamp = "1711111111"
+    nonce = "nonce"
+    request = _build_request(
+        raw_body,
+        headers={
+            "X-Lark-Signature": _sign_feishu_body(encrypt_key, timestamp, nonce, raw_body),
+            "X-Lark-Request-Timestamp": timestamp,
+            "X-Lark-Request-Nonce": nonce,
+        },
+    )
+
+    result = await tenant_channels.feishu_tenant_webhook(
+        tenant_id=tenant_id,
+        request=request,
+        db=_FakeDB(
+            SimpleNamespace(
+                tenant_id=tenant_id,
+                channel_type="feishu",
+                is_active=True,
+                encrypt_key=encrypt_key,
+            )
+        ),
+    )
+
+    assert result == {"ok": True, "routed": True}
+    assert captured["body"] == decrypted_body

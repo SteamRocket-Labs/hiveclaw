@@ -347,7 +347,7 @@ async def _process_wechat_message(
 
         # Personal WeChat: only the agent creator can connect this channel,
         # so attribute conversations to the creator — shows in "My Conversations"
-        owner_user_id = agent_obj.created_by
+        owner_user_id = agent_obj.creator_id
         if not owner_user_id:
             # Fallback: create phantom user if agent has no creator
             wc_username = f"wechat_{sender_id[:32]}"

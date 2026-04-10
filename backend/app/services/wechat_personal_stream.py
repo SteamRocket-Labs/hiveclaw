@@ -1,0 +1,431 @@
+"""Personal WeChat (iLink) long-poll message streaming manager.
+
+Manages persistent long-poll connections to iLink's getupdates API
+for all connected wechat_personal channels. Follows the same pattern
+as WeComStreamManager / FeishuWSManager.
+
+Lifecycle:
+  start_all()  → called at app startup, loads all connected channels from DB
+  start_client(agent_id, bot_token, base_url) → starts poll loop for one agent
+  stop_client(agent_id) → cancels poll loop
+  stop_all()   → called at app shutdown
+"""
+
+from __future__ import annotations
+
+import asyncio
+import uuid
+
+from loguru import logger
+from sqlalchemy import select
+
+from app.database import async_session
+from app.models.channel_config import ChannelConfig
+from app.services.wechat_ilink_client import (
+    ERROR_BACKOFF_SECONDS,
+    ILinkClient,
+    ILinkSessionExpiredError,
+    MAX_CONSECUTIVE_ERRORS,
+    TEXT_MESSAGE_MAX_LEN,
+    InboundMessage,
+)
+from app.services.wechat_personal_service import (
+    get_channel_credentials,
+    get_context_token,
+    get_sync_buf,
+    store_context_token,
+    store_sync_buf,
+    store_typing_ticket,
+)
+
+
+class WeChatPersonalStreamManager:
+    """Manages iLink long-poll clients for all wechat_personal channels."""
+
+    def __init__(self):
+        self._tasks: dict[uuid.UUID, asyncio.Task] = {}
+
+    async def start_all(self) -> None:
+        """Load all connected wechat_personal channels and start their poll loops."""
+        try:
+            async with async_session() as db:
+                result = await db.execute(
+                    select(ChannelConfig).where(
+                        ChannelConfig.channel_type == "wechat_personal",
+                        ChannelConfig.is_connected.is_(True),
+                    )
+                )
+                configs = result.scalars().all()
+
+            started = 0
+            for config in configs:
+                creds = get_channel_credentials(config)
+                if not creds or not creds["bot_token"]:
+                    logger.warning(f"[WeChatPersonal Stream] No credentials for agent {config.agent_id}")
+                    continue
+                await self.start_client(
+                    agent_id=config.agent_id,
+                    bot_token=creds["bot_token"],
+                    base_url=creds["base_url"],
+                )
+                started += 1
+
+            if started:
+                logger.info(f"[WeChatPersonal Stream] Started {started} client(s)")
+        except Exception as e:
+            logger.error(f"[WeChatPersonal Stream] start_all failed: {e}")
+
+    async def start_client(
+        self,
+        agent_id: uuid.UUID,
+        bot_token: str,
+        base_url: str,
+        stop_existing: bool = True,
+    ) -> None:
+        """Start the long-poll loop for a single agent."""
+        if stop_existing:
+            await self.stop_client(agent_id)
+
+        task = asyncio.create_task(
+            self._run_poll_loop(agent_id, bot_token, base_url),
+            name=f"wechat-personal-{str(agent_id)[:8]}",
+        )
+        self._tasks[agent_id] = task
+        logger.info(f"[WeChatPersonal Stream] Client started for agent {agent_id}")
+
+    async def stop_client(self, agent_id: uuid.UUID) -> None:
+        """Stop the poll loop for a single agent."""
+        task = self._tasks.pop(agent_id, None)
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                logger.debug(f"[WeChatPersonal Stream] Client cancelled for agent {agent_id}")
+
+    async def stop_all(self) -> None:
+        """Stop all active poll loops (called at shutdown)."""
+        agent_ids = list(self._tasks.keys())
+        for agent_id in agent_ids:
+            await self.stop_client(agent_id)
+        logger.info(f"[WeChatPersonal Stream] All clients stopped ({len(agent_ids)})")
+
+    async def _run_poll_loop(
+        self,
+        agent_id: uuid.UUID,
+        bot_token: str,
+        base_url: str,
+    ) -> None:
+        """Main long-poll loop — runs until cancelled or session expires."""
+        client = ILinkClient(base_url)
+        sync_buf = await get_sync_buf(agent_id)
+        consecutive_errors = 0
+        total_backoff_cycles = 0
+        max_backoff_cycles = 10  # after 10 × 30s backoffs, give up
+
+        logger.info(f"[WeChatPersonal Stream] Poll loop started for agent {agent_id}")
+
+        try:
+            while True:
+                try:
+                    result = await client.get_updates(bot_token, sync_buf)
+
+                    # Persist sync buffer for continuity across restarts
+                    if result.sync_buf != sync_buf:
+                        sync_buf = result.sync_buf
+                        await store_sync_buf(agent_id, sync_buf)
+
+                    # Process messages
+                    for msg in result.messages:
+                        await self._handle_message(agent_id, bot_token, base_url, msg)
+
+                    consecutive_errors = 0
+
+                except ILinkSessionExpiredError:
+                    logger.warning(f"[WeChatPersonal Stream] Session expired for agent {agent_id}, marking disconnected")
+                    await self._mark_disconnected(agent_id)
+                    return
+
+                except asyncio.CancelledError:
+                    raise
+
+                except Exception as e:
+                    consecutive_errors += 1
+                    logger.error(
+                        f"[WeChatPersonal Stream] Poll error for agent {agent_id} "
+                        f"({consecutive_errors}/{MAX_CONSECUTIVE_ERRORS}): {e}"
+                    )
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                        total_backoff_cycles += 1
+                        if total_backoff_cycles >= max_backoff_cycles:
+                            logger.error(
+                                f"[WeChatPersonal Stream] Persistent errors for agent {agent_id} "
+                                f"({total_backoff_cycles} backoff cycles), marking disconnected"
+                            )
+                            await self._mark_disconnected(agent_id)
+                            return
+                        logger.error(
+                            f"[WeChatPersonal Stream] Backoff cycle {total_backoff_cycles}/{max_backoff_cycles} "
+                            f"for agent {agent_id}, sleeping {ERROR_BACKOFF_SECONDS}s"
+                        )
+                        await asyncio.sleep(ERROR_BACKOFF_SECONDS)
+                        consecutive_errors = 0
+                    else:
+                        await asyncio.sleep(1)
+
+        except asyncio.CancelledError:
+            logger.info(f"[WeChatPersonal Stream] Poll loop cancelled for agent {agent_id}")
+
+    async def _handle_message(
+        self,
+        agent_id: uuid.UUID,
+        bot_token: str,
+        base_url: str,
+        msg: InboundMessage,
+    ) -> None:
+        """Process a single inbound WeChat message (text, image, file, voice, video)."""
+        from_user = msg.from_user_id
+
+        # Determine user-facing text from all possible sources
+        user_text = msg.text.strip()
+
+        # Voice messages: use transcription as text
+        if not user_text and msg.voice_text:
+            user_text = msg.voice_text.strip()
+            if user_text:
+                logger.info(f"[WeChatPersonal Stream] Voice transcription from {from_user[:12]}...: {user_text[:80]}")
+
+        # Image: download, describe for LLM
+        if msg.image_media:
+            try:
+                image_data = await ILinkClient(base_url).download_media(msg.image_media)
+                image_desc = f"[用户发送了一张图片，{len(image_data)} 字节]"
+                user_text = f"{user_text}\n{image_desc}" if user_text else image_desc
+                logger.info(f"[WeChatPersonal Stream] Image from {from_user[:12]}...: {len(image_data)}B")
+            except Exception as e:
+                logger.error(f"[WeChatPersonal Stream] Image download failed: {e}")
+                user_text = user_text or "[用户发送了一张图片，下载失败]"
+
+        # File: download, note filename
+        if msg.file_media and msg.file_name:
+            try:
+                file_data = await ILinkClient(base_url).download_media(msg.file_media)
+                file_desc = f"[用户发送了文件: {msg.file_name}，{len(file_data)} 字节]"
+                user_text = f"{user_text}\n{file_desc}" if user_text else file_desc
+                logger.info(f"[WeChatPersonal Stream] File from {from_user[:12]}...: {msg.file_name} ({len(file_data)}B)")
+            except Exception as e:
+                logger.error(f"[WeChatPersonal Stream] File download failed: {e}")
+                user_text = user_text or f"[用户发送了文件: {msg.file_name}，下载失败]"
+
+        # Video: note receipt
+        if msg.video_media:
+            video_desc = "[用户发送了一段视频]"
+            user_text = f"{user_text}\n{video_desc}" if user_text else video_desc
+
+        if not user_text:
+            return
+
+        logger.info(f"[WeChatPersonal Stream] Message from {from_user[:12]}...: {user_text[:80]}")
+
+        # Cache context_token (MUST be echoed in replies)
+        if msg.context_token:
+            await store_context_token(agent_id, from_user, msg.context_token)
+
+        # Fetch and cache typing ticket on first contact
+        try:
+            from app.services.wechat_personal_service import get_typing_ticket
+            ticket = await get_typing_ticket(agent_id, from_user)
+            if not ticket:
+                config = await ILinkClient(base_url).get_config(bot_token, from_user)
+                if config.typing_ticket:
+                    await store_typing_ticket(agent_id, from_user, config.typing_ticket)
+                    ticket = config.typing_ticket
+        except Exception as e:
+            logger.debug(f"[WeChatPersonal Stream] typing ticket fetch failed: {e}")
+            ticket = None
+
+        # Send typing indicator
+        if ticket:
+            try:
+                await ILinkClient(base_url).send_typing(bot_token, from_user, ticket)
+            except Exception as e:
+                logger.debug(f"[WeChatPersonal Stream] typing indicator failed: {e}")
+
+        # Process message through LLM pipeline
+        try:
+            reply_text = await _process_wechat_message(
+                agent_id=agent_id,
+                sender_id=from_user,
+                user_text=user_text,
+            )
+        except Exception as e:
+            logger.error(f"[WeChatPersonal Stream] LLM processing failed: {e}")
+            reply_text = "抱歉，处理消息时出现错误，请稍后再试。"
+
+        # Send reply — split if over 4000 chars
+        context_token = await get_context_token(agent_id, from_user) or msg.context_token
+        ilink = ILinkClient(base_url)
+
+        if len(reply_text) <= TEXT_MESSAGE_MAX_LEN:
+            chunks = [reply_text]
+        else:
+            chunks = [reply_text[i:i + TEXT_MESSAGE_MAX_LEN] for i in range(0, len(reply_text), TEXT_MESSAGE_MAX_LEN)]
+
+        for chunk in chunks:
+            try:
+                await ilink.send_message(
+                    bot_token=bot_token,
+                    to_user_id=from_user,
+                    context_token=context_token,
+                    text=chunk,
+                )
+            except Exception as e:
+                logger.error(f"[WeChatPersonal Stream] Failed to send reply: {e}")
+                break
+
+        # Cancel typing
+        if ticket:
+            try:
+                await ilink.send_typing(bot_token, from_user, ticket, status=2)
+            except Exception as e:
+                logger.debug(f"[WeChatPersonal Stream] cancel typing failed: {e}")
+
+    async def _mark_disconnected(self, agent_id: uuid.UUID) -> None:
+        """Mark channel as disconnected in DB when session expires."""
+        try:
+            async with async_session() as db:
+                result = await db.execute(
+                    select(ChannelConfig).where(
+                        ChannelConfig.agent_id == agent_id,
+                        ChannelConfig.channel_type == "wechat_personal",
+                    )
+                )
+                config = result.scalar_one_or_none()
+                if config:
+                    config.is_connected = False
+                    await db.commit()
+                    logger.info(f"[WeChatPersonal Stream] Marked agent {agent_id} as disconnected")
+        except Exception as e:
+            logger.error(f"[WeChatPersonal Stream] Failed to mark disconnected: {e}")
+
+
+# ── Message processing (follows wecom_stream.py pattern) ─
+
+async def _process_wechat_message(
+    agent_id: uuid.UUID,
+    sender_id: str,
+    user_text: str,
+) -> str:
+    """Process a WeChat message through the LLM pipeline and return the reply text."""
+    from datetime import datetime, timezone
+
+    import uuid as _uuid
+    from sqlalchemy import select as _select
+    from sqlalchemy.exc import IntegrityError
+
+    from app.api.feishu import _call_agent_llm
+    from app.core.security import hash_password
+    from app.database import async_session
+    from app.models.agent import Agent as AgentModel
+    from app.models.audit import ChatMessage
+    from app.models.user import User as UserModel
+    from app.services.channel_session import find_or_create_channel_session
+
+    async with async_session() as db:
+        # Load agent
+        agent_r = await db.execute(_select(AgentModel).where(AgentModel.id == agent_id))
+        agent_obj = agent_r.scalar_one_or_none()
+        if not agent_obj:
+            logger.warning(f"[WeChatPersonal Stream] Agent {agent_id} not found")
+            return "Agent not found"
+
+        from app.services.memory_service import compute_history_limit_for_agent
+        hist_limit = await compute_history_limit_for_agent(agent_id)
+
+        # Conversation ID
+        conv_id = f"wechat_p2p_{sender_id}"
+
+        # Find or create platform user (race-safe with IntegrityError retry)
+        wc_username = f"wechat_{sender_id[:32]}"
+        u_r = await db.execute(_select(UserModel).where(UserModel.username == wc_username))
+        platform_user = u_r.scalar_one_or_none()
+
+        if not platform_user:
+            try:
+                platform_user = UserModel(
+                    username=wc_username,
+                    email=f"{wc_username}@wechat.local",
+                    password_hash=hash_password(_uuid.uuid4().hex),
+                    display_name=f"WeChat {sender_id[:8]}",
+                    role="member",
+                    tenant_id=agent_obj.tenant_id,
+                )
+                db.add(platform_user)
+                await db.flush()
+            except IntegrityError:
+                await db.rollback()
+                u_r = await db.execute(_select(UserModel).where(UserModel.username == wc_username))
+                platform_user = u_r.scalar_one()
+        platform_user_id = platform_user.id
+
+        # Find or create session
+        sess = await find_or_create_channel_session(
+            db=db,
+            agent_id=agent_id,
+            user_id=platform_user_id,
+            external_conv_id=conv_id,
+            source_channel="wechat_personal",
+            first_message_title=user_text,
+        )
+        session_conv_id = str(sess.id)
+
+        # Load history
+        history_r = await db.execute(
+            _select(ChatMessage)
+            .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == session_conv_id)
+            .order_by(ChatMessage.created_at.desc())
+            .limit(hist_limit)
+        )
+        history = [{"role": m.role, "content": m.content} for m in reversed(history_r.scalars().all())]
+
+        # Save user message
+        db.add(ChatMessage(
+            agent_id=agent_id, user_id=platform_user_id,
+            role="user", content=user_text,
+            conversation_id=session_conv_id,
+        ))
+        sess.last_message_at = datetime.now(timezone.utc)
+        await db.commit()
+
+        # Call LLM (P1-4: pass correct channel attribution)
+        reply_text = await _call_agent_llm(
+            db, agent_id, user_text,
+            history=history, user_id=platform_user_id,
+            session_source="wechat_personal",
+            session_channel="wechat_personal",
+        )
+        logger.info(f"[WeChatPersonal Stream] LLM reply: {reply_text[:100]}")
+
+        # Save assistant reply
+        db.add(ChatMessage(
+            agent_id=agent_id, user_id=platform_user_id,
+            role="assistant", content=reply_text,
+            conversation_id=session_conv_id,
+        ))
+        sess.last_message_at = datetime.now(timezone.utc)
+        await db.commit()
+
+        # Log activity
+        from app.services.activity_logger import log_activity
+        await log_activity(
+            agent_id, "chat_reply",
+            f"Replied to WeChat message: {reply_text[:80]}",
+            detail={"channel": "wechat_personal", "user_text": user_text[:200], "reply": reply_text[:500]},
+        )
+
+    return reply_text
+
+
+# ── Singleton ────────────────────────────────────────────
+
+wechat_personal_stream_manager = WeChatPersonalStreamManager()

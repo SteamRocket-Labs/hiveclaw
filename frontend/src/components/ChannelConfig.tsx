@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { channelApi } from '../api/domains/channels';
 import { toolsApi, type FeishuRuntimeStatus } from '../api/domains/tools';
 import FeishuRuntimeStatusCard from './FeishuRuntimeStatusCard';
+import WeChatPersonalSetup from './WeChatPersonalSetup';
 
 // ─── Types ──────────────────────────────────────────────
 interface ChannelConfigProps {
@@ -56,6 +57,8 @@ interface ChannelDef {
     wsFields?: ChannelField[];
     // Atlassian-specific test connection feature
     hasTestConnection?: boolean;
+    // QR scan mode (no form fields, renders a QR scan component instead)
+    qrScanMode?: boolean;
 }
 
 // ─── SVG Icons ──────────────────────────────────────────
@@ -73,6 +76,7 @@ const DingTalkIcon = <img src="/dingtalk.png" alt="DingTalk" width="20" height="
 
 const AtlassianIcon = <img src="/atlassian.png" alt="Atlassian" width="20" height="20" style={{ borderRadius: '4px' }} />;
 
+const WeChatIcon = <svg width="20" height="20" viewBox="0 0 24 24" fill="#07C160"><path d="M9.5 4C5.36 4 2 6.69 2 10c0 1.89 1.08 3.56 2.78 4.66l-.7 2.1 2.45-1.23c.78.22 1.6.35 2.47.37-.17-.53-.25-1.1-.25-1.68 0-3.45 3.36-6.24 7.5-6.24.26 0 .51.01.76.04C16.13 5.64 13.1 4 9.5 4zm-3 4.5a1 1 0 110-2 1 1 0 010 2zm5 0a1 1 0 110-2 1 1 0 010 2zM22 14.22c0-2.8-2.9-5.06-6.5-5.06S9 11.42 9 14.22c0 2.8 2.9 5.06 6.5 5.06.7 0 1.38-.1 2.02-.27l2 1-.57-1.7C20.98 17.33 22 15.88 22 14.22zm-8.5-1a.88.88 0 110-1.75.88.88 0 010 1.75zm4 0a.88.88 0 110-1.75.88.88 0 010 1.75z"/></svg>;
 const AgentBayIcon = <span style={{ fontSize: '16px' }}>🌩️</span>;
 
 // Eye icons for password toggle
@@ -240,6 +244,18 @@ const CHANNEL_REGISTRY: ChannelDef[] = [
             { key: 'bot_token', label: 'Bot Token', type: 'password' as const, required: true },
         ],
         guide: { prefix: 'channelGuide.telegram', steps: 5 },
+    },
+    {
+        id: 'wechat_personal',
+        icon: WeChatIcon,
+        nameKey: 'common.channels.wechatPersonal',
+        nameFallback: 'WeChat',
+        desc: 'Personal WeChat (iLink)',
+        apiSlug: 'wechat-personal',
+        editOnly: true,
+        qrScanMode: true,
+        fields: [],
+        guide: { prefix: 'channelGuide.wechatPersonal', steps: 3 },
     },
 ];
 
@@ -800,6 +816,14 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                             <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontStyle: 'italic', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
                                 Only the creator or admin can configure communication channels.
                             </div>
+                        ) : ch.qrScanMode ? (
+                            /* ── QR Scan mode (Personal WeChat) ── */
+                            <WeChatPersonalSetup
+                                agentId={agentId!}
+                                onConnected={() => {
+                                    queryClient.invalidateQueries({ queryKey: ['wechat-personal-status', agentId] });
+                                }}
+                            />
                         ) : isConfigured && !isEditing ? (
                             /* ── Configured view ── */
                             <div>

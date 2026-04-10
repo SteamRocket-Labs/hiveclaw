@@ -119,6 +119,8 @@ async def main():
         "ALTER TABLE llm_models ADD COLUMN IF NOT EXISTS temperature DOUBLE PRECISION",
         "ALTER TABLE llm_models ADD COLUMN IF NOT EXISTS provider_config_id UUID",
         "ALTER TABLE llm_models ADD COLUMN IF NOT EXISTS discovered_from_provider BOOLEAN DEFAULT false",
+        # Personal WeChat channel (2026-04-11)
+        "ALTER TYPE channel_type_enum ADD VALUE IF NOT EXISTS 'wechat_personal'",
     ]
 
     from sqlalchemy import text

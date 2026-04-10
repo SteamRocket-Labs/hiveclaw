@@ -12,4 +12,17 @@ export const channelApi = {
   createChannelConfig: (agentId: string, slug: string, data: unknown) => post<unknown>(`/agents/${agentId}/${slug}`, data),
   deleteChannelConfig: (agentId: string, slug: string) => del(`/agents/${agentId}/${slug}`),
   testChannelConfig: (agentId: string, slug: string, data?: unknown) => post<unknown>(`/agents/${agentId}/${slug}/test`, data),
+
+  // Personal WeChat (iLink QR scan)
+  wechatPersonalQrStart: (agentId: string) =>
+    post<{ session_key: string; qr_image_url: string | null; message: string }>(`/agents/${agentId}/wechat-personal/qr-start`, {}),
+  wechatPersonalQrWait: (agentId: string, sessionKey: string) =>
+    post<{ connected: boolean; account_id?: string; session_key?: string; qr_image_url?: string; message: string }>(
+      `/agents/${agentId}/wechat-personal/qr-wait`, { session_key: sessionKey }),
+  wechatPersonalConnect: (agentId: string, sessionKey: string) =>
+    post<{ connected: boolean; account_id?: string }>(`/agents/${agentId}/wechat-personal/connect`, { session_key: sessionKey }),
+  wechatPersonalStatus: (agentId: string) =>
+    get<{ connected: boolean; account_id?: string }>(`/agents/${agentId}/wechat-personal/status`).catch(() => null),
+  wechatPersonalDisconnect: (agentId: string) =>
+    del(`/agents/${agentId}/wechat-personal`),
 };

@@ -1260,7 +1260,8 @@
       "dingtalk": "DingTalk",
       "wecom": "WeCom",
       "telegram": "Telegram",
-      "email": "Email"
+      "email": "Email",
+      "wechatPersonal": "WeChat"
     }
   },
   "admin": {
@@ -1433,6 +1434,12 @@
       "step5": "Find your bot in Telegram by its username and send a message to test",
       "note": "The webhook is registered automatically when you save. Your server must be publicly accessible."
     },
+    "wechatPersonal": {
+      "step1": "Click 'Connect WeChat' below to generate a QR code",
+      "step2": "Open WeChat on your phone and scan the QR code",
+      "step3": "Confirm the connection in WeChat — your agent will start receiving messages",
+      "note": "Personal WeChat uses iLink for message relay. The QR code expires in 5 minutes."
+    },
     "dingtalk": {
       "step1": "Go to open.dingtalk.com → log in → go to App Development → Create Internal App → enter a name",
       "step2": "In the app page → Add Capabilities → find Bot → click Add",
@@ -1458,5 +1465,18 @@
       "ws_step6": "Find the bot in WeCom and send a test message",
       "ws_note": "WebSocket mode requires no public IP, callback URL, or domain verification. The connection is managed automatically."
     }
+  },
+  "wechatPersonal": {
+    "qr": {
+      "description": "Scan QR code with WeChat to connect your personal account to this agent.",
+      "startBtn": "Connect WeChat",
+      "loading": "Generating QR code...",
+      "scanPrompt": "Scan with WeChat",
+      "connecting": "Connecting...",
+      "success": "WeChat connected successfully!",
+      "retry": "Retry",
+      "fetchFailed": "Failed to fetch QR code"
+    },
+    "disconnect": "Disconnect"
   }
 }

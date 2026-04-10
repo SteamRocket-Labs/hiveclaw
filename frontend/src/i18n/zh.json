@@ -1251,7 +1251,8 @@
       "dingtalk": "钉钉",
       "wecom": "企业微信",
       "telegram": "Telegram",
-      "email": "邮箱"
+      "email": "邮箱",
+      "wechatPersonal": "个人微信"
     }
   },
   "admin": {
@@ -1424,6 +1425,12 @@
       "step5": "在 Telegram 中搜索你的机器人用户名，发消息测试",
       "note": "保存后会自动注册 Webhook。服务器需要公网可访问。"
     },
+    "wechatPersonal": {
+      "step1": "点击下方「连接微信」按钮生成二维码",
+      "step2": "打开微信扫描二维码",
+      "step3": "在微信中确认连接 — 你的智能体将开始接收消息",
+      "note": "个人微信通过 iLink 进行消息中转。二维码有效期为 5 分钟。"
+    },
     "dingtalk": {
       "step1": "打开 open.dingtalk.com → 登录 → 进入应用开发 → 创建企业内部应用 → 填写名称",
       "step2": "在应用页面 → 添加应用能力 → 找到「机器人」 → 点击添加",
@@ -1449,5 +1456,18 @@
       "ws_step6": "在企业微信中找到机器人，发送消息测试",
       "ws_note": "WebSocket 长连接模式无需公网 IP、回调地址或域名备案，连接由系统自动管理。"
     }
+  },
+  "wechatPersonal": {
+    "qr": {
+      "description": "使用微信扫描二维码，将你的个人微信连接到此智能体。",
+      "startBtn": "连接微信",
+      "loading": "正在生成二维码...",
+      "scanPrompt": "请使用微信扫描",
+      "connecting": "正在连接...",
+      "success": "微信连接成功！",
+      "retry": "重试",
+      "fetchFailed": "获取二维码失败"
+    },
+    "disconnect": "断开连接"
   }
 }

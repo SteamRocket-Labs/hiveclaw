@@ -54,6 +54,7 @@ from app.api.triggers import router as triggers_router
 from app.api.upload import router as upload_router
 from app.api.users import router as users_router
 from app.api.webhooks import router as webhooks_router
+from app.api.wechat_personal import router as wechat_personal_router
 from app.api.wecom import router as wecom_router
 from app.api.websocket import router as ws_router
 from app.config import get_settings
@@ -125,6 +126,7 @@ async def lifespan(app: FastAPI):
     from app.services.feishu_ws import feishu_ws_manager
     from app.services.dingtalk_stream import dingtalk_stream_manager
     from app.services.wecom_stream import wecom_stream_manager
+    from app.services.wechat_personal_stream import wechat_personal_stream_manager
 
     # ── Step 0a: Validate production secrets ──
     if not settings.DEBUG:
@@ -298,6 +300,7 @@ async def lifespan(app: FastAPI):
             try:
                 exc = t.exception()
             except asyncio.CancelledError:
+                logger.debug(f"[startup] Background task {t.get_name()} cancelled (expected during shutdown)")
                 return
             if exc:
                 logger.error(f"[startup] Background task {t.get_name()} CRASHED: {exc}")
@@ -309,6 +312,7 @@ async def lifespan(app: FastAPI):
             ("feishu_ws", feishu_ws_manager.start_all()),
             ("dingtalk_stream", dingtalk_stream_manager.start_all()),
             ("wecom_stream", wecom_stream_manager.start_all()),
+            ("wechat_personal_stream", wechat_personal_stream_manager.start_all()),
         ]:
             task = asyncio.create_task(coro, name=name)
             task.add_done_callback(_bg_task_error)
@@ -325,6 +329,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    await wechat_personal_stream_manager.stop_all()
     await close_redis()
     try:
         from app.services.viking_client import close as close_viking
@@ -369,7 +374,7 @@ _api_routers = [
     relationships_router, activity_router, messages_router, tenants_router,
     schedules_router, files_upload_router, enterprise_kb_router,
     skills_router, users_router, slack_router, discord_router, dingtalk_router,
-    wecom_router, teams_router, telegram_router, email_channel_router, atlassian_router, notification_router,
+    wecom_router, wechat_personal_router, teams_router, telegram_router, email_channel_router, atlassian_router, notification_router,
     gateway_router, config_history_router, feature_flags_router, admin_router,
     chat_sessions_router, plaza_router, triggers_router, memory_router,
     oidc_router, capabilities_router, onboarding_router, packs_router,

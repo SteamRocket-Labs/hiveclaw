@@ -345,28 +345,32 @@ async def _process_wechat_message(
         # Conversation ID
         conv_id = f"wechat_p2p_{sender_id}"
 
-        # Find or create platform user (race-safe with IntegrityError retry)
-        wc_username = f"wechat_{sender_id[:32]}"
-        u_r = await db.execute(_select(UserModel).where(UserModel.username == wc_username))
-        platform_user = u_r.scalar_one_or_none()
-
-        if not platform_user:
-            try:
-                platform_user = UserModel(
-                    username=wc_username,
-                    email=f"{wc_username}@wechat.local",
-                    password_hash=hash_password(_uuid.uuid4().hex),
-                    display_name=f"WeChat {sender_id[:8]}",
-                    role="member",
-                    tenant_id=agent_obj.tenant_id,
-                )
-                db.add(platform_user)
-                await db.flush()
-            except IntegrityError:
-                await db.rollback()
-                u_r = await db.execute(_select(UserModel).where(UserModel.username == wc_username))
-                platform_user = u_r.scalar_one()
-        platform_user_id = platform_user.id
+        # Personal WeChat: only the agent creator can connect this channel,
+        # so attribute conversations to the creator — shows in "My Conversations"
+        owner_user_id = agent_obj.created_by
+        if not owner_user_id:
+            # Fallback: create phantom user if agent has no creator
+            wc_username = f"wechat_{sender_id[:32]}"
+            u_r = await db.execute(_select(UserModel).where(UserModel.username == wc_username))
+            platform_user = u_r.scalar_one_or_none()
+            if not platform_user:
+                try:
+                    platform_user = UserModel(
+                        username=wc_username,
+                        email=f"{wc_username}@wechat.local",
+                        password_hash=hash_password(_uuid.uuid4().hex),
+                        display_name=f"WeChat {sender_id[:8]}",
+                        role="member",
+                        tenant_id=agent_obj.tenant_id,
+                    )
+                    db.add(platform_user)
+                    await db.flush()
+                except IntegrityError:
+                    await db.rollback()
+                    u_r = await db.execute(_select(UserModel).where(UserModel.username == wc_username))
+                    platform_user = u_r.scalar_one()
+            owner_user_id = platform_user.id
+        platform_user_id = owner_user_id
 
         # Find or create session
         sess = await find_or_create_channel_session(

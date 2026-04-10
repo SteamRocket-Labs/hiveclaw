@@ -6,8 +6,6 @@ Enterprise webhook endpoint that routes inbound messages by sender → Main Agen
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -162,11 +160,10 @@ async def feishu_tenant_webhook(
     This replaces per-agent webhooks for enterprise deployments. One webhook URL
     per company; inbound messages are routed based on the sender's Feishu identity.
     """
-    body = await request.json()
-
-    # Handle Feishu URL verification challenge
-    if "challenge" in body:
-        return {"challenge": body["challenge"]}
+    body_bytes = await request.body()
+    body_str = body_bytes.decode("utf-8")
+    import json as _json_tw
+    body = _json_tw.loads(body_str)
 
     # Load tenant channel config
     result = await db.execute(
@@ -180,17 +177,31 @@ async def feishu_tenant_webhook(
     if not config:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant Feishu config not found")
 
-    # Verify signature if encrypt_key is set
+    # Security: verify signature → decrypt → then handle challenge/events
     if config.encrypt_key:
-        timestamp = request.headers.get("X-Lark-Request-Timestamp", "")
-        nonce = request.headers.get("X-Lark-Request-Nonce", "")
-        signature = request.headers.get("X-Lark-Signature", "")
-        raw_body = (await request.body()).decode("utf-8")
+        from app.api.feishu import _verify_feishu_signature, _decrypt_feishu_payload
 
-        expected = _compute_feishu_signature(timestamp, nonce, config.encrypt_key, raw_body)
-        if not hmac.compare_digest(signature, expected):
+        sig = request.headers.get("X-Lark-Signature", "")
+        ts = request.headers.get("X-Lark-Request-Timestamp", "")
+        nonce = request.headers.get("X-Lark-Request-Nonce", "")
+        if not sig or not _verify_feishu_signature(config.encrypt_key, ts, nonce, body_str, sig):
             logger.warning(f"[tenant-webhook] Feishu signature mismatch for tenant {tenant_id}")
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid signature")
+
+        if "encrypt" in body:
+            try:
+                body = _decrypt_feishu_payload(config.encrypt_key, body["encrypt"])
+            except Exception as exc:
+                logger.warning(f"[tenant-webhook] Failed to decrypt for tenant {tenant_id}: {exc}")
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid encrypted payload") from exc
+    elif config.verification_token:
+        if body.get("token") != config.verification_token:
+            logger.warning(f"[tenant-webhook] Verification token mismatch for tenant {tenant_id}")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid verification token")
+
+    # Handle challenge AFTER security verification
+    if "challenge" in body:
+        return {"challenge": body["challenge"]}
 
     # Extract event
     event = body.get("event", {})
@@ -218,14 +229,6 @@ async def feishu_tenant_webhook(
 
     return {"ok": True, "routed": True}
 
-
-# ─── Helpers ────────────────────────────────────────────
-
-
-def _compute_feishu_signature(timestamp: str, nonce: str, encrypt_key: str, body: str) -> str:
-    """Compute Feishu webhook signature (HMAC-SHA256)."""
-    content = timestamp + nonce + encrypt_key + body
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 async def _resolve_sender_agent(

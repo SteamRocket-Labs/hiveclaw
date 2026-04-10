@@ -145,9 +145,18 @@ class FeishuWSManager:
             """Ack events we don't need to process (suppresses 'processor not found' errors)."""
             pass
 
+        def handle_card_action(data: Any) -> None:
+            """Handle card.action.trigger events from Feishu WebSocket."""
+            try:
+                logger.info(f"[Feishu WS] Card action received for agent {agent_id}")
+                asyncio.run_coroutine_threadsafe(self._async_handle_card_action(agent_id, data), main_loop)
+            except Exception as e:
+                logger.error(f"[Feishu WS] Could not dispatch card action: {e}", exc_info=True)
+
         dispatcher = (
             lark.EventDispatcherHandler.builder("", "")
             .register_p2_customized_event("im.message.receive_v1", handle_message)
+            .register_p2_customized_event("card.action.trigger", handle_card_action)
             .register_p2_customized_event("im.chat.access_event.bot_p2p_chat_entered_v1", _noop_handler)
             .build()
         )
@@ -205,6 +214,37 @@ class FeishuWSManager:
             logger.error(
                 f"[Feishu WS] Error processing event for {agent_id}: {e}", exc_info=True
             )
+
+    async def _async_handle_card_action(self, agent_id: uuid.UUID, data: Dict[str, Any]) -> None:
+        """Handle card.action.trigger events from Feishu WebSocket."""
+        try:
+            import json as _json_ca
+
+            if isinstance(data, dict):
+                body_dict = data
+            else:
+                raw_body = getattr(data, "raw_body", None)
+                if raw_body:
+                    body_dict = _json_ca.loads(raw_body.decode("utf-8"))
+                elif hasattr(data, "event"):
+                    body_dict = {"event": data.event}
+                    if hasattr(data, "header"):
+                        body_dict["header"] = vars(data.header) if hasattr(data.header, "__dict__") else {}
+                else:
+                    logger.warning(f"[Feishu WS] Unrecognized card action data type: {type(data)}")
+                    return
+
+            # Forward to the card callback handler
+            from app.api.feishu import feishu_card_callback
+            class _CardRequest:
+                async def json(self):
+                    return body_dict.get("event", body_dict)
+
+            async with async_session() as db:
+                await feishu_card_callback(_CardRequest(), db)
+
+        except Exception as e:
+            logger.error(f"[Feishu WS] Error processing card action for {agent_id}: {e}", exc_info=True)
 
     async def start_client(
         self,

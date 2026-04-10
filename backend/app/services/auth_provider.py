@@ -18,7 +18,7 @@ from app.models.user import User
 
 settings = get_settings()
 
-FEISHU_TOKEN_URL = "https://open.feishu.cn/open-apis/authen/v1/oidc/access_token"
+FEISHU_TOKEN_URL_V2 = "https://open.feishu.cn/open-apis/authen/v2/oauth/token"
 FEISHU_USER_INFO_URL = "https://open.feishu.cn/open-apis/authen/v1/user_info"
 FEISHU_APP_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
 
@@ -130,18 +130,24 @@ class FeishuAuthProvider:
         return data.get("app_access_token") or data.get("tenant_access_token") or ""
 
     async def _exchange_code_for_user(self, config: dict, code: str) -> dict:
-        app_token = await self._get_app_access_token(config)
+        # OAuth v2: exchange code directly with client credentials (no app_access_token needed)
         async with httpx.AsyncClient(timeout=15) as client:
             token_resp = await client.post(
-                FEISHU_TOKEN_URL,
-                json={"grant_type": "authorization_code", "code": code},
-                headers={"Authorization": f"Bearer {app_token}"},
+                FEISHU_TOKEN_URL_V2,
+                json={
+                    "grant_type": "authorization_code",
+                    "client_id": config["app_id"],
+                    "client_secret": config["app_secret"],
+                    "code": code,
+                    "redirect_uri": settings.FEISHU_REDIRECT_URI or "",
+                },
             )
             token_resp.raise_for_status()
             token_data = token_resp.json()
-            access_token = token_data.get("data", {}).get("access_token", "")
+            # v2 returns access_token at top level (not nested under data)
+            access_token = token_data.get("access_token") or token_data.get("data", {}).get("access_token", "")
             if not access_token:
-                raise RuntimeError("Feishu OAuth code exchange did not return access_token")
+                raise RuntimeError(f"Feishu OAuth v2 code exchange failed: {token_data.get('error_description', token_data)}")
 
             info_resp = await client.get(
                 FEISHU_USER_INFO_URL,

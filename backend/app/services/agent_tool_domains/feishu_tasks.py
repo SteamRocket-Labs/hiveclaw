@@ -283,8 +283,8 @@ async def _feishu_task_comment(agent_id, arguments: dict) -> str:
         _, token = creds
         try:
             data = await _task_api_request(
-                "POST", token, f"/task/v2/tasks/{task_id}/comments",
-                body={"content": content},
+                "POST", token, "/task/v2/comments",
+                body={"content": content, "resource_type": "task", "resource_id": task_id},
             )
             return _render_task_comment(data)
         except Exception as exc:

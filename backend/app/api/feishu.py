@@ -158,7 +158,7 @@ async def _resolve_feishu_sender_profile(
 
 # ─── OAuth ──────────────────────────────────────────────
 
-FEISHU_AUTHORIZE_URL = "https://open.feishu.cn/open-apis/authen/v1/authorize"
+FEISHU_AUTHORIZE_URL = "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
 
 
 @router.get("/auth/feishu/sso/available")
@@ -199,8 +199,9 @@ async def feishu_sso_init(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="FEISHU_REDIRECT_URI not configured")
 
     params = {
-        "app_id": app_id,
+        "client_id": app_id,
         "redirect_uri": redirect_uri,
+        "response_type": "code",
         "state": str(session.id),
     }
     authorize_url = f"{FEISHU_AUTHORIZE_URL}?{urlencode(params)}"
@@ -267,8 +268,9 @@ async def feishu_bind_init(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="FEISHU_REDIRECT_URI not configured")
 
     params = {
-        "app_id": app_id,
+        "client_id": app_id,
         "redirect_uri": redirect_uri,
+        "response_type": "code",
         "state": str(session.id),
     }
     authorize_url = f"{FEISHU_AUTHORIZE_URL}?{urlencode(params)}"

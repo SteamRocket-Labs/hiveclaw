@@ -36,7 +36,7 @@ settings = get_settings()
 
 router = APIRouter(tags=["desktop-auth"])
 
-FEISHU_AUTHORIZE_URL = "https://open.feishu.cn/open-apis/authen/v1/authorize"
+FEISHU_AUTHORIZE_URL = "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
 
 _OAUTH_STATE_TTL = 600  # 10 minutes
 _OAUTH_STATE_PREFIX = "oauth_state:"
@@ -109,8 +109,9 @@ async def feishu_authorize_for_desktop(
 
     callback_url = str(request.base_url).rstrip("/") + "/api/auth/feishu/callback-desktop"
     params = {
-        "app_id": settings.FEISHU_APP_ID,
+        "client_id": settings.FEISHU_APP_ID,
         "redirect_uri": callback_url,
+        "response_type": "code",
         "state": nonce,
     }
     feishu_url = f"{FEISHU_AUTHORIZE_URL}?{urlencode(params)}"

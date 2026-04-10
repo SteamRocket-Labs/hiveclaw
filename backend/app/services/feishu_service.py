@@ -20,7 +20,7 @@ except ImportError:
 
 settings = get_settings()
 
-FEISHU_TOKEN_URL = "https://open.feishu.cn/open-apis/authen/v1/oidc/access_token"
+FEISHU_TOKEN_URL_V2 = "https://open.feishu.cn/open-apis/authen/v2/oauth/token"
 FEISHU_USER_INFO_URL = "https://open.feishu.cn/open-apis/authen/v1/user_info"
 FEISHU_APP_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
 FEISHU_SEND_MSG_URL = "https://open.feishu.cn/open-apis/im/v1/messages"
@@ -83,16 +83,18 @@ class FeishuService:
 
         Returns dict with: open_id, union_id, user_id, name, email, avatar_url
         """
-        app_token = await self.get_app_access_token()
-
         async with httpx.AsyncClient() as client:
-            # Get user access token
-            token_resp = await client.post(FEISHU_TOKEN_URL, json={
+            # OAuth v2: exchange code with client credentials directly
+            token_resp = await client.post(FEISHU_TOKEN_URL_V2, json={
                 "grant_type": "authorization_code",
+                "client_id": settings.FEISHU_APP_ID,
+                "client_secret": settings.FEISHU_APP_SECRET,
                 "code": code,
-            }, headers={"Authorization": f"Bearer {app_token}"})
+                "redirect_uri": settings.FEISHU_REDIRECT_URI or "",
+            })
             token_data = self._parse_api_response(token_resp, stage="exchange_code_for_token")
-            user_access_token = token_data.get("data", {}).get("access_token", "")
+            # v2 returns access_token at top level
+            user_access_token = token_data.get("access_token") or token_data.get("data", {}).get("access_token", "")
 
             # Get user info
             info_resp = await client.get(FEISHU_USER_INFO_URL, headers={

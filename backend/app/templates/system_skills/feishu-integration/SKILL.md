@@ -87,7 +87,7 @@ Use this skill when the user wants real work performed inside Feishu/Lark: send 
 ### Approvals
 | Tool | Purpose | Key Params |
 |------|---------|------------|
-| `feishu_approval_create` | Create an approval instance | `approval_code` (**required**), `user_id` (**required**, Feishu user_id of the approver), `form` (**required**) |
+| `feishu_approval_create` | Create an approval instance | `approval_code` (**required**), `user_id` (**required**, Feishu user_id of the submitter), `form` (**required**) |
 | `feishu_approval_query` | Query approval instances | `approval_code` (**required**), optional `status` filter |
 | `feishu_approval_get` | Read one approval instance | `instance_id` |
 
@@ -102,9 +102,9 @@ Use this skill when the user wants real work performed inside Feishu/Lark: send 
 ### Calendar
 | Tool | Purpose | Key Params |
 |------|---------|------------|
-| `feishu_calendar_list` | Query events + freebusy | optional `user_open_id` or `user_email` (check someone's schedule), `start_time`, `end_time` (ISO 8601), `max_results` (default 20) |
-| `feishu_calendar_create` | Create an event + invite attendees | `summary`, `start_time`, `end_time` (ISO 8601), optional `description`, `location`, `timezone` (default Asia/Shanghai), `user_email`, `attendee_names`, `attendee_emails`, `attendee_open_ids` |
-| `feishu_calendar_update` | Update an event | `user_email`, `event_id`, plus fields to change: `summary`, `description`, `location`, `start_time`, `end_time`, `timezone` |
+| `feishu_calendar_list` | Query events + freebusy | optional `user_open_id` (check someone's schedule), `start_time`, `end_time` (ISO 8601), `max_results` (default 20) |
+| `feishu_calendar_create` | Create an event + invite attendees | `summary`, `start_time`, `end_time` (ISO 8601), optional `description`, `location`, `timezone` (default Asia/Shanghai), `attendee_names`, `attendee_emails`, `attendee_open_ids` |
+| `feishu_calendar_update` | Update an event | `user_email`, `event_id`, plus fields to change: `summary`, `description`, `location`, `start_time`, `end_time` |
 | `feishu_calendar_delete` | Delete an event | `user_email`, `event_id` |
 
 ## Common Workflows
@@ -166,7 +166,7 @@ You have full scheduling capability: check availability, create events, invite p
 - For approvals, ask the user for the real `approval_code` when it's unknown
 
 ### Be Proactive with Calendar
-You have full scheduling capability — check availability, create events, invite attendees, reschedule, and cancel. When someone asks you to set up a meeting, act on it directly using your calendar tools. Resolve identifiers via `feishu_user_search` when you only have a name. Prefer `user_open_id` over `user_email` for `feishu_calendar_list` — both work, but `open_id` is more reliable. Include `timezone` for users outside Asia/Shanghai.
+You have full scheduling capability — check availability, create events, invite attendees, reschedule, and cancel. When someone asks you to set up a meeting, act on it directly using your calendar tools. Resolve identifiers via `feishu_user_search` when you only have a name, then pass the `user_open_id` to `feishu_calendar_list`.
 
 ### Surface Actionable Error Details
 When a tool returns an error, read the error message and tell the user exactly what's needed:

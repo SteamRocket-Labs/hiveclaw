@@ -57,7 +57,7 @@ Use this skill when the user wants real work performed inside Feishu/Lark: send 
 | Tool | Purpose | Key Params |
 |------|---------|------------|
 | `feishu_doc_read` | Read a doc or wiki page | `document_token` (accepts URL or node_token), optional `max_chars` (default 6000, max 20000) |
-| `feishu_doc_create` | Create a new doc | `title` -> returns real link and token |
+| `feishu_doc_create` | Create a new doc | `title`, optional `folder_token` (parent folder) -> returns real link and token |
 | `feishu_doc_append` | Append content to a doc | `document_token` (real token from create), `content` (Markdown) |
 | `feishu_doc_share` | Share/unshare/list permissions | `document_token`, `action` (**required**: `add`/`remove`/`list`), `member_names` or `member_open_ids`, `permission` (`view`/`edit`/`full_access`) |
 | `feishu_doc_delete` | Delete a doc (confirm first!) | `document_token` |
@@ -71,7 +71,7 @@ Use this skill when the user wants real work performed inside Feishu/Lark: send 
 | Tool | Purpose | Key Params |
 |------|---------|------------|
 | `feishu_sheet_info` | Get worksheet metadata | `spreadsheet_token` or `spreadsheet_url` |
-| `feishu_sheet_read` | Read cell data | `spreadsheet_token`, optional `sheet_id`, `range` |
+| `feishu_sheet_read` | Read cell data | `spreadsheet_token` or `spreadsheet_url`, optional `sheet_id`, `range`, `value_render_option` (ToString/FormattedValue/Formula/UnformattedValue) |
 
 ### Base (Bitable)
 | Tool | Purpose | Key Params |
@@ -79,7 +79,7 @@ Use this skill when the user wants real work performed inside Feishu/Lark: send 
 | `feishu_base_app_create` | Create a fresh Base app | `name`, optional `folder_token`, `time_zone` |
 | `feishu_base_table_list` | List tables in a Base | `base_token`, optional `offset`, `limit` (max 100) |
 | `feishu_base_field_list` | List field definitions | `base_token`, `table_id`, optional `offset`, `limit` (max 200) |
-| `feishu_base_field_create` | Create a new field (column) | `base_token`, `table_id`, `field_name`, `type` (1=Text, 2=Number, 3=SingleSelect, 4=MultiSelect, 5=Date, 7=Checkbox, 11=Person, 13=Phone, 15=URL, 17=Attachment, 18=Link, 20=Formula, 21=DuplexLink, 22=Location, 1001=CreatedTime, 1002=ModifiedTime, 1003=Creator, 1004=Modifier) |
+| `feishu_base_field_create` | Create a new field (column) | `base_token`, `table_id`, `field_name`, `type` (1=Text, 2=Number, 3=SingleSelect, 4=MultiSelect, 5=Date, 7=Checkbox, 11=Person, 13=Phone, 15=URL, 17=Attachment, 18=Link, 20=Formula, 21=DuplexLink, 22=Location, 23=GroupChat, 1001=CreatedTime, 1002=ModifiedTime, 1003=Creator, 1004=Modifier), optional `property` (object, for Select type options config) |
 | `feishu_base_record_list` | Query records | `base_token`, `table_id`, optional `view_id`, `offset`, `limit` (max 200) |
 | `feishu_base_record_upsert` | Create/update a record | `base_token`, `table_id`, `fields` (field-name to value mapping), optional `record_id` (omit to create) |
 | `feishu_base_record_delete` | Delete a record (confirm first!) | `base_token`, `table_id`, `record_id` |
@@ -88,7 +88,7 @@ Use this skill when the user wants real work performed inside Feishu/Lark: send 
 ### Approvals
 | Tool | Purpose | Key Params |
 |------|---------|------------|
-| `feishu_approval_create` | Create an approval instance | `approval_code`, approver identifier, `form` |
+| `feishu_approval_create` | Create an approval instance | `approval_code` (**required**), `user_id` (**required**, Feishu user_id of the approver), `form` (**required**) |
 | `feishu_approval_query` | Query approval instances | `approval_code` (**required**), optional `status` filter |
 | `feishu_approval_get` | Read one approval instance | `instance_id` |
 
@@ -96,14 +96,14 @@ Use this skill when the user wants real work performed inside Feishu/Lark: send 
 | Tool | Purpose | Key Params |
 |------|---------|------------|
 | `feishu_task_list` | List tasks | optional `query`, `complete`, `due_start`, `due_end`, `created_at`, `page_all`, `page_limit` |
-| `feishu_task_create` | Create a task | `summary`, optional `description`, `assignee_open_id`, `due`, `tasklist_id` |
+| `feishu_task_create` | Create a task | `summary`, optional `description`, `assignee_open_id`, `due`, `tasklist_id`, `idempotency_key` |
 | `feishu_task_complete` | Complete a task | `task_id` |
 | `feishu_task_comment` | Add comment to a task | `task_id`, `content` |
 
 ### Calendar
 | Tool | Purpose | Key Params |
 |------|---------|------------|
-| `feishu_calendar_list` | Query events + freebusy | optional `user_open_id` (check someone's schedule), `start_time`, `end_time` (ISO 8601) |
+| `feishu_calendar_list` | Query events + freebusy | optional `user_open_id` or `user_email` (check someone's schedule), `start_time`, `end_time` (ISO 8601), `max_results` (default 20) |
 | `feishu_calendar_create` | Create an event + invite attendees | `summary`, `start_time`, `end_time` (ISO 8601), optional `description`, `location`, `timezone` (default Asia/Shanghai), `user_email`, `attendee_names`, `attendee_emails`, `attendee_open_ids` |
 | `feishu_calendar_update` | Update an event | `user_email`, `event_id`, plus fields to change: `summary`, `description`, `location`, `start_time`, `end_time`, `timezone` |
 | `feishu_calendar_delete` | Delete an event | `user_email`, `event_id` |
@@ -172,7 +172,7 @@ When a tool returns an error:
 - **Do NOT ask the user to manually check their calendar** — call `feishu_calendar_list` yourself.
 - **Do NOT invent token/ID values** — always read them from tool responses first.
 - **Do NOT call `feishu_doc_share` without `action`** — it is a required parameter.
-- **Do NOT pass `user_email` to `feishu_calendar_list`** — use `user_open_id` (resolve via `feishu_user_search` first).
+- **Prefer `user_open_id` over `user_email` for `feishu_calendar_list`** — both work, but `open_id` is more reliable. Use `feishu_user_search` to resolve if needed.
 - **Do NOT assume field names in Base** — always call `feishu_base_field_list` before writing.
 - **Do NOT guess approval codes** — ask the user for the real code.
 

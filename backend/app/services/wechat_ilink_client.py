@@ -523,17 +523,31 @@ class ILinkClient:
             "filesize": cipher_size,
             "no_need_thumb": True,
             "aeskey": aes_key_hex,
+            # Provide zero thumbs even if no_need_thumb (iLink may still expect these)
+            "thumb_rawsize": 0,
+            "thumb_rawfilemd5": "",
+            "thumb_filesize": 0,
             "base_info": {"channel_version": channel_version},
         }
+
+        logger.info(f"[iLink] getuploadurl request: media_type={media_type} rawsize={raw_size} cipher_size={cipher_size} to={to_user_id[:12]}...")
 
         async with httpx.AsyncClient(timeout=SEND_TIMEOUT) as client:
             resp = await client.post(url, headers=headers, json=body)
             resp.raise_for_status()
             data = resp.json()
 
+        logger.info(f"[iLink] getuploadurl response: {data}")
+
+        ret = data.get("ret", 0)
+        if ret != 0:
+            errcode = data.get("errcode", ret)
+            errmsg = data.get("errmsg", "unknown")
+            raise ILinkAPIError(f"getuploadurl failed: ret={ret} errcode={errcode} errmsg={errmsg}")
+
         upload_param = data.get("upload_param", "")
         if not upload_param:
-            raise ILinkAPIError("getuploadurl returned empty upload_param")
+            raise ILinkAPIError(f"getuploadurl returned empty upload_param, full response: {data}")
 
         # Step 2: Encrypt file
         ciphertext = aes_ecb_encrypt(file_data, aes_key_bytes)

@@ -294,22 +294,28 @@ class WeChatPersonalStreamManager:
                     logger.warning(f"[WeChatPersonal Stream] caption send failed: {e}")
 
             # Upload file to iLink CDN
-            file_data = fp.read_bytes()
-            upload = await client.upload_media(
-                bot_token=bot_token,
-                to_user_id=from_user,
-                file_data=file_data,
-                media_type=media_type,
-            )
-            await client.send_media_message(
-                bot_token=bot_token,
-                to_user_id=from_user,
-                context_token=ctx_token,
-                upload=upload,
-                media_type=media_type,
-                file_name=fp.name,
-            )
-            logger.info(f"[WeChatPersonal Stream] File sent via iLink: {fp.name}")
+            try:
+                file_data = fp.read_bytes()
+                logger.info(f"[WeChatPersonal Stream] Uploading {fp.name} ({len(file_data)} bytes, type={media_type})...")
+                upload = await client.upload_media(
+                    bot_token=bot_token,
+                    to_user_id=from_user,
+                    file_data=file_data,
+                    media_type=media_type,
+                )
+                logger.info("[WeChatPersonal Stream] Upload complete, sending media message...")
+                await client.send_media_message(
+                    bot_token=bot_token,
+                    to_user_id=from_user,
+                    context_token=ctx_token,
+                    upload=upload,
+                    media_type=media_type,
+                    file_name=fp.name,
+                )
+                logger.info(f"[WeChatPersonal Stream] File sent via iLink: {fp.name}")
+            except Exception as e:
+                logger.error(f"[WeChatPersonal Stream] File send failed for {fp.name}: {e}", exc_info=True)
+                raise
 
         token_cfs = _cfs.set(_wechat_file_sender)
 

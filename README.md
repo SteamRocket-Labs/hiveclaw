@@ -12,8 +12,6 @@ Open-source multi-agent collaboration platform for enterprise. Build persistent 
 - **Tool Governance** — Security zones, capability policies, and human-in-the-loop approval flows
 - **Autonomous Triggers** — Cron, interval, webhook, poll, and event-driven execution
 - **Multi-Tenant** — Full tenant isolation with PostgreSQL RLS, per-tenant LLM pools, quotas, and org sync
-- **Provider-First LLM Settings** — Configure OpenAI, MiniMax, Qwen, Kimi, Zhipu, Ollama, and compatible providers from a unified provider-first admin page
-- **Managed Provider Login** — Supports API Key, web login, and QR/device login flows without breaking existing `llm_models` runtime IDs
 - **Skill System** — Markdown-based skill definitions with progressive loading and on-demand tool pack activation
 - **Agent Collaboration** — Agent-to-agent delegation, social plaza, and shared workspaces
 - **60+ Built-in Tools** — File I/O, web search, document processing, Feishu office suite, email, MCP integration
@@ -131,38 +129,9 @@ npm run build      # Production build
 
 # Migrations
 cd backend
-python -m alembic upgrade head
-python -m alembic revision --autogenerate -m "description"
+alembic upgrade head
+alembic revision --autogenerate -m "description"
 ```
-
-## LLM Provider Login
-
-Hive keeps `llm_models` as the runtime model pool, but the enterprise admin UI now manages providers first:
-
-- Save provider-level credentials and base URLs
-- Verify credentials and refresh model inventory into `llm_models`
-- Keep existing model IDs stable for agents
-- Preserve legacy per-model settings such as `label`, `max_output_tokens`, `max_input_tokens`, and `temperature`
-
-Optional environment variables for provider login:
-
-```bash
-# OpenAI "网页登录" uses an internal login bridge
-OPENAI_LOGIN_BRIDGE_URL=
-
-# MiniMax OAuth
-MINIMAX_OAUTH_AUTHORIZE_URL=
-MINIMAX_OAUTH_TOKEN_URL=
-MINIMAX_OAUTH_DEVICE_URL=
-MINIMAX_OAUTH_CLIENT_ID=
-MINIMAX_OAUTH_CLIENT_SECRET=
-MINIMAX_OAUTH_SCOPES=openid profile
-```
-
-Notes:
-
-- OpenAI login here is intentionally modeled as `login_bridge`, not official OpenAI API OAuth.
-- If these variables are empty, the related login buttons remain unavailable and API Key mode still works.
 
 ## License
 

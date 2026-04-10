@@ -28,7 +28,6 @@ async def main():
     import app.models.user           # noqa
     import app.models.agent          # noqa
     import app.models.task           # noqa
-    import app.models.llm_provider_config  # noqa: must be before llm
     import app.models.llm            # noqa
     import app.models.tool           # noqa
     import app.models.audit          # noqa

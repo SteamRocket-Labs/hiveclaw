@@ -84,15 +84,6 @@ class Settings(BaseSettings):
     # Desktop Auth Bridge
     DESKTOP_DEEP_LINK_SCHEME: str = "copaw"
 
-    # Provider auth / login bridge
-    OPENAI_LOGIN_BRIDGE_URL: str = ""
-    MINIMAX_OAUTH_AUTHORIZE_URL: str = ""
-    MINIMAX_OAUTH_TOKEN_URL: str = ""
-    MINIMAX_OAUTH_DEVICE_URL: str = ""
-    MINIMAX_OAUTH_CLIENT_ID: str = ""
-    MINIMAX_OAUTH_CLIENT_SECRET: str = ""
-    MINIMAX_OAUTH_SCOPES: str = "openid profile"
-
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
 

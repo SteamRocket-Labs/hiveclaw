@@ -4,8 +4,7 @@ import logging
 import uuid
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,7 +32,6 @@ from app.schemas.schemas import (
 )
 from app.services.approval_service import approval_service
 from app.services.enterprise_sync import enterprise_sync_service
-from app.services.llm_provider_service import llm_provider_service
 from app.services.llm_utils import get_provider_manifest
 from app.services.secrets_provider import get_secrets_provider
 
@@ -59,159 +57,6 @@ class LLMTestRequest(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
     model_id: str | None = None  # existing model ID to use stored API key
-
-
-class LLMProviderConfigRequest(BaseModel):
-    auth_mode: str = "api_key"
-    api_key: str | None = None
-    access_token: str | None = None
-    refresh_token: str | None = None
-    base_url: str | None = None
-    enabled: bool = True
-    oauth_subject: str | None = None
-    oauth_email: str | None = None
-    metadata_json: dict | None = None
-
-
-class LLMProviderAuthStartRequest(BaseModel):
-    mode: str
-
-
-@router.get("/llm-provider-configs")
-async def list_llm_provider_configs(
-    tenant_id: str | None = None,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
-    return await llm_provider_service.list_provider_configs(db, target_tenant_id)
-
-
-@router.get("/llm-provider-configs/{provider}")
-async def get_llm_provider_config(
-    provider: str,
-    tenant_id: str | None = None,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
-    return await llm_provider_service.get_provider_config(db, target_tenant_id, provider)
-
-
-@router.put("/llm-provider-configs/{provider}")
-async def save_llm_provider_config(
-    provider: str,
-    data: LLMProviderConfigRequest,
-    tenant_id: str | None = None,
-    current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
-    return await llm_provider_service.upsert_provider_config(db, target_tenant_id, provider, data.model_dump())
-
-
-@router.post("/llm-provider-configs/{provider}/verify")
-async def verify_llm_provider_config(
-    provider: str,
-    data: LLMProviderConfigRequest,
-    tenant_id: str | None = None,
-    current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
-    return await llm_provider_service.verify_provider(db, target_tenant_id, provider, data.model_dump())
-
-
-@router.post("/llm-provider-configs/{provider}/refresh-models")
-async def refresh_llm_provider_models(
-    provider: str,
-    tenant_id: str | None = None,
-    current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
-    return await llm_provider_service.refresh_provider_models(db, target_tenant_id, provider)
-
-
-@router.post("/llm-provider-configs/{provider}/auth/start")
-async def start_llm_provider_auth(
-    provider: str,
-    data: LLMProviderAuthStartRequest,
-    request: Request,
-    tenant_id: str | None = None,
-    current_user: User = Depends(get_current_admin),
-):
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
-    callback_url = f"{str(request.base_url).rstrip('/')}/api/enterprise/llm-provider-auth/callback/{provider}"
-    return await llm_provider_service.start_auth(
-        provider=provider,
-        tenant_id=target_tenant_id,
-        user_id=current_user.id,
-        mode=data.mode,
-        callback_url=callback_url,
-    )
-
-
-@router.get("/llm-provider-configs/{provider}/auth/status")
-async def get_llm_provider_auth_status(
-    provider: str,
-    session_id: str,
-    current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    del current_user
-    return await llm_provider_service.get_auth_status(provider, session_id, db=db)
-
-
-@router.get("/llm-provider-auth/callback/{provider}")
-async def llm_provider_auth_callback(
-    provider: str,
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-):
-    params = dict(request.query_params)
-    session_id = params.get("state") or params.get("session_id")
-    if not session_id:
-        raise HTTPException(status_code=400, detail="session_id or state is required")
-    session = await llm_provider_service.complete_auth_callback(
-        db,
-        provider=provider,
-        session_id=session_id,
-        query_params=params,
-    )
-    return HTMLResponse(
-        f"""
-        <html>
-          <body style="font-family: sans-serif; padding: 24px;">
-            <h3>Provider connected</h3>
-            <p>{provider} 登录已完成，可以返回 Hive。</p>
-            <script>
-              try {{
-                if (window.opener) {{
-                  window.opener.postMessage({{
-                    type: "hive-llm-provider-auth-complete",
-                    provider: "{provider}",
-                    sessionId: "{session['session_id']}"
-                  }}, window.location.origin);
-                }}
-                window.close();
-              }} catch (_err) {{}}
-            </script>
-          </body>
-        </html>
-        """
-    )
-
-
-@router.post("/llm-provider-configs/{provider}/auth/disconnect")
-async def disconnect_llm_provider_auth(
-    provider: str,
-    tenant_id: str | None = None,
-    current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
-    return await llm_provider_service.disconnect_provider_auth(db, target_tenant_id, provider)
 
 
 @router.post("/llm-test")
@@ -364,7 +209,6 @@ async def add_llm_model(
         supports_vision=data.supports_vision,
         max_output_tokens=data.max_output_tokens,
         max_input_tokens=data.max_input_tokens,
-        temperature=data.temperature,
         tenant_id=target_tenant_id,
     )
     db.add(model)
@@ -500,8 +344,6 @@ async def update_llm_model(
             model.max_output_tokens = data.max_output_tokens
         if hasattr(data, "max_input_tokens") and data.max_input_tokens is not None:
             model.max_input_tokens = data.max_input_tokens
-        if hasattr(data, "temperature") and data.temperature is not None:
-            model.temperature = data.temperature
 
         try:
             from app.core.policy import write_audit_event

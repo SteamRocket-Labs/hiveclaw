@@ -41,13 +41,6 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:3000","http://localhost:5173"]}  # Set explicit origins in production!
       FEISHU_APP_ID: ${FEISHU_APP_ID:-}
       FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
-      OPENAI_LOGIN_BRIDGE_URL: ${OPENAI_LOGIN_BRIDGE_URL:-}
-      MINIMAX_OAUTH_AUTHORIZE_URL: ${MINIMAX_OAUTH_AUTHORIZE_URL:-}
-      MINIMAX_OAUTH_TOKEN_URL: ${MINIMAX_OAUTH_TOKEN_URL:-}
-      MINIMAX_OAUTH_DEVICE_URL: ${MINIMAX_OAUTH_DEVICE_URL:-}
-      MINIMAX_OAUTH_CLIENT_ID: ${MINIMAX_OAUTH_CLIENT_ID:-}
-      MINIMAX_OAUTH_CLIENT_SECRET: ${MINIMAX_OAUTH_CLIENT_SECRET:-}
-      MINIMAX_OAUTH_SCOPES: ${MINIMAX_OAUTH_SCOPES:-openid profile}
       DOCKER_NETWORK: hive_network
       # GitHub personal access token — fallback for ClawHub/GitHub skill imports
       # when no tenant-level token is configured. Raises API rate limit from 60 to 5,000/hr.

@@ -263,7 +263,6 @@ class LLMModelCreate(BaseModel):
     supports_vision: bool = False
     max_output_tokens: int | None = None
     max_input_tokens: int | None = None
-    temperature: float | None = None
 
 class LLMModelUpdate(BaseModel):
     provider: str | None = None
@@ -276,7 +275,6 @@ class LLMModelUpdate(BaseModel):
     supports_vision: bool | None = None
     max_output_tokens: int | None = None
     max_input_tokens: int | None = None
-    temperature: float | None = None
 
 
 class LLMModelOut(BaseModel):
@@ -291,9 +289,6 @@ class LLMModelOut(BaseModel):
     supports_vision: bool = False
     max_output_tokens: int | None = None
     max_input_tokens: int | None = None
-    temperature: float | None = None
-    provider_config_id: uuid.UUID | None = None
-    discovered_from_provider: bool = False
     created_at: datetime
     is_default: bool = False
 

@@ -161,7 +161,7 @@ start_backend() {
     cd "$BACKEND_DIR"
 
     echo -e "${YELLOW}🔄 Applying database migrations...${NC}"
-    DATABASE_URL="$DATABASE_URL" .venv/bin/python -m alembic upgrade head
+    DATABASE_URL="$DATABASE_URL" .venv/bin/alembic upgrade head
 
     # Auto-run data migrations (idempotent)
     echo -e "${YELLOW}🔄 Running data migrations...${NC}"

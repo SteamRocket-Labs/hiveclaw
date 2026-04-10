@@ -17,9 +17,6 @@ export interface LLMModel {
   max_output_tokens?: number | null;
   max_input_tokens?: number | null;
   temperature?: number | null;
-  provider_config_id?: string | null;
-  discovered_from_provider?: boolean;
-  is_default?: boolean;
   created_at?: string;
 }
 
@@ -81,52 +78,6 @@ export interface LLMProviderSpec {
   default_base_url?: string | null;
   supports_tool_choice: boolean;
   default_max_tokens: number;
-  supported_auth_modes?: string[];
-  supports_model_discovery?: boolean;
-  managed_login_label?: string | null;
-  known_models?: string[];
-  max_input_tokens?: number;
-}
-
-export interface LLMProviderConfig extends LLMProviderSpec {
-  source: 'saved' | 'derived' | 'empty';
-  auth_mode: string;
-  enabled: boolean;
-  base_url?: string | null;
-  api_key_masked?: string;
-  oauth_subject?: string | null;
-  oauth_email?: string | null;
-  connected: boolean;
-  model_count: number;
-  models: LLMModel[];
-  has_auth_credentials?: boolean;
-  last_verified_at?: string | null;
-  last_refreshed_at?: string | null;
-  metadata_json?: Record<string, unknown>;
-}
-
-export interface LLMProviderConfigInput {
-  auth_mode: string;
-  api_key?: string;
-  access_token?: string;
-  refresh_token?: string;
-  base_url?: string | null;
-  enabled?: boolean;
-  oauth_subject?: string | null;
-  oauth_email?: string | null;
-  metadata_json?: Record<string, unknown>;
-}
-
-export interface LLMProviderAuthSession {
-  session_id: string;
-  mode: string;
-  status: 'pending' | 'completed' | 'failed' | 'expired';
-  connect_url?: string | null;
-  qr_url?: string | null;
-  user_code?: string | null;
-  expires_at: string;
-  provider_payload: Record<string, unknown>;
-  error?: string | null;
 }
 
 export interface LLMTestResult {
@@ -161,33 +112,8 @@ export const enterpriseApi = {
   updateLLMModel: (id: string, data: Partial<LLMModel> & { api_key?: string }) =>
     put<LLMModel>(`/enterprise/llm-models/${id}`, data),
   deleteLLMModel: (id: string, force = false) => del(`/enterprise/llm-models/${id}${force ? '?force=true' : ''}`),
-  testLLM: (data: Record<string, unknown>, tenantId?: string) =>
-    post<LLMTestResult>(`/enterprise/llm-test${tenantId ? `?tenant_id=${tenantId}` : ''}`, data),
+  testLLM: (data: Record<string, unknown>) => post<LLMTestResult>('/enterprise/llm-test', data),
   getLLMProviders: () => get<LLMProviderSpec[]>('/enterprise/llm-providers'),
-  getLLMProviderConfigs: (tenantId?: string) =>
-    get<LLMProviderConfig[]>(`/enterprise/llm-provider-configs${tenantId ? `?tenant_id=${tenantId}` : ''}`),
-  getLLMProviderConfig: (provider: string, tenantId?: string) =>
-    get<LLMProviderConfig>(`/enterprise/llm-provider-configs/${provider}${tenantId ? `?tenant_id=${tenantId}` : ''}`),
-  saveLLMProviderConfig: (provider: string, data: LLMProviderConfigInput, tenantId?: string) =>
-    put<LLMProviderConfig>(`/enterprise/llm-provider-configs/${provider}${tenantId ? `?tenant_id=${tenantId}` : ''}`, data),
-  verifyLLMProviderConfig: (provider: string, data: LLMProviderConfigInput, tenantId?: string) =>
-    post<{ success: boolean; models: string[]; metadata?: Record<string, unknown>; error?: string }>(
-      `/enterprise/llm-provider-configs/${provider}/verify${tenantId ? `?tenant_id=${tenantId}` : ''}`,
-      data,
-    ),
-  refreshLLMProviderModels: (provider: string, tenantId?: string) =>
-    post<{ created: number; updated: number; disabled: number; models: string[] }>(
-      `/enterprise/llm-provider-configs/${provider}/refresh-models${tenantId ? `?tenant_id=${tenantId}` : ''}`,
-    ),
-  startLLMProviderAuth: (provider: string, mode: string, tenantId?: string) =>
-    post<LLMProviderAuthSession>(
-      `/enterprise/llm-provider-configs/${provider}/auth/start${tenantId ? `?tenant_id=${tenantId}` : ''}`,
-      { mode },
-    ),
-  getLLMProviderAuthStatus: (provider: string, sessionId: string) =>
-    get<LLMProviderAuthSession>(`/enterprise/llm-provider-configs/${provider}/auth/status?session_id=${encodeURIComponent(sessionId)}`),
-  disconnectLLMProviderAuth: (provider: string, tenantId?: string) =>
-    post<{ ok: boolean }>(`/enterprise/llm-provider-configs/${provider}/auth/disconnect${tenantId ? `?tenant_id=${tenantId}` : ''}`),
   setDefaultModel: (modelId: string, tenantId?: string) =>
     put<{ status: string }>(`/enterprise/llm-models/default${tenantId ? `?tenant_id=${tenantId}` : ''}`, { model_id: modelId }),
 

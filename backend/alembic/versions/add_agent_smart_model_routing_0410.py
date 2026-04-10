@@ -19,21 +19,11 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-def _column_exists(table: str, column: str) -> bool:
-    conn = op.get_bind()
-    result = conn.execute(
-        sa.text("SELECT EXISTS (SELECT FROM information_schema.columns WHERE table_name = :t AND column_name = :c)"),
-        {"t": table, "c": column},
-    )
-    return result.scalar()
-
-
 def upgrade() -> None:
-    if not _column_exists("agents", "smart_model_routing"):
-        op.add_column(
-            "agents",
-            sa.Column("smart_model_routing", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-        )
+    op.add_column(
+        "agents",
+        sa.Column("smart_model_routing", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+    )
 
 
 def downgrade() -> None:

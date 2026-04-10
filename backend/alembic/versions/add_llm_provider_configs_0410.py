@@ -19,46 +19,9 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-def _table_exists(name: str) -> bool:
-    conn = op.get_bind()
-    result = conn.execute(
-        sa.text("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = :name)"),
-        {"name": name},
-    )
-    return result.scalar()
-
-
-def _column_exists(table: str, column: str) -> bool:
-    conn = op.get_bind()
-    result = conn.execute(
-        sa.text("SELECT EXISTS (SELECT FROM information_schema.columns WHERE table_name = :t AND column_name = :c)"),
-        {"t": table, "c": column},
-    )
-    return result.scalar()
-
-
-def _index_exists(name: str) -> bool:
-    conn = op.get_bind()
-    result = conn.execute(
-        sa.text("SELECT EXISTS (SELECT FROM pg_indexes WHERE indexname = :name)"),
-        {"name": name},
-    )
-    return result.scalar()
-
-
-def _constraint_exists(name: str) -> bool:
-    conn = op.get_bind()
-    result = conn.execute(
-        sa.text("SELECT EXISTS (SELECT FROM information_schema.table_constraints WHERE constraint_name = :name)"),
-        {"name": name},
-    )
-    return result.scalar()
-
-
 def upgrade() -> None:
-    if not _table_exists("llm_provider_configs"):
-        op.create_table(
-            "llm_provider_configs",
+    op.create_table(
+        "llm_provider_configs",
         sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("tenant_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("provider", sa.String(length=50), nullable=False),
@@ -79,28 +42,22 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("tenant_id", "provider", name="uq_llm_provider_configs_tenant_provider"),
     )
-    if not _index_exists("ix_llm_provider_configs_tenant_id"):
-        op.create_index("ix_llm_provider_configs_tenant_id", "llm_provider_configs", ["tenant_id"], unique=False)
+    op.create_index("ix_llm_provider_configs_tenant_id", "llm_provider_configs", ["tenant_id"], unique=False)
 
-    if not _column_exists("llm_models", "temperature"):
-        op.add_column("llm_models", sa.Column("temperature", sa.Float(), nullable=True))
-    if not _column_exists("llm_models", "provider_config_id"):
-        op.add_column("llm_models", sa.Column("provider_config_id", postgresql.UUID(as_uuid=True), nullable=True))
-    if not _column_exists("llm_models", "discovered_from_provider"):
-        op.add_column(
-            "llm_models",
-            sa.Column("discovered_from_provider", sa.Boolean(), nullable=False, server_default=sa.text("false")),
-        )
-    if not _index_exists("ix_llm_models_provider_config_id"):
-        op.create_index("ix_llm_models_provider_config_id", "llm_models", ["provider_config_id"], unique=False)
-    if not _constraint_exists("fk_llm_models_provider_config_id"):
-        op.create_foreign_key(
-            "fk_llm_models_provider_config_id",
-            "llm_models",
-            "llm_provider_configs",
-            ["provider_config_id"],
-            ["id"],
-        )
+    op.add_column("llm_models", sa.Column("temperature", sa.Float(), nullable=True))
+    op.add_column("llm_models", sa.Column("provider_config_id", postgresql.UUID(as_uuid=True), nullable=True))
+    op.add_column(
+        "llm_models",
+        sa.Column("discovered_from_provider", sa.Boolean(), nullable=False, server_default=sa.text("false")),
+    )
+    op.create_index("ix_llm_models_provider_config_id", "llm_models", ["provider_config_id"], unique=False)
+    op.create_foreign_key(
+        "fk_llm_models_provider_config_id",
+        "llm_models",
+        "llm_provider_configs",
+        ["provider_config_id"],
+        ["id"],
+    )
 
 
 def downgrade() -> None:

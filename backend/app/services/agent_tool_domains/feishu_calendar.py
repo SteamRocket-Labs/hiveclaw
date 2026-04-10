@@ -203,6 +203,7 @@ async def _feishu_calendar_create(agent_id: uuid.UUID, arguments: dict) -> str:
         "summary": summary,
         "start_time": {"timestamp": str(int(_iso_to_ts(start_time))), "timezone": tz},
         "end_time": {"timestamp": str(int(_iso_to_ts(end_time))), "timezone": tz},
+        "attendee_ability": "can_invite_others",
     }
     if arguments.get("description"):
         body["description"] = arguments["description"]
@@ -270,7 +271,7 @@ async def _feishu_calendar_create(agent_id: uuid.UUID, arguments: dict) -> str:
             for oid in attendee_open_ids:
                 await client.post(
                     f"https://open.feishu.cn/open-apis/calendar/v4/calendars/{agent_cal_id}/events/{event_id}/attendees",
-                    json={"attendees": [{"type": "user", "user_id": oid}]},
+                    json={"attendees": [{"type": "user", "is_optional": False, "open_id": oid}]},
                     headers={"Authorization": f"Bearer {token}"},
                     params={"user_id_type": "open_id"},
                 )

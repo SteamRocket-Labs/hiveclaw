@@ -26,7 +26,7 @@ def _render_tasks(items: list[dict]) -> str:
         lines.append("No tasks found.")
         return "\n".join(lines)
     for item in items:
-        due = item.get("due_at") or item.get("due", {}).get("timestamp") if isinstance(item.get("due"), dict) else item.get("due_at") or "无截止时间"
+        due = item.get("due", {}).get("timestamp", "无截止时间") if isinstance(item.get("due"), dict) else "无截止时间"
         summary = item.get("summary", "(无标题)")
         guid = item.get("guid", "")
         lines.append(f"- `{guid}` **{summary}** · due: {due}")
@@ -202,7 +202,7 @@ async def _feishu_task_create(agent_id, arguments: dict) -> str:
 
             tasklist_id = str(arguments.get("tasklist_id") or "").strip()
             if tasklist_id:
-                body["tasklists"] = [{"tasklist_id": tasklist_id}]
+                body["tasklists"] = [{"tasklist_guid": tasklist_id}]
 
             data = await _task_api_request("POST", token, "/task/v2/tasks", body=body)
             return _render_created_task(summary, data)
@@ -246,7 +246,7 @@ async def _feishu_task_complete(agent_id, arguments: dict) -> str:
     if creds:
         _, token = creds
         try:
-            now_ts = str(int(datetime.now(UTC).timestamp()))
+            now_ts = str(int(datetime.now(UTC).timestamp() * 1000))
             data = await _task_api_request(
                 "PATCH", token, f"/task/v2/tasks/{task_id}",
                 body={"task": {"completed_at": now_ts}, "update_fields": ["completed_at"]},

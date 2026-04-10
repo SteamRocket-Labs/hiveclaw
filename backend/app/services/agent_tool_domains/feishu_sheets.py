@@ -54,7 +54,7 @@ def _format_sheet_info(spreadsheet_token: str, title: str | None, sheets: list[d
     for sheet in sheets:
         lines.append(
             f"- `{sheet.get('sheet_id', '')}` **{sheet.get('title', '(未命名)')}**"
-            f" · {sheet.get('row_count', '?')} 行 × {sheet.get('column_count', '?')} 列"
+            f" · {sheet.get('grid_properties', {}).get('row_count', '?')} 行 × {sheet.get('grid_properties', {}).get('column_count', '?')} 列"
         )
     return "\n".join(lines)
 

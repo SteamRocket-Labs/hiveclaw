@@ -417,7 +417,7 @@ class FeishuService:
         tenant_token = await self.get_tenant_access_token(app_id, app_secret)
         body: dict[str, str] = {"approval_code": approval_code}
         if status:
-            body["status"] = status
+            body["instance_status"] = status
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(
                 "https://open.feishu.cn/open-apis/approval/v4/instances/query",

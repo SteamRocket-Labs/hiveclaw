@@ -518,7 +518,7 @@ async def _feishu_base_record_upload_attachment(agent_id, arguments: dict) -> st
             await _base_api_put(
                 token,
                 f"/bitable/v1/apps/{base_token}/tables/{table_id}/records/{record_id}",
-                {"fields": {field_id: [{"file_token": file_token}]}},
+                {"fields": {field_id: [{"file_token": file_token, "name": display_name}]}},
             )
             return _render_base_attachment_upload(table_id, {
                 "record": {"record_id": record_id},

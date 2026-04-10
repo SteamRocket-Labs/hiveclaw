@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -155,13 +155,15 @@ function ThemeColorPicker() {
 // ─── Main Component ────────────────────────────────
 // ─── Enterprise KB Browser ─────────────────────────
 function EnterpriseKBBrowser({ onRefresh }: { onRefresh: () => void; refreshKey: number }) {
-    const kbAdapter: FileBrowserApi = {
+    // Memoize adapter to keep the reference stable across renders —
+    // otherwise FileBrowser's useEffect(reload, [reload]) fires infinitely.
+    const kbAdapter: FileBrowserApi = useMemo(() => ({
         list: (path) => enterpriseApi.kbFiles(path),
         read: (path) => enterpriseApi.kbRead(path),
         write: (path, content) => enterpriseApi.kbWrite(path, content),
         delete: (path) => enterpriseApi.kbDelete(path),
         upload: (file, path) => enterpriseApi.kbUpload(file, path),
-    };
+    }), []);
     return <FileBrowser api={kbAdapter} features={{ upload: true, newFolder: true, edit: true, delete: true, directoryNavigation: true }} onRefresh={onRefresh} />;
 }
 

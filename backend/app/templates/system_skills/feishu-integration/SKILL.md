@@ -148,9 +148,20 @@ Use this skill when the user wants real work performed inside Feishu/Lark: send 
 3. `feishu_approval_query` when you need to search by time or initiator
 4. `feishu_approval_get` when you already know the `instance_id`
 
-### Calendar
-- Check schedule: call `feishu_calendar_list`
-- Create and invite: `feishu_calendar_create(summary="...", start_time="...", end_time="...", attendee_names=["John"])`
+### Calendar — Scheduling Meetings
+You have **full scheduling capability**. You can check availability, create events, invite people, update, and cancel — all without needing to "receive messages" or "wait for replies". Act proactively.
+
+1. Check availability: `feishu_calendar_list(user_email="person@company.com", start_time="...", end_time="...")`
+2. Find a free slot from the freebusy data returned
+3. Create and invite: `feishu_calendar_create(summary="...", start_time="...", end_time="...", attendee_names=["John"], attendee_emails=["john@company.com"])`
+4. Update if needed: `feishu_calendar_update(user_email="...", event_id="...", start_time="...")`
+5. Cancel if asked: `feishu_calendar_delete(user_email="...", event_id="...")`
+
+**Common mistakes to avoid:**
+- Do NOT say "I cannot schedule meetings" or "I cannot receive messages" — you CAN. Use the tools above.
+- Do NOT ask the user to manually check their calendar — call `feishu_calendar_list` yourself.
+- When inviting attendees, always provide `attendee_names` or `attendee_emails` in the create call. Do not create an event first and then claim you cannot add people.
+- If you need to find someone's email, use `feishu_user_search(name="...")` first.
 
 ## Tips
 

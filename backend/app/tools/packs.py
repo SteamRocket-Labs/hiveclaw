@@ -42,6 +42,7 @@ TOOL_PACKS: tuple[ToolPackSpec, ...] = (
             "feishu_sheet_read",
             "feishu_base_app_create",
             "feishu_base_field_list",
+            "feishu_base_field_create",
             "feishu_base_table_list",
             "feishu_base_record_list",
             "feishu_base_record_upload_attachment",

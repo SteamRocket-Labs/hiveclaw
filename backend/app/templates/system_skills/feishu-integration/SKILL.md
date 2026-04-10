@@ -15,6 +15,7 @@ tools:
   - feishu_base_app_create
   - feishu_base_table_list
   - feishu_base_field_list
+  - feishu_base_field_create
   - feishu_base_record_list
   - feishu_base_record_upsert
   - feishu_base_record_delete
@@ -79,6 +80,7 @@ Use this skill when the user wants real work performed inside Feishu/Lark: send 
 | `feishu_base_app_create` | Create a fresh Base app | `name` |
 | `feishu_base_table_list` | List tables in a Base | `base_token` |
 | `feishu_base_field_list` | List field definitions | `base_token`, `table_id` |
+| `feishu_base_field_create` | Create a new field (column) | `base_token`, `table_id`, `field_name`, `type` (1=Text, 2=Number, 3=SingleSelect, etc.) |
 | `feishu_base_record_list` | Query records | `base_token`, `table_id` |
 | `feishu_base_record_upsert` | Create/update a record | `base_token`, `table_id`, `fields` |
 | `feishu_base_record_delete` | Delete a record only after explicit confirmation | `base_token`, `table_id`, `record_id` |
@@ -130,7 +132,8 @@ Use this skill when the user wants real work performed inside Feishu/Lark: send 
 1. If the user needs a new Base, call `feishu_base_app_create`
 2. `feishu_base_table_list` -> discover tables
 3. `feishu_base_field_list` -> understand field structure
-4. `feishu_base_record_list` -> query data
+4. `feishu_base_field_create` -> add new columns when needed
+5. `feishu_base_record_list` -> query data
 5. `feishu_base_record_upsert` -> write/update after confirming writable field names
 6. `feishu_base_record_delete` only after the user clearly confirms deletion
 7. `feishu_base_record_upload_attachment` after you already know the target `record_id` and `field_id`

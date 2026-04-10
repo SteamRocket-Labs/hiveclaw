@@ -232,6 +232,7 @@ _FEISHU_TOOL_NAMES = {
     "feishu_sheet_read",
     "feishu_base_app_create",
     "feishu_base_field_list",
+    "feishu_base_field_create",
     "feishu_base_table_list",
     "feishu_base_record_list",
     "feishu_base_record_delete",
@@ -259,6 +260,7 @@ _FEISHU_OFFICE_TOOL_NAMES = {
     "feishu_sheet_info",
     "feishu_sheet_read",
     "feishu_base_field_list",
+    "feishu_base_field_create",
     "feishu_base_table_list",
     "feishu_base_record_list",
     "feishu_base_record_delete",
@@ -708,6 +710,7 @@ from app.services.agent_tool_domains.feishu_sheets import (  # noqa: E402
 from app.services.agent_tool_domains.feishu_base import (  # noqa: E402
     _feishu_base_app_create as _feishu_base_app_create,
     _feishu_base_field_list as _feishu_base_field_list,
+    _feishu_base_field_create as _feishu_base_field_create,
     _feishu_base_table_list as _feishu_base_table_list,
     _feishu_base_record_delete as _feishu_base_record_delete,
     _feishu_base_record_list as _feishu_base_record_list,

@@ -82,6 +82,19 @@ def _render_base_fields(table_id: str, items: list[dict], *, total: int | None =
     return "\n".join(lines)
 
 
+def _render_base_field_create(table_id: str, field: dict) -> str:
+    field_id = field.get("field_id", "")
+    field_name = field.get("field_name", "(未命名)")
+    field_type = field.get("type", "")
+    lines = [f"✅ **Feishu Base field created** (`{table_id}`)"]
+    if field_id:
+        lines.append(f"- Field ID: `{field_id}`")
+    lines.append(f"- Field Name: **{field_name}**")
+    if field_type:
+        lines.append(f"- Type: {field_type}")
+    return "\n".join(lines)
+
+
 def _render_base_attachment_upload(table_id: str, payload: dict) -> str:
     record = payload.get("record", {})
     attachment = payload.get("attachment", {})
@@ -313,6 +326,43 @@ async def _feishu_base_field_list(agent_id, arguments: dict) -> str:
          "--offset", str(offset), "--limit", str(limit)]
     )
     return _render_base_fields(table_id, payload.get("items", []), total=payload.get("total"))
+
+
+async def _feishu_base_field_create(agent_id, arguments: dict) -> str:
+    base_token = str(arguments.get("base_token") or "").strip()
+    table_id = str(arguments.get("table_id") or "").strip()
+    field_name = str(arguments.get("field_name") or "").strip()
+    field_type = int(arguments.get("type", 0) or 0)
+    tn = "feishu_base_field_create"
+    if not base_token:
+        return _render_invalid_input("Missing required argument 'base_token'.", tool_name=tn)
+    if not table_id:
+        return _render_invalid_input("Missing required argument 'table_id'.", tool_name=tn)
+    if not field_name:
+        return _render_invalid_input("Missing required argument 'field_name'.", tool_name=tn)
+    if not field_type:
+        return _render_invalid_input(
+            "Missing required argument 'type' (field type code).",
+            tool_name=tn,
+            actionable_hint="Common types: 1=Text, 2=Number, 3=SingleSelect, 4=MultiSelect, 5=Date, 7=Checkbox, 11=Person, 13=Phone, 15=URL, 17=Attachment, 18=Link, 20=Formula, 21=DuplexLink, 22=Location, 23=GroupChat, 1001=CreatedTime, 1002=ModifiedTime, 1003=Creator, 1004=Modifier.",
+        )
+
+    body: dict = {"field_name": field_name, "type": field_type}
+    # Optional property config (e.g. options for select fields)
+    property_config = arguments.get("property")
+    if isinstance(property_config, dict):
+        body["property"] = property_config
+
+    creds = await _get_feishu_token(agent_id)
+    if creds:
+        _, token = creds
+        data = await _base_api_post(
+            token, f"/bitable/v1/apps/{base_token}/tables/{table_id}/fields", body
+        )
+        field = data.get("field", data)
+        return _render_base_field_create(table_id, field)
+
+    return _not_configured_error(tn)
 
 
 async def _feishu_base_record_list(agent_id, arguments: dict) -> str:

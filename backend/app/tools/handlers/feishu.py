@@ -463,6 +463,56 @@ async def feishu_base_field_list(agent_id: uuid.UUID, arguments: dict) -> str:
     return await _feishu_base_field_list(agent_id, arguments)
 
 
+# -- feishu_base_field_create --------------------------------------------------
+
+@tool(ToolMeta(
+    name="feishu_base_field_create",
+    description=(
+        "Create a new field (column) in a Feishu Base table. "
+        "Use this when you need to add columns to a Base table. "
+        "Call `feishu_base_field_list` first to see existing fields."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "base_token": {
+                "type": "string",
+                "description": "Feishu Base token, e.g. 'app_xxx'.",
+            },
+            "table_id": {
+                "type": "string",
+                "description": "Table ID inside the Base.",
+            },
+            "field_name": {
+                "type": "string",
+                "description": "Display name for the new field.",
+            },
+            "type": {
+                "type": "integer",
+                "description": "Field type code. Common types: 1=Text, 2=Number, 3=SingleSelect, 4=MultiSelect, 5=Date, 7=Checkbox, 11=Person, 13=Phone, 15=URL, 17=Attachment, 18=Link, 20=Formula, 21=DuplexLink.",
+            },
+            "property": {
+                "type": "object",
+                "description": "Optional field property config. For SingleSelect/MultiSelect, pass {\"options\": [{\"name\": \"Option1\"}, {\"name\": \"Option2\"}]}.",
+            },
+        },
+        "required": ["base_token", "table_id", "field_name", "type"],
+    },
+    category="feishu",
+    display_name="Feishu Base Field Create",
+    icon="🧩",
+    pack="feishu_pack",
+    adapter="agent_args",
+    read_only=False,
+    governance="safe",
+))
+async def feishu_base_field_create(agent_id: uuid.UUID, arguments: dict) -> str:
+    if not await _check_feishu_office_access(agent_id):
+        return _FEISHU_NOT_CONFIGURED_MSG
+    from app.services.agent_tool_domains.feishu_base import _feishu_base_field_create
+    return await _feishu_base_field_create(agent_id, arguments)
+
+
 # -- feishu_base_record_upload_attachment -------------------------------------
 
 @tool(ToolMeta(

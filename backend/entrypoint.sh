@@ -115,6 +115,10 @@ async def main():
         "ALTER TABLE org_members ADD COLUMN IF NOT EXISTS external_id VARCHAR(100)",
         "ALTER TABLE org_members ADD COLUMN IF NOT EXISTS open_id VARCHAR(100)",
         "ALTER TABLE org_members ADD COLUMN IF NOT EXISTS unionid VARCHAR(100)",
+        # Provider-first LLM model columns (2026-04-11)
+        "ALTER TABLE llm_models ADD COLUMN IF NOT EXISTS temperature DOUBLE PRECISION",
+        "ALTER TABLE llm_models ADD COLUMN IF NOT EXISTS provider_config_id UUID",
+        "ALTER TABLE llm_models ADD COLUMN IF NOT EXISTS discovered_from_provider BOOLEAN DEFAULT false",
     ]
 
     from sqlalchemy import text

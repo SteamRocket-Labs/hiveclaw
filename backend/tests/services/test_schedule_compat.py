@@ -37,7 +37,7 @@ class _FakeDB:
 
 
 def test_schedule_response_payload_reads_trigger_compat_fields():
-    from app.services.schedule_compat import SCHEDULE_TRIGGER_SURFACE, schedule_response_payload
+    from app.services.schedule_surface import SCHEDULE_TRIGGER_SURFACE, schedule_response_payload
 
     created_by = uuid4()
     created_at = datetime(2026, 4, 14, 1, 0, tzinfo=timezone.utc)
@@ -75,7 +75,7 @@ def test_schedule_response_payload_reads_trigger_compat_fields():
 
 
 def test_mark_schedule_manual_pending_sets_request_marker():
-    from app.services.schedule_compat import mark_schedule_manual_pending
+    from app.services.schedule_surface import mark_schedule_manual_pending
 
     config = {"expr": "0 9 * * *"}
     updated = mark_schedule_manual_pending(config)
@@ -87,7 +87,7 @@ def test_mark_schedule_manual_pending_sets_request_marker():
 
 
 def test_build_schedule_activity_entries_only_emits_schedule_surface_triggers():
-    from app.services.schedule_compat import (
+    from app.services.schedule_surface import (
         SCHEDULE_TRIGGER_SURFACE,
         build_schedule_activity_entries,
     )
@@ -118,7 +118,8 @@ def test_build_schedule_activity_entries_only_emits_schedule_surface_triggers():
 
 @pytest.mark.asyncio
 async def test_migrate_legacy_schedules_creates_schedule_surface_triggers():
-    from app.services.schedule_compat import SCHEDULE_TRIGGER_SURFACE, migrate_legacy_schedules
+    from app.services.schedule_compat import migrate_legacy_schedules
+    from app.services.schedule_surface import SCHEDULE_TRIGGER_SURFACE
 
     schedule_id = uuid4()
     agent_id = uuid4()

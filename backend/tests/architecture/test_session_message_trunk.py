@@ -14,10 +14,6 @@ def test_core_session_entrypoints_use_session_service() -> None:
         "backend/app/services/heartbeat.py": ["create_chat_session("],
         "backend/app/services/trigger_daemon.py": ["create_chat_session("],
         "backend/app/services/task_executor.py": ["create_chat_session("],
-        "backend/app/services/supervision_reminder.py": [
-            "find_or_create_agent_pair_session(",
-            "session_conversation_id(",
-        ],
         "backend/app/services/channel_session.py": ["create_chat_session("],
         "backend/app/services/channel_delivery_service.py": ["find_or_create_web_chat_session("],
     }

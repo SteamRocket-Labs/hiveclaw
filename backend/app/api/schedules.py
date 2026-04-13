@@ -14,11 +14,13 @@ from app.database import get_db
 from app.models.trigger import AgentTrigger
 from app.models.user import User
 from app.services.schedule_compat import (
+    migrate_legacy_schedules,
+)
+from app.services.schedule_surface import (
     build_schedule_trigger_config,
     compute_next_run,
-    is_schedule_compat_trigger,
+    is_schedule_surface_trigger,
     mark_schedule_manual_pending,
-    migrate_legacy_schedules,
     schedule_response_payload,
 )
 
@@ -68,7 +70,7 @@ async def _load_schedule_trigger(db: AsyncSession, agent_id: uuid.UUID, schedule
         )
     )
     trigger = result.scalar_one_or_none()
-    if trigger and is_schedule_compat_trigger(trigger):
+    if trigger and is_schedule_surface_trigger(trigger):
         return trigger
     return None
 
@@ -89,7 +91,7 @@ async def list_schedules(
         .where(AgentTrigger.agent_id == agent_id, AgentTrigger.type == "cron")
         .order_by(AgentTrigger.created_at.desc())
     )
-    schedule_triggers = [trigger for trigger in result.scalars().all() if is_schedule_compat_trigger(trigger)]
+    schedule_triggers = [trigger for trigger in result.scalars().all() if is_schedule_surface_trigger(trigger)]
     payloads = [schedule_response_payload(trigger) for trigger in schedule_triggers]
     # Batch-load creator usernames
     creator_ids = {payload["created_by"] for payload in payloads if payload["created_by"]}

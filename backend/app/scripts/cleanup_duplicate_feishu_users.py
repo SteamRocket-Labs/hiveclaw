@@ -165,7 +165,7 @@ async def main():
     from app.models import (  # noqa: F401
         activity_log, agent, audit, channel_config, chat_session,
         gateway_message, identity, invitation_code, llm, notification, org,
-        participant, plaza, schedule, skill, system_settings, task,
+        participant, plaza, skill, system_settings, task,
         tenant, tenant_setting, tool, trigger, user,
     )
     from app.database import async_session

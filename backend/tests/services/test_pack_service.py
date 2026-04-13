@@ -4,7 +4,6 @@ import json
 import uuid
 from types import SimpleNamespace
 
-from app.services.agent_tools import CORE_TOOL_NAMES
 from app.services.pack_service import (
     KERNEL_TOOLS,
     _resolve_session_conversation_id,
@@ -14,6 +13,7 @@ from app.services.pack_service import (
 )
 from app.skills.types import ParsedSkill, SkillMetadata
 from app.tools.packs import iter_tool_packs
+from app.tools.surface import CORE_TOOL_NAMES
 
 
 def test_pack_catalog_returns_all_packs():

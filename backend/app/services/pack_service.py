@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.agent import Agent
 from app.models.channel_config import ChannelConfig
 from app.models.llm import LLMModel
-from app.services.agent_tools import CORE_TOOL_NAMES, get_combined_openai_tools
 from app.services.capability_gate import CAPABILITY_MAP
 from app.services.llm_client import get_provider_spec
 from app.services.pack_policy_service import get_tenant_pack_policies, is_pack_enabled
@@ -19,6 +18,7 @@ from app.services.token_tracker import estimate_tokens_from_chars
 from app.skills.types import ParsedSkill
 from app.tools import ensure_workspace
 from app.tools.packs import TOOL_PACKS, ToolPackSpec, infer_static_pack_names, pack_for_name
+from app.tools.surface import CORE_TOOL_NAMES, get_combined_openai_tools
 
 logger = logging.getLogger(__name__)
 

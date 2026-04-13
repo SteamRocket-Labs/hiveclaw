@@ -6,7 +6,7 @@ def _tool_names(tools: list[dict]) -> list[str]:
 
 
 def test_tool_registry_round_trips_collected_openai_tools():
-    from app.services.agent_tools import get_combined_openai_tools
+    from app.tools.surface import get_combined_openai_tools
     from app.tools.registry import ToolRegistry
 
     all_tools = get_combined_openai_tools()
@@ -26,7 +26,7 @@ def test_tool_registry_round_trips_collected_openai_tools():
 
 
 def test_collected_tool_categories_follow_decorator_metadata():
-    from app.services.agent_tools import get_combined_openai_tools
+    from app.tools.surface import get_combined_openai_tools
     from app.tools.registry import ToolRegistry
 
     registry = ToolRegistry.from_openai_tools(get_combined_openai_tools())
@@ -82,7 +82,7 @@ def test_tool_catalog_groups_tools_into_readable_sections():
 
 
 def test_minimal_kernel_tool_set_stays_small_and_explicit():
-    from app.services.agent_tools import CORE_TOOL_NAMES
+    from app.tools.surface import CORE_TOOL_NAMES
 
     assert CORE_TOOL_NAMES == {
         "execute_code",

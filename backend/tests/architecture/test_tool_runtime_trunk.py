@@ -16,6 +16,15 @@ def test_tool_runtime_trunk_keeps_metadata_and_execution_single_pathed() -> None
     sources = _python_sources()
 
     execute_tool_refs = sorted(path for path, source in sources.items() if "execute_tool(" in source)
+    agent_tools_importers = sorted(
+        path
+        for path, source in sources.items()
+        if path != "backend/app/services/agent_tools.py"
+        and (
+            "from app.services.agent_tools import" in source
+            or "import app.services.agent_tools" in source
+        )
+    )
 
     assert execute_tool_refs == [
         "backend/app/kernel/engine.py",
@@ -25,11 +34,15 @@ def test_tool_runtime_trunk_keeps_metadata_and_execution_single_pathed() -> None
         "backend/app/services/heartbeat.py",
         "backend/app/tools/execution_entry.py",
     ]
+    assert agent_tools_importers == []
 
     agent_tools_source = sources["backend/app/services/agent_tools.py"]
     invoker_source = sources["backend/app/runtime/invoker.py"]
     heartbeat_source = sources["backend/app/services/heartbeat.py"]
     messaging_source = sources["backend/app/services/agent_tool_domains/messaging.py"]
+    pack_service_source = sources["backend/app/services/pack_service.py"]
+    prompt_eval_source = sources["backend/app/runtime/prompt_eval.py"]
+    task_eval_source = sources["backend/app/runtime/task_eval.py"]
     registry_source = sources["backend/app/tools/registry.py"]
     execution_entry_source = sources["backend/app/tools/execution_entry.py"]
     communication_handler_source = sources["backend/app/tools/handlers/communication.py"]
@@ -88,6 +101,19 @@ def test_tool_runtime_trunk_keeps_metadata_and_execution_single_pathed() -> None
     assert "from app.services.agent_tools import _handle_list_triggers" not in triggers_handler_source
     assert "from app.services.agent_tools import _handle_email_tool" not in email_handler_source
     assert "from app.services.agent_tools import _feishu_" not in feishu_handler_source
+    assert "from app.tools.execution_entry import execute_tool" in invoker_source
+    assert "from app.services.agent_tools import CORE_TOOL_NAMES, execute_tool, get_agent_tools_for_llm, get_combined_openai_tools" not in invoker_source
+    assert "from app.tools.surface import CORE_TOOL_NAMES, get_agent_tools_for_llm, get_combined_openai_tools" in invoker_source
+    assert "from app.tools.execution_entry import execute_tool" in heartbeat_source
+    assert "from app.services.agent_tools import execute_tool" not in heartbeat_source
+    assert "from app.services.agent_tools import execute_tool" not in messaging_source
+    assert "from app.tools.execution_entry import execute_tool" in messaging_source
+    assert "from app.tools.surface import CORE_TOOL_NAMES, get_combined_openai_tools" in pack_service_source
+    assert "from app.services.agent_tools import CORE_TOOL_NAMES, get_combined_openai_tools" not in pack_service_source
+    assert "from app.tools.surface import CORE_TOOL_NAMES" in prompt_eval_source
+    assert "from app.services.agent_tools import CORE_TOOL_NAMES" not in prompt_eval_source
+    assert "from app.tools.surface import CORE_TOOL_NAMES" in task_eval_source
+    assert "from app.services.agent_tools import CORE_TOOL_NAMES" not in task_eval_source
     assert "channel_file_sender: ContextVar" not in agent_tools_source
     assert "channel_web_agent_id: ContextVar" not in agent_tools_source
     assert "channel_feishu_sender_open_id: ContextVar" not in agent_tools_source

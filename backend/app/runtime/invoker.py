@@ -35,7 +35,6 @@ from app.runtime.prompt_builder import build_frozen_prompt_prefix
 from app.runtime.session import SessionContext
 from app.skills import SkillParser, SkillRegistry, WorkspaceSkillLoader
 from app.services.agent_context import build_agent_context, build_agent_runtime_context
-from app.services.agent_tools import CORE_TOOL_NAMES, execute_tool, get_agent_tools_for_llm, get_combined_openai_tools
 from app.services.feature_flags import is_enabled as is_feature_enabled
 from app.services.knowledge_inject import fetch_relevant_knowledge
 from app.services.llm_client import apply_prompt_cache_hints
@@ -52,7 +51,9 @@ from app.services.token_tracker import (
     record_token_usage,
 )
 from app.tools import ensure_workspace
+from app.tools.execution_entry import execute_tool
 from app.tools.packs import TOOL_PACKS, pack_for_name
+from app.tools.surface import CORE_TOOL_NAMES, get_agent_tools_for_llm, get_combined_openai_tools
 
 logger = logging.getLogger(__name__)
 

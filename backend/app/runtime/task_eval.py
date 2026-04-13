@@ -10,9 +10,9 @@ from typing import Any
 from app.runtime.context_budget import compute_context_budget, infer_task_profile
 from app.runtime.prompt_eval import PromptEvalInputs, evaluate_runtime_prompt_contracts
 from app.runtime.prompt_builder import build_dynamic_prompt_suffix
-from app.services.agent_tools import CORE_TOOL_NAMES
 from app.skills.parser import SkillParser
 from app.tools.packs import pack_for_name
+from app.tools.surface import CORE_TOOL_NAMES
 
 
 @dataclass(slots=True, frozen=True)

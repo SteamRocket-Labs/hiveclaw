@@ -94,7 +94,7 @@ async def test_build_agent_message_tool_executor_persists_tool_calls(monkeypatch
     async def fake_persist(**kwargs):
         calls["persist"] = kwargs
 
-    monkeypatch.setattr("app.services.agent_tools.execute_tool", fake_execute_tool)
+    monkeypatch.setattr("app.services.agent_tool_domains.messaging.execute_tool", fake_execute_tool)
     monkeypatch.setattr("app.services.agent_tool_domains.messaging._persist_agent_tool_call", fake_persist)
 
     executor = _build_agent_message_tool_executor(

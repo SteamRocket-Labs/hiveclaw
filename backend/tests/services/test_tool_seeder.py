@@ -18,7 +18,7 @@ def test_builtin_tool_seed_list_includes_new_kernel_primitives():
 
 
 def test_builtin_tool_seed_list_tracks_combined_openai_surface():
-    from app.services.agent_tools import get_combined_openai_tools
+    from app.tools.surface import get_combined_openai_tools
     from app.services.tool_seeder import BUILTIN_TOOLS
 
     combined_names = {tool["function"]["name"] for tool in get_combined_openai_tools()}

@@ -10,7 +10,7 @@ import pytest
 
 def test_create_digital_employee_is_registered():
     """The create_digital_employee tool must be collected by the tool collector."""
-    from app.services.agent_tools import get_combined_openai_tools
+    from app.tools.surface import get_combined_openai_tools
 
     all_tools = get_combined_openai_tools()
     names = [t["function"]["name"] for t in all_tools]
@@ -20,7 +20,7 @@ def test_create_digital_employee_is_registered():
 
 def test_create_digital_employee_schema_has_required_name():
     """The tool schema must require 'name' as the only required field."""
-    from app.services.agent_tools import get_combined_openai_tools
+    from app.tools.surface import get_combined_openai_tools
 
     all_tools = get_combined_openai_tools()
     hr_tool = next(t for t in all_tools if t["function"]["name"] == "create_digital_employee")

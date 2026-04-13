@@ -17,8 +17,8 @@ from app.runtime.prompt_sections import (
     build_system_section,
     build_tools_section,
 )
-from app.services.agent_tools import CORE_TOOL_NAMES
 from app.services.extract_agent import EXTRACT_PROMPT
+from app.tools.surface import CORE_TOOL_NAMES
 
 
 @dataclass(slots=True, frozen=True)

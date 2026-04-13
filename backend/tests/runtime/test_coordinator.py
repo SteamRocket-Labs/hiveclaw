@@ -73,7 +73,7 @@ class TestCoordinatorMode:
         assert "execute_code" not in COORDINATOR_ALLOWED_TOOLS
 
     def test_all_allowed_tools_exist_in_real_registry(self) -> None:
-        from app.services.agent_tools import get_combined_openai_tools
+        from app.tools.surface import get_combined_openai_tools
 
         names = {tool["function"]["name"] for tool in get_combined_openai_tools()}
         missing = COORDINATOR_ALLOWED_TOOLS - names

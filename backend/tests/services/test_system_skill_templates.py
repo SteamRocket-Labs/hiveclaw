@@ -4,8 +4,8 @@ from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 import re
 
-from app.services.agent_tools import CORE_TOOL_NAMES, get_combined_openai_tools
 from app.skills.parser import SkillParser
+from app.tools.surface import CORE_TOOL_NAMES, get_combined_openai_tools
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]

@@ -109,7 +109,7 @@ def test_a2a_prompt_defines_status_and_result_contract() -> None:
 
 
 def test_core_tool_descriptions_define_when_not_to_use_and_fallbacks() -> None:
-    from app.services.agent_tools import get_combined_openai_tools
+    from app.tools.surface import get_combined_openai_tools
 
     combined = get_combined_openai_tools()
     tools = {tool["function"]["name"]: tool["function"]["description"] for tool in combined}

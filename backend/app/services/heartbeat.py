@@ -25,8 +25,8 @@ from app.memory.t2_store import load_incremental_t2_entries, load_t2_entries, re
 from app.kernel.contracts import ExecutionIdentityRef
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
-from app.services.agent_tools import execute_tool
 from app.services.session_service import create_chat_session, session_conversation_id
+from app.tools.execution_entry import execute_tool
 
 # Single source of truth: app/templates/HEARTBEAT.md
 # No hardcoded instruction here — read from template file at runtime.

@@ -448,9 +448,9 @@ async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
                             User.display_name.ilike(f"%{from_user_name}%"),
                             User.username.ilike(f"%{from_user_name}%"),
                         )
-                    )
+                    ).limit(1)
                 )
-                target_user = user_r.scalar_one_or_none()
+                target_user = user_r.scalars().first()
                 if not target_user:
                     return False
 

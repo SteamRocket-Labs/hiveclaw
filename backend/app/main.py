@@ -185,16 +185,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[startup] create_all failed: {e}")
 
-    # One-time legacy schedule migration: promote AgentSchedule rows into trigger trunk
-    try:
-        from app.services.legacy_schedule_migration import migrate_all_legacy_schedules
-
-        migrated_schedules = await migrate_all_legacy_schedules()
-        if migrated_schedules:
-            logger.info("[startup] Migrated %d legacy schedule(s) into trigger trunk", migrated_schedules)
-    except Exception as e:
-        logger.warning(f"[startup] legacy schedule migration failed (non-fatal): {e}")
-
     # One-time workspace migration: update HEARTBEAT.md + remove deprecated skills
     try:
         from app.tools.workspace import migrate_all_workspaces

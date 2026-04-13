@@ -287,42 +287,6 @@ async def maybe_compress_messages(
     return [{"role": "system", "content": f"[Previous conversation summary]\n{summary}"}] + recent_messages
 
 
-async def on_conversation_end(
-    agent_id: uuid.UUID,
-    session_id: str,
-    tenant_id: uuid.UUID,
-    messages: list[dict],
-) -> None:
-    """Backward-compatible wrapper for persisting runtime memory state."""
-    await persist_runtime_memory(
-        agent_id=agent_id,
-        session_id=session_id,
-        tenant_id=tenant_id,
-        messages=messages,
-    )
-
-    # P3.1: Auto-dream gate check — fire-and-forget if conditions met
-    try:
-        from app.services.auto_dream import (
-            record_session_end,
-            should_dream,
-            run_dream,
-            should_soft_dream,
-            run_soft_dream,
-        )
-        import asyncio
-
-        record_session_end(agent_id)
-        if should_dream(agent_id):
-            asyncio.create_task(run_dream(agent_id, tenant_id))
-            logger.info("[Memory] Auto-dream triggered for agent %s", agent_id)
-        elif should_soft_dream(agent_id):
-            asyncio.create_task(run_soft_dream(agent_id))
-            logger.info("[Memory] Soft dream triggered for agent %s", agent_id)
-    except Exception as _dream_err:
-        logger.debug("[Memory] Auto-dream check failed: %s", _dream_err)
-
-
 async def persist_runtime_memory(
     *,
     agent_id: uuid.UUID,

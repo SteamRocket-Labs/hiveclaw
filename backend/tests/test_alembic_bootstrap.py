@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from sqlalchemy import MetaData, Table, Column, Integer, String, create_engine, inspect, text
+from sqlalchemy.types import JSON
 
 
 class _DummyTransaction:
@@ -85,6 +86,78 @@ def test_bootstrap_schema_creates_tables_and_stamps_heads() -> None:
     assert "agents" in tables
     assert "alembic_version" in tables
     assert versions == ["rev_a", "rev_b"]
+
+
+def test_bootstrap_schema_promotes_legacy_schedules_before_stamping() -> None:
+    from app.db_bootstrap import bootstrap_database_to_head
+
+    legacy_metadata = MetaData()
+    legacy_schedules = Table(
+        "agent_schedules",
+        legacy_metadata,
+        Column("id", String(36), primary_key=True),
+        Column("agent_id", String(36), nullable=False),
+        Column("name", String(200), nullable=False),
+        Column("instruction", String(), nullable=False),
+        Column("cron_expr", String(100), nullable=False),
+        Column("is_enabled", Integer(), nullable=False),
+        Column("last_run_at", String(40), nullable=True),
+        Column("run_count", Integer(), nullable=True),
+        Column("created_by", String(36), nullable=True),
+        Column("delivery_target_json", JSON, nullable=True),
+        Column("created_at", String(40), nullable=False),
+    )
+
+    current_metadata = MetaData()
+    Table(
+        "agent_triggers",
+        current_metadata,
+        Column("id", String(36), primary_key=True),
+        Column("agent_id", String(36), nullable=False),
+        Column("name", String(100), nullable=False),
+        Column("type", String(20), nullable=False),
+        Column("config", JSON, nullable=False),
+        Column("reason", String(), nullable=False),
+        Column("focus_ref", String(200), nullable=True),
+        Column("is_enabled", Integer(), nullable=False),
+        Column("last_fired_at", String(40), nullable=True),
+        Column("fire_count", Integer(), nullable=False),
+        Column("max_fires", Integer(), nullable=True),
+        Column("cooldown_seconds", Integer(), nullable=False),
+        Column("created_at", String(40), nullable=False),
+        Column("expires_at", String(40), nullable=True),
+        Column("reply_context", JSON, nullable=True),
+    )
+
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as conn:
+        legacy_metadata.create_all(conn)
+        conn.execute(
+            legacy_schedules.insert().values(
+                id="schedule-1",
+                agent_id="agent-1",
+                name="日报",
+                instruction="生成日报",
+                cron_expr="0 9 * * *",
+                is_enabled=1,
+                last_run_at="2026-04-14T09:00:00+00:00",
+                run_count=2,
+                created_by="user-1",
+                delivery_target_json={"channel": "feishu"},
+                created_at="2026-04-14T08:00:00+00:00",
+            )
+        )
+
+        bootstrap_database_to_head(conn, current_metadata, ["rev_a"])
+
+        tables = set(inspect(conn).get_table_names())
+        versions = [row[0] for row in conn.execute(text("SELECT version_num FROM alembic_version"))]
+        migrated = conn.execute(text("SELECT id, type, reason FROM agent_triggers")).fetchall()
+
+    assert "agent_schedules" not in tables
+    assert "agent_triggers" in tables
+    assert versions == ["rev_a"]
+    assert migrated == [("schedule-1", "cron", "生成日报")]
 
 
 def test_run_migrations_with_bootstrap_uses_bootstrap_path() -> None:

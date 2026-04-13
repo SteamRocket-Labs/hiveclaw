@@ -22,6 +22,7 @@ def test_prompt_memory_trunk_entrypoints_are_single_path() -> None:
     build_memory_snapshot_refs = sorted(path for path, source in sources.items() if "build_memory_snapshot(" in source)
     build_runtime_prompt_refs = sorted(path for path, source in sources.items() if "build_runtime_prompt(" in source)
     on_conversation_start_refs = sorted(path for path, source in sources.items() if "on_conversation_start(" in source)
+    on_conversation_end_refs = sorted(path for path, source in sources.items() if "on_conversation_end(" in source)
 
     assert build_agent_context_refs == [
         "backend/app/runtime/invoker.py",
@@ -37,6 +38,7 @@ def test_prompt_memory_trunk_entrypoints_are_single_path() -> None:
     ]
     assert build_runtime_prompt_refs == []
     assert on_conversation_start_refs == []
+    assert on_conversation_end_refs == []
 
     invoker_source = sources["backend/app/runtime/invoker.py"]
     websocket_source = sources["backend/app/api/websocket.py"]

@@ -9,6 +9,8 @@ from sqlalchemy import inspect, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.sql.schema import MetaData
 
+from app.db_legacy_schedule_migration import promote_legacy_schedules_to_triggers
+
 _ALEMBIC_VERSION_TABLE = "alembic_version"
 _CORE_APP_TABLES = {
     "users",
@@ -47,6 +49,7 @@ def should_bootstrap_database(connection: Connection) -> bool:
 def bootstrap_database_to_head(connection: Connection, metadata: MetaData, heads: Sequence[str]) -> None:
     """Create the current schema and stamp Alembic heads into an unversioned DB."""
     metadata.create_all(bind=connection)
+    promote_legacy_schedules_to_triggers(connection)
     connection.execute(
         text(
             """

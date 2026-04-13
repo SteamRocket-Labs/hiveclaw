@@ -99,3 +99,6 @@ def test_supervision_reminder_uses_unified_runtime_surface():
     assert "build_agent_context(" not in source
     assert "create_llm_client(" not in source
     assert 'LLMMessage(role="system"' not in source
+    assert "ChatSession(" not in source
+    assert "find_or_create_agent_pair_session(" in source
+    assert "session_conversation_id(" in source

@@ -20,6 +20,7 @@ from app.models.task import Task, TaskLog
 from app.models.agent import Agent
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
+from app.services.session_service import find_or_create_agent_pair_session, session_conversation_id
 
 # Schedule JSON format:
 # {"freq": "daily"|"weekly", "interval": N, "time": "HH:MM", "weekdays": [0-6]}
@@ -199,9 +200,8 @@ async def _send_supervision_reminder(task: Task, agent_name: str):
             target_agent = agent_result.scalar_one_or_none()
 
             if target_agent:
-                # Send agent-to-agent message via ChatSession + ChatMessage
+                # Send agent-to-agent message via the unified session service.
                 from app.models.audit import ChatMessage
-                from app.models.chat_session import ChatSession
                 from app.models.participant import Participant
 
                 # Get participant for sender agent
@@ -214,37 +214,20 @@ async def _send_supervision_reminder(task: Task, agent_name: str):
                 )
                 tgt_part = tgt_part_r.scalar_one_or_none()
 
-                # Find or create ChatSession
-                session_agent_id = min(task.agent_id, target_agent.id, key=str)
-                session_peer_id = max(task.agent_id, target_agent.id, key=str)
-                sess_r = await db.execute(
-                    select(ChatSession).where(
-                        ChatSession.agent_id == session_agent_id,
-                        ChatSession.peer_agent_id == session_peer_id,
-                        ChatSession.source_channel == "agent",
-                    )
+                src_agent_r = await db.execute(select(Agent).where(Agent.id == task.agent_id))
+                src_agent = src_agent_r.scalar_one_or_none()
+                owner_id = src_agent.creator_id if src_agent else task.agent_id
+                chat_session = await find_or_create_agent_pair_session(
+                    db,
+                    source_agent_id=task.agent_id,
+                    target_agent_id=target_agent.id,
+                    owner_user_id=owner_id,
+                    source_name=agent_name,
+                    target_name=target_agent.name,
+                    source_participant_id=src_part.id if src_part else None,
                 )
-                chat_session = sess_r.scalar_one_or_none()
-                if not chat_session:
-                    # Get creator for user_id
-                    src_agent_r = await db.execute(select(Agent).where(Agent.id == task.agent_id))
-                    src_agent = src_agent_r.scalar_one_or_none()
-                    owner_id = src_agent.creator_id if src_agent else task.agent_id
-                    chat_session = ChatSession(
-                        agent_id=session_agent_id,
-                        user_id=owner_id,
-                        title=f"{agent_name} ↔ {target_agent.name}",
-                        source_channel="agent",
-                        participant_id=src_part.id if src_part else None,
-                        peer_agent_id=session_peer_id,
-                    )
-                    db.add(chat_session)
-                    await db.flush()
-
-                session_id = str(chat_session.id)
-                src_agent_r2 = await db.execute(select(Agent).where(Agent.id == task.agent_id))
-                src_agent2 = src_agent_r2.scalar_one_or_none()
-                owner_id = src_agent2.creator_id if src_agent2 else task.agent_id
+                session_id = session_conversation_id(chat_session)
+                session_agent_id = chat_session.agent_id
 
                 # Save reminder message
                 db.add(ChatMessage(

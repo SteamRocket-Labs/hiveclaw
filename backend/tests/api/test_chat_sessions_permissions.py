@@ -108,12 +108,39 @@ async def test_create_session_uses_check_agent_access(monkeypatch):
     agent = SimpleNamespace(id=agent_id, creator_id=uuid4())
     db = _QueryAwareDB(agent=agent)
     called = {}
+    captured = {}
 
     async def fake_check_agent_access(db_arg, user_arg, requested_agent_id):
         called["args"] = (db_arg, user_arg, requested_agent_id)
         return agent, "use"
 
+    async def fake_create_chat_session(
+        db_arg,
+        *,
+        agent_id,
+        user_id,
+        title,
+        source_channel,
+        **_kwargs,
+    ):
+        captured["args"] = {
+            "db": db_arg,
+            "agent_id": agent_id,
+            "user_id": user_id,
+            "title": title,
+            "source_channel": source_channel,
+        }
+        return SimpleNamespace(
+            id=uuid4(),
+            agent_id=agent_id,
+            user_id=user_id,
+            title=title,
+            created_at=SimpleNamespace(isoformat=lambda: "2026-04-14T10:00:00+00:00"),
+            last_message_at=None,
+        )
+
     monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+    monkeypatch.setattr(chat_sessions_api, "create_chat_session", fake_create_chat_session, raising=False)
 
     result = await chat_sessions_api.create_session(
         agent_id=agent_id,
@@ -124,6 +151,13 @@ async def test_create_session_uses_check_agent_access(monkeypatch):
 
     assert result.title == "Manual Session"
     assert called["args"] == (db, current_user, agent_id)
+    assert captured["args"] == {
+        "db": db,
+        "agent_id": agent_id,
+        "user_id": current_user.id,
+        "title": "Manual Session",
+        "source_channel": "web",
+    }
 
 
 @pytest.mark.asyncio

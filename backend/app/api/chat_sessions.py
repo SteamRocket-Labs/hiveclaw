@@ -17,6 +17,7 @@ from app.models.chat_session import ChatSession
 from app.models.agent import Agent
 from app.models.user import User
 from app.services.chat_message_parts import serialize_chat_message, split_inline_tools
+from app.services.session_service import create_chat_session
 
 router = APIRouter(prefix="/agents", tags=["chat-sessions"])
 
@@ -201,15 +202,14 @@ async def create_session(
     await check_agent_access(db, current_user, agent_id)
 
     now = datetime.now(tz.utc)
-    new_id = uuid.uuid4()
-    session = ChatSession(
-        id=new_id,
+    session = await create_chat_session(
+        db,
         agent_id=agent_id,
         user_id=current_user.id,
         title=body.title or f"Session {now.strftime('%m-%d %H:%M')}",
+        source_channel="web",
         created_at=now,
     )
-    db.add(session)
     await db.commit()
     await db.refresh(session)
     return SessionOut(

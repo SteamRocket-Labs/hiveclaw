@@ -11,13 +11,14 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db, async_session
 from app.models.agent import Agent
 from app.models.gateway_message import GatewayMessage
 from app.models.user import User
+from app.services.session_service import find_or_create_agent_pair_session, session_conversation_id
 from app.schemas.schemas import (
     GatewayPollResponse, GatewayMessageOut, GatewayReportRequest,
     GatewayHistoryItem, GatewayRelationshipItem, GatewaySendMessageRequest,
@@ -29,6 +30,47 @@ router = APIRouter(prefix="/gateway", tags=["gateway"])
 def _hash_key(key: str) -> str:
     """Hash an API key for storage."""
     return hashlib.sha256(key.encode()).hexdigest()
+
+
+def _legacy_gateway_conversation_ids(source_agent_id: str | uuid.UUID, target_agent_id: str | uuid.UUID) -> list[str]:
+    source = str(source_agent_id)
+    target = str(target_agent_id)
+    return [
+        f"gw_agent_{source}_{target}",
+        f"gw_agent_{target}_{source}",
+    ]
+
+
+async def _find_or_create_gateway_agent_pair_session(
+    db: AsyncSession,
+    *,
+    source_agent_id: uuid.UUID,
+    source_agent_name: str,
+    target_agent_id: uuid.UUID,
+    target_agent_name: str,
+    owner_user_id: uuid.UUID,
+    migrate_legacy_transcripts: bool = False,
+):
+    session = await find_or_create_agent_pair_session(
+        db,
+        source_agent_id=source_agent_id,
+        target_agent_id=target_agent_id,
+        owner_user_id=owner_user_id,
+        source_name=source_agent_name,
+        target_name=target_agent_name,
+    )
+    conv_id = session_conversation_id(session)
+
+    if migrate_legacy_transcripts:
+        from app.models.audit import ChatMessage
+
+        await db.execute(
+            update(ChatMessage)
+            .where(ChatMessage.conversation_id.in_(_legacy_gateway_conversation_ids(source_agent_id, target_agent_id)))
+            .values(conversation_id=conv_id)
+        )
+
+    return session, conv_id
 
 
 async def _get_agent_by_key(api_key: str, db: AsyncSession) -> Agent:
@@ -236,7 +278,20 @@ async def report_result(
     # write the reply back as a gateway_message for the sender agent to poll
     if body.result and msg.sender_agent_id:
         async with async_session() as reply_db:
-            conv_id = msg.conversation_id or f"gw_agent_{msg.sender_agent_id}_{agent.id}"
+            conv_id = msg.conversation_id
+            if not conv_id or conv_id.startswith("gw_agent_"):
+                sender_result = await reply_db.execute(select(Agent).where(Agent.id == msg.sender_agent_id))
+                sender_agent = sender_result.scalar_one_or_none()
+                owner_user_id = agent.creator_id or getattr(sender_agent, "creator_id", None) or msg.sender_agent_id
+                _, conv_id = await _find_or_create_gateway_agent_pair_session(
+                    reply_db,
+                    source_agent_id=msg.sender_agent_id,
+                    source_agent_name=getattr(sender_agent, "name", "Agent"),
+                    target_agent_id=agent.id,
+                    target_agent_name=agent.name,
+                    owner_user_id=owner_user_id,
+                    migrate_legacy_transcripts=bool(msg.conversation_id),
+                )
             gw_reply = GatewayMessage(
                 agent_id=msg.sender_agent_id,
                 sender_agent_id=agent.id,
@@ -293,7 +348,6 @@ async def _send_to_agent_background(
         from app.kernel.contracts import ExecutionIdentityRef
         from app.models.llm import LLMModel
         from app.models.audit import ChatMessage
-        from app.models.chat_session import ChatSession
 
         async with async_session() as db:
             # Load target agent's LLM model
@@ -307,47 +361,19 @@ async def _send_to_agent_background(
             if not model:
                 return
 
-            # Create or find a ChatSession for this agent pair
-            # Use deterministic UUID so the same pair always gets the same session
-            import uuid as _uuid
-            _ns = _uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
-            # Sort IDs so session is the same regardless of who initiates
-            sorted_ids = sorted([source_agent_id, target_agent_id])
-            session_uuid = _uuid.uuid5(_ns, f"{sorted_ids[0]}_{sorted_ids[1]}")
-            conv_id = str(session_uuid)
-
-            # Find or create the ChatSession
-            existing = await db.execute(
-                select(ChatSession).where(ChatSession.id == session_uuid)
+            source_agent_uuid = uuid.UUID(str(source_agent_id))
+            target_agent_uuid = uuid.UUID(str(target_agent_id))
+            target_creator_uuid = uuid.UUID(str(target_creator_id))
+            session, conv_id = await _find_or_create_gateway_agent_pair_session(
+                db,
+                source_agent_id=source_agent_uuid,
+                source_agent_name=source_agent_name,
+                target_agent_id=target_agent_uuid,
+                target_agent_name=target_agent_name,
+                owner_user_id=target_creator_uuid,
+                migrate_legacy_transcripts=True,
             )
-            session = existing.scalar_one_or_none()
-            if not session:
-                from datetime import datetime, timezone
-                session = ChatSession(
-                    id=session_uuid,
-                    agent_id=target_agent_id,
-                    user_id=target_creator_id,
-                    title=f"{source_agent_name} ↔ {target_agent_name}",
-                    source_channel="agent",
-                    peer_agent_id=source_agent_id,
-                    created_at=datetime.now(timezone.utc),
-                )
-                db.add(session)
-                await db.commit()
-                await db.refresh(session)
-
-                # Migrate any existing messages from old gw_agent_ format
-                old_conv_id = f"gw_agent_{source_agent_id}_{target_agent_id}"
-                from sqlalchemy import update
-                await db.execute(
-                    update(ChatMessage)
-                    .where(ChatMessage.conversation_id == old_conv_id)
-                    .values(conversation_id=conv_id)
-                )
-                await db.commit()
-
-            # Update last_message_at
-            from datetime import datetime, timezone
+            session_agent_id = session.agent_id
             session.last_message_at = datetime.now(timezone.utc)
 
             # Load recent conversation history for context
@@ -374,11 +400,11 @@ async def _send_to_agent_background(
 
             # Save user message to conversation
             db.add(ChatMessage(
-                agent_id=target_agent_id,
+                agent_id=session_agent_id,
                 conversation_id=conv_id,
                 role="user",
                 content=user_msg,
-                user_id=target_creator_id,
+                user_id=target_creator_uuid,
             ))
             await db.commit()
 
@@ -392,14 +418,14 @@ async def _send_to_agent_background(
             messages=messages,
             agent_name=target_agent_name,
             role_description=target_role_description,
-            agent_id=target_agent_id,
-            user_id=target_creator_id,
+            agent_id=target_agent_uuid,
+            user_id=target_creator_uuid,
             on_chunk=on_chunk,
             session_id=conv_id,
             memory_messages=memory_messages,
             execution_identity=ExecutionIdentityRef(
                 identity_type="agent_bot",
-                identity_id=uuid.UUID(str(source_agent_id)),
+                identity_id=source_agent_uuid,
                 label=f"Agent: {source_agent_name} (agent_message)",
             ),
             auto_close_session=True,
@@ -411,17 +437,17 @@ async def _send_to_agent_background(
         # Save assistant reply to conversation
         async with async_session() as db:
             db.add(ChatMessage(
-                agent_id=target_agent_id,
+                agent_id=session_agent_id,
                 conversation_id=conv_id,
                 role="assistant",
                 content=final_reply,
-                user_id=target_creator_id,
+                user_id=target_creator_uuid,
             ))
 
             # Write reply to gateway_messages for source (OpenClaw) to poll
             gw_reply = GatewayMessage(
-                agent_id=source_agent_id,
-                sender_agent_id=target_agent_id,
+                agent_id=source_agent_uuid,
+                sender_agent_id=target_agent_uuid,
                 content=final_reply,
                 status="pending",
                 conversation_id=conv_id,
@@ -465,7 +491,16 @@ async def send_message(
     logger.info(f"[Gateway] send_message: target='{target_name}', found_agent={target_agent.name if target_agent else None}, agent_type={getattr(target_agent, 'agent_type', None) if target_agent else None}, channel_hint='{channel_hint}'")
 
     if target_agent and (not channel_hint or channel_hint == "agent"):
-        conv_id = f"gw_agent_{agent.id}_{target_agent.id}"
+        owner_user_id = target_agent.creator_id or agent.creator_id or agent.id
+        chat_session, conv_id = await _find_or_create_gateway_agent_pair_session(
+            db,
+            source_agent_id=agent.id,
+            source_agent_name=agent.name,
+            target_agent_id=target_agent.id,
+            target_agent_name=target_agent.name,
+            owner_user_id=owner_user_id,
+        )
+        chat_session.last_message_at = datetime.now(timezone.utc)
 
         if getattr(target_agent, 'agent_type', None) == 'openclaw':
             # OpenClaw-to-OpenClaw: write to gateway_messages directly
@@ -493,7 +528,7 @@ async def send_message(
             _tgt_name = target_agent.name
             _tgt_model = str(target_agent.primary_model_id) if target_agent.primary_model_id else ""
             _tgt_role = target_agent.role_description or ""
-            _tgt_creator = str(target_agent.creator_id) if target_agent.creator_id else ""
+            _tgt_creator = str(owner_user_id)
             _tgt_tenant = str(target_agent.tenant_id) if target_agent.tenant_id else ""
             await db.commit()
             task = asyncio.create_task(_send_to_agent_background(

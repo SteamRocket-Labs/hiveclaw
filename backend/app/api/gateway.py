@@ -49,7 +49,6 @@ async def _find_or_create_gateway_agent_pair_session(
     target_agent_id: uuid.UUID,
     target_agent_name: str,
     owner_user_id: uuid.UUID,
-    migrate_legacy_transcripts: bool = False,
 ):
     session = await find_or_create_agent_pair_session(
         db,
@@ -61,14 +60,13 @@ async def _find_or_create_gateway_agent_pair_session(
     )
     conv_id = session_conversation_id(session)
 
-    if migrate_legacy_transcripts:
-        from app.models.audit import ChatMessage
+    from app.models.audit import ChatMessage
 
-        await db.execute(
-            update(ChatMessage)
-            .where(ChatMessage.conversation_id.in_(_legacy_gateway_conversation_ids(source_agent_id, target_agent_id)))
-            .values(conversation_id=conv_id)
-        )
+    await db.execute(
+        update(ChatMessage)
+        .where(ChatMessage.conversation_id.in_(_legacy_gateway_conversation_ids(source_agent_id, target_agent_id)))
+        .values(conversation_id=conv_id)
+    )
 
     return session, conv_id
 
@@ -278,20 +276,17 @@ async def report_result(
     # write the reply back as a gateway_message for the sender agent to poll
     if body.result and msg.sender_agent_id:
         async with async_session() as reply_db:
-            conv_id = msg.conversation_id
-            if not conv_id or conv_id.startswith("gw_agent_"):
-                sender_result = await reply_db.execute(select(Agent).where(Agent.id == msg.sender_agent_id))
-                sender_agent = sender_result.scalar_one_or_none()
-                owner_user_id = agent.creator_id or getattr(sender_agent, "creator_id", None) or msg.sender_agent_id
-                _, conv_id = await _find_or_create_gateway_agent_pair_session(
-                    reply_db,
-                    source_agent_id=msg.sender_agent_id,
-                    source_agent_name=getattr(sender_agent, "name", "Agent"),
-                    target_agent_id=agent.id,
-                    target_agent_name=agent.name,
-                    owner_user_id=owner_user_id,
-                    migrate_legacy_transcripts=bool(msg.conversation_id),
-                )
+            sender_result = await reply_db.execute(select(Agent).where(Agent.id == msg.sender_agent_id))
+            sender_agent = sender_result.scalar_one_or_none()
+            owner_user_id = agent.creator_id or getattr(sender_agent, "creator_id", None) or msg.sender_agent_id
+            _, conv_id = await _find_or_create_gateway_agent_pair_session(
+                reply_db,
+                source_agent_id=msg.sender_agent_id,
+                source_agent_name=getattr(sender_agent, "name", "Agent"),
+                target_agent_id=agent.id,
+                target_agent_name=agent.name,
+                owner_user_id=owner_user_id,
+            )
             gw_reply = GatewayMessage(
                 agent_id=msg.sender_agent_id,
                 sender_agent_id=agent.id,
@@ -371,7 +366,6 @@ async def _send_to_agent_background(
                 target_agent_id=target_agent_uuid,
                 target_agent_name=target_agent_name,
                 owner_user_id=target_creator_uuid,
-                migrate_legacy_transcripts=True,
             )
             session_agent_id = session.agent_id
             session.last_message_at = datetime.now(timezone.utc)

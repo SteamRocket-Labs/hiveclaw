@@ -391,6 +391,7 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                 if resp.get("code") == 0:
                     await _save_outgoing_to_feishu_session(stable_user_id, stable_open_id or stable_user_id)
                     return f"✅ Successfully sent message to {member_name}"
+                logger.warning("[Feishu Send] Step1 user_id=%s failed: %s", stable_user_id, resp)
 
             # Step 2: Try resolve open_id via email/phone
             if target_member.email or target_member.phone:
@@ -415,6 +416,7 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                 if resp.get("code") == 0:
                     await _save_outgoing_to_feishu_session(stable_user_id, stable_open_id)
                     return f"✅ Successfully sent message to {member_name}"
+                logger.warning("[Feishu Send] Step3 open_id=%s failed: %s", stable_open_id, resp)
 
                 # Step 4: If cross-app error, try org sync app as fallback
                 err_msg = resp.get("msg", "")

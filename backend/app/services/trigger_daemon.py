@@ -124,8 +124,13 @@ def _is_private_url(url: str) -> bool:
 
 # ── Trigger Evaluation ──────────────────────────────────────────────
 
-async def _evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
+async def _evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool | dict:
     """Return True if this trigger should fire right now."""
+    from app.services.schedule_compat import schedule_manual_evaluation
+
+    manual_evaluation = schedule_manual_evaluation(trigger)
+    if manual_evaluation:
+        return manual_evaluation
     if not trigger.is_enabled:
         return False
     if trigger.expires_at and now >= trigger.expires_at:
@@ -529,6 +534,8 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
     from app.models.chat_session import ChatSession
     from app.models.participant import Participant
     from app.services.audit_logger import write_audit_log
+    from app.services.activity_logger import log_activity
+    from app.services.schedule_compat import build_schedule_activity_entries
 
     try:
         async with async_session() as db:
@@ -742,6 +749,13 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
 
         # Evolution feedback — close the learning loop for trigger executions (BP-1 fix)
         final_reply = reply or "".join(collected_content)
+        for entry in build_schedule_activity_entries(triggers, final_reply):
+            await log_activity(
+                agent_id,
+                entry["action_type"],
+                entry["summary"],
+                detail=entry["detail"],
+            )
         try:
             from app.services.heartbeat import (
                 _parse_heartbeat_outcome,
@@ -867,10 +881,14 @@ async def _tick():
                         )
                         trigger = result.scalar_one_or_none()
                         if trigger:
+                            from app.services.schedule_compat import clear_schedule_manual_pending, is_schedule_compat_trigger
+
                             trigger.last_fired_at = now
                             trigger.fire_count += 1
                             if trigger.type == "once":
                                 trigger.is_enabled = False
+                            if is_schedule_compat_trigger(trigger):
+                                trigger.config = clear_schedule_manual_pending(trigger.config)
                             if trigger.type == "webhook" and trigger.config:
                                 trigger.config = {
                                     **trigger.config,

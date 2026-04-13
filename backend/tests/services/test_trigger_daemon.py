@@ -227,3 +227,91 @@ async def test_tick_does_not_apply_agent_level_dedup_window(monkeypatch):
     await trigger_daemon._tick()
 
     assert scheduled == ["_invoke_agent_for_triggers", "_invoke_agent_for_triggers"]
+
+
+@pytest.mark.asyncio
+async def test_manual_pending_trigger_fires_even_when_disabled():
+    import app.services.trigger_daemon as trigger_daemon
+
+    trigger = SimpleNamespace(
+        id=uuid4(),
+        agent_id=uuid4(),
+        name="manual_run",
+        type="cron",
+        config={
+            "_surface": "schedule_api",
+            "_manual_pending": True,
+            "_manual_request_id": "req-1",
+            "expr": "0 9 * * *",
+        },
+        is_enabled=False,
+        fire_count=0,
+        max_fires=None,
+        last_fired_at=None,
+        created_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+        expires_at=None,
+        cooldown_seconds=0,
+    )
+
+    evaluation = await trigger_daemon._evaluate_trigger(trigger, datetime.now(timezone.utc))
+
+    assert evaluation == {"event_key": f"manual:{trigger.id}:req-1"}
+
+
+@pytest.mark.asyncio
+async def test_tick_clears_manual_pending_after_fire(monkeypatch):
+    import app.services.trigger_daemon as trigger_daemon
+
+    agent_id = uuid4()
+    trigger = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        name="manual_run",
+        type="cron",
+        config={
+            "_surface": "schedule_api",
+            "_manual_pending": True,
+            "_manual_request_id": "req-1",
+            "expr": "0 9 * * *",
+        },
+        is_enabled=False,
+        fire_count=0,
+        max_fires=None,
+        last_fired_at=None,
+        created_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+        expires_at=None,
+        cooldown_seconds=0,
+    )
+    trigger_db = SimpleNamespace(**trigger.__dict__)
+
+    sessions = [
+        _SequenceSession([_RowsResult([trigger])]),
+        _SequenceSession([_ScalarResult(trigger_db)]),
+    ]
+
+    def fake_async_session():
+        if not sessions:
+            raise AssertionError("Unexpected async_session() call")
+        return sessions.pop(0)
+
+    scheduled: list[str] = []
+
+    async def fake_acquire(*_args, **_kwargs):
+        return True
+
+    def fake_create_task(coro, *args, **kwargs):
+        scheduled.append(coro.cr_code.co_name)
+        coro.close()
+        return SimpleNamespace()
+
+    monkeypatch.setattr(trigger_daemon, "async_session", fake_async_session)
+    monkeypatch.setattr(trigger_daemon, "_acquire_trigger_fire_lease", fake_acquire)
+    monkeypatch.setattr(trigger_daemon.asyncio, "create_task", fake_create_task)
+
+    await trigger_daemon._tick()
+
+    assert scheduled == ["_invoke_agent_for_triggers"]
+    assert trigger_db.last_fired_at is not None
+    assert trigger_db.fire_count == 1
+    assert trigger_db.config["_manual_pending"] is False
+    assert trigger_db.config["_manual_request_id"] is None

@@ -244,9 +244,9 @@ async def test_get_agent_feishu_runtime_status_reports_agent_access(monkeypatch)
     monkeypatch.setattr(tools_api, "_require_manage_access", fake_require_manage_access)
     monkeypatch.setattr("app.api.tools.get_settings", lambda: SimpleNamespace(FEISHU_CLI_ENABLED=True, FEISHU_CLI_BIN="lark-cli"))
     monkeypatch.setattr("app.services.agent_tool_domains.feishu_cli._feishu_cli_available", fake_agent_has_feishu_cli_access)
-    monkeypatch.setattr("app.services.agent_tools._agent_has_feishu", fake_agent_has_feishu)
-    monkeypatch.setattr("app.services.agent_tools._agent_has_feishu_office_access", fake_agent_has_feishu_office_access)
-    monkeypatch.setattr("app.services.agent_tools._agent_has_feishu_cli_access", fake_agent_has_feishu_cli_access)
+    monkeypatch.setattr("app.tools.surface._agent_has_feishu", fake_agent_has_feishu)
+    monkeypatch.setattr("app.tools.surface._agent_has_feishu_office_access", fake_agent_has_feishu_office_access)
+    monkeypatch.setattr("app.tools.surface._agent_has_feishu_cli_access", fake_agent_has_feishu_cli_access)
 
     result = await tools_api.get_agent_feishu_runtime_status(
         agent_id=agent_id,

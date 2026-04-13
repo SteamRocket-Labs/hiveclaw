@@ -181,9 +181,9 @@ class ApprovalService:
             else:
                 arguments = args_raw
 
-            from app.services.agent_tools import _execute_tool_direct
+            from app.tools.execution_entry import execute_tool_direct
 
-            return await _execute_tool_direct(tool_name, arguments, agent_id)
+            return await execute_tool_direct(tool_name, arguments, agent_id)
         except Exception as exc:
             logger.error("Failed to execute approved action %s: %s", tool_name, exc)
             return f"Execution failed: {exc}"

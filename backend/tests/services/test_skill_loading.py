@@ -4,7 +4,7 @@ from uuid import uuid4
 
 
 def test_load_skill_reads_folder_and_flat_file(tmp_path):
-    from app.services.agent_tools import _load_skill
+    from app.services.agent_tool_domains.workspace import _load_skill
 
     workspace = tmp_path / "agent"
     folder_skill = workspace / "skills" / "web-research"

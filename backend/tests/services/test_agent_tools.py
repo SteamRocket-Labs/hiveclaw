@@ -9,7 +9,7 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_execute_tool_direct_prefers_tool_registry_executor(monkeypatch):
-    from app.services.agent_tools import _execute_tool_direct
+    from app.tools.execution_entry import execute_tool_direct
     from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
 
     workspace = Path("/tmp/test-agent-workspace")
@@ -29,10 +29,10 @@ async def test_execute_tool_direct_prefers_tool_registry_executor(monkeypatch):
         return "registry-ok"
 
     monkeypatch.setattr("app.tools.resolver.ToolRuntimeResolver.resolve", fake_resolve)
-    monkeypatch.setattr("app.services.agent_tools._ensure_tool_execution_registry", lambda: None)
-    monkeypatch.setattr("app.services.agent_tools._TOOL_EXECUTION_REGISTRY.try_execute", fake_try_execute)
+    monkeypatch.setattr("app.tools.execution_entry._ensure_tool_execution_registry", lambda: None)
+    monkeypatch.setattr("app.tools.execution_entry._TOOL_EXECUTION_REGISTRY.try_execute", fake_try_execute)
 
-    result = await _execute_tool_direct(
+    result = await execute_tool_direct(
         "execute_code",
         {"language": "python", "code": "print('hi')"},
         agent_id,
@@ -47,7 +47,7 @@ async def test_execute_tool_direct_prefers_tool_registry_executor(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_execute_tool_direct_registry_miss_uses_mcp_fallback_even_for_first_class_tool(monkeypatch):
-    from app.services.agent_tools import _execute_tool_direct
+    from app.tools.execution_entry import execute_tool_direct
     from app.tools.runtime import ToolExecutionContext
 
     workspace = Path("/tmp/test-agent-workspace")
@@ -71,11 +71,11 @@ async def test_execute_tool_direct_registry_miss_uses_mcp_fallback_even_for_firs
         return "from-mcp"
 
     monkeypatch.setattr("app.tools.resolver.ToolRuntimeResolver.resolve", fake_resolve)
-    monkeypatch.setattr("app.services.agent_tools._ensure_tool_execution_registry", lambda: None)
-    monkeypatch.setattr("app.services.agent_tools._TOOL_EXECUTION_REGISTRY.try_execute", fake_try_execute)
-    monkeypatch.setattr("app.services.agent_tools._execute_mcp_tool", fake_execute_mcp_tool)
+    monkeypatch.setattr("app.tools.execution_entry._ensure_tool_execution_registry", lambda: None)
+    monkeypatch.setattr("app.tools.execution_entry._TOOL_EXECUTION_REGISTRY.try_execute", fake_try_execute)
+    monkeypatch.setattr("app.services.agent_tool_domains.web_mcp._execute_mcp_tool", fake_execute_mcp_tool)
 
-    result = await _execute_tool_direct(
+    result = await execute_tool_direct(
         "execute_code",
         {"language": "python", "code": "print('hi')"},
         uuid4(),

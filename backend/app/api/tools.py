@@ -154,7 +154,7 @@ async def _build_feishu_runtime_status(
             payload["message"] = "Feishu CLI is disabled. Enable it to unlock Base/Tasks office tooling in cloud deployments."
         return payload
 
-    from app.services.agent_tools import _agent_has_feishu, _agent_has_feishu_cli_access, _agent_has_feishu_office_access
+    from app.tools.surface import _agent_has_feishu, _agent_has_feishu_cli_access, _agent_has_feishu_office_access
 
     channel_configured = await _agent_has_feishu(agent_id)
     office_access = await _agent_has_feishu_office_access(agent_id)

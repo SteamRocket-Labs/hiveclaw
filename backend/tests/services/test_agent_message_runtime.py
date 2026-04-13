@@ -18,7 +18,7 @@ def _stub_activity_logger(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_invoke_agent_message_runtime_delegates_to_runtime(monkeypatch):
-    from app.services.agent_tools import _invoke_agent_message_runtime
+    from app.services.agent_tool_domains.messaging import _invoke_agent_message_runtime
 
     source_agent_id = uuid4()
     target_id = uuid4()
@@ -80,7 +80,7 @@ async def test_invoke_agent_message_runtime_delegates_to_runtime(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_build_agent_message_tool_executor_persists_tool_calls(monkeypatch):
-    from app.services.agent_tools import _build_agent_message_tool_executor
+    from app.services.agent_tool_domains.messaging import _build_agent_message_tool_executor
 
     target_id = uuid4()
     owner_id = uuid4()

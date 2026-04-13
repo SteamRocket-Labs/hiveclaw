@@ -119,12 +119,12 @@ async def test_email_wrapper_returns_structured_error_for_unhandled_exception(mo
 @pytest.mark.asyncio
 async def test_send_web_message_handler_normalizes_legacy_error(monkeypatch):
     import app.tools.handlers.communication as communication_handler
-    import app.services.agent_tools as agent_tools
+    import app.services.agent_tool_domains.messaging as messaging_domain
 
     async def fake_send_web_message(_agent_id, _arguments):
         return "❌ Please provide recipient username and message content"
 
-    monkeypatch.setattr(agent_tools, "_send_web_message", fake_send_web_message)
+    monkeypatch.setattr(messaging_domain, "_send_web_message", fake_send_web_message)
 
     result = await communication_handler.send_web_message(uuid4(), {})
 

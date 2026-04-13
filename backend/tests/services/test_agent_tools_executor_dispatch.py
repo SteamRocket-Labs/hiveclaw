@@ -9,7 +9,7 @@ import pytest
 @pytest.mark.asyncio
 async def test_execute_tool_inner_prefers_tool_execution_registry(monkeypatch):
     from app.core.execution_context import ExecutionIdentity
-    from app.services import agent_tools as agent_tools_module
+    from app.tools import execution_entry as execution_entry_module
     from app.tools.runtime import ToolExecutionContext
 
     agent_id = uuid4()
@@ -20,7 +20,7 @@ async def test_execute_tool_inner_prefers_tool_execution_registry(monkeypatch):
         captured["request"] = request
         return "FROM_REGISTRY"
 
-    monkeypatch.setattr(agent_tools_module._TOOL_EXECUTION_REGISTRY, "try_execute", fake_try_execute)
+    monkeypatch.setattr(execution_entry_module._TOOL_EXECUTION_REGISTRY, "try_execute", fake_try_execute)
     monkeypatch.setattr(
         "app.core.execution_context.get_execution_identity",
         lambda: ExecutionIdentity(
@@ -30,7 +30,7 @@ async def test_execute_tool_inner_prefers_tool_execution_registry(monkeypatch):
         ),
     )
 
-    result = await agent_tools_module._execute_tool_inner(
+    result = await execution_entry_module.execute_tool_inner(
         "list_files",
         {"path": "skills"},
         ToolExecutionContext(
@@ -59,7 +59,7 @@ async def test_execute_tool_inner_prefers_tool_execution_registry(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_execute_tool_inner_falls_back_to_mcp_executor(monkeypatch):
-    from app.services import agent_tools as agent_tools_module
+    from app.tools import execution_entry as execution_entry_module
     from app.tools.runtime import ToolExecutionContext
 
     agent_id = uuid4()
@@ -75,10 +75,10 @@ async def test_execute_tool_inner_falls_back_to_mcp_executor(monkeypatch):
         captured["agent_id"] = agent_id
         return "FROM_MCP"
 
-    monkeypatch.setattr(agent_tools_module._TOOL_EXECUTION_REGISTRY, "try_execute", fake_try_execute)
-    monkeypatch.setattr(agent_tools_module, "_execute_mcp_tool", fake_execute_mcp_tool)
+    monkeypatch.setattr(execution_entry_module._TOOL_EXECUTION_REGISTRY, "try_execute", fake_try_execute)
+    monkeypatch.setattr("app.services.agent_tool_domains.web_mcp._execute_mcp_tool", fake_execute_mcp_tool)
 
-    result = await agent_tools_module._execute_tool_inner(
+    result = await execution_entry_module.execute_tool_inner(
         "custom_remote_tool",
         {"query": "agent"},
         ToolExecutionContext(

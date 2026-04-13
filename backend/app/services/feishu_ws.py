@@ -139,7 +139,7 @@ class FeishuWSManager:
                     main_loop = [t for t in asyncio.all_tasks() if t.get_name() != "feishu-ws"][0].get_loop()
                     asyncio.run_coroutine_threadsafe(self._async_handle_message(agent_id, data), main_loop)
                 except Exception as e:
-                    logger.error(f"[Feishu WS] Could not dispatch event to main loop: {e}", exc_info=True)
+                    logger.opt(exception=True).error(f"[Feishu WS] Could not dispatch event to main loop: {e}")
 
         def _noop_handler(data: Any) -> None:
             """Ack events we don't need to process (suppresses 'processor not found' errors)."""
@@ -160,9 +160,9 @@ class FeishuWSManager:
                     main_loop = [t for t in asyncio.all_tasks() if t.get_name() != "feishu-ws"][0].get_loop()
                     asyncio.run_coroutine_threadsafe(self._async_handle_card_action(agent_id, data), main_loop)
                 except Exception as e:
-                    logger.error(f"[Feishu WS] Could not dispatch card action to main loop: {e}", exc_info=True)
+                    logger.opt(exception=True).error(f"[Feishu WS] Could not dispatch card action to main loop: {e}")
             except Exception as e:
-                logger.error(f"[Feishu WS] Could not dispatch card action: {e}", exc_info=True)
+                logger.opt(exception=True).error(f"[Feishu WS] Could not dispatch card action: {e}")
 
         dispatcher = (
             lark.EventDispatcherHandler.builder("", "")
@@ -222,8 +222,8 @@ class FeishuWSManager:
                 await process_feishu_event(agent_id, body_dict, db)
 
         except Exception as e:
-            logger.error(
-                f"[Feishu WS] Error processing event for {agent_id}: {e}", exc_info=True
+            logger.opt(exception=True).error(
+                f"[Feishu WS] Error processing event for {agent_id}: {e}"
             )
 
     async def _async_handle_card_action(self, agent_id: uuid.UUID, data: Dict[str, Any]) -> None:
@@ -255,7 +255,7 @@ class FeishuWSManager:
                 await feishu_card_callback(_CardRequest(), db)
 
         except Exception as e:
-            logger.error(f"[Feishu WS] Error processing card action for {agent_id}: {e}", exc_info=True)
+            logger.opt(exception=True).error(f"[Feishu WS] Error processing card action for {agent_id}: {e}")
 
     async def start_client(
         self,
@@ -284,7 +284,7 @@ class FeishuWSManager:
         try:
             event_handler = self._create_event_handler(agent_id)
         except Exception as e:
-            logger.error(f"[Feishu WS] Failed to create event handler for {agent_id}: {e}", exc_info=True)
+            logger.opt(exception=True).error(f"[Feishu WS] Failed to create event handler for {agent_id}: {e}")
             return
 
         # Instantiate Client
@@ -316,7 +316,7 @@ class FeishuWSManager:
                 logger.info(f"[Feishu WS] Async client task cancelled for {agent_id}")
                 await client._disconnect()
             except Exception as e:
-                logger.error(f"[Feishu WS] Async client exception for {agent_id}: {e}", exc_info=True)
+                logger.opt(exception=True).error(f"[Feishu WS] Async client exception for {agent_id}: {e}")
                 await client._disconnect()
                 self._clients.pop(agent_id, None)
 

@@ -320,6 +320,16 @@ class FeishuAuthProvider:
             )
             identity = result.scalar_one_or_none()
 
+        provider_union_id = profile.get("union_id")
+        if not identity and provider_union_id:
+            result = await db.execute(
+                select(ExternalIdentity).where(
+                    ExternalIdentity.provider_id == provider.id,
+                    ExternalIdentity.provider_union_id == provider_union_id,
+                )
+            )
+            identity = result.scalar_one_or_none()
+
         if not identity:
             identity = ExternalIdentity(provider_id=provider.id, user_id=user.id)
             db.add(identity)

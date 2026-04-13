@@ -740,6 +740,16 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
     """
     agent_name = args.get("agent_name", "").strip()
     message_text = args.get("message", "").strip()
+    msg_type = str(args.get("msg_type") or "notify").strip().lower()
+    target_agent_id_raw = args.get("target_agent_id")
+    target_agent_id = None
+    if target_agent_id_raw:
+        try:
+            target_agent_id = uuid.UUID(str(target_agent_id_raw))
+        except (TypeError, ValueError, AttributeError):
+            return "❌ target_agent_id is invalid"
+    if msg_type == "task_delegate":
+        return "❌ `task_delegate` is no longer supported here. Use delegate_to_agent for background delegated work."
 
     if not agent_name or not message_text:
         return "❌ Please provide target agent name and message content"
@@ -755,12 +765,15 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
             source_agent = src_result.scalar_one_or_none()
             source_name = source_agent.name if source_agent else "Unknown agent"
 
-            # Find target agent by name (scoped to same tenant)
-            _tenant_filter = [Agent.name.ilike(f"%{agent_name}%"), Agent.id != from_agent_id]
+            # Find target agent by id or name (scoped to same tenant)
+            if target_agent_id is not None:
+                _tenant_filter = [Agent.id == target_agent_id, Agent.id != from_agent_id]
+            else:
+                _tenant_filter = [Agent.name.ilike(f"%{agent_name}%"), Agent.id != from_agent_id]
             if source_agent and source_agent.tenant_id:
                 _tenant_filter.append(Agent.tenant_id == source_agent.tenant_id)
             result = await db.execute(select(Agent).where(*_tenant_filter))
-            target = result.scalars().first()
+            target = result.scalar_one_or_none() if target_agent_id is not None else result.scalars().first()
             if not target:
                 _avail_filter = [Agent.id != from_agent_id]
                 if source_agent and source_agent.tenant_id:

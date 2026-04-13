@@ -121,8 +121,11 @@ async def send_web_message(agent_id: uuid.UUID, arguments: dict) -> str:
             },
             "msg_type": {
                 "type": "string",
-                "enum": ["notify", "consult", "task_delegate"],
-                "description": "Message type: notify (notification), consult (ask a question), task_delegate (delegate a task). Defaults to notify.",
+                "enum": ["notify", "consult"],
+                "description": (
+                    "Optional message label: notify (single-turn notice) or consult (ask a question). "
+                    "This tool always stays on the synchronous A2A path."
+                ),
             },
         },
         "required": ["agent_name", "message"],

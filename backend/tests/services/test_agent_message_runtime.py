@@ -189,6 +189,75 @@ async def test_delegate_to_agent_async_accepts_research_readonly_profile(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_send_message_to_agent_accepts_target_agent_id_for_precise_resolution(monkeypatch):
+    from app.services.agent_tool_domains.messaging import _send_message_to_agent
+
+    from_agent_id = uuid4()
+    target_agent_id = uuid4()
+    tenant_id = uuid4()
+    source_agent = SimpleNamespace(id=from_agent_id, name="Source Agent", creator_id=uuid4(), tenant_id=tenant_id)
+    target = SimpleNamespace(id=target_agent_id, name="Target Agent", status="stopped", tenant_id=tenant_id)
+    captured = {"sql": []}
+
+    class _ScalarResult:
+        def __init__(self, value):
+            self._value = value
+
+        def scalar_one_or_none(self):
+            return self._value
+
+        def scalars(self):
+            return SimpleNamespace(first=lambda: self._value, all=lambda: [self._value] if self._value else [])
+
+    class _FakeDB:
+        def __init__(self):
+            self._results = [_ScalarResult(source_agent), _ScalarResult(target)]
+
+        async def execute(self, stmt):
+            captured["sql"].append(str(stmt))
+            return self._results.pop(0)
+
+    class _FakeSessionCtx:
+        async def __aenter__(self):
+            return _FakeDB()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr("app.services.agent_tool_domains.messaging.async_session", lambda: _FakeSessionCtx())
+
+    result = await _send_message_to_agent(
+        from_agent_id,
+        {
+            "agent_name": "Target Agent",
+            "target_agent_id": str(target_agent_id),
+            "message": "Please verify the contract",
+            "msg_type": "consult",
+        },
+    )
+
+    assert "currently stopped" in result
+    assert "agents.id =" in captured["sql"][1]
+    assert "lower(agents.name) LIKE lower" not in captured["sql"][1]
+
+
+@pytest.mark.asyncio
+async def test_send_message_to_agent_rejects_task_delegate_msg_type():
+    from app.services.agent_tool_domains.messaging import _send_message_to_agent
+
+    result = await _send_message_to_agent(
+        uuid4(),
+        {
+            "agent_name": "Target Agent",
+            "message": "Please implement this in the background",
+            "msg_type": "task_delegate",
+        },
+    )
+
+    assert "Use delegate_to_agent" in result
+
+
+@pytest.mark.asyncio
 async def test_list_async_tasks_filters_in_memory_fallback(monkeypatch):
     from app.agents.orchestrator import check_async_delegation, delegate_async
     from app.services.agent_tool_domains.messaging import _list_async_tasks

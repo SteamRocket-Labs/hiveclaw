@@ -113,11 +113,19 @@ def test_a2a_prompt_defines_status_and_result_contract() -> None:
 def test_core_tool_descriptions_define_when_not_to_use_and_fallbacks() -> None:
     from app.services.agent_tools import get_combined_openai_tools
 
-    tools = {tool["function"]["name"]: tool["function"]["description"] for tool in get_combined_openai_tools()}
+    combined = get_combined_openai_tools()
+    tools = {tool["function"]["name"]: tool["function"]["description"] for tool in combined}
+    send_message_schema = next(
+        tool["function"]["parameters"]
+        for tool in combined
+        if tool["function"]["name"] == "send_message_to_agent"
+    )
+    msg_type_schema = send_message_schema["properties"]["msg_type"]
 
     assert "jina_search" not in tools
     assert "jina_read" not in tools
     assert "Do NOT use this for long-running delegated work" in tools["send_message_to_agent"]
+    assert set(msg_type_schema["enum"]) == {"notify", "consult"}
     assert "check back later with `check_async_task`" in tools["delegate_to_agent"]
     assert "follow up with `web_fetch`" in tools["web_search"]
     assert "Prefer Exa" in tools["web_search"]
@@ -171,6 +179,23 @@ def test_skill_catalog_footer_discourages_speculative_loading() -> None:
 
     assert "Load only the skill that matches the current task" in rendered
     assert "Do NOT speculatively load multiple skills" in rendered
+
+
+def test_delegation_guide_no_longer_describes_agent_message_as_fire_and_forget() -> None:
+    project_root = Path(__file__).resolve().parents[3]
+    guide = (
+        project_root
+        / "backend"
+        / "app"
+        / "templates"
+        / "system_skills"
+        / "delegation-guide"
+        / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert "Fire-and-forget notification" not in guide
+    assert "`send_message_to_agent(msg_type=\"notify\")`" in guide
+    assert "`delegate_to_agent`" in guide
 
 
 def test_summarizer_prompt_distinguishes_session_state_from_durable_memory() -> None:

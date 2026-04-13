@@ -26,15 +26,14 @@ async def main() -> None:
         tenant, tenant_setting, tool, trigger, user,
     )
     from app.database import async_session
-    from app.services.session_maintenance import normalize_legacy_gateway_conversations
+    from app.db_legacy_gateway_conversation_migration import promote_legacy_gateway_conversations
 
     async with async_session() as db:
-        stats = await normalize_legacy_gateway_conversations(db)
+        connection = await db.connection()
+        normalized_pairs = await connection.run_sync(promote_legacy_gateway_conversations)
         await db.commit()
 
-    logger.info("Legacy gateway conversation ids found: %s", stats["legacy_conversation_count"])
-    logger.info("Normalized agent pairs: %s", stats["normalized_pairs"])
-    logger.info("Skipped pairs: %s", stats["skipped_pairs"])
+    logger.info("Normalized agent pairs: %s", normalized_pairs)
     logger.info("Gateway conversation maintenance complete")
 
 

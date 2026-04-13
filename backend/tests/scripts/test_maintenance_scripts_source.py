@@ -12,3 +12,12 @@ def test_maintenance_scripts_do_not_import_removed_schedule_model():
 
     assert "plaza, schedule, skill" not in duplicate_feishu_script
     assert "plaza, schedule, skill" not in gateway_script
+
+
+def test_gateway_maintenance_script_prefers_db_level_migration_helper():
+    gateway_script = Path(
+        "/Users/rocky243/vc-saas/hiveclaw/backend/app/scripts/cleanup_legacy_gateway_conversations.py"
+    ).read_text(encoding="utf-8")
+
+    assert "promote_legacy_gateway_conversations" in gateway_script
+    assert "normalize_legacy_gateway_conversations" not in gateway_script

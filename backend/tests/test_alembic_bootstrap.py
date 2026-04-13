@@ -160,6 +160,107 @@ def test_bootstrap_schema_promotes_legacy_schedules_before_stamping() -> None:
     assert migrated == [("schedule-1", "cron", "生成日报")]
 
 
+def test_bootstrap_schema_promotes_legacy_gateway_conversations_before_stamping() -> None:
+    from app.db_bootstrap import bootstrap_database_to_head
+
+    legacy_metadata = MetaData()
+    agents = Table(
+        "agents",
+        legacy_metadata,
+        Column("id", String(36), primary_key=True),
+        Column("name", String(100), nullable=False),
+        Column("creator_id", String(36), nullable=True),
+    )
+    chat_messages = Table(
+        "chat_messages",
+        legacy_metadata,
+        Column("id", String(36), primary_key=True),
+        Column("agent_id", String(36), nullable=False),
+        Column("user_id", String(36), nullable=False),
+        Column("role", String(20), nullable=False),
+        Column("content", String(), nullable=False),
+        Column("conversation_id", String(200), nullable=False),
+        Column("created_at", String(40), nullable=False),
+    )
+    gateway_messages = Table(
+        "gateway_messages",
+        legacy_metadata,
+        Column("id", String(36), primary_key=True),
+        Column("agent_id", String(36), nullable=False),
+        Column("sender_agent_id", String(36), nullable=True),
+        Column("sender_user_id", String(36), nullable=True),
+        Column("conversation_id", String(100), nullable=True),
+        Column("content", String(), nullable=False),
+        Column("status", String(20), nullable=False),
+        Column("created_at", String(40), nullable=False),
+    )
+
+    current_metadata = MetaData()
+    Table(
+        "chat_sessions",
+        current_metadata,
+        Column("id", String(36), primary_key=True),
+        Column("agent_id", String(36), nullable=False),
+        Column("user_id", String(36), nullable=False),
+        Column("title", String(200), nullable=False),
+        Column("source_channel", String(20), nullable=False),
+        Column("peer_agent_id", String(36), nullable=True),
+        Column("created_at", String(40), nullable=False),
+        Column("last_message_at", String(40), nullable=True),
+    )
+
+    engine = create_engine("sqlite:///:memory:")
+    low_agent_id = "11111111-1111-1111-1111-111111111111"
+    high_agent_id = "22222222-2222-2222-2222-222222222222"
+    legacy_conv_id = f"gw_agent_{high_agent_id}_{low_agent_id}"
+
+    with engine.begin() as conn:
+        legacy_metadata.create_all(conn)
+        conn.execute(
+            agents.insert(),
+            [
+                {"id": low_agent_id, "name": "Alpha", "creator_id": "33333333-3333-3333-3333-333333333333"},
+                {"id": high_agent_id, "name": "Beta", "creator_id": "44444444-4444-4444-4444-444444444444"},
+            ],
+        )
+        conn.execute(
+            chat_messages.insert().values(
+                id="msg-1",
+                agent_id=low_agent_id,
+                user_id="33333333-3333-3333-3333-333333333333",
+                role="user",
+                content="hello",
+                conversation_id=legacy_conv_id,
+                created_at="2026-04-14T08:00:00+00:00",
+            )
+        )
+        conn.execute(
+            gateway_messages.insert().values(
+                id="gw-1",
+                agent_id=high_agent_id,
+                sender_agent_id=low_agent_id,
+                sender_user_id="33333333-3333-3333-3333-333333333333",
+                conversation_id=legacy_conv_id,
+                content="queued",
+                status="pending",
+                created_at="2026-04-14T09:00:00+00:00",
+            )
+        )
+
+        bootstrap_database_to_head(conn, current_metadata, ["rev_a"])
+
+        session_rows = conn.execute(text("SELECT agent_id, peer_agent_id, source_channel FROM chat_sessions")).fetchall()
+        chat_rows = conn.execute(text("SELECT conversation_id FROM chat_messages")).fetchall()
+        gateway_rows = conn.execute(text("SELECT conversation_id FROM gateway_messages")).fetchall()
+        versions = [row[0] for row in conn.execute(text("SELECT version_num FROM alembic_version"))]
+
+    assert session_rows == [(low_agent_id, high_agent_id, "agent")]
+    canonical_session_id = chat_rows[0][0]
+    assert canonical_session_id == gateway_rows[0][0]
+    assert canonical_session_id != legacy_conv_id
+    assert versions == ["rev_a"]
+
+
 def test_run_migrations_with_bootstrap_uses_bootstrap_path() -> None:
     from app.db_bootstrap import run_migrations_with_bootstrap
 

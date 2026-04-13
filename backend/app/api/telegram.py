@@ -6,6 +6,7 @@ import json
 import os
 import re
 import uuid
+from datetime import datetime, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -41,14 +42,10 @@ def _compute_webhook_secret(bot_token: str) -> str:
     the secret separately — it can be recomputed from the config.
     """
     settings = get_settings()
-    return hmac.new(
-        settings.SECRET_KEY.encode(), bot_token.encode(), hashlib.sha256
-    ).hexdigest()[:64]
+    return hmac.new(settings.SECRET_KEY.encode(), bot_token.encode(), hashlib.sha256).hexdigest()[:64]
 
 
-async def _resolve_public_base_url(
-    db: AsyncSession | None = None, request: Request | None = None
-) -> str:
+async def _resolve_public_base_url(db: AsyncSession | None = None, request: Request | None = None) -> str:
     """Resolve the public base URL: env → DB → request fallback."""
     from app.models.system_settings import SystemSetting
 
@@ -58,9 +55,7 @@ async def _resolve_public_base_url(
 
     try:
         if db:
-            result = await db.execute(
-                select(SystemSetting).where(SystemSetting.key == "platform")
-            )
+            result = await db.execute(select(SystemSetting).where(SystemSetting.key == "platform"))
             setting = result.scalar_one_or_none()
             if setting and setting.value.get("public_base_url"):
                 return setting.value["public_base_url"].rstrip("/")
@@ -68,9 +63,7 @@ async def _resolve_public_base_url(
             from app.database import async_session
 
             async with async_session() as session:
-                result = await session.execute(
-                    select(SystemSetting).where(SystemSetting.key == "platform")
-                )
+                result = await session.execute(select(SystemSetting).where(SystemSetting.key == "platform"))
                 setting = result.scalar_one_or_none()
                 if setting and setting.value.get("public_base_url"):
                     return setting.value["public_base_url"].rstrip("/")
@@ -121,14 +114,35 @@ async def _register_telegram_webhook(bot_token: str, agent_id: uuid.UUID) -> Non
 
 
 async def _send_telegram_message(bot_token: str, chat_id: int | str, text: str) -> None:
-    """Send text to Telegram, splitting into TG_MSG_LIMIT chunks if needed."""
+    """Send text to Telegram, splitting into TG_MSG_LIMIT chunks if needed.
+
+    Attempts Markdown parse_mode first; on 400 (malformed markup) retries
+    as plain text so the user always receives *something*.
+    """
     chunks = [text[i : i + TG_MSG_LIMIT] for i in range(0, len(text), TG_MSG_LIMIT)]
-    async with httpx.AsyncClient(timeout=15) as client:
-        for chunk in chunks:
-            await client.post(
-                f"{TG_API}/bot{bot_token}/sendMessage",
-                json={"chat_id": chat_id, "text": chunk, "parse_mode": "Markdown"},
-            )
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            for chunk in chunks:
+                resp = await client.post(
+                    f"{TG_API}/bot{bot_token}/sendMessage",
+                    json={"chat_id": chat_id, "text": chunk, "parse_mode": "Markdown"},
+                )
+                if resp.status_code == 400:
+                    logger.warning("[Telegram] Markdown send failed (400), retrying as plain text")
+                    retry = await client.post(
+                        f"{TG_API}/bot{bot_token}/sendMessage",
+                        json={"chat_id": chat_id, "text": chunk},
+                    )
+                    if retry.status_code != 200:
+                        logger.error(
+                            "[Telegram] Plain-text retry also failed: %s %s",
+                            retry.status_code,
+                            retry.text[:200],
+                        )
+                elif resp.status_code != 200:
+                    logger.error("[Telegram] sendMessage failed: %s %s", resp.status_code, resp.text[:200])
+    except Exception as exc:
+        logger.error("[Telegram] Failed to send message to chat %s: %s", chat_id, exc)
 
 
 async def _is_duplicate_update(update_id: int) -> bool:
@@ -171,9 +185,7 @@ async def configure_telegram_channel(
         )
     )
     existing = result.scalar_one_or_none()
-    bot_token = resolve_secret_field(
-        data, "bot_token", existing.app_secret if existing else None
-    )
+    bot_token = resolve_secret_field(data, "bot_token", existing.app_secret if existing else None)
     if not bot_token:
         raise HTTPException(status_code=422, detail="bot_token is required")
     _validate_bot_token(bot_token)
@@ -218,9 +230,7 @@ async def get_telegram_channel(
 
 
 @router.get("/agents/{agent_id}/telegram-channel/webhook-url")
-async def get_telegram_webhook_url(
-    agent_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)
-):
+async def get_telegram_webhook_url(agent_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
     public_base = await _resolve_public_base_url(db=db, request=request)
     if not public_base:
         raise HTTPException(status_code=500, detail="PUBLIC_BASE_URL not configured")
@@ -248,9 +258,7 @@ async def delete_telegram_channel(
     if config.app_secret:
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                await client.post(
-                    f"{TG_API}/bot{config.app_secret}/deleteWebhook"
-                )
+                await client.post(f"{TG_API}/bot{config.app_secret}/deleteWebhook")
         except Exception as e:
             logger.warning("[Telegram] Failed to delete webhook: %s", e)
     await db.delete(config)
@@ -285,9 +293,7 @@ async def telegram_webhook(
 
     bot_token = config.app_secret
     if not bot_token:
-        logger.warning(
-            "[Telegram] Webhook called but bot_token is empty for agent %s", agent_id
-        )
+        logger.warning("[Telegram] Webhook called but bot_token is empty for agent %s", agent_id)
         return Response(status_code=403)
 
     # Verify webhook secret (if header present — absent means pre-upgrade webhook)
@@ -295,14 +301,11 @@ async def telegram_webhook(
     if received_secret is not None:
         expected_secret = _compute_webhook_secret(bot_token)
         if not hmac.compare_digest(expected_secret, received_secret):
-            logger.warning(
-                "[Telegram] Webhook secret mismatch for agent %s", agent_id
-            )
+            logger.warning("[Telegram] Webhook secret mismatch for agent %s", agent_id)
             return Response(status_code=403)
     else:
         logger.warning(
-            "[Telegram] Webhook without secret_token for agent %s "
-            "— re-save Telegram config to enable verification",
+            "[Telegram] Webhook without secret_token for agent %s — re-save Telegram config to enable verification",
             agent_id,
         )
 
@@ -321,9 +324,12 @@ async def telegram_webhook(
     sender = message.get("from", {})
     sender_id = str(sender.get("id", ""))
     sender_name = (
-        sender.get("first_name", "")
-        + (" " + sender.get("last_name", "") if sender.get("last_name") else "")
+        sender.get("first_name", "") + (" " + sender.get("last_name", "") if sender.get("last_name") else "")
     ).strip() or f"tg_{sender_id}"
+
+    # Ignore messages from bots (prevents self-reply loops in group chats)
+    if sender.get("is_bot"):
+        return {"ok": True}
 
     if not user_text:
         return {"ok": True}
@@ -345,17 +351,14 @@ async def telegram_webhook(
     if user_text == "/start":
         from app.models.agent import Agent as AgentModel
 
-        agent_r = await db.execute(
-            select(AgentModel).where(AgentModel.id == agent_id)
-        )
+        agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
         agent_obj = agent_r.scalar_one_or_none()
         welcome = agent_obj.welcome_message if agent_obj else None
         await _send_telegram_message(
             bot_token,
             chat_id,
             welcome
-            or f"Hi! I'm {agent_obj.name if agent_obj else 'your assistant'}. "
-            "Send me a message to get started.",
+            or f"Hi! I'm {agent_obj.name if agent_obj else 'your assistant'}. Send me a message to get started.",
         )
         return {"ok": True}
 
@@ -371,19 +374,13 @@ async def telegram_webhook(
     from app.models.user import User as UserModel
 
     tg_username = f"tg_{sender_id}"
-    user_result = await db.execute(
-        select(UserModel).where(UserModel.username == tg_username)
-    )
+    user_result = await db.execute(select(UserModel).where(UserModel.username == tg_username))
     platform_user = user_result.scalar_one_or_none()
     if not platform_user:
-        agent_result = await db.execute(
-            select(AgentModel).where(AgentModel.id == agent_id)
-        )
+        agent_result = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
         agent_obj = agent_result.scalar_one_or_none()
         if not agent_obj:
-            logger.error(
-                "[Telegram] Agent %s not found during user creation", agent_id
-            )
+            logger.error("[Telegram] Agent %s not found during user creation", agent_id)
             return Response(status_code=404)
         platform_user = UserModel(
             username=tg_username,
@@ -434,25 +431,27 @@ async def telegram_webhook(
         .order_by(ChatMessage.created_at.desc())
         .limit(hist_limit)
     )
-    history = [
-        {"role": m.role, "content": m.content}
-        for m in reversed(hist_r.scalars().all())
-    ]
+    history = [{"role": m.role, "content": m.content} for m in reversed(hist_r.scalars().all())]
 
     # Call agent LLM (same function used by Feishu/Slack/DingTalk channels)
     from app.api.feishu import _call_agent_llm
 
     try:
         reply = await _call_agent_llm(
-            db, agent_id, user_text, history=history,
+            db,
+            agent_id,
+            user_text,
+            history=history,
             user_id=platform_user.id,
-            session_source="telegram", session_channel="telegram",
+            session_id=str(session.id),
+            session_source="telegram",
+            session_channel="telegram",
         )
     except Exception as e:
         logger.error("[Telegram] LLM error for %s: %s", agent_id, e)
         reply = "Sorry, I encountered an error processing your message. Please try again."
 
-    # Save assistant reply
+    # Save assistant reply + update session timestamp in one commit
     db.add(
         ChatMessage(
             agent_id=agent_id,
@@ -462,6 +461,7 @@ async def telegram_webhook(
             user_id=platform_user.id,
         )
     )
+    session.last_message_at = datetime.now(timezone.utc)
     await db.commit()
 
     await _send_telegram_message(bot_token, chat_id, reply)

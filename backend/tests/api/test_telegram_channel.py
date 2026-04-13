@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 from types import SimpleNamespace
 from uuid import uuid4
@@ -50,10 +48,7 @@ class _FakeDB:
 
 
 def _build_request(body: bytes, headers: dict[str, str] | None = None) -> Request:
-    raw_headers = [
-        (key.lower().encode("utf-8"), value.encode("utf-8"))
-        for key, value in (headers or {}).items()
-    ]
+    raw_headers = [(key.lower().encode("utf-8"), value.encode("utf-8")) for key, value in (headers or {}).items()]
     scope = {
         "type": "http",
         "http_version": "1.1",
@@ -256,9 +251,7 @@ class TestTelegramWebhook:
 
         config = _make_config()
         body = json.dumps({"update_id": 1}).encode()
-        request = _build_request(
-            body, headers={"X-Telegram-Bot-Api-Secret-Token": "wrong-secret"}
-        )
+        request = _build_request(body, headers={"X-Telegram-Bot-Api-Secret-Token": "wrong-secret"})
         db = _FakeDB(config=config)
 
         response = await telegram_webhook(config.agent_id, request, db)
@@ -273,9 +266,7 @@ class TestTelegramWebhook:
         config = _make_config()
         correct_secret = _compute_webhook_secret(config.app_secret)
         body = json.dumps({"update_id": 999}).encode()
-        request = _build_request(
-            body, headers={"X-Telegram-Bot-Api-Secret-Token": correct_secret}
-        )
+        request = _build_request(body, headers={"X-Telegram-Bot-Api-Secret-Token": correct_secret})
 
         # Stub Redis dedup
         import app.api.telegram as tg_mod
@@ -283,8 +274,6 @@ class TestTelegramWebhook:
         class FakeRedis:
             async def set(self, key, value, ex=None, nx=False):
                 return True
-
-        monkeypatch.setattr(tg_mod, "get_redis", lambda: FakeRedis())
 
         async def fake_get_redis():
             return FakeRedis()
@@ -347,6 +336,169 @@ class TestTelegramWebhook:
         db = _FakeDB(config=config)
         result = await telegram_webhook(config.agent_id, request, db)
         assert result == {"ok": True}
+
+
+class TestBotMessageFiltering:
+    """Verify that messages from bots (is_bot=True) are silently dropped."""
+
+    @pytest.mark.asyncio
+    async def test_bot_sender_ignored(self, monkeypatch):
+        from app.api.telegram import telegram_webhook
+
+        monkeypatch.setenv("SECRET_KEY", "test-secret")
+
+        config = _make_config()
+        body = json.dumps(
+            {
+                "update_id": 555,
+                "message": {
+                    "text": "echo from bot",
+                    "chat": {"id": 100},
+                    "from": {"id": 999, "is_bot": True, "first_name": "MyBot"},
+                },
+            }
+        ).encode()
+        request = _build_request(body)
+
+        import app.api.telegram as tg_mod
+
+        class FakeRedis:
+            async def set(self, key, value, ex=None, nx=False):
+                return True
+
+        async def fake_get_redis():
+            return FakeRedis()
+
+        monkeypatch.setattr(tg_mod, "get_redis", fake_get_redis)
+
+        db = _FakeDB(config=config)
+        result = await telegram_webhook(config.agent_id, request, db)
+        assert result == {"ok": True}
+        # Crucially, no ChatMessage was added and no LLM was called
+        assert db.added == []
+
+    @pytest.mark.asyncio
+    async def test_human_sender_not_filtered(self, monkeypatch):
+        """A message with is_bot=False should NOT be dropped at the bot guard."""
+        from app.api.telegram import telegram_webhook
+
+        monkeypatch.setenv("SECRET_KEY", "test-secret")
+
+        config = _make_config()
+        body = json.dumps(
+            {
+                "update_id": 556,
+                "message": {
+                    "text": "hello",
+                    "chat": {"id": 100},
+                    "from": {"id": 42, "is_bot": False, "first_name": "Alice"},
+                },
+            }
+        ).encode()
+        request = _build_request(body)
+
+        import app.api.telegram as tg_mod
+
+        class FakeRedis:
+            async def set(self, key, value, ex=None, nx=False):
+                return True
+
+        async def fake_get_redis():
+            return FakeRedis()
+
+        monkeypatch.setattr(tg_mod, "get_redis", fake_get_redis)
+
+        db = _FakeDB(config=config)
+        # This will proceed past the is_bot guard and fail deeper
+        # (missing real DB) — that's fine, we just verify it DIDN'T
+        # return early at the bot guard.
+        with pytest.raises(Exception):
+            await telegram_webhook(config.agent_id, request, db)
+
+
+class TestSendTelegramMessageFallback:
+    """Verify Markdown → plain-text fallback on 400."""
+
+    @pytest.mark.asyncio
+    async def test_fallback_to_plain_text_on_400(self, monkeypatch):
+        import app.api.telegram as tg_mod
+
+        calls: list[dict] = []
+
+        class FakeResponse:
+            def __init__(self, status_code):
+                self.status_code = status_code
+                self.text = "ok"
+
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def post(self, url, json=None):
+                calls.append(json)
+                # First call (with Markdown) → 400; second (plain) → 200
+                if json and json.get("parse_mode"):
+                    return FakeResponse(400)
+                return FakeResponse(200)
+
+        monkeypatch.setattr(tg_mod.httpx, "AsyncClient", lambda timeout=None: FakeClient())
+
+        await tg_mod._send_telegram_message("tok", 123, "hello *world")
+
+        assert len(calls) == 2
+        assert calls[0]["parse_mode"] == "Markdown"
+        assert "parse_mode" not in calls[1]
+        assert calls[1]["text"] == "hello *world"
+
+    @pytest.mark.asyncio
+    async def test_no_retry_on_success(self, monkeypatch):
+        import app.api.telegram as tg_mod
+
+        calls: list[dict] = []
+
+        class FakeResponse:
+            status_code = 200
+
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def post(self, url, json=None):
+                calls.append(json)
+                return FakeResponse()
+
+        monkeypatch.setattr(tg_mod.httpx, "AsyncClient", lambda timeout=None: FakeClient())
+
+        await tg_mod._send_telegram_message("tok", 123, "clean text")
+
+        assert len(calls) == 1
+        assert calls[0]["parse_mode"] == "Markdown"
+
+    @pytest.mark.asyncio
+    async def test_network_error_does_not_raise(self, monkeypatch):
+        """httpx exceptions are caught and logged, not propagated."""
+        import app.api.telegram as tg_mod
+
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def post(self, url, json=None):
+                raise ConnectionError("DNS resolution failed")
+
+        monkeypatch.setattr(tg_mod.httpx, "AsyncClient", lambda timeout=None: FakeClient())
+
+        # Should not raise
+        await tg_mod._send_telegram_message("tok", 123, "test")
 
 
 # ─── Config Endpoint Tests ─────────────────────────────

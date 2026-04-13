@@ -35,9 +35,8 @@ MEMORY_CATEGORIES = frozenset(
 class PersistentMemoryStore:
     """Persistent semantic fact store backed by a per-agent SQLite database.
 
-    The store remains compatible with the previous `memory.json` format by:
-    1. importing legacy facts on first access
-    2. exporting the canonical fact list back to `memory.json`
+    The store keeps a one-way compatibility bridge for the previous
+    `memory.json` format by importing legacy facts on first access.
     """
 
     def __init__(self, *, data_root: Path) -> None:
@@ -78,12 +77,6 @@ class PersistentMemoryStore:
             )
             # Rebuild FTS index
             self._rebuild_fts(conn)
-            # Write legacy JSON INSIDE the connection context so both succeed or
-            # the DB commit is the canonical source (BP-E fix).
-            try:
-                self._write_legacy_json(agent_id, facts)
-            except Exception as json_err:
-                logger.warning("[MemoryStore] Legacy JSON write failed (DB committed): %s", json_err)
             conn.commit()
 
     def load_semantic_facts(self, agent_id: uuid.UUID, *, limit: int | None = None) -> list[dict]:
@@ -312,7 +305,6 @@ class PersistentMemoryStore:
         )
         self._rebuild_fts(conn)
         conn.commit()
-        self._write_legacy_json(agent_id, facts)
 
     def _rebuild_fts(self, conn: sqlite3.Connection) -> None:
         """Rebuild standalone FTS5 index from semantic_facts. No-op if FTS5 unavailable."""
@@ -326,30 +318,6 @@ class PersistentMemoryStore:
             )
         except (sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
             logger.warning("[MemoryStore] FTS5 rebuild failed: %s", exc)
-
-    def _write_legacy_json(self, agent_id: uuid.UUID, facts: list[dict]) -> None:
-        memory_file = self._legacy_json_path(agent_id)
-        memory_file.parent.mkdir(parents=True, exist_ok=True)
-        # Atomic write: write to temp file then rename to prevent corruption on crash
-        import os
-        import tempfile
-
-        tmp_fd, tmp_path = tempfile.mkstemp(dir=str(memory_file.parent), suffix=".tmp")
-        fd_closed = False
-        try:
-            os.write(tmp_fd, json.dumps(facts, ensure_ascii=False, indent=2).encode("utf-8"))
-            os.close(tmp_fd)
-            fd_closed = True
-            os.replace(tmp_path, str(memory_file))
-        except BaseException:
-            if not fd_closed:
-                os.close(tmp_fd)
-            try:
-                os.unlink(tmp_path)
-            except OSError as unlink_err:
-                logger.warning("[MemoryStore] Failed to clean up temp file %s: %s", tmp_path, unlink_err)
-            raise
-
 
 class FileBackedMemoryStore:
     """Build runtime memory context from the current Hive storage layout."""

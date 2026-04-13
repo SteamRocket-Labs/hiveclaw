@@ -44,6 +44,8 @@ def test_tool_runtime_trunk_keeps_metadata_and_execution_single_pathed() -> None
     task_eval_source = sources["backend/app/runtime/task_eval.py"]
     registry_source = sources["backend/app/tools/registry.py"]
     execution_entry_source = sources["backend/app/tools/execution_entry.py"]
+    governance_source = sources["backend/app/tools/governance.py"]
+    governance_resolver_source = sources["backend/app/tools/governance_resolver.py"]
     communication_handler_source = sources["backend/app/tools/handlers/communication.py"]
     filesystem_handler_source = sources["backend/app/tools/handlers/filesystem.py"]
     plaza_handler_source = sources["backend/app/tools/handlers/plaza.py"]
@@ -118,6 +120,9 @@ def test_tool_runtime_trunk_keeps_metadata_and_execution_single_pathed() -> None
     assert "channel_feishu_sender_open_id: ContextVar" in channel_delivery_domain_source
     assert "async def _send_channel_file(" in channel_delivery_domain_source
     assert "async def _send_channel_message(" in channel_delivery_domain_source
+    assert "async def _request_approval_compat(" not in governance_source
+    assert "result_check = await deps.request_approval(" in governance_source
+    assert "reason: str | None = None" in governance_resolver_source
 
     # direct fallback 只能兜未知工具 / MCP passthrough，不能再手写第一类工具分发。
     duplicate_direct_branches = [

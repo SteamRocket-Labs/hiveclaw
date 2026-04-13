@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
@@ -230,3 +231,51 @@ def test_team_memory_api_lists_tombstones_when_include_deleted_is_requested(monk
     assert listed.json()[0]["deleted"] is True
     assert listed.json()[0]["sync_token"]
     assert fetched.json()["deleted"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_agent_memory_reads_persistent_store_not_legacy_json(monkeypatch, tmp_path):
+    from app.api import memory as memory_api
+    from app.memory.store import PersistentMemoryStore
+
+    agent_id = uuid4()
+    user = SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4(), is_active=True)
+
+    async def fake_check_agent_access(_db, _current_user, _agent_id):
+        assert _current_user is user
+        assert _agent_id == agent_id
+
+    monkeypatch.setattr("app.core.permissions.check_agent_access", fake_check_agent_access)
+    monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    store = PersistentMemoryStore(data_root=tmp_path)
+    store.replace_semantic_facts(
+        agent_id,
+        [
+            {
+                "content": "User wants weekly check-ins",
+                "timestamp": "2026-04-14T09:00:00+08:00",
+                "category": "user",
+            }
+        ],
+    )
+
+    memory_file = tmp_path / str(agent_id) / "memory" / "memory.json"
+    assert not memory_file.exists()
+
+    payload = await memory_api.get_agent_memory(
+        agent_id=agent_id,
+        current_user=user,
+        db=SimpleNamespace(),
+    )
+
+    assert payload == {
+        "facts": [
+            {
+                "content": "User wants weekly check-ins",
+                "timestamp": "2026-04-14T09:00:00+08:00",
+                "category": "user",
+                "importance": 0.5,
+            }
+        ]
+    }

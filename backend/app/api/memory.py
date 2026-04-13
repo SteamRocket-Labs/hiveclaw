@@ -1,9 +1,8 @@
 """Memory configuration API — manage tenant memory/summarization settings."""
 
-import json
-import logging
 import uuid
 from dataclasses import asdict
+from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -14,11 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import get_current_admin, get_current_user
 from app.core.tenant_scope import resolve_tenant_scope
 from app.database import get_db
+from app.memory.store import PersistentMemoryStore
 from app.models.chat_session import ChatSession
 from app.models.tenant_setting import TenantSetting
 from app.models.user import User
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/enterprise/memory", tags=["memory"])
 
@@ -133,24 +131,13 @@ async def get_agent_memory(
 ):
     """View agent's structured memory facts (requires agent access)."""
     from app.core.permissions import check_agent_access
-    await check_agent_access(db, current_user, agent_id)
-
-    from pathlib import Path
     from app.config import get_settings
 
+    await check_agent_access(db, current_user, agent_id)
+
     settings = get_settings()
-    memory_file = Path(settings.AGENT_DATA_DIR) / str(agent_id) / "memory" / "memory.json"
-
-    if not memory_file.exists():
-        return {"facts": []}
-
-    try:
-        facts = json.loads(memory_file.read_text())
-        if not isinstance(facts, list):
-            facts = []
-        return {"facts": facts}
-    except (json.JSONDecodeError, OSError):
-        return {"facts": []}
+    store = PersistentMemoryStore(data_root=Path(settings.AGENT_DATA_DIR))
+    return {"facts": store.load_semantic_facts(agent_id)}
 
 
 @router.get("/sessions/{session_id}/summary")

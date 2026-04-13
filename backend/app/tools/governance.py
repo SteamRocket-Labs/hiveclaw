@@ -104,7 +104,7 @@ class GovernanceDependencies:
     resolve_security_zone: Callable[[uuid.UUID], Awaitable[str] | str]
     check_capability: Callable[[uuid.UUID, uuid.UUID, str], Awaitable[Any] | Any]
     write_audit_event: Callable[..., Awaitable[None] | None]
-    request_approval: Callable[..., Awaitable[dict] | dict]
+    request_approval: Callable[..., Awaitable[dict[str, Any]]]
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -118,30 +118,6 @@ async def _emit_event(event_callback: EventCallback | None, payload: dict[str, A
         maybe_result = event_callback(payload)
         if maybe_result is not None:
             await _maybe_await(maybe_result)
-
-
-async def _request_approval_compat(
-    deps: GovernanceDependencies,
-    *,
-    agent_id: uuid.UUID,
-    user_id: uuid.UUID,
-    tool_name: str,
-    arguments: dict[str, Any],
-    capability: str,
-    reason: str | None,
-) -> dict[str, Any]:
-    request_kwargs: dict[str, Any] = {
-        "agent_id": agent_id,
-        "user_id": user_id,
-        "tool_name": tool_name,
-        "arguments": arguments,
-        "capability": capability,
-    }
-    signature = inspect.signature(deps.request_approval)
-    accepts_var_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
-    if reason is not None and ("reason" in signature.parameters or accepts_var_kwargs):
-        request_kwargs["reason"] = reason
-    return await _maybe_await(deps.request_approval(**request_kwargs))
 
 
 def _detect_dangerous_command(tool_name: str, arguments: dict[str, Any]) -> str | None:
@@ -321,8 +297,7 @@ async def _run_governance_inner(
 
     if _escalated_capability:
         try:
-            result_check = await _request_approval_compat(
-                deps,
+            result_check = await deps.request_approval(
                 agent_id=context.agent_id,
                 user_id=context.user_id,
                 tool_name=context.tool_name,

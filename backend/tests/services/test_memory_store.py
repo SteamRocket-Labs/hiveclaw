@@ -69,6 +69,7 @@ def test_persistent_memory_store_round_trips_semantic_facts(tmp_path):
     ]
     assert facts[0]["subject"] == "preference:drink"
     assert (tmp_path / str(agent_id) / "memory" / "memory.sqlite3").exists()
+    assert not (tmp_path / str(agent_id) / "memory" / "memory.json").exists()
 
 
 def test_persistent_memory_store_imports_legacy_memory_json(tmp_path):

@@ -44,6 +44,8 @@ def test_prompt_memory_trunk_entrypoints_are_single_path() -> None:
     websocket_source = sources["backend/app/api/websocket.py"]
     kernel_contracts_source = sources["backend/app/kernel/contracts.py"]
     agent_context_source = sources["backend/app/services/agent_context.py"]
+    memory_api_source = sources["backend/app/api/memory.py"]
+    memory_store_source = sources["backend/app/memory/store.py"]
     prompt_builder_source = sources["backend/app/runtime/prompt_builder.py"]
 
     assert "if request.memory_context:" not in invoker_source
@@ -57,3 +59,6 @@ def test_prompt_memory_trunk_entrypoints_are_single_path() -> None:
     assert "include_focus=False" not in invoker_source
     assert "def _compute_system_prompt_budget(" not in prompt_builder_source
     assert "def _render_active_packs(" not in prompt_builder_source
+    assert '"memory.json"' not in memory_api_source
+    assert "PersistentMemoryStore" in memory_api_source
+    assert "def _write_legacy_json(" not in memory_store_source

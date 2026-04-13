@@ -5,7 +5,6 @@ import sys
 sys.path.insert(0, ".")
 
 from app.config import get_settings
-from app.core.security import hash_password
 from app.database import Base, engine, async_session
 # Import ALL models so Base.metadata.create_all can resolve all FKs
 from app.models.tenant import Tenant  # noqa: F401 — must be before user
@@ -17,7 +16,6 @@ from app.models.skill import Skill  # noqa: F401
 from app.models.tool import Tool  # noqa: F401
 from app.models.participant import Participant  # noqa: F401
 from app.models.channel_config import ChannelConfig  # noqa: F401
-from app.models.schedule import AgentSchedule  # noqa: F401
 from app.models.audit import AuditLog  # noqa: F401
 from app.models.plaza import PlazaPost, PlazaComment  # noqa: F401
 from app.models.activity_log import AgentActivityLog  # noqa: F401

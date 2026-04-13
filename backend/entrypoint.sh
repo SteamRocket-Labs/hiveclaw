@@ -33,7 +33,6 @@ async def main():
     import app.models.audit          # noqa
     import app.models.skill          # noqa
     import app.models.channel_config # noqa
-    import app.models.schedule       # noqa
     import app.models.plaza          # noqa
     import app.models.activity_log   # noqa
     import app.models.org            # noqa
@@ -136,13 +135,9 @@ echo "[entrypoint] Step 2: Running alembic migrations..."
 # Run all migrations to ensure database schema is up to date
 alembic upgrade head || echo "[entrypoint] WARNING: alembic migration failed (non-fatal, app may still work)"
 
-echo "[entrypoint] Step 2.5: Running data migrations..."
-# Safely migrate old AgentSchedules to the new AgentTriggers system
-python -m app.scripts.migrate_schedules_to_triggers
-
-# Step 2.7: Auto-authenticate lark-cli if Feishu app credentials are available
+# Step 2.5: Auto-authenticate lark-cli if Feishu app credentials are available
 if [ -n "$FEISHU_APP_ID" ] && [ -n "$FEISHU_APP_SECRET" ] && command -v lark-cli >/dev/null 2>&1; then
-    echo "[entrypoint] Step 2.7: Auto-authenticating lark-cli..."
+    echo "[entrypoint] Step 2.5: Auto-authenticating lark-cli..."
     lark-cli auth login --app-id "$FEISHU_APP_ID" --app-secret "$FEISHU_APP_SECRET" 2>&1 || echo "[entrypoint] WARNING: lark-cli auth login failed (non-fatal)"
     # Auto-enable CLI if credentials succeeded
     if lark-cli auth status >/dev/null 2>&1; then

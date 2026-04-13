@@ -153,7 +153,6 @@ async def lifespan(app: FastAPI):
         import app.models.audit          # noqa
         import app.models.skill          # noqa
         import app.models.channel_config  # noqa
-        import app.models.schedule       # noqa
         import app.models.plaza          # noqa
         import app.models.activity_log   # noqa
         import app.models.org            # noqa
@@ -185,6 +184,16 @@ async def lifespan(app: FastAPI):
         logger.info("[startup] Database tables ready")
     except Exception as e:
         logger.warning(f"[startup] create_all failed: {e}")
+
+    # One-time legacy schedule migration: promote AgentSchedule rows into trigger trunk
+    try:
+        from app.services.schedule_compat import migrate_all_legacy_schedules
+
+        migrated_schedules = await migrate_all_legacy_schedules()
+        if migrated_schedules:
+            logger.info("[startup] Migrated %d legacy schedule(s) into trigger trunk", migrated_schedules)
+    except Exception as e:
+        logger.warning(f"[startup] legacy schedule migration failed (non-fatal): {e}")
 
     # One-time workspace migration: update HEARTBEAT.md + remove deprecated skills
     try:

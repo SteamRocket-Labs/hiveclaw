@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
@@ -159,3 +160,91 @@ async def test_migrate_legacy_schedules_creates_schedule_surface_triggers():
     assert trigger.config["instruction"] == "生成日报"
     assert trigger.config["created_by"] == str(created_by)
     assert trigger.config["delivery_target_json"] == {"channel": "feishu"}
+
+
+@pytest.mark.asyncio
+async def test_migrate_all_legacy_schedules_batches_by_agent(monkeypatch):
+    from app.services import schedule_compat as compat_module
+
+    agent_a = uuid4()
+    agent_b = uuid4()
+    calls: list[uuid.UUID] = []
+
+    class _DistinctResult:
+        def __init__(self, values):
+            self._values = values
+
+        def scalars(self):
+            return self
+
+        def all(self):
+            return list(self._values)
+
+    class _FakeSessionCtx:
+        def __init__(self):
+            self.committed = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def execute(self, _stmt):
+            return _DistinctResult([agent_a, agent_b])
+
+        async def commit(self):
+            self.committed = True
+
+    async def fake_migrate_legacy_schedules(db, agent_id):
+        assert db is not None
+        calls.append(agent_id)
+        return 1 if agent_id == agent_a else 2
+
+    async def fake_table_exists(_db):
+        return True
+
+    session_ctx = _FakeSessionCtx()
+    monkeypatch.setattr(compat_module, "async_session", lambda: session_ctx)
+    monkeypatch.setattr(compat_module, "_legacy_schedule_table_exists", fake_table_exists)
+    monkeypatch.setattr(compat_module, "migrate_legacy_schedules", fake_migrate_legacy_schedules)
+
+    migrated = await compat_module.migrate_all_legacy_schedules()
+
+    assert migrated == 3
+    assert calls == [agent_a, agent_b]
+    assert session_ctx.committed is True
+
+
+@pytest.mark.asyncio
+async def test_migrate_all_legacy_schedules_noops_when_legacy_table_absent(monkeypatch):
+    from app.services import schedule_compat as compat_module
+
+    class _FakeSessionCtx:
+        def __init__(self):
+            self.committed = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def execute(self, _stmt):
+            raise AssertionError("execute() should not be called when legacy table is absent")
+
+        async def commit(self):
+            self.committed = True
+
+    session_ctx = _FakeSessionCtx()
+
+    async def fake_table_exists(_db):
+        return False
+
+    monkeypatch.setattr(compat_module, "async_session", lambda: session_ctx)
+    monkeypatch.setattr(compat_module, "_legacy_schedule_table_exists", fake_table_exists)
+
+    migrated = await compat_module.migrate_all_legacy_schedules()
+
+    assert migrated == 0
+    assert session_ctx.committed is False

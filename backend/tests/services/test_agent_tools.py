@@ -135,36 +135,6 @@ def test_get_combined_openai_tools_normalizes_collected_schema(monkeypatch):
         }
     ]
 
-
-def test_agent_tools_facade_get_combined_openai_tools_delegates(monkeypatch):
-    from app.services import agent_tools as agent_tools_module
-
-    expected = [{"type": "function", "function": {"name": "delegated", "description": "", "parameters": {"type": "object"}}}]
-    monkeypatch.setattr(agent_tools_module, "_get_combined_openai_tools", lambda: expected)
-
-    assert agent_tools_module.get_combined_openai_tools() == expected
-
-
-@pytest.mark.asyncio
-async def test_agent_tools_facade_get_agent_tools_for_llm_delegates(monkeypatch):
-    from app.services import agent_tools as agent_tools_module
-
-    expected = [{"type": "function", "function": {"name": "delegated", "description": "", "parameters": {"type": "object"}}}]
-
-    async def fake_get_agent_tools_for_llm(agent_id, core_only=False, requested_names=None):
-        assert core_only is True
-        assert requested_names == ["send_feishu_message"]
-        return expected
-
-    monkeypatch.setattr(agent_tools_module, "_get_agent_tools_for_llm", fake_get_agent_tools_for_llm)
-
-    assert await agent_tools_module.get_agent_tools_for_llm(
-        uuid4(),
-        core_only=True,
-        requested_names=["send_feishu_message"],
-    ) == expected
-
-
 @pytest.mark.asyncio
 async def test_get_agent_tools_for_llm_db_failure_falls_back_to_combined_tools(monkeypatch):
     from app.tools import surface as tool_surface_module

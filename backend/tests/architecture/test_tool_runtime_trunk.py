@@ -30,13 +30,12 @@ def test_tool_runtime_trunk_keeps_metadata_and_execution_single_pathed() -> None
         "backend/app/kernel/engine.py",
         "backend/app/runtime/invoker.py",
         "backend/app/services/agent_tool_domains/messaging.py",
-        "backend/app/services/agent_tools.py",
         "backend/app/services/heartbeat.py",
         "backend/app/tools/execution_entry.py",
     ]
     assert agent_tools_importers == []
+    assert "backend/app/services/agent_tools.py" not in sources
 
-    agent_tools_source = sources["backend/app/services/agent_tools.py"]
     invoker_source = sources["backend/app/runtime/invoker.py"]
     heartbeat_source = sources["backend/app/services/heartbeat.py"]
     messaging_source = sources["backend/app/services/agent_tool_domains/messaging.py"]
@@ -67,11 +66,6 @@ def test_tool_runtime_trunk_keeps_metadata_and_execution_single_pathed() -> None
     assert "async def execute_tool_inner(" in execution_entry_source
     assert "_TOOL_EXECUTION_REGISTRY = ToolExecutionRegistry()" in execution_entry_source
     assert "_TOOL_RUNTIME_SERVICE: ToolRuntimeService | None = None" in execution_entry_source
-    assert "return await _execute_tool_entry(" in agent_tools_source
-    assert "return await _execute_tool_direct_entry(" in agent_tools_source
-    assert "return await _execute_tool_inner_entry(" in agent_tools_source
-    assert "return _get_combined_openai_tools()" in agent_tools_source
-    assert "return await _get_agent_tools_for_llm(" in agent_tools_source
     assert "if request.tool_executor:" in invoker_source
     assert "return await execute_tool(tool_name, args, agent_id, creator_id)" in heartbeat_source
     assert "tool_result = await execute_tool(tool_name, tool_args, target_agent_id, owner_id)" in messaging_source
@@ -114,31 +108,11 @@ def test_tool_runtime_trunk_keeps_metadata_and_execution_single_pathed() -> None
     assert "from app.services.agent_tools import CORE_TOOL_NAMES" not in prompt_eval_source
     assert "from app.tools.surface import CORE_TOOL_NAMES" in task_eval_source
     assert "from app.services.agent_tools import CORE_TOOL_NAMES" not in task_eval_source
-    assert "channel_file_sender: ContextVar" not in agent_tools_source
-    assert "channel_web_agent_id: ContextVar" not in agent_tools_source
-    assert "channel_feishu_sender_open_id: ContextVar" not in agent_tools_source
-    assert "async def _send_channel_file(" not in agent_tools_source
-    assert "async def _send_channel_message(" not in agent_tools_source
-    assert "async def _provider_available_tools(" not in agent_tools_source
-    assert "async def _filter_unavailable_tools(" not in agent_tools_source
-    assert "def _get_always_core_tools(" not in agent_tools_source
-    assert "def _get_feishu_tools(" not in agent_tools_source
-    assert "def _get_hr_tools(" not in agent_tools_source
-    assert "def _filter_feishu_tools_for_access(" not in agent_tools_source
-    assert "async def _agent_has_feishu(" not in agent_tools_source
-    assert "async def _agent_has_feishu_office_access(" not in agent_tools_source
-    assert "async def _agent_has_feishu_cli_access(" not in agent_tools_source
     assert "from app.services.agent_tools import _agent_has_feishu" not in tools_api_source
     assert "from app.tools.surface import" in tools_api_source
     assert "_agent_has_feishu" in tools_api_source
     assert "_agent_has_feishu_cli_access" in tools_api_source
     assert "_agent_has_feishu_office_access" in tools_api_source
-    assert "_TOOL_EXECUTION_REGISTRY = ToolExecutionRegistry()" not in agent_tools_source
-    assert "_TOOL_RUNTIME_SERVICE: ToolRuntimeService | None = None" not in agent_tools_source
-    assert "# ─── Domain module re-exports" not in agent_tools_source
-    assert "from app.services.agent_tool_domains.workspace import (" not in agent_tools_source
-    assert "from app.services.agent_tool_domains.messaging import (" not in agent_tools_source
-    assert "from app.services.agent_tool_domains.web_mcp import (" not in agent_tools_source
     assert "channel_file_sender: ContextVar" in channel_delivery_domain_source
     assert "channel_web_agent_id: ContextVar" in channel_delivery_domain_source
     assert "channel_feishu_sender_open_id: ContextVar" in channel_delivery_domain_source
@@ -164,5 +138,6 @@ def test_tool_runtime_trunk_keeps_metadata_and_execution_single_pathed() -> None
         'if tool_name == "list_async_tasks":',
         'if tool_name == "get_current_time":',
     ]
+    execution_entry_source = sources["backend/app/tools/execution_entry.py"]
     for branch in duplicate_direct_branches:
-        assert branch not in agent_tools_source
+        assert branch not in execution_entry_source

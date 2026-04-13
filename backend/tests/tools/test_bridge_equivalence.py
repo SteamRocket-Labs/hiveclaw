@@ -5,7 +5,7 @@ from __future__ import annotations
 
 def test_combined_openai_tools_matches_canonical_surface():
     """The collected tool surface should expose the canonical builtin tool set."""
-    from app.services.agent_tools import get_combined_openai_tools
+    from app.tools.surface import get_combined_openai_tools
 
     combined = get_combined_openai_tools()
     combined_names = {t["function"]["name"] for t in combined}
@@ -91,7 +91,7 @@ def test_combined_openai_tools_matches_canonical_surface():
 
 def test_combined_has_no_duplicates():
     """No duplicate tool names in the combined list."""
-    from app.services.agent_tools import get_combined_openai_tools
+    from app.tools.surface import get_combined_openai_tools
 
     combined = get_combined_openai_tools()
     names = [t["function"]["name"] for t in combined]

@@ -6,7 +6,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select, func
+from sqlalchemy import or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import check_agent_access
@@ -135,12 +135,23 @@ async def list_sessions(
         return out
 
     else:  # scope == "mine"
+        # For agent creator/admin: also show inbound channel sessions
+        # (Telegram, Feishu, Slack, etc.) so they can monitor all conversations
+        _channel_types = ("feishu", "telegram", "slack", "discord", "dingtalk", "wecom", "teams", "wechat_personal")
+        if _is_admin_or_creator(current_user, agent):
+            ownership_filter = or_(
+                ChatSession.user_id == current_user.id,
+                ChatSession.source_channel.in_(_channel_types),
+            )
+        else:
+            ownership_filter = ChatSession.user_id == current_user.id
+
         result = await db.execute(
             select(ChatSession)
             .where(
                 ChatSession.agent_id == agent_id,
-                ChatSession.user_id == current_user.id,
-                ChatSession.source_channel.notin_(["agent", "trigger", "heartbeat"]),  # Exclude agent-to-agent, trigger, and heartbeat sessions
+                ownership_filter,
+                ChatSession.source_channel.notin_(["agent", "trigger", "heartbeat"]),
             )
             .order_by(ChatSession.last_message_at.desc().nulls_last(), ChatSession.created_at.desc())
         )

@@ -21,7 +21,7 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.database import async_session
 from app.memory.md_store import render_t3_lines
-from app.memory import FileBackedMemoryStore, MemoryAssembler, MemoryRetriever
+from app.memory import MemoryAssembler, MemoryRetriever
 from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
 from app.models.tenant_setting import TenantSetting
@@ -70,7 +70,8 @@ async def build_memory_context(
     """Build a self-consistent memory context for any runtime entrypoint.
 
     Uses the four-layer retrieval pipeline (working, episodic, semantic, external)
-    followed by the assembler. Falls back to FileBackedMemoryStore on failure.
+    followed by the assembler. Falls back to canonical summary + agent memory
+    assembly on failure.
     """
     retrieval_profile = budget_profile or compute_context_budget(
         context_window_tokens=context_window_tokens,
@@ -103,19 +104,16 @@ async def build_memory_context(
         if result:
             return result
     except Exception as exc:
-        logger.warning("Retrieval pipeline failed, falling back to FileBackedMemoryStore: %s", exc)
+        logger.warning("Retrieval pipeline failed, falling back to canonical memory assembly: %s", exc)
 
-    # Fallback: original FileBackedMemoryStore
-    store = FileBackedMemoryStore(
-        data_root=Path(get_settings().AGENT_DATA_DIR),
-        load_session_summary=_load_session_summary,
-        load_previous_session_summary=_load_previous_session_summary,
-        load_agent_memory=_load_agent_memory,
-    )
     try:
-        return await store.build_context(agent_id=agent_id, tenant_id=tenant_id, session_id=session_id)
+        return await _build_memory_context_fallback(
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+        )
     except Exception as exc:
-        logger.warning("FileBackedMemoryStore fallback failed, returning empty memory context: %s", exc)
+        logger.warning("Canonical memory fallback failed, returning empty memory context: %s", exc)
         return ""
 
 
@@ -123,6 +121,31 @@ async def _maybe_await(value):
     if inspect.isawaitable(value):
         return await value
     return value
+
+
+async def _build_memory_context_fallback(
+    *,
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    session_id: str | None,
+) -> str:
+    del tenant_id
+
+    parts: list[str] = []
+    if session_id:
+        current_summary = await _load_session_summary(agent_id, session_id)
+        if current_summary:
+            parts.append(f"[Previous conversation summary]\n{current_summary}")
+        else:
+            previous_summary = await _load_previous_session_summary(agent_id, session_id)
+            if previous_summary:
+                parts.append(f"[Previous conversation summary]\n{previous_summary}")
+
+    agent_memory = _load_agent_memory(agent_id)
+    if agent_memory:
+        parts.append(f"[Agent memory]\n{agent_memory}")
+
+    return "\n\n".join(parts)
 
 
 def compute_history_limit(

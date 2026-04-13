@@ -6,9 +6,10 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 from app.services.web_session_contract import apply_web_session_contract
 
@@ -16,6 +17,29 @@ from app.services.web_session_contract import apply_web_session_contract
 def session_conversation_id(session: Any) -> str:
     """Return the canonical persisted conversation_id for a session."""
     return str(getattr(session, "id"))
+
+
+def _legacy_gateway_conversation_ids(source_agent_id: uuid.UUID, target_agent_id: uuid.UUID) -> list[str]:
+    source = str(source_agent_id)
+    target = str(target_agent_id)
+    return [
+        f"gw_agent_{source}_{target}",
+        f"gw_agent_{target}_{source}",
+    ]
+
+
+async def _normalize_legacy_agent_pair_transcripts(
+    db: AsyncSession,
+    *,
+    source_agent_id: uuid.UUID,
+    target_agent_id: uuid.UUID,
+    conversation_id: str,
+) -> None:
+    await db.execute(
+        update(ChatMessage)
+        .where(ChatMessage.conversation_id.in_(_legacy_gateway_conversation_ids(source_agent_id, target_agent_id)))
+        .values(conversation_id=conversation_id)
+    )
 
 
 async def create_chat_session(
@@ -73,9 +97,15 @@ async def find_or_create_agent_pair_session(
     )
     session = result.scalar_one_or_none()
     if session is not None:
+        await _normalize_legacy_agent_pair_transcripts(
+            db,
+            source_agent_id=source_agent_id,
+            target_agent_id=target_agent_id,
+            conversation_id=session_conversation_id(session),
+        )
         return session
 
-    return await create_chat_session(
+    session = await create_chat_session(
         db,
         agent_id=session_agent_id,
         user_id=owner_user_id,
@@ -84,6 +114,13 @@ async def find_or_create_agent_pair_session(
         participant_id=source_participant_id,
         peer_agent_id=session_peer_id,
     )
+    await _normalize_legacy_agent_pair_transcripts(
+        db,
+        source_agent_id=source_agent_id,
+        target_agent_id=target_agent_id,
+        conversation_id=session_conversation_id(session),
+    )
+    return session
 
 
 async def find_or_create_web_chat_session(

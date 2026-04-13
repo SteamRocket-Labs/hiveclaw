@@ -22,7 +22,6 @@ from app.schemas.schemas import ChannelConfigCreate, ChannelConfigOut, TokenResp
 from app.services.auth_provider import feishu_auth_provider
 from app.services.channel_user_service import channel_user_service
 from app.services.feishu_identity_maintenance import (
-    build_feishu_session_lookup_ids,
     find_or_create_feishu_chat_session,
 )
 from app.services.feishu_contacts_cache import upsert_feishu_contact_cache
@@ -919,7 +918,6 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             # Load recent conversation history via session (session UUID may already exist)
             from app.models.audit import ChatMessage
             from app.models.agent import Agent as AgentModel
-            from app.models.chat_session import ChatSession
 
             agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
             agent_obj = agent_r.scalar_one_or_none()
@@ -934,20 +932,6 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             sender_name = sender_profile.get("name", "")
             sender_user_id_feishu = sender_profile.get("user_id", "") or sender_user_id_from_event
 
-            if chat_type == "group" and chat_id:
-                conv_id, legacy_conv_ids = build_feishu_session_lookup_ids(
-                    provider_user_id=sender_user_id_feishu,
-                    provider_open_id=sender_open_id,
-                    chat_type="group",
-                    chat_id=chat_id,
-                )
-            else:
-                conv_id, legacy_conv_ids = build_feishu_session_lookup_ids(
-                    provider_user_id=sender_user_id_feishu,
-                    provider_open_id=sender_open_id,
-                    chat_type=chat_type,
-                    chat_id=chat_id,
-                )
             delivery_target = {
                 "channel": "feishu",
                 "receive_id": chat_id if chat_type == "group" and chat_id else sender_open_id,
@@ -961,28 +945,6 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
 
             from app.services.memory_service import compute_history_limit_for_agent
             _hist_limit = await compute_history_limit_for_agent(agent_id)
-
-            # Pre-resolve session so history lookup uses the UUID  (session created later if new)
-            pre_session_conv_ids = [conv_id, *legacy_conv_ids]
-            _pre_sess_r = await db.execute(
-                select(ChatSession).where(
-                    ChatSession.agent_id == agent_id,
-                    ChatSession.external_conv_id.in_(pre_session_conv_ids),
-                )
-            )
-            _pre_sessions = list(_pre_sess_r.scalars().all())
-            _pre_sess = next((sess for sess in _pre_sessions if sess.external_conv_id == conv_id), None)
-            if _pre_sess is None and _pre_sessions:
-                _pre_sess = _pre_sessions[0]
-            _history_conv_id = str(_pre_sess.id) if _pre_sess else conv_id
-            history_result = await db.execute(
-                select(ChatMessage)
-                .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == _history_conv_id)
-                .order_by(ChatMessage.created_at.desc())
-                .limit(_hist_limit)
-            )
-            history_msgs = history_result.scalars().all()
-            history = [{"role": m.role, "content": m.content} for m in reversed(history_msgs)]
 
             # --- Resolve Feishu sender identity through the provider-driven identity layer ---
             resolved_user = None
@@ -1005,7 +967,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             except Exception as _ei_err:
                 logger.debug(f"[Feishu] Failed to set execution identity: {_ei_err}")
 
-            # ── Find-or-create a ChatSession via external_conv_id (DB-based, no cache needed) ──
+            # Resolve the canonical session first so history always hangs off the persisted session UUID.
             from datetime import datetime as _dt, timezone as _tz
 
             _sess = await find_or_create_feishu_chat_session(
@@ -1022,6 +984,15 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             session_conv_id = str(_sess.id)
             delivery_target["session_id"] = session_conv_id
             _sess.delivery_target_json = delivery_target
+
+            history_result = await db.execute(
+                select(ChatMessage)
+                .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == session_conv_id)
+                .order_by(ChatMessage.created_at.desc())
+                .limit(_hist_limit)
+            )
+            history_msgs = history_result.scalars().all()
+            history = [{"role": m.role, "content": m.content} for m in reversed(history_msgs)]
 
             # Save user message
             db.add(
@@ -1690,13 +1661,6 @@ async def _handle_feishu_file(
         except Exception as _ei_err:
             logger.debug(f"[Feishu] Failed to set execution identity: {_ei_err}")
 
-        # Conv ID — prefer user_id for session continuity
-        conv_id, legacy_conv_ids = build_feishu_session_lookup_ids(
-            provider_user_id=sender_user_id_feishu,
-            provider_open_id=sender_open_id,
-            chat_type=chat_type,
-            chat_id=chat_id,
-        )
         delivery_target = {
             "channel": "feishu",
             "receive_id": chat_id if chat_type == "group" and chat_id else sender_open_id,

@@ -98,6 +98,12 @@ async def test_process_feishu_event_text_binds_execution_identity_and_session_co
         "app.services.channel_user_service.channel_user_service.resolve_or_create_feishu_user",
         fake_resolve_feishu_user,
     )
+    monkeypatch.setattr(
+        feishu_api,
+        "build_feishu_session_lookup_ids",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("alias lookup should be handled by identity helper")),
+        raising=False,
+    )
     monkeypatch.setattr("app.services.memory_service.compute_history_limit_for_agent", fake_compute_history_limit_for_agent)
     monkeypatch.setattr(feishu_api, "find_or_create_feishu_chat_session", fake_find_or_create_feishu_chat_session)
     monkeypatch.setattr(feishu_api, "_call_agent_llm", fake_call_agent_llm)

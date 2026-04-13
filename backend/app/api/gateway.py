@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from loguru import logger
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db, async_session
@@ -30,45 +30,6 @@ router = APIRouter(prefix="/gateway", tags=["gateway"])
 def _hash_key(key: str) -> str:
     """Hash an API key for storage."""
     return hashlib.sha256(key.encode()).hexdigest()
-
-
-def _legacy_gateway_conversation_ids(source_agent_id: str | uuid.UUID, target_agent_id: str | uuid.UUID) -> list[str]:
-    source = str(source_agent_id)
-    target = str(target_agent_id)
-    return [
-        f"gw_agent_{source}_{target}",
-        f"gw_agent_{target}_{source}",
-    ]
-
-
-async def _find_or_create_gateway_agent_pair_session(
-    db: AsyncSession,
-    *,
-    source_agent_id: uuid.UUID,
-    source_agent_name: str,
-    target_agent_id: uuid.UUID,
-    target_agent_name: str,
-    owner_user_id: uuid.UUID,
-):
-    session = await find_or_create_agent_pair_session(
-        db,
-        source_agent_id=source_agent_id,
-        target_agent_id=target_agent_id,
-        owner_user_id=owner_user_id,
-        source_name=source_agent_name,
-        target_name=target_agent_name,
-    )
-    conv_id = session_conversation_id(session)
-
-    from app.models.audit import ChatMessage
-
-    await db.execute(
-        update(ChatMessage)
-        .where(ChatMessage.conversation_id.in_(_legacy_gateway_conversation_ids(source_agent_id, target_agent_id)))
-        .values(conversation_id=conv_id)
-    )
-
-    return session, conv_id
 
 
 async def _get_agent_by_key(api_key: str, db: AsyncSession) -> Agent:
@@ -279,14 +240,15 @@ async def report_result(
             sender_result = await reply_db.execute(select(Agent).where(Agent.id == msg.sender_agent_id))
             sender_agent = sender_result.scalar_one_or_none()
             owner_user_id = agent.creator_id or getattr(sender_agent, "creator_id", None) or msg.sender_agent_id
-            _, conv_id = await _find_or_create_gateway_agent_pair_session(
+            session = await find_or_create_agent_pair_session(
                 reply_db,
                 source_agent_id=msg.sender_agent_id,
-                source_agent_name=getattr(sender_agent, "name", "Agent"),
                 target_agent_id=agent.id,
-                target_agent_name=agent.name,
                 owner_user_id=owner_user_id,
+                source_name=getattr(sender_agent, "name", "Agent"),
+                target_name=agent.name,
             )
+            conv_id = session_conversation_id(session)
             gw_reply = GatewayMessage(
                 agent_id=msg.sender_agent_id,
                 sender_agent_id=agent.id,
@@ -359,14 +321,15 @@ async def _send_to_agent_background(
             source_agent_uuid = uuid.UUID(str(source_agent_id))
             target_agent_uuid = uuid.UUID(str(target_agent_id))
             target_creator_uuid = uuid.UUID(str(target_creator_id))
-            session, conv_id = await _find_or_create_gateway_agent_pair_session(
+            session = await find_or_create_agent_pair_session(
                 db,
                 source_agent_id=source_agent_uuid,
-                source_agent_name=source_agent_name,
                 target_agent_id=target_agent_uuid,
-                target_agent_name=target_agent_name,
                 owner_user_id=target_creator_uuid,
+                source_name=source_agent_name,
+                target_name=target_agent_name,
             )
+            conv_id = session_conversation_id(session)
             session_agent_id = session.agent_id
             session.last_message_at = datetime.now(timezone.utc)
 
@@ -486,14 +449,15 @@ async def send_message(
 
     if target_agent and (not channel_hint or channel_hint == "agent"):
         owner_user_id = target_agent.creator_id or agent.creator_id or agent.id
-        chat_session, conv_id = await _find_or_create_gateway_agent_pair_session(
+        chat_session = await find_or_create_agent_pair_session(
             db,
             source_agent_id=agent.id,
-            source_agent_name=agent.name,
             target_agent_id=target_agent.id,
-            target_agent_name=target_agent.name,
             owner_user_id=owner_user_id,
+            source_name=agent.name,
+            target_name=target_agent.name,
         )
+        conv_id = session_conversation_id(chat_session)
         chat_session.last_message_at = datetime.now(timezone.utc)
 
         if getattr(target_agent, 'agent_type', None) == 'openclaw':

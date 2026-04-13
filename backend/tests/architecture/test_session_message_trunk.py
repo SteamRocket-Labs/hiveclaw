@@ -19,7 +19,10 @@ def test_core_session_entrypoints_use_session_service() -> None:
     }
 
     channel_session_source = (project_root / "backend/app/services/channel_session.py").read_text(encoding="utf-8")
+    gateway_source = (project_root / "backend/app/api/gateway.py").read_text(encoding="utf-8")
     assert "legacy_external_conv_ids" not in channel_session_source
+    assert "gw_agent_" not in gateway_source
+    assert "_find_or_create_gateway_agent_pair_session(" not in gateway_source
 
     for relative_path, required_calls in expectations.items():
         source = (project_root / relative_path).read_text(encoding="utf-8")

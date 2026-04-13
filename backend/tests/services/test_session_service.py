@@ -20,8 +20,12 @@ class _SequenceDB:
         self._results = list(results)
         self.added = []
         self.flushes = 0
+        self.statements = []
 
-    async def execute(self, _stmt):
+    async def execute(self, stmt):
+        self.statements.append(stmt)
+        if getattr(stmt, "is_dml", False):
+            return _ScalarResult(None)
         if not self._results:
             raise AssertionError("Unexpected execute() call")
         return _ScalarResult(self._results.pop(0))
@@ -118,6 +122,34 @@ async def test_find_or_create_agent_pair_session_creates_ordered_session():
     assert session.user_id == owner_user_id
     assert session.participant_id == participant_id
     assert session.source_channel == "agent"
+
+
+@pytest.mark.asyncio
+async def test_find_or_create_agent_pair_session_normalizes_legacy_gateway_transcripts():
+    from app.services.session_service import find_or_create_agent_pair_session
+
+    source_agent_id = uuid4()
+    target_agent_id = uuid4()
+    existing = SimpleNamespace(id=uuid4(), agent_id=min(source_agent_id, target_agent_id, key=str))
+    db = _SequenceDB([existing])
+
+    session = await find_or_create_agent_pair_session(
+        db,
+        source_agent_id=source_agent_id,
+        target_agent_id=target_agent_id,
+        owner_user_id=uuid4(),
+        source_name="Source",
+        target_name="Target",
+    )
+
+    assert session is existing
+    assert len(db.statements) == 2
+    params = db.statements[1].compile().params
+    assert params["conversation_id"] == str(existing.id)
+    assert set(params["conversation_id_1"]) == {
+        f"gw_agent_{source_agent_id}_{target_agent_id}",
+        f"gw_agent_{target_agent_id}_{source_agent_id}",
+    }
 
 
 @pytest.mark.asyncio

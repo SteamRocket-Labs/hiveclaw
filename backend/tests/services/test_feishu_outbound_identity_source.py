@@ -26,3 +26,5 @@ def test_feishu_api_source_routes_session_alias_logic_through_identity_helper():
 
     assert "find_or_create_feishu_chat_session" in source
     assert "legacy_external_conv_ids=" not in source
+    assert "build_feishu_session_lookup_ids" not in source
+    assert "pre_session_conv_ids" not in source

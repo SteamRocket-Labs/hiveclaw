@@ -46,6 +46,7 @@ def test_prompt_memory_trunk_entrypoints_are_single_path() -> None:
     agent_context_source = sources["backend/app/services/agent_context.py"]
     memory_api_source = sources["backend/app/api/memory.py"]
     memory_store_source = sources["backend/app/memory/store.py"]
+    memory_service_source = sources["backend/app/services/memory_service.py"]
     prompt_builder_source = sources["backend/app/runtime/prompt_builder.py"]
 
     assert "if request.memory_context:" not in invoker_source
@@ -62,3 +63,4 @@ def test_prompt_memory_trunk_entrypoints_are_single_path() -> None:
     assert '"memory.json"' not in memory_api_source
     assert "PersistentMemoryStore" in memory_api_source
     assert "def _write_legacy_json(" not in memory_store_source
+    assert "FileBackedMemoryStore" not in memory_service_source

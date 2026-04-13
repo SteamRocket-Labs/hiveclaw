@@ -254,3 +254,37 @@ async def test_build_memory_context_uses_adaptive_budget_profile(monkeypatch, tm
     assert captured["budget_chars"] >= 24000
     assert captured["retrieval_profile"].semantic_limit >= 12
     assert captured["retrieval_profile"].rerank_max_select >= 8
+
+
+@pytest.mark.asyncio
+async def test_build_memory_context_retrieval_failure_uses_internal_fallback_without_legacy_store(monkeypatch):
+    from app.services import memory_service
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    fake_session = _FakeSession(["current summary"])
+
+    class _BrokenRetriever:
+        async def retrieve(self, *_args, **_kwargs):
+            raise RuntimeError("retrieval unavailable")
+
+    monkeypatch.setattr(
+        memory_service,
+        "MemoryRetriever",
+        lambda **_kwargs: _BrokenRetriever(),
+    )
+    monkeypatch.setattr("app.services.memory_service.async_session", lambda: fake_session)
+    monkeypatch.setattr("app.services.memory_service._load_agent_memory", lambda _agent_id: "- keeps durable facts")
+    monkeypatch.setattr(
+        memory_service,
+        "FileBackedMemoryStore",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("legacy store should not be constructed")),
+        raising=False,
+    )
+
+    context = await memory_service.build_memory_context(agent_id, tenant_id, session_id=str(uuid4()))
+
+    assert context == (
+        "[Previous conversation summary]\ncurrent summary\n\n"
+        "[Agent memory]\n- keeps durable facts"
+    )

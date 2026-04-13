@@ -60,6 +60,12 @@ def upgrade() -> None:
                     AND k.provider_open_id IS NOT NULL
                     AND k.provider_open_id = ei.provider_open_id
               )
+              OR EXISTS (
+                  SELECT 1 FROM external_identities k
+                  WHERE k.provider_id = keeper.id
+                    AND k.provider_union_id IS NOT NULL
+                    AND k.provider_union_id = ei.provider_union_id
+              )
           )
     """)
 

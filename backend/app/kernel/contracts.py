@@ -40,7 +40,6 @@ class InvocationRequest:
     on_thinking: ThinkingCallback | None = None
     on_event: EventCallback | None = None
     supports_vision: bool = False
-    memory_context: str = ""
     memory_session_id: str | None = None
     memory_messages: list[dict] | None = None
     session_context: SessionContext | None = None

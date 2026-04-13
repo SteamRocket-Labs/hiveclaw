@@ -170,9 +170,13 @@ def build_dynamic_prompt_suffix(
         parts.append(packs_section)
 
     if retrieval_context:
-        knowledge = build_knowledge_section(retrieval_context, budget_chars=retrieval_budget)
-        if knowledge:
-            parts.append(knowledge)
+        stripped_retrieval = retrieval_context.lstrip()
+        if stripped_retrieval.startswith("## "):
+            parts.append(retrieval_context.strip())
+        else:
+            knowledge = build_knowledge_section(retrieval_context, budget_chars=retrieval_budget)
+            if knowledge:
+                parts.append(knowledge)
 
     if budget_profile and not active_packs and budget_profile.task_profile.suggested_pack_names:
         hint_lines = [

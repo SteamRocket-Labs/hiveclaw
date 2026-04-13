@@ -83,7 +83,11 @@ async def test_resolve_retrieval_context_routes_last_user_query(monkeypatch):
     )
 
     result = await invoker._resolve_retrieval_context(request, uuid4())
-    assert result == "RUNTIME_HINTS\n\nMEMORY_RECALL\n\nKNOWLEDGE_RECALL"
+    assert result.startswith("## Runtime Context\nRUNTIME_HINTS")
+    assert "## Relevant Memory Recall\nMEMORY_RECALL" in result
+    assert "## Knowledge" in result
+    assert "KNOWLEDGE_RECALL" in result
+    assert result.index("## Runtime Context") < result.index("## Relevant Memory Recall") < result.index("## Knowledge")
     assert calls == [
         ("runtime", None),
         ("memory", "latest question"),

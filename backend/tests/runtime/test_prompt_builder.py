@@ -183,3 +183,26 @@ def test_dynamic_suffix_trims_large_retrieval_but_keeps_suffix():
 
     assert "FINAL_SUFFIX" in suffix
     assert len(suffix) < 3200
+
+
+def test_dynamic_suffix_preserves_presectioned_retrieval_context_without_rewrapping():
+    from app.runtime.prompt_builder import build_dynamic_prompt_suffix
+
+    retrieval = (
+        "## Runtime Context\n"
+        "RUNTIME_HINTS\n\n"
+        "## Relevant Memory Recall\n"
+        "MEMORY_RECALL\n\n"
+        "## Knowledge\n"
+        "KNOWLEDGE"
+    )
+
+    suffix = build_dynamic_prompt_suffix(
+        retrieval_context=retrieval,
+        system_prompt_suffix="FINAL_SUFFIX",
+    )
+
+    assert suffix.count("## Knowledge") == 1
+    assert "## Runtime Context" in suffix
+    assert "## Relevant Memory Recall" in suffix
+    assert "FINAL_SUFFIX" in suffix

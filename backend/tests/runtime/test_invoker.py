@@ -31,6 +31,14 @@ class _FakeScalarResult:
         return self._value
 
 
+def test_runtime_invocation_contract_no_longer_exposes_manual_memory_context() -> None:
+    from app.kernel.contracts import InvocationRequest
+    from app.runtime.invoker import AgentInvocationRequest
+
+    assert "memory_context" not in AgentInvocationRequest.__dataclass_fields__
+    assert "memory_context" not in InvocationRequest.__dataclass_fields__
+
+
 @pytest.mark.asyncio
 async def test_build_system_prompt_uses_static_agent_context_only(monkeypatch):
     from app.runtime.invoker import AgentInvocationRequest, _build_system_prompt
@@ -94,7 +102,11 @@ async def test_resolve_retrieval_context_appends_runtime_hints(monkeypatch):
 
     result = await _resolve_retrieval_context(request, tenant_id=uuid4())
 
-    assert result == "RUNTIME_HINTS\n\nMEMORY_RECALL\n\nKNOWLEDGE"
+    assert result.startswith("## Runtime Context\nRUNTIME_HINTS")
+    assert "## Relevant Memory Recall\nMEMORY_RECALL" in result
+    assert "## Knowledge" in result
+    assert "KNOWLEDGE" in result
+    assert result.index("## Runtime Context") < result.index("## Relevant Memory Recall") < result.index("## Knowledge")
 
 
 @pytest.mark.asyncio
@@ -530,6 +542,7 @@ async def test_invoke_agent_filters_allowed_tools_from_runtime_surface(monkeypat
 async def test_invoke_agent_composes_system_prompt_once(monkeypatch):
     from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 
+    tenant_id = uuid4()
     model = SimpleNamespace(
         provider="openai",
         model="gpt-4.1",
@@ -553,10 +566,29 @@ async def test_invoke_agent_composes_system_prompt_once(monkeypatch):
     async def fake_fetch_relevant_knowledge(*args, **kwargs):
         return "KB_CONTEXT"
 
+    async def fake_resolve_runtime_config(_agent_id):
+        return SimpleNamespace(tenant_id=tenant_id, max_tool_rounds=50, quota_message=None)
+
+    async def fake_build_memory_snapshot(_agent_id, _tenant_id, session_id=None):
+        del _agent_id, _tenant_id, session_id
+        return "MEMORY_CONTEXT"
+
+    async def fake_build_memory_context(*args, **kwargs):
+        del args, kwargs
+        return ""
+
+    async def fake_build_agent_runtime_context(*args, **kwargs):
+        del args, kwargs
+        return ""
+
     async def fake_compress(messages, **kwargs):
         return messages
 
+    monkeypatch.setattr("app.runtime.invoker._resolve_runtime_config", fake_resolve_runtime_config)
     monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
+    monkeypatch.setattr("app.runtime.invoker.build_memory_snapshot", fake_build_memory_snapshot)
+    monkeypatch.setattr("app.runtime.invoker.build_memory_context", fake_build_memory_context)
+    monkeypatch.setattr("app.runtime.invoker.build_agent_runtime_context", fake_build_agent_runtime_context)
     monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
     monkeypatch.setattr("app.runtime.invoker.maybe_compress_messages", fake_compress)
     monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", lambda *args, **kwargs: [])
@@ -572,7 +604,6 @@ async def test_invoke_agent_composes_system_prompt_once(monkeypatch):
             role_description="Policy analyst",
             agent_id=uuid4(),
             user_id=uuid4(),
-            memory_context="MEMORY_CONTEXT",
         )
     )
 
@@ -946,7 +977,6 @@ async def test_invoke_agent_loads_and_persists_runtime_memory(monkeypatch):
             role_description="Policy analyst",
             agent_id=agent_id,
             user_id=user_id,
-            memory_context="MANUAL_MEMORY",
         )
     )
 
@@ -955,7 +985,7 @@ async def test_invoke_agent_loads_and_persists_runtime_memory(monkeypatch):
     _sys_prompt = fake_client.calls[0]["messages"][0].content
     assert "BASE_PROMPT" in _sys_prompt
     assert "RUNTIME_MEMORY" in _sys_prompt
-    assert "MANUAL_MEMORY" in _sys_prompt
+    assert "MANUAL_MEMORY" not in _sys_prompt
     assert "## System" in _sys_prompt
     assert captured["persisted"] == {
         "agent_id": agent_id,

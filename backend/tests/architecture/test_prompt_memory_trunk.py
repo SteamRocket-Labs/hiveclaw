@@ -39,3 +39,13 @@ def test_prompt_memory_trunk_entrypoints_are_single_path() -> None:
         "backend/app/runtime/prompt_builder.py",
     ]
     assert on_conversation_start_refs == []
+
+    invoker_source = sources["backend/app/runtime/invoker.py"]
+    websocket_source = sources["backend/app/api/websocket.py"]
+    kernel_contracts_source = sources["backend/app/kernel/contracts.py"]
+
+    assert "if request.memory_context:" not in invoker_source
+    assert "memory_context=request.memory_context" not in invoker_source
+    assert 'memory_context: str = ""' not in websocket_source
+    assert "memory_context=memory_context" not in websocket_source
+    assert 'memory_context: str = ""' not in kernel_contracts_source

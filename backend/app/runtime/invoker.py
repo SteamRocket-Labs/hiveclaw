@@ -78,7 +78,6 @@ class AgentInvocationRequest:
     on_thinking: ThinkingCallback | None = None
     on_event: EventCallback | None = None
     supports_vision: bool = False
-    memory_context: str = ""
     memory_session_id: str | None = None
     memory_messages: list[dict] | None = None
     session_context: SessionContext | None = None
@@ -254,6 +253,13 @@ def _resolve_context_budget(request: AgentInvocationRequest) -> ContextBudget:
     return budget_profile
 
 
+def _render_retrieval_section(title: str, content: str) -> str:
+    text = content.strip()
+    if not text:
+        return ""
+    return f"## {title}\n{text}"
+
+
 async def _resolve_memory_context(
     request: AgentInvocationRequest,
     tenant_id: uuid.UUID | None,
@@ -279,9 +285,6 @@ async def _resolve_memory_context(
         if runtime_memory_context:
             parts.append(runtime_memory_context)
 
-    if request.memory_context:
-        parts.append(request.memory_context)
-
     return "\n\n".join(parts)
 
 
@@ -306,9 +309,11 @@ async def _resolve_retrieval_context(
         _runtime_sig = inspect.signature(build_agent_runtime_context).parameters
         if "budget_profile" in _runtime_sig:
             _runtime_kwargs["budget_profile"] = budget_profile
+        from app.runtime.prompt_sections import build_knowledge_section
+
         runtime_context = await build_agent_runtime_context(request.agent_id, **_runtime_kwargs)
         if runtime_context:
-            parts.append(runtime_context)
+            parts.append(_render_retrieval_section("Runtime Context", runtime_context))
 
         _memory_kwargs = {
             "session_id": session_id,
@@ -321,7 +326,21 @@ async def _resolve_retrieval_context(
             _memory_kwargs["budget_profile"] = budget_profile
         memory_recall = await build_memory_context(request.agent_id, tenant_id, **_memory_kwargs)
         if memory_recall:
-            parts.append(memory_recall)
+            parts.append(_render_retrieval_section("Relevant Memory Recall", memory_recall))
+
+        _knowledge_kwargs = {}
+        _knowledge_sig = inspect.signature(fetch_relevant_knowledge).parameters
+        if "max_tokens" in _knowledge_sig:
+            _knowledge_kwargs["max_tokens"] = max(500, budget_profile.knowledge_budget_chars // 3)
+        if "max_chars" in _knowledge_sig:
+            _knowledge_kwargs["max_chars"] = budget_profile.knowledge_budget_chars
+        if "limit" in _knowledge_sig:
+            _knowledge_kwargs["limit"] = budget_profile.external_limit
+        knowledge = await _maybe_await(fetch_relevant_knowledge(query, tenant_id, **_knowledge_kwargs))
+        if knowledge:
+            parts.append(build_knowledge_section(knowledge, budget_chars=budget_profile.knowledge_budget_chars))
+
+        return "\n\n".join(parts)
 
     _knowledge_kwargs = {}
     _knowledge_sig = inspect.signature(fetch_relevant_knowledge).parameters
@@ -767,7 +786,6 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
         on_thinking=request.on_thinking,
         on_event=request.on_event,
         supports_vision=effective_supports_vision,
-        memory_context=request.memory_context,
         memory_session_id=request.memory_session_id,
         memory_messages=request.memory_messages,
         session_context=request.session_context,

@@ -47,7 +47,6 @@ async def test_call_llm_delegates_to_runtime_invoker(monkeypatch):
         supports_vision=True,
         session_id="session-1",
         memory_messages=[{"role": "user", "content": "hello"}],
-        memory_context="MEM",
         cancel_event=cancel_event,
         fallback_model=fallback_model,
     )
@@ -59,7 +58,7 @@ async def test_call_llm_delegates_to_runtime_invoker(monkeypatch):
     assert captured["request"].supports_vision is True
     assert captured["request"].memory_session_id == "session-1"
     assert captured["request"].memory_messages == [{"role": "user", "content": "hello"}]
-    assert captured["request"].memory_context == "MEM"
+    assert not hasattr(captured["request"], "memory_context")
     assert captured["request"].session_context is not None
     assert captured["request"].session_context.session_id == "session-1"
     assert captured["request"].session_context.source == "web"

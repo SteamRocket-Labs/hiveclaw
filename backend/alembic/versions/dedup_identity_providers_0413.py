@@ -14,8 +14,42 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Step 1: Reassign external_identities from duplicate providers to the keeper
-    # (keeper = the oldest row per provider_type+tenant_id group)
+    # Keeper = oldest provider per (provider_type, tenant_id) group.
+    # Duplicate = any other provider in the same group.
+
+    # Step 1: Delete external_identities on DUPLICATE providers that would
+    # conflict with an identity already on the KEEPER (same provider_user_id
+    # or provider_open_id).
+    op.execute("""
+        DELETE FROM external_identities ei
+        USING identity_providers dup,
+              (
+                  SELECT DISTINCT ON (provider_type, tenant_id) id, provider_type, tenant_id
+                  FROM identity_providers
+                  ORDER BY provider_type, tenant_id, created_at ASC
+              ) keeper
+        WHERE ei.provider_id = dup.id
+          AND dup.id != keeper.id
+          AND dup.provider_type = keeper.provider_type
+          AND dup.tenant_id IS NOT DISTINCT FROM keeper.tenant_id
+          AND (
+              EXISTS (
+                  SELECT 1 FROM external_identities k
+                  WHERE k.provider_id = keeper.id
+                    AND k.provider_user_id IS NOT NULL
+                    AND k.provider_user_id = ei.provider_user_id
+              )
+              OR EXISTS (
+                  SELECT 1 FROM external_identities k
+                  WHERE k.provider_id = keeper.id
+                    AND k.provider_open_id IS NOT NULL
+                    AND k.provider_open_id = ei.provider_open_id
+              )
+          )
+    """)
+
+    # Step 2: Reassign remaining external_identities from duplicate providers
+    # to the keeper (no conflict now).
     op.execute("""
         UPDATE external_identities ei
         SET provider_id = keeper.id
@@ -30,7 +64,7 @@ def upgrade() -> None:
           AND dup.id != keeper.id
     """)
 
-    # Step 2: Delete duplicate providers (keep only the oldest per group)
+    # Step 3: Delete duplicate providers (keep only the oldest per group).
     op.execute("""
         DELETE FROM identity_providers
         WHERE id NOT IN (
@@ -40,15 +74,14 @@ def upgrade() -> None:
         )
     """)
 
-    # Step 3: Add unique constraint to prevent future duplicates
-    # Handle NULL tenant_id: PostgreSQL treats NULLs as distinct in unique constraints,
-    # so we use a partial unique index for the NULL case
+    # Step 4: Add unique constraint to prevent future duplicates.
     op.create_unique_constraint(
         "uq_identity_providers_type_tenant",
         "identity_providers",
         ["provider_type", "tenant_id"],
     )
-    # Partial index for NULL tenant_id (only one row per provider_type where tenant_id IS NULL)
+    # Partial index for NULL tenant_id (PostgreSQL treats NULLs as distinct
+    # in regular unique constraints).
     op.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS uq_identity_providers_type_tenant_null
         ON identity_providers (provider_type)

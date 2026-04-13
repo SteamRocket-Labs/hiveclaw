@@ -15,6 +15,20 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Idempotency guard: if the unique constraint already exists, this migration
+    # was previously applied (but alembic_version wasn't updated due to a crash).
+    # Skip all operations — the data is already clean.
+    conn = op.get_bind()
+    already_applied = conn.execute(
+        sa.text("""
+            SELECT 1 FROM information_schema.table_constraints
+            WHERE constraint_name = 'uq_identity_providers_type_tenant'
+              AND table_name = 'identity_providers'
+        """)
+    ).scalar()
+    if already_applied:
+        return
+
     # Keeper = oldest provider per (provider_type, tenant_id) group.
     # Duplicate = any other provider in the same group.
 
@@ -90,21 +104,12 @@ def upgrade() -> None:
         )
     """)
 
-    # Step 4: Add unique constraint to prevent future duplicates (idempotent).
-    conn = op.get_bind()
-    constraint_exists = conn.execute(
-        sa.text("""
-            SELECT 1 FROM information_schema.table_constraints
-            WHERE constraint_name = 'uq_identity_providers_type_tenant'
-              AND table_name = 'identity_providers'
-        """)
-    ).scalar()
-    if not constraint_exists:
-        op.create_unique_constraint(
-            "uq_identity_providers_type_tenant",
-            "identity_providers",
-            ["provider_type", "tenant_id"],
-        )
+    # Step 4: Add unique constraint to prevent future duplicates.
+    op.create_unique_constraint(
+        "uq_identity_providers_type_tenant",
+        "identity_providers",
+        ["provider_type", "tenant_id"],
+    )
     # Partial index for NULL tenant_id (PostgreSQL treats NULLs as distinct
     # in regular unique constraints).
     op.execute("""

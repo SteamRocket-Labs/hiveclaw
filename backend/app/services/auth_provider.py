@@ -331,8 +331,27 @@ class FeishuAuthProvider:
             identity = result.scalar_one_or_none()
 
         if not identity:
-            identity = ExternalIdentity(provider_id=provider.id, user_id=user.id)
-            db.add(identity)
+            # Concurrent-safe: if another request just created the same identity,
+            # our INSERT will fail on the unique constraint. Retry the lookup once.
+            try:
+                identity = ExternalIdentity(provider_id=provider.id, user_id=user.id)
+                db.add(identity)
+                await db.flush()
+            except Exception:
+                await db.rollback()
+                # Re-query — the concurrent winner's row should be visible now
+                _retry_q = select(ExternalIdentity).where(ExternalIdentity.provider_id == provider.id)
+                if provider_union_id:
+                    _retry_r = await db.execute(_retry_q.where(ExternalIdentity.provider_union_id == provider_union_id))
+                elif provider_user_id:
+                    _retry_r = await db.execute(_retry_q.where(ExternalIdentity.provider_user_id == provider_user_id))
+                elif provider_open_id:
+                    _retry_r = await db.execute(_retry_q.where(ExternalIdentity.provider_open_id == provider_open_id))
+                else:
+                    raise
+                identity = _retry_r.scalar_one_or_none()
+                if not identity:
+                    raise
 
         identity.user_id = user.id
         identity.provider_user_id = provider_user_id

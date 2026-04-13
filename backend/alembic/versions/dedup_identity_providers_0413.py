@@ -5,6 +5,7 @@ Revises: add_wechat_personal_channel_0411
 Create Date: 2026-04-13
 """
 
+import sqlalchemy as sa
 from alembic import op
 
 revision = "dedup_identity_providers_0413"
@@ -89,12 +90,21 @@ def upgrade() -> None:
         )
     """)
 
-    # Step 4: Add unique constraint to prevent future duplicates.
-    op.create_unique_constraint(
-        "uq_identity_providers_type_tenant",
-        "identity_providers",
-        ["provider_type", "tenant_id"],
-    )
+    # Step 4: Add unique constraint to prevent future duplicates (idempotent).
+    conn = op.get_bind()
+    constraint_exists = conn.execute(
+        sa.text("""
+            SELECT 1 FROM information_schema.table_constraints
+            WHERE constraint_name = 'uq_identity_providers_type_tenant'
+              AND table_name = 'identity_providers'
+        """)
+    ).scalar()
+    if not constraint_exists:
+        op.create_unique_constraint(
+            "uq_identity_providers_type_tenant",
+            "identity_providers",
+            ["provider_type", "tenant_id"],
+        )
     # Partial index for NULL tenant_id (PostgreSQL treats NULLs as distinct
     # in regular unique constraints).
     op.execute("""

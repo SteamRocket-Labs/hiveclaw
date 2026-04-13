@@ -26,6 +26,7 @@ from app.kernel.contracts import ExecutionIdentityRef
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
 from app.services.agent_tools import execute_tool
+from app.services.session_service import create_chat_session, session_conversation_id
 
 # Single source of truth: app/templates/HEARTBEAT.md
 # No hardcoded instruction here — read from template file at runtime.
@@ -863,7 +864,6 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
         from app.database import async_session
         from app.models.agent import Agent
         from app.models.audit import ChatMessage
-        from app.models.chat_session import ChatSession
         from app.models.llm import LLMModel
         from app.models.participant import Participant
 
@@ -955,15 +955,14 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                 runtime_messages = [{"role": "user", "content": heartbeat_instruction}]
 
                 # Create new DB session (only on first tick)
-                session = ChatSession(
+                session = await create_chat_session(
+                    db,
                     agent_id=agent_id,
                     user_id=agent.creator_id,
                     participant_id=agent_participant_id,
                     source_channel="heartbeat",
                     title=f"💓 Heartbeat: {agent.name}"[:200],
                 )
-                db.add(session)
-                await db.flush()
                 session_id = session.id
                 _heartbeat_session_ids[agent_id] = session_id
 
@@ -971,7 +970,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                 db.add(
                     ChatMessage(
                         agent_id=agent_id,
-                        conversation_id=str(session_id),
+                        conversation_id=session_conversation_id(session),
                         role="user",
                         content=heartbeat_instruction[:4000],
                         user_id=agent.creator_id,

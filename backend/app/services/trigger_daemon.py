@@ -27,6 +27,7 @@ from app.core.events import get_redis
 from app.database import async_session
 from app.models.trigger import AgentTrigger
 from app.models.agent import Agent
+from app.services.session_service import create_chat_session, session_conversation_id
 
 TICK_INTERVAL = 15  # seconds
 DEDUP_WINDOW = 120  # seconds — same agent won't be invoked twice within this window
@@ -531,7 +532,6 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
     from app.kernel.contracts import ExecutionIdentityRef
     from app.models.llm import LLMModel
     from app.models.audit import ChatMessage
-    from app.models.chat_session import ChatSession
     from app.models.participant import Participant
     from app.services.audit_logger import write_audit_log
     from app.services.activity_logger import log_activity
@@ -629,15 +629,14 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
             )
             agent_participant = result.scalar_one_or_none()
 
-            session = ChatSession(
+            session = await create_chat_session(
+                db,
                 agent_id=agent_id,
                 user_id=agent.creator_id,
                 participant_id=agent_participant.id if agent_participant else None,
                 source_channel="trigger",
                 title=title[:200],
             )
-            db.add(session)
-            await db.flush()
             session_id = session.id
 
             memory_messages = [{"role": "user", "content": trigger_context}]
@@ -646,7 +645,7 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
             # Store trigger context as a message in the session
             db.add(ChatMessage(
                 agent_id=agent_id,
-                conversation_id=str(session_id),
+                conversation_id=session_conversation_id(session),
                 role="user",
                 content=trigger_context,
                 user_id=agent.creator_id,

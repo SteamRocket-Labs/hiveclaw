@@ -8,6 +8,11 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from app.database import async_session
+from app.services.session_service import (
+    find_or_create_agent_pair_session,
+    find_or_create_web_chat_session,
+    session_conversation_id,
+)
 from app.tools.result_envelope import render_tool_error
 
 logger = logging.getLogger(__name__)
@@ -563,8 +568,6 @@ async def _send_web_message(agent_id: uuid.UUID, args: dict) -> str:
     try:
         from app.models.user import User as UserModel
         from app.models.audit import ChatMessage
-        from app.models.chat_session import ChatSession
-        from app.services.web_session_contract import apply_web_session_contract
         from datetime import datetime as _dt, timezone as _tz
 
         async with async_session() as db:
@@ -594,26 +597,12 @@ async def _send_web_message(agent_id: uuid.UUID, args: dict) -> str:
                 return f"❌ No user named '{username}' found. Available users: {', '.join(names) if names else 'none'}"
 
             # Find or create a web session between the agent and this user
-            sess_r = await db.execute(
-                select(ChatSession).where(
-                    ChatSession.agent_id == agent_id,
-                    ChatSession.user_id == target_user.id,
-                    ChatSession.source_channel == "web",
-                ).order_by(ChatSession.created_at.desc()).limit(1)
+            session = await find_or_create_web_chat_session(
+                db,
+                agent_id=agent_id,
+                user=target_user,
+                default_title=f"[Agent Message] {_dt.now(_tz.utc).strftime('%m-%d %H:%M')}",
             )
-            session = sess_r.scalar_one_or_none()
-
-            if not session:
-                session = ChatSession(
-                    agent_id=agent_id,
-                    user_id=target_user.id,
-                    title=f"[Agent Message] {_dt.now(_tz.utc).strftime('%m-%d %H:%M')}",
-                    source_channel="web",
-                    created_at=_dt.now(_tz.utc),
-                )
-                db.add(session)
-                await db.flush()
-            await apply_web_session_contract(db, session=session, agent_id=agent_id, user=target_user)
 
             # Save the message
             db.add(ChatMessage(
@@ -621,7 +610,7 @@ async def _send_web_message(agent_id: uuid.UUID, args: dict) -> str:
                 user_id=target_user.id,
                 role="assistant",
                 content=message_text,
-                conversation_id=str(session.id),
+                conversation_id=session_conversation_id(session),
             ))
             session.last_message_at = _dt.now(_tz.utc)
             await db.commit()
@@ -758,7 +747,6 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
     try:
         from app.models.agent import Agent
         from app.models.audit import ChatMessage
-        from app.models.chat_session import ChatSession
         from app.models.participant import Participant
 
         async with async_session() as db:
@@ -804,32 +792,19 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
             tgt_part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == target.id))
             tgt_participant = tgt_part_r.scalar_one_or_none()
 
-            # Find or create ChatSession for this agent pair (ordered consistently)
-            session_agent_id = min(from_agent_id, target.id, key=str)
-            session_peer_id = max(from_agent_id, target.id, key=str)
-            sess_r = await db.execute(
-                select(ChatSession).where(
-                    ChatSession.agent_id == session_agent_id,
-                    ChatSession.peer_agent_id == session_peer_id,
-                    ChatSession.source_channel == "agent",
-                )
+            owner_id = source_agent.creator_id if source_agent else from_agent_id
+            src_part_id = src_participant.id if src_participant else None
+            chat_session = await find_or_create_agent_pair_session(
+                db,
+                source_agent_id=from_agent_id,
+                target_agent_id=target.id,
+                owner_user_id=owner_id,
+                source_name=source_name,
+                target_name=target.name,
+                source_participant_id=src_part_id,
             )
-            chat_session = sess_r.scalar_one_or_none()
-            if not chat_session:
-                owner_id = source_agent.creator_id if source_agent else from_agent_id
-                src_part_id = src_participant.id if src_participant else None
-                chat_session = ChatSession(
-                    agent_id=session_agent_id,
-                    user_id=owner_id,
-                    title=f"{source_name} ↔ {target.name}",
-                    source_channel="agent",
-                    participant_id=src_part_id,
-                    peer_agent_id=session_peer_id,
-                )
-                db.add(chat_session)
-                await db.flush()
 
-            session_id = str(chat_session.id)
+            session_id = session_conversation_id(chat_session)
 
             # Prepare target LLM
             from app.models.llm import LLMModel
@@ -860,7 +835,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 select(ChatMessage)
                 .where(
                     ChatMessage.conversation_id == session_id,
-                    ChatMessage.agent_id == session_agent_id,
+                    ChatMessage.agent_id == chat_session.agent_id,
                 )
                 .order_by(ChatMessage.created_at.desc())
                 .limit(20)
@@ -876,9 +851,8 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
             conversation_messages.append({"role": "user", "content": f"[From {source_name}] {message_text}"})
 
             # Save source message
-            owner_id = source_agent.creator_id if source_agent else from_agent_id
             db.add(ChatMessage(
-                agent_id=session_agent_id,
+                agent_id=chat_session.agent_id,
                 user_id=owner_id,
                 role="user",
                 content=message_text,
@@ -895,7 +869,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 from_agent_id=from_agent_id,
                 owner_id=owner_id,
                 session_id=session_id,
-                session_agent_id=session_agent_id,
+                session_agent_id=chat_session.agent_id,
                 participant_id=tgt_participant.id if tgt_participant else None,
             )
 
@@ -907,7 +881,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 part_r = await db2.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == target.id))
                 tgt_part = part_r.scalar_one_or_none()
                 db2.add(ChatMessage(
-                    agent_id=session_agent_id,
+                    agent_id=chat_session.agent_id,
                     user_id=owner_id,
                     role="assistant",
                     content=target_reply,

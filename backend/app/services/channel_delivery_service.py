@@ -293,9 +293,8 @@ class ChannelDeliveryService:
                 from app.api.websocket import manager as ws_manager
                 from app.models.agent import Agent as AgentModel
                 from app.models.audit import ChatMessage
-                from app.models.chat_session import ChatSession
                 from app.models.user import User as UserModel
-                from app.services.web_session_contract import apply_web_session_contract
+                from app.services.session_service import find_or_create_web_chat_session, session_conversation_id
 
                 username = str(target.get("username") or "").strip()
                 if not username:
@@ -306,34 +305,19 @@ class ChannelDeliveryService:
                 if not target_user:
                     raise ValueError(f"unknown web user: {username}")
 
-                session_result = await db.execute(
-                    select(ChatSession)
-                    .where(
-                        ChatSession.agent_id == agent_id,
-                        ChatSession.user_id == target_user.id,
-                        ChatSession.source_channel == "web",
-                    )
-                    .order_by(ChatSession.last_message_at.desc().nulls_last(), ChatSession.created_at.desc())
-                    .limit(1)
+                session = await find_or_create_web_chat_session(
+                    db,
+                    agent_id=agent_id,
+                    user=target_user,
+                    default_title=f"[Web Message] {username}",
                 )
-                session = session_result.scalar_one_or_none()
-                if not session:
-                    session = ChatSession(
-                        agent_id=agent_id,
-                        user_id=target_user.id,
-                        title=f"[Web Message] {username}",
-                        source_channel="web",
-                    )
-                    db.add(session)
-                    await db.flush()
-                await apply_web_session_contract(db, session=session, agent_id=agent_id, user=target_user)
                 db.add(
                     ChatMessage(
                         agent_id=agent_id,
                         user_id=target_user.id,
                         role="assistant",
                         content=text,
-                        conversation_id=str(session.id),
+                        conversation_id=session_conversation_id(session),
                     )
                 )
                 session.last_message_at = datetime.now(timezone.utc)

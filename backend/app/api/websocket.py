@@ -20,7 +20,7 @@ from app.models.llm import LLMModel
 from app.models.user import User
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
-from app.services.web_session_contract import apply_web_session_contract
+from app.services.session_service import find_or_create_web_chat_session
 
 router = APIRouter(tags=["websocket"])
 
@@ -336,57 +336,15 @@ async def websocket_chat(
                 fallback_llm_model = None  # No further fallback available
                 logger.info(f"[WS] Primary model unavailable, using fallback: {llm_model.model}")
 
-            # Resolve or create chat session
-            from app.models.chat_session import ChatSession
-            from sqlalchemy import select as _sel
-            from datetime import datetime as _dt, timezone as _tz
             conv_id = session_id
-            _active_session = None
-            if conv_id:
-                # Validate the session belongs to this agent AND this user
-                _sr = await db.execute(
-                    _sel(ChatSession).where(
-                        ChatSession.id == uuid.UUID(conv_id),
-                        ChatSession.agent_id == agent_id,
-                        ChatSession.user_id == user_id,
-                    )
-                )
-                _existing = _sr.scalar_one_or_none()
-                if not _existing:
-                    conv_id = None  # fall through to create
-                else:
-                    _active_session = _existing
-            if not conv_id:
-                # Find most recent session for this user+agent
-                _sr = await db.execute(
-                    _sel(ChatSession)
-                    .where(ChatSession.agent_id == agent_id, ChatSession.user_id == user_id)
-                    .order_by(ChatSession.last_message_at.desc().nulls_last(), ChatSession.created_at.desc())
-                    .limit(1)
-                )
-                _latest = _sr.scalar_one_or_none()
-                if _latest:
-                    conv_id = str(_latest.id)
-                    _active_session = _latest
-                else:
-                    # Create a default session
-                    now = _dt.now(_tz.utc)
-                    _new_session = ChatSession(
-                        agent_id=agent_id, user_id=user_id,
-                        title=f"Session {now.strftime('%m-%d %H:%M')}",
-                        source_channel="web",
-                        created_at=now,
-                    )
-                    db.add(_new_session)
-                    await db.commit()
-                    await db.refresh(_new_session)
-                    conv_id = str(_new_session.id)
-                    _active_session = _new_session
-                    logger.info(f"[WS] Created default session {conv_id}")
-
-            if _active_session is not None:
-                await apply_web_session_contract(db, session=_active_session, agent_id=agent_id, user=user)
-                await db.commit()
+            _active_session = await find_or_create_web_chat_session(
+                db,
+                agent_id=agent_id,
+                user=user,
+                requested_session_id=conv_id,
+            )
+            conv_id = str(_active_session.id)
+            await db.commit()
 
             try:
                 # Dynamic history limit based on model context window

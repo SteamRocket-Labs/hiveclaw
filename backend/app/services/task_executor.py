@@ -11,15 +11,15 @@ from app.database import async_session
 from app.kernel.contracts import ExecutionIdentityRef
 from app.models.agent import Agent
 from app.models.audit import ChatMessage
-from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
 from app.models.participant import Participant
 from app.models.task import Task, TaskLog
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
+from app.services.session_service import create_chat_session, session_conversation_id
 
 
-TASK_EXECUTION_ADDENDUM = """## Task Execution Mode
+TASK_EXECUTION_ADDENDUM = """## TASK EXECUTION MODE
 
 You are executing an assigned task autonomously. Take initiative and work toward completion \
 without waiting for follow-up input.
@@ -147,21 +147,20 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
         agent_participant = participant_result.scalar_one_or_none()
         agent_participant_id = agent_participant.id if agent_participant else None
 
-        reflection_session = ChatSession(
+        reflection_session = await create_chat_session(
+            db,
             agent_id=agent_id,
             user_id=creator_id,
             participant_id=agent_participant_id,
             source_channel="task",
             title=f"🧾 Task: {task_title}"[:200],
         )
-        db.add(reflection_session)
-        await db.flush()
         reflection_session_id = reflection_session.id
 
         db.add(
             ChatMessage(
                 agent_id=agent_id,
-                conversation_id=str(reflection_session_id),
+                conversation_id=session_conversation_id(reflection_session),
                 role="user",
                 content=user_prompt,
                 user_id=creator_id,
@@ -181,7 +180,7 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
                 tc_db.add(
                     ChatMessage(
                         agent_id=agent_id,
-                        conversation_id=str(reflection_session_id),
+                        conversation_id=session_conversation_id(reflection_session),
                         role="tool_call",
                         content=json.dumps(
                             {
@@ -247,7 +246,7 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
             db.add(
                 ChatMessage(
                     agent_id=agent_id,
-                    conversation_id=str(reflection_session_id),
+                    conversation_id=session_conversation_id(reflection_session),
                     role="assistant",
                     content=reply,
                     user_id=creator_id,

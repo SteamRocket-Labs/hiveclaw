@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
+from app.services.session_service import create_chat_session
 
 
 async def find_or_create_channel_session(
@@ -81,7 +82,8 @@ async def find_or_create_channel_session(
                     return legacy_session
 
         now = datetime.now(timezone.utc)
-        session = ChatSession(
+        session = await create_chat_session(
+            db,
             agent_id=agent_id,
             user_id=user_id,
             title=first_message_title[:40],
@@ -90,8 +92,6 @@ async def find_or_create_channel_session(
             delivery_target_json=delivery_target,
             created_at=now,
         )
-        db.add(session)
-        await db.flush()  # populate session.id
     else:
         # Re-attribute old sessions that were stored under creator_id / wrong user
         if session.user_id != user_id:

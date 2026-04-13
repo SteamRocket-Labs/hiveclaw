@@ -20,8 +20,19 @@ from app.models.trigger import AgentTrigger
 async def migrate():
     """Convert all AgentSchedule records to AgentTrigger(type='cron')."""
     async with async_session() as db:
-        result = await db.execute(select(AgentSchedule))
-        schedules = result.scalars().all()
+        result = await db.execute(
+            select(
+                AgentSchedule.id,
+                AgentSchedule.agent_id,
+                AgentSchedule.name,
+                AgentSchedule.instruction,
+                AgentSchedule.cron_expr,
+                AgentSchedule.is_enabled,
+                AgentSchedule.run_count,
+                AgentSchedule.last_run_at,
+            )
+        )
+        schedules = result.all()
 
         if not schedules:
             logger.info("No schedules found to migrate.")
@@ -29,32 +40,33 @@ async def migrate():
 
         migrated = 0
         skipped = 0
-        for s in schedules:
+        for row in schedules:
+            schedule_id, agent_id, name, instruction, cron_expr, is_enabled, run_count, last_run_at = row
             # Check if trigger already exists for this schedule
             existing = await db.execute(
                 select(AgentTrigger).where(
-                    AgentTrigger.agent_id == s.agent_id,
-                    AgentTrigger.name == f"migrated_{s.name[:80]}",
+                    AgentTrigger.agent_id == agent_id,
+                    AgentTrigger.name == f"migrated_{name[:80]}",
                 )
             )
             if existing.scalar_one_or_none():
-                logger.info(f"  Skip: '{s.name}' already migrated")
+                logger.info(f"  Skip: '{name}' already migrated")
                 skipped += 1
                 continue
 
             trigger = AgentTrigger(
-                agent_id=s.agent_id,
-                name=f"migrated_{s.name[:80]}",
+                agent_id=agent_id,
+                name=f"migrated_{name[:80]}",
                 type="cron",
-                config={"expr": s.cron_expr},
-                reason=s.instruction[:500] if s.instruction else f"Migrated schedule: {s.name}",
-                is_enabled=s.is_enabled,
-                fire_count=s.run_count or 0,
-                last_fired_at=s.last_run_at,
+                config={"expr": cron_expr},
+                reason=instruction[:500] if instruction else f"Migrated schedule: {name}",
+                is_enabled=is_enabled,
+                fire_count=run_count or 0,
+                last_fired_at=last_run_at,
             )
             db.add(trigger)
             migrated += 1
-            logger.info(f"  Migrated: '{s.name}' → cron({s.cron_expr})")
+            logger.info(f"  Migrated: '{name}' → cron({cron_expr})")
 
         await db.commit()
         logger.info(f"Migration complete: {migrated} migrated, {skipped} skipped")

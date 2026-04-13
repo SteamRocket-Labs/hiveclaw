@@ -297,8 +297,9 @@ async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
     cfg = trigger.config or {}
     from_agent_name = cfg.get("from_agent_name")
     from_user_name = cfg.get("from_user_name")
+    reply_to_current_sender = bool(cfg.get("reply_to_current_sender"))
 
-    if not from_agent_name and not from_user_name:
+    if not from_agent_name and not from_user_name and not reply_to_current_sender:
         return False
 
     since = trigger.last_fired_at or trigger.created_at
@@ -315,6 +316,26 @@ async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
 
     try:
         async with async_session() as db:
+            if reply_to_current_sender:
+                reply_ctx = getattr(trigger, "reply_context", None) or {}
+                session_id = str(reply_ctx.get("session_id") or "")
+                if not session_id:
+                    return False
+                result = await db.execute(
+                    select(ChatMessage).where(
+                        ChatMessage.agent_id == trigger.agent_id,
+                        ChatMessage.conversation_id == session_id,
+                        ChatMessage.role == "user",
+                        ChatMessage.created_at > since,
+                    ).order_by(ChatMessage.created_at.desc()).limit(1)
+                )
+                msg = result.scalar_one_or_none()
+                if not msg:
+                    return False
+                cfg["_matched_message"] = (msg.content or "")[:2000]
+                cfg["_matched_from"] = reply_ctx.get("user_label") or reply_ctx.get("sender_identity") or "current_sender"
+                return True
+
             if from_agent_name:
                 # --- Agent-to-agent message check (existing logic) ---
                 from app.models.participant import Participant
@@ -474,16 +495,11 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
                 if reply_ctx.get("channel"):
                     ch = reply_ctx["channel"]
                     user_label = reply_ctx.get("user_label", "the requesting user")
-                    if ch == "feishu":
-                        open_id = reply_ctx.get("open_id", "")
-                        oid_hint = f" (open_id: {open_id})" if open_id else ""
-                        part += (
-                            f"\nReply Channel: feishu"
-                            f"\nReply To: {user_label}{oid_hint}"
-                            f"\n→ MUST use send_feishu_message to deliver results to this user."
-                        )
-                    else:
-                        part += f"\nReply Channel: {ch}\nReply To: {user_label}"
+                    part += (
+                        f"\nReply Channel: {ch}"
+                        f"\nReply To: {user_label}"
+                        "\n→ MUST use send_channel_message / send_channel_file for this reply target."
+                    )
 
                 context_parts.append(part)
                 trigger_names.append(t.name)
@@ -580,23 +596,40 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
             except Exception as e:
                 logger.warning(f"Failed to persist tool call for trigger session: {e}")
 
-        reply = await call_llm(
-            model=model,
-            messages=messages,
-            agent_name=agent.name,
-            role_description=agent.role_description or "",
-            agent_id=agent_id,
-            user_id=agent.creator_id,
-            on_chunk=on_chunk,
-            on_tool_call=on_tool_call,
-            session_id=str(session_id),
-            memory_messages=memory_messages,
-            execution_identity=ExecutionIdentityRef(
-                identity_type="agent_bot",
-                identity_id=agent_id,
-                label=f"Agent: {agent.name} (trigger)",
+        from app.services.channel_delivery_service import channel_delivery_target
+
+        reply_target = next(
+            (
+                getattr(trigger, "reply_context", None)
+                for trigger in triggers
+                if getattr(trigger, "reply_context", None) and getattr(trigger, "reply_context", None).get("channel")
             ),
+            None,
         )
+        _delivery_token = None
+        if reply_target:
+            _delivery_token = channel_delivery_target.set(reply_target)
+        try:
+            reply = await call_llm(
+                model=model,
+                messages=messages,
+                agent_name=agent.name,
+                role_description=agent.role_description or "",
+                agent_id=agent_id,
+                user_id=agent.creator_id,
+                on_chunk=on_chunk,
+                on_tool_call=on_tool_call,
+                session_id=str(session_id),
+                memory_messages=memory_messages,
+                execution_identity=ExecutionIdentityRef(
+                    identity_type="agent_bot",
+                    identity_id=agent_id,
+                    label=f"Agent: {agent.name} (trigger)",
+                ),
+            )
+        finally:
+            if _delivery_token is not None:
+                channel_delivery_target.reset(_delivery_token)
 
         # Save assistant reply to Reflection session
         async with async_session() as db:

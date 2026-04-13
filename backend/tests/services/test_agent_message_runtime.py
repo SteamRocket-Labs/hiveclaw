@@ -74,6 +74,7 @@ async def test_invoke_agent_message_runtime_delegates_to_runtime(monkeypatch):
     assert captured["kwargs"]["parent_session_id"] == "session-1"
     assert captured["kwargs"]["tool_executor"] is orchestrator_executor
     assert captured["kwargs"]["max_tool_rounds"] == 9
+    assert captured["kwargs"]["interaction_type"] == "agent_message"
     assert "Agent-to-Agent Message" in captured["kwargs"]["system_prompt_suffix"]
 
 
@@ -129,7 +130,7 @@ async def test_delegate_to_agent_async_passes_tool_profile(monkeypatch):
     target_model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None)
     captured = {}
 
-    async def fake_resolve(_from_agent_id, _agent_name):
+    async def fake_resolve(_from_agent_id, _agent_name, **_kwargs):
         return source_agent, target, target_model, None
 
     async def fake_delegate_async(**kwargs):
@@ -163,7 +164,7 @@ async def test_delegate_to_agent_async_accepts_research_readonly_profile(monkeyp
     target_model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None)
     captured = {}
 
-    async def fake_resolve(_from_agent_id, _agent_name):
+    async def fake_resolve(_from_agent_id, _agent_name, **_kwargs):
         return source_agent, target, target_model, None
 
     async def fake_delegate_async(**kwargs):

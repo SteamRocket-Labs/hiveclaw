@@ -18,6 +18,8 @@ EventCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 _STATIC_SENSITIVE_TOOLS = {
     "create_digital_employee",
     "send_feishu_message",
+    "send_channel_message",
+    "send_channel_file",
     "send_email",
     "delete_file",
     "write_file",

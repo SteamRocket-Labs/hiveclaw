@@ -938,6 +938,16 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             else:
                 conv_id = build_feishu_p2p_conv_id(sender_user_id_feishu, sender_open_id) or f"feishu_p2p_{sender_open_id}"
                 legacy_conv_ids = list_legacy_feishu_conv_ids(sender_open_id, conv_id)
+            delivery_target = {
+                "channel": "feishu",
+                "receive_id": chat_id if chat_type == "group" and chat_id else sender_open_id,
+                "receive_id_type": "chat_id" if chat_type == "group" and chat_id else "open_id",
+                "chat_id": chat_id,
+                "chat_type": chat_type,
+                "open_id": sender_open_id,
+                "user_id": sender_user_id_feishu,
+                "user_label": sender_name,
+            }
 
             from app.services.memory_service import compute_history_limit_for_agent
             _hist_limit = await compute_history_limit_for_agent(agent_id)
@@ -985,8 +995,11 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 source_channel="feishu",
                 first_message_title=user_text,
                 legacy_external_conv_ids=legacy_conv_ids,
+                delivery_target=delivery_target,
             )
             session_conv_id = str(_sess.id)
+            delivery_target["session_id"] = session_conv_id
+            _sess.delivery_target_json = delivery_target
 
             # Save user message
             db.add(
@@ -1049,6 +1062,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
 
             # Set channel_file_sender contextvar so the agent can send files back via Feishu
             from app.services.agent_tools import channel_file_sender as _cfs
+            from app.services.channel_delivery_service import channel_delivery_target as _cdt
 
             _reply_to_id = chat_id if chat_type == "group" else sender_open_id
             _rid_type = "chat_id" if chat_type == "group" else "open_id"
@@ -1097,6 +1111,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     )
 
             _cfs_token = _cfs.set(_feishu_file_sender)
+            _cdt_token = _cdt.set(delivery_target)
 
             # Set up streaming response via CardKit (primary) or IM patch (fallback)
             import json as _json_card
@@ -1391,6 +1406,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         logger.debug("[Feishu] Heartbeat task cancelled during cleanup")
                 _cfs.reset(_cfs_token)
                 _cfso.reset(_cfso_token)
+                _cdt.reset(_cdt_token)
             logger.info(f"[Feishu] LLM reply: {reply_text[:100]}")
 
             # Send final card update or fallback text
@@ -1658,6 +1674,16 @@ async def _handle_feishu_file(
         else:
             conv_id = build_feishu_p2p_conv_id(sender_user_id_feishu, sender_open_id) or f"feishu_p2p_{sender_open_id}"
             legacy_conv_ids = list_legacy_feishu_conv_ids(sender_open_id, conv_id)
+        delivery_target = {
+            "channel": "feishu",
+            "receive_id": chat_id if chat_type == "group" and chat_id else sender_open_id,
+            "receive_id_type": "chat_id" if chat_type == "group" and chat_id else "open_id",
+            "chat_id": chat_id,
+            "chat_type": chat_type,
+            "open_id": sender_open_id,
+            "user_id": sender_user_id_feishu,
+            "user_label": getattr(resolved_user, "display_name", "") or sender_open_id[:8],
+        }
 
         # Find-or-create session
         _sess = await find_or_create_channel_session(
@@ -1668,8 +1694,11 @@ async def _handle_feishu_file(
             source_channel="feishu",
             first_message_title=f"[文件] {filename}",
             legacy_external_conv_ids=legacy_conv_ids,
+            delivery_target=delivery_target,
         )
         session_conv_id = str(_sess.id)
+        delivery_target["session_id"] = session_conv_id
+        _sess.delivery_target_json = delivery_target
 
         # Store user message — include base64 marker for images so LLM can see them
         if msg_type == "image":
@@ -1755,16 +1784,22 @@ async def _handle_feishu_file(
                 _img_last_flush = now
 
         # Call LLM with image marker — vision models will parse it
+        from app.services.channel_delivery_service import channel_delivery_target as _cdt_img
+
+        _cdt_img_token = _cdt_img.set(delivery_target)
         async with _async_session() as _db_img:
-            reply_text = await _call_agent_llm(
-                _db_img,
-                agent_id,
-                user_msg_content,
-                history=_history,
-                user_id=platform_user_id,
-                on_chunk=_img_on_chunk,
-                session_id=session_conv_id,
-            )
+            try:
+                reply_text = await _call_agent_llm(
+                    _db_img,
+                    agent_id,
+                    user_msg_content,
+                    history=_history,
+                    user_id=platform_user_id,
+                    on_chunk=_img_on_chunk,
+                    session_id=session_conv_id,
+                )
+            finally:
+                _cdt_img.reset(_cdt_img_token)
 
         logger.info(f"[Feishu] Image LLM reply: {reply_text[:100]}")
 
@@ -1946,7 +1981,7 @@ async def _call_agent_llm(
         from app.services.pending_reply_service import (
             claim_and_fulfill_pending_replies,
             format_pending_reply_context,
-            normalize_identity,
+            sender_identity_from_external_conv_id,
         )
 
         # Resolve sender identity from session's external_conv_id pattern
@@ -1956,15 +1991,12 @@ async def _call_agent_llm(
 
             _sess_r = await db.execute(select(_CS).where(_CS.id == session_id))
             _sess_obj = _sess_r.scalar_one_or_none()
-            if _sess_obj and _sess_obj.external_conv_id:
-                _ext = _sess_obj.external_conv_id
-                # feishu_p2p_{user_id} → normalize to feishu:{user_id}
-                if _ext.startswith("feishu_p2p_"):
-                    _sender_identity = normalize_identity("feishu", _ext[len("feishu_p2p_"):])
-                elif _ext.startswith("web_"):
-                    _sender_identity = normalize_identity("web", _ext[len("web_"):])
-                elif _ext.startswith("slack_"):
-                    _sender_identity = normalize_identity("slack", _ext[len("slack_"):])
+            if _sess_obj:
+                _sender_identity = sender_identity_from_external_conv_id(_sess_obj.external_conv_id or "")
+                if not _sender_identity and getattr(_sess_obj, "delivery_target_json", None):
+                    from app.services.channel_delivery_service import ChannelDeliveryService
+
+                    _sender_identity = ChannelDeliveryService.identity_from_delivery_target(_sess_obj.delivery_target_json)
 
         if _sender_identity:
             # Atomic claim+fulfill: only one concurrent handler gets rows back (TOCTOU safe)

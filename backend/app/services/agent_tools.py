@@ -24,6 +24,7 @@ from sqlalchemy import select
 from app.database import async_session
 from app.models.agent import Agent
 from app.config import get_settings
+from app.services.channel_delivery_service import ChannelDeliveryService, channel_delivery_target
 from app.services.pack_policy_service import get_tenant_pack_policies, is_pack_enabled
 from app.tools import (
     ToolExecutionRegistry,
@@ -127,6 +128,11 @@ def _get_tool_runtime_service() -> ToolRuntimeService:
                 tool_name,
                 await _send_feishu_message(context.agent_id, arguments),
             )
+        if tool_name == "send_channel_message":
+            return _normalize_messaging_result(
+                tool_name,
+                await _send_channel_message(context.agent_id, arguments),
+            )
         if tool_name == "send_message_to_agent":
             return _normalize_messaging_result(
                 tool_name,
@@ -200,6 +206,7 @@ CORE_TOOL_NAMES = {
     "cancel_async_task",
     "list_async_tasks",
     "get_current_time",
+    "send_channel_message",
     "send_channel_file",
     "tool_search",
     "web_fetch",
@@ -584,7 +591,7 @@ async def _execute_tool_inner(
 
 
 async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
-    """Send a file to the user via the current channel or return a download URL for web chat."""
+    """Send a file to the current requester via unified channel delivery."""
     rel_path = arguments.get("file_path", "").strip()
     accompany_msg = arguments.get("message", "")
     if not rel_path:
@@ -600,6 +607,25 @@ async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> 
             return f"❌ File not found: {rel_path}"
     if not file_path.exists():
         return f"❌ File not found: {rel_path}"
+
+    reply_target = channel_delivery_target.get()
+    if reply_target is not None:
+        try:
+            async with async_session() as db:
+                result = await ChannelDeliveryService.send_file(
+                    db=db,
+                    agent_id=agent_id,
+                    reply_target=reply_target,
+                    file_path=file_path,
+                    message=accompany_msg,
+                    delivery_mode="live",
+                    extra_detail={"tool_name": "send_channel_file"},
+                )
+            if result.ok:
+                return f"✅ File '{file_path.name}' sent to user via {result.channel}."
+            logger.warning("[ChannelFile] Unified delivery failed: %s", result.message)
+        except Exception as exc:
+            logger.warning("[ChannelFile] Unified delivery error: %s", exc)
 
     sender = channel_file_sender.get()
     if sender is not None:
@@ -625,6 +651,31 @@ async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> 
         if accompany_msg:
             msg = accompany_msg + "\n\n" + msg
         return msg
+
+
+async def _send_channel_message(agent_id: uuid.UUID, arguments: dict) -> str:
+    """Send a text message to the current requester / persisted reply target."""
+    message = str(arguments.get("message", "") or "").strip()
+    if not message:
+        return "❌ message is required"
+
+    reply_target = channel_delivery_target.get()
+    if reply_target is None:
+        return "❌ No current channel delivery target is available."
+
+    async with async_session() as db:
+        result = await ChannelDeliveryService.send_text(
+            db=db,
+            agent_id=agent_id,
+            reply_target=reply_target,
+            text=message,
+            delivery_mode="live",
+            extra_detail={"tool_name": "send_channel_message"},
+        )
+
+    if result.ok:
+        return f"✅ {result.message}"
+    return f"❌ {result.message}"
 
 
 # ─── Domain module re-exports ──────────────────────────────────

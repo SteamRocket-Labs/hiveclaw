@@ -200,7 +200,21 @@
       "failedCount": "失败",
       "installIssues": "配置问题",
       "installFailed": "配置失败",
-      "installHealthy": "所有功能均已激活或正在配置中。"
+      "installHealthy": "所有功能均已激活或正在配置中。",
+      "channelCapabilityTitle": "渠道能力矩阵",
+      "channelCapabilityItems": "个渠道",
+      "channelColumn": "渠道",
+      "connectionColumn": "连接",
+      "apiColumn": "API",
+      "textColumn": "文本",
+      "fileColumn": "文件",
+      "deferredColumn": "延迟回投",
+      "waitColumn": "等待回复",
+      "connected": "已连接",
+      "officialApi": "官方",
+      "thirdParty": "第三方",
+      "capabilitySupported": "支持",
+      "capabilityUnsupported": "不支持"
     },
     "tabs": {
       "status": "概览",

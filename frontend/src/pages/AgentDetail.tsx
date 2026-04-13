@@ -28,7 +28,7 @@ import RelationshipEditor from './agent-detail/RelationshipEditor';
 import ToolsManager from './agent-detail/ToolsManager';
 import { normalizeToolCallResult } from './agent-detail/toolResultEnvelope';
 import OpenClawSettings from './OpenClawSettings';
-import { agentApi, type AgentCapabilityInstall } from '../api/domains/agents';
+import { agentApi, type AgentCapabilityInstall, type AgentChannelCapability } from '../api/domains/agents';
 import { activityApi } from '../api/domains/activity';
 import { enterpriseApi } from '../api/domains/enterprise';
 import { fileApi } from '../api/domains/files';
@@ -116,6 +116,13 @@ function AgentDetailInner() {
     const { data: capabilityInstalls = [] } = useQuery<AgentCapabilityInstall[]>({
         queryKey: ['agent-capability-installs', id],
         queryFn: () => agentApi.getCapabilityInstalls(id!),
+        enabled: !!id && activeTab === 'status',
+        staleTime: 30_000,
+    });
+
+    const { data: channelCapabilities = [] } = useQuery<AgentChannelCapability[]>({
+        queryKey: ['agent-channel-capabilities', id],
+        queryFn: () => agentApi.getChannelCapabilities(id!),
         enabled: !!id && activeTab === 'status',
         staleTime: 30_000,
     });
@@ -1172,6 +1179,7 @@ function AgentDetailInner() {
                         metrics={metrics}
                         activityLogs={activityLogs}
                         capabilityInstalls={capabilityInstalls}
+                        channelCapabilities={channelCapabilities}
                         statusKey={statusKey}
                         onSelectTab={setActiveTab}
                     />

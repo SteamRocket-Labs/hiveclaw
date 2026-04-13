@@ -47,6 +47,42 @@ class _FakeDB:
         self.committed = True
 
 
+class _RowsResult:
+    def __init__(self, rows):
+        self._rows = list(rows)
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return list(self._rows)
+
+
+class _SequenceDB:
+    def __init__(self, results):
+        self._results = list(results)
+        self.added: list = []
+        self.deleted: list = []
+        self.commits = 0
+
+    async def execute(self, _stmt):
+        if not self._results:
+            raise AssertionError("Unexpected execute() call")
+        return self._results.pop(0)
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    async def flush(self):
+        pass
+
+    async def delete(self, obj):
+        self.deleted.append(obj)
+
+    async def commit(self):
+        self.commits += 1
+
+
 def _build_request(body: bytes, headers: dict[str, str] | None = None) -> Request:
     raw_headers = [(key.lower().encode("utf-8"), value.encode("utf-8")) for key, value in (headers or {}).items()]
     scope = {
@@ -204,6 +240,33 @@ class TestIsDuplicateUpdate:
         monkeypatch.setattr(tg_mod, "get_redis", failing_redis)
 
         assert await tg_mod._is_duplicate_update(12345) is False
+
+
+class TestTelegramInboundFiles:
+    @pytest.mark.asyncio
+    async def test_extracts_document_into_workspace_hint(self, monkeypatch):
+        import app.api.telegram as tg_mod
+
+        async def fake_download(bot_token: str, agent_id, file_id: str, filename_hint: str | None = None):
+            assert bot_token == "bot-token"
+            assert file_id == "doc-1"
+            assert filename_hint == "report.pdf"
+            return "workspace/uploads/report.pdf"
+
+        monkeypatch.setattr(tg_mod, "_download_telegram_attachment", fake_download)
+
+        text, files = await tg_mod._extract_telegram_message_content(
+            "bot-token",
+            uuid4(),
+            {
+                "caption": "请处理这个报告",
+                "document": {"file_id": "doc-1", "file_name": "report.pdf"},
+            },
+        )
+
+        assert "请处理这个报告" in text
+        assert "workspace/uploads/report.pdf" in text
+        assert files == ["workspace/uploads/report.pdf"]
 
 
 # ─── Webhook Handler Tests ─────────────────────────────
@@ -499,6 +562,122 @@ class TestSendTelegramMessageFallback:
 
         # Should not raise
         await tg_mod._send_telegram_message("tok", 123, "test")
+
+
+class TestSendTelegramFile:
+    @pytest.mark.asyncio
+    async def test_send_telegram_file_uses_send_document(self, monkeypatch, tmp_path):
+        import app.api.telegram as tg_mod
+
+        sent: dict = {}
+        report = tmp_path / "report.pdf"
+        report.write_bytes(b"%PDF-1.7")
+
+        class FakeResponse:
+            status_code = 200
+            text = "ok"
+
+            def json(self):
+                return {"ok": True}
+
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def post(self, url, data=None, files=None, json=None):
+                sent["url"] = url
+                sent["data"] = data
+                sent["files"] = files
+                sent["json"] = json
+                return FakeResponse()
+
+        monkeypatch.setattr(tg_mod.httpx, "AsyncClient", lambda timeout=None: FakeClient())
+
+        await tg_mod._send_telegram_file("tok", 123, report)
+
+        assert sent["url"].endswith("/sendDocument")
+        assert sent["data"]["chat_id"] == "123"
+        assert "document" in sent["files"]
+        assert sent["files"]["document"][0] == "report.pdf"
+
+
+class TestTelegramChannelFileSender:
+    @pytest.mark.asyncio
+    async def test_webhook_registers_channel_file_sender_for_llm(self, monkeypatch, tmp_path):
+        import app.api.telegram as tg_mod
+
+        from app.services.agent_tools import channel_file_sender
+
+        config = _make_config()
+        agent = SimpleNamespace(id=config.agent_id, name="Web3研究员", tenant_id=uuid4())
+        session = SimpleNamespace(id=uuid4(), last_message_at=None)
+        db = _SequenceDB(
+            [
+                _ScalarResult(config),  # ChannelConfig
+                _ScalarResult(None),    # User lookup by tg username
+                _ScalarResult(agent),   # Agent lookup for user creation
+                _RowsResult([]),        # History lookup
+            ]
+        )
+        request = _build_request(
+            json.dumps(
+                {
+                    "update_id": 6001,
+                    "message": {
+                        "text": "给我发文件",
+                        "chat": {"id": 12345},
+                        "from": {"id": 42, "is_bot": False, "first_name": "Rocky"},
+                    },
+                }
+            ).encode()
+        )
+
+        report = tmp_path / "report.md"
+        report.write_text("# report", encoding="utf-8")
+        captured: dict = {}
+
+        class FakeRedis:
+            async def set(self, key, value, ex=None, nx=False):
+                return True
+
+        async def fake_get_redis():
+            return FakeRedis()
+
+        async def fake_find_or_create_channel_session(*_args, **_kwargs):
+            return session
+
+        async def fake_compute_history_limit_for_agent(_agent_id):
+            return 10
+
+        async def fake_call_llm(*_args, **_kwargs):
+            sender = channel_file_sender.get()
+            captured["has_sender"] = sender is not None
+            if sender is not None:
+                await sender(report, "请查收")
+            return "done"
+
+        async def fake_send_telegram_file(bot_token, chat_id, file_path, accompany_msg=""):
+            captured["file_send"] = (bot_token, chat_id, str(file_path), accompany_msg)
+
+        async def fake_send_telegram_message(*_args, **_kwargs):
+            captured["reply_sent"] = True
+
+        monkeypatch.setattr(tg_mod, "get_redis", fake_get_redis)
+        monkeypatch.setattr("app.services.channel_session.find_or_create_channel_session", fake_find_or_create_channel_session)
+        monkeypatch.setattr("app.services.memory_service.compute_history_limit_for_agent", fake_compute_history_limit_for_agent)
+        monkeypatch.setattr("app.api.feishu._call_agent_llm", fake_call_llm)
+        monkeypatch.setattr(tg_mod, "_send_telegram_file", fake_send_telegram_file)
+        monkeypatch.setattr(tg_mod, "_send_telegram_message", fake_send_telegram_message)
+
+        result = await tg_mod.telegram_webhook(config.agent_id, request, db)
+
+        assert result == {"ok": True}
+        assert captured["has_sender"] is True
+        assert captured["file_send"] == (config.app_secret, 12345, str(report), "请查收")
+        assert captured["reply_sent"] is True
 
 
 # ─── Config Endpoint Tests ─────────────────────────────

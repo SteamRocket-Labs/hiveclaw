@@ -15,11 +15,14 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 
 from loguru import logger
 from sqlalchemy import select
 
 from app.database import async_session
+from app.config import get_settings
 from app.models.channel_config import ChannelConfig
 from app.services.wechat_ilink_client import (
     ERROR_BACKOFF_SECONDS,
@@ -37,6 +40,22 @@ from app.services.wechat_personal_service import (
     store_sync_buf,
     store_typing_ticket,
 )
+
+
+def _safe_upload_name(filename: str | None, fallback: str) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in (filename or fallback)).strip("._")
+    return safe or fallback
+
+
+def _persist_inbound_media(agent_id: uuid.UUID, filename: str | None, content: bytes, fallback: str) -> str:
+    uploads_dir = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "workspace" / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = _safe_upload_name(filename, fallback)
+    destination = uploads_dir / safe_name
+    if destination.exists():
+        destination = uploads_dir / f"{destination.stem}_{uuid.uuid4().hex[:8]}{destination.suffix}"
+    destination.write_bytes(content)
+    return f"workspace/uploads/{destination.name}"
 
 
 class WeChatPersonalStreamManager:
@@ -199,7 +218,11 @@ class WeChatPersonalStreamManager:
         if msg.image_media:
             try:
                 image_data = await ILinkClient(base_url).download_media(msg.image_media)
-                image_desc = f"[用户发送了一张图片，{len(image_data)} 字节]"
+                image_path = _persist_inbound_media(agent_id, None, image_data, f"wechat_image_{uuid.uuid4().hex[:8]}.jpg")
+                image_desc = (
+                    f"[用户发送了一张图片，已保存到工作区 `{image_path}`，{len(image_data)} 字节。"
+                    f"如果需要处理内容，请直接读取该路径。]"
+                )
                 user_text = f"{user_text}\n{image_desc}" if user_text else image_desc
                 logger.info(f"[WeChatPersonal Stream] Image from {from_user[:12]}...: {len(image_data)}B")
             except Exception as e:
@@ -210,7 +233,11 @@ class WeChatPersonalStreamManager:
         if msg.file_media and msg.file_name:
             try:
                 file_data = await ILinkClient(base_url).download_media(msg.file_media)
-                file_desc = f"[用户发送了文件: {msg.file_name}，{len(file_data)} 字节]"
+                file_path = _persist_inbound_media(agent_id, msg.file_name, file_data, f"wechat_file_{uuid.uuid4().hex[:8]}")
+                file_desc = (
+                    f"[用户发送了文件: {msg.file_name}，已保存到工作区 `{file_path}`，{len(file_data)} 字节。"
+                    f"如果需要处理内容，请直接读取该路径。]"
+                )
                 user_text = f"{user_text}\n{file_desc}" if user_text else file_desc
                 logger.info(f"[WeChatPersonal Stream] File from {from_user[:12]}...: {msg.file_name} ({len(file_data)}B)")
             except Exception as e:
@@ -219,7 +246,13 @@ class WeChatPersonalStreamManager:
 
         # Video: note receipt
         if msg.video_media:
-            video_desc = "[用户发送了一段视频]"
+            try:
+                video_data = await ILinkClient(base_url).download_media(msg.video_media)
+                video_path = _persist_inbound_media(agent_id, None, video_data, f"wechat_video_{uuid.uuid4().hex[:8]}.mp4")
+                video_desc = f"[用户发送了一段视频，已保存到工作区 `{video_path}`。如需处理内容，请直接读取该路径。]"
+            except Exception as e:
+                logger.error(f"[WeChatPersonal Stream] Video download failed: {e}")
+                video_desc = "[用户发送了一段视频，下载失败]"
             user_text = f"{user_text}\n{video_desc}" if user_text else video_desc
 
         if not user_text:
@@ -230,6 +263,13 @@ class WeChatPersonalStreamManager:
         # Cache context_token (MUST be echoed in replies)
         if msg.context_token:
             await store_context_token(agent_id, from_user, msg.context_token)
+
+        delivery_target = {
+            "channel": "wechat_personal",
+            "to_user_id": from_user,
+            "context_token": msg.context_token,
+            "context_token_obtained_at": datetime.now(timezone.utc).isoformat(),
+        }
 
         # Fetch and cache typing ticket on first contact
         try:
@@ -256,6 +296,7 @@ class WeChatPersonalStreamManager:
         from pathlib import Path as _P
 
         from app.services.agent_tools import channel_file_sender as _cfs
+        from app.services.channel_delivery_service import channel_delivery_target as _cdt
         from app.services.wechat_ilink_client import (
             MEDIA_TYPE_FILE as _MT_FILE,
             MEDIA_TYPE_IMAGE as _MT_IMG,
@@ -318,6 +359,7 @@ class WeChatPersonalStreamManager:
                 raise
 
         token_cfs = _cfs.set(_wechat_file_sender)
+        token_cdt = _cdt.set(delivery_target)
 
         # Process message through LLM pipeline
         try:
@@ -325,12 +367,14 @@ class WeChatPersonalStreamManager:
                 agent_id=agent_id,
                 sender_id=from_user,
                 user_text=user_text,
+                delivery_target=delivery_target,
             )
         except Exception as e:
             logger.error(f"[WeChatPersonal Stream] LLM processing failed: {e}")
             reply_text = "抱歉，处理消息时出现错误，请稍后再试。"
         finally:
             _cfs.reset(token_cfs)
+            _cdt.reset(token_cdt)
 
         # Send reply — split if over 4000 chars
         context_token = await get_context_token(agent_id, from_user) or msg.context_token
@@ -385,6 +429,7 @@ async def _process_wechat_message(
     agent_id: uuid.UUID,
     sender_id: str,
     user_text: str,
+    delivery_target: dict | None = None,
 ) -> str:
     """Process a WeChat message through the LLM pipeline and return the reply text."""
     from datetime import datetime, timezone
@@ -450,8 +495,12 @@ async def _process_wechat_message(
             external_conv_id=conv_id,
             source_channel="wechat_personal",
             first_message_title=user_text,
+            delivery_target=delivery_target,
         )
         session_conv_id = str(sess.id)
+        if delivery_target is not None:
+            delivery_target["session_id"] = session_conv_id
+            sess.delivery_target_json = delivery_target
 
         # Load history
         history_r = await db.execute(
@@ -475,6 +524,7 @@ async def _process_wechat_message(
         reply_text = await _call_agent_llm(
             db, agent_id, user_text,
             history=history, user_id=platform_user_id,
+            session_id=session_conv_id,
             session_source="wechat_personal",
             session_channel="wechat_personal",
         )

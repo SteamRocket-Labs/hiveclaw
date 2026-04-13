@@ -57,6 +57,7 @@ _SCHEDULED = {"set_trigger", "update_trigger", "cancel_trigger", "list_triggers"
 _CHANNEL = {
     "send_feishu_message",
     "send_web_message",
+    "send_channel_message",
     "send_message_to_agent",
     "delegate_to_agent",
     "check_async_task",

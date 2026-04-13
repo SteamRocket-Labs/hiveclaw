@@ -1,7 +1,6 @@
 """Agent relationship management API — human + agent-to-agent."""
 
 import uuid
-from pathlib import Path
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -9,33 +8,17 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.config import get_settings
 from app.core.security import get_current_user
 from app.core.permissions import check_agent_access
 from app.database import get_db
 from app.models.org import AgentRelationship, AgentAgentRelationship
 from app.models.user import User
-
-settings = get_settings()
+from app.services.relationships_file import (
+    AGENT_RELATION_LABELS,
+    RELATION_LABELS,
+    write_relationships_file,
+)
 router = APIRouter(prefix="/agents/{agent_id}/relationships", tags=["relationships"])
-
-RELATION_LABELS = {
-    "direct_leader": "直属上级",
-    "collaborator": "协作伙伴",
-    "stakeholder": "利益相关者",
-    "team_member": "团队成员",
-    "subordinate": "下属",
-    "mentor": "导师",
-    "other": "其他",
-}
-
-AGENT_RELATION_LABELS = {
-    "peer": "同级协作",
-    "supervisor": "上级数字员工",
-    "assistant": "助手",
-    "collaborator": "协作伙伴",
-    "other": "其他",
-}
 
 
 # ─── Schemas ───────────────────────────────────────────
@@ -240,63 +223,5 @@ async def delete_agent_relationship(
 # ─── relationships.md Generation ──────────────────────
 
 async def _regenerate_relationships_file(db: AsyncSession, agent_id: uuid.UUID):
-    """Regenerate relationships.md with both human and agent relationships."""
-    # Load human relationships
-    h_result = await db.execute(
-        select(AgentRelationship)
-        .where(AgentRelationship.agent_id == agent_id)
-        .options(selectinload(AgentRelationship.member))
-    )
-    human_rels = h_result.scalars().all()
-
-    # Load agent relationships
-    a_result = await db.execute(
-        select(AgentAgentRelationship)
-        .where(AgentAgentRelationship.agent_id == agent_id)
-        .options(selectinload(AgentAgentRelationship.target_agent))
-    )
-    agent_rels = a_result.scalars().all()
-
-    ws = Path(settings.AGENT_DATA_DIR) / str(agent_id)
-    ws.mkdir(parents=True, exist_ok=True)
-
-    if not human_rels and not agent_rels:
-        (ws / "relationships.md").write_text("# 关系网络\n\n_暂无配置的关系。_\n", encoding="utf-8")
-        return
-
-    lines = ["# 关系网络\n"]
-
-    # Human relationships
-    if human_rels:
-        lines.append("## 👤 人类同事\n")
-        for r in human_rels:
-            m = r.member
-            if not m:
-                continue
-            label = RELATION_LABELS.get(r.relation, r.relation)
-            lines.append(f"### {m.name} — {m.title or '未设置职位'}（{m.department_path or '未设置部门'}）")
-            lines.append(f"- 关系：{label}")
-            if m.feishu_open_id:
-                lines.append(f"- 飞书ID：{m.feishu_open_id}")
-            if m.email:
-                lines.append(f"- 邮箱：{m.email}")
-            if r.description:
-                lines.append(f"- {r.description}")
-            lines.append("")
-
-    # Agent relationships
-    if agent_rels:
-        lines.append("## 🤖 数字员工同事\n")
-        for r in agent_rels:
-            a = r.target_agent
-            if not a:
-                continue
-            label = AGENT_RELATION_LABELS.get(r.relation, r.relation)
-            lines.append(f"### {a.name} — {a.role_description or '数字员工'}")
-            lines.append(f"- 关系：{label}")
-            lines.append(f"- 可以用 send_agent_message 工具给 {a.name} 发消息协作")
-            if r.description:
-                lines.append(f"- {r.description}")
-            lines.append("")
-
-    (ws / "relationships.md").write_text("\n".join(lines), encoding="utf-8")
+    """Regenerate relationships.md with the shared explicit-relationship writer."""
+    await write_relationships_file(db=db, agent_id=agent_id, include_owner=True)

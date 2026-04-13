@@ -1,6 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AgentCapabilityInstall } from '../../api/domains/agents';
+import type { AgentCapabilityInstall, AgentChannelCapability } from '../../api/domains/agents';
 
 type AgentStatusSectionProps = {
   agent: any;
@@ -8,6 +8,7 @@ type AgentStatusSectionProps = {
   metrics?: any;
   activityLogs?: any[];
   capabilityInstalls?: AgentCapabilityInstall[];
+  channelCapabilities?: AgentChannelCapability[];
   statusKey: string;
   onSelectTab: (tab: string) => void;
 };
@@ -33,6 +34,7 @@ export default function AgentStatusSection({
   metrics,
   activityLogs = [],
   capabilityInstalls = [],
+  channelCapabilities = [],
   statusKey,
   onSelectTab,
 }: AgentStatusSectionProps) {
@@ -43,6 +45,11 @@ export default function AgentStatusSection({
   const installedCount = capabilityInstalls.filter((item) => item.status === 'installed').length;
   const pendingCount = capabilityInstalls.filter((item) => item.status === 'pending').length;
   const failedItems = capabilityInstalls.filter((item) => item.status === 'failed');
+  const renderCapabilityValue = (value: boolean | string) => {
+    if (value === true) return t('agent.status.capabilitySupported', 'Supported');
+    if (value === false) return t('agent.status.capabilityUnsupported', 'Unsupported');
+    return String(value);
+  };
 
   return (
     <div>
@@ -251,6 +258,63 @@ export default function AgentStatusSection({
               {t('agent.status.installHealthy', 'All requested capabilities are currently installed or pending.')}
             </div>
           )}
+        </div>
+      )}
+
+      {channelCapabilities.length > 0 && (
+        <div className="card" style={{ marginBottom: '24px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '12px', marginBottom: '12px', flexWrap: 'wrap' }}>
+            <h3 style={{ fontSize: '14px', fontWeight: 600, margin: 0 }}>
+              {t('agent.status.channelCapabilityTitle', 'Channel Capabilities')}
+            </h3>
+            <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+              {channelCapabilities.length} {t('agent.status.channelCapabilityItems', 'channels')}
+            </span>
+          </div>
+
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+              <thead>
+                <tr style={{ textAlign: 'left', color: 'var(--text-tertiary)' }}>
+                  <th style={{ padding: '8px 10px' }}>{t('agent.status.channelColumn', 'Channel')}</th>
+                  <th style={{ padding: '8px 10px' }}>{t('agent.status.connectionColumn', 'Connection')}</th>
+                  <th style={{ padding: '8px 10px' }}>{t('agent.status.apiColumn', 'API')}</th>
+                  <th style={{ padding: '8px 10px' }}>{t('agent.status.textColumn', 'Text')}</th>
+                  <th style={{ padding: '8px 10px' }}>{t('agent.status.fileColumn', 'Files')}</th>
+                  <th style={{ padding: '8px 10px' }}>{t('agent.status.deferredColumn', 'Deferred')}</th>
+                  <th style={{ padding: '8px 10px' }}>{t('agent.status.waitColumn', 'Wait Reply')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {channelCapabilities.map((item) => (
+                  <tr key={item.channel} style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                    <td style={{ padding: '10px' }}>
+                      <div style={{ fontWeight: 600 }}>{item.channel}</div>
+                      {item.limitations?.length > 0 && (
+                        <div style={{ color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                          {item.limitations.join(' ')}
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ padding: '10px' }}>{item.connected ? t('agent.status.connected', 'Connected') : t('agent.status.disconnected', 'Disconnected')}</td>
+                    <td style={{ padding: '10px' }}>
+                      {item.official_api ? t('agent.status.officialApi', 'Official') : item.third_party_transport || t('agent.status.thirdParty', 'Third-party')}
+                    </td>
+                    <td style={{ padding: '10px' }}>{renderCapabilityValue(item.capabilities.live_text)}</td>
+                    <td style={{ padding: '10px' }}>
+                      {`${renderCapabilityValue(item.capabilities.inbound_file)} / ${renderCapabilityValue(item.capabilities.outbound_file)}`}
+                    </td>
+                    <td style={{ padding: '10px' }}>
+                      {`${renderCapabilityValue(item.capabilities.deferred_text)} / ${renderCapabilityValue(item.capabilities.deferred_file)}`}
+                    </td>
+                    <td style={{ padding: '10px' }}>
+                      {`${renderCapabilityValue(item.capabilities.on_message_current_sender)} / ${renderCapabilityValue(item.capabilities.on_message_by_name)}`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 

@@ -64,7 +64,12 @@ def _normalize_messaging_result(tool_name: str, result: str) -> str:
     )
 
 
-async def _resolve_target_agent_runtime(from_agent_id: uuid.UUID, agent_name: str):
+async def _resolve_target_agent_runtime(
+    from_agent_id: uuid.UUID,
+    agent_name: str,
+    *,
+    target_agent_id: uuid.UUID | None = None,
+):
     """Resolve source agent, target agent, and target model for A2A delegation."""
     from app.models.agent import Agent
     from app.models.llm import LLMModel
@@ -75,14 +80,24 @@ async def _resolve_target_agent_runtime(from_agent_id: uuid.UUID, agent_name: st
         if not source_agent:
             return None, None, None, "❌ Source agent not found"
 
-        target_result = await db.execute(
-            select(Agent).where(
-                Agent.name.ilike(f"%{agent_name}%"),
-                Agent.id != from_agent_id,
-                Agent.tenant_id == source_agent.tenant_id,
+        if target_agent_id is not None:
+            target_result = await db.execute(
+                select(Agent).where(
+                    Agent.id == target_agent_id,
+                    Agent.id != from_agent_id,
+                    Agent.tenant_id == source_agent.tenant_id,
+                )
             )
-        )
-        target = target_result.scalars().first()
+            target = target_result.scalar_one_or_none()
+        else:
+            target_result = await db.execute(
+                select(Agent).where(
+                    Agent.name.ilike(f"%{agent_name}%"),
+                    Agent.id != from_agent_id,
+                    Agent.tenant_id == source_agent.tenant_id,
+                )
+            )
+            target = target_result.scalars().first()
         if not target:
             all_r = await db.execute(
                 select(Agent).where(Agent.id != from_agent_id, Agent.tenant_id == source_agent.tenant_id)
@@ -723,6 +738,7 @@ async def _invoke_agent_message_runtime(
         ),
         system_prompt_suffix=A2A_SYSTEM_PROMPT_SUFFIX,
         max_tool_rounds=getattr(target, "max_tool_rounds", None) or 200,
+        interaction_type="agent_message",
     )
 
 
@@ -924,14 +940,25 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
     agent_name = args.get("agent_name", "").strip()
     message_text = args.get("message", "").strip()
     tool_profile = str(args.get("tool_profile") or "worker_safe").strip() or "worker_safe"
+    target_agent_id_raw = args.get("target_agent_id")
+    target_agent_id = None
+    if target_agent_id_raw:
+        try:
+            target_agent_id = uuid.UUID(str(target_agent_id_raw))
+        except (TypeError, ValueError, AttributeError):
+            return "❌ target_agent_id is invalid"
 
-    if not agent_name or not message_text:
+    if (not agent_name and target_agent_id is None) or not message_text:
         return "❌ Please provide target agent name and message content"
 
     try:
         from app.agents.orchestrator import OrchestrationPolicy, delegate_async
 
-        source_agent, target, target_model, error = await _resolve_target_agent_runtime(from_agent_id, agent_name)
+        source_agent, target, target_model, error = await _resolve_target_agent_runtime(
+            from_agent_id,
+            agent_name,
+            target_agent_id=target_agent_id,
+        )
         if error:
             return error
         assert source_agent is not None

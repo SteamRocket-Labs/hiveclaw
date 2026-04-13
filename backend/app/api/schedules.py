@@ -23,6 +23,7 @@ class ScheduleCreate(BaseModel):
     instruction: str = Field(default='', max_length=5000)
     cron_expr: str = Field(min_length=1, max_length=100)
     is_enabled: bool = True
+    delivery_target_json: dict | None = None
 
 
 class ScheduleUpdate(BaseModel):
@@ -30,6 +31,7 @@ class ScheduleUpdate(BaseModel):
     instruction: str | None = None
     cron_expr: str | None = None
     is_enabled: bool | None = None
+    delivery_target_json: dict | None = None
 
 
 class ScheduleOut(BaseModel):
@@ -44,6 +46,7 @@ class ScheduleOut(BaseModel):
     run_count: int
     created_by: uuid.UUID | None = None
     creator_username: str | None = None
+    delivery_target_json: dict | None = None
     created_at: datetime | None = None
 
     model_config = {"from_attributes": True}
@@ -100,6 +103,7 @@ async def create_schedule(
         instruction=data.instruction,
         cron_expr=data.cron_expr,
         is_enabled=data.is_enabled,
+        delivery_target_json=data.delivery_target_json,
         next_run_at=next_run if data.is_enabled else None,
         created_by=current_user.id,
     )
@@ -188,7 +192,7 @@ async def trigger_schedule(
     # Fire in background
     import asyncio
     from app.services.scheduler import _execute_schedule
-    asyncio.create_task(_execute_schedule(sched.id, sched.agent_id, sched.instruction))
+    asyncio.create_task(_execute_schedule(sched.id, sched.agent_id, sched.instruction, sched.delivery_target_json))
 
     # Update tracking
     sched.last_run_at = datetime.now(timezone.utc)
@@ -232,4 +236,3 @@ async def get_schedule_history(
         if len(history) >= 20:
             break
     return history
-

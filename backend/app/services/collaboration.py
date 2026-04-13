@@ -1,5 +1,6 @@
 """Agent collaboration service — Agent-to-Agent communication."""
 
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -24,10 +25,9 @@ class CollaborationService:
         self, db: AsyncSession, from_agent_id: uuid.UUID,
         to_agent_id: uuid.UUID, task_title: str, task_description: str
     ) -> dict:
-        """Agent A delegates a task to Agent B."""
-        from app.models.task import Task
+        """Delegate work through the runtime async delegation path."""
+        from app.services.agent_tool_domains.messaging import _delegate_to_agent_async
 
-        # Verify both agents exist and are running
         from_result = await db.execute(select(Agent).where(Agent.id == from_agent_id))
         from_agent = from_result.scalar_one_or_none()
         to_result = await db.execute(select(Agent).where(Agent.id == to_agent_id))
@@ -35,22 +35,25 @@ class CollaborationService:
 
         if not from_agent or not to_agent:
             raise ValueError("Agent not found")
-        if to_agent.status != "running":
-            raise ValueError(f"Target agent '{to_agent.name}' is not running")
+        if to_agent.status in {"expired", "stopped", "archived"}:
+            raise ValueError(f"Target agent '{to_agent.name}' is currently {to_agent.status}")
 
-        # Create task for target agent
-        task = Task(
-            agent_id=to_agent_id,
-            title=f"[委托自 {from_agent.name}] {task_title}",
-            description=task_description,
-            type="todo",
-            priority="medium",
-            created_by=from_agent.creator_id,
-            assignee="self",
+        task_message = task_title.strip()
+        if task_description.strip():
+            task_message = f"{task_message}\n\n{task_description.strip()}"
+
+        raw_result = await _delegate_to_agent_async(
+            from_agent_id,
+            {
+                "agent_name": to_agent.name,
+                "target_agent_id": str(to_agent.id),
+                "message": task_message,
+            },
         )
-        db.add(task)
+        if raw_result.startswith(("❌", "⚠️")):
+            raise ValueError(raw_result.lstrip("❌⚠️ ").strip())
+        payload = json.loads(raw_result)
 
-        # Audit log
         db.add(AuditLog(
             agent_id=from_agent_id,
             action="collaboration:delegate",
@@ -58,17 +61,16 @@ class CollaborationService:
                 "from_agent": str(from_agent_id),
                 "to_agent": str(to_agent_id),
                 "task_title": task_title,
+                "runtime_task_id": payload.get("task_id"),
+                "trace_id": payload.get("trace_id"),
             },
         ))
         await db.flush()
 
         logger.info(f"Agent {from_agent.name} delegated task to {to_agent.name}: {task_title}")
-        return {
-            "task_id": str(task.id),
-            "from_agent": from_agent.name,
-            "to_agent": to_agent.name,
-            "status": "delegated",
-        }
+        payload["from_agent"] = from_agent.name
+        payload["to_agent"] = to_agent.name
+        return payload
 
     async def list_collaborators(self, db: AsyncSession, agent_id: uuid.UUID) -> list[dict]:
         """List agents that can collaborate with the given agent.

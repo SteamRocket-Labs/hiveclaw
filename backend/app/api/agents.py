@@ -419,6 +419,19 @@ async def create_agent(
 
     return AgentOut.model_validate(agent)
 
+@router.get("/{agent_id}/channel-capabilities")
+async def get_agent_channel_capabilities(
+    agent_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the real capability matrix for each configured channel."""
+    await check_agent_access(db, current_user, agent_id)
+    from app.services.channel_delivery_service import ChannelDeliveryService
+
+    return await ChannelDeliveryService.resolve_agent_capabilities(db=db, agent_id=agent_id)
+
+
 @router.get("/{agent_id}")
 async def get_agent(
     agent_id: uuid.UUID,

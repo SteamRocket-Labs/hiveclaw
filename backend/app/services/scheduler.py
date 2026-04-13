@@ -31,7 +31,12 @@ def compute_next_run(cron_expr: str, after: datetime | None = None) -> datetime 
         return None
 
 
-async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruction: str):
+async def _execute_schedule(
+    schedule_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    instruction: str,
+    delivery_target_json: dict | None = None,
+):
     """Execute a single schedule by calling the LLM with the instruction."""
     try:
         from app.models.agent import Agent
@@ -68,30 +73,46 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
                 return
 
             try:
-                runtime_messages = [{"role": "user", "content": f"[自动调度任务] {instruction}"}]
-                result = await invoke_agent(
-                    AgentInvocationRequest(
-                        model=model,
-                        messages=runtime_messages,
-                        memory_messages=runtime_messages,
-                        agent_name=agent.name,
-                        role_description=agent.role_description or "",
-                        agent_id=agent_id,
-                        user_id=agent.creator_id,
-                        execution_identity=ExecutionIdentityRef(
-                            identity_type="agent_bot",
-                            identity_id=agent_id,
-                            label=f"Agent: {agent.name} (schedule)",
-                        ),
-                        session_context=SessionContext(
-                            source="schedule",
-                            channel="schedule",
-                            metadata={"schedule_id": str(schedule_id)},
-                        ),
-                        core_tools_only=True,
-                        max_tool_rounds=getattr(agent, "max_tool_rounds", None),
+                runtime_instruction = f"[自动调度任务] {instruction}"
+                if delivery_target_json:
+                    runtime_instruction += (
+                        "\n\n[回投要求] 本次调度绑定了一个真实渠道回投目标。"
+                        "如需把结果发回给发起者，必须使用 send_channel_message 或 send_channel_file。"
                     )
-                )
+                runtime_messages = [{"role": "user", "content": runtime_instruction}]
+
+                from app.services.channel_delivery_service import channel_delivery_target
+
+                _delivery_token = None
+                if delivery_target_json:
+                    _delivery_token = channel_delivery_target.set(delivery_target_json)
+                try:
+                    result = await invoke_agent(
+                        AgentInvocationRequest(
+                            model=model,
+                            messages=runtime_messages,
+                            memory_messages=runtime_messages,
+                            agent_name=agent.name,
+                            role_description=agent.role_description or "",
+                            agent_id=agent_id,
+                            user_id=agent.creator_id,
+                            execution_identity=ExecutionIdentityRef(
+                                identity_type="agent_bot",
+                                identity_id=agent_id,
+                                label=f"Agent: {agent.name} (schedule)",
+                            ),
+                            session_context=SessionContext(
+                                source="schedule",
+                                channel="schedule",
+                                metadata={"schedule_id": str(schedule_id)},
+                            ),
+                            core_tools_only=True,
+                            max_tool_rounds=getattr(agent, "max_tool_rounds", None),
+                        )
+                    )
+                finally:
+                    if _delivery_token is not None:
+                        channel_delivery_target.reset(_delivery_token)
                 reply = result.content
             except Exception as e:
                 logger.error(f"Schedule {schedule_id}: unified runtime error: {e}")
@@ -148,7 +169,7 @@ async def _tick():
 
                 # Fire execution in background (don't block ticker)
                 asyncio.create_task(
-                    _execute_schedule(sched.id, sched.agent_id, sched.instruction)
+                    _execute_schedule(sched.id, sched.agent_id, sched.instruction, sched.delivery_target_json)
                 )
                 logger.info(f"Triggered schedule '{sched.name}' (next: {next_run})")
 

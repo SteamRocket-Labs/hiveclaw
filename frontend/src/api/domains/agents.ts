@@ -70,11 +70,29 @@ export interface AgentCapabilityInstall {
   metadata?: Record<string, unknown>;
 }
 
+export interface AgentChannelCapability {
+  channel: string;
+  connected: boolean;
+  official_api: boolean;
+  third_party_transport?: string | null;
+  capabilities: {
+    live_text: boolean | string;
+    inbound_file: boolean | string;
+    outbound_file: boolean | string;
+    deferred_text: boolean | string;
+    deferred_file: boolean | string;
+    on_message_current_sender: boolean | string;
+    on_message_by_name: boolean | string;
+  };
+  limitations: string[];
+}
+
 export const agentApi = {
   getHrAgent: () => get<HrAgentInfo>('/agents/system/hr'),
   list: (tenantId?: string) => get<Agent[]>(`/agents/${tenantId ? `?tenant_id=${tenantId}` : ''}`),
   getById: (id: string) => get<Agent>(`/agents/${id}`),
   getCapabilityInstalls: (id: string) => get<AgentCapabilityInstall[]>(`/agents/${id}/capability-installs`),
+  getChannelCapabilities: (id: string) => get<AgentChannelCapability[]>(`/agents/${id}/channel-capabilities`),
   create: (data: AgentCreateParams) => post<Agent>('/agents/', data),
   update: (id: string, data: AgentUpdateParams) => patch<Agent>(`/agents/${id}`, data),
   remove: (id: string) => del(`/agents/${id}`),

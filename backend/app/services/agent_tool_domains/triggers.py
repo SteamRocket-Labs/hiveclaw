@@ -24,24 +24,24 @@ def _capture_reply_context() -> dict | None:
     this captures who requested it and which channel, so the trigger daemon can
     inject delivery instructions when the trigger fires.
     """
-    from app.services.agent_tools import channel_feishu_sender_open_id
+    from app.services.channel_delivery_service import ChannelDeliveryService, channel_delivery_target
 
-    ctx: dict = {}
-    # Feishu channel
-    feishu_oid = channel_feishu_sender_open_id.get(None)
-    if feishu_oid:
-        ctx["channel"] = "feishu"
-        ctx["open_id"] = feishu_oid
-        # Try to resolve display name for the awakening prompt
-        try:
-            from app.core.execution_context import get_execution_identity
-            identity = get_execution_identity()
-            if identity and identity.label:
-                ctx["user_label"] = identity.label
-        except Exception as exc:
-            logger.debug("Failed to resolve reply context label: %s", exc)
+    ctx = ChannelDeliveryService.normalize_reply_target(channel_delivery_target.get(None)) or {}
+    if not ctx:
+        return None
+    try:
+        from app.core.execution_context import get_execution_identity
 
-    return ctx if ctx else None
+        identity = get_execution_identity()
+        if identity and identity.label and not ctx.get("user_label"):
+            ctx["user_label"] = identity.label
+    except Exception as exc:
+        logger.debug("Failed to resolve reply context label: %s", exc)
+
+    sender_identity = ChannelDeliveryService.identity_from_delivery_target(ctx)
+    if sender_identity:
+        ctx["sender_identity"] = sender_identity
+    return ctx or None
 
 
 def _trigger_error(
@@ -140,12 +140,14 @@ def _validate_trigger_config(tool_name: str, trigger_type: str, config: dict) ->
                 actionable_hint="Provide a full http:// or https:// URL.",
             )
     elif trigger_type == "on_message":
+        if config.get("reply_to_current_sender"):
+            return None
         if not config.get("from_agent_name") and not config.get("from_user_name"):
             return _trigger_error(
                 tool_name,
                 "bad_arguments",
-                "on_message trigger requires config.from_agent_name or config.from_user_name.",
-                actionable_hint="Specify which agent or human user should wake this trigger.",
+                "on_message trigger requires config.reply_to_current_sender, config.from_agent_name, or config.from_user_name.",
+                actionable_hint="Specify the current sender or which agent/human user should wake this trigger.",
             )
     return None
 
@@ -176,6 +178,8 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
     if validation_error:
         return validation_error
     if ttype == "on_message":
+        if config.get("reply_to_current_sender"):
+            config.pop("from_user_name", None)
         # Snapshot the latest message timestamp so we only detect NEW messages after this point
         try:
             from app.models.audit import ChatMessage
@@ -239,6 +243,12 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                         f"Trigger '{name}' already exists and is active. Use update_trigger to modify it, or cancel_trigger first.",
                     )
                 # Re-enable disabled trigger with new config (preserve fire history)
+                if ttype == "on_message" and config.get("reply_to_current_sender") and not _capture_reply_context():
+                    return _trigger_error(
+                        "set_trigger",
+                        "not_configured",
+                        "reply_to_current_sender requires a live channel conversation with a persisted reply target.",
+                    )
                 existing.type = ttype
                 existing.config = config
                 existing.reason = reason
@@ -251,6 +261,12 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
 
             # Auto-capture reply channel context from current session
             reply_ctx = _capture_reply_context()
+            if ttype == "on_message" and config.get("reply_to_current_sender") and not reply_ctx:
+                return _trigger_error(
+                    "set_trigger",
+                    "not_configured",
+                    "reply_to_current_sender requires a live channel conversation with a persisted reply target.",
+                )
 
             trigger = AgentTrigger(
                 agent_id=agent_id,

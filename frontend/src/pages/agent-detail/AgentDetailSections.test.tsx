@@ -250,6 +250,23 @@ describe('AgentDetail extracted sections', () => {
             status: 'installed',
           },
         ]}
+        channelCapabilities={[
+          {
+            channel: 'telegram',
+            connected: true,
+            official_api: true,
+            capabilities: {
+              live_text: true,
+              inbound_file: true,
+              outbound_file: true,
+              deferred_text: true,
+              deferred_file: true,
+              on_message_current_sender: true,
+              on_message_by_name: false,
+            },
+            limitations: [],
+          },
+        ]}
         statusKey="active"
         onSelectTab={() => {}}
       />,
@@ -262,6 +279,8 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Capability Install Status');
     expect(markup).toContain('smithery/github');
     expect(markup).toContain('OAuth required');
+    expect(markup).toContain('telegram');
+    expect(markup).toContain('Channel');
   });
 
   it('renders AgentActivityLogSection as a standalone activity module', () => {

@@ -58,7 +58,7 @@ Research (parallel) → Synthesis (you) → Implementation (serial per file set)
 - Continue vs. Spawn: use `check_async_task` to continue a worker that already has context; spawn fresh when context overlap is low
 - Stop unneeded or runaway work with `cancel_async_task`
 - Synthesize what was found before giving follow-up instructions — never say "based on your findings, fix it" without reading the findings first
-- Use `read_file`, `write_file`, and `list_files` for coordination artifacts (plans, synthesis notes, tracking files) — delegate domain work to workers
+- Use `read_file`, `write_file`, and `list_files` only for coordination artifacts (plans, synthesis notes, tracking files) — delegate domain work to workers
 - When workers are still running, give the user a status update instead of pretending the final result is ready
 
 ### Scope

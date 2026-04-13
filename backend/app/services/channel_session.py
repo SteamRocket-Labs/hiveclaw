@@ -20,6 +20,7 @@ async def find_or_create_channel_session(
     source_channel: str,
     first_message_title: str,
     legacy_external_conv_ids: list[str] | None = None,
+    delivery_target: dict | None = None,
 ) -> ChatSession:
     """Find an existing ChatSession by (agent_id, external_conv_id), or create one.
 
@@ -74,6 +75,8 @@ async def find_or_create_channel_session(
                     legacy_session.user_id = user_id
                     if not legacy_session.title or legacy_session.title == "New Session":
                         legacy_session.title = first_message_title[:40]
+                    if delivery_target:
+                        legacy_session.delivery_target_json = delivery_target
                     await db.flush()
                     return legacy_session
 
@@ -84,6 +87,7 @@ async def find_or_create_channel_session(
             title=first_message_title[:40],
             source_channel=source_channel,
             external_conv_id=external_conv_id,
+            delivery_target_json=delivery_target,
             created_at=now,
         )
         db.add(session)
@@ -92,5 +96,7 @@ async def find_or_create_channel_session(
         # Re-attribute old sessions that were stored under creator_id / wrong user
         if session.user_id != user_id:
             session.user_id = user_id
+        if delivery_target:
+            session.delivery_target_json = delivery_target
 
     return session

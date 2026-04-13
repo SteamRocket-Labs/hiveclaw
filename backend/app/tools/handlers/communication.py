@@ -303,11 +303,45 @@ async def get_current_time(agent_id: uuid.UUID, arguments: dict) -> str:
     return _normalize_messaging_result("get_current_time", await _get_current_time(agent_id, arguments))
 
 
+# -- send_channel_message -----------------------------------------------------
+
+@tool(ToolMeta(
+    name="send_channel_message",
+    description=(
+        "Send a text reply back to the current requester on the active channel or persisted reply target.\n\n"
+        "Usage:\n"
+        "- Use this when you need to reply to the current user in Feishu, Telegram, or personal WeChat.\n"
+        "- This tool sends only to the current requester / bound reply target.\n"
+        "- Do NOT use this for arbitrary lookup-by-name messaging; keep using send_feishu_message for that Feishu-only case."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "message": {
+                "type": "string",
+                "description": "Message content to send back to the current requester",
+            },
+        },
+        "required": ["message"],
+    },
+    category="communication",
+    display_name="Send Channel Message",
+    icon="\U0001f4e9",
+    governance="sensitive",
+    adapter="agent_args",
+))
+async def send_channel_message(agent_id: uuid.UUID, arguments: dict) -> str:
+    from app.services.agent_tool_domains.messaging import _normalize_messaging_result
+    from app.services.agent_tools import _send_channel_message
+
+    return _normalize_messaging_result("send_channel_message", await _send_channel_message(agent_id, arguments))
+
+
 # -- send_channel_file --------------------------------------------------------
 
 @tool(ToolMeta(
     name="send_channel_file",
-    description="Send a file to the user via the current communication channel (Feishu, Slack, Discord, or web). Call this when you have created a file and the user would benefit from receiving it directly. Provide the workspace-relative file path (e.g. workspace/report.md).",
+    description="Send a file to the user via the current communication channel (Feishu, Telegram, Slack, Discord, WeChat personal, or web). Call this when you have created a file and the user would benefit from receiving it directly. Provide the workspace-relative file path (e.g. workspace/report.md).",
     parameters={
         "type": "object",
         "properties": {

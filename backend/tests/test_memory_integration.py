@@ -39,8 +39,8 @@ class TestHooksIntegration:
         assert hasattr(HookEvent, "SESSION_CLOSE")
         assert hasattr(HookEvent, "SESSION_START")
 
-    def test_hooks_setup_registers_11_handlers(self) -> None:
-        """register_memory_hooks() should register 11 handlers total."""
+    def test_hooks_setup_registers_12_handlers(self) -> None:
+        """register_memory_hooks() should register 12 handlers total."""
         from app.runtime.hooks import HookRegistry
         registry = HookRegistry()
         # Monkeypatch the global registry temporarily
@@ -51,23 +51,25 @@ class TestHooksIntegration:
             from app.runtime.hooks_setup import register_memory_hooks
             register_memory_hooks()
             total = sum(len(handlers) for handlers in registry._handlers.values())
-            assert total == 11
+            assert total == 12
         finally:
             hooks_mod.hook_registry = original
 
     def test_hooks_setup_declares_registration_specs(self) -> None:
         from app.runtime.hooks_setup import _MEMORY_HOOK_REGISTRATIONS
 
-        assert len(_MEMORY_HOOK_REGISTRATIONS) == 11
+        assert len(_MEMORY_HOOK_REGISTRATIONS) == 12
+        assert any(spec.key == "pending_reply.post_tool_use.capture" for spec in _MEMORY_HOOK_REGISTRATIONS)
 
     def test_hooks_setup_exports_structured_memory_hook_plan(self) -> None:
         from app.runtime.hooks_setup import export_memory_hook_plan
 
         plan = export_memory_hook_plan()
 
-        assert len(plan) == 11
+        assert len(plan) == 12
         assert plan[0]["key"] == "memory.session_start.log"
         assert plan[0]["handler_name"] == "log_session_start"
+        assert any(item["key"] == "pending_reply.post_tool_use.capture" for item in plan)
         assert all("event" in item and "key" in item and "handler_name" in item for item in plan)
 
     def test_register_memory_hooks_is_idempotent(self) -> None:
@@ -83,7 +85,7 @@ class TestHooksIntegration:
             register_memory_hooks()
             register_memory_hooks()
             total = sum(len(handlers) for handlers in registry._handlers.values())
-            assert total == 11
+            assert total == 12
         finally:
             hooks_setup_mod.hook_registry = original
 

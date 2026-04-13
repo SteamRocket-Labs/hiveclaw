@@ -201,7 +201,21 @@
       "failedCount": "Failed",
       "installIssues": "Setup Issues",
       "installFailed": "Setup failed",
-      "installHealthy": "All requested features are active or being set up."
+      "installHealthy": "All requested features are active or being set up.",
+      "channelCapabilityTitle": "Channel Capabilities",
+      "channelCapabilityItems": "channels",
+      "channelColumn": "Channel",
+      "connectionColumn": "Connection",
+      "apiColumn": "API",
+      "textColumn": "Text",
+      "fileColumn": "Files",
+      "deferredColumn": "Deferred",
+      "waitColumn": "Wait Reply",
+      "connected": "Connected",
+      "officialApi": "Official",
+      "thirdParty": "Third-party",
+      "capabilitySupported": "Supported",
+      "capabilityUnsupported": "Unsupported"
     },
     "tabs": {
       "status": "Overview",

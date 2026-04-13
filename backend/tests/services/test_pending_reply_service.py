@@ -7,7 +7,9 @@ from app.services.pending_reply_service import (
     extract_recipient_info,
     format_pending_reply_context,
     normalize_identity,
+    sender_identity_from_external_conv_id,
 )
+from app.services.channel_delivery_service import channel_delivery_target
 
 
 # ── normalize_identity ──
@@ -66,6 +68,21 @@ class TestExtractRecipientInfo:
         assert result["channel"] == "web"
         assert result["identity"] == "web:simon"
 
+    def test_send_channel_message_uses_current_delivery_target(self) -> None:
+        token = channel_delivery_target.set({
+            "channel": "telegram",
+            "chat_id": 123456,
+            "sender_id": 789,
+        })
+        try:
+            result = extract_recipient_info("send_channel_message", {"message": "hello"})
+        finally:
+            channel_delivery_target.reset(token)
+
+        assert result is not None
+        assert result["channel"] == "telegram"
+        assert result["identity"] == "telegram:123456:789"
+
     def test_unknown_tool(self) -> None:
         assert extract_recipient_info("unknown_tool", {"message": "hi"}) is None
 
@@ -103,6 +120,14 @@ class TestBuildTaskContext:
         ]
         ctx = build_task_context(messages, {"message": "hi bob"})
         assert ctx["agent_reasoning"] == "我来帮你联系Bob"
+
+
+class TestSenderIdentityFromExternalConvId:
+    def test_telegram(self) -> None:
+        assert sender_identity_from_external_conv_id("tg_123456_789") == "telegram:123456:789"
+
+    def test_wechat_personal(self) -> None:
+        assert sender_identity_from_external_conv_id("wechat_p2p_wxid_abc") == "wechat_personal:wxid_abc"
 
 
 # ── format_pending_reply_context ──

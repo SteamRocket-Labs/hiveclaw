@@ -6,7 +6,7 @@ Data flows: DB → markdown files → agent reads via tools.
 Files written:
 - enterprise_info_{tenant_id}/company_profile.md  ← company name, intro, culture
 - enterprise_info_{tenant_id}/org_structure.md    ← departments + members
-- {agent_id}/relationships.md                     ← agent owner + peer agents
+- {agent_id}/relationships.md                     ← explicit human/agent relationships
 
 Optimization: content is compared before writing. If the file already has the
 same content, the write is skipped to avoid unnecessary I/O and prompt cache
@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models.agent import Agent
 from app.models.audit import EnterpriseInfo
-from app.models.user import User
+from app.services.relationships_file import write_relationships_file
 
 logger = logging.getLogger(__name__)
 
@@ -134,54 +134,13 @@ async def sync_org_structure(db: AsyncSession, tenant_id: uuid.UUID) -> None:
 # ─── Agent Relationships ────────────────────────────────
 
 async def sync_agent_relationships(db: AsyncSession, agent_id: uuid.UUID) -> None:
-    """Write agent's relationships to its workspace relationships.md."""
+    """Write agent's explicit relationships to workspace relationships.md."""
     agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
     agent = agent_result.scalar_one_or_none()
     if not agent or not agent.tenant_id:
         return
-
-    ws = WORKSPACE_ROOT / str(agent_id)
-    ws.mkdir(parents=True, exist_ok=True)
-
-    lines = ["# 关系", ""]
-
-    # Owner info
-    if agent.owner_user_id:
-        owner_result = await db.execute(select(User).where(User.id == agent.owner_user_id))
-        owner = owner_result.scalar_one_or_none()
-        if owner:
-            lines.append("## 我的主人")
-            lines.append(f"- 姓名: {owner.display_name}")
-            lines.append(f"- 用户名: {owner.username}")
-            if owner.title:
-                lines.append(f"- 职位: {owner.title}")
-            lines.append("")
-
-    # Peer agents in same tenant
-    peer_result = await db.execute(
-        select(Agent).where(
-            Agent.tenant_id == agent.tenant_id,
-            Agent.id != agent_id,
-            Agent.status.in_(["running", "idle", "creating"]),
-        )
-    )
-    peers = peer_result.scalars().all()
-
-    if peers:
-        lines.append("## 同事（同公司数字员工）")
-        for peer in peers:
-            owner_name = ""
-            if peer.owner_user_id:
-                po = await db.execute(select(User.display_name).where(User.id == peer.owner_user_id))
-                owner_name = po.scalar_one_or_none() or ""
-            lines.append(f"- **{peer.name}**: {peer.role_description or '无描述'}" + (f" (属于 {owner_name})" if owner_name else ""))
-        lines.append("")
-
-    if len(lines) <= 2:
-        lines.append("_暂无关系信息。_")
-
-    if _write_if_changed(ws / "relationships.md", "\n".join(lines)):
-        logger.info(f"[workspace-sync] Wrote relationships.md for agent {agent.name}")
+    await write_relationships_file(db=db, agent_id=agent_id, include_owner=True)
+    logger.info(f"[workspace-sync] Wrote relationships.md for agent {agent.name}")
 
 
 # ─── Full Sync ──────────────────────────────────────────

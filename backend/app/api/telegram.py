@@ -3,10 +3,12 @@
 import hashlib
 import hmac
 import json
+import mimetypes
 import os
 import re
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -143,6 +145,124 @@ async def _send_telegram_message(bot_token: str, chat_id: int | str, text: str) 
                     logger.error("[Telegram] sendMessage failed: %s %s", resp.status_code, resp.text[:200])
     except Exception as exc:
         logger.error("[Telegram] Failed to send message to chat %s: %s", chat_id, exc)
+
+
+async def _send_telegram_file(
+    bot_token: str,
+    chat_id: int | str,
+    file_path: str | Path,
+    accompany_msg: str = "",
+) -> None:
+    """Send a real file attachment to Telegram using sendDocument."""
+    path = Path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {path}")
+
+    mime_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+    async with httpx.AsyncClient(timeout=60) as client:
+        with path.open("rb") as fh:
+            resp = await client.post(
+                f"{TG_API}/bot{bot_token}/sendDocument",
+                data={"chat_id": str(chat_id)},
+                files={"document": (path.name, fh, mime_type)},
+            )
+
+        try:
+            payload = resp.json()
+        except Exception:
+            payload = {"ok": False, "description": resp.text[:200]}
+
+        if resp.status_code != 200 or not payload.get("ok"):
+            raise RuntimeError(f"Telegram sendDocument failed: {resp.status_code} {payload}")
+
+    if accompany_msg:
+        await _send_telegram_message(bot_token, chat_id, accompany_msg)
+
+
+def _safe_upload_name(filename: str | None, fallback: str) -> str:
+    raw = (filename or "").strip() or fallback
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("._")
+    return safe or fallback
+
+
+async def _download_telegram_attachment(
+    bot_token: str,
+    agent_id: uuid.UUID,
+    file_id: str,
+    filename_hint: str | None = None,
+) -> str:
+    """Download a Telegram attachment into workspace/uploads and return workspace-relative path."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        meta_resp = await client.get(f"{TG_API}/bot{bot_token}/getFile", params={"file_id": file_id})
+        meta_resp.raise_for_status()
+        meta_payload = meta_resp.json()
+        if not meta_payload.get("ok") or not meta_payload.get("result", {}).get("file_path"):
+            raise RuntimeError(f"Telegram getFile failed: {meta_payload}")
+        remote_path = meta_payload["result"]["file_path"]
+        file_resp = await client.get(f"{TG_API}/file/bot{bot_token}/{remote_path}")
+        file_resp.raise_for_status()
+
+    uploads_dir = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "workspace" / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    base_name = _safe_upload_name(filename_hint or Path(remote_path).name, f"telegram_{file_id}")
+    destination = uploads_dir / base_name
+    if destination.exists():
+        destination = uploads_dir / f"{destination.stem}_{uuid.uuid4().hex[:8]}{destination.suffix}"
+    destination.write_bytes(file_resp.content)
+    return f"workspace/uploads/{destination.name}"
+
+
+async def _extract_telegram_message_content(
+    bot_token: str,
+    agent_id: uuid.UUID,
+    message: dict,
+) -> tuple[str, list[str]]:
+    """Return user text plus workspace file hints for Telegram attachments."""
+    user_text = (message.get("text") or "").strip()
+    caption = (message.get("caption") or "").strip()
+    if not user_text and caption:
+        user_text = caption
+
+    saved_files: list[str] = []
+
+    document = message.get("document") or {}
+    if document.get("file_id"):
+        saved_files.append(
+            await _download_telegram_attachment(
+                bot_token,
+                agent_id,
+                document["file_id"],
+                filename_hint=document.get("file_name"),
+            )
+        )
+
+    photos = message.get("photo") or []
+    if photos:
+        largest = photos[-1]
+        if largest.get("file_id"):
+            saved_files.append(
+                await _download_telegram_attachment(
+                    bot_token,
+                    agent_id,
+                    largest["file_id"],
+                    filename_hint=f"telegram_photo_{largest['file_id']}.jpg",
+                )
+            )
+
+    for key, fallback_ext in (("video", ".mp4"), ("audio", ".mp3"), ("voice", ".ogg")):
+        media = message.get(key) or {}
+        if media.get("file_id"):
+            hint_name = media.get("file_name") or f"telegram_{key}_{media['file_id']}{fallback_ext}"
+            saved_files.append(await _download_telegram_attachment(bot_token, agent_id, media["file_id"], filename_hint=hint_name))
+
+    if saved_files:
+        hints = "\n".join(
+            f"[系统提示：用户刚上传了文件，路径为工作区 `{path}`。如需处理内容，请直接读取该路径。]"
+            for path in saved_files
+        )
+        user_text = f"{user_text}\n\n{hints}".strip()
+
+    return user_text, saved_files
 
 
 async def _is_duplicate_update(update_id: int) -> bool:
@@ -319,7 +439,6 @@ async def telegram_webhook(
     if not message:
         return {"ok": True}
 
-    user_text = message.get("text", "").strip()
     chat_id = message.get("chat", {}).get("id")
     sender = message.get("from", {})
     sender_id = str(sender.get("id", ""))
@@ -331,6 +450,7 @@ async def telegram_webhook(
     if sender.get("is_bot"):
         return {"ok": True}
 
+    user_text, _inbound_files = await _extract_telegram_message_content(bot_token, agent_id, message)
     if not user_text:
         return {"ok": True}
 
@@ -400,6 +520,13 @@ async def telegram_webhook(
     from app.models.audit import ChatMessage
     from app.services.channel_session import find_or_create_channel_session
 
+    delivery_target = {
+        "channel": "telegram",
+        "chat_id": chat_id,
+        "sender_id": sender_id,
+        "user_label": sender_name,
+    }
+
     session = await find_or_create_channel_session(
         db,
         agent_id,
@@ -407,7 +534,10 @@ async def telegram_webhook(
         conv_id,
         "telegram",
         first_message_title=f"Telegram: {sender_name}",
+        delivery_target=delivery_target,
     )
+    delivery_target["session_id"] = str(session.id)
+    session.delivery_target_json = delivery_target
 
     # Save user message
     db.add(
@@ -435,6 +565,14 @@ async def telegram_webhook(
 
     # Call agent LLM (same function used by Feishu/Slack/DingTalk channels)
     from app.api.feishu import _call_agent_llm
+    from app.services.agent_tools import channel_file_sender as _cfs_t
+    from app.services.channel_delivery_service import channel_delivery_target as _cdt_t
+
+    async def _telegram_file_sender(file_path, accompany_msg: str = ""):
+        await _send_telegram_file(bot_token, chat_id, file_path, accompany_msg)
+
+    _cfs_t_token = _cfs_t.set(_telegram_file_sender)
+    _cdt_token = _cdt_t.set(delivery_target)
 
     try:
         reply = await _call_agent_llm(
@@ -450,6 +588,9 @@ async def telegram_webhook(
     except Exception as e:
         logger.error("[Telegram] LLM error for %s: %s", agent_id, e)
         reply = "Sorry, I encountered an error processing your message. Please try again."
+    finally:
+        _cfs_t.reset(_cfs_t_token)
+        _cdt_t.reset(_cdt_token)
 
     # Save assistant reply + update session timestamp in one commit
     db.add(

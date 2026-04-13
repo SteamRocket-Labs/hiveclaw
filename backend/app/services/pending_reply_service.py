@@ -27,6 +27,7 @@ _TOOL_RECIPIENT_MAP: dict[str, dict[str, str | list[str]]] = {
     "send_slack_message": {"channel": "slack", "name_key": "username", "id_keys": ["user_id", "username"]},
     "send_dingtalk_message": {"channel": "dingtalk", "name_key": "member_name", "id_keys": ["user_id"]},
     "send_wecom_message": {"channel": "wecom", "name_key": "member_name", "id_keys": ["user_id"]},
+    "send_channel_message": {"channel": "dynamic", "name_key": "message", "id_keys": []},
 }
 
 OUTBOUND_TOOL_NAMES = tuple(_TOOL_RECIPIENT_MAP.keys())
@@ -49,6 +50,20 @@ def extract_recipient_info(tool_name: str, tool_args: dict) -> dict | None:
     if not spec:
         return None
 
+    if tool_name == "send_channel_message":
+        from app.services.channel_delivery_service import ChannelDeliveryService, channel_delivery_target
+
+        target = channel_delivery_target.get(None)
+        normalized_target = ChannelDeliveryService.normalize_reply_target(target)
+        identity = ChannelDeliveryService.identity_from_delivery_target(normalized_target)
+        if not normalized_target or not identity:
+            return None
+        return {
+            "channel": normalized_target["channel"],
+            "name": normalized_target.get("user_label") or normalized_target.get("to_user_id") or normalized_target.get("open_id") or "",
+            "identity": identity,
+        }
+
     channel = str(spec["channel"])
     name_key = str(spec["name_key"])
     name = (tool_args.get(name_key) or "").strip()
@@ -68,6 +83,26 @@ def extract_recipient_info(tool_name: str, tool_args: dict) -> dict | None:
         "name": name,
         "identity": normalize_identity(channel, identifier or name),
     }
+
+
+def sender_identity_from_external_conv_id(external_conv_id: str) -> str:
+    """Infer sender identity from canonical external conversation ids."""
+    ext = (external_conv_id or "").strip()
+    if not ext:
+        return ""
+    if ext.startswith("feishu_p2p_"):
+        return normalize_identity("feishu", ext[len("feishu_p2p_"):])
+    if ext.startswith("web_"):
+        return normalize_identity("web", ext[len("web_"):])
+    if ext.startswith("slack_"):
+        return normalize_identity("slack", ext[len("slack_"):])
+    if ext.startswith("tg_"):
+        parts = ext.split("_", 2)
+        if len(parts) == 3 and parts[1] and parts[2]:
+            return f"telegram:{parts[1]}:{parts[2]}"
+    if ext.startswith("wechat_p2p_"):
+        return normalize_identity("wechat_personal", ext[len("wechat_p2p_"):])
+    return ""
 
 
 def build_task_context(messages: list[dict], tool_args: dict) -> dict:

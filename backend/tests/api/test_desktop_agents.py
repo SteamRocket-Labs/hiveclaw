@@ -109,7 +109,10 @@ def _build_client(*, main_agent=None, agents_by_id=None):
 def test_create_sub_agent_success():
     """Creating a sub-agent under the user's main agent must succeed."""
     client, fake_db = _build_client(main_agent=_FAKE_MAIN_AGENT)
-    with patch.object(agents_mod, "bump_sync_version", new_callable=AsyncMock, return_value=2):
+    with (
+        patch.object(agents_mod, "bump_sync_version", new_callable=AsyncMock, return_value=2),
+        patch.object(agents_mod, "ensure_main_agent", new_callable=AsyncMock, return_value=_FAKE_MAIN_AGENT),
+    ):
         resp = client.post("/desktop/agents", json={
             "name": "代码助手",
             "role_description": "写代码",
@@ -123,15 +126,21 @@ def test_create_sub_agent_success():
     assert data["execution_mode"] == "coordinator"
     assert data["smart_model_routing"] == {"enabled": True, "max_simple_chars": 120, "max_simple_words": 18}
     assert len(fake_db.added) == 1
+    assert fake_db.added[0].parent_agent_id == _MAIN_AGENT_ID
 
 
 def test_create_agent_succeeds_without_existing_agents():
     """Creating an agent works even without any prior agents."""
     client, fake_db = _build_client(main_agent=None)
-    with patch.object(agents_mod, "bump_sync_version", new_callable=AsyncMock, return_value=2):
+    auto_main = SimpleNamespace(id=_MAIN_AGENT_ID)
+    with (
+        patch.object(agents_mod, "bump_sync_version", new_callable=AsyncMock, return_value=2),
+        patch.object(agents_mod, "ensure_main_agent", new_callable=AsyncMock, return_value=auto_main),
+    ):
         resp = client.post("/desktop/agents", json={"name": "测试", "role_description": "test"})
     assert resp.status_code == 201
     assert resp.json()["name"] == "测试"
+    assert fake_db.added[0].parent_agent_id == _MAIN_AGENT_ID
 
 
 # ─── PATCH /desktop/agents/{id} (update sub-agent) ─────
@@ -195,6 +204,19 @@ def test_update_other_users_agent_returns_403():
     assert resp.status_code == 403
 
 
+def test_update_own_main_agent_forbidden():
+    """Desktop must not modify the user's root agent."""
+    own_main_agent = SimpleNamespace(
+        id=_MAIN_AGENT_ID,
+        name="主Agent",
+        owner_user_id=_USER_ID,
+        parent_agent_id=None,
+    )
+    client, _ = _build_client(agents_by_id={_MAIN_AGENT_ID: own_main_agent})
+    resp = client.patch(f"/desktop/agents/{_MAIN_AGENT_ID}", json={"name": "改主Agent"})
+    assert resp.status_code == 403
+
+
 # ─── DELETE /desktop/agents/{id} ────────────────────────
 
 
@@ -205,6 +227,7 @@ def test_delete_own_sub_agent():
         name="要删的",
         agent_kind="sub",
         owner_user_id=_USER_ID,
+        parent_agent_id=_MAIN_AGENT_ID,
     )
     client, fake_db = _build_client(agents_by_id={_SUB_AGENT_ID: sub})
     with patch.object(agents_mod, "bump_sync_version", new_callable=AsyncMock, return_value=4):
@@ -219,3 +242,16 @@ def test_delete_nonexistent_agent():
     client, _ = _build_client()
     resp = client.delete(f"/desktop/agents/{uuid4()}")
     assert resp.status_code == 404
+
+
+def test_delete_own_main_agent_forbidden():
+    """Desktop must not delete the user's root agent."""
+    own_main_agent = SimpleNamespace(
+        id=_MAIN_AGENT_ID,
+        name="主Agent",
+        owner_user_id=_USER_ID,
+        parent_agent_id=None,
+    )
+    client, _ = _build_client(agents_by_id={_MAIN_AGENT_ID: own_main_agent})
+    resp = client.delete(f"/desktop/agents/{_MAIN_AGENT_ID}")
+    assert resp.status_code == 403

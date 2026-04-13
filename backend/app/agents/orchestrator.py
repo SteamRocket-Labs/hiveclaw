@@ -60,6 +60,7 @@ _DELEGATION_TOOL_PROFILES: dict[str, DelegationToolProfile] = {
         ),
         memory_policy="isolated_no_long_term_memory",
         memory_rule=(
+            "Do NOT read or write long-term memory. "
             "Long-term memory tools are disabled for this worker session. "
             "Skill creation/update is also disabled — only the parent agent manages skills."
         ),
@@ -75,7 +76,7 @@ _DELEGATION_TOOL_PROFILES: dict[str, DelegationToolProfile] = {
         ),
         memory_policy="read_only_long_term_memory",
         memory_rule=(
-            "You can read long-term memory when it materially helps the delegated task. "
+            "You MAY read long-term memory when it materially helps the delegated task. "
             "Writing memory and creating/updating skills are disabled for this worker session."
         ),
     ),
@@ -96,7 +97,7 @@ _DELEGATION_TOOL_PROFILES: dict[str, DelegationToolProfile] = {
         tool_policy="worker_review_readonly",
         tool_rule=(
             "Your tool surface is review-only: read files, search, and recall. "
-            "Editing files, running commands, executing code, and external actions are not available."
+            "Do NOT edit files, run commands, execute code, or perform external actions."
         ),
         memory_policy="read_only_long_term_memory",
         memory_rule=(
@@ -140,22 +141,22 @@ def _resolve_delegation_tool_profile(name: str | None) -> DelegationToolProfile:
 
 def _build_delegated_worker_prompt(profile: DelegationToolProfile) -> str:
     return (
-    "## Delegated Worker Mode\n"
-    "You are a delegated worker running in an isolated child session.\n"
-    "- The delegated task brief is the only authoritative context you have.\n"
-    "- The parent agent's conversation history is not available to you.\n"
-    f"- {profile.memory_rule}\n"
-    f"- {profile.tool_rule}\n"
-    "- Return a concise execution summary with concrete evidence, files changed, and blockers.\n"
-    "- Delegation tools are not available in worker sessions — focus on executing the task directly.\n\n"
-    "### Return format\n"
-    "Completed:\n"
-    "- ...\n"
-    "Evidence:\n"
-    "- ...\n"
-    "Blockers:\n"
-    "- ..."
-)
+        "## Delegated Worker Mode\n"
+        "You are a delegated worker running in an isolated child session.\n"
+        "- The delegated task brief is the only authoritative context you have.\n"
+        "- The parent agent's conversation history is not available to you.\n"
+        f"- {profile.memory_rule}\n"
+        f"- {profile.tool_rule}\n"
+        "- Return a concise execution summary with concrete evidence, files changed, and blockers.\n"
+        "- Delegation tools are not available in worker sessions — focus on executing the task directly.\n\n"
+        "### Return format\n"
+        "Completed:\n"
+        "- ...\n"
+        "Evidence:\n"
+        "- ...\n"
+        "Blockers:\n"
+        "- ..."
+    )
 
 
 _DELEGATED_WORKER_PROMPT_SUFFIX = _build_delegated_worker_prompt(_DELEGATION_TOOL_PROFILES["worker_safe"])
@@ -257,6 +258,7 @@ class AgentDelegationRequest:
     trace_id: str | None = None
     depth: int = 1
     policy: OrchestrationPolicy = field(default_factory=OrchestrationPolicy)
+    interaction_type: str = "delegation"
 
 
 @dataclass(slots=True)
@@ -394,6 +396,7 @@ async def delegate_to_agent(
     trace_id: str | None = None,
     depth: int = 1,
     policy: OrchestrationPolicy | None = None,
+    interaction_type: str = "delegation",
 ) -> str:
     """Delegate one conversational turn to another agent through the runtime."""
     request = AgentDelegationRequest(
@@ -410,6 +413,7 @@ async def delegate_to_agent(
         trace_id=trace_id,
         depth=depth,
         policy=policy or OrchestrationPolicy(),
+        interaction_type=interaction_type,
     )
     result = await _delegate(request)
     return result.content
@@ -419,6 +423,7 @@ async def _delegate(request: AgentDelegationRequest) -> AgentDelegationResult:
     trace_id = request.trace_id or uuid.uuid4().hex
     child_session_id = request.session_id or uuid.uuid4().hex
     tool_profile = _resolve_delegation_tool_profile(request.policy.tool_profile)
+    is_delegation = request.interaction_type == "delegation"
 
     if request.depth > request.policy.max_depth:
         return AgentDelegationResult(
@@ -433,25 +438,25 @@ async def _delegate(request: AgentDelegationRequest) -> AgentDelegationResult:
             failed=True,
         )
 
-    # Emit DELEGATION_START hook
-    try:
-        from app.runtime.hooks import HookEvent, emit_hook
+    if is_delegation:
+        try:
+            from app.runtime.hooks import HookEvent, emit_hook
 
-        await emit_hook(
-            HookEvent.DELEGATION_START,
-            agent_id=request.target.id,
-            session_id=child_session_id,
-            source="agent",
-            metadata={
-                "from_agent": str(request.parent_agent_id) if request.parent_agent_id else None,
-                "to_agent": str(request.target.id),
-                "to_agent_name": request.target.name,
-                "trace_id": trace_id,
-                "depth": request.depth,
-            },
-        )
-    except Exception as _hook_err:
-        logger.debug("[Orchestrator] DELEGATION_START hook failed (non-fatal): %s", _hook_err)
+            await emit_hook(
+                HookEvent.DELEGATION_START,
+                agent_id=request.target.id,
+                session_id=child_session_id,
+                source="agent",
+                metadata={
+                    "from_agent": str(request.parent_agent_id) if request.parent_agent_id else None,
+                    "to_agent": str(request.target.id),
+                    "to_agent_name": request.target.name,
+                    "trace_id": trace_id,
+                    "depth": request.depth,
+                },
+            )
+        except Exception as _hook_err:
+            logger.debug("[Orchestrator] DELEGATION_START hook failed (non-fatal): %s", _hook_err)
 
     delegated_brief = _build_delegation_brief(request.conversation_messages)
     combined_suffix = "\n\n".join(
@@ -459,6 +464,34 @@ async def _delegate(request: AgentDelegationRequest) -> AgentDelegationResult:
         for part in [request.system_prompt_suffix, _build_delegated_worker_prompt(tool_profile)]
         if part and part.strip()
     )
+
+    session_metadata: dict[str, Any] = {
+        "interaction_type": request.interaction_type,
+    }
+    if is_delegation:
+        session_metadata.update({
+            "delegation": True,
+            "delegation_depth": request.depth,
+            "delegation_trace_id": trace_id,
+            "delegation_parent_agent_id": (
+                str(request.parent_agent_id) if request.parent_agent_id is not None else None
+            ),
+            "delegation_parent_session_id": request.parent_session_id,
+            "delegation_tool_policy": tool_profile.tool_policy,
+            "delegation_memory_policy": tool_profile.memory_policy,
+            "delegation_allowed_tools": tool_profile.allowed_tools,
+        })
+    else:
+        session_metadata.update({
+            "agent_message": True,
+            "agent_message_trace_id": trace_id,
+            "agent_message_parent_agent_id": (
+                str(request.parent_agent_id) if request.parent_agent_id is not None else None
+            ),
+            "agent_message_parent_session_id": request.parent_session_id,
+            "agent_message_tool_policy": tool_profile.tool_policy,
+            "agent_message_memory_policy": tool_profile.memory_policy,
+        })
 
     invocation = AgentInvocationRequest(
         model=request.target_model,
@@ -469,18 +502,7 @@ async def _delegate(request: AgentDelegationRequest) -> AgentDelegationResult:
             session_id=child_session_id,
             source="agent",
             channel="agent",
-            metadata={
-                "delegation": True,
-                "delegation_depth": request.depth,
-                "delegation_trace_id": trace_id,
-                "delegation_parent_agent_id": (
-                    str(request.parent_agent_id) if request.parent_agent_id is not None else None
-                ),
-                "delegation_parent_session_id": request.parent_session_id,
-                "delegation_tool_policy": tool_profile.tool_policy,
-                "delegation_memory_policy": tool_profile.memory_policy,
-                "delegation_allowed_tools": tool_profile.allowed_tools,
-            },
+            metadata=session_metadata,
         ),
         agent_name=request.target.name,
         role_description=request.target.role_description or "",
@@ -539,31 +561,31 @@ async def _delegate(request: AgentDelegationRequest) -> AgentDelegationResult:
             failed=True,
         )
 
-    # Emit DELEGATION_END hook on ALL paths (success/timeout/error) → T0 log
-    try:
-        from app.runtime.hooks import HookEvent, emit_hook
+    if is_delegation:
+        try:
+            from app.runtime.hooks import HookEvent, emit_hook
 
-        await emit_hook(
-            HookEvent.DELEGATION_END,
-            agent_id=request.target.id,
-            session_id=child_session_id,
-            messages=request.conversation_messages,
-            source="agent",
-            metadata={
-                "from_agent": str(request.parent_agent_id) if request.parent_agent_id else None,
-                "to_agent": str(request.target.id),
-                "to_agent_name": request.target.name,
-                "trace_id": trace_id,
-                "depth": request.depth,
-                "status": _delegation_status,
-                "failed": delegation_result.failed,
-                "task": (request.conversation_messages[-1].get("content", "")[:500]
-                         if request.conversation_messages else ""),
-                "result": (delegation_result.content or "")[:2000],
-            },
-        )
-    except Exception as _hook_err:
-        logger.debug("[Orchestrator] DELEGATION_END hook failed (non-fatal): %s", _hook_err)
+            await emit_hook(
+                HookEvent.DELEGATION_END,
+                agent_id=request.target.id,
+                session_id=child_session_id,
+                messages=request.conversation_messages,
+                source="agent",
+                metadata={
+                    "from_agent": str(request.parent_agent_id) if request.parent_agent_id else None,
+                    "to_agent": str(request.target.id),
+                    "to_agent_name": request.target.name,
+                    "trace_id": trace_id,
+                    "depth": request.depth,
+                    "status": _delegation_status,
+                    "failed": delegation_result.failed,
+                    "task": (request.conversation_messages[-1].get("content", "")[:500]
+                             if request.conversation_messages else ""),
+                    "result": (delegation_result.content or "")[:2000],
+                },
+            )
+        except Exception as _hook_err:
+            logger.debug("[Orchestrator] DELEGATION_END hook failed (non-fatal): %s", _hook_err)
 
     return delegation_result
 
@@ -653,6 +675,7 @@ async def delegate_async(
     trace_id: str | None = None,
     depth: int = 1,
     policy: OrchestrationPolicy | None = None,
+    interaction_type: str = "delegation",
 ) -> AsyncDelegationHandle:
     """Launch a child agent in the background and return immediately."""
     _cleanup_stale_tasks()
@@ -672,6 +695,7 @@ async def delegate_async(
         trace_id=real_trace_id,
         depth=depth,
         policy=policy or OrchestrationPolicy(timeout_seconds=120.0),
+        interaction_type=interaction_type,
     )
     metadata_json = _build_runtime_task_metadata(request)
 

@@ -55,13 +55,15 @@ class CollaborationService:
 
         db.add(AuditLog(
             agent_id=from_agent_id,
-            action="collaboration:delegate",
+            action="collaboration:delegation",
             details={
                 "from_agent": str(from_agent_id),
                 "to_agent": str(to_agent_id),
                 "task_title": task_title,
                 "runtime_task_id": payload.get("task_id"),
                 "trace_id": payload.get("trace_id"),
+                "interaction_type": "delegation",
+                "route": "runtime_delegation",
             },
         ))
         await db.flush()
@@ -132,17 +134,20 @@ class CollaborationService:
 
         db.add(AuditLog(
             agent_id=from_agent_id,
-            action=f"collaboration:{msg_type}",
+            action="collaboration:agent_message",
             details={
+                "from_agent": str(from_agent_id),
                 "to_agent": str(to_agent_id),
+                "msg_type": msg_type,
                 "message_preview": message[:100],
+                "interaction_type": "agent_message",
                 "route": "runtime_agent_message",
                 "result_preview": raw_result[:200],
             },
         ))
         await db.flush()
 
-        logger.info("Collab message routed through runtime: %s -> %s", from_agent_id, to_agent_id)
+        logger.info("Collab message routed through runtime: {} -> {}", from_agent_id, to_agent_id)
         return {
             "status": "completed",
             "type": msg_type,

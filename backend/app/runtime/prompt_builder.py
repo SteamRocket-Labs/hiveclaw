@@ -274,7 +274,7 @@ def assemble_runtime_prompt(
     return prompt
 
 
-# ── Legacy-compatible full builder (used by invoker.py) ─────────
+# ── Legacy-compatible full builder (kept for tests/evals, not the production trunk) ─────────
 
 
 async def build_runtime_prompt(

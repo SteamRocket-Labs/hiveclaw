@@ -39,15 +39,6 @@ CompactionCallback = Callable[[dict], Awaitable[None] | None]
 # ============================================================================
 
 
-async def on_conversation_start(
-    agent_id: uuid.UUID,
-    session_id: str,
-    tenant_id: uuid.UUID,
-) -> str:
-    """Backward-compatible wrapper for loading runtime memory context."""
-    return await build_memory_context(agent_id, tenant_id, session_id=session_id)
-
-
 async def build_memory_snapshot(
     agent_id: uuid.UUID,
     tenant_id: uuid.UUID,

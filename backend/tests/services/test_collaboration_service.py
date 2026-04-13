@@ -69,6 +69,18 @@ async def test_delegate_task_routes_through_runtime_delegation(monkeypatch):
     assert result["status"] == "running"
     assert result["from_agent"] == "源代理"
     assert result["to_agent"] == "目标代理"
+    assert db.flushed is True
+    assert len(db.added) == 1
+    assert db.added[0].action == "collaboration:delegation"
+    assert db.added[0].details == {
+        "from_agent": str(from_agent_id),
+        "to_agent": str(to_agent_id),
+        "task_title": "整理需求",
+        "runtime_task_id": "runtime-task-1",
+        "trace_id": "trace-1",
+        "interaction_type": "delegation",
+        "route": "runtime_delegation",
+    }
 
 
 @pytest.mark.asyncio
@@ -109,3 +121,15 @@ async def test_send_message_between_agents_routes_through_runtime_agent_message(
     assert result["from_agent"] == "源代理"
     assert result["to_agent"] == "目标代理"
     assert result["result"] == "💬 目标代理 replied:\n已收到"
+    assert db.flushed is True
+    assert len(db.added) == 1
+    assert db.added[0].action == "collaboration:agent_message"
+    assert db.added[0].details == {
+        "from_agent": str(from_agent_id),
+        "to_agent": str(to_agent_id),
+        "msg_type": "consult",
+        "message_preview": "请确认方案边界",
+        "interaction_type": "agent_message",
+        "route": "runtime_agent_message",
+        "result_preview": "💬 目标代理 replied:\n已收到",
+    }

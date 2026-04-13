@@ -7,5 +7,8 @@ def test_collaboration_service_routes_delegate_and_message_through_runtime_surfa
 
     assert "_delegate_to_agent_async(" in source
     assert "_send_message_to_agent(" in source
+    assert 'action="collaboration:delegation"' in source
+    assert 'action="collaboration:agent_message"' in source
     assert "event_bus.publish(" not in source
     assert "msg_file.write_text(" not in source
+    assert 'action=f"collaboration:{msg_type}"' not in source

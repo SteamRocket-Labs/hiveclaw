@@ -52,6 +52,20 @@ def set_agent_bot_identity(agent_id: uuid.UUID, agent_name: str, source: str = "
     )
 
 
+# ContextVar — current tenant for tool config isolation
+_current_tool_tenant_id: ContextVar[uuid.UUID | None] = ContextVar("tool_tenant_id", default=None)
+
+
+def set_tool_tenant_id(tenant_id: uuid.UUID | None) -> None:
+    """Set the tenant_id for tool config resolution in the current async context."""
+    _current_tool_tenant_id.set(tenant_id)
+
+
+def get_tool_tenant_id() -> uuid.UUID | None:
+    """Get the current tenant_id for tool config resolution."""
+    return _current_tool_tenant_id.get()
+
+
 def set_delegated_user_identity(user_id: uuid.UUID, user_name: str, channel: str = "feishu") -> None:
     """Convenience: set identity as user-delegated action."""
     set_execution_identity(

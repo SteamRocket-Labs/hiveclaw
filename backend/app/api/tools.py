@@ -22,6 +22,7 @@ from app.models.user import User
 from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment
 from app.services.email_service import test_connection as test_email_connection
 from app.services.mcp_client import MCPClient
+from app.services.tool_config_service import resolve_tool_config_for_tenant_display, update_tenant_tool_config
 
 router = APIRouter(tags=["tools"])
 
@@ -373,17 +374,7 @@ async def _serialize_tool_for_tenant(db: AsyncSession, tool: Tool, tenant_id: uu
     if not tenant_id:
         return _serialize_tool(tool)
 
-    agent_ids = await _get_tenant_agent_ids(db, tenant_id)
-    assignment = None
-    for agent_id in agent_ids:
-        assignment = await _get_agent_tool(db, agent_id, tool.id)
-        if assignment is not None:
-            break
-
-    effective_config = {**(tool.config or {})}
-    if assignment and assignment.config:
-        effective_config.update(assignment.config)
-    effective_enabled = assignment.enabled if assignment is not None else tool.enabled
+    effective_config, effective_enabled = await resolve_tool_config_for_tenant_display(db, tool, tenant_id)
     return _serialize_tool(tool, enabled=effective_enabled, config=effective_config)
 
 
@@ -582,15 +573,20 @@ async def update_global_tool(
     if tool.tenant_id and current_user.role != "platform_admin" and tool.tenant_id != current_user.tenant_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tool access denied")
 
-    if tool.tenant_id is None and current_user.role != "platform_admin":
+    if tool.tenant_id is None:
+        # Builtin tool (shared across tenants): write to TenantToolConfig, never modify Tool.config.
+        # This applies to ALL users including platform_admin — each tenant's config is isolated.
+        await update_tenant_tool_config(
+            db, current_user.tenant_id, tool.id,
+            config=data.config, enabled=data.enabled,
+        )
+        # Also propagate to per-agent assignments for immediate effect
         await _upsert_tenant_tool_assignments(
-            db,
-            current_user.tenant_id,
-            tool,
-            enabled=data.enabled,
-            config=data.config,
+            db, current_user.tenant_id, tool,
+            enabled=data.enabled, config=data.config,
         )
     else:
+        # Tenant-scoped tool (e.g. MCP): owning tenant can modify directly
         if data.enabled is not None:
             tool.enabled = data.enabled
         if data.config is not None:
@@ -614,10 +610,15 @@ async def delete_global_tool(
     if tool.tenant_id and current_user.role != "platform_admin" and tool.tenant_id != current_user.tenant_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tool access denied")
 
-    if tool.tenant_id is None and current_user.role != "platform_admin":
+    if tool.tenant_id is None:
+        # Builtin tool: NEVER delete the global Tool row. Remove this tenant's
+        # assignments and mark TenantToolConfig as disabled.
         agent_ids = await _get_tenant_agent_ids(db, current_user.tenant_id)
-        await db.execute(delete(AgentTool).where(AgentTool.tool_id == tool.id, AgentTool.agent_id.in_(agent_ids)))
+        if agent_ids:
+            await db.execute(delete(AgentTool).where(AgentTool.tool_id == tool.id, AgentTool.agent_id.in_(agent_ids)))
+        await update_tenant_tool_config(db, current_user.tenant_id, tool.id, enabled=False)
     else:
+        # Tenant-scoped tool (e.g. MCP): owning tenant can delete
         await db.execute(delete(AgentTool).where(AgentTool.tool_id == tool.id))
         await db.delete(tool)
 

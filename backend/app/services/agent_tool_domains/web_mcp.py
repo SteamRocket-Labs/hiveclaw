@@ -118,13 +118,18 @@ def _provider_failure_message(result: str, engine: str) -> str:
 
 
 async def _get_tool_config(tool_name: str) -> dict:
-    try:
-        from app.models.tool import Tool
+    """Resolve tool config with tenant isolation via ContextVar.
 
-        async with async_session() as db:
-            result = await db.execute(select(Tool).where(Tool.name == tool_name))
-            tool = result.scalar_one_or_none()
-            return dict(tool.config or {}) if tool and tool.config else {}
+    Reads the current tenant_id from the execution context (set by
+    ToolExecutionRegistry.try_execute) and merges:
+    Tool.config (platform default) → TenantToolConfig.config (tenant override).
+    """
+    try:
+        from app.core.execution_context import get_tool_tenant_id
+        from app.services.tool_config_service import resolve_tool_config
+
+        tenant_id = get_tool_tenant_id()
+        return await resolve_tool_config(tool_name, tenant_id)
     except Exception as e:
         logger.debug("Suppressed: %s", e)
         return {}

@@ -64,6 +64,21 @@ def upgrade() -> None:
           AND dup.id != keeper.id
     """)
 
+    # Step 2b: Reassign org_members from duplicate providers to the keeper.
+    op.execute("""
+        UPDATE org_members om
+        SET provider_id = keeper.id
+        FROM identity_providers dup
+        JOIN (
+            SELECT DISTINCT ON (provider_type, tenant_id) id, provider_type, tenant_id
+            FROM identity_providers
+            ORDER BY provider_type, tenant_id, created_at ASC
+        ) keeper ON keeper.provider_type = dup.provider_type
+                 AND keeper.tenant_id IS NOT DISTINCT FROM dup.tenant_id
+        WHERE om.provider_id = dup.id
+          AND dup.id != keeper.id
+    """)
+
     # Step 3: Delete duplicate providers (keep only the oldest per group).
     op.execute("""
         DELETE FROM identity_providers

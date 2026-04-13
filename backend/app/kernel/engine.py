@@ -363,6 +363,12 @@ async def _execute_tool_with_hooks(
         tool_name=tool_name,
         tool_args=effective_args,
         tool_result=str(result)[:500] if result else "",
+        messages=request.messages[-10:] if request.messages else None,
+        metadata={
+            "tenant_id": getattr(request, "tenant_id", None),
+            "agent_name": getattr(request, "agent_name", None),
+            "source": getattr(request.session_context, "source", None) if request.session_context else None,
+        },
     )
 
     # B-05 + P0.5: track all high-value tool outcomes for post-compact restoration

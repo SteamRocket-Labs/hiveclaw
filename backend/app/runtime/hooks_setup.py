@@ -20,6 +20,7 @@ from app.runtime.hooks import (
     load_registration_specs,
 )
 from app.services.extract_agent import extract_agent
+from app.services.pending_reply_service import OUTBOUND_TOOL_NAMES
 from app.services.session_memory import (
     build_session_memory_payload_from_messages,
     update_session_memory,
@@ -251,6 +252,60 @@ async def _t0_dream_end(ctx: HookContext) -> None:
     _reset_heartbeat_session(agent_id)
 
 
+async def _capture_pending_reply(ctx: HookContext) -> None:
+    """POST_TOOL_USE → auto-capture pending reply context for outbound messages."""
+    agent_id = _parse_agent_id(ctx)
+    if not agent_id:
+        return
+
+    tool_result = ctx.tool_result or ""
+    # Skip failed tool calls — error results start with known failure prefixes
+    if tool_result.startswith(("❌", "⚠️", "[Tool execution error]", "Blocked by hook")):
+        return
+    if not tool_result:
+        return
+
+    from app.services.pending_reply_service import (
+        capture_pending_reply,
+        extract_recipient_info,
+    )
+
+    if not extract_recipient_info(ctx.tool_name or "", ctx.tool_args or {}):
+        return
+
+    # Extract originator info from conversation messages
+    originator_name = ""
+    originator_identity = ""
+    messages = ctx.messages or []
+    for msg in messages:
+        if msg.get("role") == "user":
+            content = msg.get("content", "")
+            if isinstance(content, str) and content.strip():
+                # Try to extract sender label from "[发送者: XXX]" prefix
+                if content.startswith("[发送者:") or content.startswith("[发送者："):
+                    bracket_end = content.find("]")
+                    if bracket_end > 0:
+                        originator_name = content[5:bracket_end].strip().split("(")[0].strip()
+                # No fallback to agent_name — that's the bot, not the human originator
+
+    try:
+        from app.database import async_session
+
+        async with async_session() as db:
+            await capture_pending_reply(
+                db,
+                agent_id=agent_id,
+                tool_name=ctx.tool_name or "",
+                tool_args=ctx.tool_args or {},
+                messages=messages,
+                originator_name=originator_name,
+                originator_identity=originator_identity,
+            )
+            await db.commit()
+    except Exception as exc:
+        logger.warning("[PendingReply] Failed to capture: %s", exc)
+
+
 def register_memory_hooks() -> None:
     """Register all memory system hook handlers.
 
@@ -258,10 +313,11 @@ def register_memory_hooks() -> None:
     Phase 0: logging-only for SESSION_START, POST_COMPACTION, MEMORY_EXTRACTED.
     Phase 1: T0 cursor-based writers for SESSION_CLOSE/IDLE, TRIGGER_END, DELEGATION_END, HEARTBEAT_TICK_END, DREAM_END.
     Phase 2: Extractor for RESPONSE_COMPLETE, PRE_COMPACTION; drain on SESSION_CLOSE.
+    Phase 3: Pending reply capture for outbound messages.
     """
     hook_registry.register_many(_MEMORY_HOOK_REGISTRATIONS)
 
-    logger.info("[Hooks] Memory system hooks registered: %d handlers (3 log + 2 extract + 6 T0)", 11)
+    logger.info("[Hooks] Memory system hooks registered: %d handlers (3 log + 2 extract + 6 T0 + 1 pending_reply)", 12)
 
 
 def export_memory_hook_plan() -> list[dict[str, object]]:
@@ -285,6 +341,7 @@ _MEMORY_HOOK_HANDLERS = {
     "t0_delegation_end": _t0_delegation_end,
     "t0_heartbeat_tick_end": _t0_heartbeat_tick_end,
     "t0_dream_end": _t0_dream_end,
+    "capture_pending_reply": _capture_pending_reply,
 }
 
 _MEMORY_HOOK_CONFIGURATION = [
@@ -323,6 +380,12 @@ _MEMORY_HOOK_CONFIGURATION = [
         "key": "memory.heartbeat_tick_end.t0",
     },
     {"event": HookEvent.DREAM_END.value, "handler": "t0_dream_end", "key": "memory.dream_end.t0"},
+    {
+        "event": HookEvent.POST_TOOL_USE.value,
+        "handler": "capture_pending_reply",
+        "key": "pending_reply.post_tool_use.capture",
+        "tool_names": list(OUTBOUND_TOOL_NAMES),
+    },
 ]
 
 _MEMORY_HOOK_REGISTRATIONS = load_registration_specs(_MEMORY_HOOK_CONFIGURATION, _MEMORY_HOOK_HANDLERS)

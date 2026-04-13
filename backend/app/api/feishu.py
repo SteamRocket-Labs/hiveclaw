@@ -1884,6 +1884,46 @@ async def _call_agent_llm(
         messages.extend(history[-10:])
     messages.append({"role": "user", "content": user_text})
 
+    # ── Pending reply context injection ──
+    # If the current sender has pending reply contexts (the agent previously
+    # messaged them on behalf of someone else), inject structured task context
+    # so the agent knows WHY it messaged this person and WHAT to do with the reply.
+    pending_reply_suffix = ""
+    try:
+        from app.services.pending_reply_service import (
+            claim_and_fulfill_pending_replies,
+            format_pending_reply_context,
+            normalize_identity,
+        )
+
+        # Resolve sender identity from session's external_conv_id pattern
+        _sender_identity = ""
+        if session_id:
+            from app.models.chat_session import ChatSession as _CS
+
+            _sess_r = await db.execute(select(_CS).where(_CS.id == session_id))
+            _sess_obj = _sess_r.scalar_one_or_none()
+            if _sess_obj and _sess_obj.external_conv_id:
+                _ext = _sess_obj.external_conv_id
+                # feishu_p2p_{user_id} → normalize to feishu:{user_id}
+                if _ext.startswith("feishu_p2p_"):
+                    _sender_identity = normalize_identity("feishu", _ext[len("feishu_p2p_"):])
+                elif _ext.startswith("web_"):
+                    _sender_identity = normalize_identity("web", _ext[len("web_"):])
+                elif _ext.startswith("slack_"):
+                    _sender_identity = normalize_identity("slack", _ext[len("slack_"):])
+
+        if _sender_identity:
+            # Atomic claim+fulfill: only one concurrent handler gets rows back (TOCTOU safe)
+            claimed = await claim_and_fulfill_pending_replies(db, agent_id=agent_id, sender_identity=_sender_identity)
+            if claimed:
+                pending_reply_suffix = format_pending_reply_context(claimed)
+                logger.info("[PendingReply] Injecting %d context(s) for agent %s, sender %s", len(claimed), agent_id, _sender_identity)
+                # Commit the fulfill BEFORE invoke — prevents rollback on LLM timeout
+                await db.commit()
+    except Exception as _pr_err:
+        logger.warning("[PendingReply] Injection failed (non-fatal): %s", _pr_err)
+
     # Use actual user_id so the system prompt knows who it's chatting with
     effective_user_id = user_id or agent_id
 
@@ -1905,6 +1945,7 @@ async def _call_agent_llm(
             auto_close_session=True,
             session_source=session_source,
             session_channel=session_channel,
+            system_prompt_suffix=pending_reply_suffix,
         )
         return reply
     except Exception as e:

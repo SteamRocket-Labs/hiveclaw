@@ -807,4 +807,14 @@ async def start_trigger_daemon():
             except Exception as e:
                 logger.error(f"Heartbeat tick error: {e}")
 
+            # Cleanup expired pending reply contexts (piggyback on heartbeat cadence)
+            try:
+                from app.services.pending_reply_service import cleanup_expired_replies
+
+                async with async_session() as _pr_db:
+                    await cleanup_expired_replies(_pr_db)
+                    await _pr_db.commit()
+            except Exception as e:
+                logger.debug(f"PendingReply cleanup error (non-fatal): {e}")
+
         await asyncio.sleep(TICK_INTERVAL)

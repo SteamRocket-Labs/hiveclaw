@@ -331,14 +331,15 @@ class FeishuAuthProvider:
             identity = result.scalar_one_or_none()
 
         if not identity:
-            # Concurrent-safe: if another request just created the same identity,
-            # our INSERT will fail on the unique constraint. Retry the lookup once.
+            # Concurrent-safe: use a SAVEPOINT so that if the INSERT fails on a
+            # unique constraint, only the INSERT is rolled back — the outer transaction
+            # (session lookup, history, etc.) stays intact.
             try:
-                identity = ExternalIdentity(provider_id=provider.id, user_id=user.id)
-                db.add(identity)
-                await db.flush()
+                async with db.begin_nested():
+                    identity = ExternalIdentity(provider_id=provider.id, user_id=user.id)
+                    db.add(identity)
+                    await db.flush()
             except Exception:
-                await db.rollback()
                 # Re-query — the concurrent winner's row should be visible now
                 _retry_q = select(ExternalIdentity).where(ExternalIdentity.provider_id == provider.id)
                 if provider_union_id:

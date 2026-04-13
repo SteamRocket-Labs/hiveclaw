@@ -27,7 +27,6 @@ from app.models.invitation_code import InvitationCode  # noqa: F401
 from app.models.org import OrgDepartment, OrgMember, AgentRelationship, AgentAgentRelationship  # noqa: F401
 from app.models.identity import IdentityProvider, ExternalIdentity, SSOScanSession  # noqa: F401
 from app.models.plaza import PlazaPost, PlazaComment, PlazaLike  # noqa: F401
-from app.models.schedule import AgentSchedule  # noqa: F401
 from app.models.system_settings import SystemSetting  # noqa: F401
 from app.models.tenant import Tenant  # noqa: F401
 from app.models.tool import Tool  # noqa: F401

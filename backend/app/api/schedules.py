@@ -13,9 +13,6 @@ from app.core.security import get_current_user
 from app.database import get_db
 from app.models.trigger import AgentTrigger
 from app.models.user import User
-from app.services.schedule_compat import (
-    migrate_legacy_schedules,
-)
 from app.services.schedule_surface import (
     build_schedule_trigger_config,
     compute_next_run,
@@ -83,9 +80,6 @@ async def list_schedules(
 ):
     """List all schedules for an agent."""
     await check_agent_access(db, current_user, agent_id)
-    migrated = await migrate_legacy_schedules(db, agent_id)
-    if migrated:
-        await db.flush()
     result = await db.execute(
         select(AgentTrigger)
         .where(AgentTrigger.agent_id == agent_id, AgentTrigger.type == "cron")
@@ -121,7 +115,6 @@ async def create_schedule(
     agent, _access = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):
         raise HTTPException(status_code=403, detail="Only creator can manage schedules")
-    await migrate_legacy_schedules(db, agent_id)
 
     # Validate cron expression
     if not compute_next_run(data.cron_expr):
@@ -157,7 +150,6 @@ async def update_schedule(
     agent, _access = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):
         raise HTTPException(status_code=403, detail="Only creator can manage schedules")
-    await migrate_legacy_schedules(db, agent_id)
 
     trigger = await _load_schedule_trigger(db, agent_id, schedule_id)
     if not trigger:
@@ -203,7 +195,6 @@ async def delete_schedule(
     agent, _access = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):
         raise HTTPException(status_code=403, detail="Only creator can manage schedules")
-    await migrate_legacy_schedules(db, agent_id)
 
     trigger = await _load_schedule_trigger(db, agent_id, schedule_id)
     if not trigger:
@@ -224,7 +215,6 @@ async def trigger_schedule(
     agent, _access = await check_agent_access(db, current_user, agent_id)
     if is_agent_expired(agent):
         raise HTTPException(status_code=403, detail="Agent has expired and cannot be triggered.")
-    await migrate_legacy_schedules(db, agent_id)
 
     trigger = await _load_schedule_trigger(db, agent_id, schedule_id)
     if not trigger:
@@ -245,7 +235,6 @@ async def get_schedule_history(
 ):
     """Get execution history for a schedule from activity logs."""
     await check_agent_access(db, current_user, agent_id)
-    await migrate_legacy_schedules(db, agent_id)
     from app.models.activity_log import AgentActivityLog
     result = await db.execute(
         select(AgentActivityLog)

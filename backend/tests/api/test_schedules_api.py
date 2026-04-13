@@ -70,7 +70,6 @@ def test_create_schedule_persists_trigger_surface_record():
     with (
         patch.object(schedules_mod, "check_agent_access", new_callable=AsyncMock, return_value=(agent, None)),
         patch.object(schedules_mod, "is_agent_creator", return_value=True),
-        patch.object(schedules_mod, "migrate_legacy_schedules", new_callable=AsyncMock, return_value=0),
     ):
         response = client.post(
             f"/agents/{agent.id}/schedules/",
@@ -111,7 +110,6 @@ def test_manual_run_marks_trigger_pending_instead_of_calling_scheduler():
     with (
         patch.object(schedules_mod, "check_agent_access", new_callable=AsyncMock, return_value=(agent, None)),
         patch.object(schedules_mod, "is_agent_expired", return_value=False),
-        patch.object(schedules_mod, "migrate_legacy_schedules", new_callable=AsyncMock, return_value=0),
     ):
         response = client.post(f"/agents/{agent_id}/schedules/{schedule_id}/run")
 

@@ -187,7 +187,7 @@ async def lifespan(app: FastAPI):
 
     # One-time legacy schedule migration: promote AgentSchedule rows into trigger trunk
     try:
-        from app.services.schedule_compat import migrate_all_legacy_schedules
+        from app.services.legacy_schedule_migration import migrate_all_legacy_schedules
 
         migrated_schedules = await migrate_all_legacy_schedules()
         if migrated_schedules:

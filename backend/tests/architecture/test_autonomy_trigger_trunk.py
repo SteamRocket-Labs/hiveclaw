@@ -9,8 +9,8 @@ def test_schedule_api_depends_on_trigger_trunk_only() -> None:
     assert "from app.services.scheduler import compute_next_run" not in source
     assert "_execute_schedule" not in source
     assert "from app.services.schedule_surface import (" in source
-    assert "from app.services.schedule_compat import (" in source
-    assert "from app.services.schedule_compat import (\n    migrate_legacy_schedules,\n)" in source
+    assert "from app.services.schedule_compat import" not in source
+    assert "migrate_legacy_schedules(" not in source
 
 
 def test_trigger_daemon_uses_schedule_surface_not_compat_bridge() -> None:
@@ -25,18 +25,18 @@ def test_trigger_daemon_uses_schedule_surface_not_compat_bridge() -> None:
     assert "from app.services.schedule_surface import clear_schedule_manual_pending, is_schedule_surface_trigger" in source
 
 
-def test_schedule_compat_bridge_is_limited_to_schedule_api_migration_path() -> None:
+def test_legacy_schedule_migration_is_startup_only() -> None:
     project_root = Path(__file__).resolve().parents[3]
     app_root = project_root / "backend/app"
 
-    compat_importers = sorted(
+    migration_importers = sorted(
         str(path.relative_to(project_root))
         for path in app_root.rglob("*.py")
-        if "from app.services.schedule_compat import" in path.read_text(encoding="utf-8")
+        if "from app.services.legacy_schedule_migration import" in path.read_text(encoding="utf-8")
     )
 
-    assert compat_importers == [
-        "backend/app/api/schedules.py",
+    assert not (app_root / "services/schedule_compat.py").exists()
+    assert migration_importers == [
         "backend/app/main.py",
     ]
 
@@ -46,6 +46,7 @@ def test_agent_schedule_model_is_confined_to_legacy_boundary() -> None:
     app_root = project_root / "backend/app"
 
     assert not (app_root / "services/scheduler.py").exists()
+    assert not (app_root / "models/schedule.py").exists()
 
     legacy_importers = sorted(
         str(path.relative_to(project_root))
@@ -53,9 +54,7 @@ def test_agent_schedule_model_is_confined_to_legacy_boundary() -> None:
         if "from app.models.schedule import AgentSchedule" in path.read_text(encoding="utf-8")
     )
 
-    assert legacy_importers == [
-        "backend/app/services/schedule_compat.py",
-    ]
+    assert legacy_importers == []
 
 
 def test_agent_schedule_model_repo_imports_are_explicitly_allowlisted() -> None:
@@ -69,10 +68,7 @@ def test_agent_schedule_model_repo_imports_are_explicitly_allowlisted() -> None:
         if "from app.models.schedule import AgentSchedule" in path.read_text(encoding="utf-8")
     )
 
-    assert importers == [
-        "backend/alembic/env.py",
-        "backend/app/services/schedule_compat.py",
-    ]
+    assert importers == []
 
 
 def test_main_only_starts_trigger_daemon_for_autonomy_background_loops() -> None:
@@ -90,9 +86,13 @@ def test_legacy_schedule_startup_migration_runs_inside_main_not_entrypoint_scrip
     project_root = Path(__file__).resolve().parents[3]
     main_source = (project_root / "backend/app/main.py").read_text(encoding="utf-8")
     entrypoint_source = (project_root / "backend/entrypoint.sh").read_text(encoding="utf-8")
+    alembic_env_source = (project_root / "backend/alembic/env.py").read_text(encoding="utf-8")
+    seed_source = (project_root / "backend/seed.py").read_text(encoding="utf-8")
 
     assert "migrate_all_legacy_schedules" in main_source
     assert "import app.models.schedule" not in main_source
     assert "import app.models.schedule" not in entrypoint_source
+    assert "from app.models.schedule import AgentSchedule" not in alembic_env_source
+    assert "from app.models.schedule import AgentSchedule" not in seed_source
     assert "python -m app.scripts.migrate_schedules_to_triggers" not in entrypoint_source
     assert not (project_root / "backend/app/scripts/migrate_schedules_to_triggers.py").exists()

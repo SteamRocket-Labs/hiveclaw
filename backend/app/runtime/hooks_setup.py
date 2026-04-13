@@ -9,7 +9,6 @@ Phase 2: Extractor for RESPONSE_COMPLETE, PRE_COMPACTION, SESSION_CLOSE drain.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 
@@ -81,17 +80,15 @@ async def _extract_on_response(ctx: HookContext) -> None:
         agent_id,
         build_session_memory_payload_from_messages(ctx.messages or [], metadata=ctx.metadata),
     )
-    # Fire-and-forget: don't block the response
+    # Fire-and-forget: don't block the response (tracked for drain at SESSION_CLOSE)
     tenant_id = ctx.metadata.get("tenant_id")
     agent_name = ctx.metadata.get("agent_name", "Agent")
-    asyncio.create_task(
-        extract_agent.extract(
-            agent_id=agent_id,
-            messages=ctx.messages,
-            source=ctx.source or "web",
-            tenant_id=uuid.UUID(str(tenant_id)) if tenant_id else None,
-            agent_name=agent_name,
-        )
+    extract_agent.schedule_extract(
+        agent_id=agent_id,
+        messages=ctx.messages,
+        source=ctx.source or "web",
+        tenant_id=uuid.UUID(str(tenant_id)) if tenant_id else None,
+        agent_name=agent_name,
     )
 
 

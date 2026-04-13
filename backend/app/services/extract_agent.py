@@ -132,12 +132,17 @@ _PATTERN_MAP = [
 
 
 def _pattern_extract(messages: list[dict]) -> list[dict[str, str]]:
-    """Pattern-based extraction fallback. Returns list of {category, content}."""
+    """Pattern-based extraction fallback. Returns list of {category, content}.
+
+    Processes both user and assistant messages so delegation/agent sessions
+    (which have no user-role messages) still produce fallback extractions.
+    """
     results: list[dict[str, str]] = []
     seen: set[str] = set()
 
     for msg in messages:
-        if msg.get("role") != "user":
+        role = msg.get("role", "")
+        if role not in ("user", "assistant"):
             continue
         content = msg.get("content", "")
         if not isinstance(content, str) or len(content) < 10 or len(content) > 1000:
@@ -201,8 +206,32 @@ def _parse_extractions(raw: str) -> list[dict[str, str]]:
     return results[:8]
 
 
+_LLM_RETRY_DELAY_S = 2.0
+
+_TRANSIENT_PATTERN = re.compile(
+    r"\b(429|529)\b|rate.?limit|overload|too.?many.?request",
+    re.IGNORECASE,
+)
+
+
+def _is_transient_error(exc: Exception) -> bool:
+    """Check if an LLM exception is a transient rate-limit or overload error.
+
+    Uses word boundaries to avoid false positives from numbers like 42900 or 5290ms.
+    Also matches named error types (rate limit, overload) from LLM SDKs that may
+    not embed the HTTP status code in the exception message.
+    """
+    return bool(_TRANSIENT_PATTERN.search(str(exc)))
+
+
 async def _llm_extract(messages: list[dict], tenant_id: uuid.UUID, agent_name: str) -> list[dict[str, str]] | None:
-    """Run LLM extraction. Returns None on failure (caller should fallback)."""
+    """Run LLM extraction with one retry on transient errors (429/529).
+
+    Returns None on failure (caller should fallback to pattern extraction).
+    A single retry is critical for the PRE_COMPACTION path where context
+    is about to be lost — without it, transient LLM hiccups silently drop
+    all memory extraction for the session.
+    """
     from app.services.llm_client import LLMMessage, create_llm_client
     from app.services.memory_service import _get_summary_model_config
 
@@ -216,19 +245,29 @@ async def _llm_extract(messages: list[dict], tenant_id: uuid.UUID, agent_name: s
 
     prompt = EXTRACT_PROMPT.format(agent_name=agent_name, conversation=conversation_text)
 
-    client = create_llm_client(**model_config)
-    try:
-        response = await client.stream(
-            messages=[LLMMessage(role="user", content=prompt)],
-            max_tokens=1000,
-            temperature=0.3,
-        )
-        return _parse_extractions(response.content or "")
-    except Exception as exc:
-        logger.warning("[Extractor] LLM extraction failed: %s", exc)
-        return None
-    finally:
-        await client.close()
+    last_exc: Exception | None = None
+    for attempt in range(2):
+        client = create_llm_client(**model_config)
+        try:
+            response = await client.stream(
+                messages=[LLMMessage(role="user", content=prompt)],
+                max_tokens=1000,
+                temperature=0.3,
+            )
+            return _parse_extractions(response.content or "")
+        except Exception as exc:
+            last_exc = exc
+            if attempt == 0 and _is_transient_error(exc):
+                logger.info("[Extractor] LLM transient error, retrying in %.0fs: %s", _LLM_RETRY_DELAY_S, exc)
+                await asyncio.sleep(_LLM_RETRY_DELAY_S)
+                continue
+            logger.warning("[Extractor] LLM extraction failed: %s", exc)
+            return None
+        finally:
+            await client.close()
+
+    logger.warning("[Extractor] LLM extraction failed after retry: %s", last_exc)
+    return None
 
 
 # ── T2 file writer ──
@@ -347,11 +386,13 @@ class ExtractAgent:
     ) -> None:
         """Execute extraction: LLM primary → pattern fallback → write T2."""
         extractions: list[dict[str, str]] | None = None
+        extraction_source = "pattern"
 
         # LLM primary path
         if tenant_id:
             extractions = await _llm_extract(messages, tenant_id, agent_name)
             if extractions is not None:
+                extraction_source = "llm"
                 logger.info("[Extractor] LLM extracted %d items for %s", len(extractions), agent_id)
 
         # Pattern fallback
@@ -375,11 +416,43 @@ class ExtractAgent:
                     metadata={
                         "extraction_count": written,
                         "categories": list({e["category"] for e in extractions}),
-                        "source": "llm" if tenant_id else "pattern",
+                        "source": extraction_source,
                     },
                 )
             except Exception as _hook_err:
                 logger.debug("[Extractor] MEMORY_EXTRACTED hook failed (non-fatal): %s", _hook_err)
+
+    def schedule_extract(
+        self,
+        agent_id: uuid.UUID,
+        messages: list[dict] | None,
+        source: str = "web",
+        tenant_id: uuid.UUID | None = None,
+        agent_name: str = "Agent",
+    ) -> None:
+        """Fire-and-forget extraction that tracks the task for drain().
+
+        Use this instead of wrapping extract() in asyncio.create_task() externally.
+        """
+        key = str(agent_id)
+        task = asyncio.create_task(
+            self.extract(
+                agent_id=agent_id,
+                messages=messages,
+                source=source,
+                tenant_id=tenant_id,
+                agent_name=agent_name,
+            )
+        )
+        self._in_flight[key] = task
+
+        def _on_done(t: asyncio.Task[None]) -> None:
+            # Only pop if this task is still the current one — a later
+            # schedule_extract call may have replaced it in _in_flight.
+            if self._in_flight.get(key) is t:
+                self._in_flight.pop(key, None)
+
+        task.add_done_callback(_on_done)
 
     async def drain(self, agent_id: uuid.UUID, timeout_s: float = 10.0) -> None:
         """Wait for any in-flight extraction to complete."""

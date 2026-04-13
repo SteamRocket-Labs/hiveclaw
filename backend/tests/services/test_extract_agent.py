@@ -13,6 +13,7 @@ from app.services.extract_agent import (
     ExtractAgent,
     _append_to_learnings,
     _build_conversation_text,
+    _is_transient_error,
     _parse_extractions,
     _pattern_extract,
 )
@@ -65,8 +66,15 @@ class TestPatternExtract:
         assert len(results) == 1
         assert results[0]["category"] == "feedback"
 
-    def test_skips_assistant(self) -> None:
-        msgs = [{"role": "assistant", "content": "Don't worry, I'll fix it"}]
+    def test_extracts_assistant(self) -> None:
+        """Assistant messages are included so delegation sessions produce fallback extractions."""
+        msgs = [{"role": "assistant", "content": "Don't use that library, it's deprecated and wrong"}]
+        results = _pattern_extract(msgs)
+        assert len(results) == 1
+        assert results[0]["category"] == "feedback"
+
+    def test_skips_tool(self) -> None:
+        msgs = [{"role": "tool", "content": "Don't worry, I'll fix it"}]
         results = _pattern_extract(msgs)
         assert len(results) == 0
 
@@ -97,6 +105,48 @@ class TestPatternExtract:
         msgs = [{"role": "user", "content": "Hello, how are you doing today my friend?"}]
         results = _pattern_extract(msgs)
         assert len(results) == 0
+
+    def test_delegation_session_assistant_only(self) -> None:
+        """Delegation sessions have no user messages — assistant messages should still extract."""
+        msgs = [
+            {"role": "assistant", "content": "我决定使用 PostgreSQL 作为最终方案，确定了这个选择"},
+            {"role": "assistant", "content": "记住这个API的endpoint必须带上tenant_id参数"},
+        ]
+        results = _pattern_extract(msgs)
+        assert len(results) >= 1
+
+
+# ── _is_transient_error ──
+
+
+class TestIsTransientError:
+    def test_429_rate_limit(self) -> None:
+        exc = Exception("HTTP 429: rate limit exceeded")
+        assert _is_transient_error(exc) is True
+
+    def test_529_overloaded(self) -> None:
+        exc = Exception('HTTP 529: {"type":"error","error":{"type":"overloaded_error"}}')
+        assert _is_transient_error(exc) is True
+
+    def test_non_transient(self) -> None:
+        exc = Exception("HTTP 400: bad request")
+        assert _is_transient_error(exc) is False
+
+    def test_generic_error(self) -> None:
+        exc = Exception("connection refused")
+        assert _is_transient_error(exc) is False
+
+    def test_no_false_positive_on_embedded_digits(self) -> None:
+        """42900 tokens or 5290ms should NOT trigger transient detection."""
+        assert _is_transient_error(Exception("tokens_used: 42900")) is False
+        assert _is_transient_error(Exception("timeout after 5290ms")) is False
+
+    def test_named_rate_limit(self) -> None:
+        """SDK-wrapped exceptions that say 'rate limit' without HTTP code."""
+        assert _is_transient_error(Exception("RateLimitError: too many requests")) is True
+
+    def test_named_overload(self) -> None:
+        assert _is_transient_error(Exception("overloaded_error: cluster busy")) is True
 
 
 # ── _build_conversation_text ──
@@ -346,3 +396,44 @@ class TestExtractAgent:
     async def test_drain_no_task(self, extractor: ExtractAgent, agent_id: uuid.UUID) -> None:
         """Drain with no in-flight task should be a no-op."""
         await extractor.drain(agent_id, timeout_s=1.0)
+
+    async def test_schedule_extract_tracks_task(self, extractor: ExtractAgent, agent_id: uuid.UUID) -> None:
+        """schedule_extract stores task in _in_flight so drain() can await it."""
+        key = str(agent_id)
+        with patch("app.services.extract_agent._append_to_learnings", return_value=1):
+            extractor.schedule_extract(
+                agent_id, [{"role": "user", "content": "Don't use mocks, always use real DB"}], source="web",
+            )
+            assert key in extractor._in_flight
+            await extractor.drain(agent_id, timeout_s=5.0)
+            # After drain completes, done_callback should have cleaned up
+            assert key not in extractor._in_flight
+
+    async def test_schedule_extract_cleans_up_on_completion(self, extractor: ExtractAgent, agent_id: uuid.UUID) -> None:
+        """_in_flight entry is removed once the task finishes."""
+        key = str(agent_id)
+        with patch("app.services.extract_agent._append_to_learnings", return_value=0):
+            extractor.schedule_extract(agent_id, [{"role": "user", "content": "Hello world test"}], source="web")
+            await extractor.drain(agent_id, timeout_s=5.0)
+        assert key not in extractor._in_flight
+
+    async def test_back_to_back_schedule_does_not_orphan_drain(
+        self, extractor: ExtractAgent, agent_id: uuid.UUID,
+    ) -> None:
+        """Two rapid schedule_extract calls must not cause drain() to miss the second task."""
+        key = str(agent_id)
+        with patch("app.services.extract_agent._append_to_learnings", return_value=1):
+            extractor.schedule_extract(
+                agent_id, [{"role": "user", "content": "Don't use mocks ever in tests"}], source="web",
+            )
+            task1 = extractor._in_flight[key]
+            extractor.schedule_extract(
+                agent_id, [{"role": "user", "content": "Always use real DB for integration"}], source="web",
+            )
+            task2 = extractor._in_flight[key]
+            assert task2 is not task1
+            # drain should wait for task2 (the current one), not return early
+            await extractor.drain(agent_id, timeout_s=5.0)
+            # Both tasks should be done
+            assert task1.done()
+            assert task2.done()

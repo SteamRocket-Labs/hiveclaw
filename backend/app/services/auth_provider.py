@@ -70,7 +70,7 @@ class FeishuAuthProvider:
             select(IdentityProvider).where(
                 IdentityProvider.provider_type == self.provider_type,
                 IdentityProvider.tenant_id == tenant_id,
-            )
+            ).limit(1)
         )
         provider = result.scalar_one_or_none()
         if provider:
@@ -226,7 +226,7 @@ class FeishuAuthProvider:
             query = select(User).where(User.feishu_user_id == user_id)
             if tenant_id is not None:
                 query = query.where(User.tenant_id == tenant_id)
-            result = await db.execute(query)
+            result = await db.execute(query.limit(1))
             user = result.scalar_one_or_none()
             if user:
                 return user
@@ -235,7 +235,7 @@ class FeishuAuthProvider:
             query = select(User).where(User.feishu_open_id == open_id)
             if tenant_id is not None:
                 query = query.where(User.tenant_id == tenant_id)
-            result = await db.execute(query)
+            result = await db.execute(query.limit(1))
             user = result.scalar_one_or_none()
             if user:
                 return user
@@ -244,7 +244,7 @@ class FeishuAuthProvider:
             query = select(User).where(User.email == email)
             if tenant_id is not None:
                 query = query.where(User.tenant_id == tenant_id)
-            result = await db.execute(query)
+            result = await db.execute(query.limit(1))
             return result.scalar_one_or_none()
 
         return None
@@ -260,7 +260,7 @@ class FeishuAuthProvider:
         username = email.split("@")[0] if email else f"feishu_{(profile.get('user_id') or open_id)[:16]}"
         display_name = (profile.get("name") or "").strip() or username
 
-        result = await db.execute(select(User).where(User.username == username))
+        result = await db.execute(select(User).where(User.username == username).limit(1))
         if result.scalar_one_or_none():
             username = f"{username}_{uuid.uuid4().hex[:6]}"
 

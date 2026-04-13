@@ -99,7 +99,7 @@ class ChannelUserService:
             select(IdentityProvider).where(
                 IdentityProvider.provider_type == "feishu",
                 IdentityProvider.tenant_id == tenant_id,
-            )
+            ).limit(1)
         )
         provider = result.scalar_one_or_none()
         if provider:
@@ -109,7 +109,7 @@ class ChannelUserService:
             select(IdentityProvider).where(
                 IdentityProvider.provider_type == "feishu",
                 IdentityProvider.tenant_id.is_(None),
-            )
+            ).limit(1)
         )
         return result.scalar_one_or_none()
 
@@ -137,7 +137,7 @@ class ChannelUserService:
             select(User).where(
                 User.feishu_user_id == provider_user_id,
                 User.tenant_id == tenant_id,
-            )
+            ).limit(1)
         )
         return result.scalar_one_or_none()
 
@@ -165,7 +165,7 @@ class ChannelUserService:
             select(User).where(
                 User.feishu_open_id == provider_open_id,
                 User.tenant_id == tenant_id,
-            )
+            ).limit(1)
         )
         return result.scalar_one_or_none()
 
@@ -178,7 +178,7 @@ class ChannelUserService:
         query = select(User).where(User.email == email)
         if tenant_id is not None:
             query = query.where(User.tenant_id == tenant_id)
-        result = await db.execute(query)
+        result = await db.execute(query.limit(1))
         return result.scalar_one_or_none()
 
 

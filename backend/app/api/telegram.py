@@ -28,7 +28,7 @@ router = APIRouter(tags=["telegram"])
 TG_API = "https://api.telegram.org"
 TG_MSG_LIMIT = 4096  # Telegram message char limit
 _TG_DEDUP_TTL = 3600  # Redis TTL for update dedup (1 hour)
-_BOT_TOKEN_RE = re.compile(r"^\d+:[A-Za-z0-9_-]{30,}$")
+_BOT_TOKEN_RE = re.compile(r"^\d+:[A-Za-z0-9_-]{20,}$")
 
 
 # ─── Helpers ────────────────────────────────────────────

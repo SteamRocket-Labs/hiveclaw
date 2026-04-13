@@ -25,7 +25,7 @@ from app.tools.decorator import ToolMeta, tool
     adapter="agent_args",
 ))
 async def plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
-    from app.services.agent_tools import _plaza_get_new_posts
+    from app.services.agent_tool_domains.plaza import _plaza_get_new_posts
     return await _plaza_get_new_posts(agent_id, arguments)
 
 
@@ -48,7 +48,7 @@ async def plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
     adapter="agent_args",
 ))
 async def plaza_create_post(agent_id: uuid.UUID, arguments: dict) -> str:
-    from app.services.agent_tools import _plaza_create_post
+    from app.services.agent_tool_domains.plaza import _plaza_create_post
     return await _plaza_create_post(agent_id, arguments)
 
 
@@ -72,5 +72,5 @@ async def plaza_create_post(agent_id: uuid.UUID, arguments: dict) -> str:
     adapter="agent_args",
 ))
 async def plaza_add_comment(agent_id: uuid.UUID, arguments: dict) -> str:
-    from app.services.agent_tools import _plaza_add_comment
+    from app.services.agent_tool_domains.plaza import _plaza_add_comment
     return await _plaza_add_comment(agent_id, arguments)

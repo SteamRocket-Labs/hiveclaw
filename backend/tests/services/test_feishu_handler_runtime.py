@@ -21,7 +21,7 @@ async def test_feishu_doc_read_handler_allows_cli_without_channel(monkeypatch: p
 
     monkeypatch.setattr(feishu_handler, "_check_feishu_configured", fake_check_feishu_configured)
     monkeypatch.setattr(feishu_handler, "_check_feishu_office_access", fake_check_feishu_office_access)
-    monkeypatch.setattr("app.services.agent_tools._feishu_doc_read", fake_doc_read)
+    monkeypatch.setattr("app.services.agent_tool_domains.feishu_docs._feishu_doc_read", fake_doc_read)
 
     result = await feishu_handler.feishu_doc_read(uuid.uuid4(), {"document_token": "doc-token"})
 
@@ -44,7 +44,7 @@ async def test_feishu_sheet_info_handler_allows_cli_without_channel(monkeypatch:
 
     monkeypatch.setattr(feishu_handler, "_check_feishu_configured", fake_check_feishu_configured)
     monkeypatch.setattr(feishu_handler, "_check_feishu_office_access", fake_check_feishu_office_access)
-    monkeypatch.setattr("app.services.agent_tools._feishu_sheet_info", fake_sheet_info, raising=False)
+    monkeypatch.setattr("app.services.agent_tool_domains.feishu_sheets._feishu_sheet_info", fake_sheet_info, raising=False)
 
     result = await feishu_handler.feishu_sheet_info(uuid.uuid4(), {"spreadsheet_token": "sht-token"})
 
@@ -63,7 +63,7 @@ async def test_feishu_task_create_handler_uses_cli_only_access(monkeypatch: pyte
         return f"task:{agent_id}"
 
     monkeypatch.setattr(feishu_handler, "_check_feishu_office_access", fake_check_feishu_office_access)
-    monkeypatch.setattr("app.services.agent_tools._feishu_task_create", fake_task_create, raising=False)
+    monkeypatch.setattr("app.services.agent_tool_domains.feishu_tasks._feishu_task_create", fake_task_create, raising=False)
 
     result = await feishu_handler.feishu_task_create(uuid.uuid4(), {"summary": "跟进客户", "due": "2026-04-03"})
 
@@ -86,7 +86,7 @@ async def test_feishu_base_record_upsert_handler_uses_cli_only_access(monkeypatc
         return f"base:{agent_id}"
 
     monkeypatch.setattr(feishu_handler, "_check_feishu_office_access", fake_check_feishu_office_access)
-    monkeypatch.setattr("app.services.agent_tools._feishu_base_record_upsert", fake_record_upsert, raising=False)
+    monkeypatch.setattr("app.services.agent_tool_domains.feishu_base._feishu_base_record_upsert", fake_record_upsert, raising=False)
 
     result = await feishu_handler.feishu_base_record_upsert(
         uuid.uuid4(),
@@ -108,7 +108,7 @@ async def test_feishu_task_complete_handler_uses_cli_only_access(monkeypatch: py
         return f"complete:{agent_id}"
 
     monkeypatch.setattr(feishu_handler, "_check_feishu_office_access", fake_check_feishu_office_access)
-    monkeypatch.setattr("app.services.agent_tools._feishu_task_complete", fake_task_complete, raising=False)
+    monkeypatch.setattr("app.services.agent_tool_domains.feishu_tasks._feishu_task_complete", fake_task_complete, raising=False)
 
     result = await feishu_handler.feishu_task_complete(uuid.uuid4(), {"task_id": "task_1"})
 
@@ -127,7 +127,7 @@ async def test_feishu_base_field_list_handler_uses_cli_only_access(monkeypatch: 
         return f"fields:{agent_id}"
 
     monkeypatch.setattr(feishu_handler, "_check_feishu_office_access", fake_check_feishu_office_access)
-    monkeypatch.setattr("app.services.agent_tools._feishu_base_field_list", fake_field_list, raising=False)
+    monkeypatch.setattr("app.services.agent_tool_domains.feishu_base._feishu_base_field_list", fake_field_list, raising=False)
 
     result = await feishu_handler.feishu_base_field_list(
         uuid.uuid4(),
@@ -155,7 +155,11 @@ async def test_feishu_base_record_upload_attachment_handler_uses_cli_only_access
         return f"attachment:{agent_id}"
 
     monkeypatch.setattr(feishu_handler, "_check_feishu_office_access", fake_check_feishu_office_access)
-    monkeypatch.setattr("app.services.agent_tools._feishu_base_record_upload_attachment", fake_upload, raising=False)
+    monkeypatch.setattr(
+        "app.services.agent_tool_domains.feishu_base._feishu_base_record_upload_attachment",
+        fake_upload,
+        raising=False,
+    )
 
     result = await feishu_handler.feishu_base_record_upload_attachment(
         uuid.uuid4(),

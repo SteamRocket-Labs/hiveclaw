@@ -11,16 +11,40 @@ class ToolCatalog:
     """Render a compact grouped tool catalog from a registry."""
 
     CATEGORY_ORDER = [
-        "File System",
-        "Skills",
-        "Scheduled",
-        "IM Channel",
-        "Web Search",
-        "System",
+        "filesystem",
+        "skills",
+        "triggers",
+        "communication",
+        "search",
+        "mcp",
+        "email",
+        "memory",
+        "plaza",
+        "feishu",
+        "hr",
+        "system",
     ]
+    CATEGORY_LABELS = {
+        "filesystem": "File System",
+        "skills": "Skills",
+        "triggers": "Scheduled",
+        "communication": "IM Channel",
+        "search": "Web Search",
+        "mcp": "MCP",
+        "email": "Email",
+        "memory": "Memory",
+        "plaza": "Plaza",
+        "feishu": "Feishu",
+        "hr": "HR",
+        "system": "System",
+    }
 
     def __init__(self, registry: ToolRegistry) -> None:
         self.registry = registry
+
+    @classmethod
+    def _label_for_category(cls, category: str) -> str:
+        return cls.CATEGORY_LABELS.get(category, category.replace("_", " ").title())
 
     def render(self) -> str:
         categories: "OrderedDict[str, list[str]]" = OrderedDict()
@@ -35,6 +59,6 @@ class ToolCatalog:
         for category, entries in categories.items():
             if not entries:
                 continue
-            parts.append(f"\n### {category}")
+            parts.append(f"\n### {self._label_for_category(category)}")
             parts.extend(entries)
         return "\n".join(parts)

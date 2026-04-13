@@ -69,7 +69,15 @@ def _get_collected_tools():
 def get_combined_openai_tools() -> list[dict]:
     """Return the canonical OpenAI tool surface collected from decorators."""
     collected = _get_collected_tools()
-    return ToolRegistry.from_openai_tools(collected.openai_tools).to_openai_tools()
+    category_overrides = {
+        item["name"]: item["category"]
+        for item in getattr(collected, "seed_list", [])
+        if item.get("name") and item.get("category")
+    }
+    return ToolRegistry.from_openai_tools(
+        collected.openai_tools,
+        category_overrides=category_overrides,
+    ).to_openai_tools()
 
 
 def _ensure_tool_execution_registry() -> None:
@@ -399,6 +407,7 @@ async def get_agent_tools_for_llm(
 
             result = []
             db_tool_names = set()
+            category_overrides: dict[str, str] = {}
             for t in all_tools:
                 tid = str(t.id)
                 at = assignments.get(tid)
@@ -437,6 +446,7 @@ async def get_agent_tools_for_llm(
                 }
                 result.append(tool_def)
                 db_tool_names.add(t.name)
+                category_overrides[t.name] = t.category
 
             if result:
                 # Append always-available system tools that aren't already in the DB list
@@ -449,7 +459,10 @@ async def get_agent_tools_for_llm(
                 elif requested_set:
                     result = [t for t in result if t["function"]["name"] in requested_set]
                 result = await _filter_unavailable_tools(agent_id, result)
-                return ToolRegistry.from_openai_tools(result).to_openai_tools()
+                return ToolRegistry.from_openai_tools(
+                    result,
+                    category_overrides=category_overrides,
+                ).to_openai_tools()
     except Exception as e:
         logger.error(f"[Tools] DB load failed, using fallback: {e}")
 

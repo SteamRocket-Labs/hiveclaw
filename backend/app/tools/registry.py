@@ -68,43 +68,6 @@ _CHANNEL = {
 }
 _WEB = {"web_search", "web_fetch", "firecrawl_fetch", "xcrawl_scrape"}
 
-_STATIC_READ_ONLY_TOOL_NAMES = {
-    "read_file",
-    "glob_search",
-    "grep_search",
-    "read_document",
-    "list_files",
-    "list_triggers",
-    "web_search",
-    "web_fetch",
-    "firecrawl_fetch",
-    "xcrawl_scrape",
-    "tool_search",
-    "discover_resources",
-    "list_mcp_resources",
-    "read_mcp_resource",
-    "check_async_task",
-    "list_async_tasks",
-    "get_current_time",
-}
-
-_STATIC_PARALLEL_SAFE_TOOL_NAMES = {
-    "read_file",
-    "glob_search",
-    "grep_search",
-    "read_document",
-    "list_files",
-    "list_triggers",
-    "web_search",
-    "web_fetch",
-    "firecrawl_fetch",
-    "xcrawl_scrape",
-    "check_async_task",
-    "list_async_tasks",
-    "get_current_time",
-}
-
-
 def _resolve_collected_registry_names() -> tuple[frozenset[str], frozenset[str]]:
     from .collector import collect_tools
 
@@ -112,17 +75,26 @@ def _resolve_collected_registry_names() -> tuple[frozenset[str], frozenset[str]]
     return collected.read_only_names, collected.parallel_safe_names
 
 
+def _resolve_collected_categories() -> dict[str, str]:
+    from .collector import collect_tools
+
+    collected = collect_tools()
+    return {
+        item["name"]: item["category"]
+        for item in collected.seed_list
+        if item.get("name") and item.get("category")
+    }
+
+
 class _LazyToolNameSet(Set[str]):
-    def __init__(self, static_names: set[str], kind: str) -> None:
-        self._static_names = frozenset(static_names)
+    def __init__(self, kind: str) -> None:
         self._kind = kind
         self._resolved: frozenset[str] | None = None
 
     def _ensure(self) -> frozenset[str]:
         if self._resolved is None:
             read_only, parallel_safe = _resolve_collected_registry_names()
-            dynamic = read_only if self._kind == "read_only" else parallel_safe
-            self._resolved = frozenset(set(self._static_names) | set(dynamic))
+            self._resolved = read_only if self._kind == "read_only" else parallel_safe
         return self._resolved
 
     def __contains__(self, item: object) -> bool:
@@ -138,8 +110,8 @@ class _LazyToolNameSet(Set[str]):
         return repr(self._ensure())
 
 
-READ_ONLY_TOOL_NAMES: Set[str] = _LazyToolNameSet(_STATIC_READ_ONLY_TOOL_NAMES, "read_only")
-PARALLEL_SAFE_TOOL_NAMES: Set[str] = _LazyToolNameSet(_STATIC_PARALLEL_SAFE_TOOL_NAMES, "parallel_safe")
+READ_ONLY_TOOL_NAMES: Set[str] = _LazyToolNameSet("read_only")
+PARALLEL_SAFE_TOOL_NAMES: Set[str] = _LazyToolNameSet("parallel_safe")
 
 
 def is_read_only_tool(name: str) -> bool:
@@ -152,16 +124,27 @@ def is_parallel_safe_tool(name: str) -> bool:
 
 def infer_category(tool_name: str) -> str:
     if tool_name in _FILE_SYSTEM:
-        return "File System"
+        return "filesystem"
     if tool_name in _SKILLS:
-        return "Skills"
+        return "skills"
     if tool_name in _SCHEDULED:
-        return "Scheduled"
+        return "triggers"
     if tool_name in _CHANNEL:
-        return "IM Channel"
+        return "communication"
     if tool_name in _WEB:
-        return "Web Search"
-    return "System"
+        return "search"
+    return "system"
+
+
+def resolve_tool_category(name: str, category_overrides: dict[str, str] | None = None) -> str:
+    if category_overrides and name in category_overrides:
+        return category_overrides[name]
+
+    collected_categories = _resolve_collected_categories()
+    if name in collected_categories:
+        return collected_categories[name]
+
+    return infer_category(name)
 
 
 class ToolRegistry:
@@ -171,14 +154,22 @@ class ToolRegistry:
         self._tools: "OrderedDict[str, ToolDefinition]" = OrderedDict()
 
     @classmethod
-    def from_openai_tools(cls, tools: Iterable[dict]) -> "ToolRegistry":
+    def from_openai_tools(
+        cls,
+        tools: Iterable[dict],
+        *,
+        category_overrides: dict[str, str] | None = None,
+    ) -> "ToolRegistry":
         registry = cls()
         for tool in tools:
             fn = tool.get("function", {})
             name = fn.get("name")
             if not name:
                 continue
-            td = ToolDefinition.from_openai_tool(tool, category=infer_category(name))
+            td = ToolDefinition.from_openai_tool(
+                tool,
+                category=resolve_tool_category(name, category_overrides),
+            )
             td.read_only = is_read_only_tool(name)
             td.parallel_safe = is_parallel_safe_tool(name)
             registry.register(td)

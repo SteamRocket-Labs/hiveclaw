@@ -73,7 +73,7 @@ async def _check_feishu_cli_access() -> bool:
 async def feishu_wiki_list(agent_id: uuid.UUID, arguments: dict) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
-    from app.services.agent_tools import _feishu_wiki_list
+    from app.services.agent_tool_domains.feishu_wiki import _feishu_wiki_list
     return await _feishu_wiki_list(agent_id, arguments)
 
 
@@ -111,7 +111,7 @@ async def feishu_wiki_list(agent_id: uuid.UUID, arguments: dict) -> str:
 async def feishu_doc_read(agent_id: uuid.UUID, arguments: dict) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
-    from app.services.agent_tools import _feishu_doc_read
+    from app.services.agent_tool_domains.feishu_docs import _feishu_doc_read
     return await _feishu_doc_read(agent_id, arguments)
 
 
@@ -149,7 +149,7 @@ async def feishu_doc_read(agent_id: uuid.UUID, arguments: dict) -> str:
 async def feishu_sheet_info(agent_id: uuid.UUID, arguments: dict) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
-    from app.services.agent_tools import _feishu_sheet_info
+    from app.services.agent_tool_domains.feishu_sheets import _feishu_sheet_info
     return await _feishu_sheet_info(agent_id, arguments)
 
 
@@ -200,7 +200,7 @@ async def feishu_sheet_info(agent_id: uuid.UUID, arguments: dict) -> str:
 async def feishu_sheet_read(agent_id: uuid.UUID, arguments: dict) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
-    from app.services.agent_tools import _feishu_sheet_read
+    from app.services.agent_tool_domains.feishu_sheets import _feishu_sheet_read
     return await _feishu_sheet_read(agent_id, arguments)
 
 
@@ -239,7 +239,7 @@ async def feishu_sheet_read(agent_id: uuid.UUID, arguments: dict) -> str:
 async def feishu_base_app_create(agent_id: uuid.UUID, arguments: dict) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
-    from app.services.agent_tools import _feishu_base_app_create
+    from app.services.agent_tool_domains.feishu_base import _feishu_base_app_create
     return await _feishu_base_app_create(agent_id, arguments)
 
 
@@ -281,7 +281,7 @@ async def feishu_base_app_create(agent_id: uuid.UUID, arguments: dict) -> str:
 async def feishu_base_table_list(agent_id: uuid.UUID, arguments: dict) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
-    from app.services.agent_tools import _feishu_base_table_list
+    from app.services.agent_tool_domains.feishu_base import _feishu_base_table_list
     return await _feishu_base_table_list(agent_id, arguments)
 
 
@@ -330,7 +330,7 @@ async def feishu_base_table_list(agent_id: uuid.UUID, arguments: dict) -> str:
 async def feishu_base_record_list(agent_id: uuid.UUID, arguments: dict) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
-    from app.services.agent_tools import _feishu_base_record_list
+    from app.services.agent_tool_domains.feishu_base import _feishu_base_record_list
     return await _feishu_base_record_list(agent_id, arguments)
 
 
@@ -375,7 +375,7 @@ async def feishu_base_record_list(agent_id: uuid.UUID, arguments: dict) -> str:
 async def feishu_base_record_upsert(agent_id: uuid.UUID, arguments: dict) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
-    from app.services.agent_tools import _feishu_base_record_upsert
+    from app.services.agent_tool_domains.feishu_base import _feishu_base_record_upsert
     return await _feishu_base_record_upsert(agent_id, arguments)
 
 
@@ -414,7 +414,7 @@ async def feishu_base_record_upsert(agent_id: uuid.UUID, arguments: dict) -> str
 async def feishu_base_record_delete(agent_id: uuid.UUID, arguments: dict) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
-    from app.services.agent_tools import _feishu_base_record_delete
+    from app.services.agent_tool_domains.feishu_base import _feishu_base_record_delete
     return await _feishu_base_record_delete(agent_id, arguments)
 
 
@@ -459,7 +459,7 @@ async def feishu_base_record_delete(agent_id: uuid.UUID, arguments: dict) -> str
 async def feishu_base_field_list(agent_id: uuid.UUID, arguments: dict) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
-    from app.services.agent_tools import _feishu_base_field_list
+    from app.services.agent_tool_domains.feishu_base import _feishu_base_field_list
     return await _feishu_base_field_list(agent_id, arguments)
 
 
@@ -543,7 +543,7 @@ async def feishu_base_field_create(agent_id: uuid.UUID, arguments: dict) -> str:
 async def feishu_base_record_upload_attachment(agent_id: uuid.UUID, arguments: dict) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
-    from app.services.agent_tools import _feishu_base_record_upload_attachment
+    from app.services.agent_tool_domains.feishu_base import _feishu_base_record_upload_attachment
     return await _feishu_base_record_upload_attachment(agent_id, arguments)
 
 
@@ -599,7 +599,7 @@ async def feishu_base_record_upload_attachment(agent_id: uuid.UUID, arguments: d
 async def feishu_task_list(agent_id: uuid.UUID, arguments: dict) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
-    from app.services.agent_tools import _feishu_task_list
+    from app.services.agent_tool_domains.feishu_tasks import _feishu_task_list
     return await _feishu_task_list(agent_id, arguments)
 
 
@@ -652,7 +652,7 @@ async def feishu_task_list(agent_id: uuid.UUID, arguments: dict) -> str:
 async def feishu_task_create(agent_id: uuid.UUID, arguments: dict) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
-    from app.services.agent_tools import _feishu_task_create
+    from app.services.agent_tool_domains.feishu_tasks import _feishu_task_create
     return await _feishu_task_create(agent_id, arguments)
 
 
@@ -684,7 +684,7 @@ async def feishu_task_create(agent_id: uuid.UUID, arguments: dict) -> str:
 async def feishu_task_complete(agent_id: uuid.UUID, arguments: dict) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
-    from app.services.agent_tools import _feishu_task_complete
+    from app.services.agent_tool_domains.feishu_tasks import _feishu_task_complete
     return await _feishu_task_complete(agent_id, arguments)
 
 
@@ -720,7 +720,7 @@ async def feishu_task_complete(agent_id: uuid.UUID, arguments: dict) -> str:
 async def feishu_task_comment(agent_id: uuid.UUID, arguments: dict) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
-    from app.services.agent_tools import _feishu_task_comment
+    from app.services.agent_tool_domains.feishu_tasks import _feishu_task_comment
     return await _feishu_task_comment(agent_id, arguments)
 
 
@@ -750,7 +750,7 @@ async def feishu_task_comment(agent_id: uuid.UUID, arguments: dict) -> str:
     adapter="agent_args",
 ))
 async def feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:
-    from app.services.agent_tools import _feishu_doc_create
+    from app.services.agent_tool_domains.feishu_docs import _feishu_doc_create
     return await _feishu_doc_create(agent_id, arguments)
 
 
@@ -779,7 +779,7 @@ async def feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:
 async def feishu_doc_delete(agent_id: uuid.UUID, arguments: dict) -> str:
     if not await _check_feishu_configured(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
-    from app.services.agent_tools import _feishu_doc_delete
+    from app.services.agent_tool_domains.feishu_docs import _feishu_doc_delete
     return await _feishu_doc_delete(agent_id, arguments)
 
 
@@ -809,7 +809,7 @@ async def feishu_doc_delete(agent_id: uuid.UUID, arguments: dict) -> str:
     adapter="agent_args",
 ))
 async def feishu_doc_append(agent_id: uuid.UUID, arguments: dict) -> str:
-    from app.services.agent_tools import _feishu_doc_append
+    from app.services.agent_tool_domains.feishu_docs import _feishu_doc_append
     return await _feishu_doc_append(agent_id, arguments)
 
 
@@ -860,7 +860,7 @@ async def feishu_doc_append(agent_id: uuid.UUID, arguments: dict) -> str:
     adapter="agent_args",
 ))
 async def feishu_doc_share(agent_id: uuid.UUID, arguments: dict) -> str:
-    from app.services.agent_tools import _feishu_doc_share
+    from app.services.agent_tool_domains.feishu_sharing import _feishu_doc_share
     return await _feishu_doc_share(agent_id, arguments)
 
 
@@ -890,7 +890,7 @@ async def feishu_doc_share(agent_id: uuid.UUID, arguments: dict) -> str:
 async def feishu_approval_create(agent_id: uuid.UUID, arguments: dict) -> str:
     if not await _check_feishu_configured(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
-    from app.services.agent_tools import _feishu_approval_create
+    from app.services.agent_tool_domains.feishu_approval import _feishu_approval_create
     return await _feishu_approval_create(agent_id, arguments)
 
 
@@ -918,7 +918,7 @@ async def feishu_approval_create(agent_id: uuid.UUID, arguments: dict) -> str:
 async def feishu_approval_query(agent_id: uuid.UUID, arguments: dict) -> str:
     if not await _check_feishu_configured(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
-    from app.services.agent_tools import _feishu_approval_query
+    from app.services.agent_tool_domains.feishu_approval import _feishu_approval_query
     return await _feishu_approval_query(agent_id, arguments)
 
 
@@ -945,7 +945,7 @@ async def feishu_approval_query(agent_id: uuid.UUID, arguments: dict) -> str:
 async def feishu_approval_get(agent_id: uuid.UUID, arguments: dict) -> str:
     if not await _check_feishu_configured(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
-    from app.services.agent_tools import _feishu_approval_get
+    from app.services.agent_tool_domains.feishu_approval import _feishu_approval_get
     return await _feishu_approval_get(agent_id, arguments)
 
 
@@ -976,7 +976,7 @@ async def feishu_approval_get(agent_id: uuid.UUID, arguments: dict) -> str:
     adapter="agent_args",
 ))
 async def feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
-    from app.services.agent_tools import _feishu_user_search
+    from app.services.agent_tool_domains.feishu_users import _feishu_user_search
     return await _feishu_user_search(agent_id, arguments)
 
 
@@ -1021,7 +1021,7 @@ async def feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
     adapter="agent_args",
 ))
 async def feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
-    from app.services.agent_tools import _feishu_calendar_list
+    from app.services.agent_tool_domains.feishu_calendar import _feishu_calendar_list
     return await _feishu_calendar_list(agent_id, arguments)
 
 
@@ -1085,7 +1085,7 @@ async def feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
     adapter="agent_args",
 ))
 async def feishu_calendar_create(agent_id: uuid.UUID, arguments: dict) -> str:
-    from app.services.agent_tools import _feishu_calendar_create
+    from app.services.agent_tool_domains.feishu_calendar import _feishu_calendar_create
     return await _feishu_calendar_create(agent_id, arguments)
 
 
@@ -1120,7 +1120,7 @@ async def feishu_calendar_create(agent_id: uuid.UUID, arguments: dict) -> str:
     adapter="agent_args",
 ))
 async def feishu_calendar_update(agent_id: uuid.UUID, arguments: dict) -> str:
-    from app.services.agent_tools import _feishu_calendar_update
+    from app.services.agent_tool_domains.feishu_calendar import _feishu_calendar_update
     return await _feishu_calendar_update(agent_id, arguments)
 
 
@@ -1147,5 +1147,5 @@ async def feishu_calendar_update(agent_id: uuid.UUID, arguments: dict) -> str:
     adapter="agent_args",
 ))
 async def feishu_calendar_delete(agent_id: uuid.UUID, arguments: dict) -> str:
-    from app.services.agent_tools import _feishu_calendar_delete
+    from app.services.agent_tool_domains.feishu_calendar import _feishu_calendar_delete
     return await _feishu_calendar_delete(agent_id, arguments)

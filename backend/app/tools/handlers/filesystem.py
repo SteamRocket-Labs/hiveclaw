@@ -333,7 +333,7 @@ async def read_document(workspace: Path, arguments: dict, tenant_id: str | None 
     adapter="workspace_args",
 ))
 async def execute_code(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
-    from app.services.agent_tools import _execute_code
+    from app.services.agent_tool_domains.code_exec import _execute_code
     return await _execute_code(workspace, arguments)
 
 
@@ -371,5 +371,5 @@ async def execute_code(workspace: Path, arguments: dict, tenant_id: str | None =
     adapter="workspace_args",
 ))
 async def run_command(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
-    from app.services.agent_tools import _run_command
+    from app.services.agent_tool_domains.code_exec import _run_command
     return await _run_command(workspace, arguments)

@@ -45,7 +45,7 @@ from app.tools.runtime import ToolExecutionRequest
     adapter="request",
 ))
 async def send_email(request: ToolExecutionRequest) -> str:
-    from app.services.agent_tools import _handle_email_tool
+    from app.services.agent_tool_domains.email import _handle_email_tool
     return await _handle_email_tool(
         "send_email",
         request.context.agent_id,
@@ -82,7 +82,7 @@ async def send_email(request: ToolExecutionRequest) -> str:
     adapter="request",
 ))
 async def read_emails(request: ToolExecutionRequest) -> str:
-    from app.services.agent_tools import _handle_email_tool
+    from app.services.agent_tool_domains.email import _handle_email_tool
     return await _handle_email_tool(
         "read_emails",
         request.context.agent_id,
@@ -117,7 +117,7 @@ async def read_emails(request: ToolExecutionRequest) -> str:
     adapter="request",
 ))
 async def reply_email(request: ToolExecutionRequest) -> str:
-    from app.services.agent_tools import _handle_email_tool
+    from app.services.agent_tool_domains.email import _handle_email_tool
     return await _handle_email_tool(
         "reply_email",
         request.context.agent_id,

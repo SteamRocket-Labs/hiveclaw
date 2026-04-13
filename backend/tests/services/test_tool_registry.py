@@ -25,6 +25,21 @@ def test_tool_registry_round_trips_collected_openai_tools():
     assert _tool_names(llm_tools) == ["load_skill", "set_trigger"]
 
 
+def test_collected_tool_categories_follow_decorator_metadata():
+    from app.services.agent_tools import get_combined_openai_tools
+    from app.tools.registry import ToolRegistry
+
+    registry = ToolRegistry.from_openai_tools(get_combined_openai_tools())
+
+    assert registry.get("list_files").category == "filesystem"
+    assert registry.get("send_channel_message").category == "communication"
+    assert registry.get("web_search").category == "search"
+    assert registry.get("discover_resources").category == "mcp"
+    assert registry.get("search_memory").category == "memory"
+    assert registry.get("feishu_doc_read").category == "feishu"
+    assert registry.get("preview_agent_blueprint").category == "hr"
+
+
 def test_tool_catalog_groups_tools_into_readable_sections():
     from app.tools.catalog import ToolCatalog
     from app.tools.registry import ToolRegistry

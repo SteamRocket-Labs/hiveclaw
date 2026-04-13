@@ -53,7 +53,7 @@ from app.tools.decorator import ToolMeta, tool
     adapter="agent_args",
 ))
 async def set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
-    from app.services.agent_tools import _handle_set_trigger
+    from app.services.agent_tool_domains.triggers import _handle_set_trigger
     return await _handle_set_trigger(agent_id, arguments)
 
 
@@ -92,7 +92,7 @@ async def set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
     adapter="agent_args",
 ))
 async def update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
-    from app.services.agent_tools import _handle_update_trigger
+    from app.services.agent_tool_domains.triggers import _handle_update_trigger
     return await _handle_update_trigger(agent_id, arguments)
 
 
@@ -123,7 +123,7 @@ async def update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
     adapter="agent_args",
 ))
 async def cancel_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
-    from app.services.agent_tools import _handle_cancel_trigger
+    from app.services.agent_tool_domains.triggers import _handle_cancel_trigger
     return await _handle_cancel_trigger(agent_id, arguments)
 
 
@@ -150,5 +150,5 @@ async def cancel_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
     adapter="agent_only",
 ))
 async def list_triggers(agent_id: uuid.UUID) -> str:
-    from app.services.agent_tools import _handle_list_triggers
+    from app.services.agent_tool_domains.triggers import _handle_list_triggers
     return await _handle_list_triggers(agent_id)

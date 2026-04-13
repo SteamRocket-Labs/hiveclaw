@@ -35,7 +35,7 @@ class _FakeDB:
         self.flush_calls += 1
 
 def test_build_feishu_p2p_conv_id_prefers_user_id():
-    from app.services.feishu_identity_maintenance import build_feishu_p2p_conv_id
+    from app.session_identifiers import build_feishu_p2p_conv_id
 
     assert build_feishu_p2p_conv_id("u_123", "ou_456") == "feishu_p2p_u_123"
     assert build_feishu_p2p_conv_id(None, "ou_456") == "feishu_p2p_ou_456"
@@ -72,7 +72,7 @@ def test_choose_canonical_feishu_user_prefers_stable_user_id_real_email_then_old
 
 
 def test_build_feishu_session_lookup_ids_uses_canonical_then_legacy_alias():
-    from app.services.feishu_identity_maintenance import build_feishu_session_lookup_ids
+    from app.session_identifiers import build_feishu_session_lookup_ids
 
     conv_id, legacy_ids = build_feishu_session_lookup_ids(
         provider_user_id="u_123",

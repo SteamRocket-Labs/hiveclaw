@@ -21,3 +21,12 @@ def test_gateway_maintenance_script_prefers_db_level_migration_helper():
 
     assert "promote_legacy_gateway_conversations" in gateway_script
     assert "normalize_legacy_gateway_conversations" not in gateway_script
+
+
+def test_feishu_maintenance_script_prefers_db_level_session_normalization():
+    feishu_script = Path(
+        "/Users/rocky243/vc-saas/hiveclaw/backend/app/scripts/cleanup_duplicate_feishu_users.py"
+    ).read_text(encoding="utf-8")
+
+    assert "promote_legacy_feishu_sessions" in feishu_script
+    assert "reconcile_feishu_identity_state" not in feishu_script

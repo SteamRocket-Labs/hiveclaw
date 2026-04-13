@@ -11,6 +11,7 @@ from app.models.chat_session import ChatSession
 from app.models.identity import ExternalIdentity, IdentityProvider
 from app.models.org import AgentRelationship, OrgMember
 from app.models.user import User
+from app.session_identifiers import parse_feishu_p2p_conv_id
 from app.services.auth_provider import feishu_auth_provider
 
 
@@ -50,9 +51,7 @@ class ChannelUserService:
         )
         for row in result.all():
             external_conv_id = getattr(row, "external_conv_id", None)
-            if not external_conv_id or not str(external_conv_id).startswith("feishu_p2p_"):
-                continue
-            identifier = str(external_conv_id)[len("feishu_p2p_") :]
+            identifier = parse_feishu_p2p_conv_id(external_conv_id)
             if not identifier:
                 continue
             return identifier, ("open_id" if identifier.startswith("ou_") else "user_id")

@@ -14,44 +14,8 @@ from app.models.chat_session import ChatSession
 from app.models.identity import ExternalIdentity
 from app.models.participant import Participant
 from app.models.user import User
+from app.session_identifiers import build_feishu_session_lookup_ids
 from app.services.channel_session import find_or_create_channel_session
-
-
-def build_feishu_p2p_conv_id(provider_user_id: str | None = None, provider_open_id: str | None = None) -> str | None:
-    """Build the canonical Feishu P2P conversation id.
-
-    `user_id` is tenant-stable and always wins over app-scoped `open_id`.
-    """
-    stable_id = (provider_user_id or "").strip() or (provider_open_id or "").strip()
-    if not stable_id:
-        return None
-    return f"feishu_p2p_{stable_id}"
-
-
-def list_legacy_feishu_conv_ids(provider_open_id: str | None, canonical_conv_id: str | None = None) -> list[str]:
-    """Return legacy Feishu conv ids that should collapse into the canonical session."""
-    open_id = (provider_open_id or "").strip()
-    if not open_id:
-        return []
-    legacy = f"feishu_p2p_{open_id}"
-    if canonical_conv_id and legacy == canonical_conv_id:
-        return []
-    return [legacy]
-
-
-def build_feishu_session_lookup_ids(
-    *,
-    provider_user_id: str | None,
-    provider_open_id: str | None,
-    chat_type: str = "p2p",
-    chat_id: str | None = None,
-) -> tuple[str, list[str]]:
-    """Build canonical Feishu session id plus any legacy aliases to merge."""
-    if chat_type == "group" and chat_id:
-        return f"feishu_group_{chat_id}", []
-
-    conv_id = build_feishu_p2p_conv_id(provider_user_id, provider_open_id) or f"feishu_p2p_{provider_open_id or provider_user_id}"
-    return conv_id, list_legacy_feishu_conv_ids(provider_open_id, conv_id)
 
 
 async def find_or_create_feishu_chat_session(
@@ -263,63 +227,3 @@ async def merge_duplicate_feishu_users(db: AsyncSession) -> int:
 
     await db.flush()
     return merged
-
-
-async def normalize_feishu_chat_sessions(db: AsyncSession) -> int:
-    """Canonicalize Feishu P2P sessions from open_id-based ids to user_id-based ids."""
-    session_result = await db.execute(
-        select(ChatSession, User)
-        .join(User, User.id == ChatSession.user_id)
-        .where(
-            ChatSession.source_channel == "feishu",
-            ChatSession.external_conv_id.like("feishu_p2p_%"),
-            User.feishu_user_id.is_not(None),
-            User.feishu_user_id != "",
-        )
-    )
-
-    normalized = 0
-    for session, user in session_result.all():
-        canonical_conv_id = build_feishu_p2p_conv_id(user.feishu_user_id, user.feishu_open_id)
-        if not canonical_conv_id or canonical_conv_id == session.external_conv_id:
-            continue
-
-        existing_result = await db.execute(
-            select(ChatSession).where(
-                ChatSession.agent_id == session.agent_id,
-                ChatSession.external_conv_id == canonical_conv_id,
-            )
-        )
-        canonical_session = existing_result.scalar_one_or_none()
-
-        if canonical_session and canonical_session.id != session.id:
-            await db.execute(
-                update(ChatMessage)
-                .where(ChatMessage.conversation_id == str(session.id))
-                .values(conversation_id=str(canonical_session.id), user_id=canonical_session.user_id)
-            )
-            if session.last_message_at and (
-                canonical_session.last_message_at is None or session.last_message_at > canonical_session.last_message_at
-            ):
-                canonical_session.last_message_at = session.last_message_at
-            if (not canonical_session.title or canonical_session.title == "New Session") and session.title:
-                canonical_session.title = session.title
-            await db.delete(session)
-        else:
-            session.external_conv_id = canonical_conv_id
-            session.user_id = user.id
-
-        normalized += 1
-
-    await db.flush()
-    return normalized
-
-
-async def reconcile_feishu_identity_state(db: AsyncSession) -> dict[str, int]:
-    """Run duplicate merge + session normalization in one pass."""
-    merged_users = await merge_duplicate_feishu_users(db)
-    normalized_sessions = await normalize_feishu_chat_sessions(db)
-    return {
-        "merged_users": merged_users,
-        "normalized_sessions": normalized_sessions,
-    }

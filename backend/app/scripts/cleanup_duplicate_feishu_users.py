@@ -169,7 +169,8 @@ async def main():
         tenant, tenant_setting, tool, trigger, user,
     )
     from app.database import async_session
-    from app.services.feishu_identity_maintenance import reconcile_feishu_identity_state
+    from app.db_legacy_feishu_session_migration import promote_legacy_feishu_sessions
+    from app.services.feishu_identity_maintenance import merge_duplicate_feishu_users
 
     async with async_session() as db:
         configs = await _load_tenant_feishu_configs(db)
@@ -179,13 +180,15 @@ async def main():
 
         user_updates = await _backfill_users(db, configs)
         member_updates = await _backfill_org_members(db, configs)
-        maintenance_stats = await reconcile_feishu_identity_state(db)
+        merged_users = await merge_duplicate_feishu_users(db)
+        connection = await db.connection()
+        normalized_sessions = await connection.run_sync(promote_legacy_feishu_sessions)
         await db.commit()
 
     logger.info("Backfilled users: %s", user_updates)
     logger.info("Backfilled org members: %s", member_updates)
-    logger.info("Merged duplicate users: %s", maintenance_stats["merged_users"])
-    logger.info("Normalized chat sessions: %s", maintenance_stats["normalized_sessions"])
+    logger.info("Merged duplicate users: %s", merged_users)
+    logger.info("Normalized chat sessions: %s", normalized_sessions)
     logger.info("Feishu identity maintenance complete")
 
 

@@ -9,6 +9,11 @@ from typing import Any
 from sqlalchemy import MetaData, Table, inspect, select, update
 from sqlalchemy.engine import Connection
 
+from app.session_identifiers import (
+    build_legacy_gateway_conversation_ids,
+    parse_legacy_gateway_conversation_id,
+)
+
 REQUIRED_TABLES = {"agents", "chat_messages", "chat_sessions"}
 OPTIONAL_TABLES = {"gateway_messages"}
 
@@ -23,27 +28,6 @@ def _coerce_column_value(column, value: Any) -> Any:
     if python_type is uuid.UUID and not isinstance(value, uuid.UUID):
         return uuid.UUID(str(value))
     return value
-
-
-def _parse_legacy_gateway_conversation_id(conversation_id: str | None) -> tuple[str, str] | None:
-    if not conversation_id or not conversation_id.startswith("gw_agent_"):
-        return None
-
-    raw_pair = conversation_id.removeprefix("gw_agent_")
-    try:
-        source_raw, target_raw = raw_pair.split("_", 1)
-        uuid.UUID(source_raw)
-        uuid.UUID(target_raw)
-    except (ValueError, AttributeError, TypeError):
-        return None
-    return source_raw, target_raw
-
-
-def _legacy_gateway_conversation_ids(source_agent_id: str, target_agent_id: str) -> tuple[str, str]:
-    return (
-        f"gw_agent_{source_agent_id}_{target_agent_id}",
-        f"gw_agent_{target_agent_id}_{source_agent_id}",
-    )
 
 
 def _new_session_id(chat_sessions: Table) -> Any:
@@ -122,7 +106,7 @@ def promote_legacy_gateway_conversations(connection: Connection) -> int:
     seen_pairs: set[tuple[str, str]] = set()
 
     for legacy_conversation_id in legacy_ids:
-        parsed_pair = _parse_legacy_gateway_conversation_id(legacy_conversation_id)
+        parsed_pair = parse_legacy_gateway_conversation_id(legacy_conversation_id)
         if parsed_pair is None:
             continue
 
@@ -153,7 +137,7 @@ def promote_legacy_gateway_conversations(connection: Connection) -> int:
             )
         ).mappings().first()
 
-        legacy_pair_ids = _legacy_gateway_conversation_ids(*canonical_pair)
+        legacy_pair_ids = build_legacy_gateway_conversation_ids(*canonical_pair)
         created_at, last_message_at = _collect_pair_timestamps(
             connection,
             chat_messages=chat_messages,

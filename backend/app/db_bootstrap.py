@@ -9,6 +9,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.sql.schema import MetaData
 
+from app.db_legacy_feishu_session_migration import promote_legacy_feishu_sessions
 from app.db_legacy_gateway_conversation_migration import promote_legacy_gateway_conversations
 from app.db_legacy_schedule_migration import promote_legacy_schedules_to_triggers
 
@@ -52,6 +53,7 @@ def bootstrap_database_to_head(connection: Connection, metadata: MetaData, heads
     metadata.create_all(bind=connection)
     promote_legacy_schedules_to_triggers(connection)
     promote_legacy_gateway_conversations(connection)
+    promote_legacy_feishu_sessions(connection)
     connection.execute(
         text(
             """

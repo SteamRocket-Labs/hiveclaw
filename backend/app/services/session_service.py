@@ -11,21 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
+from app.session_identifiers import build_legacy_gateway_conversation_ids
 from app.services.web_session_contract import apply_web_session_contract
 
 
 def session_conversation_id(session: Any) -> str:
     """Return the canonical persisted conversation_id for a session."""
     return str(getattr(session, "id"))
-
-
-def _legacy_gateway_conversation_ids(source_agent_id: uuid.UUID, target_agent_id: uuid.UUID) -> list[str]:
-    source = str(source_agent_id)
-    target = str(target_agent_id)
-    return [
-        f"gw_agent_{source}_{target}",
-        f"gw_agent_{target}_{source}",
-    ]
 
 
 async def _normalize_legacy_agent_pair_transcripts(
@@ -37,7 +29,7 @@ async def _normalize_legacy_agent_pair_transcripts(
 ) -> None:
     await db.execute(
         update(ChatMessage)
-        .where(ChatMessage.conversation_id.in_(_legacy_gateway_conversation_ids(source_agent_id, target_agent_id)))
+        .where(ChatMessage.conversation_id.in_(build_legacy_gateway_conversation_ids(source_agent_id, target_agent_id)))
         .values(conversation_id=conversation_id)
     )
 

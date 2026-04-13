@@ -261,6 +261,99 @@ def test_bootstrap_schema_promotes_legacy_gateway_conversations_before_stamping(
     assert versions == ["rev_a"]
 
 
+def test_bootstrap_schema_promotes_legacy_feishu_sessions_before_stamping() -> None:
+    from app.db_bootstrap import bootstrap_database_to_head
+
+    legacy_metadata = MetaData()
+    users = Table(
+        "users",
+        legacy_metadata,
+        Column("id", String(36), primary_key=True),
+        Column("feishu_user_id", String(100), nullable=True),
+        Column("feishu_open_id", String(100), nullable=True),
+    )
+    chat_messages = Table(
+        "chat_messages",
+        legacy_metadata,
+        Column("id", String(36), primary_key=True),
+        Column("agent_id", String(36), nullable=False),
+        Column("user_id", String(36), nullable=False),
+        Column("role", String(20), nullable=False),
+        Column("content", String(), nullable=False),
+        Column("conversation_id", String(200), nullable=False),
+        Column("created_at", String(40), nullable=False),
+    )
+    legacy_chat_sessions = Table(
+        "chat_sessions",
+        legacy_metadata,
+        Column("id", String(36), primary_key=True),
+        Column("agent_id", String(36), nullable=False),
+        Column("user_id", String(36), nullable=False),
+        Column("title", String(200), nullable=False),
+        Column("source_channel", String(20), nullable=False),
+        Column("external_conv_id", String(200), nullable=True),
+        Column("created_at", String(40), nullable=False),
+        Column("last_message_at", String(40), nullable=True),
+    )
+
+    current_metadata = MetaData()
+    Table(
+        "chat_sessions",
+        current_metadata,
+        Column("id", String(36), primary_key=True),
+        Column("agent_id", String(36), nullable=False),
+        Column("user_id", String(36), nullable=False),
+        Column("title", String(200), nullable=False),
+        Column("source_channel", String(20), nullable=False),
+        Column("external_conv_id", String(200), nullable=True),
+        Column("created_at", String(40), nullable=False),
+        Column("last_message_at", String(40), nullable=True),
+    )
+
+    engine = create_engine("sqlite:///:memory:")
+
+    with engine.begin() as conn:
+        legacy_metadata.create_all(conn)
+        conn.execute(
+            users.insert().values(
+                id="user-1",
+                feishu_user_id="u_123",
+                feishu_open_id="ou_456",
+            )
+        )
+        conn.execute(
+            legacy_chat_sessions.insert().values(
+                id="session-1",
+                agent_id="agent-1",
+                user_id="user-1",
+                title="旧会话",
+                source_channel="feishu",
+                external_conv_id="feishu_p2p_ou_456",
+                created_at="2026-04-14T08:00:00+00:00",
+                last_message_at="2026-04-14T08:00:00+00:00",
+            )
+        )
+        conn.execute(
+            chat_messages.insert().values(
+                id="msg-1",
+                agent_id="agent-1",
+                user_id="user-1",
+                role="user",
+                content="hello",
+                conversation_id="session-1",
+                created_at="2026-04-14T08:00:00+00:00",
+            )
+        )
+
+        bootstrap_database_to_head(conn, current_metadata, ["rev_a"])
+
+        session_rows = conn.execute(text("SELECT external_conv_id FROM chat_sessions")).fetchall()
+        versions = [row[0] for row in conn.execute(text("SELECT version_num FROM alembic_version"))]
+
+    assert session_rows == [("feishu_p2p_u_123",)]
+    assert versions == ["rev_a"]
+
+
 def test_run_migrations_with_bootstrap_uses_bootstrap_path() -> None:
     from app.db_bootstrap import run_migrations_with_bootstrap
 

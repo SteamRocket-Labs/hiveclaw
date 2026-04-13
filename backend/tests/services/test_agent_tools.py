@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -45,7 +46,7 @@ async def test_execute_tool_direct_prefers_tool_registry_executor(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_direct_falls_back_to_execute_code(monkeypatch):
+async def test_execute_tool_direct_registry_miss_uses_mcp_fallback_even_for_first_class_tool(monkeypatch):
     from app.services.agent_tools import _execute_tool_direct
     from app.tools.runtime import ToolExecutionContext
 
@@ -63,15 +64,16 @@ async def test_execute_tool_direct_falls_back_to_execute_code(monkeypatch):
     async def fake_try_execute(_request):
         return None
 
-    async def fake_execute_code(ws, arguments):
-        called["ws"] = ws
+    async def fake_execute_mcp_tool(tool_name, arguments, agent_id=None):
+        called["tool_name"] = tool_name
         called["arguments"] = arguments
-        return "ok"
+        called["agent_id"] = agent_id
+        return "from-mcp"
 
     monkeypatch.setattr("app.tools.resolver.ToolRuntimeResolver.resolve", fake_resolve)
     monkeypatch.setattr("app.services.agent_tools._ensure_tool_execution_registry", lambda: None)
     monkeypatch.setattr("app.services.agent_tools._TOOL_EXECUTION_REGISTRY.try_execute", fake_try_execute)
-    monkeypatch.setattr("app.services.agent_tools._execute_code", fake_execute_code)
+    monkeypatch.setattr("app.services.agent_tools._execute_mcp_tool", fake_execute_mcp_tool)
 
     result = await _execute_tool_direct(
         "execute_code",
@@ -79,49 +81,59 @@ async def test_execute_tool_direct_falls_back_to_execute_code(monkeypatch):
         uuid4(),
     )
 
-    assert result == "ok"
-    assert called["ws"] == workspace
+    assert result == "from-mcp"
+    assert called["tool_name"] == "execute_code"
     assert called["arguments"] == {"language": "python", "code": "print('hi')"}
 
 
-@pytest.mark.asyncio
-async def test_execute_tool_direct_falls_back_to_run_command(monkeypatch):
-    from app.services.agent_tools import _execute_tool_direct
-    from app.tools.runtime import ToolExecutionContext
+def test_get_combined_openai_tools_normalizes_collected_schema(monkeypatch):
+    from app.services import agent_tools as agent_tools_module
 
-    workspace = Path("/tmp/test-agent-workspace")
-    called = {}
+    raw_tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "sample_tool",
+                "description": "Sample",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "enum": ["", "strict"],
+                        }
+                    },
+                },
+            },
+        }
+    ]
 
-    async def fake_resolve(self, *, agent_id: object, user_id: object):
-        return ToolExecutionContext(
-            agent_id=agent_id,
-            user_id=user_id,
-            tenant_id="tenant-1",
-            workspace=workspace,
-        )
-
-    async def fake_try_execute(_request):
-        return None
-
-    async def fake_run_command(ws, arguments):
-        called["ws"] = ws
-        called["arguments"] = arguments
-        return "ok-command"
-
-    monkeypatch.setattr("app.tools.resolver.ToolRuntimeResolver.resolve", fake_resolve)
-    monkeypatch.setattr("app.services.agent_tools._ensure_tool_execution_registry", lambda: None)
-    monkeypatch.setattr("app.services.agent_tools._TOOL_EXECUTION_REGISTRY.try_execute", fake_try_execute)
-    monkeypatch.setattr("app.services.agent_tools._run_command", fake_run_command)
-
-    result = await _execute_tool_direct(
-        "run_command",
-        {"command": "pwd"},
-        uuid4(),
+    monkeypatch.setattr(
+        agent_tools_module,
+        "_get_collected_tools",
+        lambda: SimpleNamespace(openai_tools=raw_tools),
     )
 
-    assert result == "ok-command"
-    assert called["ws"] == workspace
-    assert called["arguments"] == {"command": "pwd"}
+    tools = agent_tools_module.get_combined_openai_tools()
+
+    assert tools == [
+        {
+            "type": "function",
+            "function": {
+                "name": "sample_tool",
+                "description": "Sample",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "enum": ["strict"],
+                        }
+                    },
+                },
+            },
+        }
+    ]
 
 
 @pytest.mark.asyncio

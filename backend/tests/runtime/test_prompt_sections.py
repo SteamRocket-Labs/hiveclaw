@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+
 from app.runtime.prompt_builder import build_dynamic_prompt_suffix, build_frozen_prompt_prefix
 from app.runtime.prompt_sections import (
     build_environment_section,
@@ -199,9 +201,9 @@ class TestFrozenPrefixIntegration:
         fp = build_frozen_prompt_prefix(agent_context="ctx", skill_catalog="- web_search\n- write_file")
         assert "web_search" in fp
 
-    def test_does_not_embed_memory_snapshot(self) -> None:
-        fp = build_frozen_prompt_prefix(agent_context="ctx", memory_snapshot="feedback: should stay dynamic")
-        assert "feedback: should stay dynamic" not in fp
+    def test_no_longer_accepts_memory_snapshot_parameter(self) -> None:
+        signature = inspect.signature(build_frozen_prompt_prefix)
+        assert "memory_snapshot" not in signature.parameters
 
     def test_section_order(self) -> None:
         fp = build_frozen_prompt_prefix(agent_context="AGENT_CTX", skill_catalog="SKILLS")

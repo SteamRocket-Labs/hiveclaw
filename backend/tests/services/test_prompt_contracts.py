@@ -51,7 +51,6 @@ async def test_agent_context_exposes_identity_contract_and_context_layers(monkey
         "Ops Agent",
         role_description="Keep systems healthy",
         include_runtime_metadata=False,
-        include_focus=False,
         execution_mode="conversation",
     )
 
@@ -84,7 +83,6 @@ async def test_agent_context_blocks_prompt_injection_from_workspace_files(monkey
         "Ops Agent",
         role_description="Keep systems healthy",
         include_runtime_metadata=False,
-        include_focus=False,
         execution_mode="conversation",
     )
 

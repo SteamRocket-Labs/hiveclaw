@@ -69,7 +69,7 @@ def _get_collected_tools():
 def get_combined_openai_tools() -> list[dict]:
     """Return the canonical OpenAI tool surface collected from decorators."""
     collected = _get_collected_tools()
-    return collected.openai_tools
+    return ToolRegistry.from_openai_tools(collected.openai_tools).to_openai_tools()
 
 
 def _ensure_tool_execution_registry() -> None:
@@ -100,70 +100,9 @@ def _get_tool_runtime_service() -> ToolRuntimeService:
         return await _execute_mcp_tool(tool_name, arguments, agent_id=context.agent_id)
 
     async def _direct_fallback_execute(tool_name: str, arguments: dict, context) -> str:
-        ws = context.workspace
-        from app.services.agent_tool_domains.messaging import _normalize_messaging_result
-
-        if tool_name == "delete_file":
-            return _delete_file(ws, arguments.get("path", ""))
-        if tool_name == "write_file":
-            path = arguments.get("path")
-            content = arguments.get("content", "")
-            if not path:
-                return "Missing path"
-            return _write_file(ws, path, content)
-        if tool_name == "execute_code":
-            return await _execute_code(ws, arguments)
-        if tool_name == "run_command":
-            return await _run_command(ws, arguments)
-        if tool_name == "web_fetch":
-            return await _web_fetch(arguments)
-        if tool_name == "web_search":
-            return await _web_search(arguments)
-        if tool_name == "firecrawl_fetch":
-            return await _firecrawl_fetch(arguments)
-        if tool_name == "xcrawl_scrape":
-            return await _xcrawl_scrape(arguments)
-        if tool_name == "send_feishu_message":
-            return _normalize_messaging_result(
-                tool_name,
-                await _send_feishu_message(context.agent_id, arguments),
-            )
-        if tool_name == "send_channel_message":
-            return _normalize_messaging_result(
-                tool_name,
-                await _send_channel_message(context.agent_id, arguments),
-            )
-        if tool_name == "send_message_to_agent":
-            return _normalize_messaging_result(
-                tool_name,
-                await _send_message_to_agent(context.agent_id, arguments),
-            )
-        if tool_name == "delegate_to_agent":
-            return _normalize_messaging_result(
-                tool_name,
-                await _delegate_to_agent_async(context.agent_id, arguments),
-            )
-        if tool_name == "check_async_task":
-            return _normalize_messaging_result(
-                tool_name,
-                await _check_async_task(context.agent_id, arguments),
-            )
-        if tool_name == "cancel_async_task":
-            return _normalize_messaging_result(
-                tool_name,
-                await _cancel_async_task(context.agent_id, arguments),
-            )
-        if tool_name == "list_async_tasks":
-            return _normalize_messaging_result(
-                tool_name,
-                await _list_async_tasks(context.agent_id),
-            )
-        if tool_name == "get_current_time":
-            return _normalize_messaging_result(
-                tool_name,
-                await _get_current_time(context.agent_id, arguments),
-            )
-        # Fallback: try MCP passthrough for unrecognized tools
+        # Direct execution after approval still uses the same first-class registry.
+        # If the registry does not recognize the tool, only then do we fall back to
+        # MCP passthrough for unknown/remote tools.
         return await _execute_mcp_tool(tool_name, arguments, agent_id=context.agent_id)
 
     async def _log_activity(*args, **kwargs) -> None:

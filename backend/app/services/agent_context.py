@@ -207,9 +207,7 @@ async def build_agent_context(
     role_description: str = "",
     current_user_name: str | None = None,
     *,
-    include_memory_file: bool = True,  # deprecated: memory flows via 4-layer retriever
     include_runtime_metadata: bool = True,
-    include_focus: bool = True,  # deprecated: focus flows via retriever Working Memory
     budget_profile: ContextBudget | None = None,
     execution_mode: str = "conversation",
 ) -> str:

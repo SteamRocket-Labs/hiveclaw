@@ -28,7 +28,6 @@ def test_frozen_prefix_cached_on_first_call(session_ctx, agent_context_text, mem
 
     prefix = build_frozen_prompt_prefix(
         agent_context=agent_context_text,
-        memory_snapshot=memory_snapshot,
         skill_catalog="",
     )
     assert agent_context_text in prefix
@@ -47,12 +46,10 @@ def test_frozen_prefix_stable_across_calls(agent_context_text, memory_snapshot):
 
     prefix1 = build_frozen_prompt_prefix(
         agent_context=agent_context_text,
-        memory_snapshot=memory_snapshot,
         skill_catalog="",
     )
     prefix2 = build_frozen_prompt_prefix(
         agent_context=agent_context_text,
-        memory_snapshot=memory_snapshot,
         skill_catalog="",
     )
     assert prefix1 == prefix2
@@ -109,7 +106,6 @@ def test_assemble_combines_prefix_and_suffix():
 
     prefix = build_frozen_prompt_prefix(
         agent_context="I am Agent.",
-        memory_snapshot="Memory here.",
         skill_catalog="",
     )
     suffix = build_dynamic_prompt_suffix(

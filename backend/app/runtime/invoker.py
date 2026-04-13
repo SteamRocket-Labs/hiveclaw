@@ -218,9 +218,7 @@ async def _build_system_prompt(
         agent_name=request.agent_name,
         role_description=request.role_description,
         current_user_name=current_user_name,
-        include_memory_file=False,
         include_runtime_metadata=False,
-        include_focus=False,
         budget_profile=budget_profile,
         execution_mode=request.execution_mode or "conversation",
     )

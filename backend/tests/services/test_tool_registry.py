@@ -90,6 +90,7 @@ def test_minimal_kernel_tool_set_stays_small_and_explicit():
         "cancel_async_task",
         "list_async_tasks",
         "get_current_time",
+        "send_channel_message",
         "send_channel_file",
         "tool_search",
         "web_fetch",

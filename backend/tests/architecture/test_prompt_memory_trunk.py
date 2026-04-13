@@ -35,17 +35,23 @@ def test_prompt_memory_trunk_entrypoints_are_single_path() -> None:
         "backend/app/runtime/invoker.py",
         "backend/app/services/memory_service.py",
     ]
-    assert build_runtime_prompt_refs == [
-        "backend/app/runtime/prompt_builder.py",
-    ]
+    assert build_runtime_prompt_refs == []
     assert on_conversation_start_refs == []
 
     invoker_source = sources["backend/app/runtime/invoker.py"]
     websocket_source = sources["backend/app/api/websocket.py"]
     kernel_contracts_source = sources["backend/app/kernel/contracts.py"]
+    agent_context_source = sources["backend/app/services/agent_context.py"]
+    prompt_builder_source = sources["backend/app/runtime/prompt_builder.py"]
 
     assert "if request.memory_context:" not in invoker_source
     assert "memory_context=request.memory_context" not in invoker_source
     assert 'memory_context: str = ""' not in websocket_source
     assert "memory_context=memory_context" not in websocket_source
     assert 'memory_context: str = ""' not in kernel_contracts_source
+    assert "include_memory_file" not in agent_context_source
+    assert "include_focus" not in agent_context_source
+    assert "include_memory_file=False" not in invoker_source
+    assert "include_focus=False" not in invoker_source
+    assert "def _compute_system_prompt_budget(" not in prompt_builder_source
+    assert "def _render_active_packs(" not in prompt_builder_source

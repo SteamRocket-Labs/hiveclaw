@@ -72,8 +72,9 @@ async def test_build_system_prompt_uses_static_agent_context_only(monkeypatch):
     assert "STATIC_AGENT_CONTEXT" in prompt
     assert "MEMORY_SNAPSHOT" not in prompt
     assert "## System" in prompt
-    assert captured["kwargs"]["include_memory_file"] is False
     assert captured["kwargs"]["include_runtime_metadata"] is False
+    assert "include_memory_file" not in captured["kwargs"]
+    assert "include_focus" not in captured["kwargs"]
 
 
 @pytest.mark.asyncio

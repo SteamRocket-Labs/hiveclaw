@@ -49,7 +49,6 @@ async def test_build_agent_context_limits_confirmation_rule_to_conversation_mode
         agent_id,
         "Ops Agent",
         include_runtime_metadata=False,
-        include_focus=False,
         execution_mode="conversation",
     )
 
@@ -60,7 +59,6 @@ async def test_build_agent_context_limits_confirmation_rule_to_conversation_mode
         agent_id,
         "Ops Agent",
         include_runtime_metadata=False,
-        include_focus=False,
         execution_mode="task",
     )
 
@@ -85,7 +83,6 @@ async def test_build_agent_context_limits_confirmation_rule_to_heartbeat_mode(mo
         agent_id,
         "Ops Agent",
         include_runtime_metadata=False,
-        include_focus=False,
         execution_mode="heartbeat",
     )
 
@@ -109,7 +106,6 @@ async def test_build_agent_context_keeps_confirmation_rule_for_coordinator_mode(
         agent_id,
         "Ops Agent",
         include_runtime_metadata=False,
-        include_focus=False,
         execution_mode="coordinator",
     )
 

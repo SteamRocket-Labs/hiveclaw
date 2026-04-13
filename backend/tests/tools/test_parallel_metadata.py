@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.tools.collector import collect_tools
 from app.tools.registry import ToolRegistry
 
 
@@ -95,3 +96,10 @@ def test_tool_search_is_read_only_but_not_parallel_safe():
     registry = _build_registry("tool_search")
     assert registry.is_read_only("tool_search") is True
     assert registry.is_parallel_safe("tool_search") is False
+
+
+def test_mcp_resource_tools_are_marked_read_only_in_collector_metadata():
+    collected = collect_tools()
+
+    assert "list_mcp_resources" in collected.read_only_names
+    assert "read_mcp_resource" in collected.read_only_names

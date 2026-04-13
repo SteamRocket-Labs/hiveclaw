@@ -8,18 +8,9 @@ Three-layer prompt architecture:
 
 from __future__ import annotations
 
-import inspect
-import uuid
-from typing import Any, Awaitable, Callable
+from typing import Any
 
-from app.runtime.context_budget import ContextBudget, compute_context_budget, compute_system_prompt_budget
-from app.runtime.context import RuntimeContext
-from app.services.agent_context import build_agent_context
-from app.services.knowledge_inject import fetch_relevant_knowledge
-
-
-BuildAgentContextFn = Callable[[uuid.UUID | None, str, str, str | None], Awaitable[str]]
-KnowledgeLookupFn = Callable[[str, uuid.UUID | None], Awaitable[str] | str]
+from app.runtime.context_budget import ContextBudget, compute_system_prompt_budget
 
 # Boundary marker between frozen (cacheable) and dynamic (volatile) prompt sections.
 # apply_prompt_cache_hints() in llm_client splits at this marker to create two
@@ -30,12 +21,6 @@ PROMPT_CACHE_BOUNDARY = "__PROMPT_DYNAMIC_BOUNDARY__"
 _ACTIVE_PACKS_CHAR_BUDGET = 2000
 _RETRIEVAL_CHAR_BUDGET = 3000
 _CONTINUITY_CHAR_BUDGET = 2500
-
-
-async def _maybe_await(value):
-    if inspect.isawaitable(value):
-        return await value
-    return value
 
 
 def _trim_block(text: str, *, budget_chars: int) -> str:
@@ -73,7 +58,6 @@ def _trim_block(text: str, *, budget_chars: int) -> str:
 def build_frozen_prompt_prefix(
     *,
     agent_context: str,
-    memory_snapshot: str = "",
     skill_catalog: str = "",
 ) -> str:
     """Build the session-stable prompt prefix.
@@ -98,20 +82,12 @@ def build_frozen_prompt_prefix(
         build_tools_section(),
         build_output_efficiency_section(),
     ]
-    del memory_snapshot  # kept for backward-compatible callers; memory lives in dynamic suffix
     if skill_catalog:
         parts.append(skill_catalog)
     return "\n\n".join(parts)
 
 
 # ── Dynamic Suffix (per-round) ──────────────────────────────────
-
-
-def _render_active_packs(active_packs: list[dict[str, Any]], *, budget_chars: int = _ACTIVE_PACKS_CHAR_BUDGET) -> str:
-    """Delegate to modular section builder (kept for backward compat)."""
-    from app.runtime.prompt_sections import build_active_packs_section
-
-    return build_active_packs_section(active_packs, budget_chars=budget_chars)
 
 
 def build_dynamic_prompt_suffix(
@@ -165,7 +141,9 @@ def build_dynamic_prompt_suffix(
     if scenario_section:
         parts.append(scenario_section)
 
-    packs_section = _render_active_packs(active_packs or [], budget_chars=packs_budget)
+    from app.runtime.prompt_sections import build_active_packs_section
+
+    packs_section = build_active_packs_section(active_packs or [], budget_chars=packs_budget)
     if packs_section:
         parts.append(packs_section)
 
@@ -205,13 +183,6 @@ def _join_prompt_sections(frozen_prefix: str, dynamic_suffix: str) -> str:
 
 
 # ── Assembly ────────────────────────────────────────────────────
-
-
-def _compute_system_prompt_budget(context_window_tokens: int | None) -> int:
-    """Backward-compatible wrapper for existing imports/tests."""
-    return compute_system_prompt_budget(context_window_tokens)
-
-
 def assemble_runtime_prompt(
     frozen_prefix: str,
     dynamic_suffix: str,
@@ -230,7 +201,7 @@ def assemble_runtime_prompt(
     import logging
     _logger = logging.getLogger(__name__)
 
-    budget = budget_profile.system_prompt_budget_chars if budget_profile else _compute_system_prompt_budget(context_window_tokens)
+    budget = budget_profile.system_prompt_budget_chars if budget_profile else compute_system_prompt_budget(context_window_tokens)
     prompt = _join_prompt_sections(frozen_prefix, dynamic_suffix)
 
     # P0.4 Observability: log prompt budget metrics
@@ -276,126 +247,3 @@ def assemble_runtime_prompt(
             else:
                 prompt = frozen_prefix[:budget]
     return prompt
-
-
-# ── Legacy-compatible full builder (kept for tests/evals, not the production trunk) ─────────
-
-
-async def build_runtime_prompt(
-    *,
-    agent_id: uuid.UUID | None,
-    agent_name: str,
-    role_description: str,
-    messages: list[dict],
-    tenant_id: uuid.UUID | None,
-    current_user_name: str | None,
-    memory_context: str,
-    system_prompt_suffix: str,
-    runtime_context: RuntimeContext | None = None,
-    build_agent_context_fn: BuildAgentContextFn | None = None,
-    fetch_relevant_knowledge_fn: KnowledgeLookupFn | None = None,
-) -> str:
-    """Assemble the runtime system prompt from stable building blocks.
-
-    Legacy-compatible entry point. Internally uses the frozen/dynamic split
-    but does not cache — caching is managed by the kernel via SessionContext.
-    """
-    build_context = build_agent_context_fn or build_agent_context
-    fetch_knowledge = fetch_relevant_knowledge_fn or fetch_relevant_knowledge
-
-    last_user_msg = next(
-        (
-            message["content"]
-            for message in reversed(messages)
-            if message.get("role") == "user" and isinstance(message.get("content"), str)
-        ),
-        None,
-    )
-    context_window_tokens = None
-    active_pack_count = 0
-    if runtime_context:
-        context_window_tokens = runtime_context.metadata.get("context_window_tokens")
-        active_pack_count = len(runtime_context.session.active_packs)
-    budget_profile = compute_context_budget(
-        context_window_tokens=context_window_tokens,
-        query=last_user_msg or "",
-        messages=messages,
-        active_pack_count=active_pack_count,
-    )
-
-    _build_kwargs = {"current_user_name": current_user_name}
-    if "budget_profile" in inspect.signature(build_context).parameters:
-        _build_kwargs["budget_profile"] = budget_profile
-    agent_context = await build_context(
-        agent_id,
-        agent_name,
-        role_description,
-        **_build_kwargs,
-    )
-
-    # Build frozen prefix
-    frozen = build_frozen_prompt_prefix(
-        agent_context=agent_context,
-    )
-
-    retrieval = ""
-    continuity_context = ""
-    if agent_id and last_user_msg:
-        _knowledge_kwargs = {}
-        if "max_tokens" in inspect.signature(fetch_knowledge).parameters:
-            _knowledge_kwargs["max_tokens"] = max(500, budget_profile.knowledge_budget_chars // 3)
-        if "max_chars" in inspect.signature(fetch_knowledge).parameters:
-            _knowledge_kwargs["max_chars"] = budget_profile.knowledge_budget_chars
-        if "limit" in inspect.signature(fetch_knowledge).parameters:
-            _knowledge_kwargs["limit"] = budget_profile.external_limit
-        knowledge = await _maybe_await(fetch_knowledge(last_user_msg, tenant_id, **_knowledge_kwargs))
-        if knowledge:
-            retrieval = knowledge
-        try:
-            from app.services.session_memory import (
-                get_compaction_summary_path,
-                load_session_memory,
-                render_session_memory_excerpt,
-            )
-
-            session_payload = load_session_memory(agent_id)
-            continuity_parts: list[str] = []
-            if session_payload is not None:
-                continuity_parts.append(
-                    render_session_memory_excerpt(
-                        session_payload,
-                        budget_chars=min(max(budget_profile.memory_budget_chars // 3, 800), _CONTINUITY_CHAR_BUDGET),
-                    )
-                )
-            compaction_path = get_compaction_summary_path(agent_id)
-            if compaction_path.exists():
-                summary_text = compaction_path.read_text(encoding="utf-8", errors="replace").strip()
-                if summary_text:
-                    continuity_parts.append(_trim_block(summary_text, budget_chars=800))
-            continuity_context = "\n\n".join(part for part in continuity_parts if part.strip())
-        except Exception:
-            continuity_context = ""
-
-    active_packs = []
-    if runtime_context and runtime_context.session.active_packs:
-        active_packs = runtime_context.session.active_packs
-
-    dynamic = build_dynamic_prompt_suffix(
-        active_packs=active_packs,
-        memory_snapshot=memory_context,
-        continuity_context=continuity_context,
-        retrieval_context=retrieval,
-        system_prompt_suffix=system_prompt_suffix,
-        budget_profile=budget_profile,
-        latest_user_query=last_user_msg or "",
-        user_name=current_user_name or "",
-        channel=runtime_context.session.channel if runtime_context else "",
-        agent_name=agent_name,
-    )
-
-    return assemble_runtime_prompt(
-        frozen,
-        dynamic,
-        context_window_tokens=context_window_tokens,
-        budget_profile=budget_profile,
-    )

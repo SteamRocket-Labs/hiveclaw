@@ -1,48 +1,42 @@
 from __future__ import annotations
 
-from uuid import uuid4
+def _assemble_test_prompt(*, agent_context: str, dynamic_suffix: str, context_window_tokens: int | None = None) -> str:
+    from app.runtime.prompt_builder import assemble_runtime_prompt, build_frozen_prompt_prefix
 
-import pytest
+    return assemble_runtime_prompt(
+        build_frozen_prompt_prefix(agent_context=agent_context),
+        dynamic_suffix,
+        context_window_tokens=context_window_tokens,
+    )
 
 
-@pytest.mark.asyncio
-async def test_prompt_builder_merges_agent_context_knowledge_memory_and_suffix(monkeypatch):
-    from app.runtime.context import RuntimeContext
-    from app.runtime.prompt_builder import build_runtime_prompt
-    from app.runtime.session import SessionContext
+def test_prompt_builder_merges_prompt_sections_from_runtime_trunk():
+    from app.runtime.context_budget import compute_context_budget
+    from app.runtime.prompt_builder import build_dynamic_prompt_suffix
 
-    agent_id = uuid4()
-
-    async def fake_build_agent_context(_agent_id, _agent_name, _role_description, current_user_name=None):
-        assert current_user_name == "Rocky"
-        return "BASE_PROMPT"
-
-    async def fake_fetch_relevant_knowledge(query, tenant_id=None):
-        assert query == "latest market research status"
-        assert tenant_id == agent_id
-        return "KNOWLEDGE"
-
-    monkeypatch.setattr("app.runtime.prompt_builder.build_agent_context", fake_build_agent_context)
-    monkeypatch.setattr("app.runtime.prompt_builder.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
-
-    prompt = await build_runtime_prompt(
-        agent_id=agent_id,
-        agent_name="Ops Agent",
-        role_description="Operations",
-        messages=[
-            {"role": "assistant", "content": "old"},
-            {"role": "user", "content": "latest market research status"},
-        ],
-        tenant_id=agent_id,
-        current_user_name="Rocky",
-        memory_context="MEMORY",
-        system_prompt_suffix="SUFFIX",
-        runtime_context=RuntimeContext(
-            session=SessionContext(session_id="s-1", source="task", channel="task"),
+    messages = [
+        {"role": "assistant", "content": "old"},
+        {"role": "user", "content": "latest market research status"},
+    ]
+    prompt = _assemble_test_prompt(
+        agent_context="BASE_PROMPT",
+        dynamic_suffix=build_dynamic_prompt_suffix(
+            memory_snapshot="MEMORY",
+            retrieval_context="## Knowledge\nKNOWLEDGE",
+            system_prompt_suffix="SUFFIX",
+            latest_user_query="latest market research status",
+            user_name="Rocky",
+            channel="task",
+            agent_name="Ops Agent",
+            budget_profile=compute_context_budget(
+                context_window_tokens=None,
+                query="latest market research status",
+                messages=messages,
+                active_pack_count=0,
+            ),
         ),
     )
 
-    # Frozen prefix = agent_context + sections + memory; dynamic suffix = knowledge + env + suffix
     assert "BASE_PROMPT" in prompt
     assert "MEMORY" in prompt
     assert "## System" in prompt
@@ -54,28 +48,10 @@ async def test_prompt_builder_merges_agent_context_knowledge_memory_and_suffix(m
     assert "verify sources" in prompt.lower()
 
 
-@pytest.mark.asyncio
-async def test_prompt_builder_skips_empty_sections(monkeypatch):
-    from app.runtime.prompt_builder import build_runtime_prompt
-
-    async def fake_build_agent_context(*args, **kwargs):
-        return "BASE"
-
-    async def fake_fetch_relevant_knowledge(*args, **kwargs):
-        return ""
-
-    monkeypatch.setattr("app.runtime.prompt_builder.build_agent_context", fake_build_agent_context)
-    monkeypatch.setattr("app.runtime.prompt_builder.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
-
-    prompt = await build_runtime_prompt(
-        agent_id=None,
-        agent_name="Agent",
-        role_description="",
-        messages=[{"role": "assistant", "content": "noop"}],
-        tenant_id=None,
-        current_user_name=None,
-        memory_context="",
-        system_prompt_suffix="",
+def test_prompt_builder_skips_empty_sections():
+    prompt = _assemble_test_prompt(
+        agent_context="BASE",
+        dynamic_suffix="",
     )
 
     # With sections injected, prompt starts with BASE but includes System/Tasks/Tools
@@ -83,38 +59,17 @@ async def test_prompt_builder_skips_empty_sections(monkeypatch):
     assert "## System" in prompt
 
 
-@pytest.mark.asyncio
-async def test_prompt_builder_includes_active_packs_section(monkeypatch):
-    from app.runtime.context import RuntimeContext
-    from app.runtime.prompt_builder import build_runtime_prompt
-    from app.runtime.session import SessionContext
+def test_prompt_builder_includes_active_packs_section():
+    from app.runtime.prompt_builder import build_dynamic_prompt_suffix
 
-    async def fake_build_agent_context(*args, **kwargs):
-        return "BASE"
-
-    async def fake_fetch_relevant_knowledge(*args, **kwargs):
-        return ""
-
-    monkeypatch.setattr("app.runtime.prompt_builder.build_agent_context", fake_build_agent_context)
-    monkeypatch.setattr("app.runtime.prompt_builder.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
-
-    prompt = await build_runtime_prompt(
-        agent_id=None,
-        agent_name="Agent",
-        role_description="",
-        messages=[{"role": "assistant", "content": "noop"}],
-        tenant_id=None,
-        current_user_name=None,
-        memory_context="",
-        system_prompt_suffix="",
-        runtime_context=RuntimeContext(
-            session=SessionContext(
-                active_packs=[{
-                    "name": "web_pack",
-                    "summary": "网页搜索与抓取能力",
-                    "tools": ["web_search", "firecrawl_fetch"],
-                }]
-            )
+    prompt = _assemble_test_prompt(
+        agent_context="BASE",
+        dynamic_suffix=build_dynamic_prompt_suffix(
+            active_packs=[{
+                "name": "web_pack",
+                "summary": "网页搜索与抓取能力",
+                "tools": ["web_search", "firecrawl_fetch"],
+            }]
         ),
     )
 
@@ -127,30 +82,30 @@ class TestModelAwareBudget:
     """assemble_runtime_prompt scales budget with context window."""
 
     def test_default_budget_when_no_context_window(self) -> None:
-        from app.runtime.prompt_builder import _compute_system_prompt_budget
-        budget = _compute_system_prompt_budget(None)
+        from app.runtime.context_budget import compute_system_prompt_budget
+        budget = compute_system_prompt_budget(None)
         assert budget == 60000
 
     def test_default_budget_when_zero(self) -> None:
-        from app.runtime.prompt_builder import _compute_system_prompt_budget
-        assert _compute_system_prompt_budget(0) == 60000
+        from app.runtime.context_budget import compute_system_prompt_budget
+        assert compute_system_prompt_budget(0) == 60000
 
     def test_small_model_gets_floor_budget(self) -> None:
-        from app.runtime.prompt_builder import _compute_system_prompt_budget
+        from app.runtime.context_budget import compute_system_prompt_budget
         # 8K context → 8000 * 0.20 * 3.5 = 5600 → clamped to floor 15000
-        budget = _compute_system_prompt_budget(8000)
+        budget = compute_system_prompt_budget(8000)
         assert budget == 15000
 
     def test_large_model_gets_scaled_budget(self) -> None:
-        from app.runtime.prompt_builder import _compute_system_prompt_budget
+        from app.runtime.context_budget import compute_system_prompt_budget
         # 200K context → 200000 * 0.20 * 3.5 = 140000 (within 180K ceiling)
-        budget = _compute_system_prompt_budget(200000)
+        budget = compute_system_prompt_budget(200000)
         assert budget == 140000
 
     def test_medium_model_proportional(self) -> None:
-        from app.runtime.prompt_builder import _compute_system_prompt_budget
+        from app.runtime.context_budget import compute_system_prompt_budget
         # 64K context → 64000 * 0.20 * 3.5 = 44800
-        budget = _compute_system_prompt_budget(64000)
+        budget = compute_system_prompt_budget(64000)
         assert budget == 44800
 
     def test_assemble_trims_frozen_when_over_budget(self) -> None:

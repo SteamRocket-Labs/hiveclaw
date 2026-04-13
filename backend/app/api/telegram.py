@@ -459,6 +459,7 @@ async def telegram_webhook(
             conversation_id=str(session.id),
             role="assistant",
             content=reply,
+            user_id=platform_user.id,
         )
     )
     await db.commit()

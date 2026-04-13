@@ -438,6 +438,16 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
         queryFn: () => channelApi.getChannelConfig(agentId!, 'agentbay-channel'),
         enabled: enabled,
     });
+    const { data: telegramConfig } = useQuery({
+        queryKey: ['telegram-channel', agentId],
+        queryFn: () => channelApi.getChannelConfig(agentId!, 'telegram-channel'),
+        enabled: enabled,
+    });
+    const { data: telegramWebhook } = useQuery({
+        queryKey: ['telegram-webhook-url', agentId],
+        queryFn: () => channelApi.getChannelWebhook(agentId!, 'telegram-channel'),
+        enabled: enabled,
+    });
     const { data: feishuRuntimeStatus } = useQuery<FeishuRuntimeStatus | null>({
         queryKey: ['feishu-runtime-status', agentId],
         queryFn: () => toolsApi.getAgentFeishuRuntimeStatus(agentId!),
@@ -456,6 +466,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
             case 'wecom': return wecomConfig;
             case 'atlassian': return atlassianConfig;
             case 'agentbay': return agentbayConfig;
+            case 'telegram': return telegramConfig;
             default: return null;
         }
     };
@@ -468,6 +479,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
             case 'discord': return discordWebhook;
             case 'teams': return teamsWebhook;
             case 'wecom': return wecomWebhook;
+            case 'telegram': return telegramWebhook;
             default: return null;
         }
     };

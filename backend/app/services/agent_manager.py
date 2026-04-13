@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models.agent import Agent
 from app.models.llm import LLMModel
+from app.services.focus_state import render_focus_tasks as _shared_render_focus_tasks
 
 settings = get_settings()
 
@@ -34,6 +35,10 @@ def _markdown_bullets(lines: list[str], fallback: list[str] | None = None) -> st
     if not items:
         return "- None specified"
     return "\n".join(f"- {item}" for item in items)
+
+
+def _render_focus_tasks(task_items: list[str], fallback: list[str]) -> tuple[str, list[tuple[str, str]]]:
+    return _shared_render_focus_tasks(task_items, fallback)
 
 
 def _render_agent_soul_from_blueprint(
@@ -160,8 +165,16 @@ def _render_focus_from_blueprint(
     success_checks = []
     if core_outputs:
         success_checks.append(f"产出首个可审阅结果：{core_outputs[0]}")
-    if task_items:
-        success_checks.append(f"完成并验证首个任务：{task_items[0]}")
+    rendered_tasks, normalized_tasks = _render_focus_tasks(
+        task_items,
+        fallback=[
+            "task_1 :: Read soul.md and restate the mission, users, and output contract in your own words.",
+            "task_2 :: Run the first mission using current builtin/default capabilities before requesting more tooling.",
+            "task_3 :: If a real capability gap blocks delivery, document the blocker clearly and evolve through the approved install path.",
+        ],
+    )
+    if normalized_tasks:
+        success_checks.append(f"完成并验证首个任务：{normalized_tasks[0][1]}")
 
     parts = [
         "# Focus",
@@ -175,15 +188,8 @@ def _render_focus_from_blueprint(
         "## Expected Outputs",
         _markdown_bullets(core_outputs or [], fallback=["One visible deliverable tied to the mission."]),
         "",
-        "## First 3 Tasks",
-        _markdown_bullets(
-            task_items,
-            fallback=[
-                "Read soul.md and restate the mission, users, and output contract in your own words.",
-                "Run the first mission using current builtin/default capabilities before requesting more tooling.",
-                "If a real capability gap blocks delivery, document the blocker clearly and evolve through the approved install path.",
-            ],
-        ),
+        "## Tasks",
+        rendered_tasks,
         "",
         "## Starting Capabilities Available Now",
         _markdown_bullets(ready_now or [], fallback=["No explicit ready-now capability list recorded yet."]),

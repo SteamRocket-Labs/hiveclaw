@@ -610,6 +610,10 @@ def _cleanup_focus(agent_id: uuid.UUID) -> None:
         logger.debug("[AutoDream] Failed to read focus.md for cleanup: %s", read_err)
         return
 
+    from app.services.focus_state import parse_focus_tasks
+
+    completed_task_lines = {task.raw_line for task in parse_focus_tasks(content) if task.completed}
+
     lines = content.splitlines()
     if len(lines) < 5:
         return  # Too small to need cleanup
@@ -622,7 +626,7 @@ def _cleanup_focus(agent_id: uuid.UUID) -> None:
         stripped = line.strip()
 
         # Remove completed checkboxes
-        if stripped.startswith("- [x]") or stripped.startswith("- [X]"):
+        if stripped in completed_task_lines:
             removed_count += 1
             continue
 

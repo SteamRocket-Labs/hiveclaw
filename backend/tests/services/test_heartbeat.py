@@ -171,6 +171,36 @@ def test_heartbeat_lease_is_mutually_exclusive():
         heartbeat._heartbeat_leases.clear()
 
 
+@pytest.mark.asyncio
+async def test_heartbeat_distributed_lease_uses_redis(monkeypatch):
+    from app.services import heartbeat
+
+    agent_id = uuid4()
+    calls: list[tuple] = []
+
+    class FakeRedis:
+        async def set(self, key, value, ex=None, nx=False):
+            calls.append(("set", key, value, ex, nx))
+            return True
+
+        async def delete(self, key):
+            calls.append(("delete", key))
+            return 1
+
+    async def fake_get_redis():
+        return FakeRedis()
+
+    monkeypatch.setattr(heartbeat, "get_redis", fake_get_redis)
+
+    acquired = await heartbeat._try_acquire_heartbeat_lease_async(agent_id)
+    await heartbeat._release_heartbeat_lease_async(agent_id)
+
+    assert acquired is True
+    assert calls[0][0] == "set"
+    assert calls[0][1] == f"heartbeat_lease:{agent_id}"
+    assert calls[1] == ("delete", f"heartbeat_lease:{agent_id}")
+
+
 # ─── _build_evolution_context ───────────────────────────────────
 
 

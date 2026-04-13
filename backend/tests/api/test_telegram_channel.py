@@ -609,7 +609,9 @@ class TestTelegramChannelFileSender:
     async def test_webhook_registers_channel_file_sender_for_llm(self, monkeypatch, tmp_path):
         import app.api.telegram as tg_mod
 
+        from app.core.execution_context import clear_execution_identity
         from app.services.agent_tools import channel_file_sender
+        from app.services.channel_delivery_service import channel_delivery_target
 
         config = _make_config()
         agent = SimpleNamespace(id=config.agent_id, name="Web3研究员", tenant_id=uuid4())
@@ -653,8 +655,13 @@ class TestTelegramChannelFileSender:
             return 10
 
         async def fake_call_llm(*_args, **_kwargs):
+            from app.core.execution_context import get_execution_identity
+
             sender = channel_file_sender.get()
             captured["has_sender"] = sender is not None
+            captured["delivery_target"] = channel_delivery_target.get()
+            captured["execution_identity"] = get_execution_identity()
+            captured["llm_kwargs"] = _kwargs
             if sender is not None:
                 await sender(report, "请查收")
             return "done"
@@ -672,10 +679,23 @@ class TestTelegramChannelFileSender:
         monkeypatch.setattr(tg_mod, "_send_telegram_file", fake_send_telegram_file)
         monkeypatch.setattr(tg_mod, "_send_telegram_message", fake_send_telegram_message)
 
+        clear_execution_identity()
         result = await tg_mod.telegram_webhook(config.agent_id, request, db)
 
         assert result == {"ok": True}
         assert captured["has_sender"] is True
+        assert captured["delivery_target"] == {
+            "channel": "telegram",
+            "chat_id": 12345,
+            "sender_id": "42",
+            "user_label": "Rocky",
+            "session_id": str(session.id),
+        }
+        assert captured["llm_kwargs"]["session_id"] == str(session.id)
+        assert captured["llm_kwargs"]["session_source"] == "telegram"
+        assert captured["llm_kwargs"]["session_channel"] == "telegram"
+        assert captured["execution_identity"].identity_type == "delegated_user"
+        assert captured["execution_identity"].label == "Rocky via telegram"
         assert captured["file_send"] == (config.app_secret, 12345, str(report), "请查收")
         assert captured["reply_sent"] is True
 

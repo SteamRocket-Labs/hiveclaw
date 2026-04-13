@@ -516,6 +516,14 @@ async def telegram_webhook(
         platform_user.display_name = sender_name
         await db.flush()
 
+    from app.core.execution_context import set_delegated_user_identity
+
+    set_delegated_user_identity(
+        platform_user.id,
+        sender_name or platform_user.display_name or platform_user.username,
+        channel="telegram",
+    )
+
     # Find or create chat session
     from app.models.audit import ChatMessage
     from app.services.channel_session import find_or_create_channel_session

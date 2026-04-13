@@ -142,12 +142,29 @@ def _validate_trigger_config(tool_name: str, trigger_type: str, config: dict) ->
     elif trigger_type == "on_message":
         if config.get("reply_to_current_sender"):
             return None
-        if not config.get("from_agent_name") and not config.get("from_user_name"):
+        from_agent_id = str(config.get("from_agent_id", "")).strip()
+        from_user_identity = str(config.get("from_user_identity", "")).strip()
+        if from_agent_id:
+            try:
+                uuid.UUID(from_agent_id)
+            except ValueError:
+                return _trigger_error(
+                    tool_name,
+                    "bad_arguments",
+                    f"Invalid from_agent_id: '{from_agent_id}'",
+                    actionable_hint="Pass a valid UUID string for config.from_agent_id.",
+                )
+        if not any([
+            config.get("from_agent_name"),
+            from_agent_id,
+            config.get("from_user_name"),
+            from_user_identity,
+        ]):
             return _trigger_error(
                 tool_name,
                 "bad_arguments",
-                "on_message trigger requires config.reply_to_current_sender, config.from_agent_name, or config.from_user_name.",
-                actionable_hint="Specify the current sender or which agent/human user should wake this trigger.",
+                "on_message trigger requires config.reply_to_current_sender, config.from_agent_id/config.from_agent_name, or config.from_user_identity/config.from_user_name.",
+                actionable_hint="Specify the current sender or which agent/human user identity should wake this trigger.",
             )
     return None
 
@@ -180,6 +197,9 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
     if ttype == "on_message":
         if config.get("reply_to_current_sender"):
             config.pop("from_user_name", None)
+            config.pop("from_user_identity", None)
+            config.pop("from_agent_name", None)
+            config.pop("from_agent_id", None)
         # Snapshot the latest message timestamp so we only detect NEW messages after this point
         try:
             from app.models.audit import ChatMessage

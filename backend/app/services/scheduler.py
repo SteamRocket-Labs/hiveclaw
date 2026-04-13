@@ -102,6 +102,7 @@ async def _execute_schedule(
                                 label=f"Agent: {agent.name} (schedule)",
                             ),
                             session_context=SessionContext(
+                                session_id=str((delivery_target_json or {}).get("session_id") or "") or None,
                                 source="schedule",
                                 channel="schedule",
                                 metadata={"schedule_id": str(schedule_id)},

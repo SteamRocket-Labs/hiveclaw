@@ -83,6 +83,22 @@ class TestExtractRecipientInfo:
         assert result["channel"] == "telegram"
         assert result["identity"] == "telegram:123456:789"
 
+    def test_send_channel_message_supports_wecom_delivery_target(self) -> None:
+        token = channel_delivery_target.set({
+            "channel": "wecom",
+            "user_id": "zhangsan",
+            "user_label": "张三",
+        })
+        try:
+            result = extract_recipient_info("send_channel_message", {"message": "hello"})
+        finally:
+            channel_delivery_target.reset(token)
+
+        assert result is not None
+        assert result["channel"] == "wecom"
+        assert result["name"] == "张三"
+        assert result["identity"] == "wecom:zhangsan"
+
     def test_unknown_tool(self) -> None:
         assert extract_recipient_info("unknown_tool", {"message": "hi"}) is None
 
@@ -128,6 +144,15 @@ class TestSenderIdentityFromExternalConvId:
 
     def test_wechat_personal(self) -> None:
         assert sender_identity_from_external_conv_id("wechat_p2p_wxid_abc") == "wechat_personal:wxid_abc"
+
+    def test_wecom_p2p(self) -> None:
+        assert sender_identity_from_external_conv_id("wecom_p2p_zhangsan") == "wecom:zhangsan"
+
+    def test_wecom_group(self) -> None:
+        assert sender_identity_from_external_conv_id("wecom_group_sales-room_zhangsan") == "wecom:zhangsan"
+
+    def test_web(self) -> None:
+        assert sender_identity_from_external_conv_id("web_alice") == "web:alice"
 
 
 # ── format_pending_reply_context ──

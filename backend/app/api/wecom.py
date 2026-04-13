@@ -27,6 +27,43 @@ router = APIRouter(tags=["wecom"])
 
 # ─── WeCom AES Crypto ──────────────────────────────────
 
+
+async def _send_wecom_text_message(
+    *,
+    corp_id: str,
+    corp_secret: str,
+    agent_id: str,
+    to_user: str,
+    text: str,
+) -> dict:
+    """Send a WeCom text message through the official webhook API."""
+    import httpx
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        tok_resp = await client.get(
+            "https://qyapi.weixin.qq.com/cgi-bin/gettoken",
+            params={"corpid": corp_id, "corpsecret": corp_secret},
+        )
+        tok_resp.raise_for_status()
+        token_payload = tok_resp.json()
+        access_token = token_payload.get("access_token", "")
+        if not access_token:
+            raise ValueError(f"failed to obtain wecom access_token: {token_payload}")
+        send_resp = await client.post(
+            f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={access_token}",
+            json={
+                "touser": to_user,
+                "msgtype": "text",
+                "agentid": int(agent_id),
+                "text": {"content": text},
+            },
+        )
+        send_resp.raise_for_status()
+        payload = send_resp.json()
+        if payload.get("errcode", 0) != 0:
+            raise ValueError(f"wecom send failed: {payload}")
+        return payload
+
 def _pad(text: bytes) -> bytes:
     """PKCS7 padding for AES-CBC."""
     BLOCK_SIZE = 32
@@ -382,6 +419,7 @@ async def _process_wecom_text(
     from app.models.user import User as UserModel
     from app.core.security import hash_password
     from app.services.channel_session import find_or_create_channel_session
+    from app.services.channel_delivery_service import channel_delivery_target as _cdt
     from app.api.feishu import _call_agent_llm
 
     async with async_session() as db:
@@ -434,6 +472,17 @@ async def _process_wecom_text(
             db.add(platform_user)
             await db.flush()
         platform_user_id = platform_user.id
+        user_label = platform_user.display_name or display_name or wc_username
+
+        from app.core.execution_context import set_delegated_user_identity
+
+        set_delegated_user_identity(platform_user_id, user_label, channel="wecom")
+
+        delivery_target = {
+            "channel": "wecom",
+            "user_id": from_user,
+            "user_label": user_label,
+        }
 
         # Find or create session
         sess = await find_or_create_channel_session(
@@ -443,8 +492,11 @@ async def _process_wecom_text(
             external_conv_id=conv_id,
             source_channel="wecom",
             first_message_title=user_text,
+            delivery_target=delivery_target,
         )
         session_conv_id = str(sess.id)
+        delivery_target["session_id"] = session_conv_id
+        sess.delivery_target_json = delivery_target
 
         # Load history
         history_r = await db.execute(
@@ -465,34 +517,21 @@ async def _process_wecom_text(
         await db.commit()
 
         # Call LLM
-        reply_text = await _call_agent_llm(
-            db, agent_id, user_text,
-            history=history, user_id=platform_user_id,
-        )
-        logger.info(f"[WeCom] LLM reply: {reply_text[:100]}")
-
-        # Send reply via WeCom API
-        wecom_agent_id = (config.extra_config or {}).get("wecom_agent_id", "")
+        _cdt_token = _cdt.set(delivery_target)
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                tok_resp = await client.get(
-                    "https://qyapi.weixin.qq.com/cgi-bin/gettoken",
-                    params={"corpid": config.app_id, "corpsecret": config.app_secret},
-                )
-                access_token = tok_resp.json().get("access_token", "")
-                if access_token:
-                    # Send as markdown first (better formatting, but WeCom-client-only)
-                    await client.post(
-                        f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={access_token}",
-                        json={
-                            "touser": from_user,
-                            "msgtype": "text",
-                            "agentid": int(wecom_agent_id) if wecom_agent_id else 0,
-                            "text": {"content": reply_text},
-                        },
-                    )
-        except Exception as e:
-            logger.error(f"[WeCom] Failed to send reply: {e}")
+            reply_text = await _call_agent_llm(
+                db,
+                agent_id,
+                user_text,
+                history=history,
+                user_id=platform_user_id,
+                session_id=session_conv_id,
+                session_source="wecom",
+                session_channel="wecom",
+            )
+        finally:
+            _cdt.reset(_cdt_token)
+        logger.info(f"[WeCom] LLM reply: {reply_text[:100]}")
 
         # Save assistant reply
         db.add(ChatMessage(
@@ -502,6 +541,18 @@ async def _process_wecom_text(
         ))
         sess.last_message_at = datetime.now(timezone.utc)
         await db.commit()
+
+        # Send reply via unified WeCom helper after assistant reply is persisted
+        try:
+            await _send_wecom_text_message(
+                corp_id=str(config.app_id or "").strip(),
+                corp_secret=str(config.app_secret or "").strip(),
+                agent_id=str((config.extra_config or {}).get("wecom_agent_id") or "").strip(),
+                to_user=from_user,
+                text=reply_text,
+            )
+        except Exception as e:
+            logger.error(f"[WeCom] Failed to send reply: {e}")
 
         # Log activity
         from app.services.activity_logger import log_activity

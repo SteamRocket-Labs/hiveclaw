@@ -92,3 +92,63 @@ async def test_execute_schedule_delegates_to_runtime_invoker(monkeypatch):
     assert request.execution_identity.identity_id == agent_id
     assert request.execution_identity.label == "Agent: Scheduler Agent (schedule)"
     assert activity_calls
+
+
+@pytest.mark.asyncio
+async def test_execute_schedule_preserves_bound_session_id(monkeypatch):
+    from app.services.scheduler import _execute_schedule
+    from app.services.channel_delivery_service import channel_delivery_target
+
+    schedule_id = uuid4()
+    agent_id = uuid4()
+    model_id = uuid4()
+    creator_id = uuid4()
+    tenant_id = uuid4()
+    session_id = uuid4()
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Scheduler Agent",
+        status="running",
+        role_description="Scheduler",
+        primary_model_id=model_id,
+        fallback_model_id=None,
+        creator_id=creator_id,
+        tenant_id=tenant_id,
+    )
+    model = SimpleNamespace(
+        id=model_id,
+        provider="openai",
+        model="gpt-4.1",
+        api_key="key",
+        base_url=None,
+        max_output_tokens=None,
+        tenant_id=tenant_id,
+    )
+    captured = {}
+
+    async def fake_invoke_agent(request):
+        captured["request"] = request
+        captured["delivery_target"] = channel_delivery_target.get()
+        return SimpleNamespace(content="ok")
+
+    async def fake_log_activity(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.scheduler.async_session", lambda: _FakeSession([agent, model]))
+    monkeypatch.setattr("app.services.scheduler.invoke_agent", fake_invoke_agent)
+    monkeypatch.setattr("app.core.permissions.is_agent_expired", lambda _agent: False)
+    monkeypatch.setattr("app.services.activity_logger.log_activity", fake_log_activity)
+
+    delivery_target = {
+        "channel": "telegram",
+        "chat_id": 12345,
+        "sender_id": "42",
+        "user_label": "Rocky",
+        "session_id": str(session_id),
+    }
+    await _execute_schedule(schedule_id, agent_id, "跟进会议预约", delivery_target_json=delivery_target)
+
+    request = captured["request"]
+    assert request.session_context.session_id == str(session_id)
+    assert request.session_context.metadata["schedule_id"] == str(schedule_id)
+    assert captured["delivery_target"] == delivery_target

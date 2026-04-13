@@ -262,6 +262,7 @@ async def _process_wecom_stream_message(
     from app.models.user import User as UserModel
     from app.core.security import hash_password
     from app.services.channel_session import find_or_create_channel_session
+    from app.services.channel_delivery_service import channel_delivery_target as _cdt
     from app.api.feishu import _call_agent_llm
     import uuid as _uuid
 
@@ -277,7 +278,7 @@ async def _process_wecom_stream_message(
 
         # Conversation ID: differentiate single chat vs group chat
         if chat_type == "group" and chat_id:
-            conv_id = f"wecom_group_{chat_id}"
+            conv_id = f"wecom_group_{chat_id}_{sender_id}"
         else:
             conv_id = f"wecom_p2p_{sender_id}"
 
@@ -298,6 +299,19 @@ async def _process_wecom_stream_message(
             db.add(platform_user)
             await db.flush()
         platform_user_id = platform_user.id
+        user_label = platform_user.display_name or f"WeCom {sender_id[:8]}"
+
+        from app.core.execution_context import set_delegated_user_identity
+
+        set_delegated_user_identity(platform_user_id, user_label, channel="wecom")
+
+        delivery_target = {
+            "channel": "wecom",
+            "user_id": sender_id,
+            "user_label": user_label,
+        }
+        if chat_type == "group" and chat_id:
+            delivery_target["chat_id"] = chat_id
 
         # Find or create session
         sess = await find_or_create_channel_session(
@@ -307,8 +321,11 @@ async def _process_wecom_stream_message(
             external_conv_id=conv_id,
             source_channel="wecom",
             first_message_title=user_text,
+            delivery_target=delivery_target,
         )
         session_conv_id = str(sess.id)
+        delivery_target["session_id"] = session_conv_id
+        sess.delivery_target_json = delivery_target
 
         # Load history
         history_r = await db.execute(
@@ -329,10 +346,20 @@ async def _process_wecom_stream_message(
         await db.commit()
 
         # Call LLM
-        reply_text = await _call_agent_llm(
-            db, agent_id, user_text,
-            history=history, user_id=platform_user_id,
-        )
+        _cdt_token = _cdt.set(delivery_target)
+        try:
+            reply_text = await _call_agent_llm(
+                db,
+                agent_id,
+                user_text,
+                history=history,
+                user_id=platform_user_id,
+                session_id=session_conv_id,
+                session_source="wecom",
+                session_channel="wecom",
+            )
+        finally:
+            _cdt.reset(_cdt_token)
         logger.info(f"[WeCom Stream] LLM reply: {reply_text[:100]}")
 
         # Save assistant reply

@@ -79,6 +79,18 @@ class ChannelDeliveryService:
                 "on_message_by_name": False,
             })
             base["limitations"].append("Telegram 仅支持回当前会话，不支持按人名主动寻址。")
+        elif channel == "wecom":
+            base["official_api"] = True
+            base["capabilities"].update({
+                "live_text": True,
+                "inbound_file": False,
+                "outbound_file": False,
+                "deferred_text": True,
+                "deferred_file": False,
+                "on_message_current_sender": True,
+                "on_message_by_name": False,
+            })
+            base["limitations"].append("WeCom 当前仅承诺文本闭环；文件回发仍显式标记为 unsupported。")
         elif channel == "wechat_personal":
             base["official_api"] = False
             base["third_party_transport"] = "ilink"
@@ -126,6 +138,9 @@ class ChannelDeliveryService:
             if chat_id and sender_id:
                 return f"telegram:{chat_id}:{sender_id}"
             return f"telegram:{chat_id}" if chat_id else ""
+        if channel == "wecom":
+            user_id = str(target.get("user_id") or "").strip()
+            return f"wecom:{user_id}" if user_id else ""
         if channel == "wechat_personal":
             to_user_id = str(target.get("to_user_id") or "").strip()
             return f"wechat_personal:{to_user_id}" if to_user_id else ""
@@ -245,6 +260,23 @@ class ChannelDeliveryService:
                 client = ILinkClient(base_url)
                 await client.send_message(bot_token=bot_token, to_user_id=to_user_id, context_token=context_token, text=text)
                 result = ChannelDeliveryService._success(channel, "WeChat personal message delivered.", to_user_id=to_user_id)
+            elif channel == "wecom":
+                from app.api.wecom import _send_wecom_text_message
+
+                to_user = str(target.get("user_id") or "").strip()
+                wecom_agent_id = str((getattr(config, "extra_config", {}) or {}).get("wecom_agent_id") or "").strip()
+                if not to_user:
+                    raise ValueError("missing user_id")
+                if not wecom_agent_id:
+                    raise ValueError("missing wecom_agent_id")
+                await _send_wecom_text_message(
+                    corp_id=str(config.app_id or "").strip(),
+                    corp_secret=str(config.app_secret or "").strip(),
+                    agent_id=wecom_agent_id,
+                    to_user=to_user,
+                    text=text,
+                )
+                result = ChannelDeliveryService._success(channel, "WeCom message delivered.", user_id=to_user, agent_id=wecom_agent_id)
             else:
                 result = ChannelDeliveryService._failed(channel, f"Channel '{channel}' is not supported by unified delivery.", status="denied")
         except Exception as exc:

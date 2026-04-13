@@ -60,7 +60,15 @@ def extract_recipient_info(tool_name: str, tool_args: dict) -> dict | None:
             return None
         return {
             "channel": normalized_target["channel"],
-            "name": normalized_target.get("user_label") or normalized_target.get("to_user_id") or normalized_target.get("open_id") or "",
+            "name": (
+                normalized_target.get("user_label")
+                or normalized_target.get("username")
+                or normalized_target.get("user_id")
+                or normalized_target.get("to_user_id")
+                or normalized_target.get("open_id")
+                or normalized_target.get("receive_id")
+                or ""
+            ),
             "identity": identity,
         }
 
@@ -100,6 +108,14 @@ def sender_identity_from_external_conv_id(external_conv_id: str) -> str:
         parts = ext.split("_", 2)
         if len(parts) == 3 and parts[1] and parts[2]:
             return f"telegram:{parts[1]}:{parts[2]}"
+    if ext.startswith("wecom_p2p_"):
+        return normalize_identity("wecom", ext[len("wecom_p2p_"):])
+    if ext.startswith("wecom_group_"):
+        payload = ext[len("wecom_group_"):]
+        if "_" in payload:
+            _chat_id, user_id = payload.rsplit("_", 1)
+            if user_id:
+                return normalize_identity("wecom", user_id)
     if ext.startswith("wechat_p2p_"):
         return normalize_identity("wechat_personal", ext[len("wechat_p2p_"):])
     return ""

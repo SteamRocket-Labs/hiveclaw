@@ -20,6 +20,7 @@ from pathlib import Path
 from loguru import logger
 from sqlalchemy import select
 
+from app.core.events import get_redis
 from app.memory.t2_store import load_incremental_t2_entries, load_t2_entries, render_t2_snapshot
 from app.kernel.contracts import ExecutionIdentityRef
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
@@ -46,6 +47,7 @@ _HEARTBEAT_STRATEGY_SUFFIX = """
 ## Strategy Logging Scope
 evolution/lineage.md stores policy-level learning and durable strategy changes.
 Keep entries focused: strategy choice, action, outcome, learning, and next focus.
+Do NOT turn lineage into a raw task transcript.
 Avoid raw task transcripts or tool-by-tool logs — those belong in T0.
 """
 
@@ -142,6 +144,35 @@ def _try_acquire_heartbeat_lease(
 
 def _release_heartbeat_lease(agent_id: uuid.UUID) -> None:
     _heartbeat_leases.pop(agent_id, None)
+
+
+async def _try_acquire_heartbeat_lease_async(
+    agent_id: uuid.UUID,
+    *,
+    now: datetime | None = None,
+    ttl_seconds: int = _HEARTBEAT_LEASE_TTL_SECONDS,
+) -> bool:
+    lease_key = f"heartbeat_lease:{agent_id}"
+    try:
+        redis = await get_redis()
+        acquired = await redis.set(lease_key, (now or datetime.now(timezone.utc)).isoformat(), ex=ttl_seconds, nx=True)
+        if acquired:
+            _heartbeat_leases[agent_id] = now or datetime.now(timezone.utc)
+        return bool(acquired)
+    except Exception as exc:
+        logger.debug("[Heartbeat] Redis lease unavailable, falling back to local lease: %s", exc)
+        return _try_acquire_heartbeat_lease(agent_id, now=now, ttl_seconds=ttl_seconds)
+
+
+async def _release_heartbeat_lease_async(agent_id: uuid.UUID) -> None:
+    lease_key = f"heartbeat_lease:{agent_id}"
+    try:
+        redis = await get_redis()
+        await redis.delete(lease_key)
+    except Exception as exc:
+        logger.debug("[Heartbeat] Redis lease release skipped: %s", exc)
+    finally:
+        _release_heartbeat_lease(agent_id)
 
 
 def _is_in_active_hours(active_hours: str, tz_name: str = "UTC") -> bool:
@@ -424,11 +455,13 @@ def _archive_lineage_entries(evo_dir: Path, discarded_segments: list[str], agent
 
     for segment in discarded_segments:
         entry: dict[str, str | int | None] = {}
-        # Extract date from "HB-YYYY-MM-DD-HH:MM"
-        if segment[:10].count("-") >= 2:
-            entry["date"] = segment[:16].strip()
+        date_match = re.search(r"(\d{4}-\d{2}-\d{2}-\d{2}:\d{2})", segment)
+        if date_match:
+            entry["date"] = date_match.group(1)
         for line in segment.splitlines():
             line = line.strip()
+            if line.startswith("- Source:"):
+                entry["source"] = line[9:].strip()[:50]
             if line.startswith("- Strategy:"):
                 entry["strategy"] = line[11:].strip()[:150]
             elif line.startswith("- Outcome:"):
@@ -475,6 +508,8 @@ def _update_evolution_files(
     outcome_type: str,
     score: int | None,
     summary: str,
+    *,
+    source: str = "heartbeat",
 ) -> None:
     """Server-side writeback: update scorecard counters and append lineage entry.
 
@@ -508,7 +543,9 @@ def _update_evolution_files(
             counters = {
                 "total_heartbeats": 0,
                 "useful_heartbeats": 0,
-                "failed_attempts": 0,
+                "total_trigger_runs": 0,
+                "useful_trigger_runs": 0,
+                "failed_runs": 0,
                 "blocked_approaches": 0,
                 "skills_created": 0,
                 "strategies_evolved": 0,
@@ -517,19 +554,38 @@ def _update_evolution_files(
                 match = re.search(rf"- {key}:\s*(\d+)", sc_text)
                 if match:
                     counters[key] = int(match.group(1))
+            legacy_failed_attempts = re.search(r"- failed_attempts:\s*(\d+)", sc_text)
+            if legacy_failed_attempts:
+                counters["failed_runs"] = max(counters["failed_runs"], int(legacy_failed_attempts.group(1)))
 
-            counters["total_heartbeats"] += 1
-            if outcome_type == "action_taken" and (score is None or score >= 5):
-                counters["useful_heartbeats"] += 1
-            elif outcome_type in ("failure", "crash"):
-                counters["failed_attempts"] += 1
+            if source == "heartbeat":
+                counters["total_heartbeats"] += 1
+                if outcome_type == "action_taken" and (score is None or score >= 5):
+                    counters["useful_heartbeats"] += 1
+            elif source == "trigger":
+                counters["total_trigger_runs"] += 1
+                if outcome_type == "action_taken" and (score is None or score >= 5):
+                    counters["useful_trigger_runs"] += 1
 
-            useful_rate = (
+            if outcome_type in ("failure", "crash"):
+                counters["failed_runs"] += 1
+
+            heartbeat_useful_rate = (
                 round(counters["useful_heartbeats"] / counters["total_heartbeats"] * 100)
                 if counters["total_heartbeats"] > 0
                 else 0
             )
-            trend = f"Useful rate: {useful_rate}% ({counters['useful_heartbeats']}/{counters['total_heartbeats']})"
+            trigger_useful_rate = (
+                round(counters["useful_trigger_runs"] / counters["total_trigger_runs"] * 100)
+                if counters["total_trigger_runs"] > 0
+                else 0
+            )
+            trend = (
+                f"- Heartbeat useful rate: {heartbeat_useful_rate}% "
+                f"({counters['useful_heartbeats']}/{counters['total_heartbeats']})\n"
+                f"- Trigger useful rate: {trigger_useful_rate}% "
+                f"({counters['useful_trigger_runs']}/{counters['total_trigger_runs']})"
+            )
 
             _atomic_write(
                 scorecard_path,
@@ -548,22 +604,26 @@ def _update_evolution_files(
             if "(no entries yet)" in existing:
                 existing = "# Evolution Lineage\n\n"
 
-            # BP-4 fix: Agent may have already written a lineage entry for this
-            # heartbeat via write_file during Phase 4. Check for duplicate timestamp.
-            if f"### HB-{now}" in existing:
+            entry_marker = f"{source.upper()}-{now}"
+            if f"### {entry_marker}" in existing:
                 logger.debug(
-                    "[Heartbeat] Lineage entry HB-%s already exists (agent-written), skipping server append", now
+                    "[Heartbeat] Lineage entry %s already exists (agent-written), skipping server append", entry_marker
                 )
             else:
                 score_str = f", score={score}" if score is not None else ""
-                entry = f"### HB-{now}\n- Outcome: {outcome_type}{score_str}\n- Summary: {summary}\n\n"
+                entry = (
+                    f"### {entry_marker}\n"
+                    f"- Source: {source}\n"
+                    f"- Outcome: {outcome_type}{score_str}\n"
+                    f"- Summary: {summary}\n\n"
+                )
                 existing = existing.rstrip() + "\n\n" + entry
 
             new_content = existing
 
             # Rotate lineage: keep header + last 200 entries to prevent unbounded growth
             _LINEAGE_MAX_ENTRIES = 200
-            segments = new_content.split("### HB-")
+            segments = re.split(r"(?m)^### ", new_content)
             if len(segments) > _LINEAGE_MAX_ENTRIES + 1:  # +1 for header segment
                 # B7 fix: archive rotated entries before discarding
                 discarded = segments[1:-_LINEAGE_MAX_ENTRIES]  # Skip header segment
@@ -571,7 +631,7 @@ def _update_evolution_files(
                     _archive_lineage_entries(evo_dir, discarded, agent_id)
 
                 header = "# Evolution Lineage\n\n"
-                trimmed = header + "### HB-".join(segments[-_LINEAGE_MAX_ENTRIES:])
+                trimmed = header + "### ".join(segments[-_LINEAGE_MAX_ENTRIES:])
                 _atomic_write(lineage_path, trimmed)
             else:
                 _atomic_write(lineage_path, new_content)
@@ -632,7 +692,8 @@ def _auto_seed_evolution(agent_id: uuid.UUID) -> None:
                 scorecard.write_text(
                     "# Evolution Scorecard\n\n## Metrics\n"
                     "- total_heartbeats: 3\n- useful_heartbeats: 0\n"
-                    "- failed_attempts: 3\n- blocked_approaches: 0\n"
+                    "- total_trigger_runs: 0\n- useful_trigger_runs: 0\n"
+                    "- failed_runs: 3\n- blocked_approaches: 0\n"
                     "- skills_created: 0\n- strategies_evolved: 0\n\n"
                     "## Recent Trend\nBootstrap failures detected — auto-seeded.\n",
                     encoding="utf-8",
@@ -643,7 +704,8 @@ def _auto_seed_evolution(agent_id: uuid.UUID) -> None:
             if "(no entries yet)" in lineage_content or not lineage_content.strip():
                 lineage.write_text(
                     "# Evolution Lineage\n\n"
-                    f"### HB-{now} [auto-seed]\n"
+                    f"### HEARTBEAT-{now} [auto-seed]\n"
+                    "- Source: heartbeat\n"
                     "- Outcome: recovery\n"
                     "- Summary: 3 bootstrap failures detected, evolution files auto-seeded by server\n",
                     encoding="utf-8",
@@ -790,7 +852,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
     """
     lease_held = lease_acquired
     if not lease_held:
-        lease_held = _try_acquire_heartbeat_lease(agent_id)
+        lease_held = await _try_acquire_heartbeat_lease_async(agent_id)
         if not lease_held:
             logger.info("[Heartbeat] Skip duplicate in-flight heartbeat for %s", agent_id)
             return
@@ -924,7 +986,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                 if not new_t2:
                     # Idle protection: no new T2 entries → skip this tick
                     logger.info("[Heartbeat] Skip tick #%d for %s: no new T2 entries", tick_count, agent.name)
-                    _release_heartbeat_lease(agent_id)
+                    await _release_heartbeat_lease_async(agent_id)
                     await _touch_last_heartbeat(agent_id)
                     return
 
@@ -1063,7 +1125,14 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
             # Server-side evolution file writeback — closes the feedback loop
             # Runs in thread pool to avoid blocking the event loop (flock is blocking I/O)
             try:
-                await asyncio.to_thread(_update_evolution_files, agent_id, outcome_type, heartbeat_score, summary)
+                await asyncio.to_thread(
+                    _update_evolution_files,
+                    agent_id,
+                    outcome_type,
+                    heartbeat_score,
+                    summary,
+                    source="heartbeat",
+                )
             except Exception as _evo_err:
                 logger.warning(f"[Heartbeat] Evolution writeback failed for {agent_id}: {_evo_err}")
 
@@ -1166,12 +1235,19 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
             logger.debug(f"Failed to log heartbeat crash to activity: {log_err}")
         # Update evolution files on crash too — closes the feedback loop
         try:
-            await asyncio.to_thread(_update_evolution_files, agent_id, "crash", None, f"crash: {str(e)[:60]}")
+            await asyncio.to_thread(
+                _update_evolution_files,
+                agent_id,
+                "crash",
+                None,
+                f"crash: {str(e)[:60]}",
+                source="heartbeat",
+            )
         except Exception as _evo_crash_err:
             logger.debug(f"[Heartbeat] Evolution writeback on crash failed: {_evo_crash_err}")
     finally:
         if lease_held:
-            _release_heartbeat_lease(agent_id)
+            await _release_heartbeat_lease_async(agent_id)
 
 
 async def _auto_cancel_completed_triggers(agent_id: uuid.UUID) -> None:
@@ -1194,11 +1270,9 @@ async def _auto_cancel_completed_triggers(agent_id: uuid.UUID) -> None:
         logger.debug("[Heartbeat] Failed to read focus.md for trigger auto-cancel: %s", read_err)
         return
 
-    import re
+    from app.services.focus_state import extract_completed_focus_refs
 
-    completed_refs: set[str] = set()
-    for match in re.finditer(r"- \[x\]\s*(\S+)", focus_text, re.IGNORECASE):
-        completed_refs.add(match.group(1).strip().lower())
+    completed_refs = extract_completed_focus_refs(focus_text)
 
     if not completed_refs:
         return
@@ -1306,7 +1380,7 @@ async def _heartbeat_tick():
                     continue
 
                 # Fire heartbeat
-                if not _try_acquire_heartbeat_lease(agent.id, now=now):
+                if not await _try_acquire_heartbeat_lease_async(agent.id, now=now):
                     logger.info(f"[Heartbeat] Agent {agent.name} already has an in-flight heartbeat")
                     continue
                 logger.info(f"💓 Triggering heartbeat for {agent.name}")

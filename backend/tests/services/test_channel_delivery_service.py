@@ -58,6 +58,33 @@ class TestResolveCapabilities:
         assert caps["capabilities"]["deferred_text"] == "conditional"
         assert any("token" in item.lower() for item in caps["limitations"])
 
+    def test_wecom_matrix(self) -> None:
+        caps = ChannelDeliveryService.resolve_capabilities(
+            "wecom",
+            SimpleNamespace(channel_type="wecom", is_configured=True, is_connected=True, extra_config={}),
+        )
+        assert caps["official_api"] is True
+        assert caps["connected"] is True
+        assert caps["capabilities"]["live_text"] is True
+        assert caps["capabilities"]["deferred_text"] is True
+        assert caps["capabilities"]["deferred_file"] is False
+        assert caps["capabilities"]["on_message_current_sender"] is True
+        assert caps["capabilities"]["on_message_by_name"] is False
+
+
+class TestIdentityFromDeliveryTarget:
+    def test_wecom_identity_uses_user_id(self) -> None:
+        identity = ChannelDeliveryService.identity_from_delivery_target(
+            {"channel": "wecom", "user_id": "zhangsan"}
+        )
+        assert identity == "wecom:zhangsan"
+
+    def test_web_identity_uses_username(self) -> None:
+        identity = ChannelDeliveryService.identity_from_delivery_target(
+            {"channel": "web", "username": "alice"}
+        )
+        assert identity == "web:alice"
+
 
 class TestSendText:
     @pytest.mark.asyncio
@@ -124,3 +151,45 @@ class TestSendText:
         assert result.ok is False
         assert result.status == "unavailable"
         assert "token" in result.message.lower()
+
+    @pytest.mark.asyncio
+    async def test_send_text_wecom_uses_current_user_id(self, monkeypatch) -> None:
+        import app.api.wecom as wecom_mod
+
+        called: dict[str, object] = {}
+
+        async def fake_send(*, corp_id: str, corp_secret: str, agent_id: str, to_user: str, text: str):
+            called["corp_id"] = corp_id
+            called["corp_secret"] = corp_secret
+            called["agent_id"] = agent_id
+            called["to_user"] = to_user
+            called["text"] = text
+            return {"errcode": 0}
+
+        monkeypatch.setattr(wecom_mod, "_send_wecom_text_message", fake_send, raising=False)
+
+        config = SimpleNamespace(
+            channel_type="wecom",
+            app_id="corp-id",
+            app_secret="corp-secret",
+            is_configured=True,
+            is_connected=True,
+            extra_config={"wecom_agent_id": "1000002"},
+        )
+        result = await ChannelDeliveryService.send_text(
+            db=_FakeDB(config),
+            agent_id=uuid4(),
+            reply_target={"channel": "wecom", "user_id": "lisi", "user_label": "李四"},
+            text="hello from wecom",
+            delivery_mode="deferred",
+        )
+
+        assert result.ok is True
+        assert result.status == "success"
+        assert called == {
+            "corp_id": "corp-id",
+            "corp_secret": "corp-secret",
+            "agent_id": "1000002",
+            "to_user": "lisi",
+            "text": "hello from wecom",
+        }

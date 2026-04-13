@@ -14,6 +14,7 @@ from app.models.chat_session import ChatSession
 from app.models.identity import ExternalIdentity
 from app.models.participant import Participant
 from app.models.user import User
+from app.services.channel_session import find_or_create_channel_session
 
 
 def build_feishu_p2p_conv_id(provider_user_id: str | None = None, provider_open_id: str | None = None) -> str | None:
@@ -36,6 +37,110 @@ def list_legacy_feishu_conv_ids(provider_open_id: str | None, canonical_conv_id:
     if canonical_conv_id and legacy == canonical_conv_id:
         return []
     return [legacy]
+
+
+def build_feishu_session_lookup_ids(
+    *,
+    provider_user_id: str | None,
+    provider_open_id: str | None,
+    chat_type: str = "p2p",
+    chat_id: str | None = None,
+) -> tuple[str, list[str]]:
+    """Build canonical Feishu session id plus any legacy aliases to merge."""
+    if chat_type == "group" and chat_id:
+        return f"feishu_group_{chat_id}", []
+
+    conv_id = build_feishu_p2p_conv_id(provider_user_id, provider_open_id) or f"feishu_p2p_{provider_open_id or provider_user_id}"
+    return conv_id, list_legacy_feishu_conv_ids(provider_open_id, conv_id)
+
+
+async def find_or_create_feishu_chat_session(
+    db: AsyncSession,
+    *,
+    agent_id: uuid.UUID,
+    user_id: uuid.UUID,
+    provider_user_id: str | None,
+    provider_open_id: str | None,
+    first_message_title: str,
+    delivery_target: dict | None = None,
+    chat_type: str = "p2p",
+    chat_id: str | None = None,
+) -> ChatSession:
+    """Resolve Feishu canonical/legacy ids before entering the generic session factory."""
+    external_conv_id, legacy_external_conv_ids = build_feishu_session_lookup_ids(
+        provider_user_id=provider_user_id,
+        provider_open_id=provider_open_id,
+        chat_type=chat_type,
+        chat_id=chat_id,
+    )
+
+    result = await db.execute(
+        select(ChatSession).where(
+            ChatSession.agent_id == agent_id,
+            ChatSession.external_conv_id == external_conv_id,
+        )
+    )
+    session = result.scalar_one_or_none()
+
+    if session is not None:
+        for legacy_conv_id in legacy_external_conv_ids:
+            legacy_result = await db.execute(
+                select(ChatSession).where(
+                    ChatSession.agent_id == agent_id,
+                    ChatSession.external_conv_id == legacy_conv_id,
+                )
+            )
+            legacy_session = legacy_result.scalar_one_or_none()
+            if not legacy_session or legacy_session.id == session.id:
+                continue
+
+            await db.execute(
+                update(ChatMessage)
+                .where(ChatMessage.conversation_id == str(legacy_session.id))
+                .values(conversation_id=str(session.id), user_id=user_id)
+            )
+            if legacy_session.last_message_at and (
+                session.last_message_at is None or legacy_session.last_message_at > session.last_message_at
+            ):
+                session.last_message_at = legacy_session.last_message_at
+            if (not session.title or session.title == "New Session") and legacy_session.title:
+                session.title = legacy_session.title
+            await db.delete(legacy_session)
+            await db.flush()
+
+        if session.user_id != user_id:
+            session.user_id = user_id
+        if delivery_target:
+            session.delivery_target_json = delivery_target
+        return session
+
+    for legacy_conv_id in legacy_external_conv_ids:
+        legacy_result = await db.execute(
+            select(ChatSession).where(
+                ChatSession.agent_id == agent_id,
+                ChatSession.external_conv_id == legacy_conv_id,
+            )
+        )
+        legacy_session = legacy_result.scalar_one_or_none()
+        if legacy_session:
+            legacy_session.external_conv_id = external_conv_id
+            legacy_session.user_id = user_id
+            if not legacy_session.title or legacy_session.title == "New Session":
+                legacy_session.title = first_message_title[:40]
+            if delivery_target:
+                legacy_session.delivery_target_json = delivery_target
+            await db.flush()
+            return legacy_session
+
+    return await find_or_create_channel_session(
+        db=db,
+        agent_id=agent_id,
+        user_id=user_id,
+        external_conv_id=external_conv_id,
+        source_channel="feishu",
+        first_message_title=first_message_title,
+        delivery_target=delivery_target,
+    )
 
 
 def choose_canonical_feishu_user(candidates: Sequence[User]) -> User:

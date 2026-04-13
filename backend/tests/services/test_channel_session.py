@@ -33,33 +33,34 @@ class _FakeDB:
 
 
 @pytest.mark.asyncio
-async def test_find_or_create_channel_session_reuses_legacy_feishu_open_id_session():
+async def test_find_or_create_channel_session_reattributes_existing_session_without_legacy_aliases():
     from app.services.channel_session import find_or_create_channel_session
 
     agent_id = uuid4()
     user_id = uuid4()
-    legacy_session = SimpleNamespace(
+    existing_session = SimpleNamespace(
         id=uuid4(),
         agent_id=agent_id,
         user_id=uuid4(),
-        external_conv_id="feishu_p2p_ou_legacy",
-        title="Old Session",
-        source_channel="feishu",
+        external_conv_id="slack_dm_123",
+        title="Existing Session",
+        source_channel="slack",
         last_message_at=None,
+        delivery_target_json=None,
     )
-    db = _FakeDB([None, legacy_session])
+    db = _FakeDB([existing_session])
 
     session = await find_or_create_channel_session(
         db=db,
         agent_id=agent_id,
         user_id=user_id,
-        external_conv_id="feishu_p2p_user_123",
-        legacy_external_conv_ids=["feishu_p2p_ou_legacy"],
-        source_channel="feishu",
+        external_conv_id="slack_dm_123",
+        source_channel="slack",
         first_message_title="新的消息",
+        delivery_target={"channel": "slack", "thread_ts": "123"},
     )
 
-    assert session is legacy_session
-    assert legacy_session.external_conv_id == "feishu_p2p_user_123"
-    assert legacy_session.user_id == user_id
-    assert db.flush_calls == 1
+    assert session is existing_session
+    assert existing_session.user_id == user_id
+    assert existing_session.delivery_target_json == {"channel": "slack", "thread_ts": "123"}
+    assert db.flush_calls == 0

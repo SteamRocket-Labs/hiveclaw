@@ -17,5 +17,12 @@ def test_gateway_source_prefers_provider_backed_org_member_ids():
 def test_messaging_source_uses_canonical_feishu_conv_ids_for_outbound_history():
     source = Path("/Users/rocky243/vc-saas/hiveclaw/backend/app/services/agent_tool_domains/messaging.py").read_text()
 
-    assert "build_feishu_p2p_conv_id" in source
-    assert "legacy_external_conv_ids" in source
+    assert "find_or_create_feishu_chat_session" in source
+    assert "legacy_external_conv_ids" not in source
+
+
+def test_feishu_api_source_routes_session_alias_logic_through_identity_helper():
+    source = Path("/Users/rocky243/vc-saas/hiveclaw/backend/app/api/feishu.py").read_text()
+
+    assert "find_or_create_feishu_chat_session" in source
+    assert "legacy_external_conv_ids=" not in source

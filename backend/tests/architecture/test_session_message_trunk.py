@@ -18,6 +18,9 @@ def test_core_session_entrypoints_use_session_service() -> None:
         "backend/app/services/channel_delivery_service.py": ["find_or_create_web_chat_session("],
     }
 
+    channel_session_source = (project_root / "backend/app/services/channel_session.py").read_text(encoding="utf-8")
+    assert "legacy_external_conv_ids" not in channel_session_source
+
     for relative_path, required_calls in expectations.items():
         source = (project_root / relative_path).read_text(encoding="utf-8")
         assert "ChatSession(" not in source, f"{relative_path} should not instantiate ChatSession directly"

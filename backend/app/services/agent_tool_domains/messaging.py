@@ -202,10 +202,8 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                 try:
                     from app.models.audit import ChatMessage
                     from app.models.agent import Agent as AgentModel
-                    from app.services.channel_session import find_or_create_channel_session
                     from app.services.feishu_identity_maintenance import (
-                        build_feishu_p2p_conv_id,
-                        list_legacy_feishu_conv_ids,
+                        find_or_create_feishu_chat_session,
                     )
                     from datetime import datetime as _dt, timezone as _tz
 
@@ -221,18 +219,13 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                     )
                     user_id = feishu_user.id if feishu_user else creator_id
 
-                    ext_conv_id = (
-                        build_feishu_p2p_conv_id(stable_user_id, stable_open_id)
-                        or f"feishu_p2p_{stable_open_id or stable_user_id}"
-                    )
-                    sess = await find_or_create_channel_session(
+                    sess = await find_or_create_feishu_chat_session(
                         db=db,
                         agent_id=agent_id,
                         user_id=user_id,
-                        external_conv_id=ext_conv_id,
-                        source_channel="feishu",
+                        provider_user_id=stable_user_id,
+                        provider_open_id=stable_open_id,
                         first_message_title=f"[Agent → {member_name}]",
-                        legacy_external_conv_ids=list_legacy_feishu_conv_ids(stable_open_id, ext_conv_id),
                     )
                     db.add(ChatMessage(
                         agent_id=agent_id,

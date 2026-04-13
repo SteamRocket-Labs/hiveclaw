@@ -21,7 +21,10 @@ from app.models.user import User
 from app.schemas.schemas import ChannelConfigCreate, ChannelConfigOut, TokenResponse, UserOut
 from app.services.auth_provider import feishu_auth_provider
 from app.services.channel_user_service import channel_user_service
-from app.services.feishu_identity_maintenance import build_feishu_p2p_conv_id, list_legacy_feishu_conv_ids
+from app.services.feishu_identity_maintenance import (
+    build_feishu_session_lookup_ids,
+    find_or_create_feishu_chat_session,
+)
 from app.services.feishu_contacts_cache import upsert_feishu_contact_cache
 from app.services.feishu_service import feishu_service
 
@@ -917,7 +920,6 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             from app.models.audit import ChatMessage
             from app.models.agent import Agent as AgentModel
             from app.models.chat_session import ChatSession
-            from app.services.channel_session import find_or_create_channel_session
 
             agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
             agent_obj = agent_r.scalar_one_or_none()
@@ -933,11 +935,19 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             sender_user_id_feishu = sender_profile.get("user_id", "") or sender_user_id_from_event
 
             if chat_type == "group" and chat_id:
-                conv_id = f"feishu_group_{chat_id}"
-                legacy_conv_ids: list[str] = []
+                conv_id, legacy_conv_ids = build_feishu_session_lookup_ids(
+                    provider_user_id=sender_user_id_feishu,
+                    provider_open_id=sender_open_id,
+                    chat_type="group",
+                    chat_id=chat_id,
+                )
             else:
-                conv_id = build_feishu_p2p_conv_id(sender_user_id_feishu, sender_open_id) or f"feishu_p2p_{sender_open_id}"
-                legacy_conv_ids = list_legacy_feishu_conv_ids(sender_open_id, conv_id)
+                conv_id, legacy_conv_ids = build_feishu_session_lookup_ids(
+                    provider_user_id=sender_user_id_feishu,
+                    provider_open_id=sender_open_id,
+                    chat_type=chat_type,
+                    chat_id=chat_id,
+                )
             delivery_target = {
                 "channel": "feishu",
                 "receive_id": chat_id if chat_type == "group" and chat_id else sender_open_id,
@@ -998,15 +1008,16 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             # ── Find-or-create a ChatSession via external_conv_id (DB-based, no cache needed) ──
             from datetime import datetime as _dt, timezone as _tz
 
-            _sess = await find_or_create_channel_session(
+            _sess = await find_or_create_feishu_chat_session(
                 db=db,
                 agent_id=agent_id,
                 user_id=platform_user_id,
-                external_conv_id=conv_id,
-                source_channel="feishu",
+                provider_user_id=sender_user_id_feishu,
+                provider_open_id=sender_open_id,
                 first_message_title=user_text,
-                legacy_external_conv_ids=legacy_conv_ids,
                 delivery_target=delivery_target,
+                chat_type=chat_type,
+                chat_id=chat_id,
             )
             session_conv_id = str(_sess.id)
             delivery_target["session_id"] = session_conv_id
@@ -1589,7 +1600,6 @@ async def _handle_feishu_file(
     from app.config import get_settings
     from app.models.audit import ChatMessage
     from app.models.agent import Agent as AgentModel
-    from app.services.channel_session import find_or_create_channel_session
     from app.database import async_session as _async_session
     from datetime import datetime as _dt, timezone as _tz
     from sqlalchemy import select as _select
@@ -1681,12 +1691,12 @@ async def _handle_feishu_file(
             logger.debug(f"[Feishu] Failed to set execution identity: {_ei_err}")
 
         # Conv ID — prefer user_id for session continuity
-        if chat_type == "group" and chat_id:
-            conv_id = f"feishu_group_{chat_id}"
-            legacy_conv_ids = []
-        else:
-            conv_id = build_feishu_p2p_conv_id(sender_user_id_feishu, sender_open_id) or f"feishu_p2p_{sender_open_id}"
-            legacy_conv_ids = list_legacy_feishu_conv_ids(sender_open_id, conv_id)
+        conv_id, legacy_conv_ids = build_feishu_session_lookup_ids(
+            provider_user_id=sender_user_id_feishu,
+            provider_open_id=sender_open_id,
+            chat_type=chat_type,
+            chat_id=chat_id,
+        )
         delivery_target = {
             "channel": "feishu",
             "receive_id": chat_id if chat_type == "group" and chat_id else sender_open_id,
@@ -1699,15 +1709,16 @@ async def _handle_feishu_file(
         }
 
         # Find-or-create session
-        _sess = await find_or_create_channel_session(
+        _sess = await find_or_create_feishu_chat_session(
             db=db,
             agent_id=agent_id,
             user_id=platform_user_id,
-            external_conv_id=conv_id,
-            source_channel="feishu",
+            provider_user_id=sender_user_id_feishu,
+            provider_open_id=sender_open_id,
             first_message_title=f"[文件] {filename}",
-            legacy_external_conv_ids=legacy_conv_ids,
             delivery_target=delivery_target,
+            chat_type=chat_type,
+            chat_id=chat_id,
         )
         session_conv_id = str(_sess.id)
         delivery_target["session_id"] = session_conv_id

@@ -150,7 +150,7 @@ async def test_send_feishu_message_backfills_successful_identity_into_tool_args(
     async def _fake_resolve_feishu_user(*_args, **_kwargs):
         return resolved_user
 
-    async def _fake_find_or_create_channel_session(**_kwargs):
+    async def _fake_find_or_create_feishu_chat_session(**_kwargs):
         return session
 
     monkeypatch.setattr(
@@ -162,8 +162,8 @@ async def test_send_feishu_message_backfills_successful_identity_into_tool_args(
         _fake_resolve_feishu_user,
     )
     monkeypatch.setattr(
-        "app.services.channel_session.find_or_create_channel_session",
-        _fake_find_or_create_channel_session,
+        "app.services.feishu_identity_maintenance.find_or_create_feishu_chat_session",
+        _fake_find_or_create_feishu_chat_session,
     )
 
     async def _fake_send_message(*_args, **_kwargs):
@@ -212,7 +212,7 @@ async def test_send_feishu_message_continues_after_prior_session_identity_http_4
     async def _fake_resolve_feishu_user(*_args, **_kwargs):
         return resolved_user
 
-    async def _fake_find_or_create_channel_session(**_kwargs):
+    async def _fake_find_or_create_feishu_chat_session(**_kwargs):
         return session
 
     async def _fake_user_search(*_args, **_kwargs):
@@ -235,8 +235,8 @@ async def test_send_feishu_message_continues_after_prior_session_identity_http_4
         _fake_resolve_feishu_user,
     )
     monkeypatch.setattr(
-        "app.services.channel_session.find_or_create_channel_session",
-        _fake_find_or_create_channel_session,
+        "app.services.feishu_identity_maintenance.find_or_create_feishu_chat_session",
+        _fake_find_or_create_feishu_chat_session,
     )
     monkeypatch.setattr(messaging, "_feishu_user_search", _fake_user_search)
     monkeypatch.setattr("app.services.feishu_service.feishu_service.send_message", _fake_send_message)
@@ -292,7 +292,7 @@ async def test_send_feishu_message_org_sync_fallback_saves_history_without_argum
     async def _fake_resolve_feishu_user(*_args, **_kwargs):
         return resolved_user
 
-    async def _fake_find_or_create_channel_session(**_kwargs):
+    async def _fake_find_or_create_feishu_chat_session(**_kwargs):
         return session
 
     send_attempts: list[tuple[str, str, str]] = []
@@ -308,8 +308,8 @@ async def test_send_feishu_message_org_sync_fallback_saves_history_without_argum
         _fake_resolve_feishu_user,
     )
     monkeypatch.setattr(
-        "app.services.channel_session.find_or_create_channel_session",
-        _fake_find_or_create_channel_session,
+        "app.services.feishu_identity_maintenance.find_or_create_feishu_chat_session",
+        _fake_find_or_create_feishu_chat_session,
     )
     monkeypatch.setattr("app.services.feishu_service.feishu_service.send_message", _fake_send_message)
 

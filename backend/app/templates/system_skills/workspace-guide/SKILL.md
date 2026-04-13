@@ -57,8 +57,8 @@ Format:
 Current mission statement
 
 ## Tasks
-- Task description (uncompleted)
-- [x] Completed task
+- [ ] task_id :: description
+- [x] completed_task_id :: description
 ```
 
 **Self-direction rules:**
@@ -78,7 +78,7 @@ Use only messaging tools that are actually in your current toolset.
 **Attribution rule**: When sending a message on behalf of someone, ALWAYS say who asked you.
 Example: "Hi B, A asked me to let you know: the meeting has been moved to 3pm."
 
-**Reply waiting rule**: After sending a message and you need to wait for a reply, create an `on_message` trigger with `from_user_name` to auto-wake when they reply.
+**Reply waiting rule**: After sending a message and you need to wait for a reply, create an `on_message` trigger with `reply_to_current_sender`, or use `from_user_identity` when you must match a specific cross-session sender.
 
 ## File Sharing
 

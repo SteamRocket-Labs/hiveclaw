@@ -564,6 +564,7 @@ async def _send_web_message(agent_id: uuid.UUID, args: dict) -> str:
         from app.models.user import User as UserModel
         from app.models.audit import ChatMessage
         from app.models.chat_session import ChatSession
+        from app.services.web_session_contract import apply_web_session_contract
         from datetime import datetime as _dt, timezone as _tz
 
         async with async_session() as db:
@@ -612,6 +613,7 @@ async def _send_web_message(agent_id: uuid.UUID, args: dict) -> str:
                 )
                 db.add(session)
                 await db.flush()
+            await apply_web_session_contract(db, session=session, agent_id=agent_id, user=target_user)
 
             # Save the message
             db.add(ChatMessage(

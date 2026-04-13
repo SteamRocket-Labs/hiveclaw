@@ -983,6 +983,17 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     profile=sender_profile,
                 )
             platform_user_id = resolved_user.id if resolved_user else creator_id
+            try:
+                from app.core.execution_context import set_delegated_user_identity
+
+                _sender_label = sender_name or getattr(resolved_user, "display_name", "") or sender_open_id[:8]
+                set_delegated_user_identity(
+                    user_id=platform_user_id,
+                    user_name=_sender_label,
+                    channel="feishu",
+                )
+            except Exception as _ei_err:
+                logger.debug(f"[Feishu] Failed to set execution identity: {_ei_err}")
 
             # ── Find-or-create a ChatSession via external_conv_id (DB-based, no cache needed) ──
             from datetime import datetime as _dt, timezone as _tz
@@ -1392,6 +1403,8 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     on_tool_call=_ws_on_tool_call,
                     on_thinking=_ws_on_thinking,
                     session_id=session_conv_id,
+                    session_source="feishu",
+                    session_channel="feishu",
                 )
             except Exception as _llm_err:
                 logger.error(f"[Feishu] LLM invocation failed for agent {agent_id}: {_llm_err}")
@@ -1797,6 +1810,8 @@ async def _handle_feishu_file(
                     user_id=platform_user_id,
                     on_chunk=_img_on_chunk,
                     session_id=session_conv_id,
+                    session_source="feishu",
+                    session_channel="feishu",
                 )
             finally:
                 _cdt_img.reset(_cdt_img_token)

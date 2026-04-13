@@ -8,8 +8,10 @@ from app.services.pending_reply_service import (
     format_pending_reply_context,
     normalize_identity,
     sender_identity_from_external_conv_id,
+    sender_identity_from_session,
 )
 from app.services.channel_delivery_service import channel_delivery_target
+from datetime import datetime, timezone
 
 
 # ── normalize_identity ──
@@ -155,6 +157,32 @@ class TestSenderIdentityFromExternalConvId:
         assert sender_identity_from_external_conv_id("web_alice") == "web:alice"
 
 
+class TestSenderIdentityFromSession:
+    def test_prefers_delivery_target_identity(self) -> None:
+        session = type(
+            "Session",
+            (),
+            {
+                "external_conv_id": "web_legacy",
+                "delivery_target_json": {"channel": "web", "username": "alice"},
+            },
+        )()
+
+        assert sender_identity_from_session(session) == "web:alice"
+
+    def test_falls_back_to_external_conv_id(self) -> None:
+        session = type(
+            "Session",
+            (),
+            {
+                "external_conv_id": "wecom_p2p_zhangsan",
+                "delivery_target_json": None,
+            },
+        )()
+
+        assert sender_identity_from_session(session) == "wecom:zhangsan"
+
+
 # ── format_pending_reply_context ──
 
 
@@ -163,9 +191,12 @@ class TestFormatPendingReplyContext:
         """Create a mock PendingReplyContext-like object."""
         defaults = {
             "originator_name": "慕涵",
+            "originator_identity": "feishu:u_muhan",
+            "recipient_identity": "feishu:u_tianyi",
             "outbound_message": "天怡你好！慕涵想约你周二14:00开会",
             "task_summary": "帮我约王天怡周二下午开会",
             "expected_action": "确认后创建日程并邀请双方",
+            "created_at": datetime(2026, 4, 14, 9, 30, tzinfo=timezone.utc),
         }
         defaults.update(kwargs)
 
@@ -184,6 +215,9 @@ class TestFormatPendingReplyContext:
         result = format_pending_reply_context([self._make_pending()])
         assert "待回复任务上下文" in result
         assert "慕涵" in result
+        assert "feishu:u_muhan" in result
+        assert "feishu:u_tianyi" in result
+        assert "2026-04-14" in result
         assert "天怡你好" in result
         assert "周二" in result
         assert "不要重复询问" in result
@@ -199,6 +233,6 @@ class TestFormatPendingReplyContext:
         assert "Bob" in result
 
     def test_no_originator(self) -> None:
-        result = format_pending_reply_context([self._make_pending(originator_name=None)])
+        result = format_pending_reply_context([self._make_pending(originator_name=None, originator_identity=None)])
         assert "待回复任务上下文" in result
         assert "发起人" not in result

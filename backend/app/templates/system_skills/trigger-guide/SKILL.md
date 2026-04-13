@@ -26,7 +26,9 @@ is_system: true
 | Do something once at a specific future time | `once` | `{"at": "2026-04-10T09:00:00+08:00"}` |
 | Do something repeatedly every N minutes | `interval` | `{"minutes": 30}` |
 | Act when a webpage/API changes | `poll` | `{"url": "...", "interval_min": 5, "fire_on": "change"}` |
-| Act when a specific person replies | `on_message` | `{"from_agent_name": "Bob"}` or `{"from_user_name": "John"}` |
+| Act when the same sender replies in the current thread | `on_message` | `{"reply_to_current_sender": true}` |
+| Act when a specific external user replies | `on_message` | `{"from_user_identity": "telegram:123456:789"}` |
+| Act when a specific agent replies | `on_message` | `{"from_agent_id": "<agent-uuid>"}` |
 | Act when an external system sends data | `webhook` | `{"secret": "optional"}` (URL auto-generated) |
 
 **Quick decision**: Repeating on schedule → cron. One-time follow-up → once. Waiting for someone → on_message. Monitoring external change → poll. Receiving external events → webhook.
@@ -55,14 +57,14 @@ When a trigger fires, you wake up with NO memory of the current conversation. Th
 
 1. Before creating a task trigger, add the task to focus.md first
 2. Set `focus_ref` to link the trigger to the focus item
-3. When the task is done, update focus.md (`- [x] task`) AND cancel the trigger
+3. When the task is done, update focus.md (`- [x] task_id :: task description`) AND cancel the trigger
 4. When a trigger produces follow-up work, add it to focus.md AND create a new trigger
 
 Format in focus.md:
 ```
 ## Tasks
-- Task description (uncompleted)
-- [x] Completed task
+- [ ] task_id :: description
+- [x] completed_task_id :: description
 ```
 
 **Exception:** System-level triggers (heartbeat, webhooks for external services) do NOT need a focus item.

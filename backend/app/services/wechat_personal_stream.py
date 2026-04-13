@@ -460,32 +460,31 @@ async def _process_wechat_message(
         # Conversation ID
         conv_id = f"wechat_p2p_{sender_id}"
 
-        # Personal WeChat: only the agent creator can connect this channel,
-        # so attribute conversations to the creator — shows in "My Conversations"
-        owner_user_id = agent_obj.creator_id
-        if not owner_user_id:
-            # Fallback: create phantom user if agent has no creator
-            wc_username = f"wechat_{sender_id[:32]}"
-            u_r = await db.execute(_select(UserModel).where(UserModel.username == wc_username))
-            platform_user = u_r.scalar_one_or_none()
-            if not platform_user:
-                try:
-                    platform_user = UserModel(
-                        username=wc_username,
-                        email=f"{wc_username}@wechat.local",
-                        password_hash=hash_password(_uuid.uuid4().hex),
-                        display_name=f"WeChat {sender_id[:8]}",
-                        role="member",
-                        tenant_id=agent_obj.tenant_id,
-                    )
-                    db.add(platform_user)
-                    await db.flush()
-                except IntegrityError:
-                    await db.rollback()
-                    u_r = await db.execute(_select(UserModel).where(UserModel.username == wc_username))
-                    platform_user = u_r.scalar_one()
-            owner_user_id = platform_user.id
-        platform_user_id = owner_user_id
+        wc_username = f"wechat_{sender_id[:32]}"
+        u_r = await db.execute(_select(UserModel).where(UserModel.username == wc_username))
+        platform_user = u_r.scalar_one_or_none()
+        if not platform_user:
+            try:
+                platform_user = UserModel(
+                    username=wc_username,
+                    email=f"{wc_username}@wechat.local",
+                    password_hash=hash_password(_uuid.uuid4().hex),
+                    display_name=f"WeChat {sender_id[:8]}",
+                    role="member",
+                    tenant_id=agent_obj.tenant_id,
+                )
+                db.add(platform_user)
+                await db.flush()
+            except IntegrityError:
+                await db.rollback()
+                u_r = await db.execute(_select(UserModel).where(UserModel.username == wc_username))
+                platform_user = u_r.scalar_one()
+        platform_user_id = platform_user.id
+        user_label = platform_user.display_name or f"WeChat {sender_id[:8]}"
+
+        from app.core.execution_context import set_delegated_user_identity
+
+        set_delegated_user_identity(platform_user_id, user_label, channel="wechat_personal")
 
         # Find or create session
         sess = await find_or_create_channel_session(
@@ -499,6 +498,7 @@ async def _process_wechat_message(
         )
         session_conv_id = str(sess.id)
         if delivery_target is not None:
+            delivery_target["user_label"] = delivery_target.get("user_label") or user_label
             delivery_target["session_id"] = session_conv_id
             sess.delivery_target_json = delivery_target
 
@@ -520,14 +520,20 @@ async def _process_wechat_message(
         sess.last_message_at = datetime.now(timezone.utc)
         await db.commit()
 
-        # Call LLM (P1-4: pass correct channel attribution)
-        reply_text = await _call_agent_llm(
-            db, agent_id, user_text,
-            history=history, user_id=platform_user_id,
-            session_id=session_conv_id,
-            session_source="wechat_personal",
-            session_channel="wechat_personal",
-        )
+        from app.services.channel_delivery_service import channel_delivery_target as _cdt
+
+        _cdt_token = _cdt.set(delivery_target)
+        try:
+            # Call LLM (P1-4: pass correct channel attribution)
+            reply_text = await _call_agent_llm(
+                db, agent_id, user_text,
+                history=history, user_id=platform_user_id,
+                session_id=session_conv_id,
+                session_source="wechat_personal",
+                session_channel="wechat_personal",
+            )
+        finally:
+            _cdt.reset(_cdt_token)
         logger.info(f"[WeChatPersonal Stream] LLM reply: {reply_text[:100]}")
 
         # Save assistant reply

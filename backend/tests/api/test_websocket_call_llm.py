@@ -62,7 +62,7 @@ async def test_call_llm_delegates_to_runtime_invoker(monkeypatch):
     assert captured["request"].memory_context == "MEM"
     assert captured["request"].session_context is not None
     assert captured["request"].session_context.session_id == "session-1"
-    assert captured["request"].session_context.source == "websocket"
+    assert captured["request"].session_context.source == "web"
     assert captured["request"].session_context.channel == "web"
 
 

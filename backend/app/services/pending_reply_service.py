@@ -121,6 +121,20 @@ def sender_identity_from_external_conv_id(external_conv_id: str) -> str:
     return ""
 
 
+def sender_identity_from_session(session: object | None) -> str:
+    """Resolve canonical sender identity from a ChatSession-like object."""
+    if session is None:
+        return ""
+    delivery_target = getattr(session, "delivery_target_json", None)
+    if delivery_target:
+        from app.services.channel_delivery_service import ChannelDeliveryService
+
+        identity = ChannelDeliveryService.identity_from_delivery_target(delivery_target)
+        if identity:
+            return identity
+    return sender_identity_from_external_conv_id(getattr(session, "external_conv_id", "") or "")
+
+
 def build_task_context(messages: list[dict], tool_args: dict) -> dict:
     """Build structured task context from recent conversation messages.
 
@@ -276,6 +290,16 @@ def format_pending_reply_context(pending_replies: list[PendingReplyContext]) -> 
         parts.append(f"[任务 {i}]")
         if pr.originator_name:
             parts.append(f"- 发起人：{pr.originator_name}")
+        if getattr(pr, "originator_identity", None):
+            parts.append(f"- 发起人标识：{pr.originator_identity[:200]}")
+        if getattr(pr, "recipient_identity", None):
+            parts.append(f"- 收件人标识：{pr.recipient_identity[:200]}")
+        created_at = getattr(pr, "created_at", None)
+        if created_at:
+            try:
+                parts.append(f"- 创建时间：{created_at.astimezone(timezone.utc).isoformat()}")
+            except Exception:
+                parts.append(f"- 创建时间：{created_at}")
         parts.append(f"- 已发送内容：\"{pr.outbound_message[:300]}\"")
         if pr.task_summary:
             parts.append(f"- 原始请求：{pr.task_summary[:300]}")

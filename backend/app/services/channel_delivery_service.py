@@ -7,6 +7,7 @@ import mimetypes
 import uuid
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -104,6 +105,17 @@ class ChannelDeliveryService:
                 "on_message_by_name": False,
             })
             base["limitations"].append("个人微信延迟回投依赖近期会话 context token，有效期过后不可保证发送。")
+        elif channel == "web":
+            base["capabilities"].update({
+                "live_text": True,
+                "inbound_file": True,
+                "outbound_file": False,
+                "deferred_text": True,
+                "deferred_file": False,
+                "on_message_current_sender": True,
+                "on_message_by_name": False,
+            })
+            base["limitations"].append("Web 通过站内会话与在线 WebSocket 推送闭环，不依赖外部渠道配置。")
         return base
 
     @staticmethod
@@ -211,8 +223,8 @@ class ChannelDeliveryService:
             return result
 
         channel = target["channel"]
-        config = await ChannelDeliveryService._load_config(db, agent_id, channel)
-        if not config or not getattr(config, "is_configured", False):
+        config = None if channel == "web" else await ChannelDeliveryService._load_config(db, agent_id, channel)
+        if channel != "web" and (not config or not getattr(config, "is_configured", False)):
             result = ChannelDeliveryService._failed(channel, f"{channel} channel is not configured for this agent.", status="unavailable")
             await ChannelDeliveryService._log_result(agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail)
             return result
@@ -277,6 +289,78 @@ class ChannelDeliveryService:
                     text=text,
                 )
                 result = ChannelDeliveryService._success(channel, "WeCom message delivered.", user_id=to_user, agent_id=wecom_agent_id)
+            elif channel == "web":
+                from app.api.websocket import manager as ws_manager
+                from app.models.agent import Agent as AgentModel
+                from app.models.audit import ChatMessage
+                from app.models.chat_session import ChatSession
+                from app.models.user import User as UserModel
+                from app.services.web_session_contract import apply_web_session_contract
+
+                username = str(target.get("username") or "").strip()
+                if not username:
+                    raise ValueError("missing username")
+
+                user_result = await db.execute(select(UserModel).where(UserModel.username == username))
+                target_user = user_result.scalar_one_or_none()
+                if not target_user:
+                    raise ValueError(f"unknown web user: {username}")
+
+                session_result = await db.execute(
+                    select(ChatSession)
+                    .where(
+                        ChatSession.agent_id == agent_id,
+                        ChatSession.user_id == target_user.id,
+                        ChatSession.source_channel == "web",
+                    )
+                    .order_by(ChatSession.last_message_at.desc().nulls_last(), ChatSession.created_at.desc())
+                    .limit(1)
+                )
+                session = session_result.scalar_one_or_none()
+                if not session:
+                    session = ChatSession(
+                        agent_id=agent_id,
+                        user_id=target_user.id,
+                        title=f"[Web Message] {username}",
+                        source_channel="web",
+                    )
+                    db.add(session)
+                    await db.flush()
+                await apply_web_session_contract(db, session=session, agent_id=agent_id, user=target_user)
+                db.add(
+                    ChatMessage(
+                        agent_id=agent_id,
+                        user_id=target_user.id,
+                        role="assistant",
+                        content=text,
+                        conversation_id=str(session.id),
+                    )
+                )
+                session.last_message_at = datetime.now(timezone.utc)
+                await db.commit()
+
+                agent_result = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+                agent_obj = agent_result.scalar_one_or_none()
+                agent_id_str = str(agent_id)
+                if agent_id_str in ws_manager.active_connections:
+                    for ws, _sid in list(ws_manager.active_connections[agent_id_str]):
+                        try:
+                            await ws.send_json(
+                                {
+                                    "type": "trigger_notification",
+                                    "content": text,
+                                    "triggers": ["web_message"],
+                                    "agent_name": getattr(agent_obj, "name", None),
+                                }
+                            )
+                        except Exception as exc:
+                            logger.debug("[ChannelDelivery] Web push suppressed: %s", exc)
+                result = ChannelDeliveryService._success(
+                    channel,
+                    "Web message delivered.",
+                    username=username,
+                    session_id=str(session.id),
+                )
             else:
                 result = ChannelDeliveryService._failed(channel, f"Channel '{channel}' is not supported by unified delivery.", status="denied")
         except Exception as exc:

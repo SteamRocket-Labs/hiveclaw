@@ -290,8 +290,27 @@ async def _capture_pending_reply(ctx: HookContext) -> None:
 
     try:
         from app.database import async_session
+        from app.models.chat_session import ChatSession
+        from app.services.pending_reply_service import sender_identity_from_session
+        from sqlalchemy import select
 
         async with async_session() as db:
+            if ctx.session_id:
+                try:
+                    session_result = await db.execute(
+                        select(ChatSession).where(ChatSession.id == uuid.UUID(str(ctx.session_id)))
+                    )
+                    session_obj = session_result.scalar_one_or_none()
+                except Exception:
+                    session_obj = None
+                if session_obj:
+                    if not originator_name:
+                        delivery_target = getattr(session_obj, "delivery_target_json", None) or {}
+                        originator_name = (
+                            str(delivery_target.get("user_label") or delivery_target.get("username") or "").strip()
+                            or originator_name
+                        )
+                    originator_identity = sender_identity_from_session(session_obj)
             await capture_pending_reply(
                 db,
                 agent_id=agent_id,

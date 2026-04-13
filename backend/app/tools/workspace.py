@@ -192,7 +192,7 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
     # Pre-create focus.md (T1 working memory)
     focus_path = ws / "focus.md"
     if not focus_path.exists():
-        focus_path.write_text("# Focus\n\n_No active tasks._\n", encoding="utf-8")
+        focus_path.write_text("# Focus\n\n## Tasks\n", encoding="utf-8")
 
     # Pre-create T3 semantic memory files so heartbeat/dream don't need to create them
     for t3_file, t3_seed in [

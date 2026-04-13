@@ -310,7 +310,7 @@ async def get_current_time(agent_id: uuid.UUID, arguments: dict) -> str:
     description=(
         "Send a text reply back to the current requester on the active channel or persisted reply target.\n\n"
         "Usage:\n"
-        "- Use this when you need to reply to the current user in Feishu, Telegram, or personal WeChat.\n"
+        "- Use this when you need to reply to the current user in Feishu, Telegram, WeCom, personal WeChat, or web.\n"
         "- This tool sends only to the current requester / bound reply target.\n"
         "- Do NOT use this for arbitrary lookup-by-name messaging; keep using send_feishu_message for that Feishu-only case."
     ),

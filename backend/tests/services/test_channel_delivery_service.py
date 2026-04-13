@@ -24,6 +24,27 @@ class _FakeDB:
         return _ScalarResult(self._config)
 
 
+class _SequenceDB:
+    def __init__(self, results):
+        self._results = list(results)
+        self.added: list = []
+        self.commits = 0
+
+    async def execute(self, _stmt):
+        if not self._results:
+            raise AssertionError("Unexpected execute() call")
+        return _ScalarResult(self._results.pop(0))
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    async def flush(self):
+        pass
+
+    async def commit(self):
+        self.commits += 1
+
+
 class TestResolveCapabilities:
     def test_feishu_matrix(self) -> None:
         caps = ChannelDeliveryService.resolve_capabilities(
@@ -68,6 +89,13 @@ class TestResolveCapabilities:
         assert caps["capabilities"]["live_text"] is True
         assert caps["capabilities"]["deferred_text"] is True
         assert caps["capabilities"]["deferred_file"] is False
+        assert caps["capabilities"]["on_message_current_sender"] is True
+        assert caps["capabilities"]["on_message_by_name"] is False
+
+    def test_web_matrix(self) -> None:
+        caps = ChannelDeliveryService.resolve_capabilities("web", None)
+        assert caps["capabilities"]["live_text"] is True
+        assert caps["capabilities"]["deferred_text"] is True
         assert caps["capabilities"]["on_message_current_sender"] is True
         assert caps["capabilities"]["on_message_by_name"] is False
 
@@ -193,3 +221,60 @@ class TestSendText:
             "to_user": "lisi",
             "text": "hello from wecom",
         }
+
+    @pytest.mark.asyncio
+    async def test_send_text_web_persists_message_and_pushes_websocket(self, monkeypatch) -> None:
+        from app.models.chat_session import ChatSession
+
+        agent_id = uuid4()
+        target_user = SimpleNamespace(id=uuid4(), username="alice", display_name="Alice")
+        existing_session = ChatSession(
+            id=uuid4(),
+            agent_id=agent_id,
+            user_id=target_user.id,
+            title="Existing",
+            source_channel="web",
+        )
+        db = _SequenceDB([
+            target_user,
+            existing_session,
+            None,  # apply_web_session_contract conflict lookup
+            SimpleNamespace(id=agent_id, name="Web Agent"),
+        ])
+        pushed: list[dict] = []
+
+        class _FakeWS:
+            async def send_json(self, payload):
+                pushed.append(payload)
+
+        monkeypatch.setattr(
+            "app.api.websocket.manager",
+            SimpleNamespace(active_connections={str(agent_id): [(_FakeWS(), str(existing_session.id))]}),
+        )
+
+        result = await ChannelDeliveryService.send_text(
+            db=db,
+            agent_id=agent_id,
+            reply_target={"channel": "web", "username": "alice", "user_label": "Alice"},
+            text="hello from trigger",
+            delivery_mode="deferred",
+        )
+
+        assert result.ok is True
+        assert result.status == "success"
+        assert result.channel == "web"
+        assert existing_session.delivery_target_json == {
+            "channel": "web",
+            "username": "alice",
+            "user_label": "Alice",
+            "session_id": str(existing_session.id),
+        }
+        assert pushed == [
+            {
+                "type": "trigger_notification",
+                "content": "hello from trigger",
+                "triggers": ["web_message"],
+                "agent_name": "Web Agent",
+            }
+        ]
+        assert db.commits == 1

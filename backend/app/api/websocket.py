@@ -20,6 +20,7 @@ from app.models.llm import LLMModel
 from app.models.user import User
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
+from app.services.web_session_contract import apply_web_session_contract
 
 router = APIRouter(tags=["websocket"])
 
@@ -77,7 +78,7 @@ class ConnectionManager:
     async def get_or_create_runtime_session(self, agent_id: str, session_id: str | None) -> SessionContext:
         """Return a stable SessionContext for a chat session across turns/reconnects."""
         if not session_id:
-            return SessionContext(source="websocket", channel="web")
+            return SessionContext(source="web", channel="web")
 
         async with self._lock:
             key = self._runtime_session_key(agent_id, session_id)
@@ -86,7 +87,7 @@ class ConnectionManager:
             if session is None:
                 session = SessionContext(
                     session_id=session_id,
-                    source="websocket",
+                    source="web",
                     channel="web",
                 )
                 self._runtime_sessions[key] = session
@@ -102,6 +103,35 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+
+
+async def _claim_pending_reply_suffix_for_session(
+    db: AsyncSession,
+    *,
+    agent_id: uuid.UUID,
+    session_id: str | None,
+) -> str:
+    if not session_id:
+        return ""
+
+    from app.models.chat_session import ChatSession
+    from app.services.pending_reply_service import (
+        claim_and_fulfill_pending_replies,
+        format_pending_reply_context,
+        sender_identity_from_session,
+    )
+
+    session_result = await db.execute(select(ChatSession).where(ChatSession.id == uuid.UUID(str(session_id))))
+    session = session_result.scalar_one_or_none()
+    sender_identity = sender_identity_from_session(session)
+    if not sender_identity:
+        return ""
+
+    claimed = await claim_and_fulfill_pending_replies(db, agent_id=agent_id, sender_identity=sender_identity)
+    if not claimed:
+        return ""
+    await db.commit()
+    return format_pending_reply_context(claimed)
 
 
 @router.get("/chat/{agent_id}/history")
@@ -165,7 +195,7 @@ async def call_llm(
 
     effective_session_context = session_context or SessionContext(
         session_id=session_id,
-        source=session_source or "websocket",
+        source=session_source or "web",
         channel=session_channel or "web",
     )
 
@@ -311,6 +341,7 @@ async def websocket_chat(
             from sqlalchemy import select as _sel
             from datetime import datetime as _dt, timezone as _tz
             conv_id = session_id
+            _active_session = None
             if conv_id:
                 # Validate the session belongs to this agent AND this user
                 _sr = await db.execute(
@@ -323,6 +354,8 @@ async def websocket_chat(
                 _existing = _sr.scalar_one_or_none()
                 if not _existing:
                     conv_id = None  # fall through to create
+                else:
+                    _active_session = _existing
             if not conv_id:
                 # Find most recent session for this user+agent
                 _sr = await db.execute(
@@ -334,6 +367,7 @@ async def websocket_chat(
                 _latest = _sr.scalar_one_or_none()
                 if _latest:
                     conv_id = str(_latest.id)
+                    _active_session = _latest
                 else:
                     # Create a default session
                     now = _dt.now(_tz.utc)
@@ -347,7 +381,12 @@ async def websocket_chat(
                     await db.commit()
                     await db.refresh(_new_session)
                     conv_id = str(_new_session.id)
+                    _active_session = _new_session
                     logger.info(f"[WS] Created default session {conv_id}")
+
+            if _active_session is not None:
+                await apply_web_session_contract(db, session=_active_session, agent_id=agent_id, user=user)
+                await db.commit()
 
             try:
                 # Dynamic history limit based on model context window
@@ -689,6 +728,16 @@ async def websocket_chat(
 
                     # Run call_llm as a cancellable task
                     cancel_event = asyncio.Event()
+                    pending_reply_suffix = ""
+                    try:
+                        async with async_session() as _pending_db:
+                            pending_reply_suffix = await _claim_pending_reply_suffix_for_session(
+                                _pending_db,
+                                agent_id=agent_id,
+                                session_id=conv_id,
+                            )
+                    except Exception as _pending_err:
+                        logger.warning("[WS] Pending reply injection failed (non-fatal): %s", _pending_err)
                     llm_task = asyncio.create_task(call_llm(
                         llm_model,
                         conversation,
@@ -706,6 +755,9 @@ async def websocket_chat(
                         memory_messages=conversation,
                         cancel_event=cancel_event,
                         session_context=runtime_session_context,
+                        session_source="web",
+                        session_channel="web",
+                        system_prompt_suffix=pending_reply_suffix,
                         execution_identity=ExecutionIdentityRef(
                             identity_type="delegated_user",
                             identity_id=user.id,

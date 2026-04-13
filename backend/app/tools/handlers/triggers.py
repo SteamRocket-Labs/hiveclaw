@@ -18,7 +18,7 @@ from app.tools.decorator import ToolMeta, tool
         "- The trigger will fire and invoke you with the `reason` text as your wake-up context.\n"
         "- Write the `reason` as instructions to your future self: what changed, what to do, and what completion looks like.\n"
         "- Do NOT create a trigger without a clear reason and expected follow-up action.\n"
-        "- Trigger types: 'cron' (recurring schedule), 'once' (fire once at a time), 'interval' (every N minutes), 'poll' (HTTP monitoring), 'on_message' (when another agent or a human user replies — use from_agent_name for agents, or from_user_name for human users on Feishu/Slack/Discord), 'webhook' (receive external HTTP POST — system generates a unique URL, give it to the user so they can configure it in external services like GitHub, Grafana, etc.)."
+        "- Trigger types: 'cron' (recurring schedule), 'once' (fire once at a time), 'interval' (every N minutes), 'poll' (HTTP monitoring), 'on_message' (when another agent or a human user replies — prefer reply_to_current_sender, from_user_identity, or from_agent_id; from_user_name/from_agent_name are compatibility-only helpers), 'webhook' (receive external HTTP POST — system generates a unique URL, give it to the user so they can configure it in external services like GitHub, Grafana, etc.)."
     ),
     parameters={
         "type": "object",
@@ -34,7 +34,7 @@ from app.tools.decorator import ToolMeta, tool
             },
             "config": {
                 "type": "object",
-                "description": "Type-specific config. cron: {\"expr\": \"0 9 * * *\"}. once: {\"at\": \"2026-03-10T09:00:00+08:00\"}. interval: {\"minutes\": 30}. poll: {\"url\": \"...\", \"json_path\": \"$.status\", \"fire_on\": \"change\", \"interval_min\": 5}. on_message: {\"from_agent_name\": \"Morty\"} or {\"from_user_name\": \"\u5f20\u4e09\"} (for human users on Feishu/Slack/Discord). webhook: {\"secret\": \"optional_hmac_secret\"} (system auto-generates the URL)",
+                "description": "Type-specific config. cron: {\"expr\": \"0 9 * * *\"}. once: {\"at\": \"2026-03-10T09:00:00+08:00\"}. interval: {\"minutes\": 30}. poll: {\"url\": \"...\", \"json_path\": \"$.status\", \"fire_on\": \"change\", \"interval_min\": 5}. on_message: {\"reply_to_current_sender\": true}, {\"from_user_identity\": \"telegram:123456:789\"}, {\"from_agent_id\": \"<uuid>\"}, optionally add {\"from_channel\": \"wecom\"}; legacy {\"from_agent_name\": \"Morty\"}/{\"from_user_name\": \"张三\"} remain supported. webhook: {\"secret\": \"optional_hmac_secret\"} (system auto-generates the URL)",
             },
             "reason": {
                 "type": "string",

@@ -1067,12 +1067,12 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 logger.error(f"[Feishu] File injection error: {_fe}")
 
             # Set sender open_id contextvar so calendar tool can auto-invite the requester
-            from app.services.agent_tools import channel_feishu_sender_open_id as _cfso
+            from app.services.agent_tool_domains.channel_delivery import channel_feishu_sender_open_id as _cfso
 
             _cfso_token = _cfso.set(sender_open_id)
 
             # Set channel_file_sender contextvar so the agent can send files back via Feishu
-            from app.services.agent_tools import channel_file_sender as _cfs
+            from app.services.agent_tool_domains.channel_delivery import channel_file_sender as _cfs
             from app.services.channel_delivery_service import channel_delivery_target as _cdt
 
             _reply_to_id = chat_id if chat_type == "group" else sender_open_id

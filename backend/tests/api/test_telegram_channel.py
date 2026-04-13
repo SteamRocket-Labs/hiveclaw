@@ -610,7 +610,7 @@ class TestTelegramChannelFileSender:
         import app.api.telegram as tg_mod
 
         from app.core.execution_context import clear_execution_identity
-        from app.services.agent_tools import channel_file_sender
+        from app.services.agent_tool_domains.channel_delivery import channel_file_sender
         from app.services.channel_delivery_service import channel_delivery_target
 
         config = _make_config()

@@ -573,7 +573,7 @@ async def telegram_webhook(
 
     # Call agent LLM (same function used by Feishu/Slack/DingTalk channels)
     from app.api.feishu import _call_agent_llm
-    from app.services.agent_tools import channel_file_sender as _cfs_t
+    from app.services.agent_tool_domains.channel_delivery import channel_file_sender as _cfs_t
     from app.services.channel_delivery_service import channel_delivery_target as _cdt_t
 
     async def _telegram_file_sender(file_path, accompany_msg: str = ""):

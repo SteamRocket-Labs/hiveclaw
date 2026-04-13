@@ -376,7 +376,7 @@ async def slack_event_webhook(
     await db.commit()
 
     # Set channel_file_sender contextvar for agent → user file delivery
-    from app.services.agent_tools import channel_file_sender as _cfs_s
+    from app.services.agent_tool_domains.channel_delivery import channel_file_sender as _cfs_s
     async def _slack_file_sender(file_path, msg: str = ""):
         from pathlib import Path as _P
         _fp = _P(file_path)

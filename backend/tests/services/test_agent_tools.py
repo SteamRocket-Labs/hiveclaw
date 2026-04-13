@@ -87,7 +87,7 @@ async def test_execute_tool_direct_registry_miss_uses_mcp_fallback_even_for_firs
 
 
 def test_get_combined_openai_tools_normalizes_collected_schema(monkeypatch):
-    from app.services import agent_tools as agent_tools_module
+    from app.tools import surface as tool_surface_module
 
     raw_tools = [
         {
@@ -109,12 +109,12 @@ def test_get_combined_openai_tools_normalizes_collected_schema(monkeypatch):
     ]
 
     monkeypatch.setattr(
-        agent_tools_module,
-        "_get_collected_tools",
+        tool_surface_module,
+        "get_collected_tools",
         lambda: SimpleNamespace(openai_tools=raw_tools),
     )
 
-    tools = agent_tools_module.get_combined_openai_tools()
+    tools = tool_surface_module.get_combined_openai_tools()
 
     assert tools == [
         {
@@ -136,9 +136,38 @@ def test_get_combined_openai_tools_normalizes_collected_schema(monkeypatch):
     ]
 
 
+def test_agent_tools_facade_get_combined_openai_tools_delegates(monkeypatch):
+    from app.services import agent_tools as agent_tools_module
+
+    expected = [{"type": "function", "function": {"name": "delegated", "description": "", "parameters": {"type": "object"}}}]
+    monkeypatch.setattr(agent_tools_module, "_get_combined_openai_tools", lambda: expected)
+
+    assert agent_tools_module.get_combined_openai_tools() == expected
+
+
+@pytest.mark.asyncio
+async def test_agent_tools_facade_get_agent_tools_for_llm_delegates(monkeypatch):
+    from app.services import agent_tools as agent_tools_module
+
+    expected = [{"type": "function", "function": {"name": "delegated", "description": "", "parameters": {"type": "object"}}}]
+
+    async def fake_get_agent_tools_for_llm(agent_id, core_only=False, requested_names=None):
+        assert core_only is True
+        assert requested_names == ["send_feishu_message"]
+        return expected
+
+    monkeypatch.setattr(agent_tools_module, "_get_agent_tools_for_llm", fake_get_agent_tools_for_llm)
+
+    assert await agent_tools_module.get_agent_tools_for_llm(
+        uuid4(),
+        core_only=True,
+        requested_names=["send_feishu_message"],
+    ) == expected
+
+
 @pytest.mark.asyncio
 async def test_get_agent_tools_for_llm_db_failure_falls_back_to_combined_tools(monkeypatch):
-    from app.services import agent_tools as agent_tools_module
+    from app.tools import surface as tool_surface_module
 
     class BrokenSession:
         async def __aenter__(self):
@@ -150,11 +179,11 @@ async def test_get_agent_tools_for_llm_db_failure_falls_back_to_combined_tools(m
     def broken_async_session():
         return BrokenSession()
 
-    monkeypatch.setattr(agent_tools_module, "async_session", broken_async_session)
-    monkeypatch.setattr(agent_tools_module, "_always_core_tools", None)
-    monkeypatch.setattr(agent_tools_module, "_feishu_tools", None)
+    monkeypatch.setattr(tool_surface_module, "async_session", broken_async_session)
+    monkeypatch.setattr(tool_surface_module, "_always_core_tools", None)
+    monkeypatch.setattr(tool_surface_module, "_feishu_tools", None)
 
-    tools = await agent_tools_module.get_agent_tools_for_llm(uuid4())
+    tools = await tool_surface_module.get_agent_tools_for_llm(uuid4())
     names = {tool["function"]["name"] for tool in tools}
 
     assert "read_file" in names
@@ -164,7 +193,7 @@ async def test_get_agent_tools_for_llm_db_failure_falls_back_to_combined_tools(m
 
 @pytest.mark.asyncio
 async def test_get_agent_tools_for_llm_core_only_matches_first_round_surface(monkeypatch):
-    from app.services import agent_tools as agent_tools_module
+    from app.tools import surface as tool_surface_module
 
     class BrokenSession:
         async def __aenter__(self):
@@ -176,9 +205,9 @@ async def test_get_agent_tools_for_llm_core_only_matches_first_round_surface(mon
     def broken_async_session():
         return BrokenSession()
 
-    monkeypatch.setattr(agent_tools_module, "async_session", broken_async_session)
+    monkeypatch.setattr(tool_surface_module, "async_session", broken_async_session)
 
-    tools = await agent_tools_module.get_agent_tools_for_llm(uuid4(), core_only=True)
+    tools = await tool_surface_module.get_agent_tools_for_llm(uuid4(), core_only=True)
     names = {tool["function"]["name"] for tool in tools}
 
     assert "search_memory" in names
@@ -189,7 +218,7 @@ async def test_get_agent_tools_for_llm_core_only_matches_first_round_surface(mon
 
 @pytest.mark.asyncio
 async def test_get_agent_tools_for_llm_db_failure_still_filters_feishu_access(monkeypatch):
-    from app.services import agent_tools as agent_tools_module
+    from app.tools import surface as tool_surface_module
 
     class BrokenSession:
         async def __aenter__(self):
@@ -207,11 +236,11 @@ async def test_get_agent_tools_for_llm_db_failure_still_filters_feishu_access(mo
     async def no_feishu_cli_access():
         return False
 
-    monkeypatch.setattr(agent_tools_module, "async_session", broken_async_session)
-    monkeypatch.setattr(agent_tools_module, "_agent_has_feishu", no_feishu_channel)
-    monkeypatch.setattr(agent_tools_module, "_agent_has_feishu_cli_access", no_feishu_cli_access)
+    monkeypatch.setattr(tool_surface_module, "async_session", broken_async_session)
+    monkeypatch.setattr(tool_surface_module, "_agent_has_feishu", no_feishu_channel)
+    monkeypatch.setattr(tool_surface_module, "_agent_has_feishu_cli_access", no_feishu_cli_access)
 
-    tools = await agent_tools_module.get_agent_tools_for_llm(uuid4())
+    tools = await tool_surface_module.get_agent_tools_for_llm(uuid4())
     names = {tool["function"]["name"] for tool in tools}
 
     assert "send_feishu_message" not in names
@@ -221,7 +250,7 @@ async def test_get_agent_tools_for_llm_db_failure_still_filters_feishu_access(mo
 
 @pytest.mark.asyncio
 async def test_get_agent_tools_for_llm_hides_unavailable_external_providers(monkeypatch):
-    from app.services import agent_tools as agent_tools_module
+    from app.tools import surface as tool_surface_module
 
     class BrokenSession:
         async def __aenter__(self):
@@ -248,14 +277,14 @@ async def test_get_agent_tools_for_llm_hides_unavailable_external_providers(monk
     async def no_modelscope_token() -> str:
         return ""
 
-    monkeypatch.setattr(agent_tools_module, "async_session", broken_async_session)
-    monkeypatch.setattr(agent_tools_module, "_get_exa_api_key", no_exa_key)
-    monkeypatch.setattr(agent_tools_module, "_get_firecrawl_api_key", no_firecrawl_key)
-    monkeypatch.setattr(agent_tools_module, "_get_xcrawl_api_key", no_xcrawl_key)
+    monkeypatch.setattr(tool_surface_module, "async_session", broken_async_session)
+    monkeypatch.setattr(tool_surface_module, "_get_exa_api_key", no_exa_key)
+    monkeypatch.setattr(tool_surface_module, "_get_firecrawl_api_key", no_firecrawl_key)
+    monkeypatch.setattr(tool_surface_module, "_get_xcrawl_api_key", no_xcrawl_key)
     monkeypatch.setattr("app.services.resource_discovery._get_smithery_api_key", no_smithery_key)
     monkeypatch.setattr("app.services.resource_discovery._get_modelscope_api_token", no_modelscope_token)
 
-    tools = await agent_tools_module.get_agent_tools_for_llm(uuid4())
+    tools = await tool_surface_module.get_agent_tools_for_llm(uuid4())
     names = {tool["function"]["name"] for tool in tools}
 
     assert "web_fetch" in names
@@ -266,7 +295,7 @@ async def test_get_agent_tools_for_llm_hides_unavailable_external_providers(monk
 
 
 def test_filter_feishu_tools_for_access_allows_cli_backed_office_tools_without_channel():
-    from app.services.agent_tools import _filter_feishu_tools_for_access
+    from app.tools.surface import _filter_feishu_tools_for_access
 
     tools = [
         {"function": {"name": "send_feishu_message"}},

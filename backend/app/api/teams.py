@@ -24,7 +24,7 @@ from app.models.user import User
 from app.schemas.schemas import ChannelConfigOut
 from app.services.channel_session import find_or_create_channel_session
 from app.api.feishu import _call_agent_llm
-from app.services.agent_tools import channel_file_sender as _cfs_s
+from app.services.agent_tool_domains.channel_delivery import channel_file_sender as _cfs_s
 from app.core.security import hash_password as _hp
 from pathlib import Path as _Path
 

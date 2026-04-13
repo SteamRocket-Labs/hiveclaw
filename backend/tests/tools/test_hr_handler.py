@@ -40,7 +40,7 @@ def test_create_digital_employee_schema_has_required_name():
 
 def test_hr_tool_included_in_hr_tools_set():
     """_get_hr_tools should return the create_digital_employee tool."""
-    from app.services.agent_tools import _get_hr_tools
+    from app.tools.surface import _get_hr_tools
 
     hr_tools = _get_hr_tools()
     names = [t["function"]["name"] for t in hr_tools]

@@ -19,7 +19,7 @@ async def _feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
     import re as _re
     from datetime import timedelta as _td
 
-    from app.services.agent_tools import channel_feishu_sender_open_id
+    from app.services.agent_tool_domains.channel_delivery import channel_feishu_sender_open_id
 
     user_email = arguments.get("user_email", "").strip()
     try:
@@ -179,7 +179,7 @@ async def _feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
 async def _feishu_calendar_create(agent_id: uuid.UUID, arguments: dict) -> str:
     import httpx
 
-    from app.services.agent_tools import channel_feishu_sender_open_id
+    from app.services.agent_tool_domains.channel_delivery import channel_feishu_sender_open_id
 
     user_email = arguments.get("user_email", "").strip()
     summary = arguments.get("summary", "").strip()

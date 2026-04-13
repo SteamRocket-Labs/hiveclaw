@@ -327,7 +327,7 @@ async def get_current_time(agent_id: uuid.UUID, arguments: dict) -> str:
 ))
 async def send_channel_message(agent_id: uuid.UUID, arguments: dict) -> str:
     from app.services.agent_tool_domains.messaging import _normalize_messaging_result
-    from app.services.agent_tools import _send_channel_message
+    from app.services.agent_tool_domains.channel_delivery import _send_channel_message
 
     return _normalize_messaging_result("send_channel_message", await _send_channel_message(agent_id, arguments))
 
@@ -357,7 +357,7 @@ async def send_channel_message(agent_id: uuid.UUID, arguments: dict) -> str:
     adapter="agent_workspace_args",
 ))
 async def send_channel_file(agent_id: uuid.UUID, workspace: Path, arguments: dict) -> str:
-    from app.services.agent_tools import _send_channel_file
+    from app.services.agent_tool_domains.channel_delivery import _send_channel_file
     return await _send_channel_file(agent_id, workspace, arguments)
 
 

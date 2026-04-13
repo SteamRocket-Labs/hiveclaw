@@ -117,7 +117,7 @@ async def _feishu_doc_read(agent_id: uuid.UUID, arguments: dict) -> str:
 
 
 async def _feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:
-    from app.services.agent_tools import channel_feishu_sender_open_id
+    from app.services.agent_tool_domains.channel_delivery import channel_feishu_sender_open_id
 
     title = arguments.get("title", "").strip()
     if not title:

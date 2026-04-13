@@ -295,7 +295,7 @@ class WeChatPersonalStreamManager:
         import mimetypes as _mt
         from pathlib import Path as _P
 
-        from app.services.agent_tools import channel_file_sender as _cfs
+        from app.services.agent_tool_domains.channel_delivery import channel_file_sender as _cfs
         from app.services.channel_delivery_service import channel_delivery_target as _cdt
         from app.services.wechat_ilink_client import (
             MEDIA_TYPE_FILE as _MT_FILE,

@@ -16,6 +16,9 @@ class IdentityProvider(Base):
     """External identity provider configuration."""
 
     __tablename__ = "identity_providers"
+    __table_args__ = (
+        UniqueConstraint("provider_type", "tenant_id", name="uq_identity_providers_type_tenant"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     provider_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)

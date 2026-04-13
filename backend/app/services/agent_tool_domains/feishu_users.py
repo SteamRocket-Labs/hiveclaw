@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import uuid
 
+from app.services.feishu_contacts_cache import load_feishu_contacts_cache
 from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token
 
 logger = logging.getLogger(__name__)
@@ -76,9 +77,6 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
     2. OrgMember table (populated by org sync) — fuzzy scored.
     3. Platform User table — fuzzy scored.
     """
-    import json as _json
-    import pathlib as _pl
-
     name = (arguments.get("name") or "").strip()
     if not name:
         return "❌ Missing required argument 'name'"
@@ -88,14 +86,7 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
         return "❌ Agent has no Feishu channel configured."
 
     # ── 1. Local contacts cache ──────────────────────────────────────────────
-    _cache_file = _pl.Path(f"/data/workspaces/{agent_id}/feishu_contacts_cache.json")
-    _cached_users: list[dict] = []
-    try:
-        if _cache_file.exists():
-            _raw = _json.loads(_cache_file.read_text())
-            _cached_users = _raw.get("users", [])
-    except Exception as e:
-        logger.debug("Suppressed: %s", e)
+    _cached_users = load_feishu_contacts_cache(agent_id).get("users", [])
 
     # Score cached users
     scored_cache = []
@@ -202,10 +193,11 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
 
 async def _feishu_contacts_refresh(agent_id: uuid.UUID) -> None:
     """Force-clear the local contacts cache so next search re-fetches from API."""
-    import pathlib as _pl
-    _cache_file = _pl.Path("/data/workspaces") / str(agent_id) / "feishu_contacts_cache.json"
-    try:
-        if _cache_file.exists():
-            _cache_file.unlink()
-    except Exception as e:
-        logger.debug("Suppressed: %s", e)
+    from app.services.feishu_contacts_cache import get_feishu_contact_cache_paths
+
+    for cache_path in get_feishu_contact_cache_paths(agent_id):
+        try:
+            if cache_path.exists():
+                cache_path.unlink()
+        except Exception as e:
+            logger.debug("Suppressed: %s", e)

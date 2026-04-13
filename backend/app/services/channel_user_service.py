@@ -7,13 +7,99 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.chat_session import ChatSession
 from app.models.identity import ExternalIdentity, IdentityProvider
+from app.models.org import AgentRelationship, OrgMember
 from app.models.user import User
 from app.services.auth_provider import feishu_auth_provider
 
 
 class ChannelUserService:
     """Resolve platform users from Feishu sender identifiers."""
+
+    async def resolve_feishu_delivery_target_by_name(
+        self,
+        db: AsyncSession,
+        *,
+        agent_id: uuid.UUID,
+        tenant_id: uuid.UUID | None,
+        member_name: str,
+    ) -> tuple[str, str] | None:
+        """Resolve the best outbound Feishu identity for a named recipient.
+
+        Preference order:
+        1. Existing Feishu chat session with this agent (best signal for app-scoped open_id).
+        2. Agent relationship / org member record.
+        3. Tenant user record.
+        """
+        normalized_name = (member_name or "").strip()
+        if not normalized_name:
+            return None
+
+        result = await db.execute(
+            select(ChatSession.external_conv_id, User.display_name)
+            .join(User, User.id == ChatSession.user_id)
+            .where(
+                ChatSession.agent_id == agent_id,
+                ChatSession.source_channel == "feishu",
+                User.display_name == normalized_name,
+                ChatSession.external_conv_id.is_not(None),
+            )
+            .order_by(ChatSession.last_message_at.desc().nullslast(), ChatSession.created_at.desc())
+            .limit(5)
+        )
+        for row in result.all():
+            external_conv_id = getattr(row, "external_conv_id", None)
+            if not external_conv_id or not str(external_conv_id).startswith("feishu_p2p_"):
+                continue
+            identifier = str(external_conv_id)[len("feishu_p2p_") :]
+            if not identifier:
+                continue
+            return identifier, ("open_id" if identifier.startswith("ou_") else "user_id")
+
+        result = await db.execute(
+            select(OrgMember)
+            .join(AgentRelationship, AgentRelationship.member_id == OrgMember.id)
+            .where(
+                AgentRelationship.agent_id == agent_id,
+                OrgMember.name == normalized_name,
+            )
+            .limit(1)
+        )
+        member = result.scalar_one_or_none()
+        if member:
+            provider_user_id = (member.external_id or member.feishu_user_id or "").strip()
+            provider_open_id = (member.open_id or member.feishu_open_id or "").strip()
+            if provider_user_id:
+                return provider_user_id, "user_id"
+            if provider_open_id:
+                return provider_open_id, "open_id"
+
+        org_query = select(OrgMember).where(OrgMember.name == normalized_name)
+        if tenant_id is not None:
+            org_query = org_query.where(OrgMember.tenant_id == tenant_id)
+        result = await db.execute(org_query.limit(1))
+        member = result.scalar_one_or_none()
+        if member:
+            provider_user_id = (member.external_id or member.feishu_user_id or "").strip()
+            provider_open_id = (member.open_id or member.feishu_open_id or "").strip()
+            if provider_user_id:
+                return provider_user_id, "user_id"
+            if provider_open_id:
+                return provider_open_id, "open_id"
+
+        user_query = select(User).where(User.display_name == normalized_name)
+        if tenant_id is not None:
+            user_query = user_query.where(User.tenant_id == tenant_id)
+        result = await db.execute(user_query.limit(1))
+        user = result.scalar_one_or_none()
+        if user:
+            if user.feishu_user_id:
+                return user.feishu_user_id, "user_id"
+            if user.feishu_open_id:
+                return user.feishu_open_id, "open_id"
+
+        return None
 
     async def resolve_feishu_user(
         self,

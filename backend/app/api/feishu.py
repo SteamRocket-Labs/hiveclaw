@@ -22,11 +22,13 @@ from app.schemas.schemas import ChannelConfigCreate, ChannelConfigOut, TokenResp
 from app.services.auth_provider import feishu_auth_provider
 from app.services.channel_user_service import channel_user_service
 from app.services.feishu_identity_maintenance import build_feishu_p2p_conv_id, list_legacy_feishu_conv_ids
+from app.services.feishu_contacts_cache import upsert_feishu_contact_cache
 from app.services.feishu_service import feishu_service
 
 router = APIRouter(tags=["feishu"])
 
 _TOOL_STATUS_KEEP_LINES = 20
+_FEISHU_CARD_MARKDOWN_LIMIT = 2800
 
 
 class _SerialPatchQueue:
@@ -53,47 +55,99 @@ class _SerialPatchQueue:
             await self._tail
 
 
+def _split_feishu_markdown_text(text: str, *, limit: int = _FEISHU_CARD_MARKDOWN_LIMIT) -> list[str]:
+    """Split long Feishu markdown payloads into smaller chunks without dropping content."""
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+    if not text:
+        return []
+
+    chunks: list[str] = []
+    current = ""
+
+    def _flush_current() -> None:
+        nonlocal current
+        if current:
+            chunks.append(current)
+            current = ""
+
+    def _split_oversized_piece(piece: str) -> list[str]:
+        if len(piece) <= limit:
+            return [piece]
+
+        segments: list[str] = []
+        start = 0
+        preferred_breaks = ("\n", " ", "，", "。", ",", ".", "；", ";", "：", ":")
+        min_break_index = max(1, int(limit * 0.6))
+        while start < len(piece):
+            end = min(start + limit, len(piece))
+            if end >= len(piece):
+                segments.append(piece[start:end])
+                break
+
+            window = piece[start:end]
+            break_at = -1
+            for token in preferred_breaks:
+                idx = window.rfind(token)
+                if idx > break_at:
+                    break_at = idx
+            if break_at >= min_break_index:
+                end = start + break_at + 1
+            segments.append(piece[start:end])
+            start = end
+        return segments
+
+    for piece in text.splitlines(keepends=True) or [text]:
+        if len(piece) > limit:
+            _flush_current()
+            chunks.extend(_split_oversized_piece(piece))
+            continue
+
+        if not current:
+            current = piece
+            continue
+
+        if len(current) + len(piece) <= limit:
+            current += piece
+            continue
+
+        _flush_current()
+        current = piece
+
+    _flush_current()
+    return chunks
+
+
+def _feishu_markdown_elements(
+    text: str,
+    *,
+    limit: int = _FEISHU_CARD_MARKDOWN_LIMIT,
+    text_size: str | None = None,
+) -> list[dict]:
+    """Render markdown text as one or more Feishu card markdown elements."""
+    normalized = text or "..."
+    elements: list[dict] = []
+    for chunk in _split_feishu_markdown_text(normalized, limit=limit):
+        element = {"tag": "markdown", "content": chunk}
+        if text_size:
+            element["text_size"] = text_size
+        elements.append(element)
+    return elements or [{"tag": "markdown", "content": "..."}]
+
+
 def _cache_feishu_sender(agent_id: uuid.UUID, *, open_id: str, user_id: str, name: str, email: str) -> None:
     """Persist a tiny sender cache for downstream name lookup tools."""
     if not open_id or not name:
         return
 
     try:
-        import json as _cache_json
-        import os as _cache_os
-        import pathlib as _cache_path
-        import time as _cache_time
-
-        safe_agent_id = str(agent_id).replace("..", "").replace("/", "")
-        cache_path = _cache_path.Path(f"/data/workspaces/{safe_agent_id}/feishu_contacts_cache.json")
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-
-        existing_payload = {}
-        if cache_path.exists():
-            try:
-                existing_payload = _cache_json.loads(cache_path.read_text())
-            except Exception:
-                logger.debug("[Feishu] Failed to read contacts cache, starting fresh")
-
-        users_by_key = {}
-        for cached in existing_payload.get("users", []):
-            cache_key = cached.get("user_id") or cached.get("open_id", "")
-            if cache_key:
-                users_by_key[cache_key] = cached
-
-        users_by_key[user_id or open_id] = {
-            "open_id": open_id,
-            "user_id": user_id,
-            "name": name,
-            "email": email,
-        }
-        cache_path.write_text(
-            _cache_json.dumps(
-                {"ts": _cache_time.time(), "users": list(users_by_key.values())},
-                ensure_ascii=False,
-            )
+        upsert_feishu_contact_cache(
+            agent_id,
+            open_id=open_id,
+            user_id=user_id,
+            name=name,
+            email=email,
         )
-        _cache_os.chmod(str(cache_path), 0o600)
     except Exception as exc:
         logger.error(f"[Feishu] Cache write failed: {exc}")
 
@@ -876,7 +930,6 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 sender_user_id=sender_user_id_from_event,
             )
             sender_name = sender_profile.get("name", "")
-            sender_email = sender_profile.get("email", "")
             sender_user_id_feishu = sender_profile.get("user_id", "") or sender_user_id_from_event
 
             if chat_type == "group" and chat_id:
@@ -1147,19 +1200,19 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 running_visible = list(_tool_status_running.values())
                 all_visible = done_visible + running_visible
                 if all_visible:
-                    elements.append({"tag": "markdown", "content": "\n".join(all_visible)})
+                    elements.extend(_feishu_markdown_elements("\n".join(all_visible)))
                     elements.append({"tag": "hr"})
                 if thinking_text:
                     think_preview = thinking_text[:200].replace("\n", " ")
-                    elements.append(
-                        {
-                            "tag": "markdown",
-                            "content": f"<font color='grey'>💭 **思考过程**\n{think_preview}{'...' if len(thinking_text) > 200 else ''}</font>",
-                        }
+                    elements.extend(
+                        _feishu_markdown_elements(
+                            f"<font color='grey'>💭 **思考过程**\n"
+                            f"{think_preview}{'...' if len(thinking_text) > 200 else ''}</font>"
+                        )
                     )
                     elements.append({"tag": "hr"})
                 body = answer_text + ("▌" if streaming and answer_text else ("..." if streaming else ""))
-                elements.append({"tag": "markdown", "content": body or "..."})
+                elements.extend(_feishu_markdown_elements(body or "..."))
                 return {
                     "config": {"update_multi": True},
                     "header": {
@@ -1191,16 +1244,16 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                                 "icon_expanded_angle": -180,
                             },
                             "border": {"color": "grey", "corner_radius": "5px"},
-                            "elements": [{"tag": "markdown", "content": thinking_text, "text_size": "notation"}],
+                            "elements": _feishu_markdown_elements(thinking_text, text_size="notation"),
                         }
                     )
                 done_visible = _tool_status_done[-_TOOL_STATUS_KEEP_LINES:]
                 running_visible = list(_tool_status_running.values())
                 all_visible = done_visible + running_visible
                 if all_visible:
-                    elements.append({"tag": "markdown", "content": "\n".join(all_visible)})
+                    elements.extend(_feishu_markdown_elements("\n".join(all_visible)))
                     elements.append({"tag": "hr"})
-                elements.append({"tag": "markdown", "content": answer_text or "..."})
+                elements.extend(_feishu_markdown_elements(answer_text or "..."))
                 return {
                     "schema": "2.0",
                     "config": {"wide_screen_mode": True, "update_multi": True},

@@ -70,7 +70,10 @@ async def test_call_agent_llm_forwards_tool_callback(monkeypatch):
     monkeypatch.setattr("app.api.websocket.call_llm", fake_call_llm)
 
     db = _FakeDB()
-    tool_callback = lambda evt: evt
+
+    def tool_callback(evt):
+        return evt
+
     result = await feishu_api._call_agent_llm(
         db,
         uuid4(),
@@ -90,3 +93,24 @@ def test_process_feishu_event_source_uses_cardkit_primary_flow():
     assert "set_card_streaming_mode" in source
     assert "update_cardkit_card" in source
     assert "patch_message" in source
+
+
+def test_split_feishu_markdown_text_chunks_long_body_without_loss():
+    import app.api.feishu as feishu_api
+
+    unit = "这是一段很长的飞书回复，用来验证卡片 markdown 会被安全拆分。\n"
+    long_text = unit * 240
+
+    chunks = feishu_api._split_feishu_markdown_text(long_text, limit=280)
+
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 280 for chunk in chunks)
+    assert "".join(chunks) == long_text
+
+
+def test_feishu_markdown_elements_fallback_to_placeholder_for_empty_text():
+    import app.api.feishu as feishu_api
+
+    elements = feishu_api._feishu_markdown_elements("", limit=280)
+
+    assert elements == [{"tag": "markdown", "content": "..."}]

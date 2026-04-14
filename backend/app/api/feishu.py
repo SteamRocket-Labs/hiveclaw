@@ -1975,7 +1975,7 @@ async def _call_agent_llm(
         from app.services.pending_reply_service import (
             claim_and_fulfill_pending_replies,
             format_pending_reply_context,
-            sender_identity_from_external_conv_id,
+            sender_identity_from_session,
         )
 
         # Resolve sender identity from session's external_conv_id pattern
@@ -1986,11 +1986,7 @@ async def _call_agent_llm(
             _sess_r = await db.execute(select(_CS).where(_CS.id == session_id))
             _sess_obj = _sess_r.scalar_one_or_none()
             if _sess_obj:
-                _sender_identity = sender_identity_from_external_conv_id(_sess_obj.external_conv_id or "")
-                if not _sender_identity and getattr(_sess_obj, "delivery_target_json", None):
-                    from app.services.channel_delivery_service import ChannelDeliveryService
-
-                    _sender_identity = ChannelDeliveryService.identity_from_delivery_target(_sess_obj.delivery_target_json)
+                _sender_identity = sender_identity_from_session(_sess_obj)
 
         if _sender_identity:
             # Atomic claim+fulfill: only one concurrent handler gets rows back (TOCTOU safe)

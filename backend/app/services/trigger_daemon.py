@@ -339,13 +339,9 @@ async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
                 return True
 
             def _session_sender_identity(session_obj: ChatSession) -> str:
-                from app.services.channel_delivery_service import ChannelDeliveryService
-                from app.services.pending_reply_service import sender_identity_from_external_conv_id
+                from app.services.pending_reply_service import sender_identity_from_session
 
-                sender_identity = sender_identity_from_external_conv_id(getattr(session_obj, "external_conv_id", "") or "")
-                if sender_identity:
-                    return sender_identity
-                return ChannelDeliveryService.identity_from_delivery_target(getattr(session_obj, "delivery_target_json", None))
+                return sender_identity_from_session(session_obj)
 
             agent_r = await db.execute(select(AgentModel).where(AgentModel.id == trigger.agent_id))
             current_agent = agent_r.scalar_one_or_none()

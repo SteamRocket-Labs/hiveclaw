@@ -20,6 +20,8 @@ def test_session_identifier_contract_is_centralized() -> None:
     pending_reply_source = (project_root / "backend/app/services/pending_reply_service.py").read_text(encoding="utf-8")
     channel_user_source = (project_root / "backend/app/services/channel_user_service.py").read_text(encoding="utf-8")
     activity_api_source = (project_root / "backend/app/api/activity.py").read_text(encoding="utf-8")
+    trigger_daemon_source = (project_root / "backend/app/services/trigger_daemon.py").read_text(encoding="utf-8")
+    feishu_api_source = (project_root / "backend/app/api/feishu.py").read_text(encoding="utf-8")
 
     assert "def build_legacy_gateway_conversation_ids(" in shared_source
     assert "def canonicalize_agent_pair_ids(" in shared_source
@@ -55,3 +57,9 @@ def test_session_identifier_contract_is_centralized() -> None:
 
     assert 'startswith("feishu_p2p_")' not in activity_api_source
     assert "from app.session_identifiers import parse_feishu_p2p_conv_id" in activity_api_source
+
+    assert "sender_identity_from_session" in trigger_daemon_source
+    assert 'sender_identity_from_external_conv_id(getattr(session_obj, "external_conv_id", "") or "")' not in trigger_daemon_source
+
+    assert "sender_identity_from_session" in feishu_api_source
+    assert 'sender_identity_from_external_conv_id(_sess_obj.external_conv_id or "")' not in feishu_api_source

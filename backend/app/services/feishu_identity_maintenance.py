@@ -18,6 +18,65 @@ from app.session_identifiers import build_feishu_session_lookup_ids
 from app.services.channel_session import find_or_create_channel_session
 
 
+def _apply_feishu_session_runtime_updates(
+    session: ChatSession,
+    *,
+    user_id: uuid.UUID,
+    title: str | None = None,
+    delivery_target: dict | None = None,
+) -> None:
+    session.user_id = user_id
+    if title and (not session.title or session.title == "New Session"):
+        session.title = title
+    if delivery_target:
+        session.delivery_target_json = delivery_target
+
+
+async def _merge_legacy_feishu_session_into_canonical(
+    db: AsyncSession,
+    *,
+    canonical_session: ChatSession,
+    legacy_session: ChatSession,
+    user_id: uuid.UUID,
+) -> None:
+    await db.execute(
+        update(ChatMessage)
+        .where(ChatMessage.conversation_id == str(legacy_session.id))
+        .values(conversation_id=str(canonical_session.id), user_id=user_id)
+    )
+    if legacy_session.last_message_at and (
+        canonical_session.last_message_at is None or legacy_session.last_message_at > canonical_session.last_message_at
+    ):
+        canonical_session.last_message_at = legacy_session.last_message_at
+    _apply_feishu_session_runtime_updates(
+        canonical_session,
+        user_id=user_id,
+        title=legacy_session.title,
+    )
+    await db.delete(legacy_session)
+    await db.flush()
+
+
+async def _promote_legacy_feishu_alias_session(
+    db: AsyncSession,
+    *,
+    legacy_session: ChatSession,
+    external_conv_id: str,
+    user_id: uuid.UUID,
+    first_message_title: str,
+    delivery_target: dict | None,
+) -> ChatSession:
+    legacy_session.external_conv_id = external_conv_id
+    _apply_feishu_session_runtime_updates(
+        legacy_session,
+        user_id=user_id,
+        title=first_message_title[:40],
+        delivery_target=delivery_target,
+    )
+    await db.flush()
+    return legacy_session
+
+
 async def find_or_create_feishu_chat_session(
     db: AsyncSession,
     *,
@@ -58,24 +117,18 @@ async def find_or_create_feishu_chat_session(
             if not legacy_session or legacy_session.id == session.id:
                 continue
 
-            await db.execute(
-                update(ChatMessage)
-                .where(ChatMessage.conversation_id == str(legacy_session.id))
-                .values(conversation_id=str(session.id), user_id=user_id)
+            await _merge_legacy_feishu_session_into_canonical(
+                db,
+                canonical_session=session,
+                legacy_session=legacy_session,
+                user_id=user_id,
             )
-            if legacy_session.last_message_at and (
-                session.last_message_at is None or legacy_session.last_message_at > session.last_message_at
-            ):
-                session.last_message_at = legacy_session.last_message_at
-            if (not session.title or session.title == "New Session") and legacy_session.title:
-                session.title = legacy_session.title
-            await db.delete(legacy_session)
-            await db.flush()
 
-        if session.user_id != user_id:
-            session.user_id = user_id
-        if delivery_target:
-            session.delivery_target_json = delivery_target
+        _apply_feishu_session_runtime_updates(
+            session,
+            user_id=user_id,
+            delivery_target=delivery_target,
+        )
         return session
 
     for legacy_conv_id in legacy_external_conv_ids:
@@ -87,14 +140,14 @@ async def find_or_create_feishu_chat_session(
         )
         legacy_session = legacy_result.scalar_one_or_none()
         if legacy_session:
-            legacy_session.external_conv_id = external_conv_id
-            legacy_session.user_id = user_id
-            if not legacy_session.title or legacy_session.title == "New Session":
-                legacy_session.title = first_message_title[:40]
-            if delivery_target:
-                legacy_session.delivery_target_json = delivery_target
-            await db.flush()
-            return legacy_session
+            return await _promote_legacy_feishu_alias_session(
+                db,
+                legacy_session=legacy_session,
+                external_conv_id=external_conv_id,
+                user_id=user_id,
+                first_message_title=first_message_title,
+                delivery_target=delivery_target,
+            )
 
     return await find_or_create_channel_session(
         db=db,

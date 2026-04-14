@@ -1,5 +1,6 @@
 """Activity log API — view agent work history."""
 
+import re
 import uuid
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, func
@@ -10,9 +11,19 @@ from app.core.permissions import check_agent_access
 from app.database import get_db
 from app.models.activity_log import AgentActivityLog
 from app.models.user import User
+from app.session_identifiers import parse_feishu_p2p_conv_id
 from app.services.tool_telemetry import collect_agent_tool_failure_summary
 
 router = APIRouter(tags=["activity"])
+
+
+def _feishu_conversation_partner_name(conv_id: str, first_user_message: str | None = None) -> str:
+    identifier = parse_feishu_p2p_conv_id(conv_id)
+    if not identifier:
+        return "👥 飞书群聊"
+
+    sender_match = re.search(r"\[发送者:\s*([^\]]+?)(?:\s*\(ID:.*?\))?\]", first_user_message or "")
+    return f"📱 {sender_match.group(1)}" if sender_match else "📱 飞书用户"
 
 
 @router.get("/agents/{agent_id}/activity")
@@ -131,8 +142,8 @@ async def list_conversations(
         )
         last_content = last_msg_r.scalar_one_or_none() or ""
 
-        # Determine display name
-        if conv_id.startswith("feishu_p2p_"):
+        first_msg = ""
+        if parse_feishu_p2p_conv_id(conv_id):
             # Try to get sender name from first user message
             name_r = await db.execute(
                 select(ChatMessage.content)
@@ -144,12 +155,8 @@ async def list_conversations(
                 .order_by(ChatMessage.created_at.asc()).limit(1)
             )
             first_msg = name_r.scalar_one_or_none() or ""
-            # Extract sender name from [发送者: xxx] prefix
-            import re
-            sender_match = re.search(r'\[发送者:\s*([^\]]+?)(?:\s*\(ID:.*?\))?\]', first_msg)
-            display_name = f"📱 {sender_match.group(1)}" if sender_match else "📱 飞书用户"
-        else:
-            display_name = "👥 飞书群聊"
+
+        display_name = _feishu_conversation_partner_name(conv_id, first_msg)
 
         conversations.append({
             "conv_id": conv_id,

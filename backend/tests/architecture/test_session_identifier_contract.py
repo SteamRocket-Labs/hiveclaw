@@ -19,6 +19,7 @@ def test_session_identifier_contract_is_centralized() -> None:
     )
     pending_reply_source = (project_root / "backend/app/services/pending_reply_service.py").read_text(encoding="utf-8")
     channel_user_source = (project_root / "backend/app/services/channel_user_service.py").read_text(encoding="utf-8")
+    activity_api_source = (project_root / "backend/app/api/activity.py").read_text(encoding="utf-8")
 
     assert "def build_legacy_gateway_conversation_ids(" in shared_source
     assert "def parse_legacy_gateway_conversation_id(" in shared_source
@@ -35,7 +36,7 @@ def test_session_identifier_contract_is_centralized() -> None:
 
     assert "def build_feishu_p2p_conv_id(" not in feishu_service_source
     assert "def build_feishu_session_lookup_ids(" not in feishu_service_source
-    assert "from app.session_identifiers import (" in feishu_service_source
+    assert "from app.session_identifiers import build_feishu_session_lookup_ids" in feishu_service_source
 
     assert "def build_feishu_p2p_conv_id(" not in feishu_db_source
     assert "from app.session_identifiers import build_feishu_p2p_conv_id" in feishu_db_source
@@ -45,3 +46,6 @@ def test_session_identifier_contract_is_centralized() -> None:
 
     assert 'startswith("feishu_p2p_")' not in channel_user_source
     assert "from app.session_identifiers import parse_feishu_p2p_conv_id" in channel_user_source
+
+    assert 'startswith("feishu_p2p_")' not in activity_api_source
+    assert "from app.session_identifiers import parse_feishu_p2p_conv_id" in activity_api_source

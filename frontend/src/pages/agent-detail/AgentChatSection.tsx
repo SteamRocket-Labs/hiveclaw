@@ -264,6 +264,7 @@ export default function AgentChatSection({
     slack: t('common.channels.slack'),
     dingtalk: t('common.channels.dingtalk'),
     wecom: t('common.channels.wecom'),
+    microsoft_teams: t('common.channels.teams'),
     wechat_personal: t('common.channels.wechatPersonal'),
     telegram: t('common.channels.telegram'),
     email: t('common.channels.email'),

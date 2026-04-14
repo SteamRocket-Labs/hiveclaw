@@ -474,6 +474,13 @@ async def teams_event_webhook(
             _platform_user.display_name = sender_name
             await db.flush()
         platform_user_id = _platform_user.id
+        delivery_target = {
+            "channel": "microsoft_teams",
+            "conversation_id": conversation_id,
+            "sender_id": sender_id,
+            "user_label": sender_name,
+            "reply_to_id": reply_to_id,
+        }
 
         # Find-or-create session for this Teams conversation
         sess = await find_or_create_channel_session(
@@ -483,8 +490,11 @@ async def teams_event_webhook(
             external_conv_id=conversation_id,
             source_channel="microsoft_teams",
             first_message_title=user_text,
+            delivery_target=delivery_target,
         )
         session_conv_id = str(sess.id)
+        delivery_target["session_id"] = session_conv_id
+        sess.delivery_target_json = delivery_target
 
         # Load history
         from app.services.memory_service import compute_history_limit_for_agent

@@ -101,6 +101,18 @@ class TestResolveCapabilities:
 
 
 class TestIdentityFromDeliveryTarget:
+    def test_dingtalk_identity_uses_user_id(self) -> None:
+        identity = ChannelDeliveryService.identity_from_delivery_target(
+            {"channel": "dingtalk", "user_id": "staff_123"}
+        )
+        assert identity == "dingtalk:staff_123"
+
+    def test_teams_identity_uses_sender_id(self) -> None:
+        identity = ChannelDeliveryService.identity_from_delivery_target(
+            {"channel": "microsoft_teams", "sender_id": "29:1abc", "conversation_id": "19:conv"}
+        )
+        assert identity == "microsoft_teams:29:1abc"
+
     def test_wecom_identity_uses_user_id(self) -> None:
         identity = ChannelDeliveryService.identity_from_delivery_target(
             {"channel": "wecom", "user_id": "zhangsan"}

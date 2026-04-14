@@ -130,6 +130,8 @@ def sender_identity_from_external_conv_id(external_conv_id: str) -> str:
         parts = ext.split("_", 2)
         if len(parts) == 3 and parts[1] and parts[2]:
             return f"telegram:{parts[1]}:{parts[2]}"
+    if ext.startswith("dingtalk_p2p_"):
+        return normalize_identity("dingtalk", ext[len("dingtalk_p2p_"):])
     if ext.startswith("wecom_p2p_"):
         return normalize_identity("wecom", ext[len("wecom_p2p_"):])
     if ext.startswith("wecom_group_"):

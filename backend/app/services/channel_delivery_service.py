@@ -153,6 +153,12 @@ class ChannelDeliveryService:
         if channel == "wecom":
             user_id = str(target.get("user_id") or "").strip()
             return f"wecom:{user_id}" if user_id else ""
+        if channel == "dingtalk":
+            user_id = str(target.get("user_id") or "").strip()
+            return f"dingtalk:{user_id}" if user_id else ""
+        if channel == "microsoft_teams":
+            sender_id = str(target.get("sender_id") or "").strip()
+            return f"microsoft_teams:{sender_id}" if sender_id else ""
         if channel == "wechat_personal":
             to_user_id = str(target.get("to_user_id") or "").strip()
             return f"wechat_personal:{to_user_id}" if to_user_id else ""

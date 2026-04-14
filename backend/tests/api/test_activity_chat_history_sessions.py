@@ -181,3 +181,112 @@ async def test_get_conversation_messages_keeps_agent_sender_names_for_agent_sess
             "created_at": "2026-04-14T13:00:00+00:00",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_list_conversations_includes_telegram_session_with_delivery_target_label(monkeypatch):
+    import app.api.activity as activity_api
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    telegram_session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        user_id=user_id,
+        source_channel="telegram",
+        external_conv_id="tg_123456_789",
+        delivery_target_json={"channel": "telegram", "chat_id": 123456, "sender_id": 789, "user_label": "Luna"},
+        peer_agent_id=None,
+        title="Telegram Luna",
+    )
+    db = _SequenceDB(
+        [
+            _RowsResult([telegram_session]),
+            _RowsResult([(2, datetime(2026, 4, 14, 14, 0, tzinfo=UTC))]),
+            _ScalarResult("ping from telegram"),
+            _RowsResult([]),
+        ]
+    )
+
+    async def fake_check_agent_access(db_arg, user_arg, requested_agent_id):
+        assert db_arg is db
+        assert user_arg is current_user
+        assert requested_agent_id == agent_id
+        return None
+
+    monkeypatch.setattr(activity_api, "check_agent_access", fake_check_agent_access)
+
+    payload = await activity_api.list_conversations(
+        agent_id=agent_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    assert payload == [
+        {
+            "conv_id": str(session_id),
+            "partner_type": "telegram",
+            "partner_id": "tg_123456_789",
+            "partner_name": "✈️ Telegram Luna",
+            "last_message": "ping from telegram",
+            "message_count": 2,
+            "last_at": "2026-04-14T14:00:00+00:00",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_list_conversations_falls_back_to_user_display_name_for_teams_session(monkeypatch):
+    import app.api.activity as activity_api
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    teams_session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        user_id=user_id,
+        source_channel="microsoft_teams",
+        external_conv_id="19:teams-conversation-id",
+        delivery_target_json=None,
+        peer_agent_id=None,
+        title="Incoming teams thread",
+    )
+    db = _SequenceDB(
+        [
+            _RowsResult([teams_session]),
+            _RowsResult([(1, datetime(2026, 4, 14, 15, 0, tzinfo=UTC))]),
+            _ScalarResult("hello from teams"),
+            _ScalarResult("Ava"),
+            _RowsResult([]),
+        ]
+    )
+
+    async def fake_check_agent_access(db_arg, user_arg, requested_agent_id):
+        assert db_arg is db
+        assert user_arg is current_user
+        assert requested_agent_id == agent_id
+        return None
+
+    monkeypatch.setattr(activity_api, "check_agent_access", fake_check_agent_access)
+
+    payload = await activity_api.list_conversations(
+        agent_id=agent_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    assert payload == [
+        {
+            "conv_id": str(session_id),
+            "partner_type": "microsoft_teams",
+            "partner_id": "19:teams-conversation-id",
+            "partner_name": "🪟 Teams Ava",
+            "last_message": "hello from teams",
+            "message_count": 1,
+            "last_at": "2026-04-14T15:00:00+00:00",
+        }
+    ]

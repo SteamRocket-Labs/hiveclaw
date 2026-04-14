@@ -177,6 +177,13 @@ async def process_dingtalk_message(
             db.add(platform_user)
             await db.flush()
         platform_user_id = platform_user.id
+        user_label = platform_user.display_name or f"DingTalk {sender_staff_id[:8]}"
+        delivery_target = {
+            "channel": "dingtalk",
+            "user_id": sender_staff_id,
+            "user_label": user_label,
+            "conversation_id": conversation_id,
+        }
 
         # Find or create session
         sess = await find_or_create_channel_session(
@@ -186,8 +193,11 @@ async def process_dingtalk_message(
             external_conv_id=conv_id,
             source_channel="dingtalk",
             first_message_title=user_text,
+            delivery_target=delivery_target,
         )
         session_conv_id = str(sess.id)
+        delivery_target["session_id"] = session_conv_id
+        sess.delivery_target_json = delivery_target
 
         # Load history
         history_r = await db.execute(

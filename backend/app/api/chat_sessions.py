@@ -20,6 +20,18 @@ from app.services.chat_message_parts import serialize_chat_message, split_inline
 from app.services.session_service import create_chat_session
 
 router = APIRouter(prefix="/agents", tags=["chat-sessions"])
+_ADMIN_MONITORED_CHANNEL_TYPES = (
+    "feishu",
+    "telegram",
+    "slack",
+    "discord",
+    "dingtalk",
+    "wecom",
+    "microsoft_teams",
+    "wechat_personal",
+)
+_NON_CHAT_SESSION_CHANNELS = ("trigger", "task", "heartbeat")
+_MINE_HIDDEN_SESSION_CHANNELS = ("agent", *_NON_CHAT_SESSION_CHANNELS)
 
 
 def _is_admin_or_creator(user: User, agent: Agent) -> bool:
@@ -77,6 +89,7 @@ async def list_sessions(
         result = await db.execute(
             select(ChatSession)
             .where(
+                ChatSession.source_channel.notin_(_NON_CHAT_SESSION_CHANNELS),
                 (ChatSession.agent_id == agent_id)
                 | ((ChatSession.peer_agent_id == agent_id) & (ChatSession.source_channel == "agent"))
             )
@@ -138,11 +151,10 @@ async def list_sessions(
     else:  # scope == "mine"
         # For agent creator/admin: also show inbound channel sessions
         # (Telegram, Feishu, Slack, etc.) so they can monitor all conversations
-        _channel_types = ("feishu", "telegram", "slack", "discord", "dingtalk", "wecom", "teams", "wechat_personal")
         if _is_admin_or_creator(current_user, agent):
             ownership_filter = or_(
                 ChatSession.user_id == current_user.id,
-                ChatSession.source_channel.in_(_channel_types),
+                ChatSession.source_channel.in_(_ADMIN_MONITORED_CHANNEL_TYPES),
             )
         else:
             ownership_filter = ChatSession.user_id == current_user.id
@@ -152,7 +164,7 @@ async def list_sessions(
             .where(
                 ChatSession.agent_id == agent_id,
                 ownership_filter,
-                ChatSession.source_channel.notin_(["agent", "trigger", "heartbeat"]),
+                ChatSession.source_channel.notin_(_MINE_HIDDEN_SESSION_CHANNELS),
             )
             .order_by(ChatSession.last_message_at.desc().nulls_last(), ChatSession.created_at.desc())
         )

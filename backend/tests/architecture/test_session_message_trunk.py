@@ -16,6 +16,8 @@ def test_core_session_entrypoints_use_session_service() -> None:
         "backend/app/services/task_executor.py": ["create_chat_session("],
         "backend/app/services/channel_session.py": ["create_chat_session("],
         "backend/app/services/channel_delivery_service.py": ["find_or_create_web_chat_session("],
+        "backend/app/api/dingtalk.py": ["find_or_create_channel_session(", "delivery_target="],
+        "backend/app/api/teams.py": ["find_or_create_channel_session(", "delivery_target="],
     }
 
     channel_session_source = (project_root / "backend/app/services/channel_session.py").read_text(encoding="utf-8")

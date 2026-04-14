@@ -31,6 +31,25 @@ def test_append_t2_entries_writes_weighted_metadata_and_dedupes(tmp_path: Path) 
     assert "- [2026-04-08][w=1.00][src=web][cat=feedback] User prefers concise output" in content
 
 
+def test_append_t2_entries_treats_microsoft_teams_as_human_source(tmp_path: Path) -> None:
+    from app.memory.t2_store import append_t2_entries
+
+    agent_id = uuid.uuid4()
+
+    written = append_t2_entries(
+        tmp_path,
+        agent_id,
+        extractions=[{"category": "feedback", "content": "Teams user prefers weekly summaries"}],
+        source="microsoft_teams",
+        timestamp="2026-04-14",
+    )
+
+    content = (tmp_path / str(agent_id) / "memory" / "learnings" / "insights.md").read_text(encoding="utf-8")
+
+    assert written == 1
+    assert "- [2026-04-14][w=1.00][src=microsoft_teams][cat=feedback] Teams user prefers weekly summaries" in content
+
+
 def test_parse_t2_entry_line_reads_metadata() -> None:
     from app.memory.t2_store import parse_t2_entry_line
 

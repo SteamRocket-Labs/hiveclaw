@@ -159,6 +159,9 @@ class TestSenderIdentityFromExternalConvId:
     def test_wecom_group(self) -> None:
         assert sender_identity_from_external_conv_id("wecom_group_sales-room_zhangsan") == "wecom:zhangsan"
 
+    def test_dingtalk_p2p(self) -> None:
+        assert sender_identity_from_external_conv_id("dingtalk_p2p_staff_123") == "dingtalk:staff_123"
+
     def test_web(self) -> None:
         assert sender_identity_from_external_conv_id("web_alice") == "web:alice"
 
@@ -187,6 +190,18 @@ class TestSenderIdentityFromSession:
         )()
 
         assert sender_identity_from_session(session) == "wecom:zhangsan"
+
+    def test_uses_teams_delivery_target_identity(self) -> None:
+        session = type(
+            "Session",
+            (),
+            {
+                "external_conv_id": "19:teams-conversation-id",
+                "delivery_target_json": {"channel": "microsoft_teams", "sender_id": "29:1abc"},
+            },
+        )()
+
+        assert sender_identity_from_session(session) == "microsoft_teams:29:1abc"
 
 
 # ── format_pending_reply_context ──

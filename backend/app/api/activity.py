@@ -24,7 +24,24 @@ from app.session_identifiers import parse_feishu_p2p_conv_id
 from app.services.tool_telemetry import collect_agent_tool_failure_summary
 
 router = APIRouter(tags=["activity"])
-_SESSION_BACKED_CHANNELS = ("web", "feishu", "slack", "discord")
+_SESSION_BACKED_CHANNELS = (
+    "web",
+    "feishu",
+    "slack",
+    "discord",
+    "telegram",
+    "wecom",
+    "dingtalk",
+    "wechat_personal",
+    "microsoft_teams",
+)
+_DIRECT_LABEL_CHANNELS: dict[str, tuple[str, str]] = {
+    "telegram": ("✈️", "Telegram"),
+    "wecom": ("🏢", "企业微信"),
+    "dingtalk": ("🔔", "钉钉"),
+    "wechat_personal": ("🟢", "微信"),
+    "microsoft_teams": ("🪟", "Teams"),
+}
 
 
 def _feishu_conversation_partner_name(conv_id: str, first_user_message: str | None = None) -> str:
@@ -60,7 +77,29 @@ def _channel_partner_id(session: ChatSession | Any) -> str:
     return str(getattr(session, "external_conv_id", None) or getattr(session, "id", ""))
 
 
-def _channel_partner_name(session: ChatSession | Any, *, first_user_message: str | None = None) -> str:
+def _delivery_target_label(delivery_target: dict[str, Any] | None) -> str:
+    target = delivery_target or {}
+    for key in ("user_label", "username", "member_name", "display_name", "name", "user_id", "to_user_id", "open_id", "receive_id", "sender_id", "chat_id"):
+        value = str(target.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+async def _channel_user_display_name(db: AsyncSession, session: ChatSession | Any) -> str:
+    user_id = getattr(session, "user_id", None)
+    if not user_id:
+        return ""
+    user_r = await db.execute(select(User.display_name).where(User.id == user_id))
+    return str(user_r.scalar_one_or_none() or "").strip()
+
+
+async def _channel_partner_name(
+    db: AsyncSession,
+    session: ChatSession | Any,
+    *,
+    first_user_message: str | None = None,
+) -> str:
     source_channel = str(getattr(session, "source_channel", "") or "")
     delivery_target = getattr(session, "delivery_target_json", None) or {}
     external_conv_id = str(getattr(session, "external_conv_id", "") or "")
@@ -79,6 +118,11 @@ def _channel_partner_name(session: ChatSession | Any, *, first_user_message: str
         parts = conv_ref.split("_", 2)
         channel_part = parts[1] if len(parts) > 1 else conv_ref
         return f"{icon} {label} DM" if channel_part == "dm" else f"{icon} {label} #{channel_part}"
+
+    if source_channel in _DIRECT_LABEL_CHANNELS:
+        icon, label = _DIRECT_LABEL_CHANNELS[source_channel]
+        target_label = _delivery_target_label(delivery_target) or await _channel_user_display_name(db, session)
+        return f"{icon} {label} {target_label}".strip() if target_label else f"{icon} {label}"
 
     title = str(getattr(session, "title", "") or "").strip()
     return title or "未知会话"
@@ -176,7 +220,7 @@ async def _list_session_backed_conversations(db: AsyncSession, *, agent_id: uuid
                 "conv_id": conversation_id,
                 "partner_type": _channel_partner_type(session),
                 "partner_id": _channel_partner_id(session),
-                "partner_name": _channel_partner_name(session, first_user_message=first_user_message),
+                "partner_name": await _channel_partner_name(db, session, first_user_message=first_user_message),
                 "last_message": last_message[:80],
                 "message_count": count,
                 "last_at": last_at.isoformat() if last_at else None,

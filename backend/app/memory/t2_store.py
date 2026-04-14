@@ -47,6 +47,7 @@ _HUMAN_SOURCES = {
     "wecom",
     "dingtalk",
     "teams",
+    "microsoft_teams",
     "discord",
     "discord_bot",
     "compaction",

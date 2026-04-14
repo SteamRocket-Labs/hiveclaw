@@ -1,0 +1,183 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
+
+
+class _RowsResult:
+    def __init__(self, values):
+        self._values = list(values)
+
+    def scalars(self):
+        return SimpleNamespace(all=lambda: list(self._values))
+
+    def fetchall(self):
+        return list(self._values)
+
+    def fetchone(self):
+        return self._values[0] if self._values else None
+
+
+class _ScalarResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar_one_or_none(self):
+        return self._value
+
+
+class _SequenceDB:
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.statements = []
+
+    async def execute(self, stmt):
+        self.statements.append(stmt)
+        if not self._responses:
+            raise AssertionError(f"Unexpected execute call: {stmt}")
+        return self._responses.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_list_conversations_returns_canonical_uuid_for_web_session(monkeypatch):
+    import app.api.activity as activity_api
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    web_session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        user_id=user_id,
+        source_channel="web",
+        external_conv_id="web_alice",
+        delivery_target_json={"channel": "web", "username": "alice", "user_label": "Alice"},
+        peer_agent_id=None,
+    )
+    db = _SequenceDB(
+        [
+            _RowsResult([web_session]),
+            _RowsResult([(3, datetime(2026, 4, 14, 12, 0, tzinfo=UTC))]),
+            _ScalarResult("hello from web"),
+            _RowsResult([]),
+        ]
+    )
+
+    async def fake_check_agent_access(db_arg, user_arg, requested_agent_id):
+        assert db_arg is db
+        assert user_arg is current_user
+        assert requested_agent_id == agent_id
+        return None
+
+    monkeypatch.setattr(activity_api, "check_agent_access", fake_check_agent_access)
+
+    payload = await activity_api.list_conversations(
+        agent_id=agent_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    assert payload == [
+        {
+            "conv_id": str(session_id),
+            "partner_type": "user",
+            "partner_id": str(user_id),
+            "partner_name": "👤 Alice",
+            "last_message": "hello from web",
+            "message_count": 3,
+            "last_at": "2026-04-14T12:00:00+00:00",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_conversation_messages_uses_channel_session_uuid_and_strips_sender_prefix(monkeypatch):
+    import app.api.activity as activity_api
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    session = SimpleNamespace(id=session_id, agent_id=agent_id, source_channel="feishu", peer_agent_id=None)
+    message = SimpleNamespace(
+        id=uuid4(),
+        role="user",
+        content="[发送者: 张三 (ID: u_123)] 你好",
+        created_at=datetime(2026, 4, 14, 12, 30, tzinfo=UTC),
+    )
+    db = _SequenceDB([
+        _ScalarResult(session),
+        _RowsResult([message]),
+    ])
+
+    async def fake_check_agent_access(db_arg, user_arg, requested_agent_id):
+        assert db_arg is db
+        assert user_arg is current_user
+        assert requested_agent_id == agent_id
+        return None
+
+    monkeypatch.setattr(activity_api, "check_agent_access", fake_check_agent_access)
+
+    payload = await activity_api.get_conversation_messages(
+        agent_id=agent_id,
+        conv_id=str(session_id),
+        current_user=current_user,
+        db=db,
+    )
+
+    assert payload == [
+        {
+            "id": str(message.id),
+            "role": "user",
+            "content": "你好",
+            "created_at": "2026-04-14T12:30:00+00:00",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_conversation_messages_keeps_agent_sender_names_for_agent_session(monkeypatch):
+    import app.api.activity as activity_api
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    participant_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    session = SimpleNamespace(id=session_id, agent_id=agent_id, source_channel="agent", peer_agent_id=uuid4())
+    message = SimpleNamespace(
+        id=uuid4(),
+        role="assistant",
+        content="agent reply",
+        participant_id=participant_id,
+        created_at=datetime(2026, 4, 14, 13, 0, tzinfo=UTC),
+    )
+    db = _SequenceDB([
+        _ScalarResult(session),
+        _RowsResult([message]),
+        _ScalarResult("执行助手"),
+    ])
+
+    async def fake_check_agent_access(db_arg, user_arg, requested_agent_id):
+        return None
+
+    monkeypatch.setattr(activity_api, "check_agent_access", fake_check_agent_access)
+
+    payload = await activity_api.get_conversation_messages(
+        agent_id=agent_id,
+        conv_id=str(session_id),
+        current_user=current_user,
+        db=db,
+    )
+
+    assert payload == [
+        {
+            "id": str(message.id),
+            "role": "assistant",
+            "sender_name": "执行助手",
+            "content": "agent reply",
+            "created_at": "2026-04-14T13:00:00+00:00",
+        }
+    ]

@@ -141,6 +141,12 @@ class TestBuildTaskContext:
 
 
 class TestSenderIdentityFromExternalConvId:
+    def test_slack_channel_conversation_uses_sender_id(self) -> None:
+        assert sender_identity_from_external_conv_id("slack_C123456_U789") == "slack:U789"
+
+    def test_slack_dm_conversation_uses_sender_id(self) -> None:
+        assert sender_identity_from_external_conv_id("slack_dm_U789") == "slack:U789"
+
     def test_telegram(self) -> None:
         assert sender_identity_from_external_conv_id("tg_123456_789") == "telegram:123456:789"
 

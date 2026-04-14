@@ -1,6 +1,8 @@
 """Activity log API — view agent work history."""
 
 import uuid
+from typing import Any
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,11 +15,16 @@ from app.core.security import get_current_user
 from app.core.permissions import check_agent_access
 from app.database import get_db
 from app.models.activity_log import AgentActivityLog
+from app.models.agent import Agent
+from app.models.audit import ChatMessage
+from app.models.chat_session import ChatSession
+from app.models.participant import Participant
 from app.models.user import User
 from app.session_identifiers import parse_feishu_p2p_conv_id
 from app.services.tool_telemetry import collect_agent_tool_failure_summary
 
 router = APIRouter(tags=["activity"])
+_SESSION_BACKED_CHANNELS = ("web", "feishu", "slack", "discord")
 
 
 def _feishu_conversation_partner_name(conv_id: str, first_user_message: str | None = None) -> str:
@@ -27,6 +34,259 @@ def _feishu_conversation_partner_name(conv_id: str, first_user_message: str | No
 
     sender_label = extract_sender_label_from_message(first_user_message)
     return f"📱 {sender_label}" if sender_label else "📱 飞书用户"
+
+
+def _coerce_limit(limit: Any, *, default: int) -> int:
+    try:
+        return int(limit)
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_conv_uuid(conv_id: str) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(str(conv_id))
+    except (TypeError, ValueError):
+        return None
+
+
+def _channel_partner_type(session: ChatSession | Any) -> str:
+    return "user" if getattr(session, "source_channel", None) == "web" else str(getattr(session, "source_channel", ""))
+
+
+def _channel_partner_id(session: ChatSession | Any) -> str:
+    if getattr(session, "source_channel", None) == "web" and getattr(session, "user_id", None):
+        return str(session.user_id)
+    return str(getattr(session, "external_conv_id", None) or getattr(session, "id", ""))
+
+
+def _channel_partner_name(session: ChatSession | Any, *, first_user_message: str | None = None) -> str:
+    source_channel = str(getattr(session, "source_channel", "") or "")
+    delivery_target = getattr(session, "delivery_target_json", None) or {}
+    external_conv_id = str(getattr(session, "external_conv_id", "") or "")
+
+    if source_channel == "web":
+        user_label = str(delivery_target.get("user_label") or delivery_target.get("username") or "").strip()
+        return f"👤 {user_label}" if user_label else "👤 未知用户"
+
+    if source_channel == "feishu":
+        return _feishu_conversation_partner_name(external_conv_id, first_user_message)
+
+    if source_channel in {"slack", "discord"}:
+        icon = "💬" if source_channel == "slack" else "🎮"
+        label = "Slack" if source_channel == "slack" else "Discord"
+        conv_ref = external_conv_id or str(getattr(session, "id", ""))
+        parts = conv_ref.split("_", 2)
+        channel_part = parts[1] if len(parts) > 1 else conv_ref
+        return f"{icon} {label} DM" if channel_part == "dm" else f"{icon} {label} #{channel_part}"
+
+    title = str(getattr(session, "title", "") or "").strip()
+    return title or "未知会话"
+
+
+async def _get_session_message_stats(
+    db: AsyncSession,
+    *,
+    agent_id: uuid.UUID,
+    conversation_id: str,
+) -> tuple[int, Any]:
+    stats_q = await db.execute(
+        select(func.count(ChatMessage.id), func.max(ChatMessage.created_at))
+        .where(
+            ChatMessage.agent_id == agent_id,
+            ChatMessage.conversation_id == conversation_id,
+        )
+    )
+    stats = stats_q.fetchone()
+    if not stats:
+        return 0, None
+    return int(stats[0] or 0), stats[1]
+
+
+async def _get_last_session_message(
+    db: AsyncSession,
+    *,
+    agent_id: uuid.UUID,
+    conversation_id: str,
+) -> str:
+    last_msg_r = await db.execute(
+        select(ChatMessage.content)
+        .where(
+            ChatMessage.agent_id == agent_id,
+            ChatMessage.conversation_id == conversation_id,
+        )
+        .order_by(ChatMessage.created_at.desc())
+        .limit(1)
+    )
+    return strip_sender_label_prefix(last_msg_r.scalar_one_or_none() or "")
+
+
+async def _get_first_user_message(
+    db: AsyncSession,
+    *,
+    agent_id: uuid.UUID,
+    conversation_id: str,
+) -> str:
+    first_msg_r = await db.execute(
+        select(ChatMessage.content)
+        .where(
+            ChatMessage.agent_id == agent_id,
+            ChatMessage.conversation_id == conversation_id,
+            ChatMessage.role == "user",
+        )
+        .order_by(ChatMessage.created_at.asc())
+        .limit(1)
+    )
+    return first_msg_r.scalar_one_or_none() or ""
+
+
+async def _list_session_backed_conversations(db: AsyncSession, *, agent_id: uuid.UUID) -> list[dict[str, Any]]:
+    conversations: list[dict[str, Any]] = []
+    session_rows = await db.execute(
+        select(ChatSession)
+        .where(
+            ChatSession.agent_id == agent_id,
+            ChatSession.source_channel.in_(_SESSION_BACKED_CHANNELS),
+        )
+        .order_by(ChatSession.last_message_at.desc().nulls_last(), ChatSession.created_at.desc())
+    )
+
+    for session in session_rows.scalars().all():
+        conversation_id = str(session.id)
+        count, last_at = await _get_session_message_stats(
+            db,
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+        )
+        last_message = await _get_last_session_message(
+            db,
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+        )
+        first_user_message = ""
+        if getattr(session, "source_channel", None) == "feishu":
+            first_user_message = await _get_first_user_message(
+                db,
+                agent_id=agent_id,
+                conversation_id=conversation_id,
+            )
+
+        conversations.append(
+            {
+                "conv_id": conversation_id,
+                "partner_type": _channel_partner_type(session),
+                "partner_id": _channel_partner_id(session),
+                "partner_name": _channel_partner_name(session, first_user_message=first_user_message),
+                "last_message": last_message[:80],
+                "message_count": count,
+                "last_at": last_at.isoformat() if last_at else None,
+            }
+        )
+
+    return conversations
+
+
+async def _list_agent_conversations(db: AsyncSession, *, agent_id: uuid.UUID) -> list[dict[str, Any]]:
+    conversations: list[dict[str, Any]] = []
+    agent_sessions_q = await db.execute(
+        select(ChatSession).where(
+            ChatSession.source_channel == "agent",
+            (ChatSession.agent_id == agent_id) | (ChatSession.peer_agent_id == agent_id),
+        )
+    )
+
+    for sess in agent_sessions_q.scalars().all():
+        partner_id = sess.peer_agent_id if sess.agent_id == agent_id else sess.agent_id
+        agent_r = await db.execute(select(Agent.name).where(Agent.id == partner_id))
+        partner_name = agent_r.scalar_one_or_none() or "未知数字员工"
+        count, last_at = await _get_session_message_stats(
+            db,
+            agent_id=agent_id,
+            conversation_id=str(sess.id),
+        )
+        last_message = await _get_last_session_message(
+            db,
+            agent_id=agent_id,
+            conversation_id=str(sess.id),
+        )
+        conversations.append(
+            {
+                "conv_id": str(sess.id),
+                "partner_type": "agent",
+                "partner_id": str(partner_id),
+                "partner_name": f"🤖 {partner_name}",
+                "last_message": last_message[:80],
+                "message_count": count,
+                "last_at": last_at.isoformat() if last_at else None,
+            }
+        )
+
+    return conversations
+
+
+async def _load_channel_session_messages(
+    db: AsyncSession,
+    *,
+    agent_id: uuid.UUID,
+    conversation_id: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    result = await db.execute(
+        select(ChatMessage)
+        .where(
+            ChatMessage.agent_id == agent_id,
+            ChatMessage.conversation_id == conversation_id,
+        )
+        .order_by(ChatMessage.created_at.asc())
+        .limit(limit)
+    )
+    return [
+        {
+            "id": str(message.id),
+            "role": message.role,
+            "content": strip_sender_label_prefix(message.content),
+            "created_at": message.created_at.isoformat() if message.created_at else None,
+        }
+        for message in result.scalars().all()
+    ]
+
+
+async def _load_agent_session_messages(
+    db: AsyncSession,
+    *,
+    conversation_id: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.conversation_id == conversation_id)
+        .order_by(ChatMessage.created_at.asc())
+        .limit(limit)
+    )
+    messages: list[dict[str, Any]] = []
+    name_cache: dict[str, str] = {}
+
+    for message in result.scalars().all():
+        sender_name = "未知"
+        if getattr(message, "participant_id", None):
+            participant_id = str(message.participant_id)
+            if participant_id not in name_cache:
+                participant_result = await db.execute(
+                    select(Participant.display_name).where(Participant.id == message.participant_id)
+                )
+                name_cache[participant_id] = participant_result.scalar_one_or_none() or "未知"
+            sender_name = name_cache[participant_id]
+        messages.append(
+            {
+                "id": str(message.id),
+                "role": message.role,
+                "sender_name": sender_name,
+                "content": message.content,
+                "created_at": message.created_at.isoformat() if message.created_at else None,
+            }
+        )
+
+    return messages
 
 
 @router.get("/agents/{agent_id}/activity")
@@ -88,161 +348,8 @@ async def list_conversations(
 ):
     """List all conversation partners for this agent (web users + other agents)."""
     await check_agent_access(db, current_user, agent_id)
-
-    from app.models.audit import ChatMessage
-    from app.models.agent import Agent
-    from app.models.chat_session import ChatSession
-
-    conversations = []
-
-    # 1. Web chat conversations (from ChatMessage table, grouped by user)
-    web_users_q = await db.execute(
-        select(ChatMessage.user_id, func.max(ChatMessage.created_at).label("last_at"), func.count(ChatMessage.id).label("cnt"))
-        .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id.like("web_%"))
-        .group_by(ChatMessage.user_id)
-    )
-    for row in web_users_q.fetchall():
-        user_id, last_at, cnt = row
-        user_r = await db.execute(select(User.display_name).where(User.id == user_id))
-        name = user_r.scalar_one_or_none() or "未知用户"
-        # Get last message
-        last_msg_r = await db.execute(
-            select(ChatMessage.content)
-            .where(ChatMessage.agent_id == agent_id, ChatMessage.user_id == user_id)
-            .order_by(ChatMessage.created_at.desc()).limit(1)
-        )
-        last_content = last_msg_r.scalar_one_or_none() or ""
-        conversations.append({
-            "conv_id": f"web_{user_id}",
-            "partner_type": "user",
-            "partner_id": str(user_id),
-            "partner_name": f"👤 {name}",
-            "last_message": last_content[:80],
-            "message_count": cnt,
-            "last_at": last_at.isoformat() if last_at else None,
-        })
-
-    # 1b. Feishu conversations (P2P and group)
-    feishu_convs_q = await db.execute(
-        select(
-            ChatMessage.conversation_id,
-            func.max(ChatMessage.created_at).label("last_at"),
-            func.count(ChatMessage.id).label("cnt"),
-        )
-        .where(
-            ChatMessage.agent_id == agent_id,
-            ChatMessage.conversation_id.like("feishu_%"),
-        )
-        .group_by(ChatMessage.conversation_id)
-    )
-    for row in feishu_convs_q.fetchall():
-        conv_id, last_at, cnt = row
-        # Get last message
-        last_msg_r = await db.execute(
-            select(ChatMessage.content)
-            .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == conv_id)
-            .order_by(ChatMessage.created_at.desc()).limit(1)
-        )
-        last_content = last_msg_r.scalar_one_or_none() or ""
-
-        first_msg = ""
-        if parse_feishu_p2p_conv_id(conv_id):
-            # Try to get sender name from first user message
-            name_r = await db.execute(
-                select(ChatMessage.content)
-                .where(
-                    ChatMessage.agent_id == agent_id,
-                    ChatMessage.conversation_id == conv_id,
-                    ChatMessage.role == "user",
-                )
-                .order_by(ChatMessage.created_at.asc()).limit(1)
-            )
-            first_msg = name_r.scalar_one_or_none() or ""
-
-        display_name = _feishu_conversation_partner_name(conv_id, first_msg)
-
-        conversations.append({
-            "conv_id": conv_id,
-            "partner_type": "feishu",
-            "partner_id": conv_id,
-            "partner_name": display_name,
-            "last_message": last_content[:80],
-            "message_count": cnt,
-            "last_at": last_at.isoformat() if last_at else None,
-        })
-
-    # 1c. Slack conversations
-    for prefix, icon, label in [("slack_", "💬", "Slack"), ("discord_", "🎮", "Discord")]:
-        ch_convs_q = await db.execute(
-            select(
-                ChatMessage.conversation_id,
-                func.max(ChatMessage.created_at).label("last_at"),
-                func.count(ChatMessage.id).label("cnt"),
-            )
-            .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id.like(f"{prefix}%"))
-            .group_by(ChatMessage.conversation_id)
-        )
-        for row in ch_convs_q.fetchall():
-            conv_id, last_at, cnt = row
-            last_msg_r = await db.execute(
-                select(ChatMessage.content)
-                .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == conv_id)
-                .order_by(ChatMessage.created_at.desc()).limit(1)
-            )
-            last_content = last_msg_r.scalar_one_or_none() or ""
-            # Build a readable name from conv_id e.g. slack_C123_U456 → Slack C123
-            parts = conv_id.split("_", 2)
-            channel_part = parts[1] if len(parts) > 1 else conv_id
-            display_name = f"{icon} {label} #{channel_part}" if channel_part != "dm" else f"{icon} {label} DM"
-            conversations.append({
-                "conv_id": conv_id,
-                "partner_type": prefix.rstrip("_"),
-                "partner_id": conv_id,
-                "partner_name": display_name,
-                "last_message": last_content[:80],
-                "message_count": cnt,
-                "last_at": last_at.isoformat() if last_at else None,
-            })
-
-    # 2. Agent-to-agent conversations (from ChatSession with peer_agent_id)
-    agent_sessions_q = await db.execute(
-        select(ChatSession).where(
-            ChatSession.source_channel == "agent",
-            (ChatSession.agent_id == agent_id) | (ChatSession.peer_agent_id == agent_id),
-        )
-    )
-    for sess in agent_sessions_q.scalars().all():
-        # Determine the partner agent
-        partner_id = sess.peer_agent_id if sess.agent_id == agent_id else sess.agent_id
-        agent_r = await db.execute(select(Agent.name).where(Agent.id == partner_id))
-        partner_name = agent_r.scalar_one_or_none() or "未知数字员工"
-
-        # Count messages in this session
-        stats_q = await db.execute(
-            select(func.count(ChatMessage.id), func.max(ChatMessage.created_at))
-            .where(ChatMessage.conversation_id == str(sess.id))
-        )
-        stats = stats_q.fetchone()
-        cnt = stats[0] if stats else 0
-        last_at = stats[1] if stats else None
-
-        # Get last message
-        last_msg_r = await db.execute(
-            select(ChatMessage.content)
-            .where(ChatMessage.conversation_id == str(sess.id))
-            .order_by(ChatMessage.created_at.desc()).limit(1)
-        )
-        last_content = last_msg_r.scalar_one_or_none() or ""
-
-        conversations.append({
-            "conv_id": str(sess.id),
-            "partner_type": "agent",
-            "partner_id": str(partner_id),
-            "partner_name": f"🤖 {partner_name}",
-            "last_message": last_content[:80],
-            "message_count": cnt,
-            "last_at": last_at.isoformat() if last_at else None,
-        })
+    conversations = await _list_session_backed_conversations(db, agent_id=agent_id)
+    conversations.extend(await _list_agent_conversations(db, agent_id=agent_id))
 
     # Sort by last_at desc
     conversations.sort(key=lambda c: c["last_at"] or "", reverse=True)
@@ -259,54 +366,44 @@ async def get_conversation_messages(
 ):
     """Get messages for a specific conversation."""
     await check_agent_access(db, current_user, agent_id)
+    message_limit = _coerce_limit(limit, default=100)
+    session_uuid = _parse_conv_uuid(conv_id)
 
-    messages = []
-
-    if conv_id.startswith("web_") or conv_id.startswith("feishu_") or conv_id.startswith("slack_") or conv_id.startswith("discord_"):
-        from app.models.audit import ChatMessage
-        result = await db.execute(
-            select(ChatMessage)
-            .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == conv_id)
-            .order_by(ChatMessage.created_at.asc())
-            .limit(limit)
+    if session_uuid is not None:
+        session_result = await db.execute(
+            select(ChatSession).where(
+                ChatSession.id == session_uuid,
+                (ChatSession.agent_id == agent_id) | (ChatSession.peer_agent_id == agent_id),
+            )
         )
-        for m in result.scalars().all():
-            content = m.content
-            # Strip [发送者: xxx] prefix for display (identity shown in UI)
-            content = strip_sender_label_prefix(content)
-            messages.append({
-                "id": str(m.id),
-                "role": m.role,
-                "content": content,
-                "created_at": m.created_at.isoformat() if m.created_at else None,
-            })
-    elif conv_id.startswith("agent_") or len(conv_id) == 36:
-        # Agent-to-agent conversation — conv_id is the ChatSession UUID
-        from app.models.audit import ChatMessage
-        from app.models.participant import Participant
+        session = session_result.scalar_one_or_none()
+        if session is not None:
+            if session.source_channel == "agent":
+                return await _load_agent_session_messages(
+                    db,
+                    conversation_id=str(session.id),
+                    limit=message_limit,
+                )
+            return await _load_channel_session_messages(
+                db,
+                agent_id=agent_id,
+                conversation_id=str(session.id),
+                limit=message_limit,
+            )
 
-        result = await db.execute(
-            select(ChatMessage)
-            .where(ChatMessage.conversation_id == conv_id)
-            .order_by(ChatMessage.created_at.asc())
-            .limit(limit)
+    if conv_id.startswith(("web_", "feishu_", "slack_", "discord_")):
+        return await _load_channel_session_messages(
+            db,
+            agent_id=agent_id,
+            conversation_id=conv_id,
+            limit=message_limit,
         )
-        name_cache = {}
-        for m in result.scalars().all():
-            # Determine sender name from participant_id
-            sender_name = "未知"
-            if m.participant_id:
-                pid_str = str(m.participant_id)
-                if pid_str not in name_cache:
-                    p_r = await db.execute(select(Participant.display_name).where(Participant.id == m.participant_id))
-                    name_cache[pid_str] = p_r.scalar_one_or_none() or "未知"
-                sender_name = name_cache[pid_str]
-            messages.append({
-                "id": str(m.id),
-                "role": m.role,
-                "sender_name": sender_name,
-                "content": m.content,
-                "created_at": m.created_at.isoformat() if m.created_at else None,
-            })
 
-    return messages
+    if conv_id.startswith("agent_") or session_uuid is not None:
+        return await _load_agent_session_messages(
+            db,
+            conversation_id=conv_id,
+            limit=message_limit,
+        )
+
+    return []

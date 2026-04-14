@@ -43,6 +43,26 @@ def normalize_identity(channel: str, identifier: str) -> str:
     return f"{channel}:{identifier.strip()}"
 
 
+def _parse_slack_sender_id(external_conv_id: str) -> str | None:
+    ext = (external_conv_id or "").strip()
+    if not ext.startswith("slack_"):
+        return None
+
+    payload = ext[len("slack_") :]
+    if not payload:
+        return None
+
+    if payload.startswith("dm_"):
+        sender_id = payload[len("dm_") :]
+        return sender_id or None
+
+    if "_" in payload:
+        _channel_id, sender_id = payload.rsplit("_", 1)
+        return sender_id or None
+
+    return payload
+
+
 def extract_recipient_info(tool_name: str, tool_args: dict) -> dict | None:
     """Extract recipient channel, name, and identity from tool args.
 
@@ -104,8 +124,8 @@ def sender_identity_from_external_conv_id(external_conv_id: str) -> str:
         return normalize_identity("feishu", identifier)
     if identifier := parse_web_external_conv_id(ext):
         return normalize_identity("web", identifier)
-    if ext.startswith("slack_"):
-        return normalize_identity("slack", ext[len("slack_"):])
+    if identifier := _parse_slack_sender_id(ext):
+        return normalize_identity("slack", identifier)
     if ext.startswith("tg_"):
         parts = ext.split("_", 2)
         if len(parts) == 3 and parts[1] and parts[2]:

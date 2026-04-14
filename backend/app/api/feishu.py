@@ -11,6 +11,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.channel_message_contracts import prefix_message_with_sender_label
 from app.core.permissions import check_agent_access, is_agent_creator, is_agent_expired
 from app.core.security import get_current_user
 from app.database import get_db
@@ -1010,8 +1011,11 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             # Prepend sender identity so the agent knows who is talking
             llm_user_text = user_text
             if sender_name:
-                id_part = f" (ID: {sender_user_id_feishu})" if sender_user_id_feishu else ""
-                llm_user_text = f"[发送者: {sender_name}{id_part}] {user_text}"
+                llm_user_text = prefix_message_with_sender_label(
+                    user_text,
+                    sender_name=sender_name,
+                    sender_id=sender_user_id_feishu,
+                )
 
             # ── Inject recent uploaded file context ──────────────────────────
             # Check the uploads directory for recently modified files (within 30 min).

@@ -20,7 +20,7 @@ from app.models.llm import LLMModel
 from app.models.user import User
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
-from app.services.session_service import find_or_create_web_chat_session
+from app.services.session_service import find_or_create_web_chat_session, find_web_chat_session
 
 router = APIRouter(tags=["websocket"])
 
@@ -145,7 +145,15 @@ async def get_chat_history(
 
     # check_agent_access already verifies tenant ownership (H-17)
     await check_agent_access(db, current_user, agent_id)
-    conv_id = f"web_{current_user.id}"
+    session = await find_web_chat_session(
+        db,
+        agent_id=agent_id,
+        user=current_user,
+    )
+    if session is None:
+        return []
+
+    conv_id = str(session.id)
     result = await db.execute(
         select(ChatMessage)
         .where(

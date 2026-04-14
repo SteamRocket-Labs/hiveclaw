@@ -24,3 +24,11 @@ def test_strip_sender_label_prefix_removes_sender_block_only() -> None:
 
     assert strip_sender_label_prefix("[发送者: 张三 (ID: u_123)] 你好") == "你好"
     assert strip_sender_label_prefix("普通消息") == "普通消息"
+
+
+def test_prefix_message_with_sender_label_formats_sender_header() -> None:
+    from app.channel_message_contracts import prefix_message_with_sender_label
+
+    assert prefix_message_with_sender_label("你好", sender_name="张三", sender_id="u_123") == "[发送者: 张三 (ID: u_123)] 你好"
+    assert prefix_message_with_sender_label("你好", sender_name="张三", sender_id=None) == "[发送者: 张三] 你好"
+    assert prefix_message_with_sender_label("你好", sender_name="", sender_id="u_123") == "你好"

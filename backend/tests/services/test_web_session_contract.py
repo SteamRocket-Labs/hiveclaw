@@ -22,6 +22,14 @@ class _FakeDB:
         return _ScalarResult(self._conflict_session)
 
 
+def test_parse_web_external_conv_id_returns_identifier_only_for_web_sessions():
+    from app.services.web_session_contract import parse_web_external_conv_id
+
+    assert parse_web_external_conv_id("web_alice") == "alice"
+    assert parse_web_external_conv_id("feishu_p2p_u_123") is None
+    assert parse_web_external_conv_id("") is None
+
+
 @pytest.mark.asyncio
 async def test_apply_web_session_contract_sets_delivery_target_and_external_conv_id():
     from app.services.web_session_contract import apply_web_session_contract

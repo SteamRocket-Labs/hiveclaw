@@ -153,6 +153,25 @@ async def test_find_or_create_agent_pair_session_normalizes_legacy_gateway_trans
 
 
 @pytest.mark.asyncio
+async def test_find_web_chat_session_returns_none_when_missing():
+    from app.services.session_service import find_web_chat_session
+
+    agent_id = uuid4()
+    user = SimpleNamespace(id=uuid4(), username="alice", display_name="Alice")
+    db = _SequenceDB([None])
+
+    session = await find_web_chat_session(
+        db,
+        agent_id=agent_id,
+        user=user,
+    )
+
+    assert session is None
+    assert db.added == []
+    assert db.flushes == 0
+
+
+@pytest.mark.asyncio
 async def test_find_or_create_web_chat_session_reuses_requested_session(monkeypatch):
     from app.services.session_service import find_or_create_web_chat_session
 

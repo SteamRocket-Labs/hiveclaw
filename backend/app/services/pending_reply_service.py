@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.pending_reply import PendingReplyContext
 from app.session_identifiers import parse_feishu_p2p_conv_id
+from app.services.web_session_contract import parse_web_external_conv_id
 
 logger = logging.getLogger(__name__)
 
@@ -101,8 +102,8 @@ def sender_identity_from_external_conv_id(external_conv_id: str) -> str:
         return ""
     if identifier := parse_feishu_p2p_conv_id(ext):
         return normalize_identity("feishu", identifier)
-    if ext.startswith("web_"):
-        return normalize_identity("web", ext[len("web_"):])
+    if identifier := parse_web_external_conv_id(ext):
+        return normalize_identity("web", identifier)
     if ext.startswith("slack_"):
         return normalize_identity("slack", ext[len("slack_"):])
     if ext.startswith("tg_"):

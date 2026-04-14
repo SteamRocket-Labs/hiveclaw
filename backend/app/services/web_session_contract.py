@@ -11,6 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.chat_session import ChatSession
 
 
+def parse_web_external_conv_id(external_conv_id: str | None) -> str | None:
+    conv_id = str(external_conv_id or "").strip()
+    if not conv_id.startswith("web_"):
+        return None
+    identifier = conv_id[len("web_") :]
+    return identifier or None
+
+
 def canonical_web_external_conv_id(user: Any) -> str:
     username = str(getattr(user, "username", "") or "").strip()
     if username:
@@ -48,7 +56,7 @@ async def apply_web_session_contract(
 
     desired_conv_id = canonical_web_external_conv_id(user)
     current_conv_id = str(getattr(session, "external_conv_id", "") or "").strip()
-    can_rebind = not current_conv_id or current_conv_id.startswith("web_")
+    can_rebind = not current_conv_id or parse_web_external_conv_id(current_conv_id) is not None
     if desired_conv_id and can_rebind:
         result = await db.execute(
             select(ChatSession).where(

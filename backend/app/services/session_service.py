@@ -117,7 +117,7 @@ async def find_or_create_agent_pair_session(
     return session
 
 
-async def find_or_create_web_chat_session(
+async def find_web_chat_session(
     db: AsyncSession,
     *,
     agent_id: uuid.UUID,
@@ -125,7 +125,7 @@ async def find_or_create_web_chat_session(
     requested_session_id: str | None = None,
     default_title: str | None = None,
 ) -> ChatSession:
-    """Find or create the canonical web chat session for a user/agent pair."""
+    """Find the canonical web chat session for a user/agent pair without creating one."""
     session = None
     user_id = getattr(user, "id", None)
 
@@ -156,6 +156,26 @@ async def find_or_create_web_chat_session(
             .limit(1)
         )
         session = result.scalar_one_or_none()
+
+    return session
+
+
+async def find_or_create_web_chat_session(
+    db: AsyncSession,
+    *,
+    agent_id: uuid.UUID,
+    user: Any,
+    requested_session_id: str | None = None,
+    default_title: str | None = None,
+) -> ChatSession:
+    """Find or create the canonical web chat session for a user/agent pair."""
+    user_id = getattr(user, "id", None)
+    session = await find_web_chat_session(
+        db,
+        agent_id=agent_id,
+        user=user,
+        requested_session_id=requested_session_id,
+    )
 
     if session is None:
         now = datetime.now(timezone.utc)

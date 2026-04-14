@@ -11,7 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
-from app.session_identifiers import build_legacy_gateway_conversation_ids
+from app.session_identifiers import (
+    build_legacy_gateway_conversation_ids,
+    canonicalize_agent_pair_ids,
+)
 from app.services.web_session_contract import apply_web_session_contract
 
 
@@ -77,8 +80,7 @@ async def find_or_create_agent_pair_session(
     source_participant_id: uuid.UUID | None = None,
 ) -> ChatSession:
     """Find or create the canonical agent-to-agent session for a pair."""
-    session_agent_id = min(source_agent_id, target_agent_id, key=str)
-    session_peer_id = max(source_agent_id, target_agent_id, key=str)
+    session_agent_id, session_peer_id = canonicalize_agent_pair_ids(source_agent_id, target_agent_id)
 
     result = await db.execute(
         select(ChatSession).where(

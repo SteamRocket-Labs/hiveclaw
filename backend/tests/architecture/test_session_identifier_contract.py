@@ -22,17 +22,23 @@ def test_session_identifier_contract_is_centralized() -> None:
     activity_api_source = (project_root / "backend/app/api/activity.py").read_text(encoding="utf-8")
 
     assert "def build_legacy_gateway_conversation_ids(" in shared_source
+    assert "def canonicalize_agent_pair_ids(" in shared_source
     assert "def parse_legacy_gateway_conversation_id(" in shared_source
     assert "def build_feishu_session_lookup_ids(" in shared_source
     assert "def build_feishu_p2p_conv_id(" in shared_source
     assert "def parse_feishu_p2p_conv_id(" in shared_source
 
     assert "def _legacy_gateway_conversation_ids(" not in session_service_source
-    assert "from app.session_identifiers import build_legacy_gateway_conversation_ids" in session_service_source
+    assert "from app.session_identifiers import (" in session_service_source
+    assert "build_legacy_gateway_conversation_ids" in session_service_source
+    assert "min(source_agent_id, target_agent_id, key=str)" not in session_service_source
+    assert "max(source_agent_id, target_agent_id, key=str)" not in session_service_source
+    assert "canonicalize_agent_pair_ids" in session_service_source
 
     assert "def _legacy_gateway_conversation_ids(" not in gateway_db_source
     assert "def _parse_legacy_gateway_conversation_id(" not in gateway_db_source
     assert "from app.session_identifiers import (" in gateway_db_source
+    assert "tuple(sorted(parsed_pair, key=str))" not in gateway_db_source
 
     assert "def build_feishu_p2p_conv_id(" not in feishu_service_source
     assert "def build_feishu_session_lookup_ids(" not in feishu_service_source

@@ -11,6 +11,7 @@ from sqlalchemy.engine import Connection
 
 from app.session_identifiers import (
     build_legacy_gateway_conversation_ids,
+    canonicalize_agent_pair_ids,
     parse_legacy_gateway_conversation_id,
 )
 
@@ -110,7 +111,7 @@ def promote_legacy_gateway_conversations(connection: Connection) -> int:
         if parsed_pair is None:
             continue
 
-        canonical_pair = tuple(sorted(parsed_pair, key=str))
+        canonical_pair = canonicalize_agent_pair_ids(*parsed_pair)
         if canonical_pair in seen_pairs:
             continue
         seen_pairs.add(canonical_pair)

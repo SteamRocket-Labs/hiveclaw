@@ -1,11 +1,14 @@
 """Activity log API — view agent work history."""
 
-import re
 import uuid
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.channel_message_contracts import (
+    extract_sender_label_from_message,
+    strip_sender_label_prefix,
+)
 from app.core.security import get_current_user
 from app.core.permissions import check_agent_access
 from app.database import get_db
@@ -22,8 +25,8 @@ def _feishu_conversation_partner_name(conv_id: str, first_user_message: str | No
     if not identifier:
         return "👥 飞书群聊"
 
-    sender_match = re.search(r"\[发送者:\s*([^\]]+?)(?:\s*\(ID:.*?\))?\]", first_user_message or "")
-    return f"📱 {sender_match.group(1)}" if sender_match else "📱 飞书用户"
+    sender_label = extract_sender_label_from_message(first_user_message)
+    return f"📱 {sender_label}" if sender_label else "📱 飞书用户"
 
 
 @router.get("/agents/{agent_id}/activity")
@@ -270,9 +273,7 @@ async def get_conversation_messages(
         for m in result.scalars().all():
             content = m.content
             # Strip [发送者: xxx] prefix for display (identity shown in UI)
-            if content.startswith("[发送者:"):
-                import re
-                content = re.sub(r'^\[发送者:[^\]]*\]\s*', '', content)
+            content = strip_sender_label_prefix(content)
             messages.append({
                 "id": str(m.id),
                 "role": m.role,

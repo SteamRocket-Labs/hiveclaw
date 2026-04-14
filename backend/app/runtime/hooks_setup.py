@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import uuid
 
+from app.channel_message_contracts import extract_sender_label_from_message
 from app.runtime.hooks import (
     HookContext,
     HookEvent,
@@ -281,11 +282,7 @@ async def _capture_pending_reply(ctx: HookContext) -> None:
         if msg.get("role") == "user":
             content = msg.get("content", "")
             if isinstance(content, str) and content.strip():
-                # Try to extract sender label from "[发送者: XXX]" prefix
-                if content.startswith("[发送者:") or content.startswith("[发送者："):
-                    bracket_end = content.find("]")
-                    if bracket_end > 0:
-                        originator_name = content[5:bracket_end].strip().split("(")[0].strip()
+                originator_name = extract_sender_label_from_message(content) or originator_name
                 # No fallback to agent_name — that's the bot, not the human originator
 
     try:

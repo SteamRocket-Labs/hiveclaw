@@ -3,6 +3,17 @@ from __future__ import annotations
 from uuid import uuid4
 
 
+def test_canonicalize_agent_pair_ids_orders_pair_lexically() -> None:
+    from app.session_identifiers import canonicalize_agent_pair_ids
+
+    first = uuid4()
+    second = uuid4()
+
+    ordered = canonicalize_agent_pair_ids(first, second)
+
+    assert ordered == tuple(sorted((first, second), key=str))
+
+
 def test_build_legacy_gateway_conversation_ids_is_order_preserving_pair() -> None:
     from app.session_identifiers import build_legacy_gateway_conversation_ids
 

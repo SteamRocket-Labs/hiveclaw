@@ -5,6 +5,13 @@ from __future__ import annotations
 import uuid
 
 
+def canonicalize_agent_pair_ids(
+    source_agent_id: uuid.UUID | str,
+    target_agent_id: uuid.UUID | str,
+) -> tuple[uuid.UUID | str, uuid.UUID | str]:
+    return tuple(sorted((source_agent_id, target_agent_id), key=str))
+
+
 def build_legacy_gateway_conversation_ids(
     source_agent_id: uuid.UUID | str,
     target_agent_id: uuid.UUID | str,

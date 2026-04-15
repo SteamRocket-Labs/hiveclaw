@@ -238,6 +238,8 @@ async def report_result(
     # write the reply back as a gateway_message for the sender agent to poll
     if body.result and msg.sender_agent_id:
         async with async_session() as reply_db:
+            from app.models.audit import ChatMessage
+
             sender_result = await reply_db.execute(select(Agent).where(Agent.id == msg.sender_agent_id))
             sender_agent = sender_result.scalar_one_or_none()
             owner_user_id = agent.creator_id or getattr(sender_agent, "creator_id", None) or msg.sender_agent_id
@@ -250,6 +252,14 @@ async def report_result(
                 target_name=agent.name,
             )
             conv_id = session_conversation_id(session)
+            session.last_message_at = datetime.now(timezone.utc)
+            reply_db.add(ChatMessage(
+                agent_id=session.agent_id,
+                user_id=owner_user_id,
+                role="assistant",
+                content=body.result,
+                conversation_id=conv_id,
+            ))
             gw_reply = GatewayMessage(
                 agent_id=msg.sender_agent_id,
                 sender_agent_id=agent.id,
@@ -460,6 +470,8 @@ async def send_message(
     logger.info(f"[Gateway] send_message: target='{target_name}', found_agent={target_agent.name if target_agent else None}, agent_type={getattr(target_agent, 'agent_type', None) if target_agent else None}, channel_hint='{channel_hint}'")
 
     if target_agent and (not channel_hint or channel_hint == "agent"):
+        from app.models.audit import ChatMessage
+
         owner_user_id = target_agent.creator_id or agent.creator_id or agent.id
         chat_session = await find_or_create_agent_pair_session(
             db,
@@ -474,6 +486,13 @@ async def send_message(
 
         if getattr(target_agent, 'agent_type', None) == 'openclaw':
             # OpenClaw-to-OpenClaw: write to gateway_messages directly
+            db.add(ChatMessage(
+                agent_id=chat_session.agent_id,
+                user_id=owner_user_id,
+                role="user",
+                content=content,
+                conversation_id=conv_id,
+            ))
             gw_msg = GatewayMessage(
                 agent_id=target_agent.id,
                 sender_agent_id=agent.id,

@@ -20,8 +20,7 @@ from sqlalchemy import select
 
 from app.config import get_settings
 from app.database import async_session
-from app.memory.md_store import render_t3_lines
-from app.memory import FileBackedMemoryStore, MemoryAssembler, MemoryRetriever
+from app.memory import MemoryAssembler, MemoryRetriever
 from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
 from app.models.tenant_setting import TenantSetting
@@ -79,7 +78,7 @@ async def build_memory_context(
     """Build a self-consistent memory context for any runtime entrypoint.
 
     Uses the four-layer retrieval pipeline (working, episodic, semantic, external)
-    followed by the assembler. Falls back to FileBackedMemoryStore on failure.
+    followed by the assembler. Returns empty string on failure (caller decides).
     """
     retrieval_profile = budget_profile or compute_context_budget(
         context_window_tokens=context_window_tokens,
@@ -108,23 +107,9 @@ async def build_memory_context(
         assemble_kwargs = {}
         if "budget_chars" in inspect.signature(assembler.assemble).parameters:
             assemble_kwargs["budget_chars"] = retrieval_profile.memory_budget_chars
-        result = assembler.assemble(items, **assemble_kwargs)
-        if result:
-            return result
+        return assembler.assemble(items, **assemble_kwargs) or ""
     except Exception as exc:
-        logger.warning("Retrieval pipeline failed, falling back to FileBackedMemoryStore: %s", exc)
-
-    # Fallback: original FileBackedMemoryStore
-    store = FileBackedMemoryStore(
-        data_root=Path(get_settings().AGENT_DATA_DIR),
-        load_session_summary=_load_session_summary,
-        load_previous_session_summary=_load_previous_session_summary,
-        load_agent_memory=_load_agent_memory,
-    )
-    try:
-        return await store.build_context(agent_id=agent_id, tenant_id=tenant_id, session_id=session_id)
-    except Exception as exc:
-        logger.warning("FileBackedMemoryStore fallback failed, returning empty memory context: %s", exc)
+        logger.warning("Retrieval pipeline failed, returning empty memory context: %s", exc)
         return ""
 
 
@@ -500,15 +485,6 @@ async def _generate_session_summary(messages: list[dict], tenant_id: uuid.UUID) 
     return _extract_summary(messages)
 
 
-def _load_agent_memory(agent_id: uuid.UUID) -> str:
-    """Load agent's structured memory directly from canonical T3 md files."""
-    settings = get_settings()
-    try:
-        return render_t3_lines(Path(settings.AGENT_DATA_DIR), agent_id)
-    except Exception:
-        return ""
-
-
 def _parse_session_uuid(session_id: str | None) -> uuid.UUID | None:
     if not session_id:
         return None
@@ -517,41 +493,6 @@ def _parse_session_uuid(session_id: str | None) -> uuid.UUID | None:
     except (ValueError, TypeError) as exc:
         logger.debug("Invalid session UUID %s: %s", session_id, exc)
         return None
-
-
-async def _load_session_summary(agent_id: uuid.UUID, session_id: str | None) -> str | None:
-    session_uuid = _parse_session_uuid(session_id)
-    if not session_uuid:
-        return None
-
-    async with async_session() as db:
-        result = await db.execute(
-            select(ChatSession.summary).where(
-                ChatSession.id == session_uuid,
-                ChatSession.summary.isnot(None),
-                (ChatSession.agent_id == agent_id) | (ChatSession.peer_agent_id == agent_id),
-            )
-        )
-        return result.scalar_one_or_none()
-
-
-async def _load_previous_session_summary(agent_id: uuid.UUID, session_id: str | None) -> str | None:
-    session_uuid = _parse_session_uuid(session_id)
-
-    async with async_session() as db:
-        query = (
-            select(ChatSession.summary)
-            .where(
-                (ChatSession.agent_id == agent_id) | (ChatSession.peer_agent_id == agent_id),
-                ChatSession.summary.isnot(None),
-            )
-            .order_by(ChatSession.last_message_at.desc(), ChatSession.created_at.desc())
-            .limit(1)
-        )
-        if session_uuid:
-            query = query.where(ChatSession.id != session_uuid)
-        result = await db.execute(query)
-        return result.scalar_one_or_none()
 
 
 async def _save_session_summary(session_id: str, summary: str) -> None:

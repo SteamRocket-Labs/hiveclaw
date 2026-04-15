@@ -60,8 +60,8 @@ def save_memory(agent_id: uuid.UUID, arguments: dict) -> str:
     from pathlib import Path
 
     from app.config import get_settings
-    from app.memory.md_store import append_t3_entry, rebuild_shadow_index
-    from app.memory.store import MEMORY_CATEGORIES
+    from app.memory.md_store import append_t3_entry
+    from app.memory.types import MEMORY_CATEGORIES
 
     content = (arguments.get("content") or "").strip()
     if not content:
@@ -81,7 +81,6 @@ def save_memory(agent_id: uuid.UUID, arguments: dict) -> str:
         content=content[:2000],
         timestamp=timestamp,
     )
-    rebuild_shadow_index(data_root, agent_id)
 
     return f"Saved to long-term memory [{category}]: {content[:80]}{'...' if len(content) > 80 else ''}"
 

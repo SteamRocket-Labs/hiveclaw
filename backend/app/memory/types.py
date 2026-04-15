@@ -35,6 +35,21 @@ class MemoryKind(StrEnum):
     EXTERNAL = "external"
 
 
+# Valid memory categories (Claude Code aligned + evolution types + general default).
+MEMORY_CATEGORIES = frozenset(
+    {
+        "user",
+        "feedback",
+        "project",
+        "reference",
+        "general",
+        "constraint",
+        "strategy",
+        "blocked_pattern",
+    }
+)
+
+
 @dataclass(slots=True)
 class MemoryItem:
     """Unified memory item returned by the retrieval pipeline."""

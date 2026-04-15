@@ -35,59 +35,6 @@ class _FakeSession:
 
 
 @pytest.mark.asyncio
-async def test_build_memory_context_prefers_current_session_summary(monkeypatch):
-    from app.services.memory_service import build_memory_context
-
-    agent_id = uuid4()
-    tenant_id = uuid4()
-    fake_session = _FakeSession(["current summary"])
-
-    monkeypatch.setattr("app.services.memory_service.async_session", lambda: fake_session)
-    monkeypatch.setattr("app.services.memory_service._load_agent_memory", lambda _agent_id: "- prefers structured docs")
-
-    context = await build_memory_context(agent_id, tenant_id, session_id=str(uuid4()))
-
-    assert context == (
-        "[Previous conversation summary]\ncurrent summary\n\n"
-        "[Agent memory]\n- prefers structured docs"
-    )
-
-
-@pytest.mark.asyncio
-async def test_build_memory_context_falls_back_to_previous_summary(monkeypatch):
-    from app.services.memory_service import build_memory_context
-
-    agent_id = uuid4()
-    tenant_id = uuid4()
-    fake_session = _FakeSession([None, "previous summary"])
-
-    monkeypatch.setattr("app.services.memory_service.async_session", lambda: fake_session)
-    monkeypatch.setattr("app.services.memory_service._load_agent_memory", lambda _agent_id: "")
-
-    context = await build_memory_context(agent_id, tenant_id, session_id=str(uuid4()))
-
-    assert context == "[Previous conversation summary]\nprevious summary"
-
-
-@pytest.mark.asyncio
-async def test_build_memory_context_without_session_id_uses_only_agent_memory(monkeypatch):
-    from app.services.memory_service import build_memory_context
-
-    agent_id = uuid4()
-    tenant_id = uuid4()
-
-    def _unexpected_session():
-        raise AssertionError("session summary should not load without session_id")
-
-    monkeypatch.setattr("app.services.memory_service.async_session", _unexpected_session)
-    monkeypatch.setattr("app.services.memory_service._load_agent_memory", lambda _agent_id: "- keeps durable facts")
-
-    context = await build_memory_context(agent_id, tenant_id)
-
-    assert context == "[Agent memory]\n- keeps durable facts"
-
-
-@pytest.mark.asyncio
 async def test_persist_runtime_memory_persists_summary_without_direct_semantic_write(monkeypatch):
     from app.services.memory_service import persist_runtime_memory
 

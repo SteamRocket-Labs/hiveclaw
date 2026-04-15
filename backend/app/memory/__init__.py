@@ -2,18 +2,24 @@
 
 from .assembler import MemoryAssembler
 from .retriever import MemoryRetriever
-from .store import FileBackedMemoryStore, PersistentMemoryStore
-from .types import EpisodicMemory, ExternalMemoryRef, MemoryItem, MemoryKind, SemanticMemory, WorkingMemory
+from .types import (
+    MEMORY_CATEGORIES,
+    EpisodicMemory,
+    ExternalMemoryRef,
+    MemoryItem,
+    MemoryKind,
+    SemanticMemory,
+    WorkingMemory,
+)
 
 __all__ = [
+    "MEMORY_CATEGORIES",
     "EpisodicMemory",
     "ExternalMemoryRef",
-    "FileBackedMemoryStore",
     "MemoryAssembler",
     "MemoryItem",
     "MemoryKind",
     "MemoryRetriever",
-    "PersistentMemoryStore",
     "SemanticMemory",
     "WorkingMemory",
 ]

@@ -26,17 +26,14 @@ def retriever(data_root: Path) -> MemoryRetriever:
     return MemoryRetriever(data_root=data_root)
 
 
-def test_retriever_init_does_not_touch_legacy_sqlite_store(data_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """MD-first retriever should not initialize the legacy sqlite fact store."""
-    import app.memory.retriever as retriever_module
+def test_legacy_sqlite_store_no_longer_exists(data_root: Path) -> None:
+    """The legacy sqlite-backed PersistentMemoryStore has been retired (MD-first only)."""
+    import app.memory as memory_pkg
 
-    class _RaisingStore:
-        def __init__(self, *args, **kwargs) -> None:
-            raise AssertionError("legacy sqlite store should not be initialized")
-
-    monkeypatch.setattr(retriever_module, "PersistentMemoryStore", _RaisingStore, raising=False)
-
+    assert not hasattr(memory_pkg, "PersistentMemoryStore")
+    assert not hasattr(memory_pkg, "FileBackedMemoryStore")
     MemoryRetriever(data_root=data_root)
+    assert not (data_root / "memory.sqlite3").exists()
 
 
 def _setup_focus(data_root: Path, agent_id: uuid.UUID, content: str) -> None:

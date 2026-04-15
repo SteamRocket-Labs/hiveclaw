@@ -250,8 +250,8 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
     # Bootstrap evolution seed files
     _bootstrap_evolution_files(ws)
 
-    # One-way legacy cleanup: migrate old memory.md / uppercase learnings into canonical MD-first files.
-    migrate_legacy_memory_tree(WORKSPACE_ROOT, agent_id)
+    # Legacy migration runs only at startup via migrate_all_workspaces() (main.py lifespan).
+    # The marker file `.legacy_migrated` short-circuits any stragglers; no per-call cost here.
     rebuild_index(WORKSPACE_ROOT, agent_id)
 
     if not (ws / "HEARTBEAT.md").exists():

@@ -61,48 +61,9 @@ async def test_ensure_workspace_creates_standard_structure_and_profile(monkeypat
     assert sync_calls == [(agent_id, workspace)]
 
 
-@pytest.mark.asyncio
-async def test_ensure_workspace_migrates_legacy_memory_file(monkeypatch, tmp_path):
-    from app.tools.workspace import ensure_workspace
-
-    agent_id = uuid4()
-    workspace = tmp_path / str(agent_id)
-    workspace.mkdir(parents=True)
-    legacy_memory = workspace / "memory.md"
-    legacy_memory.write_text("# Old Memory\n", encoding="utf-8")
-
-    class _FakeScalarResult:
-        def scalar_one_or_none(self):
-            return None
-
-    class _FakeSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def execute(self, _query):
-            return _FakeScalarResult()
-
-    async def fake_sync_tasks(_agent_id, _workspace):
-        return None
-
-    monkeypatch.setattr("app.tools.workspace.WORKSPACE_ROOT", tmp_path)
-    monkeypatch.setattr("app.tools.workspace.async_session", lambda: _FakeSession())
-    monkeypatch.setattr("app.tools.workspace._sync_tasks_to_file", fake_sync_tasks)
-
-    resolved_workspace = await ensure_workspace(agent_id)
-
-    assert resolved_workspace == workspace
-    assert not legacy_memory.exists()
-    knowledge_content = (workspace / "memory" / "knowledge.md").read_text(encoding="utf-8")
-    assert "# Old Memory" not in knowledge_content
-
-
-@pytest.mark.asyncio
-async def test_ensure_workspace_migrates_legacy_memory_into_canonical_files(monkeypatch, tmp_path):
-    from app.tools.workspace import ensure_workspace
+def test_migrate_all_workspaces_handles_legacy_memory_file(monkeypatch, tmp_path):
+    """Legacy migration runs at startup via migrate_all_workspaces, not per-call."""
+    from app.tools.workspace import migrate_all_workspaces
 
     agent_id = uuid4()
     workspace = tmp_path / str(agent_id)
@@ -116,30 +77,10 @@ async def test_ensure_workspace_migrates_legacy_memory_into_canonical_files(monk
         encoding="utf-8",
     )
 
-    class _FakeScalarResult:
-        def scalar_one_or_none(self):
-            return None
-
-    class _FakeSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def execute(self, _query):
-            return _FakeScalarResult()
-
-    async def fake_sync_tasks(_agent_id, _workspace):
-        return None
-
     monkeypatch.setattr("app.tools.workspace.WORKSPACE_ROOT", tmp_path)
-    monkeypatch.setattr("app.tools.workspace.async_session", lambda: _FakeSession())
-    monkeypatch.setattr("app.tools.workspace._sync_tasks_to_file", fake_sync_tasks)
 
-    resolved_workspace = await ensure_workspace(agent_id)
+    migrate_all_workspaces()
 
-    assert resolved_workspace == workspace
     assert not (workspace / "memory" / "memory.md").exists()
     assert not (workspace / "memory" / "learnings" / "LEARNINGS.md").exists()
     assert "Keep the architecture md-first" in (workspace / "memory" / "knowledge.md").read_text(encoding="utf-8")
@@ -147,3 +88,4 @@ async def test_ensure_workspace_migrates_legacy_memory_into_canonical_files(monk
         "Prefer weighted promotion over rigid layer upgrades."
         in (workspace / "memory" / "learnings" / "insights.md").read_text(encoding="utf-8")
     )
+    assert (workspace / ".legacy_migrated").exists()

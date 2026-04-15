@@ -395,8 +395,6 @@ async def run_soft_dream(agent_id: uuid.UUID) -> dict:
 
     Runs between full dreams to prevent fact accumulation and keep T3 fresh.
     """
-    from app.memory.md_store import rebuild_shadow_index
-
     before_count = _count_t3_entries(agent_id)
     if before_count == 0:
         return {"soft_dream": True, "consolidated": 0, "removed": 0}
@@ -404,7 +402,6 @@ async def run_soft_dream(agent_id: uuid.UUID) -> dict:
     t3_stats = _consolidate_t3_files(agent_id)
     removed = sum(t3_stats.values())
     _update_index_md(agent_id)
-    rebuild_shadow_index(Path(get_settings().AGENT_DATA_DIR), agent_id)
     after_count = _count_t3_entries(agent_id)
 
     logger.info(
@@ -424,10 +421,6 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
     """
     key = agent_id.hex
     del tenant_id
-    data_root = Path(get_settings().AGENT_DATA_DIR)
-    from app.memory.legacy_migration import migrate_legacy_memory_tree
-
-    migrate_legacy_memory_tree(data_root, agent_id)
     t3_files = _read_all_t3(agent_id)
     if not t3_files:
         _mark_dreamed(key)
@@ -438,9 +431,6 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
     t3_stats = _consolidate_t3_files(agent_id)
     t3_removed = sum(t3_stats.values())
     _update_index_md(agent_id)
-    from app.memory.md_store import rebuild_shadow_index
-
-    rebuild_shadow_index(data_root, agent_id)
     after_count = _count_t3_entries(agent_id)
     t2_removed = _truncate_t2(agent_id, keep=10)
     if t3_removed or t2_removed:

@@ -224,8 +224,7 @@ class MemoryRetriever:
 
         These files are written by heartbeat (T2→T3 curation) and refined
         by dream (dedup + soul promotion). Reading them directly ensures
-        the agent always sees the latest curated knowledge, regardless of
-        whether memory.sqlite3 is in sync.
+        the agent always sees the latest curated knowledge.
         """
         ws = self.data_root / str(agent_id)
         items: list[MemoryItem] = []

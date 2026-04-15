@@ -512,7 +512,6 @@ async def websocket_chat(
                             timeout=15.0,
                         )
                         # Session summary for Episodic layer (DB) — kept for retriever._retrieve_episodic()
-                        # NOTE: _update_agent_memory (sqlite semantic_facts) removed — T2→T3 pipeline handles it.
                         if agent.tenant_id and conv_id:
                             try:
                                 from app.services.memory_service import _generate_session_summary, _save_session_summary

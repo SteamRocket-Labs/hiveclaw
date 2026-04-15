@@ -59,3 +59,37 @@ def test_migrate_legacy_memory_md_imports_lines_into_knowledge(tmp_path: Path) -
     assert "系统现在采用 md-first 记忆架构" in knowledge
     assert "dream 只负责 T3 consolidate" in knowledge
     assert not legacy_path.exists()
+
+
+def test_marker_written_after_first_migration(tmp_path: Path) -> None:
+    from app.memory.legacy_migration import migrate_legacy_memory_tree
+
+    agent_id = uuid.uuid4()
+    root = tmp_path / str(agent_id)
+    root.mkdir(parents=True)
+
+    report = migrate_legacy_memory_tree(tmp_path, agent_id)
+
+    marker = root / ".legacy_migrated"
+    assert marker.exists()
+    assert "migrated_at:" in marker.read_text(encoding="utf-8")
+    assert report["skipped"] is False
+
+
+def test_marker_skips_subsequent_migration(tmp_path: Path) -> None:
+    from app.memory.legacy_migration import migrate_legacy_memory_tree
+
+    agent_id = uuid.uuid4()
+    learnings_dir = tmp_path / str(agent_id) / "memory" / "learnings"
+    learnings_dir.mkdir(parents=True)
+    marker = tmp_path / str(agent_id) / ".legacy_migrated"
+    marker.write_text("migrated_at: 2026-01-01T00:00:00+00:00\n", encoding="utf-8")
+
+    legacy_file = learnings_dir / "LEARNINGS.md"
+    legacy_file.write_text("# Learnings\n\n- Should be ignored.\n", encoding="utf-8")
+
+    report = migrate_legacy_memory_tree(tmp_path, agent_id)
+
+    assert report["skipped"] is True
+    assert report["migrated_t2_entries"] == 0
+    assert legacy_file.exists(), "marker must short-circuit before touching legacy files"

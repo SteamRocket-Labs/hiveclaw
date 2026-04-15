@@ -180,16 +180,6 @@ def parse_t3_facts(data_root: Path, agent_id: uuid.UUID) -> list[dict]:
     return facts
 
 
-def render_t3_lines(data_root: Path, agent_id: uuid.UUID, *, limit: int = 30) -> str:
-    """Render canonical T3 memory entries as bullet lines."""
-    lines: list[str] = []
-    for fact in parse_t3_facts(data_root, agent_id):
-        content = fact.get("content", "").strip()
-        if content:
-            lines.append(f"- {content}")
-    return "\n".join(lines[-limit:])
-
-
 def search_t3_facts(data_root: Path, agent_id: uuid.UUID, query: str, *, limit: int = 5) -> list[dict]:
     """Search T3 md files directly without depending on the shadow sqlite index."""
     needle = (query or "").strip()
@@ -229,10 +219,3 @@ def search_t3_facts(data_root: Path, agent_id: uuid.UUID, query: str, *, limit: 
     return [fact for _score, _neg_index, fact in ranked[:limit]]
 
 
-def rebuild_shadow_index(data_root: Path, agent_id: uuid.UUID) -> int:
-    from app.memory.store import PersistentMemoryStore
-
-    facts = parse_t3_facts(data_root, agent_id)
-    store = PersistentMemoryStore(data_root=Path(data_root))
-    store.replace_semantic_facts(agent_id, facts)
-    return len(facts)

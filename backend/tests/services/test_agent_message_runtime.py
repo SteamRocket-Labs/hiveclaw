@@ -75,7 +75,12 @@ async def test_invoke_agent_message_runtime_delegates_to_runtime(monkeypatch):
     assert captured["kwargs"]["tool_executor"] is orchestrator_executor
     assert captured["kwargs"]["max_tool_rounds"] == 9
     assert captured["kwargs"]["interaction_type"] == "agent_message"
-    assert "Agent-to-Agent Message" in captured["kwargs"]["system_prompt_suffix"]
+    # PR-19 rewrote A2A_SYSTEM_PROMPT_SUFFIX with XML structure; the A2A
+    # identity signal is now carried by "agent-to-agent\ncommunication, 'A2A'"
+    # and "peer agent" inside <role>.
+    suffix = captured["kwargs"]["system_prompt_suffix"]
+    assert "agent-to-agent" in suffix.lower()
+    assert "peer agent" in suffix.lower()
 
 
 @pytest.mark.asyncio
@@ -127,7 +132,9 @@ async def test_delegate_to_agent_async_passes_tool_profile(monkeypatch):
     from_agent_id = uuid4()
     source_agent = SimpleNamespace(name="Source Agent", creator_id=uuid4())
     target = SimpleNamespace(id=uuid4(), name="Target Agent", role_description="Helpful agent")
-    target_model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None)
+    target_model = SimpleNamespace(
+        provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None
+    )
     captured = {}
 
     async def fake_resolve(_from_agent_id, _agent_name, **_kwargs):
@@ -161,7 +168,9 @@ async def test_delegate_to_agent_async_accepts_research_readonly_profile(monkeyp
     from_agent_id = uuid4()
     source_agent = SimpleNamespace(name="Source Agent", creator_id=uuid4())
     target = SimpleNamespace(id=uuid4(), name="Target Agent", role_description="Helpful agent")
-    target_model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None)
+    target_model = SimpleNamespace(
+        provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None
+    )
     captured = {}
 
     async def fake_resolve(_from_agent_id, _agent_name, **_kwargs):

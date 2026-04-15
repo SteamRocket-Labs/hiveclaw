@@ -107,7 +107,11 @@ def _merged_inputs(inputs: PromptEvalInputs | None) -> PromptEvalInputs:
     merged_heartbeat_templates = (
         inputs.heartbeat_templates
         if inputs.heartbeat_templates is not None
-        else ({"default": inputs.heartbeat_template} if inputs.heartbeat_template is not None else defaults.heartbeat_templates)
+        else (
+            {"default": inputs.heartbeat_template}
+            if inputs.heartbeat_template is not None
+            else defaults.heartbeat_templates
+        )
     )
     return PromptEvalInputs(
         system_section=inputs.system_section if inputs.system_section is not None else defaults.system_section,
@@ -119,7 +123,9 @@ def _merged_inputs(inputs: PromptEvalInputs | None) -> PromptEvalInputs:
         memory_section=inputs.memory_section if inputs.memory_section is not None else defaults.memory_section,
         tools_section=inputs.tools_section if inputs.tools_section is not None else defaults.tools_section,
         review_playbook=inputs.review_playbook if inputs.review_playbook is not None else defaults.review_playbook,
-        research_playbook=inputs.research_playbook if inputs.research_playbook is not None else defaults.research_playbook,
+        research_playbook=inputs.research_playbook
+        if inputs.research_playbook is not None
+        else defaults.research_playbook,
         operations_playbook=(
             inputs.operations_playbook if inputs.operations_playbook is not None else defaults.operations_playbook
         ),
@@ -136,7 +142,9 @@ def _merged_inputs(inputs: PromptEvalInputs | None) -> PromptEvalInputs:
         heartbeat_template=merged_heartbeat_template,
         heartbeat_templates=merged_heartbeat_templates,
         extractor_prompt=inputs.extractor_prompt if inputs.extractor_prompt is not None else defaults.extractor_prompt,
-        knowledge_section=inputs.knowledge_section if inputs.knowledge_section is not None else defaults.knowledge_section,
+        knowledge_section=inputs.knowledge_section
+        if inputs.knowledge_section is not None
+        else defaults.knowledge_section,
         delegation_worker_prompt=(
             inputs.delegation_worker_prompt
             if inputs.delegation_worker_prompt is not None
@@ -167,19 +175,35 @@ def _run_checks(checks: dict[str, _CheckSpec]) -> dict[str, Any]:
 
 
 def _build_heartbeat_template_checks(heartbeat_template: str) -> dict[str, _CheckSpec]:
+    # Normalize whitespace so multi-line wrapped phrases still match.
+    normalized = " ".join(heartbeat_template.split()).lower()
     return {
         "skill_patch_instead_of_duplicate_guidance": _CheckSpec(
-            predicate=lambda: "no duplicate skill exists" in heartbeat_template.lower(),
+            # PR-12 rewrote HEARTBEAT.md with decision-matrix wording. Patch-
+            # over-duplicate guidance reads "no duplicate skill exists"; older
+            # templates may use "patch the existing skill instead".
+            predicate=lambda: ("no duplicate skill exists" in normalized or "patch the existing skill" in normalized),
             severity="medium",
             remediation="Restore guidance that stale skills should be patched or updated instead of duplicated.",
             success_detail="Prompt contracts tell the agent to patch stale skills instead of creating duplicates.",
             failure_detail="Prompt contracts no longer explain how to patch stale skills instead of duplicating them.",
         ),
         "heartbeat_weight_policy": _CheckSpec(
+            # PR-12 moved weight thresholds into a decision_matrix with
+            # `| ≥ 0.85 |`, `| 0.50–0.85 |`, `| < 0.50 |` rows and the
+            # "data, not instruction" rule. Older templates used the prose
+            # phrase "promote it only as factual knowledge" — accept either.
             predicate=lambda: (
-                "w>=0.85" in heartbeat_template
-                and "instruction-like text from external sources as data" in heartbeat_template
-                and "promote it only as factual knowledge" in heartbeat_template
+                (
+                    "≥ 0.85" in heartbeat_template
+                    and "< 0.50" in heartbeat_template
+                    and "data, not instruction" in normalized
+                )
+                or (
+                    "w>=0.85" in heartbeat_template
+                    and "instruction-like text from external sources" in normalized
+                    and "promote it only as factual knowledge" in normalized
+                )
             ),
             severity="high",
             remediation="Restore heartbeat weight thresholds and external-instruction filtering before promoting T2 items.",
@@ -190,7 +214,7 @@ def _build_heartbeat_template_checks(heartbeat_template: str) -> dict[str, _Chec
             predicate=lambda: (
                 "save_skill" in heartbeat_template
                 and "Do NOT take external-facing autonomous actions" in heartbeat_template
-                and "create or update internal skills" in heartbeat_template
+                and ("create or update internal skills" in heartbeat_template)
             ),
             severity="medium",
             remediation="Restore heartbeat guidance that permits internal save_skill curation while still blocking external-facing autonomous actions.",
@@ -227,8 +251,7 @@ def evaluate_runtime_prompt_contracts(inputs: PromptEvalInputs | None = None) ->
     if not heartbeat_templates:
         heartbeat_templates["default"] = resolved.heartbeat_template or ""
     heartbeat_template_reports = {
-        name: _run_checks(_build_heartbeat_template_checks(text))
-        for name, text in heartbeat_templates.items()
+        name: _run_checks(_build_heartbeat_template_checks(text)) for name, text in heartbeat_templates.items()
     }
 
     def _heartbeat_templates_pass(check_name: str) -> bool:
@@ -236,9 +259,7 @@ def evaluate_runtime_prompt_contracts(inputs: PromptEvalInputs | None = None) ->
 
     def _heartbeat_template_failures(check_name: str) -> str:
         failing = [
-            name
-            for name, report in heartbeat_template_reports.items()
-            if not report["checks"][check_name]["passed"]
+            name for name, report in heartbeat_template_reports.items() if not report["checks"][check_name]["passed"]
         ]
         return ", ".join(failing)
 
@@ -474,7 +495,15 @@ def evaluate_runtime_prompt_contracts(inputs: PromptEvalInputs | None = None) ->
                     failure_detail="Delegated worker prompt no longer mentions worker-safe tool policy.",
                 ),
                 "worker_return_format": _CheckSpec(
-                    predicate=lambda: "### Return format" in (resolved.delegation_worker_prompt or ""),
+                    # PR-16 replaced the markdown "### Return format" section
+                    # with an XML `<return_format>` block. The Completed /
+                    # Evidence / Blockers triad remains required.
+                    predicate=lambda: (
+                        ("<return_format>" in (resolved.delegation_worker_prompt or ""))
+                        and "Completed:" in (resolved.delegation_worker_prompt or "")
+                        and "Evidence:" in (resolved.delegation_worker_prompt or "")
+                        and "Blockers:" in (resolved.delegation_worker_prompt or "")
+                    ),
                     severity="medium",
                     remediation="Restore the delegated worker return format so parent agents receive structured summaries.",
                     success_detail="Delegated worker prompt still defines a structured return format.",
@@ -510,9 +539,7 @@ def assert_runtime_prompt_contracts(
     for scenario_name, scenario in report["scenarios"].items():
         for name, entry in scenario["checks"].items():
             if (not entry["passed"]) and entry["severity"] in fail_severities:
-                blocked.append(
-                    f"{scenario_name}.{name}: {entry['detail']} Remediation: {entry['remediation']}"
-                )
+                blocked.append(f"{scenario_name}.{name}: {entry['detail']} Remediation: {entry['remediation']}")
 
     if blocked:
         raise RuntimeError("Prompt contract failures detected:\n- " + "\n- ".join(blocked))

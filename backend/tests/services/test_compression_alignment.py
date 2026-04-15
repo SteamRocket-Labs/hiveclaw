@@ -175,7 +175,12 @@ class TestSummarizePrompt:
         assert "problem-solving" in _SUMMARIZE_SYSTEM_PROMPT.lower()
 
     def test_memory_system_mention(self) -> None:
-        assert "automatically extracted to the memory system" in _SUMMARIZE_SYSTEM_PROMPT
+        # PR-18 rewrote _SUMMARIZE_SYSTEM_PROMPT with XML structure. The
+        # separation-of-concerns (memory extraction is a separate pipeline)
+        # is preserved in the new <role> block — normalize whitespace since
+        # the phrase is word-wrapped.
+        normalized = " ".join(_SUMMARIZE_SYSTEM_PROMPT.lower().split())
+        assert "memory extraction runs as a separate pipeline" in normalized
 
 
 # ── G5: _extract_summary 11-section ──

@@ -84,7 +84,12 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
     assert request.max_tool_rounds == 7
     assert "A2A_SUFFIX" in request.system_prompt_suffix
     assert "delegated worker" in request.system_prompt_suffix.lower()
-    assert "Return format" in request.system_prompt_suffix
+    # PR-16 replaced the markdown "### Return format" with the `<return_format>` XML
+    # block; the Completed/Evidence/Blockers triad remains the parent-parsed contract.
+    assert "<return_format>" in request.system_prompt_suffix
+    assert "Completed:" in request.system_prompt_suffix
+    assert "Evidence:" in request.system_prompt_suffix
+    assert "Blockers:" in request.system_prompt_suffix
     assert "Do NOT read or write long-term memory" in request.system_prompt_suffix
     assert request.session_context.metadata["delegation_tool_policy"] == "worker_safe"
     assert request.session_context.metadata["delegation_memory_policy"] == "isolated_no_long_term_memory"
@@ -393,26 +398,28 @@ async def test_resume_persisted_async_delegations_rehydrates_tasks(monkeypatch):
     async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
         assert "pending" in statuses
         assert "running" in statuses
-        return [{
-            "task_id": task_id,
-            "trace_id": "trace-resume",
-            "parent_agent_id": str(parent_agent_id),
-            "child_agent_id": str(target.id),
-            "child_agent_name": target.name,
-            "parent_session_id": "parent-session",
-            "child_session_id": "child-session",
-            "depth": 1,
-            "metadata": {
-                "resume_after_restart": True,
-                "resumable_delegation": True,
-                "owner_id": str(owner_id),
-                "target_agent_id": str(target.id),
-                "conversation_messages": [{"role": "user", "content": "resume me"}],
-                "system_prompt_suffix": "",
-                "max_tool_rounds": 9,
-                "timeout_seconds": 120.0,
-            },
-        }]
+        return [
+            {
+                "task_id": task_id,
+                "trace_id": "trace-resume",
+                "parent_agent_id": str(parent_agent_id),
+                "child_agent_id": str(target.id),
+                "child_agent_name": target.name,
+                "parent_session_id": "parent-session",
+                "child_session_id": "child-session",
+                "depth": 1,
+                "metadata": {
+                    "resume_after_restart": True,
+                    "resumable_delegation": True,
+                    "owner_id": str(owner_id),
+                    "target_agent_id": str(target.id),
+                    "conversation_messages": [{"role": "user", "content": "resume me"}],
+                    "system_prompt_suffix": "",
+                    "max_tool_rounds": 9,
+                    "timeout_seconds": 120.0,
+                },
+            }
+        ]
 
     async def fake_resolve_target_runtime(child_agent_id):
         assert child_agent_id == target.id
@@ -425,7 +432,9 @@ async def test_resume_persisted_async_delegations_rehydrates_tasks(monkeypatch):
         updates.append((task_id_arg, kwargs))
         return True
 
-    monkeypatch.setattr("app.agents.orchestrator.list_active_runtime_task_records", fake_list_active_runtime_task_records)
+    monkeypatch.setattr(
+        "app.agents.orchestrator.list_active_runtime_task_records", fake_list_active_runtime_task_records
+    )
     monkeypatch.setattr("app.agents.orchestrator._resolve_resumable_target_runtime", fake_resolve_target_runtime)
     monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke)
     monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)

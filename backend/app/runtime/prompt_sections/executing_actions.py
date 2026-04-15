@@ -20,11 +20,19 @@ def build_executing_actions_section(execution_mode: str = "conversation") -> str
     if execution_mode in {"task", "heartbeat"}:
         risk_clause = (
             "In autonomous execution modes, proceed without asking for confirmation "
-            "unless a hard runtime permission gate blocks the action."
+            "unless a hard runtime permission gate blocks the action. If you hit such a gate, "
+            "stop and report the blocked action — do not attempt workarounds."
         )
     else:
         risk_clause = (
-            "If the operation affects people outside this conversation, confirm with the user first."
+            "Confirm with the user BEFORE any of these actions, every time: "
+            "(1) sending a message to a channel (Feishu, email, plaza, outbound messaging); "
+            "(2) deleting or overwriting files that already exist; "
+            "(3) creating a trigger that will fire autonomously later; "
+            "(4) delegating work to another agent; "
+            "(5) any action that changes state visible to people outside this conversation. "
+            "For purely local reads (file reads, web searches, memory lookups) you do NOT need "
+            "confirmation — just do them."
         )
 
     return f"""\

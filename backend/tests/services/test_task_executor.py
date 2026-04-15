@@ -109,11 +109,16 @@ async def test_execute_task_delegates_to_runtime_invoker(monkeypatch):
     assert request.agent_id == agent_id
     assert request.user_id == creator_id
     assert request.core_tools_only is True
-    assert "TASK EXECUTION MODE" in request.system_prompt_suffix
-    assert request.messages == [{
-        "role": "user",
-        "content": "[任务执行] 整理周报\n任务描述: 汇总本周关键进展\n\n请认真完成此任务，给出详细的执行结果。",
-    }]
+    # PR-17 rewrote TASK_EXECUTION_ADDENDUM as XML-structured best practice.
+    # The identity signal is now `<role>` + "executing an assigned task autonomously".
+    assert "executing an assigned task autonomously" in request.system_prompt_suffix
+    assert "<final_report_format>" in request.system_prompt_suffix
+    assert request.messages == [
+        {
+            "role": "user",
+            "content": "[任务执行] 整理周报\n任务描述: 汇总本周关键进展\n\n请认真完成此任务，给出详细的执行结果。",
+        }
+    ]
     assert request.memory_messages == request.messages
     assert request.session_context is not None
     assert request.session_context.source == "task"
@@ -192,6 +197,7 @@ async def test_execute_task_persists_reflection_session_and_tool_calls(monkeypat
     monkeypatch.setattr("app.services.task_executor.async_session", lambda: sessions.pop(0))
     monkeypatch.setattr("app.services.task_executor.TaskLog", lambda **kwargs: SimpleNamespace(**kwargs))
     monkeypatch.setattr("app.services.task_executor.invoke_agent", fake_invoke_agent)
+
     async def fake_log_activity(*args, **kwargs):
         return None
 

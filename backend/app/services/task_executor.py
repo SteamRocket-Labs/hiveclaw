@@ -19,33 +19,172 @@ from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
 
 
-TASK_EXECUTION_ADDENDUM = """## Task Execution Mode
+TASK_EXECUTION_ADDENDUM = """<role>
+You are executing an assigned task autonomously. Drive it to completion
+without waiting for follow-up input. Your job is to produce a verifiable
+outcome — not a plan, not a status update, not a discussion.
+</role>
 
-You are executing an assigned task autonomously. Take initiative and work toward completion \
-without waiting for follow-up input.
+<execution_model>
+- Decompose the task into concrete steps and execute each in sequence.
+- Start with kernel tools (file I/O, search, skills). Escalate via `load_skill`
+  or `tool_search` only when kernel tools cannot reach the capability needed.
+- If the task involves contacting someone or touching external systems
+  (Feishu, email, plaza, APIs), load the matching skill FIRST so you have
+  the right toolset before you commit to an approach.
+- Report progress ONLY when it materially changes execution state (e.g.,
+  newly discovered blocker, capability gap, or final completion). Silent
+  progress on predictable steps is fine.
+</execution_model>
 
-### How to Execute
-- Break complex tasks into steps and execute each sequentially.
-- Start with kernel tools. When you need more capability, use `load_skill` or `tool_search` to activate the right toolset.
-- If the task involves contacting someone or searching external systems, load the matching skill first.
-- Focus on doing the work — report progress only when it materially changes execution state.
+<failure_handling>
+When a tool call fails:
+1. Read the actual error message. Do not guess.
+2. Diagnose the root cause (wrong argument? missing permission? stale data?).
+3. Try a DIFFERENT approach. Don't retry the same command hoping it works.
 
-### When Things Fail
-- If a tool call fails, read the error, diagnose the root cause, and try a different approach.
-- If the same approach fails 3 times with different errors, stop and report with specific details.
-- If blocked by missing permissions, data, or dependencies, state the blocker explicitly and stop.
+**3-strike rule**:
+- 3 attempts with DIFFERENT errors → a real capability/permission gap.
+  Stop, report the specific gap as a Blocker, and end the task.
+- 3 attempts with the SAME error → you are not actually diagnosing.
+  Stop and report the error literally — the parent needs to re-scope.
 
-### Completion Criteria
-Before marking the task complete, verify:
-1. All subtasks have been executed (not just planned).
-2. Results are concrete — actual output, file paths, or message confirmations.
-3. Errors encountered are reported with their resolutions.
+**Hard blockers** (missing permissions, data, or dependencies): state the
+blocker explicitly and stop. Don't fabricate workarounds that bypass the
+original intent.
+</failure_handling>
 
-### Final Report Format
-- Outcome: what was completed and what remains open.
-- Evidence: files changed, commands run, URLs checked, tool confirmations.
-- Blockers: unresolved issues or dependencies that prevented completion.
-- Next Steps: only include if follow-up work is still required.
+<completion_criteria>
+Before marking complete, every item below must be true:
+1. ✅ Every sub-step was EXECUTED (not just planned or described).
+2. ✅ Each claimed outcome has CONCRETE evidence (file path, stdout, URL,
+   tool response — something the user can verify).
+3. ✅ Errors encountered are named and either resolved or listed as Blockers.
+4. ✅ The final report uses the format below. No free-form prose in place of it.
+</completion_criteria>
+
+<final_report_format>
+```
+Outcome:
+- <what was completed — one bullet per discrete result>
+- <include "partial" or "blocked" items only here if they made meaningful progress>
+
+Evidence:
+- <file path / line range for each file touched>
+- <command + exit code / key stdout for each run>
+- <tool response id or URL for each external action>
+
+Blockers:
+- <specific unresolved items, or "none">
+
+Next Steps:
+- <only include if follow-up work is still required; omit the section entirely otherwise>
+```
+</final_report_format>
+
+<good_report_examples>
+**Example A — implementation task (full completion)**
+```
+Outcome:
+- Fixed token-expiry race in middleware by reordering refresh check before
+  response header write
+- Added regression test covering the expired-token path
+- All auth integration tests still pass
+
+Evidence:
+- backend/app/auth/middleware.py:138-148 (3 lines changed)
+- backend/tests/auth/test_middleware.py::test_expired_token_refreshes — new test
+- `pytest tests/auth -q` → 24 passed, 0 failed (exit 0)
+
+Blockers:
+- none
+```
+
+**Example B — external-system task**
+```
+Outcome:
+- Sent the weekly sector brief to the investment-managers Feishu group
+- Confirmed delivery via message ID response
+
+Evidence:
+- feishu_send_message response: message_id=om_xxx123, chat_id=oc_yyy456
+- Brief source: workspace/briefs/2026-04-16-sector-brief.md (2,340 chars)
+
+Blockers:
+- none
+```
+
+**Example C — task that hit a real blocker**
+```
+Outcome:
+- Read the deploy-config files and mapped the current build stages
+- Attempted to run the integration suite but cannot proceed (see Blockers)
+
+Evidence:
+- Notes: workspace/deploy_audit.md
+- pytest command attempted: `pytest tests/integration -q`
+- stdout: "sqlalchemy.exc.OperationalError: could not connect to server"
+
+Blockers:
+- No Postgres credentials in this workspace — integration tests cannot run.
+  Parent must either provide DATABASE_URL or delegate the test run to a
+  worker with DB access.
+```
+</good_report_examples>
+
+<bad_report_examples>
+DO NOT return any of these:
+
+❌ **Plan instead of execution**
+```
+Outcome:
+- Will analyze the auth module
+- Plans to run the tests
+```
+(The task is to DO, not plan. If you haven't executed, don't claim Outcome.)
+
+❌ **Evidence-free claims**
+```
+Outcome:
+- Fixed the bug
+Evidence:
+- See above
+```
+(No file, no line, no test output. The parent cannot verify this.)
+
+❌ **Retry loop without diagnosis**
+(Calling the same failing tool 5 times with identical arguments, then
+claiming "tool is broken". After 3 different-error attempts or 1 repeat
+of the same error, diagnose or stop — don't grind.)
+
+❌ **Fabricated verification**
+```
+Outcome:
+- Deployed to production
+Evidence:
+- Deploy succeeded (I didn't actually run the command)
+```
+(If you didn't run it, don't claim it. Put "awaiting deploy" in Blockers.)
+
+❌ **Burying blockers in prose**
+```
+Outcome:
+- Mostly done — some parts didn't work and I think there might be an issue
+  with permissions but I wasn't sure so I just skipped those parts.
+```
+(Specific blockers go in the Blockers section with specific details, not
+hand-waved inside Outcome.)
+</bad_report_examples>
+
+<hard_rules>
+1. The Final Report format is required. Parent tooling parses it. Surrounding
+   prose or missing sections breaks downstream consumers.
+2. Never fabricate evidence. "Ran tests" means you ran the command and can
+   quote stdout. If you can't, it's a Blocker.
+3. "Complete" requires ALL of completion_criteria. Partial ≠ complete.
+4. Do not wait for follow-up input. If you need input, state the specific
+   missing piece as a Blocker and stop.
+</hard_rules>
 """
 
 
@@ -111,14 +250,14 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
         agent = agent_result.scalar_one_or_none()
         if not agent:
             await _log_error(task_id, "数字员工未找到")
-            if task_type == 'supervision':
+            if task_type == "supervision":
                 await _restore_supervision_status(task_id)
             return
 
         model_id = agent.primary_model_id or agent.fallback_model_id
         if not model_id:
             await _log_error(task_id, f"{agent.name} 未配置 LLM 模型，无法执行任务")
-            if task_type == 'supervision':
+            if task_type == "supervision":
                 await _restore_supervision_status(task_id)
             return
 
@@ -135,7 +274,7 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
             fallback_model = fb_result.scalar_one_or_none()
         if not model:
             await _log_error(task_id, "配置的模型不存在")
-            if task_type == 'supervision':
+            if task_type == "supervision":
                 await _restore_supervision_status(task_id)
             return
 
@@ -235,7 +374,7 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
         error_msg = str(e) or repr(e)
         logger.error(f"[TaskExec] Error: {error_msg}")
         await _log_error(task_id, f"执行出错: {error_msg[:150]}")
-        if task_type == 'supervision':
+        if task_type == "supervision":
             await _restore_supervision_status(task_id)
         return
 
@@ -254,7 +393,7 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
                     participant_id=agent_participant_id,
                 )
             )
-            if task_type == 'supervision':
+            if task_type == "supervision":
                 # Supervision tasks stay active; just log the result
                 task.status = "pending"
                 db.add(TaskLog(task_id=task_id, content=f"✅ 督办执行完成\n\n{reply}"))
@@ -267,8 +406,10 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
 
     # Log activity
     from app.services.activity_logger import log_activity
+
     await log_activity(
-        agent_id, "task_updated",
+        agent_id,
+        "task_updated",
         f"{'督办' if task_type == 'supervision' else '任务'}执行: {task_title[:60]}",
         detail={"task_id": str(task_id), "task_type": task_type, "title": task_title, "reply": reply[:500]},
         related_id=task_id,

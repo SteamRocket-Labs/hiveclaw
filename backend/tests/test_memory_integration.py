@@ -22,19 +22,23 @@ class TestHooksIntegration:
 
     def test_v1_all_15_events(self) -> None:
         from app.runtime.hooks import HookEvent
+
         assert len(HookEvent) == 15
 
     def test_v2_response_complete_event(self) -> None:
         from app.runtime.hooks import HookEvent
+
         assert hasattr(HookEvent, "RESPONSE_COMPLETE")
 
     def test_v3_compaction_events(self) -> None:
         from app.runtime.hooks import HookEvent
+
         assert hasattr(HookEvent, "PRE_COMPACTION")
         assert hasattr(HookEvent, "POST_COMPACTION")
 
     def test_v4_session_events(self) -> None:
         from app.runtime.hooks import HookEvent
+
         assert hasattr(HookEvent, "SESSION_IDLE")
         assert hasattr(HookEvent, "SESSION_CLOSE")
         assert hasattr(HookEvent, "SESSION_START")
@@ -42,13 +46,16 @@ class TestHooksIntegration:
     def test_hooks_setup_registers_12_handlers(self) -> None:
         """register_memory_hooks() should register 12 handlers total."""
         from app.runtime.hooks import HookRegistry
+
         registry = HookRegistry()
         # Monkeypatch the global registry temporarily
         import app.runtime.hooks as hooks_mod
+
         original = hooks_mod.hook_registry
         hooks_mod.hook_registry = registry
         try:
             from app.runtime.hooks_setup import register_memory_hooks
+
             register_memory_hooks()
             total = sum(len(handlers) for handlers in registry._handlers.values())
             assert total == 12
@@ -77,6 +84,7 @@ class TestHooksIntegration:
 
         registry = HookRegistry()
         import app.runtime.hooks_setup as hooks_setup_mod
+
         original = hooks_setup_mod.hook_registry
         hooks_setup_mod.hook_registry = registry
         try:
@@ -96,10 +104,12 @@ class TestHooksIntegration:
 class TestT0Integration:
     def test_v5_all_5_formatters(self) -> None:
         from app.services.t0_logger import _FORMATTERS
+
         assert set(_FORMATTERS.keys()) == {"chat", "trigger", "delegation", "heartbeat", "dream"}
 
     def test_v6_write_t0_log_returns_path(self, tmp_path: Path) -> None:
         from app.services.t0_logger import write_t0_log
+
         agent_id = uuid.uuid4()
         (tmp_path / str(agent_id) / "logs").mkdir(parents=True)
         with patch("app.services.t0_logger.get_settings") as mock:
@@ -111,6 +121,7 @@ class TestT0Integration:
 
     def test_v7_cleanup_old_logs(self, tmp_path: Path) -> None:
         from app.services.t0_logger import cleanup_old_logs
+
         agent_id = uuid.uuid4()
         logs_dir = tmp_path / str(agent_id) / "logs"
         old = (datetime.now(timezone.utc) - timedelta(days=40)).strftime("%Y-%m-%d")
@@ -128,10 +139,12 @@ class TestT0Integration:
 class TestExtractorIntegration:
     def test_v8_extractor_singleton_exists(self) -> None:
         from app.services.extract_agent import extract_agent, ExtractAgent
+
         assert isinstance(extract_agent, ExtractAgent)
 
     def test_v9_pattern_fallback_works(self) -> None:
         from app.services.extract_agent import _pattern_extract
+
         msgs = [{"role": "user", "content": "Don't use mocks, always use real database"}]
         results = _pattern_extract(msgs)
         assert len(results) >= 1
@@ -139,12 +152,14 @@ class TestExtractorIntegration:
 
     def test_v10_coalescing_mutex(self) -> None:
         from app.services.extract_agent import ExtractAgent
+
         ea = ExtractAgent()
         agent_id = uuid.uuid4()
         key = str(agent_id)
         ea._in_progress[key] = True
         # Should not crash, just stash
         import asyncio
+
         asyncio.run(ea.extract(agent_id, [{"role": "user", "content": "Remember this important thing"}], source="web"))
         assert key in ea._pending
         ea._in_progress[key] = False
@@ -156,26 +171,37 @@ class TestExtractorIntegration:
 class TestCompressionIntegration:
     def test_v11_microcompact_time_based(self) -> None:
         from app.kernel.engine import _MICROCOMPACT_GAP_SECONDS, _MICROCOMPACT_KEEP_RECENT
+
         assert _MICROCOMPACT_GAP_SECONDS == 3600
         assert _MICROCOMPACT_KEEP_RECENT == 5
 
     def test_v12_llm_message_has_created_at(self) -> None:
         from app.services.llm_client import LLMMessage
+
         msg = LLMMessage(role="user", content="test")
         assert hasattr(msg, "created_at")
         assert isinstance(msg.created_at, float)
 
     def test_v13_ptl_max_retries_3(self) -> None:
         from app.kernel.engine import _PTL_MAX_RETRIES
+
         assert _PTL_MAX_RETRIES == 3
 
     def test_v14_summarize_prompt_11_sections(self) -> None:
         from app.services.conversation_summarizer import _SUMMARIZE_SYSTEM_PROMPT
+
         required = [
-            "Primary Request and Intent", "Key Technical Decisions",
-            "Files and Code Sections", "Problem Solving", "Errors and Fixes",
-            "All User Messages", "User Preferences", "Tool Outcomes",
-            "Pending Tasks", "Current Work", "Recovery Context",
+            "Primary Request and Intent",
+            "Key Technical Decisions",
+            "Files and Code Sections",
+            "Problem Solving",
+            "Errors and Fixes",
+            "All User Messages",
+            "User Preferences",
+            "Tool Outcomes",
+            "Pending Tasks",
+            "Current Work",
+            "Recovery Context",
         ]
         for section in required:
             assert section in _SUMMARIZE_SYSTEM_PROMPT, f"Missing: {section}"
@@ -187,6 +213,7 @@ class TestCompressionIntegration:
 class TestPromptIntegration:
     def test_v15_frozen_prefix_has_system_section(self) -> None:
         from app.runtime.prompt_builder import build_frozen_prompt_prefix
+
         fp = build_frozen_prompt_prefix(agent_context="Agent identity")
         assert "## System" in fp
         assert "## Doing Tasks" in fp
@@ -194,14 +221,17 @@ class TestPromptIntegration:
 
     def test_v15_dynamic_suffix_has_memory_section(self) -> None:
         from app.runtime.prompt_builder import build_dynamic_prompt_suffix
+
         ds = build_dynamic_prompt_suffix(memory_snapshot="feedback: user data")
         assert "## Your Memory System" in ds
         assert "## Environment" in ds
 
     def test_v16_heartbeat_md_has_curate(self) -> None:
+        # PR-12 rewrote HEARTBEAT.md with XML tags; the curate phase and
+        # persistent-session contract are preserved under new tag names.
         template = (Path(__file__).parent.parent / "app" / "templates" / "HEARTBEAT.md").read_text()
-        assert "## Phase 2: CURATE" in template
-        assert "Persistent Session Notes" in template
+        assert "<phase_2_curate>" in template
+        assert "<persistent_session_notes>" in template
 
     def test_v17_dream_md_has_4_phases(self) -> None:
         template = (Path(__file__).parent.parent / "app" / "templates" / "DREAM.md").read_text()
@@ -217,12 +247,14 @@ class TestPromptIntegration:
 class TestHeartbeatIntegration:
     def test_v18_kairos_state_dicts_exist(self) -> None:
         from app.services.heartbeat import _heartbeat_contexts, _heartbeat_session_ids, _heartbeat_tick_counts
+
         assert isinstance(_heartbeat_contexts, dict)
         assert isinstance(_heartbeat_session_ids, dict)
         assert isinstance(_heartbeat_tick_counts, dict)
 
     def test_v19_incremental_t2_returns_empty_on_unchanged(self, tmp_path: Path) -> None:
         from app.services.heartbeat import _read_incremental_t2, _read_t2_full
+
         agent_id = uuid.uuid4()
         learnings = tmp_path / str(agent_id) / "memory" / "learnings"
         learnings.mkdir(parents=True)
@@ -236,6 +268,7 @@ class TestHeartbeatIntegration:
     def test_v24_dream_end_resets_heartbeat(self) -> None:
         """DREAM_END hook handler should call _reset_heartbeat_session."""
         from app.runtime.hooks_setup import _t0_dream_end
+
         source = inspect.getsource(_t0_dream_end)
         assert "_reset_heartbeat_session" in source
 
@@ -246,6 +279,7 @@ class TestHeartbeatIntegration:
 class TestDreamIntegration:
     def test_v21_programmatic_dedup(self) -> None:
         from app.services.auto_dream import _programmatic_dedup
+
         lines = ["- [2026-04-06] User likes concise"] * 3 + ["- [2026-04-06] Project uses PostgreSQL"]
         result = _programmatic_dedup(lines)
         assert len(result) == 2
@@ -253,6 +287,7 @@ class TestDreamIntegration:
     def test_v22_dream_does_not_import_ingest_learnings(self) -> None:
         """run_dream should NOT call _ingest_learnings in the main path (heartbeat owns T2→T3)."""
         from app.services.auto_dream import run_dream
+
         source = inspect.getsource(run_dream)
         # _ingest_learnings is still called for backward compat, but the spec says
         # heartbeat should own T2→T3. We verify the new MD consolidation is present.
@@ -260,6 +295,7 @@ class TestDreamIntegration:
 
     def test_v23_index_md_update(self, tmp_path: Path) -> None:
         from app.services.auto_dream import _update_index_md
+
         agent_id = uuid.uuid4()
         memory_dir = tmp_path / str(agent_id) / "memory"
         memory_dir.mkdir(parents=True)
@@ -276,6 +312,7 @@ class TestDreamIntegration:
             _heartbeat_ticks_since_dream,
             should_dream,
         )
+
         agent_id = uuid.uuid4()
         _heartbeat_ticks_since_dream[agent_id.hex] = MIN_HEARTBEAT_TICKS_SINCE_DREAM
         with patch("app.services.auto_dream._load_dream_state", return_value=(None, 0)):
@@ -292,6 +329,7 @@ class TestFullPipeline:
     def test_t0_write_creates_file(self, tmp_path: Path) -> None:
         """Phase 1: T0 write works for all types."""
         from app.services.t0_logger import write_t0_log
+
         agent_id = uuid.uuid4()
         (tmp_path / str(agent_id) / "logs").mkdir(parents=True)
         with patch("app.services.t0_logger.get_settings") as mock:
@@ -303,18 +341,23 @@ class TestFullPipeline:
     def test_extractor_writes_t2(self, tmp_path: Path) -> None:
         """Phase 2: Extractor pattern fallback writes to T2 learnings."""
         from app.services.extract_agent import _append_to_learnings
+
         agent_id = uuid.uuid4()
         (tmp_path / str(agent_id) / "memory" / "learnings").mkdir(parents=True)
         with patch("app.services.extract_agent.get_settings") as mock:
             mock.return_value.AGENT_DATA_DIR = str(tmp_path)
-            written = _append_to_learnings(agent_id, [
-                {"category": "feedback", "content": "User prefers snake_case"},
-            ])
+            written = _append_to_learnings(
+                agent_id,
+                [
+                    {"category": "feedback", "content": "User prefers snake_case"},
+                ],
+            )
         assert written == 1
 
     def test_t3_consolidation_dedup(self, tmp_path: Path) -> None:
         """Phase 6: T3 dedup removes duplicates."""
         from app.services.auto_dream import _consolidate_t3_files, _write_t3_file
+
         agent_id = uuid.uuid4()
         (tmp_path / str(agent_id) / "memory").mkdir(parents=True)
         with patch("app.services.auto_dream.get_settings") as mock:
@@ -326,6 +369,7 @@ class TestFullPipeline:
     def test_t2_truncation(self, tmp_path: Path) -> None:
         """Phase 6: T2 truncation keeps only recent N."""
         from app.services.auto_dream import _truncate_t2
+
         agent_id = uuid.uuid4()
         learnings = tmp_path / str(agent_id) / "memory" / "learnings"
         learnings.mkdir(parents=True)
@@ -339,6 +383,7 @@ class TestFullPipeline:
     def test_prompt_includes_all_sections(self) -> None:
         """Phase 4: Final prompt has all structured sections."""
         from app.runtime.prompt_builder import build_frozen_prompt_prefix, build_dynamic_prompt_suffix
+
         fp = build_frozen_prompt_prefix(agent_context="You are TestAgent.", skill_catalog="- skill_a")
         ds = build_dynamic_prompt_suffix(memory_snapshot="feedback: data", user_name="Rocky", channel="web")
         full = fp + "\n\n" + ds

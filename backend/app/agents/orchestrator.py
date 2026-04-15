@@ -141,21 +141,126 @@ def _resolve_delegation_tool_profile(name: str | None) -> DelegationToolProfile:
 
 def _build_delegated_worker_prompt(profile: DelegationToolProfile) -> str:
     return (
-        "## Delegated Worker Mode\n"
-        "You are a delegated worker running in an isolated child session.\n"
-        "- The delegated task brief is the only authoritative context you have.\n"
-        "- The parent agent's conversation history is not available to you.\n"
-        f"- {profile.memory_rule}\n"
+        "<role>\n"
+        "You are a delegated worker running in an isolated child session. A parent\n"
+        "agent (or coordinator) handed you a scoped task with a specific brief.\n"
+        "Your job: execute the brief and return a structured report the parent can\n"
+        "consume. You are NOT a chat assistant — you produce work, not conversation.\n"
+        "</role>\n\n"
+        "<isolation_contract>\n"
+        "- The delegated task brief is the ONLY authoritative context you have.\n"
+        "- The parent agent's conversation history is NOT available to you.\n"
+        "- Do not assume shared state with the parent beyond what the brief says.\n"
+        "- Do not leak information about the parent's other tasks or sessions.\n"
+        "- Delegation tools are disabled in worker sessions — do not try to spawn\n"
+        "  nested workers. If the task truly exceeds a single worker's scope,\n"
+        "  report it as a Blocker and let the parent re-scope.\n"
+        "</isolation_contract>\n\n"
+        "<tool_policy>\n"
         f"- {profile.tool_rule}\n"
-        "- Return a concise execution summary with concrete evidence, files changed, and blockers.\n"
-        "- Delegation tools are not available in worker sessions — focus on executing the task directly.\n\n"
-        "### Return format\n"
+        f"- {profile.memory_rule}\n"
+        "</tool_policy>\n\n"
+        "<return_format>\n"
+        "Every reply MUST end with exactly these three sections. No prose outside\n"
+        "the sections. No filler. The parent parses this structure.\n\n"
+        "```\n"
         "Completed:\n"
-        "- ...\n"
+        "- <concrete outcome — verb + object + result state>\n"
+        "- <one bullet per discrete outcome>\n"
+        "\n"
         "Evidence:\n"
-        "- ...\n"
+        "- <file:line or tool-result reference for each claim above>\n"
+        "- <test/verification output where relevant>\n"
+        "\n"
         "Blockers:\n"
-        "- ..."
+        "- <specific unresolved items, or 'none'>\n"
+        "```\n"
+        "</return_format>\n\n"
+        "<good_return_examples>\n"
+        "**Example A — implementation task**\n"
+        "```\n"
+        "Completed:\n"
+        "- Fixed token-expiry race in middleware.py:142 by moving the refresh check\n"
+        "  before the response header write\n"
+        "- Added regression test covering the expired-token path\n"
+        "\n"
+        "Evidence:\n"
+        "- Diff: backend/app/auth/middleware.py:138-148 (3 lines changed)\n"
+        "- New test: backend/tests/auth/test_middleware.py::test_expired_token_refreshes\n"
+        "- pytest run: 1 new test passed, 23 existing tests still pass\n"
+        "\n"
+        "Blockers:\n"
+        "- none\n"
+        "```\n\n"
+        "**Example B — research task**\n"
+        "```\n"
+        "Completed:\n"
+        "- Audited backend/app/auth/*.py and mapped all token-expiry handling paths\n"
+        "- Identified 2 bug candidates and 1 design smell\n"
+        "\n"
+        "Evidence:\n"
+        "- Bug 1: middleware.py:142 — refresh check runs AFTER response write,\n"
+        "  so an expired token leaks a 401 once per session\n"
+        "- Bug 2: refresh.py:87 — exception path swallows the refresh failure\n"
+        "  (bare except), masking upstream issues\n"
+        "- Design smell: token_store.py:55 — in-memory cache has no TTL, grows\n"
+        "  unboundedly in long-running workers\n"
+        "\n"
+        "Blockers:\n"
+        "- none\n"
+        "```\n\n"
+        "**Example C — task that couldn't fully complete**\n"
+        "```\n"
+        "Completed:\n"
+        "- Read the specified config files (entrypoint.sh, Dockerfile, railway.json)\n"
+        "- Drafted 80% of the deploy-flow diagram\n"
+        "\n"
+        "Evidence:\n"
+        "- Notes saved to workspace/deploy_audit.md\n"
+        "- Diagram draft: workspace/deploy_flow.mermaid (covers build + deploy,\n"
+        "  missing health-check/rollback branches)\n"
+        "\n"
+        "Blockers:\n"
+        "- Cannot access .env.production (not in workspace) — need the parent to\n"
+        "  confirm which env vars are live so the diagram is accurate\n"
+        "```\n"
+        "</good_return_examples>\n\n"
+        "<bad_return_examples>\n"
+        "DO NOT return any of these:\n\n"
+        "❌ **Empty Completed claim**\n"
+        "```\n"
+        "Completed:\n"
+        "- Task done.\n"
+        "Evidence:\n"
+        "- See above.\n"
+        "```\n"
+        "(No concrete outcome, no verifiable evidence. The parent cannot act on this.)\n\n"
+        "❌ **Prose wrapping the structured block**\n"
+        "```\n"
+        "Sure! I went ahead and worked on the task. Here's what I did:\n"
+        "Completed: ...\n"
+        "Let me know if you need anything else!\n"
+        "```\n"
+        "(The parent parses the structure; surrounding prose contaminates parsing\n"
+        "and wastes tokens.)\n\n"
+        "❌ **Fabricated evidence**\n"
+        "```\n"
+        "Completed:\n"
+        "- Fixed the bug\n"
+        "Evidence:\n"
+        "- Tests pass (I didn't actually run them)\n"
+        "```\n"
+        "(If you didn't run the tests, say 'test run skipped, needs verification'\n"
+        "in Blockers. Never claim evidence you don't have.)\n\n"
+        "❌ **Leaking parent context or other sessions**\n"
+        "```\n"
+        "Completed:\n"
+        "- Did what the user asked in the previous message\n"
+        "```\n"
+        "(You don't have access to the parent's conversation. The brief is your\n"
+        "only authoritative context. Refer to it by the task content, not by\n"
+        "pronouns that only the parent can resolve.)\n"
+        "</bad_return_examples>"
     )
 
 
@@ -187,7 +292,8 @@ def _maybe_uuid(value: str | uuid.UUID | None) -> uuid.UUID | None:
         return value
     try:
         return uuid.UUID(str(value))
-    except (TypeError, ValueError, AttributeError):
+    except (TypeError, ValueError, AttributeError) as exc:
+        logger.debug("[orchestrator] _maybe_uuid could not coerce %r: %s", value, exc)
         return None
 
 
@@ -206,6 +312,7 @@ async def _persist_delegation_event(
         return
     try:
         from app.services.activity_logger import log_activity
+
         detail: dict[str, Any] = {
             "task_id": task_id,
             "status": status,
@@ -294,12 +401,11 @@ def _build_delegation_brief(conversation_messages: list[dict[str, Any]]) -> str:
     still preserving the latest task framing.
     """
     normalized = [
-        _normalize_delegation_message(message)
-        for message in conversation_messages[-_DELEGATION_SOURCE_MAX_MESSAGES:]
+        _normalize_delegation_message(message) for message in conversation_messages[-_DELEGATION_SOURCE_MAX_MESSAGES:]
     ]
     transcript = "\n".join(line for line in normalized if line).strip()
     if len(transcript) > _DELEGATION_BRIEF_MAX_CHARS:
-        transcript = transcript[-_DELEGATION_BRIEF_MAX_CHARS :]
+        transcript = transcript[-_DELEGATION_BRIEF_MAX_CHARS:]
         transcript = "...\n" + transcript.lstrip()
 
     if not transcript:
@@ -334,13 +440,15 @@ def _build_runtime_task_metadata(request: AgentDelegationRequest) -> dict[str, A
     metadata["resumable_delegation"] = resumable
     metadata["resume_after_restart"] = resumable
     if resumable:
-        metadata.update({
-            "owner_id": str(request.owner_id),
-            "target_agent_id": str(getattr(request.target, "id", "")),
-            "conversation_messages": request.conversation_messages,
-            "max_tool_rounds": request.max_tool_rounds,
-            "timeout_seconds": request.policy.timeout_seconds,
-        })
+        metadata.update(
+            {
+                "owner_id": str(request.owner_id),
+                "target_agent_id": str(getattr(request.target, "id", "")),
+                "conversation_messages": request.conversation_messages,
+                "max_tool_rounds": request.max_tool_rounds,
+                "timeout_seconds": request.policy.timeout_seconds,
+            }
+        )
     return metadata
 
 
@@ -469,29 +577,33 @@ async def _delegate(request: AgentDelegationRequest) -> AgentDelegationResult:
         "interaction_type": request.interaction_type,
     }
     if is_delegation:
-        session_metadata.update({
-            "delegation": True,
-            "delegation_depth": request.depth,
-            "delegation_trace_id": trace_id,
-            "delegation_parent_agent_id": (
-                str(request.parent_agent_id) if request.parent_agent_id is not None else None
-            ),
-            "delegation_parent_session_id": request.parent_session_id,
-            "delegation_tool_policy": tool_profile.tool_policy,
-            "delegation_memory_policy": tool_profile.memory_policy,
-            "delegation_allowed_tools": tool_profile.allowed_tools,
-        })
+        session_metadata.update(
+            {
+                "delegation": True,
+                "delegation_depth": request.depth,
+                "delegation_trace_id": trace_id,
+                "delegation_parent_agent_id": (
+                    str(request.parent_agent_id) if request.parent_agent_id is not None else None
+                ),
+                "delegation_parent_session_id": request.parent_session_id,
+                "delegation_tool_policy": tool_profile.tool_policy,
+                "delegation_memory_policy": tool_profile.memory_policy,
+                "delegation_allowed_tools": tool_profile.allowed_tools,
+            }
+        )
     else:
-        session_metadata.update({
-            "agent_message": True,
-            "agent_message_trace_id": trace_id,
-            "agent_message_parent_agent_id": (
-                str(request.parent_agent_id) if request.parent_agent_id is not None else None
-            ),
-            "agent_message_parent_session_id": request.parent_session_id,
-            "agent_message_tool_policy": tool_profile.tool_policy,
-            "agent_message_memory_policy": tool_profile.memory_policy,
-        })
+        session_metadata.update(
+            {
+                "agent_message": True,
+                "agent_message_trace_id": trace_id,
+                "agent_message_parent_agent_id": (
+                    str(request.parent_agent_id) if request.parent_agent_id is not None else None
+                ),
+                "agent_message_parent_session_id": request.parent_session_id,
+                "agent_message_tool_policy": tool_profile.tool_policy,
+                "agent_message_memory_policy": tool_profile.memory_policy,
+            }
+        )
 
     invocation = AgentInvocationRequest(
         model=request.target_model,
@@ -533,10 +645,7 @@ async def _delegate(request: AgentDelegationRequest) -> AgentDelegationResult:
     except asyncio.TimeoutError:
         _delegation_status = "timeout"
         delegation_result = AgentDelegationResult(
-            content=(
-                f"⚠️ Delegation to {request.target.name} timed out after "
-                f"{request.policy.timeout_seconds:.2f}s."
-            ),
+            content=(f"⚠️ Delegation to {request.target.name} timed out after {request.policy.timeout_seconds:.2f}s."),
             child_session_id=child_session_id,
             trace_id=trace_id,
             depth=request.depth,
@@ -548,7 +657,11 @@ async def _delegate(request: AgentDelegationRequest) -> AgentDelegationResult:
         # M-22: Log full stack server-side; return only safe summary to LLM
         logger.error(
             "[Orchestrator] Child agent %s failed (depth=%d, trace=%s): %s",
-            request.target.name, request.depth, trace_id, exc, exc_info=True,
+            request.target.name,
+            request.depth,
+            trace_id,
+            exc,
+            exc_info=True,
         )
         delegation_result = AgentDelegationResult(
             content=(
@@ -579,8 +692,11 @@ async def _delegate(request: AgentDelegationRequest) -> AgentDelegationResult:
                     "depth": request.depth,
                     "status": _delegation_status,
                     "failed": delegation_result.failed,
-                    "task": (request.conversation_messages[-1].get("content", "")[:500]
-                             if request.conversation_messages else ""),
+                    "task": (
+                        request.conversation_messages[-1].get("content", "")[:500]
+                        if request.conversation_messages
+                        else ""
+                    ),
                     "result": (delegation_result.content or "")[:2000],
                 },
             )
@@ -863,7 +979,7 @@ async def cancel_async_delegation(
     try:
         await state.task
     except asyncio.CancelledError:
-        pass
+        logger.debug("[orchestrator] async task %s cancelled as requested", task_id)
     finally:
         _async_tasks.pop(task_id, None)
 
@@ -907,12 +1023,14 @@ def list_async_delegations(
             status = "killed"
         else:
             status = "completed" if state.task.done() else "running"
-        results.append({
-            "task_id": task_id,
-            "status": status,
-            "target_agent": state.child_agent_name,
-            "trace_id": state.trace_id,
-        })
+        results.append(
+            {
+                "task_id": task_id,
+                "status": status,
+                "target_agent": state.child_agent_name,
+                "trace_id": state.trace_id,
+            }
+        )
     return results
 
 

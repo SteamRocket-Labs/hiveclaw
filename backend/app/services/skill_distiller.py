@@ -154,9 +154,13 @@ def _build_workflow_signature(tool_names: list[str] | tuple[str, ...]) -> Workfl
         filtered.append(normalized)
 
     if any(tool_name in _EXTERNAL_ACTION_TOOLS for tool_name in filtered):
-        return WorkflowSignature(normalized_tools=tuple(filtered), workflow_signature=None, blocker="external_action_workflow")
+        return WorkflowSignature(
+            normalized_tools=tuple(filtered), workflow_signature=None, blocker="external_action_workflow"
+        )
     if len(filtered) < 2:
-        return WorkflowSignature(normalized_tools=tuple(filtered), workflow_signature=None, blocker="insufficient_signal")
+        return WorkflowSignature(
+            normalized_tools=tuple(filtered), workflow_signature=None, blocker="insufficient_signal"
+        )
     return WorkflowSignature(
         normalized_tools=tuple(filtered),
         workflow_signature=" -> ".join(filtered),
@@ -298,7 +302,8 @@ def _session_is_after_cursor(
 def _parse_tool_call_content(content: str) -> str | None:
     try:
         payload = json.loads(content)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        logger.debug("[skill_distiller] tool-call payload is not JSON: %s", exc)
         return None
     if not isinstance(payload, dict):
         return None
@@ -337,16 +342,20 @@ async def _load_internal_session_evidence(
 
     async with async_session() as db:
         sessions = (
-            await db.execute(
-                select(ChatSession)
-                .where(
-                    ChatSession.agent_id == agent_id,
-                    ChatSession.source_channel.in_(tuple(_INTERNAL_SESSION_SOURCES)),
-                    ChatSession.created_at >= cutoff,
+            (
+                await db.execute(
+                    select(ChatSession)
+                    .where(
+                        ChatSession.agent_id == agent_id,
+                        ChatSession.source_channel.in_(tuple(_INTERNAL_SESSION_SOURCES)),
+                        ChatSession.created_at >= cutoff,
+                    )
+                    .order_by(ChatSession.created_at.asc(), ChatSession.id.asc())
                 )
-                .order_by(ChatSession.created_at.asc(), ChatSession.id.asc())
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
         for session in sessions:
             session_id = str(session.id)
@@ -358,15 +367,19 @@ async def _load_internal_session_evidence(
                 continue
 
             messages = (
-                await db.execute(
-                    select(ChatMessage)
-                    .where(
-                        ChatMessage.agent_id == agent_id,
-                        ChatMessage.conversation_id == session_id,
+                (
+                    await db.execute(
+                        select(ChatMessage)
+                        .where(
+                            ChatMessage.agent_id == agent_id,
+                            ChatMessage.conversation_id == session_id,
+                        )
+                        .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc())
                     )
-                    .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc())
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
 
             tool_names: list[str] = []
             assistant_reply = ""
@@ -427,11 +440,49 @@ async def _draft_skill_with_llm(
     workspace: Path,
 ) -> DistilledSkillDraft:
     system_prompt = (
-        "You are a conservative skill distiller.\n"
-        "Turn repeated internal workflows into reusable SKILL.md drafts.\n"
-        "Only propose promote when the workflow is stable, generic, and safe.\n"
-        "If the workflow overlaps an existing skill, choose patch.\n"
-        "Return strict JSON only."
+        "<role>\n"
+        "You are a conservative skill distiller. You observe repeated internal\n"
+        "workflows from an agent's recent sessions and decide whether any\n"
+        "workflow is stable enough to graduate into a reusable SKILL.md. You\n"
+        "do NOT manage the agent's memory, tools, or long-term identity —\n"
+        "those are owned by other pipeline stages.\n"
+        "</role>\n\n"
+        "<pipeline_context>\n"
+        "Upstream: the agent's runtime logged a workflow signature that\n"
+        "recurred ≥2 times across sessions. Recent evidence is attached.\n"
+        "Downstream: your JSON decision drives an automated action —\n"
+        "  - promote → new SKILL.md is written and registered\n"
+        "  - patch   → an existing SKILL.md is updated\n"
+        "  - defer   → wait for more evidence (no file change)\n"
+        "  - reject  → mark this signature as not-skill-worthy\n"
+        "The caller parses your JSON directly. Any extra prose, markdown fences,\n"
+        "or missing keys breaks the pipeline.\n"
+        "</pipeline_context>\n\n"
+        "<decision_matrix>\n"
+        "- **promote** — workflow is stable, generic, safe, and NOT covered by\n"
+        "  an existing skill. Confidence ≥ 0.75 required.\n"
+        "- **patch**   — existing skill covers part of the workflow; your draft\n"
+        "  refines its instructions or adds a missing tool hint.\n"
+        "- **defer**   — evidence is too thin, too recent, or too specific to\n"
+        "  the last session. Default if uncertain.\n"
+        "- **reject**  — workflow is one-off, time-sensitive, or contains\n"
+        "  session-specific tokens/IDs/dates that cannot generalize.\n"
+        "</decision_matrix>\n\n"
+        "<anti_patterns>\n"
+        "Never promote workflows containing any of these signals:\n"
+        "- Specific dates (e.g., '2026-04-16', 'this week', 'yesterday')\n"
+        "- Session-bound IDs (message_id, task_id, trace_id, UUIDs)\n"
+        "- User-specific names or email addresses\n"
+        "- Credentials, tokens, or config values\n"
+        "- One-off cleanup or migration actions\n"
+        "- Workflows that only make sense in one agent's current tasks\n"
+        "When these appear, choose reject (with reason) or defer.\n"
+        "</anti_patterns>\n\n"
+        "<output_contract>\n"
+        "Return raw JSON only. No markdown fences. No prose outside the JSON.\n"
+        "All keys must be present; use empty strings / empty arrays when a\n"
+        "field does not apply (e.g., declared_tools=[] for a pure-reasoning skill).\n"
+        "</output_contract>"
     )
     evidence_lines = []
     for item in evidence[:3]:
@@ -585,7 +636,11 @@ async def run_skill_distillation_cycle(
         model=model,
         workflow_signature=record.workflow_signature,
         evidence=evidence_for_candidate,
-        declared_packs=infer_static_pack_names(list(_build_workflow_signature(evidence_for_candidate[0].tool_names).normalized_tools)) if evidence_for_candidate else (),
+        declared_packs=infer_static_pack_names(
+            list(_build_workflow_signature(evidence_for_candidate[0].tool_names).normalized_tools)
+        )
+        if evidence_for_candidate
+        else (),
         workspace=workspace,
     )
 

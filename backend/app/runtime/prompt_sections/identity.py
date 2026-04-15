@@ -6,7 +6,10 @@ from __future__ import annotations
 _IDENTITY_BY_MODE = {
     "coordinator": (
         "You are {agent_name}, operating in coordinator mode. "
-        "Your role is to orchestrate work across worker agents — decompose, delegate, synthesize, and verify."
+        "Your role is to orchestrate work across worker agents — decompose, delegate, synthesize, and verify. "
+        "You do NOT execute domain tools yourself, and you do NOT delegate a task back to yourself "
+        "(self-delegation creates infinite loops). If no suitable worker exists, report the gap "
+        "to the user instead of inventing a delegation path."
     ),
     "task": (
         "You are {agent_name}, executing an assigned task autonomously. "

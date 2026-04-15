@@ -64,8 +64,11 @@ async def test_build_agent_context_limits_confirmation_rule_to_conversation_mode
         execution_mode="task",
     )
 
-    assert "confirm with the user first" in conversation_prompt
-    assert "confirm with the user first" not in task_prompt
+    # PR-22 quantified the confirmation rule with explicit trigger categories
+    # ("Confirm with the user BEFORE any of these actions, every time: …").
+    # The safety boundary is preserved; wording evolved.
+    assert "Confirm with the user BEFORE" in conversation_prompt
+    assert "Confirm with the user BEFORE" not in task_prompt
     assert "executing an assigned task autonomously" in task_prompt
 
 
@@ -89,7 +92,7 @@ async def test_build_agent_context_limits_confirmation_rule_to_heartbeat_mode(mo
         execution_mode="heartbeat",
     )
 
-    assert "confirm with the user first" not in heartbeat_prompt
+    assert "Confirm with the user BEFORE" not in heartbeat_prompt
     assert "self-evolution mode" in heartbeat_prompt
 
 
@@ -113,5 +116,5 @@ async def test_build_agent_context_keeps_confirmation_rule_for_coordinator_mode(
         execution_mode="coordinator",
     )
 
-    assert "confirm with the user first" in coordinator_prompt
+    assert "Confirm with the user BEFORE" in coordinator_prompt
     assert "operating in coordinator mode" in coordinator_prompt

@@ -203,9 +203,23 @@ def _extract_decisions(messages: list[dict]) -> list[str]:
     decisions: list[str] = []
     seen: set[str] = set()
     hints = (
-        "决定", "方案", "因为", "所以", "选择", "采用", "原因是",
-        "I decided", "because", "approach", "solution", "chose", "the reason",
-        "结论", "总结", "建议", "recommend",
+        "决定",
+        "方案",
+        "因为",
+        "所以",
+        "选择",
+        "采用",
+        "原因是",
+        "I decided",
+        "because",
+        "approach",
+        "solution",
+        "chose",
+        "the reason",
+        "结论",
+        "总结",
+        "建议",
+        "recommend",
     )
     for msg in messages:
         if msg.get("role") != "assistant" or "tool_calls" in msg:
@@ -298,7 +312,9 @@ def _extract_summary(messages: list[dict]) -> str:
             f"**Files and Code Sections:**\n{artifact_text}",
             f"**Problem Solving:**\n{problem_text}",
             f"**Errors and Fixes:**\n{reasoning_text}",
-            "**All User Messages:** " + "; ".join(u[:100] for u in user_asks[-10:]) if user_asks else "**All User Messages:** (none)",
+            "**All User Messages:** " + "; ".join(u[:100] for u in user_asks[-10:])
+            if user_asks
+            else "**All User Messages:** (none)",
             f"**User Preferences:**\n{preference_text}",
             f"**Tool Outcomes:**\n{tool_summary}",
             f"**Pending Tasks:**\n{pending_text}",
@@ -329,26 +345,49 @@ def _extract_summary_from_response(content: str) -> str | None:
 # The <analysis> block is stripped by _extract_summary_from_response() before
 # the summary reaches context, letting the model reason without wasting tokens.
 _SUMMARIZE_SYSTEM_PROMPT = """\
+<role>
+You are compressing a long conversation into a structured summary so the
+next turn can resume safely when prior messages fall out of context. You are
+NOT generating long-term memory — memory extraction runs as a separate
+pipeline. Your job is session-state preservation, not knowledge distillation.
+</role>
+
+<tool_contract>
 CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.
 - Do NOT use read_file, write_file, web_search, execute_code, or ANY other tool.
-- You already have all the context you need in the conversation below.
-- Tool calls will be REJECTED and will waste your only turn.
-- Your entire response must be plain text: an <analysis> block followed by a <summary> block.
-- Session summaries preserve working state so the next turn can continue safely.
-- Do NOT rewrite this summary as long-term memory or policy.
-- Stable preferences, lessons, and policies can be extracted later by the memory system and are automatically extracted to the memory system when relevant.
+- You already have every piece of context you need in the conversation below.
+- Tool calls will be REJECTED and will WASTE your only turn.
+- Your entire response must be plain text: one <analysis> block followed by
+  one <summary> block. Nothing before, between, or after.
+</tool_contract>
 
-Your task is to create a detailed summary of the conversation, preserving critical context \
-for continuing work without losing state.
+<scratchpad_pattern>
+This prompt uses an analysis/summary scratchpad:
+- The <analysis> block is your reasoning surface. It is STRIPPED before the
+  summary reaches the next turn's context, so spend tokens freely here.
+- The <summary> block is what the next turn actually sees. Every character
+  here costs context budget forever — be dense and concrete.
 
-First, wrap your detailed analysis in <analysis> tags:
-1. Chronologically analyze each message — identify user requests, your approach, and outcomes
-2. Note ALL file paths, code snippets, function signatures, and technical decisions
-3. Pay special attention to user corrections and feedback
-4. Identify errors encountered and how they were resolved
-5. Track problem-solving approaches — what was tried, what worked, what didn't
+Why this split matters: concise summaries without a scratchpad tend to drop
+specific file paths, user corrections, and in-flight work. The scratchpad
+lets you surface everything first, then compress deliberately.
+</scratchpad_pattern>
 
-Then provide your final summary in <summary> tags using EXACTLY this format:
+<analysis_instructions>
+Wrap detailed analysis in <analysis> tags. Cover all of:
+1. **Chronological walkthrough** — each user request, your approach, outcome.
+2. **Technical surface** — every file path, code snippet, function signature,
+   architecture decision, API shape.
+3. **User corrections and feedback** — these are the highest-value signals;
+   do not let any slip through.
+4. **Errors and resolutions** — the error, root cause, what fixed it.
+5. **Problem-solving trajectory** — what was tried, what worked, what failed.
+   Failed approaches are as important as successful ones — prevents retrying.
+</analysis_instructions>
+
+<summary_format>
+After </analysis>, produce the summary in <summary> tags. Use EXACTLY these
+11 fields in this exact order. Do not skip any field — use "(none)" if empty.
 
 **Primary Request and Intent:** [core goal + current status — be specific]
 **Key Technical Decisions:** [architecture choices, constraints, tradeoffs decided]
@@ -361,9 +400,93 @@ Then provide your final summary in <summary> tags using EXACTLY this format:
 **Pending Tasks:** [incomplete items + where work left off — include direct quotes from recent messages]
 **Current Work:** [what was actively being done when compression triggered]
 **Recovery Context:** [raw session log available at logs/ for full detail if needed]
+</summary_format>
 
-Be thorough in preserving technical details — code snippets and file paths are more valuable than prose.
-Respond in the same language as the conversation.\
+<good_summary_example>
+For a conversation where a user had asked to fix an auth bug, corrected the
+approach once, and left mid-way through adding a regression test:
+
+<summary>
+**Primary Request and Intent:** Fix token-expiry race in auth middleware. User
+explicitly scoped to middleware.py only — do not touch refresh.py even though
+a related bug exists there. Status: fix landed, regression test in progress.
+**Key Technical Decisions:** Reorder refresh check before response-header write
+(not after). User rejected the alternative "wrap handler in try/except" as too
+broad.
+**Files and Code Sections:** backend/app/auth/middleware.py:138-148 (fix applied);
+backend/tests/auth/test_middleware.py::test_expired_token_refreshes (new, in
+progress — fixture mock_clock not yet wired up).
+**Problem Solving:** First attempt moved refresh to a decorator — user rejected
+("too magic"). Second attempt (inline reorder) accepted.
+**Errors and Fixes:** pytest AttributeError on mock_clock — unresolved, blocker
+for test completion.
+**All User Messages:** 1) "Fix the token-expiry race." 2) "No, don't touch
+refresh.py, scope to middleware only." 3) "Decorator is too magic — inline it."
+4) "Add a regression test before we call this done."
+**User Preferences:** Prefers inline code over decorators for auth paths.
+Strictly scopes fixes — does not want related-but-separate bugs touched.
+**Tool Outcomes:** Edit middleware.py:138-148 applied; pytest last run failed
+at fixture setup (mock_clock missing).
+**Pending Tasks:** Wire up mock_clock fixture, then re-run pytest.
+**Current Work:** Writing test_expired_token_refreshes; stuck at mock_clock.
+**Recovery Context:** logs/2026-04-16/behavior/chat-auth-fix.md
+</summary>
+</good_summary_example>
+
+<bad_summary_examples>
+DO NOT produce summaries like these:
+
+❌ **Over-compressed, loses file paths**
+```
+**Primary Request and Intent:** User wanted a bug fixed.
+**Files and Code Sections:** Changed the auth module.
+**Pending Tasks:** Finish the test.
+```
+(No file paths, no line numbers — next turn cannot pick up the work.)
+
+❌ **Drops user corrections**
+```
+**Primary Request and Intent:** Fix token-expiry bug.
+**User Preferences:** (none)
+```
+(User explicitly rejected the decorator approach — that's the highest-value
+signal. Never drop corrections.)
+
+❌ **Narrates prose instead of structured fields**
+```
+<summary>
+The user asked for a fix and I worked on it for a while. We tried a few
+approaches and eventually settled on one. The test is still being written.
+</summary>
+```
+(Missing all 11 required fields. Parent parses the structure — prose breaks it.)
+
+❌ **Rewrites session state as policy**
+```
+**User Preferences:** Users universally prefer inline code over decorators.
+```
+(One user, one session — not universal policy. Memory extraction handles
+long-term policy; you handle session state only.)
+
+❌ **Forgets "Current Work" so next turn has no anchor**
+```
+**Current Work:** (none)
+```
+(Unless the session genuinely ended, always name the specific in-flight
+action so the next turn can resume without re-asking the user.)
+</bad_summary_examples>
+
+<hard_rules>
+1. Output ONLY: `<analysis>...</analysis><summary>...</summary>`. No prose
+   outside. No other tags. No tool calls.
+2. All 11 summary fields must appear in the specified order. Empty fields
+   use "(none)" — never omit.
+3. Preserve file paths, line numbers, and code snippets verbatim. These are
+   more valuable than descriptive prose.
+4. Preserve user corrections word-for-word where practical. They are the
+   highest-value signal.
+5. Respond in the same language as the conversation. Do not translate.
+</hard_rules>\
 """
 
 

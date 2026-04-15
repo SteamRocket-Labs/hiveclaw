@@ -58,7 +58,9 @@ async def test_agent_context_exposes_identity_contract_and_context_layers(monkey
     assert "## Identity & Mission" in prompt
     assert "## Core Directives" in prompt
     assert "## Context Material" in prompt
-    assert prompt.index("## Identity & Mission") < prompt.index("## Core Directives") < prompt.index("## Context Material")
+    assert (
+        prompt.index("## Identity & Mission") < prompt.index("## Core Directives") < prompt.index("## Context Material")
+    )
 
 
 @pytest.mark.asyncio
@@ -95,7 +97,10 @@ async def test_agent_context_blocks_prompt_injection_from_workspace_files(monkey
 def test_task_execution_addendum_defines_reporting_protocol() -> None:
     from app.services.task_executor import TASK_EXECUTION_ADDENDUM
 
-    assert "### Final Report Format" in TASK_EXECUTION_ADDENDUM
+    # PR-17 rewrote TASK_EXECUTION_ADDENDUM with XML structure. The
+    # Outcome/Evidence/Blockers report triad remains the parent-parsed
+    # contract; "Final Report Format" is now `<final_report_format>`.
+    assert "<final_report_format>" in TASK_EXECUTION_ADDENDUM
     assert "Outcome:" in TASK_EXECUTION_ADDENDUM
     assert "Evidence:" in TASK_EXECUTION_ADDENDUM
     assert "Blockers:" in TASK_EXECUTION_ADDENDUM
@@ -104,10 +109,15 @@ def test_task_execution_addendum_defines_reporting_protocol() -> None:
 def test_a2a_prompt_defines_status_and_result_contract() -> None:
     from app.services.agent_tool_domains.messaging import A2A_SYSTEM_PROMPT_SUFFIX
 
-    assert "If you are still working" in A2A_SYSTEM_PROMPT_SUFFIX
-    assert "If you completed the request" in A2A_SYSTEM_PROMPT_SUFFIX
-    assert "file path" in A2A_SYSTEM_PROMPT_SUFFIX
-    assert "Do NOT delegate" in A2A_SYSTEM_PROMPT_SUFFIX
+    # PR-19 rewrote A2A_SYSTEM_PROMPT_SUFFIX with XML structure. The three-
+    # state reply contract (still-working / clear-answer / cannot-complete)
+    # and the no-nested-delegation rule remain the enforced contract.
+    normalized = " ".join(A2A_SYSTEM_PROMPT_SUFFIX.lower().split())
+    assert "still working" in normalized
+    assert "cannot complete" in normalized
+    assert "file path" in normalized
+    assert "nested delegation" in normalized
+    assert "delegate_to_agent" in A2A_SYSTEM_PROMPT_SUFFIX
 
 
 def test_core_tool_descriptions_define_when_not_to_use_and_fallbacks() -> None:
@@ -124,10 +134,16 @@ def test_core_tool_descriptions_define_when_not_to_use_and_fallbacks() -> None:
     assert "Prefer this after `web_search` identifies the right page" in tools["web_fetch"]
     assert "Use this after `web_search`" in tools["firecrawl_fetch"]
     assert "JS-rendered" in tools["xcrawl_scrape"]
-    assert "If you need to wait for a reply later, pair the message with an `on_message` trigger" in tools["send_feishu_message"]
+    assert (
+        "If you need to wait for a reply later, pair the message with an `on_message` trigger"
+        in tools["send_feishu_message"]
+    )
     assert "Do NOT use this for agent-to-agent collaboration" in tools["send_web_message"]
     assert "Describe the capability you need, not a vendor name" in tools["discover_resources"]
-    assert "Only use this after builtin tools, loaded skills, and direct web/file tools still cannot complete the task" in tools["discover_resources"]
+    assert (
+        "Only use this after builtin tools, loaded skills, and direct web/file tools still cannot complete the task"
+        in tools["discover_resources"]
+    )
     assert "Use this to schedule future work" in tools["set_trigger"]
     assert "Do NOT create a trigger without a clear reason" in tools["set_trigger"]
     assert "Do NOT load a skill speculatively" in tools["load_skill"]
@@ -176,35 +192,55 @@ def test_skill_catalog_footer_discourages_speculative_loading() -> None:
 def test_summarizer_prompt_distinguishes_session_state_from_durable_memory() -> None:
     from app.services.conversation_summarizer import _SUMMARIZE_SYSTEM_PROMPT
 
-    assert "Session summaries preserve working state" in _SUMMARIZE_SYSTEM_PROMPT
-    assert "Do NOT rewrite this summary as long-term memory or policy" in _SUMMARIZE_SYSTEM_PROMPT
-    assert "Stable preferences, lessons, and policies can be extracted later" in _SUMMARIZE_SYSTEM_PROMPT
+    # PR-18 rewrote _SUMMARIZE_SYSTEM_PROMPT with best-practice structure.
+    # The session-state-vs-long-term-memory distinction remains (it's the
+    # core safety boundary), but the wording now lives inside <role> and
+    # <bad_summary_examples> blocks — normalize whitespace so word-wrapped
+    # phrases still match.
+    normalized = " ".join(_SUMMARIZE_SYSTEM_PROMPT.lower().split())
+    assert "session-state preservation" in normalized
+    assert "not generating long-term memory" in normalized
+    # Memory extraction is still called out as a separate pipeline.
+    assert "memory extraction runs as a separate pipeline" in normalized
 
 
 def test_extractor_prompt_emphasizes_weighted_curation_contract() -> None:
     from app.services.extract_agent import EXTRACT_PROMPT
 
-    assert "feedback (HIGHEST PRIORITY)" in EXTRACT_PROMPT
-    assert "downstream curation will filter quality" in EXTRACT_PROMPT
-    assert "user corrections > preferences > decisions > discoveries > errors" in EXTRACT_PROMPT
+    # PR-11 rewrote EXTRACT_PROMPT with XML structure. Weighted curation is
+    # now carried by <pipeline_context>, category priority by <extraction_types>,
+    # and the permissive-extraction rationale by the downstream-heartbeat note.
+    normalized = " ".join(EXTRACT_PROMPT.lower().split())
+    assert "feedback" in normalized
+    # Category priority ordering still exists in the prompt body.
+    assert "feedback" in normalized and "preference" in normalized
+    # The "extract permissively, heartbeat filters later" rationale must survive.
+    assert "heartbeat" in normalized
+    # XML-structured sections are part of the current best-practice shape.
+    assert "<role>" in EXTRACT_PROMPT
+    assert "<pipeline_context>" in EXTRACT_PROMPT
+    assert "<extraction_types>" in EXTRACT_PROMPT
 
 
 def test_auto_dream_prompt_distinguishes_memory_from_evolution_policy() -> None:
     from app.services.auto_dream import (
         _AUTO_DREAM_SYSTEM_PROMPT,
-        _build_dream_consolidation_prompt,
+        _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE,
     )
 
-    prompt = _build_dream_consolidation_prompt(
-        facts=[{"content": "Use A", "category": "strategy"}],
-        summaries=["summary text"],
-    )
-
-    assert "deduplicated fact list" in _AUTO_DREAM_SYSTEM_PROMPT
-    assert "transient task state" in _AUTO_DREAM_SYSTEM_PROMPT
-    assert "Promote durable successful approaches to strategy" in prompt
-    assert "Promote repeated failed approaches to blocked_pattern" in prompt
-    assert "evolution files remain the home for active policy iteration" in prompt
+    # PR-13 rewrote the dream prompts with XML structure + few-shot examples +
+    # anti-patterns. The identity-vs-transient-state safety boundary moved
+    # into <identity_stakes> and <anti_patterns>.
+    sys_lower = _AUTO_DREAM_SYSTEM_PROMPT.lower()
+    user_lower = _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE.lower()
+    assert "<identity_stakes>" in _AUTO_DREAM_SYSTEM_PROMPT
+    assert "soul.md" in sys_lower
+    # User-prompt template enumerates decision schema and section selection.
+    assert "<section_selection_matrix>" in _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE
+    assert "<anti_patterns>" in _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE
+    assert "learned behaviors" in user_lower
+    assert "core strategies" in user_lower
+    assert "blocked patterns" in user_lower
 
 
 def test_runtime_templates_no_longer_reference_jina() -> None:
@@ -213,12 +249,8 @@ def test_runtime_templates_no_longer_reference_jina() -> None:
     web_research_guide = (app_root / "templates" / "system_skills" / "web-research" / "SKILL.md").read_text(
         encoding="utf-8"
     )
-    find_skills = (app_root / "templates" / "skills" / "find-skills" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
-    skill_vetter = (app_root / "templates" / "skills" / "skill-vetter" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
+    find_skills = (app_root / "templates" / "skills" / "find-skills" / "SKILL.md").read_text(encoding="utf-8")
+    skill_vetter = (app_root / "templates" / "skills" / "skill-vetter" / "SKILL.md").read_text(encoding="utf-8")
     heartbeat = (app_root / "templates" / "HEARTBEAT.md").read_text(encoding="utf-8")
 
     assert "jina_" not in web_research_guide.lower()

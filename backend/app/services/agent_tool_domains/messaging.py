@@ -13,16 +13,61 @@ from app.tools.result_envelope import render_tool_error
 logger = logging.getLogger(__name__)
 
 A2A_SYSTEM_PROMPT_SUFFIX = (
-    "--- Agent-to-Agent Message ---\n"
-    "You are receiving a message from another digital employee.\n"
-    "Rules:\n"
-    "- Reply concisely and helpfully. Focus on the request and provide a clear answer.\n"
-    "- Treat the delegated brief and attached request as authoritative context. If it is incomplete, say what is missing instead of guessing.\n"
-    "- Do NOT delegate to another agent — handle the request directly (no nested delegation).\n"
-    "- If you are still working, return a short status update with the current step and the specific blocker, if any.\n"
-    "- If you completed the request, return a final answer with concrete outputs such as file paths, artifacts, tool results, or evidence.\n"
-    "- If you cannot complete the request, explain specifically what is missing or blocked.\n"
-    "- Do NOT share private workspace data (memory/*.md, tasks.json) unless explicitly asked."
+    "<role>\n"
+    "You are receiving a message from another digital employee (agent-to-agent\n"
+    "communication, 'A2A'). The sender is a peer agent, not a human user. Your\n"
+    "reply goes back to that agent, which will parse it and act on it.\n"
+    "</role>\n\n"
+    "<reply_format>\n"
+    "- Be concise and direct. Peer agents consume structured answers, not chit-chat.\n"
+    "- If the request is clear: provide a concrete answer with evidence\n"
+    "  (file paths, tool-result IDs, URLs, stdout snippets — whatever applies).\n"
+    "- If the request is incomplete or ambiguous: name the specific missing piece\n"
+    "  and stop. Do not guess at intent — the sender can resolve the gap faster\n"
+    "  than you can work around it.\n"
+    "- If you are still working on the request: return a short status update\n"
+    "  with (a) the current step, (b) the specific blocker or next action.\n"
+    "- If you cannot complete the request: explain specifically what is missing,\n"
+    "  blocked, or outside your scope. Don't fabricate a partial answer.\n"
+    "</reply_format>\n\n"
+    "<privacy_boundary>\n"
+    "- Treat the delegated brief and attached request as the authoritative context.\n"
+    "- Do NOT share private workspace data (memory/*.md, tasks.json, soul.md,\n"
+    "  focus.md, logs/) unless the sender explicitly asks for that file.\n"
+    "- Do NOT leak information about other senders, other conversations, or\n"
+    "  your user's identity unless relevant and authorized.\n"
+    "</privacy_boundary>\n\n"
+    "<anti_patterns>\n"
+    "- ❌ **Nested delegation**: do NOT call `delegate_to_agent` to forward this\n"
+    "  request to yet another agent. The sender already chose you; handle it\n"
+    "  directly or return a Blocker. Nesting breaks the A2A contract and\n"
+    "  fans out timeout risk.\n"
+    "- ❌ **Pleasantries and filler**: don't write 'Sure, happy to help!' or\n"
+    "  'Let me know if you need more'. The peer parses content; filler wastes\n"
+    "  tokens on both sides.\n"
+    "- ❌ **Guessing at ambiguous intent**: if the brief is unclear, ask ONCE\n"
+    "  with a specific clarifying question. Do not silently pick an interpretation.\n"
+    "- ❌ **Claiming completion without evidence**: 'Done.' with no file path,\n"
+    "  tool ID, or artifact is unparseable. Provide the verifiable detail.\n"
+    "</anti_patterns>\n\n"
+    "<good_reply_example>\n"
+    "Peer request: 'Summarize the current CI pipeline.'\n"
+    "Good reply:\n"
+    "'CI pipeline (from .github/workflows/ci.yml):\n"
+    " - lint (ruff + pyright) on push\n"
+    " - unit tests on PR\n"
+    " - integration tests gated on main\n"
+    " - railway deploy on merge to main\n"
+    "Evidence: .github/workflows/ci.yml:15-87. Deploy job wired to railway.json.'\n"
+    "</good_reply_example>\n\n"
+    "<bad_reply_example>\n"
+    "Peer request: 'Summarize the current CI pipeline.'\n"
+    "Bad reply:\n"
+    "'Hi! Sure thing, happy to help. The CI pipeline is pretty standard — it\n"
+    "does all the usual stuff like linting and tests and then deploys. Let me\n"
+    "know if you'd like me to dive deeper into any particular area!'\n"
+    "(No file reference, no concrete stages, no evidence — useless to a peer agent.)\n"
+    "</bad_reply_example>"
 )
 
 
@@ -103,19 +148,27 @@ async def _resolve_target_agent_runtime(
                 select(Agent).where(Agent.id != from_agent_id, Agent.tenant_id == source_agent.tenant_id)
             )
             names = [a.name for a in all_r.scalars().all()]
-            return source_agent, None, None, (
-                f"❌ No agent found matching '{agent_name}'. "
-                f"Available: {', '.join(names) if names else 'none'}"
+            return (
+                source_agent,
+                None,
+                None,
+                (f"❌ No agent found matching '{agent_name}'. Available: {', '.join(names) if names else 'none'}"),
             )
 
         if target.status in ("expired", "stopped", "archived"):
-            return source_agent, target, None, (
-                f"⚠️ {target.name} is currently {target.status} and cannot receive messages."
+            return (
+                source_agent,
+                target,
+                None,
+                (f"⚠️ {target.name} is currently {target.status} and cannot receive messages."),
             )
 
         if getattr(target, "agent_type", "native") == "openclaw":
-            return source_agent, target, None, (
-                f"⚠️ {target.name} is an OpenClaw agent and does not support async runtime delegation."
+            return (
+                source_agent,
+                target,
+                None,
+                (f"⚠️ {target.name} is an OpenClaw agent and does not support async runtime delegation."),
             )
 
         target_model = None
@@ -164,6 +217,7 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
         from sqlalchemy.orm import selectinload
 
         async with async_session() as db:
+
             async def _safe_send_text_message(
                 app_id: str,
                 app_secret: str,
@@ -228,13 +282,15 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                         first_message_title=f"[Agent → {member_name}]",
                         legacy_external_conv_ids=list_legacy_feishu_conv_ids(stable_open_id, ext_conv_id),
                     )
-                    db.add(ChatMessage(
-                        agent_id=agent_id,
-                        user_id=user_id,
-                        role="assistant",
-                        content=message_text,
-                        conversation_id=str(sess.id),
-                    ))
+                    db.add(
+                        ChatMessage(
+                            agent_id=agent_id,
+                            user_id=user_id,
+                            role="assistant",
+                            content=message_text,
+                            conversation_id=str(sess.id),
+                        )
+                    )
                     sess.last_message_at = _dt.now(_tz.utc)
                     await db.commit()
                     logger.info(f"[Feishu] Saved outgoing message to session {sess.id} ({member_name})")
@@ -274,12 +330,15 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                     )
 
                 config_result = await db.execute(
-                    select(ChannelConfig).where(ChannelConfig.agent_id == agent_id, ChannelConfig.channel_type == "feishu")
+                    select(ChannelConfig).where(
+                        ChannelConfig.agent_id == agent_id, ChannelConfig.channel_type == "feishu"
+                    )
                 )
                 config = config_result.scalar_one_or_none()
                 if not config:
                     return "❌ This agent has no Feishu channel configured"
                 import json as _j
+
                 # Prefer user_id over open_id
                 if direct_user_id:
                     resp = await _safe_send_text_message(
@@ -338,9 +397,8 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
             # ── Fallback: check if recipient matches agent owner/creator ──
             if not target_member:
                 from app.models.user import User as _UserModel
-                _owner_r = await db.execute(
-                    select(Agent).where(Agent.id == agent_id)
-                )
+
+                _owner_r = await db.execute(select(Agent).where(Agent.id == agent_id))
                 _agent_obj = _owner_r.scalar_one_or_none()
                 _owner_id = _agent_obj.owner_user_id or _agent_obj.creator_id if _agent_obj else None
                 if _owner_id:
@@ -363,13 +421,17 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                                 _owner_feishu_uid = _om.feishu_user_id
                                 _owner_feishu_oid = _om.feishu_open_id
                         if _owner_feishu_uid or _owner_feishu_oid:
-                            target_member = type("_OwnerAsMember", (), {
-                                "name": _owner_user.display_name,
-                                "feishu_user_id": _owner_feishu_uid,
-                                "feishu_open_id": _owner_feishu_oid,
-                                "email": _owner_user.email,
-                                "phone": None,
-                            })()
+                            target_member = type(
+                                "_OwnerAsMember",
+                                (),
+                                {
+                                    "name": _owner_user.display_name,
+                                    "feishu_user_id": _owner_feishu_uid,
+                                    "feishu_open_id": _owner_feishu_oid,
+                                    "email": _owner_user.email,
+                                    "phone": None,
+                                },
+                            )()
 
             if not target_member:
                 resolved_target = await channel_user_service.resolve_feishu_delivery_target_by_name(
@@ -381,7 +443,9 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                 if resolved_target:
                     resolved_id, resolved_id_type = resolved_target
                     config_result = await db.execute(
-                        select(ChannelConfig).where(ChannelConfig.agent_id == agent_id, ChannelConfig.channel_type == "feishu")
+                        select(ChannelConfig).where(
+                            ChannelConfig.agent_id == agent_id, ChannelConfig.channel_type == "feishu"
+                        )
                     )
                     config = config_result.scalar_one_or_none()
                     if not config:
@@ -407,8 +471,9 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                 _search_result = await _feishu_user_search(agent_id, {"name": member_name})
                 # Prefer user_id over open_id
                 import re as _re_oid
-                _uid_match = _re_oid.search(r'user_id: `([A-Za-z0-9]+)`', _search_result)
-                _oid_match = _re_oid.search(r'open_id: `(ou_[A-Za-z0-9]+)`', _search_result)
+
+                _uid_match = _re_oid.search(r"user_id: `([A-Za-z0-9]+)`", _search_result)
+                _oid_match = _re_oid.search(r"open_id: `(ou_[A-Za-z0-9]+)`", _search_result)
                 _found_id = None
                 _found_id_type = None
                 if _uid_match:
@@ -419,12 +484,15 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                     _found_id_type = "open_id"
                 if _found_id:
                     config_result = await db.execute(
-                        select(ChannelConfig).where(ChannelConfig.agent_id == agent_id, ChannelConfig.channel_type == "feishu")
+                        select(ChannelConfig).where(
+                            ChannelConfig.agent_id == agent_id, ChannelConfig.channel_type == "feishu"
+                        )
                     )
                     config = config_result.scalar_one_or_none()
                     if not config:
                         return "❌ This agent has no Feishu channel configured"
                     import json as _j2
+
                     resp = await _safe_send_text_message(
                         config.app_id,
                         config.app_secret,
@@ -448,7 +516,12 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                     f"通讯录搜索结果：{_search_result[:200]}"
                 )
 
-            if not target_member.feishu_user_id and not target_member.feishu_open_id and not target_member.email and not target_member.phone:
+            if (
+                not target_member.feishu_user_id
+                and not target_member.feishu_open_id
+                and not target_member.email
+                and not target_member.phone
+            ):
                 return f"❌ {member_name} has no linked Feishu account (no user_id, open_id, email, or phone)"
 
             # Get the agent's Feishu bot credentials
@@ -488,7 +561,8 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
             if target_member.email or target_member.phone:
                 try:
                     resolved = await feishu_service.resolve_open_id(
-                        config.app_id, config.app_secret,
+                        config.app_id,
+                        config.app_secret,
                         email=target_member.email,
                         mobile=target_member.phone,
                     )
@@ -527,8 +601,10 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                         # Try user_id with org sync app first
                         if stable_user_id:
                             resp2 = await _try_send(
-                                org_setting.value["app_id"], org_setting.value["app_secret"],
-                                stable_user_id, "user_id",
+                                org_setting.value["app_id"],
+                                org_setting.value["app_secret"],
+                                stable_user_id,
+                                "user_id",
                             )
                             if resp2.get("code") == 0:
                                 args["user_id"] = stable_user_id
@@ -536,7 +612,8 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                                 return f"✅ Successfully sent message to {member_name}"
                         # Fallback to open_id with org sync app
                         resp2 = await _try_send(
-                            org_setting.value["app_id"], org_setting.value["app_secret"],
+                            org_setting.value["app_id"],
+                            org_setting.value["app_secret"],
                             stable_open_id,
                         )
                         if resp2.get("code") == 0:
@@ -570,11 +647,13 @@ async def _send_web_message(agent_id: uuid.UUID, args: dict) -> str:
         async with async_session() as db:
             # Resolve agent tenant for scoped query
             from app.models.agent import Agent as _AgentModel
+
             _ag_r = await db.execute(select(_AgentModel.tenant_id).where(_AgentModel.id == agent_id))
             _agent_tenant = _ag_r.scalar_one_or_none()
 
             # Look up target user by username or display_name (scoped to same tenant)
             from sqlalchemy import or_
+
             _user_query = select(UserModel).where(
                 or_(
                     UserModel.username == username,
@@ -595,11 +674,14 @@ async def _send_web_message(agent_id: uuid.UUID, args: dict) -> str:
 
             # Find or create a web session between the agent and this user
             sess_r = await db.execute(
-                select(ChatSession).where(
+                select(ChatSession)
+                .where(
                     ChatSession.agent_id == agent_id,
                     ChatSession.user_id == target_user.id,
                     ChatSession.source_channel == "web",
-                ).order_by(ChatSession.created_at.desc()).limit(1)
+                )
+                .order_by(ChatSession.created_at.desc())
+                .limit(1)
             )
             session = sess_r.scalar_one_or_none()
 
@@ -616,28 +698,33 @@ async def _send_web_message(agent_id: uuid.UUID, args: dict) -> str:
             await apply_web_session_contract(db, session=session, agent_id=agent_id, user=target_user)
 
             # Save the message
-            db.add(ChatMessage(
-                agent_id=agent_id,
-                user_id=target_user.id,
-                role="assistant",
-                content=message_text,
-                conversation_id=str(session.id),
-            ))
+            db.add(
+                ChatMessage(
+                    agent_id=agent_id,
+                    user_id=target_user.id,
+                    role="assistant",
+                    content=message_text,
+                    conversation_id=str(session.id),
+                )
+            )
             session.last_message_at = _dt.now(_tz.utc)
             await db.commit()
 
             # Push via WebSocket if user has an active connection
             try:
                 from app.api.websocket import manager as ws_manager
+
                 agent_id_str = str(agent_id)
                 if agent_id_str in ws_manager.active_connections:
                     for ws, sid in list(ws_manager.active_connections[agent_id_str]):
                         try:
-                            await ws.send_json({
-                                "type": "trigger_notification",
-                                "content": message_text,
-                                "triggers": ["web_message"],
-                            })
+                            await ws.send_json(
+                                {
+                                    "type": "trigger_notification",
+                                    "content": message_text,
+                                    "triggers": ["web_message"],
+                                }
+                            )
                         except Exception as e:
                             logger.debug("Suppressed: %s", e)
             except Exception as e:
@@ -664,19 +751,24 @@ async def _persist_agent_tool_call(
 
     try:
         async with async_session() as db:
-            db.add(ChatMessage(
-                agent_id=session_agent_id,
-                user_id=owner_id,
-                role="tool_call",
-                content=json.dumps({
-                    "name": tool_name,
-                    "args": tool_args,
-                    "status": "done",
-                    "result": str(tool_result)[:500],
-                }, ensure_ascii=False),
-                conversation_id=session_id,
-                participant_id=participant_id,
-            ))
+            db.add(
+                ChatMessage(
+                    agent_id=session_agent_id,
+                    user_id=owner_id,
+                    role="tool_call",
+                    content=json.dumps(
+                        {
+                            "name": tool_name,
+                            "args": tool_args,
+                            "status": "done",
+                            "result": str(tool_result)[:500],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    conversation_id=session_id,
+                    participant_id=participant_id,
+                )
+            )
             await db.commit()
     except Exception as exc:
         logger.error(f"[A2A] Failed to save tool_call: {exc}")
@@ -693,6 +785,7 @@ def _build_agent_message_tool_executor(
 
     async def _executor(tool_name: str, tool_args: dict) -> str:
         from app.services.agent_tools import execute_tool
+
         tool_result = await execute_tool(tool_name, tool_args, target_agent_id, owner_id)
         await _persist_agent_tool_call(
             session_agent_id=session_agent_id,
@@ -787,6 +880,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
             # ── OpenClaw target: queue message for gateway poll ──
             if getattr(target, "agent_type", "native") == "openclaw":
                 from app.models.gateway_message import GatewayMessage as GMsg
+
                 gw_msg = GMsg(
                     agent_id=target.id,
                     sender_agent_id=from_agent_id,
@@ -796,12 +890,19 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 )
                 db.add(gw_msg)
                 await db.commit()
-                online = target.openclaw_last_seen and (datetime.now(timezone.utc) - target.openclaw_last_seen).total_seconds() < 300
+                online = (
+                    target.openclaw_last_seen
+                    and (datetime.now(timezone.utc) - target.openclaw_last_seen).total_seconds() < 300
+                )
                 status_hint = "online" if online else "offline (message will be delivered on next heartbeat)"
                 return f"✅ Message sent to {target.name} (OpenClaw agent, currently {status_hint}). The message has been queued and will be delivered when the agent polls for updates."
-            src_part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == from_agent_id))
+            src_part_r = await db.execute(
+                select(Participant).where(Participant.type == "agent", Participant.ref_id == from_agent_id)
+            )
             src_participant = src_part_r.scalar_one_or_none()
-            tgt_part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == target.id))
+            tgt_part_r = await db.execute(
+                select(Participant).where(Participant.type == "agent", Participant.ref_id == target.id)
+            )
             tgt_participant = tgt_part_r.scalar_one_or_none()
 
             # Find or create ChatSession for this agent pair (ordered consistently)
@@ -838,18 +939,24 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
             target_model = None
             if target.primary_model_id:
                 model_r = await db.execute(
-                    select(LLMModel).where(LLMModel.id == target.primary_model_id, LLMModel.tenant_id == target.tenant_id)
+                    select(LLMModel).where(
+                        LLMModel.id == target.primary_model_id, LLMModel.tenant_id == target.tenant_id
+                    )
                 )
                 target_model = model_r.scalar_one_or_none()
 
             # Config-level fallback: primary missing -> use fallback
             if not target_model and target.fallback_model_id:
                 fb_r = await db.execute(
-                    select(LLMModel).where(LLMModel.id == target.fallback_model_id, LLMModel.tenant_id == target.tenant_id)
+                    select(LLMModel).where(
+                        LLMModel.id == target.fallback_model_id, LLMModel.tenant_id == target.tenant_id
+                    )
                 )
                 target_model = fb_r.scalar_one_or_none()
                 if target_model:
-                    logger.warning(f"[A2A] Primary model unavailable for {target.name}, using fallback: {target_model.model}")
+                    logger.warning(
+                        f"[A2A] Primary model unavailable for {target.name}, using fallback: {target_model.model}"
+                    )
 
             if not target_model:
                 return f"⚠️ {target.name} has no LLM model configured"
@@ -877,14 +984,16 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
 
             # Save source message
             owner_id = source_agent.creator_id if source_agent else from_agent_id
-            db.add(ChatMessage(
-                agent_id=session_agent_id,
-                user_id=owner_id,
-                role="user",
-                content=message_text,
-                conversation_id=session_id,
-                participant_id=src_participant.id if src_participant else None,
-            ))
+            db.add(
+                ChatMessage(
+                    agent_id=session_agent_id,
+                    user_id=owner_id,
+                    role="user",
+                    content=message_text,
+                    conversation_id=session_id,
+                    participant_id=src_participant.id if src_participant else None,
+                )
+            )
             chat_session.last_message_at = datetime.now(timezone.utc)
             await db.commit()
 
@@ -904,27 +1013,34 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
 
             # Save target reply
             async with async_session() as db2:
-                part_r = await db2.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == target.id))
+                part_r = await db2.execute(
+                    select(Participant).where(Participant.type == "agent", Participant.ref_id == target.id)
+                )
                 tgt_part = part_r.scalar_one_or_none()
-                db2.add(ChatMessage(
-                    agent_id=session_agent_id,
-                    user_id=owner_id,
-                    role="assistant",
-                    content=target_reply,
-                    conversation_id=session_id,
-                    participant_id=tgt_part.id if tgt_part else None,
-                ))
+                db2.add(
+                    ChatMessage(
+                        agent_id=session_agent_id,
+                        user_id=owner_id,
+                        role="assistant",
+                        content=target_reply,
+                        conversation_id=session_id,
+                        participant_id=tgt_part.id if tgt_part else None,
+                    )
+                )
                 await db2.commit()
 
             # Log activity
             from app.services.activity_logger import log_activity
+
             await log_activity(
-                target.id, "agent_msg_sent",
+                target.id,
+                "agent_msg_sent",
                 f"Replied to message from {source_name}",
                 detail={"partner": source_name, "message": message_text[:200], "reply": target_reply[:200]},
             )
             await log_activity(
-                from_agent_id, "agent_msg_sent",
+                from_agent_id,
+                "agent_msg_sent",
                 f"Sent message to {target.name} and received reply",
                 detail={"partner": target.name, "message": message_text[:200], "reply": target_reply[:200]},
             )
@@ -933,6 +1049,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
 
     except Exception as e:
         import traceback
+
         traceback.print_exc()
         return f"❌ Message send error: {str(e)[:200]}"
 
@@ -970,10 +1087,12 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
         handle = await delegate_async(
             target=target,
             target_model=target_model,
-            conversation_messages=[{
-                "role": "user",
-                "content": f"[Delegated by {source_agent.name}] {message_text}",
-            }],
+            conversation_messages=[
+                {
+                    "role": "user",
+                    "content": f"[Delegated by {source_agent.name}] {message_text}",
+                }
+            ],
             owner_id=source_agent.creator_id,
             session_id=uuid.uuid4().hex,
             parent_agent_id=from_agent_id,
@@ -981,13 +1100,16 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
             max_tool_rounds=args.get("max_tool_rounds"),
             policy=OrchestrationPolicy(timeout_seconds=120.0, tool_profile=tool_profile),
         )
-        return json.dumps({
-            "task_id": handle.task_id,
-            "status": "running",
-            "target_agent": handle.target_name,
-            "trace_id": handle.trace_id,
-            "next_action": "Use check_async_task with this task_id to inspect progress.",
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "task_id": handle.task_id,
+                "status": "running",
+                "target_agent": handle.target_name,
+                "trace_id": handle.trace_id,
+                "next_action": "Use check_async_task with this task_id to inspect progress.",
+            },
+            ensure_ascii=False,
+        )
     except Exception as e:
         logger.error("delegate_to_agent failed: %s", e, exc_info=True)
         return f"❌ Error delegating to agent: {e}"
@@ -1071,12 +1193,15 @@ async def _get_current_time(agent_id: uuid.UUID, args: dict | None = None) -> st
         requested_tz = (args or {}).get("timezone")
         timezone_name = requested_tz or await get_agent_timezone(agent_id)
         now = now_in_timezone(timezone_name)
-        return json.dumps({
-            "timezone": timezone_name,
-            "local_time": now.isoformat(),
-            "utc_time": now.astimezone(timezone.utc).isoformat(),
-            "weekday": now.strftime("%A"),
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "timezone": timezone_name,
+                "local_time": now.isoformat(),
+                "utc_time": now.astimezone(timezone.utc).isoformat(),
+                "weekday": now.strftime("%A"),
+            },
+            ensure_ascii=False,
+        )
     except Exception as e:
         logger.error("get_current_time failed: %s", e, exc_info=True)
         return f"❌ Error getting current time: {e}"
@@ -1085,4 +1210,5 @@ async def _get_current_time(agent_id: uuid.UUID, args: dict | None = None) -> st
 async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
     """Proxy to feishu_users domain module (lazy import to avoid circular deps)."""
     from app.services.agent_tool_domains.feishu_users import _feishu_user_search as _real_search
+
     return await _real_search(agent_id, arguments)

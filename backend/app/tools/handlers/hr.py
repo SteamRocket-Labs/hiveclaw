@@ -21,6 +21,7 @@ from app.tools.runtime import ToolExecutionRequest
 
 logger = logging.getLogger(__name__)
 
+
 def _default_skill_count() -> int:
     return sum(1 for skill in BUILTIN_SKILLS if skill.get("is_default"))
 
@@ -30,6 +31,7 @@ def _default_ready_now() -> list[str]:
         f"builtin tools + {_default_skill_count()} default skills",
         "workspace, memory, heartbeat, and self-evolution scaffolding",
     ]
+
 
 _PLATFORM_SKILL_RULES = (
     {
@@ -129,112 +131,219 @@ def _dedupe_strings(values: list[str]) -> list[str]:
 
 
 _SOUL_REFINE_PROMPT = """\
-# System Context
-
+<role>
 You are the identity architect for Hive, a multi-agent collaboration platform.
-Each agent has a 4-layer memory pyramid that runs automatically:
+You craft the foundational identity contract (soul.md) that defines WHO a new
+digital employee IS — for their entire lifetime.
+</role>
 
-  T0 (raw logs, 30d) -> T2 (episodic learnings) -> T3 (semantic memory) -> soul.md (identity)
+<pipeline_context>
+Every agent has a 4-layer memory pyramid that runs automatically:
 
-- soul.md is the TOP of this pyramid: the most permanent, most condensed layer.
-- Conversations are extracted into T2 learnings after each response (automatic).
-- A heartbeat periodically curates T2 into T3 (feedback, knowledge, strategies, blocked patterns).
-- A dream process consolidates T3 and promotes the most durable insights into soul.md.
-- User corrections and confirmed patterns are the highest-value signals in this system.
+  T0 (raw logs, 30d) → T2 (episodic learnings) → T3 (semantic memory) → soul.md (identity)
 
-soul.md defines WHO the agent IS. It is not an instruction manual.
-What does NOT belong in soul.md: current tasks, tool configs, trigger schedules,
-capability lists, temporary priorities. Those go to focus.md (volatile).
+- **soul.md is the TOP**: most permanent, most condensed layer.
+- Conversations extract into T2 after each response (automatic).
+- Heartbeat (every ~45 min) curates T2 into T3 (feedback, knowledge, strategies, blocked patterns).
+- Dream (~4h + 3 sessions) consolidates T3 and may promote insights INTO soul.md.
+- User corrections and confirmed patterns are the highest-value signals.
 
-# Task
+**Why your output matters**: soul.md becomes the frozen prefix of every prompt
+this agent ever receives. A vague soul → every downstream layer inherits the
+vagueness. A rich, role-specific soul → T2/T3/dream all have a clear semantic
+basin to cluster around. You are setting the agent's gravitational center.
 
-Given raw inputs from a hiring conversation, craft a rich, role-specific identity contract.
-This soul guides the agent's behavior for its entire lifetime and is only updated through
-the dream consolidation process.
+**What belongs in soul.md**: durable identity, role mission, personality as
+observable behaviors, hard boundaries, user/output contracts, quality standards.
 
-## Raw Inputs
+**What does NOT belong** (these go to focus.md, which is volatile):
+current tasks, tool configs, trigger schedules, capability lists, dates,
+temporary priorities, current events.
+</pipeline_context>
 
+<raw_inputs>
 - Name: {name}
 - Role description: {role_description}
 - Personality/style: {personality}
 - Boundaries: {boundaries}
 - Primary users: {primary_users}
 - Core outputs: {core_outputs}
+</raw_inputs>
 
-## Output
+<output_schema>
+Produce a single JSON object with EXACTLY these keys (no extras, no omissions):
 
-Produce a JSON object with these exact keys:
+  "role_description"   : string (3-5 sentences)
+  "personality"        : string (newline-separated, 4-6 observable behaviors)
+  "boundaries"         : string (newline-separated, 3-5 hard rules)
+  "primary_users"      : list[string] (2-4 items, each with "who + why")
+  "core_outputs"       : list[string] (3-5 items, named deliverables with shape)
+  "quality_standards"  : list[string] (3-4 items, role-specific criteria)
+  "first_tasks"        : list[string] (EXACTLY 3 items, concrete first assignments)
 
-  "role_description", "personality", "boundaries", "primary_users", "core_outputs", "quality_standards", "first_tasks"
+Output valid JSON only. No markdown fences, no prose outside the JSON.
+</output_schema>
 
-## Field Requirements
+<field_requirements>
+**role_description**
+What this agent does, in what domain, supporting what decisions.
+- BAD: "Investment Research Analyst" (title, zero depth)
+- GOOD: "Covers primary-market investment research in AI infrastructure and
+  semiconductor sectors. Core responsibilities: target screening, industry
+  mapping, competitive landscape analysis to help investment managers make fast
+  judgments during deal sourcing. All research outputs must be traceable to
+  primary data sources with no subjective predictions."
 
-**role_description** (string, 3-5 sentences):
-The agent's mission and domain expertise.
-Must answer: What does this agent do? What domain? What decisions does it support?
-BAD: "Investment Research Analyst" (just a title, zero depth)
-GOOD: "Covers primary-market investment research in the AI infrastructure and semiconductor
-sectors. Core responsibilities: target screening, industry mapping, and competitive landscape
-analysis to help investment managers make fast judgments during deal sourcing. All research
-outputs must be traceable to primary data sources with no subjective predictions."
+**personality** — observable operating behaviors, NOT abstract traits.
+- BAD: "Rigorous, professional, efficient" (adjectives tell the agent nothing)
+- GOOD:
+  "Cite source and date every time data is referenced; flag data older than 30 days as [stale]
+  When sources conflict, list all perspectives rather than picking one
+  When a task exceeds capability, state the boundary clearly instead of producing low-quality output
+  Before delivering, self-check: is every conclusion data-backed? Is every suggestion actionable?"
 
-**personality** (string, newline-separated, 4-6 lines):
-Observable operating behaviors, not abstract traits. Each line = a concrete action pattern.
-BAD: "Rigorous, professional, efficient" (adjectives tell the agent nothing)
-GOOD:
-"Cite the source and date every time data is referenced; flag data older than 30 days as [stale]
-When sources conflict, list all perspectives rather than picking one
-When a task exceeds capability, state the boundary clearly instead of producing low-quality output
-Before delivering a report, self-check: is every conclusion data-backed? Is every suggestion actionable?"
+**boundaries** — hard rules specific to THIS role's risk profile.
+Think: what goes wrong if this agent is careless?
+- BAD: "Do not lie" (generic, applies to every agent)
+- GOOD (research role):
+  "Never fabricate data sources, company information, or financial figures
+  When referencing non-public information, always label confidence level
+  Do not give buy/sell recommendations on specific targets; provide frameworks and evidence only"
 
-**boundaries** (string, newline-separated, 3-5 lines):
-Hard rules specific to THIS role's risk profile. Think: what goes wrong if this agent is careless?
-BAD: "Do not lie" (too generic, applies to every agent)
-GOOD for a research role:
-"Never fabricate data sources, company information, or financial figures
-When referencing non-public information (e.g., funding rumors), always label confidence level
-Do not give buy/sell recommendations on specific targets; provide analytical frameworks and evidence only"
+**primary_users** — specific groups with what they need.
+- BAD: ["The team"]
+- GOOD: ["Investment managers (need fast target screening results and sector updates)",
+  "Partners (need weekly sector overviews and key deal tracking)"]
 
-**primary_users** (list of strings, 2-4 items):
-Specific user groups with what they need. Not "team members" — say who and why.
-BAD: ["The team"]
-GOOD: ["Investment managers (need fast target screening results and sector updates)",
-"Partners (need weekly sector overviews and key deal tracking)"]
+**core_outputs** — named deliverables with enough detail to judge quality.
+- BAD: ["Reports"]
+- GOOD: ["Target screening card (company overview + key metrics + preliminary assessment, 1 page max)",
+  "Weekly sector brief (funding events + policy updates + signals worth watching)",
+  "Deep-dive research memo (competitive landscape + moat analysis + risk checklist, for IC discussion)"]
 
-**core_outputs** (list of strings, 3-5 items):
-Named deliverables with enough detail to judge quality.
-BAD: ["Reports"]
-GOOD: ["Target screening card (company overview + key metrics + preliminary assessment, 1 page max)",
-"Weekly sector brief (funding events + policy updates + signals worth watching)",
-"Deep-dive research memo (competitive landscape + moat analysis + risk checklist, for IC discussion)"]
+**quality_standards** — role-specific criteria. Dream uses these when evaluating work.
+- GOOD: ["Every analytical conclusion must be traceable to at least one data source",
+  "Recommendations must include actionable next steps and risk flags"]
 
-**quality_standards** (list of strings, 3-4 items):
-Role-specific quality criteria. These appear in the soul's Quality Standard section
-and guide how the dream process evaluates this agent's work.
-GOOD: ["Every analytical conclusion must be traceable to at least one data source",
-"Recommendations must include actionable next steps and risk flags"]
+**first_tasks** — exactly 3 concrete first assignments (go to focus.md, not soul).
+Each task must start with builtin/default capabilities when possible.
+- BAD: ["Read soul.md", "Check capabilities", "Do something useful"]
+- GOOD (research role):
+  ["Compile an overview of this week's top 5 AI infrastructure funding rounds with source links",
+   "Build a competitive landscape draft for one target company in the semiconductor sector",
+   "Produce a template for the weekly sector brief and populate it with this week's data"]
+</field_requirements>
 
-**first_tasks** (list of strings, exactly 3 items):
-The agent's first 3 tasks after creation. These go into focus.md (volatile, not soul).
-Each task should start with builtin/default capabilities whenever possible.
-If a true capability gap appears, the agent should record it explicitly and evolve through
-the approved install path after creation.
-BAD: ["Read soul.md", "Check capabilities", "Do something useful"] (generic, tells nothing)
-GOOD for a research role:
-["Compile an overview of this week's top 5 AI infrastructure funding rounds with source links",
- "Build a competitive landscape draft for one target company in the semiconductor sector",
- "Produce a template for the weekly sector brief and populate it with this week's data"]
+<few_shot_examples>
+**Example 1 — Research role with thin inputs**
 
-## Critical Rules
+Raw inputs:
+- Name: 小研
+- Role description: 投研分析师
+- Personality/style: 严谨
+- Boundaries: (not specified)
+- Primary users: 投资经理
+- Core outputs: 研报
 
-1. Write in the SAME LANGUAGE as the inputs. If inputs are Chinese, output Chinese.
-   If inputs are English, output English. Match the user's language exactly.
-2. Be deeply specific to THIS role. Generic content is worse than no content.
-3. If an input is empty or vague, INFER rich defaults from whatever context is available.
-   Even a name alone contains enough signal to generate a reasonable identity.
-4. The soul must be durable: it should still make sense 6 months from now.
-   No references to specific dates, current events, or temporary priorities.
-5. Output valid JSON only. No markdown fences, no explanations outside the JSON.
+Good output (partial, JSON):
+```json
+{{
+  "role_description": "覆盖一级市场 AI 基础设施与半导体赛道的投研分析师。核心职责：标的筛选、行业图谱、竞品格局分析，帮助投资经理在 deal sourcing 阶段做出快速判断。所有输出必须可回溯到一手数据源，不做主观预测。",
+  "personality": "引用数据必附来源和日期，超过 30 天的数据标记 [stale]\\n资料冲突时并列所有口径，不自行取舍\\n能力边界触达时明确说明，而不是交付低质量产物\\n交付前自检：每个结论是否有数据支撑？每个建议是否可执行？",
+  "boundaries": "不编造数据源、公司信息或财务数字\\n引用非公开信息（如融资传闻）必须标注置信等级\\n不针对具体标的给出买入/卖出建议，只提供分析框架与证据",
+  "primary_users": [
+    "投资经理（需要快速的标的筛选结果和赛道动态）",
+    "合伙人（需要周度赛道综述和重点 deal 跟踪）"
+  ],
+  "core_outputs": [
+    "标的筛选卡（公司概览+关键指标+初步判断，1 页以内）",
+    "周度赛道简报（融资事件+政策更新+值得关注的信号）",
+    "深度研究备忘（竞品格局+护城河+风险清单，用于 IC 讨论）"
+  ],
+  "quality_standards": [
+    "每个分析结论必须可回溯到至少一个数据源",
+    "建议必须含可执行的下一步动作和风险提示"
+  ],
+  "first_tasks": [
+    "汇总本周 AI 基础设施赛道融资 Top 5，附来源链接",
+    "对半导体赛道一家标的公司起草竞品格局初稿",
+    "产出周度赛道简报模板并用本周数据填充"
+  ]
+}}
+```
+
+**Example 2 — Execution role with rich inputs**
+
+Raw inputs:
+- Name: opsbot
+- Role description: DevOps engineer handling CI/CD and infrastructure
+- Personality/style: methodical, defensive, document everything
+- Boundaries: must not touch prod without approval
+- Primary users: engineering team
+- Core outputs: deployment reports, postmortems
+
+Good output (partial, JSON):
+```json
+{{
+  "role_description": "DevOps engineer responsible for CI/CD pipelines, infrastructure automation, and incident response across the engineering org. Handles deploy orchestration, configuration drift detection, and post-incident analysis. Optimizes for deployment reliability and blast-radius containment over velocity.",
+  "personality": "Read the relevant runbook before touching any production-adjacent system\\nPrefer reversible changes; when irreversible is required, document the rollback path FIRST\\nEvery production change must have a linked ticket, an owner, and a rollback plan\\nWhen diagnosing, reproduce the failure in staging before proposing a fix\\nWrite every postmortem as if a new hire will read it six months from now",
+  "boundaries": "Never apply changes to production without explicit approval in the ticket\\nNever skip the staging verification step, even for 'trivial' changes\\nNever disable alerts, safety guards, or CI gates without a follow-up task to restore them\\nNever share secrets, credentials, or access tokens in chat or reports",
+  "primary_users": [
+    "Backend engineers (need fast, predictable deploys and clear failure signals)",
+    "On-call engineers (need actionable runbooks and postmortems that prevent recurrence)",
+    "Engineering managers (need deployment-health metrics and incident trends)"
+  ],
+  "core_outputs": [
+    "Deployment report (services touched, verification evidence, rollback plan status)",
+    "Incident postmortem (timeline, root cause, contributing factors, action items with owners)",
+    "Infrastructure-change proposal (diff, blast radius, verification plan, rollback)"
+  ],
+  "quality_standards": [
+    "Every production change has a reviewable diff, verification evidence, and a tested rollback",
+    "Every postmortem identifies at least one systemic fix, not just a patch",
+    "Every runbook is dated and links to the latest incident it was validated against"
+  ],
+  "first_tasks": [
+    "Audit the current CI pipeline and produce a diagram of build stages, gates, and blockers",
+    "Draft a deployment report template aligned with our existing postmortem format",
+    "Survey the three most recent incidents and extract common root-cause patterns"
+  ]
+}}
+```
+</few_shot_examples>
+
+<anti_patterns>
+DO NOT do any of these:
+
+- ❌ Generic identity that would apply to any agent
+  ("Be professional and helpful" — useless; every agent already is)
+- ❌ Title-only role_description ("Sales analyst" — tells agent nothing)
+- ❌ Adjective soup for personality ("rigorous, efficient, detail-oriented"
+  — LLMs can't execute adjectives; behaviors are actionable)
+- ❌ Date-anchored content ("Focus on Q3 2026 targets" — soul must survive 6+ months)
+- ❌ Tool-name boundaries ("Always use web_search" — tools live in focus.md,
+  not soul. soul is identity, not config.)
+- ❌ first_tasks that are self-referential setup
+  ("Read your soul.md, introduce yourself, list your capabilities")
+- ❌ Empty-string fields — if the user left a field blank, INFER a rich
+  default from surrounding context. Name alone carries signal.
+- ❌ Output with markdown fences, prose commentary, or trailing text —
+  the caller parses raw JSON and any extra chars will break parsing.
+</anti_patterns>
+
+<hard_rules>
+1. **Language match**: inputs Chinese → output Chinese; inputs English → output
+   English. Never mix languages within a single field.
+2. **Role specificity**: every field must be recognizable as THIS role's
+   content, not generic digital-employee boilerplate.
+3. **Infer when empty**: empty/vague inputs trigger inference from whatever
+   signal remains (name, any non-empty field, platform defaults). Never emit
+   empty strings or placeholders.
+4. **Durability**: soul must still make sense 6 months from now. No dates,
+   no current events, no temporary priorities.
+5. **JSON-only output**: valid JSON, all 7 keys present, no fences, no prose
+   outside the object. The caller consumes `json.loads(response)` directly.
+</hard_rules>
 """
 
 
@@ -295,7 +404,8 @@ async def _refine_soul_inputs(
         if not content or not content.strip():
             logger.warning(
                 "[HR] Soul refinement LLM returned empty content. Provider=%s model=%s response_keys=%s",
-                model_config.get("provider"), model_config.get("model"),
+                model_config.get("provider"),
+                model_config.get("model"),
                 list(response.keys()) if isinstance(response, dict) else type(response),
             )
             return raw
@@ -310,7 +420,9 @@ async def _refine_soul_inputs(
 
         # Validate each field — only use refined versions that are substantive
         result = dict(raw)
-        if isinstance(refined.get("role_description"), str) and len(refined["role_description"]) > max(len(role_description), 20):
+        if isinstance(refined.get("role_description"), str) and len(refined["role_description"]) > max(
+            len(role_description), 20
+        ):
             result["role_description"] = refined["role_description"]
         if isinstance(refined.get("personality"), str) and len(refined["personality"]) > max(len(personality), 20):
             result["personality"] = refined["personality"]
@@ -327,9 +439,12 @@ async def _refine_soul_inputs(
 
         logger.info(
             "[HR] Soul refined by LLM: role %d→%d, personality %d→%d, boundaries %d→%d, quality_standards=%d",
-            len(role_description), len(result["role_description"]),
-            len(personality), len(result.get("personality", "")),
-            len(boundaries), len(result.get("boundaries", "")),
+            len(role_description),
+            len(result["role_description"]),
+            len(personality),
+            len(result.get("personality", "")),
+            len(boundaries),
+            len(result.get("boundaries", "")),
             len(result.get("quality_standards", [])),
         )
         return result
@@ -380,9 +495,9 @@ def _derive_capability_routing(
     heartbeat_topics: str,
     welcome_message: str,
     triggers: list[dict],
-   requested_skill_names: list[str],
-   mcp_server_ids: list[str],
-   clawhub_slugs: list[str],
+    requested_skill_names: list[str],
+    mcp_server_ids: list[str],
+    clawhub_slugs: list[str],
 ) -> dict:
     text_blob = _build_capability_text_blob(
         role_description=role_description,
@@ -401,13 +516,17 @@ def _derive_capability_routing(
 
     recommended_skill_names = _dedupe_strings(recommended_skill_names)
     install_now_skill_names = _dedupe_strings(list(requested_skill_names))
-    deferred_skill_names = [skill_name for skill_name in recommended_skill_names if skill_name not in install_now_skill_names]
+    deferred_skill_names = [
+        skill_name for skill_name in recommended_skill_names if skill_name not in install_now_skill_names
+    ]
 
     builtin_paths: list[str] = []
     if _contains_any(text_blob, _OFFICE_DELIVERABLE_KEYWORDS):
         builtin_paths.append("default productivity skills already cover PDF/DOCX/XLSX/PPTX document workflows.")
     if _contains_any(text_blob, _RESEARCH_WORKFLOW_KEYWORDS):
-        builtin_paths.append("builtin workspace + web research + trigger stack already cover recurring research/report workflows.")
+        builtin_paths.append(
+            "builtin workspace + web research + trigger stack already cover recurring research/report workflows."
+        )
     if not builtin_paths:
         builtin_paths.append("builtin tools + default skills already cover the first version of this workflow.")
 
@@ -580,7 +699,9 @@ async def _install_external_skill_from_skills_ref(
         raise RuntimeError("skills.sh install completed but copied 0 skill files")
 
     expected_folder = ref.split("@", 1)[1]
-    folder_name = expected_folder if expected_folder in copied or (agent_skills / expected_folder).exists() else copied[0]
+    folder_name = (
+        expected_folder if expected_folder in copied or (agent_skills / expected_folder).exists() else copied[0]
+    )
     shutil.rmtree(exec_home, ignore_errors=True)
 
     return {
@@ -608,19 +729,29 @@ def _build_blueprint_preview_payload(arguments: dict) -> dict:
     """Build a structured HR blueprint preview from raw arguments."""
     name = str(arguments.get("name", "")).strip()
     role_description = str(arguments.get("role_description", "")).strip()
-    primary_users = _dedupe_strings([item for item in _parse_list(arguments.get("primary_users")) if isinstance(item, str)])
-    core_outputs = _dedupe_strings([item for item in _parse_list(arguments.get("core_outputs")) if isinstance(item, str)])
+    primary_users = _dedupe_strings(
+        [item for item in _parse_list(arguments.get("primary_users")) if isinstance(item, str)]
+    )
+    core_outputs = _dedupe_strings(
+        [item for item in _parse_list(arguments.get("core_outputs")) if isinstance(item, str)]
+    )
     personality = str(arguments.get("personality", "")).strip()
     boundaries = str(arguments.get("boundaries", "")).strip()
-    raw_requested_skill_names = _dedupe_strings([item for item in _parse_list(arguments.get("skill_names")) if isinstance(item, str)])
+    raw_requested_skill_names = _dedupe_strings(
+        [item for item in _parse_list(arguments.get("skill_names")) if isinstance(item, str)]
+    )
     requested_skill_names, derived_external_skill_refs = _split_requested_skill_inputs(raw_requested_skill_names)
     explicit_external_skill_refs = _dedupe_strings(
         _parse_external_skill_urls(arguments.get("external_skill_urls"))
         + _parse_external_skill_urls(arguments.get("external_skill_refs"))
     )
     external_skill_refs = _dedupe_strings(derived_external_skill_refs + explicit_external_skill_refs)
-    mcp_server_ids = _dedupe_strings([item for item in _parse_list(arguments.get("mcp_server_ids")) if isinstance(item, str)])
-    clawhub_slugs = _dedupe_strings([item for item in _parse_list(arguments.get("clawhub_slugs")) if isinstance(item, str)])
+    mcp_server_ids = _dedupe_strings(
+        [item for item in _parse_list(arguments.get("mcp_server_ids")) if isinstance(item, str)]
+    )
+    clawhub_slugs = _dedupe_strings(
+        [item for item in _parse_list(arguments.get("clawhub_slugs")) if isinstance(item, str)]
+    )
     permission_scope = str(arguments.get("permission_scope", "company") or "company").strip() or "company"
     focus_content = str(arguments.get("focus_content", "")).strip()
     heartbeat_topics = str(arguments.get("heartbeat_topics", "")).strip()
@@ -679,7 +810,9 @@ def _build_blueprint_preview_payload(arguments: dict) -> dict:
         welcome_message=welcome_message,
     )
     if external_skill_refs:
-        manual_steps.append("验证外部 GitHub/skills.sh skill 的源码、安全性与首个真实任务输出，避免直接信任第三方能力。")
+        manual_steps.append(
+            "验证外部 GitHub/skills.sh skill 的源码、安全性与首个真实任务输出，避免直接信任第三方能力。"
+        )
 
     return {
         "status": "preview",
@@ -766,120 +899,128 @@ def _build_create_employee_result(
     )
 
 
-@tool(ToolMeta(
-    name="create_digital_employee",
-    description=(
-        "Create a new digital employee with the given configuration. "
-        "Use this ONLY after confirming the full plan with the user. "
-        "Includes heartbeat schedule and custom heartbeat instructions. "
-        "Returns the new employee's name and ID on success."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "name": {
-                "type": "string",
-                "description": "Name for the new digital employee (2-100 characters)",
-            },
-            "role_description": {
-                "type": "string",
-                "description": "What this employee does — mission, core responsibilities, and domain expertise. Write 2-3 sentences minimum, be specific about the role.",
-            },
-            "personality": {
-                "type": "string",
-                "description": "Operating style as concrete behaviors (e.g. 'Always cite sources when presenting data', 'Proactively flag risks before they escalate'). One per line, 3-5 lines.",
-            },
-            "primary_users": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Who this agent primarily serves (e.g. ['investment team', 'research team']).",
-            },
-            "core_outputs": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Main deliverables this agent must produce (e.g. ['daily report', 'weekly report', 'feishu notification']).",
-            },
-            "boundaries": {
-                "type": "string",
-                "description": "Hard rules and red lines specific to this role's risk profile (e.g. 'Never fabricate financial data', 'Do not share user PII externally'). One per line, 3-5 lines.",
-            },
-            "skill_names": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": f"ONLY platform-registered skill folder_names. Available: feishu-integration, dingtalk-integration, atlassian-rovo. {_default_skill_count()} default skills are auto-installed. Only include extra platform skills that are mandatory on day one; otherwise let the agent evolve later. Do NOT put ClawHub or external skills here — use clawhub_slugs instead.",
-            },
-            "external_skill_urls": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "GitHub skill package URLs for third-party skills. Backward-compatible alias of external_skill_refs.",
-            },
-            "external_skill_refs": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Third-party installable skill references. Accepts GitHub URLs or skills.sh refs like owner/repo@skill.",
-            },
-            "mcp_server_ids": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Smithery MCP server IDs to install only when the first mission is blocked without them (e.g. ['LinkupPlatform/linkup-mcp-server']). Found via discover_resources.",
-            },
-            "clawhub_slugs": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "ClawHub skill slugs to install only when builtin/default capabilities and platform skills are insufficient on day one (e.g. ['market-research-agent', 'competitor-analyst']). Found via web_search on clawhub.ai.",
-            },
-            "permission_scope": {
-                "type": "string",
-                "enum": ["company", "self"],
-                "description": "'company' (everyone) or 'self' (creator only). Default: 'company'.",
-            },
-            "heartbeat_enabled": {
-                "type": "boolean",
-                "description": "Enable heartbeat (self-evolution cycle: observe performance, act on priorities, learn from outcomes). Default: true.",
-            },
-            "heartbeat_interval_minutes": {
-                "type": "integer",
-                "description": "Heartbeat interval in minutes. Default: 120.",
-            },
-            "heartbeat_active_hours": {
-                "type": "string",
-                "description": "Heartbeat active hours (e.g. '09:00-18:00'). Default: '09:00-18:00'.",
-            },
-            "triggers": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string", "description": "Trigger name (e.g. 'daily_news_report')"},
-                        "type": {"type": "string", "enum": ["cron", "interval"], "description": "cron or interval"},
-                        "config": {"type": "object", "description": "For cron: {\"expr\": \"0 9 * * *\"}. For interval: {\"minutes\": 30}"},
-                        "reason": {"type": "string", "description": "What the agent should do when triggered (the instruction)"},
-                    },
-                    "required": ["name", "type", "config", "reason"],
+@tool(
+    ToolMeta(
+        name="create_digital_employee",
+        description=(
+            "Create a new digital employee with the given configuration. "
+            "Use this ONLY after confirming the full plan with the user. "
+            "Includes heartbeat schedule and custom heartbeat instructions. "
+            "Returns the new employee's name and ID on success."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Name for the new digital employee (2-100 characters)",
                 },
-                "description": "Scheduled tasks. Use cron for fixed times, interval for recurring.",
+                "role_description": {
+                    "type": "string",
+                    "description": "What this employee does — mission, core responsibilities, and domain expertise. Write 2-3 sentences minimum, be specific about the role.",
+                },
+                "personality": {
+                    "type": "string",
+                    "description": "Operating style as concrete behaviors (e.g. 'Always cite sources when presenting data', 'Proactively flag risks before they escalate'). One per line, 3-5 lines.",
+                },
+                "primary_users": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Who this agent primarily serves (e.g. ['investment team', 'research team']).",
+                },
+                "core_outputs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Main deliverables this agent must produce (e.g. ['daily report', 'weekly report', 'feishu notification']).",
+                },
+                "boundaries": {
+                    "type": "string",
+                    "description": "Hard rules and red lines specific to this role's risk profile (e.g. 'Never fabricate financial data', 'Do not share user PII externally'). One per line, 3-5 lines.",
+                },
+                "skill_names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": f"ONLY platform-registered skill folder_names. Available: feishu-integration, dingtalk-integration, atlassian-rovo. {_default_skill_count()} default skills are auto-installed. Only include extra platform skills that are mandatory on day one; otherwise let the agent evolve later. Do NOT put ClawHub or external skills here — use clawhub_slugs instead.",
+                },
+                "external_skill_urls": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "GitHub skill package URLs for third-party skills. Backward-compatible alias of external_skill_refs.",
+                },
+                "external_skill_refs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Third-party installable skill references. Accepts GitHub URLs or skills.sh refs like owner/repo@skill.",
+                },
+                "mcp_server_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Smithery MCP server IDs to install only when the first mission is blocked without them (e.g. ['LinkupPlatform/linkup-mcp-server']). Found via discover_resources.",
+                },
+                "clawhub_slugs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "ClawHub skill slugs to install only when builtin/default capabilities and platform skills are insufficient on day one (e.g. ['market-research-agent', 'competitor-analyst']). Found via web_search on clawhub.ai.",
+                },
+                "permission_scope": {
+                    "type": "string",
+                    "enum": ["company", "self"],
+                    "description": "'company' (everyone) or 'self' (creator only). Default: 'company'.",
+                },
+                "heartbeat_enabled": {
+                    "type": "boolean",
+                    "description": "Enable heartbeat (self-evolution cycle: observe performance, act on priorities, learn from outcomes). Default: true.",
+                },
+                "heartbeat_interval_minutes": {
+                    "type": "integer",
+                    "description": "Heartbeat interval in minutes. Default: 120.",
+                },
+                "heartbeat_active_hours": {
+                    "type": "string",
+                    "description": "Heartbeat active hours (e.g. '09:00-18:00'). Default: '09:00-18:00'.",
+                },
+                "triggers": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "Trigger name (e.g. 'daily_news_report')"},
+                            "type": {"type": "string", "enum": ["cron", "interval"], "description": "cron or interval"},
+                            "config": {
+                                "type": "object",
+                                "description": 'For cron: {"expr": "0 9 * * *"}. For interval: {"minutes": 30}',
+                            },
+                            "reason": {
+                                "type": "string",
+                                "description": "What the agent should do when triggered (the instruction)",
+                            },
+                        },
+                        "required": ["name", "type", "config", "reason"],
+                    },
+                    "description": "Scheduled tasks. Use cron for fixed times, interval for recurring.",
+                },
+                "welcome_message": {
+                    "type": "string",
+                    "description": "Greeting shown when someone first chats with this agent. Should introduce the agent's role and capabilities.",
+                },
+                "focus_content": {
+                    "type": "string",
+                    "description": "Initial focus.md content — what should the agent work on first? Written as a task list or agenda in markdown.",
+                },
+                "heartbeat_topics": {
+                    "type": "string",
+                    "description": "Role-specific exploration topics, written to focus.md as initial directions. E.g. 'Focus on AI/VC funding news, semiconductor breakthroughs, and founder movements.'",
+                },
             },
-            "welcome_message": {
-                "type": "string",
-                "description": "Greeting shown when someone first chats with this agent. Should introduce the agent's role and capabilities.",
-            },
-            "focus_content": {
-                "type": "string",
-                "description": "Initial focus.md content — what should the agent work on first? Written as a task list or agenda in markdown.",
-            },
-            "heartbeat_topics": {
-                "type": "string",
-                "description": "Role-specific exploration topics, written to focus.md as initial directions. E.g. 'Focus on AI/VC funding news, semiconductor breakthroughs, and founder movements.'",
-            },
+            "required": ["name"],
         },
-        "required": ["name"],
-    },
-    category="hr",
-    display_name="Create Digital Employee",
-    icon="\U0001f464",
-    governance="sensitive",
-    adapter="request",
-))
+        category="hr",
+        display_name="Create Digital Employee",
+        icon="\U0001f464",
+        governance="sensitive",
+        adapter="request",
+    )
+)
 async def create_digital_employee(request: ToolExecutionRequest) -> str:
     args = request.arguments
     user_id = request.context.user_id
@@ -924,6 +1065,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
     if isinstance(raw_triggers, str):
         try:
             import json as _json
+
             raw_triggers = _json.loads(raw_triggers)
         except (ValueError, TypeError) as _trig_err:
             logger.warning("[HR] Failed to parse triggers JSON: %s — raw: %s", _trig_err, str(raw_triggers)[:100])
@@ -972,6 +1114,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
             primary_model_id = None
             from app.models.llm import LLMModel
             from app.models.tenant_setting import TenantSetting
+
             ts_r = await db.execute(
                 select(TenantSetting.value).where(
                     TenantSetting.tenant_id == effective_tenant_id,
@@ -1005,15 +1148,22 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
             _refine_model_id = (_hr_agent.primary_model_id if _hr_agent else None) or primary_model_id
             _model_r = await db.execute(select(LLMModel).where(LLMModel.id == _refine_model_id))
             _llm_obj = _model_r.scalar_one_or_none()
-            _model_cfg = {
-                "provider": _llm_obj.provider,
-                "model": _llm_obj.model,
-                "api_key": _llm_obj.api_key,
-                "base_url": _llm_obj.base_url,
-            } if _llm_obj else {}
-            logger.info("[HR] Soul refinement using model: %s/%s (from %s)",
-                        _model_cfg.get("provider", "?"), _model_cfg.get("model", "?"),
-                        "hr_agent" if _hr_agent and _hr_agent.primary_model_id else "tenant_default")
+            _model_cfg = (
+                {
+                    "provider": _llm_obj.provider,
+                    "model": _llm_obj.model,
+                    "api_key": _llm_obj.api_key,
+                    "base_url": _llm_obj.base_url,
+                }
+                if _llm_obj
+                else {}
+            )
+            logger.info(
+                "[HR] Soul refinement using model: %s/%s (from %s)",
+                _model_cfg.get("provider", "?"),
+                _model_cfg.get("model", "?"),
+                "hr_agent" if _hr_agent and _hr_agent.primary_model_id else "tenant_default",
+            )
             _refined = await _refine_soul_inputs(
                 name=name,
                 role_description=role_description,
@@ -1058,9 +1208,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                     else:
                         resolved_extra_skills.append(skill)
                 if missing_skill_names:
-                    logger.warning(
-                        "[HR] Skipping unavailable extra skills: %s", missing_skill_names
-                    )
+                    logger.warning("[HR] Skipping unavailable extra skills: %s", missing_skill_names)
                     warnings.append(
                         f"Skipped {len(missing_skill_names)} unavailable skill(s): "
                         + ", ".join(missing_skill_names)
@@ -1073,6 +1221,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
             default_webhook_rate = 5
             if effective_tenant_id:
                 from app.models.tenant import Tenant
+
                 tenant_result = await db.execute(select(Tenant).where(Tenant.id == effective_tenant_id))
                 tenant_obj = tenant_result.scalar_one_or_none()
                 if tenant_obj:
@@ -1083,6 +1232,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
             # Create the agent — set last_heartbeat_at to now so the first
             # heartbeat fires after a full interval, giving MCP/workspace init time.
             from datetime import datetime as _dt, timezone as _tz
+
             agent = Agent(
                 name=name,
                 role_description=role_description,
@@ -1107,27 +1257,39 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
             await db.flush()
 
             # Participant identity
-            db.add(Participant(
-                type="agent", ref_id=agent.id,
-                display_name=agent.name, avatar_url=None,
-            ))
+            db.add(
+                Participant(
+                    type="agent",
+                    ref_id=agent.id,
+                    display_name=agent.name,
+                    avatar_url=None,
+                )
+            )
             await db.flush()
 
             # Permissions
             if permission_scope == "self":
-                db.add(AgentPermission(
-                    agent_id=agent.id, scope_type="user",
-                    scope_id=user.id, access_level="manage",
-                ))
+                db.add(
+                    AgentPermission(
+                        agent_id=agent.id,
+                        scope_type="user",
+                        scope_id=user.id,
+                        access_level="manage",
+                    )
+                )
             else:
-                db.add(AgentPermission(
-                    agent_id=agent.id, scope_type="company",
-                    access_level="use",
-                ))
+                db.add(
+                    AgentPermission(
+                        agent_id=agent.id,
+                        scope_type="company",
+                        access_level="use",
+                    )
+                )
             await db.flush()
 
             # Assign default platform tools
             from app.services.tool_seeder import assign_default_tools_to_agent
+
             await assign_default_tools_to_agent(db, agent.id)
             await db.flush()
 
@@ -1144,7 +1306,8 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                 "manual_steps": manual_steps,
             }
             await agent_manager.initialize_agent_files(
-                db, agent,
+                db,
+                agent,
                 personality=personality,
                 boundaries=boundaries,
                 blueprint=_bp,
@@ -1155,6 +1318,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
             # Create triggers (scheduled tasks)
             if triggers:
                 from app.models.trigger import AgentTrigger
+
                 for trig in triggers:
                     raw_config = trig.get("config", {})
                     trig_type = trig.get("type", "cron")
@@ -1185,15 +1349,19 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                             raw_config = {"expr": inferred}
                             logger.info("Inferred cron expr '%s' for trigger '%s' from name", inferred, trig_name)
                         else:
-                            logger.warning("Skipping cron trigger '%s' — no expr in config and cannot infer", trig.get("name"))
+                            logger.warning(
+                                "Skipping cron trigger '%s' — no expr in config and cannot infer", trig.get("name")
+                            )
                             continue
-                    db.add(AgentTrigger(
-                        agent_id=agent.id,
-                        name=trig.get("name", "task"),
-                        type=trig_type,
-                        config=raw_config,
-                        reason=trig.get("reason", ""),
-                    ))
+                    db.add(
+                        AgentTrigger(
+                            agent_id=agent.id,
+                            name=trig.get("name", "task"),
+                            type=trig_type,
+                            config=raw_config,
+                            reason=trig.get("reason", ""),
+                        )
+                    )
                 await db.flush()
 
             # Kick-start: create ONE trigger for the first focus task.
@@ -1205,17 +1373,20 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                 _boot_task = str(args.get("focus_content", "")).strip()
             if _boot_task:
                 from app.models.trigger import AgentTrigger
+
                 _fire_at = (_dt.now(_tz.utc) + __import__("datetime").timedelta(seconds=30)).isoformat()
-                db.add(AgentTrigger(
-                    agent_id=agent.id,
-                    name="focus_boot",
-                    type="once",
-                    config={"at": _fire_at},
-                    reason=(
-                        f"Read focus.md for your full mission and task list. Start with this first task: {_boot_task}\n\n"
-                        "After completing it, update focus.md (mark done) and create a trigger for the next task."
-                    ),
-                ))
+                db.add(
+                    AgentTrigger(
+                        agent_id=agent.id,
+                        name="focus_boot",
+                        type="once",
+                        config={"at": _fire_at},
+                        reason=(
+                            f"Read focus.md for your full mission and task list. Start with this first task: {_boot_task}\n\n"
+                            "After completing it, update focus.md (mark done) and create a trigger for the next task."
+                        ),
+                    )
+                )
                 await db.flush()
                 logger.info("[HR] Created boot trigger for agent %s: %s", agent.id, _boot_task[:80])
 
@@ -1257,11 +1428,17 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
             # Audit
             try:
                 from app.core.policy import write_audit_event
+
                 await write_audit_event(
-                    db, event_type="agent.created", severity="info",
-                    actor_type="user", actor_id=user.id,
+                    db,
+                    event_type="agent.created",
+                    severity="info",
+                    actor_type="user",
+                    actor_id=user.id,
                     tenant_id=effective_tenant_id or user.tenant_id or uuid.UUID(int=0),
-                    action="create_agent", resource_type="agent", resource_id=agent.id,
+                    action="create_agent",
+                    resource_type="agent",
+                    resource_id=agent.id,
                     details={"name": agent.name, "created_via": "hr_agent"},
                 )
             except Exception as _audit_exc:
@@ -1298,6 +1475,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
             mcp_results = []
             if mcp_server_ids:
                 from app.services.resource_discovery import import_mcp_from_smithery, _get_smithery_api_key
+
                 # Pre-fetch API key from global config (not from the new agent which has empty config)
                 _smithery_key = await _get_smithery_api_key(None)
                 for server_id in mcp_server_ids:
@@ -1316,7 +1494,10 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                                 source_key=server_id,
                                 status="installed",
                                 installed_via="hr_agent",
-                                metadata_json={"phase": "reused_existing_tenant_tools", "tool_count": reused["tool_count"]},
+                                metadata_json={
+                                    "phase": "reused_existing_tenant_tools",
+                                    "tool_count": reused["tool_count"],
+                                },
                             )
                             logger.info(f"[HR] Reused existing MCP {server_id} for agent {agent.id}")
                             continue
@@ -1373,7 +1554,9 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                                 error_message=str(mcp_err)[:300],
                             )
                         except Exception as record_err:
-                            logger.warning("[HR] Failed to record MCP install failure for %s: %s", server_id, record_err)
+                            logger.warning(
+                                "[HR] Failed to record MCP install failure for %s: %s", server_id, record_err
+                            )
                         logger.warning(f"[HR] MCP install failed for {server_id}: {mcp_err}")
 
             # Install ClawHub skills (after commit, so agent exists on disk)
@@ -1411,6 +1594,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                             resp = await client.get(f"{CLAWHUB_BASE}/v1/skills/{slug}")
                             if resp.status_code == 429:
                                 import asyncio as _asyncio
+
                                 await _asyncio.sleep(2)
                                 resp = await client.get(f"{CLAWHUB_BASE}/v1/skills/{slug}")
                             if resp.status_code != 200:
@@ -1504,7 +1688,9 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                             ref=ref,
                         )
                         external_skill_results.append(
-                            f"✅ {result['folder_name']}" if result["status"] == "installed" else f"⏭️ {result['folder_name']}: reused"
+                            f"✅ {result['folder_name']}"
+                            if result["status"] == "installed"
+                            else f"⏭️ {result['folder_name']}: reused"
                         )
                         await record_capability_install(
                             agent_id=agent.id,
@@ -1562,43 +1748,83 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
         return "Error: failed to create the digital employee. Please try again or contact support."
 
 
-@tool(ToolMeta(
-    name="preview_agent_blueprint",
-    description=(
-        "Preview a structured digital-employee blueprint before creation. "
-        "Use this after clarifying mission, users, outputs, boundaries, and first mission. "
-        "Prefer identity-first, install-later previews; only plan installs when capability gaps are mandatory on day one."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "name": {"type": "string", "description": "Proposed agent name."},
-            "role_description": {"type": "string", "description": "Core responsibilities and mission."},
-            "primary_users": {"type": "array", "items": {"type": "string"}, "description": "Who this agent primarily serves."},
-            "core_outputs": {"type": "array", "items": {"type": "string"}, "description": "Main deliverables this agent must produce."},
-            "personality": {"type": "string", "description": "Desired operating style, one trait per line if helpful."},
-            "boundaries": {"type": "string", "description": "Risk boundaries or red lines, one per line if helpful."},
-            "skill_names": {"type": "array", "items": {"type": "string"}, "description": "Extra platform skills only if the first mission is blocked without them."},
-            "external_skill_urls": {"type": "array", "items": {"type": "string"}, "description": "Installable GitHub skill URLs for third-party skills outside the platform registry, only when mandatory."},
-            "external_skill_refs": {"type": "array", "items": {"type": "string"}, "description": "Third-party installable skill references. Accepts GitHub URLs or skills.sh refs like owner/repo@skill. Use only for real day-one blockers."},
-            "mcp_server_ids": {"type": "array", "items": {"type": "string"}, "description": "Requested MCP servers only when builtin/default capabilities are insufficient for the first mission."},
-            "clawhub_slugs": {"type": "array", "items": {"type": "string"}, "description": "Requested ClawHub skills only when builtin/default capabilities are insufficient for the first mission."},
-            "permission_scope": {"type": "string", "enum": ["company", "self"], "description": "Who should be allowed to use the agent."},
-            "triggers": {"type": "array", "items": {"type": "object"}, "description": "Proposed scheduled tasks."},
-            "welcome_message": {"type": "string", "description": "Planned greeting."},
-            "focus_content": {"type": "string", "description": "Initial work agenda."},
-            "heartbeat_topics": {"type": "string", "description": "Exploration topics for heartbeat."},
+@tool(
+    ToolMeta(
+        name="preview_agent_blueprint",
+        description=(
+            "Preview a structured digital-employee blueprint before creation. "
+            "Use this after clarifying mission, users, outputs, boundaries, and first mission. "
+            "Prefer identity-first, install-later previews; only plan installs when capability gaps are mandatory on day one."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Proposed agent name."},
+                "role_description": {"type": "string", "description": "Core responsibilities and mission."},
+                "primary_users": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Who this agent primarily serves.",
+                },
+                "core_outputs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Main deliverables this agent must produce.",
+                },
+                "personality": {
+                    "type": "string",
+                    "description": "Desired operating style, one trait per line if helpful.",
+                },
+                "boundaries": {
+                    "type": "string",
+                    "description": "Risk boundaries or red lines, one per line if helpful.",
+                },
+                "skill_names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Extra platform skills only if the first mission is blocked without them.",
+                },
+                "external_skill_urls": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Installable GitHub skill URLs for third-party skills outside the platform registry, only when mandatory.",
+                },
+                "external_skill_refs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Third-party installable skill references. Accepts GitHub URLs or skills.sh refs like owner/repo@skill. Use only for real day-one blockers.",
+                },
+                "mcp_server_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Requested MCP servers only when builtin/default capabilities are insufficient for the first mission.",
+                },
+                "clawhub_slugs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Requested ClawHub skills only when builtin/default capabilities are insufficient for the first mission.",
+                },
+                "permission_scope": {
+                    "type": "string",
+                    "enum": ["company", "self"],
+                    "description": "Who should be allowed to use the agent.",
+                },
+                "triggers": {"type": "array", "items": {"type": "object"}, "description": "Proposed scheduled tasks."},
+                "welcome_message": {"type": "string", "description": "Planned greeting."},
+                "focus_content": {"type": "string", "description": "Initial work agenda."},
+                "heartbeat_topics": {"type": "string", "description": "Exploration topics for heartbeat."},
+            },
+            "required": ["name"],
         },
-        "required": ["name"],
-    },
-    category="hr",
-    display_name="Preview Agent Blueprint",
-    icon="🧭",
-    is_default=False,
-    read_only=True,
-    parallel_safe=True,
-    governance="safe",
-    adapter="request",
-))
+        category="hr",
+        display_name="Preview Agent Blueprint",
+        icon="🧭",
+        is_default=False,
+        read_only=True,
+        parallel_safe=True,
+        governance="safe",
+        adapter="request",
+    )
+)
 async def preview_agent_blueprint(request: ToolExecutionRequest) -> str:
     return json.dumps(_build_blueprint_preview_payload(request.arguments), ensure_ascii=False)

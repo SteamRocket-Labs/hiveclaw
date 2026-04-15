@@ -35,14 +35,22 @@ class TestCoordinatorMode:
         assert is_coordinator_mode(request=FakeRequest()) is False
 
     def test_prompt_contains_coordinator_rules(self) -> None:
+        # PR-15 rewrote COORDINATOR_SYSTEM_PROMPT with XML structure. The
+        # behavioral contract (delegate / never delegate understanding / status-
+        # vs-completion reports) is now carried by decision_matrix, anti_patterns,
+        # and final_report_format blocks.
         prompt = get_coordinator_prompt()
-        assert "Coordinator Mode" in prompt
+        assert "coordinator mode" in prompt.lower()
         assert "delegate_to_agent" in prompt
-        assert "never delegate understanding" in prompt.lower()
-        assert "Use `read_file`, `write_file`, and `list_files` only for coordination artifacts" in prompt
-        assert "When workers are still running, give the user a status update" in prompt
-        assert "Status:" in prompt
-        assert "Synthesis:" in prompt
+        assert "delegate understanding" in prompt.lower()
+        # Coordination-artifact-only use of local file tools is encoded in
+        # <allowed_tools>.
+        assert "coordination artifacts" in prompt.lower()
+        # Status-over-completion when workers still running is in anti_patterns
+        # ("silent wait") and final_report_format.
+        assert "still running" in prompt.lower() or "Waiting on" in prompt
+        assert "## Status" in prompt
+        assert "## Synthesis" in prompt
 
     def test_filter_keeps_only_allowed_tools(self) -> None:
         tools = [

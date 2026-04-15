@@ -883,13 +883,40 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
             if target.status in ("expired", "stopped", "archived"):
                 return f"⚠️ {target.name} is currently {target.status} and cannot receive messages."
 
+            src_part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == from_agent_id))
+            src_participant = src_part_r.scalar_one_or_none()
+            owner_id = source_agent.creator_id if source_agent else from_agent_id
+            src_part_id = src_participant.id if src_participant else None
+
             # ── OpenClaw target: queue message for gateway poll ──
             if getattr(target, "agent_type", "native") == "openclaw":
                 from app.models.gateway_message import GatewayMessage as GMsg
+
+                openclaw_owner_id = target.creator_id or owner_id
+                chat_session = await find_or_create_agent_pair_session(
+                    db,
+                    source_agent_id=from_agent_id,
+                    target_agent_id=target.id,
+                    owner_user_id=openclaw_owner_id,
+                    source_name=source_name,
+                    target_name=target.name,
+                    source_participant_id=src_part_id,
+                )
+                session_id = session_conversation_id(chat_session)
+                db.add(ChatMessage(
+                    agent_id=chat_session.agent_id,
+                    user_id=openclaw_owner_id,
+                    role="user",
+                    content=message_text,
+                    conversation_id=session_id,
+                    participant_id=src_part_id,
+                ))
+                chat_session.last_message_at = datetime.now(timezone.utc)
                 gw_msg = GMsg(
                     agent_id=target.id,
                     sender_agent_id=from_agent_id,
                     sender_user_id=source_agent.creator_id if source_agent else None,
+                    conversation_id=session_id,
                     content=f"[From {source_name}] {message_text}",
                     status="pending",
                 )
@@ -898,13 +925,9 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 online = target.openclaw_last_seen and (datetime.now(timezone.utc) - target.openclaw_last_seen).total_seconds() < 300
                 status_hint = "online" if online else "offline (message will be delivered on next heartbeat)"
                 return f"✅ Message sent to {target.name} (OpenClaw agent, currently {status_hint}). The message has been queued and will be delivered when the agent polls for updates."
-            src_part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == from_agent_id))
-            src_participant = src_part_r.scalar_one_or_none()
+
             tgt_part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == target.id))
             tgt_participant = tgt_part_r.scalar_one_or_none()
-
-            owner_id = source_agent.creator_id if source_agent else from_agent_id
-            src_part_id = src_participant.id if src_participant else None
             chat_session = await find_or_create_agent_pair_session(
                 db,
                 source_agent_id=from_agent_id,

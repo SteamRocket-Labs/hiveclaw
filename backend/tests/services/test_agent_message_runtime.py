@@ -7,6 +7,9 @@ from uuid import uuid4
 
 import pytest
 
+from app.models.audit import ChatMessage
+from app.models.gateway_message import GatewayMessage
+
 
 @pytest.fixture(autouse=True)
 def _stub_activity_logger(monkeypatch):
@@ -255,6 +258,109 @@ async def test_send_message_to_agent_rejects_task_delegate_msg_type():
     )
 
     assert "Use delegate_to_agent" in result
+
+
+@pytest.mark.asyncio
+async def test_send_message_to_openclaw_target_persists_canonical_agent_pair_transcript(monkeypatch):
+    from app.services.agent_tool_domains.messaging import _send_message_to_agent
+
+    from_agent_id = uuid4()
+    target_agent_id = uuid4()
+    source_agent = SimpleNamespace(
+        id=from_agent_id,
+        name="Source Agent",
+        creator_id=uuid4(),
+        tenant_id=uuid4(),
+    )
+    target_agent = SimpleNamespace(
+        id=target_agent_id,
+        name="Target OpenClaw",
+        status="running",
+        agent_type="openclaw",
+        creator_id=uuid4(),
+        tenant_id=source_agent.tenant_id,
+        openclaw_last_seen=None,
+    )
+    source_participant = SimpleNamespace(id=uuid4())
+    chat_session = SimpleNamespace(id=uuid4(), agent_id=uuid4(), last_message_at=None)
+
+    class _ScalarResult:
+        def __init__(self, value):
+            self._value = value
+
+        def scalar_one_or_none(self):
+            return self._value
+
+        def scalars(self):
+            return SimpleNamespace(first=lambda: self._value, all=lambda: [self._value] if self._value else [])
+
+    class _FakeDB:
+        def __init__(self):
+            self._results = [
+                _ScalarResult(source_agent),
+                _ScalarResult(target_agent),
+                _ScalarResult(source_participant),
+            ]
+            self.added = []
+            self.commit_count = 0
+
+        async def execute(self, _stmt):
+            if not self._results:
+                raise AssertionError("Unexpected execute call")
+            return self._results.pop(0)
+
+        def add(self, value):
+            self.added.append(value)
+
+        async def commit(self):
+            self.commit_count += 1
+
+    class _FakeSessionCtx:
+        async def __aenter__(self):
+            return fake_db
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    fake_db = _FakeDB()
+
+    async def fake_find_or_create_agent_pair_session(*_args, **_kwargs):
+        return chat_session
+
+    monkeypatch.setattr("app.services.agent_tool_domains.messaging.async_session", lambda: _FakeSessionCtx())
+    monkeypatch.setattr(
+        "app.services.agent_tool_domains.messaging.find_or_create_agent_pair_session",
+        fake_find_or_create_agent_pair_session,
+    )
+    monkeypatch.setattr(
+        "app.services.agent_tool_domains.messaging.session_conversation_id",
+        lambda _session: "agent-pair-conv",
+    )
+
+    result = await _send_message_to_agent(
+        from_agent_id,
+        {
+            "agent_name": target_agent.name,
+            "target_agent_id": str(target_agent_id),
+            "message": "Please send the release summary.",
+            "msg_type": "consult",
+        },
+    )
+
+    assert "queued" in result
+    outbound_gateway = next(obj for obj in fake_db.added if isinstance(obj, GatewayMessage))
+    outbound_chat = next(obj for obj in fake_db.added if isinstance(obj, ChatMessage))
+    assert outbound_gateway.agent_id == target_agent.id
+    assert outbound_gateway.sender_agent_id == from_agent_id
+    assert outbound_gateway.conversation_id == "agent-pair-conv"
+    assert outbound_chat.agent_id == chat_session.agent_id
+    assert outbound_chat.conversation_id == "agent-pair-conv"
+    assert outbound_chat.role == "user"
+    assert outbound_chat.content == "Please send the release summary."
+    assert outbound_chat.user_id == target_agent.creator_id
+    assert outbound_chat.participant_id == source_participant.id
+    assert chat_session.last_message_at is not None
+    assert fake_db.commit_count == 1
 
 
 @pytest.mark.asyncio

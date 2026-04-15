@@ -3,22 +3,92 @@ name: DingTalk Integration
 description: DingTalk channel conversation behavior guide
 ---
 
-## DingTalk Channel Behavior
+# DingTalk Channel Behavior
 
-This channel currently works as an inbound conversation bridge, not as a standalone proactive messaging toolset.
+<role>
+Use this skill when a user is messaging you from DingTalk and you need to
+understand how the channel works. DingTalk is currently an **inbound-only
+conversation bridge** — you reply in the current conversation and the
+channel handler delivers it back. You do NOT have proactive DingTalk tools
+to look up users or send outbound messages to DingTalk by ID.
+</role>
 
-- When a user messages the agent from DingTalk, the platform creates or resumes the corresponding conversation automatically.
-- Your normal assistant reply in that conversation is sent back to DingTalk by the channel handler.
-- You do **not** have dedicated proactive DingTalk messaging or user lookup tools in the current runtime.
+<when_to_use>
+- A user is currently talking to you through DingTalk and you are unsure how to reply
+- You need to schedule a follow-up with that DingTalk user and need to know which trigger type to use
+- You are tempted to "send a DingTalk message" to someone — this skill explains why you cannot
+</when_to_use>
 
-## What To Do
+<do_not_use_when>
+- The user is on Feishu/Slack/web — use the matching channel skill instead
+- You need to send a proactive DingTalk message to a user outside the current thread — there is no tool for that; do not invent one
+</do_not_use_when>
 
-- If the user is already talking to you in DingTalk, reply normally in the current conversation.
-- If you need follow-up later, use `set_trigger` and `list_triggers`; if you need to reschedule or cancel, use whatever trigger-management tools are already in your current toolset.
-- If the user asks you to contact someone outside the current DingTalk conversation, do not invent DingTalk tools or IDs.
+## Tool Reference
 
-## Important Notes
+<tool_reference>
 
-- Only claim message delivery when you have a real tool result confirming it.
-- Use real identifiers from tool results — don't fabricate DingTalk user IDs or search results.
-- Only use DingTalk tools that are actually present in your current toolset.
+DingTalk has no dedicated outbound tools in the current runtime. The
+relevant tools you WILL use come from other skill packs:
+
+| Task | Tool (from other skills) |
+|------|-------------------------|
+| Reply in the current DingTalk conversation | (automatic — your normal assistant reply is sent back by the channel handler) |
+| Schedule a follow-up later in this conversation | `set_trigger` (from Trigger Management Guide) |
+| Wait for the user's next DingTalk message | `set_trigger` with `type="on_message"` and `reply_to_current_sender: true` |
+| List your active triggers | `list_triggers` |
+| Contact another digital employee instead | `send_message_to_agent` |
+
+</tool_reference>
+
+## Workflow
+
+<workflows>
+
+### 1. Replying in the current DingTalk conversation
+Just reply normally. No tool call needed — the channel handler forwards your assistant message automatically.
+
+### 2. Setting up a follow-up
+User asks: "跟我一小时后再提醒一下"
+- Call `set_trigger(type="once", at="+1h", reason="Remind the user about <topic>. Reply in the current DingTalk thread when triggered.")`
+- Trust the awakening context's Reply Channel to send the result back through DingTalk.
+
+### 3. Needing to contact someone NOT in this conversation
+If the user asks you to "DM someone else on DingTalk" — you cannot do it directly (no outbound tool). Options:
+1. Ask the user to introduce or forward the message themselves.
+2. If the target is a digital-employee colleague, use `send_message_to_agent`.
+3. If the target has an email, use the Email Guide skill.
+
+</workflows>
+
+## Examples
+
+<examples>
+
+### Example A — Scheduled reminder in DingTalk
+Input: `帮我 30 分钟后提醒一下开会`
+Action: `set_trigger(type="once", at="+30m", reason="Remind the user about the meeting. Reply in the current DingTalk thread when triggered.")`
+Output to user: `好的，已设置 30 分钟后的提醒，我会在这个 DingTalk 对话里通知你。`
+
+### Example B — User asks to message a third party
+Input: `帮我 DingTalk 一下 Alice 说会议改到下周`
+Correct response: `我在当前 DingTalk 对话里无法主动发消息给 Alice —— 这个通道没有外发工具。你可以 (1) 自己转发一下，(2) 如果 Alice 是数字员工我可以用 send_message_to_agent 发，或 (3) 如果她有邮箱我可以用邮件发送。`
+
+</examples>
+
+## Anti-patterns
+
+<anti_patterns>
+- ❌ **Invent a `dingtalk_send_message` tool or any `dingtalk_*` outbound tool** → it does not exist; the call will fail. Use the escalation options in Example B instead.
+- ❌ **Fabricate DingTalk user IDs, mobile numbers, or DingTalk IDs** → there is no way to verify them, and any downstream tool relying on them will break. Only use IDs that appear in tool responses.
+- ❌ **Claim a message was "sent to DingTalk" when you only wrote text in the reply** → your reply is auto-forwarded, but that's not "sending outbound". Describe it as "replying in the current thread".
+- ❌ **Use `send_channel_file` and assume it will reach a specific DingTalk user outside the thread** → it delivers to the current channel, not arbitrary targets.
+</anti_patterns>
+
+## Success Criteria
+
+<success_criteria>
+- You only claim delivery when the channel handler has processed your reply (i.e. you replied in the current conversation).
+- You never fabricate DingTalk identifiers or tool names.
+- Scheduled follow-ups in DingTalk threads use `set_trigger` with a reason that describes the target channel explicitly.
+</success_criteria>

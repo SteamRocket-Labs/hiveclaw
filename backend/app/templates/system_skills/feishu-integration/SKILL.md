@@ -36,7 +36,30 @@ is_system: true
 
 # Feishu Office Suite
 
-Use this skill when the user wants real work performed inside Feishu/Lark: send an IM, read or create docs, inspect Sheets, mutate Base, submit approvals, manage tasks, or operate calendar events.
+<role>
+Use this skill when the user wants real work performed inside Feishu/Lark:
+send an IM, read or create docs, inspect Sheets, mutate Base, submit
+approvals, manage tasks, or operate calendar events. This skill activates
+the `feishu_*` tool surface — loading it means you intend to actually call
+these tools, not just describe them.
+</role>
+
+<when_to_use>
+- User asks to message a Feishu colleague (by name, open_id, or user_id)
+- User wants to read, create, or append to a Feishu doc or wiki page
+- User wants to inspect Base (Bitable) structure or query/update records
+- User wants to schedule, update, or cancel calendar meetings
+- User wants to submit, query, or read approval instances
+- User wants to create, complete, or comment on Feishu tasks
+- User wants to read Feishu Sheets data
+</when_to_use>
+
+<do_not_use_when>
+- Target is a digital-employee colleague, not a human — use `send_message_to_agent` instead
+- Target is an external email recipient — use the `Email Guide` skill instead
+- Feishu App ID/Secret are not configured yet — report the missing config first
+- User is asking a generic question about Feishu features — answer from knowledge instead of calling tools
+</do_not_use_when>
 
 ## Prerequisites
 
@@ -49,6 +72,8 @@ Use this skill when the user wants real work performed inside Feishu/Lark: send 
 - OpenAPI is the primary path. Some office workflows can still fall back to CLI/runtime helpers, but message send, CardKit, approvals, and calendar depend on real Feishu app auth and scopes.
 
 ## Tool Reference
+
+<tool_reference>
 
 ### Messaging and Identity
 | Tool | Purpose | Key Params |
@@ -111,7 +136,11 @@ Use this skill when the user wants real work performed inside Feishu/Lark: send 
 | `feishu_calendar_update` | Update an agent-owned event | `event_id`, plus fields to change: `summary`, `description`, `location`, `start_time`, `end_time` |
 | `feishu_calendar_delete` | Cancel an agent-owned event | `event_id` |
 
+</tool_reference>
+
 ## Common Workflows
+
+<workflows>
 
 ### Send a message to a real person
 1. Prefer the exact identifier the user already provided: `user_id` first, then `open_id`
@@ -169,6 +198,44 @@ Calendar in this platform is **agent-first**:
 6. Update if needed: `feishu_calendar_update(event_id="...", start_time="...", end_time="...")`
 7. Cancel if asked: `feishu_calendar_delete(event_id="...")`
 
+</workflows>
+
+## Examples
+
+<examples>
+
+### Example A — Schedule a meeting with two people
+
+Input: `帮我约 Alice 和 Bob 下周二下午 2-3 点开产品评审会`
+
+Correct tool chain:
+```
+feishu_user_search(name="Alice")  → open_id=ou_alice
+feishu_user_search(name="Bob")    → open_id=ou_bob
+feishu_calendar_list(user_open_id="ou_alice", start_time="2026-04-21T14:00", end_time="2026-04-21T15:00")
+feishu_calendar_list(user_open_id="ou_bob",   start_time="2026-04-21T14:00", end_time="2026-04-21T15:00")
+# Both busy windows empty → slot is free
+feishu_calendar_create(summary="产品评审会", start_time="2026-04-21T14:00+08:00",
+                       end_time="2026-04-21T15:00+08:00",
+                       attendee_open_ids=["ou_alice", "ou_bob"])
+```
+Output to user: event link + time + invited attendees (confirmed by tool response).
+
+### Example B — Add a column to a Base table
+
+Input: `在"客户线索"Base 的"潜在客户"表里加一列"联系电话"`
+
+Correct tool chain:
+```
+feishu_base_table_list(base_token="bascn_xxx")   → discover table_id for 潜在客户
+feishu_base_field_list(base_token="bascn_xxx", table_id="tbl_yyy")   → verify "联系电话" does not exist
+feishu_base_field_create(base_token="bascn_xxx", table_id="tbl_yyy",
+                         field_name="联系电话", type=13)   # 13 = Phone
+```
+Output: new field name + Base URL, confirmed by tool response.
+
+</examples>
+
 ## How to Work Well
 
 ### Read Before Write
@@ -196,3 +263,26 @@ Before calling `feishu_doc_delete` or `feishu_base_record_delete`, restate the t
 
 ### Use the Right Channel for the Right Audience
 Send messages to real people via `send_feishu_message`. Reach other digital employees via `send_message_to_agent` instead.
+
+## Anti-patterns
+
+<anti_patterns>
+DO NOT do any of these:
+
+- ❌ **Call `send_feishu_message` with a name instead of an ID** → the tool expects `user_id` or `open_id`. Always `feishu_user_search` first when only a name is given.
+- ❌ **Call `feishu_doc_append` with the old URL token instead of the real token returned by `feishu_doc_create`** → appends will fail silently or hit the wrong doc. Use the token from the most recent create response.
+- ❌ **Call `feishu_base_record_upsert` without first calling `feishu_base_field_list`** → the field-name-to-value mapping will target wrong columns or fail schema validation. Always discover the real field names first.
+- ❌ **Call `feishu_doc_delete` or `feishu_base_record_delete` without explicit user confirmation** → irreversible. Restate the target ("about to delete doc X with token Y — confirm?") and wait.
+- ❌ **Fabricate an `approval_code`, `message_id`, or `event_id`** → Feishu rejects with obscure errors. Ask the user for the real code when unknown, or read it back from a prior tool response.
+- ❌ **Assume calendar attendee is free just because the busy-windows array is empty** → also check the agent-calendar-owned meetings section; there may be conflicting meetings you created earlier.
+- ❌ **Use `feishu_calendar_update` on a meeting the agent did not create** → calendar is agent-first; only agent-owned events are editable. Check the ownership field in `feishu_calendar_list` before attempting update.
+</anti_patterns>
+
+## Success Criteria
+
+<success_criteria>
+- Every claimed delivery is backed by a tool response `message_id`, `document_token`, `event_id`, or equivalent — never asserted without it.
+- File tokens, IDs, and codes in your output are the ones returned by tool calls in this session, not fabricated or remembered.
+- Destructive operations (delete, overwrite) only happen after explicit user confirmation in this session.
+- When a tool fails with a config error, you report the exact missing piece (App ID? scope? approval_code?) rather than "feishu isn't working".
+</success_criteria>

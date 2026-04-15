@@ -18,9 +18,25 @@ metadata:
 
 # DOCX Generator
 
-Handle DOCX work directly. Do **not** spawn sub-agents.
+<role>
+Use this skill when the user wants to create, fill, or edit a `.docx` file.
+Handle DOCX work directly — do NOT spawn sub-agents. This is a cloud
+execution contract: use the smallest `execute_code` script that can do the
+job deterministically, save to workspace, and deliver via the channel.
+</role>
 
-This skill is a **cloud execution contract**. Use the smallest script that can create or edit the requested document.
+<when_to_use>
+- User asks for a `.docx` report, memo, proposal, contract, or form draft
+- User provides a Word template and wants fields filled in
+- User wants to edit content in an existing `.docx`
+- User wants a finished Word artifact delivered back (workspace file + channel)
+</when_to_use>
+
+<do_not_use_when>
+- Output would be better as PDF (print-ready) or PPTX (deck) — use the right generator
+- Output is spreadsheet-heavy — use `XLSX Processor`
+- User only wants plain-text/Markdown response — no need to produce a file
+</do_not_use_when>
 
 ## Use This Skill For
 
@@ -35,7 +51,23 @@ This skill is a **cloud execution contract**. Use the smallest script that can c
 - Spreadsheet-heavy outputs better represented as `.xlsx`
 - Pure Markdown/plain-text responses that do not need a Word file
 
+## Tool Reference
+
+<tool_reference>
+
+| Task | Tool | Notes |
+|------|------|-------|
+| Inspect existing `.docx` structure | `read_document` | Higher-level reader with structure preservation |
+| Read raw `.docx` bytes or confirm file exists | `read_file` | Use when you only need text or metadata |
+| Run a Python script to create/edit `.docx` | `execute_code` | Use `python-docx` library |
+| Write the finished file | `write_file` | Usually handled inside `execute_code`; used when saving text snapshots |
+| Deliver the file to the current channel | `send_channel_file` | Workspace-relative path |
+
+</tool_reference>
+
 ## Routing
+
+<workflows>
 
 ### 1. New document from scratch
 
@@ -52,6 +84,59 @@ Use:
 ### 3. Template fill / form fill
 
 Use `execute_code` to open the template, fill only the requested fields/sections, and preserve layout unless the user asked to restyle it.
+
+</workflows>
+
+## Examples
+
+<examples>
+
+### Example A — Create a simple memo
+
+Input: `帮我起草一份周会纪要 docx，包含议题、决定、下一步`
+
+Correct flow (inside `execute_code`):
+```python
+from docx import Document
+
+doc = Document()
+doc.add_heading("Weekly Sync — 2026-04-16", level=1)
+
+doc.add_heading("议题", level=2)
+doc.add_paragraph("• 下季度 OKR 草案讨论\n• 飞书集成上线进度")
+
+doc.add_heading("决定", level=2)
+doc.add_paragraph("• OKR 草案本周五前定稿\n• 飞书集成 4-20 上线")
+
+doc.add_heading("下一步", level=2)
+doc.add_paragraph("• Alice: 本周四前完成 OKR 草案\n• Bob: 4-19 前跑完飞书集成冒烟测试")
+
+doc.save("workspace/weekly-sync-2026-04-16.docx")
+```
+Then: `send_channel_file(file_path="workspace/weekly-sync-2026-04-16.docx")`
+Output: `已生成 workspace/weekly-sync-2026-04-16.docx 并发送到当前对话。`
+
+### Example B — Fill a contract template
+
+Input: `把 workspace/contract-template.docx 里的公司名改成"XXX Inc"，合同金额改成 120,000`
+
+Correct flow:
+```
+read_document(path="workspace/contract-template.docx")  # inspect fields
+
+# execute_code (python-docx):
+from docx import Document
+doc = Document("workspace/contract-template.docx")
+for para in doc.paragraphs:
+    if "{{COMPANY}}" in para.text:
+        para.text = para.text.replace("{{COMPANY}}", "XXX Inc")
+    if "{{AMOUNT}}" in para.text:
+        para.text = para.text.replace("{{AMOUNT}}", "120,000")
+doc.save("workspace/contract-xxx-inc-v1.docx")
+```
+Output: `已生成 workspace/contract-xxx-inc-v1.docx，公司名和金额已替换。模板里其他格式保持不变。`
+
+</examples>
 
 ## Required Inputs
 
@@ -91,3 +176,16 @@ If one of these is missing, make the safest reasonable assumption and proceed.
 3. Run one narrow document script
 4. Save the output
 5. Return the file path or extracted result
+
+## Anti-patterns
+
+<anti_patterns>
+
+- ❌ **Rewrite the entire document for a small edit** → loses formatting, images, numbering, and comments. Use targeted paragraph/run replacement with `python-docx`.
+- ❌ **Skip `read_document` before editing** → you don't know the existing structure and may destroy it. Always read first.
+- ❌ **Claim the file exists without verifying** → `execute_code` may have silently errored. Check with `read_file` or `list_files` that the target path exists after saving.
+- ❌ **Write to an absolute path outside workspace** → `send_channel_file` needs workspace-relative paths and the file won't be reachable. Always save under `workspace/`.
+- ❌ **Hard-code strings that should be parameters** → the same template fill often needs to run multiple times. Accept the variable values from the user and plug them in.
+- ❌ **Produce a `.docx` when the user only wanted analysis** → wastes a round and creates a useless artifact. If the ask is "summarize this docx", return text, not a new file.
+
+</anti_patterns>

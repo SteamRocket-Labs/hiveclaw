@@ -26,6 +26,7 @@ from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 
 logger = logging.getLogger(__name__)
+_BACKFILLABLE_T0_GLOBS = ("chat-*.md", "agent_message-*.md")
 
 
 def _agent_logs_dir(agent_id: uuid.UUID) -> Path:
@@ -474,15 +475,20 @@ def _extract_existing_session_ids(files: Iterable[Path]) -> set[str]:
 
 
 async def backfill_recent_chat_logs(agent_id: uuid.UUID, recent_days: int = 30, limit_sessions: int = 20) -> dict[str, int]:
-    """Backfill recent chat sessions into T0 logs when raw files are missing."""
+    """Backfill recent chat / agent_message sessions into T0 logs when raw files are missing."""
     logs_dir = _agent_logs_dir(agent_id)
-    existing_session_ids = _extract_existing_session_ids(logs_dir.rglob("chat-*.md")) if logs_dir.exists() else set()
+    existing_session_ids: set[str] = set()
+    if logs_dir.exists():
+        existing_files: list[Path] = []
+        for pattern in _BACKFILLABLE_T0_GLOBS:
+            existing_files.extend(logs_dir.rglob(pattern))
+        existing_session_ids = _extract_existing_session_ids(existing_files)
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=recent_days)
     session_stmt = (
         select(ChatSession)
         .where(
-            ChatSession.agent_id == agent_id,
+            (ChatSession.agent_id == agent_id) | (ChatSession.peer_agent_id == agent_id),
             ChatSession.created_at >= cutoff,
         )
         .order_by(ChatSession.last_message_at.desc(), ChatSession.created_at.desc())
@@ -505,7 +511,6 @@ async def backfill_recent_chat_logs(agent_id: uuid.UUID, recent_days: int = 30, 
                 message_stmt = (
                     select(ChatMessage)
                     .where(
-                        ChatMessage.agent_id == agent_id,
                         ChatMessage.conversation_id == session_key,
                         ChatMessage.role.in_(("user", "assistant")),
                     )
@@ -524,16 +529,26 @@ async def backfill_recent_chat_logs(agent_id: uuid.UUID, recent_days: int = 30, 
                     skipped_empty += 1
                     continue
 
+                behavior_type = "agent_message" if session.source_channel == "agent" else "chat"
+                metadata = {
+                    "session_id": session_key,
+                    "started_at": session.created_at,
+                    "occurred_at": session.created_at,
+                }
+                if behavior_type == "agent_message":
+                    partner_agent_id = session.peer_agent_id if session.agent_id == agent_id else session.agent_id
+                    metadata.update({
+                        "from_agent": str(partner_agent_id or "unknown"),
+                        "to_agent": str(agent_id),
+                    })
+                else:
+                    metadata["source"] = session.source_channel
+
                 path = write_t0_log(
                     agent_id,
-                    behavior_type="chat",
+                    behavior_type=behavior_type,
                     messages=rendered_messages,
-                    metadata={
-                        "session_id": session_key,
-                        "source": session.source_channel,
-                        "started_at": session.created_at,
-                        "occurred_at": session.created_at,
-                    },
+                    metadata=metadata,
                 )
                 if path is not None:
                     written += 1

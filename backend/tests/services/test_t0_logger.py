@@ -438,3 +438,137 @@ async def test_backfill_recent_chat_logs_creates_t0_files(agent_id: uuid.UUID, t
     content = files[0].read_text(encoding="utf-8")
     assert "请你把记忆系统收成 md-first" in content
     assert "我会先从 session recall 和 T0 审计开始。" in content
+
+
+@pytest.mark.asyncio
+async def test_backfill_recent_chat_logs_backfills_peer_agent_sessions_as_agent_message(
+    agent_id: uuid.UUID,
+    tmp_agent_dir: Path,
+    monkeypatch,
+) -> None:
+    session_id = uuid.uuid4()
+    canonical_agent_id = uuid.uuid4()
+    session = type(
+        "SessionRow",
+        (),
+        {
+            "id": session_id,
+            "agent_id": canonical_agent_id,
+            "peer_agent_id": agent_id,
+            "source_channel": "agent",
+            "created_at": datetime(2026, 4, 10, 9, 0, tzinfo=timezone.utc),
+            "last_message_at": datetime(2026, 4, 10, 9, 5, tzinfo=timezone.utc),
+            "summary": "协作发布核对表",
+            "user_id": uuid.uuid4(),
+        },
+    )()
+    messages = [
+        type(
+            "MessageRow",
+            (),
+            {
+                "role": "user",
+                "content": "请确认 release checklist 的最终三段式结构。",
+                "created_at": datetime(2026, 4, 10, 9, 1, tzinfo=timezone.utc),
+                "conversation_id": str(session_id),
+            },
+        )(),
+        type(
+            "MessageRow",
+            (),
+            {
+                "role": "assistant",
+                "content": "已经确认是 preflight、deploy、post-verify 三段。",
+                "created_at": datetime(2026, 4, 10, 9, 2, tzinfo=timezone.utc),
+                "conversation_id": str(session_id),
+            },
+        )(),
+    ]
+
+    class _InspectingBackfillSession:
+        def __init__(self):
+            self._calls = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def execute(self, stmt):
+            self._calls += 1
+            sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+            if self._calls == 1:
+                assert "chat_sessions.peer_agent_id" in sql
+                return _BackfillResult([session])
+            if self._calls == 2:
+                assert "chat_messages.agent_id =" not in sql
+                return _BackfillResult(messages)
+            raise AssertionError(f"Unexpected execute call #{self._calls}: {sql}")
+
+    monkeypatch.setattr("app.services.t0_logger.async_session", lambda: _InspectingBackfillSession(), raising=False)
+    with patch("app.services.t0_logger.get_settings") as mock_settings:
+        mock_settings.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
+        report = await backfill_recent_chat_logs(agent_id, recent_days=30, limit_sessions=10)
+
+    logs_root = tmp_agent_dir / str(agent_id) / "logs"
+    chat_files = list(logs_root.rglob("chat-*.md"))
+    agent_message_files = list(logs_root.rglob("agent_message-*.md"))
+
+    assert report["sessions_scanned"] == 1
+    assert report["written"] == 1
+    assert len(chat_files) == 0
+    assert len(agent_message_files) == 1
+    content = agent_message_files[0].read_text(encoding="utf-8")
+    assert "type: agent_message" in content
+    assert "source: agent_message" in content
+    assert f"from: {canonical_agent_id}" in content
+    assert f"to: {agent_id}" in content
+
+
+@pytest.mark.asyncio
+async def test_backfill_recent_chat_logs_skips_existing_agent_message_log(
+    agent_id: uuid.UUID,
+    tmp_agent_dir: Path,
+    monkeypatch,
+) -> None:
+    session_id = uuid.uuid4()
+    logs_day = tmp_agent_dir / str(agent_id) / "logs" / "2026-04-10"
+    logs_day.mkdir(parents=True, exist_ok=True)
+    (logs_day / "agent_message-0900-existing.md").write_text(
+        f"""---
+type: agent_message
+session_id: {session_id}
+source: agent_message
+started: 2026-04-10T09:00:00+00:00
+---
+""",
+        encoding="utf-8",
+    )
+
+    session = type(
+        "SessionRow",
+        (),
+        {
+            "id": session_id,
+            "agent_id": uuid.uuid4(),
+            "peer_agent_id": agent_id,
+            "source_channel": "agent",
+            "created_at": datetime(2026, 4, 10, 9, 0, tzinfo=timezone.utc),
+            "last_message_at": datetime(2026, 4, 10, 9, 5, tzinfo=timezone.utc),
+            "summary": "协作发布核对表",
+            "user_id": uuid.uuid4(),
+        },
+    )()
+
+    monkeypatch.setattr("app.services.t0_logger.async_session", lambda: _BackfillSession([session], []), raising=False)
+    with patch("app.services.t0_logger.get_settings") as mock_settings:
+        mock_settings.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
+        report = await backfill_recent_chat_logs(agent_id, recent_days=30, limit_sessions=10)
+
+    agent_message_files = list((tmp_agent_dir / str(agent_id) / "logs").rglob("agent_message-*.md"))
+
+    assert report["sessions_scanned"] == 1
+    assert report["written"] == 0
+    assert report["skipped_existing"] == 1
+    assert len(agent_message_files) == 1

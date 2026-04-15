@@ -115,6 +115,122 @@ class TestExecutingActionsSection:
             assert "do not attempt workarounds" in out
 
 
+class TestScenarioPR29Deepening:
+    """PR-29 deepened scenario.py to gold: per-type XML tags + good/bad examples."""
+
+    def _profile(self, name: str) -> TaskProfile:
+        return TaskProfile(name=name, complexity="high")
+
+    def test_research_playbook_has_xml_and_examples(self) -> None:
+        out = build_scenario_section(self._profile("research"))
+        assert "<research_playbook>" in out
+        assert "</research_playbook>" in out
+        assert "**Good**:" in out
+        assert "**Bad**:" in out
+        assert "Claude 4.6" in out  # concrete good example anchor
+
+    def test_coding_playbook_has_xml_and_examples(self) -> None:
+        out = build_scenario_section(self._profile("coding"))
+        assert "<coding_playbook>" in out
+        assert "pytest tests/auth" in out  # concrete good example anchor
+
+    def test_operations_playbook_has_xml_and_examples(self) -> None:
+        out = build_scenario_section(self._profile("operations"))
+        assert "<operations_playbook>" in out
+        assert "trigger queue" in out  # concrete good example anchor
+        assert "Rollback:" in out
+
+    def test_memory_recall_playbook_has_xml_and_examples(self) -> None:
+        out = build_scenario_section(self._profile("memory_recall"))
+        assert "<memory_recall_playbook>" in out
+        assert "search_memory" in out
+
+    def test_self_evolution_playbook_has_xml_and_examples(self) -> None:
+        out = build_scenario_section(self._profile("self_evolution"))
+        assert "<self_evolution_playbook>" in out
+        assert "save_skill" in out
+
+    def test_default_playbook_has_xml(self) -> None:
+        out = build_scenario_section(self._profile("unknown_task_type"))
+        assert "<default_playbook>" in out
+
+    def test_review_overlay_has_xml_and_examples_when_keyword_matches(self) -> None:
+        out = build_scenario_section(self._profile("coding"), query="please review this PR")
+        assert "<review_overlay>" in out
+        assert "### Verification / Review Overlay" in out
+        assert "P0:" in out  # good example anchor
+
+    def test_review_overlay_absent_when_no_review_keyword(self) -> None:
+        out = build_scenario_section(self._profile("coding"), query="implement a new feature")
+        assert "<review_overlay>" not in out
+
+
+class TestExecutingActionsPR28Deepening:
+    """PR-28 deepened executing_actions to gold standard: XML sub-blocks,
+    explicit 3-strike rule, honesty good/bad examples, verification matrix."""
+
+    def test_xml_sub_blocks_present_in_conversation_mode(self) -> None:
+        out = build_executing_actions_section(execution_mode="conversation")
+        for tag in [
+            "<core_directives>",
+            "</core_directives>",
+            "<work_methodology>",
+            "</work_methodology>",
+            "<three_strike_rule>",
+            "</three_strike_rule>",
+            "<operating_principles>",
+            "</operating_principles>",
+            "<honesty>",
+            "</honesty>",
+            "<safety>",
+            "</safety>",
+            "<problem_solving>",
+            "</problem_solving>",
+            "<verification>",
+            "</verification>",
+            "<platform_integration>",
+            "</platform_integration>",
+        ]:
+            assert tag in out, f"missing tag: {tag}"
+
+    def test_three_strike_rule_differentiates_same_vs_different_errors(self) -> None:
+        out = build_executing_actions_section(execution_mode="conversation")
+        assert "DIFFERENT errors" in out
+        assert "SAME error" in out
+        assert "grinding" in out
+
+    def test_honesty_has_good_bad_examples(self) -> None:
+        out = build_executing_actions_section(execution_mode="conversation")
+        # Named bad → good rewrite pair with file:line evidence.
+        assert "middleware.py:142" in out
+        assert "pytest tests/auth" in out
+        # Tests-not-yet-run bad example
+        assert "Tests not yet run" in out
+
+    def test_verification_has_decision_matrix_table(self) -> None:
+        out = build_executing_actions_section(execution_mode="conversation")
+        assert "| Action | Pre-check tool | Why |" in out
+        # Specific rows
+        assert "Overwrite a file" in out
+        assert "Create a trigger" in out
+        assert "Mark a task complete" in out
+
+    def test_legacy_markdown_headers_preserved(self) -> None:
+        # The prompt_eval contract + test_prompt_sections expect these.
+        out = build_executing_actions_section(execution_mode="conversation")
+        for header in [
+            "## Core Directives",
+            "## How You Work",
+            "## Operating Principles",
+            "### Honesty",
+            "### Safety",
+            "### Problem Solving",
+            "### Verification",
+            "## Platform Integration",
+        ]:
+            assert header in out, f"missing header: {header}"
+
+
 class TestIdentitySection:
     def test_coordinator_mode_forbids_self_delegation(self) -> None:
         out = build_identity_section("opsbot", execution_mode="coordinator")

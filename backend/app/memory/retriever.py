@@ -108,22 +108,55 @@ async def _rerank_semantic_items(
         str(i) + ": " + item.content[:150] for i, item in enumerate(items)
     ]
     manifest = "\n".join(manifest_lines)
-    prompt_parts = [
-        "Query: " + query,
-        "",
-        "Memories (index: content):",
-        manifest,
-        "",
-        "Select up to " + str(max_select) + " memory indices most useful for this query. ",
-        'Return JSON: {"selected": [0, 2, 4]}',
-    ]
-    prompt_text = "\n".join(prompt_parts)
+    system_prompt = (
+        "<role>\n"
+        "You are a memory reranker. Given a user query and a numbered list of\n"
+        "candidate semantic memory items, select the indices that will best\n"
+        "help the caller answer the query. You do NOT summarize, explain, or\n"
+        "modify the memories — you only pick.\n"
+        "</role>\n\n"
+        "<selection_criteria>\n"
+        "- Relevance to the literal query intent comes first.\n"
+        "- Prefer items with concrete artifacts (file paths, decisions, errors,\n"
+        "  user preferences) over abstract or generic statements.\n"
+        "- Skip items that merely restate a well-known fact already covered by\n"
+        "  a higher-ranked item.\n"
+        "- When items are near-duplicates, keep ONE (the one with richer\n"
+        "  evidence) and drop the rest.\n"
+        "</selection_criteria>\n\n"
+        "<anti_patterns>\n"
+        "- Do NOT invent new memory content. You can only return indices that\n"
+        "  appear in the numbered list.\n"
+        "- Do NOT return indices outside [0, len(items) - 1].\n"
+        "- Do NOT pad the selection to hit the cap — return fewer indices if\n"
+        "  fewer are relevant. An empty selection is valid if nothing fits.\n"
+        "- Do NOT wrap the JSON in markdown fences or add prose outside it.\n"
+        "</anti_patterns>\n\n"
+        "<output_contract>\n"
+        "Respond with a single raw JSON object, no fences, no prose:\n"
+        '  {"selected": [<int>, <int>, ...]}\n'
+        "Indices are 0-based. Order by descending relevance (most useful first).\n"
+        "</output_contract>"
+    )
+    user_prompt = (
+        "<query>" + query + "</query>\n\n"
+        "<candidate_memories>\n"
+        "Format: `<index>: <content preview, truncated at 150 chars>`\n\n"
+        + manifest
+        + "\n</candidate_memories>\n\n"
+        "<task>\n"
+        "Select up to "
+        + str(max_select)
+        + " memory indices most useful for the query above.\n"
+        "Return only the JSON object defined in <output_contract>.\n"
+        "</task>"
+    )
     try:
         client = create_llm_client(**model_config)
         response = await client.stream(
             messages=[
-                LLMMessage(role="system", content="Select the most relevant memories. Return only JSON."),
-                LLMMessage(role="user", content=prompt_text),
+                LLMMessage(role="system", content=system_prompt),
+                LLMMessage(role="user", content=user_prompt),
             ],
             max_tokens=100,
             temperature=0.0,

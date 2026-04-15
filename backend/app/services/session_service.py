@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
+from app.models.gateway_message import GatewayMessage
 from app.session_identifiers import (
     build_legacy_gateway_conversation_ids,
     canonicalize_agent_pair_ids,
@@ -30,9 +31,15 @@ async def _normalize_legacy_agent_pair_transcripts(
     target_agent_id: uuid.UUID,
     conversation_id: str,
 ) -> None:
+    legacy_conversation_ids = build_legacy_gateway_conversation_ids(source_agent_id, target_agent_id)
     await db.execute(
         update(ChatMessage)
-        .where(ChatMessage.conversation_id.in_(build_legacy_gateway_conversation_ids(source_agent_id, target_agent_id)))
+        .where(ChatMessage.conversation_id.in_(legacy_conversation_ids))
+        .values(conversation_id=conversation_id)
+    )
+    await db.execute(
+        update(GatewayMessage)
+        .where(GatewayMessage.conversation_id.in_(legacy_conversation_ids))
         .values(conversation_id=conversation_id)
     )
 

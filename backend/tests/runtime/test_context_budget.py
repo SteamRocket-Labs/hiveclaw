@@ -179,6 +179,37 @@ def test_resolve_turn_model_route_keeps_primary_for_coding_turn():
     assert route.task_profile.name == "coding"
 
 
+def test_resolve_turn_model_route_keeps_primary_for_trigger_session_source():
+    from types import SimpleNamespace
+
+    from app.runtime.context_budget import resolve_turn_model_route
+
+    primary_model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1",
+        max_input_tokens=128000,
+        supports_vision=True,
+    )
+    fallback_model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1-mini",
+        max_input_tokens=32000,
+        supports_vision=False,
+    )
+
+    route = resolve_turn_model_route(
+        primary_model=primary_model,
+        fallback_model=fallback_model,
+        query="请继续处理这个待办。",
+        execution_mode="conversation",
+        session_source="trigger",
+    )
+
+    assert route.model is primary_model
+    assert route.fallback_model is fallback_model
+    assert route.reason == "primary_model"
+
+
 def test_resolve_turn_model_route_respects_explicit_disabled_routing_config():
     from types import SimpleNamespace
 

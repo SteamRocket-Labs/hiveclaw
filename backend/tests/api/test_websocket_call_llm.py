@@ -202,3 +202,42 @@ async def test_call_llm_auto_close_emits_session_close(monkeypatch):
     assert payload["source"] == "feishu"
     assert payload["metadata"]["reason"] == "invoke_complete"
     assert payload["messages"][-1] == {"role": "assistant", "content": "runtime-result"}
+
+
+@pytest.mark.asyncio
+async def test_call_llm_uses_explicit_session_source_and_channel_in_runtime_request(monkeypatch):
+    from app.api.websocket import call_llm
+
+    captured = {}
+
+    async def fake_invoke_agent(request):
+        captured["request"] = request
+        return SimpleNamespace(content="runtime-result")
+
+    monkeypatch.setattr("app.api.websocket.invoke_agent", fake_invoke_agent)
+
+    model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1",
+        api_key="key",
+        base_url=None,
+        max_output_tokens=None,
+    )
+
+    result = await call_llm(
+        model=model,
+        messages=[{"role": "user", "content": "hello"}],
+        agent_name="Agent",
+        role_description="desc",
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        session_id="trigger-session-1",
+        session_source="trigger",
+        session_channel="trigger",
+    )
+
+    assert result == "runtime-result"
+    assert captured["request"].session_context is not None
+    assert captured["request"].session_context.session_id == "trigger-session-1"
+    assert captured["request"].session_context.source == "trigger"
+    assert captured["request"].session_context.channel == "trigger"

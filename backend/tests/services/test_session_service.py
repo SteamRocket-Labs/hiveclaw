@@ -143,10 +143,16 @@ async def test_find_or_create_agent_pair_session_normalizes_legacy_gateway_trans
     )
 
     assert session is existing
-    assert len(db.statements) == 2
-    params = db.statements[1].compile().params
-    assert params["conversation_id"] == str(existing.id)
-    assert set(params["conversation_id_1"]) == {
+    assert len(db.statements) == 3
+    chat_params = db.statements[1].compile().params
+    gateway_params = db.statements[2].compile().params
+    assert chat_params["conversation_id"] == str(existing.id)
+    assert gateway_params["conversation_id"] == str(existing.id)
+    assert set(chat_params["conversation_id_1"]) == {
+        f"gw_agent_{source_agent_id}_{target_agent_id}",
+        f"gw_agent_{target_agent_id}_{source_agent_id}",
+    }
+    assert set(gateway_params["conversation_id_1"]) == {
         f"gw_agent_{source_agent_id}_{target_agent_id}",
         f"gw_agent_{target_agent_id}_{source_agent_id}",
     }

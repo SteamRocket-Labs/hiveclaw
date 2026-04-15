@@ -23,11 +23,14 @@ def _apply_feishu_session_runtime_updates(
     *,
     user_id: uuid.UUID,
     title: str | None = None,
+    participant_id: uuid.UUID | None = None,
     delivery_target: dict | None = None,
 ) -> None:
     session.user_id = user_id
     if title and (not session.title or session.title == "New Session"):
         session.title = title
+    if participant_id and not getattr(session, "participant_id", None):
+        session.participant_id = participant_id
     if delivery_target:
         session.delivery_target_json = delivery_target
 
@@ -52,6 +55,8 @@ async def _merge_legacy_feishu_session_into_canonical(
         canonical_session,
         user_id=user_id,
         title=legacy_session.title,
+        participant_id=getattr(legacy_session, "participant_id", None),
+        delivery_target=getattr(legacy_session, "delivery_target_json", None),
     )
     await db.delete(legacy_session)
     await db.flush()

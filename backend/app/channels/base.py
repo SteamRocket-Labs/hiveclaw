@@ -19,7 +19,7 @@ from fastapi import APIRouter
 class InboundMessage:
     """Normalized incoming message from any channel."""
 
-    channel_type: str           # feishu, slack, discord, dingtalk, wecom, teams, web
+    channel_type: str           # feishu, slack, discord, dingtalk, wecom, microsoft_teams, web
     channel_id: str             # Platform-specific channel/conversation ID
     thread_id: str | None       # Thread/topic within channel (if threaded)
     sender_id: str              # Platform-specific sender identifier

@@ -204,3 +204,49 @@ async def test_find_or_create_feishu_chat_session_merges_legacy_alias_into_exist
     params = db.statements[2].compile().params
     assert params["conversation_id"] == str(canonical_session.id)
     assert params["user_id"] == user_id
+
+
+@pytest.mark.asyncio
+async def test_find_or_create_feishu_chat_session_preserves_legacy_participant_and_delivery_target_when_merging():
+    from app.services.feishu_identity_maintenance import find_or_create_feishu_chat_session
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    legacy_participant_id = uuid4()
+    canonical_session = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        user_id=uuid4(),
+        external_conv_id="feishu_p2p_u_123",
+        title="Existing Session",
+        source_channel="feishu",
+        participant_id=None,
+        last_message_at=None,
+        delivery_target_json=None,
+    )
+    legacy_session = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        user_id=uuid4(),
+        external_conv_id="feishu_p2p_ou_legacy",
+        title="Legacy Session",
+        source_channel="feishu",
+        participant_id=legacy_participant_id,
+        last_message_at=datetime(2026, 4, 14, 11, 0, tzinfo=timezone.utc),
+        delivery_target_json={"channel": "feishu", "open_id": "ou_legacy"},
+    )
+    db = _FakeDB([canonical_session, legacy_session])
+
+    session = await find_or_create_feishu_chat_session(
+        db=db,
+        agent_id=agent_id,
+        user_id=user_id,
+        provider_user_id="u_123",
+        provider_open_id="ou_legacy",
+        first_message_title="新的消息",
+        delivery_target=None,
+    )
+
+    assert session is canonical_session
+    assert canonical_session.participant_id == legacy_participant_id
+    assert canonical_session.delivery_target_json == {"channel": "feishu", "open_id": "ou_legacy"}

@@ -711,6 +711,8 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
                     identity_id=agent_id,
                     label=f"Agent: {agent.name} (trigger)",
                 ),
+                session_source="trigger",
+                session_channel="trigger",
             )
         finally:
             if _delivery_token is not None:

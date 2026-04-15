@@ -24,6 +24,8 @@ def test_core_session_entrypoints_use_session_service() -> None:
     gateway_source = (project_root / "backend/app/api/gateway.py").read_text(encoding="utf-8")
     websocket_source = (project_root / "backend/app/api/websocket.py").read_text(encoding="utf-8")
     activity_source = (project_root / "backend/app/api/activity.py").read_text(encoding="utf-8")
+    trigger_daemon_source = (project_root / "backend/app/services/trigger_daemon.py").read_text(encoding="utf-8")
+    feishu_source = (project_root / "backend/app/api/feishu.py").read_text(encoding="utf-8")
     assert "legacy_external_conv_ids" not in channel_session_source
     assert "gw_agent_" not in gateway_source
     assert "_find_or_create_gateway_agent_pair_session(" not in gateway_source
@@ -32,6 +34,12 @@ def test_core_session_entrypoints_use_session_service() -> None:
     assert 'ChatMessage.conversation_id.like("feishu_%")' not in activity_source
     assert 'ChatMessage.conversation_id.like(f"{prefix}%")' not in activity_source
     assert "_list_session_backed_conversations(" in activity_source
+    assert 'session_source="gateway"' in gateway_source
+    assert 'session_channel="gateway"' in gateway_source
+    assert 'session_source="trigger"' in trigger_daemon_source
+    assert 'session_channel="trigger"' in trigger_daemon_source
+    assert "session_source=session_source" in feishu_source
+    assert "session_channel=session_channel" in feishu_source
 
     for relative_path, required_calls in expectations.items():
         source = (project_root / relative_path).read_text(encoding="utf-8")

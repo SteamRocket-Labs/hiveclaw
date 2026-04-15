@@ -158,7 +158,7 @@ _CHEAP_MODEL_HINTS = (
     "7b",
     "3b",
 )
-_NO_CHEAP_ROUTE_SESSION_SOURCES = {"task", "schedule", "heartbeat", "agent"}
+_NO_CHEAP_ROUTE_SESSION_SOURCES = {"task", "trigger", "heartbeat", "agent"}
 _NO_CHEAP_ROUTE_EXECUTION_MODES = {"task", "heartbeat", "coordinator"}
 
 
@@ -334,7 +334,7 @@ def resolve_turn_model_route(
     Conservative by design:
     - Only route to a cheaper fallback when the turn looks like a simple
       low-stakes conversation request.
-    - Task/heartbeat/schedule/delegation paths always stay on the primary model.
+    - Task/heartbeat/trigger/delegation paths always stay on the primary model.
     """
 
     profile = infer_task_profile(query, messages=messages)

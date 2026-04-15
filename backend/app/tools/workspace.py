@@ -90,7 +90,10 @@ def _bootstrap_evolution_files(ws: Path) -> None:
             fpath.write_text(content, encoding="utf-8")
 
 
-_HEARTBEAT_MIGRATION_MARKER = "Phase 5: PASSIVE LEARNING"
+# PR-12: rewrote the template with XML sections + a decision matrix. Use one
+# of the new unique tags as the marker so agents on the pre-PR-12 template
+# get upgraded on next startup migration.
+_HEARTBEAT_MIGRATION_MARKER = "<decision_matrix>"
 _DEPRECATED_SKILLS = ("self-improving-agent", "proactive-agent")
 
 

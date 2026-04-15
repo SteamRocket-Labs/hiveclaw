@@ -7,6 +7,12 @@ from uuid import uuid4
 import pytest
 
 
+def test_internal_session_sources_include_agent_collaboration() -> None:
+    from app.services.skill_distiller import _INTERNAL_SESSION_SOURCES
+
+    assert "agent" in _INTERNAL_SESSION_SOURCES
+
+
 def test_build_workflow_signature_filters_noise_and_consecutive_duplicates() -> None:
     from app.services.skill_distiller import _build_workflow_signature
 

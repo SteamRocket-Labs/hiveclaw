@@ -62,7 +62,7 @@ _EXTERNAL_ACTION_TOOLS = {
     "send_message_to_agent",
     "delegate_to_agent",
 }
-_INTERNAL_SESSION_SOURCES = {"heartbeat", "trigger", "task"}
+_INTERNAL_SESSION_SOURCES = {"heartbeat", "trigger", "task", "agent"}
 _PROMOTE_WINDOW_DAYS = 14
 _PROMOTE_THRESHOLD = 3
 _MIN_CONFIDENCE = 0.85

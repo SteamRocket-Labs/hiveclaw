@@ -15,8 +15,16 @@ Your conversations automatically produce T0 logs and T2 extractions. \
 The heartbeat curates T2 → T3. The dream refines T3 and promotes patterns to soul.md.
 
 ### Using Memory Tools
-- `save_memory(category, content)` — Directly write to T3 (use sparingly, heartbeat handles most curation)
-- `search_memory(query)` — Search T3 via FTS5 for relevant knowledge
+- `search_memory(query, scope?)` — Search your long-term memory (T3 files) and past session \
+recall (ChatSession) using token-frequency + character overlap scoring. Use specific phrases; \
+this is not a query language — no boolean operators, no phrase quoting, no wildcards. Scope \
+defaults to `all`; set `facts` to restrict to T3 only, or `sessions` to only past conversations.
+- `save_memory(category, content)` — **Escape hatch only.** This writes DIRECTLY to T3, \
+bypassing the heartbeat curation that normally filters low-signal content. Use ONLY when:
+  * The user issues a direct imperative ("记住", "remember this", "never do X again")
+  * You must override something heartbeat would otherwise drop
+  Everything else flows automatically: conversation → T0 logs → extractor picks salient bits \
+into T2 → heartbeat curates T2 into T3. Do not pre-empt that pipeline.
 
 ### What's Worth Remembering
 - User corrections and preferences (highest value)

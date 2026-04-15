@@ -7,6 +7,32 @@ import pytest
 from unittest.mock import AsyncMock, Mock
 
 
+class _RowsResult:
+    def __init__(self, rows):
+        self._rows = list(rows)
+
+    def all(self):
+        return list(self._rows)
+
+
+class _ExecuteDB:
+    def __init__(self, results):
+        self._results = list(results)
+
+    async def execute(self, _stmt):
+        if not self._results:
+            raise AssertionError("Unexpected execute() call")
+        return self._results.pop(0)
+
+
+class _ScalarResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar_one_or_none(self):
+        return self._value
+
+
 @pytest.mark.asyncio
 async def test_resolve_feishu_user_prefers_provider_user_id(monkeypatch):
     from app.services.channel_user_service import ChannelUserService
@@ -42,6 +68,116 @@ async def test_resolve_feishu_user_prefers_provider_user_id(monkeypatch):
 
     assert user is expected_user
     assert calls == ["user_id:ouser_123"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_feishu_delivery_target_by_name_prefers_canonical_user_id_over_session_open_id(monkeypatch):
+    from app.services.channel_user_service import ChannelUserService
+
+    service = ChannelUserService()
+    tenant_id = uuid4()
+    session_user = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        feishu_user_id="u_staff_123",
+        feishu_open_id="ou_app_scoped",
+    )
+    fake_db = _ExecuteDB(
+        [
+            _RowsResult(
+                [
+                    SimpleNamespace(
+                        external_conv_id="feishu_p2p_ou_app_scoped",
+                        user=session_user,
+                    )
+                ]
+            )
+        ]
+    )
+    get_target = AsyncMock(return_value=("u_staff_123", "user_id"))
+    monkeypatch.setattr(service, "get_feishu_delivery_target", get_target)
+
+    result = await service.resolve_feishu_delivery_target_by_name(
+        fake_db,
+        agent_id=uuid4(),
+        tenant_id=tenant_id,
+        member_name="王天怡",
+    )
+
+    assert result == ("u_staff_123", "user_id")
+    get_target.assert_awaited_once_with(fake_db, user=session_user)
+
+
+@pytest.mark.asyncio
+async def test_resolve_feishu_delivery_target_by_name_falls_back_to_session_open_id_when_no_user_id(monkeypatch):
+    from app.services.channel_user_service import ChannelUserService
+
+    service = ChannelUserService()
+    tenant_id = uuid4()
+    session_user = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        feishu_user_id=None,
+        feishu_open_id="ou_app_scoped",
+    )
+    fake_db = _ExecuteDB(
+        [
+            _RowsResult(
+                [
+                    SimpleNamespace(
+                        external_conv_id="feishu_p2p_ou_app_scoped",
+                        user=session_user,
+                    )
+                ]
+            )
+        ]
+    )
+    get_target = AsyncMock(return_value=("ou_app_scoped", "open_id"))
+    monkeypatch.setattr(service, "get_feishu_delivery_target", get_target)
+
+    result = await service.resolve_feishu_delivery_target_by_name(
+        fake_db,
+        agent_id=uuid4(),
+        tenant_id=tenant_id,
+        member_name="王天怡",
+    )
+
+    assert result == ("ou_app_scoped", "open_id")
+
+
+@pytest.mark.asyncio
+async def test_resolve_feishu_delivery_target_by_name_prefers_provider_backed_user_target_for_tenant_user(monkeypatch):
+    from app.services.channel_user_service import ChannelUserService
+
+    service = ChannelUserService()
+    tenant_id = uuid4()
+    tenant_user = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        display_name="王天怡",
+        feishu_user_id=None,
+        feishu_open_id="ou_app_scoped",
+    )
+    fake_db = _ExecuteDB(
+        [
+            _RowsResult([]),             # existing session lookup
+            _ScalarResult(None),         # org member by relationship
+            _ScalarResult(None),         # tenant org member
+            _ScalarResult(tenant_user),  # tenant user
+        ]
+    )
+    get_target = AsyncMock(return_value=("u_provider_123", "user_id"))
+    monkeypatch.setattr(service, "get_feishu_delivery_target", get_target)
+
+    result = await service.resolve_feishu_delivery_target_by_name(
+        fake_db,
+        agent_id=uuid4(),
+        tenant_id=tenant_id,
+        member_name="王天怡",
+    )
+
+    assert result == ("u_provider_123", "user_id")
+    get_target.assert_awaited_once_with(fake_db, user=tenant_user)
 
 
 @pytest.mark.asyncio

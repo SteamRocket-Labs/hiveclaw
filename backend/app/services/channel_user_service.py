@@ -18,6 +18,18 @@ from app.services.auth_provider import feishu_auth_provider
 class ChannelUserService:
     """Resolve platform users from Feishu sender identifiers."""
 
+    @staticmethod
+    def _session_row_user(row: object) -> User | None:
+        for attr in ("user", "User"):
+            candidate = getattr(row, attr, None)
+            if candidate is not None:
+                return candidate
+        try:
+            candidate = row[1]
+        except Exception:
+            return None
+        return candidate if isinstance(candidate, User) or getattr(candidate, "id", None) else None
+
     async def resolve_feishu_delivery_target_by_name(
         self,
         db: AsyncSession,
@@ -38,7 +50,7 @@ class ChannelUserService:
             return None
 
         result = await db.execute(
-            select(ChatSession.external_conv_id, User.display_name)
+            select(ChatSession.external_conv_id, User)
             .join(User, User.id == ChatSession.user_id)
             .where(
                 ChatSession.agent_id == agent_id,
@@ -54,6 +66,11 @@ class ChannelUserService:
             identifier = parse_feishu_p2p_conv_id(external_conv_id)
             if not identifier:
                 continue
+            session_user = self._session_row_user(row)
+            if session_user is not None:
+                canonical_target = await self.get_feishu_delivery_target(db, user=session_user)
+                if canonical_target and canonical_target[1] == "user_id":
+                    return canonical_target
             return identifier, ("open_id" if identifier.startswith("ou_") else "user_id")
 
         result = await db.execute(
@@ -93,10 +110,9 @@ class ChannelUserService:
         result = await db.execute(user_query.limit(1))
         user = result.scalar_one_or_none()
         if user:
-            if user.feishu_user_id:
-                return user.feishu_user_id, "user_id"
-            if user.feishu_open_id:
-                return user.feishu_open_id, "open_id"
+            canonical_target = await self.get_feishu_delivery_target(db, user=user)
+            if canonical_target:
+                return canonical_target
 
         return None
 

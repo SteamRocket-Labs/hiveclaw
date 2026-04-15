@@ -132,6 +132,13 @@ def _parse_agent_id(ctx: HookContext) -> uuid.UUID | None:
 _t0_cursors: dict[str, int] = {}  # "agent_id:session_id" → message index of last T0 write
 
 
+def _session_t0_behavior_type(ctx: HookContext) -> str:
+    interaction_type = str((ctx.metadata or {}).get("interaction_type") or "").strip().lower()
+    if interaction_type == "agent_message":
+        return "agent_message"
+    return "chat"
+
+
 async def _t0_session_close(ctx: HookContext) -> None:
     """SESSION_CLOSE → drain extractor + write incremental T0 (cursor-based)."""
     agent_id = _parse_agent_id(ctx)
@@ -155,7 +162,7 @@ async def _t0_session_close(ctx: HookContext) -> None:
         return
     write_t0_log(
         agent_id,
-        behavior_type="chat",
+        behavior_type=_session_t0_behavior_type(ctx),
         messages=new_messages,
         metadata={**ctx.metadata, "source": ctx.source or "web", "cursor_start": cursor},
     )
@@ -186,7 +193,7 @@ async def _t0_session_idle(ctx: HookContext) -> None:
                 ctx.agent_id, idle_s, len(new_messages), cursor, len(messages))
     write_t0_log(
         agent_id,
-        behavior_type="chat",
+        behavior_type=_session_t0_behavior_type(ctx),
         messages=new_messages,
         metadata={**ctx.metadata, "source": ctx.source or "web", "cursor_start": cursor},
     )

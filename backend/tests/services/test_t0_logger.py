@@ -229,6 +229,32 @@ class TestWriteT0Log:
         content = path.read_text()
         assert "type: chat" in content
 
+    def test_writes_agent_message_file(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
+        with patch("app.services.t0_logger.get_settings") as mock_settings:
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
+            path = write_t0_log(
+                agent_id,
+                behavior_type="agent_message",
+                messages=[
+                    {"role": "user", "content": "请直接回复这个协作请求"},
+                    {"role": "assistant", "content": "我会先核对现状再答复。"},
+                ],
+                metadata={
+                    "session_id": "agent-msg-sess",
+                    "source": "agent",
+                    "agent_name": "Target Agent",
+                    "agent_message_parent_agent_id": "source-agent-id",
+                    "interaction_type": "agent_message",
+                },
+            )
+        assert path is not None
+        assert path.exists()
+        assert path.name.startswith("agent_message-")
+        content = path.read_text()
+        assert "type: agent_message" in content
+        assert "from: source-agent-id" in content
+        assert "to: Target Agent" in content
+
     def test_unknown_type_returns_none(self, agent_id: uuid.UUID) -> None:
         result = write_t0_log(agent_id, behavior_type="unknown_type")
         assert result is None
@@ -241,10 +267,10 @@ class TestWriteT0Log:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         assert today in str(path)
 
-    def test_all_five_types(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
+    def test_all_supported_types(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
         with patch("app.services.t0_logger.get_settings") as mock_settings:
             mock_settings.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
-            for btype in ["chat", "trigger", "delegation", "heartbeat", "dream"]:
+            for btype in ["chat", "agent_message", "trigger", "delegation", "heartbeat", "dream"]:
                 path = write_t0_log(agent_id, behavior_type=btype)
                 assert path is not None, f"Failed for type: {btype}"
                 assert path.exists()

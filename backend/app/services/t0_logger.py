@@ -205,6 +205,56 @@ def _format_delegation_log(messages: list[dict], metadata: dict[str, Any]) -> st
     return front + body
 
 
+def _format_agent_message_log(messages: list[dict], metadata: dict[str, Any]) -> str:
+    """Format an agent-to-agent collaboration turn as T0 MD."""
+    now = _coerce_datetime(
+        metadata.get("occurred_at") or metadata.get("started_at") or metadata.get("agent_message_at")
+    ) or datetime.now(timezone.utc)
+    request_text = next(
+        (
+            str(message.get("content", "")).strip()
+            for message in messages
+            if str(message.get("role", "")).strip().lower() == "user" and str(message.get("content", "")).strip()
+        ),
+        "",
+    )
+    result_text = next(
+        (
+            str(message.get("content", "")).strip()
+            for message in reversed(messages)
+            if str(message.get("role", "")).strip().lower() in {"assistant", "agent"}
+            and str(message.get("content", "")).strip()
+        ),
+        "",
+    )
+    front = _yaml_frontmatter({
+        "type": "agent_message",
+        "from": (
+            metadata.get("from_agent")
+            or metadata.get("agent_message_parent_agent_id")
+            or metadata.get("parent_agent_id")
+            or "unknown"
+        ),
+        "to": metadata.get("to_agent") or metadata.get("agent_name") or "unknown",
+        "source": metadata.get("source", "agent"),
+        "trace_id": metadata.get("agent_message_trace_id") or metadata.get("trace_id", ""),
+        "started": now.isoformat(),
+    })
+
+    execution = _messages_to_execution(messages)
+    body = f"""
+## Request
+{_truncate(request_text, 2000) if request_text else '(none)'}
+
+## Execution
+{execution}
+
+## Result
+{_truncate(result_text, 2000) if result_text else '(none)'}
+"""
+    return front + body
+
+
 def _format_heartbeat_log(_messages: list[dict], metadata: dict[str, Any]) -> str:
     """Format a heartbeat tick as T0 MD."""
     now = _coerce_datetime(metadata.get("executed_at")) or datetime.now(timezone.utc)
@@ -300,6 +350,7 @@ def _messages_to_execution(messages: list[dict]) -> str:
 
 _FORMATTERS: dict[str, Any] = {
     "chat": _format_chat_log,
+    "agent_message": _format_agent_message_log,
     "trigger": _format_trigger_log,
     "delegation": _format_delegation_log,
     "heartbeat": _format_heartbeat_log,

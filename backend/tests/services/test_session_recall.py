@@ -148,6 +148,56 @@ tools: []
 
 
 @pytest.mark.asyncio
+async def test_search_session_history_reads_agent_message_t0_logs(monkeypatch, tmp_path: Path) -> None:
+    from app.services.session_recall import search_session_history
+
+    agent_id = uuid.uuid4()
+    logs_dir = tmp_path / str(agent_id) / "logs" / "2026-04-09"
+    logs_dir.mkdir(parents=True)
+    (logs_dir / "agent_message-0930-abcd.md").write_text(
+        """---
+type: agent_message
+session_id: agent-msg-1
+source: agent
+from: source-agent-id
+to: Target Agent
+started: 2026-04-09T09:30:00+00:00
+trace_id: trace-123
+---
+
+## Request
+请回忆我们上次 agent 之间关于 release checklist 的协作结论。
+
+## Execution
+**user**: 请回忆我们上次 agent 之间关于 release checklist 的协作结论。
+
+**assistant**: 我们把发布流程定成 preflight、deploy、post-verify 三段，并写入 docs/release-checklist.md。
+
+## Result
+已确认协作结论，并同步到文档草案。
+""",
+        encoding="utf-8",
+    )
+
+    def _unexpected_session():
+        raise AssertionError("T0 agent_message logs should satisfy recall without touching DB")
+
+    monkeypatch.setattr("app.services.session_recall.async_session", _unexpected_session)
+    monkeypatch.setattr(
+        "app.services.session_recall.get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+    )
+
+    hits = await search_session_history(agent_id, "release checklist", limit=5, snippet_limit=2)
+
+    assert len(hits) == 1
+    assert hits[0]["session_id"] == "agent-msg-1"
+    assert hits[0]["source"] == "agent"
+    assert "release checklist" in hits[0]["headline"].lower()
+    assert "preflight、deploy、post-verify" in hits[0]["summary"]
+
+
+@pytest.mark.asyncio
 async def test_search_session_history_t0_summary_keeps_adjacent_resolution(monkeypatch, tmp_path: Path) -> None:
     from app.services.session_recall import search_session_history
 

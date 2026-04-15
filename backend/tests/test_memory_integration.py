@@ -13,6 +13,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 
 # ── §1: Hooks system (Phase 0) ──
 
@@ -94,9 +96,9 @@ class TestHooksIntegration:
 
 
 class TestT0Integration:
-    def test_v5_all_5_formatters(self) -> None:
+    def test_v5_all_supported_formatters(self) -> None:
         from app.services.t0_logger import _FORMATTERS
-        assert set(_FORMATTERS.keys()) == {"chat", "trigger", "delegation", "heartbeat", "dream"}
+        assert set(_FORMATTERS.keys()) == {"chat", "agent_message", "trigger", "delegation", "heartbeat", "dream"}
 
     def test_v6_write_t0_log_returns_path(self, tmp_path: Path) -> None:
         from app.services.t0_logger import write_t0_log
@@ -120,6 +122,49 @@ class TestT0Integration:
             mock.return_value.AGENT_DATA_DIR = str(tmp_path)
             removed = cleanup_old_logs(agent_id, retention_days=30)
         assert removed == 1
+
+    @pytest.mark.asyncio
+    async def test_v7b_session_close_routes_agent_message_to_distinct_t0_behavior(self, monkeypatch) -> None:
+        from app.runtime.hooks import HookContext, HookEvent
+        from app.runtime.hooks_setup import _t0_session_close
+
+        agent_id = uuid.uuid4()
+        captured = {}
+
+        async def fake_drain(_agent_id, timeout_s=10.0):
+            return None
+
+        def fake_write_t0_log(_agent_id, *, behavior_type, messages=None, metadata=None):
+            captured["behavior_type"] = behavior_type
+            captured["metadata"] = metadata or {}
+            captured["messages"] = messages or []
+            return Path("/tmp/fake-agent-message-log.md")
+
+        monkeypatch.setattr("app.runtime.hooks_setup.update_session_memory", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr("app.runtime.hooks_setup.extract_agent.drain", fake_drain)
+        monkeypatch.setattr("app.runtime.hooks_setup.write_t0_log", fake_write_t0_log)
+
+        await _t0_session_close(
+            HookContext(
+                event=HookEvent.SESSION_CLOSE,
+                agent_id=str(agent_id),
+                session_id="agent-msg-sess",
+                source="agent",
+                messages=[
+                    {"role": "user", "content": "请直接回复这个协作请求"},
+                    {"role": "assistant", "content": "我会先核对现状再答复。"},
+                ],
+                metadata={
+                    "interaction_type": "agent_message",
+                    "agent_message": True,
+                    "agent_message_parent_agent_id": "source-agent-id",
+                    "agent_name": "Target Agent",
+                },
+            )
+        )
+
+        assert captured["behavior_type"] == "agent_message"
+        assert captured["metadata"]["interaction_type"] == "agent_message"
 
 
 # ── §3: Extractor (Phase 2) ──
@@ -296,7 +341,7 @@ class TestFullPipeline:
         (tmp_path / str(agent_id) / "logs").mkdir(parents=True)
         with patch("app.services.t0_logger.get_settings") as mock:
             mock.return_value.AGENT_DATA_DIR = str(tmp_path)
-            for btype in ["chat", "trigger", "delegation", "heartbeat", "dream"]:
+            for btype in ["chat", "agent_message", "trigger", "delegation", "heartbeat", "dream"]:
                 path = write_t0_log(agent_id, behavior_type=btype)
                 assert path is not None, f"T0 write failed for {btype}"
 

@@ -293,6 +293,79 @@ async def test_invoke_agent_emits_response_complete_and_session_close_hooks(monk
 
 
 @pytest.mark.asyncio
+async def test_invoke_agent_session_close_hook_preserves_session_interaction_metadata(monkeypatch):
+    from app.runtime.hooks import HookEvent
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+
+    model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1",
+        api_key="test-key",
+        base_url=None,
+        max_output_tokens=None,
+    )
+    fake_client = _FakeClient([
+        SimpleNamespace(
+            content="final answer",
+            tool_calls=[],
+            reasoning_content=None,
+            usage={"total_tokens": 5},
+        ),
+    ])
+    emitted: list[tuple[HookEvent, dict]] = []
+
+    async def fake_emit_hook(event, **kwargs):
+        emitted.append((event, kwargs))
+
+    async def fake_build_agent_context(*args, **kwargs):
+        return "BASE_PROMPT"
+
+    async def fake_fetch_relevant_knowledge(*args, **kwargs):
+        return ""
+
+    async def fake_compress(messages, **kwargs):
+        return messages
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+    monkeypatch.setattr("app.kernel.engine.asyncio.ensure_future", lambda coro: asyncio.create_task(coro))
+    monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
+    monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
+    monkeypatch.setattr("app.runtime.invoker.maybe_compress_messages", fake_compress)
+    monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", lambda *args, **kwargs: [])
+    monkeypatch.setattr("app.runtime.invoker.create_llm_client", lambda **kwargs: fake_client)
+    monkeypatch.setattr("app.runtime.invoker.record_token_usage", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.runtime.invoker.get_max_tokens", lambda *args, **kwargs: 2048)
+
+    await invoke_agent(
+        AgentInvocationRequest(
+            model=model,
+            messages=[{"role": "user", "content": "直接回复另一个 agent"}],
+            agent_name="Planner",
+            role_description="Planning agent",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            memory_session_id="session-agent-message",
+            session_context=SessionContext(
+                session_id="session-agent-message",
+                source="agent",
+                metadata={
+                    "interaction_type": "agent_message",
+                    "agent_message": True,
+                    "agent_message_parent_agent_id": "parent-agent-id",
+                },
+            ),
+        )
+    )
+    await asyncio.sleep(0)
+
+    close_payload = next(payload for event, payload in emitted if event == HookEvent.SESSION_CLOSE)
+    assert close_payload["source"] == "agent"
+    assert close_payload["metadata"]["interaction_type"] == "agent_message"
+    assert close_payload["metadata"]["agent_message"] is True
+    assert close_payload["metadata"]["agent_message_parent_agent_id"] == "parent-agent-id"
+
+
+@pytest.mark.asyncio
 async def test_invoke_agent_emits_response_complete_only_once(monkeypatch):
     from app.runtime.hooks import HookEvent
     from app.runtime.invoker import AgentInvocationRequest, invoke_agent

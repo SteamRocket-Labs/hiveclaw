@@ -18,6 +18,8 @@ from app.models.chat_session import ChatSession
 _FALLBACK_HEADLINE = "回顾到与查询相关的历史会话"
 _EXCLUDED_CHANNELS = {"agent", "heartbeat", "trigger", "task", "dream"}
 _EXCLUDED_ROLES = {"system", "tool_call"}
+_T0_RECALLABLE_TYPES = {"chat", "agent_message"}
+_T0_RECALLABLE_GLOBS = ("chat-*.md", "agent_message-*.md")
 _QUERY_SPLIT_RE = re.compile(r"\s+")
 _ARTIFACT_PATH_RE = re.compile(r"\b[\w./-]+\.[A-Za-z0-9]{1,8}\b")
 
@@ -65,9 +67,9 @@ def _split_frontmatter(raw: str) -> tuple[dict[str, str], str]:
 
 def _clean_line(line: str) -> str:
     cleaned = line.strip()
-    cleaned = cleaned.replace("**User**:", "").replace("**Agent**:", "").strip()
-    cleaned = cleaned.removeprefix("User:").removeprefix("Assistant:").removeprefix("Agent:").strip()
-    cleaned = cleaned.replace("**Tools**:", "Tools:")
+    cleaned = re.sub(r"^\*\*(user|assistant|agent)\*\*:\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"^(user|assistant|agent):\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"^\*\*tools\*\*:\s*", "Tools: ", cleaned, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
@@ -75,7 +77,7 @@ def _body_lines(body: str) -> list[str]:
     lines: list[str] = []
     for raw_line in body.splitlines():
         line = _clean_line(raw_line)
-        if not line or line.startswith("## Turn"):
+        if not line or line.startswith("## "):
             continue
         lines.append(line)
     return lines
@@ -94,11 +96,11 @@ def _speaker_label(role: str) -> str:
 
 def _normalize_transcript_line(line: str) -> str:
     stripped = line.strip()
-    if stripped.startswith("**User**:"):
+    if stripped.startswith("## "):
+        return ""
+    if re.match(r"^\*\*user\*\*:", stripped, flags=re.IGNORECASE):
         return f"User: {_clean_line(stripped)}"
-    if stripped.startswith("**Agent**:"):
-        return f"Assistant: {_clean_line(stripped)}"
-    if stripped.startswith("**Assistant**:"):
+    if re.match(r"^\*\*(assistant|agent)\*\*:", stripped, flags=re.IGNORECASE):
         return f"Assistant: {_clean_line(stripped)}"
     return re.sub(r"\s+", " ", stripped).strip()
 
@@ -467,13 +469,22 @@ def _search_t0_chat_logs(
     terms = _query_terms(query)
     grouped: dict[str, dict] = {}
 
-    for path in sorted(logs_root.rglob("chat-*.md"), reverse=True):
+    seen_paths: set[Path] = set()
+    candidate_paths: list[Path] = []
+    for pattern in _T0_RECALLABLE_GLOBS:
+        for path in logs_root.rglob(pattern):
+            if path in seen_paths:
+                continue
+            seen_paths.add(path)
+            candidate_paths.append(path)
+
+    for path in sorted(candidate_paths, reverse=True):
         try:
             raw = path.read_text(encoding="utf-8")
         except OSError:
             continue
         metadata, body = _split_frontmatter(raw)
-        if metadata.get("type") != "chat":
+        if metadata.get("type") not in _T0_RECALLABLE_TYPES:
             continue
 
         body_score = _match_score(body, terms)

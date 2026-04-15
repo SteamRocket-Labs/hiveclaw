@@ -806,12 +806,14 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
         from app.runtime.hooks import HookEvent, emit_hook
 
         _session_source = request.session_context.source if request.session_context else "runtime"
+        session_metadata = _session_metadata(request.session_context)
         await emit_hook(
             HookEvent.SESSION_START,
             agent_id=request.agent_id,
             session_id=request.memory_session_id,
             source=_session_source,
             metadata={
+                **session_metadata,
                 "model": getattr(effective_model, "model", str(effective_model)) if effective_model else None,
                 "fallback_model": getattr(effective_fallback_model, "model", str(effective_fallback_model))
                 if effective_fallback_model
@@ -831,6 +833,7 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
         _session_source = request.session_context.source if request.session_context else "runtime"
         session_metadata = _session_metadata(request.session_context)
         _hook_metadata = {
+            **session_metadata,
             "agent_name": request.agent_name,
             "tenant_id": session_metadata.get("tenant_id"),
             "turn_count": len(completed_messages),

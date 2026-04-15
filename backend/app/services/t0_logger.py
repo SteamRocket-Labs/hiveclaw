@@ -236,7 +236,7 @@ def _format_agent_message_log(messages: list[dict], metadata: dict[str, Any]) ->
             or "unknown"
         ),
         "to": metadata.get("to_agent") or metadata.get("agent_name") or "unknown",
-        "source": metadata.get("source", "agent"),
+        "source": "agent_message",
         "trace_id": metadata.get("agent_message_trace_id") or metadata.get("trace_id", ""),
         "started": now.isoformat(),
     })

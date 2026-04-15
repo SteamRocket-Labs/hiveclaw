@@ -252,6 +252,7 @@ class TestWriteT0Log:
         assert path.name.startswith("agent_message-")
         content = path.read_text()
         assert "type: agent_message" in content
+        assert "source: agent_message" in content
         assert "from: source-agent-id" in content
         assert "to: Target Agent" in content
 

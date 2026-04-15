@@ -429,6 +429,14 @@ def _started_label(value: str | None) -> str:
         return value[:10]
 
 
+def _normalize_recall_source(source: str | None, *, behavior_type: str | None = None) -> str:
+    normalized_type = (behavior_type or "").strip().lower()
+    normalized_source = (source or "").strip().lower()
+    if normalized_type == "agent_message" and normalized_source in {"", "agent", "unknown"}:
+        return "agent_message"
+    return (source or "unknown").strip() or "unknown"
+
+
 def _unpack_match_row(row: tuple) -> tuple[object, str | None, object, str | None, str | None, str | None, object]:
     if len(row) == 7:
         return row
@@ -497,7 +505,10 @@ def _search_t0_chat_logs(
             session_key,
             {
                 "session_id": session_key,
-                "source": metadata.get("source", "unknown"),
+                "source": _normalize_recall_source(
+                    metadata.get("source"),
+                    behavior_type=metadata.get("type"),
+                ),
                 "started_at": _started_label(metadata.get("started")),
                 "headline": _FALLBACK_HEADLINE,
                 "snippets": [],

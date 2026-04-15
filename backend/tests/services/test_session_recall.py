@@ -192,7 +192,7 @@ trace_id: trace-123
 
     assert len(hits) == 1
     assert hits[0]["session_id"] == "agent-msg-1"
-    assert hits[0]["source"] == "agent"
+    assert hits[0]["source"] == "agent_message"
     assert "release checklist" in hits[0]["headline"].lower()
     assert "preflight、deploy、post-verify" in hits[0]["summary"]
 

@@ -116,13 +116,14 @@ async def list_sessions(
             if session.source_channel == "agent" and session.peer_agent_id:
                 # Agent-to-agent session
                 participant_type = "agent"
-                peer_agent_id = str(session.peer_agent_id)
                 # Get both agent names
                 a1_r = await db.execute(select(Agent.name).where(Agent.id == session.agent_id))
                 a2_r = await db.execute(select(Agent.name).where(Agent.id == session.peer_agent_id))
                 a1_name = a1_r.scalar_one_or_none() or "Agent"
                 a2_name = a2_r.scalar_one_or_none() or "Agent"
-                peer_agent_name = a2_name
+                partner_agent_id = session.peer_agent_id if session.agent_id == agent_id else session.agent_id
+                peer_agent_id = str(partner_agent_id)
+                peer_agent_name = a2_name if partner_agent_id == session.peer_agent_id else a1_name
                 display = f"🤖 {a1_name} ↔ {a2_name}"
             else:
                 # Human session — resolve username

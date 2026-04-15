@@ -199,6 +199,71 @@ async def test_list_sessions_all_scope_allows_manage_access_for_non_creator(monk
 
 
 @pytest.mark.asyncio
+async def test_list_sessions_all_scope_exposes_agent_peer_relative_to_requested_agent(monkeypatch):
+    import app.api.chat_sessions as chat_sessions_api
+
+    requested_agent_id = uuid4()
+    source_agent_id = uuid4()
+    owner_id = uuid4()
+    session_id = uuid4()
+    agent = SimpleNamespace(id=requested_agent_id, creator_id=owner_id)
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=source_agent_id,
+        user_id=owner_id,
+        source_channel="agent",
+        title="Agent Session",
+        created_at=SimpleNamespace(isoformat=lambda: "2026-03-25T00:00:00+00:00"),
+        last_message_at=SimpleNamespace(isoformat=lambda: "2026-03-25T00:10:00+00:00"),
+        peer_agent_id=requested_agent_id,
+    )
+    current_user = SimpleNamespace(id=owner_id, role="org_admin")
+
+    class _AgentPeerDB(_QueryAwareDB):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self._agent_name_reads = 0
+
+        async def execute(self, stmt):
+            sql = str(stmt)
+            if "count(chat_messages.id)" in sql:
+                if not self.counts:
+                    raise AssertionError("No count prepared")
+                return _ScalarResult(self.counts.pop(0))
+            if "FROM chat_sessions" in sql:
+                return _ListResult(self.sessions)
+            if "FROM agents" in sql and "agents.name" in sql:
+                self._agent_name_reads += 1
+                if self._agent_name_reads == 1:
+                    return _ScalarResult("Source Agent")
+                if self._agent_name_reads == 2:
+                    return _ScalarResult("Requested Agent")
+                raise AssertionError(f"Unexpected number of agent name lookups: {self._agent_name_reads}")
+            if "FROM agents" in sql:
+                return _ScalarResult(self.agent)
+            raise AssertionError(f"Unhandled SQL in fake DB: {sql}")
+
+    db = _AgentPeerDB(agent=agent, sessions=[session], counts=[2])
+
+    async def fake_check_agent_access(_db, _user, _agent_id):
+        return agent, "manage"
+
+    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+
+    result = await chat_sessions_api.list_sessions(
+        agent_id=requested_agent_id,
+        scope="all",
+        current_user=current_user,
+        db=db,
+    )
+
+    assert len(result) == 1
+    assert result[0].peer_agent_id == str(source_agent_id)
+    assert result[0].peer_agent_name == "Source Agent"
+    assert result[0].participant_type == "agent"
+
+
+@pytest.mark.asyncio
 async def test_get_session_messages_allows_manage_access_for_non_owner(monkeypatch):
     import app.api.chat_sessions as chat_sessions_api
 

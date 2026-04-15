@@ -290,3 +290,70 @@ async def test_list_conversations_falls_back_to_user_display_name_for_teams_sess
             "last_at": "2026-04-14T15:00:00+00:00",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_list_conversations_reads_agent_session_stats_from_canonical_session_agent(monkeypatch):
+    import app.api.activity as activity_api
+
+    requested_agent_id = uuid4()
+    source_agent_id = uuid4()
+    session_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    agent_session = SimpleNamespace(
+        id=session_id,
+        agent_id=source_agent_id,
+        user_id=current_user.id,
+        source_channel="agent",
+        external_conv_id=None,
+        delivery_target_json=None,
+        peer_agent_id=requested_agent_id,
+        title="Agent Pair Session",
+    )
+    db = _SequenceDB(
+        [
+            _RowsResult([]),
+            _RowsResult([agent_session]),
+            _ScalarResult("Source Agent"),
+        ]
+    )
+
+    async def fake_check_agent_access(db_arg, user_arg, requested_agent_id_arg):
+        assert db_arg is db
+        assert user_arg is current_user
+        assert requested_agent_id_arg == requested_agent_id
+        return None
+
+    async def fake_get_session_message_stats(db_arg, *, agent_id, conversation_id):
+        assert db_arg is db
+        assert agent_id == source_agent_id
+        assert conversation_id == str(session_id)
+        return 4, datetime(2026, 4, 14, 16, 0, tzinfo=UTC)
+
+    async def fake_get_last_session_message(db_arg, *, agent_id, conversation_id):
+        assert db_arg is db
+        assert agent_id == source_agent_id
+        assert conversation_id == str(session_id)
+        return "agent reply"
+
+    monkeypatch.setattr(activity_api, "check_agent_access", fake_check_agent_access)
+    monkeypatch.setattr(activity_api, "_get_session_message_stats", fake_get_session_message_stats)
+    monkeypatch.setattr(activity_api, "_get_last_session_message", fake_get_last_session_message)
+
+    payload = await activity_api.list_conversations(
+        agent_id=requested_agent_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    assert payload == [
+        {
+            "conv_id": str(session_id),
+            "partner_type": "agent",
+            "partner_id": str(source_agent_id),
+            "partner_name": "🤖 Source Agent",
+            "last_message": "agent reply",
+            "message_count": 4,
+            "last_at": "2026-04-14T16:00:00+00:00",
+        }
+    ]

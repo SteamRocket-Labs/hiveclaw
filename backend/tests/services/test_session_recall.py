@@ -291,6 +291,68 @@ async def test_search_session_history_db_summary_keeps_adjacent_resolution(monke
 
 
 @pytest.mark.asyncio
+async def test_search_session_history_db_fallback_includes_peer_agent_sessions(monkeypatch, tmp_path: Path) -> None:
+    from app.services.session_recall import search_session_history
+
+    agent_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    search_rows = [
+        (
+            session_id,
+            "agent",
+            datetime(2026, 4, 9, 11, 0, tzinfo=timezone.utc),
+            "协作 release checklist",
+            "assistant",
+            "我们确认发布流程分成 preflight、deploy、post-verify 三段。",
+            datetime(2026, 4, 9, 11, 1, tzinfo=timezone.utc),
+        ),
+    ]
+    transcript_rows = [
+        (
+            str(session_id),
+            "assistant",
+            "我们确认发布流程分成 preflight、deploy、post-verify 三段。",
+            datetime(2026, 4, 9, 11, 1, tzinfo=timezone.utc),
+        ),
+    ]
+
+    class _PeerAwareSession:
+        def __init__(self):
+            self._call_index = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def execute(self, stmt):
+            self._call_index += 1
+            sql = str(stmt)
+            if self._call_index == 1:
+                assert "chat_sessions.peer_agent_id" in sql
+                assert "chat_messages.agent_id" not in sql
+                return _FakeResult(search_rows)
+            if self._call_index == 2:
+                assert "chat_messages.agent_id" not in sql
+                return _FakeResult(transcript_rows)
+            raise AssertionError(f"Unexpected execute call #{self._call_index}: {sql}")
+
+    monkeypatch.setattr("app.services.session_recall.async_session", lambda: _PeerAwareSession())
+    monkeypatch.setattr(
+        "app.services.session_recall.get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+    )
+
+    hits = await search_session_history(agent_id, "release checklist", limit=5, snippet_limit=2)
+
+    assert len(hits) == 1
+    assert hits[0]["session_id"] == str(session_id)
+    assert hits[0]["source"] == "agent"
+    assert "release checklist" in hits[0]["headline"].lower()
+
+
+@pytest.mark.asyncio
 async def test_search_session_history_builds_transcript_focused_recap(monkeypatch, tmp_path: Path) -> None:
     from app.services.session_recall import search_session_history
 

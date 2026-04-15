@@ -243,14 +243,15 @@ async def _list_agent_conversations(db: AsyncSession, *, agent_id: uuid.UUID) ->
         partner_id = sess.peer_agent_id if sess.agent_id == agent_id else sess.agent_id
         agent_r = await db.execute(select(Agent.name).where(Agent.id == partner_id))
         partner_name = agent_r.scalar_one_or_none() or "未知数字员工"
+        canonical_agent_id = sess.agent_id
         count, last_at = await _get_session_message_stats(
             db,
-            agent_id=agent_id,
+            agent_id=canonical_agent_id,
             conversation_id=str(sess.id),
         )
         last_message = await _get_last_session_message(
             db,
-            agent_id=agent_id,
+            agent_id=canonical_agent_id,
             conversation_id=str(sess.id),
         )
         conversations.append(

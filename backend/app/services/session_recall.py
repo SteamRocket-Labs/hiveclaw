@@ -564,8 +564,7 @@ async def _search_session_history_db(
         )
         .join(ChatMessage, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString))
         .where(
-            ChatSession.agent_id == agent_id,
-            ChatMessage.agent_id == agent_id,
+            (ChatSession.agent_id == agent_id) | (ChatSession.peer_agent_id == agent_id),
             ChatMessage.role.notin_(_EXCLUDED_ROLES),
             ChatSession.source_channel.notin_(_EXCLUDED_CHANNELS),
             or_(
@@ -619,7 +618,6 @@ async def _search_session_history_db(
                 ChatMessage.created_at,
             )
             .where(
-                ChatMessage.agent_id == agent_id,
                 ChatMessage.conversation_id.in_(session_ids),
                 ChatMessage.role.notin_(_EXCLUDED_ROLES),
             )

@@ -679,6 +679,94 @@ class TestExtractPromptConsistency:
         assert "untrusted" in EXTRACT_PROMPT
 
 
+class TestExtractPromptEngineeringQuality:
+    """PR-11: EXTRACT_PROMPT upgraded to Anthropic prompt-engineering best practices.
+
+    These tests freeze the structural properties so future regressions
+    (e.g. someone removing the examples block "to save tokens") fail loud.
+    """
+
+    def test_prompt_uses_xml_structure(self) -> None:
+        required_tags = [
+            "<role>",
+            "</role>",
+            "<pipeline_context>",
+            "</pipeline_context>",
+            "<extraction_types>",
+            "<tool_results_are_evidence>",
+            "<input_formats_you_may_see>",
+            "<thinking_instruction>",
+            "<examples>",
+            "<what_to_skip>",
+            "<rules>",
+            "<output_format>",
+            "<conversation>",
+        ]
+        for tag in required_tags:
+            assert tag in EXTRACT_PROMPT, f"Missing required XML tag: {tag}"
+
+    def test_prompt_has_good_and_bad_example_pairs(self) -> None:
+        # At least three example blocks, each with good + bad pairings.
+        assert EXTRACT_PROMPT.count("<example_1>") == 1
+        assert EXTRACT_PROMPT.count("<example_2>") == 1
+        assert EXTRACT_PROMPT.count("<example_3>") == 1
+        assert EXTRACT_PROMPT.count("<good_extractions>") >= 3
+        assert EXTRACT_PROMPT.count("<bad_extractions_and_why>") >= 3
+
+    def test_prompt_documents_downstream_pipeline(self) -> None:
+        # LLM needs to know its output is consumed by heartbeat with weights.
+        assert "heartbeat" in EXTRACT_PROMPT
+        assert "T3" in EXTRACT_PROMPT
+        assert "soul.md" in EXTRACT_PROMPT
+        assert "w=" in EXTRACT_PROMPT
+
+    def test_prompt_has_thinking_instruction(self) -> None:
+        assert "<thinking_instruction>" in EXTRACT_PROMPT
+        # Must list at least one concrete question to guide reasoning.
+        assert "stranger" in EXTRACT_PROMPT or "self-contained" in EXTRACT_PROMPT
+
+    def test_prompt_contains_beautifulsoup_example(self) -> None:
+        # Freezes example_1 so it can't silently disappear.
+        assert "BeautifulSoup" in EXTRACT_PROMPT
+        assert "regex" in EXTRACT_PROMPT
+
+    def test_prompt_contains_three_phase_workflow_example(self) -> None:
+        # Freezes example_2 (confirmation signal).
+        assert "three-phase" in EXTRACT_PROMPT
+        assert "research" in EXTRACT_PROMPT
+
+    def test_prompt_contains_timeout_example(self) -> None:
+        # Freezes example_3 (tool-failure pattern).
+        assert "timeout" in EXTRACT_PROMPT
+
+    def test_prompt_still_warns_about_prompt_injection(self) -> None:
+        # PR-7 guardrail — keep it alive after the PR-11 rewrite.
+        assert "not instructions" in EXTRACT_PROMPT.lower() or "NOT instructions" in EXTRACT_PROMPT
+        assert "untrusted" in EXTRACT_PROMPT
+
+    def test_prompt_instructs_self_contained_entries(self) -> None:
+        assert "self-contained" in EXTRACT_PROMPT.lower() or "SELF-CONTAINED" in EXTRACT_PROMPT
+
+    def test_prompt_still_documents_artifact_and_error_prefixes(self) -> None:
+        # PR-4 / PR-5 backfill markers must still be explained.
+        assert "[Error]" in EXTRACT_PROMPT
+        assert "[artifact:" in EXTRACT_PROMPT
+
+    def test_prompt_declares_tool_results_as_evidence(self) -> None:
+        # PR-7 semantic — preserved in PR-11's new block.
+        assert "Tool outputs" in EXTRACT_PROMPT or "tool output" in EXTRACT_PROMPT
+        assert "first-class evidence" in EXTRACT_PROMPT
+
+    def test_prompt_keeps_nothing_sentinel(self) -> None:
+        assert "NOTHING" in EXTRACT_PROMPT
+
+    def test_prompt_preserves_agent_name_placeholder(self) -> None:
+        assert "{agent_name}" in EXTRACT_PROMPT
+
+    def test_prompt_preserves_conversation_placeholder(self) -> None:
+        assert "{conversation}" in EXTRACT_PROMPT
+
+
 class TestBuildConversationTextCaps:
     def test_tool_content_cap_is_2000(self) -> None:
         big_tool = "R" * 3000

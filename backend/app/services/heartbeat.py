@@ -1174,6 +1174,28 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
             try:
                 from app.runtime.hooks import HookEvent, emit_hook
 
+                # Derive `reasoning` from the last assistant text so the
+                # T0 system/heartbeat-*.md log records WHY the tick chose
+                # this outcome (PR-3: heartbeat decision audit trail).
+                reasoning_text = ""
+                for _msg in reversed(runtime_messages or []):
+                    if not isinstance(_msg, dict):
+                        continue
+                    if _msg.get("role") != "assistant":
+                        continue
+                    _c = _msg.get("content")
+                    if isinstance(_c, str) and _c.strip():
+                        reasoning_text = _c.strip()
+                        break
+                    if isinstance(_c, list):
+                        _texts = [
+                            str(p.get("text", "")) for p in _c
+                            if isinstance(p, dict) and p.get("type") == "text"
+                        ]
+                        if _texts:
+                            reasoning_text = " ".join(_texts).strip()
+                            break
+
                 await emit_hook(
                     HookEvent.HEARTBEAT_TICK_END,
                     agent_id=agent_id,
@@ -1186,6 +1208,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                         "score": heartbeat_score,
                         "summary": summary[:200] if summary else "",
                         "action": summary[:100] if outcome_type == "action_taken" else "none",
+                        "reasoning": reasoning_text,
                     },
                 )
             except Exception as _hook_err:

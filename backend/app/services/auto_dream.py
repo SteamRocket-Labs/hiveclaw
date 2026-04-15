@@ -188,15 +188,23 @@ def _count_t3_entries(agent_id: uuid.UUID) -> int:
     return total
 
 
-def _promote_repeated_feedback_to_soul(agent_id: uuid.UUID, feedback_content: str) -> int:
-    """Promote repeated feedback patterns to soul.md without LLM."""
+def _promote_repeated_feedback_to_soul(agent_id: uuid.UUID, feedback_content: str) -> dict:
+    """Promote repeated feedback patterns to soul.md without LLM.
+
+    Returns:
+        {"count": int, "decisions": list[dict]}
+        decisions[i] = {soul_excerpt, source_t3_file, repetition_count, reason}
+
+    Callers may treat the return as int via dict["count"] or via the
+    isinstance() guard in run_dream() for backwards-compat.
+    """
     from difflib import SequenceMatcher
 
     from app.memory.md_store import extract_entry_lines, parse_entry_line
 
     raw_entries = [parse_entry_line(line)[0] for line in extract_entry_lines(feedback_content)]
     if len(raw_entries) < 3:
-        return 0
+        return {"count": 0, "decisions": []}
 
     clusters: list[dict[str, object]] = []
     for entry in raw_entries:
@@ -223,17 +231,20 @@ def _promote_repeated_feedback_to_soul(agent_id: uuid.UUID, feedback_content: st
                 }
             )
 
-    promotable = [str(cluster["content"]) for cluster in clusters if int(cluster["count"]) >= 3]
-    if not promotable:
-        return 0
+    promotable_clusters = [c for c in clusters if int(c["count"]) >= 3]
+    if not promotable_clusters:
+        return {"count": 0, "decisions": []}
 
     soul_path = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "soul.md"
     existing = soul_path.read_text(encoding="utf-8", errors="replace") if soul_path.exists() else "# Soul\n\n"
     existing_lower = existing.lower()
-    new_behaviors = [content for content in promotable if content.lower() not in existing_lower]
-    if not new_behaviors:
-        return 0
+    new_clusters = [
+        c for c in promotable_clusters if str(c["content"]).lower() not in existing_lower
+    ]
+    if not new_clusters:
+        return {"count": 0, "decisions": []}
 
+    new_behaviors = [str(c["content"]) for c in new_clusters]
     header = "## Learned Behaviors"
     behavior_block = "\n".join(f"- {content}" for content in new_behaviors) + "\n"
     if header in existing:
@@ -243,7 +254,17 @@ def _promote_repeated_feedback_to_soul(agent_id: uuid.UUID, feedback_content: st
         updated = existing.rstrip() + f"\n\n{header}\n" + behavior_block
 
     soul_path.write_text(updated.strip() + "\n", encoding="utf-8")
-    return len(new_behaviors)
+
+    decisions = [
+        {
+            "soul_excerpt": str(c["content"]),
+            "source_t3_file": "feedback.md",
+            "repetition_count": int(c["count"]),
+            "reason": "feedback repeated 3+ times → promoted to soul",
+        }
+        for c in new_clusters
+    ]
+    return {"count": len(new_behaviors), "decisions": decisions}
 
 
 def record_heartbeat_tick(agent_id: uuid.UUID) -> None:
@@ -427,9 +448,26 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
         return {"consolidated": 0, "removed": 0, "added": 0}
 
     before_count = _count_t3_entries(agent_id)
-    promoted_to_soul = _promote_repeated_feedback_to_soul(agent_id, t3_files.get("feedback.md", ""))
+    promotion_result = _promote_repeated_feedback_to_soul(agent_id, t3_files.get("feedback.md", ""))
+    if isinstance(promotion_result, dict):
+        promoted_to_soul = int(promotion_result.get("count", 0))
+        promotion_decisions = promotion_result.get("decisions") or []
+    else:
+        # Backwards-compat for the legacy int return type.
+        promoted_to_soul = int(promotion_result)
+        promotion_decisions = []
     t3_stats = _consolidate_t3_files(agent_id)
     t3_removed = sum(t3_stats.values())
+    dedup_decisions = [
+        {
+            "file": fname,
+            "kept": "(consolidated)",
+            "dropped_count": removed,
+            "reason": f"dedup+cap={removed}",
+        }
+        for fname, removed in t3_stats.items()
+        if removed
+    ]
     _update_index_md(agent_id)
     after_count = _count_t3_entries(agent_id)
     t2_removed = _truncate_t2(agent_id, keep=10)
@@ -491,6 +529,11 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
                 "promoted_to_soul": promoted_to_soul,
                 "strategy": "md_only",
                 "t2_truncated": t2_removed,
+                "dedup_decisions": dedup_decisions,
+                "promotion_decisions": promotion_decisions,
+                "cleanup_summary": (
+                    f"focus cleaned + blocklist reviewed; T2 truncated {t2_removed}"
+                ),
             },
         )
     except Exception as _hook_err:

@@ -365,8 +365,13 @@ def _format_delegation_log(messages: list[dict], metadata: dict[str, Any]) -> st
     return front + body
 
 
-def _format_heartbeat_log(_messages: list[dict], metadata: dict[str, Any]) -> str:
-    """Format a heartbeat tick as T0 MD."""
+def _format_heartbeat_log(messages: list[dict], metadata: dict[str, Any]) -> str:
+    """Format a heartbeat tick as T0 MD with decision-reasoning audit trail.
+
+    System-type log: NOT consumed by T2 extractor; written so operators can
+    debug "why did this heartbeat choose noop / which T2 inputs did it
+    consider".
+    """
     now = _coerce_datetime(metadata.get("executed_at")) or datetime.now(timezone.utc)
     front = _yaml_frontmatter({
         "type": "heartbeat",
@@ -381,25 +386,36 @@ def _format_heartbeat_log(_messages: list[dict], metadata: dict[str, Any]) -> st
     new_t2_entries = metadata.get("new_t2_entries", [])
     distillation = metadata.get("distillation", [])
     action = metadata.get("action", "none")
+    reasoning = (metadata.get("reasoning") or "").strip()
+    t2_inputs = metadata.get("t2_inputs", []) or []
+
+    sections: list[str] = []
+    if reasoning:
+        sections.append(f"## Decision Reasoning\n{_truncate(reasoning, 2000)}")
+    if t2_inputs:
+        rendered_inputs = "\n".join(f"- {_truncate(str(item), 200)}" for item in t2_inputs)
+        sections.append(f"## T2 Inputs Considered\n{rendered_inputs}")
+    if messages:
+        sections.append(
+            "## Tool Calls\n"
+            + _render_messages_with_tools(messages, start_with_user_turn=False)
+        )
 
     t2_section = "\n".join(f"- {e}" for e in new_t2_entries) if new_t2_entries else "(none)"
     distill_section = "\n".join(f"- {d}" for d in distillation) if distillation else "(none)"
+    sections.append(f"## New T2 Entries\n{t2_section}")
+    sections.append(f"## Distillation\n{distill_section}")
+    sections.append(f"## Action\n{_truncate(str(action), 2000)}")
 
-    body = f"""
-## New T2 Entries
-{t2_section}
-
-## Distillation
-{distill_section}
-
-## Action
-{_truncate(str(action), 2000)}
-"""
-    return front + body
+    return front + "\n\n" + "\n\n".join(sections) + "\n"
 
 
-def _format_dream_log(_messages: list[dict], metadata: dict[str, Any]) -> str:
-    """Format a dream execution as T0 MD."""
+def _format_dream_log(messages: list[dict], metadata: dict[str, Any]) -> str:
+    """Format a dream execution as T0 MD with structured decision audit.
+
+    System-type log: NOT consumed by T2. Records WHY the dream consolidated
+    or promoted what it did, so soul-evolution is traceable later.
+    """
     now = _coerce_datetime(metadata.get("executed_at")) or datetime.now(timezone.utc)
     front = _yaml_frontmatter({
         "type": "dream",
@@ -409,23 +425,61 @@ def _format_dream_log(_messages: list[dict], metadata: dict[str, Any]) -> str:
         "promoted_to_soul": metadata.get("promoted_to_soul", 0),
     })
 
-    dedup = metadata.get("dedup_summary", "")
-    promotions = metadata.get("soul_promotions", [])
+    dream_reasoning = (metadata.get("dream_reasoning") or "").strip()
+    dedup_decisions = metadata.get("dedup_decisions") or []
+    promotion_decisions = metadata.get("promotion_decisions") or []
+    legacy_dedup_summary = metadata.get("dedup_summary", "")
+    legacy_promotions = metadata.get("soul_promotions", []) or []
     cleanup = metadata.get("cleanup_summary", "")
 
-    promo_section = "\n".join(f"- {p}" for p in promotions) if promotions else "(none)"
+    sections: list[str] = []
+    if dream_reasoning:
+        sections.append(f"## Reasoning\n{_truncate(dream_reasoning, 2000)}")
 
-    body = f"""
-## Dedup
-{_truncate(dedup, 2000) if dedup else '(none)'}
+    # Dedup section: prefer structured decisions, fall back to legacy summary.
+    if dedup_decisions:
+        lines = []
+        for d in dedup_decisions:
+            if not isinstance(d, dict):
+                continue
+            file_name = str(d.get("file", "?"))
+            kept = _truncate(str(d.get("kept", "")), 80)
+            dropped_count = d.get("dropped_count", 0)
+            reason = str(d.get("reason", ""))
+            lines.append(f'- {file_name}: kept "{kept}" (dropped {dropped_count}: {reason})')
+        sections.append("## Dedup Decisions\n" + ("\n".join(lines) if lines else "(none)"))
+    else:
+        sections.append(
+            f"## Dedup\n{_truncate(legacy_dedup_summary, 2000) if legacy_dedup_summary else '(none)'}"
+        )
 
-## Soul Promotion
-{promo_section}
+    # Promotion section: prefer structured decisions, fall back to legacy list.
+    if promotion_decisions:
+        lines = []
+        for p in promotion_decisions:
+            if not isinstance(p, dict):
+                continue
+            excerpt = _truncate(str(p.get("soul_excerpt", "")), 120)
+            source = str(p.get("source_t3_file", "?"))
+            repetition = p.get("repetition_count", 0)
+            reason = str(p.get("reason", ""))
+            lines.append(f'- "{excerpt}" ← {source} (repeated {repetition}x: {reason})')
+        sections.append("## Soul Promotions\n" + ("\n".join(lines) if lines else "(none)"))
+    else:
+        promo_section = (
+            "\n".join(f"- {p}" for p in legacy_promotions) if legacy_promotions else "(none)"
+        )
+        sections.append(f"## Soul Promotion\n{promo_section}")
 
-## Cleanup
-{_truncate(cleanup, 2000) if cleanup else '(none)'}
-"""
-    return front + body
+    sections.append(f"## Cleanup\n{_truncate(cleanup, 2000) if cleanup else '(none)'}")
+
+    if messages:
+        sections.append(
+            "## Tool Calls\n"
+            + _render_messages_with_tools(messages, start_with_user_turn=False)
+        )
+
+    return front + "\n\n" + "\n\n".join(sections) + "\n"
 
 
 # ── Helpers ──

@@ -756,3 +756,104 @@ class TestRenderHelperEdgeCases:
         # system messages aren't rendered → result should be "(no content)"
         out = _render_messages_with_tools([{"role": "system", "content": "you are helpful"}])
         assert out == "(no content)"
+
+
+# ── PR-3: system log decision audit trail ──
+
+
+class TestHeartbeatLogReasoning:
+    def test_includes_decision_reasoning_when_provided(self) -> None:
+        result = _format_heartbeat_log(
+            [],
+            {"tick": 1, "score": 5, "reasoning": "noop because focus.md unchanged in 30 min"},
+        )
+        assert "## Decision Reasoning" in result
+        assert "noop because focus.md unchanged" in result
+
+    def test_omits_reasoning_section_when_empty(self) -> None:
+        result = _format_heartbeat_log([], {"tick": 1})
+        assert "## Decision Reasoning" not in result
+        assert "## New T2 Entries" in result  # other sections still emitted
+
+    def test_includes_t2_inputs_section(self) -> None:
+        result = _format_heartbeat_log(
+            [],
+            {"tick": 1, "t2_inputs": ["entry A", "entry B"]},
+        )
+        assert "## T2 Inputs Considered" in result
+        assert "- entry A" in result
+        assert "- entry B" in result
+
+    def test_includes_tool_calls_when_messages_present(self) -> None:
+        messages = [
+            {
+                "role": "assistant",
+                "content": "checking workspace",
+                "tool_calls": [{"id": "h1", "function": {"name": "list_files", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "h1", "content": "10 files"},
+        ]
+        result = _format_heartbeat_log(messages, {"tick": 1})
+        assert "## Tool Calls" in result
+        assert "`list_files(" in result
+        assert "→ result: 10 files" in result
+
+    def test_omits_tool_calls_section_when_no_messages(self) -> None:
+        result = _format_heartbeat_log([], {"tick": 1})
+        assert "## Tool Calls" not in result
+
+
+class TestDreamLogDecisions:
+    def test_renders_structured_dedup_decisions(self) -> None:
+        result = _format_dream_log(
+            [],
+            {
+                "dedup_decisions": [
+                    {"file": "feedback.md", "kept": "rep entry", "dropped_count": 4, "reason": "fuzzy match"}
+                ],
+            },
+        )
+        assert "## Dedup Decisions" in result
+        assert "feedback.md" in result
+        assert "dropped 4" in result
+
+    def test_renders_promotion_decisions(self) -> None:
+        result = _format_dream_log(
+            [],
+            {
+                "promotion_decisions": [
+                    {
+                        "soul_excerpt": "respond in Chinese",
+                        "source_t3_file": "feedback.md",
+                        "repetition_count": 5,
+                        "reason": "repeated 5+ times",
+                    }
+                ],
+            },
+        )
+        assert "## Soul Promotions" in result
+        assert "respond in Chinese" in result
+        assert "repeated 5x" in result
+        assert "feedback.md" in result
+
+    def test_falls_back_to_legacy_summary_when_decisions_missing(self) -> None:
+        result = _format_dream_log(
+            [],
+            {
+                "dedup_summary": "Merged 3 feedback entries",
+                "soul_promotions": ["Core value: quality"],
+            },
+        )
+        # Legacy keys still rendered when new structured fields are absent.
+        assert "Merged 3 feedback entries" in result
+        assert "Core value: quality" in result
+        assert "## Dedup Decisions" not in result
+        assert "## Soul Promotions" not in result
+
+    def test_renders_dream_reasoning_when_provided(self) -> None:
+        result = _format_dream_log(
+            [],
+            {"dream_reasoning": "consolidated 3 redundant feedback entries"},
+        )
+        assert "## Reasoning" in result
+        assert "consolidated 3 redundant" in result

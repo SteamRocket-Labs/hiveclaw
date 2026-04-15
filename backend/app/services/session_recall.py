@@ -16,7 +16,7 @@ from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 
 _FALLBACK_HEADLINE = "回顾到与查询相关的历史会话"
-_EXCLUDED_CHANNELS = {"agent", "heartbeat", "trigger", "task", "dream"}
+_EXCLUDED_CHANNELS = {"heartbeat", "trigger", "task", "dream"}
 _EXCLUDED_ROLES = {"system", "tool_call"}
 _T0_RECALLABLE_TYPES = {"chat", "agent_message"}
 _T0_RECALLABLE_GLOBS = ("chat-*.md", "agent_message-*.md")
@@ -589,7 +589,10 @@ async def _search_session_history_db(
             if group is None:
                 group = {
                     "session_id": key,
-                    "source": source or "unknown",
+                    "source": _normalize_recall_source(
+                        source,
+                        behavior_type="agent_message" if (source or "").strip().lower() == "agent" else None,
+                    ),
                     "started_at": started_at.strftime("%Y-%m-%d") if started_at else "?",
                     "headline": (summary or "").strip() or _FALLBACK_HEADLINE,
                     "snippets": [],

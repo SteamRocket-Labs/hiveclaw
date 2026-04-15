@@ -328,10 +328,12 @@ async def test_search_session_history_db_fallback_includes_peer_agent_sessions(m
 
         async def execute(self, stmt):
             self._call_index += 1
-            sql = str(stmt)
+            sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
             if self._call_index == 1:
                 assert "chat_sessions.peer_agent_id" in sql
                 assert "chat_messages.agent_id" not in sql
+                excluded_channels = sql.split("chat_sessions.source_channel NOT IN (", 1)[1].split(")", 1)[0]
+                assert "'agent'" not in excluded_channels
                 return _FakeResult(search_rows)
             if self._call_index == 2:
                 assert "chat_messages.agent_id" not in sql
@@ -348,7 +350,7 @@ async def test_search_session_history_db_fallback_includes_peer_agent_sessions(m
 
     assert len(hits) == 1
     assert hits[0]["session_id"] == str(session_id)
-    assert hits[0]["source"] == "agent"
+    assert hits[0]["source"] == "agent_message"
     assert "release checklist" in hits[0]["headline"].lower()
 
 

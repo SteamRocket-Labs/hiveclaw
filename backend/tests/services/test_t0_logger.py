@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from app.services.t0_logger import (
+    _category_of,
     _format_chat_log,
     _format_delegation_log,
     _format_dream_log,
@@ -21,6 +22,7 @@ from app.services.t0_logger import (
     audit_t0_logs,
     backfill_recent_chat_logs,
     cleanup_old_logs,
+    migrate_t0_layout,
     write_t0_log,
 )
 
@@ -411,3 +413,169 @@ async def test_backfill_recent_chat_logs_creates_t0_files(agent_id: uuid.UUID, t
     content = files[0].read_text(encoding="utf-8")
     assert "请你把记忆系统收成 md-first" in content
     assert "我会先从 session recall 和 T0 审计开始。" in content
+
+
+# ── PR-1: behavior/ vs system/ split ──
+
+
+class TestCategoryMapping:
+    def test_behavior_types_map_to_behavior(self) -> None:
+        assert _category_of("chat") == "behavior"
+        assert _category_of("trigger") == "behavior"
+        assert _category_of("delegation") == "behavior"
+
+    def test_system_types_map_to_system(self) -> None:
+        assert _category_of("heartbeat") == "system"
+        assert _category_of("dream") == "system"
+
+    def test_unknown_type_falls_back_to_system(self) -> None:
+        assert _category_of("totally_new_kind") == "system"
+
+
+class TestWriteT0LogSubdirs:
+    def _patch_settings(self, tmp_agent_dir: Path):
+        return patch(
+            "app.services.t0_logger.get_settings",
+            return_value=type("S", (), {"AGENT_DATA_DIR": str(tmp_agent_dir)})(),
+        )
+
+    def test_chat_lands_in_behavior_subdir(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
+        with self._patch_settings(tmp_agent_dir):
+            path = write_t0_log(
+                agent_id,
+                behavior_type="chat",
+                messages=[{"role": "user", "content": "hi"}],
+                metadata={"session_id": "s1"},
+            )
+        assert path is not None
+        assert path.parent.name == "behavior"
+        assert path.parent.parent.parent.name == "logs"
+
+    def test_trigger_lands_in_behavior_subdir(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
+        with self._patch_settings(tmp_agent_dir):
+            path = write_t0_log(agent_id, behavior_type="trigger", metadata={"trigger_name": "t"})
+        assert path is not None
+        assert path.parent.name == "behavior"
+
+    def test_heartbeat_lands_in_system_subdir(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
+        with self._patch_settings(tmp_agent_dir):
+            path = write_t0_log(agent_id, behavior_type="heartbeat", metadata={"tick": 1})
+        assert path is not None
+        assert path.parent.name == "system"
+
+    def test_dream_lands_in_system_subdir(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
+        with self._patch_settings(tmp_agent_dir):
+            path = write_t0_log(agent_id, behavior_type="dream", metadata={"t3_processed": 0})
+        assert path is not None
+        assert path.parent.name == "system"
+
+
+class TestAuditSplitCounts:
+    def test_audit_counts_behavior_and_system_separately(
+        self, agent_id: uuid.UUID, tmp_agent_dir: Path
+    ) -> None:
+        logs_dir = tmp_agent_dir / str(agent_id) / "logs"
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        (logs_dir / today / "behavior").mkdir(parents=True)
+        (logs_dir / today / "system").mkdir(parents=True)
+        (logs_dir / today / "behavior" / "chat-1200-abcd.md").write_text("x", encoding="utf-8")
+        (logs_dir / today / "behavior" / "trigger-1300-efgh.md").write_text("x", encoding="utf-8")
+        (logs_dir / today / "system" / "heartbeat-1400-ijkl.md").write_text("x", encoding="utf-8")
+
+        with patch("app.services.t0_logger.get_settings") as mock_settings:
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
+            report = audit_t0_logs(agent_id)
+
+        assert report["behavior_files"] == 2
+        assert report["system_files"] == 1
+        assert report["legacy_flat_files"] == 0
+        assert report["total_files"] == 3
+        assert report["healthy"] is True
+
+    def test_audit_counts_legacy_flat_files(
+        self, agent_id: uuid.UUID, tmp_agent_dir: Path
+    ) -> None:
+        logs_dir = tmp_agent_dir / str(agent_id) / "logs"
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        (logs_dir / today).mkdir(parents=True)
+        (logs_dir / today / "chat-1200-abcd.md").write_text("legacy", encoding="utf-8")
+
+        with patch("app.services.t0_logger.get_settings") as mock_settings:
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
+            report = audit_t0_logs(agent_id)
+
+        assert report["legacy_flat_files"] == 1
+        assert report["behavior_files"] == 0
+        assert report["total_files"] == 1
+
+
+class TestMigrateT0Layout:
+    def test_moves_behavior_and_system_files(
+        self, agent_id: uuid.UUID, tmp_agent_dir: Path
+    ) -> None:
+        logs_dir = tmp_agent_dir / str(agent_id) / "logs" / "2026-04-10"
+        logs_dir.mkdir(parents=True)
+        (logs_dir / "chat-0900-aaaa.md").write_text("c", encoding="utf-8")
+        (logs_dir / "trigger-1000-bbbb.md").write_text("t", encoding="utf-8")
+        (logs_dir / "heartbeat-1100-cccc.md").write_text("h", encoding="utf-8")
+        (logs_dir / "dream-1200-dddd.md").write_text("d", encoding="utf-8")
+
+        with patch("app.services.t0_logger.get_settings") as mock_settings:
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
+            report = migrate_t0_layout(agent_id)
+
+        assert report["moved"] == 4
+        assert report["skipped"] == 0
+        assert (logs_dir / "behavior" / "chat-0900-aaaa.md").exists()
+        assert (logs_dir / "behavior" / "trigger-1000-bbbb.md").exists()
+        assert (logs_dir / "system" / "heartbeat-1100-cccc.md").exists()
+        assert (logs_dir / "system" / "dream-1200-dddd.md").exists()
+        assert not (logs_dir / "chat-0900-aaaa.md").exists()
+        marker = tmp_agent_dir / str(agent_id) / ".t0_layout_v2"
+        assert marker.exists()
+
+    def test_idempotent_via_marker(
+        self, agent_id: uuid.UUID, tmp_agent_dir: Path
+    ) -> None:
+        logs_dir = tmp_agent_dir / str(agent_id) / "logs" / "2026-04-10"
+        logs_dir.mkdir(parents=True)
+        marker = tmp_agent_dir / str(agent_id) / ".t0_layout_v2"
+        marker.write_text("migrated_at: 2026-04-10T00:00:00+00:00\n", encoding="utf-8")
+        (logs_dir / "chat-0900-aaaa.md").write_text("should-not-move", encoding="utf-8")
+
+        with patch("app.services.t0_logger.get_settings") as mock_settings:
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
+            report = migrate_t0_layout(agent_id)
+
+        assert report["moved"] == 0
+        assert report["marker_existed"] == 1
+        assert (logs_dir / "chat-0900-aaaa.md").exists()
+        assert not (logs_dir / "behavior").exists()
+
+    def test_skips_unknown_prefixes(
+        self, agent_id: uuid.UUID, tmp_agent_dir: Path
+    ) -> None:
+        logs_dir = tmp_agent_dir / str(agent_id) / "logs" / "2026-04-10"
+        logs_dir.mkdir(parents=True)
+        (logs_dir / "weird-0900-aaaa.md").write_text("?", encoding="utf-8")
+        (logs_dir / "chat-1000-bbbb.md").write_text("c", encoding="utf-8")
+
+        with patch("app.services.t0_logger.get_settings") as mock_settings:
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
+            report = migrate_t0_layout(agent_id)
+
+        assert report["moved"] == 1
+        assert report["skipped"] == 1
+        assert (logs_dir / "behavior" / "chat-1000-bbbb.md").exists()
+        assert (logs_dir / "weird-0900-aaaa.md").exists()  # untouched
+
+    def test_handles_missing_logs_dir(
+        self, agent_id: uuid.UUID, tmp_agent_dir: Path
+    ) -> None:
+        with patch("app.services.t0_logger.get_settings") as mock_settings:
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
+            report = migrate_t0_layout(agent_id)
+
+        assert report["moved"] == 0
+        assert report["skipped"] == 0
+        assert (tmp_agent_dir / str(agent_id) / ".t0_layout_v2").exists()

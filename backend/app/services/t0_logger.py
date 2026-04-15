@@ -1,10 +1,22 @@
 """T0 Raw Behavior Logger — writes per-behavior MD files to logs/ directory.
 
 T0 is the bottom layer of the 4-layer MD pyramid (T0→T2→T3→soul).
-Each behavior (chat, trigger, delegation, heartbeat, dream) produces
-a timestamped MD file with YAML frontmatter + body.
+Each event produces a timestamped MD file with YAML frontmatter + body.
 
-Files are organized by date: logs/YYYY-MM-DD/{type}-{HHmm}-{short_id}.md
+Layout (since PR-1 of T0 raw revamp):
+
+    logs/YYYY-MM-DD/
+        behavior/        ← agent ↔ outside-world events (real T0 substrate)
+            chat-{HHmm}-{id}.md
+            trigger-{HHmm}-{id}.md
+            delegation-{HHmm}-{id}.md
+        system/          ← distiller self-trace (audit only, NOT consumed by T2)
+            heartbeat-{HHmm}-{id}.md
+            dream-{HHmm}-{id}.md
+
+Only behavior/* files are eligible to feed `extract_agent` / T2 backfill.
+system/* files exist purely so operators can debug heartbeat / dream decisions.
+
 Retention: 30 days (cleanup_old_logs removes older date directories).
 """
 
@@ -28,6 +40,21 @@ from app.models.chat_session import ChatSession
 logger = logging.getLogger(__name__)
 
 
+_BEHAVIOR_TYPES: frozenset[str] = frozenset({"chat", "trigger", "delegation"})
+_SYSTEM_TYPES: frozenset[str] = frozenset({"heartbeat", "dream"})
+
+
+def _category_of(behavior_type: str) -> str:
+    """Map a behavior_type to its storage subdirectory.
+
+    behavior/ holds true T0 substrate; system/ holds distiller traces.
+    Unknown types fall back to system/ so they don't pollute the T2 input set.
+    """
+    if behavior_type in _BEHAVIOR_TYPES:
+        return "behavior"
+    return "system"
+
+
 def _agent_logs_dir(agent_id: uuid.UUID) -> Path:
     """Return the logs/ directory for an agent."""
     return Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "logs"
@@ -49,16 +76,29 @@ def _coerce_datetime(value: Any) -> datetime | None:
         try:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
             return parsed.astimezone(timezone.utc) if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-        except ValueError:
+        except ValueError as exc:
+            logger.debug("[T0] Unparseable timestamp %r: %s", value, exc)
             return None
     return None
 
 
-def _date_dir(agent_id: uuid.UUID, when: datetime | None = None) -> Path:
-    """Return a date directory under logs/, creating it if needed."""
+def _date_dir(
+    agent_id: uuid.UUID,
+    when: datetime | None = None,
+    *,
+    behavior_type: str | None = None,
+) -> Path:
+    """Return a date directory under logs/, creating it if needed.
+
+    If `behavior_type` is given the path includes a behavior/ or system/
+    subdirectory so callers don't have to track the split themselves.
+    Without it (legacy callers / cleanup) the bare date directory is returned.
+    """
     target = when.astimezone(timezone.utc) if when else datetime.now(timezone.utc)
     date_label = target.strftime("%Y-%m-%d")
     d = _agent_logs_dir(agent_id) / date_label
+    if behavior_type is not None:
+        d = d / _category_of(behavior_type)
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -332,7 +372,7 @@ def write_t0_log(
         short_id = str(metadata.get("session_id", uuid.uuid4().hex))[:4]
         filename = _generate_filename(behavior_type, short_id)
         occurred_at = _coerce_datetime(metadata.get("occurred_at") or metadata.get("started_at"))
-        filepath = _date_dir(agent_id, occurred_at) / filename
+        filepath = _date_dir(agent_id, occurred_at, behavior_type=behavior_type) / filename
         filepath.write_text(content, encoding="utf-8")
         logger.info("[T0] Wrote %s for agent %s (%d bytes)", filepath.name, agent_id, len(content))
         return filepath
@@ -369,7 +409,12 @@ def cleanup_old_logs(agent_id: uuid.UUID, retention_days: int = 30) -> int:
 
 
 def audit_t0_logs(agent_id: uuid.UUID, recent_days: int = 30) -> dict[str, Any]:
-    """Inspect T0 log health for an agent."""
+    """Inspect T0 log health for an agent.
+
+    Counts behavior/* and system/* separately under the new layout while still
+    counting any leftover legacy flat files (top-level under YYYY-MM-DD/) so
+    audits before the migration runs are not under-reported.
+    """
     logs_dir = _agent_logs_dir(agent_id)
     if not logs_dir.exists():
         return {
@@ -378,6 +423,9 @@ def audit_t0_logs(agent_id: uuid.UUID, recent_days: int = 30) -> dict[str, Any]:
             "empty_date_dirs": 0,
             "total_files": 0,
             "recent_files": 0,
+            "behavior_files": 0,
+            "system_files": 0,
+            "legacy_flat_files": 0,
             "healthy": False,
         }
 
@@ -386,18 +434,35 @@ def audit_t0_logs(agent_id: uuid.UUID, recent_days: int = 30) -> dict[str, Any]:
     empty_date_dirs = 0
     total_files = 0
     recent_files = 0
+    behavior_files = 0
+    system_files = 0
+    legacy_flat_files = 0
 
     for day_dir in logs_dir.iterdir():
         if not day_dir.is_dir():
             continue
         date_dirs += 1
-        files = [path for path in day_dir.iterdir() if path.is_file()]
-        if not files:
+
+        day_count = 0
+        for child in day_dir.iterdir():
+            if child.is_file() and child.suffix == ".md":
+                # Pre-migration flat layout — counted but flagged.
+                legacy_flat_files += 1
+                day_count += 1
+            elif child.is_dir() and child.name in ("behavior", "system"):
+                bucket_files = [p for p in child.iterdir() if p.is_file() and p.suffix == ".md"]
+                if child.name == "behavior":
+                    behavior_files += len(bucket_files)
+                else:
+                    system_files += len(bucket_files)
+                day_count += len(bucket_files)
+
+        if day_count == 0:
             empty_date_dirs += 1
             continue
-        total_files += len(files)
+        total_files += day_count
         if day_dir.name >= cutoff_label:
-            recent_files += len(files)
+            recent_files += day_count
 
     return {
         "logs_dir_exists": True,
@@ -405,6 +470,9 @@ def audit_t0_logs(agent_id: uuid.UUID, recent_days: int = 30) -> dict[str, Any]:
         "empty_date_dirs": empty_date_dirs,
         "total_files": total_files,
         "recent_files": recent_files,
+        "behavior_files": behavior_files,
+        "system_files": system_files,
+        "legacy_flat_files": legacy_flat_files,
         "healthy": total_files > 0,
     }
 
@@ -502,3 +570,67 @@ async def backfill_recent_chat_logs(agent_id: uuid.UUID, recent_days: int = 30, 
         "skipped_existing": skipped_existing,
         "skipped_empty": skipped_empty,
     }
+
+
+_LAYOUT_MARKER_FILENAME = ".t0_layout_v2"
+
+
+def migrate_t0_layout(agent_id: uuid.UUID) -> dict[str, int]:
+    """Move pre-PR-1 flat T0 files into behavior/ or system/ subdirectories.
+
+    Layout before:  logs/YYYY-MM-DD/{type}-{HHmm}-{id}.md
+    Layout after:   logs/YYYY-MM-DD/{behavior|system}/{type}-{HHmm}-{id}.md
+
+    Idempotent via `.t0_layout_v2` marker at the agent root. Files with
+    unrecognized name prefixes are left in place and counted under `skipped`.
+    """
+    agent_root = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
+    marker = agent_root / _LAYOUT_MARKER_FILENAME
+    if marker.exists():
+        return {"moved": 0, "skipped": 0, "marker_existed": 1}
+
+    logs_dir = _agent_logs_dir(agent_id)
+    moved = 0
+    skipped = 0
+
+    if logs_dir.exists():
+        for day_dir in logs_dir.iterdir():
+            if not day_dir.is_dir():
+                continue
+            for entry in list(day_dir.iterdir()):
+                if not entry.is_file() or entry.suffix != ".md":
+                    continue
+                prefix = entry.name.split("-", 1)[0]
+                if prefix not in _BEHAVIOR_TYPES and prefix not in _SYSTEM_TYPES:
+                    skipped += 1
+                    continue
+                target_dir = day_dir / _category_of(prefix)
+                target_dir.mkdir(parents=True, exist_ok=True)
+                target_path = target_dir / entry.name
+                if target_path.exists():
+                    # Conflict: keep the in-place copy and remove the source so
+                    # we don't churn it again on every restart.
+                    entry.unlink()
+                    skipped += 1
+                    continue
+                try:
+                    shutil.move(str(entry), str(target_path))
+                    moved += 1
+                except OSError as exc:
+                    logger.warning("[T0] Failed to move %s → %s: %s", entry, target_path, exc)
+                    skipped += 1
+
+    agent_root.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(marker, "x", encoding="utf-8") as f:
+            f.write(
+                f"migrated_at: {datetime.now(timezone.utc).isoformat()}\n"
+                f"moved: {moved}\n"
+                f"skipped: {skipped}\n"
+            )
+    except FileExistsError:
+        logger.debug("[T0] Layout marker already written for agent %s (concurrent migration)", agent_id)
+
+    if moved or skipped:
+        logger.info("[T0] Layout migration for %s: moved=%d skipped=%d", agent_id, moved, skipped)
+    return {"moved": moved, "skipped": skipped, "marker_existed": 0}

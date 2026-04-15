@@ -109,9 +109,26 @@ def migrate_all_workspaces() -> None:
         if not agent_dir.is_dir():
             continue
         try:
-            migrate_legacy_memory_tree(WORKSPACE_ROOT, uuid.UUID(agent_dir.name))
+            agent_uuid = uuid.UUID(agent_dir.name)
         except ValueError:
             logger.debug("[migrate] Skipping non-agent workspace directory: %s", agent_dir.name)
+            continue
+
+        migrate_legacy_memory_tree(WORKSPACE_ROOT, agent_uuid)
+
+        try:
+            from app.services.t0_logger import migrate_t0_layout
+
+            t0_report = migrate_t0_layout(agent_uuid)
+            if t0_report.get("moved", 0):
+                logger.info(
+                    "[migrate] T0 layout for %s: moved=%d skipped=%d",
+                    agent_dir.name,
+                    t0_report["moved"],
+                    t0_report.get("skipped", 0),
+                )
+        except Exception as exc:
+            logger.warning("[migrate] T0 layout migration failed for %s: %s", agent_dir.name, exc)
 
         # Update HEARTBEAT.md if it's the old version
         hb_path = agent_dir / "HEARTBEAT.md"

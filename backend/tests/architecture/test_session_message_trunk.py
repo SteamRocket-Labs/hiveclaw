@@ -36,6 +36,8 @@ def test_core_session_entrypoints_use_session_service() -> None:
     assert "_list_session_backed_conversations(" in activity_source
     assert 'session_source="gateway"' in gateway_source
     assert 'session_channel="gateway"' in gateway_source
+    assert 'interaction_type": "agent_message"' in gateway_source
+    assert "session_context=SessionContext(" in gateway_source
     assert 'session_source="trigger"' in trigger_daemon_source
     assert 'session_channel="trigger"' in trigger_daemon_source
     assert "session_source=session_source" in feishu_source

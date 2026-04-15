@@ -18,6 +18,7 @@ from app.database import get_db, async_session
 from app.models.agent import Agent
 from app.models.gateway_message import GatewayMessage
 from app.models.user import User
+from app.runtime.session import SessionContext
 from app.services.session_service import find_or_create_agent_pair_session, session_conversation_id
 from app.schemas.schemas import (
     GatewayPollResponse, GatewayMessageOut, GatewayReportRequest,
@@ -384,6 +385,17 @@ async def _send_to_agent_background(
                 identity_type="agent_bot",
                 identity_id=source_agent_uuid,
                 label=f"Agent: {source_agent_name} (agent_message)",
+            ),
+            session_context=SessionContext(
+                session_id=conv_id,
+                source="gateway",
+                channel="gateway",
+                metadata={
+                    "interaction_type": "agent_message",
+                    "agent_message": True,
+                    "agent_message_parent_agent_id": str(source_agent_uuid),
+                    "agent_message_parent_session_id": conv_id,
+                },
             ),
             auto_close_session=True,
             session_source="gateway",

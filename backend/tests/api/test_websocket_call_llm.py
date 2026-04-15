@@ -205,6 +205,65 @@ async def test_call_llm_auto_close_emits_session_close(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_call_llm_auto_close_preserves_session_context_metadata(monkeypatch):
+    from app.api.websocket import call_llm
+    from app.runtime.hooks import HookEvent
+
+    captured = {"events": []}
+
+    async def fake_invoke_agent(request):
+        captured["request"] = request
+        return SimpleNamespace(content="runtime-result")
+
+    async def fake_emit_hook(event, **kwargs):
+        captured["events"].append((event, kwargs))
+
+    monkeypatch.setattr("app.api.websocket.invoke_agent", fake_invoke_agent)
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+
+    model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1",
+        api_key="key",
+        base_url=None,
+        max_output_tokens=None,
+    )
+    session_context = SessionContext(
+        session_id="gateway-agent-msg-1",
+        source="gateway",
+        channel="gateway",
+        metadata={
+            "interaction_type": "agent_message",
+            "agent_message": True,
+            "agent_message_parent_agent_id": "source-agent-id",
+        },
+    )
+
+    result = await call_llm(
+        model=model,
+        messages=[{"role": "user", "content": "hello"}],
+        agent_name="Agent",
+        role_description="desc",
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        session_context=session_context,
+        memory_messages=[{"role": "user", "content": "hello"}],
+        auto_close_session=True,
+    )
+
+    assert result == "runtime-result"
+    assert len(captured["events"]) == 1
+    event, payload = captured["events"][0]
+    assert event == HookEvent.SESSION_CLOSE
+    assert payload["source"] == "gateway"
+    assert payload["metadata"]["reason"] == "invoke_complete"
+    assert payload["metadata"]["channel"] == "gateway"
+    assert payload["metadata"]["interaction_type"] == "agent_message"
+    assert payload["metadata"]["agent_message"] is True
+    assert payload["metadata"]["agent_message_parent_agent_id"] == "source-agent-id"
+
+
+@pytest.mark.asyncio
 async def test_call_llm_uses_explicit_session_source_and_channel_in_runtime_request(monkeypatch):
     from app.api.websocket import call_llm
 

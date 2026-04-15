@@ -232,6 +232,11 @@ async def call_llm(
     if auto_close_session and agent_id is not None:
         close_messages = list(runtime_memory_messages or runtime_messages)
         close_messages.append({"role": "assistant", "content": result.content})
+        close_metadata = (
+            dict(effective_session_context.metadata)
+            if isinstance(getattr(effective_session_context, "metadata", None), dict)
+            else {}
+        )
         try:
             from app.runtime.hooks import HookEvent, emit_hook
 
@@ -242,6 +247,7 @@ async def call_llm(
                 source=effective_session_context.source,
                 messages=close_messages,
                 metadata={
+                    **close_metadata,
                     "reason": "invoke_complete",
                     "channel": effective_session_context.channel,
                 },

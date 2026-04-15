@@ -9,20 +9,27 @@ Aligned with Claude Code's extractMemories architecture:
 
 Pipeline: messages → LLM extract → append to learnings/{category}.md
 Fallback: messages → regex patterns → append to learnings/{category}.md
+
+T0 backfill (PR-4): when in-memory message extraction was skipped (process
+crash, hook misfire, or pre-extractor agents), behavior T0 MD files can be
+replayed back into messages and re-extracted into T2. The backfill cursor
+(learnings/.backfill_cursor.json) records which session_ids have already
+been processed so re-runs are idempotent.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from app.config import get_settings
-from app.memory.t2_store import append_t2_entries
+from app.memory.t2_store import append_t2_entries, t2_dir
 
 logger = logging.getLogger(__name__)
 
@@ -471,3 +478,275 @@ class ExtractAgent:
 
 # Module-level singleton
 extract_agent = ExtractAgent()
+
+
+# ── PR-4: T0 → T2 backfill ──
+
+_BACKFILL_CURSOR_FILENAME = ".backfill_cursor.json"
+_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
+_TURN_HEADER_RE = re.compile(r"^##\s+Turn\s+\d+\s*$")
+_USER_LINE_RE = re.compile(r"^\*\*User\*\*:\s*(.*)$")
+_AGENT_LINE_RE = re.compile(r"^\*\*Agent\*\*:\s*(.*)$")
+_TOOLS_HEADER_RE = re.compile(r"^\*\*Tools\*\*:\s*$")
+_TOOL_CALL_RE = re.compile(r"^-\s+`(?P<name>[^(`]+)\((?P<args>.*)\)`\s*$")
+_TOOL_RESULT_RE = re.compile(r"^\s*→\s*result:\s*(.*)$")
+
+
+def _backfill_cursor_path(agent_id: uuid.UUID) -> Path:
+    return t2_dir(Path(get_settings().AGENT_DATA_DIR), agent_id) / _BACKFILL_CURSOR_FILENAME
+
+
+def _read_backfill_cursor(agent_id: uuid.UUID) -> set[str]:
+    path = _backfill_cursor_path(agent_id)
+    if not path.exists():
+        return set()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        sessions = data.get("backfilled_sessions") or []
+        return {str(s) for s in sessions if s}
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("[Backfill] Failed to read cursor for %s: %s", agent_id, exc)
+        return set()
+
+
+def _write_backfill_cursor(agent_id: uuid.UUID, session_ids: set[str]) -> None:
+    path = _backfill_cursor_path(agent_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "backfilled_sessions": sorted(session_ids),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
+    """Split a T0 MD into ({frontmatter_field: value}, body)."""
+    match = _FRONTMATTER_RE.match(text)
+    if not match:
+        return {}, text
+    fm_block = match.group(1)
+    body = match.group(2)
+    fields: dict[str, str] = {}
+    for line in fm_block.splitlines():
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        fields[key.strip()] = value.strip()
+    return fields, body
+
+
+def replay_messages_from_t0(t0_md_path: Path) -> dict[str, Any]:
+    """Inverse of _format_chat_log / _format_trigger_log / _format_delegation_log.
+
+    Returns: {session_id, source, started, type, messages: list[dict]}.
+    Empty messages list on parse failure (caller decides).
+    """
+    try:
+        text = t0_md_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        logger.warning("[Backfill] Cannot read %s: %s", t0_md_path, exc)
+        return {"session_id": "", "source": "", "started": "", "type": "", "messages": []}
+
+    frontmatter, body = _parse_frontmatter(text)
+    session_id = frontmatter.get("session_id", "")
+    source = frontmatter.get("source", "")
+    started = frontmatter.get("started", "")
+    log_type = frontmatter.get("type", "")
+
+    messages: list[dict] = []
+    pending_assistant: dict | None = None
+    in_tools_block = False
+    pending_tool_calls: list[dict] = []
+
+    def _flush_assistant() -> None:
+        nonlocal pending_assistant, pending_tool_calls
+        if pending_assistant is not None:
+            if pending_tool_calls:
+                pending_assistant["tool_calls"] = pending_tool_calls
+            messages.append(pending_assistant)
+        pending_assistant = None
+        pending_tool_calls = []
+
+    for raw_line in body.splitlines():
+        line = raw_line.rstrip()
+
+        if _TURN_HEADER_RE.match(line) or line.startswith("## Errors") or line.startswith("## Result") or line.startswith("## Instruction") or line.startswith("## Task") or line.startswith("## Execution"):
+            _flush_assistant()
+            in_tools_block = False
+            continue
+
+        m = _USER_LINE_RE.match(line)
+        if m:
+            _flush_assistant()
+            in_tools_block = False
+            content = m.group(1).rstrip("…").strip()
+            if content:
+                messages.append({"role": "user", "content": content})
+            continue
+
+        m = _AGENT_LINE_RE.match(line)
+        if m:
+            _flush_assistant()
+            in_tools_block = False
+            content = m.group(1).rstrip("…").strip()
+            pending_assistant = {"role": "assistant", "content": content}
+            continue
+
+        if _TOOLS_HEADER_RE.match(line):
+            in_tools_block = True
+            if pending_assistant is None:
+                pending_assistant = {"role": "assistant", "content": ""}
+            continue
+
+        if in_tools_block:
+            m = _TOOL_CALL_RE.match(line)
+            if m:
+                pending_tool_calls.append(
+                    {
+                        "id": f"replay_{len(pending_tool_calls)}",
+                        "function": {
+                            "name": m.group("name").strip(),
+                            "arguments": m.group("args").rstrip("…"),
+                        },
+                    }
+                )
+                continue
+            m = _TOOL_RESULT_RE.match(line)
+            if m and pending_tool_calls:
+                # Attach as standalone tool message (lossy: artifact references resolved by PR-5).
+                tool_call_id = pending_tool_calls[-1]["id"]
+                _flush_assistant()
+                in_tools_block = False
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": m.group(1).rstrip("…").strip(),
+                    }
+                )
+                continue
+
+    _flush_assistant()
+
+    return {
+        "session_id": session_id,
+        "source": source,
+        "started": started,
+        "type": log_type,
+        "messages": messages,
+    }
+
+
+def _list_behavior_chat_files(agent_id: uuid.UUID, days: int) -> list[Path]:
+    """Return chat-*.md paths under behavior/ for the last N days."""
+    logs_root = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "logs"
+    if not logs_root.exists():
+        return []
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    out: list[Path] = []
+    for day_dir in sorted(logs_root.iterdir()):
+        if not day_dir.is_dir() or day_dir.name < cutoff:
+            continue
+        # Prefer new layout; fall back to legacy flat in case migration hasn't run yet.
+        behavior_dir = day_dir / "behavior"
+        candidates = behavior_dir.glob("chat-*.md") if behavior_dir.exists() else day_dir.glob("chat-*.md")
+        out.extend(p for p in candidates if p.is_file())
+    return sorted(out)
+
+
+async def audit_extraction_completeness(agent_id: uuid.UUID, days: int = 7) -> dict[str, Any]:
+    """Report behavior T0 sessions vs the backfill cursor.
+
+    Returns:
+      {sessions_in_t0: int, extracted: int, missing: list[{path, session_id}]}
+    """
+    files = _list_behavior_chat_files(agent_id, days)
+    cursor = _read_backfill_cursor(agent_id)
+    seen: set[str] = set()
+    missing: list[dict[str, str]] = []
+
+    for path in files:
+        replayed = replay_messages_from_t0(path)
+        sid = replayed.get("session_id") or ""
+        if not sid or sid == "unknown":
+            continue
+        seen.add(sid)
+        if sid not in cursor:
+            missing.append({"path": str(path), "session_id": sid})
+
+    return {
+        "sessions_in_t0": len(seen),
+        "extracted": max(0, len(seen) - len(missing)),
+        "missing": missing,
+    }
+
+
+async def backfill_missing_extractions(
+    agent_id: uuid.UUID,
+    days: int = 7,
+    *,
+    dry_run: bool = False,
+    tenant_id: uuid.UUID | None = None,
+    agent_name: str = "Agent",
+) -> dict[str, Any]:
+    """For each behavior T0 session not yet backfilled, replay + extract → T2.
+
+    Marks backfilled session_ids in the cursor so subsequent calls skip them.
+    Errors on individual sessions are reported but do not stop the run.
+    """
+    audit = await audit_extraction_completeness(agent_id, days=days)
+    if not audit["missing"]:
+        return {"extracted": 0, "errors": [], "would_extract": 0, "scanned": audit["sessions_in_t0"]}
+
+    if dry_run:
+        return {
+            "extracted": 0,
+            "would_extract": len(audit["missing"]),
+            "errors": [],
+            "scanned": audit["sessions_in_t0"],
+            "missing_session_ids": [m["session_id"] for m in audit["missing"]],
+        }
+
+    cursor = _read_backfill_cursor(agent_id)
+    extracted_count = 0
+    written_total = 0
+    errors: list[dict[str, str]] = []
+
+    for entry in audit["missing"]:
+        path = Path(entry["path"])
+        session_id = entry["session_id"]
+        try:
+            replayed = replay_messages_from_t0(path)
+            messages = replayed.get("messages") or []
+            if not messages:
+                cursor.add(session_id)
+                continue
+
+            extractions: list[dict[str, str]] | None = None
+            if tenant_id:
+                extractions = await _llm_extract(messages, tenant_id, agent_name)
+            if extractions is None:
+                extractions = _pattern_extract(messages)
+
+            if extractions:
+                written = _append_to_learnings(agent_id, extractions, source="t0_backfill")
+                written_total += written
+                extracted_count += 1
+                logger.info(
+                    "[Backfill] %s session %s → %d T2 entries (%s)",
+                    agent_id, session_id, written, "llm" if tenant_id else "pattern",
+                )
+            cursor.add(session_id)
+        except Exception as exc:  # noqa: BLE001
+            errors.append({"path": str(path), "session_id": session_id, "error": str(exc)})
+            logger.warning("[Backfill] Failed for %s session %s: %s", agent_id, session_id, exc)
+
+    _write_backfill_cursor(agent_id, cursor)
+
+    return {
+        "extracted": extracted_count,
+        "written_t2_entries": written_total,
+        "errors": errors,
+        "scanned": audit["sessions_in_t0"],
+        "missing_total": len(audit["missing"]),
+    }

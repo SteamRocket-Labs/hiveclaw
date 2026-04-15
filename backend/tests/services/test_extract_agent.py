@@ -16,6 +16,11 @@ from app.services.extract_agent import (
     _is_transient_error,
     _parse_extractions,
     _pattern_extract,
+    _read_backfill_cursor,
+    _write_backfill_cursor,
+    audit_extraction_completeness,
+    backfill_missing_extractions,
+    replay_messages_from_t0,
 )
 
 
@@ -437,3 +442,209 @@ class TestExtractAgent:
             # Both tasks should be done
             assert task1.done()
             assert task2.done()
+
+
+# ── PR-4: T0 → T2 backfill ──
+
+
+def _write_chat_md(
+    agent_dir: Path,
+    *,
+    session_id: str,
+    body: str,
+    date_label: str | None = None,
+    filename: str = "chat-1200-abcd.md",
+) -> Path:
+    from datetime import datetime, timezone
+
+    label = date_label or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    behavior_dir = agent_dir / "logs" / label / "behavior"
+    behavior_dir.mkdir(parents=True, exist_ok=True)
+    md = (
+        "---\n"
+        "type: chat\n"
+        f"session_id: {session_id}\n"
+        "source: web\n"
+        "user: Tester\n"
+        "started: 2026-04-15T08:00:00+00:00\n"
+        "turns: 1\n"
+        "tools: []\n"
+        "---\n"
+        "\n"
+        f"{body}"
+    )
+    target = behavior_dir / filename
+    target.write_text(md, encoding="utf-8")
+    return target
+
+
+class TestReplayMessagesFromT0:
+    def test_replays_simple_user_assistant(self, tmp_path: Path) -> None:
+        path = _write_chat_md(
+            tmp_path,
+            session_id="s1",
+            body="## Turn 1\n**User**: Hello\n**Agent**: Hi there\n",
+        )
+        result = replay_messages_from_t0(path)
+        assert result["session_id"] == "s1"
+        assert result["type"] == "chat"
+        assert result["messages"] == [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi there"},
+        ]
+
+    def test_replays_tool_call_with_result(self, tmp_path: Path) -> None:
+        body = (
+            "## Turn 1\n"
+            "**User**: search for X\n"
+            "**Agent**: looking up\n"
+            "**Tools**:\n"
+            '- `web_search({"q":"X"})`\n'
+            "  → result: 5 results: A, B, C\n"
+        )
+        path = _write_chat_md(tmp_path, session_id="s2", body=body)
+        result = replay_messages_from_t0(path)
+        msgs = result["messages"]
+        assert msgs[0] == {"role": "user", "content": "search for X"}
+        assert msgs[1]["role"] == "assistant"
+        assert msgs[1]["content"] == "looking up"
+        assert msgs[1]["tool_calls"][0]["function"]["name"] == "web_search"
+        assert "X" in msgs[1]["tool_calls"][0]["function"]["arguments"]
+        assert msgs[2]["role"] == "tool"
+        assert "5 results" in msgs[2]["content"]
+
+    def test_replays_multi_turn(self, tmp_path: Path) -> None:
+        body = (
+            "## Turn 1\n**User**: q1\n**Agent**: a1\n"
+            "## Turn 2\n**User**: q2\n**Agent**: a2\n"
+        )
+        path = _write_chat_md(tmp_path, session_id="s3", body=body)
+        msgs = replay_messages_from_t0(path)["messages"]
+        assert [m["content"] for m in msgs] == ["q1", "a1", "q2", "a2"]
+
+    def test_returns_empty_on_unreadable(self, tmp_path: Path) -> None:
+        result = replay_messages_from_t0(tmp_path / "missing.md")
+        assert result["messages"] == []
+        assert result["session_id"] == ""
+
+    def test_handles_missing_frontmatter(self, tmp_path: Path) -> None:
+        path = tmp_path / "raw.md"
+        path.write_text("just body text\n", encoding="utf-8")
+        result = replay_messages_from_t0(path)
+        assert result["session_id"] == ""
+        assert result["messages"] == []
+
+
+class TestBackfillCursor:
+    def test_round_trip(self, tmp_path: Path, agent_id: uuid.UUID) -> None:
+        with patch("app.services.extract_agent.get_settings") as mock_settings:
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
+            assert _read_backfill_cursor(agent_id) == set()
+            _write_backfill_cursor(agent_id, {"sess-1", "sess-2"})
+            assert _read_backfill_cursor(agent_id) == {"sess-1", "sess-2"}
+
+    def test_corrupt_cursor_returns_empty(self, tmp_path: Path, agent_id: uuid.UUID) -> None:
+        from app.services.extract_agent import _backfill_cursor_path
+
+        with patch("app.services.extract_agent.get_settings") as mock_settings:
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
+            cursor_path = _backfill_cursor_path(agent_id)
+            cursor_path.parent.mkdir(parents=True, exist_ok=True)
+            cursor_path.write_text("not valid json", encoding="utf-8")
+            assert _read_backfill_cursor(agent_id) == set()
+
+
+@pytest.mark.asyncio
+class TestAuditAndBackfill:
+    async def test_audit_finds_missing_sessions(self, tmp_path: Path, agent_id: uuid.UUID) -> None:
+        with patch("app.services.extract_agent.get_settings") as mock_settings:
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
+            agent_dir = tmp_path / str(agent_id)
+            _write_chat_md(
+                agent_dir,
+                session_id="sess-A",
+                body="## Turn 1\n**User**: hi\n**Agent**: hello\n",
+                filename="chat-1200-aaaa.md",
+            )
+            _write_chat_md(
+                agent_dir,
+                session_id="sess-B",
+                body="## Turn 1\n**User**: hi2\n**Agent**: hello2\n",
+                filename="chat-1300-bbbb.md",
+            )
+            _write_backfill_cursor(agent_id, {"sess-A"})
+
+            report = await audit_extraction_completeness(agent_id, days=30)
+
+            assert report["sessions_in_t0"] == 2
+            assert report["extracted"] == 1
+            missing_sids = {m["session_id"] for m in report["missing"]}
+            assert missing_sids == {"sess-B"}
+
+    async def test_dry_run_does_not_write(self, tmp_path: Path, agent_id: uuid.UUID) -> None:
+        with patch("app.services.extract_agent.get_settings") as mock_settings:
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
+            agent_dir = tmp_path / str(agent_id)
+            _write_chat_md(
+                agent_dir,
+                session_id="sess-X",
+                body="## Turn 1\n**User**: I prefer concise answers\n**Agent**: noted\n",
+            )
+
+            with patch("app.services.extract_agent._append_to_learnings") as mock_append:
+                report = await backfill_missing_extractions(agent_id, days=30, dry_run=True)
+
+            assert report["would_extract"] == 1
+            assert report["extracted"] == 0
+            mock_append.assert_not_called()
+            assert _read_backfill_cursor(agent_id) == set()
+
+    async def test_backfill_writes_t2_and_updates_cursor(self, tmp_path: Path, agent_id: uuid.UUID) -> None:
+        with patch("app.services.extract_agent.get_settings") as mock_settings:
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
+            agent_dir = tmp_path / str(agent_id)
+            _write_chat_md(
+                agent_dir,
+                session_id="sess-Y",
+                body="## Turn 1\n**User**: please prefer concise answers\n**Agent**: noted\n",
+            )
+
+            fake_extractions = [{"category": "feedback", "content": "prefer concise answers"}]
+            with patch(
+                "app.services.extract_agent._pattern_extract",
+                return_value=fake_extractions,
+            ), patch(
+                "app.services.extract_agent._append_to_learnings", return_value=1
+            ) as mock_append:
+                report = await backfill_missing_extractions(agent_id, days=30)
+
+            assert report["extracted"] >= 1
+            mock_append.assert_called()
+            assert "sess-Y" in _read_backfill_cursor(agent_id)
+
+    async def test_backfill_skips_already_processed(self, tmp_path: Path, agent_id: uuid.UUID) -> None:
+        with patch("app.services.extract_agent.get_settings") as mock_settings:
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
+            agent_dir = tmp_path / str(agent_id)
+            _write_chat_md(
+                agent_dir,
+                session_id="sess-Z",
+                body="## Turn 1\n**User**: hi\n**Agent**: hello\n",
+            )
+            _write_backfill_cursor(agent_id, {"sess-Z"})
+
+            with patch("app.services.extract_agent._append_to_learnings") as mock_append:
+                report = await backfill_missing_extractions(agent_id, days=30)
+
+            assert report["extracted"] == 0
+            mock_append.assert_not_called()
+
+    async def test_backfill_returns_no_op_when_no_files(self, tmp_path: Path, agent_id: uuid.UUID) -> None:
+        with patch("app.services.extract_agent.get_settings") as mock_settings:
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
+            (tmp_path / str(agent_id)).mkdir(parents=True)
+
+            report = await backfill_missing_extractions(agent_id, days=30)
+
+            assert report["extracted"] == 0
+            assert report["scanned"] == 0

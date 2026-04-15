@@ -380,3 +380,45 @@ async def get_metrics_leaderboards(
         top_companies=[LeaderboardEntry(name=r.name, tokens=r.tokens) for r in top_co],
         top_agents=[LeaderboardEntry(name=r.name, company=r.company or "", tokens=r.tokens) for r in top_ag],
     )
+
+
+# ─── T0 → T2 backfill (PR-4) ─────────────────────────────
+
+
+@router.get("/agents/{agent_id}/extraction-audit")
+async def audit_agent_extraction(
+    agent_id: uuid.UUID,
+    days: int = Query(7, ge=1, le=30),
+    _admin: User = Depends(require_role("admin")),
+) -> dict:
+    """Report which behavior T0 sessions are missing from T2 backfill."""
+    from app.services.extract_agent import audit_extraction_completeness
+
+    return await audit_extraction_completeness(agent_id, days=days)
+
+
+@router.post("/agents/{agent_id}/backfill-t2")
+async def backfill_agent_t2(
+    agent_id: uuid.UUID,
+    days: int = Query(7, ge=1, le=30),
+    dry_run: bool = Query(False),
+    _admin: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Replay missing behavior T0 sessions into T2 learnings.
+
+    Pass dry_run=true to preview without writing.
+    """
+    from app.services.extract_agent import backfill_missing_extractions
+
+    agent_row = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
+    if not agent_row:
+        raise HTTPException(status_code=404, detail="agent not found")
+
+    return await backfill_missing_extractions(
+        agent_id,
+        days=days,
+        dry_run=dry_run,
+        tenant_id=agent_row.tenant_id,
+        agent_name=agent_row.name or "Agent",
+    )

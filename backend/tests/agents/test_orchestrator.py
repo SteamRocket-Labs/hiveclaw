@@ -91,6 +91,55 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_delegate_to_agent_keeps_agent_message_prompt_distinct_from_delegation(monkeypatch):
+    from app.agents.orchestrator import delegate_to_agent
+
+    target = SimpleNamespace(
+        id=uuid4(),
+        name="Target Agent",
+        role_description="Helpful",
+    )
+    target_model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1",
+        api_key="key",
+        base_url=None,
+        max_output_tokens=None,
+    )
+    captured = {}
+
+    async def fake_invoke_agent(request):
+        captured["request"] = request
+        return SimpleNamespace(content="agent reply")
+
+    monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke_agent)
+
+    reply = await delegate_to_agent(
+        target=target,
+        target_model=target_model,
+        conversation_messages=[{"role": "user", "content": "please review this status"}],
+        owner_id=uuid4(),
+        session_id="session-agent-message",
+        system_prompt_suffix="A2A_SUFFIX",
+        interaction_type="agent_message",
+    )
+
+    request = captured["request"]
+    assert reply == "agent reply"
+    assert "Agent Message Brief" in request.messages[0]["content"]
+    assert "please review this status" in request.messages[0]["content"]
+    assert "Delegated Task Brief" not in request.messages[0]["content"]
+    assert request.system_prompt_suffix == "A2A_SUFFIX"
+    assert "delegated worker" not in request.system_prompt_suffix.lower()
+    assert "Return format" not in request.system_prompt_suffix
+    assert request.session_context.metadata["interaction_type"] == "agent_message"
+    assert request.session_context.metadata["agent_message"] is True
+    assert request.session_context.metadata["agent_message_tool_policy"] == "worker_safe"
+    assert request.session_context.metadata["agent_message_memory_policy"] == "isolated_no_long_term_memory"
+    assert "delegation" not in request.session_context.metadata
+
+
+@pytest.mark.asyncio
 async def test_delegate_to_agent_enforces_depth_limit(monkeypatch):
     from app.agents.orchestrator import AgentDelegationRequest, OrchestrationPolicy, _delegate
 
@@ -367,6 +416,7 @@ async def test_delegate_async_persists_resumable_payload_for_restart_recovery(mo
     assert created["child_agent_id"] == target.id
     assert created["parent_agent_id"] == parent_agent_id
     metadata = created["metadata_json"]
+    assert metadata["interaction_type"] == "delegation"
     assert metadata["resumable_delegation"] is True
     assert metadata["resume_after_restart"] is True
     assert metadata["owner_id"] == str(owner_id)
@@ -405,6 +455,7 @@ async def test_resume_persisted_async_delegations_rehydrates_tasks(monkeypatch):
             "metadata": {
                 "resume_after_restart": True,
                 "resumable_delegation": True,
+                "interaction_type": "delegation",
                 "owner_id": str(owner_id),
                 "target_agent_id": str(target.id),
                 "conversation_messages": [{"role": "user", "content": "resume me"}],
@@ -443,6 +494,74 @@ async def test_resume_persisted_async_delegations_rehydrates_tasks(monkeypatch):
         assert status["result"] == "resumed async result"
         assert any(task_id_arg == task_id and payload.get("status") == "running" for task_id_arg, payload in updates)
         assert any(task_id_arg == task_id and payload.get("status") == "completed" for task_id_arg, payload in updates)
+    finally:
+        _async_tasks.clear()
+
+
+@pytest.mark.asyncio
+async def test_resume_persisted_async_delegations_restores_interaction_type_contract(monkeypatch):
+    from app.agents.orchestrator import _async_tasks, resume_persisted_async_delegations
+
+    task_id = uuid4().hex
+    owner_id = uuid4()
+    target = SimpleNamespace(id=uuid4(), name="Worker", role_description="helper")
+    model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None)
+    captured = {}
+
+    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+        assert "pending" in statuses
+        assert "running" in statuses
+        return [{
+            "task_id": task_id,
+            "trace_id": "trace-agent-message",
+            "parent_agent_id": str(uuid4()),
+            "child_agent_id": str(target.id),
+            "child_agent_name": target.name,
+            "parent_session_id": "parent-session",
+            "child_session_id": "child-session",
+            "depth": 1,
+            "metadata": {
+                "resume_after_restart": True,
+                "resumable_delegation": True,
+                "interaction_type": "agent_message",
+                "owner_id": str(owner_id),
+                "target_agent_id": str(target.id),
+                "conversation_messages": [{"role": "user", "content": "resume this agent message"}],
+                "system_prompt_suffix": "A2A_SUFFIX",
+                "max_tool_rounds": 5,
+                "timeout_seconds": 120.0,
+            },
+        }]
+
+    async def fake_resolve_target_runtime(child_agent_id):
+        assert child_agent_id == target.id
+        return target, model
+
+    async def fake_invoke(invocation):
+        captured["invocation"] = invocation
+        return SimpleNamespace(content="resumed agent reply")
+
+    async def fake_update_runtime_task_record(*_args, **_kwargs):
+        return True
+
+    monkeypatch.setattr("app.agents.orchestrator.list_active_runtime_task_records", fake_list_active_runtime_task_records)
+    monkeypatch.setattr("app.agents.orchestrator._resolve_resumable_target_runtime", fake_resolve_target_runtime)
+    monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke)
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
+
+    _async_tasks.clear()
+    try:
+        resumed = await resume_persisted_async_delegations()
+        assert resumed == [task_id]
+        await asyncio.sleep(0.05)
+
+        invocation = captured["invocation"]
+        assert "Agent Message Brief" in invocation.messages[0]["content"]
+        assert "Delegated Task Brief" not in invocation.messages[0]["content"]
+        assert invocation.system_prompt_suffix == "A2A_SUFFIX"
+        assert invocation.session_context.metadata["interaction_type"] == "agent_message"
+        assert invocation.session_context.metadata["agent_message"] is True
+        assert "delegation" not in invocation.session_context.metadata
     finally:
         _async_tasks.clear()
 

@@ -293,17 +293,10 @@ def _build_delegation_brief(conversation_messages: list[dict[str, Any]]) -> str:
     This keeps tool noise and unrelated history out of the child context while
     still preserving the latest task framing.
     """
-    normalized = [
-        _normalize_delegation_message(message)
-        for message in conversation_messages[-_DELEGATION_SOURCE_MAX_MESSAGES:]
-    ]
-    transcript = "\n".join(line for line in normalized if line).strip()
-    if len(transcript) > _DELEGATION_BRIEF_MAX_CHARS:
-        transcript = transcript[-_DELEGATION_BRIEF_MAX_CHARS :]
-        transcript = "...\n" + transcript.lstrip()
-
-    if not transcript:
-        transcript = "User: Complete the delegated task and report the concrete result."
+    transcript = _build_interaction_transcript(
+        conversation_messages,
+        fallback="User: Complete the delegated task and report the concrete result.",
+    )
 
     return (
         "## Delegated Task Brief\n"
@@ -318,8 +311,44 @@ def _build_delegation_brief(conversation_messages: list[dict[str, Any]]) -> str:
     )
 
 
+def _build_interaction_transcript(
+    conversation_messages: list[dict[str, Any]],
+    *,
+    fallback: str,
+) -> str:
+    normalized = [
+        _normalize_delegation_message(message)
+        for message in conversation_messages[-_DELEGATION_SOURCE_MAX_MESSAGES:]
+    ]
+    transcript = "\n".join(line for line in normalized if line).strip()
+    if len(transcript) > _DELEGATION_BRIEF_MAX_CHARS:
+        transcript = transcript[-_DELEGATION_BRIEF_MAX_CHARS :]
+        transcript = "...\n" + transcript.lstrip()
+    return transcript or fallback
+
+
+def _build_agent_message_brief(conversation_messages: list[dict[str, Any]]) -> str:
+    transcript = _build_interaction_transcript(
+        conversation_messages,
+        fallback="User: Respond directly to the other agent with the requested status or result.",
+    )
+
+    return (
+        "## Agent Message Brief\n"
+        "You are receiving a direct request from another agent.\n"
+        "Answer the request directly from the message below. If context is missing, say exactly what is missing instead of inventing details.\n\n"
+        "### Incoming Request\n"
+        f"{transcript}\n\n"
+        "### Expected Return\n"
+        "- Direct answer or concrete status\n"
+        "- Evidence or artifacts when applicable\n"
+        "- Missing context or blockers, if any"
+    )
+
+
 def _build_runtime_task_metadata(request: AgentDelegationRequest) -> dict[str, Any]:
     metadata: dict[str, Any] = {
+        "interaction_type": request.interaction_type,
         "message_count": len(request.conversation_messages),
         "system_prompt_suffix": request.system_prompt_suffix,
         "tool_profile": request.policy.tool_profile,
@@ -458,10 +487,17 @@ async def _delegate(request: AgentDelegationRequest) -> AgentDelegationResult:
         except Exception as _hook_err:
             logger.debug("[Orchestrator] DELEGATION_START hook failed (non-fatal): %s", _hook_err)
 
-    delegated_brief = _build_delegation_brief(request.conversation_messages)
+    interaction_brief = (
+        _build_delegation_brief(request.conversation_messages)
+        if is_delegation
+        else _build_agent_message_brief(request.conversation_messages)
+    )
+    combined_suffix_parts = [request.system_prompt_suffix]
+    if is_delegation:
+        combined_suffix_parts.append(_build_delegated_worker_prompt(tool_profile))
     combined_suffix = "\n\n".join(
         part.strip()
-        for part in [request.system_prompt_suffix, _build_delegated_worker_prompt(tool_profile)]
+        for part in combined_suffix_parts
         if part and part.strip()
     )
 
@@ -495,7 +531,7 @@ async def _delegate(request: AgentDelegationRequest) -> AgentDelegationResult:
 
     invocation = AgentInvocationRequest(
         model=request.target_model,
-        messages=[{"role": "user", "content": delegated_brief}],
+        messages=[{"role": "user", "content": interaction_brief}],
         memory_messages=[],
         memory_session_id=child_session_id,
         session_context=SessionContext(
@@ -972,6 +1008,7 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
                 timeout_seconds=float(metadata.get("timeout_seconds") or 120.0),
                 tool_profile=str(metadata.get("tool_profile") or "worker_safe"),
             ),
+            interaction_type=str(metadata.get("interaction_type") or "delegation"),
         )
 
         _spawn_async_delegation_task(task_id=task_id, request=request, trace_id=request.trace_id or uuid.uuid4().hex)

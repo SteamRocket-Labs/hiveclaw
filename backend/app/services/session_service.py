@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit import ChatMessage
@@ -22,6 +22,38 @@ from app.services.web_session_contract import apply_web_session_contract
 def session_conversation_id(session: Any) -> str:
     """Return the canonical persisted conversation_id for a session."""
     return str(getattr(session, "id"))
+
+
+async def _legacy_agent_pair_timestamp_bounds(
+    db: AsyncSession,
+    *,
+    source_agent_id: uuid.UUID,
+    target_agent_id: uuid.UUID,
+) -> tuple[datetime | None, datetime | None]:
+    legacy_conversation_ids = build_legacy_gateway_conversation_ids(source_agent_id, target_agent_id)
+    min_chat_created = (
+        await db.execute(select(func.min(ChatMessage.created_at)).where(ChatMessage.conversation_id.in_(legacy_conversation_ids)))
+    ).scalar_one_or_none()
+    max_chat_created = (
+        await db.execute(select(func.max(ChatMessage.created_at)).where(ChatMessage.conversation_id.in_(legacy_conversation_ids)))
+    ).scalar_one_or_none()
+    min_gateway_created = (
+        await db.execute(
+            select(func.min(GatewayMessage.created_at)).where(GatewayMessage.conversation_id.in_(legacy_conversation_ids))
+        )
+    ).scalar_one_or_none()
+    max_gateway_created = (
+        await db.execute(
+            select(func.max(GatewayMessage.created_at)).where(GatewayMessage.conversation_id.in_(legacy_conversation_ids))
+        )
+    ).scalar_one_or_none()
+
+    created_candidates = [value for value in (min_chat_created, min_gateway_created) if value is not None]
+    last_message_candidates = [value for value in (max_chat_created, max_gateway_created) if value is not None]
+    return (
+        min(created_candidates) if created_candidates else None,
+        max(last_message_candidates) if last_message_candidates else None,
+    )
 
 
 async def _normalize_legacy_agent_pair_transcripts(
@@ -97,7 +129,20 @@ async def find_or_create_agent_pair_session(
         )
     )
     session = result.scalar_one_or_none()
+    legacy_created_at, legacy_last_message_at = await _legacy_agent_pair_timestamp_bounds(
+        db,
+        source_agent_id=source_agent_id,
+        target_agent_id=target_agent_id,
+    )
     if session is not None:
+        if legacy_created_at is not None and (
+            getattr(session, "created_at", None) is None or legacy_created_at < session.created_at
+        ):
+            session.created_at = legacy_created_at
+        if legacy_last_message_at is not None and (
+            getattr(session, "last_message_at", None) is None or legacy_last_message_at > session.last_message_at
+        ):
+            session.last_message_at = legacy_last_message_at
         await _normalize_legacy_agent_pair_transcripts(
             db,
             source_agent_id=source_agent_id,
@@ -114,7 +159,10 @@ async def find_or_create_agent_pair_session(
         source_channel="agent",
         participant_id=source_participant_id,
         peer_agent_id=session_peer_id,
+        created_at=legacy_created_at,
     )
+    if legacy_last_message_at is not None:
+        session.last_message_at = legacy_last_message_at
     await _normalize_legacy_agent_pair_transcripts(
         db,
         source_agent_id=source_agent_id,

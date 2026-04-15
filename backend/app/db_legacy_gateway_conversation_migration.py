@@ -162,6 +162,13 @@ def promote_legacy_gateway_conversations(connection: Connection) -> int:
             )
         else:
             session_id = existing_session["id"]
+            existing_created_at = existing_session.get("created_at")
+            if existing_created_at is None or created_at < existing_created_at:
+                connection.execute(
+                    update(chat_sessions)
+                    .where(chat_sessions.c.id == session_id)
+                    .values(created_at=created_at)
+                )
             existing_last_message_at = existing_session.get("last_message_at")
             if existing_last_message_at is None or last_message_at > existing_last_message_at:
                 connection.execute(

@@ -153,7 +153,8 @@ def test_promote_legacy_gateway_conversations_reuses_existing_canonical_session(
     high_agent_id = "22222222-2222-2222-2222-222222222222"
     low_creator_id = "33333333-3333-3333-3333-333333333333"
     existing_session_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-    created_at = datetime(2026, 4, 14, 8, 0, tzinfo=timezone.utc)
+    legacy_created_at = datetime(2026, 4, 14, 8, 0, tzinfo=timezone.utc)
+    canonical_created_at = datetime(2026, 4, 14, 8, 30, tzinfo=timezone.utc)
     completed_at = datetime(2026, 4, 14, 9, 0, tzinfo=timezone.utc)
 
     with engine.begin() as conn:
@@ -173,8 +174,8 @@ def test_promote_legacy_gateway_conversations_reuses_existing_canonical_session(
                 title="Alpha ↔ Beta",
                 source_channel="agent",
                 peer_agent_id=high_agent_id,
-                created_at=created_at,
-                last_message_at=created_at,
+                created_at=canonical_created_at,
+                last_message_at=canonical_created_at,
             )
         )
         conn.execute(
@@ -184,6 +185,17 @@ def test_promote_legacy_gateway_conversations_reuses_existing_canonical_session(
                 user_id=low_creator_id,
                 role="user",
                 content="hello",
+                conversation_id=f"gw_agent_{high_agent_id}_{low_agent_id}",
+                created_at=legacy_created_at,
+            )
+        )
+        conn.execute(
+            chat_messages.insert().values(
+                id="msg-2",
+                agent_id=low_agent_id,
+                user_id=low_creator_id,
+                role="assistant",
+                content="world",
                 conversation_id=f"gw_agent_{high_agent_id}_{low_agent_id}",
                 created_at=completed_at,
             )
@@ -197,8 +209,9 @@ def test_promote_legacy_gateway_conversations_reuses_existing_canonical_session(
     assert migrated == 1
     assert len(session_rows) == 1
     assert session_rows[0]["id"] == existing_session_id
+    assert session_rows[0]["created_at"].replace(tzinfo=timezone.utc) == legacy_created_at
     assert session_rows[0]["last_message_at"].replace(tzinfo=timezone.utc) == completed_at
-    assert chat_rows == [(existing_session_id,)]
+    assert chat_rows == [(existing_session_id,), (existing_session_id,)]
 
 
 def test_promote_legacy_gateway_conversations_noops_without_required_tables() -> None:

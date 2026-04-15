@@ -79,7 +79,7 @@ async def test_find_or_create_agent_pair_session_orders_ids_and_reuses_existing(
     source_agent_id = uuid4()
     target_agent_id = uuid4()
     existing = SimpleNamespace(id=uuid4(), agent_id=min(source_agent_id, target_agent_id, key=str))
-    db = _SequenceDB([existing])
+    db = _SequenceDB([existing, None, None, None, None])
 
     session = await find_or_create_agent_pair_session(
         db,
@@ -103,7 +103,7 @@ async def test_find_or_create_agent_pair_session_creates_ordered_session():
     target_agent_id = uuid4()
     owner_user_id = uuid4()
     participant_id = uuid4()
-    db = _SequenceDB([None])
+    db = _SequenceDB([None, None, None, None, None])
 
     session = await find_or_create_agent_pair_session(
         db,
@@ -131,7 +131,11 @@ async def test_find_or_create_agent_pair_session_normalizes_legacy_gateway_trans
     source_agent_id = uuid4()
     target_agent_id = uuid4()
     existing = SimpleNamespace(id=uuid4(), agent_id=min(source_agent_id, target_agent_id, key=str))
-    db = _SequenceDB([existing])
+    older = datetime(2026, 4, 14, 8, 0, tzinfo=timezone.utc)
+    newer = datetime(2026, 4, 14, 9, 0, tzinfo=timezone.utc)
+    existing.created_at = newer
+    existing.last_message_at = older
+    db = _SequenceDB([existing, older, newer, None, newer])
 
     session = await find_or_create_agent_pair_session(
         db,
@@ -143,9 +147,11 @@ async def test_find_or_create_agent_pair_session_normalizes_legacy_gateway_trans
     )
 
     assert session is existing
-    assert len(db.statements) == 3
-    chat_params = db.statements[1].compile().params
-    gateway_params = db.statements[2].compile().params
+    assert session.created_at == older
+    assert session.last_message_at == newer
+    assert len(db.statements) == 7
+    chat_params = db.statements[5].compile().params
+    gateway_params = db.statements[6].compile().params
     assert chat_params["conversation_id"] == str(existing.id)
     assert gateway_params["conversation_id"] == str(existing.id)
     assert set(chat_params["conversation_id_1"]) == {
@@ -156,6 +162,30 @@ async def test_find_or_create_agent_pair_session_normalizes_legacy_gateway_trans
         f"gw_agent_{source_agent_id}_{target_agent_id}",
         f"gw_agent_{target_agent_id}_{source_agent_id}",
     }
+
+
+@pytest.mark.asyncio
+async def test_find_or_create_agent_pair_session_creates_session_with_legacy_timestamp_bounds():
+    from app.services.session_service import find_or_create_agent_pair_session
+
+    source_agent_id = uuid4()
+    target_agent_id = uuid4()
+    owner_user_id = uuid4()
+    older = datetime(2026, 4, 14, 8, 0, tzinfo=timezone.utc)
+    newer = datetime(2026, 4, 14, 9, 0, tzinfo=timezone.utc)
+    db = _SequenceDB([None, older, newer, None, newer])
+
+    session = await find_or_create_agent_pair_session(
+        db,
+        source_agent_id=source_agent_id,
+        target_agent_id=target_agent_id,
+        owner_user_id=owner_user_id,
+        source_name="Source",
+        target_name="Target",
+    )
+
+    assert session.created_at == older
+    assert session.last_message_at == newer
 
 
 @pytest.mark.asyncio

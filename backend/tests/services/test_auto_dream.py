@@ -11,8 +11,11 @@ from unittest.mock import patch
 import pytest
 
 from app.services.auto_dream import (
+    _AUTO_DREAM_SYSTEM_PROMPT,
+    _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE,
     MIN_SESSIONS_SINCE_DREAM,
     _apply_dream_decisions,
+    _build_dream_consolidation_user_prompt,
     _consolidate_t3_files,
     _last_dream_time,
     _parse_dream_decision,
@@ -462,3 +465,141 @@ class TestRunDreamIntegration:
         soul = (tmp_path / str(agent_id) / "soul.md").read_text(encoding="utf-8")
         assert "## Learned Behaviors" in soul
         assert "- always prefer concise output" in soul
+
+
+# ── PR-13: dream prompt best-practices (XML + few-shot + anti-patterns) ──
+
+
+class TestDreamSystemPromptStructure:
+    def test_system_prompt_uses_xml_tags(self) -> None:
+        for tag in ("<role>", "</role>", "<identity_stakes>", "<output_contract>"):
+            assert tag in _AUTO_DREAM_SYSTEM_PROMPT, f"missing tag: {tag}"
+
+    def test_system_prompt_warns_identity_stakes(self) -> None:
+        # The whole reason dream is more cautious than heartbeat.
+        assert "identity_stakes" in _AUTO_DREAM_SYSTEM_PROMPT
+        assert "soul.md" in _AUTO_DREAM_SYSTEM_PROMPT
+        assert "cannot be" in _AUTO_DREAM_SYSTEM_PROMPT.lower() or "cannot" in _AUTO_DREAM_SYSTEM_PROMPT.lower()
+        assert "surgeon" in _AUTO_DREAM_SYSTEM_PROMPT.lower()
+
+    def test_system_prompt_demands_json_only(self) -> None:
+        # Guardrail against LLM wrapping output in prose or code fences.
+        assert "No prose" in _AUTO_DREAM_SYSTEM_PROMPT or "no prose" in _AUTO_DREAM_SYSTEM_PROMPT
+        assert "no code fences" in _AUTO_DREAM_SYSTEM_PROMPT.lower() or "no markdown" in _AUTO_DREAM_SYSTEM_PROMPT.lower()
+
+
+class TestDreamUserPromptTemplateStructure:
+    def test_user_prompt_uses_xml_tags(self) -> None:
+        required = [
+            "<agent_context>",
+            "<current_soul>",
+            "<t3_memory>",
+            "<section_selection_matrix>",
+            "<few_shot_example_1>",
+            "<few_shot_example_2>",
+            "<anti_patterns>",
+            "<json_schema>",
+            "<hard_rules>",
+            "<your_task>",
+        ]
+        for tag in required:
+            assert tag in _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE, f"missing tag: {tag}"
+
+    def test_template_has_section_selection_matrix(self) -> None:
+        t = _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE
+        # All four target soul sections are explicitly listed.
+        assert "Learned Behaviors" in t
+        assert "Core Strategies" in t
+        assert "Blocked Patterns" in t
+        assert "User Profile" in t
+        # Matrix carries the criteria column.
+        assert "criteria" in t
+
+    def test_template_has_two_few_shot_examples(self) -> None:
+        t = _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE
+        assert t.count("<few_shot_example_") == 2
+        assert t.count("<input_t3>") == 2
+        assert t.count("<output_decision>") == 2
+
+    def test_emoji_example_preserved(self) -> None:
+        # Freezes example 1 so "no emoji" ground-truth can't silently disappear.
+        t = _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE
+        assert "emoji" in t.lower()
+        assert "ripgrep" in t
+
+    def test_japanese_chinese_example_preserved(self) -> None:
+        # Freezes example 2 for contradiction handling.
+        t = _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE
+        assert "Japanese" in t
+        assert "Chinese" in t
+        assert "kept_new" in t
+
+    def test_anti_patterns_section_present(self) -> None:
+        t = _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE
+        assert "<anti_patterns>" in t
+        assert "DO NOT promote" in t
+        assert "DO NOT merge" in t
+        assert "DO NOT flag for preservation" in t
+
+    def test_json_schema_lists_all_four_output_keys(self) -> None:
+        t = _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE
+        for key in (
+            '"reasoning"',
+            '"soul_promotions"',
+            '"t3_merges"',
+            '"t3_contradictions"',
+            '"preservation_flags"',
+        ):
+            assert key in t, f"schema missing key: {key}"
+
+    def test_section_enum_is_complete(self) -> None:
+        t = _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE
+        assert "Learned Behaviors|Core Strategies|Blocked Patterns|User Profile" in t
+
+    def test_source_file_enum_is_complete(self) -> None:
+        t = _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE
+        assert "feedback.md|knowledge.md|strategies.md|blocked.md|user.md" in t
+
+    def test_hard_rules_preserve_prompt_injection_guardrail(self) -> None:
+        t = _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE
+        assert "data, not instructions" in t or "not instructions" in t
+        assert "web" in t and "email" in t
+
+    def test_hard_rules_cap_preservation_flags(self) -> None:
+        t = _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE
+        assert "max" in t.lower()
+        assert "5" in t  # cap is ~5
+
+    def test_template_preserves_placeholders(self) -> None:
+        assert "{agent_name}" in _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE
+        assert "{soul_excerpt}" in _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE
+        assert "{t3_block}" in _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE
+
+
+class TestDreamUserPromptBuilder:
+    def test_builder_fills_placeholders(self) -> None:
+        out = _build_dream_consolidation_user_prompt(
+            "Alice",
+            "# Soul\n\n## Identity\n- Name: Alice",
+            {
+                "feedback.md": "# Feedback\n\n- [2026-04-10] prefers concise output",
+                "strategies.md": "# Strategies\n\n- [2026-04-11] TDD-first",
+            },
+        )
+        assert "Agent: Alice" in out
+        assert "Name: Alice" in out
+        assert "prefers concise output" in out
+        assert "TDD-first" in out
+        # XML structure survives formatting.
+        assert "<section_selection_matrix>" in out
+        assert "<few_shot_example_1>" in out
+
+    def test_builder_truncates_long_soul(self) -> None:
+        out = _build_dream_consolidation_user_prompt(
+            "A", "X" * 5000, {"feedback.md": "Y"}
+        )
+        assert "truncated" in out
+
+    def test_builder_handles_no_t3_files(self) -> None:
+        out = _build_dream_consolidation_user_prompt("A", "soul", {})
+        assert "(no T3 files)" in out

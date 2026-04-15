@@ -181,7 +181,7 @@ def parse_t3_facts(data_root: Path, agent_id: uuid.UUID) -> list[dict]:
 
 
 def search_t3_facts(data_root: Path, agent_id: uuid.UUID, query: str, *, limit: int = 5) -> list[dict]:
-    """Search T3 md files directly without depending on the shadow sqlite index."""
+    """Search T3 md files directly with token-frequency scoring."""
     needle = (query or "").strip()
     if not needle:
         return parse_t3_facts(data_root, agent_id)[:limit]

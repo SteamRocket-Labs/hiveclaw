@@ -113,19 +113,48 @@ Markdown files with YAML frontmatter defining agent capabilities. `SkillParser` 
 
 ### Memory System — 4-Layer MD Pyramid
 
-MD files are the source of truth. SQLite is demoted to FTS recall index only.
+MD files are the source of truth; the legacy SQLite shadow store was retired.
 
 ```
-T0 (raw logs, 30d)  →  T2 (learnings/*.md, episodic)  →  T3 (memory/*.md, semantic)  →  soul.md (identity)
-     ↑ write                    ↑ extract                       ↑ curate                      ↑ dream
-SESSION_IDLE/CLOSE      RESPONSE_COMPLETE              Heartbeat (45min)              Dream (4h+3s gate)
-  cursor-based            cursor-based                  T2→T3 curation               T3→soul consolidation
+T0 (raw logs, 30d)  →  T2 (learnings/*.md)  →  T3 (memory/*.md)  →  soul.md (identity)
+     ↑ write                 ↑ extract               ↑ curate              ↑ dream
+SESSION_IDLE/CLOSE      RESPONSE_COMPLETE      Heartbeat (45min)     Dream (4h+3 sessions)
+  behavior/ only       (in-memory primary;    T2→T3 curation        T3→soul consolidation
+  feeds T2 backfill     T0 backfill fallback)
 ```
+
+**T0 layout (split by role, since PR-1):**
+
+```
+logs/YYYY-MM-DD/
+  behavior/        ← agent ↔ outside-world events — eligible T2 substrate
+    chat-*.md      ← full message thread, tool_calls + tool_results inline
+    trigger-*.md   ← same, for scheduled tasks
+    delegation-*.md ← same, for agent→agent
+  system/          ← distiller self-trace, audit only (NOT fed to T2)
+    heartbeat-*.md ← decision reasoning + T2 inputs considered + tool calls
+    dream-*.md     ← dedup decisions + soul promotion decisions + reasoning
+  artifacts/       ← spilled tool_results > 8000 chars (PR-5)
+    {tool_call_id}-{tool_name}.json
+```
+
+**T2 extraction has two paths:**
+
+1. **Hot path (primary)**: in-memory messages → `extract_agent` via
+   `RESPONSE_COMPLETE` hook → `learnings/*.md`. Per-agent cursor skips
+   already-processed messages.
+2. **Backfill path (PR-4)**: behavior T0 MD → `replay_messages_from_t0`
+   → same extractor → `learnings/*.md`. Gated by
+   `learnings/.backfill_cursor.json` (idempotent by `session_id`).
+   Triggered manually via `POST /api/admin/agents/{id}/backfill-t2`
+   or programmatically from lifespan startup (future).
 
 | Layer | Location | Written By | Read By |
 |-------|----------|-----------|---------|
-| **T0** | `logs/YYYY-MM-DD/*.md` | `t0_logger.py` (cursor-based, incremental) | Dream gate counting |
-| **T2** | `memory/learnings/*.md` | `extract_agent.py` (LLM per-response) | Heartbeat curation |
+| **T0 behavior** | `logs/YYYY-MM-DD/behavior/` | `t0_logger.write_t0_log` (post-session/trigger/delegation) | `extract_agent.backfill_missing_extractions` |
+| **T0 system**   | `logs/YYYY-MM-DD/system/`   | heartbeat / auto_dream | Operators only |
+| **T0 artifacts**| `logs/YYYY-MM-DD/artifacts/` | `_spillover_large_tool_results` when tool_result > 8000 chars | `_resolve_artifact_content` during backfill |
+| **T2** | `memory/learnings/*.md` | `extract_agent` (LLM hot path + pattern fallback) | Heartbeat curation |
 | **T3** | `memory/feedback.md`, `knowledge.md`, `strategies.md`, `blocked.md`, `user.md` | Heartbeat (T2→T3) | Prompt injection via `retriever.py` |
 | **soul.md** | Root workspace | Dream consolidation | Prompt injection (frozen prefix) |
 | **focus.md** | Root workspace | Agent + heartbeat | Prompt injection (dynamic suffix) |

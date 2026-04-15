@@ -181,7 +181,7 @@ class MemoryRetriever:
         items.extend(self._retrieve_t3_direct(agent_id) or [])
         episodic_limit = retrieval_profile.episodic_limit if retrieval_profile else 3
         external_limit = retrieval_profile.external_limit if retrieval_profile else 5
-        del limit  # prompt memory is sourced from T3 markdown, not a shadow sqlite store
+        del limit  # prompt memory is sourced entirely from T3 markdown files.
 
         items.extend(await self._retrieve_episodic(agent_id, session_id, previous_limit=episodic_limit) or [])
 

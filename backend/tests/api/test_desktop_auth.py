@@ -159,11 +159,6 @@ def test_callback_desktop_redirects_to_deep_link():
     test_nonce = "test_csrf_nonce_abc123"
     _oauth_state_fallback[test_nonce] = "dev1"
 
-    fake_feishu_user = {
-        "open_id": "ou_test123", "union_id": "on_test456", "user_id": "u_test789",
-        "name": "张三", "email": "zhangsan@test.com", "avatar_url": "",
-    }
-
     with (
         patch.object(desktop_auth_mod.feishu_auth_provider, "authenticate_with_code", new_callable=AsyncMock, return_value=(_FAKE_USER, "jwt_access_token_here")),
         patch.object(desktop_auth_mod, "create_refresh_token", new_callable=AsyncMock, return_value="raw_refresh_token_here"),

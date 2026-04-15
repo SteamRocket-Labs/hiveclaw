@@ -175,6 +175,10 @@ async def feishu_tenant_webhook(
     )
     config = result.scalar_one_or_none()
     if not config:
+        if "challenge" in body:
+            # Allow the initial Feishu URL verification handshake before the
+            # tenant config has been persisted.
+            return {"challenge": body["challenge"]}
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant Feishu config not found")
 
     # Security: verify signature → decrypt → then handle challenge/events
@@ -199,7 +203,6 @@ async def feishu_tenant_webhook(
             logger.warning(f"[tenant-webhook] Verification token mismatch for tenant {tenant_id}")
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid verification token")
 
-    # Handle challenge AFTER security verification
     if "challenge" in body:
         return {"challenge": body["challenge"]}
 

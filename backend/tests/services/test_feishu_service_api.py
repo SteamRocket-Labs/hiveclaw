@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
 
@@ -98,4 +96,3 @@ async def test_patch_message_raises_with_stage_on_business_error(monkeypatch):
             "{\"content\":\"...\"}",
             stage="stream_patch",
         )
-

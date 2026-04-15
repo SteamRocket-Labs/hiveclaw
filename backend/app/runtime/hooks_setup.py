@@ -12,12 +12,12 @@ from __future__ import annotations
 import logging
 import uuid
 
+import app.runtime.hooks as runtime_hooks
 from app.channel_message_contracts import extract_sender_label_from_message
 from app.runtime.hooks import (
     HookContext,
     HookEvent,
     describe_registration_specs,
-    hook_registry,
     load_registration_specs,
 )
 from app.services.extract_agent import extract_agent
@@ -30,6 +30,9 @@ from app.services.session_memory import (
 from app.services.t0_logger import write_t0_log
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_HOOK_REGISTRY = runtime_hooks.hook_registry
+hook_registry = runtime_hooks.hook_registry
 
 
 # ── Logging-only handlers (Phase 0, kept for events without active handler) ──
@@ -370,7 +373,8 @@ def register_memory_hooks() -> None:
     Phase 2: Extractor for RESPONSE_COMPLETE, PRE_COMPACTION; drain on SESSION_CLOSE.
     Phase 3: Pending reply capture for outbound messages.
     """
-    hook_registry.register_many(_MEMORY_HOOK_REGISTRATIONS)
+    active_registry = hook_registry if hook_registry is not _DEFAULT_HOOK_REGISTRY else runtime_hooks.hook_registry
+    active_registry.register_many(_MEMORY_HOOK_REGISTRATIONS)
 
     logger.info("[Hooks] Memory system hooks registered: %d handlers (3 log + 2 extract + 6 T0 + 1 pending_reply)", 12)
 

@@ -104,7 +104,12 @@ def collect_tools() -> CollectedTools:
     _import_handler_modules()
 
     all_metas = get_all_registered_tools()
-    if not all_metas:
+    handler_modules_in_registry = {
+        fn.__module__
+        for _name, (_meta, fn) in all_metas.items()
+        if getattr(fn, "__module__", "").startswith("app.tools.handlers.")
+    }
+    if not all_metas or (handler_modules_in_registry and handler_modules_in_registry != set(HANDLER_MODULES)):
         _import_handler_modules(force_reload=True)
         all_metas = get_all_registered_tools()
 

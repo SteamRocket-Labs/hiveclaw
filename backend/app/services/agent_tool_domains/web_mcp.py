@@ -129,10 +129,25 @@ async def _get_tool_config(tool_name: str) -> dict:
         from app.services.tool_config_service import resolve_tool_config
 
         tenant_id = get_tool_tenant_id()
-        return await resolve_tool_config(tool_name, tenant_id)
+        config = await resolve_tool_config(tool_name, tenant_id)
+        if config:
+            return config
     except Exception as e:
         logger.debug("Suppressed: %s", e)
-        return {}
+
+    # Backward-compatible fallback for direct unit tests and maintenance paths
+    # that still stub Tool.config reads without a full execution context.
+    try:
+        from app.models.tool import Tool
+
+        async with async_session() as db:
+            result = await db.execute(select(Tool).where(Tool.name == tool_name).limit(1))
+            tool = result.scalar_one_or_none()
+            if tool and getattr(tool, "config", None):
+                return dict(tool.config or {})
+    except Exception as e:
+        logger.debug("Suppressed legacy tool-config fallback: %s", e)
+    return {}
 
 
 async def _fallback_search_result(query: str, max_results: int) -> tuple[str, str] | None:

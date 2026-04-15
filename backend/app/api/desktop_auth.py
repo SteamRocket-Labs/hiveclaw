@@ -36,7 +36,7 @@ settings = get_settings()
 
 router = APIRouter(tags=["desktop-auth"])
 
-FEISHU_AUTHORIZE_URL = "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
+FEISHU_AUTHORIZE_URL = "https://open.feishu.cn/open-apis/authen/v1/authorize"
 
 _OAUTH_STATE_TTL = 600  # 10 minutes
 _OAUTH_STATE_PREFIX = "oauth_state:"

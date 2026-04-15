@@ -6,7 +6,6 @@ import json
 from collections import OrderedDict
 
 import httpx
-from loguru import logger
 
 from app.config import get_settings
 

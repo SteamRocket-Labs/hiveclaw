@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 
-from app.tools.decorator import ToolMeta, clear_registry, tool
+from app.tools.decorator import ToolMeta, clear_registry, get_all_registered_tools, tool
 from app.tools.collector import HANDLER_MODULES, collect_tools
 
 
@@ -161,6 +161,22 @@ def test_collect_real_handlers_include_memory_tools():
     delegate_schema = next(tool for tool in collected.openai_tools if tool["function"]["name"] == "delegate_to_agent")
     profile_enum = delegate_schema["function"]["parameters"]["properties"]["tool_profile"]["enum"]
     assert profile_enum == ["worker_safe", "memory_readonly", "review_readonly", "research_readonly"]
+
+
+def test_collect_recovers_when_registry_contains_only_partial_real_handlers():
+    clear_registry()
+    importlib.reload(importlib.import_module("app.tools.handlers.hr"))
+
+    partial_names = set(get_all_registered_tools())
+    assert "preview_agent_blueprint" in partial_names
+    assert "list_mcp_resources" not in partial_names
+
+    collected = collect_tools()
+    names = {tool["function"]["name"] for tool in collected.openai_tools}
+
+    assert "preview_agent_blueprint" in names
+    assert "list_mcp_resources" in names
+    assert "read_mcp_resource" in names
 
 
 def test_handler_module_manifest_matches_handlers_directory():

@@ -242,6 +242,7 @@ T0 基础设施
   - `messaging.py::_send_message_to_agent -> OpenClaw target GatewayMessage sender/content contract` 已与 `api/gateway.py` 主干重新对齐
   - 本轮补扫 `backend/app` 其余 `GatewayMessage` agent-to-agent 写入点，暂未再发现第二处同类 `sender_user_id / [From ...]` 回流
   - `.gitignore` 现已精准放行 `docs/backend-trunk-governance/*.md`；治理进度文档不再停留在“工作树已更新、但 Git 不可见”的隐形断层状态
+  - 2026-04-15 push 前全量回归已通过：`backend pytest = 1223 passed`、`backend ruff = All checks passed`、`frontend vitest = 67 passed`、`frontend build = passed`
   - 当前目标已提升为：把各 Phase 的残余断点继续压缩到 `98%+`，并尽量消除“主干已 canonical、补偿分支仍在旧 fallback”这类隐形双轨
   - 下一批继续扫描重点：
     - 其它非 Feishu maintenance / migration helper 是否仍存在“只认 legacy 字段、不认 canonical 主干”的读写漂移

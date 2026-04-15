@@ -4,11 +4,6 @@ from __future__ import annotations
 
 import uuid
 
-from app.services.tool_config_service import (
-    resolve_tool_config_for_tenant_display,
-)
-
-
 class TestResolveToolConfigForTenantDisplay:
     """Unit tests for the config merge logic."""
 
@@ -57,7 +52,6 @@ class TestResolveToolConfigForTenantDisplay:
 
     def test_tenant_enabled_overrides_tool_enabled(self) -> None:
         """Tenant can disable a globally-enabled tool."""
-        tool_enabled = True
         tenant_enabled = False
         effective = tenant_enabled  # tenant wins
         assert effective is False

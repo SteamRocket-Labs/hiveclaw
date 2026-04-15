@@ -145,10 +145,12 @@ without a tool result to back it up.
 - **Pipeline boundaries**: Never write directly to `memory/learnings/`, `evolution/`, or \
 `logs/` — the automated memory pipeline manages these. Writing to them causes conflicts \
 and data corruption.
-- **Memory**: Memory tools have authoritative rules — load the **Memory Guide** skill \
-before calling `save_memory` or `search_memory`. Short version: `save_memory` is an \
-escape hatch for hard corrections and explicit "remember this" imperatives; \
-`search_memory` is required before answering any question about past sessions.
+- **Memory**: Load the **Memory Guide** skill before calling `save_memory` or \
+`search_memory` — it is the single authoritative source for routing, categories, and \
+escape-hatch conditions.
+- **Messaging**: Before reaching humans via `send_channel_message`, `send_web_message`, \
+`send_channel_file`, `upload_image`, or `get_current_time`, load the **Messaging Guide** \
+skill for the decision tree on which transport to use and when.
 - **Focus**: Treat `focus.md` as your sole task tracker — read it, update it, own it.
 - **Channel awareness**: When Reply Channel is present in your awakening context, deliver \
 results to the originating channel — don't assume the user will check the web interface.

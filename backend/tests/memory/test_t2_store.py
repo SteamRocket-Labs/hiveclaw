@@ -87,3 +87,15 @@ def test_render_t2_snapshot_groups_by_priority_and_repetition() -> None:
     assert "[w=1.00][repeat=1][src=web][cat=feedback]" in snapshot
     assert "[w=0.50][repeat=2][src=trigger][cat=project]" in snapshot
     assert "[w=0.30][repeat=1][src=web][cat=request]" in snapshot
+
+
+def test_t0_backfill_source_uses_human_bucket_weight() -> None:
+    """PR-7: backfilled sessions share the original human conversation's
+    provenance, so weight must match web/slack/etc. — not get demoted to
+    the system bucket (0.85 for feedback vs 1.00 for human).
+    """
+    from app.memory.t2_store import compute_t2_weight
+
+    assert compute_t2_weight("feedback", "t0_backfill") == compute_t2_weight("feedback", "web")
+    assert compute_t2_weight("constraint", "t0_backfill") == compute_t2_weight("constraint", "slack")
+    assert compute_t2_weight("feedback", "t0_backfill") == 1.00

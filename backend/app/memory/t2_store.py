@@ -51,6 +51,9 @@ _HUMAN_SOURCES = {
     "discord_bot",
     "compaction",
     "invoke_complete",
+    # Backfill replays originally-human sessions from behavior T0 MD files;
+    # the provenance is still the same user conversation, just delayed.
+    "t0_backfill",
 }
 _AUTONOMOUS_SOURCES = {
     "trigger",

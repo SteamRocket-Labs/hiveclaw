@@ -17,8 +17,39 @@ from app.tools.result_envelope import render_tool_error, render_tool_fallback
 logger = logging.getLogger(__name__)
 
 
+def _safe_feishu_json(resp: httpx.Response, op: str) -> dict:
+    """Parse a Feishu OpenAPI response body as JSON with a graceful fallback.
+
+    The Feishu gateway occasionally returns non-JSON bodies (HTML error pages,
+    auth-redirect stubs, multi-value junk that trips ``JSONDecodeError`` with
+    "Extra data"). Those previously surfaced to the caller as raw Python
+    tracebacks. Here we normalize every failure mode into the same envelope
+    shape the callers already handle ({"code", "msg"}), so the tool just
+    reports a clean error.
+    """
+    try:
+        data = resp.json()
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        return data
+    snippet = (resp.text or "")[:200]
+    logger.warning(
+        "Feishu %s returned non-JSON body (status=%s, content_type=%s): %r",
+        op,
+        resp.status_code,
+        resp.headers.get("content-type"),
+        snippet,
+    )
+    return {
+        "code": resp.status_code or -1,
+        "msg": f"non-JSON response from Feishu (status {resp.status_code}): {snippet}",
+    }
+
+
 async def _feishu_doc_read_via_openapi(agent_id: uuid.UUID, arguments: dict) -> str:
     import httpx
+
     document_token = arguments.get("document_token", "").strip()
     if not document_token:
         return "❌ Missing required argument 'document_token'"
@@ -48,7 +79,7 @@ async def _feishu_doc_read_via_openapi(agent_id: uuid.UUID, arguments: dict) -> 
             params={"lang": 0},
         )
 
-    data = resp.json()
+    data = _safe_feishu_json(resp, "doc_read")
     if data.get("code") != 0:
         return f"❌ Failed to read document: {data.get('msg')} (code {data.get('code')})"
 
@@ -140,7 +171,7 @@ async def _feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:
             headers=headers,
         )
 
-    data = resp.json()
+    data = _safe_feishu_json(resp, "doc_create")
     if data.get("code") != 0:
         return f"❌ Failed to create document: {data.get('msg')} (code {data.get('code')})"
 
@@ -163,7 +194,7 @@ async def _feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:
                     },
                     headers=headers,
                 )
-            sr = share_resp.json()
+            sr = _safe_feishu_json(share_resp, "doc_create_share")
             if sr.get("code") == 0:
                 share_note = "\n✅ 已自动为你开通访问权限。"
             else:
@@ -176,7 +207,7 @@ async def _feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:
         f"标题：{title}\n"
         f"Token：{doc_token}\n"
         f"🔗 访问链接：{doc_url}\n"
-        f"下一步：调用 feishu_doc_append(document_token=\"{doc_token}\", content=\"...\") 写入正文内容。"
+        f'下一步：调用 feishu_doc_append(document_token="{doc_token}", content="...") 写入正文内容。'
     )
 
 
@@ -197,11 +228,11 @@ def _parse_inline_markdown(text: str) -> list[dict]:
 
     elements = []
     # Only handle **bold**, *italic*, ~~strikethrough~~; backticks become plain text
-    pattern = r'(\*\*(.+?)\*\*|\*(.+?)\*|~~(.+?)~~|`(.+?)`)'
+    pattern = r"(\*\*(.+?)\*\*|\*(.+?)\*|~~(.+?)~~|`(.+?)`)"
     pos = 0
     for m in _re.finditer(pattern, text):
         if m.start() > pos:
-            elements.append(_make_run(text[pos:m.start()]))
+            elements.append(_make_run(text[pos : m.start()]))
         raw = m.group(0)
         if raw.startswith("**"):
             elements.append(_make_run(m.group(2), {"bold": True}))
@@ -235,8 +266,7 @@ def _markdown_to_feishu_blocks(markdown: str) -> list[dict]:
     """
     import re as _re
 
-    _HEADING_BLOCK = {1: (3, "heading1"), 2: (4, "heading2"),
-                      3: (5, "heading3"), 4: (6, "heading4")}
+    _HEADING_BLOCK = {1: (3, "heading1"), 2: (4, "heading2"), 3: (5, "heading3"), 4: (6, "heading4")}
 
     def _text_block(bt: int, key: str, line: str) -> dict:
         # Omit "style" entirely to avoid Feishu field validation errors on empty style dicts
@@ -259,30 +289,47 @@ def _markdown_to_feishu_blocks(markdown: str) -> list[dict]:
             while i < len(lines) and not lines[i].strip().startswith("```"):
                 code_lines.append(lines[i])
                 i += 1
-            blocks.append({
-                "block_type": 14,
-                "code": {
-                    "elements": [{"text_run": {"content": "\n".join(code_lines)}}],
-                    "style": {"language": 1 if not lang else
-                              {"python": 49, "javascript": 22, "js": 22,
-                               "typescript": 56, "ts": 56, "bash": 4, "sh": 4,
-                               "sql": 53, "java": 21, "go": 17, "rust": 51,
-                               "json": 25, "yaml": 60, "html": 19, "css": 10,
-                               }.get(lang.lower(), 1)},
-                },
-            })
+            blocks.append(
+                {
+                    "block_type": 14,
+                    "code": {
+                        "elements": [{"text_run": {"content": "\n".join(code_lines)}}],
+                        "style": {
+                            "language": 1
+                            if not lang
+                            else {
+                                "python": 49,
+                                "javascript": 22,
+                                "js": 22,
+                                "typescript": 56,
+                                "ts": 56,
+                                "bash": 4,
+                                "sh": 4,
+                                "sql": 53,
+                                "java": 21,
+                                "go": 17,
+                                "rust": 51,
+                                "json": 25,
+                                "yaml": 60,
+                                "html": 19,
+                                "css": 10,
+                            }.get(lang.lower(), 1)
+                        },
+                    },
+                }
+            )
             i += 1
             continue
 
         # ── Divider ──────────────────────────────────────────────────────────
-        if _re.fullmatch(r'[-*_]{3,}', line.strip()):
+        if _re.fullmatch(r"[-*_]{3,}", line.strip()):
             # block_type 22 = Divider; no extra fields allowed (empty dict causes validation error)
             blocks.append({"block_type": 22})
             i += 1
             continue
 
         # ── Headings ─────────────────────────────────────────────────────────
-        hm = _re.match(r'^(#{1,4})\s+(.*)', line)
+        hm = _re.match(r"^(#{1,4})\s+(.*)", line)
         if hm:
             level = min(len(hm.group(1)), 4)
             bt, key = _HEADING_BLOCK[level]
@@ -291,15 +338,15 @@ def _markdown_to_feishu_blocks(markdown: str) -> list[dict]:
             continue
 
         # ── Bullet list ──────────────────────────────────────────────────────
-        if _re.match(r'^[\-\*\+]\s+', line):
-            text = _re.sub(r'^[\-\*\+]\s+', '', line)
+        if _re.match(r"^[\-\*\+]\s+", line):
+            text = _re.sub(r"^[\-\*\+]\s+", "", line)
             blocks.append(_text_block(12, "bullet", text))
             i += 1
             continue
 
         # ── Ordered list ─────────────────────────────────────────────────────
-        if _re.match(r'^\d+\.\s+', line):
-            text = _re.sub(r'^\d+\.\s+', '', line)
+        if _re.match(r"^\d+\.\s+", line):
+            text = _re.sub(r"^\d+\.\s+", "", line)
             blocks.append(_text_block(13, "ordered", text))
             i += 1
             continue
@@ -312,15 +359,17 @@ def _markdown_to_feishu_blocks(markdown: str) -> list[dict]:
 
         # ── Empty line → empty text block ────────────────────────────────────
         if line.strip() == "":
-            blocks.append({
-                "block_type": 2,
-                "text": {"elements": [{"text_run": {"content": " "}}]},
-            })
+            blocks.append(
+                {
+                    "block_type": 2,
+                    "text": {"elements": [{"text_run": {"content": " "}}]},
+                }
+            )
             i += 1
             continue
 
         # ── Markdown table separator line (|---|---| ) → skip ───────────────
-        if _re.match(r'^\|[\s\-:]+(\|[\s\-:]+)*\|?\s*$', line.strip()):
+        if _re.match(r"^\|[\s\-:]+(\|[\s\-:]+)*\|?\s*$", line.strip()):
             i += 1
             continue
 
@@ -359,34 +408,30 @@ async def _feishu_doc_append(agent_id: uuid.UUID, arguments: dict) -> str:
     docx_token = node_info["obj_token"] if (node_info and node_info.get("obj_token")) else document_token
 
     async with httpx.AsyncClient(timeout=20) as client:
-        meta = (await client.get(
+        meta_resp = await client.get(
             f"https://open.feishu.cn/open-apis/docx/v1/documents/{docx_token}",
             headers=headers,
-        )).json()
+        )
+        meta = _safe_feishu_json(meta_resp, "doc_append_meta")
         if meta.get("code") != 0:
             return f"❌ Cannot access document: {meta.get('msg')}"
 
-        body_block_id = (
-            meta.get("data", {}).get("document", {}).get("body", {}).get("block_id")
-            or docx_token
-        )
+        body_block_id = meta.get("data", {}).get("document", {}).get("body", {}).get("block_id") or docx_token
 
         children = _markdown_to_feishu_blocks(content)
 
-        result = (await client.post(
+        append_resp = await client.post(
             f"https://open.feishu.cn/open-apis/docx/v1/documents/{docx_token}/blocks/{body_block_id}/children",
             json={"children": children, "index": -1},
             headers=headers,
-        )).json()
+        )
+        result = _safe_feishu_json(append_resp, "doc_append")
 
     if result.get("code") != 0:
         return f"❌ Failed to append: {result.get('msg')} (code {result.get('code')})"
 
     doc_url = f"https://bytedance.larkoffice.com/docx/{docx_token}"
-    return (
-        f"✅ 已写入 {len(children)} 个段落到文档。\n"
-        f"🔗 文档直链（原文发给用户，勿修改）：{doc_url}"
-    )
+    return f"✅ 已写入 {len(children)} 个段落到文档。\n🔗 文档直链（原文发给用户，勿修改）：{doc_url}"
 
 
 async def _feishu_doc_delete(agent_id: uuid.UUID, arguments: dict) -> str:
@@ -412,7 +457,7 @@ async def _feishu_doc_delete(agent_id: uuid.UUID, arguments: dict) -> str:
             headers={"Authorization": f"Bearer {token}"},
         )
 
-    data = resp.json()
+    data = _safe_feishu_json(resp, "doc_delete")
     if data.get("code") != 0:
         return f"❌ Failed to delete document: {data.get('msg')} (code {data.get('code')})"
     return f"🗑️ 已删除飞书文档 `{document_token}`"

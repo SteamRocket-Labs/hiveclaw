@@ -84,12 +84,13 @@ class ChannelUserService:
         )
         member = result.scalar_one_or_none()
         if member:
-            provider_user_id = (member.external_id or member.feishu_user_id or "").strip()
-            provider_open_id = (member.open_id or member.feishu_open_id or "").strip()
-            if provider_user_id:
-                return provider_user_id, "user_id"
-            if provider_open_id:
-                return provider_open_id, "open_id"
+            member_target = await self._get_org_member_delivery_target(
+                db,
+                tenant_id=tenant_id,
+                member=member,
+            )
+            if member_target:
+                return member_target
 
         org_query = select(OrgMember).where(OrgMember.name == normalized_name)
         if tenant_id is not None:
@@ -97,12 +98,13 @@ class ChannelUserService:
         result = await db.execute(org_query.limit(1))
         member = result.scalar_one_or_none()
         if member:
-            provider_user_id = (member.external_id or member.feishu_user_id or "").strip()
-            provider_open_id = (member.open_id or member.feishu_open_id or "").strip()
-            if provider_user_id:
-                return provider_user_id, "user_id"
-            if provider_open_id:
-                return provider_open_id, "open_id"
+            member_target = await self._get_org_member_delivery_target(
+                db,
+                tenant_id=tenant_id,
+                member=member,
+            )
+            if member_target:
+                return member_target
 
         user_query = select(User).where(User.display_name == normalized_name)
         if tenant_id is not None:
@@ -193,6 +195,30 @@ class ChannelUserService:
             return user.feishu_user_id, "user_id"
         if user.feishu_open_id:
             return user.feishu_open_id, "open_id"
+        return None
+
+    async def _get_org_member_delivery_target(
+        self,
+        db: AsyncSession,
+        *,
+        tenant_id: uuid.UUID | None,
+        member: OrgMember,
+    ) -> tuple[str, str] | None:
+        provider_user_id = (member.external_id or member.feishu_user_id or "").strip()
+        provider_open_id = (member.open_id or member.feishu_open_id or "").strip()
+        if provider_user_id:
+            return provider_user_id, "user_id"
+        if provider_open_id:
+            resolved_user = await self.resolve_feishu_user(
+                db,
+                tenant_id=tenant_id if tenant_id is not None else member.tenant_id,
+                provider_open_id=provider_open_id,
+            )
+            if resolved_user:
+                canonical_target = await self.get_feishu_delivery_target(db, user=resolved_user)
+                if canonical_target and canonical_target[1] == "user_id":
+                    return canonical_target
+            return provider_open_id, "open_id"
         return None
 
     async def _get_tenant_provider(self, db: AsyncSession, tenant_id: uuid.UUID | None) -> IdentityProvider | None:

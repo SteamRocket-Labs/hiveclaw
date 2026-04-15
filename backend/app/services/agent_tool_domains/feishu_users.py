@@ -136,8 +136,8 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
             if best >= 0.3:
                 scored_members.append((best, {
                     "name": _om.name,
-                    "feishu_user_id": _om.feishu_user_id,
-                    "open_id": _om.feishu_open_id,
+                    "user_id": getattr(_om, "external_id", None) or _om.feishu_user_id,
+                    "open_id": getattr(_om, "open_id", None) or _om.feishu_open_id,
                     "email": getattr(_om, "email", ""),
                     "department_path": getattr(_om, "department_path", ""),
                 }))
@@ -153,6 +153,7 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
         from app.database import async_session as _async_session
         from sqlalchemy import select as _sa_select
         from app.models.user import User as _User
+        from app.services.channel_user_service import channel_user_service
 
         _user_query = _sa_select(_User)
         if _tenant_id:
@@ -163,8 +164,12 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
 
         scored_users = []
         for _pu in _all_users:
-            _uid = getattr(_pu, "feishu_user_id", None)
-            _oid = getattr(_pu, "feishu_open_id", None)
+            _delivery_target = await channel_user_service.get_feishu_delivery_target(_db, user=_pu)
+            _uid = _delivery_target[0] if _delivery_target and _delivery_target[1] == "user_id" else None
+            _oid = _delivery_target[0] if _delivery_target and _delivery_target[1] == "open_id" else None
+            if not _uid and not _oid:
+                _uid = getattr(_pu, "feishu_user_id", None)
+                _oid = getattr(_pu, "feishu_open_id", None)
             if not (_uid or _oid):
                 continue
             best = _fuzzy_score(name, _pu.display_name or "")

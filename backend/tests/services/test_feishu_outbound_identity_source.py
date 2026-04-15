@@ -21,6 +21,8 @@ def test_messaging_source_uses_canonical_feishu_conv_ids_for_outbound_history():
 
     assert "find_or_create_feishu_chat_session" in source
     assert "legacy_external_conv_ids" not in source
+    assert "OrgMember.external_id == direct_user_id" in source
+    assert "OrgMember.open_id == direct_open_id" in source
 
 
 def test_feishu_api_source_routes_session_alias_logic_through_identity_helper():

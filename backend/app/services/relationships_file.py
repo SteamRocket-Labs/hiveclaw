@@ -72,8 +72,12 @@ def render_relationships_markdown(
                 f"（{getattr(member, 'department_path', '') or '未设置部门'}）"
             )
             lines.append(f"- 关系：{label}")
-            if getattr(member, "feishu_open_id", None):
-                lines.append(f"- 飞书ID：{member.feishu_open_id}")
+            provider_user_id = getattr(member, "external_id", None) or getattr(member, "feishu_user_id", None)
+            provider_open_id = getattr(member, "open_id", None) or getattr(member, "feishu_open_id", None)
+            if provider_user_id:
+                lines.append(f"- 飞书 user_id：{provider_user_id}")
+            if provider_open_id:
+                lines.append(f"- 飞书 open_id：{provider_open_id}")
             if getattr(member, "email", None):
                 lines.append(f"- 邮箱：{member.email}")
             description = getattr(relation, "description", "")

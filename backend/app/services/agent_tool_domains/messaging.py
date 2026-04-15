@@ -5,7 +5,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.database import async_session
 from app.services.session_service import (
@@ -262,6 +262,28 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                 if normalized_open_id:
                     args["open_id"] = normalized_open_id
 
+            async def _canonicalize_user_id_from_open_id(
+                *,
+                current_user_id: str | None,
+                current_open_id: str | None,
+                tenant_id: uuid.UUID | None,
+            ) -> str:
+                normalized_user_id = str(current_user_id or "").strip()
+                normalized_open_id = str(current_open_id or "").strip()
+                if normalized_user_id or not normalized_open_id:
+                    return normalized_user_id
+                canonical_user = await channel_user_service.resolve_feishu_user(
+                    db,
+                    tenant_id=tenant_id,
+                    provider_open_id=normalized_open_id,
+                )
+                if not canonical_user:
+                    return normalized_user_id
+                canonical_target = await channel_user_service.get_feishu_delivery_target(db, user=canonical_user)
+                if canonical_target and canonical_target[1] == "user_id":
+                    return canonical_target[0]
+                return normalized_user_id
+
             # ── Resolve agent tenant_id for recipient validation ──
             _agent_r = await db.execute(select(Agent.tenant_id).where(Agent.id == agent_id))
             _agent_tenant_id = _agent_r.scalar_one_or_none()
@@ -276,8 +298,11 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                 if direct_user_id:
                     _check = await db.execute(
                         select(OrgMember).where(
-                            OrgMember.feishu_user_id == direct_user_id,
                             OrgMember.tenant_id == _agent_tenant_id,
+                            or_(
+                                OrgMember.external_id == direct_user_id,
+                                OrgMember.feishu_user_id == direct_user_id,
+                            ),
                         )
                     )
                     validated_member = _check.scalar_one_or_none()
@@ -285,8 +310,11 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                 if not _recipient_ok and direct_open_id:
                     _check = await db.execute(
                         select(OrgMember).where(
-                            OrgMember.feishu_open_id == direct_open_id,
                             OrgMember.tenant_id == _agent_tenant_id,
+                            or_(
+                                OrgMember.open_id == direct_open_id,
+                                OrgMember.feishu_open_id == direct_open_id,
+                            ),
                         )
                     )
                     validated_member = _check.scalar_one_or_none()
@@ -297,6 +325,16 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                         f"该用户不在本组织通讯录中，已阻止发送。"
                     )
                 canonical_user_id = _stable_feishu_user_id(validated_member)
+                if not canonical_user_id and direct_open_id:
+                    canonical_user = await channel_user_service.resolve_feishu_user(
+                        db,
+                        tenant_id=_agent_tenant_id,
+                        provider_open_id=direct_open_id,
+                    )
+                    if canonical_user:
+                        canonical_target = await channel_user_service.get_feishu_delivery_target(db, user=canonical_user)
+                        if canonical_target and canonical_target[1] == "user_id":
+                            canonical_user_id = canonical_target[0]
 
                 config_result = await db.execute(
                     select(ChannelConfig).where(ChannelConfig.agent_id == agent_id, ChannelConfig.channel_type == "feishu")
@@ -527,6 +565,11 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
 
             stable_user_id = _stable_feishu_user_id(target_member)
             stable_open_id = _stable_feishu_open_id(target_member)
+            stable_user_id = await _canonicalize_user_id_from_open_id(
+                current_user_id=stable_user_id,
+                current_open_id=stable_open_id,
+                tenant_id=getattr(target_member, "tenant_id", None) or _agent_tenant_id,
+            )
 
             # Step 1: Try using provider user_id (tenant-stable, works across apps)
             if stable_user_id:
@@ -546,11 +589,19 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                         mobile=target_member.phone,
                     )
                     if resolved:
+                        stable_user_id = await _canonicalize_user_id_from_open_id(
+                            current_user_id=stable_user_id,
+                            current_open_id=resolved,
+                            tenant_id=getattr(target_member, "tenant_id", None) or _agent_tenant_id,
+                        )
                         resp = await _try_send(config.app_id, config.app_secret, resolved)
                         if resp.get("code") == 0:
                             _backfill_successful_identity(user_id=stable_user_id, open_id=resolved)
                             target_member.open_id = resolved
                             target_member.feishu_open_id = resolved
+                            if stable_user_id:
+                                target_member.external_id = stable_user_id
+                                target_member.feishu_user_id = stable_user_id
                             await db.commit()
                             await _save_outgoing_to_feishu_session(stable_user_id, resolved)
                             return f"✅ Successfully sent message to {member_name}"
@@ -584,7 +635,7 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                                 stable_user_id, "user_id",
                             )
                             if resp2.get("code") == 0:
-                                args["user_id"] = stable_user_id
+                                _backfill_successful_identity(user_id=stable_user_id)
                                 await _save_outgoing_to_feishu_session(stable_user_id, stable_open_id)
                                 return f"✅ Successfully sent message to {member_name}"
                         # Fallback to open_id with org sync app

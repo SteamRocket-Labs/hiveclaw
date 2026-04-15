@@ -181,6 +181,93 @@ async def test_resolve_feishu_delivery_target_by_name_prefers_provider_backed_us
 
 
 @pytest.mark.asyncio
+async def test_resolve_feishu_delivery_target_by_name_canonicalizes_relationship_member_open_id(monkeypatch):
+    from app.services.channel_user_service import ChannelUserService
+
+    service = ChannelUserService()
+    tenant_id = uuid4()
+    relationship_member = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        name="王天怡",
+        external_id=None,
+        feishu_user_id=None,
+        open_id="ou_provider_only",
+        feishu_open_id=None,
+    )
+    canonical_user = SimpleNamespace(id=uuid4(), tenant_id=tenant_id)
+    fake_db = _ExecuteDB(
+        [
+            _RowsResult([]),                     # existing session lookup
+            _ScalarResult(relationship_member),  # relationship org member
+        ]
+    )
+    resolve_user = AsyncMock(return_value=canonical_user)
+    get_target = AsyncMock(return_value=("u_provider_123", "user_id"))
+    monkeypatch.setattr(service, "resolve_feishu_user", resolve_user)
+    monkeypatch.setattr(service, "get_feishu_delivery_target", get_target)
+
+    result = await service.resolve_feishu_delivery_target_by_name(
+        fake_db,
+        agent_id=uuid4(),
+        tenant_id=tenant_id,
+        member_name="王天怡",
+    )
+
+    assert result == ("u_provider_123", "user_id")
+    resolve_user.assert_awaited_once_with(
+        fake_db,
+        tenant_id=tenant_id,
+        provider_open_id="ou_provider_only",
+    )
+    get_target.assert_awaited_once_with(fake_db, user=canonical_user)
+
+
+@pytest.mark.asyncio
+async def test_resolve_feishu_delivery_target_by_name_canonicalizes_tenant_org_member_open_id(monkeypatch):
+    from app.services.channel_user_service import ChannelUserService
+
+    service = ChannelUserService()
+    tenant_id = uuid4()
+    org_member = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        name="王天怡",
+        external_id=None,
+        feishu_user_id=None,
+        open_id="ou_provider_only",
+        feishu_open_id=None,
+    )
+    canonical_user = SimpleNamespace(id=uuid4(), tenant_id=tenant_id)
+    fake_db = _ExecuteDB(
+        [
+            _RowsResult([]),         # existing session lookup
+            _ScalarResult(None),     # relationship org member
+            _ScalarResult(org_member),  # tenant org member
+        ]
+    )
+    resolve_user = AsyncMock(return_value=canonical_user)
+    get_target = AsyncMock(return_value=("u_provider_456", "user_id"))
+    monkeypatch.setattr(service, "resolve_feishu_user", resolve_user)
+    monkeypatch.setattr(service, "get_feishu_delivery_target", get_target)
+
+    result = await service.resolve_feishu_delivery_target_by_name(
+        fake_db,
+        agent_id=uuid4(),
+        tenant_id=tenant_id,
+        member_name="王天怡",
+    )
+
+    assert result == ("u_provider_456", "user_id")
+    resolve_user.assert_awaited_once_with(
+        fake_db,
+        tenant_id=tenant_id,
+        provider_open_id="ou_provider_only",
+    )
+    get_target.assert_awaited_once_with(fake_db, user=canonical_user)
+
+
+@pytest.mark.asyncio
 async def test_resolve_feishu_user_falls_back_open_id_then_email(monkeypatch):
     from app.services.channel_user_service import ChannelUserService
 

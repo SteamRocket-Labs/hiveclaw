@@ -11,6 +11,7 @@ from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent import Agent
 from app.models.user import User
+from app.services.channel_user_service import channel_user_service
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -72,6 +73,17 @@ async def list_users(
             )
         )
         agents_count = count_result.scalar() or 0
+        delivery_target = await channel_user_service.get_feishu_delivery_target(db, user=u)
+        feishu_open_id = (
+            delivery_target[0]
+            if delivery_target and delivery_target[1] == "open_id"
+            else getattr(u, "feishu_open_id", None)
+        )
+        source = (
+            "feishu"
+            if delivery_target or getattr(u, "feishu_open_id", None) or getattr(u, "feishu_user_id", None)
+            else "registered"
+        )
 
         user_dict = {
             "id": u.id,
@@ -86,9 +98,9 @@ async def list_users(
             "tokens_used_month": u.tokens_used_month,
             "tokens_used_total": u.tokens_used_total,
             "agents_count": agents_count,
-            "feishu_open_id": getattr(u, 'feishu_open_id', None),
+            "feishu_open_id": feishu_open_id,
             "created_at": u.created_at.isoformat() if u.created_at else None,
-            "source": 'feishu' if getattr(u, 'feishu_open_id', None) else 'registered',
+            "source": source,
         }
         out.append(UserOut(**user_dict))
     return out

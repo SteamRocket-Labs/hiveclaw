@@ -28,4 +28,6 @@ _agent/
 _agents/
 
 # Internal docs
-docs/
+docs/*
+!docs/backend-trunk-governance/
+!docs/backend-trunk-governance/*.md

@@ -352,7 +352,9 @@ async def test_send_message_to_openclaw_target_persists_canonical_agent_pair_tra
     outbound_chat = next(obj for obj in fake_db.added if isinstance(obj, ChatMessage))
     assert outbound_gateway.agent_id == target_agent.id
     assert outbound_gateway.sender_agent_id == from_agent_id
+    assert outbound_gateway.sender_user_id is None
     assert outbound_gateway.conversation_id == "agent-pair-conv"
+    assert outbound_gateway.content == "Please send the release summary."
     assert outbound_chat.agent_id == chat_session.agent_id
     assert outbound_chat.conversation_id == "agent-pair-conv"
     assert outbound_chat.role == "user"

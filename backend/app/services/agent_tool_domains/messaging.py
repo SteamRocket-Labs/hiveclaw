@@ -915,9 +915,8 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 gw_msg = GMsg(
                     agent_id=target.id,
                     sender_agent_id=from_agent_id,
-                    sender_user_id=source_agent.creator_id if source_agent else None,
                     conversation_id=session_id,
-                    content=f"[From {source_name}] {message_text}",
+                    content=message_text,
                     status="pending",
                 )
                 db.add(gw_msg)

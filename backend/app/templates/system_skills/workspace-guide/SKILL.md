@@ -3,6 +3,15 @@ name: Workspace Guide
 description: Workspace structure, file operations, focus management, and messaging rules
 tools:
   - read_document
+  - read_file
+  - write_file
+  - edit_file
+  - list_files
+  - glob_search
+  - grep_search
+  - delete_file
+  - run_command
+  - tool_search
 is_system: true
 ---
 

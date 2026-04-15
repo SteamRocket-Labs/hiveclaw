@@ -1,6 +1,12 @@
 ---
 name: Delegation Guide
 description: Multi-agent delegation decisions, instruction quality, and async task lifecycle
+tools:
+  - delegate_to_agent
+  - send_message_to_agent
+  - check_async_task
+  - cancel_async_task
+  - list_async_tasks
 is_system: true
 ---
 

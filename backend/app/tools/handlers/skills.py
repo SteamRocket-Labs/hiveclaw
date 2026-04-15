@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 
 from app.tools.decorator import ToolMeta, tool
@@ -92,17 +93,34 @@ def load_skill(workspace: Path, arguments: dict, tenant_id: str | None = None) -
     display_name="Save Skill",
     icon="\U0001f4da",
     governance="safe",
-    adapter="workspace_args",
+    adapter="agent_workspace_args",
 ))
-def save_skill(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
-    from app.services.agent_tool_domains.workspace import _save_skill
+async def save_skill(agent_id: uuid.UUID, workspace: Path, arguments: dict) -> str:
+    from app.core.execution_context import get_tool_tenant_id
+    from app.services.agent_tool_domains.workspace import _save_skill, _workspace_error, check_declared_packs_authorized
+
+    declared_packs = tuple(arguments.get("packs", []) or ())
+    tenant_id = get_tool_tenant_id()
+    ok, reason = await check_declared_packs_authorized(
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        declared_packs=declared_packs,
+    )
+    if not ok:
+        return _workspace_error(
+            "save_skill",
+            "unauthorized_pack",
+            reason,
+            actionable_hint="Remove the unauthorized pack from `packs`, or request capability access before re-saving.",
+        )
+
     return _save_skill(
         workspace,
         name=arguments.get("name", ""),
         description=arguments.get("description", ""),
         instructions=arguments.get("instructions", ""),
         declared_tools=tuple(arguments.get("tools", []) or ()),
-        declared_packs=tuple(arguments.get("packs", []) or ()),
+        declared_packs=declared_packs,
         folder_name=arguments.get("folder_name"),
         overwrite=bool(arguments.get("overwrite", False)),
     )

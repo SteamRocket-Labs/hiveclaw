@@ -26,6 +26,9 @@ bypassing the heartbeat curation that normally filters low-signal content. Use O
   Everything else flows automatically: conversation → T0 logs → extractor picks salient bits \
 into T2 → heartbeat curates T2 into T3. Do not pre-empt that pipeline.
 
+**For category routing (8 categories → 5 T3 files), worked examples, and anti-patterns, \
+load the `memory-guide` system skill before your first `save_memory` call.**
+
 ### What's Worth Remembering
 - User corrections and preferences (highest value)
 - Project decisions and constraints

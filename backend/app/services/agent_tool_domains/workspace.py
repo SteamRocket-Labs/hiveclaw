@@ -5,11 +5,12 @@ import os
 import re
 import shutil
 import subprocess
+import uuid
 from pathlib import Path
 
 from app.config import get_settings
 from app.skills import SkillRegistry, WorkspaceSkillLoader
-from app.tools.packs import iter_tool_packs
+from app.tools.packs import iter_tool_packs, pack_for_name
 from app.tools.result_envelope import render_tool_error
 
 logger = logging.getLogger(__name__)
@@ -208,6 +209,87 @@ def _render_skill_markdown(
     return "\n".join(lines) + "\n" + body.rstrip() + "\n"
 
 
+def _find_similar_existing_skill(
+    ws: Path,
+    *,
+    name: str,
+    description: str,
+):
+    """Return the most similar existing skill (ParsedSkill + Jaccard score) if
+    it exceeds SKILL_DEDUP_THRESHOLD, else None.
+
+    Compares `(name + " " + description)` against every loaded skill in the
+    workspace using word-level Jaccard. Catches heartbeat-pushed repeats
+    like "web-research-brief" vs "research-brief-web" where the body is
+    nearly identical.
+    """
+    from app.memory.md_store import SKILL_DEDUP_THRESHOLD, jaccard_similarity
+
+    if not name or not description:
+        return None
+
+    try:
+        registry = _build_skill_registry(ws)
+    except Exception as exc:
+        logger.warning("[workspace] skill dedup registry build failed: %s", exc)
+        return None
+
+    candidate_text = f"{name} {description}".strip()
+    best = None
+    for skill_name in registry.names():
+        parsed = registry.resolve(skill_name)
+        meta = parsed.metadata
+        existing_text = f"{meta.name} {meta.description}".strip()
+        score = jaccard_similarity(candidate_text, existing_text)
+        if score >= SKILL_DEDUP_THRESHOLD and (best is None or score > best[1]):
+            best = (parsed, score)
+    return best
+
+
+async def check_declared_packs_authorized(
+    *,
+    tenant_id: uuid.UUID | None,
+    agent_id: uuid.UUID | None,
+    declared_packs: tuple[str, ...],
+) -> tuple[bool, str]:
+    """Verify that every tool inside each declared_pack is callable by this agent.
+
+    Returns (ok, reason). `ok=False` means at least one tool in one of the
+    declared packs is explicitly denied by capability policy for this agent,
+    which would turn the saved skill into a "zombie" (writes succeed, but
+    `load_skill` later fails to activate the pack).
+
+    Skips check when tenant_id or agent_id is missing (e.g. distiller
+    backfill with no identity) — conservative default permits writing.
+    """
+    if not declared_packs:
+        return True, ""
+    if tenant_id is None or agent_id is None:
+        return True, ""
+
+    from app.database import async_session
+    from app.services.capability_gate import check_capability
+
+    try:
+        async with async_session() as db:
+            for pack_name in declared_packs:
+                spec = pack_for_name(pack_name)
+                if spec is None:
+                    return False, f"declared_pack '{pack_name}' does not exist"
+                for tool_name in spec.tools:
+                    res = await check_capability(db, tenant_id, agent_id, tool_name)
+                    if res.denied:
+                        return False, (
+                            f"declared_pack '{pack_name}' contains tool '{tool_name}' "
+                            f"which is denied for this agent ({res.reason})"
+                        )
+    except Exception as exc:
+        logger.warning("[workspace] pack authorization check failed: %s", exc)
+        return True, ""
+
+    return True, ""
+
+
 def _save_skill(
     ws: Path,
     *,
@@ -263,6 +345,28 @@ def _save_skill(
             f"Skill already exists at {rel_path}.",
             actionable_hint="Pass overwrite=true to replace the existing skill, or choose a different skill name/folder_name.",
         )
+
+    if not overwrite:
+        similar = _find_similar_existing_skill(
+            ws,
+            name=skill_name,
+            description=skill_description,
+        )
+        if similar is not None:
+            sim_skill, sim_score = similar
+            return _workspace_error(
+                tool_name,
+                "similar_skill_exists",
+                (
+                    f"A semantically similar skill already exists "
+                    f"(similarity={sim_score:.2f}): {sim_skill.metadata.name} at "
+                    f"{sim_skill.relative_path}. Description: {sim_skill.metadata.description}"
+                ),
+                actionable_hint=(
+                    "Patch the existing skill (pass overwrite=true and the same name/folder), "
+                    "or pick a clearly distinct name and description that captures the difference."
+                ),
+            )
 
     content = _render_skill_markdown(
         name=skill_name,

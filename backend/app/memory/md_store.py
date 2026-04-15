@@ -100,6 +100,106 @@ def _normalize_entry_content(content: str) -> str:
     return re.sub(r"\s+", " ", content).strip().lower()
 
 
+# Similarity thresholds for detecting near-duplicate T3 entries / skills.
+# Uses max(word-token Jaccard, char-bigram Jaccard) so both English and
+# Chinese paraphrases are caught. Thresholds are tuned empirically:
+#   - English paraphrase "user likes short replies" vs "user prefers short replies" → ~0.45-0.55
+#   - Chinese paraphrase "用户偏好简短回复" vs "用户喜欢简短回复" → char-bigram ~0.30-0.45
+#   - Genuinely distinct facts → typically <0.10
+# Since the handler returns a soft "[Skipped]" hint (not a hard error), the LLM
+# can re-phrase and retry, so we err on catching more paraphrases.
+MEMORY_DEDUP_THRESHOLD = 0.45
+SKILL_DEDUP_THRESHOLD = 0.50
+
+
+def _token_set(text: str) -> frozenset[str]:
+    normalized = _normalize_entry_content(text)
+    if not normalized:
+        return frozenset()
+    return frozenset(t for t in re.split(r"\W+", normalized) if t)
+
+
+def _char_bigram_set(text: str) -> frozenset[str]:
+    """Character-level bigrams — robust to CJK (no whitespace tokenization)."""
+    stripped = re.sub(r"\s+", "", _normalize_entry_content(text))
+    if len(stripped) < 2:
+        return frozenset([stripped] if stripped else [])
+    return frozenset(stripped[i : i + 2] for i in range(len(stripped) - 1))
+
+
+def jaccard_similarity(a: str, b: str) -> float:
+    """Jaccard similarity — returns the MAX of word-token and char-bigram scores.
+
+    Word tokens catch English paraphrases ("user likes" vs "the user likes")
+    where word boundaries are reliable. Character bigrams catch Chinese near-
+    duplicates ("用户偏好简短回复" vs "用户喜欢简短回复") where whitespace
+    tokenization produces near-empty intersection. Taking the max means
+    either script pattern can trigger dedup.
+    """
+    tokens_a = _token_set(a)
+    tokens_b = _token_set(b)
+    if tokens_a and tokens_b:
+        token_score = len(tokens_a & tokens_b) / len(tokens_a | tokens_b)
+    else:
+        token_score = 0.0
+
+    bigrams_a = _char_bigram_set(a)
+    bigrams_b = _char_bigram_set(b)
+    if bigrams_a and bigrams_b:
+        bigram_score = len(bigrams_a & bigrams_b) / len(bigrams_a | bigrams_b)
+    else:
+        bigram_score = 0.0
+
+    return max(token_score, bigram_score)
+
+
+def find_similar_t3_entries(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    *,
+    content: str,
+    category: str | None = None,
+    threshold: float = MEMORY_DEDUP_THRESHOLD,
+    limit: int = 3,
+) -> list[dict]:
+    """Return T3 facts whose Jaccard similarity to `content` exceeds threshold.
+
+    When `category` is given, limits to facts routed to the same T3 file
+    (so 'feedback' content is only compared against feedback.md entries).
+    """
+    if not content.strip():
+        return []
+    target_filename: str | None = None
+    if category:
+        spec = t3_spec_for_category(category)
+        target_filename = spec["filename"]
+
+    hits: list[tuple[float, dict]] = []
+    mem_dir = ensure_t3_layout(data_root, agent_id)
+    for spec in T3_FILE_SPECS:
+        if target_filename and spec["filename"] != target_filename:
+            continue
+        path = mem_dir / spec["filename"]
+        if not path.exists():
+            continue
+        body = path.read_text(encoding="utf-8", errors="replace")
+        for line in extract_entry_lines(body):
+            existing_content, timestamp = parse_entry_line(line)
+            if not existing_content:
+                continue
+            sim = jaccard_similarity(content, existing_content)
+            if sim >= threshold:
+                hits.append((sim, {
+                    "content": existing_content,
+                    "category": spec["shadow_category"],
+                    "timestamp": timestamp or "",
+                    "similarity": round(sim, 3),
+                }))
+
+    hits.sort(key=lambda item: item[0], reverse=True)
+    return [fact for _sim, fact in hits[:limit]]
+
+
 def append_t3_entry(
     data_root: Path,
     agent_id: uuid.UUID,

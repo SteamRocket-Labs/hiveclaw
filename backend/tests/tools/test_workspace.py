@@ -89,3 +89,142 @@ def test_migrate_all_workspaces_handles_legacy_memory_file(monkeypatch, tmp_path
         in (workspace / "memory" / "learnings" / "insights.md").read_text(encoding="utf-8")
     )
     assert (workspace / ".legacy_migrated").exists()
+
+
+@pytest.mark.asyncio
+async def test_check_declared_packs_authorized_skips_without_identity():
+    """Conservative default — missing tenant/agent id permits write (e.g. distiller backfill)."""
+    from app.services.agent_tool_domains.workspace import check_declared_packs_authorized
+
+    ok, reason = await check_declared_packs_authorized(
+        tenant_id=None,
+        agent_id=None,
+        declared_packs=("web_pack",),
+    )
+    assert ok is True
+    assert reason == ""
+
+
+@pytest.mark.asyncio
+async def test_check_declared_packs_authorized_empty_packs_passes():
+    from app.services.agent_tool_domains.workspace import check_declared_packs_authorized
+
+    ok, reason = await check_declared_packs_authorized(
+        tenant_id=uuid4(),
+        agent_id=uuid4(),
+        declared_packs=(),
+    )
+    assert ok is True
+    assert reason == ""
+
+
+@pytest.mark.asyncio
+async def test_check_declared_packs_authorized_unknown_pack_rejected(monkeypatch):
+    """Unknown pack slug must not be silently accepted — skill would be unactivatable."""
+    from app.services.agent_tool_domains import workspace as workspace_mod
+
+    class _NoopSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr("app.database.async_session", lambda: _NoopSession())
+
+    ok, reason = await workspace_mod.check_declared_packs_authorized(
+        tenant_id=uuid4(),
+        agent_id=uuid4(),
+        declared_packs=("totally_fake_pack",),
+    )
+    assert ok is False
+    assert "totally_fake_pack" in reason
+    assert "does not exist" in reason
+
+
+@pytest.mark.asyncio
+async def test_check_declared_packs_authorized_denied_tool_rejected(monkeypatch):
+    """If any tool inside a declared pack is denied by capability policy, skill save must fail."""
+    from app.services.agent_tool_domains import workspace as workspace_mod
+    from app.services.capability_gate import CapabilityCheckResult
+
+    class _NoopSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def _fake_check_capability(db, tenant_id, agent_id, tool_name):
+        if tool_name == "send_feishu_message":
+            return CapabilityCheckResult(
+                allowed=False,
+                denied=True,
+                capability="channel.feishu.message",
+                reason="denied for this tenant",
+            )
+        return CapabilityCheckResult(allowed=True)
+
+    monkeypatch.setattr("app.database.async_session", lambda: _NoopSession())
+    monkeypatch.setattr(
+        "app.services.capability_gate.check_capability", _fake_check_capability
+    )
+
+    ok, reason = await workspace_mod.check_declared_packs_authorized(
+        tenant_id=uuid4(),
+        agent_id=uuid4(),
+        declared_packs=("feishu_pack",),
+    )
+    assert ok is False
+    assert "send_feishu_message" in reason
+    assert "denied" in reason.lower()
+
+
+@pytest.mark.asyncio
+async def test_save_skill_handler_blocks_unauthorized_pack(monkeypatch, tmp_path):
+    """End-to-end: save_skill handler must return unauthorized_pack error when a declared_pack contains a denied tool."""
+    from app.core.execution_context import set_tool_tenant_id
+    from app.services.capability_gate import CapabilityCheckResult
+    from app.tools.handlers.skills import save_skill
+
+    class _NoopSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def _fake_check_capability(db, tenant_id, agent_id, tool_name):
+        return CapabilityCheckResult(
+            allowed=False,
+            denied=True,
+            capability="external.web.search",
+            reason="tenant policy forbids web search",
+        )
+
+    monkeypatch.setattr("app.database.async_session", lambda: _NoopSession())
+    monkeypatch.setattr(
+        "app.services.capability_gate.check_capability", _fake_check_capability
+    )
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    set_tool_tenant_id(tenant_id)
+
+    try:
+        result = await save_skill(
+            agent_id,
+            tmp_path,
+            {
+                "name": "Zombie Skill",
+                "description": "would dangle if written",
+                "instructions": "do web search then synthesize",
+                "packs": ["web_pack"],
+            },
+        )
+    finally:
+        set_tool_tenant_id(None)
+
+    assert "unauthorized_pack" in result
+    assert "web_pack" in result
+    assert not (tmp_path / "skills" / "zombie-skill" / "SKILL.md").exists()

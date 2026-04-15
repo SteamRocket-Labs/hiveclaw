@@ -239,6 +239,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[startup] Builtin tools seed failed: {e}")
 
+    # Run tool coverage audit — flag tools without any discovery path
+    # (no pack, no declared_tools in a system/template skill, no prompt mention).
+    try:
+        from app.tools.audit import run_startup_audit
+        run_startup_audit()
+    except Exception as e:
+        logger.warning(f"[startup] Tool coverage audit failed: {e}")
+
     try:
         from app.agents.orchestrator import resume_persisted_async_delegations
         from app.services.runtime_task_service import reconcile_orphaned_runtime_tasks

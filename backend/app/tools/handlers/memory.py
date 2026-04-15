@@ -60,7 +60,11 @@ def save_memory(agent_id: uuid.UUID, arguments: dict) -> str:
     from pathlib import Path
 
     from app.config import get_settings
-    from app.memory.md_store import append_t3_entry
+    from app.memory.md_store import (
+        MEMORY_DEDUP_THRESHOLD,
+        append_t3_entry,
+        find_similar_t3_entries,
+    )
     from app.memory.types import MEMORY_CATEGORIES
 
     content = (arguments.get("content") or "").strip()
@@ -73,6 +77,28 @@ def save_memory(agent_id: uuid.UUID, arguments: dict) -> str:
 
     settings = get_settings()
     data_root = Path(settings.AGENT_DATA_DIR)
+
+    # Semantic near-dedup: reject paraphrases of an already-saved fact so
+    # T3 does not accumulate "用户喜欢简短回复" / "偏好简短的回复" twice.
+    similar = find_similar_t3_entries(
+        data_root,
+        agent_id,
+        content=content[:2000],
+        category=category,
+        threshold=MEMORY_DEDUP_THRESHOLD,
+        limit=1,
+    )
+    if similar:
+        hit = similar[0]
+        ts = f" ({hit['timestamp']})" if hit.get("timestamp") else ""
+        return (
+            f"[Skipped] A similar memory already exists (similarity={hit['similarity']:.2f}):\n"
+            f"  [{hit['category']}]{ts} {hit['content']}\n"
+            f"If this new fact is intentionally distinct (different scope, newer value, "
+            f"explicit correction), re-call save_memory with content that makes the "
+            f"difference explicit (e.g. include the date or the delta)."
+        )
+
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     append_t3_entry(
         data_root,

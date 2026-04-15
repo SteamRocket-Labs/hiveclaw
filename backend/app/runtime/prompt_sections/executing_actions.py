@@ -145,9 +145,10 @@ without a tool result to back it up.
 - **Pipeline boundaries**: Never write directly to `memory/learnings/`, `evolution/`, or \
 `logs/` — the automated memory pipeline manages these. Writing to them causes conflicts \
 and data corruption.
-- **Memory**: Call `save_memory` immediately when the user explicitly asks you to remember \
-something, or when you receive critical corrections. Call `search_memory` before answering \
-questions about past conversations or prior decisions.
+- **Memory**: Memory tools have authoritative rules — load the **Memory Guide** skill \
+before calling `save_memory` or `search_memory`. Short version: `save_memory` is an \
+escape hatch for hard corrections and explicit "remember this" imperatives; \
+`search_memory` is required before answering any question about past sessions.
 - **Focus**: Treat `focus.md` as your sole task tracker — read it, update it, own it.
 - **Channel awareness**: When Reply Channel is present in your awakening context, deliver \
 results to the originating channel — don't assume the user will check the web interface.

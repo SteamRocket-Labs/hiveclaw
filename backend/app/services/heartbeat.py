@@ -268,7 +268,67 @@ def _parse_heartbeat_outcome(reply: str | None) -> tuple[str, int | None]:
     return outcome, score
 
 
-async def _build_evolution_context(agent_id: uuid.UUID, recent_activities: list) -> str:
+_SKILL_OPPORTUNITY_COOLDOWN_TICKS = 5  # ~3.75 hours at 45-minute ticks
+_SKILL_OPPORTUNITY_STATE_FILENAME = "skill_opportunity_cooldown.json"
+
+
+def _load_skill_opportunity_state(ws_root) -> dict:
+    import json
+
+    if ws_root is None:
+        return {}
+    path = ws_root / "evolution" / _SKILL_OPPORTUNITY_STATE_FILENAME
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.debug("[Heartbeat] failed to read skill opportunity state: %s", exc)
+        return {}
+
+
+def _save_skill_opportunity_state(ws_root, *, tick: int, tools: list[str]) -> None:
+    import json
+
+    if ws_root is None:
+        return
+    try:
+        evo_dir = ws_root / "evolution"
+        evo_dir.mkdir(parents=True, exist_ok=True)
+        (evo_dir / _SKILL_OPPORTUNITY_STATE_FILENAME).write_text(
+            json.dumps({"tick": tick, "tools": sorted(tools)}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        logger.debug("[Heartbeat] failed to write skill opportunity state: %s", exc)
+
+
+def _skill_already_covers_tools(ws_root, frequent_tools: list[str]) -> str | None:
+    """If an existing skill declares tools ⊇ frequent_tools, return its name (skip suggestion)."""
+    if ws_root is None or not frequent_tools:
+        return None
+    try:
+        from app.skills import SkillRegistry, WorkspaceSkillLoader
+
+        loader = WorkspaceSkillLoader()
+        registry = SkillRegistry()
+        registry.register_many(loader.load_from_workspace(ws_root))
+    except Exception as exc:
+        logger.debug("[Heartbeat] skill coverage check failed: %s", exc)
+        return None
+
+    target = set(frequent_tools)
+    for name in registry.names():
+        parsed = registry.resolve(name)
+        declared = set(parsed.metadata.declared_tools or ())
+        if target.issubset(declared):
+            return name
+    return None
+
+
+async def _build_evolution_context(
+    agent_id: uuid.UUID, recent_activities: list, tick_count: int = 0
+) -> str:
     """Build structured evolution context from activity logs and workspace evolution files.
 
     This is the server-side pattern analysis that feeds into the heartbeat prompt,
@@ -374,16 +434,53 @@ async def _build_evolution_context(agent_id: uuid.UUID, recent_activities: list)
                 if count >= _SKILL_THRESHOLD
                 and name not in ("read_file", "write_file", "list_files", "edit_file", "save_memory", "search_memory")
             ]
-            if frequent_tools:
+
+            should_push = bool(frequent_tools)
+            suppression_note: str | None = None
+
+            if should_push:
+                # Coverage check — skip if an existing skill already declares these tools.
+                covered_by = _skill_already_covers_tools(ws_root, frequent_tools)
+                if covered_by:
+                    should_push = False
+                    suppression_note = f"skill '{covered_by}' already covers tools {sorted(frequent_tools)}"
+
+            if should_push:
+                # Cooldown — skip if the same tool set was suggested recently.
+                state = _load_skill_opportunity_state(ws_root)
+                last_tick = int(state.get("tick", 0)) if isinstance(state.get("tick"), (int, float)) else 0
+                last_tools = sorted(state.get("tools", []) or [])
+                if (
+                    last_tools == sorted(frequent_tools)
+                    and tick_count
+                    and tick_count - last_tick < _SKILL_OPPORTUNITY_COOLDOWN_TICKS
+                ):
+                    should_push = False
+                    suppression_note = (
+                        f"cooldown: same tools suggested at tick {last_tick} "
+                        f"(<{_SKILL_OPPORTUNITY_COOLDOWN_TICKS} ticks ago)"
+                    )
+
+            if should_push and frequent_tools:
                 parts.append(
                     "\n---\n## Skill Creation Opportunity\n"
                     f"You have used these tools repeatedly: {', '.join(frequent_tools)}.\n"
                     "Consider whether the workflow around them is worth saving as a reusable skill:\n"
-                    "1. Use `load_skill` or inspect your existing skills/ directory to check for duplicates\n"
-                    "2. If no matching skill exists, call `save_skill` instead of writing skill files manually\n"
+                    "1. FIRST call `tool_search` to confirm no existing skill already covers this workflow\n"
+                    "2. If no matching skill exists, call `save_skill` with a distinctive name/description\n"
                     "3. Include: name, description, reusable step-by-step instructions, verification, and declared tools/packs only when stable\n"
                     "4. A good skill captures the *workflow* (multiple tools in sequence), not a single tool or one-off note\n"
                     "This counts as a high-value heartbeat action (score 7+)."
+                )
+                if tick_count:
+                    _save_skill_opportunity_state(
+                        ws_root, tick=tick_count, tools=list(frequent_tools)
+                    )
+            elif suppression_note:
+                logger.debug(
+                    "[Heartbeat] skill opportunity suppressed for %s: %s",
+                    agent_id,
+                    suppression_note,
                 )
 
     # 3. Cold start bootstrap — guide new agents through first heartbeats
@@ -924,14 +1021,21 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                     .limit(50)
                 )
                 recent_activities = list(recent_result.scalars().all())
-                evolution_context = await _build_evolution_context(agent_id, recent_activities)
             except Exception as e:
-                logger.warning(f"Failed to build evolution context for heartbeat: {e}")
-                evolution_context = ""
+                logger.warning(f"Failed to fetch recent activities for heartbeat: {e}")
+                recent_activities = []
 
             # ── KAIROS persistent session: first tick vs subsequent tick ──
             tick_count = _heartbeat_tick_counts.get(agent_id, 0) + 1
             _heartbeat_tick_counts[agent_id] = tick_count
+
+            try:
+                evolution_context = await _build_evolution_context(
+                    agent_id, recent_activities, tick_count=tick_count
+                )
+            except Exception as e:
+                logger.warning(f"Failed to build evolution context for heartbeat: {e}")
+                evolution_context = ""
 
             # Resolve participant for DB session
             p_result = await db.execute(

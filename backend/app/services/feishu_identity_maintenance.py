@@ -241,6 +241,22 @@ def _copy_missing_user_fields(primary_user: User, duplicate_user: User) -> None:
         primary_user.feishu_user_id = duplicate_user.feishu_user_id
 
 
+async def _hydrate_primary_user_from_external_identities(
+    db: AsyncSession,
+    primary_user: User,
+) -> None:
+    result = await db.execute(select(ExternalIdentity).where(ExternalIdentity.user_id == primary_user.id))
+    for identity in result.scalars().all():
+        if identity.provider_user_id and not primary_user.feishu_user_id:
+            primary_user.feishu_user_id = identity.provider_user_id
+        if identity.provider_open_id and not primary_user.feishu_open_id:
+            primary_user.feishu_open_id = identity.provider_open_id
+        if identity.provider_union_id and not primary_user.feishu_union_id:
+            primary_user.feishu_union_id = identity.provider_union_id
+        if primary_user.feishu_user_id and primary_user.feishu_open_id and primary_user.feishu_union_id:
+            break
+
+
 async def _merge_user_record(db: AsyncSession, primary_user: User, duplicate_user: User) -> None:
     await db.execute(
         update(ChatMessage)
@@ -259,6 +275,7 @@ async def _merge_user_record(db: AsyncSession, primary_user: User, duplicate_use
     )
     await _merge_participants(db, primary_user, duplicate_user)
     _copy_missing_user_fields(primary_user, duplicate_user)
+    await _hydrate_primary_user_from_external_identities(db, primary_user)
     await db.delete(duplicate_user)
 
 

@@ -14,6 +14,12 @@ class _ScalarResult:
     def scalar_one_or_none(self):
         return self._value
 
+    def all(self):
+        return self._value
+
+    def scalars(self):
+        return self
+
 
 class _FakeDB:
     def __init__(self, responses):
@@ -255,3 +261,52 @@ async def test_find_or_create_feishu_chat_session_preserves_legacy_participant_a
     assert canonical_session.participant_id == legacy_participant_id
     assert canonical_session.delivery_target_json == {"channel": "feishu", "open_id": "ou_legacy"}
     assert canonical_session.created_at == older
+
+
+@pytest.mark.asyncio
+async def test_merge_duplicate_feishu_users_hydrates_primary_legacy_fields_from_external_identity():
+    from app.services.feishu_identity_maintenance import merge_duplicate_feishu_users
+
+    created_at = datetime(2026, 4, 14, 8, 0, tzinfo=timezone.utc)
+    primary_user = SimpleNamespace(
+        id=uuid4(),
+        email="primary@company.com",
+        display_name="Primary",
+        avatar_url=None,
+        feishu_user_id="u_123",
+        feishu_open_id=None,
+        feishu_union_id=None,
+        created_at=created_at,
+    )
+    duplicate_user = SimpleNamespace(
+        id=uuid4(),
+        email="duplicate@feishu.local",
+        display_name=None,
+        avatar_url=None,
+        feishu_user_id="u_123",
+        feishu_open_id=None,
+        feishu_union_id=None,
+        created_at=created_at,
+    )
+    external_identity = SimpleNamespace(
+        provider_user_id="u_123",
+        provider_open_id="ou_456",
+        provider_union_id="on_789",
+    )
+    db = _FakeDB(
+        [
+            [("u_123",)],
+            [primary_user, duplicate_user],
+            None,
+            None,
+            [external_identity],
+        ]
+    )
+
+    merged = await merge_duplicate_feishu_users(db)
+
+    assert merged == 1
+    assert primary_user.feishu_user_id == "u_123"
+    assert primary_user.feishu_open_id == "ou_456"
+    assert primary_user.feishu_union_id == "on_789"
+    assert db.deleted[-1] is duplicate_user

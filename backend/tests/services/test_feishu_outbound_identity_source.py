@@ -12,6 +12,8 @@ def test_gateway_source_prefers_provider_backed_org_member_ids():
 
     assert "target_member.external_id or target_member.feishu_user_id" in source
     assert "target_member.open_id or target_member.feishu_open_id" in source
+    assert "getattr(r.member, 'external_id', None) or getattr(r.member, 'feishu_user_id', None)" in source
+    assert "getattr(r.member, 'open_id', None) or getattr(r.member, 'feishu_open_id', None)" in source
 
 
 def test_messaging_source_uses_canonical_feishu_conv_ids_for_outbound_history():

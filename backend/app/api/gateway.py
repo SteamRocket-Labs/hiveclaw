@@ -165,7 +165,10 @@ async def poll_messages(
     for r in h_result.scalars().all():
         if r.member:
             channels = []
-            if getattr(r.member, 'feishu_user_id', None) or getattr(r.member, 'feishu_open_id', None):
+            if (
+                getattr(r.member, 'external_id', None) or getattr(r.member, 'feishu_user_id', None)
+                or getattr(r.member, 'open_id', None) or getattr(r.member, 'feishu_open_id', None)
+            ):
                 channels.append("feishu")
             if getattr(r.member, 'email', None):
                 channels.append("email")

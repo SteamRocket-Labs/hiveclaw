@@ -379,8 +379,12 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                     _owner_user = _owner_r2.scalar_one_or_none()
                     if _owner_user and member_name.lower() in (_owner_user.display_name or "").lower():
                         # Owner matched by name — resolve feishu credentials
-                        _owner_feishu_uid = _owner_user.feishu_user_id
-                        _owner_feishu_oid = _owner_user.feishu_open_id
+                        _owner_target = await channel_user_service.get_feishu_delivery_target(db, user=_owner_user)
+                        _owner_feishu_uid = _owner_target[0] if _owner_target and _owner_target[1] == "user_id" else None
+                        _owner_feishu_oid = _owner_target[0] if _owner_target and _owner_target[1] == "open_id" else None
+                        if not _owner_feishu_uid and not _owner_feishu_oid:
+                            _owner_feishu_uid = _owner_user.feishu_user_id
+                            _owner_feishu_oid = _owner_user.feishu_open_id
                         # If owner has no feishu binding, try matching via email in OrgMember
                         if not _owner_feishu_uid and not _owner_feishu_oid and _owner_user.email and _agent_tenant_id:
                             _om_r = await db.execute(
@@ -391,15 +395,18 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                             )
                             _om = _om_r.scalar_one_or_none()
                             if _om:
-                                _owner_feishu_uid = _om.feishu_user_id
-                                _owner_feishu_oid = _om.feishu_open_id
+                                _owner_feishu_uid = _stable_feishu_user_id(_om)
+                                _owner_feishu_oid = _stable_feishu_open_id(_om)
                         if _owner_feishu_uid or _owner_feishu_oid:
                             target_member = type("_OwnerAsMember", (), {
                                 "name": _owner_user.display_name,
+                                "external_id": _owner_feishu_uid,
+                                "open_id": _owner_feishu_oid,
                                 "feishu_user_id": _owner_feishu_uid,
                                 "feishu_open_id": _owner_feishu_oid,
                                 "email": _owner_user.email,
                                 "phone": None,
+                                "tenant_id": _agent_tenant_id,
                             })()
 
             if not target_member:
@@ -438,8 +445,8 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                 _search_result = await _feishu_user_search(agent_id, {"name": member_name})
                 # Prefer user_id over open_id
                 import re as _re_oid
-                _uid_match = _re_oid.search(r'user_id: `([A-Za-z0-9]+)`', _search_result)
-                _oid_match = _re_oid.search(r'open_id: `(ou_[A-Za-z0-9]+)`', _search_result)
+                _uid_match = _re_oid.search(r'user_id: `([^`]+)`', _search_result)
+                _oid_match = _re_oid.search(r'open_id: `([^`]+)`', _search_result)
                 _found_id = None
                 _found_id_type = None
                 if _uid_match:
@@ -448,6 +455,16 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                 elif _oid_match:
                     _found_id = _oid_match.group(1)
                     _found_id_type = "open_id"
+                if _found_id and _found_id_type == "open_id":
+                    canonical_user = await channel_user_service.resolve_feishu_user(
+                        db,
+                        tenant_id=_agent_tenant_id,
+                        provider_open_id=_found_id,
+                    )
+                    if canonical_user:
+                        canonical_target = await channel_user_service.get_feishu_delivery_target(db, user=canonical_user)
+                        if canonical_target and canonical_target[1] == "user_id":
+                            _found_id, _found_id_type = canonical_target
                 if _found_id:
                     config_result = await db.execute(
                         select(ChannelConfig).where(ChannelConfig.agent_id == agent_id, ChannelConfig.channel_type == "feishu")
@@ -479,7 +496,12 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                     f"通讯录搜索结果：{_search_result[:200]}"
                 )
 
-            if not target_member.feishu_user_id and not target_member.feishu_open_id and not target_member.email and not target_member.phone:
+            if (
+                not _stable_feishu_user_id(target_member)
+                and not _stable_feishu_open_id(target_member)
+                and not target_member.email
+                and not target_member.phone
+            ):
                 return f"❌ {member_name} has no linked Feishu account (no user_id, open_id, email, or phone)"
 
             # Get the agent's Feishu bot credentials

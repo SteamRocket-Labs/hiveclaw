@@ -579,3 +579,180 @@ class TestMigrateT0Layout:
         assert report["moved"] == 0
         assert report["skipped"] == 0
         assert (tmp_agent_dir / str(agent_id) / ".t0_layout_v2").exists()
+
+
+# ── PR-2: behavior raw rendering (tool_results, errors, no truncation) ──
+
+
+class TestChatLogIncludesToolResults:
+    def test_tool_call_followed_by_inline_result(self) -> None:
+        messages = [
+            {"role": "user", "content": "search docs"},
+            {
+                "role": "assistant",
+                "content": "looking up...",
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "web_search", "arguments": '{"q":"hive"}'}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "found 3 results: A, B, C"},
+        ]
+        result = _format_chat_log(messages, {"session_id": "s1"})
+        assert "`web_search(" in result
+        assert "→ result: found 3 results: A, B, C" in result
+
+    def test_long_args_not_truncated_at_200_chars(self) -> None:
+        long_query = "x" * 800
+        messages = [
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "function": {"name": "search", "arguments": f'{{"q":"{long_query}"}}'}}
+                ],
+            },
+        ]
+        result = _format_chat_log(messages, {})
+        assert "x" * 800 in result  # full 800-char arg present
+
+    def test_multipart_tool_result_content(self) -> None:
+        messages = [
+            {"role": "user", "content": "do it"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "c1", "function": {"name": "fetch", "arguments": "{}"}}],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "content": [{"type": "text", "text": "page body here"}],
+            },
+        ]
+        result = _format_chat_log(messages, {})
+        assert "→ result: page body here" in result
+
+    def test_missing_tool_call_id_falls_back_to_order(self) -> None:
+        messages = [
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"function": {"name": "search", "arguments": "{}"}}],  # no id
+            },
+            {"role": "tool", "content": "fallback result"},  # no tool_call_id either
+        ]
+        result = _format_chat_log(messages, {})
+        assert "→ result: fallback result" in result
+
+    def test_no_crash_when_tool_result_missing(self) -> None:
+        messages = [
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "c1", "function": {"name": "search", "arguments": "{}"}}],
+            },
+            # no tool message at all
+        ]
+        result = _format_chat_log(messages, {})
+        assert "`search(" in result
+        assert "→ result:" not in result
+
+
+class TestErrorsSection:
+    def test_extracts_error_tool_results(self) -> None:
+        messages = [
+            {"role": "user", "content": "do it"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "c1", "function": {"name": "fetch", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "[Error] timeout after 30s"},
+        ]
+        result = _format_chat_log(messages, {})
+        assert "## Errors" in result
+        assert "[Error] timeout after 30s" in result
+        assert "(call c1)" in result
+
+    def test_extracts_assistant_error_field(self) -> None:
+        messages = [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": "", "error": "rate_limit_429"},
+        ]
+        result = _format_chat_log(messages, {})
+        assert "## Errors" in result
+        assert "rate_limit_429" in result
+
+    def test_no_errors_section_when_clean(self) -> None:
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        result = _format_chat_log(messages, {})
+        assert "## Errors" not in result
+
+
+class TestTriggerDelegationToolChain:
+    def test_trigger_includes_tool_calls_and_results(self) -> None:
+        messages = [
+            {
+                "role": "assistant",
+                "content": "running",
+                "tool_calls": [{"id": "c1", "function": {"name": "fetch_news", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "5 articles"},
+        ]
+        result = _format_trigger_log(
+            messages,
+            {"trigger_name": "daily", "instruction": "Fetch news", "result": "done"},
+        )
+        assert "## Execution" in result
+        assert "`fetch_news(" in result
+        assert "→ result: 5 articles" in result
+
+    def test_delegation_includes_tool_chain(self) -> None:
+        messages = [
+            {
+                "role": "assistant",
+                "content": "delegating",
+                "tool_calls": [{"id": "c2", "function": {"name": "summarize", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "c2", "content": "summary text"},
+        ]
+        result = _format_delegation_log(
+            messages,
+            {"from_agent": "PM", "to_agent": "Researcher", "task": "summarize", "result": "ok"},
+        )
+        assert "→ result: summary text" in result
+
+    def test_trigger_renders_errors_section(self) -> None:
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "c1", "function": {"name": "fetch", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "[Error] backend down"},
+        ]
+        result = _format_trigger_log(
+            messages, {"trigger_name": "x", "instruction": "y", "result": "fail"}
+        )
+        assert "## Errors" in result
+        assert "backend down" in result
+
+
+class TestRenderHelperEdgeCases:
+    def test_empty_messages_returns_marker(self) -> None:
+        from app.services.t0_logger import _render_messages_with_tools
+
+        assert _render_messages_with_tools([]) == "(no messages)"
+
+    def test_only_system_messages_returns_no_content(self) -> None:
+        from app.services.t0_logger import _render_messages_with_tools
+
+        # system messages aren't rendered → result should be "(no content)"
+        out = _render_messages_with_tools([{"role": "system", "content": "you are helpful"}])
+        assert out == "(no content)"

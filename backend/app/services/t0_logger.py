@@ -119,17 +119,159 @@ def _yaml_frontmatter(fields: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# ── Shared rendering helpers (used by behavior formatters) ──
+
+
+def _extract_text_content(content: Any) -> str:
+    """Normalize message content to a string.
+
+    Handles plain strings, multi-part list[dict] (e.g. vision messages),
+    and None. Non-text parts are skipped silently.
+    """
+    if not content:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for p in content:
+            if not isinstance(p, dict):
+                continue
+            if p.get("type") == "text" and p.get("text"):
+                parts.append(str(p["text"]))
+            elif "content" in p and isinstance(p["content"], str):
+                parts.append(p["content"])
+        return " ".join(parts)
+    return str(content)
+
+
+def _index_tool_results(messages: list[dict]) -> dict[str, dict]:
+    """Map tool_call_id → the corresponding `role=tool` message. Single pass."""
+    index: dict[str, dict] = {}
+    for msg in messages:
+        if msg.get("role") != "tool":
+            continue
+        tcid = msg.get("tool_call_id")
+        if tcid:
+            index[str(tcid)] = msg
+    return index
+
+
+def _render_tool_call_with_result(
+    tc: dict,
+    result_msg: dict | None,
+    *,
+    max_args: int,
+    max_result: int,
+) -> str:
+    fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+    name = fn.get("name", "?") if isinstance(fn, dict) else "?"
+    args = fn.get("arguments", "") if isinstance(fn, dict) else ""
+    line = f"- `{name}({_truncate(str(args), max_args)})`"
+    if result_msg is not None:
+        result_text = _extract_text_content(result_msg.get("content"))
+        if result_text:
+            line += f"\n  → result: {_truncate(result_text, max_result)}"
+    return line
+
+
+def _render_messages_with_tools(
+    messages: list[dict],
+    *,
+    max_text: int = 5000,
+    max_args: int = 1500,
+    max_result: int = 3000,
+    start_with_user_turn: bool = True,
+) -> str:
+    """Render a thread including tool_calls AND their tool_results inline.
+
+    Modern messages match by `tool_call_id`; legacy messages without that
+    field fall back to positional pairing (next available tool result).
+    """
+    if not messages:
+        return "(no messages)"
+
+    result_index = _index_tool_results(messages)
+    fallback_results = [m for m in messages if m.get("role") == "tool" and not m.get("tool_call_id")]
+    fallback_idx = 0
+
+    body_parts: list[str] = []
+    turn_num = 0
+
+    for msg in messages:
+        role = msg.get("role", "")
+        content_text = _extract_text_content(msg.get("content"))
+
+        if role == "user":
+            if not content_text:
+                continue
+            if start_with_user_turn:
+                turn_num += 1
+                body_parts.append(f"\n## Turn {turn_num}\n**User**: {_truncate(content_text, max_text)}")
+            else:
+                body_parts.append(f"**User**: {_truncate(content_text, max_text)}")
+        elif role == "assistant":
+            if content_text:
+                body_parts.append(f"**Agent**: {_truncate(content_text, max_text)}")
+            tool_calls = msg.get("tool_calls") or []
+            if tool_calls:
+                tool_lines: list[str] = []
+                for tc in tool_calls:
+                    if not isinstance(tc, dict):
+                        continue
+                    tcid = tc.get("id")
+                    result = result_index.get(str(tcid)) if tcid else None
+                    if result is None and fallback_idx < len(fallback_results):
+                        result = fallback_results[fallback_idx]
+                        fallback_idx += 1
+                    tool_lines.append(
+                        _render_tool_call_with_result(
+                            tc, result, max_args=max_args, max_result=max_result
+                        )
+                    )
+                if tool_lines:
+                    body_parts.append("**Tools**:\n" + "\n".join(tool_lines))
+        # tool messages are surfaced inline above; skip standalone rendering.
+
+    return "\n".join(body_parts) if body_parts else "(no content)"
+
+
+def _extract_errors_section(messages: list[dict]) -> str:
+    """Surface error tool-results and assistant-side errors in one place.
+
+    Returns an empty string when nothing matches so callers can simply
+    append the result without checking.
+    """
+    errors: list[str] = []
+    for msg in messages:
+        role = msg.get("role")
+        if role == "tool":
+            content = _extract_text_content(msg.get("content"))
+            if not content:
+                continue
+            head = content[:60].lower()
+            if content.startswith("[Error]") or "error" in head[:20]:
+                tcid = msg.get("tool_call_id", "?")
+                errors.append(f"- (call {tcid}) {_truncate(content, 500)}")
+        elif role == "assistant":
+            err = msg.get("error")
+            if err:
+                errors.append(f"- (assistant) {_truncate(str(err), 500)}")
+    if not errors:
+        return ""
+    return "\n\n## Errors\n" + "\n".join(errors)
+
+
 # ── Format functions for 5 behavior types ──
 
 
 def _format_chat_log(messages: list[dict], metadata: dict[str, Any]) -> str:
-    """Format a chat session as T0 MD."""
+    """Format a chat session as T0 MD with full tool_call/tool_result chain."""
     started_at = _coerce_datetime(metadata.get("started_at")) or datetime.now(timezone.utc)
     source = metadata.get("source", "web")
     session_id = metadata.get("session_id", "unknown")
     user_name = metadata.get("user_name", "User")
 
-    # Collect tool names from assistant messages
     tools_used: list[str] = []
     turn_count = 0
     for msg in messages:
@@ -137,8 +279,9 @@ def _format_chat_log(messages: list[dict], metadata: dict[str, Any]) -> str:
         if role == "user":
             turn_count += 1
         if role == "assistant":
-            tool_calls = msg.get("tool_calls") or []
-            for tc in tool_calls:
+            for tc in msg.get("tool_calls") or []:
+                if not isinstance(tc, dict):
+                    continue
                 fn = tc.get("function", {})
                 name = fn.get("name", "") if isinstance(fn, dict) else ""
                 if name and name not in tools_used:
@@ -154,41 +297,14 @@ def _format_chat_log(messages: list[dict], metadata: dict[str, Any]) -> str:
         "tools": tools_used or [],
     })
 
-    # Build turn-by-turn body
-    body_parts: list[str] = []
-    turn_num = 0
-    for msg in messages:
-        role = msg.get("role", "")
-        content = msg.get("content", "")
-        if isinstance(content, list):
-            # Multi-part content — extract text parts
-            content = " ".join(
-                p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
-            )
-        if not content:
-            continue
+    body = _render_messages_with_tools(messages, start_with_user_turn=True)
+    errors = _extract_errors_section(messages)
 
-        if role == "user":
-            turn_num += 1
-            body_parts.append(f"\n## Turn {turn_num}\n**User**: {_truncate(content, 2000)}")
-        elif role == "assistant":
-            body_parts.append(f"**Agent**: {_truncate(content, 2000)}")
-            # Append tool calls if present
-            tool_calls = msg.get("tool_calls") or []
-            if tool_calls:
-                tool_lines = []
-                for tc in tool_calls:
-                    fn = tc.get("function", {})
-                    name = fn.get("name", "?") if isinstance(fn, dict) else "?"
-                    args = fn.get("arguments", "") if isinstance(fn, dict) else ""
-                    tool_lines.append(f"- `{name}({_truncate(str(args), 200)})`")
-                body_parts.append("**Tools**:\n" + "\n".join(tool_lines))
-
-    return front + "\n" + "\n".join(body_parts) + "\n"
+    return front + "\n" + body + errors + "\n"
 
 
 def _format_trigger_log(messages: list[dict], metadata: dict[str, Any]) -> str:
-    """Format a trigger execution as T0 MD."""
+    """Format a trigger execution as T0 MD with full tool chain."""
     now = _coerce_datetime(metadata.get("executed_at")) or datetime.now(timezone.utc)
     front = _yaml_frontmatter({
         "type": "trigger",
@@ -201,7 +317,8 @@ def _format_trigger_log(messages: list[dict], metadata: dict[str, Any]) -> str:
 
     instruction = metadata.get("instruction", "")
     result = metadata.get("result", "")
-    execution = _messages_to_execution(messages)
+    execution = _render_messages_with_tools(messages, start_with_user_turn=False)
+    errors = _extract_errors_section(messages)
 
     body = f"""
 ## Instruction
@@ -212,12 +329,13 @@ def _format_trigger_log(messages: list[dict], metadata: dict[str, Any]) -> str:
 
 ## Result
 {_truncate(result, 2000)}
+{errors}
 """
     return front + body
 
 
 def _format_delegation_log(messages: list[dict], metadata: dict[str, Any]) -> str:
-    """Format a delegation execution as T0 MD."""
+    """Format a delegation execution as T0 MD with full tool chain."""
     now = _coerce_datetime(metadata.get("delegated_at")) or datetime.now(timezone.utc)
     front = _yaml_frontmatter({
         "type": "delegation",
@@ -230,7 +348,8 @@ def _format_delegation_log(messages: list[dict], metadata: dict[str, Any]) -> st
 
     task_text = metadata.get("task", "")
     result = metadata.get("result", "")
-    execution = _messages_to_execution(messages)
+    execution = _render_messages_with_tools(messages, start_with_user_turn=False)
+    errors = _extract_errors_section(messages)
 
     body = f"""
 ## Task
@@ -241,6 +360,7 @@ def _format_delegation_log(messages: list[dict], metadata: dict[str, Any]) -> st
 
 ## Result
 {_truncate(result, 2000)}
+{errors}
 """
     return front + body
 
@@ -316,24 +436,6 @@ def _truncate(text: str, max_len: int) -> str:
     if len(text) <= max_len:
         return text
     return text[:max_len] + "…"
-
-
-def _messages_to_execution(messages: list[dict]) -> str:
-    """Convert messages list to a compact execution summary."""
-    if not messages:
-        return "(no messages)"
-    parts: list[str] = []
-    for msg in messages:
-        role = msg.get("role", "")
-        content = msg.get("content", "")
-        if isinstance(content, list):
-            content = " ".join(
-                p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
-            )
-        if not content:
-            continue
-        parts.append(f"**{role}**: {_truncate(content, 500)}")
-    return "\n\n".join(parts) if parts else "(no content)"
 
 
 # ── Public API ──

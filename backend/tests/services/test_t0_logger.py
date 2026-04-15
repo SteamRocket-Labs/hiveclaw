@@ -857,3 +857,198 @@ class TestDreamLogDecisions:
         )
         assert "## Reasoning" in result
         assert "consolidated 3 redundant" in result
+
+
+# ── PR-5: artifact spillover for large tool_results ──
+
+
+class TestArtifactSpillover:
+    def _patch_settings(self, tmp_agent_dir: Path):
+        return patch(
+            "app.services.t0_logger.get_settings",
+            return_value=type("S", (), {"AGENT_DATA_DIR": str(tmp_agent_dir)})(),
+        )
+
+    def test_short_result_inlined_no_artifact(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
+        messages = [
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "c1", "function": {"name": "search", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "tiny result"},
+        ]
+        with self._patch_settings(tmp_agent_dir):
+            path = write_t0_log(
+                agent_id, behavior_type="chat", messages=messages, metadata={"session_id": "s1"}
+            )
+        assert path is not None
+        body = path.read_text(encoding="utf-8")
+        assert "tiny result" in body
+        assert "[artifact:" not in body
+        assert not (path.parent.parent / "artifacts").exists()
+
+    def test_large_result_spilled_to_artifact(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
+        big = "X" * 10000  # > _ARTIFACT_THRESHOLD_CHARS (8000)
+        messages = [
+            {"role": "user", "content": "fetch big"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "call_big", "function": {"name": "fetch_doc", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "call_big", "content": big},
+        ]
+        with self._patch_settings(tmp_agent_dir):
+            path = write_t0_log(
+                agent_id, behavior_type="chat", messages=messages, metadata={"session_id": "sess-big"}
+            )
+        assert path is not None
+        body = path.read_text(encoding="utf-8")
+
+        # MD now contains a reference + preview, not the full payload.
+        assert "[artifact: artifacts/" in body
+        assert "preview:" in body
+        assert big not in body  # full body must NOT be inlined
+
+        # Artifact JSON exists with full content.
+        artifacts_dir = path.parent.parent / "artifacts"
+        assert artifacts_dir.is_dir()
+        artifact_files = list(artifacts_dir.glob("*.json"))
+        assert len(artifact_files) == 1
+        import json as _json
+
+        payload = _json.loads(artifact_files[0].read_text(encoding="utf-8"))
+        assert payload["tool_name"] == "fetch_doc"
+        assert payload["tool_call_id"] == "call_big"
+        assert payload["session_id"] == "sess-big"
+        assert payload["result"] == big
+        assert payload["size_chars"] == 10000
+
+    def test_threshold_boundary_no_spill(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
+        from app.services.t0_logger import _ARTIFACT_THRESHOLD_CHARS
+
+        at_limit = "Y" * _ARTIFACT_THRESHOLD_CHARS  # exactly == threshold, should NOT spill
+        messages = [
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "c1", "function": {"name": "fetch", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": at_limit},
+        ]
+        with self._patch_settings(tmp_agent_dir):
+            path = write_t0_log(
+                agent_id, behavior_type="chat", messages=messages, metadata={"session_id": "s2"}
+            )
+        assert path is not None
+        assert not (path.parent.parent / "artifacts").exists()
+
+    def test_artifact_filename_is_safe(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
+        big = "Z" * 9000
+        messages = [
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "weird/id with spaces", "function": {"name": "x:y/z", "arguments": "{}"}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "weird/id with spaces", "content": big},
+        ]
+        with self._patch_settings(tmp_agent_dir):
+            path = write_t0_log(
+                agent_id, behavior_type="chat", messages=messages, metadata={"session_id": "s3"}
+            )
+        assert path is not None
+        artifacts_dir = path.parent.parent / "artifacts"
+        files = list(artifacts_dir.glob("*.json"))
+        assert len(files) == 1
+        # No path-traversal characters in filename.
+        assert "/" not in files[0].name
+        assert " " not in files[0].name
+        assert ":" not in files[0].name
+
+
+class TestReplayResolvesArtifact:
+    def test_replay_loads_artifact_into_message_content(self, tmp_path: Path, agent_id: uuid.UUID) -> None:
+        from app.services.extract_agent import replay_messages_from_t0
+
+        # Manually craft a chat MD that references an artifact.
+        big = "Q" * 5000
+        date_dir = tmp_path / str(agent_id) / "logs" / "2026-04-15"
+        behavior_dir = date_dir / "behavior"
+        artifacts_dir = date_dir / "artifacts"
+        behavior_dir.mkdir(parents=True)
+        artifacts_dir.mkdir(parents=True)
+
+        artifact_path = artifacts_dir / "abc123-fetch_doc.json"
+        import json as _json
+
+        artifact_path.write_text(
+            _json.dumps({"tool_call_id": "abc123", "tool_name": "fetch_doc", "result": big}),
+            encoding="utf-8",
+        )
+
+        md = (
+            "---\n"
+            "type: chat\n"
+            "session_id: sess-art\n"
+            "source: web\n"
+            "user: T\n"
+            "started: 2026-04-15T08:00:00+00:00\n"
+            "turns: 1\n"
+            "tools: [fetch_doc]\n"
+            "---\n\n"
+            "## Turn 1\n"
+            "**User**: go\n"
+            "**Agent**: \n"
+            "**Tools**:\n"
+            "- `fetch_doc({})`\n"
+            "  → result: [artifact: artifacts/abc123-fetch_doc.json] preview: QQQQ...\n"
+        )
+        chat_path = behavior_dir / "chat-1200-abcd.md"
+        chat_path.write_text(md, encoding="utf-8")
+
+        result = replay_messages_from_t0(chat_path)
+        tool_msgs = [m for m in result["messages"] if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["content"] == big
+
+    def test_replay_handles_missing_artifact_gracefully(
+        self, tmp_path: Path, agent_id: uuid.UUID
+    ) -> None:
+        from app.services.extract_agent import replay_messages_from_t0
+
+        date_dir = tmp_path / str(agent_id) / "logs" / "2026-04-15"
+        behavior_dir = date_dir / "behavior"
+        behavior_dir.mkdir(parents=True)
+
+        md = (
+            "---\n"
+            "type: chat\n"
+            "session_id: sess-miss\n"
+            "source: web\n"
+            "user: T\n"
+            "started: 2026-04-15T08:00:00+00:00\n"
+            "turns: 1\n"
+            "tools: []\n"
+            "---\n\n"
+            "## Turn 1\n"
+            "**User**: go\n"
+            "**Agent**: \n"
+            "**Tools**:\n"
+            "- `fetch({})`\n"
+            "  → result: [artifact: artifacts/nope.json] preview: hint\n"
+        )
+        chat_path = behavior_dir / "chat-1200-miss.md"
+        chat_path.write_text(md, encoding="utf-8")
+
+        result = replay_messages_from_t0(chat_path)
+        tool_msgs = [m for m in result["messages"] if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        # Falls back to the raw reference text — never crashes.
+        assert "[artifact:" in tool_msgs[0]["content"]

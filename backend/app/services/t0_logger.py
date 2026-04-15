@@ -22,7 +22,9 @@ Retention: 30 days (cleanup_old_logs removes older date directories).
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import shutil
 import uuid
 from collections.abc import Iterable
@@ -42,6 +44,13 @@ logger = logging.getLogger(__name__)
 
 _BEHAVIOR_TYPES: frozenset[str] = frozenset({"chat", "trigger", "delegation"})
 _SYSTEM_TYPES: frozenset[str] = frozenset({"heartbeat", "dream"})
+
+# PR-5: spill large tool_results into separate JSON files so a single
+# behavior MD never balloons past a few KB. Threshold is per-message,
+# measured against the rendered text content.
+_ARTIFACT_THRESHOLD_CHARS = 8000
+_ARTIFACT_PREVIEW_CHARS = 500
+_ARTIFACT_REFERENCE_PREFIX = "[artifact: "
 
 
 def _category_of(behavior_type: str) -> str:
@@ -524,17 +533,115 @@ def write_t0_log(
     metadata = metadata or {}
 
     try:
-        content = formatter(messages, metadata)
         short_id = str(metadata.get("session_id", uuid.uuid4().hex))[:4]
         filename = _generate_filename(behavior_type, short_id)
         occurred_at = _coerce_datetime(metadata.get("occurred_at") or metadata.get("started_at"))
         filepath = _date_dir(agent_id, occurred_at, behavior_type=behavior_type) / filename
+
+        # PR-5: spill large tool_results into artifacts/ before formatter runs.
+        artifact_dir = filepath.parent.parent / "artifacts"
+        spilled_messages = _spillover_large_tool_results(
+            messages,
+            artifact_dir=artifact_dir,
+            session_id=str(metadata.get("session_id", "")),
+        )
+
+        content = formatter(spilled_messages, metadata)
         filepath.write_text(content, encoding="utf-8")
         logger.info("[T0] Wrote %s for agent %s (%d bytes)", filepath.name, agent_id, len(content))
         return filepath
     except Exception as exc:
         logger.error("[T0] Failed to write %s log for agent %s: %s", behavior_type, agent_id, exc)
         return None
+
+
+def _spillover_large_tool_results(
+    messages: list[dict],
+    *,
+    artifact_dir: Path,
+    session_id: str = "",
+    threshold: int = _ARTIFACT_THRESHOLD_CHARS,
+) -> list[dict]:
+    """Replace oversized tool_result content with an artifact reference.
+
+    Walks `messages`, identifies role=="tool" entries whose text content
+    exceeds `threshold`, dumps the original content + matching tool_call
+    metadata to `artifact_dir/{tool_call_id}-{tool_name}.json`, and
+    returns a copy of the message list where those tool messages now
+    carry the reference + a preview prefix.
+
+    Reference format (matched by replay_messages_from_t0):
+        [artifact: artifacts/{file}.json] preview: <first N chars>
+    """
+    if not messages:
+        return messages
+
+    # Build a tool_call_id → tool_name lookup so artifacts can be named.
+    name_lookup: dict[str, str] = {}
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls") or []:
+            if not isinstance(tc, dict):
+                continue
+            tcid = tc.get("id")
+            fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+            if tcid and isinstance(fn, dict):
+                name_lookup[str(tcid)] = str(fn.get("name", "tool"))
+
+    output: list[dict] = []
+    artifact_dir_created = False
+
+    for msg in messages:
+        if msg.get("role") != "tool":
+            output.append(msg)
+            continue
+        text = _extract_text_content(msg.get("content"))
+        if len(text) <= threshold:
+            output.append(msg)
+            continue
+
+        tcid = str(msg.get("tool_call_id") or uuid.uuid4().hex[:8])
+        tool_name = name_lookup.get(tcid, "tool")
+        safe_tool = re.sub(r"[^A-Za-z0-9_.-]", "_", tool_name)[:48] or "tool"
+        safe_tcid = re.sub(r"[^A-Za-z0-9_.-]", "_", tcid)[:48]
+        artifact_filename = f"{safe_tcid}-{safe_tool}.json"
+
+        if not artifact_dir_created:
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            artifact_dir_created = True
+
+        artifact_path = artifact_dir / artifact_filename
+        try:
+            artifact_path.write_text(
+                json.dumps(
+                    {
+                        "tool_call_id": tcid,
+                        "tool_name": tool_name,
+                        "session_id": session_id,
+                        "result": text,
+                        "size_chars": len(text),
+                        "spilled_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            logger.warning("[T0] Failed to write artifact %s: %s", artifact_path, exc)
+            output.append(msg)
+            continue
+
+        relative_ref = f"artifacts/{artifact_filename}"
+        preview = text[:_ARTIFACT_PREVIEW_CHARS]
+        new_content = f"{_ARTIFACT_REFERENCE_PREFIX}{relative_ref}] preview: {preview}"
+        replaced = dict(msg)
+        replaced["content"] = new_content
+        replaced["_artifact_ref"] = relative_ref
+        output.append(replaced)
+
+    return output
 
 
 def cleanup_old_logs(agent_id: uuid.UUID, retention_days: int = 30) -> int:

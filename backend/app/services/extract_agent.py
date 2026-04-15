@@ -490,6 +490,32 @@ _AGENT_LINE_RE = re.compile(r"^\*\*Agent\*\*:\s*(.*)$")
 _TOOLS_HEADER_RE = re.compile(r"^\*\*Tools\*\*:\s*$")
 _TOOL_CALL_RE = re.compile(r"^-\s+`(?P<name>[^(`]+)\((?P<args>.*)\)`\s*$")
 _TOOL_RESULT_RE = re.compile(r"^\s*→\s*result:\s*(.*)$")
+# PR-5: artifact references look like `[artifact: artifacts/<file>.json] preview: ...`
+_ARTIFACT_REF_RE = re.compile(r"\[artifact:\s*(?P<ref>[^\]]+)\]")
+
+
+def _resolve_artifact_content(t0_md_path: Path, raw_content: str) -> str:
+    """If `raw_content` carries an `[artifact: ...]` reference, load the
+    full result from the sibling artifact JSON; otherwise return as-is.
+    """
+    match = _ARTIFACT_REF_RE.search(raw_content)
+    if not match:
+        return raw_content
+    rel_ref = match.group("ref").strip()
+    # Artifact path is relative to the date dir (parent of behavior/system).
+    date_dir = t0_md_path.parent.parent
+    artifact_path = date_dir / rel_ref
+    if not artifact_path.exists():
+        logger.warning("[Backfill] Missing artifact %s referenced by %s", artifact_path, t0_md_path)
+        return raw_content
+    try:
+        payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+        result = payload.get("result")
+        if isinstance(result, str):
+            return result
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("[Backfill] Failed to read artifact %s: %s", artifact_path, exc)
+    return raw_content
 
 
 def _backfill_cursor_path(agent_id: uuid.UUID) -> Path:
@@ -613,15 +639,16 @@ def replay_messages_from_t0(t0_md_path: Path) -> dict[str, Any]:
                 continue
             m = _TOOL_RESULT_RE.match(line)
             if m and pending_tool_calls:
-                # Attach as standalone tool message (lossy: artifact references resolved by PR-5).
                 tool_call_id = pending_tool_calls[-1]["id"]
                 _flush_assistant()
                 in_tools_block = False
+                raw_result = m.group(1).rstrip("…").strip()
+                resolved = _resolve_artifact_content(t0_md_path, raw_result)
                 messages.append(
                     {
                         "role": "tool",
                         "tool_call_id": tool_call_id,
-                        "content": m.group(1).rstrip("…").strip(),
+                        "content": resolved,
                     }
                 )
                 continue

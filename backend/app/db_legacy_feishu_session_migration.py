@@ -15,6 +15,7 @@ def _chat_session_update_values(
     *,
     user_id,
     external_conv_id: str | None = None,
+    created_at=None,
     last_message_at=None,
     title: str | None = None,
     participant_id=None,
@@ -24,6 +25,9 @@ def _chat_session_update_values(
     values: dict = {"user_id": user_id}
     if external_conv_id is not None:
         values["external_conv_id"] = external_conv_id
+    if created_at is not None:
+        if existing_row is None or existing_row.get("created_at") is None or created_at < existing_row["created_at"]:
+            values["created_at"] = created_at
     if last_message_at is not None:
         values["last_message_at"] = last_message_at
     if title is not None:
@@ -84,6 +88,7 @@ def promote_legacy_feishu_sessions(connection: Connection) -> int:
             existing_updates = _chat_session_update_values(
                 chat_sessions,
                 user_id=row["user_id"],
+                created_at=row["created_at"],
                 last_message_at=row["last_message_at"]
                 if row["last_message_at"] and (
                     existing_session["last_message_at"] is None or row["last_message_at"] > existing_session["last_message_at"]

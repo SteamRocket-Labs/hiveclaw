@@ -213,6 +213,8 @@ async def test_find_or_create_feishu_chat_session_preserves_legacy_participant_a
     agent_id = uuid4()
     user_id = uuid4()
     legacy_participant_id = uuid4()
+    older = datetime(2026, 4, 14, 8, 0, tzinfo=timezone.utc)
+    newer = datetime(2026, 4, 14, 9, 0, tzinfo=timezone.utc)
     canonical_session = SimpleNamespace(
         id=uuid4(),
         agent_id=agent_id,
@@ -221,6 +223,7 @@ async def test_find_or_create_feishu_chat_session_preserves_legacy_participant_a
         title="Existing Session",
         source_channel="feishu",
         participant_id=None,
+        created_at=newer,
         last_message_at=None,
         delivery_target_json=None,
     )
@@ -232,6 +235,7 @@ async def test_find_or_create_feishu_chat_session_preserves_legacy_participant_a
         title="Legacy Session",
         source_channel="feishu",
         participant_id=legacy_participant_id,
+        created_at=older,
         last_message_at=datetime(2026, 4, 14, 11, 0, tzinfo=timezone.utc),
         delivery_target_json={"channel": "feishu", "open_id": "ou_legacy"},
     )
@@ -250,3 +254,4 @@ async def test_find_or_create_feishu_chat_session_preserves_legacy_participant_a
     assert session is canonical_session
     assert canonical_session.participant_id == legacy_participant_id
     assert canonical_session.delivery_target_json == {"channel": "feishu", "open_id": "ou_legacy"}
+    assert canonical_session.created_at == older

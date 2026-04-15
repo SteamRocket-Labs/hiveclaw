@@ -215,7 +215,7 @@ def test_promote_legacy_feishu_sessions_preserves_participant_and_delivery_targe
                     "external_conv_id": "feishu_p2p_u_123",
                     "participant_id": None,
                     "delivery_target_json": None,
-                    "created_at": older,
+                    "created_at": newer,
                     "last_message_at": older,
                 },
             ],
@@ -229,6 +229,7 @@ def test_promote_legacy_feishu_sessions_preserves_participant_and_delivery_targe
     assert session_rows[0]["id"] == "canonical-session"
     assert session_rows[0]["participant_id"] == "participant-legacy"
     assert session_rows[0]["delivery_target_json"] == {"channel": "feishu", "open_id": "ou_456"}
+    assert session_rows[0]["created_at"].replace(tzinfo=timezone.utc) == older
 
 
 def test_promote_legacy_feishu_sessions_realigns_canonical_user_id_on_merge() -> None:

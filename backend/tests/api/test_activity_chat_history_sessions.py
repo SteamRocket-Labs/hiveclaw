@@ -238,6 +238,61 @@ async def test_list_conversations_includes_telegram_session_with_delivery_target
 
 
 @pytest.mark.asyncio
+async def test_list_conversations_uses_feishu_delivery_target_label_when_sender_prefix_missing(monkeypatch):
+    import app.api.activity as activity_api
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    feishu_session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        user_id=user_id,
+        source_channel="feishu",
+        external_conv_id="feishu_p2p_u_123",
+        delivery_target_json={"channel": "feishu", "user_label": "王天怡", "user_id": "u_123"},
+        peer_agent_id=None,
+        title="Feishu session",
+    )
+    db = _SequenceDB(
+        [
+            _RowsResult([feishu_session]),
+            _RowsResult([(2, datetime(2026, 4, 14, 14, 30, tzinfo=UTC))]),
+            _ScalarResult("普通消息"),
+            _ScalarResult("普通消息"),
+            _RowsResult([]),
+        ]
+    )
+
+    async def fake_check_agent_access(db_arg, user_arg, requested_agent_id):
+        assert db_arg is db
+        assert user_arg is current_user
+        assert requested_agent_id == agent_id
+        return None
+
+    monkeypatch.setattr(activity_api, "check_agent_access", fake_check_agent_access)
+
+    payload = await activity_api.list_conversations(
+        agent_id=agent_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    assert payload == [
+        {
+            "conv_id": str(session_id),
+            "partner_type": "feishu",
+            "partner_id": "feishu_p2p_u_123",
+            "partner_name": "📱 王天怡",
+            "last_message": "普通消息",
+            "message_count": 2,
+            "last_at": "2026-04-14T14:30:00+00:00",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_list_conversations_falls_back_to_user_display_name_for_teams_session(monkeypatch):
     import app.api.activity as activity_api
 

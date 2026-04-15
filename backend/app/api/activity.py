@@ -44,13 +44,20 @@ _DIRECT_LABEL_CHANNELS: dict[str, tuple[str, str]] = {
 }
 
 
-def _feishu_conversation_partner_name(conv_id: str, first_user_message: str | None = None) -> str:
+def _feishu_conversation_partner_name(
+    conv_id: str,
+    first_user_message: str | None = None,
+    delivery_target_label: str | None = None,
+) -> str:
     identifier = parse_feishu_p2p_conv_id(conv_id)
     if not identifier:
         return "👥 飞书群聊"
 
     sender_label = extract_sender_label_from_message(first_user_message)
-    return f"📱 {sender_label}" if sender_label else "📱 飞书用户"
+    if sender_label:
+        return f"📱 {sender_label}"
+    target_label = str(delivery_target_label or "").strip()
+    return f"📱 {target_label}" if target_label else "📱 飞书用户"
 
 
 def _coerce_limit(limit: Any, *, default: int) -> int:
@@ -109,7 +116,11 @@ async def _channel_partner_name(
         return f"👤 {user_label}" if user_label else "👤 未知用户"
 
     if source_channel == "feishu":
-        return _feishu_conversation_partner_name(external_conv_id, first_user_message)
+        return _feishu_conversation_partner_name(
+            external_conv_id,
+            first_user_message,
+            _delivery_target_label(delivery_target),
+        )
 
     if source_channel in {"slack", "discord"}:
         icon = "💬" if source_channel == "slack" else "🎮"

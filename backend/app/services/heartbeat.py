@@ -1170,6 +1170,28 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
             # memory here. Evolution files are the intermediate source; dream curates
             # durable entries into canonical markdown memory on the next cycle.
 
+            # PR-9: scrub any T3 rows the LLM may have written off-spec so
+            # dream's parser sees them. Must run BEFORE the T0 hook so the
+            # normalization report rides along in the heartbeat MD.
+            normalization_report: dict = {"fixed": 0, "warnings": [], "files_touched": []}
+            try:
+                from app.config import get_settings as _get_settings
+                from app.memory.md_store import validate_and_normalize_t3
+
+                normalization_report = validate_and_normalize_t3(
+                    Path(_get_settings().AGENT_DATA_DIR), agent_id
+                )
+                if normalization_report["fixed"] or normalization_report["warnings"]:
+                    logger.info(
+                        "[Heartbeat] T3 normalization for %s: fixed=%d warnings=%d files=%s",
+                        agent_id,
+                        normalization_report["fixed"],
+                        len(normalization_report["warnings"]),
+                        normalization_report["files_touched"],
+                    )
+            except Exception as _nrm_err:
+                logger.debug("[Heartbeat] T3 normalization failed (non-fatal): %s", _nrm_err)
+
             # Emit HEARTBEAT_TICK_END hook → T0 log
             try:
                 from app.runtime.hooks import HookEvent, emit_hook
@@ -1209,6 +1231,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                         "summary": summary[:200] if summary else "",
                         "action": summary[:100] if outcome_type == "action_taken" else "none",
                         "reasoning": reasoning_text,
+                        "t3_normalization": normalization_report,
                     },
                 )
             except Exception as _hook_err:

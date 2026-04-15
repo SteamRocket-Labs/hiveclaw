@@ -219,3 +219,123 @@ def search_t3_facts(data_root: Path, agent_id: uuid.UUID, query: str, *, limit: 
     return [fact for _score, _neg_index, fact in ranked[:limit]]
 
 
+# ── T3 format validator + self-healing (PR-9) ──
+#
+# heartbeat writes T3 via LLM following HEARTBEAT.md's "- [YYYY-MM-DD] desc"
+# rule, but nothing stops the model from drifting to `* desc`, `1. desc`, or
+# dateless bullets. dream's parser (extract_entry_lines) only recognizes
+# `- [` / `- ` prefixes, so any drifted row becomes invisible — dedup misses
+# it, soul promotion misses it, and the cap-by-count cleanup misses it.
+# This module re-canonicalizes what it can and surfaces what it can't.
+
+_STAR_BULLET_RE = re.compile(r"^\*\s+(?P<content>.+?)\s*$")
+_NUMBERED_BULLET_RE = re.compile(r"^\d+\.\s+(?P<content>.+?)\s*$")
+_DASH_WITH_DATE_RE = re.compile(r"^- \[\d{4}-\d{2}-\d{2}[^\]]*\]")
+_DASH_BARE_RE = re.compile(r"^- (?P<content>.+?)\s*$")
+_T3_HEADER_PREFIXES = tuple(spec["header"] for spec in T3_FILE_SPECS)
+
+
+def validate_and_normalize_t3(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    *,
+    recent_window_seconds: int = 3600,
+) -> dict:
+    """Auto-fix drifted T3 lines; flag lines we can't safely repair.
+
+    Rewrites are purely syntactic (bullet marker, missing date); semantic
+    content is never altered. Files untouched inside `recent_window_seconds`
+    are skipped so the common no-op case is cheap.
+
+    Returns:
+      {
+        "fixed": int,                 # lines rewritten
+        "warnings": list[str],        # unfixable plain-text lines (truncated)
+        "files_touched": list[str],   # filenames with any change
+      }
+    """
+    import time as _time
+
+    report: dict = {"fixed": 0, "warnings": [], "files_touched": []}
+    mem_dir = memory_dir(data_root, agent_id)
+    if not mem_dir.exists():
+        return report
+
+    now_ts = _time.time()
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    for spec in T3_FILE_SPECS:
+        path = mem_dir / spec["filename"]
+        if not path.exists():
+            continue
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if now_ts - mtime > recent_window_seconds:
+            continue
+
+        try:
+            original = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+
+        new_lines: list[str] = []
+        fixed_in_file = 0
+        for raw_line in original.splitlines():
+            stripped = raw_line.rstrip()
+            if not stripped:
+                new_lines.append(raw_line)
+                continue
+
+            # Preserve file headers verbatim.
+            if stripped.startswith(_T3_HEADER_PREFIXES) or stripped.startswith("##"):
+                new_lines.append(raw_line)
+                continue
+
+            # Already canonical "- [date] ..." — keep.
+            if _DASH_WITH_DATE_RE.match(stripped):
+                new_lines.append(raw_line)
+                continue
+
+            # "* content" → "- [today] content"
+            star = _STAR_BULLET_RE.match(stripped)
+            if star:
+                new_lines.append(f"- [{today}] {star.group('content').strip()}")
+                fixed_in_file += 1
+                continue
+
+            # "1. content" / "2. content" → "- [today] content"
+            numbered = _NUMBERED_BULLET_RE.match(stripped)
+            if numbered:
+                new_lines.append(f"- [{today}] {numbered.group('content').strip()}")
+                fixed_in_file += 1
+                continue
+
+            # "- content" without date → "- [today] content"
+            dash_bare = _DASH_BARE_RE.match(stripped)
+            if dash_bare:
+                content = dash_bare.group("content").strip()
+                if len(content) >= 10:
+                    new_lines.append(f"- [{today}] {content}")
+                    fixed_in_file += 1
+                    continue
+                # Too short to canonicalize safely — keep original.
+                new_lines.append(raw_line)
+                continue
+
+            # Plain text line that isn't a bullet or heading — can't repair.
+            report["warnings"].append(f"{spec['filename']}: {stripped[:100]}")
+            new_lines.append(raw_line)
+
+        if fixed_in_file:
+            new_content = "\n".join(new_lines)
+            if not new_content.endswith("\n"):
+                new_content += "\n"
+            path.write_text(new_content, encoding="utf-8")
+            report["fixed"] += fixed_in_file
+            report["files_touched"].append(spec["filename"])
+
+    return report
+
+

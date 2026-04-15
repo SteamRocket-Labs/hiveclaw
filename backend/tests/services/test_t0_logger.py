@@ -761,6 +761,60 @@ class TestRenderHelperEdgeCases:
 # ── PR-3: system log decision audit trail ──
 
 
+class TestHeartbeatT3NormalizationSection:
+    """PR-9: heartbeat log surfaces the T3 format normalizer report."""
+
+    def test_renders_section_when_lines_were_fixed(self) -> None:
+        result = _format_heartbeat_log(
+            [],
+            {
+                "tick": 1,
+                "t3_normalization": {
+                    "fixed": 3,
+                    "warnings": [],
+                    "files_touched": ["feedback.md", "strategies.md"],
+                },
+            },
+        )
+        assert "## T3 Normalization" in result
+        assert "Fixed: 3" in result
+        assert "Warnings: 0" in result
+        assert "feedback.md, strategies.md" in result
+
+    def test_renders_warnings_when_unfixable_lines_present(self) -> None:
+        result = _format_heartbeat_log(
+            [],
+            {
+                "tick": 2,
+                "t3_normalization": {
+                    "fixed": 0,
+                    "warnings": ["user.md: Hello world.", "user.md: stray prose"],
+                    "files_touched": [],
+                },
+            },
+        )
+        assert "## T3 Normalization" in result
+        assert "Warnings: 2" in result
+        assert "### Warnings" in result
+        assert "Hello world." in result
+        assert "stray prose" in result
+
+    def test_omits_section_when_nothing_to_report(self) -> None:
+        result = _format_heartbeat_log(
+            [],
+            {
+                "tick": 3,
+                "t3_normalization": {"fixed": 0, "warnings": [], "files_touched": []},
+            },
+        )
+        assert "## T3 Normalization" not in result
+
+    def test_omits_section_when_key_missing(self) -> None:
+        # Older callers don't pass this field at all — must still render.
+        result = _format_heartbeat_log([], {"tick": 4})
+        assert "## T3 Normalization" not in result
+
+
 class TestHeartbeatLogReasoning:
     def test_includes_decision_reasoning_when_provided(self) -> None:
         result = _format_heartbeat_log(

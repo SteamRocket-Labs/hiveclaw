@@ -397,6 +397,7 @@ def _format_heartbeat_log(messages: list[dict], metadata: dict[str, Any]) -> str
     action = metadata.get("action", "none")
     reasoning = (metadata.get("reasoning") or "").strip()
     t2_inputs = metadata.get("t2_inputs", []) or []
+    t3_normalization = metadata.get("t3_normalization") or {}
 
     sections: list[str] = []
     if reasoning:
@@ -415,6 +416,25 @@ def _format_heartbeat_log(messages: list[dict], metadata: dict[str, Any]) -> str
     sections.append(f"## New T2 Entries\n{t2_section}")
     sections.append(f"## Distillation\n{distill_section}")
     sections.append(f"## Action\n{_truncate(str(action), 2000)}")
+
+    # PR-9: heartbeat-run T3 format normalizer report.
+    if isinstance(t3_normalization, dict) and (
+        t3_normalization.get("fixed") or t3_normalization.get("warnings") or t3_normalization.get("files_touched")
+    ):
+        fixed = int(t3_normalization.get("fixed") or 0)
+        warnings = t3_normalization.get("warnings") or []
+        files = t3_normalization.get("files_touched") or []
+        lines = [
+            f"Fixed: {fixed}",
+            f"Warnings: {len(warnings)}",
+            f"Files touched: {', '.join(files) if files else '(none)'}",
+        ]
+        if warnings:
+            lines.append("")
+            lines.append("### Warnings")
+            for w in warnings[:20]:
+                lines.append(f"- {_truncate(str(w), 200)}")
+        sections.append("## T3 Normalization\n" + "\n".join(lines))
 
     return front + "\n\n" + "\n\n".join(sections) + "\n"
 

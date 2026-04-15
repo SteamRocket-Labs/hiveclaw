@@ -30,3 +30,5 @@ def test_feishu_maintenance_script_prefers_db_level_session_normalization():
 
     assert "promote_legacy_feishu_sessions" in feishu_script
     assert "reconcile_feishu_identity_state" not in feishu_script
+    assert "feishu_auth_provider._write_through_user_fields" in feishu_script
+    assert 'member.feishu_open_id = user_info.get("open_id") or member.feishu_open_id' in feishu_script

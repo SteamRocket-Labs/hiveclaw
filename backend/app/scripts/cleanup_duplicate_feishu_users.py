@@ -83,11 +83,8 @@ async def _backfill_users(db, configs: dict[uuid.UUID | None, tuple[str, str]]) 
             logger.warning("No user_id returned for user %s", user.username)
             continue
 
-        user.feishu_user_id = user_info["user_id"]
-        if user_info.get("union_id"):
-            user.feishu_union_id = user_info["union_id"]
-        if user_info.get("email") and user.email.endswith("@feishu.local"):
-            user.email = user_info["email"]
+        feishu_auth_provider._write_through_user_fields(user, user_info)
+        feishu_auth_provider._hydrate_user_profile(user, user_info)
 
         provider = await feishu_auth_provider._ensure_provider(db, user.tenant_id)
         await feishu_auth_provider._upsert_external_identity(
@@ -151,8 +148,9 @@ async def _backfill_org_members(db, configs: dict[uuid.UUID | None, tuple[str, s
         provider = await feishu_auth_provider._ensure_provider(db, member.tenant_id)
         member.provider_id = provider.id
         member.external_id = user_id
-        member.open_id = user_info.get("open_id") or member.feishu_open_id
-        member.unionid = user_info.get("union_id")
+        member.open_id = user_info.get("open_id") or member.open_id or member.feishu_open_id
+        member.feishu_open_id = user_info.get("open_id") or member.feishu_open_id
+        member.unionid = user_info.get("union_id") or member.unionid
         member.feishu_user_id = user_id
         updated += 1
 

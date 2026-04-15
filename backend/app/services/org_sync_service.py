@@ -8,14 +8,12 @@ from datetime import datetime, timezone
 
 import httpx
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import async_session
 from app.models.org import OrgDepartment, OrgMember
 from app.models.tenant_setting import TenantSetting
-from app.models.user import User
-from app.core.security import hash_password
 from app.services.auth_provider import feishu_auth_provider
 
 FEISHU_APP_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
@@ -267,6 +265,18 @@ class OrgSyncService:
                     for u in users:
                         open_id = u.get("open_id", "")
                         user_id = u.get("user_id", "")
+                        member_email = u.get("email", "")
+                        member_name = u.get("name", "")
+                        profile = {
+                            "user_id": user_id or None,
+                            "open_id": open_id or None,
+                            "union_id": u.get("union_id") or None,
+                            "name": member_name,
+                            "email": member_email,
+                            "avatar_url": u.get("avatar", {}).get("avatar_origin", ""),
+                            "mobile": u.get("mobile", ""),
+                            "raw_profile": u,
+                        }
                         if not open_id and not user_id:
                             logger.warning(f"[OrgSync] Skipping user with no open_id and no user_id: {u.get('name','?')}")
                             continue
@@ -279,7 +289,10 @@ class OrgSyncService:
                             result = await db.execute(
                                 select(OrgMember).where(
                                     OrgMember.tenant_id == tenant_id,
-                                    OrgMember.feishu_user_id == user_id,
+                                    or_(
+                                        OrgMember.external_id == user_id,
+                                        OrgMember.feishu_user_id == user_id,
+                                    ),
                                 )
                             )
                             member = result.scalar_one_or_none()
@@ -287,7 +300,10 @@ class OrgSyncService:
                             result = await db.execute(
                                 select(OrgMember).where(
                                     OrgMember.tenant_id == tenant_id,
-                                    OrgMember.feishu_open_id == open_id,
+                                    or_(
+                                        OrgMember.open_id == open_id,
+                                        OrgMember.feishu_open_id == open_id,
+                                    ),
                                 )
                             )
                             member = result.scalar_one_or_none()
@@ -335,78 +351,20 @@ class OrgSyncService:
                         member_count += 1
 
                         # --- Auto-create/update platform User ---
-                        # Prefer user_id (tenant-stable), then open_id, then email
-                        platform_user = None
-                        if user_id:
-                            pu_result = await db.execute(
-                                select(User).where(
-                                    User.tenant_id == tenant_id,
-                                    User.feishu_user_id == user_id,
-                                )
-                            )
-                            platform_user = pu_result.scalar_one_or_none()
-                        if not platform_user and open_id:
-                            pu_result = await db.execute(
-                                select(User).where(
-                                    User.tenant_id == tenant_id,
-                                    User.feishu_open_id == open_id,
-                                )
-                            )
-                            platform_user = pu_result.scalar_one_or_none()
-                        # Fallback: match by real email (most reliable cross-app identifier)
-                        member_email = u.get("email", "")
-                        if not platform_user and member_email and "@" in member_email and not member_email.endswith("@feishu.local"):
-                            pu_result = await db.execute(
-                                select(User).where(
-                                    User.tenant_id == tenant_id,
-                                    User.email == member_email,
-                                )
-                            )
-                            platform_user = pu_result.scalar_one_or_none()
+                        platform_user = await feishu_auth_provider._find_user_by_external_identity(db, provider, profile)
+                        if not platform_user:
+                            platform_user = await feishu_auth_provider._find_user_by_legacy_fields(db, tenant_id, profile)
 
-                        member_name = u.get("name", "")
                         if platform_user:
-                            # Update existing user info
-                            platform_user.display_name = member_name or platform_user.display_name
-                            # Always update feishu IDs to track the current app's values
-                            if open_id:
-                                platform_user.feishu_open_id = open_id
-                            if user_id:
-                                platform_user.feishu_user_id = user_id
+                            feishu_auth_provider._write_through_user_fields(platform_user, profile)
+                            feishu_auth_provider._hydrate_user_profile(platform_user, profile)
                             if tenant_id and not platform_user.tenant_id:
                                 platform_user.tenant_id = tenant_id
                         else:
-                            # Create new user — prefer user_id in username
-                            username_base = f"feishu_{user_id or (open_id[:16] if open_id else uuid.uuid4().hex[:8])}"
-                            email = member_email or f"{username_base}@feishu.local"
-                            platform_user = User(
-                                username=username_base,
-                                email=email,
-                                password_hash=hash_password(uuid.uuid4().hex),
-                                display_name=member_name,
-                                role="member",
-                                feishu_open_id=open_id or None,
-                                feishu_user_id=user_id or None,
-                                tenant_id=tenant_id,
-                            )
-                            db.add(platform_user)
+                            platform_user = await feishu_auth_provider._create_user(db, tenant_id, profile)
                             user_count += 1
 
-                        await feishu_auth_provider._upsert_external_identity(
-                            db,
-                            provider,
-                            platform_user,
-                            {
-                                "user_id": user_id or None,
-                                "open_id": open_id or None,
-                                "union_id": u.get("union_id") or None,
-                                "name": member_name,
-                                "email": member_email,
-                                "avatar_url": u.get("avatar", {}).get("avatar_origin", ""),
-                                "mobile": u.get("mobile", ""),
-                                "raw_profile": u,
-                            },
-                        )
+                        await feishu_auth_provider._upsert_external_identity(db, provider, platform_user, profile)
             except Exception as e:
                 import traceback
                 traceback.print_exc()

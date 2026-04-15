@@ -292,6 +292,8 @@ def test_bootstrap_schema_promotes_legacy_feishu_sessions_before_stamping() -> N
         Column("title", String(200), nullable=False),
         Column("source_channel", String(20), nullable=False),
         Column("external_conv_id", String(200), nullable=True),
+        Column("participant_id", String(36), nullable=True),
+        Column("delivery_target_json", JSON, nullable=True),
         Column("created_at", String(40), nullable=False),
         Column("last_message_at", String(40), nullable=True),
     )
@@ -306,6 +308,8 @@ def test_bootstrap_schema_promotes_legacy_feishu_sessions_before_stamping() -> N
         Column("title", String(200), nullable=False),
         Column("source_channel", String(20), nullable=False),
         Column("external_conv_id", String(200), nullable=True),
+        Column("participant_id", String(36), nullable=True),
+        Column("delivery_target_json", JSON, nullable=True),
         Column("created_at", String(40), nullable=False),
         Column("last_message_at", String(40), nullable=True),
     )
@@ -329,6 +333,8 @@ def test_bootstrap_schema_promotes_legacy_feishu_sessions_before_stamping() -> N
                 title="旧会话",
                 source_channel="feishu",
                 external_conv_id="feishu_p2p_ou_456",
+                participant_id="participant-1",
+                delivery_target_json={"channel": "feishu", "open_id": "ou_456"},
                 created_at="2026-04-14T08:00:00+00:00",
                 last_message_at="2026-04-14T08:00:00+00:00",
             )
@@ -347,10 +353,12 @@ def test_bootstrap_schema_promotes_legacy_feishu_sessions_before_stamping() -> N
 
         bootstrap_database_to_head(conn, current_metadata, ["rev_a"])
 
-        session_rows = conn.execute(text("SELECT external_conv_id FROM chat_sessions")).fetchall()
+        session_rows = conn.execute(
+            text("SELECT external_conv_id, participant_id, delivery_target_json FROM chat_sessions")
+        ).fetchall()
         versions = [row[0] for row in conn.execute(text("SELECT version_num FROM alembic_version"))]
 
-    assert session_rows == [("feishu_p2p_u_123",)]
+    assert session_rows == [("feishu_p2p_u_123", "participant-1", '{"channel": "feishu", "open_id": "ou_456"}')]
     assert versions == ["rev_a"]
 
 

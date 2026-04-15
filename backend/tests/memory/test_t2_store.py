@@ -65,6 +65,12 @@ def test_parse_t2_entry_line_reads_metadata() -> None:
     assert entry["content"] == "tool call failed after timeout"
 
 
+def test_compute_t2_weight_treats_agent_message_as_autonomous_source() -> None:
+    from app.memory.t2_store import compute_t2_weight
+
+    assert compute_t2_weight("feedback", "agent_message") == 0.70
+
+
 def test_render_t2_snapshot_groups_by_priority_and_repetition() -> None:
     from app.memory.t2_store import render_t2_snapshot
 

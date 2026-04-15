@@ -91,6 +91,43 @@ class TestHooksIntegration:
         finally:
             hooks_setup_mod.hook_registry = original
 
+    @pytest.mark.asyncio
+    async def test_response_complete_extraction_uses_interaction_type_source(self, monkeypatch) -> None:
+        from app.runtime.hooks import HookContext, HookEvent
+        from app.runtime.hooks_setup import _extract_on_response
+
+        captured = {}
+
+        def fake_update_session_memory(*_args, **_kwargs):
+            return None
+
+        def fake_schedule_extract(**kwargs):
+            captured.update(kwargs)
+
+        monkeypatch.setattr("app.runtime.hooks_setup.update_session_memory", fake_update_session_memory)
+        monkeypatch.setattr("app.runtime.hooks_setup.extract_agent.schedule_extract", fake_schedule_extract)
+
+        await _extract_on_response(
+            HookContext(
+                event=HookEvent.RESPONSE_COMPLETE,
+                agent_id=str(uuid.uuid4()),
+                session_id="agent-msg-sess",
+                source="agent",
+                messages=[
+                    {"role": "user", "content": "请直接回复另一个 agent"},
+                    {"role": "assistant", "content": "我已经整理好要点，准备答复。"},
+                ],
+                metadata={
+                    "interaction_type": "agent_message",
+                    "tenant_id": str(uuid.uuid4()),
+                    "agent_name": "Target Agent",
+                    "turn_count": 1,
+                },
+            )
+        )
+
+        assert captured["source"] == "agent_message"
+
 
 # ── §2: T0 raw log layer (Phase 1) ──
 
@@ -165,6 +202,48 @@ class TestT0Integration:
 
         assert captured["behavior_type"] == "agent_message"
         assert captured["metadata"]["interaction_type"] == "agent_message"
+
+    @pytest.mark.asyncio
+    async def test_v7c_session_close_skips_chat_t0_for_delegation_sessions(self, monkeypatch) -> None:
+        from app.runtime.hooks import HookContext, HookEvent
+        from app.runtime.hooks_setup import _t0_session_close
+
+        agent_id = uuid.uuid4()
+        captured = {"called": False}
+
+        async def fake_drain(_agent_id, timeout_s=10.0):
+            return None
+
+        def fake_write_t0_log(_agent_id, *, behavior_type, messages=None, metadata=None):
+            captured["called"] = True
+            captured["behavior_type"] = behavior_type
+            captured["metadata"] = metadata or {}
+            return Path("/tmp/fake-delegation-chat-log.md")
+
+        monkeypatch.setattr("app.runtime.hooks_setup.update_session_memory", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr("app.runtime.hooks_setup.extract_agent.drain", fake_drain)
+        monkeypatch.setattr("app.runtime.hooks_setup.write_t0_log", fake_write_t0_log)
+
+        await _t0_session_close(
+            HookContext(
+                event=HookEvent.SESSION_CLOSE,
+                agent_id=str(agent_id),
+                session_id="delegation-sess",
+                source="agent",
+                messages=[
+                    {"role": "user", "content": "完成这个委派任务"},
+                    {"role": "assistant", "content": "已完成并返回结果。"},
+                ],
+                metadata={
+                    "interaction_type": "delegation",
+                    "delegation": True,
+                    "delegation_parent_agent_id": "source-agent-id",
+                    "agent_name": "Worker Agent",
+                },
+            )
+        )
+
+        assert captured["called"] is False
 
 
 # ── §3: Extractor (Phase 2) ──

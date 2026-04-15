@@ -1,7 +1,7 @@
 """T0 Raw Behavior Logger — writes per-behavior MD files to logs/ directory.
 
 T0 is the bottom layer of the 4-layer MD pyramid (T0→T2→T3→soul).
-Each behavior (chat, trigger, delegation, heartbeat, dream) produces
+Each behavior (chat, agent_message, trigger, delegation, heartbeat, dream) produces
 a timestamped MD file with YAML frontmatter + body.
 
 Files are organized by date: logs/YYYY-MM-DD/{type}-{HHmm}-{short_id}.md
@@ -79,7 +79,7 @@ def _yaml_frontmatter(fields: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-# ── Format functions for 5 behavior types ──
+# ── Format functions for supported behavior types ──
 
 
 def _format_chat_log(messages: list[dict], metadata: dict[str, Any]) -> str:

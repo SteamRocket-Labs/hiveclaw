@@ -370,7 +370,7 @@ def build_session_memory_payload_from_messages(
     ]
     return SessionMemoryPayload(
         session_id=str(metadata.get("session_id") or metadata.get("conversation_id") or "").strip(),
-        source=str(metadata.get("source") or metadata.get("event") or "").strip(),
+        source=str(metadata.get("interaction_type") or metadata.get("source") or metadata.get("event") or "").strip(),
         session_title=str(metadata.get("session_title") or _derive_session_title(user_messages[0] if user_messages else "", current_state)).strip(),
         current_state=current_state,
         task_spec=str(metadata.get("task_spec") or (user_messages[0] if user_messages else "")).strip(),

@@ -71,6 +71,17 @@ async def _log_memory_extracted(ctx: HookContext) -> None:
 # ── Extractor handlers (Phase 2) ──
 
 
+def _memory_event_source(ctx: HookContext, *, fallback: str) -> str:
+    interaction_type = str((ctx.metadata or {}).get("interaction_type") or "").strip()
+    if interaction_type:
+        return interaction_type
+    return ctx.source or fallback
+
+
+def _memory_payload_metadata(ctx: HookContext, *, fallback_source: str) -> dict:
+    return {**(ctx.metadata or {}), "source": _memory_event_source(ctx, fallback=fallback_source)}
+
+
 async def _extract_on_response(ctx: HookContext) -> None:
     """RESPONSE_COMPLETE → fire-and-forget extraction to T2."""
     agent_id = _parse_agent_id(ctx)
@@ -80,7 +91,10 @@ async def _extract_on_response(ctx: HookContext) -> None:
     logger.info("[Hooks] RESPONSE_COMPLETE: agent=%s source=%s turn=%s", ctx.agent_id, ctx.source, turn)
     update_session_memory(
         agent_id,
-        build_session_memory_payload_from_messages(ctx.messages or [], metadata=ctx.metadata),
+        build_session_memory_payload_from_messages(
+            ctx.messages or [],
+            metadata=_memory_payload_metadata(ctx, fallback_source="web"),
+        ),
     )
     # Fire-and-forget: don't block the response (tracked for drain at SESSION_CLOSE)
     tenant_id = ctx.metadata.get("tenant_id")
@@ -88,7 +102,7 @@ async def _extract_on_response(ctx: HookContext) -> None:
     extract_agent.schedule_extract(
         agent_id=agent_id,
         messages=ctx.messages,
-        source=ctx.source or "web",
+        source=_memory_event_source(ctx, fallback="web"),
         tenant_id=uuid.UUID(str(tenant_id)) if tenant_id else None,
         agent_name=agent_name,
     )
@@ -103,7 +117,10 @@ async def _extract_on_pre_compaction(ctx: HookContext) -> None:
     logger.info("[Hooks] PRE_COMPACTION: agent=%s trigger=%s msgs=%d", ctx.agent_id, trigger, len(ctx.messages or []))
     update_session_memory(
         agent_id,
-        build_session_memory_payload_from_messages(ctx.messages or [], metadata=ctx.metadata),
+        build_session_memory_payload_from_messages(
+            ctx.messages or [],
+            metadata=_memory_payload_metadata(ctx, fallback_source="compaction"),
+        ),
     )
     # Synchronous: must finish before compaction discards messages
     tenant_id = ctx.metadata.get("tenant_id")
@@ -111,7 +128,7 @@ async def _extract_on_pre_compaction(ctx: HookContext) -> None:
     await extract_agent.extract(
         agent_id=agent_id,
         messages=ctx.messages,
-        source="compaction",
+        source=_memory_event_source(ctx, fallback="compaction"),
         tenant_id=uuid.UUID(str(tenant_id)) if tenant_id else None,
         agent_name=agent_name,
     )
@@ -132,10 +149,12 @@ def _parse_agent_id(ctx: HookContext) -> uuid.UUID | None:
 _t0_cursors: dict[str, int] = {}  # "agent_id:session_id" → message index of last T0 write
 
 
-def _session_t0_behavior_type(ctx: HookContext) -> str:
+def _session_t0_behavior_type(ctx: HookContext) -> str | None:
     interaction_type = str((ctx.metadata or {}).get("interaction_type") or "").strip().lower()
     if interaction_type == "agent_message":
         return "agent_message"
+    if interaction_type == "delegation":
+        return None
     return "chat"
 
 
@@ -149,7 +168,10 @@ async def _t0_session_close(ctx: HookContext) -> None:
     logger.info("[Hooks] SESSION_CLOSE: agent=%s reason=%s msgs=%d", ctx.agent_id, reason, len(messages))
     update_session_memory(
         agent_id,
-        build_session_memory_payload_from_messages(messages, metadata=ctx.metadata),
+        build_session_memory_payload_from_messages(
+            messages,
+            metadata=_memory_payload_metadata(ctx, fallback_source="web"),
+        ),
     )
     # Drain pending extractions before session ends
     await extract_agent.drain(agent_id, timeout_s=10.0)
@@ -160,9 +182,14 @@ async def _t0_session_close(ctx: HookContext) -> None:
     if not new_messages:
         logger.debug("[Hooks] SESSION_CLOSE: no new messages since cursor=%d, skipping T0", cursor)
         return
+    behavior_type = _session_t0_behavior_type(ctx)
+    if behavior_type is None:
+        logger.debug("[Hooks] SESSION_CLOSE: delegation session routed to DELEGATION_END T0 only")
+        _t0_cursors[session_key] = len(messages)
+        return
     write_t0_log(
         agent_id,
-        behavior_type=_session_t0_behavior_type(ctx),
+        behavior_type=behavior_type,
         messages=new_messages,
         metadata={**ctx.metadata, "source": ctx.source or "web", "cursor_start": cursor},
     )
@@ -191,9 +218,14 @@ async def _t0_session_idle(ctx: HookContext) -> None:
         return
     logger.info("[Hooks] SESSION_IDLE: agent=%s idle=%ss new_msgs=%d (cursor %d→%d)",
                 ctx.agent_id, idle_s, len(new_messages), cursor, len(messages))
+    behavior_type = _session_t0_behavior_type(ctx)
+    if behavior_type is None:
+        logger.debug("[Hooks] SESSION_IDLE: delegation session routed to DELEGATION_END T0 only")
+        _t0_cursors[session_key] = len(messages)
+        return
     write_t0_log(
         agent_id,
-        behavior_type=_session_t0_behavior_type(ctx),
+        behavior_type=behavior_type,
         messages=new_messages,
         metadata={**ctx.metadata, "source": ctx.source or "web", "cursor_start": cursor},
     )

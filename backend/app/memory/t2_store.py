@@ -54,6 +54,8 @@ _HUMAN_SOURCES = {
     "invoke_complete",
 }
 _AUTONOMOUS_SOURCES = {
+    "agent",
+    "agent_message",
     "trigger",
     "delegation",
     "scheduler",

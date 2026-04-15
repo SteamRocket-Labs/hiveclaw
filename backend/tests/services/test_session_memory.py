@@ -93,6 +93,23 @@ def test_build_session_memory_payload_from_messages_detects_chinese_future_steps
     ]
 
 
+def test_build_session_memory_payload_prefers_interaction_type_over_generic_agent_source() -> None:
+    from app.services.session_memory import build_session_memory_payload_from_messages
+
+    payload = build_session_memory_payload_from_messages(
+        [
+            {"role": "user", "content": "请直接回复另一个 agent"},
+            {"role": "assistant", "content": "我已经整理好要点，准备答复。"},
+        ],
+        metadata={
+            "source": "agent",
+            "interaction_type": "agent_message",
+        },
+    )
+
+    assert payload.source == "agent_message"
+
+
 def test_merge_session_memory_into_recovery_manifest_restores_pending_work(tmp_path: Path) -> None:
     from app.runtime.recovery_manifest import RecoveryManifest, merge_session_memory_into_manifest
     from app.services.session_memory import SessionMemoryPayload, update_session_memory

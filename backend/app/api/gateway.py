@@ -48,6 +48,22 @@ async def _get_agent_by_key(api_key: str, db: AsyncSession) -> Agent:
     return agent
 
 
+async def _get_agent_participant_id(db: AsyncSession, agent_id: uuid.UUID | None) -> uuid.UUID | None:
+    """Resolve the canonical Participant row for an agent identity."""
+    if not agent_id:
+        return None
+
+    from app.models.participant import Participant
+
+    result = await db.execute(
+        select(Participant.id).where(
+            Participant.type == "agent",
+            Participant.ref_id == agent_id,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 # ─── Poll for messages ──────────────────────────────────
 
 @router.get("/poll", response_model=GatewayPollResponse)
@@ -106,10 +122,15 @@ async def poll_messages(
             for h in hist_msgs:
                 # Resolve sender name for each history message
                 h_sender = None
-                if h.role == "user" and h.user_id:
+                if h.participant_id:
+                    from app.models.participant import Participant
+
+                    r = await db.execute(select(Participant.display_name).where(Participant.id == h.participant_id))
+                    h_sender = r.scalar_one_or_none()
+                if not h_sender and h.role == "user" and h.user_id:
                     r = await db.execute(select(User.display_name).where(User.id == h.user_id))
                     h_sender = r.scalar_one_or_none()
-                elif h.role == "assistant":
+                elif not h_sender and h.role == "assistant":
                     h_sender = agent.name
                 history.append(GatewayHistoryItem(
                     role=h.role,
@@ -211,12 +232,14 @@ async def report_result(
     # (only for user-originated messages; agent-to-agent skips this)
     if body.result and msg.conversation_id and msg.sender_user_id:
         from app.models.audit import ChatMessage
+        agent_participant_id = await _get_agent_participant_id(db, agent.id)
         assistant_msg = ChatMessage(
             agent_id=agent.id,
             user_id=msg.sender_user_id,
             role="assistant",
             content=body.result,
             conversation_id=msg.conversation_id,
+            participant_id=agent_participant_id,
         )
         db.add(assistant_msg)
 
@@ -242,6 +265,7 @@ async def report_result(
 
             sender_result = await reply_db.execute(select(Agent).where(Agent.id == msg.sender_agent_id))
             sender_agent = sender_result.scalar_one_or_none()
+            agent_participant_id = await _get_agent_participant_id(reply_db, agent.id)
             owner_user_id = agent.creator_id or getattr(sender_agent, "creator_id", None) or msg.sender_agent_id
             session = await find_or_create_agent_pair_session(
                 reply_db,
@@ -259,6 +283,7 @@ async def report_result(
                 role="assistant",
                 content=body.result,
                 conversation_id=conv_id,
+                participant_id=agent_participant_id,
             ))
             gw_reply = GatewayMessage(
                 agent_id=msg.sender_agent_id,
@@ -332,6 +357,8 @@ async def _send_to_agent_background(
             source_agent_uuid = uuid.UUID(str(source_agent_id))
             target_agent_uuid = uuid.UUID(str(target_agent_id))
             target_creator_uuid = uuid.UUID(str(target_creator_id))
+            source_participant_id = await _get_agent_participant_id(db, source_agent_uuid)
+            target_participant_id = await _get_agent_participant_id(db, target_agent_uuid)
             session = await find_or_create_agent_pair_session(
                 db,
                 source_agent_id=source_agent_uuid,
@@ -373,6 +400,7 @@ async def _send_to_agent_background(
                 role="user",
                 content=user_msg,
                 user_id=target_creator_uuid,
+                participant_id=source_participant_id,
             ))
             await db.commit()
 
@@ -421,6 +449,7 @@ async def _send_to_agent_background(
                 role="assistant",
                 content=final_reply,
                 user_id=target_creator_uuid,
+                participant_id=target_participant_id,
             ))
 
             # Write reply to gateway_messages for source (OpenClaw) to poll
@@ -473,6 +502,7 @@ async def send_message(
         from app.models.audit import ChatMessage
 
         owner_user_id = target_agent.creator_id or agent.creator_id or agent.id
+        source_participant_id = await _get_agent_participant_id(db, agent.id)
         chat_session = await find_or_create_agent_pair_session(
             db,
             source_agent_id=agent.id,
@@ -492,6 +522,7 @@ async def send_message(
                 role="user",
                 content=content,
                 conversation_id=conv_id,
+                participant_id=source_participant_id,
             ))
             gw_msg = GatewayMessage(
                 agent_id=target_agent.id,

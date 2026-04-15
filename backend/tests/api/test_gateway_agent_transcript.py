@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -15,13 +16,27 @@ class _FakeScalarResult:
         self._value = value
 
     def scalar_one_or_none(self):
+        if isinstance(self._value, list):
+            if not self._value:
+                return None
+            if len(self._value) > 1:
+                raise AssertionError("scalar_one_or_none() received multiple rows")
+            return self._value[0]
         return self._value
 
     def scalars(self):
         return self
 
+    def all(self):
+        if isinstance(self._value, list):
+            return list(self._value)
+        if self._value is None:
+            return []
+        return [self._value]
+
     def first(self):
-        return self._value
+        values = self.all()
+        return values[0] if values else None
 
 
 class _FakeDB:
@@ -53,6 +68,16 @@ class _AsyncSessionContext:
         return False
 
 
+class _AsyncSessionFactory:
+    def __init__(self, dbs: list[_FakeDB]) -> None:
+        self._dbs = list(dbs)
+
+    def __call__(self):
+        if not self._dbs:
+            raise AssertionError("Unexpected async_session() call")
+        return _AsyncSessionContext(self._dbs.pop(0))
+
+
 @pytest.mark.asyncio
 async def test_gateway_send_message_persists_openclaw_agent_request_to_chat_transcript(monkeypatch) -> None:
     from app.api import gateway as gateway_mod
@@ -73,7 +98,8 @@ async def test_gateway_send_message_persists_openclaw_agent_request_to_chat_tran
         openclaw_last_seen=None,
     )
     chat_session = SimpleNamespace(id=uuid4(), agent_id=uuid4(), last_message_at=None)
-    db = _FakeDB([target_agent])
+    source_participant = SimpleNamespace(id=uuid4(), display_name=source_agent.name)
+    db = _FakeDB([target_agent, source_participant.id])
 
     async def fake_get_agent_by_key(_api_key, _db):
         return source_agent
@@ -100,6 +126,7 @@ async def test_gateway_send_message_persists_openclaw_agent_request_to_chat_tran
     assert outbound_chat.role == "user"
     assert outbound_chat.content == "Need the release summary."
     assert outbound_chat.user_id == target_owner_id
+    assert outbound_chat.participant_id == source_participant.id
 
 
 @pytest.mark.asyncio
@@ -130,7 +157,8 @@ async def test_gateway_report_result_persists_openclaw_agent_reply_to_chat_trans
         completed_at=None,
     )
     primary_db = _FakeDB([queued_message])
-    reply_db = _FakeDB([sender_agent])
+    current_participant = SimpleNamespace(id=uuid4(), display_name=current_agent.name)
+    reply_db = _FakeDB([sender_agent, current_participant.id])
     chat_session = SimpleNamespace(id=uuid4(), agent_id=uuid4(), last_message_at=None)
 
     async def fake_get_agent_by_key(_api_key, _db):
@@ -158,3 +186,111 @@ async def test_gateway_report_result_persists_openclaw_agent_reply_to_chat_trans
     assert reply_chat.conversation_id == "agent-pair-conv"
     assert reply_chat.role == "assistant"
     assert reply_chat.content == "Here is the release summary."
+    assert reply_chat.participant_id == current_participant.id
+
+
+@pytest.mark.asyncio
+async def test_gateway_poll_history_prefers_participant_display_names(monkeypatch) -> None:
+    from app.api import gateway as gateway_mod
+
+    current_agent = SimpleNamespace(
+        id=uuid4(),
+        name="Target OpenClaw",
+        agent_type="openclaw",
+        creator_id=uuid4(),
+        openclaw_last_seen=None,
+        status="idle",
+    )
+    queued_message = SimpleNamespace(
+        id=uuid4(),
+        agent_id=current_agent.id,
+        sender_agent_id=uuid4(),
+        sender_user_id=None,
+        content="Need the release summary.",
+        conversation_id="agent-pair-conv",
+        status="pending",
+        delivered_at=None,
+        created_at=datetime.now(timezone.utc),
+    )
+    source_participant = SimpleNamespace(id=uuid4(), display_name="Source OpenClaw")
+    target_participant = SimpleNamespace(id=uuid4(), display_name="Target OpenClaw")
+    history_messages = [
+        SimpleNamespace(
+            role="user",
+            content="Need the release summary.",
+            participant_id=source_participant.id,
+            user_id=current_agent.creator_id,
+            created_at=datetime.now(timezone.utc),
+        ),
+        SimpleNamespace(
+            role="assistant",
+            content="Here is the release summary.",
+            participant_id=target_participant.id,
+            user_id=current_agent.creator_id,
+            created_at=datetime.now(timezone.utc),
+        ),
+    ]
+    db = _FakeDB([
+        [queued_message],
+        "Source OpenClaw",
+        history_messages,
+        source_participant.display_name,
+        target_participant.display_name,
+        [],
+        [],
+    ])
+
+    async def fake_get_agent_by_key(_api_key, _db):
+        return current_agent
+
+    monkeypatch.setattr(gateway_mod, "_get_agent_by_key", fake_get_agent_by_key)
+
+    response = await gateway_mod.poll_messages(x_api_key="test-key", db=db)
+
+    assert queued_message.status == "delivered"
+    assert response.messages[0].history[0].sender_name == source_participant.display_name
+    assert response.messages[0].history[1].sender_name == target_participant.display_name
+
+
+@pytest.mark.asyncio
+async def test_send_to_agent_background_persists_participant_ids_for_native_agent_transcript(monkeypatch) -> None:
+    from app.api import gateway as gateway_mod
+    from app.api import websocket as websocket_mod
+
+    source_agent_id = uuid4()
+    target_agent_id = uuid4()
+    owner_user_id = uuid4()
+    source_participant = SimpleNamespace(id=uuid4(), display_name="Source OpenClaw")
+    target_participant = SimpleNamespace(id=uuid4(), display_name="Native Target")
+    model = SimpleNamespace(id=uuid4())
+    chat_session = SimpleNamespace(id=uuid4(), agent_id=uuid4(), last_message_at=None)
+    first_db = _FakeDB([model, source_participant.id, target_participant.id, []])
+    second_db = _FakeDB([])
+
+    async def fake_find_or_create_agent_pair_session(*_args, **_kwargs):
+        return chat_session
+
+    async def fake_call_llm(**_kwargs):
+        return "Native reply"
+
+    monkeypatch.setattr(gateway_mod, "find_or_create_agent_pair_session", fake_find_or_create_agent_pair_session)
+    monkeypatch.setattr(gateway_mod, "session_conversation_id", lambda _session: "agent-pair-conv")
+    monkeypatch.setattr(gateway_mod, "async_session", _AsyncSessionFactory([first_db, second_db]))
+    monkeypatch.setattr(websocket_mod, "call_llm", fake_call_llm)
+
+    await gateway_mod._send_to_agent_background(
+        source_agent_id=str(source_agent_id),
+        source_agent_name="Source OpenClaw",
+        target_agent_id=str(target_agent_id),
+        target_agent_name="Native Target",
+        target_primary_model_id=str(uuid4()),
+        target_role_description="Summarize releases",
+        target_creator_id=str(owner_user_id),
+        target_tenant_id=str(uuid4()),
+        content="Need the release summary.",
+    )
+
+    request_chat = next(obj for obj in first_db.added if isinstance(obj, ChatMessage))
+    reply_chat = next(obj for obj in second_db.added if isinstance(obj, ChatMessage))
+    assert request_chat.participant_id == source_participant.id
+    assert reply_chat.participant_id == target_participant.id

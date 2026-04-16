@@ -279,20 +279,33 @@ def parse_t3_facts(data_root: Path, agent_id: uuid.UUID) -> list[dict]:
     return facts
 
 
-def search_t3_facts(data_root: Path, agent_id: uuid.UUID, query: str, *, limit: int = 5) -> list[dict]:
-    """Search T3 MD files using BM25 scoring with CJK bigram fallback.
+def search_t3_facts(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    query: str,
+    *,
+    limit: int = 5,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> list[dict]:
+    """Search T3 MD files using BM25 scoring with optional temporal filtering.
 
-    BM25 parameters (k1=1.5, b=0.75) are standard defaults. The tokenizer
-    uses word-level tokens for Latin text and character bigrams for CJK,
-    matching the dual-path strategy used throughout the memory system.
+    Args:
+        date_from: ISO date string (YYYY-MM-DD). Only include facts on or after this date.
+        date_to: ISO date string (YYYY-MM-DD). Only include facts on or before this date.
     """
     needle = (query or "").strip()
-    if not needle:
-        return parse_t3_facts(data_root, agent_id)[:limit]
 
     all_facts = parse_t3_facts(data_root, agent_id)
     if not all_facts:
         return []
+
+    # Apply temporal filter if specified
+    if date_from or date_to:
+        all_facts = _filter_facts_by_date(all_facts, date_from=date_from, date_to=date_to)
+
+    if not needle:
+        return all_facts[:limit]
 
     # Build corpus + tokenize
     corpus_tokens: list[list[str]] = []
@@ -316,6 +329,30 @@ def search_t3_facts(data_root: Path, agent_id: uuid.UUID, query: str, *, limit: 
 
     ranked.sort(reverse=True)
     return [fact for _score, _neg_index, fact in ranked[:limit]]
+
+
+# ── Temporal filtering ──
+
+def _filter_facts_by_date(
+    facts: list[dict],
+    *,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> list[dict]:
+    """Filter facts by their [YYYY-MM-DD] timestamp tag."""
+    filtered: list[dict] = []
+    for fact in facts:
+        ts = (fact.get("timestamp") or "")[:10]  # "2026-04-16" portion
+        if not ts or len(ts) < 10:
+            # No date tag → include (don't drop undated facts silently)
+            filtered.append(fact)
+            continue
+        if date_from and ts < date_from:
+            continue
+        if date_to and ts > date_to:
+            continue
+        filtered.append(fact)
+    return filtered
 
 
 # ── BM25 implementation (pure Python, zero dependencies) ──

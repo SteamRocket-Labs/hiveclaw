@@ -140,6 +140,14 @@ def save_memory(agent_id: uuid.UUID, arguments: dict) -> str:
                 "type": "integer",
                 "description": "Maximum results to return. Default: 10.",
             },
+            "date_from": {
+                "type": "string",
+                "description": "Only include facts on or after this date (YYYY-MM-DD). Use get_current_time to resolve relative dates like 'last month'.",
+            },
+            "date_to": {
+                "type": "string",
+                "description": "Only include facts on or before this date (YYYY-MM-DD).",
+            },
         },
         "required": ["query"],
     },
@@ -163,13 +171,18 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
 
     scope = arguments.get("scope", "all")
     limit = min(int(arguments.get("limit", 10)), 20)
+    date_from = (arguments.get("date_from") or "").strip() or None
+    date_to = (arguments.get("date_to") or "").strip() or None
     results: list[str] = []
 
     settings = get_settings()
 
     # --- Semantic facts search ---
     if scope in ("facts", "all"):
-        facts = search_t3_facts(Path(settings.AGENT_DATA_DIR), agent_id, query, limit=limit)
+        facts = search_t3_facts(
+            Path(settings.AGENT_DATA_DIR), agent_id, query,
+            limit=limit, date_from=date_from, date_to=date_to,
+        )
         if facts:
             results.append("## Semantic Memory")
             for f in facts:

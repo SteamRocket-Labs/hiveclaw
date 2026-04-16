@@ -1,17 +1,11 @@
 """Tests for PR-22 prompt-section polish.
 
-Locks down the targeted upgrades across the prompt sections that are
-actually rendered by `prompt_builder.build_frozen_prompt_prefix` /
-`build_dynamic_prompt_suffix`:
+Locks down the targeted upgrades across 5 prompt sections:
 - knowledge.py       → citation/conflict/no-source rules + examples
 - tone_style.py      → quantified expertise-signal calibration
 - scenario.py        → low-confidence inference warning
+- executing_actions  → enumerated confirmation triggers
 - identity.py        → coordinator self-delegation guardrail
-
-(The legacy `executing_actions` section was removed — it was only
-consumed by `prompt_eval.py` as a regression fixture and never reached
-the live runtime prompt. The always-on tool-coverage check now targets
-system.py + memory.py directly.)
 """
 
 from __future__ import annotations
@@ -19,6 +13,7 @@ from __future__ import annotations
 import pytest
 
 from app.runtime.context_budget import TaskProfile
+from app.runtime.prompt_sections.executing_actions import build_executing_actions_section
 from app.runtime.prompt_sections.identity import build_identity_section
 from app.runtime.prompt_sections.knowledge import build_knowledge_section
 from app.runtime.prompt_sections.scenario import build_scenario_section
@@ -98,6 +93,28 @@ class TestScenarioSection:
         assert build_scenario_section(None) == ""
 
 
+class TestExecutingActionsSection:
+    def test_conversational_mode_enumerates_confirmation_triggers(self) -> None:
+        out = build_executing_actions_section(execution_mode="conversation")
+        # Must name the 5 triggering categories explicitly.
+        assert "sending a message to a channel" in out
+        assert "deleting or overwriting files" in out
+        assert "creating a trigger" in out
+        assert "delegating work to another agent" in out
+        assert "changes state visible to people outside this conversation" in out
+
+    def test_conversational_mode_allows_local_reads_without_confirmation(self) -> None:
+        out = build_executing_actions_section(execution_mode="conversation")
+        assert "purely local reads" in out
+        assert "do NOT need" in out
+
+    def test_autonomous_mode_instructs_report_on_blocked_gate(self) -> None:
+        for mode in ("task", "heartbeat"):
+            out = build_executing_actions_section(execution_mode=mode)
+            assert "proceed without asking for confirmation" in out
+            assert "do not attempt workarounds" in out
+
+
 class TestScenarioPR29Deepening:
     """PR-29 deepened scenario.py to gold: per-type XML tags + good/bad examples."""
 
@@ -146,6 +163,72 @@ class TestScenarioPR29Deepening:
     def test_review_overlay_absent_when_no_review_keyword(self) -> None:
         out = build_scenario_section(self._profile("coding"), query="implement a new feature")
         assert "<review_overlay>" not in out
+
+
+class TestExecutingActionsPR28Deepening:
+    """PR-28 deepened executing_actions to gold standard: XML sub-blocks,
+    explicit 3-strike rule, honesty good/bad examples, verification matrix."""
+
+    def test_xml_sub_blocks_present_in_conversation_mode(self) -> None:
+        out = build_executing_actions_section(execution_mode="conversation")
+        for tag in [
+            "<core_directives>",
+            "</core_directives>",
+            "<work_methodology>",
+            "</work_methodology>",
+            "<three_strike_rule>",
+            "</three_strike_rule>",
+            "<operating_principles>",
+            "</operating_principles>",
+            "<honesty>",
+            "</honesty>",
+            "<safety>",
+            "</safety>",
+            "<problem_solving>",
+            "</problem_solving>",
+            "<verification>",
+            "</verification>",
+            "<platform_integration>",
+            "</platform_integration>",
+        ]:
+            assert tag in out, f"missing tag: {tag}"
+
+    def test_three_strike_rule_differentiates_same_vs_different_errors(self) -> None:
+        out = build_executing_actions_section(execution_mode="conversation")
+        assert "DIFFERENT errors" in out
+        assert "SAME error" in out
+        assert "grinding" in out
+
+    def test_honesty_has_good_bad_examples(self) -> None:
+        out = build_executing_actions_section(execution_mode="conversation")
+        # Named bad → good rewrite pair with file:line evidence.
+        assert "middleware.py:142" in out
+        assert "pytest tests/auth" in out
+        # Tests-not-yet-run bad example
+        assert "Tests not yet run" in out
+
+    def test_verification_has_decision_matrix_table(self) -> None:
+        out = build_executing_actions_section(execution_mode="conversation")
+        assert "| Action | Pre-check tool | Why |" in out
+        # Specific rows
+        assert "Overwrite a file" in out
+        assert "Create a trigger" in out
+        assert "Mark a task complete" in out
+
+    def test_legacy_markdown_headers_preserved(self) -> None:
+        # The prompt_eval contract + test_prompt_sections expect these.
+        out = build_executing_actions_section(execution_mode="conversation")
+        for header in [
+            "## Core Directives",
+            "## How You Work",
+            "## Operating Principles",
+            "### Honesty",
+            "### Safety",
+            "### Problem Solving",
+            "### Verification",
+            "## Platform Integration",
+        ]:
+            assert header in out, f"missing header: {header}"
 
 
 class TestIdentitySection:

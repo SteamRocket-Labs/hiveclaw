@@ -24,6 +24,7 @@ DYNAMIC SUFFIX (per-round):
 
 from .active_packs import build_active_packs_section
 from .environment import build_environment_section
+from .executing_actions import build_executing_actions_section
 from .output_efficiency import build_output_efficiency_section
 from .identity import build_identity_section
 from .knowledge import build_knowledge_section
@@ -42,6 +43,7 @@ __all__ = [
     "build_identity_section",
     "build_system_section",
     "build_tasks_section",
+    "build_executing_actions_section",
     "build_tools_section",
     "build_tone_style_section",
     "build_output_efficiency_section",

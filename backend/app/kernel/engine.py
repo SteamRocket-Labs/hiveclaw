@@ -808,18 +808,19 @@ class AgentKernel:
             session_ctx = request.session_context
             budget_profile = session_ctx.metadata.get("context_budget") if session_ctx else None
             latest_user_query = _latest_user_query(request.messages)
-            # Prompt cache: reuse frozen prefix if available AND still valid.
-            # Rebuild if memory context changed (hash-based invalidation).
-            _cache_valid = False
-            if session_ctx and session_ctx.prompt_prefix:
-                _mem_hash = hashlib.sha256(resolved_memory_context.encode("utf-8")).hexdigest()[:16]
-                _cached_mem_hash = getattr(session_ctx, "_memory_hash", None)
-                _cache_valid = _cached_mem_hash == _mem_hash
-                if not _cache_valid:
-                    logger.info("[Kernel] Prompt cache invalidated — memory context changed")
-                    # Clear active_packs to prevent stale pack contamination (H-05)
-                    if session_ctx:
-                        session_ctx.active_packs.clear()
+            # Prompt cache: reuse frozen prefix if available.
+            # The frozen prefix is session-stable by design — it contains
+            # agent_context (soul, identity, skills catalog, company info) +
+            # system + tasks + tools + output_efficiency. None of these change
+            # within a session. Memory lives in the dynamic suffix which is
+            # rebuilt every round regardless.
+            #
+            # Previously this checked memory hash and invalidated frozen prefix
+            # when memory changed — but memory isn't in the frozen prefix, so
+            # that was wasted work (full prompt rebuild + DB queries for the
+            # same agent_context). Removed to maximize both application-level
+            # cache hits and Anthropic API prefix cache hits.
+            _cache_valid = bool(session_ctx and session_ctx.prompt_prefix)
 
             # Resolve model context window for dynamic prompt budget
             _ctx_window = getattr(request.model, "max_input_tokens", None) if request.model else None
@@ -833,8 +834,8 @@ class AgentKernel:
 
             # P0.4 Observability: prompt cache hit/miss
             logger.info(
-                "[Kernel] Prompt cache %s (agent=%s)",
-                "hit" if _cache_valid else "miss",
+                "[Kernel] Prompt prefix cache %s (agent=%s)",
+                "hit" if _cache_valid else "cold-build",
                 request.agent_id,
                 extra={"metric": "prompt_cache", "cache_hit": _cache_valid},
             )

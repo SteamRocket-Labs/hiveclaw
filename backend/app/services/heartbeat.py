@@ -59,6 +59,11 @@ _heartbeat_contexts: dict[uuid.UUID, list[dict]] = {}
 _heartbeat_session_ids: dict[uuid.UUID, uuid.UUID] = {}
 _heartbeat_tick_counts: dict[uuid.UUID, int] = {}
 _t2_mtimes: dict[uuid.UUID, dict[str, float]] = {}
+# Persistent SessionContext per agent — allows the kernel to reuse the
+# frozen prompt prefix across heartbeat ticks instead of rebuilding it
+# every 45 minutes (saves DB queries + string rendering + enables
+# Anthropic prompt cache hits within multi-round ticks).
+_heartbeat_session_ctxs: dict[uuid.UUID, "SessionContext"] = {}
 
 
 def _reset_heartbeat_session(agent_id: uuid.UUID) -> None:
@@ -67,7 +72,29 @@ def _reset_heartbeat_session(agent_id: uuid.UUID) -> None:
     _heartbeat_session_ids.pop(agent_id, None)
     _heartbeat_tick_counts.pop(agent_id, None)
     _t2_mtimes.pop(agent_id, None)
+    _heartbeat_session_ctxs.pop(agent_id, None)
     logger.info("[Heartbeat] Session reset for %s", agent_id)
+
+
+def _get_or_create_heartbeat_session_ctx(agent_id: uuid.UUID, session_id: uuid.UUID) -> "SessionContext":
+    """Return a persistent SessionContext for heartbeat ticks.
+
+    On first call for an agent, creates a new context; subsequent calls
+    reuse it so the kernel's frozen prompt prefix cache carries across ticks.
+    """
+    ctx = _heartbeat_session_ctxs.get(agent_id)
+    if ctx is not None:
+        # Update session_id if it changed (e.g. after day-boundary reset)
+        ctx.session_id = str(session_id)
+        return ctx
+    ctx = SessionContext(
+        source="heartbeat",
+        channel="heartbeat",
+        session_id=str(session_id),
+        metadata={"agent_id": str(agent_id)},
+    )
+    _heartbeat_session_ctxs[agent_id] = ctx
+    return ctx
 
 
 def _read_t2_full(agent_id: uuid.UUID) -> str:
@@ -1162,11 +1189,8 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                             identity_id=agent_id,
                             label=f"Agent: {agent.name} (heartbeat)",
                         ),
-                        session_context=SessionContext(
-                            source="heartbeat",
-                            channel="heartbeat",
-                            session_id=str(session_id),
-                            metadata={"agent_id": str(agent_id)},
+                        session_context=_get_or_create_heartbeat_session_ctx(
+                            agent_id, session_id
                         ),
                         on_tool_call=_on_tool_call,
                         tool_executor=_build_heartbeat_tool_executor(agent_id, agent.creator_id),

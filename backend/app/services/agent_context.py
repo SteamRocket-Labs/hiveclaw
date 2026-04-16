@@ -284,7 +284,7 @@ async def build_agent_context(
                 sa_select(ChannelConfig).where(
                     ChannelConfig.agent_id == agent_id,
                     ChannelConfig.is_configured,
-                )
+                ).order_by(ChannelConfig.channel_type)
             )
             _configured_channels = [c.channel_type for c in _cfgs.scalars().all()]
     except Exception as exc:

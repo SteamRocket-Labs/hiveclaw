@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 import uuid
-from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -281,42 +280,127 @@ def parse_t3_facts(data_root: Path, agent_id: uuid.UUID) -> list[dict]:
 
 
 def search_t3_facts(data_root: Path, agent_id: uuid.UUID, query: str, *, limit: int = 5) -> list[dict]:
-    """Search T3 md files directly with token-frequency scoring."""
+    """Search T3 MD files using BM25 scoring with CJK bigram fallback.
+
+    BM25 parameters (k1=1.5, b=0.75) are standard defaults. The tokenizer
+    uses word-level tokens for Latin text and character bigrams for CJK,
+    matching the dual-path strategy used throughout the memory system.
+    """
     needle = (query or "").strip()
     if not needle:
         return parse_t3_facts(data_root, agent_id)[:limit]
 
-    normalized_query = _normalize_entry_content(needle)
-    query_terms = [term for term in re.split(r"\s+", normalized_query) if term]
-    ranked: list[tuple[int, int, dict]] = []
+    all_facts = parse_t3_facts(data_root, agent_id)
+    if not all_facts:
+        return []
 
-    for index, fact in enumerate(parse_t3_facts(data_root, agent_id)):
-        content = str(fact.get("content", "")).strip()
-        if not content:
-            continue
-        haystack = _normalize_entry_content(content)
-        if normalized_query in haystack:
-            score = 100 + len(query_terms)
-        else:
-            matched_terms = sum(1 for term in query_terms if term in haystack)
-            if matched_terms == 0:
-                continue
-            score = matched_terms * 10
+    # Build corpus + tokenize
+    corpus_tokens: list[list[str]] = []
+    for fact in all_facts:
+        content = str(fact.get("content", ""))
+        # Include category as searchable text
+        category = str(fact.get("category", ""))
+        corpus_tokens.append(_bm25_tokenize(f"{category} {content}"))
 
-        # Prefer facts whose category/subject also overlaps with the query.
-        bonus_source = " ".join(
-            str(fact.get(key, "")).strip().lower()
-            for key in ("category", "subject")
-            if fact.get(key)
-        )
-        if bonus_source:
-            overlap = Counter(query_terms) & Counter(re.split(r"\s+", bonus_source))
-            score += sum(overlap.values()) * 2
+    query_tokens = _bm25_tokenize(needle)
+    if not query_tokens:
+        return all_facts[:limit]
 
-        ranked.append((score, -index, fact))
+    # BM25 scoring
+    scores = _bm25_score(query_tokens, corpus_tokens)
+
+    ranked: list[tuple[float, int, dict]] = []
+    for i, (score, fact) in enumerate(zip(scores, all_facts)):
+        if score > 0:
+            ranked.append((score, -i, fact))
 
     ranked.sort(reverse=True)
     return [fact for _score, _neg_index, fact in ranked[:limit]]
+
+
+# ── BM25 implementation (pure Python, zero dependencies) ──
+
+_CJK_RANGE_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uF900-\uFAFF]")
+
+
+def _bm25_tokenize(text: str) -> list[str]:
+    """Tokenize for BM25: word tokens + CJK character bigrams.
+
+    Latin text is split on non-word boundaries. CJK text is converted to
+    overlapping character bigrams (same strategy as jaccard_similarity).
+    Both are lowercased and merged into one token list.
+    """
+    normalized = _normalize_entry_content(text)
+    if not normalized:
+        return []
+
+    # Word tokens (works for English, numbers, mixed)
+    word_tokens = [t for t in re.split(r"\W+", normalized) if t and len(t) > 1]
+
+    # CJK bigrams
+    cjk_chars = "".join(c for c in normalized if _CJK_RANGE_RE.match(c))
+    bigrams = [cjk_chars[i : i + 2] for i in range(len(cjk_chars) - 1)] if len(cjk_chars) >= 2 else []
+
+    return word_tokens + bigrams
+
+
+def _bm25_score(
+    query_tokens: list[str],
+    corpus_tokens: list[list[str]],
+    *,
+    k1: float = 1.5,
+    b: float = 0.75,
+) -> list[float]:
+    """BM25 scoring for a query against a pre-tokenized corpus.
+
+    Returns one score per document. Standard BM25 with Okapi weighting.
+    """
+    import math
+
+    n = len(corpus_tokens)
+    if n == 0:
+        return []
+
+    # Average document length
+    avg_dl = sum(len(doc) for doc in corpus_tokens) / n
+
+    # Document frequency for each term
+    df: dict[str, int] = {}
+    for doc in corpus_tokens:
+        seen: set[str] = set()
+        for token in doc:
+            if token not in seen:
+                df[token] = df.get(token, 0) + 1
+                seen.add(token)
+
+    # IDF (with +0.5 smoothing to avoid negative values for very common terms)
+    idf: dict[str, float] = {}
+    for term, freq in df.items():
+        idf[term] = math.log((n - freq + 0.5) / (freq + 0.5) + 1.0)
+
+    # Score each document
+    scores: list[float] = []
+    for doc in corpus_tokens:
+        doc_len = len(doc)
+        # Term frequency in this document
+        tf: dict[str, int] = {}
+        for token in doc:
+            tf[token] = tf.get(token, 0) + 1
+
+        score = 0.0
+        for qt in query_tokens:
+            if qt not in tf:
+                continue
+            term_freq = tf[qt]
+            term_idf = idf.get(qt, 0.0)
+            # BM25 TF component
+            numerator = term_freq * (k1 + 1)
+            denominator = term_freq + k1 * (1 - b + b * doc_len / avg_dl)
+            score += term_idf * (numerator / denominator)
+
+        scores.append(score)
+
+    return scores
 
 
 # ── T3 format validator + self-healing (PR-9) ──

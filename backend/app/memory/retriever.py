@@ -11,6 +11,7 @@ import logging
 import re as _re
 import uuid
 from pathlib import Path
+from typing import Any
 
 from app.memory.md_store import extract_entry_lines
 from app.memory.types import MemoryItem, MemoryKind
@@ -211,7 +212,7 @@ class MemoryRetriever:
         """
         items: list[MemoryItem] = []
         items.extend(self._retrieve_working(agent_id) or [])
-        items.extend(self._retrieve_t3_direct(agent_id) or [])
+        items.extend(self._retrieve_t3_direct(agent_id, query=query) or [])
         episodic_limit = retrieval_profile.episodic_limit if retrieval_profile else 3
         external_limit = retrieval_profile.external_limit if retrieval_profile else 5
         del limit  # prompt memory is sourced entirely from T3 markdown files.
@@ -243,26 +244,36 @@ class MemoryRetriever:
 
     # -- T3 Direct layer: memory/*.md files (MD = Source of Truth) --
 
-    # P0 files are always loaded; P1/P2 loaded with lower scores.
-    _T3_FILES: list[tuple[str, str, float]] = [
-        ("memory/feedback.md", "feedback", 0.95),     # P0: user corrections
-        ("memory/blocked.md", "blocked_pattern", 0.95),  # P0: failed approaches
-        ("memory/knowledge.md", "knowledge", 0.80),   # P1: project knowledge
-        ("memory/strategies.md", "strategy", 0.80),   # P1: effective approaches
-        ("memory/user.md", "user", 0.70),             # P2: user profile
+    # P0 files are always loaded at full score (user corrections and failure
+    # patterns must never be dropped by query-aware filtering).
+    # P1/P2 files are scored per-entry by relevance to the current query.
+    _T3_FILES: list[tuple[str, str, float, bool]] = [
+        #  (path, category, base_score, is_p0)
+        ("memory/feedback.md", "feedback", 0.95, True),        # P0
+        ("memory/blocked.md", "blocked_pattern", 0.95, True),  # P0
+        ("memory/knowledge.md", "knowledge", 0.80, False),     # P1
+        ("memory/strategies.md", "strategy", 0.80, False),     # P1
+        ("memory/user.md", "user", 0.70, False),               # P2
     ]
 
-    def _retrieve_t3_direct(self, agent_id: uuid.UUID) -> list[MemoryItem]:
-        """Read T3 memory/*.md files directly — the MD source of truth.
+    def _retrieve_t3_direct(self, agent_id: uuid.UUID, *, query: str = "") -> list[MemoryItem]:
+        """Read T3 memory/*.md files — per-entry granularity with query-aware scoring.
 
-        These files are written by heartbeat (T2→T3 curation) and refined
-        by dream (dedup + soul promotion). Reading them directly ensures
-        the agent always sees the latest curated knowledge.
+        P0 entries (feedback + blocked) are always included at full score.
+        P1/P2 entries are scored by relevance to the current user query so
+        only the most useful knowledge/strategy/user facts occupy prompt space.
+
+        Previously this emitted one MemoryItem per file (all bullets concatenated).
+        Now each bullet is a separate MemoryItem, enabling the assembler's
+        budget trimming to drop individual low-relevance entries instead of
+        losing an entire file.
         """
+        from app.memory.md_store import parse_entry_line
+
         ws = self.data_root / str(agent_id)
         items: list[MemoryItem] = []
 
-        for rel_path, category, base_score in self._T3_FILES:
+        for rel_path, category, base_score, is_p0 in self._T3_FILES:
             fpath = ws / rel_path
             try:
                 content = fpath.read_text(encoding="utf-8").strip()
@@ -272,21 +283,41 @@ class MemoryRetriever:
             if not content:
                 continue
 
-            # Only bullet entries count as curated memory. Template prose is ignored.
             lines = extract_entry_lines(content)
             if not lines:
                 continue
 
-            entry_text = "\n".join(lines)
-            items.append(
-                MemoryItem(
-                    kind=MemoryKind.SEMANTIC,
-                    content=f"[{category}]\n{entry_text}",
-                    score=base_score,
-                    source=rel_path,
-                    metadata={"category": category, "source_type": "t3_direct"},
+            for line in lines:
+                entry_content, timestamp = parse_entry_line(line)
+                if not entry_content:
+                    continue
+
+                if is_p0 or not query:
+                    # P0 entries always at full base_score; no query = load all
+                    score = base_score
+                else:
+                    # P1/P2: score by query relevance × base priority
+                    relevance = _score_relevance(entry_content, query)
+                    # Minimum floor of 0.15 so even low-relevance entries can
+                    # survive if budget allows — prevents total loss of context
+                    score = base_score * max(relevance, 0.15)
+
+                metadata: dict[str, Any] = {
+                    "category": category,
+                    "source_type": "t3_direct",
+                }
+                if timestamp:
+                    metadata["timestamp"] = timestamp
+
+                items.append(
+                    MemoryItem(
+                        kind=MemoryKind.SEMANTIC,
+                        content=f"[{category}] {entry_content}",
+                        score=round(score, 4),
+                        source=rel_path,
+                        metadata=metadata,
+                    )
                 )
-            )
 
         return items
 

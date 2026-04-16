@@ -101,7 +101,13 @@ async def proxy_chat_completions(
 
     # 2. Get API key (auto-decrypted via @property)
     api_key = llm_model.api_key or ""
-    base_url = llm_model.base_url or "https://api.openai.com/v1"
+    base_url = llm_model.base_url
+    if not base_url:
+        from app.services.llm_client import get_provider_spec
+        spec = get_provider_spec(llm_model.provider or "")
+        base_url = spec.default_base_url if spec else None
+    if not base_url:
+        raise HTTPException(400, f"Model '{model_id}' has no base_url and provider '{llm_model.provider}' has no default")
 
     # 3. Build upstream request
     headers = {

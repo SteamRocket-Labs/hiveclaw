@@ -1381,15 +1381,15 @@ class AnthropicClient(LLMClient):
         }
 
     def _get_anthropic_max_tokens(self) -> int:
-        """Model-aware max_tokens default for Anthropic models."""
-        model_lower = (self.model or "").lower()
-        if "opus" in model_lower:
-            return 16384
-        if "sonnet" in model_lower:
-            return 16384
-        if "haiku" in model_lower:
-            return 8192
-        return 16384  # Default to higher limit for unknown/future models
+        """Model-aware max_tokens default — reads from ProviderSpec first."""
+        spec = get_provider_spec("anthropic")
+        if spec:
+            # Check model-specific override in spec.model_max_tokens
+            model_key = (self.model or "").strip()
+            if model_key in spec.model_max_tokens:
+                return spec.model_max_tokens[model_key]
+            return spec.default_max_tokens
+        return 16384
 
     def _build_payload(
         self,
@@ -1683,7 +1683,12 @@ class AnthropicClient(LLMClient):
 
 @dataclass(frozen=True)
 class ProviderSpec:
-    """Provider registry entry."""
+    """Provider registry entry — single source of truth for provider capabilities.
+
+    Every provider-specific behavior should be driven by a field here,
+    not by name-matching in business logic. New providers only need to
+    add an entry to PROVIDER_REGISTRY below.
+    """
 
     provider: str
     display_name: str
@@ -1693,6 +1698,14 @@ class ProviderSpec:
     default_max_tokens: int = 8192
     max_input_tokens: int = 256000
     model_max_tokens: dict[str, int] = field(default_factory=dict)
+    # Prompt caching: does the API accept cache_control content blocks?
+    supports_cache_control: bool = False
+    # Token counting: some providers use "completion_tokens" instead of "output_tokens"
+    use_completion_tokens: bool = False
+    # Token estimation: average characters per token for this provider's tokenizer
+    chars_per_token: float = 3.5
+    # Cost tier hint: "cheap" / "standard" / "premium" (used by context_budget)
+    cost_tier: str = "standard"
 
 
 # Provider aliases accepted for compatibility
@@ -1712,6 +1725,8 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         supports_tool_choice=False,
         default_max_tokens=8192,
         max_input_tokens=200000,
+        supports_cache_control=True,
+        chars_per_token=3.5,
     ),
     "openai": ProviderSpec(
         provider="openai",
@@ -1720,6 +1735,8 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         default_base_url="https://api.openai.com/v1",
         default_max_tokens=16384,
         max_input_tokens=128000,
+        use_completion_tokens=True,
+        chars_per_token=4.0,
     ),
     "openai-response": ProviderSpec(
         provider="openai-response",
@@ -1728,6 +1745,8 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         default_base_url="https://api.openai.com/v1",
         default_max_tokens=16384,
         max_input_tokens=128000,
+        use_completion_tokens=True,
+        chars_per_token=4.0,
     ),
     "azure": ProviderSpec(
         provider="azure",
@@ -1736,6 +1755,8 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         default_base_url=None,
         default_max_tokens=16384,
         max_input_tokens=128000,
+        use_completion_tokens=True,
+        chars_per_token=4.0,
     ),
     "deepseek": ProviderSpec(
         provider="deepseek",
@@ -1744,6 +1765,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         default_base_url="https://api.deepseek.com/v1",
         default_max_tokens=8192,
         max_input_tokens=64000,
+        chars_per_token=3.3,
     ),
     "qwen": ProviderSpec(
         provider="qwen",
@@ -1752,6 +1774,8 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         default_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         default_max_tokens=8192,
         max_input_tokens=131072,
+        supports_cache_control=True,
+        chars_per_token=3.3,
         model_max_tokens={
             "qwen-plus": 16384,
             "qwen-long": 16384,
@@ -1766,6 +1790,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         default_base_url="https://api.minimaxi.com/v1",
         default_max_tokens=16384,
         max_input_tokens=204800,
+        supports_cache_control=True,
     ),
     "openrouter": ProviderSpec(
         provider="openrouter",
@@ -1790,6 +1815,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         default_base_url="https://generativelanguage.googleapis.com/v1beta",
         default_max_tokens=8192,
         max_input_tokens=1048576,
+        chars_per_token=3.8,
     ),
     "kimi": ProviderSpec(
         provider="kimi",
@@ -2000,7 +2026,7 @@ def create_llm_client(
             model=model,
             timeout=timeout,
             supports_tool_choice=supports_tool_choice,
-            use_completion_tokens=normalized_provider in ("openai", "azure"),
+            use_completion_tokens=spec.use_completion_tokens if spec else False,
         )
     else:
         # Default to OpenAI-compatible for unknown providers

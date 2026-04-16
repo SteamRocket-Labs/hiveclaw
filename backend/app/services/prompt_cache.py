@@ -71,27 +71,22 @@ class CacheMetrics:
 # This is the only provider-name check in the entire module, and it
 # defaults to False for any unknown provider (safe passthrough).
 
-# Providers whose API accepts cache_control in content blocks.
-# Add new providers here ONLY if they adopt the same content-block
-# cache_control protocol. Most providers use automatic prefix caching
-# and don't need explicit markers.
-#
-# Verified as of 2026-04:
-#   anthropic/claude — original cache_control protocol, 5min/1h TTL
-#   qwen/dashscope  — Anthropic-compatible cache_control, 5min TTL, min 1024 tokens
-#   minimax         — Anthropic-compatible cache_control via their SDK, min 512 tokens
-_CACHE_CONTROL_PROVIDERS = frozenset({"anthropic", "claude", "qwen", "dashscope", "minimax"})
-
-
 def _supports_cache_control(provider: str) -> bool:
     """Does this provider's API accept cache_control markers in content blocks?
 
-    Returns False for any unknown provider — safe default because:
-    - Most providers ignore unknown fields (no harm)
-    - Or they use automatic prefix caching (no markers needed)
+    Reads the `supports_cache_control` flag from ProviderSpec (PROVIDER_REGISTRY).
+    Returns False for any unknown provider — safe default because most providers
+    use automatic prefix caching and don't need explicit markers.
     """
-    p = (provider or "").lower().strip()
-    return any(keyword in p for keyword in _CACHE_CONTROL_PROVIDERS)
+    try:
+        from app.services.llm_client import get_provider_spec
+
+        spec = get_provider_spec(provider)
+        if spec is not None:
+            return spec.supports_cache_control
+    except Exception:
+        pass
+    return False
 
 
 # ── Hint injection ──────────────────────────────────────────────

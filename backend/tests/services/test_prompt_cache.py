@@ -22,13 +22,10 @@ class TestCapabilityDetection:
 
     def test_anthropic_supported(self):
         assert _supports_cache_control("anthropic") is True
-        assert _supports_cache_control("claude-3.5-sonnet") is True
 
     def test_qwen_supported(self):
-        """Qwen/DashScope supports Anthropic-style cache_control markers."""
+        """Qwen supports cache_control via ProviderSpec.supports_cache_control."""
         assert _supports_cache_control("qwen") is True
-        assert _supports_cache_control("dashscope") is True
-        assert _supports_cache_control("qwen-max") is True
 
     def test_minimax_supported(self):
         """MiniMax supports cache_control via Anthropic-compatible SDK."""

@@ -145,9 +145,10 @@ _MCP_EXTENSION_HINTS = (
 _FILE_EXTENSION_HINTS = (".py", ".ts", ".tsx", ".js")
 _FILE_EXTENSION_PATTERN = re.compile(r"\b[\w./-]+\.(?:py|ts|tsx|js)\b")
 _URL_PATTERN = re.compile(r"https?://|www\.", re.IGNORECASE)
+# Generic naming conventions that signal a cheaper/smaller model across
+# providers. These are cross-vendor patterns, not provider-specific names.
 _CHEAP_MODEL_HINTS = (
     "mini",
-    "haiku",
     "flash",
     "nano",
     "lite",
@@ -202,6 +203,18 @@ def _cheap_model_signal_score(model: object | None) -> int:
     max_input_tokens = getattr(model, "max_input_tokens", None)
     if isinstance(max_input_tokens, int) and 0 < max_input_tokens <= 64000:
         score += 1
+
+    # Check ProviderSpec.cost_tier if available (no name-matching needed)
+    provider = str(getattr(model, "provider", "") or "").strip()
+    if provider:
+        try:
+            from app.services.llm_client import get_provider_spec
+
+            spec = get_provider_spec(provider)
+            if spec and spec.cost_tier == "cheap":
+                score += 2
+        except Exception:
+            pass
     return score
 
 

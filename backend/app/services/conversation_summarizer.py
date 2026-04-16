@@ -5,24 +5,35 @@ import re
 
 logger = logging.getLogger(__name__)
 
-# Provider-specific chars-per-token estimates (tuned for mixed CJK/English)
-_CHARS_PER_TOKEN_BY_PROVIDER: dict[str, float] = {
-    "anthropic": 3.5,
-    "openai": 4.0,
-    "azure_openai": 4.0,
-    "deepseek": 3.3,
-    "qwen": 3.3,
-    "gemini": 3.8,
-}
-CHARS_PER_TOKEN = 3.5  # default fallback
+# Default fallback when ProviderSpec is unavailable
+CHARS_PER_TOKEN = 3.5
+
+
+def _get_chars_per_token(provider: str) -> float:
+    """Read chars_per_token from ProviderSpec (PROVIDER_REGISTRY).
+
+    Falls back to CHARS_PER_TOKEN constant for unknown providers.
+    No hardcoded provider names — all values live in the registry.
+    """
+    if not provider:
+        return CHARS_PER_TOKEN
+    try:
+        from app.services.llm_client import get_provider_spec
+
+        spec = get_provider_spec(provider)
+        if spec is not None:
+            return spec.chars_per_token
+    except Exception:
+        pass
+    return CHARS_PER_TOKEN
 
 
 def estimate_tokens(messages: list[dict], *, provider: str = "") -> int:
     """Estimate total tokens across all messages.
 
-    Uses provider-specific chars-per-token ratios for better accuracy.
+    Uses ProviderSpec.chars_per_token for better accuracy per provider.
     """
-    cpt = _CHARS_PER_TOKEN_BY_PROVIDER.get(provider.lower(), CHARS_PER_TOKEN) if provider else CHARS_PER_TOKEN
+    cpt = _get_chars_per_token(provider)
     total_chars = 0
     for msg in messages:
         content = msg.get("content")

@@ -1,6 +1,7 @@
 """Agent lifecycle manager — Docker container management for OpenClaw Gateway instances."""
 
 import json
+import os
 import shutil
 import uuid
 from datetime import datetime, timezone
@@ -392,7 +393,7 @@ class AgentManager:
         """Generate openclaw.json config for the agent container."""
         config = {
             "agent": {
-                "model": f"{model.provider}/{model.model}" if model else "anthropic/claude-sonnet-4-5",
+                "model": f"{model.provider}/{model.model}" if model else os.environ.get("FALLBACK_MODEL", "openai/gpt-4.1"),
             },
             "agents": {
                 "defaults": {

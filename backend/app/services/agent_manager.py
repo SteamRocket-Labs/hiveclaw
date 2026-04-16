@@ -389,11 +389,32 @@ class AgentManager:
                 fp.write_text(sf.content, encoding="utf-8")
             logger.info(f"[AgentManager] Pushed skill '{skill.name}' to agent {agent_id}")
 
+    async def _resolve_fallback_model_string(self, agent: Agent) -> str:
+        """Resolve a model string from the tenant's first available LLM — no hardcoded provider."""
+        try:
+            from app.database import async_session as _async_session
+            from app.models.llm import LLMModel as LLMModelDB
+
+            async with _async_session() as db:
+                result = await db.execute(
+                    select(LLMModelDB).where(
+                        LLMModelDB.tenant_id == agent.tenant_id,
+                        LLMModelDB.enabled.is_(True),
+                    ).limit(1)
+                )
+                fallback = result.scalar_one_or_none()
+                if fallback:
+                    return f"{fallback.provider}/{fallback.model}"
+        except Exception as exc:
+            logger.debug("[AgentManager] Fallback model lookup failed: %s", exc)
+        # Last resort: env var with no built-in default — admin must configure
+        return os.environ.get("FALLBACK_MODEL", "")
+
     def _generate_openclaw_config(self, agent: Agent, model: LLMModel | None) -> dict:
         """Generate openclaw.json config for the agent container."""
         config = {
             "agent": {
-                "model": f"{model.provider}/{model.model}" if model else os.environ.get("FALLBACK_MODEL", "openai/gpt-4.1"),
+                "model": f"{model.provider}/{model.model}" if model else "",
             },
             "agents": {
                 "defaults": {
@@ -436,8 +457,18 @@ class AgentManager:
             )
             model = result.scalar_one_or_none()
 
+        # Resolve model — if agent has no primary model, look up tenant's first available
+        if not model:
+            fallback_str = await self._resolve_fallback_model_string(agent)
+            if fallback_str:
+                logger.info("[AgentManager] Agent %s has no primary model — using tenant fallback: %s", agent.id, fallback_str)
+
         # Generate OpenClaw config
         config = self._generate_openclaw_config(agent, model)
+        if not config["agent"]["model"] and not model:
+            # Inject the resolved fallback directly
+            fallback_str = await self._resolve_fallback_model_string(agent)
+            config["agent"]["model"] = fallback_str
         config_dir = agent_dir / ".openclaw"
         config_dir.mkdir(parents=True, exist_ok=True)
         (config_dir / "openclaw.json").write_text(json.dumps(config, indent=2))

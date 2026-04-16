@@ -199,9 +199,11 @@ def _apply_vision_transform(api_messages: list[LLMMessage], supports_vision: boo
     return api_messages
 
 
-def _apply_cache_hints(api_messages: list[LLMMessage], provider: str) -> list[LLMMessage]:
-    """Apply provider-specific prompt cache hints (e.g., Anthropic prefix caching)."""
-    return apply_prompt_cache_hints(api_messages, provider)
+def _apply_cache_hints(api_messages: list[LLMMessage], provider: str, execution_mode: str = "conversation") -> list[LLMMessage]:
+    """Apply provider-specific prompt cache hints (Anthropic, OpenAI, DeepSeek, Gemini, etc.)."""
+    from app.services.prompt_cache import apply_cache_hints
+
+    return apply_cache_hints(api_messages, provider, execution_mode=execution_mode)
 
 
 async def _build_system_prompt(

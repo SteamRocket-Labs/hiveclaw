@@ -94,7 +94,7 @@ GetMaxTokens = Callable[[str, str, int | None], int]
 ExtractUsageTokens = Callable[[dict | None], int | None]
 EstimateTokensFromChars = Callable[[int], int]
 ApplyVisionTransform = Callable[[list[LLMMessage], bool], list[LLMMessage]]
-ApplyCacheHints = Callable[[list[LLMMessage], str], list[LLMMessage]]
+ApplyCacheHints = Callable[[list[LLMMessage], str, str], list[LLMMessage]]  # (messages, provider, execution_mode)
 
 
 @dataclass(slots=True)
@@ -1051,7 +1051,9 @@ class AgentKernel:
                             )
                         if self._deps.apply_cache_hints:
                             stream_messages = self._deps.apply_cache_hints(
-                                stream_messages, getattr(active_model, "provider", "")
+                                stream_messages,
+                                getattr(active_model, "provider", ""),
+                                request.execution_mode or "conversation",
                             )
 
                         try:

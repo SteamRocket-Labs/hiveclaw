@@ -2109,65 +2109,11 @@ async def chat_stream(
 
 
 def apply_prompt_cache_hints(messages: list[LLMMessage], provider: str) -> list[LLMMessage]:
-    """Inject provider-specific cache control hints into messages.
+    """Backward-compatible wrapper — delegates to the provider-agnostic prompt_cache module.
 
-    For Anthropic: splits the system prompt at __PROMPT_DYNAMIC_BOUNDARY__ into
-    two content blocks — the frozen prefix gets cache_control (stable across rounds),
-    the dynamic suffix does not (changes per round).  This enables prefix caching
-    (~75% cost reduction) on the stable portion of the system prompt.
-
-    Also marks the last 3 user/assistant messages with cache_control.
-
-    For other providers: returns messages unchanged (no-op).
+    New callers should use `app.services.prompt_cache.apply_cache_hints` directly,
+    which accepts an `execution_mode` parameter for TTL optimization.
     """
-    if "anthropic" not in provider.lower() and "claude" not in provider.lower():
-        return messages
+    from app.services.prompt_cache import apply_cache_hints
 
-    from app.runtime.prompt_builder import PROMPT_CACHE_BOUNDARY
-
-    result = list(messages)
-
-    # Split system message at cache boundary into frozen (cached) + dynamic (volatile)
-    for i, msg in enumerate(result):
-        if msg.role == "system" and msg.content and isinstance(msg.content, str):
-            if PROMPT_CACHE_BOUNDARY.strip() in msg.content:
-                parts = msg.content.split(PROMPT_CACHE_BOUNDARY.strip(), 1)
-                frozen_text = parts[0].strip()
-                dynamic_text = parts[1].strip() if len(parts) > 1 else ""
-                blocks: list[dict] = [
-                    {"type": "text", "text": frozen_text, "cache_control": {"type": "ephemeral"}},
-                ]
-                if dynamic_text:
-                    blocks.append({"type": "text", "text": dynamic_text})
-                result[i] = LLMMessage(
-                    role=msg.role,
-                    content=blocks,
-                    tool_calls=msg.tool_calls,
-                    tool_call_id=msg.tool_call_id,
-                    reasoning_content=msg.reasoning_content,
-                )
-            else:
-                # No boundary marker — cache entire system message
-                result[i] = LLMMessage(
-                    role=msg.role,
-                    content=[{"type": "text", "text": msg.content, "cache_control": {"type": "ephemeral"}}],
-                    tool_calls=msg.tool_calls,
-                    tool_call_id=msg.tool_call_id,
-                    reasoning_content=msg.reasoning_content,
-                )
-            break
-
-    # Mark last 3 non-system messages with cache_control
-    non_system_indices = [i for i, m in enumerate(result) if m.role != "system"]
-    for idx in non_system_indices[-3:]:
-        msg = result[idx]
-        if msg.content and isinstance(msg.content, str):
-            result[idx] = LLMMessage(
-                role=msg.role,
-                content=[{"type": "text", "text": msg.content, "cache_control": {"type": "ephemeral"}}],
-                tool_calls=msg.tool_calls,
-                tool_call_id=msg.tool_call_id,
-                reasoning_content=msg.reasoning_content,
-            )
-
-    return result
+    return apply_cache_hints(messages, provider, execution_mode="conversation")

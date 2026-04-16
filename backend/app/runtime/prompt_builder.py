@@ -21,10 +21,10 @@ from app.services.knowledge_inject import fetch_relevant_knowledge
 BuildAgentContextFn = Callable[[uuid.UUID | None, str, str, str | None], Awaitable[str]]
 KnowledgeLookupFn = Callable[[str, uuid.UUID | None], Awaitable[str] | str]
 
-# Boundary marker between frozen (cacheable) and dynamic (volatile) prompt sections.
-# apply_prompt_cache_hints() in llm_client splits at this marker to create two
-# content blocks: frozen gets cache_control, dynamic does not.
-PROMPT_CACHE_BOUNDARY = "__PROMPT_DYNAMIC_BOUNDARY__"
+# Re-export the cache boundary marker from the provider-agnostic prompt_cache
+# module. The prompt assembler inserts it between frozen and dynamic sections;
+# apply_cache_hints() splits on it per provider.
+from app.services.prompt_cache import PROMPT_CACHE_BOUNDARY  # noqa: F401
 
 # Default fallbacks when no task-aware budget profile is provided.
 _ACTIVE_PACKS_CHAR_BUDGET = 2000

@@ -24,12 +24,24 @@ class TestCapabilityDetection:
         assert _supports_cache_control("anthropic") is True
         assert _supports_cache_control("claude-3.5-sonnet") is True
 
-    def test_other_providers_not_supported(self):
-        for p in ("openai", "deepseek", "gemini", "minimax", "zhipu", "mistral", "qwen", "llama", ""):
-            assert _supports_cache_control(p) is False, f"{p} should not support cache_control"
+    def test_qwen_supported(self):
+        """Qwen/DashScope supports Anthropic-style cache_control markers."""
+        assert _supports_cache_control("qwen") is True
+        assert _supports_cache_control("dashscope") is True
+        assert _supports_cache_control("qwen-max") is True
+
+    def test_minimax_supported(self):
+        """MiniMax supports cache_control via Anthropic-compatible SDK."""
+        assert _supports_cache_control("minimax") is True
+
+    def test_auto_cache_providers_no_markers(self):
+        """Providers with automatic caching do NOT need explicit markers."""
+        for p in ("openai", "deepseek", "gemini", "zhipu", "kimi", "moonshot"):
+            assert _supports_cache_control(p) is False, f"{p} should not need cache_control markers"
 
     def test_unknown_provider_safe_default(self):
         assert _supports_cache_control("totally-new-provider-2027") is False
+        assert _supports_cache_control("") is False
 
 
 class TestHintInjection:
@@ -138,6 +150,53 @@ class TestUniversalMetricsProbe:
         )
         assert m.cache_hit is True
         assert m.cache_read_tokens == 500
+
+    def test_zhipu_glm_format(self):
+        """Zhipu GLM uses OpenAI-compatible prompt_tokens_details.cached_tokens."""
+        m = extract_cache_metrics(
+            {"prompt_tokens": 800, "prompt_tokens_details": {"cached_tokens": 500}},
+            "zhipu/glm-5",
+        )
+        assert m.cache_hit is True
+        assert m.cache_read_tokens == 500
+
+    def test_kimi_top_level_cached_tokens(self):
+        """Kimi reports cached_tokens at top level (some models)."""
+        m = extract_cache_metrics(
+            {"prompt_tokens": 600, "cached_tokens": 450},
+            "kimi-k2.5",
+        )
+        assert m.cache_hit is True
+        assert m.cache_read_tokens == 450
+
+    def test_qwen_nested_write_tokens(self):
+        """Qwen reports cache_creation_input_tokens nested in prompt_tokens_details."""
+        m = extract_cache_metrics(
+            {"prompt_tokens": 1000, "prompt_tokens_details": {"cached_tokens": 700, "cache_creation_input_tokens": 200}},
+            "qwen-max",
+        )
+        assert m.cache_hit is True
+        assert m.cache_read_tokens == 700
+        assert m.cache_write_tokens == 200
+
+    def test_minimax_anthropic_compat_format(self):
+        """MiniMax in Anthropic-compat mode uses cache_read_input_tokens."""
+        m = extract_cache_metrics(
+            {"input_tokens": 900, "cache_read_input_tokens": 700, "cache_creation_input_tokens": 100},
+            "minimax",
+        )
+        assert m.cache_hit is True
+        assert m.cache_read_tokens == 700
+        assert m.cache_write_tokens == 100
+
+    def test_minimax_openai_compat_format(self):
+        """MiniMax in OpenAI-compat mode uses prompt_tokens_details.cached_tokens."""
+        m = extract_cache_metrics(
+            {"prompt_tokens": 800, "prompt_tokens_details": {"cached_tokens": 600}},
+            "minimax",
+        )
+        assert m.cache_hit is True
+        assert m.cache_read_tokens == 600
 
     def test_unknown_provider_with_standard_fields(self):
         """A brand-new provider using OpenAI-compatible fields should work."""

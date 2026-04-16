@@ -73,9 +73,14 @@ class CacheMetrics:
 
 # Providers whose API accepts cache_control in content blocks.
 # Add new providers here ONLY if they adopt the same content-block
-# cache_control protocol. Most providers (OpenAI, DeepSeek, Gemini,
-# Mistral, Qwen, etc.) use automatic caching and don't need this.
-_CACHE_CONTROL_PROVIDERS = frozenset({"anthropic", "claude"})
+# cache_control protocol. Most providers use automatic prefix caching
+# and don't need explicit markers.
+#
+# Verified as of 2026-04:
+#   anthropic/claude — original cache_control protocol, 5min/1h TTL
+#   qwen/dashscope  — Anthropic-compatible cache_control, 5min TTL, min 1024 tokens
+#   minimax         — Anthropic-compatible cache_control via their SDK, min 512 tokens
+_CACHE_CONTROL_PROVIDERS = frozenset({"anthropic", "claude", "qwen", "dashscope", "minimax"})
 
 
 def _supports_cache_control(provider: str) -> bool:
@@ -198,16 +203,26 @@ def _clone_msg(msg, **overrides):
 # from every provider we've ever seen. A new provider that uses ANY
 # of these field names gets metrics extracted automatically.
 #
-# Known fields (as of 2026-04):
-#   cache_read_input_tokens     — Anthropic
-#   cache_creation_input_tokens — Anthropic
-#   prompt_cache_hit_tokens     — DeepSeek
-#   prompt_cache_miss_tokens    — DeepSeek
-#   prompt_tokens_details.cached_tokens — OpenAI
-#   cachedContentTokenCount     — Gemini
-#   input_tokens                — Anthropic, generic
-#   prompt_tokens               — OpenAI, DeepSeek, generic
-#   promptTokenCount            — Gemini
+# Known cache-related usage fields (as of 2026-04):
+#
+# Cache read:
+#   cache_read_input_tokens                  — Anthropic
+#   prompt_tokens_details.cached_tokens      — OpenAI, Zhipu GLM, MiniMax (OAI-compat), Kimi
+#   cached_tokens (top-level)                — Kimi (some models)
+#   prompt_cache_hit_tokens                  — DeepSeek
+#   cachedContentTokenCount                  — Gemini
+#
+# Cache write:
+#   cache_creation_input_tokens              — Anthropic, MiniMax (Anthropic-compat)
+#   prompt_tokens_details.cache_creation_input_tokens — Qwen/DashScope
+#
+# Total input:
+#   input_tokens                             — Anthropic, generic
+#   prompt_tokens                            — OpenAI, DeepSeek, generic
+#   promptTokenCount                         — Gemini
+#
+# Cache miss (DeepSeek-specific):
+#   prompt_cache_miss_tokens                 — DeepSeek
 
 def _probe_int(usage: dict, *keys: str) -> int:
     """Try multiple keys in order, return the first non-zero int found."""
@@ -234,20 +249,22 @@ def extract_cache_metrics(usage: dict | None, provider: str = "") -> CacheMetric
     metrics = CacheMetrics(provider=provider)
 
     # ── Cache read tokens (from any source) ──
-    # Try nested OpenAI format first, then flat fields
+    # Merge nested prompt_tokens_details into flat dict so both paths
+    # are probed in one pass.
     details = usage.get("prompt_tokens_details") or {}
+    merged = {**usage, **details}
     metrics.cache_read_tokens = _probe_int(
-        {**usage, **details},
-        "cache_read_input_tokens",     # Anthropic
-        "cached_tokens",               # OpenAI (nested in prompt_tokens_details)
+        merged,
+        "cache_read_input_tokens",     # Anthropic, MiniMax (Anthropic-compat)
+        "cached_tokens",               # OpenAI, Zhipu GLM, MiniMax (OAI), Kimi
         "prompt_cache_hit_tokens",     # DeepSeek
         "cachedContentTokenCount",     # Gemini
     )
 
     # ── Cache write tokens ──
     metrics.cache_write_tokens = _probe_int(
-        usage,
-        "cache_creation_input_tokens",  # Anthropic
+        merged,
+        "cache_creation_input_tokens",  # Anthropic, MiniMax, Qwen (may be nested)
     )
 
     # ── Total input tokens ──

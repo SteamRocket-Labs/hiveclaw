@@ -33,11 +33,13 @@ class ToolAuditReport:
     covered_by_skill: frozenset[str] = field(default_factory=frozenset)
     covered_by_prompt: frozenset[str] = field(default_factory=frozenset)
     orphans: frozenset[str] = field(default_factory=frozenset)
+    unregistered_system_skill_dirs: frozenset[str] = field(default_factory=frozenset)
 
     def as_dict(self) -> dict:
         return {
             "total_tools": self.total_tools,
             "orphans": sorted(self.orphans),
+            "unregistered_system_skill_dirs": sorted(self.unregistered_system_skill_dirs),
             "covered_by_pack_only": sorted(
                 self.covered_by_pack - self.covered_by_skill - self.covered_by_prompt
             ),
@@ -57,23 +59,35 @@ def _pack_tools() -> frozenset[str]:
 
 
 def _template_skill_declared_tools(backend_root: Path | None = None) -> frozenset[str]:
+    """Aggregate declared_tools across every SKILL.md that ships with the backend.
+
+    Includes templates/ (general / system) AND every `*_agent_template/skills/`
+    directory so agent-specific skills (e.g. HR agent's hr-guide) are counted
+    as live coverage, not mislabelled as orphans.
+    """
     from app.skills import SkillParser
 
     if backend_root is None:
         backend_root = Path(__file__).resolve().parents[2]
-    templates_root = backend_root / "app" / "templates"
+
+    roots: list[Path] = [backend_root / "app" / "templates"]
+    for tpl_dir in backend_root.glob("*_agent_template"):
+        skills_dir = tpl_dir / "skills"
+        if skills_dir.is_dir():
+            roots.append(skills_dir)
 
     parser = SkillParser()
     declared: set[str] = set()
-    for skill_md in templates_root.rglob("SKILL.md"):
-        try:
-            parsed = parser.parse_file(skill_md, relative_path=skill_md.as_posix())
-        except Exception as exc:
-            logger.debug("[tool-audit] failed to parse %s: %s", skill_md, exc)
-            continue
-        for tool_name in parsed.metadata.declared_tools or ():
-            if tool_name:
-                declared.add(tool_name)
+    for root in roots:
+        for skill_md in root.rglob("SKILL.md"):
+            try:
+                parsed = parser.parse_file(skill_md, relative_path=skill_md.as_posix())
+            except Exception as exc:
+                logger.debug("[tool-audit] failed to parse %s: %s", skill_md, exc)
+                continue
+            for tool_name in parsed.metadata.declared_tools or ():
+                if tool_name:
+                    declared.add(tool_name)
     return frozenset(declared)
 
 
@@ -91,6 +105,27 @@ def _prompt_section_mentions(
             logger.debug("[tool-audit] failed to read %s: %s", py_file, exc)
     joined = "\n".join(texts)
     return frozenset(name for name in tool_names if name in joined)
+
+
+def _unregistered_system_skill_dirs(backend_root: Path | None = None) -> frozenset[str]:
+    """SKILL.md files under templates/system_skills/ whose folder is not in
+    BUILTIN_SKILLS — they sit on disk but the seeder will never load them
+    into the DB, so agents never see them in their skill catalog."""
+    if backend_root is None:
+        backend_root = Path(__file__).resolve().parents[2]
+    sys_skills_root = backend_root / "app" / "templates" / "system_skills"
+    if not sys_skills_root.is_dir():
+        return frozenset()
+
+    try:
+        from app.services.skill_seeder import BUILTIN_SKILLS
+    except Exception as exc:
+        logger.debug("[tool-audit] cannot load BUILTIN_SKILLS: %s", exc)
+        return frozenset()
+
+    registered = {s["folder_name"] for s in BUILTIN_SKILLS}
+    on_disk = {p.parent.name for p in sys_skills_root.glob("*/SKILL.md")}
+    return frozenset(on_disk - registered)
 
 
 def audit_tool_coverage(*, backend_root: Path | None = None) -> ToolAuditReport:
@@ -113,6 +148,7 @@ def audit_tool_coverage(*, backend_root: Path | None = None) -> ToolAuditReport:
         covered_by_skill=covered_skill,
         covered_by_prompt=covered_prompt,
         orphans=orphans,
+        unregistered_system_skill_dirs=_unregistered_system_skill_dirs(backend_root),
     )
 
 
@@ -135,5 +171,12 @@ def run_startup_audit() -> ToolAuditReport:
         logger.info(
             "[tool-audit] All %d tools have at least one discovery path (pack / skill / prompt).",
             report.total_tools,
+        )
+    if report.unregistered_system_skill_dirs:
+        logger.warning(
+            "[tool-audit] %d SKILL.md folder(s) under templates/system_skills/ are NOT in BUILTIN_SKILLS — "
+            "they will never be seeded to the DB nor pushed to agent workspaces: %s",
+            len(report.unregistered_system_skill_dirs),
+            sorted(report.unregistered_system_skill_dirs),
         )
     return report

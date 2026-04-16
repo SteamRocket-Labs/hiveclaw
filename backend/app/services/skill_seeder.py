@@ -291,6 +291,33 @@ Plan would be:
         "files": [],  # populated at runtime from templates/system_skills/
     },
     {
+        "name": "Memory Guide",
+        "description": "Authoritative rules for save_memory / search_memory — categories, T3 routing, escape-hatch conditions",
+        "category": "system",
+        "icon": "🧠",
+        "folder_name": "memory-guide",
+        "is_default": True,
+        "files": [],  # populated at runtime from templates/system_skills/
+    },
+    {
+        "name": "Messaging Guide",
+        "description": "Decision tree for delivering messages, files, images to humans across channels — which transport, when",
+        "category": "system",
+        "icon": "💬",
+        "folder_name": "messaging-guide",
+        "is_default": True,
+        "files": [],  # populated at runtime from templates/system_skills/
+    },
+    {
+        "name": "Delegation Guide",
+        "description": "Multi-agent delegation decisions, instruction quality, and async task lifecycle",
+        "category": "system",
+        "icon": "🤝",
+        "folder_name": "delegation-guide",
+        "is_default": True,
+        "files": [],  # populated at runtime from templates/system_skills/
+    },
+    {
         "name": "DingTalk Integration",
         "description": "DingTalk channel conversation behavior guide",
         "category": "system_integration",
@@ -389,6 +416,7 @@ async def seed_skills():
             "workspace-guide", "trigger-guide", "web-research",
             "feishu-integration", "plaza-guide", "email-guide",
             "dingtalk-integration", "atlassian-rovo",
+            "memory-guide", "messaging-guide", "delegation-guide",
         ) and not s["files"]:
             _sys_skills_dir = Path(__file__).parent.parent / "templates" / "system_skills"
             skill_dir = _sys_skills_dir / s["folder_name"]

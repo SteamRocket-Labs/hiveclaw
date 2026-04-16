@@ -10,9 +10,6 @@ better results:
   - Search by name/content: use file search tools instead of find/grep
 - For internet lookup, `load_skill` for the matching research workflow first, then use `web_search`. \
 Use `web_fetch` when you already have a specific URL.
-- Before sending messages to humans via `send_channel_message`, `send_web_message`, `send_channel_file`, \
-`upload_image`, or using `get_current_time`, load the **Messaging Guide** skill for the decision tree \
-on which transport to use.
 - Call multiple tools in parallel when they are independent — don't serialize unnecessarily.
 - Break complex tasks into focused tool calls. Verify outcomes before proceeding.
 - Use `load_skill` to access full skill instructions when a task matches a skill name — \

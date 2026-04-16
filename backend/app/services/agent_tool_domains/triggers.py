@@ -365,6 +365,14 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                 trigger.reason = new_reason
                 changes.append("reason updated")
 
+            # Refresh reply_context if called from a channel session —
+            # fixes triggers created before unified-delivery that have
+            # reply_context=NULL and thus can't deliver back to the channel.
+            fresh_ctx = _capture_reply_context()
+            if fresh_ctx and fresh_ctx.get("channel"):
+                trigger.reply_context = fresh_ctx
+                changes.append(f"reply_context refreshed ({fresh_ctx.get('channel')})")
+
             await db.commit()
 
         try:

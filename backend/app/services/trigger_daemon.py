@@ -92,6 +92,128 @@ _webhook_hits: dict[str, list[float]] = {}
 WEBHOOK_RATE_LIMIT = 5   # max hits per minute per token
 
 
+# ── Reply target recovery for pre-unified triggers ──────────────────
+
+async def _recover_reply_target_from_session(
+    agent_id: uuid.UUID,
+    triggers: list,
+) -> dict | None:
+    """Try to recover a channel delivery target for triggers that have
+    reply_context=NULL (created before the unified-delivery refactor).
+
+    Strategy: find the agent's most recent non-web ChatSession that has
+    a delivery_target_json with a "channel" key. This is a best-effort
+    heuristic — it picks the last channel the user talked to this agent on.
+    """
+    from app.models.chat_session import ChatSession
+
+    try:
+        async with async_session() as db:
+            result = await db.execute(
+                select(ChatSession)
+                .where(
+                    ChatSession.agent_id == agent_id,
+                    ChatSession.source_channel != "web",
+                    ChatSession.source_channel != "agent",
+                    ChatSession.delivery_target_json.isnot(None),
+                )
+                .order_by(ChatSession.last_message_at.desc().nullslast())
+                .limit(1)
+            )
+            session = result.scalar_one_or_none()
+            if not session or not session.delivery_target_json:
+                return None
+
+            target = dict(session.delivery_target_json)
+            if not target.get("channel"):
+                return None
+
+            # Persist the recovered context back to the trigger so this
+            # fallback only runs once per trigger.
+            for trigger in triggers:
+                if getattr(trigger, "reply_context", None) is None:
+                    try:
+                        trigger_r = await db.execute(
+                            select(AgentTrigger).where(AgentTrigger.id == trigger.id)
+                        )
+                        t_obj = trigger_r.scalar_one_or_none()
+                        if t_obj:
+                            t_obj.reply_context = target
+                    except Exception:
+                        pass
+            await db.commit()
+            return target
+    except Exception as exc:
+        logger.debug("[TriggerDaemon] _recover_reply_target_from_session failed: %s", exc)
+        return None
+
+
+async def backfill_null_reply_contexts() -> dict:
+    """One-time startup job: patch all enabled triggers that have reply_context=NULL.
+
+    For each such trigger, look up the agent's most recent non-web ChatSession
+    with a delivery_target_json and copy it into reply_context. This fixes
+    triggers created before commit c0e00c8 (unified delivery refactor) where
+    only Feishu triggers got reply_context — TG/WeChat were left NULL.
+
+    Returns: {"patched": N, "skipped": M}
+    """
+    from app.models.chat_session import ChatSession
+
+    patched = 0
+    skipped = 0
+    try:
+        async with async_session() as db:
+            # All enabled triggers with NULL reply_context
+            null_triggers = await db.execute(
+                select(AgentTrigger).where(
+                    AgentTrigger.is_enabled.is_(True),
+                    AgentTrigger.reply_context.is_(None),
+                )
+            )
+            triggers = null_triggers.scalars().all()
+            if not triggers:
+                return {"patched": 0, "skipped": 0}
+
+            # Group by agent for efficient session lookup
+            agent_triggers: dict[uuid.UUID, list] = {}
+            for t in triggers:
+                agent_triggers.setdefault(t.agent_id, []).append(t)
+
+            for aid, agent_trigs in agent_triggers.items():
+                # Find the most recent non-web session with delivery_target
+                session_r = await db.execute(
+                    select(ChatSession)
+                    .where(
+                        ChatSession.agent_id == aid,
+                        ChatSession.source_channel != "web",
+                        ChatSession.source_channel != "agent",
+                        ChatSession.delivery_target_json.isnot(None),
+                    )
+                    .order_by(ChatSession.last_message_at.desc().nullslast())
+                    .limit(1)
+                )
+                session = session_r.scalar_one_or_none()
+                if not session or not session.delivery_target_json or not session.delivery_target_json.get("channel"):
+                    skipped += len(agent_trigs)
+                    continue
+
+                target = dict(session.delivery_target_json)
+                for t in agent_trigs:
+                    t.reply_context = target
+                    patched += 1
+                    logger.info(
+                        "[TriggerDaemon] Backfilled reply_context for trigger '%s' (agent %s): channel=%s",
+                        t.name, aid, target.get("channel"),
+                    )
+
+            await db.commit()
+    except Exception as exc:
+        logger.warning("[TriggerDaemon] backfill_null_reply_contexts failed: %s", exc)
+
+    return {"patched": patched, "skipped": skipped}
+
+
 # ── SSRF Protection ─────────────────────────────────────────────────
 
 def _is_private_url(url: str) -> bool:
@@ -689,6 +811,21 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
             ),
             None,
         )
+
+        # Fallback: if reply_context is NULL (pre-unified-delivery triggers),
+        # try to recover from the agent's most recent non-web ChatSession.
+        if reply_target is None:
+            try:
+                reply_target = await _recover_reply_target_from_session(agent_id, triggers)
+                if reply_target:
+                    logger.info(
+                        "[TriggerDaemon] Recovered reply_target from session for agent %s: channel=%s",
+                        agent_id,
+                        reply_target.get("channel"),
+                    )
+            except Exception as _recover_err:
+                logger.debug("[TriggerDaemon] reply_target recovery failed: %s", _recover_err)
+
         _delivery_token = None
         if reply_target:
             _delivery_token = channel_delivery_target.set(reply_target)

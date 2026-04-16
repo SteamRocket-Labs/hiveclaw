@@ -296,6 +296,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[startup] Memory hooks registration failed: {e}")
 
+    # Backfill reply_context for triggers created before the unified-delivery
+    # refactor — those triggers have reply_context=NULL and cannot deliver
+    # results back to TG/WeChat/Feishu channels.
+    try:
+        from app.services.trigger_daemon import backfill_null_reply_contexts
+        result = await backfill_null_reply_contexts()
+        if result["patched"]:
+            logger.info("[startup] Backfilled %d trigger reply_contexts (skipped %d)", result["patched"], result["skipped"])
+    except Exception as e:
+        logger.warning(f"[startup] Trigger reply_context backfill failed: {e}")
+
     # Start background tasks (always, even if seeding failed)
     try:
         logger.info("[startup] starting background tasks...")

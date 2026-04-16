@@ -1,14 +1,15 @@
 """Prompt section modules — structured system prompt components.
 
-13 sections aligned with Claude Code's section-based architecture:
+Sections rendered into the runtime prompt (via `build_frozen_prompt_prefix`
+and `build_dynamic_prompt_suffix` in `prompt_builder.py`):
 
 FROZEN PREFIX (session-stable):
   § Identity — agent name, role, personality (identity.py)
   § System — kernel execution model, governance (system.py)
   § Doing Tasks — code style, security guidance (tasks.py)
-  § Executing Actions — risk control, operating contract (executing_actions.py)
   § Using Your Tools — tool preferences (tools.py)
   § Tone and Style — output format, language (tone_style.py)
+  § Output Efficiency — response format rules (output_efficiency.py)
   § Skills Catalog — progressive disclosure index (skills_catalog.py)
   § Relationships — colleagues, org structure (relationships.py)
 
@@ -23,7 +24,6 @@ DYNAMIC SUFFIX (per-round):
 
 from .active_packs import build_active_packs_section
 from .environment import build_environment_section
-from .executing_actions import build_executing_actions_section
 from .output_efficiency import build_output_efficiency_section
 from .identity import build_identity_section
 from .knowledge import build_knowledge_section
@@ -42,7 +42,6 @@ __all__ = [
     "build_identity_section",
     "build_system_section",
     "build_tasks_section",
-    "build_executing_actions_section",
     "build_tools_section",
     "build_tone_style_section",
     "build_output_efficiency_section",

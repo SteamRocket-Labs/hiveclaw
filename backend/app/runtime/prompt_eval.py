@@ -10,7 +10,6 @@ from typing import Any, Callable
 from app.agents.orchestrator import _DELEGATED_WORKER_PROMPT_SUFFIX
 from app.runtime.context_budget import TaskProfile
 from app.runtime.prompt_sections import (
-    build_executing_actions_section,
     build_knowledge_section,
     build_memory_section,
     build_scenario_section,
@@ -24,7 +23,6 @@ from app.services.extract_agent import EXTRACT_PROMPT
 @dataclass(slots=True, frozen=True)
 class PromptEvalInputs:
     system_section: str | None = None
-    executing_actions_section: str | None = None
     memory_section: str | None = None
     tools_section: str | None = None
     review_playbook: str | None = None
@@ -66,7 +64,6 @@ def _runtime_heartbeat_template_texts() -> dict[str, str]:
 def _build_default_inputs() -> PromptEvalInputs:
     return PromptEvalInputs(
         system_section=build_system_section(),
-        executing_actions_section=build_executing_actions_section(),
         memory_section=build_memory_section(),
         tools_section=build_tools_section(),
         review_playbook=build_scenario_section(
@@ -115,11 +112,6 @@ def _merged_inputs(inputs: PromptEvalInputs | None) -> PromptEvalInputs:
     )
     return PromptEvalInputs(
         system_section=inputs.system_section if inputs.system_section is not None else defaults.system_section,
-        executing_actions_section=(
-            inputs.executing_actions_section
-            if inputs.executing_actions_section is not None
-            else defaults.executing_actions_section
-        ),
         memory_section=inputs.memory_section if inputs.memory_section is not None else defaults.memory_section,
         tools_section=inputs.tools_section if inputs.tools_section is not None else defaults.tools_section,
         review_playbook=inputs.review_playbook if inputs.review_playbook is not None else defaults.review_playbook,
@@ -287,16 +279,23 @@ def evaluate_runtime_prompt_contracts(inputs: PromptEvalInputs | None = None) ->
             failure_detail="Memory section no longer clearly defines memory tool usage or storage exclusions.",
         ),
         "always_on_required_tools_are_core": _CheckSpec(
+            # save_memory + search_memory are the two always-on memory tools the
+            # agent must reach for without loading a skill. They must appear in
+            # the live frozen prefix (system + memory sections) AND belong to
+            # the first-round core tool surface. list_triggers is no longer an
+            # always-on requirement — it lives in the Trigger Management Guide
+            # skill and is discovered via progressive disclosure.
             predicate=lambda: (
-                "save_memory" in (resolved.executing_actions_section or "")
-                and "search_memory" in (resolved.executing_actions_section or "")
-                and "list_triggers" in (resolved.executing_actions_section or "")
-                and {"save_memory", "search_memory", "list_triggers"}.issubset(CORE_TOOL_NAMES)
+                "save_memory" in (resolved.system_section or "")
+                and "search_memory" in (resolved.system_section or "")
+                and "save_memory" in (resolved.memory_section or "")
+                and "search_memory" in (resolved.memory_section or "")
+                and {"save_memory", "search_memory"}.issubset(CORE_TOOL_NAMES)
             ),
             severity="high",
-            remediation="Keep every always-on MUST/first-step tool requirement aligned with the first-round core tool surface.",
-            success_detail="Always-on prompt rules only require tools that exist in the first-round core surface.",
-            failure_detail="Always-on prompt requires tools that are not available in the first-round core surface.",
+            remediation="Keep save_memory / search_memory referenced in system.py and memory.py (live frozen prefix + dynamic suffix) and ensure both stay in CORE_TOOL_NAMES (first-round core surface).",
+            success_detail="Always-on memory tools are both referenced in live prompt sections and present in the first-round core surface.",
+            failure_detail="Always-on memory tools are either missing from the live frozen prefix/dynamic suffix OR no longer part of the first-round core surface.",
         ),
         "skill_evolution_guidance": _CheckSpec(
             predicate=lambda: (

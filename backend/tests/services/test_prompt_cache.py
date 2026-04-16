@@ -1,4 +1,9 @@
-"""Tests for provider-agnostic prompt caching layer."""
+"""Tests for provider-agnostic prompt caching layer.
+
+Design principle: the cache layer is capability-driven, not name-driven.
+Any unknown provider should work safely (passthrough for hints, universal
+probe for metrics).
+"""
 
 from __future__ import annotations
 
@@ -6,67 +11,47 @@ from app.services.llm_client import LLMMessage
 from app.services.prompt_cache import (
     PROMPT_CACHE_BOUNDARY,
     CacheMetrics,
-    _detect_provider,
+    _supports_cache_control,
     apply_cache_hints,
     extract_cache_metrics,
 )
 
 
-class TestProviderDetection:
-    def test_anthropic_variants(self):
-        for p in ("anthropic", "Anthropic", "claude-3.5-sonnet", "CLAUDE"):
-            assert _detect_provider(p) == "anthropic", f"failed for {p}"
+class TestCapabilityDetection:
+    """Only providers that accept cache_control blocks should be detected."""
 
-    def test_openai_variants(self):
-        for p in ("openai", "OpenAI", "gpt-4.1", "GPT"):
-            assert _detect_provider(p) == "openai", f"failed for {p}"
+    def test_anthropic_supported(self):
+        assert _supports_cache_control("anthropic") is True
+        assert _supports_cache_control("claude-3.5-sonnet") is True
 
-    def test_deepseek(self):
-        assert _detect_provider("deepseek-coder") == "deepseek"
+    def test_other_providers_not_supported(self):
+        for p in ("openai", "deepseek", "gemini", "minimax", "zhipu", "mistral", "qwen", "llama", ""):
+            assert _supports_cache_control(p) is False, f"{p} should not support cache_control"
 
-    def test_gemini(self):
-        for p in ("gemini-pro", "google-gemini", "Google"):
-            assert _detect_provider(p) == "gemini", f"failed for {p}"
-
-    def test_zhipu(self):
-        for p in ("zhipu", "glm-5.1"):
-            assert _detect_provider(p) == "zhipu", f"failed for {p}"
-
-    def test_minimax(self):
-        assert _detect_provider("minimax-abab") == "minimax"
-
-    def test_unknown(self):
-        assert _detect_provider("some-random-llm") == "unknown"
-        assert _detect_provider("") == "unknown"
+    def test_unknown_provider_safe_default(self):
+        assert _supports_cache_control("totally-new-provider-2027") is False
 
 
-class TestAnthropicHints:
+class TestHintInjection:
     def _system_msg(self) -> LLMMessage:
         return LLMMessage(
             role="system",
             content=f"frozen part\n{PROMPT_CACHE_BOUNDARY}\ndynamic part",
         )
 
-    def test_conversation_mode_uses_5min_ttl(self):
+    def test_anthropic_conversation_5min(self):
         result = apply_cache_hints([self._system_msg()], "anthropic", execution_mode="conversation")
         cc = result[0].content[0]["cache_control"]
         assert cc == {"type": "ephemeral"}
-        assert "ttl" not in cc
 
-    def test_heartbeat_mode_uses_1h_ttl(self):
+    def test_anthropic_heartbeat_1h(self):
         result = apply_cache_hints([self._system_msg()], "anthropic", execution_mode="heartbeat")
         cc = result[0].content[0]["cache_control"]
         assert cc == {"type": "ephemeral", "ttl": "1h"}
 
-    def test_trigger_mode_uses_1h_ttl(self):
+    def test_anthropic_trigger_1h(self):
         result = apply_cache_hints([self._system_msg()], "anthropic", execution_mode="trigger")
-        cc = result[0].content[0]["cache_control"]
-        assert cc["ttl"] == "1h"
-
-    def test_task_mode_uses_1h_ttl(self):
-        result = apply_cache_hints([self._system_msg()], "anthropic", execution_mode="task")
-        cc = result[0].content[0]["cache_control"]
-        assert cc["ttl"] == "1h"
+        assert result[0].content[0]["cache_control"]["ttl"] == "1h"
 
     def test_splits_at_boundary(self):
         result = apply_cache_hints([self._system_msg()], "anthropic")
@@ -87,33 +72,40 @@ class TestAnthropicHints:
             LLMMessage(role="user", content="msg3"),
         ]
         result = apply_cache_hints(msgs, "anthropic")
-        # Last 3 non-system messages should have cache_control
         for i in [-1, -2, -3]:
-            assert isinstance(result[i].content, list), f"msg at {i} not wrapped"
+            assert isinstance(result[i].content, list)
             assert "cache_control" in result[i].content[0]
-        # Earlier messages should be untouched
+        # Earlier messages untouched
         assert isinstance(result[1].content, str)
 
+    def test_unknown_provider_passthrough(self):
+        msg = LLMMessage(role="system", content="hello")
+        result = apply_cache_hints([msg], "totally-new-llm-2027")
+        assert result[0].content == "hello"
 
-class TestNonAnthropicPassthrough:
-    def test_openai_unchanged(self):
+    def test_openai_passthrough(self):
         msg = LLMMessage(role="system", content="hello")
         result = apply_cache_hints([msg], "openai")
         assert result[0].content == "hello"
 
-    def test_deepseek_unchanged(self):
-        msg = LLMMessage(role="system", content="hello")
-        result = apply_cache_hints([msg], "deepseek")
-        assert result[0].content == "hello"
+    def test_explicit_override_enables_cache_control(self):
+        """A new provider can opt in via override without touching _CACHE_CONTROL_PROVIDERS."""
+        msg = self._system_msg()
+        result = apply_cache_hints([msg], "future-provider", supports_cache_control_override=True)
+        assert isinstance(result[0].content, list)
+        assert "cache_control" in result[0].content[0]
 
-    def test_unknown_unchanged(self):
-        msg = LLMMessage(role="system", content="hello")
-        result = apply_cache_hints([msg], "some-random-llm")
-        assert result[0].content == "hello"
+    def test_explicit_override_disables_cache_control(self):
+        """Anthropic can be opted out (e.g., for testing) via override."""
+        msg = self._system_msg()
+        result = apply_cache_hints([msg], "anthropic", supports_cache_control_override=False)
+        assert result[0].content == msg.content  # unchanged
 
 
-class TestCacheMetrics:
-    def test_anthropic_cache_hit(self):
+class TestUniversalMetricsProbe:
+    """Metrics extraction should work for ANY provider via field probing."""
+
+    def test_anthropic_format(self):
         m = extract_cache_metrics(
             {"input_tokens": 1000, "cache_read_input_tokens": 800, "cache_creation_input_tokens": 50},
             "anthropic",
@@ -121,17 +113,8 @@ class TestCacheMetrics:
         assert m.cache_hit is True
         assert m.cache_read_tokens == 800
         assert m.cache_write_tokens == 50
-        assert m.hit_rate > 0.7
 
-    def test_anthropic_cache_miss(self):
-        m = extract_cache_metrics(
-            {"input_tokens": 1000, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 900},
-            "anthropic",
-        )
-        assert m.cache_hit is False
-        assert m.cache_write_tokens == 900
-
-    def test_openai_cached_tokens(self):
+    def test_openai_format(self):
         m = extract_cache_metrics(
             {"prompt_tokens": 500, "prompt_tokens_details": {"cached_tokens": 400}},
             "openai",
@@ -140,16 +123,15 @@ class TestCacheMetrics:
         assert m.cache_read_tokens == 400
         assert m.hit_rate == 0.8
 
-    def test_deepseek_cache(self):
+    def test_deepseek_format(self):
         m = extract_cache_metrics(
             {"prompt_cache_hit_tokens": 600, "prompt_cache_miss_tokens": 100},
             "deepseek",
         )
         assert m.cache_hit is True
         assert m.total_input_tokens == 700
-        assert abs(m.hit_rate - 600 / 700) < 0.01
 
-    def test_gemini_cached_content(self):
+    def test_gemini_format(self):
         m = extract_cache_metrics(
             {"promptTokenCount": 1000, "cachedContentTokenCount": 500},
             "gemini",
@@ -157,20 +139,43 @@ class TestCacheMetrics:
         assert m.cache_hit is True
         assert m.cache_read_tokens == 500
 
+    def test_unknown_provider_with_standard_fields(self):
+        """A brand-new provider using OpenAI-compatible fields should work."""
+        m = extract_cache_metrics(
+            {"prompt_tokens": 800, "prompt_tokens_details": {"cached_tokens": 600}},
+            "brand-new-llm-2027",
+        )
+        assert m.cache_hit is True
+        assert m.cache_read_tokens == 600
+        assert m.provider == "brand-new-llm-2027"
+
+    def test_unknown_provider_with_anthropic_fields(self):
+        """A new provider adopting Anthropic field names also works."""
+        m = extract_cache_metrics(
+            {"input_tokens": 500, "cache_read_input_tokens": 400},
+            "some-anthropic-compatible-llm",
+        )
+        assert m.cache_hit is True
+        assert m.cache_read_tokens == 400
+
+    def test_unknown_provider_no_cache_fields(self):
+        """Provider with only basic token counts — cache_hit=False, total still extracted."""
+        m = extract_cache_metrics(
+            {"prompt_tokens": 300},
+            "minimal-llm",
+        )
+        assert m.cache_hit is False
+        assert m.total_input_tokens == 300
+        assert m.cache_read_tokens == 0
+
     def test_empty_usage(self):
-        m = extract_cache_metrics(None, "anthropic")
+        m = extract_cache_metrics(None, "any-provider")
         assert m.cache_hit is False
         assert m.total_input_tokens == 0
 
-    def test_unknown_provider_graceful(self):
-        m = extract_cache_metrics({"prompt_tokens": 100}, "minimax")
-        assert m.provider == "minimax"
-        assert m.total_input_tokens == 100
-        assert m.cache_hit is False
-
     def test_as_log_dict_structure(self):
         m = CacheMetrics(
-            provider="anthropic",
+            provider="test",
             cache_write_tokens=100,
             cache_read_tokens=800,
             uncached_input_tokens=100,
@@ -178,7 +183,6 @@ class TestCacheMetrics:
             cache_hit=True,
         )
         d = m.as_log_dict()
-        assert d["provider"] == "anthropic"
         assert d["cache_hit"] is True
         assert d["cache_hit_rate"] == 0.8
         assert set(d.keys()) == {

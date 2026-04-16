@@ -1,17 +1,23 @@
 """Provider-agnostic prompt caching layer.
 
-Hive serves multiple LLM providers (Anthropic, OpenAI, DeepSeek, Gemini,
-MiniMax, Zhipu, etc.). Each provider has its own caching mechanism:
+Design principle: **capability-driven, not name-driven**.
 
-- Anthropic: explicit `cache_control` markers on content blocks + TTL
-- OpenAI / DeepSeek: automatic prefix caching (no markers needed)
-- Gemini: explicit Context Caching API (separate endpoint)
-- Others: no API-level caching, benefit from application-level only
+This module does NOT hardcode provider names. Instead it uses two
+mechanisms that work for ANY LLM provider, present or future:
 
-This module provides a unified interface so the kernel does not need to
-know which provider it is talking to. The application-level cache (frozen
-prefix reuse in SessionContext) benefits ALL providers; the API-level
-hints here are provider-specific sugar on top.
+1. **Hint injection**: a boolean `supports_cache_control` flag decides
+   whether to inject Anthropic-style `cache_control` markers. The flag
+   defaults to auto-detection but can be overridden per model config.
+   Any unknown provider gets NO markers (safe default — most providers
+   either cache automatically or don't cache at all).
+
+2. **Metrics extraction**: a universal field probe that tries ALL known
+   cache metric field names from any provider. If a new provider uses
+   `cached_tokens` or `cache_read_input_tokens` or any other known field,
+   it is picked up automatically — zero code change needed.
+
+The application-level cache (frozen prefix reuse in SessionContext)
+benefits ALL providers regardless of API-level support.
 """
 
 from __future__ import annotations
@@ -59,71 +65,72 @@ class CacheMetrics:
         }
 
 
-# ── Provider detection ──────────────────────────────────────────
+# ── Capability detection ────────────────────────────────────────
+# Only ONE capability matters for hint injection: does the provider
+# accept `cache_control` content blocks? Currently only Anthropic does.
+# This is the only provider-name check in the entire module, and it
+# defaults to False for any unknown provider (safe passthrough).
 
-def _detect_provider(provider_str: str) -> str:
-    """Normalize raw provider string to canonical name."""
-    p = (provider_str or "").lower().strip()
-    if "anthropic" in p or "claude" in p:
-        return "anthropic"
-    if "openai" in p or "gpt" in p:
-        return "openai"
-    if "deepseek" in p:
-        return "deepseek"
-    if "gemini" in p or "google" in p:
-        return "gemini"
-    if "minimax" in p:
-        return "minimax"
-    if "zhipu" in p or "glm" in p:
-        return "zhipu"
-    return "unknown"
+# Providers whose API accepts cache_control in content blocks.
+# Add new providers here ONLY if they adopt the same content-block
+# cache_control protocol. Most providers (OpenAI, DeepSeek, Gemini,
+# Mistral, Qwen, etc.) use automatic caching and don't need this.
+_CACHE_CONTROL_PROVIDERS = frozenset({"anthropic", "claude"})
 
 
-# ── Hint injection (per provider) ───────────────────────────────
+def _supports_cache_control(provider: str) -> bool:
+    """Does this provider's API accept cache_control markers in content blocks?
+
+    Returns False for any unknown provider — safe default because:
+    - Most providers ignore unknown fields (no harm)
+    - Or they use automatic prefix caching (no markers needed)
+    """
+    p = (provider or "").lower().strip()
+    return any(keyword in p for keyword in _CACHE_CONTROL_PROVIDERS)
+
+
+# ── Hint injection ──────────────────────────────────────────────
 
 def apply_cache_hints(
     messages: list,
     provider: str,
     *,
     execution_mode: str = "conversation",
+    supports_cache_control_override: bool | None = None,
 ) -> list:
-    """Inject provider-specific cache control hints into LLM messages.
+    """Inject cache hints into LLM messages if the provider supports them.
 
-    This is the unified entry point replacing the old Anthropic-only
-    `apply_prompt_cache_hints`. The kernel calls this once per LLM round;
-    it routes to the appropriate provider strategy.
+    This is capability-driven: unknown providers get passthrough (safe).
+    The `supports_cache_control_override` parameter allows per-model opt-in
+    without touching this module (e.g., if a new provider adopts
+    Anthropic's cache_control protocol, set override=True in model config).
 
     Args:
         messages: LLMMessage list (system + user/assistant history)
-        provider: raw provider string (e.g. "anthropic", "openai/gpt-4.1")
+        provider: raw provider string from model config
         execution_mode: "conversation" | "heartbeat" | "trigger" | "task"
-            Autonomous modes use longer cache TTL where supported.
+        supports_cache_control_override: explicit opt-in/out (None = auto-detect)
     """
-    canonical = _detect_provider(provider)
+    use_cache_control = (
+        supports_cache_control_override
+        if supports_cache_control_override is not None
+        else _supports_cache_control(provider)
+    )
 
-    if canonical == "anthropic":
-        return _apply_anthropic_hints(messages, execution_mode=execution_mode)
-    if canonical == "openai" or canonical == "deepseek":
-        # Automatic prefix caching — no markers needed.
-        # The frozen prefix stability from Phase 1a is sufficient.
-        return messages
-    if canonical == "gemini":
-        # Gemini Context Caching uses a separate API call (CreateCachedContent)
-        # which must happen before the chat request. This function only handles
-        # in-message hints, so Gemini caching is a no-op here. Future: add a
-        # pre-flight hook in the kernel for Gemini cached content creation.
-        return messages
+    if use_cache_control:
+        return _apply_cache_control_hints(messages, execution_mode=execution_mode)
 
-    # Unknown / unsupported providers — return unchanged.
+    # All other providers: passthrough. They benefit from the application-
+    # level frozen prefix stability (Phase 1a-1c) without needing API markers.
     return messages
 
 
-def _apply_anthropic_hints(
+def _apply_cache_control_hints(
     messages: list,
     *,
     execution_mode: str = "conversation",
 ) -> list:
-    """Anthropic-specific: split system prompt at boundary, add cache_control.
+    """Apply cache_control content-block hints (Anthropic protocol).
 
     TTL strategy:
     - conversation: 5-min default (frequent requests keep the sliding window
@@ -132,7 +139,6 @@ def _apply_anthropic_hints(
       gaps between calls; 5-min TTL would always expire; 1h costs 2.0x write
       but 0.1x reads — pays off after 2 cache hits)
     """
-    # Pick TTL based on execution mode
     if execution_mode in ("heartbeat", "trigger", "task"):
         cache_control = {"type": "ephemeral", "ttl": "1h"}
     else:
@@ -154,7 +160,6 @@ def _apply_anthropic_hints(
                     blocks.append({"type": "text", "text": dynamic_text})
                 result[i] = _clone_msg(msg, content=blocks)
             else:
-                # No boundary marker — cache entire system message
                 result[i] = _clone_msg(
                     msg,
                     content=[{"type": "text", "text": msg.content, "cache_control": cache_control}],
@@ -187,56 +192,79 @@ def _clone_msg(msg, **overrides):
     )
 
 
-# ── Metrics extraction (per provider) ───────────────────────────
+# ── Metrics extraction (universal field probe) ──────────────────
+#
+# Instead of routing by provider name, we probe ALL known field names
+# from every provider we've ever seen. A new provider that uses ANY
+# of these field names gets metrics extracted automatically.
+#
+# Known fields (as of 2026-04):
+#   cache_read_input_tokens     — Anthropic
+#   cache_creation_input_tokens — Anthropic
+#   prompt_cache_hit_tokens     — DeepSeek
+#   prompt_cache_miss_tokens    — DeepSeek
+#   prompt_tokens_details.cached_tokens — OpenAI
+#   cachedContentTokenCount     — Gemini
+#   input_tokens                — Anthropic, generic
+#   prompt_tokens               — OpenAI, DeepSeek, generic
+#   promptTokenCount            — Gemini
 
-def extract_cache_metrics(usage: dict | None, provider: str) -> CacheMetrics:
-    """Extract cache metrics from an LLM response's usage object.
+def _probe_int(usage: dict, *keys: str) -> int:
+    """Try multiple keys in order, return the first non-zero int found."""
+    for key in keys:
+        val = usage.get(key)
+        if val is not None and val != 0:
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                continue
+    return 0
 
-    Each provider reports cache stats differently. This normalizes them
-    into a unified CacheMetrics structure for observability.
+
+def extract_cache_metrics(usage: dict | None, provider: str = "") -> CacheMetrics:
+    """Extract cache metrics from ANY provider's response usage object.
+
+    Uses universal field probing — no provider-name routing. If a new
+    provider reports cache stats using any known field name, it is
+    picked up automatically.
     """
     if not usage:
-        return CacheMetrics(provider=_detect_provider(provider))
+        return CacheMetrics(provider=provider)
 
-    canonical = _detect_provider(provider)
-    metrics = CacheMetrics(provider=canonical)
+    metrics = CacheMetrics(provider=provider)
 
-    if canonical == "anthropic":
-        # Anthropic reports: cache_creation_input_tokens, cache_read_input_tokens
-        # Newer: ephemeral_5m_input_tokens, ephemeral_1h_input_tokens
-        metrics.cache_write_tokens = int(usage.get("cache_creation_input_tokens", 0) or 0)
-        metrics.cache_read_tokens = int(usage.get("cache_read_input_tokens", 0) or 0)
-        metrics.uncached_input_tokens = int(usage.get("input_tokens", 0) or 0) - metrics.cache_read_tokens
-        metrics.total_input_tokens = int(usage.get("input_tokens", 0) or 0)
-        metrics.cache_hit = metrics.cache_read_tokens > 0
+    # ── Cache read tokens (from any source) ──
+    # Try nested OpenAI format first, then flat fields
+    details = usage.get("prompt_tokens_details") or {}
+    metrics.cache_read_tokens = _probe_int(
+        {**usage, **details},
+        "cache_read_input_tokens",     # Anthropic
+        "cached_tokens",               # OpenAI (nested in prompt_tokens_details)
+        "prompt_cache_hit_tokens",     # DeepSeek
+        "cachedContentTokenCount",     # Gemini
+    )
 
-    elif canonical == "openai":
-        # OpenAI reports: prompt_tokens_details.cached_tokens
-        details = usage.get("prompt_tokens_details") or {}
-        metrics.cache_read_tokens = int(details.get("cached_tokens", 0) or 0)
-        metrics.total_input_tokens = int(usage.get("prompt_tokens", 0) or 0)
-        metrics.uncached_input_tokens = metrics.total_input_tokens - metrics.cache_read_tokens
-        metrics.cache_hit = metrics.cache_read_tokens > 0
+    # ── Cache write tokens ──
+    metrics.cache_write_tokens = _probe_int(
+        usage,
+        "cache_creation_input_tokens",  # Anthropic
+    )
 
-    elif canonical == "deepseek":
-        # DeepSeek reports: prompt_cache_hit_tokens, prompt_cache_miss_tokens
-        metrics.cache_read_tokens = int(usage.get("prompt_cache_hit_tokens", 0) or 0)
-        miss = int(usage.get("prompt_cache_miss_tokens", 0) or 0)
-        metrics.uncached_input_tokens = miss
-        metrics.total_input_tokens = metrics.cache_read_tokens + miss
-        metrics.cache_hit = metrics.cache_read_tokens > 0
+    # ── Total input tokens ──
+    metrics.total_input_tokens = _probe_int(
+        usage,
+        "input_tokens",        # Anthropic, generic
+        "prompt_tokens",       # OpenAI, DeepSeek, generic
+        "promptTokenCount",    # Gemini
+    )
+    # DeepSeek special: total = hit + miss
+    if metrics.total_input_tokens == 0:
+        miss = _probe_int(usage, "prompt_cache_miss_tokens")
+        if miss or metrics.cache_read_tokens:
+            metrics.total_input_tokens = metrics.cache_read_tokens + miss
 
-    elif canonical == "gemini":
-        # Gemini reports: cached_content_token_count in usageMetadata
-        metrics.cache_read_tokens = int(usage.get("cachedContentTokenCount", 0) or 0)
-        metrics.total_input_tokens = int(usage.get("promptTokenCount", 0) or 0)
-        metrics.uncached_input_tokens = metrics.total_input_tokens - metrics.cache_read_tokens
-        metrics.cache_hit = metrics.cache_read_tokens > 0
-
-    else:
-        # Unknown provider — extract what we can
-        metrics.total_input_tokens = int(
-            usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0) or 0
-        )
+    # ── Derived fields ──
+    metrics.uncached_input_tokens = max(0, metrics.total_input_tokens - metrics.cache_read_tokens)
+    metrics.cache_hit = metrics.cache_read_tokens > 0
 
     return metrics

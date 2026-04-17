@@ -167,7 +167,7 @@ logs/YYYY-MM-DD/
 | `services/extract_agent.py` | LLM extraction T0→T2 (cursor-based, per-response via RESPONSE_COMPLETE hook) |
 | `services/heartbeat.py` | T2→T3 curation (KAIROS persistent session, 45min ticks) |
 | `services/auto_dream.py` | T3→soul consolidation (4h + 3 sessions gate) |
-| `memory/retriever.py` | Read T3 MD files directly into prompt (sqlite for recall-only) |
+| `memory/retriever.py` | Read T3 MD files directly into prompt |
 | `runtime/hooks_setup.py` | Hook handlers: T0 writers, extraction triggers, drain on close |
 
 ### Hook System (`app/runtime/hooks.py`)
@@ -234,7 +234,8 @@ Soul refinement prompt teaches the LLM the full 4-layer architecture, soul-vs-fo
 | `runtime/` | 8+ files | Hooks, invoker, prompt builder, prompt sections, session context |
 | `tools/` | 11+ files | Tool registry, governance, handlers, workspace |
 | `skills/` | 5 files | Skill parser, loader, registry |
-| `memory/` | 5 files | Retriever (T3 MD → prompt), assembler, sqlite FTS (recall-only) |
+| `memory/` | 10 files | MD-first: retriever, assembler, md_store (T3), t2_store, legacy_migration, `MemoryBackend` Protocol, hindsight_sync, metrics, `backends/` |
+| `memory/backends/` | `hindsight.py` | Optional read-side accelerator; opt-in per tenant via `tenants.memory_backend` column. Module docstring has the design invariants and operator runbook. |
 | `core/` | — | Security, permissions, middleware, Redis pub/sub |
 | `migrations/` | 35 versions | Alembic schema evolution |
 

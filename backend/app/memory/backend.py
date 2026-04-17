@@ -154,49 +154,106 @@ class MDBackend:
 
 # ── Backend resolution ──────────────────────────────────────────
 
-_backend_instance: MemoryBackend | None = None
+_backend_cache: dict[str, MemoryBackend] = {}
 
 
-def get_memory_backend() -> MemoryBackend:
-    """Return the configured memory backend (singleton).
+def _md_backend() -> MemoryBackend:
+    """MDBackend singleton — tenant-agnostic."""
+    if "md" not in _backend_cache:
+        from app.config import get_settings
+        _backend_cache["md"] = MDBackend(Path(get_settings().AGENT_DATA_DIR))
+    return _backend_cache["md"]
 
-    Reads MEMORY_BACKEND env var:
-    - "md" (default): MDBackend using T3 markdown files + BM25
-    - "hindsight": future Hindsight integration
-    - "cognee": future Cognee integration
 
-    Unknown values fall back to MD with a warning.
-    """
-    global _backend_instance
-    if _backend_instance is not None:
-        return _backend_instance
-
+def _resolve_backend_name(tenant_backend_pref: str | None) -> str:
+    """Resolve backend name. Priority: tenant override > env > 'md'."""
+    if tenant_backend_pref and tenant_backend_pref.strip():
+        return tenant_backend_pref.strip().lower()
     import os
+    return os.environ.get("MEMORY_BACKEND", "md").strip().lower()
+
+
+def get_memory_backend(
+    tenant_id: uuid.UUID | None = None,
+    *,
+    tenant_backend_pref: str | None = None,
+) -> MemoryBackend:
+    """Return the configured memory backend.
+
+    MDBackend is tenant-agnostic (singleton). HindsightBackend is tenant-scoped
+    (cached per tenant_id to reuse its httpx.AsyncClient).
+
+    Backend resolution (first non-empty wins):
+    1. ``tenant_backend_pref`` argument (caller read from Tenant.memory_backend)
+    2. ``MEMORY_BACKEND`` environment variable
+    3. "md" default
+
+    Supported backend names:
+    - "md": MDBackend — T3 markdown files + BM25
+    - "hindsight": HindsightBackend (Phase A: global key + bank_id isolation)
+    - unknown values or unconfigured Hindsight → fall back to MD with warning
+
+    `tenant_id=None` always returns MDBackend regardless of preference —
+    tenant-agnostic callers (admin tools, legacy paths) always use MD.
+    """
     from app.config import get_settings
 
-    backend_name = os.environ.get("MEMORY_BACKEND", "md").strip().lower()
-    settings = get_settings()
-    data_root = Path(settings.AGENT_DATA_DIR)
+    backend_name = _resolve_backend_name(tenant_backend_pref)
 
-    if backend_name == "md":
-        _backend_instance = MDBackend(data_root)
-    elif backend_name == "hindsight":
-        # Future: from app.memory.backends.hindsight import HindsightBackend
-        # _backend_instance = HindsightBackend(url=settings.HINDSIGHT_URL, ...)
-        logger.warning("[MemoryBackend] hindsight backend not yet implemented, falling back to MD")
-        _backend_instance = MDBackend(data_root)
-    elif backend_name == "cognee":
+    # MD path — tenant-agnostic, shared singleton
+    if backend_name == "md" or tenant_id is None:
+        return _md_backend()
+
+    if backend_name == "hindsight":
+        settings = get_settings()
+        if not (settings.HINDSIGHT_ENABLED and settings.HINDSIGHT_URL):
+            logger.warning(
+                "[MemoryBackend] hindsight selected but disabled/unconfigured "
+                "(ENABLED=%s URL=%r), falling back to MD",
+                settings.HINDSIGHT_ENABLED, settings.HINDSIGHT_URL,
+            )
+            return _md_backend()
+
+        cache_key = f"hindsight:{tenant_id.hex}"
+        if cache_key in _backend_cache:
+            return _backend_cache[cache_key]
+
+        from app.memory.backends.hindsight import HindsightBackend
+        _backend_cache[cache_key] = HindsightBackend(
+            tenant_id=tenant_id,
+            url=settings.HINDSIGHT_URL,
+            api_key=settings.HINDSIGHT_API_KEY,
+            timeout=settings.HINDSIGHT_TIMEOUT_SECONDS,
+        )
+        logger.info("[MemoryBackend] Using HindsightBackend for tenant=%s", tenant_id)
+        return _backend_cache[cache_key]
+
+    if backend_name == "cognee":
         logger.warning("[MemoryBackend] cognee backend not yet implemented, falling back to MD")
-        _backend_instance = MDBackend(data_root)
-    else:
-        logger.warning("[MemoryBackend] Unknown backend '%s', falling back to MD", backend_name)
-        _backend_instance = MDBackend(data_root)
+        return _md_backend()
 
-    logger.info("[MemoryBackend] Using %s backend", type(_backend_instance).__name__)
-    return _backend_instance
+    logger.warning("[MemoryBackend] Unknown backend '%s', falling back to MD", backend_name)
+    return _md_backend()
 
 
 def reset_memory_backend() -> None:
-    """Reset the singleton (for testing)."""
-    global _backend_instance
-    _backend_instance = None
+    """Clear all cached backends (for testing).
+
+    Note: this does NOT close HindsightBackend's httpx.AsyncClient — tests
+    using MockTransport are unaffected, but production callers must use
+    aclose_all_backends() during app shutdown to avoid leaking sockets.
+    """
+    _backend_cache.clear()
+
+
+async def aclose_all_backends() -> None:
+    """Close all cached backend HTTP clients. Call at app shutdown."""
+    for backend in list(_backend_cache.values()):
+        close = getattr(backend, "close", None)
+        if close is None:
+            continue
+        try:
+            await close()
+        except Exception as exc:
+            logger.warning("[MemoryBackend] close failed for %s: %s", type(backend).__name__, exc)
+    _backend_cache.clear()

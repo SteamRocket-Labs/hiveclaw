@@ -354,6 +354,11 @@ async def lifespan(app: FastAPI):
         await close_viking()
     except Exception as exc:
         logger.debug(f"OpenViking client cleanup skipped: {exc}")
+    try:
+        from app.memory.backend import aclose_all_backends
+        await aclose_all_backends()
+    except Exception as exc:
+        logger.warning(f"Memory backend shutdown failed: {exc}")
 
 
 app = FastAPI(

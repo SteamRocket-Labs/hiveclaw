@@ -1320,6 +1320,23 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
             except Exception as _nrm_err:
                 logger.debug("[Heartbeat] T3 normalization failed (non-fatal): %s", _nrm_err)
 
+            # Sync normalized T3 MD to Hindsight bank (no-op when backend=md).
+            # Runs AFTER normalization so cursor mtime reflects the canonical state.
+            try:
+                from app.memory.hindsight_sync import sync_t3_to_hindsight
+
+                synced = await sync_t3_to_hindsight(agent_id, agent.tenant_id)
+                if synced:
+                    logger.info(
+                        "[Heartbeat] Hindsight sync: %d T3 items (agent=%s)",
+                        synced, agent_id,
+                    )
+            except Exception as _hs_err:
+                # sync_t3_to_hindsight already has its own try/except and only
+                # returns here on truly unexpected paths (import error, etc).
+                # Warning-level so ops actually see these regressions.
+                logger.warning("[Heartbeat] Hindsight sync outer guard tripped: %s", _hs_err)
+
             # Emit HEARTBEAT_TICK_END hook → T0 log
             try:
                 from app.runtime.hooks import HookEvent, emit_hook

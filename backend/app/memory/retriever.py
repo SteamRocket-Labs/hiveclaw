@@ -215,14 +215,22 @@ class MemoryRetriever:
         items.extend(self._retrieve_t3_direct(agent_id, query=query) or [])
         episodic_limit = retrieval_profile.episodic_limit if retrieval_profile else 3
         external_limit = retrieval_profile.external_limit if retrieval_profile else 5
+        semantic_limit = retrieval_profile.external_limit if retrieval_profile else 5
         del limit  # prompt memory is sourced entirely from T3 markdown files.
 
         items.extend(await self._retrieve_episodic(agent_id, session_id, previous_limit=episodic_limit) or [])
 
         # T3 markdown is the only long-term memory source injected into the prompt.
-        # search_memory/session recall may use separate shadow indexes, but prompt
-        # assembly must stay md-first to avoid dual-source drift.
+        # Other retrieval paths (search_memory tool, session_recall service) run
+        # independently and must not merge into prompt assembly — md-first only,
+        # to avoid dual-source drift.
 
+        items.extend(
+            await self._retrieve_semantic_backend(
+                agent_id, query, tenant_id, limit=semantic_limit,
+            )
+            or []
+        )
         items.extend(await self._retrieve_external(agent_id, query, tenant_id, limit=external_limit) or [])
         return items
 
@@ -403,6 +411,72 @@ class MemoryRetriever:
                     unique.append(item)
             items = unique
 
+        return items
+
+    # -- Semantic backend layer: optional Hindsight read-side accelerator --
+
+    async def _retrieve_semantic_backend(
+        self,
+        agent_id: uuid.UUID,
+        query: str,
+        tenant_id: str | None,
+        *,
+        limit: int = 5,
+    ) -> list[MemoryItem]:
+        """If tenant has a non-MD MemoryBackend configured, augment T3 direct reads
+        with ranked results from that backend (e.g. Hindsight's TEMPR fusion).
+
+        The T3 direct layer already covers every bullet; this layer adds ranking
+        signal by producing items at higher base scores for semantically relevant
+        matches. The assembler dedupes near-identical content so overlap is safe.
+
+        Any failure / MD backend / missing tenant → returns [] silently.
+        """
+        if not query or not tenant_id:
+            return []
+        try:
+            tenant_uuid = uuid.UUID(tenant_id)
+        except (ValueError, TypeError):
+            return []
+
+        try:
+            from app.memory.backend import MDBackend, get_memory_backend
+            from app.memory.hindsight_sync import (
+                LOOKUP_FAILED,
+                _fetch_tenant_backend_pref,
+            )
+
+            pref = await _fetch_tenant_backend_pref(tenant_uuid)
+            if pref is LOOKUP_FAILED:
+                return []  # fail-closed: unknown tenant state → skip external backend
+            backend = get_memory_backend(tenant_id=tenant_uuid, tenant_backend_pref=pref)
+            if isinstance(backend, MDBackend):
+                return []  # MD path already covered by _retrieve_t3_direct
+
+            scored = await backend.search(agent_id, query, limit=limit)
+        except Exception as exc:
+            logger.debug("[Retriever] semantic backend failed: %s", exc)
+            return []
+
+        items: list[MemoryItem] = []
+        for sm in scored:
+            content = (sm.content or "").strip()
+            if not content:
+                continue
+            items.append(
+                MemoryItem(
+                    kind=MemoryKind.SEMANTIC,
+                    content=f"[{sm.category}] {content}",
+                    score=float(sm.score or 0.5),
+                    source="hindsight",
+                    metadata={
+                        "category": sm.category,
+                        "timestamp": sm.timestamp,
+                        "source_type": "memory_backend",
+                        **(sm.metadata or {}),
+                    },
+                )
+            )
         return items
 
     # -- External layer: OpenViking recall --

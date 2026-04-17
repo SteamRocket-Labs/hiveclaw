@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import uuid
 from pathlib import Path
 from typing import Any
@@ -14,6 +16,8 @@ from app.config import get_settings
 from app.models.agent import Agent
 from app.models.org import AgentAgentRelationship, AgentRelationship
 from app.models.user import User
+
+logger = logging.getLogger(__name__)
 
 RELATION_LABELS = {
     "direct_leader": "直属上级",
@@ -142,22 +146,40 @@ async def write_relationships_file(
     db: AsyncSession,
     agent_id: uuid.UUID,
     include_owner: bool = True,
-) -> Path:
-    """Materialize relationships.md for one agent from the explicit relationship tables."""
+) -> bool:
+    """Materialize relationships.md for one agent. Returns True if file was written.
+
+    Compares rendered content against existing file and skips the write when
+    unchanged — relationships rarely change but this is called from the
+    heartbeat hot path on every tenant tick.
+    """
     owner, human_relationships, agent_relationships = await _load_relationship_context(
         db,
         agent_id=agent_id,
         include_owner=include_owner,
     )
     workspace_dir = _workspace_root() / str(agent_id)
-    workspace_dir.mkdir(parents=True, exist_ok=True)
     path = workspace_dir / "relationships.md"
-    path.write_text(
-        render_relationships_markdown(
-            owner=owner,
-            human_relationships=human_relationships,
-            agent_relationships=agent_relationships,
-        ),
-        encoding="utf-8",
+    content = render_relationships_markdown(
+        owner=owner,
+        human_relationships=human_relationships,
+        agent_relationships=agent_relationships,
     )
-    return path
+    return await asyncio.to_thread(_write_if_changed_sync, path, workspace_dir, content)
+
+
+def _write_if_changed_sync(path: Path, parent: Path, content: str) -> bool:
+    """Synchronous file I/O bundle — runs in a worker thread to avoid blocking the event loop.
+
+    Combines exists + read + mkdir + write so a single thread hop covers the
+    full hot-path write rather than four separate context switches.
+    """
+    if path.exists():
+        try:
+            if path.read_text(encoding="utf-8") == content:
+                return False
+        except OSError as exc:
+            logger.debug("[relationships_file] Could not read %s for diff, will overwrite: %s", path, exc)
+    parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return True

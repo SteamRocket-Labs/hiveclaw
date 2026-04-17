@@ -223,5 +223,12 @@ async def delete_agent_relationship(
 # ─── relationships.md Generation ──────────────────────
 
 async def _regenerate_relationships_file(db: AsyncSession, agent_id: uuid.UUID):
-    """Regenerate relationships.md with the shared explicit-relationship writer."""
+    """Regenerate relationships.md with the shared explicit-relationship writer.
+
+    Inline write covers the editing user; mark_agent_dirty broadcasts to
+    peer backend instances so their workspace caches converge.
+    """
+    from app.services.workspace_sync_dirty import mark_agent_dirty
+
     await write_relationships_file(db=db, agent_id=agent_id, include_owner=True)
+    mark_agent_dirty(agent_id)

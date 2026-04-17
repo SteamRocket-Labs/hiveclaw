@@ -1518,28 +1518,8 @@ async def _heartbeat_tick():
             )
             agents = result.scalars().all()
 
-            # Periodic workspace sync — write DB data to files agents can read
-            # Uses isolated sessions per tenant to prevent one failure from
-            # poisoning the main session (InFailedSQLTransactionError cascade).
-            synced_tenants: set[uuid.UUID] = set()
-            from app.services.workspace_sync import sync_all_for_tenant
-
-            for a in agents:
-                if a.tenant_id and a.tenant_id not in synced_tenants:
-                    for attempt in range(2):
-                        try:
-                            async with async_session() as sync_db:
-                                await sync_all_for_tenant(sync_db, a.tenant_id)
-                            synced_tenants.add(a.tenant_id)
-                            break
-                        except Exception as sync_err:
-                            if attempt == 0:
-                                logger.warning(f"Workspace sync failed for tenant {a.tenant_id}, retrying: {sync_err}")
-                                await asyncio.sleep(1)
-                            else:
-                                logger.warning(
-                                    f"Workspace sync failed for tenant {a.tenant_id} after retry: {sync_err}"
-                                )
+            # Workspace sync moved to _workspace_sync_loop (600s cadence).
+            # Keeping it inline blocked the 60s heartbeat tick on Volume I/O.
 
             # Pre-load tenants for timezone resolution
             tenant_ids = {a.tenant_id for a in agents if a.tenant_id}
@@ -1589,9 +1569,104 @@ async def _heartbeat_tick():
         await write_audit_log("heartbeat_error", {"error": str(e)[:300]})
 
 
+async def _sync_one_tenant(tenant_id: uuid.UUID) -> None:
+    """Run sync_all_for_tenant in an isolated session with one retry."""
+    from app.database import async_session
+    from app.services.workspace_sync import sync_all_for_tenant
+
+    for attempt in range(2):
+        try:
+            async with async_session() as sync_db:
+                await sync_all_for_tenant(sync_db, tenant_id)
+            return
+        except Exception as sync_err:
+            if attempt == 0:
+                logger.warning(f"Workspace sync failed for tenant {tenant_id}, retrying: {sync_err}")
+                await asyncio.sleep(1)
+            else:
+                logger.warning(f"Workspace sync failed for tenant {tenant_id} after retry: {sync_err}")
+
+
+async def _sync_one_agent(agent_id: uuid.UUID) -> None:
+    """Re-render relationships.md for a single agent."""
+    from app.database import async_session
+    from app.services.workspace_sync import sync_agent_relationships
+
+    try:
+        async with async_session() as sync_db:
+            await sync_agent_relationships(sync_db, agent_id)
+    except Exception as sync_err:
+        logger.warning(f"Agent relationships sync failed for {agent_id}: {sync_err}")
+
+
+async def _workspace_dirty_tick() -> None:
+    """Drain dirty-flag set and re-sync only what changed. Cheap when nothing changed."""
+    from app.services.workspace_sync_dirty import consume_dirty
+
+    try:
+        tenants, agents = await consume_dirty()
+        if not tenants and not agents:
+            return
+        logger.info(f"[workspace-sync] dirty drain: tenants={len(tenants)}, agents={len(agents)}")
+        for tenant_id in tenants:
+            await _sync_one_tenant(tenant_id)
+        for agent_id in agents:
+            await _sync_one_agent(agent_id)
+    except Exception as e:
+        logger.error(f"Workspace dirty tick error: {e}", exc_info=True)
+
+
+async def _workspace_full_sweep() -> None:
+    """Safety net: sync every active tenant in case dirty events were lost."""
+    from app.database import async_session
+    from app.models.agent import Agent
+
+    try:
+        async with async_session() as db:
+            tenant_result = await db.execute(
+                select(Agent.tenant_id)
+                .where(
+                    Agent.heartbeat_enabled.is_(True),
+                    Agent.status.in_(["running", "idle"]),
+                    Agent.tenant_id.is_not(None),
+                )
+                .distinct()
+            )
+            tenant_ids = {row[0] for row in tenant_result.all() if row[0]}
+
+        logger.info(f"[workspace-sync] full sweep: {len(tenant_ids)} tenants")
+        for tenant_id in tenant_ids:
+            await _sync_one_tenant(tenant_id)
+    except Exception as e:
+        logger.error(f"Workspace full sweep error: {e}", exc_info=True)
+
+
+async def _workspace_sync_loop():
+    """Dirty-flag consumer: 60s tick, only syncs changed tenants/agents."""
+    logger.info("📁 Workspace dirty-sync loop started (60s tick)")
+    await asyncio.sleep(30)
+    while True:
+        await _workspace_dirty_tick()
+        await asyncio.sleep(60)
+
+
+async def _workspace_full_sweep_loop():
+    """Safety net loop: full sync every 1h to recover from any lost dirty events."""
+    logger.info("📁 Workspace full-sweep loop started (3600s interval)")
+    await asyncio.sleep(120)
+    while True:
+        await _workspace_full_sweep()
+        await asyncio.sleep(3600)
+
+
 async def start_heartbeat():
-    """Start the background heartbeat loop. Call from FastAPI startup."""
+    """Start background loops: heartbeat (60s) + workspace dirty-sync + full-sweep + dirty Redis listener."""
+    from app.services.workspace_sync_dirty import start_redis_listener
+
     logger.info("💓 Agent heartbeat service started (60s tick)")
+    await start_redis_listener()
+    asyncio.create_task(_workspace_sync_loop())
+    asyncio.create_task(_workspace_full_sweep_loop())
     while True:
         await _heartbeat_tick()
         await asyncio.sleep(60)

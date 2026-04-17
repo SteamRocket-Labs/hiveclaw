@@ -13,6 +13,7 @@ same content, the write is skipped to avoid unnecessary I/O and prompt cache
 invalidation in the kernel.
 """
 
+import asyncio
 import logging
 import uuid
 from pathlib import Path
@@ -30,22 +31,27 @@ logger = logging.getLogger(__name__)
 WORKSPACE_ROOT = Path(get_settings().AGENT_DATA_DIR)
 
 
-def _write_if_changed(path: Path, content: str) -> bool:
-    """Write file only if content differs. Returns True if written."""
+def _write_if_changed_sync(path: Path, content: str) -> bool:
+    """Sync file write with content diff. Run via asyncio.to_thread from async callers."""
     if path.exists():
         try:
             if path.read_text(encoding="utf-8") == content:
                 return False
-        except Exception as exc:
+        except OSError as exc:
             logger.debug("[workspace-sync] Could not read %s for comparison, overwriting: %s", path, exc)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     return True
 
 
-def _enterprise_dir(tenant_id: uuid.UUID) -> Path:
+async def _write_if_changed(path: Path, content: str) -> bool:
+    """Async wrapper: keeps the event loop unblocked on a slow Volume mount."""
+    return await asyncio.to_thread(_write_if_changed_sync, path, content)
+
+
+async def _enterprise_dir_async(tenant_id: uuid.UUID) -> Path:
     d = WORKSPACE_ROOT / f"enterprise_info_{tenant_id}"
-    d.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(d.mkdir, parents=True, exist_ok=True)
     return d
 
 
@@ -73,7 +79,7 @@ async def sync_company_profile(db: AsyncSession, tenant_id: uuid.UUID) -> None:
         profile_text = info.content.get("text", "") or info.content.get("description", "")
 
     # Write markdown
-    path = _enterprise_dir(tenant_id) / "company_profile.md"
+    path = (await _enterprise_dir_async(tenant_id)) / "company_profile.md"
     lines = [
         f"# {company_name}",
         "",
@@ -83,7 +89,7 @@ async def sync_company_profile(db: AsyncSession, tenant_id: uuid.UUID) -> None:
     else:
         lines.append("_公司简介尚未填写。请在公司设置-公司信息中编辑。_")
 
-    if _write_if_changed(path, "\n".join(lines)):
+    if await _write_if_changed(path, "\n".join(lines)):
         logger.info(f"[workspace-sync] Wrote company_profile.md for tenant {tenant_id}")
 
 
@@ -106,7 +112,7 @@ async def sync_org_structure(db: AsyncSession, tenant_id: uuid.UUID) -> None:
     members = member_result.scalars().all()
 
     # Write markdown
-    path = _enterprise_dir(tenant_id) / "org_structure.md"
+    path = (await _enterprise_dir_async(tenant_id)) / "org_structure.md"
     lines = ["# 组织架构", ""]
 
     if departments:
@@ -127,7 +133,7 @@ async def sync_org_structure(db: AsyncSession, tenant_id: uuid.UUID) -> None:
     if not departments and not members:
         lines.append("_组织架构尚未同步。请在公司设置-组织结构中同步。_")
 
-    if _write_if_changed(path, "\n".join(lines)):
+    if await _write_if_changed(path, "\n".join(lines)):
         logger.info(f"[workspace-sync] Wrote org_structure.md for tenant {tenant_id}")
 
 
@@ -139,8 +145,9 @@ async def sync_agent_relationships(db: AsyncSession, agent_id: uuid.UUID) -> Non
     agent = agent_result.scalar_one_or_none()
     if not agent or not agent.tenant_id:
         return
-    await write_relationships_file(db=db, agent_id=agent_id, include_owner=True)
-    logger.info(f"[workspace-sync] Wrote relationships.md for agent {agent.name}")
+    written = await write_relationships_file(db=db, agent_id=agent_id, include_owner=True)
+    if written:
+        logger.info(f"[workspace-sync] Wrote relationships.md for agent {agent.name}")
 
 
 # ─── Full Sync ──────────────────────────────────────────

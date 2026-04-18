@@ -174,15 +174,7 @@
     "createFirst": "Create your first digital employee",
     "emptyTitle": "Welcome to HiveClaw",
     "emptyDesc": "Digital employees can search the web, write documents, send messages, analyze data, and work autonomously across Feishu, Slack, and other channels.",
-    "emptyHint": "Tell the onboarding assistant what you need, and it will create the right employee for you.",
-    "templateResearcher": "Market Researcher",
-    "templateResearcherDesc": "Tracks industry news, monitors competitors, and summarizes findings",
-    "templatePM": "Project Manager",
-    "templatePMDesc": "Coordinates tasks, follows up with the team, and reports progress",
-    "templateSupport": "Customer Support",
-    "templateSupportDesc": "Handles inquiries, resolves tickets, and manages after-sales",
-    "templateWriter": "Content Writer",
-    "templateWriterDesc": "Writes marketing copy, social posts, and internal communications"
+    "emptyHint": "Tell the onboarding assistant what you need, and it will create the right employee for you."
   },
   "agent": {
     "status": {

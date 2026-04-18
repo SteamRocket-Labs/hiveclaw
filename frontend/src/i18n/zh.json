@@ -173,15 +173,7 @@
     "createFirst": "创建你的第一个数字员工",
     "emptyTitle": "欢迎使用 HiveClaw",
     "emptyDesc": "数字员工可以搜索网络、撰写文档、发送消息、分析数据，并通过飞书、Slack 等渠道自主工作。",
-    "emptyHint": "告诉入职助手你的需求，它会为你创建合适的员工。",
-    "templateResearcher": "市场研究员",
-    "templateResearcherDesc": "跟踪行业新闻、监测竞品动态、整理分析报告",
-    "templatePM": "项目经理",
-    "templatePMDesc": "协调任务、跟进团队进度、输出工作汇报",
-    "templateSupport": "客户支持",
-    "templateSupportDesc": "处理客户咨询、解决工单、管理售后服务",
-    "templateWriter": "内容创作者",
-    "templateWriterDesc": "撰写营销文案、社交内容和内部沟通材料"
+    "emptyHint": "告诉入职助手你的需求，它会为你创建合适的员工。"
   },
   "agent": {
     "status": {

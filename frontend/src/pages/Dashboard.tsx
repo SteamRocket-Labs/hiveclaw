@@ -652,36 +652,6 @@ export default function Dashboard() {
                         </p>
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '24px' }}>
-                        {([
-                            { key: 'Researcher', icon: '🔍' },
-                            { key: 'PM', icon: '📋' },
-                            { key: 'Support', icon: '💬' },
-                            { key: 'Writer', icon: '✏️' },
-                        ] as const).map(tmpl => (
-                            <button
-                                key={tmpl.key}
-                                className="btn btn-secondary"
-                                onClick={() => navigate('/agents/new')}
-                                style={{
-                                    display: 'flex', alignItems: 'flex-start', gap: '10px',
-                                    padding: '14px 16px', textAlign: 'left', height: 'auto',
-                                    borderRadius: 'var(--radius-lg)',
-                                }}
-                            >
-                                <span style={{ fontSize: '18px', lineHeight: 1 }}>{tmpl.icon}</span>
-                                <span>
-                                    <span style={{ display: 'block', fontSize: 'var(--text-sm)', fontWeight: 500, color: 'var(--text-primary)' }}>
-                                        {t(`dashboard.template${tmpl.key}`)}
-                                    </span>
-                                    <span style={{ display: 'block', fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', marginTop: '2px', lineHeight: 1.4 }}>
-                                        {t(`dashboard.template${tmpl.key}Desc`)}
-                                    </span>
-                                </span>
-                            </button>
-                        ))}
-                    </div>
-
                     <div style={{ textAlign: 'center' }}>
                         <button className="btn btn-primary" onClick={() => navigate('/agents/new')}>
                             {Icons.plus} {t('dashboard.createFirst')}

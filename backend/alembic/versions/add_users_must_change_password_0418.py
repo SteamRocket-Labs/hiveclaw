@@ -28,9 +28,9 @@ match hash_password() in app.core.security.
 """
 from typing import Sequence, Union
 
+import bcrypt
 import sqlalchemy as sa
 from alembic import op
-from passlib.context import CryptContext
 
 revision: str = "add_users_must_change_password_0418"
 down_revision: Union[str, None] = "add_tenant_memory_backend_0417"
@@ -46,9 +46,12 @@ def upgrade() -> None:
         "BOOLEAN NOT NULL DEFAULT FALSE"
     )
 
-    # Rehash once per upgrade; bcrypt is intentionally slow, no need for per-row.
-    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-    default_hash = pwd_context.hash(_DEFAULT_PW)
+    # Use bcrypt directly instead of passlib — passlib 1.7.x tries to read
+    # bcrypt.__about__.__version__ which bcrypt 4.x removed, and crashes with
+    # "error reading bcrypt version" when its CryptContext is freshly built
+    # inside a migration. The app runtime's pre-initialized CryptContext
+    # works fine, but that's app code we must not import from a migration.
+    default_hash = bcrypt.hashpw(_DEFAULT_PW.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
     # Reset every Feishu shadow row. Escape the hash via bind param to avoid
     # any literal-quoting footguns (bcrypt hashes contain $ and /).

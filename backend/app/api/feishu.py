@@ -235,12 +235,17 @@ async def feishu_sso_init(
     from app.config import get_settings
 
     _settings = get_settings()
-    # Deliberately no pre-flight check on FEISHU_APP_ID / FEISHU_REDIRECT_URI.
-    # The platform does not gate-keep admin configuration: if either is
-    # missing, the URL still gets built (with empty fields) and Feishu's
-    # own OAuth server surfaces the real error to the user on redirect.
-    app_id = _settings.FEISHU_APP_ID or ""
-    redirect_uri = _settings.FEISHU_REDIRECT_URI or ""
+    # FEISHU_APP_ID / FEISHU_REDIRECT_URI are *platform* deployment settings
+    # (not per-tenant admin config). If missing, the deployment itself has no
+    # Feishu ISV app registered — detect here instead of shipping an empty
+    # client_id= URL that Feishu rejects as "app_id 请求不合法" (20028).
+    app_id = _settings.FEISHU_APP_ID
+    redirect_uri = _settings.FEISHU_REDIRECT_URI
+    if not app_id or not redirect_uri:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Feishu SSO not configured on this deployment",
+        )
 
     session = SSOScanSession(
         id=uuid.uuid4(),
@@ -302,10 +307,15 @@ async def feishu_bind_init(
     from app.config import get_settings
 
     _settings = get_settings()
-    # Same no-gate policy as sso/init above — platform does not judge
-    # whether admin config is complete; Feishu surfaces the real error.
-    app_id = _settings.FEISHU_APP_ID or ""
-    redirect_uri = _settings.FEISHU_REDIRECT_URI or ""
+    # Same platform-level preflight as sso/init — missing env = deployment
+    # hasn't registered with Feishu; don't ship broken URLs.
+    app_id = _settings.FEISHU_APP_ID
+    redirect_uri = _settings.FEISHU_REDIRECT_URI
+    if not app_id or not redirect_uri:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Feishu SSO not configured on this deployment",
+        )
 
     session = SSOScanSession(
         id=uuid.uuid4(),

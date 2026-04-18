@@ -131,6 +131,65 @@ def test_feishu_sso_init_uses_current_oauth_authorize_contract(monkeypatch: pyte
     assert db.added, "Expected an SSO session row to be created"
 
 
+def test_feishu_sso_init_returns_503_when_platform_env_missing(monkeypatch: pytest.MonkeyPatch):
+    """Deployment hasn't registered a Feishu ISV app → refuse, don't build empty client_id= URL."""
+    db = _FakeDB()
+    app = _build_app(db)
+
+    settings = SimpleNamespace(FEISHU_APP_ID=None, FEISHU_REDIRECT_URI=None)
+    monkeypatch.setattr("app.config.get_settings", lambda: settings)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.post("/auth/feishu/sso/init")
+
+    assert response.status_code == 503
+    assert "not configured" in response.json()["detail"].lower()
+    assert not db.added, "No SSO session should be created when platform is unconfigured"
+
+
+def test_feishu_bind_init_returns_503_when_platform_env_missing(monkeypatch: pytest.MonkeyPatch):
+    """Same preflight on the bind flow."""
+    db = _FakeDB()
+    app = _build_app(db)
+
+    settings = SimpleNamespace(FEISHU_APP_ID="", FEISHU_REDIRECT_URI="")
+    monkeypatch.setattr("app.config.get_settings", lambda: settings)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.post("/auth/feishu/bind/init")
+
+    assert response.status_code == 503
+    assert "not configured" in response.json()["detail"].lower()
+
+
+def test_feishu_sso_init_returns_503_when_only_redirect_uri_missing(monkeypatch: pytest.MonkeyPatch):
+    """Pin OR short-circuit: partial config is still broken config."""
+    db = _FakeDB()
+    app = _build_app(db)
+
+    settings = SimpleNamespace(FEISHU_APP_ID="cli_test_app_id", FEISHU_REDIRECT_URI="")
+    monkeypatch.setattr("app.config.get_settings", lambda: settings)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.post("/auth/feishu/sso/init")
+
+    assert response.status_code == 503
+
+
+def test_feishu_bind_init_returns_503_when_only_app_id_missing(monkeypatch: pytest.MonkeyPatch):
+    """Pin OR short-circuit for the bind path too."""
+    db = _FakeDB()
+    app = _build_app(db)
+
+    settings = SimpleNamespace(FEISHU_APP_ID=None, FEISHU_REDIRECT_URI="https://example.com/cb")
+    monkeypatch.setattr("app.config.get_settings", lambda: settings)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.post("/auth/feishu/bind/init")
+
+    assert response.status_code == 503
+
+
 def test_feishu_callback_get_completes_scan_session_and_returns_html_redirect():
     tenant_id = uuid4()
     session_id = uuid4()

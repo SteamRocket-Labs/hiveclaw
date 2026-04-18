@@ -10,7 +10,6 @@ fallback still applies until an operator explicitly flips a tenant.
 """
 from typing import Sequence, Union
 
-import sqlalchemy as sa
 from alembic import op
 
 
@@ -29,18 +28,19 @@ def upgrade() -> None:
     # are explicit per-tenant overrides. We cannot use server_default='md'
     # here because a persisted literal would shadow env MEMORY_BACKEND
     # for every tenant (resolution priority = non-null pref > env > default).
-    op.add_column(
-        "tenants",
-        sa.Column(
-            "memory_backend",
-            sa.String(length=32),
-            nullable=True,
-            server_default=None,
-        ),
+    #
+    # IF NOT EXISTS guards against the entrypoint.sh safety-net patch that
+    # creates the same column on startup — without it the alembic run fails
+    # on every redeploy with DuplicateColumnError.
+    op.execute(
+        "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS memory_backend VARCHAR(32)"
     )
     # DB-level validation so typos in future migrations or hand-edits don't
     # silently fall through to MD at resolve time.
     values_sql = ", ".join(f"'{v}'" for v in _ALLOWED)
+    op.execute(
+        f"ALTER TABLE tenants DROP CONSTRAINT IF EXISTS {_CHECK_NAME}"
+    )
     op.create_check_constraint(
         _CHECK_NAME,
         "tenants",

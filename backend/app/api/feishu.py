@@ -235,9 +235,12 @@ async def feishu_sso_init(
     from app.config import get_settings
 
     _settings = get_settings()
-    app_id = _settings.FEISHU_APP_ID
-    if not app_id:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Feishu OAuth not configured")
+    # Deliberately no pre-flight check on FEISHU_APP_ID / FEISHU_REDIRECT_URI.
+    # The platform does not gate-keep admin configuration: if either is
+    # missing, the URL still gets built (with empty fields) and Feishu's
+    # own OAuth server surfaces the real error to the user on redirect.
+    app_id = _settings.FEISHU_APP_ID or ""
+    redirect_uri = _settings.FEISHU_REDIRECT_URI or ""
 
     session = SSOScanSession(
         id=uuid.uuid4(),
@@ -247,10 +250,6 @@ async def feishu_sso_init(
     )
     db.add(session)
     await db.commit()
-
-    redirect_uri = _settings.FEISHU_REDIRECT_URI
-    if not redirect_uri:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="FEISHU_REDIRECT_URI not configured")
 
     params = {
         "client_id": app_id,
@@ -303,9 +302,10 @@ async def feishu_bind_init(
     from app.config import get_settings
 
     _settings = get_settings()
-    app_id = _settings.FEISHU_APP_ID
-    if not app_id:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Feishu OAuth not configured")
+    # Same no-gate policy as sso/init above — platform does not judge
+    # whether admin config is complete; Feishu surfaces the real error.
+    app_id = _settings.FEISHU_APP_ID or ""
+    redirect_uri = _settings.FEISHU_REDIRECT_URI or ""
 
     session = SSOScanSession(
         id=uuid.uuid4(),
@@ -316,10 +316,6 @@ async def feishu_bind_init(
     )
     db.add(session)
     await db.commit()
-
-    redirect_uri = _settings.FEISHU_REDIRECT_URI
-    if not redirect_uri:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="FEISHU_REDIRECT_URI not configured")
 
     params = {
         "client_id": app_id,

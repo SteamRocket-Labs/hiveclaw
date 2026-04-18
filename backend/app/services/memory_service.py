@@ -500,11 +500,13 @@ async def _save_session_summary(session_id: str, summary: str) -> None:
     if not session_uuid:
         return
 
+    safe_summary = summary.replace("\x00", "")
+
     async with async_session() as db:
         result = await db.execute(select(ChatSession).where(ChatSession.id == session_uuid))
         session = result.scalar_one_or_none()
         if session:
-            session.summary = summary
+            session.summary = safe_summary
             # Update last_message_at so episodic retriever ranks this session correctly
             from datetime import datetime, timezone
 

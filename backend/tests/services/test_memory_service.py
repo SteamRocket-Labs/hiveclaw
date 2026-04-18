@@ -77,6 +77,41 @@ async def test_persist_runtime_memory_persists_summary_without_direct_semantic_w
 
 
 @pytest.mark.asyncio
+async def test_persist_runtime_memory_strips_null_bytes_from_summary(monkeypatch):
+    from app.services.memory_service import persist_runtime_memory
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = str(uuid4())
+    chat_session = SimpleNamespace(summary=None)
+    fake_session = _FakeSession([chat_session])
+
+    async def fake_generate_session_summary(messages, _tenant_id):
+        assert len(messages) == 2
+        return "safe\x00summary"
+
+    async def fake_get_memory_config(_tenant_id):
+        return {}
+
+    monkeypatch.setattr("app.services.memory_service.async_session", lambda: fake_session)
+    monkeypatch.setattr("app.services.memory_service._generate_session_summary", fake_generate_session_summary)
+    monkeypatch.setattr("app.services.memory_service._get_memory_config", fake_get_memory_config)
+
+    await persist_runtime_memory(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        messages=[
+            {"role": "user", "content": "contains extracted binary text"},
+            {"role": "assistant", "content": "summary ready"},
+        ],
+    )
+
+    assert chat_session.summary == "safesummary"
+    assert fake_session.commits == 1
+
+
+@pytest.mark.asyncio
 async def test_build_memory_context_passes_rerank_model_config(monkeypatch, tmp_path):
     from app.services import memory_service
 

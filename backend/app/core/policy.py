@@ -114,7 +114,7 @@ async def write_audit_event(
     severity: str = "info",
     actor_type: str,
     actor_id: uuid.UUID | None,
-    tenant_id: uuid.UUID,
+    tenant_id: uuid.UUID | None,
     action: str,
     resource_type: str | None = None,
     resource_id: uuid.UUID | None = None,
@@ -127,6 +127,13 @@ async def write_audit_event(
     import json
 
     from app.models.security_audit import SecurityAuditEvent
+
+    if tenant_id is None or tenant_id == uuid.UUID(int=0):
+        logger.warning(
+            "Skipping audit event %s without a persistable tenant_id",
+            event_type,
+        )
+        return
 
     # Get previous hash for chain
     result = await db.execute(

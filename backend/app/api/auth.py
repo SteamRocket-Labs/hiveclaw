@@ -147,9 +147,21 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
 
 @router.post("/login", response_model=TokenResponse)
 async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
-    """Login with username and password."""
-    result = await db.execute(select(User).where(User.username == data.username))
+    """Login with username-or-email and password.
+
+    The input field is still called `username` for API backward-compat, but
+    employees imported via Feishu org sync get a machine-generated username
+    (`feishu_<user_id>`) they never see. They know their email instead, so
+    we also accept email as a fallback login identifier. Username match
+    takes precedence (canonical); email lookup only runs when the input
+    contains "@" and no username matched.
+    """
+    identifier = data.username
+    result = await db.execute(select(User).where(User.username == identifier))
     user = result.scalar_one_or_none()
+    if user is None and "@" in identifier:
+        result = await db.execute(select(User).where(User.email == identifier))
+        user = result.scalar_one_or_none()
 
     if not user or not verify_password(data.password, user.password_hash):
         # Audit: login failed

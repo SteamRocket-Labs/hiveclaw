@@ -261,7 +261,7 @@ export default function Login() {
                                 onChange={(e) => setForm({ ...form, username: e.target.value })}
                                 required
                                 autoFocus
-                                placeholder={t('auth.usernamePlaceholder')}
+                                placeholder={isRegister ? t('auth.usernamePlaceholder') : t('auth.loginIdentifierPlaceholder', 'Username or email')}
                             />
                         </div>
 

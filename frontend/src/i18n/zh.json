@@ -99,6 +99,7 @@
     "invitationCodePlaceholder": "请输入邀请码",
     "invitationHint": "注册需要邀请码。推荐大家自行部署并配置最前沿的模型，体验最佳效果。",
     "usernamePlaceholder": "设置用户名",
+    "loginIdentifierPlaceholder": "用户名或邮箱",
     "passwordPlaceholder": "设置密码",
     "emailPlaceholder": "your@email.com",
     "companyDisabled": "你的公司已被停用，请联系平台管理员。",

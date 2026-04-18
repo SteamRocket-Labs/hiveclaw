@@ -100,6 +100,7 @@
     "invitationCodePlaceholder": "Enter your invitation code",
     "invitationHint": "An invitation code is required to register. For the best experience, we recommend deploying your own instance with your preferred AI models.",
     "usernamePlaceholder": "Choose a username",
+    "loginIdentifierPlaceholder": "Username or email",
     "passwordPlaceholder": "Choose a password",
     "emailPlaceholder": "you@example.com",
     "companyDisabled": "Your company has been disabled. Please contact the platform administrator.",

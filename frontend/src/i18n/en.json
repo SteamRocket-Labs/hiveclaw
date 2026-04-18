@@ -81,6 +81,8 @@
     "loginFailed": "Sign in failed",
     "registerEmailTaken": "This email is already registered.",
     "registerUsernameTaken": "This username is already taken. Please choose another.",
+    "registerEmailFromFeishu": "This email was imported from Feishu. Log in with default password 123456 and change it right after.",
+    "passwordChangeReminder": "You are signed in with the default password. Please change it via Profile → Change Password for security.",
     "subtitleLogin": "Welcome back. Sign in to continue.",
     "subtitleRegister": "Create your account to get started.",
     "feishu": {

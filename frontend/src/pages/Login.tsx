@@ -5,7 +5,12 @@ import { useAuthStore } from '../stores';
 import { authApi } from '../api/domains/auth';
 import { ApiError } from '../api/core/errors';
 
-type RegisterConflict = { field?: string; code?: string; suggest_login?: boolean };
+type RegisterConflict = {
+    field?: string;
+    code?: string;
+    suggest_login?: boolean;
+    default_password_hint?: boolean;
+};
 
 export default function Login() {
     const { t, i18n } = useTranslation();
@@ -99,6 +104,15 @@ export default function Login() {
                 res = await authApi.login({ username: form.username, password: form.password });
             }
             setAuth(res.user, res.access_token);
+            // Feishu-imported users log in with the shared default "123456".
+            // Nag them to rotate it (first version: plain alert — upgrade to
+            // an in-app banner once the dashboard layout gets one).
+            if (res.needs_password_change) {
+                alert(t(
+                    'auth.passwordChangeReminder',
+                    'You are using the default password. For security, please change it in Settings → Account → Change Password.',
+                ));
+            }
             // Redirect to company setup if user has no company assigned
             if (res.needs_company_setup) {
                 navigate('/setup-company');
@@ -110,7 +124,13 @@ export default function Login() {
             // and offer "go log in" when the email is already taken.
             if (isRegister && err instanceof ApiError && err.status === 409) {
                 const detail = (err.data ?? {}) as RegisterConflict;
-                if (detail.code === 'email_taken') {
+                if (detail.code === 'email_linked_to_feishu') {
+                    setError(t(
+                        'auth.registerEmailFromFeishu',
+                        'This email was imported from Feishu. Log in with default password 123456 and change it right after.',
+                    ));
+                    setSuggestLogin(!!detail.suggest_login);
+                } else if (detail.code === 'email_taken') {
                     setError(t('auth.registerEmailTaken', 'This email is already registered.'));
                     setSuggestLogin(!!detail.suggest_login);
                 } else if (detail.code === 'username_taken') {

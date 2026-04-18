@@ -27,6 +27,9 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     user: "UserOut"
     needs_company_setup: bool = False
+    # True when the user logged in with the shared default password from an SSO
+    # import and hasn't rotated it yet. UI prompts them to change it.
+    needs_password_change: bool = False
 
 
 class UserOut(BaseModel):

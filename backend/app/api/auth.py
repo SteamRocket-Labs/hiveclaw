@@ -38,7 +38,26 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
     # Priority: email clash surfaces first because it points the user to "go
     # log in / reset password" rather than just picking a new username.
     email_hit = await db.execute(select(User).where(User.email == data.email))
-    if email_hit.scalar_one_or_none():
+    existing_email_user = email_hit.scalar_one_or_none()
+    if existing_email_user:
+        # Shadow account created by Feishu org sync: username=feishu_*,
+        # feishu_open_id set, must_change_password=True, default pw "123456".
+        # Tell the user to log in with that default and rotate it.
+        is_feishu_shadow = (
+            bool(getattr(existing_email_user, "feishu_open_id", None))
+            and bool(getattr(existing_email_user, "must_change_password", False))
+        )
+        if is_feishu_shadow:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "email_linked_to_feishu",
+                    "field": "email",
+                    "message": "This email was imported from Feishu. Log in with the default password 123456 and change it after signing in.",
+                    "suggest_login": True,
+                    "default_password_hint": True,
+                },
+            )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={
@@ -180,6 +199,7 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
         access_token=token,
         user=UserOut.model_validate(user),
         needs_company_setup=needs_setup,
+        needs_password_change=bool(getattr(user, "must_change_password", False)),
     )
 
 
@@ -230,5 +250,10 @@ async def change_password(
         raise HTTPException(status_code=400, detail="Current password is incorrect")
 
     current_user.password_hash = hash_password(new_password)
+    # Clear the "must change default password" flag — the user has now
+    # rotated away from the shared SSO-import default, so future logins
+    # no longer surface the nag banner.
+    if getattr(current_user, "must_change_password", False):
+        current_user.must_change_password = False
     await db.flush()
     return {"ok": True}

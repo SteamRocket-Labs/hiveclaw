@@ -80,6 +80,8 @@
     "loginFailed": "登录失败",
     "registerEmailTaken": "该邮箱已被注册。",
     "registerUsernameTaken": "该用户名已被占用，请换一个。",
+    "registerEmailFromFeishu": "该邮箱已从飞书同步，请使用默认密码 123456 登录，进入后请尽快修改密码。",
+    "passwordChangeReminder": "您正在使用默认密码，为保障账号安全，请进入「我的 → 修改密码」立即修改。",
     "subtitleLogin": "欢迎回来，请登录继续。",
     "subtitleRegister": "创建你的账号开始使用。",
     "feishu": {

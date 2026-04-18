@@ -12,11 +12,18 @@ from app.api.auth import router
 from app.database import get_db
 
 
-def _fake_user(username: str = "occupied", email: str = "existing@example.com"):
+def _fake_user(
+    username: str = "occupied",
+    email: str = "existing@example.com",
+    feishu_open_id: str | None = None,
+    must_change_password: bool = False,
+):
     return SimpleNamespace(
         id=uuid4(),
         username=username,
         email=email,
+        feishu_open_id=feishu_open_id,
+        must_change_password=must_change_password,
     )
 
 
@@ -92,3 +99,26 @@ def test_register_409_prefers_email_when_both_clash():
 
     assert resp.status_code == 409
     assert resp.json()["detail"]["field"] == "email"
+
+
+def test_register_409_feishu_shadow_points_to_default_password():
+    """Shadow account from Feishu import needs a specific hint so the user
+    knows to log in with 123456 instead of trying another email."""
+    shadow = _fake_user(
+        email="new@example.com",
+        username="feishu_ou_xxx",
+        feishu_open_id="ou_xxx",
+        must_change_password=True,
+    )
+    db = _FakeDB([shadow])
+    client = _make_client(db)
+
+    resp = client.post("/api/auth/register", json=_PAYLOAD)
+
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert detail["code"] == "email_linked_to_feishu"
+    assert detail["default_password_hint"] is True
+    assert detail["suggest_login"] is True
+    # The message must surface the default password so the UI can show it verbatim
+    assert "123456" in detail["message"]

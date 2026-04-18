@@ -40,6 +40,10 @@ class User(Base):
     oidc_issuer: Mapped[str | None] = mapped_column(String(500))
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Set to True when the user was created by an SSO import (Feishu org sync etc.)
+    # with a known default password. Login surfaces this as needs_password_change
+    # so the UI can prompt the user to rotate away from the shared default.
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

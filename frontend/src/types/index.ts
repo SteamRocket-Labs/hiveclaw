@@ -80,4 +80,6 @@ export interface TokenResponse {
     token_type: string;
     user: User;
     needs_company_setup?: boolean;
+    /** True for SSO-imported users who still have the shared default password (123456). */
+    needs_password_change?: boolean;
 }

@@ -120,6 +120,9 @@ async def main():
         # ORM queries SELECT tenants.memory_backend on every tenant load, so a missing
         # column blocks the entire startup (heartbeat, trigger daemon, enterprise migration).
         "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS memory_backend VARCHAR(32)",
+        # users.must_change_password (2026-04-18) — Feishu shadow users need a nag-to-rotate flag.
+        # Every login SELECTs this column; missing column = 500 on login.
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE",
     ]
 
     from sqlalchemy import text

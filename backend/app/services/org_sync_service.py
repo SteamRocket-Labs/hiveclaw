@@ -376,13 +376,19 @@ class OrgSyncService:
                             if tenant_id and not platform_user.tenant_id:
                                 platform_user.tenant_id = tenant_id
                         else:
-                            # Create new user — prefer user_id in username
+                            # Create new user — prefer user_id in username.
+                            # Default password is the well-known "123456" so the
+                            # imported employee can actually log in. The
+                            # must_change_password flag forces a rotate prompt
+                            # on first sign-in; the user can swap to a real
+                            # password right after.
                             username_base = f"feishu_{user_id or (open_id[:16] if open_id else uuid.uuid4().hex[:8])}"
                             email = member_email or f"{username_base}@feishu.local"
                             platform_user = User(
                                 username=username_base,
                                 email=email,
-                                password_hash=hash_password(uuid.uuid4().hex),
+                                password_hash=hash_password("123456"),
+                                must_change_password=True,
                                 display_name=member_name,
                                 role="member",
                                 feishu_open_id=open_id or None,

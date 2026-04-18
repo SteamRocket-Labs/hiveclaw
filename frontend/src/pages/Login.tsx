@@ -3,6 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores';
 import { authApi } from '../api/domains/auth';
+import { ApiError } from '../api/core/errors';
+
+type RegisterConflict = { field?: string; code?: string; suggest_login?: boolean };
 
 export default function Login() {
     const { t, i18n } = useTranslation();
@@ -10,6 +13,7 @@ export default function Login() {
     const setAuth = useAuthStore((s) => s.setAuth);
     const [isRegister, setIsRegister] = useState(false);
     const [error, setError] = useState('');
+    const [suggestLogin, setSuggestLogin] = useState(false);
     const [loading, setLoading] = useState(false);
     const [feishuLoading, setFeishuLoading] = useState(false);
     const [feishuAvailable, setFeishuAvailable] = useState(false);
@@ -81,6 +85,7 @@ export default function Login() {
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         setError('');
+        setSuggestLogin(false);
         setLoading(true);
 
         try {
@@ -101,6 +106,20 @@ export default function Login() {
                 navigate('/');
             }
         } catch (err: any) {
+            // Structured 409 on register — surface the specific clashing field
+            // and offer "go log in" when the email is already taken.
+            if (isRegister && err instanceof ApiError && err.status === 409) {
+                const detail = (err.data ?? {}) as RegisterConflict;
+                if (detail.code === 'email_taken') {
+                    setError(t('auth.registerEmailTaken', 'This email is already registered.'));
+                    setSuggestLogin(!!detail.suggest_login);
+                } else if (detail.code === 'username_taken') {
+                    setError(t('auth.registerUsernameTaken', 'This username is already taken. Please choose another.'));
+                } else {
+                    setError(err.message);
+                }
+                return;
+            }
             const msg = err.message || '';
             // Server-returned error messages (e.g. disabled company, invalid credentials)
             if (msg && msg !== 'Failed to fetch' && !msg.includes('NetworkError') && !msg.includes('ERR_CONNECTION')) {
@@ -193,6 +212,22 @@ export default function Login() {
                     {error && (
                         <div className="login-error">
                             <span>⚠</span> {error}
+                            {suggestLogin && (
+                                <>
+                                    {' '}
+                                    <button
+                                        type="button"
+                                        className="login-error-action"
+                                        onClick={() => {
+                                            setIsRegister(false);
+                                            setError('');
+                                            setSuggestLogin(false);
+                                        }}
+                                    >
+                                        {t('auth.goLogin', 'Go to login')}
+                                    </button>
+                                </>
+                            )}
                         </div>
                     )}
 

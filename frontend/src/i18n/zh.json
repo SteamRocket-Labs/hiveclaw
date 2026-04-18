@@ -78,6 +78,8 @@
     "selectCompany": "所属公司",
     "selectCompanyPlaceholder": "— 请选择公司 —",
     "loginFailed": "登录失败",
+    "registerEmailTaken": "该邮箱已被注册。",
+    "registerUsernameTaken": "该用户名已被占用，请换一个。",
     "subtitleLogin": "欢迎回来，请登录继续。",
     "subtitleRegister": "创建你的账号开始使用。",
     "feishu": {

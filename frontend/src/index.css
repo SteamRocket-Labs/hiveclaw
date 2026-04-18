@@ -1260,6 +1260,22 @@ select:focus {
   border: 1px solid rgba(239, 68, 68, 0.2);
 }
 
+.login-error-action {
+  background: none;
+  border: none;
+  color: var(--error);
+  font-size: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 0;
+  margin-left: 4px;
+}
+
+.login-error-action:hover {
+  opacity: 0.8;
+}
+
 .login-form {
   display: flex;
   flex-direction: column;

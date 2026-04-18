@@ -34,12 +34,31 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
     without a company — they must create or join one via /tenants/self-create
     or /tenants/join.
     """
-    # Check existing
-    existing = await db.execute(
-        select(User).where((User.username == data.username) | (User.email == data.email))
-    )
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username or email already exists")
+    # Check existing — report which field clashed so the UI can guide the user.
+    # Priority: email clash surfaces first because it points the user to "go
+    # log in / reset password" rather than just picking a new username.
+    email_hit = await db.execute(select(User).where(User.email == data.email))
+    if email_hit.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "email_taken",
+                "field": "email",
+                "message": "Email already registered",
+                "suggest_login": True,
+            },
+        )
+    username_hit = await db.execute(select(User).where(User.username == data.username))
+    if username_hit.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "username_taken",
+                "field": "username",
+                "message": "Username already taken",
+                "suggest_login": False,
+            },
+        )
 
     # Check if this is the first user (→ platform admin + default company org_admin)
     from sqlalchemy import func

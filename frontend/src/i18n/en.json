@@ -79,6 +79,8 @@
     "selectCompany": "Company",
     "selectCompanyPlaceholder": "— Select your company —",
     "loginFailed": "Sign in failed",
+    "registerEmailTaken": "This email is already registered.",
+    "registerUsernameTaken": "This username is already taken. Please choose another.",
     "subtitleLogin": "Welcome back. Sign in to continue.",
     "subtitleRegister": "Create your account to get started.",
     "feishu": {

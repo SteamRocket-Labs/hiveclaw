@@ -35,18 +35,24 @@ function handleUnauthorized(url: string): never {
   throw new ApiError(401, 'Session expired');
 }
 
-async function parseErrorDetail(res: Response): Promise<string> {
+async function parseErrorDetail(res: Response): Promise<{ message: string; data: unknown }> {
   try {
     const body = await res.json();
-    if (Array.isArray(body.detail)) {
-      return body.detail.map((e: { loc?: string[]; msg: string }) => {
+    const raw = body.detail;
+    if (Array.isArray(raw)) {
+      const message = raw.map((e: { loc?: string[]; msg: string }) => {
         const field = e.loc?.slice(-1)[0] || '';
         return field ? `${field}: ${e.msg}` : e.msg;
       }).join('; ');
+      return { message, data: raw };
     }
-    return body.detail || `HTTP ${res.status}`;
-  } catch {
-    return `HTTP ${res.status}`;
+    if (raw && typeof raw === 'object') {
+      const message = typeof raw.message === 'string' ? raw.message : `HTTP ${res.status}`;
+      return { message, data: raw };
+    }
+    return { message: raw || `HTTP ${res.status}`, data: raw };
+  } catch (parseErr) {
+    return { message: `HTTP ${res.status}`, data: { parseError: String(parseErr) } };
   }
 }
 
@@ -73,8 +79,8 @@ export async function request<T>(
 
   if (!res.ok) {
     if (res.status === 401) handleUnauthorized(path);
-    const detail = await parseErrorDetail(res);
-    throw new ApiError(res.status, detail);
+    const { message, data } = await parseErrorDetail(res);
+    throw new ApiError(res.status, message, data);
   }
 
   if (res.status === 204) return undefined as T;
@@ -100,8 +106,8 @@ export async function getBlob(path: string, options?: RequestOptions): Promise<B
 
   if (!res.ok) {
     if (res.status === 401) handleUnauthorized(path);
-    const detail = await parseErrorDetail(res);
-    throw new ApiError(res.status, detail);
+    const { message, data } = await parseErrorDetail(res);
+    throw new ApiError(res.status, message, data);
   }
 
   return res.blob();
@@ -131,8 +137,8 @@ export async function upload<T = unknown>(
 
   if (!res.ok) {
     if (res.status === 401) handleUnauthorized(path);
-    const detail = await parseErrorDetail(res);
-    throw new ApiError(res.status, detail);
+    const { message, data } = await parseErrorDetail(res);
+    throw new ApiError(res.status, message, data);
   }
 
   return res.json();

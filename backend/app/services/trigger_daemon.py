@@ -139,8 +139,8 @@ async def _recover_reply_target_from_session(
                         t_obj = trigger_r.scalar_one_or_none()
                         if t_obj:
                             t_obj.reply_context = target
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("[TriggerDaemon] reply_context persist skipped: %s", exc)
             await db.commit()
             return target
     except Exception as exc:
@@ -1031,6 +1031,22 @@ async def _tick():
 async def start_trigger_daemon():
     """Start the background trigger daemon loop. Called from FastAPI startup."""
     logger.info("⚡ Trigger Daemon started (15s tick, heartbeat every ~60s)")
+
+    # Workspace sync was previously inline in _heartbeat_tick but blocked the
+    # event loop on Volume I/O. Decoupled into independent background loops:
+    #   - dirty consumer (60s, only syncs changed tenants/agents)
+    #   - full sweep safety net (3600s)
+    # Plus Redis pub/sub listener so peer backends converge on dirty marks.
+    try:
+        from app.services.heartbeat import _workspace_full_sweep_loop, _workspace_sync_loop
+        from app.services.workspace_sync_dirty import start_redis_listener
+
+        await start_redis_listener()
+        asyncio.create_task(_workspace_sync_loop())
+        asyncio.create_task(_workspace_full_sweep_loop())
+    except Exception as e:
+        logger.error(f"[TriggerDaemon] Failed to spawn workspace sync loops: {e}", exc_info=True)
+
     _heartbeat_counter = 0
     while True:
         try:

@@ -123,6 +123,10 @@ async def main():
         # users.must_change_password (2026-04-18) — Feishu shadow users need a nag-to-rotate flag.
         # Every login SELECTs this column; missing column = 500 on login.
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE",
+        # sso_scan_sessions.updated_at (2026-04-18) — the feishu_identity_provider_0410 migration
+        # gated create_table on _table_exists, so older DBs where sso_scan_sessions was built by
+        # an earlier ORM create_all never got updated_at. ORM SELECTs include it → sso/init 500.
+        "ALTER TABLE sso_scan_sessions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
     ]
 
     from sqlalchemy import text

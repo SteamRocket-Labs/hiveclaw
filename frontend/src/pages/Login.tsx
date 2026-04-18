@@ -312,24 +312,13 @@ export default function Login() {
                         className="login-submit"
                         disabled={feishuLoading || loading}
                         onClick={handleFeishuLogin}
-                        style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            gap: '10px',
-                        }}
                     >
                         {feishuLoading ? (
                             <span className="login-spinner" />
                         ) : (
                             <>
-                                {/* Feishu (Lark) official mark: stylised bird profile */}
-                                <svg width="20" height="20" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                                    <path d="M24 4C13 4 4 13 4 24s9 20 20 20c4.4 0 8.4-1.4 11.7-3.8l6.3 1.7-1.8-6.2C42.6 32.5 44 28.4 44 24c0-11-9-20-20-20z" fill="#00D6B9"/>
-                                    <path d="M14 18c0-2.2 1.8-4 4-4h12c5.5 0 10 4.5 10 10s-4.5 10-10 10H18c-2.2 0-4-1.8-4-4V18z" fill="#3370FF"/>
-                                    <path d="M30 14c5.5 0 10 4.5 10 10H30V14z" fill="#133C9A"/>
-                                </svg>
                                 {t('auth.feishu.login', 'Login with Feishu')}
+                                <span style={{ marginLeft: '6px' }}>→</span>
                             </>
                         )}
                     </button>

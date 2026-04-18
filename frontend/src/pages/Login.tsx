@@ -21,7 +21,6 @@ export default function Login() {
     const [suggestLogin, setSuggestLogin] = useState(false);
     const [loading, setLoading] = useState(false);
     const [feishuLoading, setFeishuLoading] = useState(false);
-    const [feishuAvailable, setFeishuAvailable] = useState(false);
     const feishuPollRef = useRef(false);
 
     const [form, setForm] = useState({
@@ -33,7 +32,10 @@ export default function Login() {
     // Login page always uses dark theme (hero panel is dark)
     useEffect(() => {
         document.documentElement.setAttribute('data-theme', 'dark');
-        authApi.feishuSsoAvailable().then(r => setFeishuAvailable(r.available)).catch(() => {});
+        // Feishu login button is always rendered — whether the backend
+        // actually has Feishu credentials configured is the admin's
+        // responsibility. If a user clicks and it fails, the error banner
+        // tells them to contact their admin.
     }, []);
 
     const handleFeishuLogin = useCallback(async () => {
@@ -299,7 +301,6 @@ export default function Login() {
                         </button>
                     </form>
 
-                    {feishuAvailable && (<>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px', margin: '4px 0 8px' }}>
                         <div style={{ flex: 1, height: '1px', background: 'var(--border-subtle)' }} />
                         <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>{t('auth.feishu.or', 'or')}</span>
@@ -333,7 +334,6 @@ export default function Login() {
                             </>
                         )}
                     </button>
-                    </>)}
 
                     <div className="login-switch">
                         {isRegister ? t('auth.hasAccount') : t('auth.noAccount')}{' '}

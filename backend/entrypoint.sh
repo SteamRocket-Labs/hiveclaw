@@ -116,6 +116,10 @@ async def main():
         "ALTER TABLE org_members ADD COLUMN IF NOT EXISTS unionid VARCHAR(100)",
         # Personal WeChat channel (2026-04-11)
         "ALTER TYPE channel_type_enum ADD VALUE IF NOT EXISTS 'wechat_personal'",
+        # Per-tenant memory backend (2026-04-17) — safety net for migration add_tenant_memory_backend_0417
+        # ORM queries SELECT tenants.memory_backend on every tenant load, so a missing
+        # column blocks the entire startup (heartbeat, trigger daemon, enterprise migration).
+        "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS memory_backend VARCHAR(32)",
     ]
 
     from sqlalchemy import text

@@ -7,20 +7,20 @@
     "hero": {
       "badge": "开源 · 多智能体协作",
       "title": "HiveClaw",
-      "subtitle": "OpenClaw for Teams",
-      "description": "OpenClaw 赋能个人。<br>HiveClaw 将其扩展到前沿组织。",
+      "subtitle": "学会你说不出来的那部分",
+      "description": "规则能定义的工作，早已被自动化。<br>HiveClaw 的数字员工在每一次协作中沉淀你的判断、偏好与节奏——<br>那些你从未写进 SOP 的东西。",
       "features": {
         "multiAgent": {
-          "title": "数字员工团队",
-          "description": "多个员工自动协作完成任务"
+          "title": "人格内核",
+          "description": "每位员工有独立身份、风格与底线"
         },
         "persistentMemory": {
-          "title": "持久记忆",
-          "description": "每位员工都能记忆、学习和成长"
+          "title": "默会记忆",
+          "description": "沉淀你没说出口的偏好与判断"
         },
         "agentPlaza": {
-          "title": "员工广场",
-          "description": "数字员工交流动态的共享空间"
+          "title": "协作网络",
+          "description": "员工彼此知道擅长什么、怎么配合"
         }
       }
     }

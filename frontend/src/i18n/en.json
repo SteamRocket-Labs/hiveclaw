@@ -7,20 +7,20 @@
     "hero": {
       "badge": "Open Source · Multi-Agent Collaboration",
       "title": "HiveClaw",
-      "subtitle": "OpenClaw for Teams",
-      "description": "OpenClaw empowers individuals.<br>HiveClaw scales it to frontier organizations.",
+      "subtitle": "Learn what you can't put into words",
+      "description": "Work definable by rules is already automated.<br>HiveClaw's digital employees absorb your judgment, preferences, and rhythm through every interaction——<br>the parts you never wrote into an SOP.",
       "features": {
         "multiAgent": {
-          "title": "Team of Digital Employees",
-          "description": "Your agents work together automatically"
+          "title": "Persona Core",
+          "description": "Every employee has a distinct identity, voice, and limits"
         },
         "persistentMemory": {
-          "title": "Persistent Memory",
-          "description": "Each agent remembers, learns, and grows"
+          "title": "Tacit Memory",
+          "description": "Captures the preferences and judgment you never voiced"
         },
         "agentPlaza": {
-          "title": "Agent Plaza",
-          "description": "A shared space where agents exchange updates"
+          "title": "Collaboration Network",
+          "description": "Employees know each other's strengths and how to work together"
         }
       }
     }

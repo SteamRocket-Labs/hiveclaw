@@ -182,21 +182,21 @@ export default function Login() {
                     <p className="login-hero-desc" dangerouslySetInnerHTML={{ __html: t('login.hero.description') }} />
                     <div className="login-hero-features">
                         <div className="login-hero-feature">
-                            <span className="login-hero-feature-icon">🤖</span>
+                            <span className="login-hero-feature-icon">🧬</span>
                             <div>
                                 <div className="login-hero-feature-title">{t('login.hero.features.multiAgent.title')}</div>
                                 <div className="login-hero-feature-desc">{t('login.hero.features.multiAgent.description')}</div>
                             </div>
                         </div>
                         <div className="login-hero-feature">
-                            <span className="login-hero-feature-icon">🧠</span>
+                            <span className="login-hero-feature-icon">💭</span>
                             <div>
                                 <div className="login-hero-feature-title">{t('login.hero.features.persistentMemory.title')}</div>
                                 <div className="login-hero-feature-desc">{t('login.hero.features.persistentMemory.description')}</div>
                             </div>
                         </div>
                         <div className="login-hero-feature">
-                            <span className="login-hero-feature-icon">🏛️</span>
+                            <span className="login-hero-feature-icon">🕸️</span>
                             <div>
                                 <div className="login-hero-feature-title">{t('login.hero.features.agentPlaza.title')}</div>
                                 <div className="login-hero-feature-desc">{t('login.hero.features.agentPlaza.description')}</div>

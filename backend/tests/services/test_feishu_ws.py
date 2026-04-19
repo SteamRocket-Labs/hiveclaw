@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -93,3 +94,83 @@ def test_card_action_callback_is_scheduled_from_dispatcher(monkeypatch):
 
     assert scheduled["loop"] == "loop-token"
     assert scheduled["coro"] is not None
+
+
+def test_message_read_event_is_acknowledged_without_scheduling(monkeypatch):
+    import app.services.feishu_ws as feishu_ws
+
+    handlers: dict[str, object] = {}
+
+    class _FakeBuilder:
+        def register_p2_customized_event(self, name, handler):
+            handlers[name] = handler
+            return self
+
+        def build(self):
+            return handlers
+
+    class _FakeDispatcherHandler:
+        @staticmethod
+        def builder(*_args, **_kwargs):
+            return _FakeBuilder()
+
+    monkeypatch.setattr(feishu_ws, "lark", SimpleNamespace(EventDispatcherHandler=_FakeDispatcherHandler))
+
+    scheduled: list[object] = []
+
+    def fake_create_task(coro):
+        scheduled.append(coro)
+
+    monkeypatch.setattr(feishu_ws.asyncio, "create_task", fake_create_task)
+
+    manager = feishu_ws.FeishuWSManager()
+    dispatcher = manager._create_event_handler(uuid4())
+
+    assert "im.message.message_read_v1" in dispatcher
+    dispatcher["im.message.message_read_v1"]({"event": {}})
+
+    assert scheduled == []
+
+
+def test_receive_event_with_raw_body_is_scheduled(monkeypatch):
+    import app.services.feishu_ws as feishu_ws
+
+    handlers: dict[str, object] = {}
+
+    class _FakeBuilder:
+        def register_p2_customized_event(self, name, handler):
+            handlers[name] = handler
+            return self
+
+        def build(self):
+            return handlers
+
+    class _FakeDispatcherHandler:
+        @staticmethod
+        def builder(*_args, **_kwargs):
+            return _FakeBuilder()
+
+    scheduled: list[object] = []
+
+    class _FakeLoop:
+        def create_task(self, coro):
+            scheduled.append(coro)
+            coro.close()
+
+    monkeypatch.setattr(feishu_ws, "lark", SimpleNamespace(EventDispatcherHandler=_FakeDispatcherHandler))
+    monkeypatch.setattr(feishu_ws.asyncio, "get_running_loop", lambda: _FakeLoop())
+
+    manager = feishu_ws.FeishuWSManager()
+    dispatcher = manager._create_event_handler(uuid4())
+    event = SimpleNamespace(
+        raw_body=json.dumps(
+            {
+                "header": {"event_type": "im.message.receive_v1"},
+                "event": {"message": {"message_type": "text"}},
+            }
+        ).encode("utf-8")
+    )
+
+    dispatcher["im.message.receive_v1"](event)
+
+    assert scheduled

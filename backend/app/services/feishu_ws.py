@@ -118,7 +118,6 @@ class FeishuWSManager:
                         if hasattr(data, "event"):
                             body_dict["event"] = data.event
                         elif hasattr(data, "content") and isinstance(getattr(data, "content"), str):
-                            import json
                             try:
                                 body_dict["event"] = json.loads(data.content)
                             except json.JSONDecodeError:
@@ -169,6 +168,7 @@ class FeishuWSManager:
             .register_p2_customized_event("im.message.receive_v1", handle_message)
             .register_p2_customized_event("card.action.trigger", handle_card_action)
             .register_p2_customized_event("im.chat.access_event.bot_p2p_chat_entered_v1", _noop_handler)
+            .register_p2_customized_event("im.message.message_read_v1", _noop_handler)
             .build()
         )
         return dispatcher
@@ -200,7 +200,6 @@ class FeishuWSManager:
                     if hasattr(data, "event"):
                         body_dict["event"] = data.event
                     elif hasattr(data, "content") and isinstance(getattr(data, "content"), str):
-                        import json
                         try:
                             body_dict["event"] = json.loads(data.content)
                         except json.JSONDecodeError:

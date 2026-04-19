@@ -1,6 +1,7 @@
 backend/.venv
 frontend/node_modules
 .ultra
+.code-review-graph
 .git
 __pycache__
 *.pyc

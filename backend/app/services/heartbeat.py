@@ -73,7 +73,7 @@ def _reset_heartbeat_session(agent_id: uuid.UUID) -> None:
     _heartbeat_tick_counts.pop(agent_id, None)
     _t2_mtimes.pop(agent_id, None)
     _heartbeat_session_ctxs.pop(agent_id, None)
-    logger.info("[Heartbeat] Session reset for %s", agent_id)
+    logger.info("[Heartbeat] Session reset for {}", agent_id)
 
 
 def _get_or_create_heartbeat_session_ctx(agent_id: uuid.UUID, session_id: uuid.UUID) -> "SessionContext":
@@ -125,7 +125,7 @@ def _read_t3_summary(agent_id: uuid.UUID) -> str:
                     # Truncate to first 500 chars per file for reference
                     parts.append(f"### {fname}\n{content[:500]}")
             except Exception as exc:
-                logger.debug("[Heartbeat] Failed to read T3 %s: %s", fpath, exc)
+                logger.debug("[Heartbeat] Failed to read T3 {}: {}", fpath, exc)
     return "\n\n".join(parts) if parts else "(no memory files)"
 
 
@@ -187,7 +187,7 @@ async def _try_acquire_heartbeat_lease_async(
             _heartbeat_leases[agent_id] = now or datetime.now(timezone.utc)
         return bool(acquired)
     except Exception as exc:
-        logger.debug("[Heartbeat] Redis lease unavailable, falling back to local lease: %s", exc)
+        logger.debug("[Heartbeat] Redis lease unavailable, falling back to local lease: {}", exc)
         return _try_acquire_heartbeat_lease(agent_id, now=now, ttl_seconds=ttl_seconds)
 
 
@@ -197,7 +197,7 @@ async def _release_heartbeat_lease_async(agent_id: uuid.UUID) -> None:
         redis = await get_redis()
         await redis.delete(lease_key)
     except Exception as exc:
-        logger.debug("[Heartbeat] Redis lease release skipped: %s", exc)
+        logger.debug("[Heartbeat] Redis lease release skipped: {}", exc)
     finally:
         _release_heartbeat_lease(agent_id)
 
@@ -310,7 +310,7 @@ def _load_skill_opportunity_state(ws_root) -> dict:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
-        logger.debug("[Heartbeat] failed to read skill opportunity state: %s", exc)
+        logger.debug("[Heartbeat] failed to read skill opportunity state: {}", exc)
         return {}
 
 
@@ -327,7 +327,7 @@ def _save_skill_opportunity_state(ws_root, *, tick: int, tools: list[str]) -> No
             encoding="utf-8",
         )
     except Exception as exc:
-        logger.debug("[Heartbeat] failed to write skill opportunity state: %s", exc)
+        logger.debug("[Heartbeat] failed to write skill opportunity state: {}", exc)
 
 
 def _skill_already_covers_tools(ws_root, frequent_tools: list[str]) -> str | None:
@@ -341,7 +341,7 @@ def _skill_already_covers_tools(ws_root, frequent_tools: list[str]) -> str | Non
         registry = SkillRegistry()
         registry.register_many(loader.load_from_workspace(ws_root))
     except Exception as exc:
-        logger.debug("[Heartbeat] skill coverage check failed: %s", exc)
+        logger.debug("[Heartbeat] skill coverage check failed: {}", exc)
         return None
 
     target = set(frequent_tools)
@@ -505,7 +505,7 @@ async def _build_evolution_context(
                     )
             elif suppression_note:
                 logger.debug(
-                    "[Heartbeat] skill opportunity suppressed for %s: %s",
+                    "[Heartbeat] skill opportunity suppressed for {}: {}",
                     agent_id,
                     suppression_note,
                 )
@@ -575,7 +575,7 @@ def _archive_lineage_entries(evo_dir: Path, discarded_segments: list[str], agent
             if not isinstance(existing, list):
                 existing = []
         except (json.JSONDecodeError, OSError) as load_err:
-            logger.debug("[Heartbeat] Failed to load lineage archive: %s", load_err)
+            logger.debug("[Heartbeat] Failed to load lineage archive: {}", load_err)
 
     for segment in discarded_segments:
         entry: dict[str, str | int | None] = {}
@@ -594,7 +594,7 @@ def _archive_lineage_entries(evo_dir: Path, discarded_segments: list[str], agent
                 try:
                     entry["score"] = int(line[8:].strip().split()[0])
                 except (ValueError, IndexError) as parse_err:
-                    logger.debug("[Heartbeat] Failed to parse score: %s", parse_err)
+                    logger.debug("[Heartbeat] Failed to parse score: {}", parse_err)
         if entry.get("date") or entry.get("strategy"):
             existing.append(entry)
 
@@ -602,9 +602,9 @@ def _archive_lineage_entries(evo_dir: Path, discarded_segments: list[str], agent
     existing = existing[-_LINEAGE_ARCHIVE_MAX:]
     try:
         archive_path.write_text(json.dumps(existing, ensure_ascii=False, indent=1), encoding="utf-8")
-        logger.info("[Heartbeat] Archived %d rotated lineage entries for %s", len(discarded_segments), agent_id)
+        logger.info("[Heartbeat] Archived {} rotated lineage entries for {}", len(discarded_segments), agent_id)
     except Exception as write_err:
-        logger.debug("[Heartbeat] Failed to write lineage archive: %s", write_err)
+        logger.debug("[Heartbeat] Failed to write lineage archive: {}", write_err)
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -623,7 +623,7 @@ def _atomic_write(path: Path, content: str) -> None:
         try:
             os.unlink(tmp_path)
         except OSError as unlink_exc:
-            logger.debug("[Heartbeat] Failed to clean up temp file %s: %s", tmp_path, unlink_exc)
+            logger.debug("[Heartbeat] Failed to clean up temp file {}: {}", tmp_path, unlink_exc)
         raise
 
 
@@ -648,7 +648,7 @@ def _update_evolution_files(
     # Use canonical workspace to avoid double-counting across paths
     ws_root = _get_canonical_workspace(agent_id)
     if not ws_root:
-        logger.debug("[Heartbeat] No workspace found for evolution writeback: %s", agent_id)
+        logger.debug("[Heartbeat] No workspace found for evolution writeback: {}", agent_id)
         return
 
     evo_dir = ws_root / "evolution"
@@ -731,7 +731,7 @@ def _update_evolution_files(
             entry_marker = f"{source.upper()}-{now}"
             if f"### {entry_marker}" in existing:
                 logger.debug(
-                    "[Heartbeat] Lineage entry %s already exists (agent-written), skipping server append", entry_marker
+                    "[Heartbeat] Lineage entry {} already exists (agent-written), skipping server append", entry_marker
                 )
             else:
                 score_str = f", score={score}" if score is not None else ""
@@ -782,9 +782,9 @@ def _update_evolution_files(
                     entry = f"- [{date_str}] {summary[:150]} (3 consecutive failures)"
                     if summary[:60].lower() not in bl_text.lower():
                         _atomic_write(blocklist_path, bl_text.rstrip() + "\n" + entry + "\n")
-                        logger.info("[Heartbeat] Auto-blocked approach for agent %s: %s", agent_id, summary[:80])
+                        logger.info("[Heartbeat] Auto-blocked approach for agent {}: {}", agent_id, summary[:80])
             except Exception as bl_err:
-                logger.debug("[Heartbeat] Blocklist auto-append failed: %s", bl_err)
+                logger.debug("[Heartbeat] Blocklist auto-append failed: {}", bl_err)
 
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
@@ -964,7 +964,7 @@ async def _maybe_run_skill_distillation(
             current_session_id=current_session_id,
         )
     except Exception as exc:
-        logger.warning("[Heartbeat] Skill distillation failed for %s: %s", agent_id, exc)
+        logger.warning("[Heartbeat] Skill distillation failed for {}: {}", agent_id, exc)
         return None
 
 
@@ -978,7 +978,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
     if not lease_held:
         lease_held = await _try_acquire_heartbeat_lease_async(agent_id)
         if not lease_held:
-            logger.info("[Heartbeat] Skip duplicate in-flight heartbeat for %s", agent_id)
+            logger.info("[Heartbeat] Skip duplicate in-flight heartbeat for {}", agent_id)
             return
 
     import json as _json
@@ -1110,13 +1110,13 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                     )
                 )
                 await db.commit()
-                logger.info("[Heartbeat] Tick #%d (full init) for %s", tick_count, agent.name)
+                logger.info("[Heartbeat] Tick #{} (full init) for {}", tick_count, agent.name)
             else:
                 # ═══ Subsequent tick: <tick> + incremental T2 ═══
                 new_t2 = _read_incremental_t2(agent_id)
                 if not new_t2:
                     # Idle protection: no new T2 entries → skip this tick
-                    logger.info("[Heartbeat] Skip tick #%d for %s: no new T2 entries", tick_count, agent.name)
+                    logger.info("[Heartbeat] Skip tick #{} for {}: no new T2 entries", tick_count, agent.name)
                     await _release_heartbeat_lease_async(agent_id)
                     await _touch_last_heartbeat(agent_id)
                     return
@@ -1142,7 +1142,12 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                     )
                 )
                 await db.commit()
-                logger.info("[Heartbeat] Tick #%d (incremental, %d new entries) for %s", tick_count, new_t2.count("\n") + 1, agent.name)
+                logger.info(
+                    "[Heartbeat] Tick #{} (incremental, {} new entries) for {}",
+                    tick_count,
+                    new_t2.count("\n") + 1,
+                    agent.name,
+                )
 
             # Tool call persistence callback
             async def _on_tool_call(data: dict) -> None:
@@ -1279,7 +1284,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                     current_session_id=str(session_id),
                 )
             except Exception as _distill_err:
-                logger.warning("[Heartbeat] Skill distillation setup failed for %s: %s", agent_id, _distill_err)
+                logger.warning("[Heartbeat] Skill distillation setup failed for {}: {}", agent_id, _distill_err)
 
             # Count heartbeat as a session for auto-dream gate so agents with
             # low user-chat but high heartbeat activity still trigger distillation.
@@ -1290,9 +1295,9 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                 record_session_end(agent_id)
                 if should_dream(agent_id) and agent.tenant_id:
                     asyncio.create_task(run_dream(agent_id, agent.tenant_id))
-                    logger.info("[Heartbeat] Auto-dream triggered for agent %s", agent_id)
+                    logger.info("[Heartbeat] Auto-dream triggered for agent {}", agent_id)
             except Exception as _dream_err:
-                logger.debug("[Heartbeat] Auto-dream check failed: %s", _dream_err)
+                logger.debug("[Heartbeat] Auto-dream check failed: {}", _dream_err)
 
             # NOTE: Heartbeat outcomes are no longer written directly into long-term
             # memory here. Evolution files are the intermediate source; dream curates
@@ -1311,14 +1316,14 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                 )
                 if normalization_report["fixed"] or normalization_report["warnings"]:
                     logger.info(
-                        "[Heartbeat] T3 normalization for %s: fixed=%d warnings=%d files=%s",
+                        "[Heartbeat] T3 normalization for {}: fixed={} warnings={} files={}",
                         agent_id,
                         normalization_report["fixed"],
                         len(normalization_report["warnings"]),
                         normalization_report["files_touched"],
                     )
             except Exception as _nrm_err:
-                logger.debug("[Heartbeat] T3 normalization failed (non-fatal): %s", _nrm_err)
+                logger.debug("[Heartbeat] T3 normalization failed (non-fatal): {}", _nrm_err)
 
             # Sync normalized T3 MD to Hindsight bank (no-op when backend=md).
             # Runs AFTER normalization so cursor mtime reflects the canonical state.
@@ -1328,14 +1333,14 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                 synced = await sync_t3_to_hindsight(agent_id, agent.tenant_id)
                 if synced:
                     logger.info(
-                        "[Heartbeat] Hindsight sync: %d T3 items (agent=%s)",
+                        "[Heartbeat] Hindsight sync: {} T3 items (agent={})",
                         synced, agent_id,
                     )
             except Exception as _hs_err:
                 # sync_t3_to_hindsight already has its own try/except and only
                 # returns here on truly unexpected paths (import error, etc).
                 # Warning-level so ops actually see these regressions.
-                logger.warning("[Heartbeat] Hindsight sync outer guard tripped: %s", _hs_err)
+                logger.warning("[Heartbeat] Hindsight sync outer guard tripped: {}", _hs_err)
 
             # Emit HEARTBEAT_TICK_END hook → T0 log
             try:
@@ -1380,7 +1385,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                     },
                 )
             except Exception as _hook_err:
-                logger.debug("[Heartbeat] HEARTBEAT_TICK_END hook failed (non-fatal): %s", _hook_err)
+                logger.debug("[Heartbeat] HEARTBEAT_TICK_END hook failed (non-fatal): {}", _hook_err)
 
             # Bootstrap validation: verify key files exist regardless of outcome
             # (cold_start agents need validation even on failure/noop)
@@ -1390,7 +1395,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
             try:
                 await _auto_cancel_completed_triggers(agent_id)
             except Exception as _ac_err:
-                logger.debug("[Heartbeat] Auto-cancel triggers failed (non-fatal): %s", _ac_err)
+                logger.debug("[Heartbeat] Auto-cancel triggers failed (non-fatal): {}", _ac_err)
 
             score_str = f" score={heartbeat_score}" if heartbeat_score is not None else ""
             logger.info(f"💓 Heartbeat for {agent.name}: {outcome_type}{score_str} — {summary}")
@@ -1458,7 +1463,7 @@ async def _auto_cancel_completed_triggers(agent_id: uuid.UUID) -> None:
     try:
         focus_text = focus_path.read_text(encoding="utf-8")
     except Exception as read_err:
-        logger.debug("[Heartbeat] Failed to read focus.md for trigger auto-cancel: %s", read_err)
+        logger.debug("[Heartbeat] Failed to read focus.md for trigger auto-cancel: {}", read_err)
         return
 
     from app.services.focus_state import extract_completed_focus_refs
@@ -1488,7 +1493,7 @@ async def _auto_cancel_completed_triggers(agent_id: uuid.UUID) -> None:
                 trigger.is_enabled = False
                 cancelled += 1
                 logger.info(
-                    "[Heartbeat] Auto-cancelled trigger '%s' (focus_ref '%s' completed) for agent %s",
+                    "[Heartbeat] Auto-cancelled trigger '{}' (focus_ref '{}' completed) for agent {}",
                     trigger.name,
                     trigger.focus_ref,
                     agent_id,

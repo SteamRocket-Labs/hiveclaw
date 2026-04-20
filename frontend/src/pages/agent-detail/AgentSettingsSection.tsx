@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom';
 
 import ChannelConfig from '../../components/ChannelConfig';
 import { agentApi } from '../../api/domains/agents';
+import { enterpriseApi, type CapabilityDefinition, type CapabilityPolicy } from '../../api/domains/enterprise';
 
 type AgentSettingsForm = {
   primary_model_id: string;
@@ -15,12 +16,31 @@ type AgentSettingsForm = {
   smart_model_routing_enabled: boolean;
 };
 
+type CapabilityPolicyMode = 'auto' | 'approval' | 'deny';
+
+const policyToMode = (policy?: CapabilityPolicy): CapabilityPolicyMode => {
+  if (!policy) return 'auto';
+  if (!policy.allowed) return 'deny';
+  return policy.requires_approval ? 'approval' : 'auto';
+};
+
+const modeToPolicy = (mode: CapabilityPolicyMode) => {
+  if (mode === 'deny') return { allowed: false, requires_approval: false };
+  if (mode === 'approval') return { allowed: true, requires_approval: true };
+  return { allowed: true, requires_approval: false };
+};
+
 interface AgentSettingsSectionProps {
   agentId: string;
   agent: any;
   llmModels: any[];
   permData: any;
   canManage: boolean;
+  canManageCapabilityPolicies: boolean;
+  capabilityDefinitions?: CapabilityDefinition[];
+  capabilityPolicies: CapabilityPolicy[];
+  capabilityPolicyLoading: boolean;
+  capabilityPolicyError: string;
   settingsForm: AgentSettingsForm;
   onSettingsFormChange: React.Dispatch<React.SetStateAction<AgentSettingsForm>>;
   settingsSaving: boolean;
@@ -51,6 +71,11 @@ export default function AgentSettingsSection({
   llmModels,
   permData,
   canManage,
+  canManageCapabilityPolicies,
+  capabilityDefinitions = [],
+  capabilityPolicies,
+  capabilityPolicyLoading,
+  capabilityPolicyError,
   settingsForm,
   onSettingsFormChange,
   settingsSaving,
@@ -78,6 +103,31 @@ export default function AgentSettingsSection({
     settingsForm.min_poll_interval_min !== ((agent as any)?.min_poll_interval_min ?? 5) ||
     settingsForm.webhook_rate_limit !== ((agent as any)?.webhook_rate_limit ?? 5) ||
     settingsForm.smart_model_routing_enabled !== !!((agent as any)?.smart_model_routing?.enabled);
+
+  const capabilityDefinitionSet = React.useMemo(
+    () => new Set(capabilityDefinitions.map((item) => item.capability)),
+    [capabilityDefinitions],
+  );
+  const capabilityPolicyByCapability = React.useMemo(
+    () => new Map(capabilityPolicies.map((policy) => [policy.capability, policy])),
+    [capabilityPolicies],
+  );
+
+  const handleCapabilityPolicyChange = async (capability: string, mode: CapabilityPolicyMode) => {
+    if (!canManageCapabilityPolicies) return;
+    const nextPolicy = modeToPolicy(mode);
+    try {
+      await enterpriseApi.upsertCapabilityPolicy({
+        capability,
+        agent_id: agentId,
+        ...nextPolicy,
+        conditions: capabilityPolicyByCapability.get(capability)?.conditions || {},
+      });
+      queryClient.invalidateQueries({ queryKey: ['capability-policies', agentId] });
+    } catch (e: any) {
+      onSetSettingsError(e?.message || 'Failed to save capability policy');
+    }
+  };
 
   const handleSaveSettings = async () => {
     onSetSettingsSaving(true);
@@ -439,19 +489,34 @@ export default function AgentSettingsSection({
       <div className="card" style={{ marginBottom: '12px' }}>
         <h4 style={{ marginBottom: '4px' }}>{t('agent.settings.autonomy.title')}</h4>
         <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>{t('agent.settings.autonomy.description')}</p>
+        {capabilityPolicyLoading && (
+          <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+            {t('agent.settings.autonomy.policyLoading')}
+          </p>
+        )}
+        {capabilityPolicyError && (
+          <p style={{ fontSize: '12px', color: 'var(--error)', marginBottom: '12px' }}>
+            {t('agent.settings.autonomy.policyError', { message: capabilityPolicyError })}
+          </p>
+        )}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           {[
-            { key: 'read_files', label: t('agent.settings.autonomy.readFiles'), desc: t('agent.settings.autonomy.readFilesDesc') },
-            { key: 'write_workspace_files', label: t('agent.settings.autonomy.writeFiles'), desc: t('agent.settings.autonomy.writeFilesDesc') },
-            { key: 'delete_files', label: t('agent.settings.autonomy.deleteFiles'), desc: t('agent.settings.autonomy.deleteFilesDesc') },
-            { key: 'execute_code', label: t('agent.settings.autonomy.executeCode'), desc: t('agent.settings.autonomy.executeCodeDesc') },
-            { key: 'send_email', label: t('agent.settings.autonomy.sendEmail'), desc: t('agent.settings.autonomy.sendEmailDesc') },
-            { key: 'import_mcp_server', label: t('agent.settings.autonomy.installMcp'), desc: t('agent.settings.autonomy.installMcpDesc') },
-            { key: 'send_feishu_message', label: t('agent.settings.autonomy.sendFeishu'), desc: t('agent.settings.autonomy.sendFeishuDesc') },
-            { key: 'web_search', label: t('agent.settings.autonomy.webSearch'), desc: t('agent.settings.autonomy.webSearchDesc') },
-            { key: 'manage_tasks', label: t('agent.settings.autonomy.manageTasks'), desc: t('agent.settings.autonomy.manageTasksDesc') },
+            { key: 'read_files', capability: 'workspace.file.read', label: t('agent.settings.autonomy.readFiles'), desc: t('agent.settings.autonomy.readFilesDesc') },
+            { key: 'write_workspace_files', capability: 'workspace.file.write', label: t('agent.settings.autonomy.writeFiles'), desc: t('agent.settings.autonomy.writeFilesDesc') },
+            { key: 'delete_files', capability: 'workspace.file.delete', label: t('agent.settings.autonomy.deleteFiles'), desc: t('agent.settings.autonomy.deleteFilesDesc') },
+            { key: 'execute_code', capability: 'workspace.code.execute', label: t('agent.settings.autonomy.executeCode'), desc: t('agent.settings.autonomy.executeCodeDesc') },
+            { key: 'send_email', capability: 'channel.email.send', label: t('agent.settings.autonomy.sendEmail'), desc: t('agent.settings.autonomy.sendEmailDesc') },
+            { key: 'import_mcp_server', capability: 'agent.tool.install', label: t('agent.settings.autonomy.installMcp'), desc: t('agent.settings.autonomy.installMcpDesc') },
+            { key: 'send_feishu_message', capability: 'channel.feishu.message', label: t('agent.settings.autonomy.sendFeishu'), desc: t('agent.settings.autonomy.sendFeishuDesc') },
+            { key: 'feishu_documents', capability: 'channel.feishu.document', label: t('agent.settings.autonomy.feishuDocs'), desc: t('agent.settings.autonomy.feishuDocsDesc') },
+            { key: 'feishu_base', capability: 'channel.feishu.base', label: t('agent.settings.autonomy.feishuBase'), desc: t('agent.settings.autonomy.feishuBaseDesc') },
+            { key: 'feishu_tasks', capability: 'channel.feishu.task', label: t('agent.settings.autonomy.feishuTasks'), desc: t('agent.settings.autonomy.feishuTasksDesc') },
+            { key: 'web_search', capability: 'external.web.search', label: t('agent.settings.autonomy.webSearch'), desc: t('agent.settings.autonomy.webSearchDesc') },
+            { key: 'manage_tasks', capability: 'agent.task.modify', label: t('agent.settings.autonomy.manageTasks'), desc: t('agent.settings.autonomy.manageTasksDesc') },
           ].map((action) => {
-            const currentLevel = (agent?.autonomy_policy as any)?.[action.key] || 'L1';
+            const currentMode = policyToMode(capabilityPolicyByCapability.get(action.capability));
+            const unsupported = capabilityDefinitionSet.size > 0 && !capabilityDefinitionSet.has(action.capability);
+            const disabled = !canManageCapabilityPolicies || capabilityPolicyLoading || !!capabilityPolicyError || unsupported;
             return (
               <div
                 key={action.key}
@@ -471,22 +536,22 @@ export default function AgentSettingsSection({
                 </div>
                 <select
                   className="input"
-                  value={currentLevel}
+                  value={currentMode}
+                  disabled={disabled}
                   onChange={async (e) => {
-                    const newPolicy = { ...(agent?.autonomy_policy as any || {}), [action.key]: e.target.value };
-                    await agentApi.update(agentId, { autonomy_policy: newPolicy } as any);
-                    queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
+                    await handleCapabilityPolicyChange(action.capability, e.target.value as CapabilityPolicyMode);
                   }}
                   style={{
                     width: '140px',
                     fontSize: '12px',
-                    color: currentLevel === 'L1' ? 'var(--success)' : currentLevel === 'L2' ? 'var(--warning)' : 'var(--error)',
+                    color: currentMode === 'auto' ? 'var(--success)' : currentMode === 'approval' ? 'var(--warning)' : 'var(--error)',
                     fontWeight: 600,
+                    opacity: disabled ? 0.6 : 1,
                   }}
                 >
-                  <option value="L1">{t('agent.settings.autonomy.l1Auto')}</option>
-                  <option value="L2">{t('agent.settings.autonomy.l2Notify')}</option>
-                  <option value="L3">{t('agent.settings.autonomy.l3Approve')}</option>
+                  <option value="auto">{t('agent.settings.autonomy.l1Auto')}</option>
+                  <option value="approval">{t('agent.settings.autonomy.l3Approve')}</option>
+                  <option value="deny">{t('agent.settings.autonomy.deny')}</option>
                 </select>
               </div>
             );

@@ -26,6 +26,7 @@ _STATIC_SENSITIVE_TOOLS = {
     "reply_email",
     "execute_code",
     "run_command",
+    "manage_tasks",
     "set_trigger",
     "import_mcp_server",
     "send_message_to_agent",

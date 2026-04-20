@@ -470,7 +470,6 @@ describe('AgentDetail extracted sections', () => {
           tokens_used_today: 1234,
           tokens_used_month: 5678,
           welcome_message: 'Hello there',
-          autonomy_policy: { read_files: 'L1' },
           timezone: 'Asia/Shanghai',
           heartbeat_enabled: true,
           heartbeat_interval_minutes: 120,
@@ -488,6 +487,19 @@ describe('AgentDetail extracted sections', () => {
           scope_names: [],
         }}
         canManage
+        canManageCapabilityPolicies
+        capabilityPolicies={[
+          {
+            id: 'policy-1',
+            capability: 'workspace.file.delete',
+            agent_id: 'agent-1',
+            allowed: false,
+            requires_approval: false,
+            conditions: {},
+          },
+        ]}
+        capabilityPolicyLoading={false}
+        capabilityPolicyError=""
         settingsForm={{
           primary_model_id: 'model-1',
           fallback_model_id: '',
@@ -519,6 +531,8 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Execution Mode');
     expect(markup).toContain('Coordinator');
     expect(markup).toContain('welcomeMessage');
+    expect(markup).toContain('value="deny" selected=""');
+    expect(markup).not.toContain('value="L2"');
     expect(markup).toContain('Access Permissions');
     expect(markup).toContain('Channel Config Mock');
     expect(markup).toContain('deleteAgent');

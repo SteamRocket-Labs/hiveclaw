@@ -119,6 +119,52 @@ describe('request cleanup adapters', () => {
     });
   });
 
+  it('routes capability policies through enterpriseApi', async () => {
+    vi.doMock('./core/request', async () => {
+      const actual = await vi.importActual<typeof import('./core/request')>('./core/request');
+      return {
+        ...actual,
+        get: vi.fn(),
+        put: vi.fn(),
+        del: vi.fn(),
+      };
+    });
+    const { enterpriseApi } = await import('./domains/enterprise');
+    const { get, put, del } = await import('./core/request');
+    vi.mocked(get).mockResolvedValue([]);
+    vi.mocked(put).mockResolvedValue({
+      id: 'policy-1',
+      capability: 'workspace.file.delete',
+      agent_id: 'agent-1',
+      allowed: false,
+      requires_approval: false,
+      conditions: {},
+    });
+    vi.mocked(del).mockResolvedValue({ status: 'deleted' });
+
+    await enterpriseApi.listCapabilityDefinitions();
+    await enterpriseApi.listCapabilityPolicies('agent-1');
+    await enterpriseApi.upsertCapabilityPolicy({
+      capability: 'workspace.file.delete',
+      agent_id: 'agent-1',
+      allowed: false,
+      requires_approval: false,
+      conditions: {},
+    });
+    await enterpriseApi.deleteCapabilityPolicy('policy-1');
+
+    expect(get).toHaveBeenCalledWith('/enterprise/capabilities/definitions');
+    expect(get).toHaveBeenCalledWith('/enterprise/capabilities?agent_id=agent-1');
+    expect(put).toHaveBeenCalledWith('/enterprise/capabilities', {
+      capability: 'workspace.file.delete',
+      agent_id: 'agent-1',
+      allowed: false,
+      requires_approval: false,
+      conditions: {},
+    });
+    expect(del).toHaveBeenCalledWith('/enterprise/capabilities/policy-1');
+  });
+
   it('routes session message loading through chatApi with abort support', async () => {
     vi.doMock('./core/request', async () => {
       const actual = await vi.importActual<typeof import('./core/request')>('./core/request');

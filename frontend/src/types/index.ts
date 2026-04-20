@@ -26,7 +26,6 @@ export interface Agent {
     creator_id: string;
     primary_model_id?: string;
     fallback_model_id?: string;
-    autonomy_policy: Record<string, string>;
     tokens_used_today: number;
     tokens_used_month: number;
     max_tokens_per_day?: number;

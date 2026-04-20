@@ -1,0 +1,49 @@
+from app.services.capability_gate import CAPABILITY_MAP, get_all_capabilities
+
+
+def test_capability_map_covers_agent_settings_controls_and_destructive_feishu_tools():
+    expected = {
+        "list_files": "workspace.file.read",
+        "read_file": "workspace.file.read",
+        "read_document": "workspace.file.read",
+        "write_file": "workspace.file.write",
+        "edit_file": "workspace.file.write",
+        "delete_file": "workspace.file.delete",
+        "execute_code": "workspace.code.execute",
+        "run_command": "workspace.command.execute",
+        "send_email": "channel.email.send",
+        "reply_email": "channel.email.send",
+        "import_mcp_server": "agent.tool.install",
+        "send_feishu_message": "channel.feishu.message",
+        "web_search": "external.web.search",
+        "bing_search": "external.web.search",
+        "manage_tasks": "agent.task.modify",
+        "feishu_task_create": "channel.feishu.task",
+        "feishu_task_complete": "channel.feishu.task",
+        "feishu_task_comment": "channel.feishu.task",
+        "feishu_doc_create": "channel.feishu.document",
+        "feishu_doc_append": "channel.feishu.document",
+        "feishu_doc_share": "channel.feishu.document",
+        "feishu_doc_delete": "channel.feishu.document",
+        "feishu_base_app_create": "channel.feishu.base",
+        "feishu_base_field_create": "channel.feishu.base",
+        "feishu_base_record_upsert": "channel.feishu.base",
+        "feishu_base_record_upload_attachment": "channel.feishu.base",
+        "feishu_base_record_delete": "channel.feishu.base",
+    }
+
+    for tool_name, capability in expected.items():
+        assert CAPABILITY_MAP.get(tool_name) == capability
+
+
+def test_capability_definitions_expose_policy_capabilities_for_frontend():
+    definitions = {item["capability"]: set(item["tools"]) for item in get_all_capabilities()}
+
+    assert "workspace.file.read" in definitions
+    assert "workspace.file.write" in definitions
+    assert "workspace.file.delete" in definitions
+    assert "agent.task.modify" in definitions
+    assert "channel.feishu.document" in definitions
+    assert "channel.feishu.base" in definitions
+    assert "feishu_doc_delete" in definitions["channel.feishu.document"]
+    assert "feishu_base_record_delete" in definitions["channel.feishu.base"]

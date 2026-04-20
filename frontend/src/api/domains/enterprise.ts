@@ -102,6 +102,28 @@ export interface MemoryConfig {
   extract_to_viking: boolean;
 }
 
+export interface CapabilityDefinition {
+  capability: string;
+  tools: string[];
+}
+
+export interface CapabilityPolicy {
+  id: string;
+  capability: string;
+  agent_id?: string | null;
+  allowed: boolean;
+  requires_approval: boolean;
+  conditions: Record<string, unknown>;
+}
+
+export interface CapabilityPolicyUpdate {
+  capability: string;
+  agent_id?: string | null;
+  allowed: boolean;
+  requires_approval: boolean;
+  conditions?: Record<string, unknown>;
+}
+
 export const enterpriseApi = {
   /** LLM models */
   listLLMModels: (tenantId?: string) => get<LLMModel[]>(`/enterprise/llm-models${tenantId ? `?tenant_id=${tenantId}` : ''}`),
@@ -135,6 +157,14 @@ export const enterpriseApi = {
     get<MemoryConfig>(`/enterprise/memory/config${tenantId ? `?tenant_id=${tenantId}` : ''}`),
   updateMemoryConfig: (data: MemoryConfig, tenantId?: string) =>
     put<MemoryConfig>(`/enterprise/memory/config${tenantId ? `?tenant_id=${tenantId}` : ''}`, data),
+
+  /** Capability policies */
+  listCapabilityDefinitions: () => get<CapabilityDefinition[]>('/enterprise/capabilities/definitions'),
+  listCapabilityPolicies: (agentId?: string) =>
+    get<CapabilityPolicy[]>(`/enterprise/capabilities${agentId ? `?agent_id=${agentId}` : ''}`),
+  upsertCapabilityPolicy: (data: CapabilityPolicyUpdate) =>
+    put<CapabilityPolicy>('/enterprise/capabilities', { conditions: {}, ...data }),
+  deleteCapabilityPolicy: (policyId: string) => del(`/enterprise/capabilities/${policyId}`),
 
   /** Invitation codes */
   listInvitationCodes: (params?: string) =>

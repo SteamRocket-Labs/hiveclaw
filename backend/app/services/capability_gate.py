@@ -15,21 +15,40 @@ from app.models.capability_policy import CapabilityPolicy
 
 logger = logging.getLogger(__name__)
 
-# Tool name → capability category mapping (only high-risk tools)
+# Tool name → capability category mapping.
+#
+# These names are also exposed through /enterprise/capabilities/definitions for
+# the admin UI, so keep this surface aligned with visible permission controls.
 CAPABILITY_MAP: dict[str, str] = {
+    "list_files": "workspace.file.read",
+    "read_file": "workspace.file.read",
+    "read_document": "workspace.file.read",
     "write_file": "workspace.file.write",
     "edit_file": "workspace.file.write",
+    "delete_file": "workspace.file.delete",
+    "execute_code": "workspace.code.execute",
+    "run_command": "workspace.command.execute",
+    "manage_tasks": "agent.task.modify",
     "send_feishu_message": "channel.feishu.message",
     "feishu_calendar_create": "channel.feishu.calendar",
     "feishu_calendar_update": "channel.feishu.calendar",
     "feishu_calendar_delete": "channel.feishu.calendar",
     "feishu_doc_create": "channel.feishu.document",
     "feishu_doc_append": "channel.feishu.document",
+    "feishu_doc_share": "channel.feishu.document",
+    "feishu_doc_delete": "channel.feishu.document",
+    "feishu_base_app_create": "channel.feishu.base",
+    "feishu_base_field_create": "channel.feishu.base",
+    "feishu_base_record_upsert": "channel.feishu.base",
+    "feishu_base_record_upload_attachment": "channel.feishu.base",
+    "feishu_base_record_delete": "channel.feishu.base",
+    "feishu_task_create": "channel.feishu.task",
+    "feishu_task_complete": "channel.feishu.task",
+    "feishu_task_comment": "channel.feishu.task",
     "send_email": "channel.email.send",
     "reply_email": "channel.email.send",
-    "delete_file": "workspace.file.delete",
-    "execute_code": "workspace.code.execute",
-    "run_command": "workspace.command.execute",
+    "send_channel_message": "channel.message.send",
+    "send_channel_file": "channel.file.send",
     "set_trigger": "agent.trigger.modify",
     "update_trigger": "agent.trigger.modify",
     "import_mcp_server": "agent.tool.install",

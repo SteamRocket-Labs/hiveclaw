@@ -30,7 +30,7 @@ import { normalizeToolCallResult } from './agent-detail/toolResultEnvelope';
 import OpenClawSettings from './OpenClawSettings';
 import { agentApi, type AgentCapabilityInstall, type AgentChannelCapability } from '../api/domains/agents';
 import { activityApi } from '../api/domains/activity';
-import { enterpriseApi } from '../api/domains/enterprise';
+import { enterpriseApi, type CapabilityDefinition, type CapabilityPolicy } from '../api/domains/enterprise';
 import { fileApi } from '../api/domains/files';
 import { triggerApi } from '../api/domains/triggers';
 import { chatApi } from '../api/domains/chat';
@@ -938,6 +938,36 @@ function AgentDetailInner() {
         enabled: !!id && activeTab === 'settings',
     });
 
+    const canManage = !!agent && ((agent as any).access_level === 'manage' || isAdmin);
+    const canManageCapabilityPolicies = isAdmin;
+
+    const {
+        data: capabilityDefinitions = [],
+        isLoading: capabilityDefinitionsLoading,
+        error: capabilityDefinitionsError,
+    } = useQuery<CapabilityDefinition[]>({
+        queryKey: ['capability-definitions'],
+        queryFn: () => enterpriseApi.listCapabilityDefinitions(),
+        enabled: !!id && activeTab === 'settings' && canManageCapabilityPolicies,
+        retry: false,
+    });
+
+    const {
+        data: capabilityPolicies = [],
+        isLoading: capabilityPoliciesLoading,
+        error: capabilityPoliciesError,
+    } = useQuery<CapabilityPolicy[]>({
+        queryKey: ['capability-policies', id],
+        queryFn: () => enterpriseApi.listCapabilityPolicies(id!),
+        enabled: !!id && activeTab === 'settings' && canManageCapabilityPolicies,
+        retry: false,
+    });
+
+    const capabilityPolicyError =
+        (capabilityPoliciesError as Error | null)?.message ||
+        (capabilityDefinitionsError as Error | null)?.message ||
+        '';
+
     // ─── File viewer ─────────────────────────────────────
     const [viewingFile, setViewingFile] = useState<string | null>(null);
     const [fileEditing, setFileEditing] = useState(false);
@@ -988,7 +1018,6 @@ function AgentDetailInner() {
         return agent.status === 'running' ? 'running' : 'idle';
     };
     const statusKey = computeStatusKey();
-    const canManage = (agent as any).access_level === 'manage' || isAdmin;
     const isSystemHrRaw = (agent as any).agent_class === 'internal_system';
     const isManageMode = new URLSearchParams(location.search).has('manage');
     const isSystemHr = isSystemHrRaw && !isManageMode;
@@ -1363,6 +1392,11 @@ function AgentDetailInner() {
                             llmModels={llmModels}
                             permData={permData}
                             canManage={canManage}
+                            canManageCapabilityPolicies={canManageCapabilityPolicies}
+                            capabilityDefinitions={capabilityDefinitions}
+                            capabilityPolicies={capabilityPolicies}
+                            capabilityPolicyLoading={capabilityDefinitionsLoading || capabilityPoliciesLoading}
+                            capabilityPolicyError={capabilityPolicyError}
                             settingsForm={settingsForm}
                             onSettingsFormChange={setSettingsForm}
                             settingsSaving={settingsSaving}

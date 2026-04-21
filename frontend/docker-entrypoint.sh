@@ -15,7 +15,7 @@ if [ -z "$RESOLVER" ]; then
   fi
 fi
 
-sed -i "s|resolver 127.0.0.11 valid=10s ipv6=off|resolver $RESOLVER valid=10s|g" /etc/nginx/conf.d/default.conf
+sed -i "s|resolver 127.0.0.11 valid=10s ipv6=off|resolver $RESOLVER valid=10s ipv6=off|g" /etc/nginx/conf.d/default.conf
 
 # Replace backend upstream if BACKEND_HOST is set
 if [ -n "$BACKEND_HOST" ]; then

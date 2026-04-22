@@ -19,8 +19,9 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
 
     Access is granted if:
     1. User is platform admin → manage
-    2. User is the agent creator → manage
-    3. User has explicit permission (company/user scope) → from permission record
+    2. User is org admin for the agent's tenant → manage
+    3. User is the agent creator → manage
+    4. User has explicit permission (company/user scope) → from permission record
     """
     result = await db.execute(select(Agent).where(Agent.id == agent_id))
     agent = result.scalar_one_or_none()
@@ -34,6 +35,11 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
     # Tenant boundary: non-platform users can only access agents in their own tenant
     if user.tenant_id and agent.tenant_id and user.tenant_id != agent.tenant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+
+    # Organization admins can audit and manage every agent in their own tenant,
+    # including agents whose explicit permission scope is limited to one user.
+    if user.role == "org_admin" and user.tenant_id and agent.tenant_id == user.tenant_id:
+        return agent, "manage"
 
     # Creator always has manage access
     if agent.creator_id == user.id:

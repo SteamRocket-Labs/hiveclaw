@@ -28,6 +28,7 @@ export interface AgentUpdateParams {
   heartbeat_interval_minutes?: number;
   heartbeat_active_hours?: string;
   timezone?: string;
+  security_zone?: string;
   execution_mode?: 'standard' | 'coordinator';
 }
 

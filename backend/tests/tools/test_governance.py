@@ -219,6 +219,74 @@ async def test_governance_requests_approval_when_capability_requires_it():
 
 
 @pytest.mark.asyncio
+async def test_governance_denies_feishu_doc_delete_in_standard_zone_when_policy_denies():
+    from app.services.capability_gate import CapabilityCheckResult
+    from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    events = []
+    audit_calls = []
+
+    async def resolve_security_zone(_agent_id):
+        return "standard"
+
+    async def check_capability(_tenant_id, _agent_id, tool_name):
+        assert _tenant_id == tenant_id
+        assert _agent_id == agent_id
+        assert tool_name == "feishu_doc_delete"
+        return CapabilityCheckResult(
+            allowed=False,
+            denied=True,
+            capability="channel.feishu.document",
+            reason="Capability 'channel.feishu.document' is not allowed for this agent",
+        )
+
+    async def write_audit(**kwargs):
+        audit_calls.append(kwargs)
+
+    async def request_approval(*args, **kwargs):
+        raise AssertionError("approval should not be requested after capability deny")
+
+    message = await run_tool_governance(
+        ToolGovernanceContext(
+            agent_id=agent_id,
+            user_id=uuid4(),
+            tenant_id=str(tenant_id),
+            tool_name="feishu_doc_delete",
+            arguments={"document_token": "doc-token"},
+        ),
+        GovernanceDependencies(
+            resolve_security_zone=resolve_security_zone,
+            check_capability=check_capability,
+            write_audit_event=write_audit,
+            request_approval=request_approval,
+        ),
+        event_callback=events.append,
+    )
+
+    assert message == "🚫 Capability denied: Capability 'channel.feishu.document' is not allowed for this agent"
+    assert audit_calls == [{
+        "event_type": "capability.denied",
+        "severity": "warn",
+        "actor_type": "agent",
+        "actor_id": agent_id,
+        "tenant_id": tenant_id,
+        "action": "capability_denied",
+        "resource_type": "tool",
+        "resource_id": None,
+        "details": {"tool": "feishu_doc_delete", "capability": "channel.feishu.document"},
+    }]
+    assert events == [{
+        "type": "permission",
+        "tool_name": "feishu_doc_delete",
+        "status": "capability_denied",
+        "message": "🚫 Capability denied: Capability 'channel.feishu.document' is not allowed for this agent",
+        "capability": "channel.feishu.document",
+    }]
+
+
+@pytest.mark.asyncio
 async def test_governance_escalates_dangerous_run_command_even_when_capability_allows():
     from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
 

@@ -553,6 +553,17 @@
       "welcomeMessage": "Welcome Message",
       "welcomeMessageDesc": "Greeting shown when someone starts a new conversation. Supports Markdown. Leave empty to skip.",
       "welcomeMessagePlaceholder": "e.g. Hi! I'm your digital assistant. How can I help you today?",
+      "securityZone": {
+        "title": "Security Zone",
+        "description": "Choose the coarse-grained runtime boundary before capability policies are evaluated.",
+        "current": "Current Zone",
+        "public": "Public",
+        "publicDesc": "Read-only safe tools only",
+        "standard": "Standard",
+        "standardDesc": "Capability policies decide whether actions run automatically, need approval, or are denied",
+        "restricted": "Restricted",
+        "restrictedDesc": "Sensitive tools require approval before capability policies are evaluated"
+      },
       "usingFallback": "Using backup model: {{model}}",
       "noModelWarning": "No AI model selected. This employee can't chat until you choose one.",
       "clampedField": {

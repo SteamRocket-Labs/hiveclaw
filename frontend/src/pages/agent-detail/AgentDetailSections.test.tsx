@@ -470,6 +470,7 @@ describe('AgentDetail extracted sections', () => {
           tokens_used_today: 1234,
           tokens_used_month: 5678,
           welcome_message: 'Hello there',
+          security_zone: 'restricted',
           timezone: 'Asia/Shanghai',
           heartbeat_enabled: true,
           heartbeat_interval_minutes: 120,
@@ -509,6 +510,7 @@ describe('AgentDetail extracted sections', () => {
           min_poll_interval_min: 5,
           webhook_rate_limit: 5,
           smart_model_routing_enabled: false,
+          security_zone: 'restricted',
         }}
         onSettingsFormChange={vi.fn()}
         settingsSaving={false}
@@ -530,6 +532,8 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('modelConfig');
     expect(markup).toContain('Execution Mode');
     expect(markup).toContain('Coordinator');
+    expect(markup).toContain('Security Zone');
+    expect(markup).toContain('Restricted');
     expect(markup).toContain('welcomeMessage');
     expect(markup).toContain('value="deny" selected=""');
     expect(markup).not.toContain('value="L2"');

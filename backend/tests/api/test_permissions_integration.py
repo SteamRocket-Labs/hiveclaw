@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 
 
 class _ScalarResult:
@@ -87,3 +88,35 @@ async def test_check_agent_access_falls_back_to_resource_permission_execute(monk
     assert resolved_agent is agent
     assert access_level == "use"
     assert any(call["principal_type"] == "department" for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_check_agent_access_allows_org_admin_to_audit_same_tenant_private_agent():
+    import app.core.permissions as permissions_module
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=uuid4(), tenant_id=tenant_id)
+    user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id, department_id=None)
+    private_user_permission = SimpleNamespace(scope_type="user", scope_id=uuid4(), access_level="manage")
+    db = _PermissionsDB(agent=agent, permissions=[private_user_permission])
+
+    resolved_agent, access_level = await permissions_module.check_agent_access(db, user, agent_id)
+
+    assert resolved_agent is agent
+    assert access_level == "manage"
+
+
+@pytest.mark.asyncio
+async def test_check_agent_access_blocks_org_admin_from_other_tenant_agent():
+    import app.core.permissions as permissions_module
+
+    agent_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=uuid4(), tenant_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=uuid4(), department_id=None)
+    db = _PermissionsDB(agent=agent)
+
+    with pytest.raises(HTTPException) as exc:
+        await permissions_module.check_agent_access(db, user, agent_id)
+
+    assert exc.value.status_code == 404

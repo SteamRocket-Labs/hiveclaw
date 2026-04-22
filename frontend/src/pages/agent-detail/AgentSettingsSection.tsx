@@ -14,6 +14,7 @@ type AgentSettingsForm = {
   min_poll_interval_min: number;
   webhook_rate_limit: number;
   smart_model_routing_enabled: boolean;
+  security_zone: string;
 };
 
 type CapabilityPolicyMode = 'auto' | 'approval' | 'deny';
@@ -102,7 +103,8 @@ export default function AgentSettingsSection({
     settingsForm.max_triggers !== ((agent as any)?.max_triggers ?? 20) ||
     settingsForm.min_poll_interval_min !== ((agent as any)?.min_poll_interval_min ?? 5) ||
     settingsForm.webhook_rate_limit !== ((agent as any)?.webhook_rate_limit ?? 5) ||
-    settingsForm.smart_model_routing_enabled !== !!((agent as any)?.smart_model_routing?.enabled);
+    settingsForm.smart_model_routing_enabled !== !!((agent as any)?.smart_model_routing?.enabled) ||
+    settingsForm.security_zone !== ((agent as any)?.security_zone || 'standard');
 
   const capabilityDefinitionSet = React.useMemo(
     () => new Set(capabilityDefinitions.map((item) => item.capability)),
@@ -139,6 +141,7 @@ export default function AgentSettingsSection({
         max_triggers: settingsForm.max_triggers,
         min_poll_interval_min: settingsForm.min_poll_interval_min,
         webhook_rate_limit: settingsForm.webhook_rate_limit,
+        security_zone: settingsForm.security_zone,
         smart_model_routing: settingsForm.smart_model_routing_enabled
           ? { enabled: true, max_simple_chars: 160, max_simple_words: 28 }
           : null,
@@ -484,6 +487,46 @@ export default function AgentSettingsSection({
             fontSize: '13px',
           }}
         />
+      </div>
+
+      <div className="card" style={{ marginBottom: '12px' }}>
+        <h4 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {t('agent.settings.securityZone.title', 'Security Zone')}
+        </h4>
+        <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
+          {t('agent.settings.securityZone.description', 'Choose the coarse-grained runtime boundary before capability policies are evaluated.')}
+        </p>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '10px 14px',
+            background: 'var(--bg-elevated)',
+            borderRadius: '8px',
+            border: '1px solid var(--border-subtle)',
+          }}
+        >
+          <div>
+            <div style={{ fontWeight: 500, fontSize: '13px' }}>{t('agent.settings.securityZone.current', 'Current Zone')}</div>
+            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+              {settingsForm.security_zone === 'public' && t('agent.settings.securityZone.publicDesc', 'Read-only safe tools only')}
+              {settingsForm.security_zone === 'standard' && t('agent.settings.securityZone.standardDesc', 'Capability policies decide whether actions run automatically, need approval, or are denied')}
+              {settingsForm.security_zone === 'restricted' && t('agent.settings.securityZone.restrictedDesc', 'Sensitive tools require approval before capability policies are evaluated')}
+            </div>
+          </div>
+          <select
+            className="input"
+            value={settingsForm.security_zone}
+            onChange={(e) => onSettingsFormChange((prev) => ({ ...prev, security_zone: e.target.value }))}
+            disabled={!canManage}
+            style={{ width: '220px', fontSize: '12px', opacity: canManage ? 1 : 0.6 }}
+          >
+            <option value="public">{t('agent.settings.securityZone.public', 'Public')}</option>
+            <option value="standard">{t('agent.settings.securityZone.standard', 'Standard')}</option>
+            <option value="restricted">{t('agent.settings.securityZone.restricted', 'Restricted')}</option>
+          </select>
+        </div>
       </div>
 
       <div className="card" style={{ marginBottom: '12px' }}>

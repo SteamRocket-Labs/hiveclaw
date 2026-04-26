@@ -154,6 +154,41 @@ class TestSendText:
         }
 
     @pytest.mark.asyncio
+    async def test_send_text_failure_log_includes_channel_and_error(self, monkeypatch) -> None:
+        import app.api.telegram as telegram_mod
+        import app.services.channel_delivery_service as delivery_mod
+
+        async def fake_send(*_args, **_kwargs):
+            raise RuntimeError("telegram down")
+
+        logged: list[tuple[str, tuple[object, ...]]] = []
+
+        def fake_warning(message: str, *args: object) -> None:
+            logged.append((message, args))
+
+        monkeypatch.setattr(telegram_mod, "_send_telegram_message", fake_send)
+        monkeypatch.setattr(delivery_mod.logger, "warning", fake_warning)
+
+        config = SimpleNamespace(
+            channel_type="telegram",
+            app_secret="bot-token",
+            app_id="telegram",
+            is_configured=True,
+            is_connected=True,
+            extra_config={},
+        )
+        result = await ChannelDeliveryService.send_text(
+            db=_FakeDB(config),
+            agent_id=uuid4(),
+            reply_target={"channel": "telegram", "chat_id": 99887766},
+            text="hello from deferred",
+            delivery_mode="deferred",
+        )
+
+        assert result.ok is False
+        assert logged == [("[ChannelDelivery] Text delivery failed via telegram: telegram down", ())]
+
+    @pytest.mark.asyncio
     async def test_send_text_wechat_without_context_token_is_unavailable(self, monkeypatch) -> None:
         monkeypatch.setattr(
             "app.services.wechat_personal_service.get_channel_credentials",
@@ -278,3 +313,43 @@ class TestSendText:
             }
         ]
         assert db.commits == 1
+
+
+class TestSendFile:
+    @pytest.mark.asyncio
+    async def test_send_file_failure_log_includes_channel_and_error(self, monkeypatch, tmp_path) -> None:
+        import app.api.telegram as telegram_mod
+        import app.services.channel_delivery_service as delivery_mod
+
+        async def fake_send_file(*_args, **_kwargs):
+            raise RuntimeError("telegram upload down")
+
+        logged: list[tuple[str, tuple[object, ...]]] = []
+
+        def fake_warning(message: str, *args: object) -> None:
+            logged.append((message, args))
+
+        monkeypatch.setattr(telegram_mod, "_send_telegram_file", fake_send_file)
+        monkeypatch.setattr(delivery_mod.logger, "warning", fake_warning)
+
+        file_path = tmp_path / "report.txt"
+        file_path.write_text("report", encoding="utf-8")
+        config = SimpleNamespace(
+            channel_type="telegram",
+            app_secret="bot-token",
+            app_id="telegram",
+            is_configured=True,
+            is_connected=True,
+            extra_config={},
+        )
+        result = await ChannelDeliveryService.send_file(
+            db=_FakeDB(config),
+            agent_id=uuid4(),
+            reply_target={"channel": "telegram", "chat_id": 99887766},
+            file_path=file_path,
+            message="see attached",
+            delivery_mode="deferred",
+        )
+
+        assert result.ok is False
+        assert logged == [("[ChannelDelivery] File delivery failed via telegram: telegram upload down", ())]

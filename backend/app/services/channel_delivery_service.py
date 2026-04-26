@@ -354,7 +354,7 @@ class ChannelDeliveryService:
                                 }
                             )
                         except Exception as exc:
-                            logger.debug("[ChannelDelivery] Web push suppressed: %s", exc)
+                            logger.debug(f"[ChannelDelivery] Web push suppressed: {exc}")
                 result = ChannelDeliveryService._success(
                     channel,
                     "Web message delivered.",
@@ -364,7 +364,7 @@ class ChannelDeliveryService:
             else:
                 result = ChannelDeliveryService._failed(channel, f"Channel '{channel}' is not supported by unified delivery.", status="denied")
         except Exception as exc:
-            logger.warning("[ChannelDelivery] Text delivery failed via %s: %s", channel, exc)
+            logger.warning(f"[ChannelDelivery] Text delivery failed via {channel}: {exc}")
             result = ChannelDeliveryService._failed(channel, str(exc), retryable=True)
 
         await ChannelDeliveryService._log_result(agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail)
@@ -473,7 +473,7 @@ class ChannelDeliveryService:
             else:
                 result = ChannelDeliveryService._failed(channel, f"Channel '{channel}' is not supported by unified file delivery.", status="denied")
         except Exception as exc:
-            logger.warning("[ChannelDelivery] File delivery failed via %s: %s", channel, exc)
+            logger.warning(f"[ChannelDelivery] File delivery failed via {channel}: {exc}")
             result = ChannelDeliveryService._failed(channel, str(exc), retryable=True, file_name=path.name)
 
         await ChannelDeliveryService._log_result(agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail)

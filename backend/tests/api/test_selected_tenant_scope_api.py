@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 
 
 class _ScalarResult:
@@ -301,6 +302,26 @@ async def test_platform_admin_can_update_selected_tenant_llm_model(monkeypatch):
     assert model.label == "Updated target model"
     assert result.label == "Updated target model"
     assert db.committed is True
+
+
+def test_llm_model_create_rejects_oversized_max_output_tokens():
+    import app.api.enterprise as enterprise_api
+
+    with pytest.raises(ValidationError):
+        enterprise_api.LLMModelCreate(
+            provider="custom",
+            model="qwen3.6-plus",
+            api_key="secret",
+            label="Qwen",
+            max_output_tokens=70000,
+        )
+
+
+def test_llm_model_update_rejects_oversized_max_output_tokens():
+    import app.api.enterprise as enterprise_api
+
+    with pytest.raises(ValidationError):
+        enterprise_api.LLMModelUpdate(max_output_tokens=70000)
 
 
 class _RowsResult:

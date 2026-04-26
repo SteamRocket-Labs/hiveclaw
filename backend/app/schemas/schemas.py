@@ -264,7 +264,7 @@ class LLMModelCreate(BaseModel):
     max_tokens_per_day: int | None = None
     enabled: bool = True
     supports_vision: bool = False
-    max_output_tokens: int | None = None
+    max_output_tokens: int | None = Field(default=None, ge=1, le=65536)
     max_input_tokens: int | None = None
 
 class LLMModelUpdate(BaseModel):
@@ -276,7 +276,7 @@ class LLMModelUpdate(BaseModel):
     max_tokens_per_day: int | None = None
     enabled: bool | None = None
     supports_vision: bool | None = None
-    max_output_tokens: int | None = None
+    max_output_tokens: int | None = Field(default=None, ge=1, le=65536)
     max_input_tokens: int | None = None
 
 

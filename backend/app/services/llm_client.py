@@ -1714,6 +1714,8 @@ PROVIDER_ALIASES: dict[str, str] = {
     "openairesponses": "openai-response",
 }
 
+MAX_OUTPUT_TOKENS_HARD_LIMIT = 65536
+
 
 # Canonical provider registry (single source of truth)
 PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
@@ -1944,14 +1946,17 @@ def get_provider_base_url(provider: str, custom_base_url: str | None = None) -> 
 def get_max_tokens(provider: str, model: str | None = None, max_output_tokens: int | None = None) -> int:
     """Return a safe max_tokens value for the given provider/model pair.
 
-    Priority: max_output_tokens (DB override) > model prefix > provider default > 4096
+    Priority: max_output_tokens (DB override) > model prefix > provider default > 4096.
+
+    DB overrides are clamped to a hard upper bound so a bad tenant config does
+    not turn into repeated provider-side request validation failures at runtime.
     """
     spec = get_provider_spec(provider)
     model_limits = spec.model_max_tokens if spec else MAX_TOKENS_BY_MODEL
 
     # Highest priority: per-model DB override
     if max_output_tokens and max_output_tokens > 0:
-        return max_output_tokens
+        return min(max_output_tokens, MAX_OUTPUT_TOKENS_HARD_LIMIT)
 
     # Check model-specific limits
     if model:

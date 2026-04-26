@@ -21,6 +21,7 @@ from app.models.invitation_code import InvitationCode
 from app.models.system_settings import SystemSetting
 from app.models.tenant import Tenant
 from app.models.user import User
+from app.services.autonomous_audit import build_autonomous_audit_report
 
 logger = logging.getLogger(__name__)
 
@@ -243,6 +244,24 @@ async def get_memory_backend_metrics(
     del current_user
     from app.memory.metrics import snapshot
     return snapshot()
+
+
+@router.get("/autonomous-audit")
+async def get_autonomous_audit(
+    tenant_id: uuid.UUID | None = Query(default=None),
+    agent_id: uuid.UUID | None = Query(default=None),
+    lookback_hours: int = Query(default=24, ge=1, le=720),
+    current_user: User = Depends(require_role("platform_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return a read-only audit of autonomous trigger/self-evolution continuity."""
+    del current_user
+    return await build_autonomous_audit_report(
+        db=db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        lookback_hours=lookback_hours,
+    )
 
 
 @router.put("/companies/{company_id}/toggle")

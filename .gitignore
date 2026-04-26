@@ -29,3 +29,6 @@ _agents/
 
 # Internal docs
 docs/
+!backend/docs/
+backend/docs/*
+!backend/docs/autonomous-trigger-system.md

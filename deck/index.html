@@ -1,0 +1,1277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hive · Enterprise Agent Asset Infrastructure</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;0,800;0,900;1,400;1,700&family=Source+Serif+4:ital,opsz,wght@0,8..60,300;0,8..60,400;0,8..60,500;0,8..60,600;1,8..60,400&family=IBM+Plex+Mono:wght@300;400;500;600&family=Noto+Serif+SC:wght@300;400;500;600;700;900&family=Noto+Sans+SC:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#0a1f3d;
+    --ink-rgb:10,31,61;
+    --paper:#f1f3f5;
+    --paper-rgb:241,243,245;
+    --paper-tint:#e4e8ec;
+    --ink-tint:#152a4a;
+
+    --mono:"IBM Plex Mono",ui-monospace,monospace;
+    --serif-en:"Playfair Display","Source Serif 4",Georgia,serif;
+    --serif-body-en:"Source Serif 4",Georgia,serif;
+    --serif-zh:"Noto Serif SC",source-han-serif-sc,serif;
+    --sans-zh:"Noto Sans SC",source-han-sans-sc,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{width:100%;height:100%;overflow:hidden;background:var(--ink);color:var(--paper);font-family:var(--sans-zh);-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+
+  canvas.bg{position:fixed;inset:0;width:100vw;height:100vh;z-index:0;display:block;transition:opacity 1.2s ease}
+  canvas#bg-light{opacity:0}
+  canvas#bg-dark{opacity:1}
+  body.light-bg canvas#bg-light{opacity:1}
+  body.light-bg canvas#bg-dark{opacity:0}
+
+  #deck{position:fixed;inset:0;width:10000vw;height:100vh;display:flex;flex-wrap:nowrap;transition:transform .9s cubic-bezier(.77,0,.175,1);z-index:10;will-change:transform}
+  .slide{width:100vw;height:100vh;flex:0 0 100vw;position:relative;padding:6vh 6vw 10vh 6vw;display:flex;flex-direction:column;overflow:hidden}
+  .slide.light{color:var(--ink)}
+  .slide.dark{color:var(--paper)}
+
+  .slide::before{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;transition:background .7s ease}
+  .slide.light::before{background:rgba(var(--paper-rgb),.78);backdrop-filter:blur(3px)}
+  .slide.dark::before{background:rgba(var(--ink-rgb),.78);backdrop-filter:blur(3px)}
+  .slide.hero.light::before{background:rgba(var(--paper-rgb),.16);backdrop-filter:none}
+  .slide.hero.dark::before{background:rgba(var(--ink-rgb),.12);backdrop-filter:none}
+  .slide.hero::after{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none}
+  .slide.hero.light::after{background:linear-gradient(180deg,rgba(var(--paper-rgb),.28) 0%,rgba(var(--paper-rgb),0) 14%,rgba(var(--paper-rgb),0) 86%,rgba(var(--paper-rgb),.28) 100%)}
+  .slide.hero.dark::after{background:linear-gradient(180deg,rgba(var(--ink-rgb),.32) 0%,rgba(var(--ink-rgb),0) 14%,rgba(var(--ink-rgb),0) 86%,rgba(var(--ink-rgb),.32) 100%)}
+
+  .chrome{display:flex;justify-content:space-between;align-items:flex-start;font-family:var(--mono);font-size:12px;letter-spacing:.18em;text-transform:uppercase;opacity:.7}
+  .chrome .left,.chrome .right{display:flex;gap:2.4em;align-items:center}
+  .chrome .sep{width:40px;height:1px;background:currentColor;opacity:.4}
+  .foot{margin-top:auto;display:flex;justify-content:space-between;align-items:flex-end;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;opacity:.55}
+  .foot .title{font-family:var(--serif-zh);font-weight:400;letter-spacing:.05em;text-transform:none;opacity:.75;font-size:13px}
+
+  .tag{display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.24em;text-transform:uppercase;padding:6px 14px;border:1px solid currentColor;opacity:.85}
+  .rule{width:100%;height:1px;background:currentColor;opacity:.25;margin:3vh 0}
+  .rule.v{width:1px;height:100%;margin:0}
+
+  .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.3em;text-transform:uppercase;opacity:.6;margin-bottom:2.6vh}
+  .display{font-family:var(--serif-en);font-weight:700;font-size:11vw;line-height:.92;letter-spacing:-.025em}
+  .display-zh{font-family:var(--serif-zh);font-weight:700;font-size:7.8vw;line-height:1.04;letter-spacing:-.005em}
+  .h1-zh{font-family:var(--serif-zh);font-weight:700;font-size:4.6vw;line-height:1.12;letter-spacing:-.005em}
+  .h2-zh{font-family:var(--serif-zh);font-weight:600;font-size:3.2vw;line-height:1.2;letter-spacing:0}
+  .h3-zh{font-family:var(--serif-zh);font-weight:500;font-size:1.9vw;line-height:1.35}
+  .body-zh{font-family:var(--sans-zh);font-weight:400;font-size:max(15px,1.22vw);line-height:1.75;opacity:.82;letter-spacing:.01em}
+  .body-serif{font-family:var(--serif-zh);font-weight:400;font-size:max(15px,1.3vw);line-height:1.65;opacity:.88}
+  .lead{font-family:var(--serif-zh);font-weight:400;font-size:1.9vw;line-height:1.4;opacity:.85}
+  .meta{font-family:var(--mono);font-size:max(11px,.88vw);letter-spacing:.16em;text-transform:uppercase;opacity:.6}
+  .big-num{font-family:var(--serif-en);font-weight:800;font-size:10vw;line-height:.85;letter-spacing:-.03em;font-feature-settings:"tnum"}
+  .mid-num{font-family:var(--serif-en);font-weight:700;font-size:5.5vw;line-height:.88;letter-spacing:-.02em;font-feature-settings:"tnum"}
+  .ghost{font-family:var(--serif-en);font-weight:900;font-size:34vw;line-height:.8;opacity:.06;letter-spacing:-.04em;position:absolute;font-feature-settings:"tnum"}
+  em{font-style:italic;font-family:var(--serif-en)}
+  .en{font-family:var(--serif-en);font-style:italic;font-weight:500}
+
+  .col{display:flex;flex-direction:column;gap:2.4vh}
+  .row{display:flex;align-items:center;gap:3vw}
+  .grid-6{display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(2,1fr);gap:4vw 6vw;flex:1;align-content:center;padding:2vh 0}
+  .grid-9{display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr);gap:3vh 4vw;flex:1;align-content:center}
+  .grid-4{display:grid;grid-template-columns:repeat(2,1fr);grid-template-rows:repeat(2,1fr);gap:4vh 6vw;flex:1;align-content:center}
+  .grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:4vw;flex:1;align-content:center}
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:4vw;flex:1;align-items:center}
+  .split-55{display:grid;grid-template-columns:55fr 45fr;gap:5vw;flex:1;align-items:stretch}
+  .fill{flex:1}
+  .center{align-items:center;justify-content:center;text-align:center}
+
+  .stat{display:flex;flex-direction:column;gap:1vh;align-items:flex-start}
+  .stat .n{font-family:var(--serif-en);font-weight:800;font-size:8vw;line-height:.88;letter-spacing:-.03em;font-feature-settings:"tnum"}
+  .stat .l{font-family:var(--sans-zh);font-size:max(13px,1.05vw);opacity:.7;margin-top:1vh;font-weight:400;line-height:1.5}
+  .stat .m{font-family:var(--mono);font-size:10px;letter-spacing:.22em;text-transform:uppercase;opacity:.5;margin-bottom:.2vh}
+
+  .callout{padding:3vh 2.4vw;border-left:3px solid currentColor;position:relative;font-family:var(--serif-zh);font-size:max(15px,1.2vw);line-height:1.55;opacity:.92}
+  .slide.light .callout{background:rgba(var(--ink-rgb),.05)}
+  .slide.dark .callout{background:rgba(var(--paper-rgb),.06)}
+  .callout .cite{display:block;margin-top:1.6vh;font-family:var(--mono);font-size:11px;letter-spacing:.2em;text-transform:uppercase;opacity:.6}
+
+  .rowline{display:grid;grid-template-columns:1fr 2fr 1fr;gap:2vw;padding:2.2vh 0;border-top:1px solid currentColor;align-items:center;border-color:rgba(127,127,127,.25)}
+  .rowline:last-child{border-bottom:1px solid currentColor;border-color:rgba(127,127,127,.25)}
+  .rowline .k{font-family:var(--serif-zh);font-weight:700;font-size:1.7vw}
+  .rowline .v{font-family:var(--sans-zh);font-weight:400;font-size:max(14px,1.2vw);opacity:.85;line-height:1.55}
+  .rowline .m{font-family:var(--mono);font-size:11px;letter-spacing:.2em;text-transform:uppercase;opacity:.6;justify-self:end}
+
+  .pillar{display:flex;flex-direction:column;gap:1.8vh}
+  .pillar .ic{font-family:var(--serif-en);font-style:italic;font-size:2.6vw;opacity:.45;font-weight:400}
+  .pillar .t{font-family:var(--serif-zh);font-weight:700;font-size:2.4vw;line-height:1.1}
+  .pillar .d{font-family:var(--sans-zh);font-weight:400;font-size:max(14px,1.1vw);opacity:.76;line-height:1.6}
+
+  .sign{font-family:var(--serif-en);font-style:italic;font-weight:500;font-size:2vw;opacity:.7}
+  .hi{position:relative;display:inline}
+  .slide.dark .hi::after{content:"";position:absolute;left:-.1em;right:-.1em;bottom:-.05em;height:.28em;background:rgba(var(--paper-rgb),.15);z-index:-1}
+  .slide.light .hi::after{content:"";position:absolute;left:-.1em;right:-.1em;bottom:-.05em;height:.28em;background:rgba(var(--ink-rgb),.08);z-index:-1}
+
+  .frame-img{overflow:hidden;position:relative;background:rgba(0,0,0,.04);box-sizing:border-box;width:100%;border-radius:4px}
+  .slide.dark .frame-img{background:rgba(255,255,255,.04);border-color:rgba(255,255,255,.12)}
+  .frame-img > img{width:100%;height:100%;object-fit:cover;object-position:top center;display:block}
+
+  #nav{position:fixed;left:50%;bottom:2.6vh;transform:translateX(-50%);z-index:30;display:flex;gap:10px;padding:8px 14px;border-radius:999px;background:rgba(0,0,0,.18);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+  #nav .dot{width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,.3);cursor:pointer;transition:all .3s ease;border:0;padding:0}
+  #nav .dot:hover{background:rgba(255,255,255,.5);transform:scale(1.15)}
+  #nav .dot.active{background:rgba(255,255,255,.95);width:22px;border-radius:999px}
+  body.light-bg #nav{background:rgba(255,255,255,.25)}
+  body.light-bg #nav .dot{background:rgba(var(--ink-rgb),.25)}
+  body.light-bg #nav .dot.active{background:rgba(var(--ink-rgb),.9)}
+  #hint{position:fixed;bottom:3vh;right:3vw;z-index:30;font-family:var(--mono);font-size:10px;letter-spacing:.2em;text-transform:uppercase;opacity:.4;mix-blend-mode:difference;color:#aaa}
+
+  .frame{flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden}
+  .frame.grid-2-7-5,
+  .frame.grid-2-6-6,
+  .frame.grid-2-8-4,
+  .frame.grid-3-3,
+  .frame.grid-6{display:grid}
+
+  .h-hero{font-family:var(--serif-zh);font-weight:900;font-size:10vw;line-height:.96;letter-spacing:-.02em}
+  .h-xl{font-family:var(--serif-zh);font-weight:700;font-size:6.2vw;line-height:1.08;letter-spacing:-.01em}
+  .h-sub{font-family:var(--serif-zh);font-weight:500;font-size:3.1vw;line-height:1.25;letter-spacing:0;opacity:.7}
+  .h-md{font-family:var(--serif-zh);font-weight:600;font-size:2.3vw;line-height:1.3}
+  .h-hero-en,.h-xl-en{font-family:var(--serif-en);letter-spacing:-.025em}
+
+  .lead{font-family:var(--serif-zh);font-weight:400;font-size:1.75vw;line-height:1.5;opacity:.86}
+
+  .meta-row{display:flex;gap:1.2em;align-items:baseline;flex-wrap:wrap;font-family:var(--mono);font-size:max(12px,.92vw);letter-spacing:.16em;text-transform:uppercase;opacity:.6}
+
+  .stat-card{display:flex;flex-direction:column;gap:.8vh;align-items:flex-start;padding-top:1.6vh;border-top:1px solid currentColor;border-color:rgba(127,127,127,.3)}
+  .stat-card .stat-label{font-family:var(--mono);font-size:max(10px,.78vw);letter-spacing:.24em;text-transform:uppercase;opacity:.55}
+  .stat-card .stat-nb{font-family:var(--serif-en);font-weight:800;font-size:5.8vw;line-height:.9;letter-spacing:-.03em;font-feature-settings:"tnum";margin-top:.4vh}
+  .stat-card .stat-nb .stat-unit{font-family:var(--serif-zh);font-weight:500;font-size:.38em;letter-spacing:0;opacity:.72;margin-left:.14em}
+  .stat-card .stat-note{font-family:var(--sans-zh);font-weight:400;font-size:max(13px,1.05vw);line-height:1.5;opacity:.72;margin-top:.6vh}
+  .grid-4 .stat-card .stat-nb{font-size:5vw}
+  .grid-3 .stat-card .stat-nb{font-size:6.8vw}
+
+  .pipeline-section{margin-top:4.4vh;padding-top:2.8vh;border-top:1px dashed rgba(127,127,127,.32)}
+  .pipeline-section:first-of-type{border-top:0;padding-top:0;margin-top:3vh}
+  .pipeline-label{font-family:var(--mono);font-size:max(11px,.85vw);letter-spacing:.24em;text-transform:uppercase;opacity:.62;margin-bottom:2.2vh}
+  .pipeline{display:grid;grid-template-columns:repeat(5,1fr);gap:1.2vw}
+  .pipeline[data-cols="3"]{grid-template-columns:repeat(3,1fr)}
+  .pipeline[data-cols="4"]{grid-template-columns:repeat(4,1fr)}
+  .pipeline[data-cols="6"]{grid-template-columns:repeat(6,1fr)}
+  .step{display:flex;flex-direction:column;gap:.8vh;padding-top:1.4vh;border-top:1px solid currentColor;border-color:rgba(127,127,127,.35)}
+  .step-nb{font-family:var(--serif-en);font-style:italic;font-weight:500;font-size:1.15vw;opacity:.45}
+  .step-title{font-family:var(--sans-zh);font-weight:700;font-size:1.55vw;letter-spacing:.01em;line-height:1.2}
+  .step-desc{font-family:var(--sans-zh);font-weight:400;font-size:max(12px,.95vw);line-height:1.45;opacity:.72}
+
+  .grid-2-7-5{display:grid;grid-template-columns:7fr 5fr;gap:3vw 4vh;align-items:start}
+  .grid-2-6-6{display:grid;grid-template-columns:1fr 1fr;gap:3vw 4vh;align-items:start}
+  .grid-2-8-4{display:grid;grid-template-columns:8fr 4fr;gap:3vw 4vh;align-items:start}
+  .grid-3-3{display:grid;grid-template-columns:repeat(3,1fr);grid-auto-rows:minmax(0,1fr);gap:2.4vh 2vw}
+
+  figure.frame-img{margin:0;display:flex;flex-direction:column;min-width:0}
+  .img-cap{display:block;margin-top:.8vh;font-family:var(--mono);font-size:max(10px,.8vw);letter-spacing:.22em;text-transform:uppercase;opacity:.6}
+  .callout-src{display:block;margin-top:1.6vh;font-family:var(--mono);font-size:11px;letter-spacing:.2em;text-transform:uppercase;opacity:.6}
+
+  .chrome{font-family:var(--mono);font-size:max(11px,.78vw);letter-spacing:.2em;text-transform:uppercase;opacity:.62}
+  .foot{font-family:var(--mono);font-size:max(11px,.78vw);letter-spacing:.18em;text-transform:uppercase;opacity:.5}
+
+  [data-anim]{opacity:0}
+  [data-anim="left"]{transform:translateX(-24px)}
+  [data-anim="right"]{transform:translateX(24px)}
+  [data-anim="line"]{opacity:0;transform:translateY(10px)}
+  [data-animate="pipeline"] [data-anim]{opacity:.15}
+
+  @media (max-width:900px){
+    .display{font-size:16vw}
+    .display-zh{font-size:12vw}
+    .h1-zh{font-size:7vw}
+    .h-hero{font-size:14vw}
+    .h-xl{font-size:9vw}
+    .pipeline{grid-template-columns:repeat(2,1fr)}
+    .grid-2-7-5,.grid-2-6-6,.grid-2-8-4{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+
+<canvas id="bg-dark" class="bg"></canvas>
+<canvas id="bg-light" class="bg"></canvas>
+<div id="hint">← → 翻页 · ESC 索引</div>
+
+<div id="deck">
+
+<section class="slide hero dark">
+  <div class="chrome">
+    <div>VC Brief · 2026.04</div>
+    <div>Vol.01 · Hive</div>
+  </div>
+  <div class="frame" style="display:grid; gap:4vh; align-content:center; min-height:80vh">
+    <div class="kicker" data-anim>Enterprise Agent Asset Infrastructure</div>
+    <h1 class="h-hero" data-anim>Hive</h1>
+    <h2 class="h-sub" data-anim>Agent 时代的公司中台</h2>
+    <p class="lead" style="max-width:60vw" data-anim>
+      让 Agent 成为公司资产，而不是员工的随身硬盘。
+    </p>
+    <div class="meta-row" data-anim>
+      <span>Open Source</span><span>·</span><span>Multi-Tenant</span><span>·</span><span>Cloud-Native</span>
+    </div>
+  </div>
+  <div class="foot">
+    <div>Hive · VC Brief</div>
+    <div>— 2026 —</div>
+  </div>
+</section>
+
+<section class="slide hero light" data-animate="quote">
+  <div class="chrome">
+    <div>Opening Statement</div>
+    <div>02 / 26</div>
+  </div>
+  <div class="frame" style="display:grid; gap:5vh; align-content:center; min-height:80vh">
+    <div class="kicker" data-anim>The Thesis</div>
+    <blockquote style="font-family:var(--serif-en); font-style:italic; font-weight:500; font-size:6.4vw; line-height:1.12; letter-spacing:-.02em; max-width:78vw">
+      <span data-anim="line" style="display:block">Employees leave.</span>
+      <span data-anim="line" style="display:block">Agents should not.</span>
+    </blockquote>
+    <p class="lead" style="max-width:55vw; opacity:.65" data-anim>
+      员工会离职，Agent 不会。<br>
+      前提是：Agent 必须属于公司。
+    </p>
+  </div>
+  <div class="foot">
+    <div>The Thesis</div>
+    <div>— · —</div>
+  </div>
+</section>
+
+<section class="slide hero dark">
+  <div class="chrome">
+    <div>第一幕 · 组织断层</div>
+    <div>Act I · 03 / 26</div>
+  </div>
+  <div class="frame" style="display:grid; gap:6vh; align-content:center; min-height:80vh">
+    <div class="kicker" data-anim>Act I</div>
+    <h1 class="h-hero" style="font-size:9vw" data-anim>The Problem</h1>
+    <p class="lead" style="max-width:55vw" data-anim>
+      Agent 能力不是最大瓶颈，组织归属才是。
+    </p>
+  </div>
+  <div class="foot">
+    <div>Act I · The Problem</div>
+    <div>— · —</div>
+  </div>
+</section>
+
+<section class="slide light">
+  <div class="chrome">
+    <div>第一幕 · 组织转折</div>
+    <div>Act I · 04 / 26</div>
+  </div>
+  <div class="frame" style="padding-top:6vh">
+    <div class="kicker" data-anim>The Shift · 组织转折</div>
+    <h2 class="h-xl" data-anim>一人公司是叙事，<br>一人部门才是趋势。</h2>
+    <p class="lead" style="margin-top:4vh; max-width:70vw" data-anim>
+      硅谷反复在讲「AI 时代第一家独角兽只有一个员工」。这套叙事在 demo 层面成立。生产级业务里，Agent 时代真正稀缺的是<span class="hi">决策权</span>。
+    </p>
+    <p class="body-zh" style="margin-top:3vh; max-width:70vw" data-anim>
+      跨域决策（战略、法务、财务、产品、市场、人事）超出个人的认知边界与责任承担能力，必须由不同的人分担。域内执行可以由 1 个人 + 一组 Agent 完成，原本 10–20 人的部门规模被压缩到「一人部门」。
+    </p>
+  </div>
+  <div class="foot">
+    <div>Page 04 · 组织转折</div>
+    <div>Act I</div>
+  </div>
+</section>
+
+<section class="slide dark" data-animate="directional">
+  <div class="chrome">
+    <div>一人公司 vs 一人部门</div>
+    <div>Act I · 05 / 26</div>
+  </div>
+  <div class="frame" style="padding-top:5vh">
+    <div class="kicker" data-anim>Comparison · 范式对比</div>
+    <h2 class="h-xl" style="margin-bottom:4vh" data-anim>跨域不可信，域内可压缩</h2>
+
+    <div class="grid-2-6-6" style="gap:5vw 4vh">
+      <div data-anim="left" style="padding:3vh 2vw; border-left:3px solid currentColor; opacity:.55">
+        <div class="kicker" style="opacity:.9">一人公司 · 伪命题</div>
+        <h3 class="h-md" style="margin-top:2vh">跨域决策无法压缩</h3>
+        <ul style="margin-top:3vh; padding-left:1.2em; display:flex; flex-direction:column; gap:1.4vh; font-family:var(--sans-zh); font-size:max(14px,1.1vw); line-height:1.55">
+          <li>决策范围：全公司跨域</li>
+          <li>认知带宽：超出个人上限</li>
+          <li>法律责任：全公司行为</li>
+          <li>Agent 跨域协调不可信</li>
+          <li>失败成本：公司死</li>
+        </ul>
+      </div>
+      <div data-anim="right" style="padding:3vh 2vw; border-left:3px solid currentColor">
+        <div class="kicker" style="opacity:.9">一人部门 · 真实趋势</div>
+        <h3 class="h-md" style="margin-top:2vh">单域可由一人主理</h3>
+        <ul style="margin-top:3vh; padding-left:1.2em; display:flex; flex-direction:column; gap:1.4vh; font-family:var(--sans-zh); font-size:max(14px,1.1vw); line-height:1.55">
+          <li>决策范围：单一职能</li>
+          <li>认知带宽：单域可覆盖</li>
+          <li>法律责任：部门动作</li>
+          <li>Agent 域内执行、检索、起草</li>
+          <li>失败成本：部门可纠正</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="foot">
+    <div>Page 05 · Before / After</div>
+    <div>组织对比</div>
+  </div>
+</section>
+
+<section class="slide hero light" data-animate="quote">
+  <div class="chrome">
+    <div>The Insight</div>
+    <div>06 / 26</div>
+  </div>
+  <div class="frame" style="display:grid; gap:5vh; align-content:center; min-height:80vh">
+    <div class="kicker" data-anim>The Hidden Asset</div>
+    <blockquote style="font-family:var(--serif-zh); font-weight:700; font-size:6vw; line-height:1.18; letter-spacing:-.01em; max-width:80vw">
+      <span data-anim="line" style="display:block">员工最值钱的部分，</span>
+      <span data-anim="line" style="display:block">写不进文档。</span>
+    </blockquote>
+    <p class="lead" style="max-width:60vw; opacity:.7" data-anim>
+      老市场总监为什么这一波预算压抖音、下一波压小红书；老客服为什么对这个客户用强势语气；老财务为什么愿意给 A 客户延期 30 天。这些<span class="hi">判断力</span>是公司真正的护城河，不在 Wiki 里，不在 SOP 里。
+    </p>
+  </div>
+  <div class="foot">
+    <div>Page 06 · The Insight</div>
+    <div>— · —</div>
+  </div>
+</section>
+
+<section class="slide dark">
+  <div class="chrome">
+    <div>新型组织风险</div>
+    <div>Act I · 07 / 26</div>
+  </div>
+  <div class="frame" style="display:grid; gap:6vh; align-content:center; min-height:80vh">
+    <div class="kicker" data-anim>The New Risk</div>
+    <h1 class="h-hero" style="font-size:8.5vw" data-anim>人走，部门 = 0。</h1>
+    <p class="lead" style="max-width:60vw" data-anim>
+      部门精简到「一人 + 一组 Agent」之后，负责人离开带走的不是 1/10 的部门产出——是这个部门所有 Agent 的人格、累积的处理口径、外部凭证、工具组合与权限边界。一人部门没有冗余可言。
+    </p>
+  </div>
+  <div class="foot">
+    <div>Page 07 · 一人部门的代价</div>
+    <div>— · —</div>
+  </div>
+</section>
+
+<section class="slide hero dark">
+  <div class="chrome">
+    <div>第二幕 · 产品架构</div>
+    <div>Act II · 08 / 26</div>
+  </div>
+  <div class="frame" style="display:grid; gap:6vh; align-content:center; min-height:80vh">
+    <div class="kicker" data-anim>Act II</div>
+    <h1 class="h-hero" style="font-size:9vw" data-anim>The Product</h1>
+    <p class="lead" style="max-width:55vw" data-anim>
+      Hive 把 Agent 变成公司资产。
+    </p>
+  </div>
+  <div class="foot">
+    <div>Act II · The Product</div>
+    <div>— · —</div>
+  </div>
+</section>
+
+<section class="slide light">
+  <div class="chrome">
+    <div>4 层记忆金字塔</div>
+    <div>Act II · 09 / 26</div>
+  </div>
+  <div class="frame">
+    <div class="kicker" data-anim>Memory Pyramid · 把判断力沉淀</div>
+    <h2 class="h-xl" data-anim>4 层记忆金字塔</h2>
+    <p class="lead" style="margin-top:3vh; max-width:70vw" data-anim>
+      让 Agent 在每一次实际工作中旁观、提取、沉淀——把"说不清的"逐步显性化。
+    </p>
+
+    <div class="pipeline-section" style="margin-top:5vh">
+      <div class="pipeline-label">Pipeline · 提取链路</div>
+      <div class="pipeline" data-cols="4">
+        <div class="step" data-anim>
+          <div class="step-nb">T0</div>
+          <div class="step-title">原始日志</div>
+          <div class="step-desc">每一次对话、每一次工具调用，30 天滚动</div>
+        </div>
+        <div class="step" data-anim>
+          <div class="step-nb">T2</div>
+          <div class="step-title">情景学习</div>
+          <div class="step-desc">LLM 增量提取，per-response cursor</div>
+        </div>
+        <div class="step" data-anim>
+          <div class="step-nb">T3</div>
+          <div class="step-title">语义记忆</div>
+          <div class="step-desc">Heartbeat 每 45 分钟 curation</div>
+        </div>
+        <div class="step" data-anim>
+          <div class="step-nb">·</div>
+          <div class="step-title">soul.md 身份契约</div>
+          <div class="step-desc">Dream 引擎在 4h + 3 会话凝结</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="foot">
+    <div>Page 09 · 记忆架构</div>
+    <div>T0 → T2 → T3 → soul</div>
+  </div>
+</section>
+
+<section class="slide dark">
+  <div class="chrome">
+    <div>五个产品支柱</div>
+    <div>Act II · 10 / 26</div>
+  </div>
+  <div class="frame">
+    <div class="kicker" data-anim>Five Pillars · 产品架构</div>
+    <h2 class="h-xl" data-anim>把 Agent 做成数字员工资产</h2>
+
+    <div class="grid-3" style="margin-top:5vh; grid-template-rows:repeat(2,1fr); grid-auto-flow:row dense; gap:3vh 3vw">
+      <div class="pillar" data-anim>
+        <div class="kicker">01</div>
+        <div class="t" style="font-size:1.9vw">Persistent Identity</div>
+        <div class="d">soul.md 记录 Agent 的角色、风格、目标和边界——稳定身份不因单次会话清零</div>
+      </div>
+      <div class="pillar" data-anim>
+        <div class="kicker">02</div>
+        <div class="t" style="font-size:1.9vw">Long-term Memory</div>
+        <div class="d">T0/T2/T3 记忆管线 + Dream/Heartbeat 整理——真实工作中的判断逐步沉淀</div>
+      </div>
+      <div class="pillar" data-anim>
+        <div class="kicker">03</div>
+        <div class="t" style="font-size:1.9vw">Tool Governance</div>
+        <div class="d">Security Zone + Capability Policy + Approval Flow——企业敢把 Agent 接入业务系统</div>
+      </div>
+      <div class="pillar" data-anim>
+        <div class="kicker">04</div>
+        <div class="t" style="font-size:1.9vw">Channel-native Work</div>
+        <div class="d">飞书 / Slack / Teams / 企微 6 大 IM 通道——Agent 在员工已有工作流中被使用</div>
+      </div>
+      <div class="pillar" data-anim>
+        <div class="kicker">05</div>
+        <div class="t" style="font-size:1.9vw">HR Agent Onboarding</div>
+        <div class="d">通过对话创建数字员工——从 IT 项目变成员工自助</div>
+      </div>
+      <div class="pillar" data-anim style="opacity:.4">
+        <div class="kicker">→</div>
+        <div class="t" style="font-size:1.9vw; font-style:italic; opacity:.6">System of Record<br>for Enterprise Agents</div>
+        <div class="d" style="opacity:.7">五个支柱组成 Agent 资产中台的完整骨架</div>
+      </div>
+    </div>
+  </div>
+  <div class="foot">
+    <div>Page 10 · 产品架构</div>
+    <div>5 Pillars</div>
+  </div>
+</section>
+
+<section class="slide light">
+  <div class="chrome">
+    <div>员工自助</div>
+    <div>Act II · 11 / 26</div>
+  </div>
+  <div class="frame">
+    <div class="kicker" data-anim>Onboarding</div>
+    <h2 class="h-xl" data-anim>员工入职 = 招一个 Agent</h2>
+    <p class="lead" style="margin-top:3vh; max-width:70vw" data-anim>
+      传统企业软件部署成本主要在培训——SAP、Salesforce 让员工上手需要驻场培训数月。Hive 把这件事压缩到 <span class="hi">5 分钟</span>。
+    </p>
+
+    <div class="pipeline-section" style="margin-top:5vh">
+      <div class="pipeline-label">Day 1 · 入职流程</div>
+      <div class="pipeline" data-cols="4">
+        <div class="step" data-anim>
+          <div class="step-nb">01</div>
+          <div class="step-title">Day 1</div>
+          <div class="step-desc">HR 把员工拉进企业 Hive</div>
+        </div>
+        <div class="step" data-anim>
+          <div class="step-nb">02</div>
+          <div class="step-title">5 min</div>
+          <div class="step-desc">HR Agent 对话引导员工说出角色、职责、目标</div>
+        </div>
+        <div class="step" data-anim>
+          <div class="step-nb">03</div>
+          <div class="step-title">Auto</div>
+          <div class="step-desc">自动生成 soul.md + Skill Pack + Trigger 配方</div>
+        </div>
+        <div class="step" data-anim>
+          <div class="step-nb">04</div>
+          <div class="step-title">Work</div>
+          <div class="step-desc">Agent 已在岗，员工通过 IM 直接对话</div>
+        </div>
+      </div>
+    </div>
+
+    <p class="body-zh" style="margin-top:5vh; max-width:75vw" data-anim>
+      不写代码、不开后台、不需要 IT 介入。员工对待 Agent 像对待新同事。Agent 化的渗透速度从「IT 部门排期」变成「员工自助」，使用深度从签约第一天起就开始复利。
+    </p>
+  </div>
+  <div class="foot">
+    <div>Page 11 · 入职即招 Agent</div>
+    <div>0 → 5min</div>
+  </div>
+</section>
+
+<section class="slide hero dark" data-animate="quote">
+  <div class="chrome">
+    <div>Positioning</div>
+    <div>12 / 26</div>
+  </div>
+  <div class="frame" style="display:grid; gap:5vh; align-content:center; min-height:80vh">
+    <div class="kicker" data-anim>The Anchor</div>
+    <blockquote style="font-family:var(--serif-en); font-style:italic; font-weight:500; font-size:5.4vw; line-height:1.18; letter-spacing:-.02em; max-width:82vw">
+      <span data-anim="line" style="display:block">Hive is the</span>
+      <span data-anim="line" style="display:block"><span class="hi">system of record</span></span>
+      <span data-anim="line" style="display:block">for enterprise agents.</span>
+    </blockquote>
+    <p class="lead" style="max-width:55vw; opacity:.7" data-anim>
+      像 Salesforce 之于 CRM，Workday 之于 HR——Hive 是 Agent 的资产账本。
+    </p>
+  </div>
+  <div class="foot">
+    <div>Page 12 · Positioning</div>
+    <div>— · —</div>
+  </div>
+</section>
+
+<section class="slide hero light">
+  <div class="chrome">
+    <div>第三幕 · 竞争与位置</div>
+    <div>Act III · 13 / 26</div>
+  </div>
+  <div class="frame" style="display:grid; gap:6vh; align-content:center; min-height:80vh">
+    <div class="kicker" data-anim>Act III</div>
+    <h1 class="h-hero" style="font-size:9vw" data-anim>Why Hive</h1>
+    <p class="lead" style="max-width:55vw" data-anim>
+      不是更强的聊天助手，而是 Agent 的资产账本。
+    </p>
+  </div>
+  <div class="foot">
+    <div>Act III · Why Hive</div>
+    <div>— · —</div>
+  </div>
+</section>
+
+<section class="slide light">
+  <div class="chrome">
+    <div>竞争矩阵</div>
+    <div>Act III · 14 / 26</div>
+  </div>
+  <div class="frame">
+    <div class="kicker" data-anim>Competitive Map · 5 类对手</div>
+    <h2 class="h-xl" data-anim>同样是 Agent，分类很重要</h2>
+
+    <div style="margin-top:4vh; display:flex; flex-direction:column; gap:0">
+      <div class="rowline" data-anim>
+        <div class="k">企业套件 Agent</div>
+        <div class="v">Microsoft Copilot Studio · Salesforce Agentforce</div>
+        <div class="m">绑定 SaaS 套件</div>
+      </div>
+      <div class="rowline" data-anim>
+        <div class="k">企业搜索 / 工作 AI</div>
+        <div class="v">Glean Agents</div>
+        <div class="m">连接知识源</div>
+      </div>
+      <div class="rowline" data-anim>
+        <div class="k">开源 Agent 框架</div>
+        <div class="v">LangChain · AutoGen · CrewAI</div>
+        <div class="m">开发者生态</div>
+      </div>
+      <div class="rowline" data-anim>
+        <div class="k">垂直 Agent</div>
+        <div class="v">Devin · Cursor · Sierra</div>
+        <div class="m">单场景能力</div>
+      </div>
+      <div class="rowline" data-anim>
+        <div class="k">个人 / 通用 Agent</div>
+        <div class="v">Manus · OpenClaw · ChatGPT Agent</div>
+        <div class="m">个人体验</div>
+      </div>
+    </div>
+
+    <p class="body-zh" style="margin-top:4vh; max-width:80vw; opacity:.78" data-anim>
+      Microsoft、Salesforce、Glean 的入场是<span class="hi">市场验证</span>，不是威胁——它们证明企业 Agent 已经进入预算周期。Hive 占据的缺口：独立、跨平台、以公司资产继承为核心的 Agent lifecycle layer。
+    </p>
+  </div>
+  <div class="foot">
+    <div>Page 14 · 竞争矩阵</div>
+    <div>5 categories</div>
+  </div>
+</section>
+
+<section class="slide dark">
+  <div class="chrome">
+    <div>独占象限</div>
+    <div>Act III · 15 / 26</div>
+  </div>
+  <div class="frame" style="display:grid; gap:5vh; align-content:center; min-height:80vh">
+    <div class="kicker" data-anim>The Open Quadrant</div>
+    <h1 class="h-hero" style="font-size:7.4vw" data-anim>
+      <span data-anim style="display:block">通用 × 服务组织</span>
+      <span data-anim style="display:block; opacity:.5">= Hive 的位置</span>
+    </h1>
+    <p class="lead" style="max-width:60vw" data-anim>
+      底层是 Agent 框架，与 OpenClaw 同层；同时承载组织级治理、4 层记忆沉淀、全员零门槛接入——这是单点厂商或个人产品补不上的。
+    </p>
+  </div>
+  <div class="foot">
+    <div>Page 15 · 独占象限</div>
+    <div>— · —</div>
+  </div>
+</section>
+
+<section class="slide hero dark">
+  <div class="chrome">
+    <div>第四幕 · 工程证据</div>
+    <div>Act IV · 16 / 26</div>
+  </div>
+  <div class="frame" style="display:grid; gap:6vh; align-content:center; min-height:80vh">
+    <div class="kicker" data-anim>Act IV</div>
+    <h1 class="h-hero" style="font-size:9vw" data-anim>The Numbers</h1>
+    <p class="lead" style="max-width:55vw" data-anim>
+      工程基础已就位。
+    </p>
+  </div>
+  <div class="foot">
+    <div>Act IV · The Numbers</div>
+    <div>— · —</div>
+  </div>
+</section>
+
+<section class="slide light">
+  <div class="chrome">
+    <div>Product Evidence</div>
+    <div>Act IV · 17 / 26</div>
+  </div>
+  <div class="frame" style="padding-top:4vh">
+    <div class="kicker" data-anim>工程清单</div>
+    <h2 class="h-xl" data-anim>已实现的工程资产</h2>
+
+    <div class="grid-6" style="margin-top:5vh">
+      <div class="stat-card" data-anim>
+        <div class="stat-label">Backend Tests</div>
+        <div class="stat-nb">191<span class="stat-unit">个</span></div>
+        <div class="stat-note">backend test 文件</div>
+      </div>
+      <div class="stat-card" data-anim>
+        <div class="stat-label">Frontend Tests</div>
+        <div class="stat-nb">17<span class="stat-unit">个</span></div>
+        <div class="stat-note">frontend test 文件</div>
+      </div>
+      <div class="stat-card" data-anim>
+        <div class="stat-label">Memory Layers</div>
+        <div class="stat-nb">4<span class="stat-unit">层</span></div>
+        <div class="stat-note">T0 / T2 / T3 / soul.md</div>
+      </div>
+      <div class="stat-card" data-anim>
+        <div class="stat-label">IM Channels</div>
+        <div class="stat-nb">6<span class="stat-unit">大</span></div>
+        <div class="stat-note">飞书 · Slack · Discord · 钉钉 · 企微 · Teams</div>
+      </div>
+      <div class="stat-card" data-anim>
+        <div class="stat-label">Built-in Tools</div>
+        <div class="stat-nb">60<span class="stat-unit">+</span></div>
+        <div class="stat-note">file I/O · search · feishu · email · MCP</div>
+      </div>
+      <div class="stat-card" data-anim>
+        <div class="stat-label">Parallel Branches</div>
+        <div class="stat-nb">12<span class="stat-unit">天</span></div>
+        <div class="stat-note">Architecture × LLM 并行演进</div>
+      </div>
+    </div>
+  </div>
+  <div class="foot">
+    <div>Page 17 · 工程证据</div>
+    <div>repo: hiveclaw-main</div>
+  </div>
+</section>
+
+<section class="slide dark">
+  <div class="chrome">
+    <div>市场规模 · TAM</div>
+    <div>Act IV · 18 / 26</div>
+  </div>
+  <div class="frame" style="padding-top:4vh">
+    <div class="kicker" data-anim>Total Addressable Market</div>
+    <h2 class="h-xl" data-anim>万亿级 TAM</h2>
+
+    <div class="grid-3" style="margin-top:6vh; align-items:start">
+      <div class="stat-card" data-anim>
+        <div class="stat-label">Mid-Large Enterprises</div>
+        <div class="stat-nb">2<span class="stat-unit">百万家</span></div>
+        <div class="stat-note">全球中大型企业</div>
+      </div>
+      <div class="stat-card" data-anim>
+        <div class="stat-label">Annual Spend Range</div>
+        <div class="stat-nb">50–500<span class="stat-unit">万 / 年</span></div>
+        <div class="stat-note">每家企业 license + usage credits</div>
+      </div>
+      <div class="stat-card" data-anim>
+        <div class="stat-label">Total Addressable</div>
+        <div class="stat-nb">10<span class="stat-unit">万亿</span></div>
+        <div class="stat-note">理论市场上限</div>
+      </div>
+    </div>
+
+    <p class="body-zh" style="margin-top:6vh; max-width:78vw; opacity:.78" data-anim>
+      Microsoft / Salesforce / Glean 把企业 Agent 带入预算周期。当企业部署大量 Agent 后，需要一个独立资产层管理它们——这是 Hive 的位置。
+    </p>
+  </div>
+  <div class="foot">
+    <div>Page 18 · 市场规模</div>
+    <div>TAM Sizing</div>
+  </div>
+</section>
+
+<section class="slide light">
+  <div class="chrome">
+    <div>商业模式 · 三层收入</div>
+    <div>Act IV · 19 / 26</div>
+  </div>
+  <div class="frame">
+    <div class="kicker" data-anim>Business Model · Token Economy</div>
+    <h2 class="h-xl" data-anim>三层收入结构</h2>
+    <p class="lead" style="margin-top:3vh; max-width:75vw" data-anim>
+      围绕「企业 Agent 资产中台」设计的收入结构。客户为 Agent 完成的工作、节省的人力、保留下来的组织记忆付费。
+    </p>
+
+    <div class="pipeline-section" style="margin-top:5vh">
+      <div class="pipeline-label">Three Revenue Streams</div>
+      <div class="pipeline" data-cols="3">
+        <div class="step" data-anim>
+          <div class="step-nb">01</div>
+          <div class="step-title">Enterprise License</div>
+          <div class="step-desc">按公司 / 部门 / 私有化部署年付。多租户 · 权限 · 审计 · SSO · 合规——企业稳定盘，毛利 90%+</div>
+        </div>
+        <div class="step" data-anim>
+          <div class="step-nb">02</div>
+          <div class="step-title">Usage Credits</div>
+          <div class="step-desc">按模型调用、工具调用、自动触发消耗。Agent 工作越多，客户价值与平台收入同步增长——复利复合</div>
+        </div>
+        <div class="step" data-anim>
+          <div class="step-nb">03</div>
+          <div class="step-title">Workflow Packs</div>
+          <div class="step-desc">部门模板 / 行业 pack / premium 工具 / 深度集成按调用扣费。把成功样板产品化，毛利 70–85%</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="foot">
+    <div>Page 19 · 三层收入</div>
+    <div>License + Usage + Packs</div>
+  </div>
+</section>
+
+<section class="slide dark" data-animate="directional">
+  <div class="chrome">
+    <div>Seat vs Usage</div>
+    <div>Act IV · 20 / 26</div>
+  </div>
+  <div class="frame" style="padding-top:5vh">
+    <div class="kicker" data-anim>Pricing Paradigm</div>
+    <h2 class="h-xl" style="margin-bottom:4vh" data-anim>Usage 模式：与 Agent 主动性正向耦合</h2>
+
+    <div class="grid-2-6-6" style="gap:5vw 4vh">
+      <div data-anim="left" style="padding:3vh 2vw; border-left:3px solid currentColor; opacity:.55">
+        <div class="kicker" style="opacity:.9">Seat 模式</div>
+        <h3 class="h-md" style="margin-top:2vh">收入受员工数限制</h3>
+        <ul style="margin-top:3vh; padding-left:1.2em; display:flex; flex-direction:column; gap:1.4vh; font-family:var(--sans-zh); font-size:max(14px,1.1vw); line-height:1.55">
+          <li>每加一个 Agent 都触发采购摩擦</li>
+          <li>与 Agent 主动性弱相关</li>
+          <li>容易被当成又一个 SaaS seat</li>
+          <li>收入天花板：员工数 × 单价</li>
+        </ul>
+      </div>
+      <div data-anim="right" style="padding:3vh 2vw; border-left:3px solid currentColor">
+        <div class="kicker" style="opacity:.9">Hive Usage + License</div>
+        <h3 class="h-md" style="margin-top:2vh">随自动化深度增长</h3>
+        <ul style="margin-top:3vh; padding-left:1.2em; display:flex; flex-direction:column; gap:1.4vh; font-family:var(--sans-zh); font-size:max(14px,1.1vw); line-height:1.55">
+          <li>钱包 / credits 承接持续消耗</li>
+          <li>Trigger / Heartbeat / Dream 都计量</li>
+          <li>更接近云资源 + 工作流自动化</li>
+          <li>无收入天花板</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="foot">
+    <div>Page 20 · 定价对比</div>
+    <div>Seat vs Usage</div>
+  </div>
+</section>
+
+<section class="slide hero light">
+  <div class="chrome">
+    <div>第五幕 · Roadmap & Ask</div>
+    <div>Act V · 21 / 26</div>
+  </div>
+  <div class="frame" style="display:grid; gap:6vh; align-content:center; min-height:80vh">
+    <div class="kicker" data-anim>Act V</div>
+    <h1 class="h-hero" style="font-size:9vw" data-anim>The Ask</h1>
+    <p class="lead" style="max-width:55vw" data-anim>
+      从工程能力到付费样板。
+    </p>
+  </div>
+  <div class="foot">
+    <div>Act V · The Ask</div>
+    <div>— · —</div>
+  </div>
+</section>
+
+<section class="slide light">
+  <div class="chrome">
+    <div>Roadmap · 路线图</div>
+    <div>Act V · 22 / 26</div>
+  </div>
+  <div class="frame">
+    <div class="kicker" data-anim>3-Phase Roadmap</div>
+    <h2 class="h-xl" data-anim>从样板到中台到系统记录层</h2>
+
+    <div class="pipeline-section" style="margin-top:5vh">
+      <div class="pipeline-label">36-Month Plan</div>
+      <div class="pipeline" data-cols="3">
+        <div class="step" data-anim>
+          <div class="step-nb">0–6 mo</div>
+          <div class="step-title">一人部门样板</div>
+          <div class="step-desc">3 个付费 design partners · 客服 / 市场 / 销售运营 3 个部门模板 · 1 次负责人交接测试案例</div>
+        </div>
+        <div class="step" data-anim>
+          <div class="step-nb">6–18 mo</div>
+          <div class="step-title">从样板到中台</div>
+          <div class="step-desc">Workflow Packs 体系 · 私有化部署 + SSO + 审计 · CRM/ERP/HRIS 行业集成 · NRR 指标</div>
+        </div>
+        <div class="step" data-anim>
+          <div class="step-nb">18–36 mo</div>
+          <div class="step-title">企业 Agent 系统记录层</div>
+          <div class="step-desc">公司内部 Agent registry / memory / policy / audit 层 · 第三方 pack 生态 · 政企国央落地</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="foot">
+    <div>Page 22 · Roadmap</div>
+    <div>Phase 1 · 2 · 3</div>
+  </div>
+</section>
+
+<section class="slide dark">
+  <div class="chrome">
+    <div>Use of Funds</div>
+    <div>Act V · 23 / 26</div>
+  </div>
+  <div class="frame" style="padding-top:4vh">
+    <div class="kicker" data-anim>Capital Allocation</div>
+    <h2 class="h-xl" data-anim>本轮资金的四个去向</h2>
+
+    <div class="grid-4" style="margin-top:6vh">
+      <div class="stat-card" data-anim>
+        <div class="stat-label">Product Engineering</div>
+        <div class="stat-nb">40<span class="stat-unit">%</span></div>
+        <div class="stat-note">Agent lifecycle · 记忆可视化 · 审批审计 · ROI 看板</div>
+      </div>
+      <div class="stat-card" data-anim>
+        <div class="stat-label">Pilot Delivery</div>
+        <div class="stat-nb">30<span class="stat-unit">%</span></div>
+        <div class="stat-note">做深 3 个一人部门样板，形成可复用交付手册</div>
+      </div>
+      <div class="stat-card" data-anim>
+        <div class="stat-label">Security & Enterprise</div>
+        <div class="stat-nb">20<span class="stat-unit">%</span></div>
+        <div class="stat-note">SSO · 私有化 · 权限矩阵 · 审计导出 · 数据隔离</div>
+      </div>
+      <div class="stat-card" data-anim>
+        <div class="stat-label">Open Source & Ecosystem</div>
+        <div class="stat-nb">10<span class="stat-unit">%</span></div>
+        <div class="stat-note">开源社区 · skill pack · 开发者文档 · 早期合作伙伴</div>
+      </div>
+    </div>
+  </div>
+  <div class="foot">
+    <div>Page 23 · Use of Funds</div>
+    <div>— · —</div>
+  </div>
+</section>
+
+<section class="slide light">
+  <div class="chrome">
+    <div>6-Month Commitment</div>
+    <div>Act V · 24 / 26</div>
+  </div>
+  <div class="frame" style="display:grid; gap:5vh; align-content:center; min-height:80vh">
+    <div class="kicker" data-anim>The Commitment</div>
+    <h1 class="h-hero" style="font-size:6vw; line-height:1.18">
+      <span data-anim style="display:block">6 个月内证明：</span>
+      <span data-anim style="display:block">一个部门负责人离开后，</span>
+      <span data-anim style="display:block">公司仍能通过 Hive Agent 继承</span>
+      <span data-anim style="display:block; opacity:.62">他的上下文、判断口径、关键工作流。</span>
+    </h1>
+  </div>
+  <div class="foot">
+    <div>Page 24 · The Commitment</div>
+    <div>— · —</div>
+  </div>
+</section>
+
+<section class="slide hero dark" data-animate="quote">
+  <div class="chrome">
+    <div>Investor Takeaway</div>
+    <div>25 / 26</div>
+  </div>
+  <div class="frame" style="display:grid; gap:5vh; align-content:center; min-height:80vh">
+    <div class="kicker" data-anim>Closing Statement</div>
+    <blockquote style="font-family:var(--serif-en); font-style:italic; font-weight:500; font-size:5vw; line-height:1.16; letter-spacing:-.02em; max-width:84vw">
+      <span data-anim="line" style="display:block">Employees leave. Agents should not.</span>
+      <span data-anim="line" style="display:block; opacity:.78; font-size:.72em; margin-top:1.6vh">Hive makes agents</span>
+      <span data-anim="line" style="display:block; opacity:.78; font-size:.72em">company-owned, governed, and inheritable.</span>
+    </blockquote>
+    <div class="meta-row" data-anim>
+      <span>Hive</span><span>·</span><span>Enterprise Agent Asset Infrastructure</span><span>·</span><span>2026</span>
+    </div>
+  </div>
+  <div class="foot">
+    <div>Page 25 · Closing</div>
+    <div>— · —</div>
+  </div>
+</section>
+
+<section class="slide hero light">
+  <div class="chrome">
+    <div>Thank You · Contact</div>
+    <div>26 / 26</div>
+  </div>
+  <div class="frame" style="display:grid; gap:5vh; align-content:center; min-height:80vh">
+    <div class="kicker" data-anim>Let's talk</div>
+    <h1 class="h-hero" style="font-size:8.5vw" data-anim>Hive</h1>
+    <p class="lead" style="max-width:60vw" data-anim>
+      Open source · Enterprise-ready · Looking for design partners and seed investors.
+    </p>
+    <div class="meta-row" data-anim>
+      <span>github.com/rocky2431/hive-agents</span><span>·</span><span>VC Brief v1.4</span>
+    </div>
+    <p class="body-serif" style="margin-top:3vh; opacity:.6; font-size:1.2vw" data-anim>
+      Thank you.
+    </p>
+  </div>
+  <div class="foot">
+    <div>End of deck</div>
+    <div>— Hive · 2026 —</div>
+  </div>
+</section>
+
+</div>
+
+<div id="nav"></div>
+
+<script>
+const VS = `attribute vec2 position;void main(){gl_Position=vec4(position,0.0,1.0);}`;
+
+const FS_DARK = `precision highp float;
+uniform vec2 u_resolution;uniform float u_time;uniform vec2 u_mouse;
+vec3 palette(float t,vec3 a,vec3 b,vec3 c,vec3 d){return a+b*cos(6.28318*(c*t+d));}
+void main(){
+  vec2 uv=gl_FragCoord.xy/u_resolution.xy;
+  vec2 p=uv*2.0-1.0;p.x*=u_resolution.x/u_resolution.y;
+  vec2 m=u_mouse*2.0-1.0;m.x*=u_resolution.x/u_resolution.y;
+  float md=length(p-m);
+  float mr=sin(md*15.0-u_time*4.0)*exp(-md*3.0);p+=mr*0.08;
+  vec2 p0=p;
+  for(float i=1.0;i<4.0;i++){
+    p.x+=0.1/i*sin(i*3.0*p.y+u_time*0.4)+0.05;
+    p.y+=0.1/i*cos(i*2.0*p.x+u_time*0.3)-0.05;
+  }
+  float r=length(p);float ang=atan(p.y,p.x);
+  vec3 a=vec3(0.10,0.13,0.20);
+  vec3 b=vec3(0.04,0.05,0.08);
+  vec3 c=vec3(1.0,1.0,1.0);
+  vec3 d=vec3(0.15,0.30,0.55);
+  vec3 col=palette(r*1.5+p0.x*0.5+u_time*0.1,a,b,c,d);
+  float disp=sin(r*25.0-u_time*1.5+ang*2.0)*0.5+0.5;
+  col+=vec3(disp*0.012,disp*0.015,disp*0.025);
+  float hi=pow(sin(p.x*4.0+p.y*3.0+u_time)*0.5+0.5,8.0);
+  col+=hi*0.06;
+  vec3 base=vec3(0.04,0.07,0.13);
+  col=mix(base,col,0.85);
+  gl_FragColor=vec4(col,1.0);
+}`;
+
+const FS_LIGHT = `precision highp float;
+uniform vec2 u_resolution;uniform float u_time;uniform vec2 u_mouse;
+float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
+float noise(vec2 p){
+  vec2 i=floor(p),f=fract(p);
+  float a=hash(i),b=hash(i+vec2(1,0));
+  float c=hash(i+vec2(0,1)),d=hash(i+vec2(1,1));
+  vec2 u=f*f*(3.0-2.0*f);
+  return mix(a,b,u.x)+(c-a)*u.y*(1.0-u.x)+(d-b)*u.x*u.y;
+}
+float fbm(vec2 p){
+  float v=0.0,a=0.5;
+  mat2 m=mat2(0.80,0.60,-0.60,0.80);
+  for(int i=0;i<5;i++){v+=a*noise(p);p=m*p*2.02;a*=0.5;}
+  return v;
+}
+void main(){
+  vec2 uv=gl_FragCoord.xy/u_resolution.xy;
+  vec2 p=uv;p.x*=u_resolution.x/u_resolution.y;
+  vec2 m=u_mouse;m.x*=u_resolution.x/u_resolution.y;
+  vec2 md=p-m;float dl=length(md);
+  p+=normalize(md+vec2(0.0001))*exp(-dl*5.0)*0.03;
+  vec2 q=vec2(fbm(p*1.8+u_time*0.07),fbm(p*1.8+vec2(5.2,1.3)+u_time*0.06));
+  vec2 r=vec2(fbm(p*2.0+q*1.3+vec2(1.7,9.2)+u_time*0.05),
+              fbm(p*2.0+q*1.3+vec2(8.3,2.8)+u_time*0.04));
+  float f=fbm(p*2.2+r*1.5);
+  vec3 silverBlue=vec3(0.84,0.86,0.90);
+  vec3 paper=vec3(0.945,0.955,0.965);
+  vec3 col=mix(silverBlue,paper,f);
+  float ph=r.x*2.2+u_time*0.35;
+  col+=vec3(0.55,0.68,0.92)*sin(ph)*0.045;
+  col+=vec3(0.62,0.75,0.95)*sin(ph*0.8+2.0)*0.04;
+  float hl=smoothstep(0.48,0.92,f);
+  col+=hl*0.05;
+  gl_FragColor=vec4(col,1.0);
+}`;
+
+const mouse={x:0.5,y:0.5};
+addEventListener('mousemove',e=>{mouse.x=e.clientX/innerWidth;mouse.y=e.clientY/innerHeight});
+
+function bootGL(canvasId, fsSrc){
+  const canvas=document.getElementById(canvasId);
+  const gl=canvas.getContext('webgl',{alpha:false,antialias:true});
+  if(!gl) return ()=>false;
+  const mk=(t,s)=>{const sh=gl.createShader(t);gl.shaderSource(sh,s);gl.compileShader(sh);return sh};
+  const prog=gl.createProgram();
+  gl.attachShader(prog,mk(gl.VERTEX_SHADER,VS));
+  gl.attachShader(prog,mk(gl.FRAGMENT_SHADER,fsSrc));
+  gl.linkProgram(prog);gl.useProgram(prog);
+  const buf=gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]),gl.STATIC_DRAW);
+  const pos=gl.getAttribLocation(prog,'position');
+  gl.enableVertexAttribArray(pos);gl.vertexAttribPointer(pos,2,gl.FLOAT,false,0,0);
+  const lRes=gl.getUniformLocation(prog,'u_resolution');
+  const lT=gl.getUniformLocation(prog,'u_time');
+  const lM=gl.getUniformLocation(prog,'u_mouse');
+  const resize=()=>{
+    const d=Math.min(window.devicePixelRatio||1,2);
+    canvas.width=innerWidth*d;canvas.height=innerHeight*d;
+    gl.viewport(0,0,canvas.width,canvas.height);
+  };
+  addEventListener('resize',resize);resize();
+  return (tSec)=>{
+    gl.uniform2f(lRes,canvas.width,canvas.height);
+    gl.uniform1f(lT,tSec);
+    gl.uniform2f(lM,mouse.x,1-mouse.y);
+    gl.drawArrays(gl.TRIANGLES,0,6);
+    return true;
+  };
+}
+const drawDark=bootGL('bg-dark',FS_DARK);
+const drawLight=bootGL('bg-light',FS_LIGHT);
+const t0=Date.now();
+(function loop(){
+  const t=(Date.now()-t0)/1000;
+  drawDark(t);drawLight(t);
+  requestAnimationFrame(loop);
+})();
+
+const deck=document.getElementById('deck');
+const slides=deck.querySelectorAll('.slide');
+const nav=document.getElementById('nav');
+let idx=0,total=slides.length,lock=false;
+
+deck.style.width=(total*100)+'vw';
+
+slides.forEach((s,i)=>{
+  const b=document.createElement('button');
+  b.className='dot';b.dataset.i=i;b.setAttribute('aria-label','Page '+(i+1));
+  b.onclick=()=>go(i);
+  nav.appendChild(b);
+});
+
+function go(n){
+  if(lock)return;
+  idx=Math.max(0,Math.min(total-1,n));
+  deck.style.transform=`translateX(${-idx*100}vw)`;
+  nav.querySelectorAll('.dot').forEach((d,i)=>d.classList.toggle('active',i===idx));
+  const el=slides[idx];
+  const th=el.dataset.theme || (el.classList.contains('light')?'light':(el.classList.contains('dark')?'dark':'dark'));
+  document.body.classList.toggle('light-bg',th==='light');
+  if(window.__playSlide) setTimeout(()=>window.__playSlide(idx), 450);
+  lock=true;setTimeout(()=>lock=false,700);
+}
+
+let overviewOn=false;
+const ov=document.createElement('div');
+ov.id='overview';
+ov.style.cssText='position:fixed;inset:0;z-index:100;background:rgba(var(--ink-rgb),.92);backdrop-filter:blur(12px);display:none;overflow-y:auto;padding:4vh 4vw';
+document.body.appendChild(ov);
+
+function buildOverview(){
+  ov.replaceChildren();
+  const grid=document.createElement('div');
+  grid.style.cssText='display:grid;grid-template-columns:repeat(4,1fr);gap:2vh 1.6vw;max-width:90vw;margin:0 auto';
+  slides.forEach((s,i)=>{
+    const card=document.createElement('div');
+    card.style.cssText='cursor:pointer;border-radius:6px;overflow:hidden;border:2px solid '+(i===idx?'rgba(var(--paper-rgb),.8)':'rgba(var(--paper-rgb),.15)')+';transition:border-color .2s';
+    card.onmouseenter=()=>card.style.borderColor='rgba(var(--paper-rgb),.6)';
+    card.onmouseleave=()=>card.style.borderColor=i===idx?'rgba(var(--paper-rgb),.8)':'rgba(var(--paper-rgb),.15)';
+    const wrap=document.createElement('div');
+    wrap.style.cssText='width:100%;aspect-ratio:16/9;overflow:hidden;position:relative;pointer-events:none;background:'+(s.classList.contains('light')?'var(--paper)':'var(--ink)');
+    const clone=s.cloneNode(true);
+    clone.style.cssText='width:100vw;height:100vh;transform:scale('+(1/4.5)+');transform-origin:top left;position:absolute;top:0;left:0;pointer-events:none';
+    wrap.appendChild(clone);
+    const label=document.createElement('div');
+    label.style.cssText='padding:6px 10px;font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--paper);opacity:.7';
+    label.textContent=(i+1)+' / '+total;
+    card.appendChild(wrap);
+    card.appendChild(label);
+    card.onclick=()=>{toggleOverview();go(i)};
+    grid.appendChild(card);
+  });
+  ov.appendChild(grid);
+}
+
+function toggleOverview(){
+  overviewOn=!overviewOn;
+  if(overviewOn){buildOverview();ov.style.display='block';}
+  else{ov.style.display='none';}
+}
+
+addEventListener('keydown',e=>{
+  if(e.key==='Escape'){e.preventDefault();toggleOverview();return;}
+  if(overviewOn)return;
+  if(e.key==='ArrowRight'||e.key==='PageDown'||e.key===' '||e.key==='ArrowDown'){
+    if(window.__pipeAdvance && window.__pipeAdvance()) return;
+    go(idx+1);
+    return;
+  }
+  if(e.key==='ArrowLeft'||e.key==='PageUp'||e.key==='ArrowUp')go(idx-1);
+  if(e.key==='Home')go(0);
+  if(e.key==='End')go(total-1);
+});
+
+let wheelTO=null,wheelAcc=0;
+addEventListener('wheel',e=>{
+  wheelAcc+=e.deltaY+e.deltaX;
+  if(Math.abs(wheelAcc)>50){
+    if(wheelAcc>0 && window.__pipeAdvance && window.__pipeAdvance()){
+      wheelAcc=0;
+    }else{
+      go(idx+(wheelAcc>0?1:-1));wheelAcc=0;
+    }
+  }
+  clearTimeout(wheelTO);wheelTO=setTimeout(()=>wheelAcc=0,150);
+},{passive:true});
+
+let tx=0,ty=0;
+addEventListener('touchstart',e=>{tx=e.touches[0].clientX;ty=e.touches[0].clientY},{passive:true});
+addEventListener('touchend',e=>{
+  const dx=(e.changedTouches[0].clientX-tx);
+  const dy=(e.changedTouches[0].clientY-ty);
+  if(Math.abs(dx)>50&&Math.abs(dx)>Math.abs(dy)){
+    if(dx<0 && window.__pipeAdvance && window.__pipeAdvance()) return;
+    go(idx+(dx<0?1:-1));
+  }
+},{passive:true});
+
+go(0);
+</script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script>lucide.createIcons();</script>
+
+<script type="module">
+let motion;
+try {
+  motion = await import('https://cdn.jsdelivr.net/npm/motion@11.11.17/+esm');
+} catch(e) {
+  console.warn('[motion] CDN failed, disabling animations', e);
+  document.querySelectorAll('[data-anim]').forEach(el=>{el.style.opacity='1';el.style.transform='none'});
+  document.querySelectorAll('[data-animate="pipeline"] [data-anim]').forEach(el=>el.style.opacity='1');
+}
+
+if(motion){
+  const { animate, stagger } = motion;
+  const EASE = [.22, 1, .36, 1];
+  const slides = [...document.querySelectorAll('.slide')];
+  let pipeStep = -1;
+  let lastIdx = -1;
+
+  function resetAnims(slide){
+    slide.querySelectorAll('[data-anim]').forEach(el=>{
+      el.style.opacity='';
+      el.style.transform='';
+    });
+  }
+
+  function playSlide(i){
+    const slide = slides[i];
+    if(!slide) return;
+    lastIdx = i;
+    const recipe = slide.dataset.animate || (slide.classList.contains('hero') ? 'hero' : 'cascade');
+
+    if(recipe === 'pipeline'){
+      pipeStep = -1;
+      slide.querySelectorAll('[data-anim]').forEach(el=>{
+        el.style.opacity='0.15';
+        el.style.transform='none';
+      });
+      return;
+    }
+
+    resetAnims(slide);
+    const all = [...slide.querySelectorAll('[data-anim]')];
+    if(!all.length) return;
+
+    if(recipe === 'directional'){
+      const lefts  = all.filter(el=>el.dataset.anim==='left');
+      const divs   = all.filter(el=>el.dataset.anim==='divider');
+      const rights = all.filter(el=>el.dataset.anim==='right');
+      const others = all.filter(el=>!['left','right','divider'].includes(el.dataset.anim));
+      if(others.length) animate(others, {opacity:[0,1], y:[12,0]}, {duration:.6, delay:stagger(.1, {start:.15}), easing:EASE});
+      if(lefts.length)  animate(lefts,  {opacity:[0,1], x:[-24,0]}, {duration:.8, delay:.35, easing:EASE});
+      if(divs.length)   animate(divs,   {opacity:[0,.25]},          {duration:.5, delay:.9});
+      if(rights.length) animate(rights, {opacity:[0,1], x:[24,0]},  {duration:.8, delay:1.0, easing:EASE});
+      return;
+    }
+
+    if(recipe === 'quote'){
+      const lines = all.filter(el=>el.dataset.anim==='line');
+      const others = all.filter(el=>el.dataset.anim!=='line');
+      if(others.length) animate(others, {opacity:[0,1], y:[8,0]},    {duration:.6, delay:stagger(.12, {start:.2}), easing:EASE});
+      if(lines.length)  animate(lines,  {opacity:[.35,1], y:[10,0]}, {duration:.8, delay:stagger(.55, {start:.5}), easing:EASE});
+      return;
+    }
+
+    if(recipe === 'hero'){
+      animate(all, {opacity:[0,1], y:[14,0]}, {duration:.9, delay:stagger(.16, {start:.2}), easing:EASE});
+      return;
+    }
+
+    animate(all, {opacity:[0,1], y:[16,0]}, {duration:.75, delay:stagger(.1, {start:.15}), easing:EASE});
+  }
+
+  function pipeAdvance(){
+    const slide = slides[lastIdx];
+    if(!slide || slide.dataset.animate !== 'pipeline') return false;
+    const steps  = [...slide.querySelectorAll('[data-anim="step"]')];
+    const arrows = [...slide.querySelectorAll('[data-anim="arrow"]')];
+    if(pipeStep >= steps.length - 1) return false;
+    pipeStep++;
+    animate(steps[pipeStep], {opacity:[0.15,1], y:[8,0]}, {duration:.5, easing:EASE});
+    if(pipeStep > 0 && arrows[pipeStep-1]){
+      animate(arrows[pipeStep-1], {opacity:[0.15,.7]}, {duration:.3, delay:.15});
+    }
+    return true;
+  }
+
+  window.__playSlide = playSlide;
+  window.__pipeAdvance = pipeAdvance;
+
+  playSlide(0);
+}
+</script>
+</body>
+</html>

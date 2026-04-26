@@ -1,0 +1,21 @@
+:{$PORT:80} {
+	root * /srv
+	encode gzip zstd
+	file_server
+
+	# 防止搜索引擎索引这个 deck（VC 链接不应该被 Google 抓取）
+	header X-Robots-Tag "noindex, nofollow, noarchive"
+
+	# 5 分钟缓存，方便 push 新版后快速看到
+	header Cache-Control "public, max-age=300"
+
+	# 安全头
+	header X-Content-Type-Options "nosniff"
+	header Referrer-Policy "strict-origin-when-cross-origin"
+
+	# 访问日志（Railway 抓 stdout）
+	log {
+		output stdout
+		format console
+	}
+}

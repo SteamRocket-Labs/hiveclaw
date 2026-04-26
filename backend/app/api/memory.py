@@ -15,6 +15,7 @@ from app.core.security import get_current_admin, get_current_user
 from app.core.tenant_scope import resolve_tenant_scope
 from app.database import get_db
 from app.models.chat_session import ChatSession
+from app.models.llm import LLMModel
 from app.models.tenant_setting import TenantSetting
 from app.models.user import User
 
@@ -41,6 +42,15 @@ class TeamMemoryUpsert(BaseModel):
     sync_token: str | None = None
 
 
+DEFAULT_MEMORY_CONFIG = {
+    "summary_model_id": None,
+    "rerank_model_id": None,
+    "compress_threshold": 70,
+    "keep_recent": 10,
+    "extract_to_viking": False,
+}
+
+
 def _team_memory_conflict_detail(exc) -> dict:
     current_entry = asdict(exc.current_entry)
     return {
@@ -50,6 +60,62 @@ def _team_memory_conflict_detail(exc) -> dict:
         "server_sync_token": current_entry.get("sync_token"),
         "current_entry": current_entry,
     }
+
+
+def _coerce_uuid(value: object) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+async def _resolve_default_memory_model_id(db: AsyncSession, tenant_id: uuid.UUID) -> str | None:
+    result = await db.execute(
+        select(TenantSetting.value).where(
+            TenantSetting.tenant_id == tenant_id,
+            TenantSetting.key == "default_model_id",
+        )
+    )
+    value = result.scalar_one_or_none()
+    if isinstance(value, dict) and value.get("model_id"):
+        model_uuid = _coerce_uuid(value["model_id"])
+        if model_uuid:
+            model_result = await db.execute(
+                select(LLMModel.id).where(
+                    LLMModel.id == model_uuid,
+                    LLMModel.tenant_id == tenant_id,
+                    LLMModel.enabled.is_(True),
+                )
+            )
+            model_id = model_result.scalar_one_or_none()
+            if model_id:
+                return str(model_id)
+
+    fallback_result = await db.execute(
+        select(LLMModel.id)
+        .where(
+            LLMModel.tenant_id == tenant_id,
+            LLMModel.enabled.is_(True),
+        )
+        .order_by(LLMModel.created_at.desc())
+        .limit(1)
+    )
+    fallback_id = fallback_result.scalar_one_or_none()
+    return str(fallback_id) if fallback_id else None
+
+
+async def _effective_memory_config(db: AsyncSession, tenant_id: uuid.UUID, stored_config: dict | None) -> dict:
+    config = {**DEFAULT_MEMORY_CONFIG, **(stored_config or {})}
+    if config.get("summary_model_id") and config.get("rerank_model_id"):
+        return config
+
+    default_model_id = await _resolve_default_memory_model_id(db, tenant_id)
+    if default_model_id:
+        if not config.get("summary_model_id"):
+            config["summary_model_id"] = default_model_id
+        if not config.get("rerank_model_id"):
+            config["rerank_model_id"] = default_model_id
+    return config
 
 
 @router.get("/config")
@@ -67,15 +133,8 @@ async def get_memory_config(
         )
     )
     setting = result.scalar_one_or_none()
-    if not setting:
-        return {
-            "summary_model_id": None,
-            "rerank_model_id": None,
-            "compress_threshold": 70,
-            "keep_recent": 10,
-            "extract_to_viking": False,
-        }
-    return setting.value
+    stored_config = setting.value if setting and isinstance(setting.value, dict) else None
+    return await _effective_memory_config(db, target_tenant_id, stored_config)
 
 
 @router.put("/config")

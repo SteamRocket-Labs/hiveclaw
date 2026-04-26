@@ -38,7 +38,6 @@ from app.services.agent_context import build_agent_context, build_agent_runtime_
 from app.services.agent_tools import CORE_TOOL_NAMES, execute_tool, get_agent_tools_for_llm, get_combined_openai_tools
 from app.services.feature_flags import is_enabled as is_feature_enabled
 from app.services.knowledge_inject import fetch_relevant_knowledge
-from app.services.llm_client import apply_prompt_cache_hints
 from app.services.llm_utils import LLMMessage, create_llm_client, get_max_tokens
 from app.services.memory_service import (
     build_memory_snapshot,
@@ -61,6 +60,12 @@ ThinkingCallback = Callable[[str], Awaitable[None] | None]
 ToolCallback = Callable[[dict], Awaitable[None] | None]
 ToolExecutor = Callable[[str, dict], Awaitable[str] | str]
 EventCallback = Callable[[dict], Awaitable[None] | None]
+
+
+_RUNTIME_FLAG_DEFAULTS: dict[str, bool] = {
+    "runtime_continuity_v1": False,
+    "skill_candidate_loop_v1": True,
+}
 
 
 @dataclass(slots=True)
@@ -138,7 +143,7 @@ async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
                 flag_result = await db.execute(select(FeatureFlag).where(FeatureFlag.key == flag_key))
                 flag = flag_result.scalar_one_or_none()
                 if flag is None:
-                    return local_default
+                    return _RUNTIME_FLAG_DEFAULTS.get(flag_key, local_default)
                 return await is_feature_enabled(db, flag_key, tenant_id=agent.tenant_id)
 
             return RuntimeConfig(

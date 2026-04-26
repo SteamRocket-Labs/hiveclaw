@@ -360,7 +360,7 @@ def test_resolve_context_budget_initializes_missing_session_metadata():
 
 
 @pytest.mark.asyncio
-async def test_resolve_runtime_config_defaults_new_flags_to_false_when_missing(monkeypatch):
+async def test_resolve_runtime_config_defaults_skill_candidate_loop_to_true_when_missing(monkeypatch):
     from app.runtime.invoker import _resolve_runtime_config
 
     tenant_id = uuid4()
@@ -401,7 +401,7 @@ async def test_resolve_runtime_config_defaults_new_flags_to_false_when_missing(m
     assert config.tenant_id == tenant_id
     assert config.max_tool_rounds == 33
     assert config.runtime_continuity_enabled is False
-    assert config.skill_candidate_loop_enabled is False
+    assert config.skill_candidate_loop_enabled is True
 
 
 @pytest.mark.asyncio

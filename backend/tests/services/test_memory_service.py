@@ -35,6 +35,64 @@ class _FakeSession:
 
 
 @pytest.mark.asyncio
+async def test_get_summary_model_config_falls_back_to_tenant_default_model(monkeypatch):
+    from app.services import memory_service
+
+    tenant_id = uuid4()
+    model_id = uuid4()
+    fake_model = SimpleNamespace(
+        id=model_id,
+        tenant_id=tenant_id,
+        provider="openai",
+        model="gpt-5.4-mini",
+        api_key="test-key",
+        base_url=None,
+        enabled=True,
+    )
+    fake_session = _FakeSession([{}, {"model_id": str(model_id)}, fake_model])
+
+    monkeypatch.setattr(memory_service, "async_session", lambda: fake_session)
+
+    config = await memory_service._get_summary_model_config(tenant_id)
+
+    assert config == {
+        "provider": "openai",
+        "model": "gpt-5.4-mini",
+        "api_key": "test-key",
+        "base_url": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_rerank_model_config_falls_back_to_tenant_default_model(monkeypatch):
+    from app.services import memory_service
+
+    tenant_id = uuid4()
+    model_id = uuid4()
+    fake_model = SimpleNamespace(
+        id=model_id,
+        tenant_id=tenant_id,
+        provider="openai",
+        model="gpt-5.4-mini",
+        api_key="test-key",
+        base_url=None,
+        enabled=True,
+    )
+    fake_session = _FakeSession([{}, {"model_id": str(model_id)}, fake_model])
+
+    monkeypatch.setattr(memory_service, "async_session", lambda: fake_session)
+
+    config = await memory_service._get_rerank_model_config(tenant_id)
+
+    assert config == {
+        "provider": "openai",
+        "model": "gpt-5.4-mini",
+        "api_key": "test-key",
+        "base_url": None,
+    }
+
+
+@pytest.mark.asyncio
 async def test_persist_runtime_memory_persists_summary_without_direct_semantic_write(monkeypatch):
     from app.services.memory_service import persist_runtime_memory
 

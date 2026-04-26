@@ -119,6 +119,32 @@ async def test_platform_admin_can_update_other_tenant_user_quota():
 
 
 @pytest.mark.asyncio
+async def test_get_selected_tenant_memory_config_defaults_models_to_default_model():
+    import app.api.memory as memory_api
+
+    own_tenant_id = uuid4()
+    target_tenant_id = uuid4()
+    default_model_id = uuid4()
+    db = _FakeDB([
+        _ScalarResult(None),
+        _ScalarResult({"model_id": str(default_model_id)}),
+        _ScalarResult(default_model_id),
+    ])
+
+    result = await memory_api.get_memory_config(
+        tenant_id=str(target_tenant_id),
+        current_user=SimpleNamespace(role="platform_admin", tenant_id=own_tenant_id),
+        db=db,
+    )
+
+    assert result["summary_model_id"] == str(default_model_id)
+    assert result["rerank_model_id"] == str(default_model_id)
+    assert result["compress_threshold"] == 70
+    assert result["keep_recent"] == 10
+    assert result["extract_to_viking"] is False
+
+
+@pytest.mark.asyncio
 async def test_platform_admin_can_update_selected_tenant_memory_config():
     import app.api.memory as memory_api
 

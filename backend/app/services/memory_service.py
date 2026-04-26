@@ -417,58 +417,89 @@ async def _get_memory_config(tenant_id: uuid.UUID) -> dict:
         return {}
 
 
+def _coerce_uuid(value: object) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _model_config(model: LLMModel) -> dict:
+    return {
+        "provider": model.provider,
+        "model": model.model,
+        "api_key": model.api_key,
+        "base_url": model.base_url,
+    }
+
+
+async def _get_enabled_model_config_by_id(db, tenant_id: uuid.UUID, model_id: object) -> dict | None:
+    model_uuid = _coerce_uuid(model_id)
+    if not model_uuid:
+        return None
+
+    result = await db.execute(
+        select(LLMModel).where(
+            LLMModel.id == model_uuid,
+            LLMModel.tenant_id == tenant_id,
+            LLMModel.enabled.is_(True),
+        )
+    )
+    model = result.scalar_one_or_none()
+    return _model_config(model) if model else None
+
+
+async def _get_default_model_config(db, tenant_id: uuid.UUID) -> dict | None:
+    result = await db.execute(
+        select(TenantSetting.value).where(
+            TenantSetting.tenant_id == tenant_id,
+            TenantSetting.key == "default_model_id",
+        )
+    )
+    value = result.scalar_one_or_none()
+    if isinstance(value, dict) and value.get("model_id"):
+        model_config = await _get_enabled_model_config_by_id(db, tenant_id, value["model_id"])
+        if model_config:
+            return model_config
+
+    result = await db.execute(
+        select(LLMModel)
+        .where(
+            LLMModel.tenant_id == tenant_id,
+            LLMModel.enabled.is_(True),
+        )
+        .order_by(LLMModel.created_at.desc())
+        .limit(1)
+    )
+    model = result.scalar_one_or_none()
+    return _model_config(model) if model else None
+
+
+async def _get_memory_model_config(tenant_id: uuid.UUID, configured_model_id: object, purpose: str) -> dict | None:
+    try:
+        async with async_session() as db:
+            if configured_model_id:
+                model_config = await _get_enabled_model_config_by_id(db, tenant_id, configured_model_id)
+                if model_config:
+                    return model_config
+                logger.warning("Configured %s model is unavailable for tenant %s", purpose, tenant_id)
+
+            return await _get_default_model_config(db, tenant_id)
+    except Exception as e:
+        logger.warning("Failed to load %s model: %s", purpose, e)
+        return None
+
+
 async def _get_summary_model_config(tenant_id: uuid.UUID) -> dict | None:
     """Resolve the LLM model to use for summarization from tenant config."""
     config = await _get_memory_config(tenant_id)
-    model_id = config.get("summary_model_id")
-    if not model_id:
-        return None
-
-    try:
-        async with async_session() as db:
-            result = await db.execute(
-                select(LLMModel).where(LLMModel.id == uuid.UUID(str(model_id)), LLMModel.tenant_id == tenant_id)
-            )
-            model = result.scalar_one_or_none()
-            if not model or not model.enabled:
-                return None
-
-            return {
-                "provider": model.provider,
-                "model": model.model,
-                "api_key": model.api_key,
-                "base_url": model.base_url,
-            }
-    except Exception as e:
-        logger.warning("Failed to load summary model: %s", e)
-        return None
+    return await _get_memory_model_config(tenant_id, config.get("summary_model_id"), "summary")
 
 
 async def _get_rerank_model_config(tenant_id: uuid.UUID) -> dict | None:
     """Resolve the optional LLM model to use for semantic memory reranking."""
     config = await _get_memory_config(tenant_id)
-    model_id = config.get("rerank_model_id")
-    if not model_id:
-        return None
-
-    try:
-        async with async_session() as db:
-            result = await db.execute(
-                select(LLMModel).where(LLMModel.id == uuid.UUID(str(model_id)), LLMModel.tenant_id == tenant_id)
-            )
-            model = result.scalar_one_or_none()
-            if not model or not model.enabled:
-                return None
-
-            return {
-                "provider": model.provider,
-                "model": model.model,
-                "api_key": model.api_key,
-                "base_url": model.base_url,
-            }
-    except Exception as e:
-        logger.warning("Failed to load rerank model: %s", e)
-        return None
+    return await _get_memory_model_config(tenant_id, config.get("rerank_model_id"), "rerank")
 
 
 async def _generate_session_summary(messages: list[dict], tenant_id: uuid.UUID) -> str | None:

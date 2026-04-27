@@ -173,12 +173,15 @@ async def test_run_skill_distillation_cycle_promotes_high_confidence_candidate(m
     skill_path = workspace / "skills" / "market-research-loop" / "SKILL.md"
     state_path = workspace / "evolution" / "skill_distiller_state.json"
     ledger_path = workspace / "evolution" / "evolution_ledger.jsonl"
+    validation_path = workspace / "evolution" / "evolution_validation_report.json"
     review = (workspace / "evolution" / "skill_review.md").read_text(encoding="utf-8")
 
     assert result["status"] == "promoted"
+    assert result["evolution_validation_passed"] is True
     assert skill_path.exists()
     assert state_path.exists()
     assert ledger_path.exists()
+    assert validation_path.exists()
     assert "evolution_candidate.v1" in ledger_path.read_text(encoding="utf-8")
     assert "Market Research Loop" in review
     assert "[promoted]" in review

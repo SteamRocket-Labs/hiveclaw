@@ -877,10 +877,12 @@ backend/tests/architecture/test_h3_context_engine_contract.py
 
 backend/tests/architecture/test_h4_long_task_runtime_contract.py
 - long task plan/progress/resume artifact 建立在 RuntimeTask metadata 之上。
+- long task validation report 会检查 plan、progress、terminal status、完成证据和中断原因。
 
 backend/tests/architecture/test_h5_evolution_ledger_contract.py
 - skill distiller 自动 promote 路径写入 evolution candidate、eval run、promotion decision。
 - promotion decision 包含 rollback_ref 和 critical regression gate。
+- evolution validation report 会检查 candidate source、eval reward/trace、promotion rollback_ref 和 critical regression。
 
 backend/tests/architecture/test_h6_session_key_contract.py
 - SessionKey 统一 objective、runtime task、external conversation 的 stable_id 映射。

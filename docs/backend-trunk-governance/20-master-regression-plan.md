@@ -18,7 +18,7 @@ cd /Users/rocky243/vc-saas/hiveclaw-main
 git diff --check
 ```
 
-Expected current backend test count after session/gateway transcript and legacy repair migration: `1915 passed, 7 skipped, 4 warnings`. Update this file only from real pytest output, never from memory.
+Expected current backend test count after H4/H5 validation reports: `1924 passed, 7 skipped, 4 warnings`. Update this file only from real pytest output, never from memory.
 
 Target invariant:
 

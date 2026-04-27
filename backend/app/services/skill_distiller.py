@@ -777,6 +777,9 @@ async def run_skill_distillation_cycle(
         rollback_ref=rollback_ref,
         metadata={"save_result": save_result[:500]},
     )
+    from app.services.evolution_validation import validate_evolution_ledger
+
+    evolution_validation = validate_evolution_ledger(workspace, write_report=True)
 
     promoted_at = datetime.now(timezone.utc).isoformat()
     update_skill_candidate_record(
@@ -795,4 +798,6 @@ async def run_skill_distillation_cycle(
         "processed_sessions": processed,
         "skill_name": draft.name,
         "workflow_signature": record.workflow_signature,
+        "evolution_validation_passed": evolution_validation["passed"],
+        "evolution_validation": evolution_validation.get("report_artifact"),
     }

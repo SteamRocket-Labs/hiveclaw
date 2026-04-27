@@ -138,6 +138,29 @@ def record_promotion_decision(
     )
 
 
+def record_rollback_event(
+    workspace: Path,
+    *,
+    candidate_id: str,
+    restored_ref: str,
+    reason: str,
+    operator: str = "system",
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return _append(
+        workspace,
+        {
+            "schema": "evolution_rollback_event.v1",
+            "event": "rollback",
+            "candidate_id": candidate_id,
+            "restored_ref": restored_ref,
+            "reason": reason,
+            "operator": operator,
+            "metadata": metadata or {},
+        },
+    )
+
+
 def load_evolution_ledger(workspace: Path) -> list[dict[str, Any]]:
     path = _ledger_path(workspace)
     if not path.exists():

@@ -16,8 +16,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db, async_session
 from app.models.agent import Agent
+from app.models.audit import ChatMessage
 from app.models.gateway_message import GatewayMessage
+from app.models.participant import Participant
 from app.models.user import User
+from app.services.agent_pair_session import (
+    find_or_create_agent_pair_session,
+    get_or_create_agent_participant_id,
+    session_conversation_id,
+)
 from app.schemas.schemas import (
     GatewayPollResponse, GatewayMessageOut, GatewayReportRequest,
     GatewayHistoryItem, GatewayRelationshipItem, GatewaySendMessageRequest,
@@ -93,7 +100,6 @@ async def poll_messages(
         # Fetch conversation history (last 10 messages) for context
         history = []
         if msg.conversation_id:
-            from app.models.audit import ChatMessage
             hist_result = await db.execute(
                 select(ChatMessage)
                 .where(ChatMessage.conversation_id == msg.conversation_id)
@@ -104,7 +110,10 @@ async def poll_messages(
             for h in hist_msgs:
                 # Resolve sender name for each history message
                 h_sender = None
-                if h.role == "user" and h.user_id:
+                if getattr(h, "participant_id", None):
+                    r = await db.execute(select(Participant.display_name).where(Participant.id == h.participant_id))
+                    h_sender = r.scalar_one_or_none()
+                elif h.role == "user" and h.user_id:
                     r = await db.execute(select(User.display_name).where(User.id == h.user_id))
                     h_sender = r.scalar_one_or_none()
                 elif h.role == "assistant":
@@ -208,7 +217,6 @@ async def report_result(
     # Save result as assistant chat message and push via WebSocket
     # (only for user-originated messages; agent-to-agent skips this)
     if body.result and msg.conversation_id and msg.sender_user_id:
-        from app.models.audit import ChatMessage
         assistant_msg = ChatMessage(
             agent_id=agent.id,
             user_id=msg.sender_user_id,
@@ -236,7 +244,30 @@ async def report_result(
     # write the reply back as a gateway_message for the sender agent to poll
     if body.result and msg.sender_agent_id:
         async with async_session() as reply_db:
-            conv_id = msg.conversation_id or f"gw_agent_{msg.sender_agent_id}_{agent.id}"
+            sender_result = await reply_db.execute(select(Agent).where(Agent.id == msg.sender_agent_id))
+            sender_agent = sender_result.scalar_one_or_none()
+            sender_name = sender_agent.name if sender_agent else str(msg.sender_agent_id)
+            owner_user_id = agent.creator_id or getattr(sender_agent, "creator_id", None)
+            if not owner_user_id:
+                logger.warning("[Gateway] Cannot persist agent reply transcript without owner_user_id")
+                owner_user_id = agent.id
+
+            current_participant_id = await get_or_create_agent_participant_id(
+                reply_db,
+                agent_id=agent.id,
+                display_name=agent.name,
+                avatar_url=getattr(agent, "avatar_url", None),
+            )
+            session = await find_or_create_agent_pair_session(
+                reply_db,
+                source_agent_id=msg.sender_agent_id,
+                target_agent_id=agent.id,
+                owner_user_id=owner_user_id,
+                source_agent_name=sender_name,
+                target_agent_name=agent.name,
+            )
+            conv_id = session_conversation_id(session)
+            session.last_message_at = datetime.now(timezone.utc)
             gw_reply = GatewayMessage(
                 agent_id=msg.sender_agent_id,
                 sender_agent_id=agent.id,
@@ -245,6 +276,14 @@ async def report_result(
                 conversation_id=conv_id,
             )
             reply_db.add(gw_reply)
+            reply_db.add(ChatMessage(
+                agent_id=session.agent_id,
+                user_id=owner_user_id,
+                role="assistant",
+                content=body.result,
+                conversation_id=conv_id,
+                participant_id=current_participant_id,
+            ))
             await reply_db.commit()
             logger.info(f"[Gateway] Reply routed back to sender agent {msg.sender_agent_id}")
 
@@ -292,8 +331,6 @@ async def _send_to_agent_background(
         from app.api.websocket import call_llm
         from app.kernel.contracts import ExecutionIdentityRef
         from app.models.llm import LLMModel
-        from app.models.audit import ChatMessage
-        from app.models.chat_session import ChatSession
 
         async with async_session() as db:
             # Load target agent's LLM model
@@ -307,47 +344,29 @@ async def _send_to_agent_background(
             if not model:
                 return
 
-            # Create or find a ChatSession for this agent pair
-            # Use deterministic UUID so the same pair always gets the same session
-            import uuid as _uuid
-            _ns = _uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
-            # Sort IDs so session is the same regardless of who initiates
-            sorted_ids = sorted([source_agent_id, target_agent_id])
-            session_uuid = _uuid.uuid5(_ns, f"{sorted_ids[0]}_{sorted_ids[1]}")
-            conv_id = str(session_uuid)
-
-            # Find or create the ChatSession
-            existing = await db.execute(
-                select(ChatSession).where(ChatSession.id == session_uuid)
+            source_participant_id = await get_or_create_agent_participant_id(
+                db,
+                agent_id=source_agent_id,
+                display_name=source_agent_name,
             )
-            session = existing.scalar_one_or_none()
-            if not session:
-                from datetime import datetime, timezone
-                session = ChatSession(
-                    id=session_uuid,
-                    agent_id=target_agent_id,
-                    user_id=target_creator_id,
-                    title=f"{source_agent_name} ↔ {target_agent_name}",
-                    source_channel="agent",
-                    peer_agent_id=source_agent_id,
-                    created_at=datetime.now(timezone.utc),
-                )
-                db.add(session)
-                await db.commit()
-                await db.refresh(session)
-
-                # Migrate any existing messages from old gw_agent_ format
-                old_conv_id = f"gw_agent_{source_agent_id}_{target_agent_id}"
-                from sqlalchemy import update
-                await db.execute(
-                    update(ChatMessage)
-                    .where(ChatMessage.conversation_id == old_conv_id)
-                    .values(conversation_id=conv_id)
-                )
-                await db.commit()
+            target_participant_id = await get_or_create_agent_participant_id(
+                db,
+                agent_id=target_agent_id,
+                display_name=target_agent_name,
+            )
+            session = await find_or_create_agent_pair_session(
+                db,
+                source_agent_id=source_agent_id,
+                target_agent_id=target_agent_id,
+                owner_user_id=target_creator_id,
+                source_agent_name=source_agent_name,
+                target_agent_name=target_agent_name,
+                source_participant_id=source_participant_id,
+            )
+            conv_id = session_conversation_id(session)
+            session_agent_id = session.agent_id
 
             # Update last_message_at
-            from datetime import datetime, timezone
             session.last_message_at = datetime.now(timezone.utc)
 
             # Load recent conversation history for context
@@ -374,11 +393,12 @@ async def _send_to_agent_background(
 
             # Save user message to conversation
             db.add(ChatMessage(
-                agent_id=target_agent_id,
+                agent_id=session_agent_id,
                 conversation_id=conv_id,
                 role="user",
                 content=user_msg,
                 user_id=target_creator_id,
+                participant_id=source_participant_id,
             ))
             await db.commit()
 
@@ -411,11 +431,12 @@ async def _send_to_agent_background(
         # Save assistant reply to conversation
         async with async_session() as db:
             db.add(ChatMessage(
-                agent_id=target_agent_id,
+                agent_id=session_agent_id,
                 conversation_id=conv_id,
                 role="assistant",
                 content=final_reply,
                 user_id=target_creator_id,
+                participant_id=target_participant_id,
             ))
 
             # Write reply to gateway_messages for source (OpenClaw) to poll
@@ -465,9 +486,25 @@ async def send_message(
     logger.info(f"[Gateway] send_message: target='{target_name}', found_agent={target_agent.name if target_agent else None}, agent_type={getattr(target_agent, 'agent_type', None) if target_agent else None}, channel_hint='{channel_hint}'")
 
     if target_agent and (not channel_hint or channel_hint == "agent"):
-        conv_id = f"gw_agent_{agent.id}_{target_agent.id}"
-
         if getattr(target_agent, 'agent_type', None) == 'openclaw':
+            source_participant_id = await get_or_create_agent_participant_id(
+                db,
+                agent_id=agent.id,
+                display_name=agent.name,
+                avatar_url=getattr(agent, "avatar_url", None),
+            )
+            session = await find_or_create_agent_pair_session(
+                db,
+                source_agent_id=agent.id,
+                target_agent_id=target_agent.id,
+                owner_user_id=target_agent.creator_id,
+                source_agent_name=agent.name,
+                target_agent_name=target_agent.name,
+                source_participant_id=source_participant_id,
+            )
+            conv_id = session_conversation_id(session)
+            session.last_message_at = datetime.now(timezone.utc)
+
             # OpenClaw-to-OpenClaw: write to gateway_messages directly
             gw_msg = GatewayMessage(
                 agent_id=target_agent.id,
@@ -477,6 +514,14 @@ async def send_message(
                 conversation_id=conv_id,
             )
             db.add(gw_msg)
+            db.add(ChatMessage(
+                agent_id=session.agent_id,
+                user_id=target_agent.creator_id,
+                role="user",
+                content=content,
+                conversation_id=conv_id,
+                participant_id=source_participant_id,
+            ))
             await db.commit()
             return {
                 "status": "accepted",

@@ -851,8 +851,11 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
     try:
         from app.models.agent import Agent
         from app.models.audit import ChatMessage
-        from app.models.chat_session import ChatSession
-        from app.models.participant import Participant
+        from app.services.agent_pair_session import (
+            find_or_create_agent_pair_session,
+            get_or_create_agent_participant_id,
+            session_conversation_id,
+        )
 
         async with async_session() as db:
             # Look up source agent
@@ -881,14 +884,43 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
             if getattr(target, "agent_type", "native") == "openclaw":
                 from app.models.gateway_message import GatewayMessage as GMsg
 
+                owner_id = source_agent.creator_id if source_agent else target.creator_id
+                source_participant_id = await get_or_create_agent_participant_id(
+                    db,
+                    agent_id=from_agent_id,
+                    display_name=source_name,
+                    avatar_url=getattr(source_agent, "avatar_url", None),
+                )
+                chat_session = await find_or_create_agent_pair_session(
+                    db,
+                    source_agent_id=from_agent_id,
+                    target_agent_id=target.id,
+                    owner_user_id=owner_id,
+                    source_agent_name=source_name,
+                    target_agent_name=target.name,
+                    source_participant_id=source_participant_id,
+                )
+                session_id = session_conversation_id(chat_session)
+                chat_session.last_message_at = datetime.now(timezone.utc)
                 gw_msg = GMsg(
                     agent_id=target.id,
                     sender_agent_id=from_agent_id,
-                    sender_user_id=source_agent.creator_id if source_agent else None,
+                    sender_user_id=owner_id,
                     content=f"[From {source_name}] {message_text}",
                     status="pending",
+                    conversation_id=session_id,
                 )
                 db.add(gw_msg)
+                db.add(
+                    ChatMessage(
+                        agent_id=chat_session.agent_id,
+                        user_id=owner_id,
+                        role="user",
+                        content=message_text,
+                        conversation_id=session_id,
+                        participant_id=source_participant_id,
+                    )
+                )
                 await db.commit()
                 online = (
                     target.openclaw_last_seen
@@ -896,41 +928,31 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 )
                 status_hint = "online" if online else "offline (message will be delivered on next heartbeat)"
                 return f"✅ Message sent to {target.name} (OpenClaw agent, currently {status_hint}). The message has been queued and will be delivered when the agent polls for updates."
-            src_part_r = await db.execute(
-                select(Participant).where(Participant.type == "agent", Participant.ref_id == from_agent_id)
-            )
-            src_participant = src_part_r.scalar_one_or_none()
-            tgt_part_r = await db.execute(
-                select(Participant).where(Participant.type == "agent", Participant.ref_id == target.id)
-            )
-            tgt_participant = tgt_part_r.scalar_one_or_none()
 
-            # Find or create ChatSession for this agent pair (ordered consistently)
-            session_agent_id = min(from_agent_id, target.id, key=str)
-            session_peer_id = max(from_agent_id, target.id, key=str)
-            sess_r = await db.execute(
-                select(ChatSession).where(
-                    ChatSession.agent_id == session_agent_id,
-                    ChatSession.peer_agent_id == session_peer_id,
-                    ChatSession.source_channel == "agent",
-                )
+            owner_id = source_agent.creator_id if source_agent else from_agent_id
+            src_participant_id = await get_or_create_agent_participant_id(
+                db,
+                agent_id=from_agent_id,
+                display_name=source_name,
+                avatar_url=getattr(source_agent, "avatar_url", None),
             )
-            chat_session = sess_r.scalar_one_or_none()
-            if not chat_session:
-                owner_id = source_agent.creator_id if source_agent else from_agent_id
-                src_part_id = src_participant.id if src_participant else None
-                chat_session = ChatSession(
-                    agent_id=session_agent_id,
-                    user_id=owner_id,
-                    title=f"{source_name} ↔ {target.name}",
-                    source_channel="agent",
-                    participant_id=src_part_id,
-                    peer_agent_id=session_peer_id,
-                )
-                db.add(chat_session)
-                await db.flush()
-
+            tgt_participant_id = await get_or_create_agent_participant_id(
+                db,
+                agent_id=target.id,
+                display_name=target.name,
+                avatar_url=getattr(target, "avatar_url", None),
+            )
+            chat_session = await find_or_create_agent_pair_session(
+                db,
+                source_agent_id=from_agent_id,
+                target_agent_id=target.id,
+                owner_user_id=owner_id,
+                source_agent_name=source_name,
+                target_agent_name=target.name,
+                source_participant_id=src_participant_id,
+            )
             session_id = str(chat_session.id)
+            session_agent_id = chat_session.agent_id
 
             # Prepare target LLM
             from app.models.llm import LLMModel
@@ -973,7 +995,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 .limit(20)
             )
             for m in reversed(hist_result.scalars().all()):
-                if m.participant_id and src_participant and m.participant_id == src_participant.id:
+                if m.participant_id and src_participant_id and m.participant_id == src_participant_id:
                     role = "user"
                 else:
                     role = "assistant"
@@ -991,7 +1013,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                     role="user",
                     content=message_text,
                     conversation_id=session_id,
-                    participant_id=src_participant.id if src_participant else None,
+                    participant_id=src_participant_id,
                 )
             )
             chat_session.last_message_at = datetime.now(timezone.utc)
@@ -1005,7 +1027,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 owner_id=owner_id,
                 session_id=session_id,
                 session_agent_id=session_agent_id,
-                participant_id=tgt_participant.id if tgt_participant else None,
+                participant_id=tgt_participant_id,
             )
 
             if not target_reply:
@@ -1013,10 +1035,6 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
 
             # Save target reply
             async with async_session() as db2:
-                part_r = await db2.execute(
-                    select(Participant).where(Participant.type == "agent", Participant.ref_id == target.id)
-                )
-                tgt_part = part_r.scalar_one_or_none()
                 db2.add(
                     ChatMessage(
                         agent_id=session_agent_id,
@@ -1024,7 +1042,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                         role="assistant",
                         content=target_reply,
                         conversation_id=session_id,
-                        participant_id=tgt_part.id if tgt_part else None,
+                        participant_id=tgt_participant_id,
                     )
                 )
                 await db2.commit()

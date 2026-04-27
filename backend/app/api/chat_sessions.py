@@ -137,7 +137,16 @@ async def list_sessions(
     else:  # scope == "mine"
         # For agent creator/admin: also show inbound channel sessions
         # (Telegram, Feishu, Slack, etc.) so they can monitor all conversations
-        _channel_types = ("feishu", "telegram", "slack", "discord", "dingtalk", "wecom", "teams", "wechat_personal")
+        _channel_types = (
+            "feishu",
+            "telegram",
+            "slack",
+            "discord",
+            "dingtalk",
+            "wecom",
+            "microsoft_teams",
+            "wechat_personal",
+        )
         if _is_admin_or_creator(current_user, agent):
             ownership_filter = or_(
                 ChatSession.user_id == current_user.id,

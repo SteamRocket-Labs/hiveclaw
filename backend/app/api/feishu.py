@@ -15,6 +15,7 @@ from app.core.permissions import check_agent_access, is_agent_creator, is_agent_
 from app.core.security import get_current_user
 from app.database import get_db
 from app.api.channel_secrets import resolve_secret_value
+from app.channel_message_contracts import prefix_message_with_sender_label
 from app.models.channel_config import ChannelConfig
 from app.models.identity import SSOScanSession
 from app.models.user import User
@@ -1032,10 +1033,11 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             await db.commit()
 
             # Prepend sender identity so the agent knows who is talking
-            llm_user_text = user_text
-            if sender_name:
-                id_part = f" (ID: {sender_user_id_feishu})" if sender_user_id_feishu else ""
-                llm_user_text = f"[发送者: {sender_name}{id_part}] {user_text}"
+            llm_user_text = prefix_message_with_sender_label(
+                user_text,
+                sender_name=sender_name,
+                sender_id=sender_user_id_feishu,
+            )
 
             # ── Inject recent uploaded file context ──────────────────────────
             # Check the uploads directory for recently modified files (within 30 min).

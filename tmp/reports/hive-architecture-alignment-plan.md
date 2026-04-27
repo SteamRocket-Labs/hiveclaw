@@ -965,6 +965,11 @@ backend/tests/architecture/test_session_context_contract.py
 - H4 已新增 `long_task_runtime`，用 RuntimeTask metadata + `runtime_artifacts/long_tasks/` 写入 plan/progress/resume artifact。
 - H5 已新增 `evolution_ledger`，skill distiller 自动 promote 会写 candidate/eval/promotion decision，包含 reward、trace、rollback_ref 和 critical regression gate。
 - H6 已新增 `SessionKey` contract，invoker 会为所有 SessionContext 统一补 `session_key` metadata，objective/runtime/external conversation stable_id 规则一致。
+- feature 分支的 session/message contract 资产已选择性迁移：新增 `session_identifiers.py`、`channel_message_contracts.py` 与 `agent_pair_session.py`，activity/hooks/Feishu/gateway 不再散落 `[发送者]` 解析与 `gw_agent_` 拼接逻辑。
+- 第二批 session/gateway transcript 已落地：chat-history 以 `ChatSession.id` 为入口，OpenClaw 请求/回复、native 背景回复、`send_message_to_agent` 工具消息和督办提醒都复用同一个 agent-pair session service，并写入 `ChatMessage.participant_id` 账本。
+- legacy 数据修复也已闭合：新增 `db_legacy_gateway_conversation_migration.py` 和 `db_legacy_feishu_session_migration.py`，分别把旧 `gw_agent_*` transcript 与 Feishu `open_id` 会话提升到 canonical session/user_id。
+- channel 命名漂移已修正：`chat_sessions` mine 视图使用 canonical `"microsoft_teams"`，不再使用旧 `"teams"`。
+- 当前真实 backend 回归基线：`1915 passed, 7 skipped, 4 warnings`。
 
 边界说明：这里的 H1-H6 是第一版可执行 harness trunk 和常绿护栏，不等于 H4/H5 的长期效果已经被生产数据证明。长任务 6 小时恢复率、skill draft 接受率、prompt/eval 自动优化收益仍需要真实运行周期继续度量。
 
@@ -1238,11 +1243,11 @@ docs/backend-trunk-governance/
 
 建议不再继续抽象讨论。Architecture Phase 0R 与 Harness H1-H6 的第一版可执行 trunk 已落地，下一步不再继续补同类空壳，而是进入真实子系统迁移和长期运行验证:
 
-1. 选择性迁移 `feature/agent-session-feishu` 中仍有价值的 session identifiers、channel message contracts、Feishu canonical user_id。
-2. 用真实 agent 长任务跑 H4 resume/cancel/missed-policy 验证，收集 artifact 完整率和恢复率。
-3. 用真实 skill distiller 输出跑 H5 evolution ledger，记录 draft 接受率、eval reward 和 rollback 事件。
+1. 用真实 agent 长任务跑 H4 resume/cancel/missed-policy 验证，收集 artifact 完整率和恢复率。
+2. 用真实 skill distiller 输出跑 H5 evolution ledger，记录 draft 接受率、eval reward 和 rollback 事件。
+3. feature/session/Feishu/gateway 迁移线先收口：剩余旧 feature 架构测试多为 branch-specific `session_service` 约束或已被当前 `agent_pair_session`/H6 护栏覆盖，不再作为待合并代码源。
 
-完成这三步后,再决定是否开 `codex/integrate-agent-session-feishu` 做普通 merge，还是按 Feishu/session 子系统 cherry-pick。判断标准只有一个:不能产生第二套 autonomy trigger/session/tool/runtime 机制,不能回退当前 Autonomy P6 + Harness H1-H6 账本闭环。
+完成 H4/H5 真实运行验证后,再决定是否继续从 `feature/agent-session-feishu` cherry-pick 单点治理资产。判断标准只有一个:不能产生第二套 autonomy trigger/session/tool/runtime 机制,不能回退当前 Autonomy P6 + Harness H1-H6 账本闭环。
 
 ---
 
@@ -1272,5 +1277,5 @@ docs/backend-trunk-governance/
 
 ---
 
-**文档版本**:v1.8 · 2026-04-27 · Phase 0R + H1-H6 第一版可执行 harness trunk 落地
-**下次修订**:feature session/Feishu 子系统迁移、H4 长任务生产验证或 H5 eval/self-evolution 运行数据完成后,用真实 diff/test 结果更新
+**文档版本**:v2.0 · 2026-04-27 · Session/Gateway/Legacy Feishu 数据修复迁移收口
+**下次修订**:H4 长任务生产验证或 H5 eval/self-evolution 运行数据完成后,用真实 diff/test 结果更新

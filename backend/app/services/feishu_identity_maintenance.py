@@ -14,28 +14,9 @@ from app.models.chat_session import ChatSession
 from app.models.identity import ExternalIdentity
 from app.models.participant import Participant
 from app.models.user import User
+from app.session_identifiers import build_feishu_p2p_conv_id, list_legacy_feishu_conv_ids
 
-
-def build_feishu_p2p_conv_id(provider_user_id: str | None = None, provider_open_id: str | None = None) -> str | None:
-    """Build the canonical Feishu P2P conversation id.
-
-    `user_id` is tenant-stable and always wins over app-scoped `open_id`.
-    """
-    stable_id = (provider_user_id or "").strip() or (provider_open_id or "").strip()
-    if not stable_id:
-        return None
-    return f"feishu_p2p_{stable_id}"
-
-
-def list_legacy_feishu_conv_ids(provider_open_id: str | None, canonical_conv_id: str | None = None) -> list[str]:
-    """Return legacy Feishu conv ids that should collapse into the canonical session."""
-    open_id = (provider_open_id or "").strip()
-    if not open_id:
-        return []
-    legacy = f"feishu_p2p_{open_id}"
-    if canonical_conv_id and legacy == canonical_conv_id:
-        return []
-    return [legacy]
+__all__ = ["build_feishu_p2p_conv_id", "list_legacy_feishu_conv_ids"]
 
 
 def choose_canonical_feishu_user(candidates: Sequence[User]) -> User:

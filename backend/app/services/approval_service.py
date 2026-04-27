@@ -115,7 +115,11 @@ class ApprovalService:
         execution_result = None
         if approval.status == "approved" and approval.details:
             execution_result = await self._execute_approved_action(
-                approval.agent_id, approval.action_type, approval.details
+                approval.agent_id,
+                approval.action_type,
+                approval.details,
+                approved_by_user_id=user.id,
+                approval_id=approval.id,
             )
             execution_status = "success" if execution_result and "failed" not in str(execution_result).lower() else "failed"
             logger.info(
@@ -160,7 +164,15 @@ class ApprovalService:
         await db.flush()
         return approval
 
-    async def _execute_approved_action(self, agent_id: uuid.UUID, action_type: str, details: dict) -> str | None:
+    async def _execute_approved_action(
+        self,
+        agent_id: uuid.UUID,
+        action_type: str,
+        details: dict,
+        *,
+        approved_by_user_id: uuid.UUID | None = None,
+        approval_id: uuid.UUID | None = None,
+    ) -> str | None:
         """Execute the tool action that was approved."""
         tool_name = details.get("tool")
         args_raw = details.get("args", "{}")
@@ -181,9 +193,15 @@ class ApprovalService:
             else:
                 arguments = args_raw
 
-            from app.services.agent_tools import _execute_tool_direct
+            from app.services.agent_tools import execute_approved_tool
 
-            return await _execute_tool_direct(tool_name, arguments, agent_id)
+            return await execute_approved_tool(
+                tool_name,
+                arguments,
+                agent_id,
+                approved_by_user_id=approved_by_user_id,
+                approval_id=approval_id,
+            )
         except Exception as exc:
             logger.error("Failed to execute approved action %s: %s", tool_name, exc)
             return f"Execution failed: {exc}"

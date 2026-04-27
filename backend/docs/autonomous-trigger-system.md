@@ -490,7 +490,7 @@ P5 后仍属于产品运营层的增强：
 - 长期 SLA dashboard 和趋势报表。
 ```
 
-## P6 计划：Trigger 前端控制台增强适配
+## P6 已实现与验收：Trigger 前端控制台增强适配
 
 P6 的目标不是给现有触发器列表加更多字段，而是把前端页面升级为“自主系统运营控制台”。页面必须展示同一条闭环里的事实：
 
@@ -797,6 +797,53 @@ P6E — Realtime & Ops Polish
 - 所有新增 UI 文案完成 en/zh i18n。
 - API、服务层、前端组件均有测试覆盖。
 ```
+
+## Autonomy P0-P6 验收状态
+
+Autonomy P0-P6 是本文件内部的自主目标/触发/执行/UI 实施阶段，和架构对齐文档里的 Architecture Phase 0R-5 不是同一套编号，不能混算。本文件不定义任何后续 P 编号；后续长期 harness 能力在架构计划中单独命名为 Harness H1-H6。
+
+| 阶段 | 目标 | 当前验收状态 |
+|------|------|-------------|
+| P0 | 只读审计层，暴露 focus/trigger/runtime/session 断点 | 已完成：`/api/admin/autonomous-audit` 与服务/API 测试覆盖 |
+| P1 | trigger/heartbeat 写 RuntimeTask，skipped 也入账 | 已完成：trigger、heartbeat、skip reason、diagnostics 进入执行账本 |
+| P2 | objective_task 稳定 session 与 completed-focus reconciler | 已完成：objective session key、分组触发、独立 reconciler 已落地 |
+| P3 | `agent_objectives` 成为目标事实源，`focus.md` 变投影 | 已完成：migration、同步、projection、legacy fallback 已落地 |
+| P4 | Objective Intake / Gate / Wake / Evaluation 闭环 | 已完成：会话/HR/runtime signal 生成目标，wake reconciler 与 evaluator 已接入 |
+| P5 | wake gate、artifact、context_from、backoff、approval、event lifecycle | 已完成：执行可靠性与运营闭环已落地 |
+| P6 | Autonomy/Aware UI 与 BFF，前端不解析 raw metadata | 已完成：agent autonomy API、overview service、attempt/artifact endpoint、trigger P6 API、Aware UI 与 i18n/tests 已落地 |
+
+当前验收基线：
+
+```text
+backend pytest     1853 passed,7 skipped,4 warnings
+backend ruff       All checks passed
+frontend test      18 files,70 tests passed
+frontend build     passed
+alembic heads      add_agent_objectives_0427 (head)
+git diff --check   clean
+```
+
+Autonomy P0-P6 完成后的剩余问题不是“自主闭环没做完”，而是：
+
+```text
+- 需要补 architecture tests 防止 Autonomy P0-P6 主干回退。
+- 需要把 feature/agent-session-feishu 中 session/Feishu/tool runtime 治理资产选择性迁移。
+- 需要进入独立的 Harness H1-H6，把 autonomy trunk 升级成长期 harness trunk。
+```
+
+2026-04-27 Phase 0R 已补第一层护栏：
+
+```text
+backend/tests/architecture/test_phase0r_boundaries.py
+- kernel 不直接导入 DB/model/API 层。
+- approved tool execution 必须走公开的 approved boundary。
+- objective ledger 是 focus projection 的事实源。
+- trigger/heartbeat 执行必须进入 RuntimeTask attempt ledger。
+- objective session / heartbeat session / runtime session_context 必须保持显式边界。
+- memory layer 不创建或修改 objective ledger。
+```
+
+本轮同时把 post-approval 工具执行从私有 `_execute_tool_direct` 调整为 `execute_approved_tool` / `ToolRuntimeService.execute_approved`，审计记录包含 `approved_by_user_id` 与 `approval_id`。这属于架构护栏修正，不改变 trigger firing 或 objective lifecycle 行为。
 
 ## P0 边界
 

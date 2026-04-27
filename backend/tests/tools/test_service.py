@@ -196,6 +196,52 @@ async def test_tool_runtime_service_execute_direct_uses_direct_fallback():
     assert captured["context"] == context
 
 
+@pytest.mark.asyncio
+async def test_tool_runtime_service_execute_approved_logs_approval_metadata():
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    agent_id = uuid4()
+    approved_by = uuid4()
+    approval_id = uuid4()
+    context = ToolExecutionContext(
+        agent_id=agent_id,
+        user_id=approved_by,
+        tenant_id="tenant-1",
+        workspace=Path("/tmp/ws"),
+    )
+    logged = []
+
+    async def fake_log_activity(*args, **kwargs):
+        logged.append((args, kwargs))
+
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(SimpleNamespace(), SimpleNamespace()),
+        registry=_FakeRegistry("APPROVED"),
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=fake_log_activity,
+    )
+
+    result = await service.execute_approved(
+        "write_file",
+        {"path": "focus.md", "content": "done"},
+        agent_id=agent_id,
+        approved_by_user_id=approved_by,
+        approval_id=approval_id,
+    )
+
+    assert result == "APPROVED"
+    assert service.runtime_resolver.calls == [(agent_id, approved_by)]
+    assert logged[0][0][1] == "tool_call_approved"
+    assert logged[0][1]["detail"]["approved"] is True
+    assert logged[0][1]["detail"]["approved_by_user_id"] == str(approved_by)
+    assert logged[0][1]["detail"]["approval_id"] == str(approval_id)
+
+
 def _extract_tool_error_payload(result: str) -> dict:
     marker = "<tool_error>"
     end_marker = "</tool_error>"

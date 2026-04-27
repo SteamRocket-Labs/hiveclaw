@@ -189,12 +189,63 @@ class ToolRuntimeService:
         Governance is intentionally skipped (approval already granted), but
         we validate the tool exists and log the execution for audit.
         """
+        return await self._execute_without_governance(
+            tool_name,
+            arguments,
+            agent_id=agent_id,
+            user_id=user_id,
+            activity_type="tool_call_direct",
+            activity_detail={"approved": True},
+            log_label="execute_direct",
+        )
+
+    async def execute_approved(
+        self,
+        tool_name: str,
+        arguments: dict,
+        *,
+        agent_id: uuid.UUID,
+        approved_by_user_id: uuid.UUID | None = None,
+        approval_id: uuid.UUID | None = None,
+    ) -> str:
+        """Execute a tool after a recorded approval decision.
+
+        This is the public post-approval entrypoint. It skips governance
+        preflight because the approval decision is the governance result, but
+        keeps execution inside ToolRuntimeService for validation and audit.
+        """
+        detail = {
+            "approved": True,
+            "approved_by_user_id": str(approved_by_user_id) if approved_by_user_id else None,
+            "approval_id": str(approval_id) if approval_id else None,
+        }
+        return await self._execute_without_governance(
+            tool_name,
+            arguments,
+            agent_id=agent_id,
+            user_id=approved_by_user_id,
+            activity_type="tool_call_approved",
+            activity_detail=detail,
+            log_label="execute_approved",
+        )
+
+    async def _execute_without_governance(
+        self,
+        tool_name: str,
+        arguments: dict,
+        *,
+        agent_id: uuid.UUID,
+        user_id: uuid.UUID | None = None,
+        activity_type: str,
+        activity_detail: dict[str, Any],
+        log_label: str,
+    ) -> str:
         _logger = logging.getLogger(__name__)
 
         self.ensure_registry()
 
         resolved_user_id = user_id or agent_id
-        _logger.info("[ToolService] execute_direct: tool=%s agent=%s user=%s", tool_name, agent_id, resolved_user_id)
+        _logger.info("[ToolService] %s: tool=%s agent=%s user=%s", log_label, tool_name, agent_id, resolved_user_id)
 
         runtime_context = await self.runtime_resolver.resolve(agent_id=agent_id, user_id=resolved_user_id)
         try:
@@ -214,18 +265,24 @@ class ToolRuntimeService:
             # Activity log for audit trail (mirrors execute() behavior)
             if self.activity_logger and tool_name not in ("list_files", "read_file", "read_document"):
                 try:
+                    detail = {
+                        "tool": tool_name,
+                        "result": result[:300],
+                        **activity_detail,
+                    }
                     await _maybe_await(
                         self.activity_logger(
-                            agent_id, "tool_call_direct",
-                            f"Direct-executed {tool_name}: {result[:80]}",
-                            detail={"tool": tool_name, "result": result[:300], "approved": True},
+                            agent_id,
+                            activity_type,
+                            f"Approved-executed {tool_name}: {result[:80]}",
+                            detail=detail,
                         )
                     )
                 except Exception as _log_err:
-                    _logger.warning("[ToolService] Activity logging failed for execute_direct: %s", _log_err)
+                    _logger.warning("[ToolService] Activity logging failed for %s: %s", log_label, _log_err)
             return result
         except Exception as exc:
-            _logger.error("[ToolService] execute_direct failed: tool=%s agent=%s error=%s", tool_name, agent_id, exc)
+            _logger.error("[ToolService] %s failed: tool=%s agent=%s error=%s", log_label, tool_name, agent_id, exc)
             return render_tool_error(
                 tool_name=tool_name,
                 error_class="tool_execution_error",

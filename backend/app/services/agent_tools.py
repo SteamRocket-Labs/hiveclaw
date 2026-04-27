@@ -547,22 +547,26 @@ async def get_agent_tools_for_llm(
 # ─── Tool Executors ─────────────────────────────────────────────
 
 
-async def _execute_tool_direct(
+async def execute_approved_tool(
     tool_name: str,
     arguments: dict,
     agent_id: uuid.UUID,
+    *,
+    approved_by_user_id: uuid.UUID | None = None,
+    approval_id: uuid.UUID | None = None,
 ) -> str:
-    """Execute a tool directly, bypassing approval preflight checks.
+    """Execute a tool after an explicit approval decision.
 
-    Used by the approval post-processing hook after an action
-    has been approved and needs to actually run.
+    Approval handling is a governance boundary, so callers should use this
+    public entrypoint instead of reaching into ToolRuntimeService internals.
     """
-    return await _get_tool_runtime_service().execute_direct(
+    return await _get_tool_runtime_service().execute_approved(
         tool_name,
         arguments,
         agent_id=agent_id,
+        approved_by_user_id=approved_by_user_id,
+        approval_id=approval_id,
     )
-
 
 async def execute_tool(
     tool_name: str,

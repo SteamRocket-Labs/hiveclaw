@@ -7,8 +7,8 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_direct_prefers_tool_registry_executor(monkeypatch):
-    from app.services.agent_tools import _execute_tool_direct
+async def test_execute_approved_tool_prefers_tool_registry_executor(monkeypatch):
+    from app.services.agent_tools import execute_approved_tool
     from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
 
     workspace = Path("/tmp/test-agent-workspace")
@@ -31,7 +31,7 @@ async def test_execute_tool_direct_prefers_tool_registry_executor(monkeypatch):
     monkeypatch.setattr("app.services.agent_tools._ensure_tool_execution_registry", lambda: None)
     monkeypatch.setattr("app.services.agent_tools._TOOL_EXECUTION_REGISTRY.try_execute", fake_try_execute)
 
-    result = await _execute_tool_direct(
+    result = await execute_approved_tool(
         "execute_code",
         {"language": "python", "code": "print('hi')"},
         agent_id,
@@ -45,8 +45,8 @@ async def test_execute_tool_direct_prefers_tool_registry_executor(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_direct_falls_back_to_execute_code(monkeypatch):
-    from app.services.agent_tools import _execute_tool_direct
+async def test_execute_approved_tool_falls_back_to_execute_code(monkeypatch):
+    from app.services.agent_tools import execute_approved_tool
     from app.tools.runtime import ToolExecutionContext
 
     workspace = Path("/tmp/test-agent-workspace")
@@ -73,7 +73,7 @@ async def test_execute_tool_direct_falls_back_to_execute_code(monkeypatch):
     monkeypatch.setattr("app.services.agent_tools._TOOL_EXECUTION_REGISTRY.try_execute", fake_try_execute)
     monkeypatch.setattr("app.services.agent_tools._execute_code", fake_execute_code)
 
-    result = await _execute_tool_direct(
+    result = await execute_approved_tool(
         "execute_code",
         {"language": "python", "code": "print('hi')"},
         uuid4(),
@@ -85,8 +85,8 @@ async def test_execute_tool_direct_falls_back_to_execute_code(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_direct_falls_back_to_run_command(monkeypatch):
-    from app.services.agent_tools import _execute_tool_direct
+async def test_execute_approved_tool_falls_back_to_run_command(monkeypatch):
+    from app.services.agent_tools import execute_approved_tool
     from app.tools.runtime import ToolExecutionContext
 
     workspace = Path("/tmp/test-agent-workspace")
@@ -113,7 +113,7 @@ async def test_execute_tool_direct_falls_back_to_run_command(monkeypatch):
     monkeypatch.setattr("app.services.agent_tools._TOOL_EXECUTION_REGISTRY.try_execute", fake_try_execute)
     monkeypatch.setattr("app.services.agent_tools._run_command", fake_run_command)
 
-    result = await _execute_tool_direct(
+    result = await execute_approved_tool(
         "run_command",
         {"command": "pwd"},
         uuid4(),

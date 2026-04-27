@@ -1,35 +1,122 @@
 # Hive Agent 架构对齐方案 — 对标 Claude Code 与 Hermes Agent
 
-> **状态**:修订稿 v1.2 · 2026-04-27 · Codex 事实校准 + 执行顺序修正
+> **状态**:修订稿 v1.4 · 2026-04-27 · P6 自主闭环落地后 + Harness Engineering 外部校准
 > **作者**:Claude (Opus 4.7) 草案 · Codex 复核修订 · 与 Codex 报告并列(参见 `agent-session-feishu-merge-review.md`)
-> **目标**:在当前 main 分支基础上,12 周内达到全面对标 Claude Code 与 Hermes Agent 的极简、易拓展架构
+> **目标**:在当前 main 分支基础上,12 周内达到全面对标 Claude Code、Hermes Agent 与主流 Harness Engineering 实践的极简、易拓展架构
 
 ---
 
 ## 0. TL;DR(给只看一眼的人)
 
 1. **不要直接合并 `feature/agent-session-feishu`**——会和 main 上 63 个 commit 的 prompt/cache/memory/eval 演进发生真实冲突
-2. **先修当前 main 的验证基线,再做集成分支**——当前复核结果不是"18 fail",而是 pytest collection error + ruff 10 errors;frontend test/build 通过
-3. **走集成分支策略**——`codex/integrate-agent-session-feishu`,以 main 为基底吸收 feature 的 trunk cleanup,普通 merge 暴露冲突,不要默认使用 `git merge -X ours`
-4. **两个战略差距(本文档第一优先级)**:
+2. **当前本地验证基线已经从"待修"变成"可用"**——截至本次再校准:backend pytest `1844 passed,7 skipped`;ruff 全绿;frontend `70 passed`;frontend build 通过;Alembic 单 head。原 Phase 0 的"先修 collection/ruff"已不再是待办,应改为 Phase 0R: **冻结当前绿基线并防回退**。
+3. **feature/agent-session-feishu 仍然不能直接合并,但集成策略要变成选择性吸收**——P0-P6 已经把 autonomy trigger/objective/runtime/UI 主干向前推进了一大段;后续只能把 feature 的 session、Feishu canonical、tool runtime、architecture tests 拿来对齐,不能用旧 feature 覆盖当前 objective ledger / autonomy BFF。
+4. **自主触发模块已经从"待建设"变成"已成主干,需要护栏"**:
+   - Objective Ledger 是目标事实源
+   - Trigger/Wake Policy 是唤醒策略
+   - RuntimeTask/Artifact 是执行账本
+   - `focus.md` 是可读投影,不是事实源
+   - Aware UI 默认展示目标/唤醒/结果/动作,内部 ID/config/metadata 只进 diagnostics
+5. **两个仍然没有闭环的战略差距(本文档第一优先级)**:
    - **差距 A**:**Evals 驱动的 prompt 自动优化**——Hermes 生态已明确指向 DSPy + GEPA,但不能把 companion repo 直接等同为 Hermes Agent core 已全量落地;Hive 应先建 eval/bake-off/rollback
    - **差距 B**:**闭环 skill auto-extraction/refinement**——Hermes 本地源码已有后台 memory/skill review;Hive 也已有 `skill_distiller` 与 candidate lifecycle,真正缺的是 outcome-driven refine 与用户审核 promote 闭环
    - 这两个不是"锦上添花",是**架构层面真正需要补齐的系统能力**
-5. **架构债不在功能,而在多代叠层和缺少常绿护栏**——`agent_tools.py` 815 行 facade、feature 有 10 个架构测试但 main 尚未吸收、当前 main 验证不绿
-6. **方案分 6 个 Phase,12 周推进**——Phase 0-2 是地基(基线清洁 + 消化合并 + 工程治理 + Claude Code 对齐),**Phase 3-4 是核心(直接攻击两个战略差距)**,Phase 5 收尾
-7. **结论置信度分层**——"不能直接合并,但值得系统性吸收"信心约 96%;"12 周内完整自我进化系统稳定提升任务达成率"信心约 65%-75%
+6. **架构债不在功能,而在多代叠层和缺少常绿护栏**——`agent_tools.py` facade、feature 的架构测试/治理文档、session/Feishu/tool runtime 主干仍值得吸收;但 autonomy trigger trunk 不能再按旧分支方案重做
+7. **路线要改成 5 条并行主线**——A.冻结当前自主闭环与架构测试;B.选择性吸收 session/Feishu/tool runtime 治理;C.闭环 skill refine;D.evals/GEPA-light;E.plain-text inspectability 与 UX 收尾
+8. **结论置信度分层**——"不能直接合并,但值得系统性吸收"信心约 96%;"自主目标/触发/执行/UI 基本闭环"信心约 90%;"12 周内 prompt/skill 自进化稳定提升任务达成率"信心约 65%-75%
+9. **Harness Engineering 重新定义下一步**——P0-P6 解决的是 autonomy trunk;P7-P12 必须解决 harness trunk:可执行规范、可观察环境、独立评价器、可恢复长任务、权限沙箱、上下文/记忆边界、eval 驱动的自我进化。
 
 ---
 
 ## 0.1 本次 Codex 修订说明:为什么这样改
 
-这次修订不是推翻原始诉求,而是把原文中证据强度不够、执行顺序有风险、验证状态过期的地方改成可落地版本。
+这次修订不是推翻原始诉求,而是把原文中证据强度不够、执行顺序有风险、验证状态过期的地方改成可落地版本。2026-04-27 的 P0-P6 实施后,本文档再次校准:自主目标/触发/执行/UI 已经变成当前主干,而不是未来分支计划。
 
-1. **把当前状态从历史结论改为工具复核结论。** 原文写 main 有 18 个失败测试,但当前重新运行后不是这个状态:pytest 在 collection 阶段因重复 `test_prompt_cache` 模块名报错,ruff 有 10 个明确问题,frontend test/build 通过。因此 Phase 0 必须先修 baseline,不能直接拿旧失败数当合并门槛。
+1. **把当前状态从历史结论改为工具复核结论。** 原文写 main 有 18 个失败测试,随后一版修订又写成 pytest collection error + ruff 10 errors。当前最新本机回归已经不同:backend pytest `1844 passed,7 skipped`;backend ruff 全绿;frontend `70 passed`;frontend build 通过;Alembic 单 head。因此原 Phase 0 不再是"先修 baseline",而是 Phase 0R 的"冻结绿基线并防回退"。
 2. **把 Hermes/GEPA 的表述从"核心系统已完整落地"改成"生态方向已确认、核心落地程度需谨慎"。** 已能确认 Hermes 自进化 companion repo 和 release 文档体现了 DSPy/GEPA/benchmark 方向,但本地 Hermes Agent core 未能证明"所有系统提示词都已进入 GEPA 自动优化 loop"。所以这里作为战略目标保留,作为已完成事实降级。
 3. **把 Hive skill distillation 的描述从"固定模板/半人工"修正为"已有保守 distiller,但缺闭环"。** Hive 当前已有 LLM draft、workflow signature、candidate lifecycle、review-only patch 等机制,低估它会导致错误规划;真正缺口是 outcome-driven refine、用户确认 promote、失败样本回灌。
 4. **移除 `git merge -X ours` 作为默认集成命令。** 这个策略在当前冲突类型下风险很高,可能静默覆盖 feature 的结构化治理资产或 main 的 prompt/memory 演进。正确做法是普通 merge 暴露冲突,再逐文件决策。
-5. **把"能合并"的定义改为零红线验证。** 当前目标是长期对标 Claude Code / Hermes Agent,基础工程门槛不能接受 pytest collection error、ruff error、架构测试缺失或运行态数据污染。Phase 0 的退出条件必须是可重复、可审计、可回滚。
+5. **把"能合并"的定义改为零红线验证。** 当前目标是长期对标 Claude Code / Hermes Agent,基础工程门槛不能接受 pytest failure、ruff error、架构测试缺失或运行态数据污染。Phase 0R 的退出条件必须是可重复、可审计、可回滚。
+
+## 0.2 P6 后当前状态再校准:哪些计划必须改变
+
+P6 之后,这份计划需要从"修坏掉的自主触发模块"改为"保护已经形成的自主闭环主干"。
+
+**当前绿基线**:
+```text
+backend pytest     1844 passed,7 skipped,4 warnings
+backend ruff       All checks passed
+frontend test      18 files,70 tests passed
+frontend build     passed
+alembic heads      add_agent_objectives_0427 (head)
+git diff --check   clean
+```
+
+**新的事实源分层**:
+```text
+soul/SKILL/memory markdown
+- agent 的认知、技能、长期记忆真源
+- 必须保持 plain-text 可读、可 diff、可人工修
+
+agent_objectives
+- 目标事实源
+- 记录目标状态、成功标准、优先级、证据、完成/拒绝理由
+
+agent_triggers
+- wake policy 真源
+- 只表示何时唤醒/怎样唤醒,不再冒充目标本身
+
+runtime_tasks + artifacts
+- attempt/result ledger 真源
+- 记录每次 heartbeat/trigger/objective run 的执行、跳过、失败、产物
+
+focus.md
+- 可读投影和兼容面
+- 不是目标事实源,不能再被 UI 或 trigger 当作唯一账本
+```
+
+**计划影响**:
+- 原 Phase 0 的 baseline cleanup 已完成,后续应改为 Phase 0R:冻结当前 P6 自主闭环主干,补架构测试和防回退护栏。
+- `feature/agent-session-feishu` 仍然值得吸收,但只能选择性迁移 session、Feishu canonical、tool runtime、architecture tests;不能用旧 autonomy trigger trunk 覆盖当前 `agent_objectives` / autonomy BFF / Aware UI。
+- 架构测试需要从 feature 分支迁移并适配当前 P6 API,尤其要固化 Objective Ledger / Wake Policy / RuntimeTask / Artifact / UI diagnostics 的边界。
+- 后续战略工作应转向 skill outcome/refine 和 eval/GEPA-light,并直接复用当前 RuntimeTask、objective、artifact 数据,不要再发明第二套任务账本。
+
+---
+
+## 0.3 Harness Engineering 外部校准:这件事真正要做什么
+
+本次新增校准来自 2026 年的三类资料:Anthropic 的 long-running harness 系列、OpenAI 的 Codex harness engineering 实践、以及社区/研究界围绕 Ralph loop、Jules、VeRO、CAT、SWE-EVO、ABTest 形成的共识。结论很明确:一个长期可行的 agent 框架不是"更长 prompt + 更多 trigger",而是**把目标、环境、反馈、权限、记忆、评价、回滚做成可执行的 harness**。
+
+**Anthropic 给出的关键经验**:
+- 长任务失败的核心不是模型不会写代码,而是上下文跨 session 断裂、过早宣布完成、试图一次做太多、缺少端到端验证。
+- 有效 harness 需要 initializer agent 建立结构化 feature/test/progress artifact,后续 coding agent 每次只做增量,结束时留下干净状态、git/progress 记录和可验证结果。
+- 最新 long-running app harness 进一步证明 generator 与 evaluator 要分离;QA/evaluator 必须用 Playwright 这类真实操作工具验证,不能只看代码或听 generator 自评。
+- harness 复杂度必须定期删减:每个额外 agent、sprint、reset、gate 都是假设,模型变强后要重新验证它是否仍是 load-bearing。
+
+**OpenAI 给出的关键经验**:
+- 工程师角色从"写代码"转为"设计环境、明确意图、构建反馈回路"。
+- 代码仓库是记录系统:给 agent 的应该是地图,不是一千页说明书;AGENTS/skills/docs 要短、分层、可发现。
+- 应用、日志、metrics、traces、DevTools、screenshots 都要对 agent 可读,让 agent 能自己复现、修复、验证。
+- 高吞吐 agent 会复制代码库里的坏模式,所以必须把"黄金原则"编码成机械规则和后台清理任务,形成垃圾回收式治理。
+
+**社区/Google/研究界给出的关键经验**:
+- Ralph loop 的有效点是简单:每轮新上下文、读规范、选最高优先级未完成任务、执行、测试、提交、记录;风险是 token/cost 高,且没有评价器时会自我确认。
+- Google Jules 的产品化方向是 async cloud VM、plan 可审、diff/PR 可审、GitHub workflow 触发、并发任务、隔离执行环境;对 Hive 的启发是 long task 输出必须是可审核 artifact,不是只在聊天里说完成。
+- VeRO 指向 agent 优化必须有 versioned snapshots、reward、observations、budget-controlled eval、structured traces;这正是 Hive skill/prompt 自我进化缺的账本。
+- CAT 指出 context 不应只是被动压缩,而应成为 agent 可调用的工具:稳定任务语义、压缩长期记忆、高保真短期交互分层管理。
+- SWE-EVO/ABTest 说明长周期软件演进和 agent 鲁棒性必须单独测;只看单 issue benchmark 或普通 pytest 会严重高估 agent。
+
+**反过来看 Hive 的架构结论**:
+
+```text
+P0-P6 = autonomy trunk
+- 目标、唤醒、执行、artifact、UI 已成主干
+
+P7-P12 = harness trunk
+- 规范、上下文、工具环境、权限、评价、自我进化、回滚要成主干
+```
+
+Hive 不应该照搬 Ralph 的死循环,也不应该照搬 Jules 的纯 PR 模式。Hive 的优势是多租户、多渠道、企业权限、长期 agent identity 和记忆。因此正确方向是:在 Hive 内部建立**持续运行的 Evolution Harness**,把每个 agent 的长期成长拆成可审计的 objective/attempt/artifact/eval/version ledger。
 
 ---
 
@@ -66,12 +153,13 @@ git rev-list --left-right --count origin/main...origin/feature/agent-session-fei
 
 | 项 | main(本机当前) | feature(Codex 验证) |
 |---|---|---|
-| pytest | **collection error**:`backend/tests/runtime/test_prompt_cache.py` 与 `backend/tests/services/test_prompt_cache.py` 模块名冲突;1745 items collected / 1 error | 1223 passed |
-| ruff | **10 errors**:unused imports/vars + E402 import-order 问题 | All checks passed |
-| frontend test | 68 passed | 67 passed |
+| pytest | **1844 passed,7 skipped,4 warnings** | 1223 passed |
+| ruff | **All checks passed** | All checks passed |
+| frontend test | **70 passed** | 67 passed |
 | frontend build | passed | passed |
+| alembic heads | **single head:`add_agent_objectives_0427`** | 未复核 |
 
-> ⚠️ **本次修正**:原文的"1720 passed / 18 failed"属于过期基线。当前 main 的第一红线是 pytest 还不能完整 collection,第二红线是 ruff 不绿。合并 feature 前应先修复这些 baseline hygiene 问题,否则集成后无法判断失败来自 main、feature 还是冲突解决。
+> **P6 后修正**:原文的"1720 passed / 18 failed"、上一版的"pytest collection error + ruff 10 errors"都属于历史基线。当前本地 main/P6 工作区已经重新变绿。后续重点不是"先修 baseline",而是防止 feature 集成或后续 P 阶段把这条绿基线打回去。
 
 ### 2.3 main 独有(feature 没有)的进化
 
@@ -105,6 +193,13 @@ git rev-list --left-right --count origin/main...origin/feature/agent-session-fei
 **Providers 解耦(2 commit)**
 - 移除所有硬编码 provider 依赖
 - 从 tenant DB 解析
+
+**Autonomy P0-P6 主干(当前工作区已落地)**
+- `agent_objectives` 成为目标事实源,`focus.md` 退为可读投影
+- trigger/heartbeat/objective run 写入 `RuntimeTask`,skipped 也进入账本
+- trigger 分类收敛为 objective_task / scheduled_job / event_wait / system_maintenance
+- runtime artifact、wake gate、context_from、toolset/workdir/model pinning 进入统一机制
+- Aware UI 通过 autonomy BFF 暴露目标/唤醒/尝试/产物/下一步动作,默认隐藏 raw config/metadata/内部 ID
 
 ### 2.4 feature 独有(main 没有)的工程治理
 
@@ -220,15 +315,17 @@ tests/architecture/
 | **GEPA 自动 prompt 进化** | 人工 best-practice 重写 + 初级 eval infra | Hermes 生态明确指向 GEPA/DSPy | **算法/工程差距** |
 | **DSPy compile** | 无 | Hermes self-evolution 方向使用 DSPy | **工程差距** |
 | **Evals 闭环** | 有 eval runner 雏形,无线上 pass-rate 驱动 | 推断两家都有更强内部 evals | **方法差距** |
-| **架构测试** | main 尚未吸收 / feature 10 个 | 不公开但内部一定有 | **工程债** |
+| **架构测试** | P6 新增大量服务/API/UI 测试,但 feature 的 10 个 architecture tests 尚未迁移适配 | 不公开但内部一定有 | **工程债** |
 | **Hooks 编程接口对外开放** | 内部 15 事件,租户拿不到 | Claude Code 完全开放 | **产品形态债** |
 | **Subagent 隔离深度** | `delegate_to_agent` 已有,context 边界不够清晰 | Claude Code Task 工具完全隔离 | **架构精度债** |
 | **Tooling runtime 多后端** | in-process 单一 | Hermes 6 backends | **架构能力债** |
 | **多代叠层未清理** | `agent_tools.py` 815 行 facade | 未公开但理论上更干净 | **工程债** |
 
+> 自主目标/触发/执行闭环不再列为"真实落后"。P0-P6 已经把它推进为当前主干;剩余问题是补架构测试、长周期指标和 feature 分支迁移时的兼容护栏。
+
 ### 4.4 ⭐ 两个战略差距(本文档核心诉求)
 
-这两点不是普通差距,是**架构层面的系统能力差距**。它们不应被包装成已经完全证实的竞品事实,但确实是 Hive 要达到"持续变强的 agent 框架"时必须建设的能力。**这是 12 周路线的真正意义所在**,如果只完成 Phase 0-2 没有触及这两个,等于没有完成对标。
+这两点不是普通差距,是**架构层面的系统能力差距**。它们不应被包装成已经完全证实的竞品事实,但确实是 Hive 要达到"持续变强的 agent 框架"时必须建设的能力。**这是 12 周路线的真正意义所在**,如果只完成 Phase 0R-2 没有触及这两个,等于没有完成对标。
 
 ---
 
@@ -307,7 +404,7 @@ tests/architecture/
 #### 这两个战略差距与 12 周路线的关系
 
 ```
-Phase 0  → 合并基线        (基础设施)
+Phase 0R → 保护当前 P6 主干 + 选择性迁移 feature 治理 (基础设施)
 Phase 1  → 工程治理        (基础设施)
 Phase 2  → Claude Code 对齐 (基础设施 — Hooks/Subagent/Compact)
 Phase 3  → 闭环 skill auto-extraction  ← ⭐ 攻击差距 B
@@ -315,11 +412,11 @@ Phase 4  → GEPA / DSPy / Evals          ← ⭐ 攻击差距 A
 Phase 5  → 极简化收尾      (打磨)
 ```
 
-**Phase 0-2 是地基**:不解决这些,差距 A/B 没法做(没有架构测试、没有 hooks 总线对外、没有干净的 LLM 调用面,自进化无从落脚)。
+**Phase 0R-2 是地基**:不解决这些,差距 A/B 没法做(没有架构测试、没有 hooks 总线对外、没有干净的 LLM 调用面,自进化无从落脚)。但 Phase 0R 的重点已经不是修 collection/ruff,而是保护当前 P6 自主闭环,并把 feature 的工程治理资产按新主干适配进来。
 
 **Phase 3-4 是攻坚**:这两个 Phase 占整个路线 50% 的难度和 60% 的置信度损失,但**这是对标对齐的真正意义所在**。
 
-**Phase 5 是打磨**:有了 Phase 0-4,最后的极简化才有意义。
+**Phase 5 是打磨**:有了 Phase 0R-4,最后的极简化才有意义。
 
 ---
 
@@ -330,7 +427,7 @@ Phase 5  → 极简化收尾      (打磨)
 ─────────────────────────────────────────────────────────────
 极简度            ●●●●○            ●●●●●            ●●○○○  (815 行 facade)
 易拓展度          ●●●●●            ●●●○○            ●●●○○  (hooks 不对外)
-工程治理          ●●●●○            ●●●●○            ●●○○○  (feature 有 10 个,main 待吸收)
+工程治理          ●●●●○            ●●●●○            ●●●○○  (P6 测试变绿,feature 架构测试待适配)
 自我进化          ●●○○○            ●●●●●            ●●●○○  (有 distiller,缺闭环 refine)
 提示词工程        ●●●●○            ●●●●●            ●●●●○  (人工 best-practice + 初级 eval)
 上下文工程        ●●●●●            ●●●●○            ●●●●○  (frozen/dynamic + cache)
@@ -361,10 +458,10 @@ Phase 5  → 极简化收尾      (打磨)
 │       禁止:绕过 ToolRuntimeService、绕过 Hook 总线               │
 │       架构测试:`test_no_direct_tool_execution.py`                 │
 ├──────────────────────────────────────────────────────────────────┤
-│  L2  Memory (T0/T2/T3/soul + Backend Protocol)                   │
-│       职责:plain-text MD 是真源,SQLite/Hindsight 是只读加速器    │
-│       禁止:把业务真源写到 MD 之外                                │
-│       架构测试:`test_md_is_source_of_truth.py`                    │
+│  L2  Memory & Ledgers (T0/T2/T3/soul + objective/trigger/runtime)│
+│       职责:MD 保存认知/技能/记忆;DB ledger 保存目标/唤醒/执行    │
+│       禁止:把 focus.md 当目标事实源;禁止 UI 解析 raw metadata    │
+│       架构测试:`test_autonomy_ledger_boundaries.py`               │
 ├──────────────────────────────────────────────────────────────────┤
 │  L1  Identity & Evolution (soul + GEPA/DSPy + skill auto-extract)│
 │       职责:闭环自进化(对齐 Hermes)                              │
@@ -379,61 +476,129 @@ Phase 5  → 极简化收尾      (打磨)
 
 ---
 
+### 5.1 Hive Evolution Harness v2 — 长期自主进化的 6 层架构
+
+P6 后的 5 层架构仍然成立,但如果目标是长期 harness engineering,需要把"运行时"和"评价/进化"显式拆出来。最终目标不是一个更复杂的 agent swarm,而是一套更可控的 agent harness。
+
+```text
+L0 Trust Boundary
+- tenant/user/agent identity
+- secrets/capability/approval/audit
+- hardline deny + allow/ask/deny policy
+
+L1 Agent Kernel
+- 唯一 LLM 执行入口:AgentKernel + InvocationRequest
+- 所有工具调用必须经 ToolRuntime + CapabilityGate
+- 禁止 API/service/channel 直接调 LLM 或 tool handler
+
+L2 Context Engine
+- prompt sections / memory retrieval / context_from / compaction / cache
+- summary 是 reference artifact,不是新指令
+- context compression 可被 agent 主动请求,也可由 policy 触发
+
+L3 Durable Ledgers
+- objectives / wake policies / runtime attempts / artifacts
+- memory / skill candidates / eval runs / prompt versions
+- 所有长期事实必须可查询、可 diff、可回滚
+
+L4 Control Loops
+- objective intake / wake reconciler / trigger daemon / heartbeat
+- dream / distill / evaluator / skill refiner / garbage collector
+- 每个 loop 都必须有 skipped/failed/completed attempt 记录
+
+L5 Surfaces
+- web / Feishu / Slack / A2A / admin / autonomy dashboard
+- UI 展示 decision fields 和 action fields
+- raw metadata/config/internal IDs 只进入 diagnostics
+```
+
+**不可破坏的 harness invariants**:
+
+```text
+1. Objective 是目标事实源;Trigger 只是 wake policy。
+2. RuntimeTask/Attempt 记录每次真实执行、跳过、失败和完成。
+3. Session 是上下文容器,不是事实源。
+4. Memory 记录经验/知识/偏好,不承载待办目标。
+5. focus.md 只是可读投影和兼容面。
+6. 所有 LLM 调用必须走 AgentKernel。
+7. 所有工具调用必须走 ToolRuntime + CapabilityGate。
+8. 所有外部副作用必须有 objective/authorization lineage。
+9. 所有 compaction/memory injection 必须有 fence/source。
+10. 所有自我进化修改必须有 candidate/eval/promote/rollback。
+11. 所有长任务必须有 output artifact、状态机、可恢复/可取消语义。
+12. 所有 harness 复杂度都必须能被 eval 证明仍然 load-bearing。
+```
+
+**对标后的 Hive 取舍**:
+
+| 取舍 | Hive 方案 | 原因 |
+|------|----------|------|
+| 是否照搬 Ralph loop | 不照搬,只吸收 fresh context + spec/task/progress artifact | Hive 是长期身份 agent,死循环容易制造无授权副作用和成本失控 |
+| 是否照搬 Jules | 不照搬,但吸收 async VM/PR-like artifact/plan approval | Hive 不是纯代码 PR 产品,需要多渠道和企业权限 |
+| 是否采用 Anthropic 三 agent harness | 选择性采用 planner/generator/evaluator 分离 | 只在高风险长任务和 self-evolution 上启用,普通任务保持单 kernel |
+| 是否让 heartbeat 做所有事 | 不允许 | heartbeat 是观察/蒸馏/提案 loop,不是业务万能执行器 |
+| 是否把 memory 当 task queue | 不允许 | 目标必须进 objective ledger,记忆只服务上下文 |
+| 是否让 evaluator 常驻 | 不默认 | evaluator 成本高,只在 long task、external side effect、self-evolution、低置信完成时启用 |
+
+---
+
 ## 6. 12 周路线图
 
-### Phase 0 — 基线清洁 + 集成准备(W0,本周)
+### Phase 0R — 保护当前 P6 主干 + 集成准备(W0,本周)
 
-**目标**:先把当前 main 修到可验证基线,再把 feature 的工程治理吸收到 main,不损失 main 的 prompt/cache/memory/eval 演进
-**置信度**:90%
+**目标**:冻结当前已经变绿的 P6 自主闭环主干,再选择性吸收 feature 的工程治理资产;任何集成都不能倒退 Objective Ledger / Wake Policy / RuntimeTask / Artifact / autonomy UI 这条主路径。
+**置信度**:92%
 **预计工时**:1-2 天
 
 **动作清单**:
-1. 修 main 当前验证红线
-   - pytest collection error:`backend/tests/runtime/test_prompt_cache.py` 与 `backend/tests/services/test_prompt_cache.py` 模块名冲突
-   - ruff 10 errors:unused imports/vars + E402 import-order
-   - 先做到 main 自身 `pytest` 可以完整 collection、`ruff check` 全绿
-2. 清理运行态数据入库问题
-   - `git rm --cached` 只从 git index 取消跟踪,不删除本地运行态文件
+1. 固化当前绿基线
+   - 保留并持续运行当前回归命令:
+   ```bash
+   cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+   .venv/bin/python -m pytest
+   .venv/bin/python -m ruff check app tests
+   .venv/bin/alembic heads
+
+   cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+   npm test
+   npm run build
+
+   cd /Users/rocky243/vc-saas/hiveclaw-main
+   git diff --check
+   ```
+   - 当前期望:backend `1844 passed,7 skipped`;ruff pass;frontend `70 passed`;build pass;Alembic 单 head。
+2. 增加/迁移架构测试,但先适配 P6 新事实源
+   - 从 feature 迁移 architecture tests 中仍有效的 session/message/tool runtime/prompt-memory 合约。
+   - `test_autonomy_trigger_trunk.py` 必须改写为当前 P6 合约:目标事实源是 `agent_objectives`,trigger 是 wake policy,attempt/result 是 `RuntimeTask` + artifact,`focus.md` 是 projection。
+3. 选择性吸收 feature 分支
+   - 可以吸收:session identifiers、channel message contracts、Feishu canonical user_id、tool runtime canonical surface、trunk-governance 文档。
+   - 不可覆盖:当前 `autonomy.py` / `autonomy_overview.py` / trigger P6 API / objective ledger / runtime artifact / Aware UI。
+4. 清理运行态数据入库问题
+   - 如果 `.ultra/memory/*` 仍被 git 跟踪,只从 index 移除,不删除本地运行态文件。
    ```bash
    git status --short .ultra/memory
    git rm --cached -r .ultra/memory/
    printf '\\n# Local agent runtime memory\\n.ultra/memory/\\n' >> .gitignore
    ```
-3. 切集成分支,普通 merge 暴露冲突
+5. feature 集成必须走普通 merge 或 cherry-pick,逐文件 review
    ```bash
    git switch main
    git pull --ff-only
    git switch -c codex/integrate-agent-session-feishu
    git merge --no-commit origin/feature/agent-session-feishu
    ```
-4. 按第 2.5 节冲突表逐文件解决
-   - prompt / memory / cache / eval 默认以 main 为准
-   - tool runtime / session / Feishu canonical / architecture tests 默认吸收 feature
-   - `agents/orchestrator.py`、`task_executor.py`、`memory_service.py` 必须手动合并,不能用整文件覆盖
-5. 跑完整验证
-   ```bash
-   cd /Users/rocky243/vc-saas/hiveclaw-main/backend
-   .venv/bin/python -m pytest tests
-   .venv/bin/python -m ruff check app tests
-
-   cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
-   npm run test -- --run
-   npm run build
-
-   cd /Users/rocky243/vc-saas/hiveclaw-main
-   git diff --check
-   ```
-6. 提 PR 到 main(独立 review,不直接合并)
+   - prompt / memory / cache / eval 默认以当前 main/P6 为准。
+   - session / Feishu canonical / tool runtime / architecture tests 默认吸收 feature,但必须适配当前接口。
+   - `agents/orchestrator.py`、`task_executor.py`、`memory_service.py` 必须手动合并,不能整文件覆盖。
 
 **Exit criteria**:
-- ✅ `pytest tests/architecture` 全过(从 0 涨到 10+)
-- ✅ `pytest tests` 可完整 collection 且 0 fail;若存在历史 flaky,必须列出具体测试与复现证据
-- ✅ `ruff check` 全过
-- ✅ frontend test/build 全过
-- ✅ `git diff --check` 全过
-- ✅ 所有 feature 的 trunk-governance 文档进入 `docs/backend-trunk-governance/`
+- ✅ 当前全量回归仍然保持 backend pytest / ruff / alembic / frontend test / frontend build / diff-check 全绿
+- ✅ architecture tests 迁移后能表达当前 P6 ledger 边界,而不是旧 focus.md/trigger 事实源模型
+- ✅ 所有 feature 的 trunk-governance 文档进入 `docs/backend-trunk-governance/` 或等价位置
+- ✅ feature 集成没有引入第二套 autonomy trigger 机制
+- ✅ Aware UI 仍通过 autonomy BFF 展示 display fields,默认不暴露 raw metadata/config/内部 ID
 
-**回滚方案**:集成分支独立,失败直接弃枝
+**回滚方案**:集成分支独立,失败直接弃枝;P6 当前主干不通过 feature merge 回滚。
 
 ---
 
@@ -445,10 +610,10 @@ Phase 5  → 极简化收尾      (打磨)
 
 **动作清单**:
 
-**1.1 验证基线归零并防回退**(0.5-1 天)
-- 保留 Phase 0 对 pytest collection、ruff、frontend test/build 的修复
-- 为 `test_prompt_cache` 模块名冲突增加命名约束或重命名测试文件,避免再次 import mismatch
-- 把 feature 的 architecture tests 纳入常规 CI
+**1.1 绿基线防回退**(0.5-1 天)
+- 保留 P6 后全量回归基线:backend pytest / ruff / alembic / frontend test / frontend build / diff-check
+- 把 feature 的 architecture tests 纳入常规 CI,但先适配当前 Objective/Wake/Runtime/Artifact 分层
+- 为测试文件命名、Alembic single-head、UI diagnostics 隐藏策略增加轻量架构护栏,避免历史 drift 回潮
 
 **1.2 `agent_tools.py` 削薄到 < 100 行**(4 小时)
 - 拆 ContextVar 到 `app/tools/channel_context.py`
@@ -636,19 +801,120 @@ Phase 5  → 极简化收尾      (打磨)
 
 ---
 
-## 7. 第一刀:本周可立即执行的 5 个动作
+### Phase P7-P12 — Harness Trunk 升级路线(接 P6 自主闭环之后)
+
+> Phase 0R-5 解决的是"对齐旧 feature 治理 + skill/eval 初步闭环"。P7-P12 解决的是更底层的问题:Hive 自己是否已经成为一个高质量 harness engineering 平台。这个路线应该成为 P6 之后的新主线。
+
+| Phase | 名称 | 目标 | 验收标准 |
+|-------|------|------|----------|
+| P7 | Architecture Guardrails | 用架构测试锁死 kernel/tool/objective/memory/context/permission 边界 | 任何直接调 LLM、直接调 tool handler、把 focus.md 当事实源、memory/objective 混用都会测试失败 |
+| P8 | Permission + Tool Runtime Hardening | 建立 hardline deny、allow/ask/deny、approval 后仍走 ToolRuntime、skill guard | 高风险命令 fail-closed;approval 不再有 direct execute 绕路;工具调用全量可审计 |
+| P9 | ContextEngine + MemoryProvider | 把 context/memory 做成可插拔 harness 组件 | compaction artifact、memory fence、provider lifecycle、context_as_tool 全部有测试 |
+| P10 | Long Task Runtime | 长任务支持 plan/spec/progress/output delta/resume/cancel/missed policy | 6 小时任务可跨 session 恢复;每轮都有 artifact;UI 可看进度/阻塞/下一步 |
+| P11 | Evaluator + Self-Evolution Ledger | generator/evaluator 分离,skill/prompt 进入 eval/bakeoff/promote/rollback | 所有 skill/prompt 自动改动都有 version、reward、trace、rollback |
+| P12 | Session/Channel Harness Unification | web/Feishu/Slack/A2A/trigger 共享 SessionContext/SessionKey contract | 渠道只生成 InvocationRequest;不再有渠道侧私有 session/trigger 逻辑 |
+
+**P7 立即实施清单**:
+
+```text
+backend/tests/architecture/test_kernel_boundaries.py
+- AgentKernel 不 import DB、渠道、API router
+- invoke_agent 是 LLM runtime 唯一入口
+
+backend/tests/architecture/test_tool_runtime_single_entry.py
+- API/service/channel 不直接调用 tool handler
+- approval 后执行也必须回到 ToolRuntime
+
+backend/tests/architecture/test_autonomy_ledger_boundaries.py
+- Objective 是事实源
+- Trigger 是 wake policy
+- RuntimeTask/Artifact 是 attempt/result ledger
+- focus.md 只能是 projection
+
+backend/tests/architecture/test_memory_objective_separation.py
+- memory service 不创建业务目标
+- objective intake 不把 memory markdown 当 task queue
+
+backend/tests/architecture/test_permission_hardline.py
+- destructive shell / secret exfil / external side effect 必须进入 deny 或 approval
+
+backend/tests/architecture/test_context_engine_contract.py
+- compression summary 只能是 reference artifact
+- memory/context injection 必须有 source/fence
+
+backend/tests/architecture/test_session_context_contract.py
+- channel/web/trigger/A2A 都必须产出统一 SessionContext/InvocationRequest
+```
+
+**P8-P12 关键设计**:
+
+```text
+P8:
+- PermissionPolicy = hardline_deny + capability_gate + approval + audit
+- SkillGuard 扫描外部 skill 的 exfiltration/destructive/persistence/network/injection 风险
+- ToolRuntimeBackend 抽象 local/docker/ssh/cloud VM,先落 local/docker
+
+P9:
+- ContextEngine Protocol: on_session_start / assemble / should_compact / compact / on_session_end
+- MemoryProvider Protocol: prefetch / inject / sync_turn / on_pre_compress / on_session_end
+- Context artifact: every compaction and memory injection is traceable
+
+P10:
+- LongTaskPlan artifact: spec / acceptance criteria / verification command / risk gates
+- Runtime progress artifact: delta output / screenshots / logs / metrics links
+- Resume contract: fresh context can recover from objective + runtime artifact + git/log state
+
+P11:
+- EvolutionCandidate: target_type(prompt|skill|memory_policy|tool_policy), diff, source attempts
+- EvalRun: dataset, model, budget, reward, traces, failure cases
+- PromotionPolicy: only promote when reward beats baseline and no critical regression
+
+P12:
+- SessionContext as request-scoped object, not env/global mutable state
+- external_conv_id / channel thread / objective session / runtime task trace_id 统一映射
+- Channel delivery result also writes artifact, not only chat message
+```
+
+**P7-P12 之后的目标状态**:
+
+```text
+用户提出长期目标
+  ↓
+ObjectiveIntake 生成候选并过 gate
+  ↓
+WakePolicy 负责唤醒
+  ↓
+AgentKernel 在 ContextEngine 管理下执行
+  ↓
+ToolRuntime 在 PermissionPolicy 下执行工具
+  ↓
+RuntimeTask + Artifact 记录过程和结果
+  ↓
+Evaluator 验证是否真的完成
+  ↓
+MemoryProvider 写入经验,SkillRefiner 生成候选
+  ↓
+Eval/Bakeoff 决定是否 promote 自我进化改动
+```
+
+这条链路闭合后,才能说 Hive 的自主进化能力基本闭环。P0-P6 让 agent "会醒、会做、会记账";P7-P12 让 agent "会被环境约束、会被独立评价、会安全长期运行、会基于证据进化"。
+
+---
+
+## 7. 第一刀:本周可立即执行的 6 个动作
 
 按优先级:
 
 | # | 动作 | 风险 | 时间 | 谁做 |
 |---|------|------|-----|-----|
-| 1 | 修当前 main 的 pytest collection error + ruff 10 errors | 低 | 0.5-1 天 | Claude/Codex |
-| 2 | `.ultra/memory/*` 加 `.gitignore` + 删除已 track 运行态数据 | 低 | 10 分钟 | Claude/Codex |
-| 3 | 先移植 feature 的 10 个架构测试与 trunk-governance 文档(不改行为) | 低(纯增量) | 2-4 小时 | Claude/Codex |
-| 4 | 切 `codex/integrate-agent-session-feishu`,普通 merge 并逐文件解决冲突 | 中 | 1 天 | Claude/Codex + 用户 review |
-| 5 | `agent_tools.py` 按 canonical surface/execution 收敛到 < 100 行 | 中(动多个调用方) | 0.5-1 天 | Claude/Codex |
+| 1 | 给当前 P6 autonomy trunk 补 architecture tests:Objective Ledger / Wake Policy / RuntimeTask / Artifact / UI diagnostics 边界 | 低 | 0.5-1 天 | Claude/Codex |
+| 2 | 增加 P7 harness architecture tests:Kernel / ToolRuntime / Permission / ContextEngine / MemoryProvider / SessionContext | 中 | 0.5-1 天 | Claude/Codex |
+| 3 | 移植 feature 的 trunk-governance 文档和非 autonomy 架构测试,逐个适配当前接口 | 中 | 0.5-1 天 | Claude/Codex |
+| 4 | 选择性迁移 session identifiers / channel message contracts / Feishu canonical user_id,不覆盖 P6 autonomy API | 中 | 1-2 天 | Claude/Codex + 用户 review |
+| 5 | 开始 skill outcome/refine 账本设计,直接复用 RuntimeTask artifact 数据 | 中 | 0.5-1 天 | Claude/Codex |
+| 6 | 开始 eval/pass-rate 数据集设计,用 objective/runtime ledger 作为样本来源 | 中 | 0.5-1 天 | Claude/Codex |
 
-**全部完成 = main 进入"可验证基线",可以承接 Phase 1 之后的所有改造。**
+**全部完成 = 当前 P6 自主闭环从"功能可用"进入"架构受保护",并且 P7 harness trunk 的边界开始常绿。**
 
 ---
 
@@ -656,7 +922,7 @@ Phase 5  → 极简化收尾      (打磨)
 
 | ID | 风险 | 概率 | 影响 | 缓解 | 责任 |
 |----|------|-----|------|-----|------|
-| R1 | Phase 0 合并冲突解错,prompt/cache 进化丢失 | 中 | 高 | 集成分支独立 PR,每个冲突单独 commit,review 到位 | Claude + 用户 |
+| R1 | Phase 0R 选择性集成冲突解错,prompt/cache/P6 autonomy 进化丢失 | 中 | 高 | 集成分支独立 PR,每个冲突单独 commit,review 到位 | Claude + 用户 |
 | R2 | Feishu canonical 修复破坏现网会话 | 中 | 高 | feature 已带 db_legacy_*_migration helper,启动期归一化可回放 | Claude |
 | R3 | Phase 3.1 闭环 skill 抽取出垃圾 skill | 高 | 中 | draft 蓄水池 + 用户审核,不直接 promote | Claude |
 | R4 | Phase 4 GEPA 让 prompt 退化 | 高 | 高 | evals pass-rate 自动回滚,配人工 override | Claude |
@@ -672,14 +938,15 @@ Phase 5  → 极简化收尾      (打磨)
 如果没有新的产品方向输入,建议按以下默认值执行:
 
 ### Q1:Phase 顺序
-- 当前顺序:0 → 1 → 2 → 3 → 4 → 5(工程债先,自进化后)
-- 备选:0 → 3 → 1 → 2 → 4 → 5(自进化优先,但风险更高)
-- 备选:0 → 1 → 3 → 2 → 4 → 5(工程债 + 自进化双线并行)
+- 当前顺序:0R/P7 并行 → P8/P9 → P10 → P11 → P12;旧 Phase 1-5 的工程治理、skill、eval 工作并入对应 P8-P11
+- 原因:当前 P6 已经形成 autonomy trunk,下一步要保护 harness 边界,不能继续按旧"先功能后治理"顺序推进
+- 备选:0R → 3 → 1 → 2 → 4 → 5(自进化优先,但会让 skill/eval 建在尚未削薄的工具主干上)
+- 备选:0R → 1 → 3 → 2 → 4 → 5(工程债 + skill 闭环双线并行)
 
-### Q2:Phase 0 集成时机
-- 选项 A:先修 main baseline,再开 `codex/integrate-agent-session-feishu`(推荐)
+### Q2:Phase 0R 集成时机
+- 选项 A:先补 P6 autonomy architecture tests,再开 `codex/integrate-agent-session-feishu`(推荐)
 - 选项 B:现在立即开集成分支,但不提交 merge commit,只用于冲突侦察
-- 选项 C:先做 5 个"第一刀"动作中的非合并部分(action 1、action 2、action 3),合并放到下周
+- 选项 C:只 cherry-pick feature 的 session/Feishu/tool runtime 子集,暂不做整分支 merge
 
 ### Q3:Phase 3.1 skill auto-extraction 信号设计
 - 选项 A:LLM judge 单审(快,但容易抽出垃圾)
@@ -704,7 +971,7 @@ Phase 5  → 极简化收尾      (打磨)
 - 选项 C:**直接用 DSPy 框架**(置信度 60%)——不自研,挂 DSPy 的现成实现
 - 我的推荐:**选项 A 起步,跑 4 周后看效果决定要不要升级到 B/C**
 
-### Q5:谁来跑 Phase 0 ~ Phase 5
+### Q5:谁来跑 Phase 0R ~ Phase 5
 - 选项 A:Claude(我)主导,你 review + 决策
 - 选项 B:多 agent 协作(Codex 跑工程治理,Claude 跑自进化)
 - 选项 C:你自己主导,Claude/Codex 当工具
@@ -745,47 +1012,50 @@ Phase 5  → 极简化收尾      (打磨)
 - [Hermes Agent Architecture](https://hermes-agent.nousresearch.com/docs/developer-guide/architecture)
 - [Hermes Agent GitHub](https://github.com/nousresearch/hermes-agent)
 - [Hermes Agent Memory Explained](https://www.remoteopenclaw.com/blog/hermes-agent-memory-system-explained)
+- [Anthropic: Harness design for long-running agents](https://www.anthropic.com/engineering/harness-design-long-running-apps)
+- [Anthropic: Effective harnesses for long-running agents](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents)
+- [Anthropic: Building effective agents](https://www.anthropic.com/research/building-effective-agents)
+- [OpenAI: Harness engineering for agents](https://openai.com/zh-Hans-CN/index/harness-engineering/)
+- [Google Labs: Jules, an asynchronous coding agent](https://blog.google/technology/google-labs/jules)
+- [VeRO: Versioned agentic Reinforcement Learning via Order-preserving gradients](https://arxiv.org/abs/2602.22480)
+- [Context as a Tool: Context Management for Long-Horizon SWE-Agents](https://arxiv.org/abs/2512.22087)
+- [SWE-EVO: Benchmarking Coding Agents in Long-Horizon Software Evolution Scenarios](https://arxiv.org/abs/2512.18470)
+- [ABTest: Behavior-Driven Testing for AI Coding Agents](https://arxiv.org/abs/2604.03362)
 
-### 10.2 main 当前验证失败清单(Codex 复核,2026-04-27)
+### 10.2 当前验证基线与历史失败清单(Codex 复核,2026-04-27)
 
-**pytest 当前第一红线**:
-
-```text
-backend/tests/runtime/test_prompt_cache.py
-backend/tests/services/test_prompt_cache.py
-
-import file mismatch:
-imported module 'test_prompt_cache' has this __file__ attribute:
-  backend/tests/runtime/test_prompt_cache.py
-which is not the same as the test file we want to collect:
-  backend/tests/services/test_prompt_cache.py
-```
-
-实际结果:1745 items collected / 1 collection error。也就是说,当前 main 还没有进入可比较的"多少 passed / failed"阶段。
-
-**ruff 当前 10 个错误**:
+**当前 P6 后绿基线**:
 
 ```text
-backend/app/runtime/invoker.py:41 F401 unused apply_prompt_cache_hints
-backend/app/runtime/prompt_builder.py:27 E402 module level import not at top of file
-backend/app/services/feishu_service.py:9 F401 unused loguru.logger
-backend/tests/api/test_admin_memory_backend.py:229 E402 module level import not at top of file
-backend/tests/api/test_desktop_auth.py:162 F841 local variable fake_feishu_user assigned but never used
-backend/tests/services/test_feishu_calendar_runtime.py:3 F401 unused SimpleNamespace
-backend/tests/services/test_feishu_service_api.py:3 F401 unused SimpleNamespace
-backend/tests/services/test_skill_distiller.py:192 E402 module level import not at top of file
-backend/tests/services/test_tool_config_service.py:8 F401 unused resolve_tool_config_for_tenant_display
-backend/tests/services/test_tool_config_service.py:60 F841 local variable tool_enabled assigned but never used
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+./.venv/bin/python -m pytest
+# 1844 passed,7 skipped,4 warnings
+
+./.venv/bin/python -m ruff check app tests
+# All checks passed
+
+./.venv/bin/alembic heads
+# add_agent_objectives_0427 (head)
+
+cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+npm test
+# 18 files,70 tests passed
+
+npm run build
+# passed
+
+cd /Users/rocky243/vc-saas/hiveclaw-main
+git diff --check
+# clean
 ```
 
-**frontend 当前状态**:
+**历史失败清单(仅保留审计背景,不再代表当前状态)**:
 
-```text
-npm run test -- --run  # 17 files,68 tests passed
-npm run build          # passed
-```
+- 曾出现 pytest import mismatch:`backend/tests/runtime/test_prompt_cache.py` 与 `backend/tests/services/test_prompt_cache.py` 模块名冲突。
+- 曾出现 ruff 10 个 unused import / E402 / F841 问题。
+- 曾记录 frontend `68 passed` 的旧基线。
 
-> 原文中的"18 个失败测试"应视为历史/过期基线。现在最重要的是先修 collection 和 lint,否则无法判断后续集成质量。
+> 当前计划必须以 P6 后绿基线为准。后续所有 feature 集成和 P 阶段推进,都要证明没有打破这组命令。
 
 ### 10.3 feature 分支的 trunk-governance 文档清单
 
@@ -814,7 +1084,7 @@ docs/backend-trunk-governance/
 ─────────────────────────────────────────────────────────────────────────────────
 极简度                       ●●●●○         ●●●●●         ●●○○○         ●●●●●
 易拓展度                     ●●●●●         ●●●○○         ●●●○○         ●●●●●
-工程治理                     ●●●●○         ●●●●○         ●●○○○         ●●●●●
+工程治理                     ●●●●○         ●●●●○         ●●●○○         ●●●●●
 自我进化                     ●●○○○         ●●●●●         ●●●○○         ●●●●●
 提示词工程                   ●●●●○         ●●●●●         ●●●●○         ●●●●●
 上下文工程                   ●●●●●         ●●●●○         ●●●●○         ●●●●●
@@ -829,9 +1099,10 @@ docs/backend-trunk-governance/
 | 内容 | 置信度 | 说明 |
 |------|------|-----|
 | 不能直接 merge 的判断 | 96% | 14 个真实冲突已用 git merge-tree 验证 |
-| 当前 main 验证不绿的判断 | 95% | pytest collection error + ruff 10 errors 已本机复核 |
-| Phase 0 baseline cleanup 可行 | 85% | 问题明确,但修完后可能暴露下一层测试失败 |
-| Phase 0 集成方案可行 | 82% | 冲突表已逐个分析,但需要人工逐文件决策 |
+| 当前 P6 绿基线成立 | 95% | backend pytest/ruff/alembic、frontend test/build、diff-check 已本机复核 |
+| 自主目标/触发/执行/UI 基本闭环 | 90% | P0-P6 已覆盖 objective、wake policy、RuntimeTask、artifact、Aware UI;仍需长周期线上数据验证 |
+| Phase 0R 主干保护可行 | 88% | 重点从修 baseline 改为补 architecture tests 和选择性迁移 feature |
+| Phase 0R 集成方案可行 | 82% | 冲突表已逐个分析,但需要人工逐文件决策 |
 | Phase 1 工程治理可达 | 88% | feature 已验证,但要在 main 的新 prompt/memory 基线上重做 |
 | Phase 2 Claude Code 对齐可达 | 85% | hook/subagent/compact 三件事都是已知工程 |
 | Phase 3 Hermes 对齐可达 | 75% | skill auto-extraction 需要 LLM judge 调优 |
@@ -843,13 +1114,14 @@ docs/backend-trunk-governance/
 
 ## 11. 下一步(建议直接执行)
 
-建议不再继续抽象讨论,直接进入 Phase 0 的前 3 个动作:
+建议不再继续抽象讨论,直接进入 P7/Phase 0R 的前 4 个动作。Phase 0R 负责保护当前 P6 主干,P7 负责把 harness 边界测试化:
 
-1. 修当前 main 的 pytest collection error 和 ruff 10 errors。
-2. 清理 `.ultra/memory` 运行态数据入库问题。
-3. 移植 feature 的 10 个架构测试和 trunk-governance 文档,先不改运行逻辑。
+1. 给当前 P6 autonomy trunk 补 architecture tests,锁住 Objective Ledger / Wake Policy / RuntimeTask / Artifact / UI diagnostics 边界。
+2. 移植 feature 的 trunk-governance 文档和非 autonomy 架构测试,逐个适配当前接口。
+3. 新增 P7 harness architecture tests,锁住 Kernel / ToolRuntime / Permission / ContextEngine / MemoryProvider / SessionContext 边界。
+4. 选择性迁移 session identifiers、channel message contracts、Feishu canonical user_id、tool runtime canonical surface。
 
-完成这三步后,再开 `codex/integrate-agent-session-feishu` 做普通 merge 和冲突解决。这样做的原因是:先把验证基线变干净,再讨论合并质量,否则所有失败都会混在一起。
+完成这四步后,再决定是开 `codex/integrate-agent-session-feishu` 做普通 merge,还是按子系统 cherry-pick。判断标准只有一个:不能产生第二套 autonomy trigger 机制,不能回退当前 P6 账本闭环。
 
 ---
 
@@ -859,17 +1131,17 @@ docs/backend-trunk-governance/
 
 | 关键词 | 本文档对应方案 | 哪个 Phase |
 |-------|-------------|----------|
-| 极简 | 5 层架构 + 删除 815 行 facade + 多代叠层清理 | Phase 0/1/5 |
+| 极简 | 5 层架构 + 删除 815 行 facade + 多代叠层清理 | Phase 0R/1/5 |
 | 极易拓展 | Hooks 对外开放 + Subagent 隔离 + skill marketplace | Phase 2/5 |
 | 全面对标 Claude Code | Hooks/Subagent/Compact + plain-text-first + MCP 已有 | Phase 2 |
 | 全面对标 Hermes Agent | **闭环 skill auto-extraction(差距 B)** + **GEPA/DSPy-light(差距 A)** + 多 backend tooling runtime | **Phase 3 + Phase 4** |
 | 系统提示词重点优化 | GEPA-light 演化 HEARTBEAT/DREAM/EXTRACT(差距 A) | **Phase 4** |
 | skill 重点优化 | 闭环抽取 + 自我 refine(差距 B) | **Phase 3** |
 | 记忆蒸馏提示词 | EXTRACT_PROMPT 进入 eval/bake-off/GEPA-light(差距 A) | **Phase 4** |
-| 工程上对标 | main 吸收 feature 的 10+ 架构测试,815 行 facade → < 100 行 | Phase 0/1 |
+| 工程上对标 | main 吸收并适配 feature 的 10+ 架构测试,815 行 facade → < 100 行 | Phase 0R/1 |
 | 框架上对标 | 5 层架构 + 单一执行入口 + 单一工具运行时 | Phase 1 |
 | agent 效率上 | Cache 命中率 + token 预算 UX | Phase 5 |
-| 上下文工程上 | 已对齐(frozen/dynamic + section 化 + cache),Phase 0 后稳态 | Phase 0 |
+| 上下文工程上 | 已对齐(frozen/dynamic + section 化 + cache),Phase 0R 后稳态 | Phase 0R |
 | **自我进化系统上** | **差距 A + 差距 B 双闭环**——这是核心 | **Phase 3 + Phase 4** |
 | 提示词工程上 | GEPA-light 演化(差距 A) | **Phase 4** |
 | 工具使用上 | 多 backend(local/Docker/SSH) | Phase 3.3 |
@@ -879,5 +1151,5 @@ docs/backend-trunk-governance/
 
 ---
 
-**文档版本**:v1.2 · 2026-04-27 · Codex 事实校准 + Phase 0 执行顺序修正
-**下次修订**:Phase 0 前三项执行完成后,用真实 diff/test 结果更新
+**文档版本**:v1.4 · 2026-04-27 · P6 自主闭环落地后 + Harness Engineering 外部校准
+**下次修订**:P7 架构测试、permission/tool runtime hardening 或 feature 选择性迁移完成后,用真实 diff/test 结果更新

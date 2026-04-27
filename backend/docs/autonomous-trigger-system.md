@@ -887,6 +887,11 @@ backend/tests/architecture/test_h5_evolution_ledger_contract.py
 backend/tests/architecture/test_h6_session_key_contract.py
 - SessionKey 统一 objective、runtime task、external conversation 的 stable_id 映射。
 - invoker 对所有 entrypoint 的 SessionContext 自动补 session_key metadata。
+
+backend/tests/architecture/test_harness_validation_contract.py
+- `/admin/harness-validation` 只读聚合 H4/H5 证据。
+- Harness validation 复用 `validate_long_task_run(write_report=False)` 与 `validate_evolution_ledger(write_report=False)`。
+- 不写 RuntimeTask，不生成 evolution candidate，不自动修复 artifact。
 ```
 
 ## P0 边界

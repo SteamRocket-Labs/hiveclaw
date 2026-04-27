@@ -22,6 +22,7 @@ from app.models.system_settings import SystemSetting
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services.autonomous_audit import build_autonomous_audit_report
+from app.services.harness_validation_report import build_harness_validation_report
 
 logger = logging.getLogger(__name__)
 
@@ -257,6 +258,24 @@ async def get_autonomous_audit(
     """Return a read-only audit of autonomous trigger/self-evolution continuity."""
     del current_user
     return await build_autonomous_audit_report(
+        db=db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        lookback_hours=lookback_hours,
+    )
+
+
+@router.get("/harness-validation")
+async def get_harness_validation(
+    tenant_id: uuid.UUID | None = Query(default=None),
+    agent_id: uuid.UUID | None = Query(default=None),
+    lookback_hours: int = Query(default=168, ge=1, le=2160),
+    current_user: User = Depends(require_role("platform_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return a read-only production report for H4/H5 harness evidence."""
+    del current_user
+    return await build_harness_validation_report(
         db=db,
         tenant_id=tenant_id,
         agent_id=agent_id,

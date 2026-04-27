@@ -45,7 +45,7 @@ cd /Users/rocky243/vc-saas/hiveclaw-main
 git diff --check
 ```
 
-Current expected backend baseline after Phase 0R plus the first executable H1-H6 harness trunk and H4/H5 validation reports: `1924 passed, 7 skipped, 4 warnings`, ruff clean, Alembic single head `add_agent_objectives_0427`.
+Current expected backend baseline after Phase 0R plus the first executable H1-H6 harness trunk and the production Harness Validation Run endpoint: `1931 passed, 7 skipped, 4 warnings`, ruff clean, Alembic single head `add_agent_objectives_0427`.
 
 ## Execution Discipline
 

@@ -964,12 +964,13 @@ backend/tests/architecture/test_session_context_contract.py
 - H3 已新增 `ContextEngine` / `MemoryProvider` contract，memory snapshot、memory recall、runtime hints、knowledge injection 全部通过 source/fence/context_artifacts 注入和留痕。
 - H4 已新增 `long_task_runtime` 与 `long_task_validation`，用 RuntimeTask metadata + `runtime_artifacts/long_tasks/` 写入 plan/progress/resume artifact，并生成 `validation_report.json` 检查 terminal status、完成证据与中断原因。
 - H5 已新增 `evolution_ledger` 与 `evolution_validation`，skill distiller 自动 promote 会写 candidate/eval/promotion decision，包含 reward、trace、rollback_ref、rollback event 和 critical regression gate，并生成 `evolution_validation_report.json`。
+- 新增 `/api/admin/harness-validation` / `/api/v1/admin/harness-validation` 只读生产验收入口，聚合 RuntimeTask、long-task artifact、evolution ledger 与 validation report，输出 H4/H5 pass-rate 和缺失证据。
 - H6 已新增 `SessionKey` contract，invoker 会为所有 SessionContext 统一补 `session_key` metadata，objective/runtime/external conversation stable_id 规则一致。
 - feature 分支的 session/message contract 资产已选择性迁移：新增 `session_identifiers.py`、`channel_message_contracts.py` 与 `agent_pair_session.py`，activity/hooks/Feishu/gateway 不再散落 `[发送者]` 解析与 `gw_agent_` 拼接逻辑。
 - 第二批 session/gateway transcript 已落地：chat-history 以 `ChatSession.id` 为入口，OpenClaw 请求/回复、native 背景回复、`send_message_to_agent` 工具消息和督办提醒都复用同一个 agent-pair session service，并写入 `ChatMessage.participant_id` 账本。
 - legacy 数据修复也已闭合：新增 `db_legacy_gateway_conversation_migration.py` 和 `db_legacy_feishu_session_migration.py`，分别把旧 `gw_agent_*` transcript 与 Feishu `open_id` 会话提升到 canonical session/user_id。
 - channel 命名漂移已修正：`chat_sessions` mine 视图使用 canonical `"microsoft_teams"`，不再使用旧 `"teams"`。
-- 当前真实 backend 回归基线：`1924 passed, 7 skipped, 4 warnings`。
+- 当前真实 backend 回归基线：`1931 passed, 7 skipped, 4 warnings`。
 
 边界说明：这里的 H1-H6 是第一版可执行 harness trunk 和常绿护栏，不等于 H4/H5 的长期效果已经被生产数据证明。长任务 6 小时恢复率、skill draft 接受率、prompt/eval 自动优化收益仍需要真实运行周期继续度量。
 
@@ -1246,8 +1247,8 @@ docs/backend-trunk-governance/
 
 建议不再继续抽象讨论。Architecture Phase 0R 与 Harness H1-H6 的第一版可执行 trunk 已落地，下一步不再继续补同类空壳，而是进入真实子系统迁移和长期运行验证:
 
-1. 用真实 agent 长任务跑 H4 resume/cancel/missed-policy 验证，收集 artifact 完整率、恢复率和 validation report pass-rate。
-2. 用真实 skill distiller 输出跑 H5 evolution ledger validation，记录 draft 接受率、eval reward、validation pass-rate 和 rollback 事件。
+1. 用 `/admin/harness-validation?lookback_hours=168` 在 Railway 生产环境读取真实 H4/H5 证据，收集 artifact 完整率、恢复率、validation report pass-rate、draft 接受率、eval reward 和 rollback 事件。
+2. 根据 harness validation findings 选择真实 agent 跑一轮长任务和 skill distiller，补齐缺失的 durable validation report。
 3. feature/session/Feishu/gateway 迁移线先收口：剩余旧 feature 架构测试多为 branch-specific `session_service` 约束或已被当前 `agent_pair_session`/H6 护栏覆盖，不再作为待合并代码源。
 
 完成 H4/H5 真实运行验证后,再决定是否继续从 `feature/agent-session-feishu` cherry-pick 单点治理资产。判断标准只有一个:不能产生第二套 autonomy trigger/session/tool/runtime 机制,不能回退当前 Autonomy P6 + Harness H1-H6 账本闭环。

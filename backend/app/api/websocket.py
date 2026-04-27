@@ -186,6 +186,8 @@ async def call_llm(
     session_source: str | None = None,
     session_channel: str | None = None,
     system_prompt_suffix: str = "",
+    allowed_tool_names: tuple[str, ...] = (),
+    excluded_tool_names: tuple[str, ...] = (),
 ) -> str:
     """Call LLM via the unified agent runtime."""
     runtime_messages = [msg for msg in messages if msg.get("role") != "system"]
@@ -220,6 +222,8 @@ async def call_llm(
             cancel_event=cancel_event,
             session_context=effective_session_context,
             system_prompt_suffix=system_prompt_suffix,
+            allowed_tool_names=allowed_tool_names,
+            excluded_tool_names=excluded_tool_names,
         )
     )
 

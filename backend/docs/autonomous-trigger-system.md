@@ -449,20 +449,263 @@ P4 验收标准：
 - autonomous audit 能报告 proposed/active/orphan/stale/blocked objective 状态
 ```
 
-## P5 之后方向
+## P5 已实现内容：执行可靠性与运营闭环
 
-原 P4 中的 wake gate、output artifact、`context_from`、per-job model/toolset/workdir、backoff、stale SLA、失败蒸馏应下沉到 P5。
+P5 补齐的是“已有自主目标如何可靠执行”。P4 让 agent 知道自己该做什么，P5 让每一次唤醒都可门控、可恢复、可产出、可审计。
 
-原因是这些能力很重要，但它们优化的是“已有自主目标如何更可靠地执行”。在 P4 完成前，系统还缺少目标生成闭环；先做 artifact/context/model pinning 会让执行层更强，但不会解决“agent 自己到底应该做什么”的核心问题。
+P5 闭环：
 
-P5：
+```text
+Wake Policy / Trigger
+-> preflight / wake gate
+-> RuntimeTask attempt ledger
+-> stable session or standalone scheduled_job session
+-> output artifact
+-> objective completion / blocked state
+-> failure backoff / recovery objective
+-> audit finding
+```
 
-- 增加 wake gate 和 preflight check。
-- 增加 output artifact。
-- 增加 `context_from`。
-- 增加 per-job model/toolset/workdir。
-- 增加 backoff、stale SLA、失败蒸馏。
-- scheduled_job 与 objective_task 分离得更彻底。
+P5 已实现：
+
+```text
+- wake gate / preflight：trigger fire_count 更新前检查 agent/model/objective approval/backoff/event_wait lifecycle。
+- output artifact：trigger RuntimeTask 完成后写 runtime_artifacts/triggers/{runtime_task_id}.json。
+- context_from：scheduled/objective trigger 可显式加载 objective/session 上下文。
+- per-job model/toolset/workdir：trigger config 支持 model_id、toolset、excluded_tool_names、workdir。
+- backoff：trigger 失败后写 failure_count、last_failure、backoff_until，成功后清理失败状态。
+- stale SLA：objective metadata.stale_after_hours 超时后标记 blocked/stale。
+- 失败蒸馏：重复 trigger failure 后生成 internal self-improvement recovery objective。
+- scheduled_job / event_wait 默认分类：无 objective 的 cron/once/interval 默认 scheduled_job；poll/on_message/webhook 默认 event_wait。
+- event_wait 生命周期：event_wait 必须有 max_fires 或 expires_at。
+- approval API：proposed objective 可 approve/reject，approval 会清理 requires_approval 并激活目标。
+- legacy cleanup：auto-dream 不再直接修改 objective ledger 生成的 focus.md projection。
+```
+
+P5 后仍属于产品运营层的增强：
+
+```text
+- 前端 objective approval 队列。
+- blocked/stale objective 运营处理台。
+- 长期 SLA dashboard 和趋势报表。
+```
+
+## P6 计划：Trigger 前端控制台增强适配
+
+P6 的目标不是给现有触发器列表加更多字段，而是把前端页面升级为“自主系统运营控制台”。页面必须展示同一条闭环里的事实：
+
+```text
+Objective Ledger
+-> Wake Policy / Trigger
+-> RuntimeTask Attempt
+-> Session / Artifact
+-> Audit / Lifecycle Finding
+```
+
+前端不能把 `focus.md`、trigger reason、activity log 文本解析成第二套目标系统。所有目标状态以 `agent_objectives` 为准；所有唤醒策略以 `agent_triggers` 为准；所有执行结果以 `runtime_tasks` 与 artifact 为准。
+
+### 当前代码事实
+
+```text
+Backend trigger model
+- agent_triggers 已有 name/type/config/reason/focus_ref/is_enabled/fire_count/max_fires/cooldown_seconds/expires_at。
+- 高级能力主要放在 config：trigger_class、objective_id、context_from、model_id、toolset、excluded_tool_names、workdir、backoff_until、failure_count 等。
+
+Backend trigger API
+- GET /api/agents/{agent_id}/triggers 返回基础 TriggerResponse。
+- PATCH /api/agents/{agent_id}/triggers/{trigger_id} 只支持 config/reason/is_enabled/max_fires/cooldown_seconds/expires_at。
+- 当前 REST API 没有 create trigger endpoint；创建主要走 agent tool set_trigger。
+- 当前 REST API 没有 trigger run history、preflight diagnostic、artifact read endpoint。
+
+Backend objective API
+- GET /api/agents/{agent_id}/objectives 已存在。
+- POST /api/agents/{agent_id}/objectives/proposals 已存在。
+- PATCH /api/agents/{agent_id}/objectives/{objective_id} 已存在。
+- POST approve/reject 已存在。
+
+Frontend current state
+- AgentDetail Aware tab 调用 triggerApi.list(id)。
+- AgentAwareSection 仍从 focusContent 解析 checklist，再按 trigger.focus_ref 分组。
+- 页面只支持启停、删除、简单 fired count、简单 reflection session 展开。
+- frontend/src/api/domains/triggers.ts 只有 list/update/delete。
+- frontend 还没有 objectives domain adapter，也没有 autonomous audit adapter。
+```
+
+### 前端信息架构
+
+Agent Detail 的 Aware tab 应拆成四个工作区，而不是继续把所有东西塞进 focus markdown 视图：
+
+```text
+Objectives
+- active/running/proposed/blocked/stale/completed 分组
+- proposed 目标可 approve/reject
+- blocked/stale 目标显示原因、最后 attempt、建议动作
+- completed 目标显示 completion evidence
+
+Wake Policies
+- 每个 objective 显示绑定的 objective_task trigger
+- standalone scheduled_job 单独分组
+- event_wait 单独分组，强制显示 max_fires/expires_at
+- system_maintenance 只读展示，不与业务目标混淆
+
+Attempts
+- RuntimeTask history，按 objective_id / trigger_id / trigger_class 过滤
+- skipped / failed / completed / running 都要可见
+- preflight skip_reason 要直接展示，不让用户只看到“没运行”
+
+Artifacts
+- scheduled_job 与 trigger attempt 的 output artifact 列表
+- artifact 展开显示 final_reply、trigger metadata、runtime_task_id、created_at
+- artifact 是执行产物，不是新目标事实源
+```
+
+### 后端 BFF/API 需要补齐
+
+直接让前端解析 `trigger.config` 和 `runtime_tasks.metadata_json` 会快速形成能力孤岛。P6 应先补一层 agent-scoped BFF，让前端消费稳定结构：
+
+```text
+GET /api/agents/{agent_id}/autonomy/overview
+- 返回 objectives、triggers、recent_attempts、findings、totals
+- tenant 用户可访问，只限自己有权限的 agent
+- 复用 autonomous_audit 的纯审计逻辑，但不要求 platform_admin
+
+GET /api/agents/{agent_id}/triggers
+- response 增加 normalized 字段：
+  trigger_class
+  objective_id
+  lifecycle_state
+  blocked_reason
+  backoff_until
+  failure_count
+  runtime_options_summary
+  bound_objective
+
+POST /api/agents/{agent_id}/triggers
+- 前端创建 trigger 不再绕 agent tool
+- 使用同一套 validation：trigger_class、objective binding、event_wait lifecycle、scheduled_job 自包含 prompt
+- objective_task 必须绑定 objective_id 或 focus_ref
+
+GET /api/agents/{agent_id}/runtime-tasks
+- 支持 task_type=trigger|heartbeat|delegation
+- 支持 trigger_id/objective_id/status/limit
+- 返回 metadata 的稳定子集，不暴露任意内部字段为 UI contract
+
+GET /api/agents/{agent_id}/runtime-artifacts/{runtime_task_id}
+- 只允许读取当前 agent workspace 下 runtime_artifacts/triggers/*.json
+- 返回 schema、created_at、triggers、metadata、final_reply
+
+GET /api/agents/{agent_id}/autonomy/diagnostics
+- agent-scoped audit findings
+- platform admin 的 /api/admin/autonomous-audit 保留全局视角
+```
+
+### Trigger 表单策略
+
+创建/编辑 trigger 应使用模式化表单，而不是一个 JSON config 文本框。
+
+```text
+objective_task
+- 选择 active/proposed objective
+- proposed objective 需要先 approve 才允许自动 wake
+- 可配置 cadence：once / interval / cron
+- 可选 model_id、toolset、excluded_tool_names、workdir、context_from
+
+scheduled_job
+- 必须填写自包含 prompt/reason
+- cron/once/interval
+- 可选 output artifact 命名、model_id、toolset、workdir、context_from
+- 不显示为业务目标进度
+
+event_wait
+- poll/on_message/webhook
+- 必须 max_fires 或 expires_at
+- 必须选择命中后的动作：绑定 objective、创建一次性 scheduled_job、或创建 proposed objective
+- 没有 lifecycle 不允许保存
+
+system_maintenance
+- 只读展示 heartbeat/dream/distill/reconciler 类运行状态
+- 不允许普通用户误创建业务 trigger
+```
+
+### 页面状态与交互
+
+```text
+状态 badge
+- active / paused / expired / max_fires_reached
+- backoff_active / requires_approval / objective_not_active / no_model
+- stale / blocked / failed_recently / no_recent_attempt
+
+安全操作
+- pause/resume trigger
+- approve/reject proposed objective
+- retry failed trigger：只清 backoff 或立即触发需另设权限
+- mark objective completed 必须提供 evidence
+- delete trigger 前展示是否会留下 active objective without wake
+
+可观测性
+- 每个 trigger 行显示 last_fired_at、fire_count、last_attempt_status、skip_reason
+- 每个 objective 行显示 wake policy 是否存在、最近 attempt、completion evidence
+- scheduled_job 行显示最近 artifact
+- event_wait 行显示剩余 fires、expires_at、最后命中事件
+```
+
+### UI 设计约束
+
+```text
+- 这是运营工具，不做营销式大卡片 hero。
+- 采用 dense dashboard：左侧 objective 列表，中间 wake policy/attempt，右侧详情抽屉。
+- 表格/列表优先，卡片只用于单个 objective/attempt detail。
+- 状态色不使用单一紫蓝主题；错误、阻塞、等待、完成要有清晰区分。
+- 所有文案进入 en.json / zh.json。
+- 图标按钮使用现有图标库，危险动作必须有确认。
+```
+
+### P6 分阶段实施
+
+```text
+P6A — Read-only Autonomy Overview
+- 新增 frontend objectives/autonomy API adapter。
+- 新增 agent-scoped autonomy overview endpoint。
+- Aware tab 从 focus.md 解析切换到 objective ledger 展示。
+- trigger 仍可启停删除，但列表显示 trigger_class/objective/status/backoff/skip_reason。
+- 新增测试覆盖 overview empty/error/blocked/proposed/scheduled_job/event_wait。
+
+P6B — Attempts & Artifacts
+- 新增 runtime task list endpoint。
+- 新增 artifact read endpoint。
+- 前端增加 attempt timeline 与 artifact drawer。
+- skipped/failed/completed 都可见，用户能看到没唤醒的原因。
+
+P6C — Objective Approval Console
+- 前端接入 objective approve/reject/update。
+- proposed 目标不再隐藏在审计报告里。
+- completed objective 必须提交 evidence。
+- active objective without wake 显示修复入口。
+
+P6D — Trigger Create/Edit Wizard
+- REST create trigger endpoint 与现有 set_trigger tool 共用 validation helper。
+- 表单按 objective_task/scheduled_job/event_wait/system_maintenance 分流。
+- event_wait 没有 max_fires/expires_at 时前后端都拒绝。
+- scheduled_job 必须显示 artifact 策略。
+
+P6E — Realtime & Ops Polish
+- WebSocket trigger_notification 增加 runtime_task_id/objective_id/trigger_id。
+- Aware tab 收到事件后局部刷新 attempts/objectives/triggers。
+- 加入筛选：status、trigger_class、objective、last 24h failed/skipped。
+```
+
+### P6 验收标准
+
+```text
+- 用户能从一个页面看清：目标是什么、为什么会醒、醒了没有、结果在哪里。
+- proposed objective 能被 approve/reject，不再只能靠后台 API。
+- trigger_class、event_wait lifecycle、scheduled_job artifact 在 UI 中是 first-class。
+- skipped/failed trigger 不再只表现为“没有反应”，而是显示 skip_reason/backoff/blocked_reason。
+- 页面不再把 focus.md 当事实源，只作为可选 raw projection。
+- 前端没有直接依赖未定义的 metadata_json 私有字段；复杂字段由 BFF normalized 后返回。
+- 所有新增 UI 文案完成 en/zh i18n。
+- API、服务层、前端组件均有测试覆盖。
+```
 
 ## P0 边界
 
@@ -504,5 +747,5 @@ P0 视为完成，当且仅当：
 - 报告至少覆盖 focus、trigger、runtime task、heartbeat/trigger session 四类事实。
 - 报告是只读的，不改变任何线上行为。
 - 所有新增测试通过。
-- 文档明确说明当前架构问题、P0 范围、P1-P4 路线。
+- 文档明确说明当前架构问题、P0 范围、P1-P6 路线。
 - 当前已知问题能被报告出来：无模型阻塞、trigger/heartbeat runtime gap、focus/trigger 绑定缺失或失效。

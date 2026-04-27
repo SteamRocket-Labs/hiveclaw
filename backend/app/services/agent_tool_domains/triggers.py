@@ -3,7 +3,7 @@
 import logging
 import secrets
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from sqlalchemy import select
@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 MAX_TRIGGERS_PER_AGENT = 20
 VALID_TRIGGER_TYPES = {"cron", "once", "interval", "poll", "on_message", "webhook"}
 VALID_TRIGGER_CLASSES = {"objective_task", "scheduled_job", "event_wait", "system_maintenance"}
+EVENT_WAIT_TRIGGER_TYPES = {"poll", "on_message", "webhook"}
+SCHEDULED_TRIGGER_TYPES = {"cron", "once", "interval"}
 
 
 def _capture_reply_context() -> dict | None:
@@ -170,7 +172,14 @@ def _validate_trigger_config(tool_name: str, trigger_type: str, config: dict) ->
     return None
 
 
-def _resolve_trigger_class(tool_name: str, arguments: dict, config: dict, focus_ref: str | None) -> tuple[str | None, str | None]:
+def _resolve_trigger_class(
+    tool_name: str,
+    arguments: dict,
+    config: dict,
+    focus_ref: str | None,
+    *,
+    trigger_type: str | None = None,
+) -> tuple[str | None, str | None]:
     raw_class = (
         arguments.get("trigger_class")
         or config.get("trigger_class")
@@ -180,9 +189,14 @@ def _resolve_trigger_class(tool_name: str, arguments: dict, config: dict, focus_
     objective_id = str(arguments.get("objective_id") or config.get("objective_id") or "").strip()
     trigger_class = str(raw_class or "").strip()
     if not trigger_class:
-        if not (focus_ref or objective_id):
+        if focus_ref or objective_id:
+            trigger_class = "objective_task"
+        elif trigger_type in EVENT_WAIT_TRIGGER_TYPES:
+            trigger_class = "event_wait"
+        elif trigger_type in SCHEDULED_TRIGGER_TYPES:
+            trigger_class = "scheduled_job"
+        else:
             return None, None
-        trigger_class = "objective_task"
     if trigger_class not in VALID_TRIGGER_CLASSES:
         return None, _trigger_error(
             tool_name,
@@ -202,6 +216,41 @@ def _resolve_trigger_class(tool_name: str, arguments: dict, config: dict, focus_
     if objective_id:
         config["objective_id"] = objective_id
     return trigger_class, None
+
+
+def _coerce_int(value) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _parse_expires_at(value) -> datetime | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _validate_trigger_lifecycle_policy(tool_name: str, trigger_type: str, config: dict, arguments: dict) -> str | None:
+    trigger_class = str(config.get("trigger_class") or arguments.get("trigger_class") or "").strip()
+    if trigger_class != "event_wait":
+        return None
+    max_fires = _coerce_int(arguments.get("max_fires") or config.get("max_fires"))
+    expires_at = arguments.get("expires_at") or config.get("expires_at")
+    if max_fires or expires_at:
+        return None
+    return _trigger_error(
+        tool_name,
+        "bad_arguments",
+        "event_wait trigger requires max_fires or expires_at to prevent indefinite waiting.",
+        actionable_hint="Pass max_fires=1 for one reply/event, or expires_at as an ISO timestamp.",
+    )
 
 
 async def _bind_objective_for_trigger(db, agent, config: dict, focus_ref: str | None, reason: str) -> bool:
@@ -250,9 +299,18 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
     validation_error = _validate_trigger_config("set_trigger", ttype, config)
     if validation_error:
         return validation_error
-    _trigger_class, binding_error = _resolve_trigger_class("set_trigger", arguments, config, focus_ref)
+    _trigger_class, binding_error = _resolve_trigger_class(
+        "set_trigger",
+        arguments,
+        config,
+        focus_ref,
+        trigger_type=ttype,
+    )
     if binding_error:
         return binding_error
+    lifecycle_error = _validate_trigger_lifecycle_policy("set_trigger", ttype, config, arguments)
+    if lifecycle_error:
+        return lifecycle_error
     if ttype == "on_message":
         if config.get("reply_to_current_sender"):
             config.pop("from_user_name", None)
@@ -340,6 +398,13 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                 existing.reason = reason
                 existing.focus_ref = focus_ref or None
                 existing.is_enabled = True
+                existing.max_fires = _coerce_int(arguments.get("max_fires") or config.get("max_fires"))
+                if arguments.get("expires_at") or config.get("expires_at"):
+                    existing.expires_at = _parse_expires_at(arguments.get("expires_at") or config.get("expires_at"))
+                if arguments.get("cooldown_seconds") is not None or config.get("cooldown_seconds") is not None:
+                    existing.cooldown_seconds = _coerce_int(
+                        arguments.get("cooldown_seconds") or config.get("cooldown_seconds")
+                    ) or existing.cooldown_seconds
                 existing.reply_context = _capture_reply_context()
                 # Keep fire_count and last_fired_at — they are cumulative stats
                 await db.commit()
@@ -368,6 +433,13 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                 config=config,
                 reason=reason,
                 focus_ref=focus_ref or None,
+                max_fires=_coerce_int(arguments.get("max_fires") or config.get("max_fires")),
+                expires_at=(
+                    _parse_expires_at(arguments.get("expires_at") or config.get("expires_at"))
+                    if arguments.get("expires_at") or config.get("expires_at")
+                    else None
+                ),
+                cooldown_seconds=_coerce_int(arguments.get("cooldown_seconds") or config.get("cooldown_seconds")) or 60,
                 reply_context=reply_ctx or None,
             )
             db.add(trigger)
@@ -419,6 +491,9 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
         and new_focus_ref is None
         and arguments.get("trigger_class") is None
         and arguments.get("objective_id") is None
+        and arguments.get("max_fires") is None
+        and arguments.get("expires_at") is None
+        and arguments.get("cooldown_seconds") is None
     ):
         return _trigger_error(
             "update_trigger",
@@ -458,9 +533,13 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                 arguments,
                 final_config,
                 final_focus_ref,
+                trigger_type=trigger.type,
             )
             if binding_error:
                 return binding_error
+            lifecycle_error = _validate_trigger_lifecycle_policy("update_trigger", trigger.type, final_config, arguments)
+            if lifecycle_error:
+                return lifecycle_error
 
             objective_bound = False
             if _trigger_class == "objective_task":
@@ -485,6 +564,15 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                 old_config = trigger.config
                 trigger.config = final_config
                 changes.append(f"config: {old_config} → {final_config}")
+            if arguments.get("max_fires") is not None:
+                trigger.max_fires = _coerce_int(arguments.get("max_fires"))
+                changes.append(f"max_fires: {trigger.max_fires}")
+            if arguments.get("expires_at") is not None:
+                trigger.expires_at = _parse_expires_at(arguments.get("expires_at")) if arguments.get("expires_at") else None
+                changes.append(f"expires_at: {trigger.expires_at.isoformat() if trigger.expires_at else '(cleared)'}")
+            if arguments.get("cooldown_seconds") is not None:
+                trigger.cooldown_seconds = _coerce_int(arguments.get("cooldown_seconds")) or trigger.cooldown_seconds
+                changes.append(f"cooldown_seconds: {trigger.cooldown_seconds}")
             if new_focus_ref is not None:
                 trigger.focus_ref = final_focus_ref
                 changes.append(f"focus_ref: {final_focus_ref or '(cleared)'}")

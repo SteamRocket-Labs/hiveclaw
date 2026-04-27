@@ -230,7 +230,9 @@ def audit_agent_autonomy_snapshot(
                 evidence={"trigger_name": getattr(trigger, "name", None)},
                 recommendation="Disable the trigger or reopen the focus task if it still needs work.",
             ))
-        if getattr(trigger, "type", None) in _SCHEDULED_TRIGGER_TYPES and not raw_ref:
+        trigger_config = getattr(trigger, "config", None) or {}
+        trigger_class = str(trigger_config.get("trigger_class") or "").strip()
+        if getattr(trigger, "type", None) in _SCHEDULED_TRIGGER_TYPES and not raw_ref and trigger_class != "scheduled_job":
             findings.append(_finding(
                 severity="warning",
                 category="scheduled_trigger_without_focus_ref",
@@ -238,7 +240,17 @@ def audit_agent_autonomy_snapshot(
                 trigger_id=getattr(trigger, "id", None),
                 message=f"Scheduled trigger '{getattr(trigger, 'name', '')}' has no focus_ref.",
                 evidence={"trigger_name": getattr(trigger, "name", None), "trigger_type": getattr(trigger, "type", None)},
-                recommendation="If this is task work, bind it to focus.md; if it is a standalone scheduled job, mark it as such in P1 metadata.",
+                recommendation="If this is task work, bind it to an objective; if it is a standalone scheduled job, mark trigger_class='scheduled_job'.",
+            ))
+        if trigger_class == "event_wait" and not getattr(trigger, "max_fires", None) and not getattr(trigger, "expires_at", None):
+            findings.append(_finding(
+                severity="warning",
+                category="event_wait_missing_lifecycle",
+                agent_id=agent_id,
+                trigger_id=getattr(trigger, "id", None),
+                message=f"event_wait trigger '{getattr(trigger, 'name', '')}' has no max_fires or expires_at.",
+                evidence={"trigger_name": getattr(trigger, "name", None), "trigger_type": getattr(trigger, "type", None)},
+                recommendation="Set max_fires or expires_at so event waits cannot run forever.",
             ))
 
     has_autonomous_wake = bool(enabled) or bool(getattr(agent, "heartbeat_enabled", False))

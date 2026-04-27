@@ -58,6 +58,10 @@ class ObjectiveUpdateIn(BaseModel):
     metadata: dict[str, Any] | None = None
 
 
+class ObjectiveDecisionIn(BaseModel):
+    reason: str | None = None
+
+
 def _dt(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
@@ -77,6 +81,18 @@ def _objective_out(objective: AgentObjective) -> ObjectiveOut:
         updated_at=_dt(objective.updated_at),
         completed_at=_dt(objective.completed_at),
     )
+
+
+async def _load_agent_objective_or_404(db: AsyncSession, *, agent_id: uuid.UUID, objective_id: uuid.UUID) -> AgentObjective:
+    from sqlalchemy import select
+
+    result = await db.execute(
+        select(AgentObjective).where(AgentObjective.id == objective_id, AgentObjective.agent_id == agent_id)
+    )
+    objective = result.scalar_one_or_none()
+    if objective is None:
+        raise HTTPException(status_code=404, detail="Objective not found")
+    return objective
 
 
 @router.get("/{agent_id}/objectives", response_model=list[ObjectiveOut])
@@ -125,14 +141,7 @@ async def update_agent_objective(
     db: AsyncSession = Depends(get_db),
 ):
     await check_agent_access(db, current_user, agent_id)
-    from sqlalchemy import select
-
-    result = await db.execute(
-        select(AgentObjective).where(AgentObjective.id == objective_id, AgentObjective.agent_id == agent_id)
-    )
-    objective = result.scalar_one_or_none()
-    if objective is None:
-        raise HTTPException(status_code=404, detail="Objective not found")
+    objective = await _load_agent_objective_or_404(db, agent_id=agent_id, objective_id=objective_id)
 
     data = payload.model_dump(exclude_unset=True)
     metadata = dict(objective.metadata_json or {})
@@ -166,5 +175,49 @@ async def update_agent_objective(
             evidence=completion_evidence,
             result_summary=str(metadata.get("last_result_summary") or completion_evidence),
         )
+    await db.commit()
+    return _objective_out(objective)
+
+
+@router.post("/{agent_id}/objectives/{objective_id}/approve", response_model=ObjectiveOut)
+async def approve_agent_objective(
+    agent_id: uuid.UUID,
+    objective_id: uuid.UUID,
+    payload: ObjectiveDecisionIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_agent_access(db, current_user, agent_id)
+    objective = await _load_agent_objective_or_404(db, agent_id=agent_id, objective_id=objective_id)
+    from app.services.objective_approval import apply_objective_approval
+
+    apply_objective_approval(
+        objective,
+        actor_id=getattr(current_user, "id", None),
+        decision="approved",
+        reason=payload.reason,
+    )
+    await db.commit()
+    return _objective_out(objective)
+
+
+@router.post("/{agent_id}/objectives/{objective_id}/reject", response_model=ObjectiveOut)
+async def reject_agent_objective(
+    agent_id: uuid.UUID,
+    objective_id: uuid.UUID,
+    payload: ObjectiveDecisionIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_agent_access(db, current_user, agent_id)
+    objective = await _load_agent_objective_or_404(db, agent_id=agent_id, objective_id=objective_id)
+    from app.services.objective_approval import apply_objective_approval
+
+    apply_objective_approval(
+        objective,
+        actor_id=getattr(current_user, "id", None),
+        decision="rejected",
+        reason=payload.reason,
+    )
     await db.commit()
     return _objective_out(objective)

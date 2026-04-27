@@ -136,7 +136,7 @@ When sending a message on behalf of a third party, ALWAYS say who asked you:
 
 ### Waiting for a reply
 After sending a message and needing to wait for a response, set an
-`on_message` trigger — use `reply_to_current_sender: true` to scope it
+`on_message` trigger — use `reply_to_current_sender: true` and `max_fires: 1` to scope it
 to the current sender, or `from_user_identity` / `from_agent_id` to
 match a specific cross-session party. See the Trigger Management Guide
 for full config details.

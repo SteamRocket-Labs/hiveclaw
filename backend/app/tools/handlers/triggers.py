@@ -34,7 +34,7 @@ from app.tools.decorator import ToolMeta, tool
             },
             "config": {
                 "type": "object",
-                "description": "Type-specific config. cron: {\"expr\": \"0 9 * * *\"}. once: {\"at\": \"2026-03-10T09:00:00+08:00\"}. interval: {\"minutes\": 30}. poll: {\"url\": \"...\", \"json_path\": \"$.status\", \"fire_on\": \"change\", \"interval_min\": 5}. on_message: {\"reply_to_current_sender\": true}, {\"from_user_identity\": \"telegram:123456:789\"}, {\"from_agent_id\": \"<uuid>\"}, optionally add {\"from_channel\": \"wecom\"}; legacy {\"from_agent_name\": \"Morty\"}/{\"from_user_name\": \"张三\"} remain supported. webhook: {\"secret\": \"optional_hmac_secret\"} (system auto-generates the URL)",
+                "description": "Type-specific config. cron: {\"expr\": \"0 9 * * *\"}. once: {\"at\": \"2026-03-10T09:00:00+08:00\"}. interval: {\"minutes\": 30}. poll: {\"url\": \"...\", \"json_path\": \"$.status\", \"fire_on\": \"change\", \"interval_min\": 5}. on_message: {\"reply_to_current_sender\": true}, {\"from_user_identity\": \"telegram:123456:789\"}, {\"from_agent_id\": \"<uuid>\"}, optionally add {\"from_channel\": \"wecom\"}. event_wait triggers require max_fires or expires_at. Optional P5 fields: context_from, model_id, toolset, excluded_tool_names, workdir.",
             },
             "reason": {
                 "type": "string",
@@ -52,6 +52,18 @@ from app.tools.decorator import ToolMeta, tool
             "objective_id": {
                 "type": "string",
                 "description": "Optional future objective ledger id. Use with trigger_class='objective_task' when no focus_ref exists yet.",
+            },
+            "max_fires": {
+                "type": "integer",
+                "description": "Optional lifecycle cap. Required for event_wait when expires_at is not provided.",
+            },
+            "expires_at": {
+                "type": "string",
+                "description": "Optional ISO timestamp after which the trigger is disabled. Required for event_wait when max_fires is not provided.",
+            },
+            "cooldown_seconds": {
+                "type": "integer",
+                "description": "Optional cooldown between fires.",
             },
         },
         "required": ["name", "type", "config", "reason"],
@@ -105,6 +117,9 @@ async def set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                 "type": "string",
                 "description": "Optional future objective ledger id for objective_task triggers.",
             },
+            "max_fires": {"type": "integer"},
+            "expires_at": {"type": "string"},
+            "cooldown_seconds": {"type": "integer"},
         },
         "required": ["name"],
     },

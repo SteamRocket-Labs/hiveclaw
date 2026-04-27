@@ -55,10 +55,10 @@ briefing a future self who has no memory of this conversation.
 | Do something once at a specific future time | `once` | `{"at": "2026-04-10T09:00:00+08:00"}` |
 | Do something repeatedly every N minutes | `interval` | `{"minutes": 30}` |
 | Act when a webpage/API changes | `poll` | `{"url": "...", "interval_min": 5, "fire_on": "change"}` |
-| Act when the same sender replies in the current thread | `on_message` | `{"reply_to_current_sender": true}` |
-| Act when a specific external user replies | `on_message` | `{"from_user_identity": "telegram:123456:789"}` |
-| Act when a specific agent replies | `on_message` | `{"from_agent_id": "<agent-uuid>"}` |
-| Act when an external system sends data | `webhook` | `{"secret": "optional"}` (URL auto-generated) |
+| Act when the same sender replies in the current thread | `on_message` | `{"reply_to_current_sender": true, "max_fires": 1}` |
+| Act when a specific external user replies | `on_message` | `{"from_user_identity": "telegram:123456:789", "max_fires": 1}` |
+| Act when a specific agent replies | `on_message` | `{"from_agent_id": "<agent-uuid>", "max_fires": 1}` |
+| Act when an external system sends data | `webhook` | `{"secret": "optional", "max_fires": 1}` (URL auto-generated) |
 
 **Quick decision**: Repeating on schedule → `cron`. One-time follow-up → `once`. Waiting for someone → `on_message`. Monitoring external change → `poll`. Receiving external events → `webhook`.
 
@@ -95,6 +95,8 @@ Legacy projection format in `focus.md`:
 
 **Exception**: System-level triggers (heartbeat, webhooks for external services) do NOT need a focus item.
 Use `trigger_class="scheduled_job"` for standalone recurring jobs that intentionally have no focus item.
+Use trigger_class="event_wait" for `on_message`, `webhook`, or `poll` waits; always include max_fires or expires_at.
+Standalone scheduled jobs can declare context_from, model_id, toolset, excluded_tool_names, and workdir in config.
 
 ### Channel-Aware Delivery
 
@@ -125,7 +127,7 @@ Context: User (Ray) asked you to periodically remind colleague Qinrui to send mo
 Call:
 ```
 set_trigger(type="interval",
-  config={"minutes": 30},
+  config={"minutes": 30, "trigger_class": "scheduled_job"},
   reason="Send a Feishu message to Qinrui reminding him to send the movie tickets "
          "(requested by Ray). Vary the tone each time. "
          "After sending, keep this interval trigger active. Also ensure the "
@@ -165,7 +167,12 @@ propose_objective(
 )
 
 set_trigger(type="cron",
-  config={"expr": "0 9 * * *", "tz": "Asia/Shanghai"},
+  config={
+    "expr": "0 9 * * *",
+    "tz": "Asia/Shanghai",
+    "context_from": ["objective:ai_funding_daily"],
+    "workdir": "reports/ai-funding"
+  },
   trigger_class="objective_task",
   focus_ref="ai_funding_daily",
   reason="Search for AI-startup funding news published in the last 24h. Write a Chinese "
@@ -188,6 +195,7 @@ set_trigger(type="cron",
 - ❌ **Forget to `complete_objective` and cancel obsolete triggers after task completion** → interval/cron keeps firing, user gets repeated useless messages.
 - ❌ **Create a trigger that requires channel delivery without referencing the Reply Channel** → when it fires outside the channel you may deliver to the wrong place. Mention Reply Channel in the `reason` so future-you remembers.
 - ❌ **Use `on_message` without scoping** (neither `reply_to_current_sender`, `from_user_identity`, nor `from_agent_id`) → fires on any message, causing noise.
+- ❌ **Use event_wait without max_fires or expires_at** → waits forever and becomes stale operational noise.
 
 </anti_patterns>
 
@@ -199,5 +207,7 @@ set_trigger(type="cron",
 - Every objective/task trigger uses `trigger_class="objective_task"` and binds the objective id when available.
 - Completed objectives always have evidence and obsolete triggers cancelled.
 - Scheduled cron triggers include an explicit timezone (`tz` field).
+- Event waits include max_fires or expires_at.
+- Standalone scheduled jobs use trigger_class="scheduled_job" and declare context_from when they depend on prior context.
 - `list_triggers` is consulted before creating new triggers to avoid duplicates.
 </success_criteria>

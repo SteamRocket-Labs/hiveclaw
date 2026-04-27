@@ -31,6 +31,13 @@ from app.services.focus_state import normalize_focus_task_id
 from app.services.runtime_task_service import create_runtime_task_record, update_runtime_task_record
 from app.services.trigger_reconciler import reconcile_all_completed_focus_triggers
 from app.services.objective_wake_reconciler import reconcile_all_objective_wake_policies
+from app.services.objective_lifecycle import reconcile_all_objective_lifecycle
+from app.services.trigger_preflight import (
+    collect_trigger_runtime_options,
+    evaluate_trigger_preflight,
+    load_context_from,
+    select_trigger_model,
+)
 
 TICK_INTERVAL = 15  # seconds
 DEDUP_WINDOW = 120  # seconds — same agent won't be invoked twice within this window
@@ -79,6 +86,7 @@ async def _create_trigger_runtime_task(
     triggers: list[AgentTrigger],
     *,
     objective_session_key: str | None = None,
+    metadata_json: dict | None = None,
 ) -> str | None:
     """Create a best-effort RuntimeTask ledger row for a fired trigger batch."""
     trigger_names = [str(getattr(trigger, "name", "")) for trigger in triggers]
@@ -88,18 +96,24 @@ async def _create_trigger_runtime_task(
         "trigger_ids": [str(getattr(trigger, "id", "")) for trigger in triggers],
         "trigger_names": trigger_names,
         "trigger_types": [str(getattr(trigger, "type", "")) for trigger in triggers],
-            "objective_session_key": objective_session_key,
-            "objective_ids": [
-                str((getattr(trigger, "config", None) or {}).get("objective_id"))
-                for trigger in triggers
-                if (getattr(trigger, "config", None) or {}).get("objective_id")
-            ],
-            "focus_refs": [
+        "trigger_classes": [
+            str((getattr(trigger, "config", None) or {}).get("trigger_class") or "")
+            for trigger in triggers
+            if (getattr(trigger, "config", None) or {}).get("trigger_class")
+        ],
+        "objective_session_key": objective_session_key,
+        "objective_ids": [
+            str((getattr(trigger, "config", None) or {}).get("objective_id"))
+            for trigger in triggers
+            if (getattr(trigger, "config", None) or {}).get("objective_id")
+        ],
+        "focus_refs": [
             str(getattr(trigger, "focus_ref", ""))
             for trigger in triggers
             if getattr(trigger, "focus_ref", None)
         ],
     }
+    metadata.update(metadata_json or {})
     try:
         return await create_runtime_task_record(
             task_id=uuid.uuid4().hex,
@@ -110,7 +124,7 @@ async def _create_trigger_runtime_task(
             metadata_json=metadata,
         )
     except Exception as exc:
-        logger.warning("[TriggerDaemon] Failed to create trigger RuntimeTask for %s: %s", agent_id, exc)
+        logger.warning("[TriggerDaemon] Failed to create trigger RuntimeTask for {}: {}", agent_id, exc)
         return None
 
 
@@ -134,7 +148,7 @@ async def _update_trigger_runtime_task(
     try:
         await update_runtime_task_record(runtime_task_id, **fields)
     except Exception as exc:
-        logger.warning("[TriggerDaemon] Failed to update trigger RuntimeTask %s: %s", runtime_task_id, exc)
+        logger.warning("[TriggerDaemon] Failed to update trigger RuntimeTask {}: {}", runtime_task_id, exc)
 
 
 async def _skip_trigger_runtime_task(
@@ -172,7 +186,7 @@ def _load_dedup_state() -> None:
             data = _json.loads(_DEDUP_FILE.read_text())
             _last_invoke = {uuid.UUID(k): datetime.fromisoformat(v) for k, v in data.items()}
     except Exception as exc:
-        logger.debug("[TriggerDaemon] Failed to load dedup state: %s", exc)
+        logger.debug("[TriggerDaemon] Failed to load dedup state: {}", exc)
 
 
 def _save_dedup_state() -> None:
@@ -194,10 +208,10 @@ def _save_dedup_state() -> None:
             try:
                 os.unlink(tmp_path)
             except OSError as _unlink_err:
-                logger.debug("[TriggerDaemon] Failed to clean up temp dedup file: %s", _unlink_err)
+                logger.debug("[TriggerDaemon] Failed to clean up temp dedup file: {}", _unlink_err)
             raise
     except Exception as exc:
-        logger.debug("[TriggerDaemon] Failed to save dedup state: %s", exc)
+        logger.debug("[TriggerDaemon] Failed to save dedup state: {}", exc)
 
 # Webhook rate limiter: token -> list of timestamps
 _webhook_hits: dict[str, list[float]] = {}
@@ -252,11 +266,11 @@ async def _recover_reply_target_from_session(
                         if t_obj:
                             t_obj.reply_context = target
                     except Exception as exc:
-                        logger.debug("[TriggerDaemon] reply_context persist skipped: %s", exc)
+                        logger.debug("[TriggerDaemon] reply_context persist skipped: {}", exc)
             await db.commit()
             return target
     except Exception as exc:
-        logger.debug("[TriggerDaemon] _recover_reply_target_from_session failed: %s", exc)
+        logger.debug("[TriggerDaemon] _recover_reply_target_from_session failed: {}", exc)
         return None
 
 
@@ -315,13 +329,13 @@ async def backfill_null_reply_contexts() -> dict:
                     t.reply_context = target
                     patched += 1
                     logger.info(
-                        "[TriggerDaemon] Backfilled reply_context for trigger '%s' (agent %s): channel=%s",
+                        "[TriggerDaemon] Backfilled reply_context for trigger '{}' (agent {}): channel={}",
                         t.name, aid, target.get("channel"),
                     )
 
             await db.commit()
     except Exception as exc:
-        logger.warning("[TriggerDaemon] backfill_null_reply_contexts failed: %s", exc)
+        logger.warning("[TriggerDaemon] backfill_null_reply_contexts failed: {}", exc)
 
     return {"patched": patched, "skipped": skipped}
 
@@ -362,6 +376,17 @@ async def _evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
     """Return True if this trigger should fire right now."""
     if not trigger.is_enabled:
         return False
+    cfg = trigger.config or {}
+    backoff_until = cfg.get("backoff_until")
+    if backoff_until:
+        try:
+            parsed_backoff = datetime.fromisoformat(str(backoff_until).replace("Z", "+00:00"))
+            if parsed_backoff.tzinfo is None:
+                parsed_backoff = parsed_backoff.replace(tzinfo=timezone.utc)
+            if now < parsed_backoff:
+                return False
+        except ValueError:
+            logger.debug("[TriggerDaemon] Invalid backoff_until for trigger {}: {}", trigger.name, backoff_until)
     if trigger.expires_at and now >= trigger.expires_at:
         # Auto-disable expired triggers
         return False
@@ -374,7 +399,6 @@ async def _evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
         if (now - trigger.last_fired_at) < cooldown:
             return False
 
-    cfg = trigger.config or {}
     t = trigger.type
 
     if t == "cron":
@@ -745,8 +769,83 @@ async def _acquire_trigger_fire_lease(
         acquired = await redis.set(lease_key, "1", ex=ttl_seconds, nx=True)
         return bool(acquired)
     except Exception as exc:
-        logger.warning("[TriggerDaemon] Failed to acquire trigger fire lease for %s: %s", trigger_id, exc)
+        logger.warning("[TriggerDaemon] Failed to acquire trigger fire lease for {}: {}", trigger_id, exc)
         return True
+
+
+async def _preflight_trigger_group(
+    agent_id: uuid.UUID,
+    triggers: list[AgentTrigger],
+    now: datetime,
+) -> tuple[bool, str | None, str, dict]:
+    """Run P5 wake gate before mutating trigger fire counters."""
+    try:
+        async with async_session() as db:
+            result = await db.execute(select(Agent).where(Agent.id == agent_id))
+            agent = result.scalar_one_or_none()
+            if not agent:
+                return False, "agent_not_found", f"Agent {agent_id} was not found.", {}
+            model, model_metadata, model_error = await select_trigger_model(db, agent, triggers)
+            if model_error:
+                return (
+                    False,
+                    model_error,
+                    f"Trigger wake skipped by preflight: {model_error}.",
+                    model_metadata,
+                )
+            preflight = await evaluate_trigger_preflight(db, agent=agent, model=model, triggers=triggers, now=now)
+            metadata = {**model_metadata, **preflight.metadata}
+            return preflight.ok, preflight.skip_reason, preflight.result_summary, metadata
+    except Exception as exc:
+        logger.warning("[TriggerDaemon] Trigger preflight failed for {}: {}", agent_id, exc)
+        return False, "preflight_failed", f"Trigger preflight failed: {str(exc)[:500]}", {"error": str(exc)[:1000]}
+
+
+async def _record_trigger_success_state(trigger_ids: list[uuid.UUID]) -> None:
+    if not trigger_ids:
+        return
+    from app.services.objective_lifecycle import reset_trigger_failure_policy
+
+    async with async_session() as db:
+        changed = False
+        for trigger_id in trigger_ids:
+            result = await db.execute(select(AgentTrigger).where(AgentTrigger.id == trigger_id))
+            trigger = result.scalar_one_or_none()
+            if trigger and reset_trigger_failure_policy(trigger):
+                changed = True
+        if changed:
+            await db.commit()
+
+
+async def _record_trigger_failure_state(agent_id: uuid.UUID, triggers: list[AgentTrigger], error: str) -> dict:
+    from app.services.objective_lifecycle import (
+        apply_trigger_failure_policy,
+        create_recovery_objective_for_trigger_failure,
+    )
+
+    metadata: dict = {"failure_backoff": []}
+    async with async_session() as db:
+        for detached in triggers:
+            result = await db.execute(select(AgentTrigger).where(AgentTrigger.id == getattr(detached, "id", None)))
+            trigger = result.scalar_one_or_none()
+            if not trigger:
+                continue
+            failure_meta = apply_trigger_failure_policy(trigger, error=error)
+            metadata["failure_backoff"].append({
+                "trigger_id": str(trigger.id),
+                "trigger_name": trigger.name,
+                **failure_meta,
+            })
+            recovery = await create_recovery_objective_for_trigger_failure(
+                db,
+                agent_id=agent_id,
+                trigger=trigger,
+                error=error,
+            )
+            if recovery is not None:
+                metadata["recovery_objective_id"] = str(getattr(recovery, "id", ""))
+        await db.commit()
+    return metadata
 
 
 # ── Agent Invocation ────────────────────────────────────────────────
@@ -764,7 +863,6 @@ async def _invoke_agent_for_triggers(
     """
     from app.api.websocket import call_llm
     from app.kernel.contracts import ExecutionIdentityRef
-    from app.models.llm import LLMModel
     from app.models.audit import ChatMessage
     from app.models.chat_session import ChatSession
     from app.models.participant import Participant
@@ -776,7 +874,7 @@ async def _invoke_agent_for_triggers(
             result = await db.execute(select(Agent).where(Agent.id == agent_id))
             agent = result.scalar_one_or_none()
             if not agent:
-                logger.warning("[TriggerDaemon] Agent %s not found — skipping trigger", agent_id)
+                logger.warning("[TriggerDaemon] Agent {} not found — skipping trigger", agent_id)
                 await _skip_trigger_runtime_task(
                     runtime_task_id,
                     skip_reason="agent_not_found",
@@ -796,27 +894,18 @@ async def _invoke_agent_for_triggers(
             from app.core.execution_context import set_agent_bot_identity
             set_agent_bot_identity(agent_id, agent.name, source="trigger")
 
-            # Load LLM model
-            if not agent.primary_model_id:
-                logger.warning(f"Agent {agent.name} has no LLM model, skipping trigger invocation")
+            # Load LLM model. P5 supports per-job model pinning via trigger.config.model_id.
+            model, model_metadata, model_error = await select_trigger_model(db, agent, triggers)
+            if model_error:
+                logger.warning("[TriggerDaemon] Model preflight failed for {}: {}", agent.name, model_error)
                 await _skip_trigger_runtime_task(
                     runtime_task_id,
-                    skip_reason="no_model",
-                    result_summary=f"Skipped trigger invocation because agent {agent.name} has no primary model configured.",
+                    skip_reason=model_error,
+                    result_summary=f"Skipped trigger invocation because model preflight failed: {model_error}.",
+                    metadata_json=model_metadata,
                 )
                 return
-            result = await db.execute(
-                select(LLMModel).where(LLMModel.id == agent.primary_model_id, LLMModel.tenant_id == agent.tenant_id)
-            )
-            model = result.scalar_one_or_none()
-            if not model:
-                await _skip_trigger_runtime_task(
-                    runtime_task_id,
-                    skip_reason="model_not_found",
-                    result_summary=f"Skipped trigger invocation because model {agent.primary_model_id} was not found.",
-                    metadata_json={"model_id": str(agent.primary_model_id)},
-                )
-                return
+            runtime_options = collect_trigger_runtime_options(triggers)
 
             # Build trigger context
             context_parts = []
@@ -851,6 +940,13 @@ async def _invoke_agent_for_triggers(
 
             # G3: Inject focus.md so agent can track progress during trigger execution
             focus_context = ""
+            explicit_context = ""
+            if runtime_options.get("context_from"):
+                explicit_context = await load_context_from(
+                    db,
+                    agent_id=agent_id,
+                    context_refs=list(runtime_options.get("context_from") or []),
+                )
             try:
                 from app.services.objective_service import sync_agent_focus_file_to_objectives
 
@@ -871,13 +967,14 @@ async def _invoke_agent_for_triggers(
                             focus_context = f"\n\nCurrent Focus (your work priorities):\n{_focus_text}"
                         break
             except Exception as _focus_err:
-                logger.debug("[TriggerDaemon] Failed to read focus.md for trigger context: %s", _focus_err)
+                logger.debug("[TriggerDaemon] Failed to read focus.md for trigger context: {}", _focus_err)
 
             trigger_context = (
                 "===== Trigger Awakening Context =====\n"
                 f"Source: trigger ({'multiple triggers fired simultaneously' if len(triggers) > 1 else 'single trigger fired'})\n\n"
                 + "\n---\n".join(context_parts)
                 + focus_context
+                + (f"\n\nExplicit Context From configured refs:\n{explicit_context}" if explicit_context else "")
                 + "\n\nIf you completed any focus.md task during this execution, use write_file to update focus.md and mark it [x]."
                 "\n==========================="
             )
@@ -1001,16 +1098,28 @@ async def _invoke_agent_for_triggers(
                 reply_target = await _recover_reply_target_from_session(agent_id, triggers)
                 if reply_target:
                     logger.info(
-                        "[TriggerDaemon] Recovered reply_target from session for agent %s: channel=%s",
+                        "[TriggerDaemon] Recovered reply_target from session for agent {}: channel={}",
                         agent_id,
                         reply_target.get("channel"),
                     )
             except Exception as _recover_err:
-                logger.debug("[TriggerDaemon] reply_target recovery failed: %s", _recover_err)
+                logger.debug("[TriggerDaemon] reply_target recovery failed: {}", _recover_err)
 
         _delivery_token = None
         if reply_target:
             _delivery_token = channel_delivery_target.set(reply_target)
+        system_prompt_suffix_parts = []
+        if runtime_options.get("execution_class"):
+            system_prompt_suffix_parts.append(f"Trigger execution class: {runtime_options['execution_class']}.")
+        if runtime_options.get("workdir"):
+            system_prompt_suffix_parts.append(
+                f"Use this job workdir for generated files when applicable: {runtime_options['workdir']}."
+            )
+        if runtime_options.get("allowed_tool_names"):
+            system_prompt_suffix_parts.append(
+                "This job declares an explicit toolset; stay within it unless a loaded skill expands the task legitimately."
+            )
+        system_prompt_suffix = "\n".join(system_prompt_suffix_parts)
         try:
             reply = await call_llm(
                 model=model,
@@ -1028,6 +1137,9 @@ async def _invoke_agent_for_triggers(
                     identity_id=agent_id,
                     label=f"Agent: {agent.name} (trigger)",
                 ),
+                allowed_tool_names=runtime_options.get("allowed_tool_names") or (),
+                excluded_tool_names=runtime_options.get("excluded_tool_names") or (),
+                system_prompt_suffix=system_prompt_suffix,
             )
         finally:
             if _delivery_token is not None:
@@ -1082,11 +1194,11 @@ async def _invoke_agent_for_triggers(
                 source="trigger",
             )
             logger.debug(
-                "[TriggerDaemon] Evolution feedback for %s: %s score=%s",
+                "[TriggerDaemon] Evolution feedback for {}: {} score={}",
                 agent_id, trigger_outcome, trigger_score,
             )
         except Exception as _evo_err:
-            logger.debug("[TriggerDaemon] Evolution feedback failed (non-fatal): %s", _evo_err)
+            logger.debug("[TriggerDaemon] Evolution feedback failed (non-fatal): {}", _evo_err)
 
         # Count trigger execution as a session for auto-dream gate
         try:
@@ -1094,9 +1206,9 @@ async def _invoke_agent_for_triggers(
             record_session_end(agent_id)
             if should_dream(agent_id) and agent.tenant_id:
                 asyncio.create_task(run_dream(agent_id, agent.tenant_id))
-                logger.info("[TriggerDaemon] Auto-dream triggered for agent %s", agent_id)
+                logger.info("[TriggerDaemon] Auto-dream triggered for agent {}", agent_id)
         except Exception as _dream_err:
-            logger.debug("[TriggerDaemon] Auto-dream check failed: %s", _dream_err)
+            logger.debug("[TriggerDaemon] Auto-dream check failed: {}", _dream_err)
 
         # Audit log
         await write_audit_log("trigger_fired", {
@@ -1104,15 +1216,46 @@ async def _invoke_agent_for_triggers(
             "triggers": [{"name": t.name, "type": t.type} for t in triggers],
         }, agent_id=agent_id)
 
+        output_artifact = None
+        try:
+            from app.config import get_settings
+            from app.services.trigger_artifacts import write_trigger_output_artifact
+
+            output_artifact = write_trigger_output_artifact(
+                agent_data_dir=get_settings().AGENT_DATA_DIR,
+                agent_id=agent_id,
+                runtime_task_id=runtime_task_id,
+                triggers=triggers,
+                final_reply=final_reply or "",
+                metadata={
+                    **model_metadata,
+                    **runtime_options,
+                    "outcome": trigger_outcome,
+                    "score": trigger_score,
+                    "objective_session_key": objective_session_key,
+                    "session_id": str(session_id),
+                },
+            )
+        except Exception as _artifact_err:
+            logger.debug("[TriggerDaemon] Trigger output artifact failed (non-fatal): {}", _artifact_err)
+
+        try:
+            await _record_trigger_success_state([getattr(trigger, "id") for trigger in triggers])
+        except Exception as _success_state_err:
+            logger.debug("[TriggerDaemon] Trigger success state reset failed (non-fatal): {}", _success_state_err)
+
         await _update_trigger_runtime_task(
             runtime_task_id,
             status="completed",
             result_summary=(final_reply or "Trigger completed.")[:2000],
             session_id=str(session_id),
             metadata_json={
+                **model_metadata,
+                **runtime_options,
                 "outcome": trigger_outcome,
                 "score": trigger_score,
                 "objective_session_key": objective_session_key,
+                "output_artifact": output_artifact,
             },
         )
 
@@ -1131,7 +1274,7 @@ async def _invoke_agent_for_triggers(
                     },
                 )
         except Exception as _objective_eval_err:
-            logger.debug("[TriggerDaemon] Objective evaluation failed (non-fatal): %s", _objective_eval_err)
+            logger.debug("[TriggerDaemon] Objective evaluation failed (non-fatal): {}", _objective_eval_err)
 
         logger.info(f"⚡ Triggers fired for {agent.name}: {[t.name for t in triggers]}")
 
@@ -1156,15 +1299,20 @@ async def _invoke_agent_for_triggers(
                 },
             )
         except Exception as _hook_err:
-            logger.debug("[TriggerDaemon] TRIGGER_END hook failed (non-fatal): %s", _hook_err)
+            logger.debug("[TriggerDaemon] TRIGGER_END hook failed (non-fatal): {}", _hook_err)
 
     except Exception as e:
         logger.error(f"Failed to invoke agent {agent_id} for triggers: {e}", exc_info=True)
+        failure_metadata = {"error": str(e)[:1000]}
+        try:
+            failure_metadata.update(await _record_trigger_failure_state(agent_id, triggers, str(e)))
+        except Exception as _failure_state_err:
+            logger.debug("[TriggerDaemon] Trigger failure state update failed (non-fatal): {}", _failure_state_err)
         await _update_trigger_runtime_task(
             runtime_task_id,
             status="failed",
             result_summary=f"Trigger invocation failed: {str(e)[:500]}",
-            metadata_json={"error": str(e)[:1000]},
+            metadata_json=failure_metadata,
         )
 
 
@@ -1182,6 +1330,10 @@ async def _tick():
         await reconcile_all_objective_wake_policies()
     except Exception as exc:
         logger.debug("[TriggerDaemon] Objective wake reconciler failed (non-fatal): {}", exc)
+    try:
+        await reconcile_all_objective_lifecycle()
+    except Exception as exc:
+        logger.debug("[TriggerDaemon] Objective lifecycle reconciler failed (non-fatal): {}", exc)
 
     async with async_session() as db:
         result = await db.execute(
@@ -1215,7 +1367,7 @@ async def _tick():
                 continue
             event_key = _default_trigger_event_key(trigger, now, evaluation)
             if not await _acquire_trigger_fire_lease(trigger.id, event_key):
-                logger.debug("[TriggerDaemon] Duplicate fire lease rejected for %s (%s)", trigger.name, event_key)
+                logger.debug("[TriggerDaemon] Duplicate fire lease rejected for {} ({})", trigger.name, event_key)
                 continue
             objective_session_key = _trigger_objective_session_key(trigger)
             fired_by_group.setdefault((trigger.agent_id, objective_session_key), []).append(trigger)
@@ -1226,6 +1378,26 @@ async def _tick():
     # Per-agent try/except so one agent's failure doesn't block others (C-08)
     for (agent_id, objective_session_key), agent_triggers in fired_by_group.items():
         try:
+            preflight_ok, skip_reason, skip_summary, preflight_metadata = await _preflight_trigger_group(
+                agent_id,
+                agent_triggers,
+                now,
+            )
+            runtime_task_id = await _create_trigger_runtime_task(
+                agent_id,
+                agent_triggers,
+                objective_session_key=objective_session_key,
+                metadata_json=preflight_metadata,
+            )
+            if not preflight_ok:
+                await _skip_trigger_runtime_task(
+                    runtime_task_id,
+                    skip_reason=skip_reason or "preflight_blocked",
+                    result_summary=skip_summary or "Trigger wake skipped by preflight.",
+                    metadata_json=preflight_metadata,
+                )
+                continue
+
             # ── Immediately update trigger state BEFORE launching async task ──
             try:
                 async with async_session() as db:
@@ -1254,11 +1426,6 @@ async def _tick():
             except Exception as e:
                 logger.warning(f"Failed to pre-update trigger state: {e}")
 
-            runtime_task_id = await _create_trigger_runtime_task(
-                agent_id,
-                agent_triggers,
-                objective_session_key=objective_session_key,
-            )
             asyncio.create_task(
                 _invoke_agent_for_triggers(
                     agent_id,
@@ -1268,7 +1435,7 @@ async def _tick():
                 )
             )
         except Exception as _agent_err:
-            logger.warning("[TriggerDaemon] Failed to process agent %s: %s", agent_id, _agent_err)
+            logger.warning("[TriggerDaemon] Failed to process agent {}: {}", agent_id, _agent_err)
 
 
 async def start_trigger_daemon():

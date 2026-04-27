@@ -158,3 +158,63 @@ def test_update_objective_api_rejects_completion_without_evidence(monkeypatch):
     assert response.status_code == 400
     assert objective.status == "active"
     assert fake_db.committed is False
+
+
+def test_approve_objective_api_activates_pending_goal(monkeypatch):
+    agent_id = uuid4()
+    objective = SimpleNamespace(
+        id=uuid4(),
+        objective_key="daily_report",
+        description="Send report",
+        status="proposed",
+        priority=1,
+        source="conversation",
+        success_criteria="Sent with evidence",
+        blocked_reason="waiting for approval",
+        metadata_json={"requires_approval": True},
+        created_at=None,
+        updated_at=None,
+        completed_at=None,
+    )
+    fake_db = _ObjectiveUpdateDB(objective)
+    client, _user = _client(monkeypatch, db=fake_db)
+
+    response = client.post(
+        f"/agents/{agent_id}/objectives/{objective.id}/approve",
+        json={"reason": "approved by user"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "active"
+    assert objective.metadata_json["requires_approval"] is False
+    assert fake_db.committed is True
+
+
+def test_reject_objective_api_records_rejection(monkeypatch):
+    agent_id = uuid4()
+    objective = SimpleNamespace(
+        id=uuid4(),
+        objective_key="risky_message",
+        description="Send risky message",
+        status="proposed",
+        priority=1,
+        source="conversation",
+        success_criteria=None,
+        blocked_reason=None,
+        metadata_json={"requires_approval": True},
+        created_at=None,
+        updated_at=None,
+        completed_at=None,
+    )
+    fake_db = _ObjectiveUpdateDB(objective)
+    client, _user = _client(monkeypatch, db=fake_db)
+
+    response = client.post(
+        f"/agents/{agent_id}/objectives/{objective.id}/reject",
+        json={"reason": "too risky"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "rejected"
+    assert objective.metadata_json["rejection"]["reason"] == "too risky"
+    assert fake_db.committed is True

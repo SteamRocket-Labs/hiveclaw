@@ -1222,6 +1222,9 @@ def _cleanup_focus(agent_id: uuid.UUID) -> None:
     except Exception as read_err:
         logger.debug("[AutoDream] Failed to read focus.md for cleanup: %s", read_err)
         return
+    if "AUTO-GENERATED FROM agent_objectives" in content:
+        logger.debug("[AutoDream] Skipping focus.md cleanup for objective ledger projection: %s", agent_id)
+        return
 
     from app.services.focus_state import parse_focus_tasks
 

@@ -35,7 +35,7 @@ relevant tools you WILL use come from other skill packs:
 |------|-------------------------|
 | Reply in the current DingTalk conversation | (automatic — your normal assistant reply is sent back by the channel handler) |
 | Schedule a follow-up later in this conversation | `set_trigger` (from Trigger Management Guide) |
-| Wait for the user's next DingTalk message | `set_trigger` with `type="on_message"` and `reply_to_current_sender: true` |
+| Wait for the user's next DingTalk message | `set_trigger` with `type="on_message"`, `reply_to_current_sender: true`, and `max_fires: 1` |
 | List your active triggers | `list_triggers` |
 | Contact another digital employee instead | `send_message_to_agent` |
 

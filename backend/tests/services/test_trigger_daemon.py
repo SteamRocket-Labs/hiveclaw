@@ -87,6 +87,12 @@ def _disable_completed_focus_reconciler(monkeypatch, trigger_daemon):
     async def fake_reconcile_all_objective_wake_policies():
         return {"agents_checked": 0, "created": 0}
 
+    async def fake_reconcile_all_objective_lifecycle():
+        return {"objectives_checked": 0, "stale_marked": 0}
+
+    async def fake_preflight_trigger_group(_agent_id, _triggers, _now):
+        return True, None, "", {}
+
     monkeypatch.setattr(
         trigger_daemon,
         "reconcile_all_completed_focus_triggers",
@@ -96,6 +102,16 @@ def _disable_completed_focus_reconciler(monkeypatch, trigger_daemon):
         trigger_daemon,
         "reconcile_all_objective_wake_policies",
         fake_reconcile_all_objective_wake_policies,
+    )
+    monkeypatch.setattr(
+        trigger_daemon,
+        "reconcile_all_objective_lifecycle",
+        fake_reconcile_all_objective_lifecycle,
+    )
+    monkeypatch.setattr(
+        trigger_daemon,
+        "_preflight_trigger_group",
+        fake_preflight_trigger_group,
     )
 
 
@@ -123,6 +139,33 @@ async def test_on_message_config_accepts_from_agent_id():
     )
 
     assert error is None
+
+
+@pytest.mark.asyncio
+async def test_evaluate_trigger_respects_backoff_until():
+    import app.services.trigger_daemon as trigger_daemon
+
+    now = datetime.now(timezone.utc)
+    trigger = SimpleNamespace(
+        id=uuid4(),
+        agent_id=uuid4(),
+        name="daily_report",
+        type="once",
+        config={
+            "at": (now - timedelta(minutes=5)).isoformat(),
+            "trigger_class": "scheduled_job",
+            "backoff_until": (now + timedelta(minutes=30)).isoformat(),
+        },
+        is_enabled=True,
+        expires_at=None,
+        max_fires=None,
+        fire_count=0,
+        last_fired_at=None,
+        cooldown_seconds=60,
+        created_at=now - timedelta(hours=1),
+    )
+
+    assert await trigger_daemon._evaluate_trigger(trigger, now) is False
 
 
 @pytest.mark.asyncio

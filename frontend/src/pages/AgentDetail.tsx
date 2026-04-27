@@ -33,6 +33,7 @@ import { activityApi } from '../api/domains/activity';
 import { enterpriseApi, type CapabilityDefinition, type CapabilityPolicy } from '../api/domains/enterprise';
 import { fileApi } from '../api/domains/files';
 import { triggerApi } from '../api/domains/triggers';
+import { autonomyApi } from '../api/domains/autonomy';
 import { chatApi } from '../api/domains/chat';
 import { uploadFileWithProgress } from '../api/core/upload-progress';
 import { useAuthStore } from '../stores';
@@ -73,6 +74,13 @@ function AgentDetailInner() {
     const { data: awareTriggers = [], refetch: refetchTriggers } = useQuery({
         queryKey: ['triggers', id],
         queryFn: () => triggerApi.list(id!),
+        enabled: !!id && activeTab === 'aware',
+        refetchInterval: activeTab === 'aware' ? 5000 : false,
+    });
+
+    const { data: autonomyOverview, refetch: refetchAutonomy } = useQuery({
+        queryKey: ['autonomy-overview', id],
+        queryFn: () => autonomyApi.getOverview(id!, { lookbackHours: 24 }),
         enabled: !!id && activeTab === 'aware',
         refetchInterval: activeTab === 'aware' ? 5000 : false,
     });
@@ -654,6 +662,8 @@ function AgentDetailInner() {
             } else if (d.type === 'trigger_notification') {
                 setChatMessages(prev => [...prev, parseChatMsg({ role: 'assistant', content: d.content })]);
                 fetchMySessions(true, agentId);
+                queryClient.invalidateQueries({ queryKey: ['autonomy-overview', agentId] });
+                queryClient.invalidateQueries({ queryKey: ['triggers', agentId] });
             } else if (typeof d.content === 'string' && (d.role === 'assistant' || d.role === 'user')) {
                 setChatMessages(prev => [...prev, parseChatMsg({ role: d.role, content: d.content })]);
             }
@@ -1239,6 +1249,8 @@ function AgentDetailInner() {
                         onSetShowAllTriggers={setShowAllTriggers}
                         onSetReflectionPage={setReflectionPage}
                         onRefetchTriggers={refetchTriggers}
+                        autonomyOverview={autonomyOverview}
+                        onRefetchAutonomy={refetchAutonomy}
                     />
                 )}
 

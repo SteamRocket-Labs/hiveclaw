@@ -504,6 +504,77 @@ Objective Ledger
 
 前端不能把 `focus.md`、trigger reason、activity log 文本解析成第二套目标系统。所有目标状态以 `agent_objectives` 为准；所有唤醒策略以 `agent_triggers` 为准；所有执行结果以 `runtime_tasks` 与 artifact 为准。
 
+### UI 暴露原则
+
+P6 的关键不是“把后端能力都暴露出来”，而是把用户需要做判断和操作的内容默认展示，把排障信息放进诊断层，把内部实现细节留在后台。
+
+```text
+Default Operator UI
+- 让用户知道 agent 当前承诺了什么、是否会自主执行、执行是否成功、哪里需要人工处理。
+- 面向业务/运营用户，展示意图和状态，不展示内部字段名。
+
+Advanced Diagnostics
+- 让管理员或调试者定位为什么没有触发、为什么跳过、为什么失败。
+- 可展开，可复制 ID/code，但不作为普通用户的主路径。
+
+Internal Policy
+- 由后台策略、reconciler、preflight、daemon 自动处理。
+- 不在普通 UI 暴露成开关，避免用户误以为每个字段都需要手工配置。
+```
+
+默认 UI 只暴露这四件事：
+
+```text
+1. Objective
+- 目标是什么
+- 当前状态：待审批 / 运行中 / 阻塞 / 已完成 / 已拒绝
+- 成功标准和完成证据
+
+2. Wake
+- 会不会自动醒
+- 大概什么时候醒：一次性 / 每天 / 每 N 分钟 / 等待事件
+- 如果不会醒，原因是什么：缺模型 / 目标待审批 / 已暂停 / 已过期 / 失败退避中
+
+3. Result
+- 最近一次是否执行
+- 成功、失败、跳过还是仍在运行
+- 用户可读的失败/跳过原因
+
+4. Action
+- 审批 / 拒绝 proposed objective
+- 暂停 / 恢复 wake policy
+- 查看结果 artifact
+- 提供 completion evidence
+- 修复阻塞项，例如配置模型或重新授权能力
+```
+
+默认 UI 不应该暴露为主控件的内容：
+
+```text
+- raw trigger_class：默认显示为“目标任务 / 定时任务 / 等待事件 / 系统维护”。
+- objective_id / focus_ref：默认显示目标标题；ID 只放诊断抽屉。
+- raw config JSON：只放诊断抽屉。
+- context_from：默认由模板和后台策略管理；高级定时任务才允许配置。
+- model_id per-job pinning：默认继承 agent 模型；只在高级设置显示。
+- toolset / excluded_tool_names：默认由 capability/policy 管理；只在高级设置显示。
+- workdir：默认后台选择；只在高级设置显示。
+- cooldown_seconds：默认隐藏；只有高频 poll/event_wait 高级设置显示。
+- backoff_until / failure_count：默认合成为“失败退避中，预计 X 后重试”；原始值放诊断抽屉。
+- runtime_task_id / session id / artifact path：默认显示“最近执行/结果文件”；原始 ID 和路径放诊断抽屉。
+- metadata_json 任意字段：永远不作为前端直接 contract。
+```
+
+需要默认暴露的“能力未打开/阻塞”项：
+
+```text
+- agent 没有 primary model，导致 heartbeat/trigger 无法运行。
+- proposed objective 等待审批，导致自主唤醒被 gate 拦截。
+- objective active 但没有 wake policy。
+- event_wait 没有 max_fires/expires_at，导致无限等待风险。
+- scheduled_job 没有自包含 prompt/reason，导致每次独立 session 不可靠。
+- 最近 attempt 连续 skipped/failed，且用户需要处理授权、模型、能力、外部连接问题。
+```
+
 ### 当前代码事实
 
 ```text
@@ -549,13 +620,15 @@ Wake Policies
 - system_maintenance 只读展示，不与业务目标混淆
 
 Attempts
-- RuntimeTask history，按 objective_id / trigger_id / trigger_class 过滤
+- RuntimeTask history，默认按目标、触发类型、状态过滤
+- objective_id / trigger_id / trigger_class 只作为 diagnostics filter
 - skipped / failed / completed / running 都要可见
-- preflight skip_reason 要直接展示，不让用户只看到“没运行”
+- preflight skip_reason 要映射成用户可读原因，不让用户只看到“没运行”
 
 Artifacts
 - scheduled_job 与 trigger attempt 的 output artifact 列表
-- artifact 展开显示 final_reply、trigger metadata、runtime_task_id、created_at
+- artifact 默认展开显示 summary、final_reply、created_at
+- trigger metadata、runtime_task_id、artifact path 只放 diagnostics
 - artifact 是执行产物，不是新目标事实源
 ```
 
@@ -571,6 +644,16 @@ GET /api/agents/{agent_id}/autonomy/overview
 
 GET /api/agents/{agent_id}/triggers
 - response 增加 normalized 字段：
+  display_kind
+  display_title
+  display_schedule
+  attention_state
+  attention_reason
+  next_action
+  linked_objective
+  last_attempt
+  last_artifact
+- diagnostics 字段可选返回：
   trigger_class
   objective_id
   lifecycle_state
@@ -578,7 +661,6 @@ GET /api/agents/{agent_id}/triggers
   backoff_until
   failure_count
   runtime_options_summary
-  bound_objective
 
 POST /api/agents/{agent_id}/triggers
 - 前端创建 trigger 不再绕 agent tool
@@ -588,11 +670,13 @@ POST /api/agents/{agent_id}/triggers
 GET /api/agents/{agent_id}/runtime-tasks
 - 支持 task_type=trigger|heartbeat|delegation
 - 支持 trigger_id/objective_id/status/limit
-- 返回 metadata 的稳定子集，不暴露任意内部字段为 UI contract
+- 返回 display_summary/status/created_at/completed_at/artifact/diagnostics
+- metadata_json 只由后端映射成稳定字段，不直接给 UI 依赖
 
 GET /api/agents/{agent_id}/runtime-artifacts/{runtime_task_id}
 - 只允许读取当前 agent workspace 下 runtime_artifacts/triggers/*.json
-- 返回 schema、created_at、triggers、metadata、final_reply
+- 默认返回 title、created_at、summary、final_reply
+- diagnostics 可返回 schema、runtime_task_id、trigger ids、相对路径
 
 GET /api/agents/{agent_id}/autonomy/diagnostics
 - agent-scoped audit findings
@@ -608,12 +692,14 @@ objective_task
 - 选择 active/proposed objective
 - proposed objective 需要先 approve 才允许自动 wake
 - 可配置 cadence：once / interval / cron
-- 可选 model_id、toolset、excluded_tool_names、workdir、context_from
+- 默认不显示 model/toolset/workdir/context_from
+- 高级设置才允许 per-job model、toolset、workdir、context_from
 
 scheduled_job
 - 必须填写自包含 prompt/reason
 - cron/once/interval
-- 可选 output artifact 命名、model_id、toolset、workdir、context_from
+- 默认继承 agent 模型和能力
+- 高级设置才允许 per-job model、toolset、workdir、context_from
 - 不显示为业务目标进度
 
 event_wait
@@ -632,21 +718,23 @@ system_maintenance
 ```text
 状态 badge
 - active / paused / expired / max_fires_reached
-- backoff_active / requires_approval / objective_not_active / no_model
-- stale / blocked / failed_recently / no_recent_attempt
+- waiting_approval / missing_model / no_wake_policy
+- blocked / stale / failed_recently / no_recent_attempt
+- backoff_active 只显示为“失败后等待重试”，不默认展示 raw backoff_until
 
 安全操作
 - pause/resume trigger
 - approve/reject proposed objective
-- retry failed trigger：只清 backoff 或立即触发需另设权限
+- retry failed trigger：默认显示“请求重试”，是否清 backoff 或立即触发由后端权限决定
 - mark objective completed 必须提供 evidence
 - delete trigger 前展示是否会留下 active objective without wake
 
 可观测性
-- 每个 trigger 行显示 last_fired_at、fire_count、last_attempt_status、skip_reason
-- 每个 objective 行显示 wake policy 是否存在、最近 attempt、completion evidence
-- scheduled_job 行显示最近 artifact
-- event_wait 行显示剩余 fires、expires_at、最后命中事件
+- 每个 trigger 行默认显示：会不会醒、何时醒、最近结果、是否需要处理
+- 每个 objective 行默认显示：目标状态、wake 是否存在、最近 attempt、completion evidence
+- scheduled_job 行默认显示：最近 artifact 摘要
+- event_wait 行默认显示：等待什么事件、剩余次数或过期时间
+- 原始 skip_reason、trigger_id、runtime_task_id、config、metadata 放诊断抽屉
 ```
 
 ### UI 设计约束
@@ -667,7 +755,8 @@ P6A — Read-only Autonomy Overview
 - 新增 frontend objectives/autonomy API adapter。
 - 新增 agent-scoped autonomy overview endpoint。
 - Aware tab 从 focus.md 解析切换到 objective ledger 展示。
-- trigger 仍可启停删除，但列表显示 trigger_class/objective/status/backoff/skip_reason。
+- trigger 仍可启停删除，但默认列表只显示 display_kind/objective/status/next_action。
+- 原始 trigger_class/backoff/skip_reason 只进入 diagnostics drawer。
 - 新增测试覆盖 overview empty/error/blocked/proposed/scheduled_job/event_wait。
 
 P6B — Attempts & Artifacts
@@ -699,10 +788,12 @@ P6E — Realtime & Ops Polish
 ```text
 - 用户能从一个页面看清：目标是什么、为什么会醒、醒了没有、结果在哪里。
 - proposed objective 能被 approve/reject，不再只能靠后台 API。
-- trigger_class、event_wait lifecycle、scheduled_job artifact 在 UI 中是 first-class。
-- skipped/failed trigger 不再只表现为“没有反应”，而是显示 skip_reason/backoff/blocked_reason。
+- 目标任务、定时任务、等待事件、系统维护在 UI 中是一等分类，但不要求用户理解 raw trigger_class。
+- event_wait lifecycle、scheduled_job artifact 在 UI 中是 first-class。
+- skipped/failed trigger 不再只表现为“没有反应”，而是显示用户可读的原因和下一步动作。
 - 页面不再把 focus.md 当事实源，只作为可选 raw projection。
 - 前端没有直接依赖未定义的 metadata_json 私有字段；复杂字段由 BFF normalized 后返回。
+- 普通 UI 不默认暴露 raw config、ID、metadata、workdir、toolset、context_from、cooldown、backoff 原始值。
 - 所有新增 UI 文案完成 en/zh i18n。
 - API、服务层、前端组件均有测试覆盖。
 ```

@@ -2,7 +2,7 @@
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +12,15 @@ from app.core.security import get_current_user
 from app.database import get_db
 from app.models.trigger import AgentTrigger
 from app.models.user import User
+from app.services.agent_tool_domains.triggers import (
+    VALID_TRIGGER_TYPES,
+    _coerce_int,
+    _parse_expires_at,
+    _resolve_trigger_class,
+    _validate_trigger_config,
+    _validate_trigger_lifecycle_policy,
+)
+from app.services.autonomy_overview import build_trigger_view
 
 router = APIRouter(prefix="/agents", tags=["triggers"])
 
@@ -30,24 +39,86 @@ class TriggerResponse(BaseModel):
     last_fired_at: str | None = None
     created_at: str | None = None
     expires_at: str | None = None
+    display_kind: str | None = None
+    display_title: str | None = None
+    display_schedule: str | None = None
+    attention_state: str | None = None
+    attention_reason: str | None = None
+    next_action: str | None = None
+    linked_objective: dict | None = None
+    last_attempt: dict | None = None
+    last_artifact: dict | None = None
+    diagnostics: dict | None = None
+
+
+class TriggerCreate(BaseModel):
+    name: str
+    type: str
+    config: dict
+    reason: str
+    focus_ref: str | None = None
+    trigger_class: str | None = None
+    objective_id: str | None = None
+    max_fires: int | None = None
+    cooldown_seconds: int | None = None
+    expires_at: str | None = None
 
 
 class TriggerUpdate(BaseModel):
     config: dict | None = None
     reason: str | None = None
     is_enabled: bool | None = None
+    focus_ref: str | None = None
+    trigger_class: str | None = None
+    objective_id: str | None = None
     max_fires: int | None = None
     cooldown_seconds: int | None = None
     expires_at: str | None = None
 
 
+def _trigger_response(trigger: AgentTrigger, *, diagnostics: bool = False, view: dict | None = None) -> TriggerResponse:
+    view = view or build_trigger_view(trigger, include_diagnostics=diagnostics)
+    return TriggerResponse(
+        id=str(trigger.id),
+        name=trigger.name,
+        type=trigger.type,
+        config=trigger.config or {},
+        reason=trigger.reason or "",
+        focus_ref=trigger.focus_ref,
+        is_enabled=bool(trigger.is_enabled),
+        fire_count=int(trigger.fire_count or 0),
+        max_fires=trigger.max_fires,
+        cooldown_seconds=int(trigger.cooldown_seconds or 60),
+        last_fired_at=trigger.last_fired_at.isoformat() if trigger.last_fired_at else None,
+        created_at=trigger.created_at.isoformat() if trigger.created_at else None,
+        expires_at=trigger.expires_at.isoformat() if trigger.expires_at else None,
+        display_kind=view.get("display_kind"),
+        display_title=view.get("display_title"),
+        display_schedule=view.get("display_schedule"),
+        attention_state=view.get("attention_state"),
+        attention_reason=view.get("attention_reason"),
+        next_action=view.get("next_action"),
+        linked_objective=view.get("linked_objective"),
+        last_attempt=view.get("last_attempt"),
+        last_artifact=view.get("last_artifact"),
+        diagnostics=view.get("diagnostics") if diagnostics else None,
+    )
+
+
+def _raise_trigger_validation_error(error: str | None) -> None:
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+
+
 @router.get("/{agent_id}/triggers", response_model=list[TriggerResponse])
 async def list_agent_triggers(
     agent_id: uuid.UUID,
+    diagnostics: bool = Query(default=False),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List all triggers for an agent."""
+    include_diagnostics = diagnostics is True
     await check_agent_access(db, current_user, agent_id)
     result = await db.execute(
         select(AgentTrigger)
@@ -57,23 +128,76 @@ async def list_agent_triggers(
     triggers = result.scalars().all()
 
     return [
-        TriggerResponse(
-            id=str(t.id),
-            name=t.name,
-            type=t.type,
-            config=t.config or {},
-            reason=t.reason or "",
-            focus_ref=t.focus_ref,
-            is_enabled=t.is_enabled,
-            fire_count=t.fire_count,
-            max_fires=t.max_fires,
-            cooldown_seconds=t.cooldown_seconds,
-            last_fired_at=t.last_fired_at.isoformat() if t.last_fired_at else None,
-            created_at=t.created_at.isoformat() if t.created_at else None,
-            expires_at=t.expires_at.isoformat() if t.expires_at else None,
-        )
+        _trigger_response(t, diagnostics=include_diagnostics)
         for t in triggers
     ]
+
+
+@router.post("/{agent_id}/triggers", response_model=TriggerResponse, status_code=status.HTTP_201_CREATED)
+async def create_trigger(
+    agent_id: uuid.UUID,
+    body: TriggerCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a trigger from the frontend without routing through the agent tool loop."""
+    await check_agent_access(db, current_user, agent_id)
+    name = body.name.strip()
+    reason = body.reason.strip()
+    trigger_type = body.type.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Trigger name is required")
+    if not reason:
+        raise HTTPException(status_code=400, detail="Trigger reason is required")
+    if trigger_type not in VALID_TRIGGER_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid trigger type: {trigger_type}")
+
+    config = dict(body.config or {})
+    if body.trigger_class is not None:
+        config["trigger_class"] = body.trigger_class
+    if body.objective_id is not None:
+        config["objective_id"] = body.objective_id
+    focus_ref = body.focus_ref.strip() if body.focus_ref else None
+
+    _raise_trigger_validation_error(_validate_trigger_config("create_trigger", trigger_type, config))
+    _trigger_class, error = _resolve_trigger_class(
+        "create_trigger",
+        {"trigger_class": body.trigger_class, "objective_id": body.objective_id},
+        config,
+        focus_ref,
+        trigger_type=trigger_type,
+    )
+    _raise_trigger_validation_error(error)
+    _raise_trigger_validation_error(
+        _validate_trigger_lifecycle_policy(
+            "create_trigger",
+            trigger_type,
+            config,
+            {"max_fires": body.max_fires, "expires_at": body.expires_at},
+        )
+    )
+    try:
+        expires_at = _parse_expires_at(body.expires_at) if body.expires_at else None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid expires_at: {body.expires_at}") from exc
+
+    trigger = AgentTrigger(
+        agent_id=agent_id,
+        name=name,
+        type=trigger_type,
+        config=config,
+        reason=reason,
+        focus_ref=focus_ref,
+        is_enabled=True,
+        max_fires=_coerce_int(body.max_fires),
+        cooldown_seconds=_coerce_int(body.cooldown_seconds) or 60,
+        expires_at=expires_at,
+    )
+    db.add(trigger)
+    await db.commit()
+    if hasattr(db, "refresh"):
+        await db.refresh(trigger)
+    return _trigger_response(trigger)
 
 
 @router.patch("/{agent_id}/triggers/{trigger_id}")
@@ -102,6 +226,8 @@ async def update_trigger(
         trigger.reason = body.reason
     if body.is_enabled is not None:
         trigger.is_enabled = body.is_enabled
+    if body.focus_ref is not None:
+        trigger.focus_ref = body.focus_ref.strip() or None
     if body.max_fires is not None:
         trigger.max_fires = body.max_fires
     if body.cooldown_seconds is not None:
@@ -110,6 +236,29 @@ async def update_trigger(
         from datetime import datetime
 
         trigger.expires_at = datetime.fromisoformat(body.expires_at)
+    if body.trigger_class is not None or body.objective_id is not None:
+        config = dict(trigger.config or {})
+        if body.trigger_class is not None:
+            config["trigger_class"] = body.trigger_class
+        if body.objective_id is not None:
+            config["objective_id"] = body.objective_id
+        _trigger_class, error = _resolve_trigger_class(
+            "update_trigger",
+            {"trigger_class": body.trigger_class, "objective_id": body.objective_id},
+            config,
+            trigger.focus_ref,
+            trigger_type=trigger.type,
+        )
+        _raise_trigger_validation_error(error)
+        _raise_trigger_validation_error(
+            _validate_trigger_lifecycle_policy(
+                "update_trigger",
+                trigger.type,
+                config,
+                {"max_fires": trigger.max_fires, "expires_at": trigger.expires_at},
+            )
+        )
+        trigger.config = config
 
     await db.commit()
 

@@ -443,6 +443,105 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Document rollback before the final promotion.');
   });
 
+  it('renders autonomy overview as the primary aware surface without raw internals', () => {
+    const markup = renderToStaticMarkup(
+      <AgentAwareSection
+        agentId="agent-1"
+        focusContent={'- [ ] legacy: this raw projection should be secondary'}
+        awareTriggers={[]}
+        activityLogs={[]}
+        reflectionSessions={[]}
+        reflectionMessages={{}}
+        autonomyOverview={{
+          agent_id: 'agent-1',
+          lookback_hours: 24,
+          totals: { objectives: 2, triggers: 2, recent_attempts: 1, findings: 1 },
+          objectives: [
+            {
+              id: 'objective-internal-id',
+              description: 'Send investor update',
+              status: 'proposed',
+              wake_state: 'no_wake_policy',
+              requires_approval: true,
+              success_criteria: 'Sent with confirmation',
+            },
+            {
+              id: 'objective-active-id',
+              description: 'Monitor launch health',
+              status: 'active',
+              wake_state: 'has_wake_policy',
+              requires_approval: false,
+              completion_evidence: 'workspace/report.md',
+            },
+          ],
+          triggers: [
+            {
+              id: 'trigger-internal-id',
+              display_kind: 'scheduled_job',
+              display_title: 'Daily launch report',
+              display_schedule: '0 9 * * *',
+              attention_state: 'backoff_active',
+              attention_reason: 'Waiting to retry after a recent failure.',
+              next_action: 'request_retry',
+              linked_objective: null,
+              last_attempt: {
+                task_id: 'runtime-internal-id',
+                status: 'failed',
+                display_summary: 'Provider quota exceeded',
+                attention_reason: 'Provider quota exceeded',
+              },
+              last_artifact: { path: 'runtime_artifacts/triggers/runtime-internal-id.json' },
+            },
+          ],
+          recent_attempts: [
+            {
+              task_id: 'runtime-internal-id',
+              task_type: 'trigger',
+              status: 'failed',
+              display_summary: 'Provider quota exceeded',
+              attention_reason: 'Provider quota exceeded',
+            },
+          ],
+          findings: [
+            {
+              severity: 'warning',
+              category: 'objective_waiting_approval',
+              message: 'Objective is waiting for approval.',
+              recommendation: 'Approve or reject it.',
+            },
+          ],
+        }}
+        expandedFocus={null}
+        expandedReflection={null}
+        showAllFocus={false}
+        showCompletedFocus={false}
+        showAllTriggers={false}
+        reflectionPage={0}
+        onSetExpandedFocus={() => {}}
+        onSetExpandedReflection={() => {}}
+        onSetReflectionMessages={() => {}}
+        onSetShowAllFocus={() => {}}
+        onSetShowCompletedFocus={() => {}}
+        onSetShowAllTriggers={() => {}}
+        onSetReflectionPage={() => {}}
+        onRefetchTriggers={async () => {}}
+        onRefetchAutonomy={async () => {}}
+      />,
+    );
+
+    expect(markup).toContain('Send investor update');
+    expect(markup).toContain('proposed');
+    expect(markup).toContain('Approve');
+    expect(markup).toContain('Daily launch report');
+    expect(markup).toContain('Waiting to retry after a recent failure.');
+    expect(markup).toContain('Provider quota exceeded');
+    expect(markup).not.toContain('trigger-internal-id');
+    expect(markup).not.toContain('runtime-internal-id');
+    expect(markup).not.toContain('objective-internal-id');
+    expect(markup).not.toContain('runtime_artifacts/triggers');
+    expect(markup).not.toContain('legacy: this raw projection should be secondary');
+  });
+
   it('renders AgentMindSection as a standalone mind module', () => {
     const markup = renderToStaticMarkup(<AgentMindSection agentId="agent-1" canEdit />);
 

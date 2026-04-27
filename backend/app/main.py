@@ -12,6 +12,7 @@ from app.api.advanced import router as advanced_router
 from app.api.agents import router as agents_router
 from app.api.atlassian import router as atlassian_router
 from app.api.auth import router as auth_router
+from app.api.autonomy import router as autonomy_router
 from app.api.capabilities import router as capabilities_router
 from app.api.chat_sessions import router as chat_sessions_router
 from app.api.config_history import router as config_history_router
@@ -417,6 +418,7 @@ _api_routers = [
     chat_sessions_router, plaza_router, triggers_router, memory_router,
     oidc_router, capabilities_router, onboarding_router, packs_router,
     objectives_router,
+    autonomy_router,
     llm_proxy_router,
     desktop_auth_router,
     desktop_sync_router,

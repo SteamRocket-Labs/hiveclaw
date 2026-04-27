@@ -92,6 +92,7 @@ def audit_agent_autonomy_snapshot(
     agent: Any,
     focus_text: str | None,
     triggers: list[Any],
+    objectives: list[Any] | None = None,
     trigger_session_count: int = 0,
     heartbeat_session_count: int = 0,
     trigger_runtime_count: int = 0,
@@ -103,6 +104,7 @@ def audit_agent_autonomy_snapshot(
     agent_name = getattr(agent, "name", "")
     tenant_id = getattr(agent, "tenant_id", None)
     enabled = _enabled_triggers(triggers)
+    objectives = list(objectives or [])
     findings: list[dict[str, Any]] = []
 
     if focus_read_error:
@@ -124,6 +126,62 @@ def audit_agent_autonomy_snapshot(
         for trigger in enabled
         if (ref := _trigger_focus_ref(trigger)) is not None
     }
+    enabled_objective_ids = {
+        str((getattr(trigger, "config", None) or {}).get("objective_id"))
+        for trigger in enabled
+        if (getattr(trigger, "config", None) or {}).get("objective_id")
+    }
+
+    for objective in objectives:
+        objective_id = str(getattr(objective, "id", "") or "")
+        objective_key = normalize_focus_task_id(str(getattr(objective, "objective_key", "") or ""))
+        status = str(getattr(objective, "status", "") or "open")
+        metadata = dict(getattr(objective, "metadata_json", None) or {})
+        has_wake = objective_id in enabled_objective_ids or objective_key in enabled_focus_refs
+        if status == "proposed":
+            findings.append(_finding(
+                severity="info",
+                category="proposed_objective_pending",
+                agent_id=agent_id,
+                focus_ref=objective_key,
+                message=f"Objective '{objective_key}' is proposed and not yet active.",
+                evidence={
+                    "objective_id": objective_id,
+                    "autonomy_class": metadata.get("autonomy_class"),
+                    "requires_approval": metadata.get("requires_approval"),
+                },
+                recommendation="Confirm, reject, or keep it proposed; do not create an autonomous trigger until it is active.",
+            ))
+        if status in {"active", "open", "running"} and not has_wake and not metadata.get("manual_no_wake"):
+            findings.append(_finding(
+                severity="error",
+                category="active_objective_without_wake_policy",
+                agent_id=agent_id,
+                focus_ref=objective_key,
+                message=f"Active objective '{objective_key}' has no enabled objective_task wake policy.",
+                evidence={"objective_id": objective_id, "status": status},
+                recommendation="Run the objective wake reconciler or create an objective_task trigger bound to this objective.",
+            ))
+        if status == "blocked":
+            findings.append(_finding(
+                severity="warning",
+                category="blocked_objective",
+                agent_id=agent_id,
+                focus_ref=objective_key,
+                message=f"Objective '{objective_key}' is blocked.",
+                evidence={"objective_id": objective_id, "blocked_reason": getattr(objective, "blocked_reason", None)},
+                recommendation="Resolve the blocker, create a recovery objective, or reject/snooze the objective.",
+            ))
+        if metadata.get("stale"):
+            findings.append(_finding(
+                severity="warning",
+                category="stale_objective",
+                agent_id=agent_id,
+                focus_ref=objective_key,
+                message=f"Objective '{objective_key}' is marked stale.",
+                evidence={"objective_id": objective_id, "stale": metadata.get("stale")},
+                recommendation="Revalidate, snooze, block, or complete the stale objective with evidence.",
+            ))
 
     for task in focus_tasks:
         if not task.completed and task.task_id not in enabled_focus_refs:
@@ -378,6 +436,7 @@ async def build_autonomous_audit_report(
             agent=agent,
             focus_text=focus_text,
             triggers=triggers_by_agent.get(agent.id, []),
+            objectives=objectives_by_agent.get(agent.id, []),
             trigger_session_count=per_agent_sessions.get("trigger", 0),
             heartbeat_session_count=per_agent_sessions.get("heartbeat", 0),
             trigger_runtime_count=per_agent_runtime.get("trigger", 0),

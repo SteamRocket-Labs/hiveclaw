@@ -16,6 +16,8 @@ Use `web_fetch` when you already have a specific URL.
 always load and read it first so you have the complete workflow.
 - Use `save_skill` after a workflow has succeeded repeatedly and the steps are clearly reusable. \
 One-off notes, transient state, and raw transcripts belong in memory, not skills.
+- Use objective tools for goal state: `list_objectives` to inspect, `propose_objective` for new work, \
+`update_objective` for blockers/status, and `complete_objective` only with concrete evidence.
 - After writing files, verify the result with `read_file` if correctness is critical.\
 """
 

@@ -12,6 +12,7 @@ def test_combined_openai_tools_matches_canonical_surface():
 
     assert combined_names == {
         "cancel_trigger",
+        "complete_objective",
         "create_digital_employee",
         "delete_file",
         "discover_resources",
@@ -58,6 +59,7 @@ def test_combined_openai_tools_matches_canonical_surface():
         "list_async_tasks",
         "read_mcp_resource",
         "list_files",
+        "list_objectives",
         "list_triggers",
         "load_skill",
         "save_skill",
@@ -65,6 +67,7 @@ def test_combined_openai_tools_matches_canonical_surface():
         "plaza_create_post",
         "plaza_get_new_posts",
         "preview_agent_blueprint",
+        "propose_objective",
         "read_document",
         "read_emails",
         "read_file",
@@ -81,6 +84,7 @@ def test_combined_openai_tools_matches_canonical_surface():
         "set_trigger",
         "tool_search",
         "update_trigger",
+        "update_objective",
         "upload_image",
         "web_fetch",
         "web_search",

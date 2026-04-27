@@ -156,7 +156,7 @@ basin to cluster around. You are setting the agent's gravitational center.
 **What belongs in soul.md**: durable identity, role mission, personality as
 observable behaviors, hard boundaries, user/output contracts, quality standards.
 
-**What does NOT belong** (these go to focus.md, which is volatile):
+**What does NOT belong** (these go to the objective ledger / focus projection, which is volatile):
 current tasks, tool configs, trigger schedules, capability lists, dates,
 temporary priorities, current events.
 </pipeline_context>
@@ -225,7 +225,7 @@ Think: what goes wrong if this agent is careless?
 - GOOD: ["Every analytical conclusion must be traceable to at least one data source",
   "Recommendations must include actionable next steps and risk flags"]
 
-**first_tasks** — exactly 3 concrete first assignments (go to focus.md, not soul).
+**first_tasks** — exactly 3 concrete first assignments (go to the objective ledger, not soul).
 Each task must start with builtin/default capabilities when possible.
 - BAD: ["Read soul.md", "Check capabilities", "Do something useful"]
 - GOOD (research role):
@@ -321,7 +321,7 @@ DO NOT do any of these:
 - ❌ Adjective soup for personality ("rigorous, efficient, detail-oriented"
   — LLMs can't execute adjectives; behaviors are actionable)
 - ❌ Date-anchored content ("Focus on Q3 2026 targets" — soul must survive 6+ months)
-- ❌ Tool-name boundaries ("Always use web_search" — tools live in focus.md,
+- ❌ Tool-name boundaries ("Always use web_search" — tools live in operational guidance,
   not soul. soul is identity, not config.)
 - ❌ first_tasks that are self-referential setup
   ("Read your soul.md, introduce yourself, list your capabilities")
@@ -1005,11 +1005,11 @@ def _build_create_employee_result(
                 },
                 "focus_content": {
                     "type": "string",
-                    "description": "Initial focus.md content — what should the agent work on first? Written as a task list or agenda in markdown.",
+                    "description": "Initial objective/focus projection content — what should the agent work on first? Written as a task list or agenda in markdown.",
                 },
                 "heartbeat_topics": {
                     "type": "string",
-                    "description": "Role-specific exploration topics, written to focus.md as initial directions. E.g. 'Focus on AI/VC funding news, semiconductor breakthroughs, and founder movements.'",
+                    "description": "Role-specific exploration topics, written into the initial objective/focus projection. E.g. 'Focus on AI/VC funding news, semiconductor breakthroughs, and founder movements.'",
                 },
             },
             "required": ["name"],
@@ -1315,6 +1315,31 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
 
             agent_dir = agent_manager._agent_dir(agent.id)
 
+            # P4: HR-confirmed first tasks are active objectives, not merely
+            # focus.md projection rows. Keep the objective ledger as source of truth.
+            from app.models.objective import AgentObjective
+            from app.services.focus_state import normalize_focus_task_id as _normalize_focus_task_id
+            from app.services import objective_intake as _objective_intake
+            from app.services.objective_wake_reconciler import build_objective_trigger_payload
+
+            _objective_rows = await db.execute(select(AgentObjective).where(AgentObjective.agent_id == agent.id))
+            _initial_objectives = list(_objective_rows.scalars().all())
+            for _objective in _initial_objectives:
+                if _objective.status not in {"completed", "rejected"}:
+                    _objective.status = "active"
+                _objective.source = "hr_blueprint"
+                _meta = dict(_objective.metadata_json or {})
+                _meta.update(
+                    {
+                        "intake_source": "hr_blueprint",
+                        "autonomy_class": "confirmed_hr_blueprint",
+                        "risk_level": "low",
+                        "confidence": 1.0,
+                        "requires_approval": False,
+                    }
+                )
+                _objective.metadata_json = _meta
+
             # Create triggers (scheduled tasks)
             if triggers:
                 from app.models.trigger import AgentTrigger
@@ -1353,20 +1378,46 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                                 "Skipping cron trigger '%s' — no expr in config and cannot infer", trig.get("name")
                             )
                             continue
+                    _trigger_name = str(trig.get("name", "task") or "task").strip()
+                    _trigger_reason = str(trig.get("reason", "") or "").strip()
+                    _trigger_key = _normalize_focus_task_id(_trigger_name)
+                    _trigger_objective = await _objective_intake.upsert_objective_candidate(
+                        db,
+                        agent,
+                        _objective_intake.ObjectiveCandidate(
+                            agent_id=agent.id,
+                            tenant_id=effective_tenant_id,
+                            description=_trigger_reason or _trigger_name,
+                            source="hr_blueprint",
+                            autonomy_class="confirmed_hr_blueprint",
+                            risk_level="low",
+                            confidence=1.0,
+                            evidence={"trigger": trig},
+                            objective_key=_trigger_key,
+                            success_criteria=_trigger_reason or None,
+                            priority=5,
+                            wake_policy={"type": trig_type, "config": raw_config},
+                        ),
+                        commit=False,
+                    )
+                    raw_config = dict(raw_config)
+                    raw_config["trigger_class"] = "objective_task"
+                    raw_config["objective_id"] = str(_trigger_objective.id)
                     db.add(
                         AgentTrigger(
                             agent_id=agent.id,
-                            name=trig.get("name", "task"),
+                            name=_trigger_name,
                             type=trig_type,
                             config=raw_config,
-                            reason=trig.get("reason", ""),
+                            reason=_trigger_reason,
+                            focus_ref=_trigger_key,
                         )
                     )
                 await db.flush()
 
-            # Kick-start: create ONE trigger for the first focus task.
-            # After completing it, the agent's self-direction rules (executing_actions.py)
-            # tell it to update focus.md and create the next trigger itself.
+            # Kick-start: create ONE trigger for the first active objective.
+            # After completing it, the agent must call complete_objective with evidence;
+            # the objective wake reconciler handles follow-up wake policies.
             _first_tasks = _refined.get("first_tasks", [])
             _boot_task = next((str(t).strip() for t in _first_tasks if str(t).strip()), "")
             if not _boot_task:
@@ -1374,19 +1425,47 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
             if _boot_task:
                 from app.models.trigger import AgentTrigger
 
-                _fire_at = (_dt.now(_tz.utc) + __import__("datetime").timedelta(seconds=30)).isoformat()
-                db.add(
-                    AgentTrigger(
-                        agent_id=agent.id,
-                        name="focus_boot",
-                        type="once",
-                        config={"at": _fire_at},
-                        reason=(
-                            f"Read focus.md for your full mission and task list. Start with this first task: {_boot_task}\n\n"
-                            "After completing it, update focus.md (mark done) and create a trigger for the next task."
-                        ),
-                    )
+                _first_key = "task_1"
+                _first_objective = next(
+                    (
+                        obj
+                        for obj in _initial_objectives
+                        if _normalize_focus_task_id(str(getattr(obj, "objective_key", ""))) == _first_key
+                    ),
+                    _initial_objectives[0] if _initial_objectives else None,
                 )
+                if _first_objective is not None:
+                    _boot_payload = build_objective_trigger_payload(_first_objective)
+                    _boot_payload["name"] = "focus_boot"
+                    _boot_payload["reason"] = (
+                        f"Read the objective ledger and focus projection for your full mission. "
+                        f"Start with this first task: {_boot_task}\n\n"
+                        "When genuinely complete, call complete_objective with concrete evidence."
+                    )
+                    db.add(
+                        AgentTrigger(
+                            agent_id=agent.id,
+                            name=_boot_payload["name"],
+                            type=_boot_payload["type"],
+                            config=_boot_payload["config"],
+                            reason=_boot_payload["reason"],
+                            focus_ref=_boot_payload["focus_ref"],
+                        )
+                    )
+                else:
+                    _fire_at = (_dt.now(_tz.utc) + __import__("datetime").timedelta(seconds=30)).isoformat()
+                    db.add(
+                        AgentTrigger(
+                            agent_id=agent.id,
+                            name="focus_boot",
+                            type="once",
+                            config={"at": _fire_at, "trigger_class": "scheduled_job"},
+                            reason=(
+                                f"Read focus.md for your full mission and task list. Start with this first task: {_boot_task}\n\n"
+                                "After completing it, update the objective ledger with evidence."
+                            ),
+                        )
+                    )
                 await db.flush()
                 logger.info("[HR] Created boot trigger for agent %s: %s", agent.id, _boot_task[:80])
 

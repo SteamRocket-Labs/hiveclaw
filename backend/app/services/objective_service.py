@@ -17,8 +17,8 @@ from app.models.agent import Agent
 from app.models.objective import AgentObjective
 from app.services.focus_state import normalize_focus_task_id, parse_focus_tasks
 
-OPEN_STATUSES = {"open", "blocked"}
-VISIBLE_STATUSES = {"open", "blocked", "completed"}
+OPEN_STATUSES = {"open", "active", "running", "blocked"}
+VISIBLE_STATUSES = {"open", "active", "running", "blocked", "completed"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,7 +55,7 @@ def objective_snapshots_from_focus_text(
 
 def _objective_sort_key(objective: Any) -> tuple[int, int, str]:
     status = str(getattr(objective, "status", "") or "open")
-    status_rank = {"open": 0, "blocked": 1, "completed": 2}.get(status, 3)
+    status_rank = {"active": 0, "running": 1, "open": 2, "blocked": 3, "completed": 4}.get(status, 5)
     priority = int(getattr(objective, "priority", 0) or 0)
     key = str(getattr(objective, "objective_key", "") or getattr(objective, "focus_ref", "") or "")
     return (status_rank, -priority, key)

@@ -84,10 +84,18 @@ def _disable_completed_focus_reconciler(monkeypatch, trigger_daemon):
     async def fake_reconcile_all_completed_focus_triggers():
         return {"agents_checked": 0, "cancelled": 0}
 
+    async def fake_reconcile_all_objective_wake_policies():
+        return {"agents_checked": 0, "created": 0}
+
     monkeypatch.setattr(
         trigger_daemon,
         "reconcile_all_completed_focus_triggers",
         fake_reconcile_all_completed_focus_triggers,
+    )
+    monkeypatch.setattr(
+        trigger_daemon,
+        "reconcile_all_objective_wake_policies",
+        fake_reconcile_all_objective_wake_policies,
     )
 
 

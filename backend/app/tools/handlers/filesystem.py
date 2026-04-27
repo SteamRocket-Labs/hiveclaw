@@ -41,7 +41,7 @@ def list_files(workspace: Path, arguments: dict, tenant_id: str | None = None) -
     description=(
         "Read file contents from the workspace.\n\n"
         "Usage:\n"
-        "- Common files: soul.md (personality), memory/feedback.md or memory/knowledge.md (memory), focus.md (current priorities), "
+        "- Common files: soul.md (personality), memory/feedback.md or memory/knowledge.md (memory), focus.md (objective projection), "
         "tasks.json (tasks), skills/*.md (skill files), enterprise_info/ (shared company info)\n"
         "- For large files, the output may be truncated. Check if the result ends with a truncation marker.\n"
         "- You can read office documents (PDF, Word, Excel) via the separate `read_document` tool.\n"
@@ -81,7 +81,7 @@ def read_file(workspace: Path, arguments: dict, tenant_id: str | None = None) ->
         "- For modifying existing files, prefer `edit_file` instead — it only changes a specific snippet "
         "without rewriting the entire file, which is safer and preserves content you didn't intend to change.\n"
         "- Use `write_file` when creating new files or when the entire file content needs to be replaced.\n"
-        "- Common targets: memory/knowledge.md, focus.md, workspace/*.md (reports/documents), skills/*.md (new skills)\n"
+        "- Common targets: memory/knowledge.md, workspace/*.md (reports/documents), skills/*.md (new skills). Use objective tools instead of editing focus.md for goal state.\n"
         "- Protected paths: soul.md can be written but should only be modified carefully as it defines your personality.\n"
         "- This tool overwrites the file completely — if you only need to change part of a file, use `edit_file`."
     ),

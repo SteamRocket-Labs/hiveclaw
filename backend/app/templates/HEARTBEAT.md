@@ -63,7 +63,7 @@ When seeing a T2 entry with weight `w` and category `cat`, the action is:
 
 <phase_1_observe>
 Read current state (2–3 tool calls max):
-1. `read_file` `focus.md` — current priorities (for context, do not act on).
+1. `list_objectives` — current objective ledger (for context, do not execute business work).
 2. First tick: `read_file` `memory/feedback.md`, `memory/strategies.md`,
    `memory/blocked.md`.
    Subsequent tick: **skip** — previous reads are already in your session

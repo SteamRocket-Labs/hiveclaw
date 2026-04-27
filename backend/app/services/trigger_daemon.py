@@ -30,6 +30,7 @@ from app.models.agent import Agent
 from app.services.focus_state import normalize_focus_task_id
 from app.services.runtime_task_service import create_runtime_task_record, update_runtime_task_record
 from app.services.trigger_reconciler import reconcile_all_completed_focus_triggers
+from app.services.objective_wake_reconciler import reconcile_all_objective_wake_policies
 
 TICK_INTERVAL = 15  # seconds
 DEDUP_WINDOW = 120  # seconds — same agent won't be invoked twice within this window
@@ -87,8 +88,13 @@ async def _create_trigger_runtime_task(
         "trigger_ids": [str(getattr(trigger, "id", "")) for trigger in triggers],
         "trigger_names": trigger_names,
         "trigger_types": [str(getattr(trigger, "type", "")) for trigger in triggers],
-        "objective_session_key": objective_session_key,
-        "focus_refs": [
+            "objective_session_key": objective_session_key,
+            "objective_ids": [
+                str((getattr(trigger, "config", None) or {}).get("objective_id"))
+                for trigger in triggers
+                if (getattr(trigger, "config", None) or {}).get("objective_id")
+            ],
+            "focus_refs": [
             str(getattr(trigger, "focus_ref", ""))
             for trigger in triggers
             if getattr(trigger, "focus_ref", None)
@@ -1110,6 +1116,23 @@ async def _invoke_agent_for_triggers(
             },
         )
 
+        try:
+            from app.services.objective_evaluator import evaluate_trigger_attempt_by_session_key
+
+            async with async_session() as db:
+                await evaluate_trigger_attempt_by_session_key(
+                    db,
+                    agent_id=agent_id,
+                    objective_session_key=objective_session_key,
+                    result_summary=final_reply or "",
+                    metadata_json={
+                        "outcome": trigger_outcome,
+                        "score": trigger_score,
+                    },
+                )
+        except Exception as _objective_eval_err:
+            logger.debug("[TriggerDaemon] Objective evaluation failed (non-fatal): %s", _objective_eval_err)
+
         logger.info(f"⚡ Triggers fired for {agent.name}: {[t.name for t in triggers]}")
 
         # Emit TRIGGER_END hook → T0 log + extraction pipeline
@@ -1155,6 +1178,10 @@ async def _tick():
         await reconcile_all_completed_focus_triggers()
     except Exception as exc:
         logger.debug("[TriggerDaemon] Completed-focus trigger reconciler failed (non-fatal): {}", exc)
+    try:
+        await reconcile_all_objective_wake_policies()
+    except Exception as exc:
+        logger.debug("[TriggerDaemon] Objective wake reconciler failed (non-fatal): {}", exc)
 
     async with async_session() as db:
         result = await db.execute(

@@ -81,12 +81,12 @@ Option A: Poll manually
 
 Option B: Set a timed check (preferred for long tasks)
     → set_trigger(type="once", at="+15m",
-        reason="check_async_task(task_id=xxx). If completed, read result and update focus.md.
+        reason="check_async_task(task_id=xxx). If completed, read result and update/complete the objective with evidence.
                 If still running, set another once trigger 15 min later.")
 
 When done:
     → Process the result
-    → Update focus.md if relevant
+    → Update or complete the objective ledger if relevant
     → cancel_async_task(task_id) if no longer needed
 ```
 
@@ -95,7 +95,7 @@ When done:
 For tasks that take more than a few minutes, pair delegation with a once trigger:
 
 1. `delegate_to_agent(...)` → get task_id
-2. `set_trigger(type="once", at="+15m", reason="Check task_id=xxx result. If done, process and update focus. If running, set another check in 15m. If failed, notify user.")`
+2. `set_trigger(type="once", at="+15m", reason="Check task_id=xxx result. If done, process and call complete_objective with evidence. If running, set another check in 15m. If failed, notify user.")`
 3. Continue your own work — the trigger will wake you up to check
 
 This avoids blocking your current conversation waiting for a worker.
@@ -138,7 +138,7 @@ Then immediately:
 ```
 set_trigger(type="once", at="+15m",
   reason="check_async_task(task_id=<returned>). If completed, read workspace/ai-infra-funding-2026-04-13-to-15.md,
-          summarize top-3 for user, mark task done in focus.md. If running, set another 15m check. If failed, notify user.")
+          summarize top-3 for user, call complete_objective with the file path as evidence. If running, set another 15m check. If failed, notify user.")
 ```
 
 ### Example B — Quick consult
@@ -177,5 +177,5 @@ You get the reply in the current round and relay it to the user.
 - Every `delegate_to_agent` call is paired with a follow-up mechanism (manual check or once trigger) before you move on.
 - Every delegation instruction names Goal, Constraints, Evidence, Output location.
 - You verify with `check_async_task` before claiming the delegated work is done.
-- `focus.md` is updated when delegated work produces follow-on tasks or completions.
+- Objective ledger is updated when delegated work produces follow-on tasks or completions.
 </success_criteria>

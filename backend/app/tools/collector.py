@@ -25,6 +25,7 @@ HANDLER_MODULES: tuple[str, ...] = (
     "app.tools.handlers.filesystem",
     "app.tools.handlers.skills",
     "app.tools.handlers.triggers",
+    "app.tools.handlers.objectives",
     "app.tools.handlers.communication",
     "app.tools.handlers.feishu",
     "app.tools.handlers.mcp",

@@ -73,20 +73,20 @@ conversation. The `reason` is your ONLY context. Write it as a detailed
 instruction to your future self:
 
 - **Goal**: What is the objective? Who requested it?
-- **Action steps**: Exactly what to do (e.g. read focus.md, search web, send message)
+- **Action steps**: Exactly what to do (e.g. list objectives, search web, send message)
 - **Edge cases**: What if the person says "wait"? What if the task is already done?
 - **Follow-up**: What triggers to create/cancel next?
 
-### Focus-Trigger Binding
+### Objective-Trigger Binding
 
-**Rule: focus without trigger is a wish. Focus with trigger is a plan.**
+**Rule: active objective without trigger is a stalled plan. Trigger without objective is only a standalone job.**
 
-1. Before creating a task trigger, add the task to `focus.md` first
-2. Set `focus_ref` to link the trigger to the focus item; `trigger_class` defaults to `objective_task` when `focus_ref` is present
-3. When the task is done, update the canonical `focus.md` row (`- [x] task_id :: task description`) AND `cancel_trigger`; the backend syncs it into the objective ledger
-4. When a trigger produces follow-up work, add it to `focus.md` AND create a new trigger
+1. Before creating a task trigger, create or confirm the objective with `propose_objective` / `list_objectives`.
+2. Bind the trigger using the objective id when available. The focus ref remains a compatibility alias for old focus-bound work.
+3. When the task is done, call `complete_objective` with concrete evidence; cancel obsolete triggers.
+4. When a trigger produces follow-up work, create a new objective candidate with `propose_objective`; active objectives get wake policies through the reconciler.
 
-Format in `focus.md`:
+Legacy projection format in `focus.md`:
 ```
 ## Tasks
 - [ ] task_id :: description
@@ -133,7 +133,7 @@ set_trigger(type="interval",
          "If Qinrui replies 'wait X minutes' -> cancel this interval, set a once "
          "trigger X minutes later, re-create the on_message trigger. "
          "If Qinrui says done -> cancel all related triggers, notify Ray, update "
-         "focus.md to mark task done.")
+         "complete_objective with evidence.")
 ```
 
 ### Example B — Bad `reason` (useless when fired)
@@ -154,8 +154,15 @@ Input: `每天早上帮我扫一下 AI 融资新闻，摘要发给我`
 
 Call:
 ```
-# First add to focus.md
-write_file(path="focus.md", content="<append>\n- [ ] ai_funding_daily :: Daily AI-funding news brief\n</append>")
+# First create/confirm the objective
+propose_objective(
+  objective_key="ai_funding_daily",
+  description="Daily AI-funding news brief",
+  autonomy_class="explicit_user_request",
+  risk_level="medium",
+  wake_policy={"type": "cron", "config": {"expr": "0 9 * * *"}},
+  evidence={"request": "daily brief requested by user"}
+)
 
 set_trigger(type="cron",
   config={"expr": "0 9 * * *", "tz": "Asia/Shanghai"},
@@ -176,9 +183,9 @@ set_trigger(type="cron",
 
 - ❌ **Write a terse `reason`** like `"Remind Qinrui"` or `"Check task"` → when the trigger fires you have zero context. Always include Goal / Action steps / Edge cases / Follow-up.
 - ❌ **Skip `list_triggers` before creating** → you may duplicate an existing trigger and create a double-remind loop.
-- ❌ **Create a task trigger without a matching objective / `focus.md` entry** (except heartbeat/webhook system triggers) → the task disappears when the trigger is cancelled; no objective record means no audit trail.
+- ❌ **Create a task trigger without a matching objective** (except heartbeat/webhook system triggers) → the task disappears when the trigger is cancelled; no objective record means no audit trail.
 - ❌ **Set `cron` expressions without a timezone** → fires in server UTC, drifts from user expectations. Always include `tz` (e.g. `"tz": "Asia/Shanghai"`) or convert to the user's locale explicitly.
-- ❌ **Forget to `cancel_trigger` after task completion** → interval/cron keeps firing, user gets repeated useless messages. Always pair completion in `focus.md` with `cancel_trigger`.
+- ❌ **Forget to `complete_objective` and cancel obsolete triggers after task completion** → interval/cron keeps firing, user gets repeated useless messages.
 - ❌ **Create a trigger that requires channel delivery without referencing the Reply Channel** → when it fires outside the channel you may deliver to the wrong place. Mention Reply Channel in the `reason` so future-you remembers.
 - ❌ **Use `on_message` without scoping** (neither `reply_to_current_sender`, `from_user_identity`, nor `from_agent_id`) → fires on any message, causing noise.
 
@@ -188,9 +195,9 @@ set_trigger(type="cron",
 
 <success_criteria>
 - Every trigger's `reason` contains Goal, Action steps, Edge cases, and Follow-up instructions.
-- Every task trigger is preceded by a `focus.md` entry with a matching `focus_ref`.
-- Every objective/task trigger uses `trigger_class="objective_task"` and binds `focus_ref` or a future objective ledger id.
-- Completed tasks in `focus.md` always have their corresponding trigger cancelled.
+- Every task trigger is preceded by an objective ledger row.
+- Every objective/task trigger uses `trigger_class="objective_task"` and binds the objective id when available.
+- Completed objectives always have evidence and obsolete triggers cancelled.
 - Scheduled cron triggers include an explicit timezone (`tz` field).
 - `list_triggers` is consulted before creating new triggers to avoid duplicates.
 </success_criteria>

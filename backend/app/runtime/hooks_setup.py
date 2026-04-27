@@ -162,6 +162,35 @@ async def _t0_session_close(ctx: HookContext) -> None:
     _t0_cursors[session_key] = len(messages)
 
 
+async def _objective_intake_session_close(ctx: HookContext) -> None:
+    """SESSION_CLOSE → conservative objective intake from user-facing conversations."""
+    agent_id = _parse_agent_id(ctx)
+    if not agent_id:
+        return
+    if (ctx.source or "web") in {"trigger", "heartbeat", "dream", "delegation", "agent"}:
+        return
+    messages = ctx.messages or []
+    if not messages:
+        return
+    try:
+        from app.database import async_session
+        from app.services.objective_intake import intake_session_objectives
+
+        tenant_id = ctx.metadata.get("tenant_id")
+        async with async_session() as db:
+            report = await intake_session_objectives(
+                db,
+                agent_id=agent_id,
+                tenant_id=uuid.UUID(str(tenant_id)) if tenant_id else None,
+                messages=messages,
+                source=ctx.source or "conversation",
+            )
+            if report.get("created_or_updated"):
+                logger.info("[ObjectiveIntake] SESSION_CLOSE agent=%s report=%s", agent_id, report)
+    except Exception as exc:
+        logger.debug("[ObjectiveIntake] SESSION_CLOSE skipped for %s: %s", agent_id, exc)
+
+
 async def _t0_session_idle(ctx: HookContext) -> None:
     """SESSION_IDLE → write incremental T0 log (cursor-based, no duplication).
 
@@ -343,7 +372,10 @@ def register_memory_hooks() -> None:
 
     registry.register_many(_MEMORY_HOOK_REGISTRATIONS)
 
-    logger.info("[Hooks] Memory system hooks registered: %d handlers (3 log + 2 extract + 6 T0 + 1 pending_reply)", 12)
+    logger.info(
+        "[Hooks] Memory/objective hooks registered: %d handlers (3 log + 2 extract + 6 T0 + 1 pending_reply + 1 objective_intake)",
+        13,
+    )
 
 
 def export_memory_hook_plan() -> list[dict[str, object]]:
@@ -362,6 +394,7 @@ _MEMORY_HOOK_HANDLERS = {
     "extract_on_response": _extract_on_response,
     "extract_on_pre_compaction": _extract_on_pre_compaction,
     "t0_session_close": _t0_session_close,
+    "objective_intake_session_close": _objective_intake_session_close,
     "t0_session_idle": _t0_session_idle,
     "t0_trigger_end": _t0_trigger_end,
     "t0_delegation_end": _t0_delegation_end,
@@ -393,6 +426,11 @@ _MEMORY_HOOK_CONFIGURATION = [
         "key": "memory.pre_compaction.extract",
     },
     {"event": HookEvent.SESSION_CLOSE.value, "handler": "t0_session_close", "key": "memory.session_close.t0"},
+    {
+        "event": HookEvent.SESSION_CLOSE.value,
+        "handler": "objective_intake_session_close",
+        "key": "objective_intake.session_close",
+    },
     {"event": HookEvent.SESSION_IDLE.value, "handler": "t0_session_idle", "key": "memory.session_idle.t0"},
     {"event": HookEvent.TRIGGER_END.value, "handler": "t0_trigger_end", "key": "memory.trigger_end.t0"},
     {

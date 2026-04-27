@@ -151,7 +151,7 @@ async def list_sessions(
             .where(
                 ChatSession.agent_id == agent_id,
                 ownership_filter,
-                ChatSession.source_channel.notin_(["agent", "trigger", "heartbeat"]),
+                ChatSession.source_channel.notin_(["agent", "trigger", "task", "heartbeat"]),
             )
             .order_by(ChatSession.last_message_at.desc().nulls_last(), ChatSession.created_at.desc())
         )

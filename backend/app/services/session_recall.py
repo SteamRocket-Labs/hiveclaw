@@ -16,7 +16,7 @@ from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 
 _FALLBACK_HEADLINE = "回顾到与查询相关的历史会话"
-_EXCLUDED_CHANNELS = {"agent", "heartbeat", "trigger", "dream"}
+_EXCLUDED_CHANNELS = {"agent", "heartbeat", "trigger", "task", "dream"}
 _EXCLUDED_ROLES = {"system", "tool_call"}
 _QUERY_SPLIT_RE = re.compile(r"\s+")
 _ARTIFACT_PATH_RE = re.compile(r"\b[\w./-]+\.[A-Za-z0-9]{1,8}\b")

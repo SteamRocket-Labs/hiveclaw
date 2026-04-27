@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable
 from app.tools.governance import EventCallback, GovernanceDependencies, ToolGovernanceContext
 from app.tools.result_envelope import render_tool_error
 from app.tools.runtime import ToolExecutionContext, ToolExecutionRegistry, ToolExecutionRequest
+from app.tools.backends import LocalToolRuntimeBackend, ToolRuntimeBackend
 
 
 RuntimeResolver = Callable[..., Awaitable[ToolExecutionContext] | ToolExecutionContext]
@@ -57,6 +58,11 @@ class ToolRuntimeService:
     fallback_executor: FallbackExecutor
     direct_fallback_executor: FallbackExecutor
     activity_logger: ActivityLogger | None = None
+    backend: ToolRuntimeBackend | None = None
+
+    def __post_init__(self) -> None:
+        if self.backend is None:
+            self.backend = LocalToolRuntimeBackend()
 
     async def execute(
         self,
@@ -112,6 +118,7 @@ class ToolRuntimeService:
                         f"Called tool {tool_name}: {result[:80]}",
                         detail={
                             "tool": tool_name,
+                            "backend": self.backend.name if self.backend else "unknown",
                             "args": {k: (_json.dumps(v, ensure_ascii=False, default=str)[:100] if isinstance(v, (dict, list)) else str(v)[:100]) for k, v in arguments.items()},
                             "result": result[:300],
                         },
@@ -249,24 +256,31 @@ class ToolRuntimeService:
 
         runtime_context = await self.runtime_resolver.resolve(agent_id=agent_id, user_id=resolved_user_id)
         try:
-            direct_result = await _maybe_await(
-                self.registry.try_execute(
-                    ToolExecutionRequest(
-                        tool_name=tool_name,
-                        arguments=arguments,
-                        context=runtime_context,
+            request = ToolExecutionRequest(
+                tool_name=tool_name,
+                arguments=arguments,
+                context=runtime_context,
+            )
+
+            async def _execute_approved_request(inner_request: ToolExecutionRequest) -> str:
+                direct_result = await _maybe_await(self.registry.try_execute(inner_request))
+                if direct_result is not None:
+                    return direct_result
+                return await _maybe_await(
+                    self.direct_fallback_executor(
+                        inner_request.tool_name,
+                        inner_request.arguments,
+                        inner_request.context,
                     )
                 )
-            )
-            if direct_result is not None:
-                result = direct_result
-            else:
-                result = await _maybe_await(self.direct_fallback_executor(tool_name, arguments, runtime_context))
+
+            result = await self.backend.execute(request, _execute_approved_request)
             # Activity log for audit trail (mirrors execute() behavior)
             if self.activity_logger and tool_name not in ("list_files", "read_file", "read_document"):
                 try:
                     detail = {
                         "tool": tool_name,
+                        "backend": self.backend.name if self.backend else "unknown",
                         "result": result[:300],
                         **activity_detail,
                     }
@@ -299,15 +313,18 @@ class ToolRuntimeService:
         context: ToolExecutionContext,
     ) -> str:
         self.ensure_registry()
-        registry_result = await _maybe_await(
-            self.registry.try_execute(
-                ToolExecutionRequest(
-                    tool_name=tool_name,
-                    arguments=arguments,
-                    context=context,
-                )
-            )
+        request = ToolExecutionRequest(
+            tool_name=tool_name,
+            arguments=arguments,
+            context=context,
         )
-        if registry_result is not None:
-            return registry_result
-        return await _maybe_await(self.fallback_executor(tool_name, arguments, context))
+
+        async def _execute_request(inner_request: ToolExecutionRequest) -> str:
+            registry_result = await _maybe_await(self.registry.try_execute(inner_request))
+            if registry_result is not None:
+                return registry_result
+            return await _maybe_await(
+                self.fallback_executor(inner_request.tool_name, inner_request.arguments, inner_request.context)
+            )
+
+        return await self.backend.execute(request, _execute_request)

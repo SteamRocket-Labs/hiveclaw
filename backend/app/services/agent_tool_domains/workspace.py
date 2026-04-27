@@ -375,6 +375,17 @@ def _save_skill(
         declared_tools=tuple(dict.fromkeys(tool.strip() for tool in declared_tools if tool.strip())),
         declared_packs=tuple(dict.fromkeys(pack.strip() for pack in declared_packs if pack.strip())),
     )
+    from app.services.skill_guard import scan_skill_files
+
+    guard_report = scan_skill_files([{"path": "SKILL.md", "content": content}], source="workspace_save_skill")
+    if not guard_report.allowed:
+        categories = ", ".join(finding.category for finding in guard_report.blocking_findings)
+        return _workspace_error(
+            tool_name,
+            "skill_guard_blocked",
+            f"SkillGuard blocked this skill before activation: {categories}",
+            actionable_hint="Remove embedded secrets, remote shell installers, path escapes, or destructive commands.",
+        )
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")

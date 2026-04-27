@@ -59,7 +59,7 @@ async def test_call_llm_delegates_to_runtime_invoker(monkeypatch):
     assert captured["request"].supports_vision is True
     assert captured["request"].memory_session_id == "session-1"
     assert captured["request"].memory_messages == [{"role": "user", "content": "hello"}]
-    assert captured["request"].memory_context == "MEM"
+    assert captured["request"].memory_context == ""
     assert captured["request"].session_context is not None
     assert captured["request"].session_context.session_id == "session-1"
     assert captured["request"].session_context.source == "web"

@@ -45,7 +45,7 @@ async def test_execute_approved_tool_prefers_tool_registry_executor(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_execute_approved_tool_falls_back_to_execute_code(monkeypatch):
+async def test_execute_approved_tool_registry_miss_uses_mcp_passthrough(monkeypatch):
     from app.services.agent_tools import execute_approved_tool
     from app.tools.runtime import ToolExecutionContext
 
@@ -63,65 +63,28 @@ async def test_execute_approved_tool_falls_back_to_execute_code(monkeypatch):
     async def fake_try_execute(_request):
         return None
 
-    async def fake_execute_code(ws, arguments):
-        called["ws"] = ws
+    async def fake_execute_mcp(tool_name, arguments, *, agent_id):
+        called["tool_name"] = tool_name
         called["arguments"] = arguments
-        return "ok"
+        called["agent_id"] = agent_id
+        return "mcp-passthrough"
 
     monkeypatch.setattr("app.tools.resolver.ToolRuntimeResolver.resolve", fake_resolve)
     monkeypatch.setattr("app.services.agent_tools._ensure_tool_execution_registry", lambda: None)
     monkeypatch.setattr("app.services.agent_tools._TOOL_EXECUTION_REGISTRY.try_execute", fake_try_execute)
-    monkeypatch.setattr("app.services.agent_tools._execute_code", fake_execute_code)
+    monkeypatch.setattr("app.services.agent_tools._execute_mcp_tool", fake_execute_mcp)
+    agent_id = uuid4()
 
     result = await execute_approved_tool(
         "execute_code",
         {"language": "python", "code": "print('hi')"},
-        uuid4(),
+        agent_id,
     )
 
-    assert result == "ok"
-    assert called["ws"] == workspace
+    assert result == "mcp-passthrough"
+    assert called["tool_name"] == "execute_code"
     assert called["arguments"] == {"language": "python", "code": "print('hi')"}
-
-
-@pytest.mark.asyncio
-async def test_execute_approved_tool_falls_back_to_run_command(monkeypatch):
-    from app.services.agent_tools import execute_approved_tool
-    from app.tools.runtime import ToolExecutionContext
-
-    workspace = Path("/tmp/test-agent-workspace")
-    called = {}
-
-    async def fake_resolve(self, *, agent_id: object, user_id: object):
-        return ToolExecutionContext(
-            agent_id=agent_id,
-            user_id=user_id,
-            tenant_id="tenant-1",
-            workspace=workspace,
-        )
-
-    async def fake_try_execute(_request):
-        return None
-
-    async def fake_run_command(ws, arguments):
-        called["ws"] = ws
-        called["arguments"] = arguments
-        return "ok-command"
-
-    monkeypatch.setattr("app.tools.resolver.ToolRuntimeResolver.resolve", fake_resolve)
-    monkeypatch.setattr("app.services.agent_tools._ensure_tool_execution_registry", lambda: None)
-    monkeypatch.setattr("app.services.agent_tools._TOOL_EXECUTION_REGISTRY.try_execute", fake_try_execute)
-    monkeypatch.setattr("app.services.agent_tools._run_command", fake_run_command)
-
-    result = await execute_approved_tool(
-        "run_command",
-        {"command": "pwd"},
-        uuid4(),
-    )
-
-    assert result == "ok-command"
-    assert called["ws"] == workspace
-    assert called["arguments"] == {"command": "pwd"}
+    assert called["agent_id"] == agent_id
 
 
 @pytest.mark.asyncio

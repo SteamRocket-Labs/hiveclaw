@@ -80,14 +80,23 @@ class _LazyToolNameSet(Set[str]):
 
 SAFE_TOOLS: Set[str] = _LazyToolNameSet(_STATIC_SAFE_TOOLS, "safe")
 SENSITIVE_TOOLS: Set[str] = _LazyToolNameSet(_STATIC_SENSITIVE_TOOLS, "sensitive")
-_DANGEROUS_COMMAND_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"\brm\s+-[^\s]*r"), "recursive delete"),
-    (re.compile(r"\brm\s+--recursive\b"), "recursive delete"),
-    (re.compile(r"\bDROP\s+(TABLE|DATABASE)\b", re.IGNORECASE), "SQL DROP"),
-    (re.compile(r"\bTRUNCATE\s+(TABLE)?\s*\w", re.IGNORECASE), "SQL TRUNCATE"),
-    (re.compile(r"\bDELETE\s+FROM\b(?!.*\bWHERE\b)", re.IGNORECASE | re.DOTALL), "SQL DELETE without WHERE"),
-    (re.compile(r"\bchmod\s+(-[^\s]*\s+)*(777|666)\b"), "world-writable permissions"),
-    (re.compile(r"\b(chown|sudo)\b"), "privileged ownership or sudo operation"),
+_DANGEROUS_COMMAND_PATTERNS: tuple[tuple[re.Pattern[str], str, str], ...] = (
+    (re.compile(r"\brm\s+-[^\s]*r"), "workspace.command.dangerous", "recursive delete"),
+    (re.compile(r"\brm\s+--recursive\b"), "workspace.command.dangerous", "recursive delete"),
+    (re.compile(r"\bDROP\s+(TABLE|DATABASE)\b", re.IGNORECASE), "workspace.command.dangerous", "SQL DROP"),
+    (re.compile(r"\bTRUNCATE\s+(TABLE)?\s*\w", re.IGNORECASE), "workspace.command.dangerous", "SQL TRUNCATE"),
+    (
+        re.compile(r"\bDELETE\s+FROM\b(?!.*\bWHERE\b)", re.IGNORECASE | re.DOTALL),
+        "workspace.command.dangerous",
+        "SQL DELETE without WHERE",
+    ),
+    (re.compile(r"\bchmod\s+(-[^\s]*\s+)*(777|666)\b"), "workspace.command.dangerous", "world-writable permissions"),
+    (re.compile(r"\b(chown|sudo)\b"), "workspace.command.dangerous", "privileged ownership or sudo operation"),
+    (
+        re.compile(r"(\bcat\s+\.env\b|\bprintenv\b|\benv\s*\|\s*grep\b|\bSECRET[_A-Z0-9]*\b|\bTOKEN[_A-Z0-9]*\b)"),
+        "workspace.command.secret_exfiltration",
+        "secret exfiltration",
+    ),
 )
 
 
@@ -121,40 +130,16 @@ async def _emit_event(event_callback: EventCallback | None, payload: dict[str, A
             await _maybe_await(maybe_result)
 
 
-async def _request_approval_compat(
-    deps: GovernanceDependencies,
-    *,
-    agent_id: uuid.UUID,
-    user_id: uuid.UUID,
-    tool_name: str,
-    arguments: dict[str, Any],
-    capability: str,
-    reason: str | None,
-) -> dict[str, Any]:
-    request_kwargs: dict[str, Any] = {
-        "agent_id": agent_id,
-        "user_id": user_id,
-        "tool_name": tool_name,
-        "arguments": arguments,
-        "capability": capability,
-    }
-    signature = inspect.signature(deps.request_approval)
-    accepts_var_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
-    if reason is not None and ("reason" in signature.parameters or accepts_var_kwargs):
-        request_kwargs["reason"] = reason
-    return await _maybe_await(deps.request_approval(**request_kwargs))
-
-
-def _detect_dangerous_command(tool_name: str, arguments: dict[str, Any]) -> str | None:
+def _detect_dangerous_command(tool_name: str, arguments: dict[str, Any]) -> tuple[str, str] | None:
     if tool_name != "run_command":
         return None
     command = str(arguments.get("command", "")).strip()
     if not command:
         return None
     lowered = command.lower()
-    for pattern, description in _DANGEROUS_COMMAND_PATTERNS:
+    for pattern, capability, description in _DANGEROUS_COMMAND_PATTERNS:
         if pattern.search(lowered):
-            return description
+            return capability, description
     return None
 
 
@@ -316,21 +301,21 @@ async def _run_governance_inner(
     else:
         _escalated_capability = None
 
-    dangerous_reason = _detect_dangerous_command(context.tool_name, context.arguments)
-    if dangerous_reason:
-        _escalated_capability = "workspace.command.dangerous"
+    dangerous_command = _detect_dangerous_command(context.tool_name, context.arguments)
+    dangerous_reason = None
+    if dangerous_command:
+        _escalated_capability, dangerous_reason = dangerous_command
 
     if _escalated_capability:
         try:
-            result_check = await _request_approval_compat(
-                deps,
+            result_check = await _maybe_await(deps.request_approval(
                 agent_id=context.agent_id,
                 user_id=context.user_id,
                 tool_name=context.tool_name,
                 arguments=context.arguments,
                 capability=_escalated_capability,
                 reason=dangerous_reason,
-            )
+            ))
             message = (
                 "⏳ This action requires approval. An approval request has been sent. "
                 f"Please wait for approval before retrying. (Approval ID: {result_check.get('approval_id', 'N/A')})"

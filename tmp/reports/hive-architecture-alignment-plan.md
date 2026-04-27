@@ -1,6 +1,6 @@
 # Hive Agent 架构对齐方案 — 对标 Claude Code 与 Hermes Agent
 
-> **状态**:修订稿 v1.6 · 2026-04-27 · Phase 0R 护栏落地
+> **状态**:修订稿 v1.8 · 2026-04-27 · Phase 0R + H1-H6 第一版可执行 harness trunk 落地
 > **作者**:Claude (Opus 4.7) 草案 · Codex 复核修订 · 与 Codex 报告并列(参见 `agent-session-feishu-merge-review.md`)
 > **目标**:在当前 main 分支基础上,先冻结 Autonomy P0-P6 绿基线,再用 Harness H1-H6 达到全面对标 Claude Code、Hermes Agent 与主流 Harness Engineering 实践的极简、易拓展架构
 
@@ -9,7 +9,7 @@
 ## 0. TL;DR(给只看一眼的人)
 
 1. **不要直接合并 `feature/agent-session-feishu`**——会和 main 上 63 个 commit 的 prompt/cache/memory/eval 演进发生真实冲突
-2. **当前本地验证基线已经从"待修"变成"可用"**——截至本次再校准:backend pytest `1853 passed,7 skipped`;ruff 全绿;frontend `70 passed`;frontend build 通过;Alembic 单 head。原 Phase 0 的"先修 collection/ruff"已不再是待办,应改为 Phase 0R: **冻结当前绿基线并防回退**。
+2. **当前本地验证基线已经从"待修"变成"可用"**——截至本次再校准:backend pytest `1887 passed,7 skipped`;ruff 全绿;frontend `70 passed`;frontend build 通过;Alembic 单 head。原 Phase 0 的"先修 collection/ruff"已不再是待办,应改为 Phase 0R: **冻结当前绿基线并防回退**。
 3. **feature/agent-session-feishu 仍然不能直接合并,但集成策略要变成选择性吸收**——Autonomy P0-P6 已经把 autonomy trigger/objective/runtime/UI 主干向前推进了一大段;后续只能把 feature 的 session、Feishu canonical、tool runtime、architecture tests 拿来对齐,不能用旧 feature 覆盖当前 objective ledger / autonomy BFF。
 4. **自主触发模块已经从"待建设"变成"已成主干,需要护栏"**:
    - Objective Ledger 是目标事实源
@@ -32,7 +32,7 @@
 
 这次修订不是推翻原始诉求,而是把原文中证据强度不够、执行顺序有风险、验证状态过期的地方改成可落地版本。2026-04-27 的 Autonomy P0-P6 实施后,本文档再次校准:自主目标/触发/执行/UI 已经变成当前主干,而不是未来分支计划。
 
-1. **把当前状态从历史结论改为工具复核结论。** 原文写 main 有 18 个失败测试,随后一版修订又写成 pytest collection error + ruff 10 errors。当前最新本机回归已经不同:backend pytest `1853 passed,7 skipped`;backend ruff 全绿;frontend `70 passed`;frontend build 通过;Alembic 单 head。因此原 Phase 0 不再是"先修 baseline",而是 Phase 0R 的"冻结绿基线并防回退"。
+1. **把当前状态从历史结论改为工具复核结论。** 原文写 main 有 18 个失败测试,随后一版修订又写成 pytest collection error + ruff 10 errors。当前最新本机回归已经不同:backend pytest `1887 passed,7 skipped`;backend ruff 全绿;frontend `70 passed`;frontend build 通过;Alembic 单 head。因此原 Phase 0 不再是"先修 baseline",而是 Phase 0R 的"冻结绿基线并防回退"。
 2. **把 Hermes/GEPA 的表述从"核心系统已完整落地"改成"生态方向已确认、核心落地程度需谨慎"。** 已能确认 Hermes 自进化 companion repo 和 release 文档体现了 DSPy/GEPA/benchmark 方向,但本地 Hermes Agent core 未能证明"所有系统提示词都已进入 GEPA 自动优化 loop"。所以这里作为战略目标保留,作为已完成事实降级。
 3. **把 Hive skill distillation 的描述从"固定模板/半人工"修正为"已有保守 distiller,但缺闭环"。** Hive 当前已有 LLM draft、workflow signature、candidate lifecycle、review-only patch 等机制,低估它会导致错误规划;真正缺口是 outcome-driven refine、用户确认 promote、失败样本回灌。
 4. **移除 `git merge -X ours` 作为默认集成命令。** 这个策略在当前冲突类型下风险很高,可能静默覆盖 feature 的结构化治理资产或 main 的 prompt/memory 演进。正确做法是普通 merge 暴露冲突,再逐文件决策。
@@ -44,7 +44,7 @@ P6 之后,这份计划需要从"修坏掉的自主触发模块"改为"保护已�
 
 **当前绿基线**:
 ```text
-backend pytest     1853 passed,7 skipped,4 warnings
+backend pytest     1887 passed,7 skipped,4 warnings
 backend ruff       All checks passed
 frontend test      18 files,70 tests passed
 frontend build     passed
@@ -137,7 +137,7 @@ Autonomy P0-P6 已经是当前完成并验收过的自主目标/触发/执行/UI
 Autonomy P0-P6 的验收命令已经在 10.2 固化,当前记录的绿基线是:
 
 ```text
-backend pytest     1853 passed,7 skipped,4 warnings
+backend pytest     1887 passed,7 skipped,4 warnings
 backend ruff       All checks passed
 frontend test      18 files,70 tests passed
 frontend build     passed
@@ -248,7 +248,7 @@ git rev-list --left-right --count origin/main...origin/feature/agent-session-fei
 
 | 项 | main(本机当前) | feature(Codex 验证) |
 |---|---|---|
-| pytest | **1853 passed,7 skipped,4 warnings** | 1223 passed |
+| pytest | **1887 passed,7 skipped,4 warnings** | 1223 passed |
 | ruff | **All checks passed** | All checks passed |
 | frontend test | **70 passed** | 67 passed |
 | frontend build | passed | passed |
@@ -663,7 +663,7 @@ L5 Surfaces
    cd /Users/rocky243/vc-saas/hiveclaw-main
    git diff --check
    ```
-   - 当前期望:backend `1853 passed,7 skipped`;ruff pass;frontend `70 passed`;build pass;Alembic 单 head。
+   - 当前期望:backend `1887 passed,7 skipped`;ruff pass;frontend `70 passed`;build pass;Alembic 单 head。
 2. 增加/迁移架构测试,但先适配 P6 新事实源
    - 从 feature 迁移 architecture tests 中仍有效的 session/message/tool runtime/prompt-memory 合约。
    - `test_autonomy_trigger_trunk.py` 必须改写为当前 Autonomy P6 合约:目标事实源是 `agent_objectives`,trigger 是 wake policy,attempt/result 是 `RuntimeTask` + artifact,`focus.md` 是 projection。
@@ -949,6 +949,25 @@ backend/tests/architecture/test_session_context_contract.py
 - channel/web/trigger/A2A 都必须产出统一 SessionContext/InvocationRequest
 ```
 
+**2026-04-27 已落地的 H1-H6 第一版可执行 harness trunk**:
+
+- 已迁移并重写 `docs/backend-trunk-governance/`，保留 feature 分支治理结构，但改成当前 Autonomy P0-P6 / Phase 0R 事实源。
+- 新增 `test_tool_runtime_single_entry.py`，固定 direct fallback 不允许复制第一类工具分发。
+- 新增 `test_permission_hardline.py`，固定 approval canonical dependency 与 secret exfiltration approval。
+- 新增 `test_context_memory_boundaries.py`，阻止 websocket 外部 `memory_context` 直灌 prompt。
+- 新增 `test_session_context_contract.py`，固定 internal execution channels 与普通 chat/recall 分离。
+- 新增 `test_legacy_schedule_trunk.py`，固定 legacy schedules API 只能作为 AgentTrigger cron facade。
+- 实现层已移除 `governance._request_approval_compat`，并把 `run_command` secret exfiltration 归为 `workspace.command.secret_exfiltration` approval。
+- `agent_tools` 的 direct fallback 已收窄为 unknown/MCP passthrough；first-class tools 必须走 registry。
+- `app.services.scheduler` 旧 runtime 已删除，`/schedules/{id}/run` 改为排队 one-shot trigger，不再直接 invoke agent。
+- H2 已新增 `ToolRuntimeBackend` contract，默认 local backend；docker backend 未启用时 fail-closed；`SkillGuard` 已覆盖平台 skill 导入、agent workspace 导入、HR 外部 skill 安装和 `save_skill`。
+- H3 已新增 `ContextEngine` / `MemoryProvider` contract，memory snapshot、memory recall、runtime hints、knowledge injection 全部通过 source/fence/context_artifacts 注入和留痕。
+- H4 已新增 `long_task_runtime`，用 RuntimeTask metadata + `runtime_artifacts/long_tasks/` 写入 plan/progress/resume artifact。
+- H5 已新增 `evolution_ledger`，skill distiller 自动 promote 会写 candidate/eval/promotion decision，包含 reward、trace、rollback_ref 和 critical regression gate。
+- H6 已新增 `SessionKey` contract，invoker 会为所有 SessionContext 统一补 `session_key` metadata，objective/runtime/external conversation stable_id 规则一致。
+
+边界说明：这里的 H1-H6 是第一版可执行 harness trunk 和常绿护栏，不等于 H4/H5 的长期效果已经被生产数据证明。长任务 6 小时恢复率、skill draft 接受率、prompt/eval 自动优化收益仍需要真实运行周期继续度量。
+
 **H2-H6 关键设计**:
 
 ```text
@@ -1132,7 +1151,7 @@ Eval/Bakeoff 决定是否 promote 自我进化改动
 ```text
 cd /Users/rocky243/vc-saas/hiveclaw-main/backend
 ./.venv/bin/python -m pytest
-# 1853 passed,7 skipped,4 warnings
+# 1887 passed,7 skipped,4 warnings
 
 ./.venv/bin/python -m ruff check app tests
 # All checks passed
@@ -1217,13 +1236,13 @@ docs/backend-trunk-governance/
 
 ## 11. 下一步(建议直接执行)
 
-建议不再继续抽象讨论。Architecture Phase 0R 的 Autonomy P6 主干保护已落地,下一步进入 Harness H1/H2 的前 3 个动作。H1 负责把 harness 边界测试化,H2 负责把 tool runtime / permission / backend 抽象继续收敛:
+建议不再继续抽象讨论。Architecture Phase 0R 与 Harness H1-H6 的第一版可执行 trunk 已落地，下一步不再继续补同类空壳，而是进入真实子系统迁移和长期运行验证:
 
-1. 移植 feature 的 trunk-governance 文档和非 autonomy 架构测试,逐个适配当前接口。
-2. 新增 H1 harness architecture tests,继续锁住 Permission / ContextEngine / MemoryProvider / SessionContext / KernelDependencies 边界。
-3. 选择性迁移 session identifiers、channel message contracts、Feishu canonical user_id、tool runtime canonical surface。
+1. 选择性迁移 `feature/agent-session-feishu` 中仍有价值的 session identifiers、channel message contracts、Feishu canonical user_id。
+2. 用真实 agent 长任务跑 H4 resume/cancel/missed-policy 验证，收集 artifact 完整率和恢复率。
+3. 用真实 skill distiller 输出跑 H5 evolution ledger，记录 draft 接受率、eval reward 和 rollback 事件。
 
-完成这三步后,再决定是开 `codex/integrate-agent-session-feishu` 做普通 merge,还是按子系统 cherry-pick。判断标准只有一个:不能产生第二套 autonomy trigger 机制,不能回退当前 Autonomy P6 账本闭环。
+完成这三步后,再决定是否开 `codex/integrate-agent-session-feishu` 做普通 merge，还是按 Feishu/session 子系统 cherry-pick。判断标准只有一个:不能产生第二套 autonomy trigger/session/tool/runtime 机制,不能回退当前 Autonomy P6 + Harness H1-H6 账本闭环。
 
 ---
 
@@ -1253,5 +1272,5 @@ docs/backend-trunk-governance/
 
 ---
 
-**文档版本**:v1.6 · 2026-04-27 · Phase 0R 护栏落地
-**下次修订**:Harness H1 架构测试、permission/tool runtime hardening 或 feature 选择性迁移完成后,用真实 diff/test 结果更新
+**文档版本**:v1.8 · 2026-04-27 · Phase 0R + H1-H6 第一版可执行 harness trunk 落地
+**下次修订**:feature session/Feishu 子系统迁移、H4 长任务生产验证或 H5 eval/self-evolution 运行数据完成后,用真实 diff/test 结果更新

@@ -617,6 +617,12 @@ async def _install_external_skill_from_url(
     files = await _fetch_github_directory(owner, repo, path, branch, token=token)
     if not files:
         raise ValueError("No files found at the provided GitHub URL")
+    from app.services.skill_guard import scan_skill_files
+
+    guard_report = scan_skill_files(files, source=url)
+    if not guard_report.allowed:
+        categories = ", ".join(finding.category for finding in guard_report.blocking_findings)
+        raise ValueError(f"SkillGuard blocked external skill before activation: {categories}")
 
     agent_dir = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
     skill_dir = agent_dir / "skills" / folder_name
@@ -635,6 +641,7 @@ async def _install_external_skill_from_url(
         "status": "installed",
         "folder_name": folder_name,
         "files_written": len(written),
+        "skill_guard": guard_report.to_dict(),
         "source_url": url,
     }
 
@@ -681,6 +688,24 @@ async def _install_external_skill_from_skills_ref(
     if not sandbox_skills.exists():
         raise RuntimeError("skills.sh install completed but no skill files were produced")
 
+    from app.services.skill_guard import scan_skill_files
+
+    files_for_guard: list[dict] = []
+    for candidate in sandbox_skills.rglob("*"):
+        if not candidate.is_file():
+            continue
+        rel = candidate.relative_to(sandbox_skills).as_posix()
+        try:
+            content = candidate.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            content = ""
+        files_for_guard.append({"path": rel, "content": content})
+    guard_report = scan_skill_files(files_for_guard, source=f"skills_ref:{ref}")
+    if not guard_report.allowed:
+        shutil.rmtree(exec_home, ignore_errors=True)
+        categories = ", ".join(finding.category for finding in guard_report.blocking_findings)
+        raise RuntimeError(f"SkillGuard blocked external skill before activation: {categories}")
+
     copied: list[str] = []
     agent_skills = agent_dir / "skills"
     agent_skills.mkdir(parents=True, exist_ok=True)
@@ -708,6 +733,7 @@ async def _install_external_skill_from_skills_ref(
         "status": "installed",
         "folder_name": folder_name,
         "files_written": len(copied),
+        "skill_guard": guard_report.to_dict(),
         "source_ref": ref,
     }
 

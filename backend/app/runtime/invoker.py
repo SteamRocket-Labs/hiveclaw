@@ -31,8 +31,10 @@ from app.models.agent import Agent
 from app.models.feature_flag import FeatureFlag
 from app.models.user import User
 from app.runtime.context_budget import ContextBudget, compute_context_budget, resolve_turn_model_route
+from app.runtime.context_engine import DefaultContextEngine
 from app.runtime.prompt_builder import build_frozen_prompt_prefix
 from app.runtime.session import SessionContext
+from app.runtime.session_key import build_session_key, ensure_session_key
 from app.skills import SkillParser, SkillRegistry, WorkspaceSkillLoader
 from app.services.agent_context import build_agent_context, build_agent_runtime_context
 from app.services.agent_tools import CORE_TOOL_NAMES, execute_tool, get_agent_tools_for_llm, get_combined_openai_tools
@@ -66,6 +68,27 @@ _RUNTIME_FLAG_DEFAULTS: dict[str, bool] = {
     "runtime_continuity_v1": False,
     "skill_candidate_loop_v1": True,
 }
+
+
+def _context_engine() -> DefaultContextEngine:
+    return DefaultContextEngine()
+
+
+def _normalize_invocation_session_context(request: AgentInvocationRequest) -> None:
+    if request.session_context is None:
+        return
+    metadata = _session_metadata(request.session_context)
+    key = build_session_key(
+        agent_id=request.agent_id,
+        tenant_id=metadata.get("tenant_id"),
+        source=request.session_context.source,
+        channel=request.session_context.channel,
+        external_conv_id=metadata.get("external_conv_id") or request.session_context.session_id,
+        objective_id=metadata.get("objective_id") or metadata.get("focus_ref"),
+        runtime_task_id=metadata.get("runtime_task_id") or metadata.get("task_id"),
+        trace_id=metadata.get("trace_id"),
+    )
+    ensure_session_key(request.session_context, key)
 
 
 @dataclass(slots=True)
@@ -284,10 +307,24 @@ async def _resolve_memory_context(
             _snapshot_kwargs["budget_profile"] = budget_profile
         runtime_memory_context = await build_memory_snapshot(request.agent_id, tenant_id, **_snapshot_kwargs)
         if runtime_memory_context:
-            parts.append(runtime_memory_context)
+            parts.append(
+                _context_engine().inject(
+                    request.session_context,
+                    kind="memory_snapshot",
+                    source="memory_provider:snapshot",
+                    content=runtime_memory_context,
+                )
+            )
 
     if request.memory_context:
-        parts.append(request.memory_context)
+        parts.append(
+            _context_engine().inject(
+                request.session_context,
+                kind="request_memory_context",
+                source="request.memory_context",
+                content=request.memory_context,
+            )
+        )
 
     return "\n\n".join(parts)
 
@@ -315,7 +352,14 @@ async def _resolve_retrieval_context(
             _runtime_kwargs["budget_profile"] = budget_profile
         runtime_context = await build_agent_runtime_context(request.agent_id, **_runtime_kwargs)
         if runtime_context:
-            parts.append(runtime_context)
+            parts.append(
+                _context_engine().inject(
+                    request.session_context,
+                    kind="agent_runtime_context",
+                    source="runtime_context:agent",
+                    content=runtime_context,
+                )
+            )
 
         _memory_kwargs = {
             "session_id": session_id,
@@ -328,7 +372,14 @@ async def _resolve_retrieval_context(
             _memory_kwargs["budget_profile"] = budget_profile
         memory_recall = await build_memory_context(request.agent_id, tenant_id, **_memory_kwargs)
         if memory_recall:
-            parts.append(memory_recall)
+            parts.append(
+                _context_engine().inject(
+                    request.session_context,
+                    kind="memory_recall",
+                    source="memory_provider:recall",
+                    content=memory_recall,
+                )
+            )
 
     _knowledge_kwargs = {}
     _knowledge_sig = inspect.signature(fetch_relevant_knowledge).parameters
@@ -340,7 +391,14 @@ async def _resolve_retrieval_context(
         _knowledge_kwargs["limit"] = budget_profile.external_limit
     knowledge = await _maybe_await(fetch_relevant_knowledge(query, tenant_id, **_knowledge_kwargs))
     if knowledge:
-        parts.append(knowledge)
+        parts.append(
+            _context_engine().inject(
+                request.session_context,
+                kind="knowledge_relevant",
+                source="knowledge_provider:relevant",
+                content=knowledge,
+            )
+        )
 
     return "\n\n".join(parts)
 
@@ -735,6 +793,8 @@ def _resolve_effective_turn_route(
 
 
 async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult:
+    _normalize_invocation_session_context(request)
+
     routing_config = request.smart_model_routing
     if routing_config is None and request.agent_id is not None and request.fallback_model is not None:
         routing_config = await _resolve_agent_smart_model_routing(request.agent_id)

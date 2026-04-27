@@ -178,10 +178,11 @@ async def test_governance_requests_approval_when_capability_requires_it():
     async def write_audit(**kwargs):
         return None
 
-    async def request_approval(*, agent_id, user_id, tool_name, arguments, capability):
+    async def request_approval(*, agent_id, user_id, tool_name, arguments, capability, reason=None):
         assert tool_name == "send_feishu_message"
         assert arguments["message"] == "hi"
         assert capability == "channel.feishu.message"
+        assert reason is None
         return {"allowed": False, "approval_id": "approval-1"}
 
     message = await run_tool_governance(

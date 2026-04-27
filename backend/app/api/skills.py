@@ -17,6 +17,7 @@ from app.database import async_session, get_db
 from app.models.skill import Skill, SkillFile
 from app.core.security import require_role, get_current_user
 from app.models.user import User
+from app.services.skill_guard import SkillGuardReport, scan_skill_files
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,20 @@ def _parse_skill_md_frontmatter(content: str) -> dict:
         return yaml.safe_load(match.group(1)) or {}
     except Exception:
         return {}
+
+
+def _skill_guard_detail(report: SkillGuardReport) -> dict:
+    return {
+        "message": f"SkillGuard blocked skill package: {len(report.blocking_findings)} blocking finding(s).",
+        "skill_guard": report.to_dict(),
+    }
+
+
+def _guard_skill_files_or_raise(files: list[dict], *, source: str) -> SkillGuardReport:
+    report = scan_skill_files(files, source=source)
+    if not report.allowed:
+        raise HTTPException(400, _skill_guard_detail(report))
+    return report
 
 
 def _parse_github_url(url: str) -> dict | None:
@@ -410,6 +425,8 @@ async def install_from_clawhub(body: ClawhubInstallIn, current_user: User = Depe
     if not files:
         raise HTTPException(404, "No files found in the skill directory")
 
+    guard_report = _guard_skill_files_or_raise(files, source=f"clawhub:{slug}")
+
     # 4. Extract name/description from SKILL.md
     skill_md = next((f for f in files if f["path"].upper() == "SKILL.MD"), None)
     if not skill_md:
@@ -442,6 +459,7 @@ async def install_from_clawhub(body: ClawhubInstallIn, current_user: User = Depe
     result["moderation_summary"] = moderation_summary
     result["has_scripts"] = has_scripts
     result["file_count"] = len(files)
+    result["skill_guard"] = guard_report.to_dict()
     result["source"] = "clawhub"
     return result
 
@@ -461,6 +479,8 @@ async def import_from_url(body: UrlImportIn, current_user: User = Depends(get_cu
     files = await _fetch_github_directory(owner, repo, path, branch, token=token)
     if not files:
         raise HTTPException(404, "No files found at the specified path")
+
+    guard_report = _guard_skill_files_or_raise(files, source=body.url)
 
     # Validate SKILL.md exists
     skill_md = next((f for f in files if f["path"].upper() == "SKILL.MD"), None)
@@ -501,6 +521,7 @@ async def import_from_url(body: UrlImportIn, current_user: User = Depends(get_cu
 
     result["tier"] = tier
     result["file_count"] = len(files)
+    result["skill_guard"] = guard_report.to_dict()
     result["source"] = "url"
     return result
 
@@ -526,6 +547,7 @@ async def preview_url_import(body: UrlImportIn, current_user: User = Depends(get
 
     frontmatter = _parse_skill_md_frontmatter(skill_md["content"])
     tier = classify_portability(skill_md["content"])
+    guard_report = scan_skill_files(files, source=body.url)
 
     return {
         "name": frontmatter.get("name", path.rstrip("/").split("/")[-1] if path else repo),
@@ -534,6 +556,7 @@ async def preview_url_import(body: UrlImportIn, current_user: User = Depends(get
         "files": [{"path": f["path"], "size": len(f["content"])} for f in files],
         "total_size": sum(len(f["content"]) for f in files),
         "has_scripts": any("/" in f["path"] for f in files if f["path"] != "SKILL.md"),
+        "skill_guard": guard_report.to_dict(),
     }
 
 
@@ -612,6 +635,17 @@ async def get_skill(
 @router.post("/")
 async def create_skill(body: SkillCreateIn, _=Depends(require_role("platform_admin"))):
     """Create a custom skill."""
+    files_for_guard = (
+        [{"path": f.path, "content": f.content} for f in body.files]
+        if body.files
+        else [
+            {
+                "path": "SKILL.md",
+                "content": f"---\nname: {body.name}\ndescription: {body.description}\n---\n\n# {body.name}\n\n## Overview\n{body.description}\n",
+            }
+        ]
+    )
+    _guard_skill_files_or_raise(files_for_guard, source="admin_create")
     async with async_session() as db:
         skill = Skill(
             name=body.name,
@@ -650,6 +684,11 @@ class SkillUpdateIn(BaseModel):
 @router.put("/{skill_id}")
 async def update_skill(skill_id: str, body: SkillUpdateIn, _=Depends(require_role("platform_admin"))):
     """Update a skill's metadata and/or files."""
+    if body.files is not None:
+        _guard_skill_files_or_raise(
+            [{"path": f.path, "content": f.content} for f in body.files],
+            source=f"admin_update:{skill_id}",
+        )
     async with async_session() as db:
         result = await db.execute(
             select(Skill).where(Skill.id == skill_id).options(selectinload(Skill.files))

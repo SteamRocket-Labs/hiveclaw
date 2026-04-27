@@ -1,0 +1,25 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+APP_ROOT = PROJECT_ROOT / "app"
+
+
+def test_self_evolution_ledger_contract_exists() -> None:
+    source = (APP_ROOT / "services" / "evolution_ledger.py").read_text(encoding="utf-8")
+
+    assert "evolution_candidate.v1" in source
+    assert "evolution_eval_run.v1" in source
+    assert "evolution_promotion_decision.v1" in source
+    assert "rollback_ref" in source
+    assert "critical_regressions" in source
+
+
+def test_skill_distiller_promotion_records_evolution_ledger() -> None:
+    source = (APP_ROOT / "services" / "skill_distiller.py").read_text(encoding="utf-8")
+
+    assert "record_evolution_candidate" in source
+    assert "record_eval_run" in source
+    assert "record_promotion_decision" in source

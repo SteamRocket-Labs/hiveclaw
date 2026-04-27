@@ -14,6 +14,7 @@ from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.user import User
+from app.services.skill_guard import SkillGuardReport, scan_skill_files
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,6 +50,20 @@ def _safe_path(agent_id: uuid.UUID, rel_path: str) -> Path:
     if not str(full).startswith(str(base.resolve())):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Path traversal not allowed")
     return full
+
+
+def _skill_guard_detail(report: SkillGuardReport) -> dict:
+    return {
+        "message": f"SkillGuard blocked skill package: {len(report.blocking_findings)} blocking finding(s).",
+        "skill_guard": report.to_dict(),
+    }
+
+
+def _guard_skill_files_or_raise(files: list[dict], *, source: str) -> SkillGuardReport:
+    report = scan_skill_files(files, source=source)
+    if not report.allowed:
+        raise HTTPException(status_code=400, detail=_skill_guard_detail(report))
+    return report
 
 
 @router.get("/", response_model=list[FileInfo])
@@ -569,6 +584,7 @@ async def agent_import_from_clawhub(
     tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
     token = await _get_github_token(tenant_id)
     files = await _fetch_github_directory("openclaw", "skills", github_path, "main", token)
+    guard_report = _guard_skill_files_or_raise(files, source=f"agent_clawhub:{slug}")
 
     # 3. Write to agent workspace: skills/<slug>/
     skill_dir = base / "skills" / folder_name
@@ -589,6 +605,7 @@ async def agent_import_from_clawhub(
         "folder_name": folder_name,
         "files_written": len(written),
         "files": written,
+        "skill_guard": guard_report.to_dict(),
     }
 
 
@@ -626,6 +643,7 @@ async def agent_import_from_url(
     files = await _fetch_github_directory(owner, repo, path, branch, token)
     if not files:
         raise HTTPException(404, "No files found")
+    guard_report = _guard_skill_files_or_raise(files, source=body.url)
 
     # Write to agent workspace
     skill_dir = base / "skills" / folder_name
@@ -645,4 +663,5 @@ async def agent_import_from_url(
         "folder_name": folder_name,
         "files_written": len(written),
         "files": written,
+        "skill_guard": guard_report.to_dict(),
     }

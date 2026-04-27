@@ -29,6 +29,9 @@ _agents/
 
 # Internal docs
 docs/
+!docs/
+!docs/backend-trunk-governance/
+!docs/backend-trunk-governance/**
 !backend/docs/
 backend/docs/*
 !backend/docs/autonomous-trigger-system.md

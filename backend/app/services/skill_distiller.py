@@ -23,7 +23,7 @@ from sqlalchemy import select
 from app.database import async_session
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
-from app.services.agent_tool_domains.workspace import _render_skill_markdown, _save_skill
+from app.services.agent_tool_domains.workspace import _normalize_skill_folder_name, _render_skill_markdown, _save_skill
 from app.services.skill_lifecycle import (
     load_skill_candidates,
     record_skill_execution,
@@ -734,6 +734,49 @@ async def run_skill_distillation_cycle(
             last_updated_at=datetime.now(timezone.utc).isoformat(),
         )
         return {"status": "deferred", "processed_sessions": processed, "save_result": save_result}
+
+    from app.services.evolution_ledger import (
+        decide_promotion,
+        record_eval_run,
+        record_evolution_candidate,
+        record_promotion_decision,
+    )
+
+    candidate = record_evolution_candidate(
+        workspace,
+        target_type="skill",
+        target_id=draft.name,
+        diff=rendered,
+        source_attempt_ids=[item.session_id for item in evidence_for_candidate],
+        baseline_version="none",
+        metadata={
+            "workflow_signature": record.workflow_signature,
+            "confidence": draft.confidence,
+            "declared_tools": list(draft.declared_tools),
+            "declared_packs": list(draft.declared_packs),
+        },
+    )
+    eval_run = record_eval_run(
+        workspace,
+        candidate_id=candidate["candidate_id"],
+        dataset="skill_distiller.internal_workflow_repeats",
+        reward=float(draft.confidence),
+        baseline_reward=float(_MIN_CONFIDENCE),
+        passed=True,
+        traces=[item.session_id for item in evidence_for_candidate],
+        critical_regressions=0,
+        metadata={"reason": draft.reason or ""},
+    )
+    promotion_decision = decide_promotion(eval_run, min_reward_delta=0.0)
+    rollback_ref = f"skills/{_normalize_skill_folder_name(draft.name)}/SKILL.md"
+    record_promotion_decision(
+        workspace,
+        candidate_id=candidate["candidate_id"],
+        decision="promoted" if promotion_decision["decision"] == "promote" else "held",
+        reason=promotion_decision["reason"],
+        rollback_ref=rollback_ref,
+        metadata={"save_result": save_result[:500]},
+    )
 
     promoted_at = datetime.now(timezone.utc).isoformat()
     update_skill_candidate_record(

@@ -333,7 +333,7 @@ P2 完成了以下触发连续性增强：
 - trigger daemon 每个 tick 先运行 completed-focus reconciler；heartbeat 末尾保留兼容 wrapper。
 - trigger RuntimeTask metadata 会记录 `objective_session_key`，便于审计。
 
-P2 仍然不新增 `agent_objectives` 表，不改变 `focus.md` 的事实源地位；它只是把当前 focus/objective trigger 的执行连续性补齐。
+P2 当时仍未新增 `agent_objectives` 表；它只补齐 focus/objective trigger 的执行连续性。P3 之后，目标事实源已经切换到 `agent_objectives`，`focus.md` 只保留为 projection。
 
 ## P3 已实现内容
 
@@ -815,7 +815,7 @@ Autonomy P0-P6 是本文件内部的自主目标/触发/执行/UI 实施阶段�
 当前验收基线：
 
 ```text
-backend pytest     1853 passed,7 skipped,4 warnings
+backend pytest     1887 passed,7 skipped,4 warnings
 backend ruff       All checks passed
 frontend test      18 files,70 tests passed
 frontend build     passed
@@ -844,6 +844,48 @@ backend/tests/architecture/test_phase0r_boundaries.py
 ```
 
 本轮同时把 post-approval 工具执行从私有 `_execute_tool_direct` 调整为 `execute_approved_tool` / `ToolRuntimeService.execute_approved`，审计记录包含 `approved_by_user_id` 与 `approval_id`。这属于架构护栏修正，不改变 trigger firing 或 objective lifecycle 行为。
+
+2026-04-27 H1-H6 第一版可执行 harness trunk 已补齐：
+
+```text
+backend/tests/architecture/test_tool_runtime_single_entry.py
+- direct fallback 不再复制第一类工具分发，只保留 unknown/MCP passthrough。
+- ToolExecutionRegistry 请求只由 ToolRuntimeService 组织。
+
+backend/tests/architecture/test_permission_hardline.py
+- governance 移除 approval compat wrapper，直接调用 canonical request_approval。
+- secret exfiltration shell 命令必须升级 approval。
+
+backend/tests/architecture/test_context_memory_boundaries.py
+- websocket 不再把外部 memory_context 直灌 runtime prompt。
+- memory/objective 继续保持分层。
+
+backend/tests/architecture/test_session_context_contract.py
+- trigger/task/heartbeat 等内部 session 不进入普通聊天列表或普通 recall。
+
+backend/tests/architecture/test_legacy_schedule_trunk.py
+- legacy schedules API 只作为 AgentTrigger cron facade。
+- manual schedule run 排队 one-shot trigger，不再直接调用旧 scheduler runtime。
+
+backend/tests/architecture/test_h2_harness_hardening.py
+- ToolRuntimeBackend contract 已存在，默认 local，docker backend 未启用时 fail-closed。
+- 外部 / agent workspace / HR / save_skill skill 导入路径必须经过 SkillGuard。
+
+backend/tests/architecture/test_h3_context_engine_contract.py
+- ContextEngine / MemoryProvider contract 已存在。
+- memory snapshot、memory recall、runtime hints、knowledge injection 都通过 source/fence/context_artifacts 记录。
+
+backend/tests/architecture/test_h4_long_task_runtime_contract.py
+- long task plan/progress/resume artifact 建立在 RuntimeTask metadata 之上。
+
+backend/tests/architecture/test_h5_evolution_ledger_contract.py
+- skill distiller 自动 promote 路径写入 evolution candidate、eval run、promotion decision。
+- promotion decision 包含 rollback_ref 和 critical regression gate。
+
+backend/tests/architecture/test_h6_session_key_contract.py
+- SessionKey 统一 objective、runtime task、external conversation 的 stable_id 映射。
+- invoker 对所有 entrypoint 的 SessionContext 自动补 session_key metadata。
+```
 
 ## P0 边界
 

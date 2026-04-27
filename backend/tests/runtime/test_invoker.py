@@ -94,7 +94,17 @@ async def test_resolve_retrieval_context_appends_runtime_hints(monkeypatch):
 
     result = await _resolve_retrieval_context(request, tenant_id=uuid4())
 
-    assert result == "RUNTIME_HINTS\n\nMEMORY_RECALL\n\nKNOWLEDGE"
+    assert "RUNTIME_HINTS" in result
+    assert "MEMORY_RECALL" in result
+    assert "KNOWLEDGE" in result
+    assert '<context_block kind="agent_runtime_context" source="runtime_context:agent">' in result
+    assert '<context_block kind="memory_recall" source="memory_provider:recall">' in result
+    assert '<context_block kind="knowledge_relevant" source="knowledge_provider:relevant">' in result
+    assert [item["kind"] for item in request.session_context.metadata["context_artifacts"]] == [
+        "agent_runtime_context",
+        "memory_recall",
+        "knowledge_relevant",
+    ]
 
 
 @pytest.mark.asyncio

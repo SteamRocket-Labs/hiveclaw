@@ -218,7 +218,6 @@ async def call_llm(
             supports_vision=supports_vision,
             memory_session_id=session_id,
             memory_messages=runtime_memory_messages,
-            memory_context=memory_context,
             cancel_event=cancel_event,
             session_context=effective_session_context,
             system_prompt_suffix=system_prompt_suffix,

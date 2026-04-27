@@ -1,26 +1,27 @@
-"""Schedule API — CRUD for agent cron jobs."""
+"""Legacy schedules API backed by AgentTrigger cron wake policies."""
 
 import uuid
 from datetime import datetime, timezone
 
+from croniter import croniter
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import check_agent_access, is_agent_creator, is_agent_expired
+from app.core.permissions import check_agent_access, is_agent_creator
 from app.core.security import get_current_user
 from app.database import get_db
-from app.models.schedule import AgentSchedule
+from app.models.activity_log import AgentActivityLog
+from app.models.trigger import AgentTrigger
 from app.models.user import User
-from app.services.scheduler import compute_next_run
 
 router = APIRouter(prefix="/agents/{agent_id}/schedules", tags=["schedules"])
 
 
 class ScheduleCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    instruction: str = Field(default='', max_length=5000)
+    instruction: str = Field(default="", max_length=5000)
     cron_expr: str = Field(min_length=1, max_length=100)
     is_enabled: bool = True
     delivery_target_json: dict | None = None
@@ -52,32 +53,102 @@ class ScheduleOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+def compute_next_run(cron_expr: str, after: datetime | None = None) -> datetime | None:
+    try:
+        base = after or datetime.now(timezone.utc)
+        return croniter(cron_expr, base).get_next(datetime).replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _trigger_config(trigger: AgentTrigger) -> dict:
+    return dict(trigger.config or {})
+
+
+def _created_by_from_config(config: dict) -> uuid.UUID | None:
+    raw = config.get("created_by")
+    if not raw:
+        return None
+    try:
+        return uuid.UUID(str(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def _schedule_out(trigger: AgentTrigger, *, creator_username: str | None = None) -> ScheduleOut:
+    config = _trigger_config(trigger)
+    cron_expr = str(config.get("expr") or "")
+    return ScheduleOut(
+        id=trigger.id,
+        agent_id=trigger.agent_id,
+        name=trigger.name,
+        instruction=trigger.reason or "",
+        cron_expr=cron_expr,
+        is_enabled=bool(trigger.is_enabled),
+        last_run_at=trigger.last_fired_at,
+        next_run_at=compute_next_run(cron_expr, trigger.last_fired_at or trigger.created_at) if trigger.is_enabled else None,
+        run_count=int(trigger.fire_count or 0),
+        created_by=_created_by_from_config(config),
+        creator_username=creator_username,
+        delivery_target_json=trigger.reply_context or config.get("delivery_target_json"),
+        created_at=trigger.created_at,
+    )
+
+
+def _schedule_config(cron_expr: str, *, created_by: uuid.UUID | None = None, delivery_target_json: dict | None = None) -> dict:
+    config = {
+        "expr": cron_expr,
+        "trigger_class": "scheduled_job",
+        "legacy_surface": "schedules_api",
+    }
+    if created_by:
+        config["created_by"] = str(created_by)
+    if delivery_target_json is not None:
+        config["delivery_target_json"] = delivery_target_json
+    return config
+
+
+async def _load_schedule_trigger(db: AsyncSession, agent_id: uuid.UUID, schedule_id: uuid.UUID) -> AgentTrigger:
+    result = await db.execute(
+        select(AgentTrigger).where(
+            AgentTrigger.id == schedule_id,
+            AgentTrigger.agent_id == agent_id,
+            AgentTrigger.type == "cron",
+        )
+    )
+    trigger = result.scalar_one_or_none()
+    if not trigger:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return trigger
+
+
 @router.get("/", response_model=list[ScheduleOut])
 async def list_schedules(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all schedules for an agent."""
+    """List cron wake policies through the legacy schedules surface."""
     await check_agent_access(db, current_user, agent_id)
     result = await db.execute(
-        select(AgentSchedule)
-        .where(AgentSchedule.agent_id == agent_id)
-        .order_by(AgentSchedule.created_at.desc())
+        select(AgentTrigger)
+        .where(AgentTrigger.agent_id == agent_id, AgentTrigger.type == "cron")
+        .order_by(AgentTrigger.created_at.desc())
     )
-    schedules = result.scalars().all()
-    # Batch-load creator usernames
-    creator_ids = {s.created_by for s in schedules if s.created_by}
+    triggers = result.scalars().all()
+    creator_ids = {
+        created_by
+        for trigger in triggers
+        if (created_by := _created_by_from_config(_trigger_config(trigger))) is not None
+    }
     creator_map = {}
     if creator_ids:
         users_result = await db.execute(select(User).where(User.id.in_(creator_ids)))
-        creator_map = {u.id: u.username for u in users_result.scalars().all()}
-    out_list = []
-    for s in schedules:
-        s_out = ScheduleOut.model_validate(s)
-        s_out.creator_username = creator_map.get(s.created_by)
-        out_list.append(s_out)
-    return out_list
+        creator_map = {user.id: user.username for user in users_result.scalars().all()}
+    return [
+        _schedule_out(trigger, creator_username=creator_map.get(_created_by_from_config(_trigger_config(trigger))))
+        for trigger in triggers
+    ]
 
 
 @router.post("/", response_model=ScheduleOut, status_code=status.HTTP_201_CREATED)
@@ -87,29 +158,31 @@ async def create_schedule(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a new schedule for an agent."""
+    """Create a scheduled wake policy as an AgentTrigger."""
     agent, _access = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):
         raise HTTPException(status_code=403, detail="Only creator can manage schedules")
 
-    # Validate cron expression
-    next_run = compute_next_run(data.cron_expr)
-    if not next_run:
+    if not compute_next_run(data.cron_expr):
         raise HTTPException(status_code=400, detail=f"Invalid cron expression: {data.cron_expr}")
 
-    sched = AgentSchedule(
+    trigger = AgentTrigger(
         agent_id=agent_id,
-        name=data.name,
-        instruction=data.instruction,
-        cron_expr=data.cron_expr,
+        name=data.name.strip(),
+        type="cron",
+        config=_schedule_config(
+            data.cron_expr,
+            created_by=current_user.id,
+            delivery_target_json=data.delivery_target_json,
+        ),
+        reason=data.instruction,
+        reply_context=data.delivery_target_json,
         is_enabled=data.is_enabled,
-        delivery_target_json=data.delivery_target_json,
-        next_run_at=next_run if data.is_enabled else None,
-        created_by=current_user.id,
+        cooldown_seconds=60,
     )
-    db.add(sched)
+    db.add(trigger)
     await db.flush()
-    return ScheduleOut.model_validate(sched)
+    return _schedule_out(trigger, creator_username=current_user.username)
 
 
 @router.patch("/{schedule_id}", response_model=ScheduleOut)
@@ -120,31 +193,35 @@ async def update_schedule(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Update a schedule."""
+    """Update a scheduled wake policy."""
     agent, _access = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):
         raise HTTPException(status_code=403, detail="Only creator can manage schedules")
 
-    result = await db.execute(
-        select(AgentSchedule).where(AgentSchedule.id == schedule_id, AgentSchedule.agent_id == agent_id)
-    )
-    sched = result.scalar_one_or_none()
-    if not sched:
-        raise HTTPException(status_code=404, detail="Schedule not found")
-
+    trigger = await _load_schedule_trigger(db, agent_id, schedule_id)
     updates = data.model_dump(exclude_unset=True)
-    for field, value in updates.items():
-        setattr(sched, field, value)
+    if "name" in updates and updates["name"] is not None:
+        trigger.name = str(updates["name"]).strip()
+    if "instruction" in updates and updates["instruction"] is not None:
+        trigger.reason = updates["instruction"]
+    if "is_enabled" in updates and updates["is_enabled"] is not None:
+        trigger.is_enabled = bool(updates["is_enabled"])
+    if "delivery_target_json" in updates:
+        trigger.reply_context = updates["delivery_target_json"]
 
-    # Recompute next_run if cron or enabled changed
-    if "cron_expr" in updates or "is_enabled" in updates:
-        if sched.is_enabled:
-            sched.next_run_at = compute_next_run(sched.cron_expr)
-        else:
-            sched.next_run_at = None
+    config = _trigger_config(trigger)
+    if "cron_expr" in updates and updates["cron_expr"] is not None:
+        if not compute_next_run(updates["cron_expr"]):
+            raise HTTPException(status_code=400, detail=f"Invalid cron expression: {updates['cron_expr']}")
+        config["expr"] = updates["cron_expr"]
+    if "delivery_target_json" in updates:
+        config["delivery_target_json"] = updates["delivery_target_json"]
+    config["trigger_class"] = "scheduled_job"
+    config["legacy_surface"] = "schedules_api"
+    trigger.config = config
 
     await db.flush()
-    return ScheduleOut.model_validate(sched)
+    return _schedule_out(trigger)
 
 
 @router.delete("/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -154,19 +231,13 @@ async def delete_schedule(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a schedule."""
+    """Delete a scheduled wake policy."""
     agent, _access = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):
         raise HTTPException(status_code=403, detail="Only creator can manage schedules")
 
-    result = await db.execute(
-        select(AgentSchedule).where(AgentSchedule.id == schedule_id, AgentSchedule.agent_id == agent_id)
-    )
-    sched = result.scalar_one_or_none()
-    if not sched:
-        raise HTTPException(status_code=404, detail="Schedule not found")
-
-    await db.delete(sched)
+    trigger = await _load_schedule_trigger(db, agent_id, schedule_id)
+    await db.delete(trigger)
     await db.flush()
 
 
@@ -177,29 +248,29 @@ async def trigger_schedule(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Manually trigger a schedule execution."""
-    agent, _access = await check_agent_access(db, current_user, agent_id)
-    if is_agent_expired(agent):
-        raise HTTPException(status_code=403, detail="Agent has expired and cannot be triggered.")
-
-    result = await db.execute(
-        select(AgentSchedule).where(AgentSchedule.id == schedule_id, AgentSchedule.agent_id == agent_id)
+    """Queue a one-shot trigger instead of directly invoking a scheduler runtime."""
+    await check_agent_access(db, current_user, agent_id)
+    trigger = await _load_schedule_trigger(db, agent_id, schedule_id)
+    now = datetime.now(timezone.utc)
+    manual = AgentTrigger(
+        agent_id=agent_id,
+        name=f"manual_{trigger.name[:70]}_{uuid.uuid4().hex[:8]}",
+        type="once",
+        config={
+            "at": now.isoformat(),
+            "trigger_class": "scheduled_job",
+            "source_schedule_id": str(schedule_id),
+            "legacy_surface": "schedules_api_manual_run",
+        },
+        reason=trigger.reason or f"Manual run for schedule {trigger.name}",
+        reply_context=trigger.reply_context,
+        is_enabled=True,
+        max_fires=1,
+        cooldown_seconds=0,
     )
-    sched = result.scalar_one_or_none()
-    if not sched:
-        raise HTTPException(status_code=404, detail="Schedule not found")
-
-    # Fire in background
-    import asyncio
-    from app.services.scheduler import _execute_schedule
-    asyncio.create_task(_execute_schedule(sched.id, sched.agent_id, sched.instruction, sched.delivery_target_json))
-
-    # Update tracking
-    sched.last_run_at = datetime.now(timezone.utc)
-    sched.run_count = (sched.run_count or 0) + 1
+    db.add(manual)
     await db.flush()
-
-    return {"status": "triggered", "schedule_id": str(schedule_id)}
+    return {"status": "queued", "schedule_id": str(schedule_id), "trigger_id": str(manual.id)}
 
 
 @router.get("/{schedule_id}/history")
@@ -209,23 +280,21 @@ async def get_schedule_history(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get execution history for a schedule from activity logs."""
+    """Get execution history for a legacy schedule id from activity logs."""
     await check_agent_access(db, current_user, agent_id)
-    from app.models.activity_log import AgentActivityLog
     result = await db.execute(
         select(AgentActivityLog)
         .where(
             AgentActivityLog.agent_id == agent_id,
-            AgentActivityLog.action_type == "schedule_run",
+            AgentActivityLog.action_type.in_(["schedule_run", "trigger_run"]),
         )
         .order_by(AgentActivityLog.created_at.desc())
     )
     logs = result.scalars().all()
-    # Filter by schedule_id in detail_json
     history = []
     for log in logs:
         detail = log.detail_json or {}
-        if detail.get("schedule_id") == str(schedule_id):
+        if detail.get("schedule_id") == str(schedule_id) or detail.get("source_schedule_id") == str(schedule_id):
             history.append({
                 "id": str(log.id),
                 "created_at": log.created_at.isoformat() if log.created_at else None,

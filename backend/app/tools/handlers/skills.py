@@ -98,6 +98,7 @@ def load_skill(workspace: Path, arguments: dict, tenant_id: str | None = None) -
 async def save_skill(agent_id: uuid.UUID, workspace: Path, arguments: dict) -> str:
     from app.core.execution_context import get_tool_tenant_id
     from app.services.agent_tool_domains.workspace import _save_skill, _workspace_error, check_declared_packs_authorized
+    from app.services.skill_guard import scan_skill_files
 
     declared_packs = tuple(arguments.get("packs", []) or ())
     tenant_id = get_tool_tenant_id()
@@ -112,6 +113,24 @@ async def save_skill(agent_id: uuid.UUID, workspace: Path, arguments: dict) -> s
             "unauthorized_pack",
             reason,
             actionable_hint="Remove the unauthorized pack from `packs`, or request capability access before re-saving.",
+        )
+
+    guard_report = scan_skill_files(
+        [
+            {
+                "path": "SKILL.md",
+                "content": str(arguments.get("instructions", "") or ""),
+            }
+        ],
+        source="save_skill",
+    )
+    if not guard_report.allowed:
+        categories = ", ".join(finding.category for finding in guard_report.blocking_findings)
+        return _workspace_error(
+            "save_skill",
+            "skill_guard_blocked",
+            f"SkillGuard blocked this skill before activation: {categories}",
+            actionable_hint="Remove embedded secrets, remote shell installers, path escapes, or destructive commands.",
         )
 
     return _save_skill(

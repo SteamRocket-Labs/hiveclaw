@@ -31,14 +31,16 @@ async def test_resolve_memory_context_uses_snapshot_only_before_prefix_exists(mo
     )
 
     result = await invoker._resolve_memory_context(request, uuid4())
-    assert result == "SNAPSHOT"
+    assert "SNAPSHOT" in result
+    assert '<context_block kind="memory_snapshot" source="memory_provider:snapshot">' in result
     assert snapshot_calls == ["s-1"]
+    assert request.session_context.metadata["context_artifacts"][0]["kind"] == "memory_snapshot"
 
     # After prefix is cached, memory context should STILL be loaded (not skipped)
     # This ensures the engine's hash-based cache invalidation works correctly.
     request.session_context.prompt_prefix = "CACHED_PREFIX"
     result = await invoker._resolve_memory_context(request, uuid4())
-    assert result == "SNAPSHOT"  # Memory always loaded, even with cached prefix
+    assert "SNAPSHOT" in result  # Memory always loaded, even with cached prefix
     assert len(snapshot_calls) == 2  # Called twice — once per invocation
 
 
@@ -83,9 +85,19 @@ async def test_resolve_retrieval_context_routes_last_user_query(monkeypatch):
     )
 
     result = await invoker._resolve_retrieval_context(request, uuid4())
-    assert result == "RUNTIME_HINTS\n\nMEMORY_RECALL\n\nKNOWLEDGE_RECALL"
+    assert "RUNTIME_HINTS" in result
+    assert "MEMORY_RECALL" in result
+    assert "KNOWLEDGE_RECALL" in result
+    assert '<context_block kind="agent_runtime_context" source="runtime_context:agent">' in result
+    assert '<context_block kind="memory_recall" source="memory_provider:recall">' in result
+    assert '<context_block kind="knowledge_relevant" source="knowledge_provider:relevant">' in result
     assert calls == [
         ("runtime", None),
         ("memory", "latest question"),
         ("knowledge", "latest question"),
+    ]
+    assert [item["kind"] for item in request.session_context.metadata["context_artifacts"]] == [
+        "agent_runtime_context",
+        "memory_recall",
+        "knowledge_relevant",
     ]

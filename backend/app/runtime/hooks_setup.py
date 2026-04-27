@@ -29,6 +29,7 @@ from app.services.session_memory import (
 from app.services.t0_logger import write_t0_log
 
 logger = logging.getLogger(__name__)
+_DEFAULT_HOOK_REGISTRY = hook_registry
 
 
 # ── Logging-only handlers (Phase 0, kept for events without active handler) ──
@@ -334,7 +335,13 @@ def register_memory_hooks() -> None:
     Phase 2: Extractor for RESPONSE_COMPLETE, PRE_COMPACTION; drain on SESSION_CLOSE.
     Phase 3: Pending reply capture for outbound messages.
     """
-    hook_registry.register_many(_MEMORY_HOOK_REGISTRATIONS)
+    from app.runtime import hooks as hooks_mod
+
+    registry = hook_registry
+    if registry is _DEFAULT_HOOK_REGISTRY and hooks_mod.hook_registry is not _DEFAULT_HOOK_REGISTRY:
+        registry = hooks_mod.hook_registry
+
+    registry.register_many(_MEMORY_HOOK_REGISTRATIONS)
 
     logger.info("[Hooks] Memory system hooks registered: %d handlers (3 log + 2 extract + 6 T0 + 1 pending_reply)", 12)
 

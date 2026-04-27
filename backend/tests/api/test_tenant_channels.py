@@ -177,9 +177,20 @@ def test_webhook_challenge_response():
     """Feishu URL verification must echo challenge back."""
     app = FastAPI()
     app.include_router(router)
+    config = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=_TENANT_ID,
+        channel_type="feishu",
+        app_id="cli_company",
+        app_secret="secret",
+        encrypt_key=None,
+        verification_token=None,
+        extra_config={},
+        is_active=True,
+    )
 
     async def override_db():
-        yield _FakeDB()
+        yield _FakeDB(config=config)
 
     app.dependency_overrides[get_db] = override_db
     client = TestClient(app, raise_server_exceptions=False)

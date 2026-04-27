@@ -114,7 +114,7 @@ async def update_runtime_task_record(task_id: str, **fields: Any) -> bool:
             status = fields.get("status")
             if status == "running" and task.started_at is None:
                 task.started_at = now
-            if status in {"completed", "failed", "killed"} and task.completed_at is None:
+            if status in {"completed", "failed", "killed", "skipped"} and task.completed_at is None:
                 task.completed_at = now
 
             await db.commit()

@@ -66,6 +66,8 @@ _CROSS_SKILL_ALLOWLIST: set[str] = {
     "import_mcp_server",    # mcp skill tool
     "list_mcp_resources",   # mcp skill tool
     "read_mcp_resource",    # mcp skill tool
+    "feishu_doc_create",    # messaging-guide cross-reference to Feishu Integration
+    "feishu_doc_append",    # messaging-guide cross-reference to Feishu Integration
 }
 
 
@@ -114,6 +116,7 @@ _NON_TOOL_IDENTIFIERS: set[str] = {
     # Trigger config names (not tools)
     "from_agent_id", "from_user_identity", "on_message", "reply_to_current_sender",
     "focus_ref", "interval_min", "fire_on",
+    "blocked_pattern", "trigger_class", "objective_task",
     # Parameter/field names surfaced in tool-reference tables
     "max_tool_rounds", "message_id", "post_id", "task_id",
     "spreadsheet_url", "search", "attachments", "to", "subject", "body", "cc",

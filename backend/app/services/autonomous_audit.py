@@ -13,8 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models.agent import Agent
 from app.models.chat_session import ChatSession
+from app.models.objective import AgentObjective
 from app.models.runtime_task import RuntimeTask
 from app.models.trigger import AgentTrigger
+from app.services import objective_service
 from app.services.focus_state import normalize_focus_task_id, parse_focus_tasks
 
 _SCHEDULED_TRIGGER_TYPES = {"cron", "once", "interval"}
@@ -342,6 +344,11 @@ async def build_autonomous_audit_report(
     for trigger in trigger_result.scalars().all():
         triggers_by_agent.setdefault(trigger.agent_id, []).append(trigger)
 
+    objective_result = await db.execute(select(AgentObjective).where(AgentObjective.agent_id.in_(agent_ids)))
+    objectives_by_agent: dict[uuid.UUID, list[AgentObjective]] = {aid: [] for aid in agent_ids}
+    for objective in objective_result.scalars().all():
+        objectives_by_agent.setdefault(objective.agent_id, []).append(objective)
+
     session_result = await db.execute(
         select(ChatSession).where(
             ChatSession.agent_id.in_(agent_ids),
@@ -362,6 +369,9 @@ async def build_autonomous_audit_report(
     agent_reports: list[dict[str, Any]] = []
     for agent in agents:
         focus_text, focus_error = _read_focus_text(agent.id)
+        if objectives_by_agent.get(agent.id):
+            focus_text = objective_service.render_focus_projection(objectives_by_agent[agent.id])
+            focus_error = None
         per_agent_sessions = session_counts.get(agent.id, {})
         per_agent_runtime = runtime_counts.get(agent.id, {})
         agent_reports.append(audit_agent_autonomy_snapshot(

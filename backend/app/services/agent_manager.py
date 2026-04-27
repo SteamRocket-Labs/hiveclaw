@@ -352,6 +352,12 @@ class AgentManager:
                 ),
                 encoding="utf-8",
             )
+        try:
+            from app.services.objective_service import sync_agent_focus_file_to_objectives
+
+            await sync_agent_focus_file_to_objectives(db, agent, write_projection=True, commit=False)
+        except Exception as objective_err:
+            logger.warning("[AgentManager] Objective ledger bootstrap failed for %s: %s", agent.id, objective_err)
 
         # Customize state.json
         state_path = agent_dir / "state.json"

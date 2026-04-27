@@ -27,6 +27,9 @@ from app.core.events import get_redis
 from app.database import async_session
 from app.models.trigger import AgentTrigger
 from app.models.agent import Agent
+from app.services.focus_state import normalize_focus_task_id
+from app.services.runtime_task_service import create_runtime_task_record, update_runtime_task_record
+from app.services.trigger_reconciler import reconcile_all_completed_focus_triggers
 
 TICK_INTERVAL = 15  # seconds
 DEDUP_WINDOW = 120  # seconds — same agent won't be invoked twice within this window
@@ -40,6 +43,109 @@ _last_invoke: dict[uuid.UUID, datetime] = {}
 
 # Track fire timestamps per agent for hourly rate limiting
 _fire_history: dict[uuid.UUID, list[datetime]] = {}
+
+
+def _trigger_objective_session_key(trigger: AgentTrigger) -> str | None:
+    """Return the stable session key for objective_task triggers."""
+    config = getattr(trigger, "config", None) or {}
+    trigger_class = str(config.get("trigger_class") or "").strip()
+    objective_id = str(config.get("objective_id") or "").strip()
+    focus_ref = str(getattr(trigger, "focus_ref", None) or "").strip()
+
+    if trigger_class and trigger_class != "objective_task":
+        return None
+
+    if not trigger_class and not (objective_id or focus_ref):
+        return None
+
+    if objective_id:
+        return f"objective:{objective_id}"
+
+    if focus_ref:
+        return f"objective:focus:{normalize_focus_task_id(focus_ref)}"
+
+    return None
+
+
+def _objective_session_title(objective_session_key: str, trigger_names: list[str]) -> str:
+    key_label = objective_session_key.removeprefix("objective:")
+    trigger_label = ", ".join(name for name in trigger_names if name) or key_label
+    return f"Objective: {key_label} ({trigger_label})"
+
+
+async def _create_trigger_runtime_task(
+    agent_id: uuid.UUID,
+    triggers: list[AgentTrigger],
+    *,
+    objective_session_key: str | None = None,
+) -> str | None:
+    """Create a best-effort RuntimeTask ledger row for a fired trigger batch."""
+    trigger_names = [str(getattr(trigger, "name", "")) for trigger in triggers]
+    metadata = {
+        "source": "trigger_daemon",
+        "agent_id": str(agent_id),
+        "trigger_ids": [str(getattr(trigger, "id", "")) for trigger in triggers],
+        "trigger_names": trigger_names,
+        "trigger_types": [str(getattr(trigger, "type", "")) for trigger in triggers],
+        "objective_session_key": objective_session_key,
+        "focus_refs": [
+            str(getattr(trigger, "focus_ref", ""))
+            for trigger in triggers
+            if getattr(trigger, "focus_ref", None)
+        ],
+    }
+    try:
+        return await create_runtime_task_record(
+            task_id=uuid.uuid4().hex,
+            task_type="trigger",
+            status="running",
+            parent_agent_id=agent_id,
+            prompt=f"Trigger wake: {', '.join(name for name in trigger_names if name) or 'unknown'}",
+            metadata_json=metadata,
+        )
+    except Exception as exc:
+        logger.warning("[TriggerDaemon] Failed to create trigger RuntimeTask for %s: %s", agent_id, exc)
+        return None
+
+
+async def _update_trigger_runtime_task(
+    runtime_task_id: str | None,
+    *,
+    status: str,
+    result_summary: str,
+    session_id: str | None = None,
+    metadata_json: dict | None = None,
+) -> None:
+    if not runtime_task_id:
+        return
+    fields = {
+        "status": status,
+        "result_summary": result_summary[:2000],
+        "metadata_json": metadata_json or {},
+    }
+    if session_id:
+        fields["child_session_id"] = session_id
+    try:
+        await update_runtime_task_record(runtime_task_id, **fields)
+    except Exception as exc:
+        logger.warning("[TriggerDaemon] Failed to update trigger RuntimeTask %s: %s", runtime_task_id, exc)
+
+
+async def _skip_trigger_runtime_task(
+    runtime_task_id: str | None,
+    *,
+    skip_reason: str,
+    result_summary: str,
+    metadata_json: dict | None = None,
+) -> None:
+    metadata = {"skip_reason": skip_reason}
+    metadata.update(metadata_json or {})
+    await _update_trigger_runtime_task(
+        runtime_task_id,
+        status="skipped",
+        result_summary=result_summary,
+        metadata_json=metadata,
+    )
 
 # M-16: Persist dedup state to survive process restarts
 # Use AGENT_DATA_DIR if available, otherwise a restricted temp path
@@ -639,7 +745,13 @@ async def _acquire_trigger_fire_lease(
 
 # ── Agent Invocation ────────────────────────────────────────────────
 
-async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTrigger]):
+async def _invoke_agent_for_triggers(
+    agent_id: uuid.UUID,
+    triggers: list[AgentTrigger],
+    *,
+    runtime_task_id: str | None = None,
+    objective_session_key: str | None = None,
+):
     """Invoke an agent with context from one or more fired triggers.
 
     Creates a Reflection Session and calls the LLM.
@@ -659,8 +771,19 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
             agent = result.scalar_one_or_none()
             if not agent:
                 logger.warning("[TriggerDaemon] Agent %s not found — skipping trigger", agent_id)
+                await _skip_trigger_runtime_task(
+                    runtime_task_id,
+                    skip_reason="agent_not_found",
+                    result_summary=f"Skipped trigger invocation because agent {agent_id} was not found.",
+                )
                 return
             if agent.status in ("expired", "stopped", "error", "archived"):
+                await _skip_trigger_runtime_task(
+                    runtime_task_id,
+                    skip_reason="agent_not_runnable",
+                    result_summary=f"Skipped trigger invocation because agent status is {agent.status}.",
+                    metadata_json={"agent_status": agent.status},
+                )
                 return
 
             # Set execution identity — autonomous agent action
@@ -670,12 +793,23 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
             # Load LLM model
             if not agent.primary_model_id:
                 logger.warning(f"Agent {agent.name} has no LLM model, skipping trigger invocation")
+                await _skip_trigger_runtime_task(
+                    runtime_task_id,
+                    skip_reason="no_model",
+                    result_summary=f"Skipped trigger invocation because agent {agent.name} has no primary model configured.",
+                )
                 return
             result = await db.execute(
                 select(LLMModel).where(LLMModel.id == agent.primary_model_id, LLMModel.tenant_id == agent.tenant_id)
             )
             model = result.scalar_one_or_none()
             if not model:
+                await _skip_trigger_runtime_task(
+                    runtime_task_id,
+                    skip_reason="model_not_found",
+                    result_summary=f"Skipped trigger invocation because model {agent.primary_model_id} was not found.",
+                    metadata_json={"model_id": str(agent.primary_model_id)},
+                )
                 return
 
             # Build trigger context
@@ -712,6 +846,12 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
             # G3: Inject focus.md so agent can track progress during trigger execution
             focus_context = ""
             try:
+                from app.services.objective_service import sync_agent_focus_file_to_objectives
+
+                await sync_agent_focus_file_to_objectives(db, agent, write_projection=False, commit=False)
+            except Exception as _objective_sync_err:
+                logger.debug("[TriggerDaemon] Failed to sync objective ledger before trigger context: {}", _objective_sync_err)
+            try:
                 from app.config import get_settings as _get_settings
                 _settings = _get_settings()
                 for _base in [
@@ -736,26 +876,61 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
                 "\n==========================="
             )
 
-            # Create Reflection Session
-            title = f"🤖 Reflection: {', '.join(trigger_names)}"
+            # Create or reuse Reflection Session.
+            # Objective tasks get a stable session so each objective has durable continuity.
+            title = (
+                _objective_session_title(objective_session_key, trigger_names)
+                if objective_session_key
+                else f"🤖 Reflection: {', '.join(trigger_names)}"
+            )
             # Find agent's participant
             result = await db.execute(
                 select(Participant).where(Participant.type == "agent", Participant.ref_id == agent_id)
             )
             agent_participant = result.scalar_one_or_none()
 
-            session = ChatSession(
-                agent_id=agent_id,
-                user_id=agent.creator_id,
-                participant_id=agent_participant.id if agent_participant else None,
-                source_channel="trigger",
-                title=title[:200],
-            )
-            db.add(session)
-            await db.flush()
+            session = None
+            if objective_session_key:
+                result = await db.execute(
+                    select(ChatSession).where(
+                        ChatSession.agent_id == agent_id,
+                        ChatSession.external_conv_id == objective_session_key,
+                    )
+                )
+                session = result.scalar_one_or_none()
+
+            if not session:
+                session = ChatSession(
+                    agent_id=agent_id,
+                    user_id=agent.creator_id,
+                    participant_id=agent_participant.id if agent_participant else None,
+                    source_channel="trigger",
+                    external_conv_id=objective_session_key,
+                    title=title[:200],
+                )
+                db.add(session)
+                await db.flush()
             session_id = session.id
 
-            memory_messages = [{"role": "user", "content": trigger_context}]
+            prior_messages = []
+            if objective_session_key:
+                result = await db.execute(
+                    select(ChatMessage)
+                    .where(
+                        ChatMessage.agent_id == agent_id,
+                        ChatMessage.conversation_id == str(session_id),
+                        ChatMessage.role.in_(("user", "assistant")),
+                    )
+                    .order_by(ChatMessage.created_at.asc())
+                    .limit(12)
+                )
+                prior_messages = [
+                    {"role": message.role, "content": message.content}
+                    for message in result.scalars().all()
+                    if getattr(message, "content", None)
+                ]
+
+            memory_messages = [*prior_messages, {"role": "user", "content": trigger_context}]
             messages = list(memory_messages)
 
             # Store trigger context as a message in the session
@@ -767,6 +942,7 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
                 user_id=agent.creator_id,
                 participant_id=agent_participant.id if agent_participant else None,
             ))
+            session.last_message_at = datetime.now(timezone.utc)
             await db.commit()
             # Cache participant ID for callbacks
             agent_participant_id = agent_participant.id if agent_participant else None
@@ -879,6 +1055,8 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
 
         # Evolution feedback — close the learning loop for trigger executions (BP-1 fix)
         final_reply = reply or "".join(collected_content)
+        trigger_outcome = "unknown"
+        trigger_score = None
         try:
             from app.services.heartbeat import (
                 _parse_heartbeat_outcome,
@@ -920,6 +1098,18 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
             "triggers": [{"name": t.name, "type": t.type} for t in triggers],
         }, agent_id=agent_id)
 
+        await _update_trigger_runtime_task(
+            runtime_task_id,
+            status="completed",
+            result_summary=(final_reply or "Trigger completed.")[:2000],
+            session_id=str(session_id),
+            metadata_json={
+                "outcome": trigger_outcome,
+                "score": trigger_score,
+                "objective_session_key": objective_session_key,
+            },
+        )
+
         logger.info(f"⚡ Triggers fired for {agent.name}: {[t.name for t in triggers]}")
 
         # Emit TRIGGER_END hook → T0 log + extraction pipeline
@@ -947,6 +1137,12 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
 
     except Exception as e:
         logger.error(f"Failed to invoke agent {agent_id} for triggers: {e}", exc_info=True)
+        await _update_trigger_runtime_task(
+            runtime_task_id,
+            status="failed",
+            result_summary=f"Trigger invocation failed: {str(e)[:500]}",
+            metadata_json={"error": str(e)[:1000]},
+        )
 
 
 # ── Main Tick Loop ──────────────────────────────────────────────────
@@ -954,6 +1150,11 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
 async def _tick():
     """One daemon tick: evaluate all triggers, group by agent, invoke."""
     now = datetime.now(timezone.utc)
+
+    try:
+        await reconcile_all_completed_focus_triggers()
+    except Exception as exc:
+        logger.debug("[TriggerDaemon] Completed-focus trigger reconciler failed (non-fatal): {}", exc)
 
     async with async_session() as db:
         result = await db.execute(
@@ -966,8 +1167,10 @@ async def _tick():
         return
 
 
-    # Evaluate and group fired triggers by agent
-    fired_by_agent: dict[uuid.UUID, list[AgentTrigger]] = {}
+    # Evaluate and group fired triggers by agent + objective session.
+    # Objective-task triggers must not collapse into one invocation when they
+    # represent different goals, because each objective has its own continuity.
+    fired_by_group: dict[tuple[uuid.UUID, str | None], list[AgentTrigger]] = {}
     for trigger in all_triggers:
         # Auto-disable expired triggers
         if trigger.expires_at and now >= trigger.expires_at:
@@ -987,13 +1190,14 @@ async def _tick():
             if not await _acquire_trigger_fire_lease(trigger.id, event_key):
                 logger.debug("[TriggerDaemon] Duplicate fire lease rejected for %s (%s)", trigger.name, event_key)
                 continue
-            fired_by_agent.setdefault(trigger.agent_id, []).append(trigger)
+            objective_session_key = _trigger_objective_session_key(trigger)
+            fired_by_group.setdefault((trigger.agent_id, objective_session_key), []).append(trigger)
         except Exception as e:
             logger.warning(f"Error evaluating trigger {trigger.name}: {e}")
 
     # Invoke each agent for the trigger events that acquired a fire lease.
     # Per-agent try/except so one agent's failure doesn't block others (C-08)
-    for agent_id, agent_triggers in fired_by_agent.items():
+    for (agent_id, objective_session_key), agent_triggers in fired_by_group.items():
         try:
             # ── Immediately update trigger state BEFORE launching async task ──
             try:
@@ -1023,7 +1227,19 @@ async def _tick():
             except Exception as e:
                 logger.warning(f"Failed to pre-update trigger state: {e}")
 
-            asyncio.create_task(_invoke_agent_for_triggers(agent_id, agent_triggers))
+            runtime_task_id = await _create_trigger_runtime_task(
+                agent_id,
+                agent_triggers,
+                objective_session_key=objective_session_key,
+            )
+            asyncio.create_task(
+                _invoke_agent_for_triggers(
+                    agent_id,
+                    agent_triggers,
+                    runtime_task_id=runtime_task_id,
+                    objective_session_key=objective_session_key,
+                )
+            )
         except Exception as _agent_err:
             logger.warning("[TriggerDaemon] Failed to process agent %s: %s", agent_id, _agent_err)
 

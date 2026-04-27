@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 MAX_TRIGGERS_PER_AGENT = 20
 VALID_TRIGGER_TYPES = {"cron", "once", "interval", "poll", "on_message", "webhook"}
+VALID_TRIGGER_CLASSES = {"objective_task", "scheduled_job", "event_wait", "system_maintenance"}
 
 
 def _capture_reply_context() -> dict | None:
@@ -169,6 +170,61 @@ def _validate_trigger_config(tool_name: str, trigger_type: str, config: dict) ->
     return None
 
 
+def _resolve_trigger_class(tool_name: str, arguments: dict, config: dict, focus_ref: str | None) -> tuple[str | None, str | None]:
+    raw_class = (
+        arguments.get("trigger_class")
+        or config.get("trigger_class")
+        or config.get("trigger_kind")
+        or config.get("kind")
+    )
+    objective_id = str(arguments.get("objective_id") or config.get("objective_id") or "").strip()
+    trigger_class = str(raw_class or "").strip()
+    if not trigger_class:
+        if not (focus_ref or objective_id):
+            return None, None
+        trigger_class = "objective_task"
+    if trigger_class not in VALID_TRIGGER_CLASSES:
+        return None, _trigger_error(
+            tool_name,
+            "bad_arguments",
+            f"Invalid trigger_class '{trigger_class}'. Valid values: {', '.join(sorted(VALID_TRIGGER_CLASSES))}.",
+            actionable_hint="Use objective_task, scheduled_job, event_wait, or system_maintenance.",
+        )
+
+    if trigger_class == "objective_task" and not (focus_ref or objective_id):
+        return None, _trigger_error(
+            tool_name,
+            "bad_arguments",
+            "trigger_class='objective_task' requires focus_ref or config.objective_id.",
+            actionable_hint="Bind the objective trigger to a focus.md checklist id via focus_ref, or pass config.objective_id once the objective ledger exists.",
+        )
+    config["trigger_class"] = trigger_class
+    if objective_id:
+        config["objective_id"] = objective_id
+    return trigger_class, None
+
+
+async def _bind_objective_for_trigger(db, agent, config: dict, focus_ref: str | None, reason: str) -> bool:
+    if str(config.get("trigger_class") or "").strip() != "objective_task":
+        return False
+    from app.services.objective_service import ensure_objective_for_trigger
+
+    objective = await ensure_objective_for_trigger(
+        db,
+        agent,
+        focus_ref=str(focus_ref).strip() if focus_ref else None,
+        description=reason,
+        objective_id=str(config.get("objective_id") or "").strip() or None,
+    )
+    if not objective:
+        return False
+    objective_id = str(objective.id)
+    if config.get("objective_id") == objective_id:
+        return False
+    config["objective_id"] = objective_id
+    return True
+
+
 async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
     """Create a new trigger for the agent."""
     from app.models.trigger import AgentTrigger
@@ -194,6 +250,9 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
     validation_error = _validate_trigger_config("set_trigger", ttype, config)
     if validation_error:
         return validation_error
+    _trigger_class, binding_error = _resolve_trigger_class("set_trigger", arguments, config, focus_ref)
+    if binding_error:
+        return binding_error
     if ttype == "on_message":
         if config.get("reply_to_current_sender"):
             config.pop("from_user_name", None)
@@ -269,6 +328,13 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                         "not_configured",
                         "reply_to_current_sender requires a live channel conversation with a persisted reply target.",
                     )
+                await _bind_objective_for_trigger(
+                    db,
+                    _agent_obj or type("AgentRef", (), {"id": agent_id, "tenant_id": None})(),
+                    config,
+                    focus_ref,
+                    reason,
+                )
                 existing.type = ttype
                 existing.config = config
                 existing.reason = reason
@@ -287,6 +353,13 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                     "not_configured",
                     "reply_to_current_sender requires a live channel conversation with a persisted reply target.",
                 )
+            await _bind_objective_for_trigger(
+                db,
+                _agent_obj or type("AgentRef", (), {"id": agent_id, "tenant_id": None})(),
+                config,
+                focus_ref,
+                reason,
+            )
 
             trigger = AgentTrigger(
                 agent_id=agent_id,
@@ -333,12 +406,24 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
 
     new_config = arguments.get("config")
     new_reason = arguments.get("reason")
+    if "focus_ref" in arguments:
+        new_focus_ref = arguments.get("focus_ref")
+    elif "agenda_ref" in arguments:
+        new_focus_ref = arguments.get("agenda_ref")
+    else:
+        new_focus_ref = None
 
-    if new_config is None and new_reason is None:
+    if (
+        new_config is None
+        and new_reason is None
+        and new_focus_ref is None
+        and arguments.get("trigger_class") is None
+        and arguments.get("objective_id") is None
+    ):
         return _trigger_error(
             "update_trigger",
             "bad_arguments",
-            "Provide at least one of 'config' or 'reason' to update.",
+            "Provide at least one of 'config', 'reason', 'focus_ref', or 'trigger_class' to update.",
         )
 
     try:
@@ -354,13 +439,55 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                 return _trigger_error("update_trigger", "not_found", f"Trigger '{name}' not found.")
 
             changes = []
+            final_config = dict(trigger.config or {})
+            final_focus_ref = getattr(trigger, "focus_ref", None)
             if new_config is not None:
                 validation_error = _validate_trigger_config("update_trigger", trigger.type, new_config)
                 if validation_error:
                     return validation_error
+                final_config = dict(new_config)
+            if arguments.get("trigger_class") is not None:
+                final_config["trigger_class"] = arguments.get("trigger_class")
+            if arguments.get("objective_id") is not None:
+                final_config["objective_id"] = arguments.get("objective_id")
+            if new_focus_ref is not None:
+                final_focus_ref = str(new_focus_ref).strip() or None
+
+            _trigger_class, binding_error = _resolve_trigger_class(
+                "update_trigger",
+                arguments,
+                final_config,
+                final_focus_ref,
+            )
+            if binding_error:
+                return binding_error
+
+            objective_bound = False
+            if _trigger_class == "objective_task":
+                from app.models.agent import Agent as _AgentModel
+
+                agent_result = await db.execute(select(_AgentModel).where(_AgentModel.id == agent_id))
+                agent_obj = agent_result.scalar_one_or_none()
+                objective_bound = await _bind_objective_for_trigger(
+                    db,
+                    agent_obj or type("AgentRef", (), {"id": agent_id, "tenant_id": None})(),
+                    final_config,
+                    final_focus_ref,
+                    new_reason or trigger.reason,
+                )
+
+            if (
+                new_config is not None
+                or arguments.get("trigger_class") is not None
+                or arguments.get("objective_id") is not None
+                or objective_bound
+            ):
                 old_config = trigger.config
-                trigger.config = new_config
-                changes.append(f"config: {old_config} → {new_config}")
+                trigger.config = final_config
+                changes.append(f"config: {old_config} → {final_config}")
+            if new_focus_ref is not None:
+                trigger.focus_ref = final_focus_ref
+                changes.append(f"focus_ref: {final_focus_ref or '(cleared)'}")
             if new_reason is not None:
                 trigger.reason = new_reason
                 changes.append("reason updated")
@@ -428,6 +555,8 @@ async def _handle_cancel_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
 
 async def _handle_list_triggers(agent_id: uuid.UUID) -> str:
     """List all active triggers for the agent."""
+    import app.services.autonomous_audit as autonomous_audit
+    from app.models.agent import Agent
     from app.models.trigger import AgentTrigger
 
     try:
@@ -438,16 +567,54 @@ async def _handle_list_triggers(agent_id: uuid.UUID) -> str:
                 ).order_by(AgentTrigger.created_at.desc())
             )
             triggers = result.scalars().all()
+            agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+            agent = agent_result.scalar_one_or_none()
 
+        lines = []
         if not triggers:
-            return "No triggers found. Use set_trigger to create one."
-
-        lines = ["| Name | Type | Config | Reason | Status | Fires |", "|------|------|--------|--------|--------|-------|"]
+            lines.append("No triggers found. Use set_trigger to create one.")
+        else:
+            lines.extend([
+                "| Name | Type | Config | Reason | Status | Fires |",
+                "|------|------|--------|--------|--------|-------|",
+            ])
         for t in triggers:
             status = "✅ active" if t.is_enabled else "⏸ disabled"
             config_str = str(t.config)[:50]
             reason_str = t.reason[:40] if t.reason else ""
             lines.append(f"| {t.name} | {t.type} | {config_str} | {reason_str} | {status} | {t.fire_count} |")
+
+        if agent is not None:
+            focus_text, focus_error = autonomous_audit._read_focus_text(agent_id)
+            report = autonomous_audit.audit_agent_autonomy_snapshot(
+                agent=agent,
+                focus_text=focus_text,
+                triggers=list(triggers),
+                focus_read_error=focus_error,
+            )
+            findings = report.get("findings", [])
+            if findings:
+                lines.extend([
+                    "",
+                    "## Trigger Diagnostics",
+                    "| Severity | Category | Focus | Trigger | Recommendation |",
+                    "|----------|----------|-------|---------|----------------|",
+                ])
+                trigger_names_by_id = {str(t.id): t.name for t in triggers}
+                for finding in findings[:20]:
+                    trigger_id = finding.get("trigger_id")
+                    trigger_name = trigger_names_by_id.get(str(trigger_id), "") if trigger_id else ""
+                    lines.append(
+                        "| {severity} | {category} | {focus_ref} | {trigger} | {recommendation} |".format(
+                            severity=finding.get("severity", ""),
+                            category=finding.get("category", ""),
+                            focus_ref=finding.get("focus_ref") or "",
+                            trigger=trigger_name,
+                            recommendation=str(finding.get("recommendation", "")).replace("|", "/")[:160],
+                        )
+                    )
+                if len(findings) > 20:
+                    lines.append(f"| info | truncated | | | {len(findings) - 20} more diagnostics omitted |")
 
         return "\n".join(lines)
 

@@ -173,6 +173,7 @@ async def lifespan(app: FastAPI):
         import app.models.refresh_token  # noqa
         import app.models.guard_policy  # noqa
         import app.models.tenant_channel_config  # noqa
+        import app.models.objective  # noqa
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             # Add enum values to channel_type_enum if they don't exist yet (idempotent)
@@ -192,6 +193,19 @@ async def lifespan(app: FastAPI):
         migrate_all_workspaces()
     except Exception as e:
         logger.warning(f"[startup] workspace migration failed (non-fatal): {e}")
+
+    # P3: Backfill canonical focus.md tasks into the durable objective ledger,
+    # then rewrite focus.md as the ledger projection.
+    try:
+        from app.database import async_session as _objective_session
+        from app.services.objective_service import sync_all_focus_files_to_objectives
+
+        async with _objective_session() as _db:
+            objective_report = await sync_all_focus_files_to_objectives(_db)
+            if objective_report.get("created") or objective_report.get("updated"):
+                logger.info("[startup] Objective ledger sync: {}", objective_report)
+    except Exception as e:
+        logger.warning(f"[startup] Objective ledger sync failed (non-fatal): {e}")
 
     # Startup: seed data — each step isolated so one failure doesn't block others
     logger.info("[startup] seeding...")

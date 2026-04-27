@@ -6,16 +6,16 @@ Hive 当前已经具备 heartbeat、trigger、focus.md、evolution files、auto-
 
 当前代码事实：
 
-- `focus.md` 只解析标准格式 `- [ ] task_id :: description`，非标准目标不会进入系统判断。
+- `focus.md` 只解析标准格式 `- [ ] task_id :: description`，非标准目标不会进入 objective ledger。
   参考：`backend/app/services/focus_state.py`
-- trigger 每次触发会创建新的 `source_channel="trigger"` Reflection Session。
+- 普通 scheduled/job trigger 每次触发仍创建新的 `source_channel="trigger"` Reflection Session；`objective_task` trigger 已改为复用稳定 objective session。
   参考：`backend/app/services/trigger_daemon.py`
-- trigger fire 会更新 `fire_count` 和 `last_fired_at`，但当前没有强制写入 `RuntimeTask(task_type="trigger")`。
+- trigger fire 会更新 `fire_count` 和 `last_fired_at`，并写入 `RuntimeTask(task_type="trigger")` 作为执行账本。
   参考：`backend/app/services/trigger_daemon.py`
-- heartbeat 已有持久 session 语义，并会在结束时尝试 auto-cancel 已完成 focus_ref 对应的 trigger。
+- heartbeat 已有持久 session 语义，并写入 `RuntimeTask(task_type="heartbeat")`。
   参考：`backend/app/services/heartbeat.py`
-- `RuntimeTask` 注释中预留了 `heartbeat`、`trigger` 类型，但生产使用主要还是 delegation。
-  参考：`backend/app/models/runtime_task.py`
+- completed focus 自动关闭 trigger 已从 heartbeat 末尾逻辑升级为独立 reconciler，并由 trigger daemon tick 调用。
+  参考：`backend/app/services/trigger_reconciler.py`
 
 ## 对照结论
 
@@ -110,6 +110,7 @@ heartbeat
 objective_task trigger
 - 每 objective 一个稳定 session
 - external_conv_id = objective:{objective_id}
+- 当前兼容 focus_ref：external_conv_id = objective:focus:{normalized_focus_ref}
 
 scheduled_job
 - 每次 run 独立 session
@@ -189,25 +190,54 @@ curl -H "Authorization: Bearer $TOKEN" \
   "https://<railway-domain>/api/admin/autonomous-audit?lookback_hours=24"
 ```
 
-## P1 之后方向
+## P1 已实现内容
 
-P1：
+P1 完成了以下闭环增强：
 
-- trigger / heartbeat 每次执行都写 RuntimeTask。
-- skipped 也必须写 RuntimeTask，包含 `skip_reason`。
-- `objective_task` trigger 必须绑定 objective 或 focus_ref。
-- `list_triggers` 返回 orphan / blocked / stale 警告。
+- trigger fired batch 会创建 `RuntimeTask(task_type="trigger")`。
+- heartbeat execution 会创建 `RuntimeTask(task_type="heartbeat")`。
+- 成功执行写 `status="completed"`，异常写 `status="failed"`。
+- 无 agent、agent 不可运行、无模型、模型不存在、重复 heartbeat lease 等路径写 `status="skipped"` 和 `metadata_json.skip_reason`。
+- `RuntimeTask.status="skipped"` 会设置 `completed_at`，避免跳过任务长期停留在 active 状态。
+- `set_trigger` / `update_trigger` 支持 `trigger_class`。
+- `trigger_class="objective_task"` 必须绑定 `focus_ref` 或 `config.objective_id`。
+- 若提供了 `focus_ref` 或 `objective_id` 但未显式传 `trigger_class`，后台默认按 `objective_task` 处理，兼容旧 focus-bound trigger。
+- `list_triggers` 会附带 Trigger Diagnostics，暴露 orphan、blocked、stale 类问题。
+- heartbeat skill opportunity prompt 明确要求先 `tool_search` + `load_skill`，再决定是否 `save_skill`。
 
-P2：
+P1 仍然复用现有 `runtime_tasks.metadata_json`，不新增表、不做 migration。
 
-- 目标型 trigger 改为稳定 objective session。
-- completed focus 自动 cancel trigger 从 heartbeat 末尾逻辑升级为独立 reconciler。
+## P2 已实现内容
 
-P3：
+P2 完成了以下触发连续性增强：
+
+- `trigger_class="objective_task"` 的 trigger 会生成稳定 objective session key。
+- 若存在 `config.objective_id`，session key 为 `objective:{objective_id}`。
+- 若暂时只有 `focus_ref`，session key 为 `objective:focus:{normalized_focus_ref}`。
+- 历史 trigger 即使没有 `trigger_class`，只要有 `focus_ref` 也会按 objective session 复用。
+- trigger daemon 按 `(agent_id, objective_session_key)` 分组触发；不同 objective 不再混入同一次 LLM invocation。
+- objective trigger 会复用 `chat_sessions.external_conv_id` 对应 session，并把最近 session 历史作为 `memory_messages` 注入。
+- 新增 `trigger_reconciler`，独立负责把 `focus.md` 中已完成任务对应的 enabled trigger 关闭。
+- trigger daemon 每个 tick 先运行 completed-focus reconciler；heartbeat 末尾保留兼容 wrapper。
+- trigger RuntimeTask metadata 会记录 `objective_session_key`，便于审计。
+
+P2 仍然不新增 `agent_objectives` 表，不改变 `focus.md` 的事实源地位；它只是把当前 focus/objective trigger 的执行连续性补齐。
+
+## P3 已实现内容
+
+P3 完成了目标事实源切换：
 
 - 新增 `agent_objectives` 表。
-- `focus.md` 改为 DB objective 的投影。
-- 迁移当前 canonical focus items 到 objective ledger。
+- `focus.md` 改为 `agent_objectives` 的可读投影，投影头包含 `AUTO-GENERATED FROM agent_objectives`。
+- 启动时会读取现有 agent workspace 的 canonical `focus.md` task 行，写入 objective ledger，再重新渲染投影。
+- 新 agent 初始化时会把 blueprint/default focus task 同步到 objective ledger。
+- `set_trigger` / `update_trigger` 对 objective task 会创建或绑定对应 objective，并把 `config.objective_id` 写回 trigger config。
+- trigger daemon 在执行前会把 legacy focus 文件中的 canonical task 同步到 objective ledger，兼容 agent 通过 `write_file/edit_file` 更新 focus 的旧路径。
+- completed focus 自动关闭 trigger 的 reconciler 改为优先读取 objective ledger；文件解析只作为兼容 fallback。
+- autonomous audit 优先使用 objective ledger 渲染出的 focus projection，而不是把文件本身当事实源。
+- 当前 P3 不新增前端 objective UI，不移除 `focus_ref`，也不阻断旧 agent 写 `focus.md`；这些旧入口会被同步进 DB。
+
+## P4 之后方向
 
 P4：
 
@@ -244,7 +274,8 @@ pytest tests/services/test_focus_state.py \
        tests/services/test_autonomous_audit.py \
        tests/api/test_admin_autonomous_audit.py \
        tests/services/test_runtime_task_service.py \
-       tests/services/test_trigger_daemon.py
+       tests/services/test_trigger_daemon.py \
+       tests/services/test_trigger_reconciler.py
 ```
 
 P0 视为完成，当且仅当：

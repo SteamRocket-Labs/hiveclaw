@@ -16,6 +16,7 @@ from app.runtime.context_budget import ContextBudget, compute_context_budget, co
 from app.runtime.context import RuntimeContext
 from app.services.agent_context import build_agent_context
 from app.services.knowledge_inject import fetch_relevant_knowledge
+from app.services.prompt_cache import PROMPT_CACHE_BOUNDARY  # noqa: F401
 
 
 BuildAgentContextFn = Callable[[uuid.UUID | None, str, str, str | None], Awaitable[str]]
@@ -24,7 +25,6 @@ KnowledgeLookupFn = Callable[[str, uuid.UUID | None], Awaitable[str] | str]
 # Re-export the cache boundary marker from the provider-agnostic prompt_cache
 # module. The prompt assembler inserts it between frozen and dynamic sections;
 # apply_cache_hints() splits on it per provider.
-from app.services.prompt_cache import PROMPT_CACHE_BOUNDARY  # noqa: F401
 
 # Default fallbacks when no task-aware budget profile is provided.
 _ACTIVE_PACKS_CHAR_BUDGET = 2000

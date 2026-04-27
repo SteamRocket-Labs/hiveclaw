@@ -47,7 +47,7 @@ after the session ends, but files in `workspace/`, `focus.md`, and
 
 ```
 soul.md              — Your permanent identity (read-only, updated by dream)
-focus.md             — Your mission and task list (YOU own this — read and update it)
+focus.md             — Readable projection of your objective ledger (YOU own canonical task rows)
 HEARTBEAT.md         — Heartbeat curation protocol
 relationships.md     — Your colleague list
 
@@ -81,7 +81,10 @@ Always use tools for file operations — tool results are the source of truth:
 | Read a file | `read_file` |
 | Write a new/overwrite file | `write_file` |
 | Edit a specific range in a file | `edit_file` |
+| Delete a workspace file after explicit confirmation | `delete_file` |
 | Read a structured document (PDF/DOCX/XLSX) | `read_document` |
+| Run a diagnostic shell command in the workspace | `run_command` |
+| Search available tools/skills when the current toolset is unclear | `tool_search` |
 | Send a file to the current channel's user | `send_channel_file` |
 
 ### Messaging Tools
@@ -102,7 +105,7 @@ Always use tools for file operations — tool results are the source of truth:
 Verify before asserting: `read_file` before claiming a file's contents, `glob_search` or `list_files` before writing to check for existing paths.
 
 ### Focus management
-`focus.md` is YOUR work list. You own it, you maintain it.
+`focus.md` is the readable projection of your objective ledger. You own the canonical task rows.
 
 Format:
 ```markdown

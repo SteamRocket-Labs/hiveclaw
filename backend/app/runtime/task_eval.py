@@ -101,7 +101,7 @@ _SCENARIO_SPECS: dict[str, _ScenarioSpec] = {
         benchmark_cases=(
             _BenchmarkCase(
                 query="delegate a bounded research task and require a completed/evidence/blockers summary",
-                prompt_expectations=("Return format", "Completed:", "Evidence:", "Blockers:"),
+                prompt_expectations=("<return_format>", "Completed:", "Evidence:", "Blockers:"),
             ),
         ),
     ),

@@ -26,6 +26,7 @@ from app.kernel.contracts import ExecutionIdentityRef
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
 from app.services.agent_tools import execute_tool
+from app.services.runtime_task_service import create_runtime_task_record, update_runtime_task_record
 
 # Single source of truth: app/templates/HEARTBEAT.md
 # No hardcoded instruction here — read from template file at runtime.
@@ -64,6 +65,61 @@ _t2_mtimes: dict[uuid.UUID, dict[str, float]] = {}
 # every 45 minutes (saves DB queries + string rendering + enables
 # Anthropic prompt cache hits within multi-round ticks).
 _heartbeat_session_ctxs: dict[uuid.UUID, "SessionContext"] = {}
+
+
+async def _create_heartbeat_runtime_task(agent_id: uuid.UUID) -> str | None:
+    try:
+        return await create_runtime_task_record(
+            task_id=uuid.uuid4().hex,
+            task_type="heartbeat",
+            status="running",
+            parent_agent_id=agent_id,
+            prompt="Heartbeat self-evolution tick",
+            metadata_json={"source": "heartbeat", "agent_id": str(agent_id)},
+        )
+    except Exception as exc:
+        logger.warning("[Heartbeat] Failed to create RuntimeTask for {}: {}", agent_id, exc)
+        return None
+
+
+async def _update_heartbeat_runtime_task(
+    runtime_task_id: str | None,
+    *,
+    status: str,
+    result_summary: str,
+    session_id: str | None = None,
+    metadata_json: dict | None = None,
+) -> None:
+    if not runtime_task_id:
+        return
+    fields = {
+        "status": status,
+        "result_summary": result_summary[:2000],
+        "metadata_json": metadata_json or {},
+    }
+    if session_id:
+        fields["child_session_id"] = session_id
+    try:
+        await update_runtime_task_record(runtime_task_id, **fields)
+    except Exception as exc:
+        logger.warning("[Heartbeat] Failed to update RuntimeTask {}: {}", runtime_task_id, exc)
+
+
+async def _skip_heartbeat_runtime_task(
+    runtime_task_id: str | None,
+    *,
+    skip_reason: str,
+    result_summary: str,
+    metadata_json: dict | None = None,
+) -> None:
+    metadata = {"skip_reason": skip_reason}
+    metadata.update(metadata_json or {})
+    await _update_heartbeat_runtime_task(
+        runtime_task_id,
+        status="skipped",
+        result_summary=result_summary,
+        metadata_json=metadata,
+    )
 
 
 def _reset_heartbeat_session(agent_id: uuid.UUID) -> None:
@@ -493,7 +549,7 @@ async def _build_evolution_context(
                     "\n---\n## Skill Creation Opportunity\n"
                     f"You have used these tools repeatedly: {', '.join(frequent_tools)}.\n"
                     "Consider whether the workflow around them is worth saving as a reusable skill:\n"
-                    "1. FIRST call `tool_search` to confirm no existing skill already covers this workflow\n"
+                    "1. FIRST call `tool_search` and `load_skill` to confirm no existing skill already covers this workflow\n"
                     "2. If no matching skill exists, call `save_skill` with a distinctive name/description\n"
                     "3. Include: name, description, reusable step-by-step instructions, verification, and declared tools/packs only when stable\n"
                     "4. A good skill captures the *workflow* (multiple tools in sequence), not a single tool or one-off note\n"
@@ -974,12 +1030,22 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
     Creates a Reflection Session (like trigger_daemon) so tool calls and
     the final reply are persisted and visible in the UI.
     """
+    runtime_task_id: str | None = None
+    heartbeat_session_id: str | None = None
     lease_held = lease_acquired
     if not lease_held:
         lease_held = await _try_acquire_heartbeat_lease_async(agent_id)
         if not lease_held:
             logger.info("[Heartbeat] Skip duplicate in-flight heartbeat for {}", agent_id)
+            runtime_task_id = await _create_heartbeat_runtime_task(agent_id)
+            await _skip_heartbeat_runtime_task(
+                runtime_task_id,
+                skip_reason="duplicate_in_flight",
+                result_summary="Skipped heartbeat because another heartbeat is already in flight.",
+            )
             return
+
+    runtime_task_id = await _create_heartbeat_runtime_task(agent_id)
 
     import json as _json
 
@@ -997,6 +1063,11 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
             if not agent:
                 logger.warning(f"[Heartbeat] Agent {agent_id} not found in DB — skipping")
                 await _touch_last_heartbeat(agent_id)
+                await _skip_heartbeat_runtime_task(
+                    runtime_task_id,
+                    skip_reason="agent_not_found",
+                    result_summary=f"Skipped heartbeat because agent {agent_id} was not found.",
+                )
                 return
 
             # Set execution identity — autonomous heartbeat action
@@ -1008,6 +1079,11 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
             if not model_id:
                 logger.warning(f"[Heartbeat] Agent {agent.name} ({agent_id}) has no model configured — skipping")
                 await _touch_last_heartbeat(agent_id)
+                await _skip_heartbeat_runtime_task(
+                    runtime_task_id,
+                    skip_reason="no_model",
+                    result_summary=f"Skipped heartbeat because agent {agent.name} has no primary or fallback model configured.",
+                )
                 return
 
             model_result = await db.execute(
@@ -1017,6 +1093,12 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
             if not model:
                 logger.warning(f"[Heartbeat] Model {model_id} for agent {agent.name} ({agent_id}) not found — skipping")
                 await _touch_last_heartbeat(agent_id)
+                await _skip_heartbeat_runtime_task(
+                    runtime_task_id,
+                    skip_reason="model_not_found",
+                    result_summary=f"Skipped heartbeat because model {model_id} was not found.",
+                    metadata_json={"model_id": str(model_id)},
+                )
                 return
 
             # Fetch recent activity for evolution context
@@ -1097,6 +1179,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                 await db.flush()
                 session_id = session.id
                 _heartbeat_session_ids[agent_id] = session_id
+                heartbeat_session_id = str(session_id)
 
                 # Save heartbeat instruction as first message
                 db.add(
@@ -1122,6 +1205,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                     return
 
                 session_id = _heartbeat_session_ids[agent_id]
+                heartbeat_session_id = str(session_id)
                 runtime_messages = _heartbeat_contexts[agent_id]
 
                 tick_msg = (
@@ -1399,6 +1483,13 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
 
             score_str = f" score={heartbeat_score}" if heartbeat_score is not None else ""
             logger.info(f"💓 Heartbeat for {agent.name}: {outcome_type}{score_str} — {summary}")
+            await _update_heartbeat_runtime_task(
+                runtime_task_id,
+                status="completed",
+                result_summary=f"Heartbeat [{outcome_type}]: {summary}",
+                session_id=heartbeat_session_id,
+                metadata_json={"outcome": outcome_type, "score": heartbeat_score},
+            )
 
     except Exception as e:
         logger.error(f"Heartbeat error for agent {agent_id}: {e}", exc_info=True)
@@ -1441,66 +1532,23 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
             )
         except Exception as _evo_crash_err:
             logger.debug(f"[Heartbeat] Evolution writeback on crash failed: {_evo_crash_err}")
+        await _update_heartbeat_runtime_task(
+            runtime_task_id,
+            status="failed",
+            result_summary=f"Heartbeat failed: {str(e)[:500]}",
+            session_id=heartbeat_session_id,
+            metadata_json={"error": str(e)[:1000]},
+        )
     finally:
         if lease_held:
             await _release_heartbeat_lease_async(agent_id)
 
 
 async def _auto_cancel_completed_triggers(agent_id: uuid.UUID) -> None:
-    """Disable triggers whose focus_ref items are marked [x] in focus.md.
+    """Backward-compatible wrapper around the trigger reconciler."""
+    from app.services.trigger_reconciler import reconcile_completed_focus_triggers
 
-    Runs at the end of each heartbeat to prevent stale triggers from
-    wasting tokens on completed work.
-    """
-    ws_root = _get_canonical_workspace(agent_id)
-    if not ws_root:
-        return
-
-    # Read focus.md and extract completed items
-    focus_path = ws_root / "focus.md"
-    if not focus_path.exists():
-        return
-    try:
-        focus_text = focus_path.read_text(encoding="utf-8")
-    except Exception as read_err:
-        logger.debug("[Heartbeat] Failed to read focus.md for trigger auto-cancel: {}", read_err)
-        return
-
-    from app.services.focus_state import extract_completed_focus_refs
-
-    completed_refs = extract_completed_focus_refs(focus_text)
-
-    if not completed_refs:
-        return
-
-    # Find and disable matching triggers
-    from app.database import async_session
-    from app.models.trigger import AgentTrigger
-
-    async with async_session() as db:
-        result = await db.execute(
-            select(AgentTrigger).where(
-                AgentTrigger.agent_id == agent_id,
-                AgentTrigger.is_enabled.is_(True),
-                AgentTrigger.focus_ref.isnot(None),
-            )
-        )
-        triggers = result.scalars().all()
-
-        cancelled = 0
-        for trigger in triggers:
-            if trigger.focus_ref and trigger.focus_ref.strip().lower() in completed_refs:
-                trigger.is_enabled = False
-                cancelled += 1
-                logger.info(
-                    "[Heartbeat] Auto-cancelled trigger '{}' (focus_ref '{}' completed) for agent {}",
-                    trigger.name,
-                    trigger.focus_ref,
-                    agent_id,
-                )
-
-        if cancelled > 0:
-            await db.commit()
+    await reconcile_completed_focus_triggers(agent_id)
 
 
 async def _heartbeat_tick():

@@ -384,3 +384,43 @@ async def test_execute_heartbeat_uses_correct_settings(monkeypatch):
     assert request.session_context.session_id is not None, "Heartbeat must have session_id for memory"
     assert request.on_tool_call is not None, "Heartbeat must persist tool calls"
     assert request.execution_identity.identity_type == "agent_bot"
+
+
+@pytest.mark.asyncio
+async def test_execute_heartbeat_marks_runtime_task_skipped_when_no_model(monkeypatch):
+    from app.services import heartbeat
+
+    agent_id = uuid4()
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="No Model Agent",
+        primary_model_id=None,
+        fallback_model_id=None,
+        creator_id=uuid4(),
+        tenant_id=uuid4(),
+    )
+    fake_session = _FakeSession([agent])
+    created = []
+    updates = []
+
+    async def fake_create_runtime_task_record(**kwargs):
+        created.append(kwargs)
+        return "heartbeat-task-1"
+
+    async def fake_update_runtime_task_record(task_id, **fields):
+        updates.append((task_id, fields))
+        return True
+
+    monkeypatch.setattr("app.database.async_session", lambda: fake_session)
+    monkeypatch.setattr(heartbeat, "create_runtime_task_record", fake_create_runtime_task_record)
+    monkeypatch.setattr(heartbeat, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr("app.core.execution_context.set_agent_bot_identity", lambda *a, **kw: None)
+
+    await heartbeat._execute_heartbeat(agent_id, lease_acquired=True)
+
+    assert created[0]["task_type"] == "heartbeat"
+    assert created[0]["status"] == "running"
+    assert created[0]["parent_agent_id"] == agent_id
+    assert updates[-1][0] == "heartbeat-task-1"
+    assert updates[-1][1]["status"] == "skipped"
+    assert updates[-1][1]["metadata_json"]["skip_reason"] == "no_model"

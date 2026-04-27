@@ -82,8 +82,8 @@ instruction to your future self:
 **Rule: focus without trigger is a wish. Focus with trigger is a plan.**
 
 1. Before creating a task trigger, add the task to `focus.md` first
-2. Set `focus_ref` to link the trigger to the focus item
-3. When the task is done, update `focus.md` (`- [x] task_id :: task description`) AND `cancel_trigger`
+2. Set `focus_ref` to link the trigger to the focus item; `trigger_class` defaults to `objective_task` when `focus_ref` is present
+3. When the task is done, update the canonical `focus.md` row (`- [x] task_id :: task description`) AND `cancel_trigger`; the backend syncs it into the objective ledger
 4. When a trigger produces follow-up work, add it to `focus.md` AND create a new trigger
 
 Format in `focus.md`:
@@ -94,6 +94,7 @@ Format in `focus.md`:
 ```
 
 **Exception**: System-level triggers (heartbeat, webhooks for external services) do NOT need a focus item.
+Use `trigger_class="scheduled_job"` for standalone recurring jobs that intentionally have no focus item.
 
 ### Channel-Aware Delivery
 
@@ -158,6 +159,7 @@ write_file(path="focus.md", content="<append>\n- [ ] ai_funding_daily :: Daily A
 
 set_trigger(type="cron",
   config={"expr": "0 9 * * *", "tz": "Asia/Shanghai"},
+  trigger_class="objective_task",
   focus_ref="ai_funding_daily",
   reason="Search for AI-startup funding news published in the last 24h. Write a Chinese "
          "summary (≤300 words) to workspace/ai-news-daily-YYYY-MM-DD.md. Then send the "
@@ -174,7 +176,7 @@ set_trigger(type="cron",
 
 - ❌ **Write a terse `reason`** like `"Remind Qinrui"` or `"Check task"` → when the trigger fires you have zero context. Always include Goal / Action steps / Edge cases / Follow-up.
 - ❌ **Skip `list_triggers` before creating** → you may duplicate an existing trigger and create a double-remind loop.
-- ❌ **Create a task trigger without a matching `focus.md` entry** (except heartbeat/webhook system triggers) → the task disappears when the trigger is cancelled; no record in `focus.md` means no audit trail.
+- ❌ **Create a task trigger without a matching objective / `focus.md` entry** (except heartbeat/webhook system triggers) → the task disappears when the trigger is cancelled; no objective record means no audit trail.
 - ❌ **Set `cron` expressions without a timezone** → fires in server UTC, drifts from user expectations. Always include `tz` (e.g. `"tz": "Asia/Shanghai"`) or convert to the user's locale explicitly.
 - ❌ **Forget to `cancel_trigger` after task completion** → interval/cron keeps firing, user gets repeated useless messages. Always pair completion in `focus.md` with `cancel_trigger`.
 - ❌ **Create a trigger that requires channel delivery without referencing the Reply Channel** → when it fires outside the channel you may deliver to the wrong place. Mention Reply Channel in the `reason` so future-you remembers.
@@ -187,6 +189,7 @@ set_trigger(type="cron",
 <success_criteria>
 - Every trigger's `reason` contains Goal, Action steps, Edge cases, and Follow-up instructions.
 - Every task trigger is preceded by a `focus.md` entry with a matching `focus_ref`.
+- Every objective/task trigger uses `trigger_class="objective_task"` and binds `focus_ref` or a future objective ledger id.
 - Completed tasks in `focus.md` always have their corresponding trigger cancelled.
 - Scheduled cron triggers include an explicit timezone (`tz` field).
 - `list_triggers` is consulted before creating new triggers to avoid duplicates.

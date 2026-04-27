@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 from fastapi import FastAPI
@@ -223,10 +224,6 @@ def test_patch_does_not_close_stale_backend_inline() -> None:
     # But a delayed close MUST have been scheduled
     assert len(close_scheduled) == 1
     reset_memory_backend()
-
-
-# Helper context manager for patching asyncio.create_task at admin module scope
-from contextlib import contextmanager
 
 
 @contextmanager

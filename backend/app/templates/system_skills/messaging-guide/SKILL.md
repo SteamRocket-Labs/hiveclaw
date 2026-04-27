@@ -5,6 +5,9 @@ tools:
   - send_web_message
   - send_channel_message
   - send_channel_file
+  - send_feishu_message
+  - feishu_doc_create
+  - feishu_doc_append
   - upload_image
   - get_current_time
 is_system: true

@@ -16,7 +16,7 @@ The heartbeat curates T2 → T3. The dream refines T3 and promotes patterns to s
 
 ### Using Memory Tools
 - `search_memory(query, scope?)` — Search your long-term memory (T3 files) and past session \
-recall (ChatSession) using token-frequency + character overlap scoring. Use specific phrases; \
+history (ChatSession) using token-frequency + character overlap scoring. Use specific phrases; \
 this is not a query language — no boolean operators, no phrase quoting, no wildcards. Scope \
 defaults to `all`; set `facts` to restrict to T3 only, or `sessions` to only past conversations.
 - `save_memory(category, content)` — **Escape hatch only.** This writes DIRECTLY to T3, \

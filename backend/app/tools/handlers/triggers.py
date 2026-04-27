@@ -44,6 +44,15 @@ from app.tools.decorator import ToolMeta, tool
                 "type": "string",
                 "description": "Optional: identifier of the focus item in focus.md that this trigger relates to (use the checklist identifier, e.g. 'daily_news_check')",
             },
+            "trigger_class": {
+                "type": "string",
+                "enum": ["objective_task", "scheduled_job", "event_wait", "system_maintenance"],
+                "description": "Optional classification. If focus_ref or objective_id is provided and this is omitted, it defaults to objective_task.",
+            },
+            "objective_id": {
+                "type": "string",
+                "description": "Optional future objective ledger id. Use with trigger_class='objective_task' when no focus_ref exists yet.",
+            },
         },
         "required": ["name", "type", "config", "reason"],
     },
@@ -82,6 +91,19 @@ async def set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
             "reason": {
                 "type": "string",
                 "description": "New reason text",
+            },
+            "focus_ref": {
+                "type": "string",
+                "description": "New focus.md checklist identifier to bind this trigger to. Pass an empty string to clear.",
+            },
+            "trigger_class": {
+                "type": "string",
+                "enum": ["objective_task", "scheduled_job", "event_wait", "system_maintenance"],
+                "description": "Optional classification. If focus_ref or objective_id is provided and this is omitted, it defaults to objective_task.",
+            },
+            "objective_id": {
+                "type": "string",
+                "description": "Optional future objective ledger id for objective_task triggers.",
             },
         },
         "required": ["name"],

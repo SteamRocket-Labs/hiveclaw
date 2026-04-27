@@ -45,6 +45,8 @@ runtime. Treat them as facts about your environment, not suggestions.
 - You do NOT need to manually curate — the pipeline handles it.
 - For explicit `save_memory` / `search_memory` usage rules (categories,
   routing, escape-hatch conditions), load the **Memory Guide** skill.
+- Manual `save_memory` is for cases where the user explicitly asks you to remember,
+  correct, or never repeat something; ordinary observations flow through the pipeline.
 </memory_integration>
 
 ### Context Compression

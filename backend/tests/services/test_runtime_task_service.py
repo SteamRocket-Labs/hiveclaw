@@ -67,6 +67,36 @@ class _ReconcileSession:
         self.rollback_calls += 1
 
 
+class _OneTaskResult:
+    def __init__(self, task):
+        self._task = task
+
+    def scalar_one_or_none(self):
+        return self._task
+
+
+class _UpdateSession:
+    def __init__(self, task):
+        self.task = task
+        self.commit_calls = 0
+        self.rollback_calls = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def execute(self, _query):
+        return _OneTaskResult(self.task)
+
+    async def commit(self):
+        self.commit_calls += 1
+
+    async def rollback(self):
+        self.rollback_calls += 1
+
+
 @pytest.mark.asyncio
 async def test_create_runtime_task_record_rolls_back_on_commit_error(monkeypatch):
     from app.services.runtime_task_service import create_runtime_task_record
@@ -167,4 +197,35 @@ async def test_reconcile_orphaned_runtime_tasks_skips_excluded_ids(monkeypatch):
     assert updated == 1
     assert resumable_task.status == "running"
     assert orphaned_task.status == "failed"
+    assert fake_session.commit_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_update_runtime_task_record_marks_skipped_completed(monkeypatch):
+    from app.services.runtime_task_service import update_runtime_task_record
+
+    task = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            "status": "running",
+            "started_at": None,
+            "completed_at": None,
+            "metadata_json": {},
+        },
+    )()
+    fake_session = _UpdateSession(task)
+    monkeypatch.setattr("app.services.runtime_task_service.async_session", lambda: fake_session)
+
+    updated = await update_runtime_task_record(
+        uuid4().hex,
+        status="skipped",
+        result_summary="Skipped: no model configured.",
+        metadata_json={"skip_reason": "no_model"},
+    )
+
+    assert updated is True
+    assert task.status == "skipped"
+    assert task.completed_at is not None
+    assert task.metadata_json["skip_reason"] == "no_model"
     assert fake_session.commit_calls == 1

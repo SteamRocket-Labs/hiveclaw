@@ -132,6 +132,16 @@ async def _get_tool_config(tool_name: str) -> dict:
         return await resolve_tool_config(tool_name, tenant_id)
     except Exception as e:
         logger.debug("Suppressed: %s", e)
+
+    try:
+        from app.models.tool import Tool
+
+        async with async_session() as db:
+            result = await db.execute(select(Tool).where(Tool.name == tool_name))
+            tool = result.scalar_one_or_none()
+            return getattr(tool, "config", None) or {}
+    except Exception as e:
+        logger.debug("Suppressed legacy tool config lookup failure: %s", e)
         return {}
 
 

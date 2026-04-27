@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -188,9 +189,6 @@ async def test_run_skill_distillation_cycle_promotes_high_confidence_candidate(m
 # XML tags, pipeline context, decision matrix, anti-patterns for
 # time-sensitive content, and JSON output contract.
 # ──────────────────────────────────────────────────────────────────────────
-
-import inspect
-
 
 def _extract_system_prompt_literal() -> str:
     """Read the system_prompt literal out of _draft_skill_with_llm source."""

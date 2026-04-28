@@ -31,6 +31,338 @@ const modeToPolicy = (mode: CapabilityPolicyMode) => {
   return { allowed: true, requires_approval: false };
 };
 
+type CapabilityActionMeta = {
+  key: string;
+  capability: string;
+  labelKey: string;
+  descKey: string;
+  fallbackLabel: string;
+  fallbackDesc: string;
+};
+
+const KNOWN_CAPABILITY_ACTIONS: CapabilityActionMeta[] = [
+  {
+    key: 'read_files',
+    capability: 'workspace.file.read',
+    labelKey: 'readFiles',
+    descKey: 'readFilesDesc',
+    fallbackLabel: 'Read Files',
+    fallbackDesc: 'View files in the workspace and knowledge base',
+  },
+  {
+    key: 'write_workspace_files',
+    capability: 'workspace.file.write',
+    labelKey: 'writeFiles',
+    descKey: 'writeFilesDesc',
+    fallbackLabel: 'Write Files',
+    fallbackDesc: 'Create or edit files in the workspace',
+  },
+  {
+    key: 'delete_files',
+    capability: 'workspace.file.delete',
+    labelKey: 'deleteFiles',
+    descKey: 'deleteFilesDesc',
+    fallbackLabel: 'Delete Files',
+    fallbackDesc: 'Remove files from the workspace',
+  },
+  {
+    key: 'execute_code',
+    capability: 'workspace.code.execute',
+    labelKey: 'executeCode',
+    descKey: 'executeCodeDesc',
+    fallbackLabel: 'Run Code',
+    fallbackDesc: 'Execute scripts in a secure sandbox',
+  },
+  {
+    key: 'run_command',
+    capability: 'workspace.command.execute',
+    labelKey: 'runCommand',
+    descKey: 'runCommandDesc',
+    fallbackLabel: 'Run Shell Commands',
+    fallbackDesc: 'Run shell commands in the agent workspace',
+  },
+  {
+    key: 'dangerous_commands',
+    capability: 'workspace.command.dangerous',
+    labelKey: 'dangerousCommands',
+    descKey: 'dangerousCommandsDesc',
+    fallbackLabel: 'Dangerous Commands',
+    fallbackDesc: 'Recursive deletes, SQL destructive commands, sudo, or permission changes',
+  },
+  {
+    key: 'secret_reads',
+    capability: 'workspace.command.secret_exfiltration',
+    labelKey: 'secretReads',
+    descKey: 'secretReadsDesc',
+    fallbackLabel: 'Secret/Environment Reads',
+    fallbackDesc: 'Commands that inspect environment variables, secrets, or tokens',
+  },
+  {
+    key: 'read_tasks',
+    capability: 'agent.task.read',
+    labelKey: 'readTasks',
+    descKey: 'readTasksDesc',
+    fallbackLabel: 'Read Tasks',
+    fallbackDesc: 'View task records',
+  },
+  {
+    key: 'manage_tasks',
+    capability: 'agent.task.modify',
+    labelKey: 'manageTasks',
+    descKey: 'manageTasksDesc',
+    fallbackLabel: 'Manage Tasks',
+    fallbackDesc: 'Create, update, or complete tasks',
+  },
+  {
+    key: 'read_objectives',
+    capability: 'agent.objective.read',
+    labelKey: 'readObjectives',
+    descKey: 'readObjectivesDesc',
+    fallbackLabel: 'Read Objectives',
+    fallbackDesc: 'View durable objective records',
+  },
+  {
+    key: 'manage_objectives',
+    capability: 'agent.objective.modify',
+    labelKey: 'manageObjectives',
+    descKey: 'manageObjectivesDesc',
+    fallbackLabel: 'Objectives',
+    fallbackDesc: 'Create, update, or complete durable objectives',
+  },
+  {
+    key: 'read_memory',
+    capability: 'agent.memory.read',
+    labelKey: 'readMemory',
+    descKey: 'readMemoryDesc',
+    fallbackLabel: 'Read Memory',
+    fallbackDesc: 'Search long-term memory and past sessions',
+  },
+  {
+    key: 'write_memory',
+    capability: 'agent.memory.write',
+    labelKey: 'writeMemory',
+    descKey: 'writeMemoryDesc',
+    fallbackLabel: 'Write Memory',
+    fallbackDesc: 'Save facts into long-term memory',
+  },
+  {
+    key: 'read_skills',
+    capability: 'agent.skill.read',
+    labelKey: 'readSkills',
+    descKey: 'readSkillsDesc',
+    fallbackLabel: 'Read Skills',
+    fallbackDesc: 'Load reusable skill instructions',
+  },
+  {
+    key: 'write_skills',
+    capability: 'agent.skill.write',
+    labelKey: 'writeSkills',
+    descKey: 'writeSkillsDesc',
+    fallbackLabel: 'Write Skills',
+    fallbackDesc: 'Create or update reusable skills',
+  },
+  {
+    key: 'discover_tools',
+    capability: 'agent.tool.discover',
+    labelKey: 'discoverTools',
+    descKey: 'discoverToolsDesc',
+    fallbackLabel: 'Discover Tools',
+    fallbackDesc: 'Search available tools, skills, and capability packs',
+  },
+  {
+    key: 'install_mcp_server',
+    capability: 'agent.tool.install',
+    labelKey: 'installMcp',
+    descKey: 'installMcpDesc',
+    fallbackLabel: 'Install Extensions',
+    fallbackDesc: 'Add third-party tool extensions',
+  },
+  {
+    key: 'read_mcp_resources',
+    capability: 'agent.mcp.read',
+    labelKey: 'readMcp',
+    descKey: 'readMcpDesc',
+    fallbackLabel: 'Read MCP Resources',
+    fallbackDesc: 'List or read resources from connected MCP servers',
+  },
+  {
+    key: 'read_triggers',
+    capability: 'agent.trigger.read',
+    labelKey: 'readTriggers',
+    descKey: 'readTriggersDesc',
+    fallbackLabel: 'Read Triggers',
+    fallbackDesc: 'View automation triggers',
+  },
+  {
+    key: 'manage_triggers',
+    capability: 'agent.trigger.modify',
+    labelKey: 'manageTriggers',
+    descKey: 'manageTriggersDesc',
+    fallbackLabel: 'Manage Triggers',
+    fallbackDesc: 'Create, update, or cancel automation triggers',
+  },
+  {
+    key: 'send_agent_message',
+    capability: 'agent.message.send',
+    labelKey: 'sendAgentMessage',
+    descKey: 'sendAgentMessageDesc',
+    fallbackLabel: 'Agent Messaging',
+    fallbackDesc: 'Message or delegate work to other digital employees',
+  },
+  {
+    key: 'read_async_tasks',
+    capability: 'agent.async_task.read',
+    labelKey: 'readAsyncTasks',
+    descKey: 'readAsyncTasksDesc',
+    fallbackLabel: 'Read Async Tasks',
+    fallbackDesc: 'Check delegated task status',
+  },
+  {
+    key: 'manage_async_tasks',
+    capability: 'agent.async_task.modify',
+    labelKey: 'manageAsyncTasks',
+    descKey: 'manageAsyncTasksDesc',
+    fallbackLabel: 'Manage Async Tasks',
+    fallbackDesc: 'Cancel delegated background tasks',
+  },
+  {
+    key: 'create_employee',
+    capability: 'agent.employee.create',
+    labelKey: 'createEmployee',
+    descKey: 'createEmployeeDesc',
+    fallbackLabel: 'Create Employees',
+    fallbackDesc: 'Preview or create digital employee colleagues',
+  },
+  {
+    key: 'send_email',
+    capability: 'channel.email.send',
+    labelKey: 'sendEmail',
+    descKey: 'sendEmailDesc',
+    fallbackLabel: 'Send Email',
+    fallbackDesc: 'Send or reply to emails',
+  },
+  {
+    key: 'read_email',
+    capability: 'channel.email.read',
+    labelKey: 'readEmail',
+    descKey: 'readEmailDesc',
+    fallbackLabel: 'Read Email',
+    fallbackDesc: 'Read mailbox messages',
+  },
+  {
+    key: 'send_channel_message',
+    capability: 'channel.message.send',
+    labelKey: 'sendChannelMessage',
+    descKey: 'sendChannelMessageDesc',
+    fallbackLabel: 'Send Channel Messages',
+    fallbackDesc: 'Reply through the active web, Feishu, Telegram, WeCom, Slack, Discord, or WeChat channel',
+  },
+  {
+    key: 'send_channel_file',
+    capability: 'channel.file.send',
+    labelKey: 'sendChannelFile',
+    descKey: 'sendChannelFileDesc',
+    fallbackLabel: 'Send Channel Files',
+    fallbackDesc: 'Send files or uploaded images through a communication channel',
+  },
+  {
+    key: 'send_feishu_message',
+    capability: 'channel.feishu.message',
+    labelKey: 'sendFeishu',
+    descKey: 'sendFeishuDesc',
+    fallbackLabel: 'Send Feishu Messages',
+    fallbackDesc: 'Send Feishu messages directly to people',
+  },
+  {
+    key: 'feishu_documents',
+    capability: 'channel.feishu.document',
+    labelKey: 'feishuDocs',
+    descKey: 'feishuDocsDesc',
+    fallbackLabel: 'Feishu Documents',
+    fallbackDesc: 'Create, update, share, read, or delete Feishu documents',
+  },
+  {
+    key: 'feishu_base',
+    capability: 'channel.feishu.base',
+    labelKey: 'feishuBase',
+    descKey: 'feishuBaseDesc',
+    fallbackLabel: 'Feishu Base',
+    fallbackDesc: 'Create, read, update, or delete Base records and fields',
+  },
+  {
+    key: 'feishu_spreadsheet',
+    capability: 'channel.feishu.spreadsheet',
+    labelKey: 'feishuSpreadsheet',
+    descKey: 'feishuSpreadsheetDesc',
+    fallbackLabel: 'Feishu Spreadsheets',
+    fallbackDesc: 'Read Feishu spreadsheet information and values',
+  },
+  {
+    key: 'feishu_tasks',
+    capability: 'channel.feishu.task',
+    labelKey: 'feishuTasks',
+    descKey: 'feishuTasksDesc',
+    fallbackLabel: 'Feishu Tasks',
+    fallbackDesc: 'Create, complete, list, or comment on Feishu tasks',
+  },
+  {
+    key: 'feishu_calendar',
+    capability: 'channel.feishu.calendar',
+    labelKey: 'feishuCalendar',
+    descKey: 'feishuCalendarDesc',
+    fallbackLabel: 'Feishu Calendar',
+    fallbackDesc: 'List, create, update, or delete Feishu calendar events',
+  },
+  {
+    key: 'feishu_approval',
+    capability: 'channel.feishu.approval',
+    labelKey: 'feishuApproval',
+    descKey: 'feishuApprovalDesc',
+    fallbackLabel: 'Feishu Approval',
+    fallbackDesc: 'Create or inspect Feishu approval instances',
+  },
+  {
+    key: 'feishu_directory',
+    capability: 'channel.feishu.directory',
+    labelKey: 'feishuDirectory',
+    descKey: 'feishuDirectoryDesc',
+    fallbackLabel: 'Feishu Directory',
+    fallbackDesc: 'Search Feishu users and directory information',
+  },
+  {
+    key: 'web_search',
+    capability: 'external.web.search',
+    labelKey: 'webSearch',
+    descKey: 'webSearchDesc',
+    fallbackLabel: 'Search the Web',
+    fallbackDesc: 'Look up information on the internet',
+  },
+  {
+    key: 'web_read',
+    capability: 'external.web.read',
+    labelKey: 'webRead',
+    descKey: 'webReadDesc',
+    fallbackLabel: 'Read Web Pages',
+    fallbackDesc: 'Fetch or scrape web page content',
+  },
+  {
+    key: 'plaza_read',
+    capability: 'plaza.post.read',
+    labelKey: 'plazaRead',
+    descKey: 'plazaReadDesc',
+    fallbackLabel: 'Read Plaza Posts',
+    fallbackDesc: 'Read posts from the agent plaza',
+  },
+  {
+    key: 'plaza_write',
+    capability: 'plaza.post.write',
+    labelKey: 'plazaWrite',
+    descKey: 'plazaWriteDesc',
+    fallbackLabel: 'Write Plaza Posts',
+    fallbackDesc: 'Create posts or comments in the agent plaza',
+  },
+];
+
 interface AgentSettingsSectionProps {
   agentId: string;
   agent: any;
@@ -114,6 +446,27 @@ export default function AgentSettingsSection({
     () => new Map(capabilityPolicies.map((policy) => [policy.capability, policy])),
     [capabilityPolicies],
   );
+  const capabilityActions = React.useMemo(() => {
+    const knownCapabilities = new Set(KNOWN_CAPABILITY_ACTIONS.map((item) => item.capability));
+    const knownActions = KNOWN_CAPABILITY_ACTIONS.map((item) => ({
+      key: item.key,
+      capability: item.capability,
+      label: t(`agent.settings.autonomy.${item.labelKey}`, item.fallbackLabel),
+      desc: t(`agent.settings.autonomy.${item.descKey}`, item.fallbackDesc),
+    }));
+    const dynamicActions = capabilityDefinitions
+      .filter((item) => !knownCapabilities.has(item.capability))
+      .map((item) => ({
+        key: item.capability,
+        capability: item.capability,
+        label: item.capability,
+        desc:
+          item.tools.length > 0
+            ? t('agent.settings.autonomy.dynamicTools', 'Backend tools: {{tools}}', { tools: item.tools.join(', ') })
+            : t('agent.settings.autonomy.dynamicNoTools', 'No mapped tools reported by backend'),
+      }));
+    return [...knownActions, ...dynamicActions];
+  }, [capabilityDefinitions, t]);
 
   const handleCapabilityPolicyChange = async (capability: string, mode: CapabilityPolicyMode) => {
     if (!canManageCapabilityPolicies) return;
@@ -491,10 +844,10 @@ export default function AgentSettingsSection({
 
       <div className="card" style={{ marginBottom: '12px' }}>
         <h4 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-          {t('agent.settings.securityZone.title', 'Security Zone')}
+          {t('agent.settings.securityZone.title', 'Runtime Safety Boundary')}
         </h4>
         <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
-          {t('agent.settings.securityZone.description', 'Choose the coarse-grained runtime boundary before capability policies are evaluated.')}
+          {t('agent.settings.securityZone.description', 'Choose how strict the coarse runtime guard should be. This is evaluated before capability policies.')}
         </p>
         <div
           style={{
@@ -508,11 +861,11 @@ export default function AgentSettingsSection({
           }}
         >
           <div>
-            <div style={{ fontWeight: 500, fontSize: '13px' }}>{t('agent.settings.securityZone.current', 'Current Zone')}</div>
+            <div style={{ fontWeight: 500, fontSize: '13px' }}>{t('agent.settings.securityZone.current', 'Selected Boundary')}</div>
             <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-              {settingsForm.security_zone === 'public' && t('agent.settings.securityZone.publicDesc', 'Read-only safe tools only')}
-              {settingsForm.security_zone === 'standard' && t('agent.settings.securityZone.standardDesc', 'Capability policies decide whether actions run automatically, need approval, or are denied')}
-              {settingsForm.security_zone === 'restricted' && t('agent.settings.securityZone.restrictedDesc', 'Sensitive tools require approval before capability policies are evaluated')}
+              {settingsForm.security_zone === 'standard' && t('agent.settings.securityZone.standardDesc', 'No extra zone approval; capability policies below decide whether actions run automatically, need approval, or are denied.')}
+              {settingsForm.security_zone === 'restricted' && t('agent.settings.securityZone.restrictedDesc', 'Sensitive actions require approval even when capability policies allow auto execution.')}
+              {settingsForm.security_zone === 'public' && t('agent.settings.securityZone.publicDesc', 'Only safe read-only tools can run. Write, send, delete, and execute actions are blocked.')}
             </div>
           </div>
           <select
@@ -522,10 +875,27 @@ export default function AgentSettingsSection({
             disabled={!canManage}
             style={{ width: '220px', fontSize: '12px', opacity: canManage ? 1 : 0.6 }}
           >
-            <option value="public">{t('agent.settings.securityZone.public', 'Public')}</option>
-            <option value="standard">{t('agent.settings.securityZone.standard', 'Standard')}</option>
-            <option value="restricted">{t('agent.settings.securityZone.restricted', 'Restricted')}</option>
+            <option value="standard">{t('agent.settings.securityZone.standard', 'Loose (Default)')}</option>
+            <option value="restricted">{t('agent.settings.securityZone.restricted', 'Approval Guard')}</option>
+            <option value="public">{t('agent.settings.securityZone.public', 'Read-only Lockdown')}</option>
           </select>
+        </div>
+        <div
+          style={{
+            marginTop: '10px',
+            padding: '9px 12px',
+            borderRadius: '8px',
+            border: '1px solid var(--border-subtle)',
+            background: 'var(--bg-elevated)',
+            color: 'var(--text-secondary)',
+            fontSize: '12px',
+            lineHeight: 1.5,
+          }}
+        >
+          {t(
+            'agent.settings.securityZone.precedenceHint',
+            'Ordered from loose to strict. The boundary is checked before capability policies, so stricter modes can override Auto below.',
+          )}
         </div>
       </div>
 
@@ -543,20 +913,7 @@ export default function AgentSettingsSection({
           </p>
         )}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          {[
-            { key: 'read_files', capability: 'workspace.file.read', label: t('agent.settings.autonomy.readFiles'), desc: t('agent.settings.autonomy.readFilesDesc') },
-            { key: 'write_workspace_files', capability: 'workspace.file.write', label: t('agent.settings.autonomy.writeFiles'), desc: t('agent.settings.autonomy.writeFilesDesc') },
-            { key: 'delete_files', capability: 'workspace.file.delete', label: t('agent.settings.autonomy.deleteFiles'), desc: t('agent.settings.autonomy.deleteFilesDesc') },
-            { key: 'execute_code', capability: 'workspace.code.execute', label: t('agent.settings.autonomy.executeCode'), desc: t('agent.settings.autonomy.executeCodeDesc') },
-            { key: 'send_email', capability: 'channel.email.send', label: t('agent.settings.autonomy.sendEmail'), desc: t('agent.settings.autonomy.sendEmailDesc') },
-            { key: 'import_mcp_server', capability: 'agent.tool.install', label: t('agent.settings.autonomy.installMcp'), desc: t('agent.settings.autonomy.installMcpDesc') },
-            { key: 'send_feishu_message', capability: 'channel.feishu.message', label: t('agent.settings.autonomy.sendFeishu'), desc: t('agent.settings.autonomy.sendFeishuDesc') },
-            { key: 'feishu_documents', capability: 'channel.feishu.document', label: t('agent.settings.autonomy.feishuDocs'), desc: t('agent.settings.autonomy.feishuDocsDesc') },
-            { key: 'feishu_base', capability: 'channel.feishu.base', label: t('agent.settings.autonomy.feishuBase'), desc: t('agent.settings.autonomy.feishuBaseDesc') },
-            { key: 'feishu_tasks', capability: 'channel.feishu.task', label: t('agent.settings.autonomy.feishuTasks'), desc: t('agent.settings.autonomy.feishuTasksDesc') },
-            { key: 'web_search', capability: 'external.web.search', label: t('agent.settings.autonomy.webSearch'), desc: t('agent.settings.autonomy.webSearchDesc') },
-            { key: 'manage_tasks', capability: 'agent.task.modify', label: t('agent.settings.autonomy.manageTasks'), desc: t('agent.settings.autonomy.manageTasksDesc') },
-          ].map((action) => {
+          {capabilityActions.map((action) => {
             const currentMode = policyToMode(capabilityPolicyByCapability.get(action.capability));
             const unsupported = capabilityDefinitionSet.size > 0 && !capabilityDefinitionSet.has(action.capability);
             const disabled = !canManageCapabilityPolicies || capabilityPolicyLoading || !!capabilityPolicyError || unsupported;

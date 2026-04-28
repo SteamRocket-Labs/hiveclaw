@@ -597,6 +597,23 @@ describe('AgentDetail extracted sections', () => {
             requires_approval: false,
             conditions: {},
           },
+          {
+            id: 'policy-2',
+            capability: 'workspace.command.secret_exfiltration',
+            agent_id: 'agent-1',
+            allowed: true,
+            requires_approval: true,
+            conditions: {},
+          },
+        ]}
+        capabilityDefinitions={[
+          { capability: 'workspace.file.read', tools: ['list_files', 'read_file'] },
+          { capability: 'workspace.file.write', tools: ['write_file', 'edit_file'] },
+          { capability: 'workspace.file.delete', tools: ['delete_file'] },
+          { capability: 'workspace.command.execute', tools: ['run_command'] },
+          { capability: 'workspace.command.secret_exfiltration', tools: ['run_command'] },
+          { capability: 'agent.objective.modify', tools: ['propose_objective', 'update_objective', 'complete_objective'] },
+          { capability: 'unknown.future.capability', tools: ['future_tool'] },
         ]}
         capabilityPolicyLoading={false}
         capabilityPolicyError=""
@@ -631,10 +648,20 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('modelConfig');
     expect(markup).toContain('Execution Mode');
     expect(markup).toContain('Coordinator');
-    expect(markup).toContain('Security Zone');
-    expect(markup).toContain('Restricted');
+    expect(markup).toContain('Runtime Safety Boundary');
+    expect(markup).toContain('Loose (Default)');
+    expect(markup).toContain('Approval Guard');
+    expect(markup).toContain('Read-only Lockdown');
+    expect(markup).toContain('Ordered from loose to strict');
+    expect(markup.indexOf('Loose (Default)')).toBeLessThan(markup.indexOf('Approval Guard'));
+    expect(markup.indexOf('Approval Guard')).toBeLessThan(markup.indexOf('Read-only Lockdown'));
+    expect(markup).not.toContain('>Public<');
+    expect(markup).not.toContain('>Restricted<');
     expect(markup).toContain('Run Shell Commands');
     expect(markup).toContain('Secret/Environment Reads');
+    expect(markup).toContain('Objectives');
+    expect(markup).toContain('unknown.future.capability');
+    expect(markup).toContain('future_tool');
     expect(markup).toContain('value="approval" selected=""');
     expect(markup).toContain('welcomeMessage');
     expect(markup).toContain('value="deny" selected=""');

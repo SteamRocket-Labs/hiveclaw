@@ -504,7 +504,7 @@ async def feishu_base_field_list(agent_id: uuid.UUID, arguments: dict) -> str:
     pack="feishu_pack",
     adapter="agent_args",
     read_only=False,
-    governance="safe",
+    governance="sensitive",
 ))
 async def feishu_base_field_create(agent_id: uuid.UUID, arguments: dict) -> str:
     if not await _check_feishu_office_access(agent_id):

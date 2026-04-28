@@ -53,7 +53,7 @@ from app.tools.decorator import ToolMeta, tool
     icon="\U0001f9e0",
     read_only=False,
     parallel_safe=False,
-    governance="safe",
+    governance="sensitive",
     adapter="agent_args",
 ))
 def save_memory(agent_id: uuid.UUID, arguments: dict) -> str:

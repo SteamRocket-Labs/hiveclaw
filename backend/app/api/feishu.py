@@ -2090,6 +2090,19 @@ async def _call_agent_llm(
         fallback_model = None
         logger.warning(f"[Channel] Primary model unavailable, using fallback: {model.model}")
 
+    if model and agent.tenant_id:
+        from app.services.model_resolution import choose_runtime_model_pair, resolve_default_model_for_tenant
+
+        default_runtime_model = await resolve_default_model_for_tenant(
+            db,
+            agent.tenant_id,
+            exclude_model_id=model.id,
+        )
+        previous_fallback = fallback_model
+        model, fallback_model = choose_runtime_model_pair(model, fallback_model, default_runtime_model)
+        if fallback_model and fallback_model is not previous_fallback:
+            logger.info(f"[Channel] Tenant default fallback loaded: {fallback_model.model}")
+
     if not model:
         return f"⚠️ {agent.name} 未配置 LLM 模型，请在管理后台设置。"
 

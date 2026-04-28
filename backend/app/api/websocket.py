@@ -381,6 +381,24 @@ async def websocket_chat(
                 fallback_llm_model = None  # No further fallback available
                 logger.info(f"[WS] Primary model unavailable, using fallback: {llm_model.model}")
 
+            # Runtime fallback: if the configured fallback is missing/duplicated, use tenant default.
+            if llm_model and agent.tenant_id:
+                from app.services.model_resolution import choose_runtime_model_pair, resolve_default_model_for_tenant
+
+                default_runtime_model = await resolve_default_model_for_tenant(
+                    db,
+                    agent.tenant_id,
+                    exclude_model_id=llm_model.id,
+                )
+                previous_fallback = fallback_llm_model
+                llm_model, fallback_llm_model = choose_runtime_model_pair(
+                    llm_model,
+                    fallback_llm_model,
+                    default_runtime_model,
+                )
+                if fallback_llm_model and fallback_llm_model is not previous_fallback:
+                    logger.info(f"[WS] Tenant default fallback loaded: {fallback_llm_model.model}")
+
             # Resolve or create chat session
             from app.models.chat_session import ChatSession
             from sqlalchemy import select as _sel

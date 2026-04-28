@@ -1,4 +1,25 @@
 from app.services.capability_gate import CAPABILITY_MAP, get_all_capabilities
+from app.tools.collector import collect_tools
+
+
+def test_capability_map_covers_all_governance_classified_tools():
+    collected = collect_tools()
+    governance_tools = set(collected.safe_tools) | set(collected.sensitive_tools)
+
+    missing = sorted(tool for tool in governance_tools if tool not in CAPABILITY_MAP)
+
+    assert missing == []
+
+
+def test_safe_governance_tools_are_read_only():
+    collected = collect_tools()
+    definitions = {
+        tool["function"]["name"]: tool["function"]["description"]
+        for tool in collected.openai_tools
+    }
+    non_read_only_safe = sorted(tool for tool in collected.safe_tools if tool not in collected.read_only_names)
+
+    assert non_read_only_safe == [], definitions
 
 
 def test_capability_map_covers_agent_settings_controls_and_destructive_feishu_tools():

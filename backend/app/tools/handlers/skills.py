@@ -92,7 +92,7 @@ def load_skill(workspace: Path, arguments: dict, tenant_id: str | None = None) -
     category="skills",
     display_name="Save Skill",
     icon="\U0001f4da",
-    governance="safe",
+    governance="sensitive",
     adapter="agent_workspace_args",
 ))
 async def save_skill(agent_id: uuid.UUID, workspace: Path, arguments: dict) -> str:

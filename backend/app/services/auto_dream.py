@@ -401,6 +401,12 @@ async def _dream_llm_consolidate(
     )
     user_prompt = _build_dream_consolidation_user_prompt(agent_name, soul_excerpt, t3_files)
 
+    # P1-W3-10 — autonomous LLM call surfaces in metrics so operators
+    # can chart dream call rate / success ratio independently from
+    # invoke_agent traffic. Audit log carries the same signal so the
+    # security pipeline sees that an LLM call ran *outside* governance.
+    from app.memory.metrics import record_autonomous_llm_call
+
     client = None
     try:
         client = create_llm_client(**model_config)
@@ -414,6 +420,13 @@ async def _dream_llm_consolidate(
         )
     except Exception as exc:  # noqa: BLE001
         logger.info("[Dream] LLM call failed for %s: %s", agent_id, exc)
+        record_autonomous_llm_call(source="dream", outcome="failure")
+        await _write_dream_audit_event(
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            outcome="failure",
+            reason=type(exc).__name__,
+        )
         return None
     finally:
         if client is not None and hasattr(client, "close"):
@@ -426,7 +439,52 @@ async def _dream_llm_consolidate(
     decision = _parse_dream_decision(raw)
     if decision is None:
         logger.info("[Dream] LLM decision unparseable for %s", agent_id)
+        record_autonomous_llm_call(source="dream", outcome="failure")
+        await _write_dream_audit_event(
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            outcome="failure",
+            reason="unparseable_decision",
+        )
+    else:
+        record_autonomous_llm_call(source="dream", outcome="success")
+        await _write_dream_audit_event(
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            outcome="success",
+            reason="",
+        )
     return decision
+
+
+async def _write_dream_audit_event(
+    *,
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID | None,
+    outcome: str,
+    reason: str,
+) -> None:
+    """Best-effort audit trail for autonomous dream LLM consolidations.
+
+    Captures the call shape (agent / tenant / outcome) so the security
+    pipeline has a record of LLM activity that bypasses invoke_agent
+    governance. Failures here are logged at DEBUG so audit recording
+    never breaks the dream path.
+    """
+    try:
+        from app.services.audit_logger import write_audit_log
+
+        await write_audit_log(
+            action="dream.llm_consolidation",
+            details={
+                "tenant_id": str(tenant_id) if tenant_id else None,
+                "outcome": outcome,
+                "reason": reason,
+            },
+            agent_id=agent_id,
+        )
+    except Exception as audit_err:  # noqa: BLE001
+        logger.debug("[Dream] Audit log write failed: %s", audit_err)
 
 
 # ── Apply dream decisions ──

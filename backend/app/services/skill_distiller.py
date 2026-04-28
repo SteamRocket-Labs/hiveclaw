@@ -524,6 +524,11 @@ async def _draft_skill_with_llm(
         "}"
     )
 
+    # P1-W3-11 — autonomous LLM call surfaces in metrics + audit so the
+    # security pipeline sees skill-distiller traffic that bypasses
+    # invoke_agent governance.
+    from app.memory.metrics import record_autonomous_llm_call
+
     client = create_llm_client(
         provider=getattr(model, "provider"),
         model=getattr(model, "model"),
@@ -539,12 +544,40 @@ async def _draft_skill_with_llm(
             temperature=0.2,
             max_tokens=min(getattr(model, "max_output_tokens", None) or 1400, 1400),
         )
+    except Exception as exc:  # noqa: BLE001
+        record_autonomous_llm_call(source="skill_distiller", outcome="failure")
+        await _write_distiller_audit_event(
+            workspace=workspace,
+            outcome="failure",
+            reason=type(exc).__name__,
+            decision="",
+        )
+        raise
     finally:
         await client.close()
 
-    payload = _parse_json_object(response.content or "")
+    try:
+        payload = _parse_json_object(response.content or "")
+    except Exception as exc:  # noqa: BLE001
+        record_autonomous_llm_call(source="skill_distiller", outcome="failure")
+        await _write_distiller_audit_event(
+            workspace=workspace,
+            outcome="failure",
+            reason="unparseable_json",
+            decision="",
+        )
+        raise exc
+
+    decision_str = str(payload.get("decision", "defer")).strip().lower()
+    record_autonomous_llm_call(source="skill_distiller", outcome="success")
+    await _write_distiller_audit_event(
+        workspace=workspace,
+        outcome="success",
+        reason="",
+        decision=decision_str,
+    )
     return DistilledSkillDraft(
-        decision=str(payload.get("decision", "defer")).strip().lower(),
+        decision=decision_str,
         confidence=float(payload.get("confidence", 0.0) or 0.0),
         name=str(payload.get("name", "")).strip(),
         description=str(payload.get("description", "")).strip(),
@@ -553,6 +586,41 @@ async def _draft_skill_with_llm(
         declared_packs=tuple(str(item).strip() for item in payload.get("declared_packs", []) if str(item).strip()),
         reason=str(payload.get("reason", "")).strip(),
     )
+
+
+async def _write_distiller_audit_event(
+    *,
+    workspace: Path,
+    outcome: str,
+    reason: str,
+    decision: str,
+) -> None:
+    """Best-effort audit trail for skill_distiller LLM calls.
+
+    Mirrors `_write_dream_audit_event` shape so dashboards can join the
+    two streams. agent_id is derived from workspace path (last segment).
+    """
+    try:
+        import uuid as _uuid
+        from app.services.audit_logger import write_audit_log
+
+        agent_id: _uuid.UUID | None = None
+        try:
+            agent_id = _uuid.UUID(workspace.name)
+        except (ValueError, AttributeError):
+            agent_id = None
+
+        await write_audit_log(
+            action="skill_distiller.llm_draft",
+            details={
+                "outcome": outcome,
+                "reason": reason,
+                "decision": decision,
+            },
+            agent_id=agent_id,
+        )
+    except Exception as audit_err:  # noqa: BLE001
+        logger.debug("[skill_distiller] Audit log write failed: %s", audit_err)
 
 
 async def run_skill_distillation_cycle(

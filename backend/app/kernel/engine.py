@@ -1116,6 +1116,59 @@ class AgentKernel:
                     except Exception as _exc:
                         logger.warning("[Kernel] Auto-save compaction summary failed: %s", _exc)
 
+                # P1-W3-9 — RecoveryManifest persistence.
+                # build_recovery_manifest captures the structured runtime
+                # state (recent reads/writes, active skills/packs, pending
+                # work) that natural-language summaries flatten away. Written
+                # to the agent workspace so the next invocation's
+                # prompt_builder (or operator inspection) can rehydrate the
+                # exact post-compaction state.
+                if request.agent_id and getattr(request, "session_context", None) is not None:
+                    try:
+                        import json as _json
+                        from pathlib import Path as _P
+                        from app.config import get_settings as _gs
+                        from app.runtime.recovery_manifest import (
+                            build_recovery_manifest,
+                            merge_session_memory_into_manifest,
+                        )
+
+                        manifest = build_recovery_manifest(request.session_context)
+                        manifest = merge_session_memory_into_manifest(
+                            manifest, agent_id=request.agent_id
+                        )
+                        if not manifest.is_empty():
+                            for _root in [
+                                _P(_gs().AGENT_DATA_DIR) / str(request.agent_id),
+                                _P("/tmp/hive_workspaces") / str(request.agent_id),
+                            ]:
+                                if _root.exists():
+                                    _mfile = _root / "workspace" / "recovery_manifest.json"
+                                    _mfile.parent.mkdir(parents=True, exist_ok=True)
+                                    _mfile.write_text(
+                                        _json.dumps(
+                                            {
+                                                "session_id": manifest.session_id,
+                                                "recent_reads": manifest.recent_reads,
+                                                "recent_writes": manifest.recent_writes,
+                                                "recent_tool_outcomes": manifest.recent_tool_outcomes,
+                                                "active_skills": manifest.active_skills,
+                                                "active_packs": manifest.active_packs,
+                                                "recent_external_refs": manifest.recent_external_refs,
+                                                "pending_items": manifest.pending_items,
+                                                "blocked_patterns": manifest.blocked_patterns,
+                                            },
+                                            ensure_ascii=False,
+                                            indent=2,
+                                        ),
+                                        encoding="utf-8",
+                                    )
+                    except Exception as _rec_exc:
+                        logger.warning(
+                            "[Kernel] Recovery manifest persistence failed (non-fatal): %s",
+                            _rec_exc,
+                        )
+
             async def _emit_chunk(text: str) -> None:
                 nonlocal _callback_failure_count
                 streamed_chunks.append(text)

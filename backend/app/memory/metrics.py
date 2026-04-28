@@ -100,6 +100,14 @@ _frozen_prefix_warn_total: int = 0
 _frozen_prefix_overrun_total: int = 0
 
 
+# ── Autonomous LLM call tracking (P1-W3-10/11) ────────────────
+# The dream / heartbeat / skill_distiller paths spend tenant token
+# budget without going through the invoke_agent governance pipeline.
+# These counters surface the call volume so operators have at minimum a
+# rate signal — separate from agent-initiated LLM usage.
+_autonomous_llm_calls_total: dict[tuple[str, str], int] = defaultdict(int)  # (source, outcome)
+
+
 # ── Public API ────────────────────────────────────────────────
 
 
@@ -170,6 +178,10 @@ def snapshot() -> dict[str, Any]:
         "frozen_prefix_tokens": _frozen_prefix_tokens_window.snapshot(),
         "frozen_prefix_warn_total": _frozen_prefix_warn_total,
         "frozen_prefix_overrun_total": _frozen_prefix_overrun_total,
+        # P1-W3-10/11 autonomous LLM call tracking
+        "autonomous_llm_calls_total": {
+            f"{k[0]}:{k[1]}": v for k, v in _autonomous_llm_calls_total.items()
+        },
     }
 
 
@@ -197,6 +209,7 @@ def reset_all() -> None:
     _frozen_prefix_tokens_window.samples.clear()
     _frozen_prefix_warn_total = 0
     _frozen_prefix_overrun_total = 0
+    _autonomous_llm_calls_total.clear()
 
 
 # ── Extraction recorders (P0-2c) ──────────────────────────────
@@ -232,6 +245,16 @@ def record_extract_replay_outcome(*, scheduled: int, skipped_stale: int, failed:
 
 
 # ── Frozen prefix recorders (P1-1b) ───────────────────────────
+
+
+def record_autonomous_llm_call(*, source: str, outcome: str) -> None:
+    """Bump an autonomous LLM call counter.
+
+    `source` is one of {"dream", "heartbeat", "skill_distiller"}.
+    `outcome` is {"success", "failure", "skipped"} so dashboards can
+    chart success rate alongside volume.
+    """
+    _autonomous_llm_calls_total[(source, outcome)] += 1
 
 
 def record_frozen_prefix_metering(

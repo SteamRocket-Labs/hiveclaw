@@ -304,6 +304,29 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[startup] Default agents seed failed: {e}")
 
+    # P0-2b: replay extractions persisted by P0-2a that didn't reach
+    # mark_done before the previous process died (LLM crash, OOM, deploy
+    # restart, drain timeout). Best-effort — failures here just leave the
+    # entries on disk for the next startup or operator inspection.
+    try:
+        from app.memory.metrics import record_extract_replay_outcome
+        from app.services.extract_queue_replay import replay_pending_extractions
+        replayed = await replay_pending_extractions()
+        record_extract_replay_outcome(
+            scheduled=replayed["scheduled"],
+            skipped_stale=replayed["skipped_stale"],
+            failed=replayed["failed"],
+        )
+        if replayed["scheduled"] or replayed["skipped_stale"] or replayed["failed"]:
+            logger.info(
+                "[startup] Extraction replay: scheduled=%d skipped_stale=%d failed=%d",
+                replayed["scheduled"],
+                replayed["skipped_stale"],
+                replayed["failed"],
+            )
+    except Exception as e:
+        logger.warning(f"[startup] Extraction queue replay failed (non-fatal): {e}")
+
     # Register memory system hooks
     try:
         from app.runtime.hooks_setup import register_memory_hooks

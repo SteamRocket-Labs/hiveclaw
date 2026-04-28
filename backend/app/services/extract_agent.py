@@ -595,8 +595,40 @@ class ExtractAgent:
     ) -> None:
         """Fire-and-forget extraction that tracks the task for drain().
 
+        P0-2a: persist payload to durable extract_queue *before* scheduling
+        the in-process task. If the task succeeds, the entry is removed via
+        mark_done. If it fails (LLM error after pattern fallback also fails,
+        OOM, drain timeout, process crash), the entry stays on disk for
+        P0-2b startup replay. This closes the data-loss window where a
+        fire-and-forget task could die silently and lose its message batch.
+
         Use this instead of wrapping extract() in asyncio.create_task() externally.
         """
+        from app.memory import metrics
+        from app.services import extract_queue
+
+        # Persist first; if even enqueue fails (FS full, permission denied)
+        # we still try the in-memory task so we don't regress further than
+        # the previous behaviour.
+        entry_id: str | None = None
+        try:
+            entry_id = extract_queue.enqueue(
+                agent_id=agent_id,
+                messages=messages,
+                source=source,
+                tenant_id=tenant_id,
+                agent_name=agent_name,
+            )
+            metrics.record_extract_enqueue(source)
+        except OSError as exc:
+            metrics.record_extract_enqueue_failure(source, type(exc).__name__)
+            logger.error(
+                "[Extractor] extract_queue.enqueue failed for agent %s (source=%s): %s — proceeding without durability",
+                agent_id,
+                source,
+                exc,
+            )
+
         key = str(agent_id)
         task = asyncio.create_task(
             self.extract(
@@ -615,17 +647,65 @@ class ExtractAgent:
             if self._in_flight.get(key) is t:
                 self._in_flight.pop(key, None)
 
+            # P0-2a: clear the durable entry only if the task finished
+            # without raising. If it raised (post-fallback failure, OOM,
+            # cancellation), leave the entry for startup replay.
+            if entry_id is None:
+                return
+            exc = None
+            try:
+                exc = t.exception()
+            except asyncio.CancelledError:
+                logger.warning(
+                    "[Extractor] Task %s was cancelled — leaving entry %s for replay",
+                    key,
+                    entry_id,
+                )
+                return
+            except asyncio.InvalidStateError:
+                # Task not done somehow — should not happen in done callback.
+                return
+            if exc is None:
+                extract_queue.mark_done(entry_id)
+                metrics.record_extract_task_success(source)
+            else:
+                metrics.record_extract_task_failure(source, type(exc).__name__)
+                logger.warning(
+                    "[Extractor] Task %s raised %s — leaving entry %s for replay",
+                    key,
+                    type(exc).__name__,
+                    entry_id,
+                )
+
         task.add_done_callback(_on_done)
 
     async def drain(self, agent_id: uuid.UUID, timeout_s: float = 10.0) -> None:
-        """Wait for any in-flight extraction to complete."""
+        """Wait for any in-flight extraction to complete.
+
+        Never re-raises the underlying task's exception: drain is called
+        from SESSION_CLOSE hooks where letting an extractor error bubble up
+        would break unrelated cleanup (T0 writes, audit, channel teardown).
+        Task exceptions are still recorded by the done-callback (P0-2a leaves
+        the queue entry in place for replay) and logged here for ops.
+        """
+        from app.memory import metrics
+
         key = str(agent_id)
         task = self._in_flight.get(key)
         if task and not task.done():
             try:
                 await asyncio.wait_for(task, timeout=timeout_s)
             except asyncio.TimeoutError:
+                metrics.record_extract_drain_timeout()
                 logger.warning("[Extractor] Drain timeout for %s after %.1fs", agent_id, timeout_s)
+            except Exception as exc:
+                # Task already raised; done-callback handles queue retention.
+                # Suppress here so the caller (SESSION_CLOSE hook) keeps running.
+                logger.warning(
+                    "[Extractor] Drain swallowed %s from in-flight task for %s; queue entry retained for replay",
+                    type(exc).__name__,
+                    agent_id,
+                )
 
     def reset_cursor(self, agent_id: uuid.UUID) -> None:
         """Reset cursor for an agent (e.g., on new session)."""

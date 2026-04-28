@@ -445,6 +445,92 @@ class TestExtractAgent:
             assert task1.done()
             assert task2.done()
 
+    # ── P0-2a: durable extract_queue integration ────────────────────────────
+
+    async def test_schedule_extract_enqueues_durable_entry_and_marks_done_on_success(
+        self, extractor: ExtractAgent, agent_id: uuid.UUID, tmp_path: Path, monkeypatch,
+    ) -> None:
+        """schedule_extract must persist a queue entry, then delete it on success."""
+        from app.config import get_settings
+        from app.services import extract_queue
+
+        monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path))
+        queue_root = tmp_path / ".failed_extractions"
+
+        with patch("app.services.extract_agent._append_to_learnings", return_value=1):
+            extractor.schedule_extract(
+                agent_id,
+                [{"role": "user", "content": "Don't mock the database in integration tests"}],
+                source="web",
+            )
+
+            # Entry should exist before the task finishes (we can race it, but
+            # by the time we read the directory the task may already be done —
+            # accept either: file present OR list_pending empty after drain).
+            await extractor.drain(agent_id, timeout_s=5.0)
+
+        # On success, mark_done should have cleared the entry.
+        remaining = list(extract_queue.list_pending())
+        assert remaining == [], f"expected queue to be drained, found {[e.entry_id for e in remaining]}"
+        # Directory may still exist (created on first enqueue) but contain no .json files.
+        assert queue_root.exists()
+        assert list(queue_root.glob("*.json")) == []
+
+    async def test_schedule_extract_leaves_entry_on_task_failure(
+        self, extractor: ExtractAgent, agent_id: uuid.UUID, tmp_path: Path, monkeypatch,
+    ) -> None:
+        """If the underlying extract() task raises, the queue entry must remain
+        for P0-2b startup replay rather than being silently dropped."""
+        from app.config import get_settings
+        from app.services import extract_queue
+
+        monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path))
+
+        async def _boom(*_args, **_kwargs):
+            raise RuntimeError("simulated post-fallback failure")
+
+        # Replace the bound extract method on the *instance* so our shim runs
+        # inside the task created by schedule_extract.
+        monkeypatch.setattr(extractor, "extract", _boom)
+
+        extractor.schedule_extract(
+            agent_id,
+            [{"role": "user", "content": "important learning"}],
+            source="web",
+        )
+        await extractor.drain(agent_id, timeout_s=5.0)
+
+        # Entry must still be on disk for replay.
+        remaining = list(extract_queue.list_pending())
+        assert len(remaining) == 1, f"expected entry to survive failure, got {remaining}"
+        assert remaining[0].agent_id == str(agent_id)
+        assert remaining[0].source == "web"
+
+    async def test_schedule_extract_continues_when_enqueue_fails(
+        self, extractor: ExtractAgent, agent_id: uuid.UUID, monkeypatch, caplog,
+    ) -> None:
+        """If durable enqueue fails (FS error), schedule_extract still runs the
+        in-process task — degrading to the pre-P0-2a behaviour rather than
+        failing the response entirely."""
+        from app.services import extract_queue
+
+        def _enqueue_fails(**_kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(extract_queue, "enqueue", _enqueue_fails)
+
+        with patch("app.services.extract_agent._append_to_learnings", return_value=1):
+            with caplog.at_level("ERROR"):
+                extractor.schedule_extract(
+                    agent_id,
+                    [{"role": "user", "content": "still want extraction"}],
+                    source="web",
+                )
+            await extractor.drain(agent_id, timeout_s=5.0)
+
+        assert any("extract_queue.enqueue failed" in r.message for r in caplog.records)
+        # Task itself ran — no exception propagated to caller.
+
 
 # ── PR-4: T0 → T2 backfill ──
 

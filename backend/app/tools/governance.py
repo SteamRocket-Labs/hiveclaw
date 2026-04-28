@@ -232,7 +232,48 @@ async def _run_governance_inner(
         return message
 
     if not context.tenant_id:
-        logger.info("[Governance] No tenant_id — skipping capability checks for tool %s", context.tool_name)
+        # P0-1a fail-closed: tenant_id=None means agent/DB resolution failed
+        # (see invoker._resolve_runtime_config fallbacks). Capability gate cannot
+        # determine policy without a tenant, so block non-safe tools rather than
+        # silently allow them. Read-only SAFE_TOOLS remain permitted to support
+        # bootstrap paths (e.g. discovery before registry init).
+        if context.tool_name in SAFE_TOOLS:
+            logger.info(
+                "[Governance] No tenant_id for safe tool %s — allowed (read-only)",
+                context.tool_name,
+            )
+        else:
+            logger.warning(
+                "[Governance] No tenant_id for non-safe tool %s — fail-closed",
+                context.tool_name,
+            )
+            message = (
+                f"🔒 Tool '{context.tool_name}' blocked — no tenant context available. "
+                "Agent resolution may have failed; please retry."
+            )
+            await _maybe_await(
+                deps.write_audit_event(
+                    event_type="capability.tenant_missing",
+                    severity="warn",
+                    actor_type="agent",
+                    actor_id=context.agent_id,
+                    tenant_id=None,
+                    action="tenant_missing_blocked",
+                    resource_type="tool",
+                    resource_id=None,
+                    details={"tool": context.tool_name},
+                )
+            )
+            await _emit_event(
+                event_callback,
+                {
+                    "type": "permission",
+                    "tool_name": context.tool_name,
+                    "status": "blocked",
+                    "message": message,
+                },
+            )
+            return message
 
     tenant_uuid: uuid.UUID | None = None
     if context.tenant_id:

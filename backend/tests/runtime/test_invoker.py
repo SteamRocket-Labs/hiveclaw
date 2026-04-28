@@ -369,6 +369,7 @@ def test_resolve_context_budget_initializes_missing_session_metadata():
     assert request.session_context.metadata["context_window_tokens"] == 128000
 
 
+@pytest.mark.real_runtime_config
 @pytest.mark.asyncio
 async def test_resolve_runtime_config_defaults_skill_candidate_loop_to_true_when_missing(monkeypatch):
     from app.runtime.invoker import _resolve_runtime_config
@@ -1230,3 +1231,151 @@ async def test_invoke_agent_respects_explicit_disabled_smart_model_routing(monke
         "complexity": "low",
         "config_source": "agent_config",
     }
+
+
+# ── P0-1b: tenant_resolution_error sentinel on invoker fallback paths ─────
+# Three fallback paths previously returned RuntimeConfig(tenant_id=None)
+# silently, letting governance skip capability checks. Now they set the
+# tenant_resolution_error sentinel so kernel.engine aborts before any tool
+# runs (governance fail-closed in P0-1a is the second line of defence).
+
+
+class _FakeAsyncSessionCM:
+    """Minimal async context manager mimicking async_session() for unit tests."""
+
+    def __init__(self, db) -> None:
+        self._db = db
+
+    async def __aenter__(self):
+        return self._db
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+
+class _FakeDB:
+    def __init__(self, agent_value, raise_on_execute: Exception | None = None) -> None:
+        self._agent_value = agent_value
+        self._raise = raise_on_execute
+
+    async def execute(self, _stmt):
+        if self._raise is not None:
+            raise self._raise
+        return _FakeScalarResult(self._agent_value)
+
+
+@pytest.mark.real_runtime_config
+@pytest.mark.asyncio
+async def test_resolve_runtime_config_no_agent_id_sets_tenant_error():
+    from app.runtime.invoker import _resolve_runtime_config
+
+    cfg = await _resolve_runtime_config(None)
+
+    assert cfg.tenant_id is None
+    assert cfg.tenant_resolution_error is not None
+    assert "agent_id" in cfg.tenant_resolution_error.lower() or "no agent" in cfg.tenant_resolution_error.lower()
+
+
+@pytest.mark.real_runtime_config
+@pytest.mark.asyncio
+async def test_resolve_runtime_config_agent_not_found_sets_tenant_error(monkeypatch):
+    from app.runtime import invoker
+
+    missing_id = uuid4()
+    monkeypatch.setattr(invoker, "async_session", lambda: _FakeAsyncSessionCM(_FakeDB(agent_value=None)))
+
+    cfg = await invoker._resolve_runtime_config(missing_id)
+
+    assert cfg.tenant_id is None
+    assert cfg.tenant_resolution_error is not None
+    assert str(missing_id) in cfg.tenant_resolution_error
+    assert "not found" in cfg.tenant_resolution_error
+
+
+@pytest.mark.real_runtime_config
+@pytest.mark.asyncio
+async def test_resolve_runtime_config_db_exception_sets_tenant_error(monkeypatch):
+    from app.runtime import invoker
+
+    failing_id = uuid4()
+    monkeypatch.setattr(
+        invoker,
+        "async_session",
+        lambda: _FakeAsyncSessionCM(_FakeDB(agent_value=None, raise_on_execute=RuntimeError("DB down"))),
+    )
+
+    cfg = await invoker._resolve_runtime_config(failing_id)
+
+    assert cfg.tenant_id is None
+    assert cfg.tenant_resolution_error is not None
+    assert "DB down" in cfg.tenant_resolution_error or "failed" in cfg.tenant_resolution_error.lower()
+
+
+@pytest.mark.real_runtime_config
+@pytest.mark.asyncio
+async def test_resolve_runtime_config_success_does_not_set_tenant_error(monkeypatch):
+    """Sanity: existing successful path must not set the new sentinel."""
+    from app.runtime import invoker
+
+    fake_agent = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=uuid4(),
+        max_tool_rounds=42,
+        execution_mode="standard",
+    )
+
+    async def _fake_flag(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(invoker, "async_session", lambda: _FakeAsyncSessionCM(_FakeDB(agent_value=fake_agent)))
+    monkeypatch.setattr(invoker, "is_feature_enabled", _fake_flag)
+
+    cfg = await invoker._resolve_runtime_config(fake_agent.id)
+
+    assert cfg.tenant_id == fake_agent.tenant_id
+    assert cfg.max_tool_rounds == 42
+    assert cfg.tenant_resolution_error is None
+
+
+@pytest.mark.real_runtime_config
+@pytest.mark.asyncio
+async def test_invoke_agent_aborts_when_tenant_resolution_fails(monkeypatch):
+    """End-to-end: invoke_agent with an unresolvable agent_id must abort
+    before any tool runs. Verifies kernel.engine reads the sentinel and
+    returns an error result, never reaching create_llm_client."""
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+
+    # Make _resolve_runtime_config hit the "agent not found" fallback by
+    # stubbing async_session to return None for any agent lookup.
+    from app.runtime import invoker as invoker_mod
+
+    monkeypatch.setattr(
+        invoker_mod,
+        "async_session",
+        lambda: _FakeAsyncSessionCM(_FakeDB(agent_value=None)),
+    )
+
+    # If kernel ever reaches LLM client creation, fail loudly — we expect early abort.
+    def _exploding_client(**_kwargs):
+        raise AssertionError(
+            "create_llm_client must NOT be called when tenant resolution fails — kernel should abort first"
+        )
+
+    monkeypatch.setattr("app.runtime.invoker.create_llm_client", _exploding_client)
+
+    bad_agent_id = uuid4()
+    result = await invoke_agent(
+        AgentInvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None),
+            messages=[{"role": "user", "content": "hi"}],
+            agent_name="Ghost",
+            role_description="non-existent agent",
+            agent_id=bad_agent_id,
+            user_id=uuid4(),
+        )
+    )
+
+    # Kernel returned an error result with the tenant_resolution_error message.
+    assert result.content.startswith("[Error]")
+    assert "tenant resolution failed" in result.content.lower()
+    assert str(bad_agent_id) in result.content

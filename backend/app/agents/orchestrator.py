@@ -267,6 +267,16 @@ def _build_delegated_worker_prompt(profile: DelegationToolProfile) -> str:
 _DELEGATED_WORKER_PROMPT_SUFFIX = _build_delegated_worker_prompt(_DELEGATION_TOOL_PROFILES["worker_safe"])
 
 
+# P0-3a: per-trace visited-agent tracking for cycle detection.
+# `max_depth` alone cannot stop A→B→A→B style loops if a child uses the
+# messaging tool to bounce work back to a previously-active agent (the
+# delegation-tool blacklist doesn't cover messaging). The set is keyed by
+# trace_id and populated/cleaned via a try/finally in `_delegate` so that
+# concurrent traces don't interfere and successful chains free their
+# entries deterministically.
+_visited_agents_by_trace: dict[str, set[str]] = {}
+
+
 @dataclass(slots=True)
 class OrchestrationPolicy:
     max_depth: int = 2
@@ -546,6 +556,56 @@ async def _delegate(request: AgentDelegationRequest) -> AgentDelegationResult:
             failed=True,
         )
 
+    # P0-3a: cycle detection along the same trace_id. depth check above only
+    # blocks linear A→B→C→D chains; without this, a child can use the
+    # messaging tool to bounce work back to a previously-active agent
+    # (A→B→A→B…), since the delegation-tool blacklist doesn't cover messaging.
+    target_agent_key = str(getattr(request.target, "id", ""))
+    visited = _visited_agents_by_trace.setdefault(trace_id, set())
+    if target_agent_key and target_agent_key in visited:
+        target_label = getattr(request.target, "name", None) or target_agent_key
+        return AgentDelegationResult(
+            content=(
+                f"⚠️ Delegation cycle detected: agent '{target_label}' is already active on this "
+                f"trace ({trace_id[:8]}…). Refusing to re-enter — break the loop or restructure the task."
+            ),
+            child_session_id=child_session_id,
+            trace_id=trace_id,
+            depth=request.depth,
+            failed=True,
+        )
+    if target_agent_key:
+        visited.add(target_agent_key)
+
+    try:
+        return await _delegate_after_cycle_check(
+            request,
+            trace_id=trace_id,
+            child_session_id=child_session_id,
+            tool_profile=tool_profile,
+            is_delegation=is_delegation,
+        )
+    finally:
+        # Drop this hop from the visited set; clean the dict entry once empty
+        # so long-lived processes don't leak memory across many short traces.
+        if target_agent_key:
+            current = _visited_agents_by_trace.get(trace_id)
+            if current is not None:
+                current.discard(target_agent_key)
+                if not current:
+                    _visited_agents_by_trace.pop(trace_id, None)
+
+
+async def _delegate_after_cycle_check(
+    request: AgentDelegationRequest,
+    *,
+    trace_id: str,
+    child_session_id: str,
+    tool_profile: Any,
+    is_delegation: bool,
+) -> AgentDelegationResult:
+    """Original _delegate body, extracted so cycle tracking can wrap it
+    with try/finally without indenting hundreds of lines."""
     if is_delegation:
         try:
             from app.runtime.hooks import HookEvent, emit_hook

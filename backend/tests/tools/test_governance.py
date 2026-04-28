@@ -404,3 +404,146 @@ async def test_governance_escalates_dangerous_run_command_even_when_capability_a
         "approval_id": "approval-danger",
         "capability": "workspace.command.dangerous",
     }]
+
+
+# ── P0-1a: tenant_id=None fail-closed for non-safe tools ──────────────
+# Closes the bypass where invoker._resolve_runtime_config fallbacks (agent_id
+# missing / agent not found / DB exception) returned tenant_id=None and
+# governance silently skipped capability checks. Now: non-safe tools blocked,
+# safe tools (read-only) still permitted to support bootstrap/discovery paths.
+
+@pytest.mark.asyncio
+async def test_governance_fail_closed_when_tenant_missing_for_non_safe_tool():
+    from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
+
+    audit_calls = []
+    events = []
+
+    async def resolve_security_zone(_agent_id):
+        return "standard"  # not public, not restricted — would normally pass to capability gate
+
+    async def check_capability(*_args, **_kwargs):
+        raise AssertionError("capability check must NOT run when tenant_id is missing")
+
+    async def write_audit(**kwargs):
+        audit_calls.append(kwargs)
+
+    async def request_approval(*_args, **_kwargs):
+        raise AssertionError("approval must NOT run on tenant-missing fail-closed path")
+
+    message = await run_tool_governance(
+        ToolGovernanceContext(
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            tenant_id=None,  # ← simulates invoker fallback
+            tool_name="edit_file",  # non-safe, has capability mapping
+            arguments={"path": "x.md", "content": "y"},
+        ),
+        GovernanceDependencies(
+            resolve_security_zone=resolve_security_zone,
+            check_capability=check_capability,
+            write_audit_event=write_audit,
+            request_approval=request_approval,
+        ),
+        event_callback=events.append,
+    )
+
+    assert message is not None
+    assert "no tenant context" in message.lower()
+    assert "edit_file" in message
+    assert len(audit_calls) == 1
+    assert audit_calls[0]["event_type"] == "capability.tenant_missing"
+    assert audit_calls[0]["action"] == "tenant_missing_blocked"
+    assert audit_calls[0]["tenant_id"] is None
+    assert audit_calls[0]["details"] == {"tool": "edit_file"}
+    assert events == [{
+        "type": "permission",
+        "tool_name": "edit_file",
+        "status": "blocked",
+        "message": message,
+    }]
+
+
+@pytest.mark.asyncio
+async def test_governance_fail_closed_does_not_break_safe_tool_bootstrap():
+    """Bootstrap/discovery paths still need read-only tools without tenant context."""
+    from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
+
+    events = []
+
+    async def resolve_security_zone(_agent_id):
+        return "standard"
+
+    async def check_capability(*_args, **_kwargs):
+        raise AssertionError("capability check must not run when tenant_id is missing")
+
+    async def write_audit(**_kwargs):
+        raise AssertionError("audit must not run for safe tool on bootstrap path")
+
+    async def request_approval(*_args, **_kwargs):
+        raise AssertionError("approval must not run for safe tool on bootstrap path")
+
+    message = await run_tool_governance(
+        ToolGovernanceContext(
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            tenant_id=None,
+            tool_name="read_file",  # in SAFE_TOOLS
+            arguments={"path": "soul.md"},
+        ),
+        GovernanceDependencies(
+            resolve_security_zone=resolve_security_zone,
+            check_capability=check_capability,
+            write_audit_event=write_audit,
+            request_approval=request_approval,
+        ),
+        event_callback=events.append,
+    )
+
+    assert message is None  # safe tool allowed
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_governance_fail_closed_blocks_dangerous_command_without_tenant():
+    """tenant_id=None + dangerous run_command — must still block (run_command is non-safe)."""
+    from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
+
+    audit_calls = []
+    events = []
+
+    async def resolve_security_zone(_agent_id):
+        return "standard"
+
+    async def check_capability(*_args, **_kwargs):
+        raise AssertionError("capability check must not run on tenant-missing fail-closed")
+
+    async def write_audit(**kwargs):
+        audit_calls.append(kwargs)
+
+    async def request_approval(*_args, **_kwargs):
+        raise AssertionError("approval must not run on tenant-missing fail-closed")
+
+    message = await run_tool_governance(
+        ToolGovernanceContext(
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            tenant_id=None,
+            tool_name="run_command",  # non-safe; would have triggered dangerous detection downstream
+            arguments={"command": "rm -rf /"},
+        ),
+        GovernanceDependencies(
+            resolve_security_zone=resolve_security_zone,
+            check_capability=check_capability,
+            write_audit_event=write_audit,
+            request_approval=request_approval,
+        ),
+        event_callback=events.append,
+    )
+
+    assert message is not None
+    assert "no tenant context" in message.lower()
+    # Fail-closed kicks in BEFORE dangerous command detection — that's intentional:
+    # without tenant we cannot resolve the policy that would have approved/denied it.
+    assert audit_calls[0]["event_type"] == "capability.tenant_missing"
+    assert events[0]["status"] == "blocked"

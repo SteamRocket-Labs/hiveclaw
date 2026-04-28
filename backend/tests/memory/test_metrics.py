@@ -174,3 +174,108 @@ async def test_recall_timer_records_error_on_explicit_reason() -> None:
     snap = snapshot()
     assert snap["recall_error_total"]["hindsight:t1:HTTPStatusError"] == 1
     assert consecutive_failures("t1") == 1
+
+
+# ── P0-2c: extraction pipeline counters ──────────────────────────────
+
+
+class TestExtractionMetrics:
+    def setup_method(self):
+        from app.memory.metrics import reset_all
+        reset_all()
+
+    def test_record_enqueue_increments_per_source(self):
+        from app.memory.metrics import record_extract_enqueue, snapshot
+
+        record_extract_enqueue("web")
+        record_extract_enqueue("web")
+        record_extract_enqueue("trigger")
+
+        snap = snapshot()
+        assert snap["extract_enqueue_total"] == {"web": 2, "trigger": 1}
+
+    def test_record_enqueue_failure_buckets_by_reason(self):
+        from app.memory.metrics import record_extract_enqueue_failure, snapshot
+
+        record_extract_enqueue_failure("web", "OSError")
+        record_extract_enqueue_failure("web", "OSError")
+        record_extract_enqueue_failure("web", "PermissionError")
+
+        snap = snapshot()
+        assert snap["extract_enqueue_failure_total"] == {
+            "web:OSError": 2,
+            "web:PermissionError": 1,
+        }
+
+    def test_record_task_success_and_failure(self):
+        from app.memory.metrics import (
+            record_extract_task_failure,
+            record_extract_task_success,
+            snapshot,
+        )
+
+        record_extract_task_success("web")
+        record_extract_task_success("trigger")
+        record_extract_task_failure("web", "RuntimeError")
+
+        snap = snapshot()
+        assert snap["extract_task_success_total"] == {"web": 1, "trigger": 1}
+        assert snap["extract_task_failure_total"] == {"web:RuntimeError": 1}
+
+    def test_record_drain_timeout(self):
+        from app.memory.metrics import record_extract_drain_timeout, snapshot
+
+        record_extract_drain_timeout()  # default source
+        record_extract_drain_timeout("session_close")
+
+        snap = snapshot()
+        assert snap["extract_drain_timeout_total"] == {"session_close": 2}
+
+    def test_record_replay_outcome_aggregates(self):
+        from app.memory.metrics import record_extract_replay_outcome, snapshot
+
+        record_extract_replay_outcome(scheduled=3, skipped_stale=1, failed=0)
+        record_extract_replay_outcome(scheduled=2, skipped_stale=0, failed=1)
+
+        snap = snapshot()
+        assert snap["extract_replay"] == {
+            "scheduled": 5,
+            "skipped_stale": 1,
+            "failed": 1,
+        }
+
+    def test_reset_all_clears_extraction_counters(self):
+        from app.memory.metrics import (
+            record_extract_enqueue,
+            record_extract_replay_outcome,
+            record_extract_task_failure,
+            reset_all,
+            snapshot,
+        )
+
+        record_extract_enqueue("web")
+        record_extract_task_failure("web", "OSError")
+        record_extract_replay_outcome(scheduled=5, skipped_stale=2, failed=1)
+
+        reset_all()
+        snap = snapshot()
+        assert snap["extract_enqueue_total"] == {}
+        assert snap["extract_task_failure_total"] == {}
+        assert snap["extract_replay"] == {"scheduled": 0, "skipped_stale": 0, "failed": 0}
+
+    def test_snapshot_includes_extraction_keys_even_when_empty(self):
+        from app.memory.metrics import reset_all, snapshot
+
+        reset_all()
+        snap = snapshot()
+        # All P0-2c keys must be present (operator dashboards may rely on them).
+        for key in (
+            "extract_enqueue_total",
+            "extract_enqueue_failure_total",
+            "extract_task_success_total",
+            "extract_task_failure_total",
+            "extract_drain_timeout_total",
+            "extract_replay",
+        ):
+            assert key in snap
+        assert snap["extract_replay"] == {"scheduled": 0, "skipped_stale": 0, "failed": 0}

@@ -61,6 +61,31 @@ class LatencyWindow:
 _recall_latency: dict[tuple[str, str], LatencyWindow] = defaultdict(LatencyWindow)
 
 
+# ── Extraction pipeline counters (P0-2c) ─────────────────────
+# The hot-path RESPONSE_COMPLETE → schedule_extract → durable queue path
+# fails silently in several ways that operators previously couldn't see:
+#  - enqueue itself fails (FS full / permission denied)
+#  - scheduled task raises after pattern fallback (kept on disk for replay)
+#  - drain timeout cancels in-flight work
+#  - startup replay re-schedules and may hit any of the above again
+# Each counter is keyed by (source, reason) where useful.
+
+# Successful enqueue (payload persisted before task starts).
+_extract_enqueue_total: dict[str, int] = defaultdict(int)  # by source
+# enqueue() raised — durability disabled for this batch.
+_extract_enqueue_failure_total: dict[tuple[str, str], int] = defaultdict(int)  # (source, reason)
+# Task completed cleanly (mark_done called).
+_extract_task_success_total: dict[str, int] = defaultdict(int)  # by source
+# Task raised after pattern fallback — entry left for replay.
+_extract_task_failure_total: dict[tuple[str, str], int] = defaultdict(int)  # (source, exc_type)
+# Drain timed out (SESSION_CLOSE) — task still running, entry kept.
+_extract_drain_timeout_total: dict[str, int] = defaultdict(int)  # by source-of-truth ("session_close")
+# Startup replay outcome (P0-2b).
+_extract_replay_scheduled_total: int = 0
+_extract_replay_skipped_stale_total: int = 0
+_extract_replay_failed_total: int = 0
+
+
 # ── Public API ────────────────────────────────────────────────
 
 
@@ -111,11 +136,27 @@ def snapshot() -> dict[str, Any]:
         "sync_items_total": dict(_sync_items_total),
         "sync_failure_total": dict(_sync_failure_total),
         "consecutive_failures": dict(_consecutive_failures),
+        # P0-2c extraction pipeline counters
+        "extract_enqueue_total": dict(_extract_enqueue_total),
+        "extract_enqueue_failure_total": {
+            f"{k[0]}:{k[1]}": v for k, v in _extract_enqueue_failure_total.items()
+        },
+        "extract_task_success_total": dict(_extract_task_success_total),
+        "extract_task_failure_total": {
+            f"{k[0]}:{k[1]}": v for k, v in _extract_task_failure_total.items()
+        },
+        "extract_drain_timeout_total": dict(_extract_drain_timeout_total),
+        "extract_replay": {
+            "scheduled": _extract_replay_scheduled_total,
+            "skipped_stale": _extract_replay_skipped_stale_total,
+            "failed": _extract_replay_failed_total,
+        },
     }
 
 
 def reset_all() -> None:
     """For testing — clear every counter."""
+    global _extract_replay_scheduled_total, _extract_replay_skipped_stale_total, _extract_replay_failed_total
     _recall_total.clear()
     _recall_error_total.clear()
     _recall_empty_total.clear()
@@ -124,6 +165,46 @@ def reset_all() -> None:
     _sync_failure_total.clear()
     _consecutive_failures.clear()
     _last_failure_ts.clear()
+    _extract_enqueue_total.clear()
+    _extract_enqueue_failure_total.clear()
+    _extract_task_success_total.clear()
+    _extract_task_failure_total.clear()
+    _extract_drain_timeout_total.clear()
+    _extract_replay_scheduled_total = 0
+    _extract_replay_skipped_stale_total = 0
+    _extract_replay_failed_total = 0
+
+
+# ── Extraction recorders (P0-2c) ──────────────────────────────
+
+
+def record_extract_enqueue(source: str) -> None:
+    _extract_enqueue_total[source] += 1
+
+
+def record_extract_enqueue_failure(source: str, reason: str) -> None:
+    """Reason is exception class name; bucketed for cardinality control."""
+    _extract_enqueue_failure_total[(source, reason)] += 1
+
+
+def record_extract_task_success(source: str) -> None:
+    _extract_task_success_total[source] += 1
+
+
+def record_extract_task_failure(source: str, exc_type: str) -> None:
+    _extract_task_failure_total[(source, exc_type)] += 1
+
+
+def record_extract_drain_timeout(source: str = "session_close") -> None:
+    _extract_drain_timeout_total[source] += 1
+
+
+def record_extract_replay_outcome(*, scheduled: int, skipped_stale: int, failed: int) -> None:
+    """Single call from main.py lifespan after replay completes."""
+    global _extract_replay_scheduled_total, _extract_replay_skipped_stale_total, _extract_replay_failed_total
+    _extract_replay_scheduled_total += scheduled
+    _extract_replay_skipped_stale_total += skipped_stale
+    _extract_replay_failed_total += failed
 
 
 class RecallTimer:

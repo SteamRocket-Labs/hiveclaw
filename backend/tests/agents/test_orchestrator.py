@@ -736,3 +736,171 @@ async def test_delegate_async_persists_runtime_task_lifecycle(monkeypatch):
     assert persisted[0][0] == "create"
     assert persisted[0][1]["task_id"] == handle.task_id
     assert any(kind == "update" and payload["status"] == "completed" for kind, payload in persisted)
+
+
+# ── P0-3a/b: cycle detection on shared trace_id ────────────────────────
+
+
+def _delegation_request(*, target, owner_id, depth=1, trace_id=None, max_depth=5):
+    """Helper that builds a minimal AgentDelegationRequest for cycle tests."""
+    from app.agents.orchestrator import AgentDelegationRequest, OrchestrationPolicy
+
+    return AgentDelegationRequest(
+        target=target,
+        target_model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        conversation_messages=[{"role": "user", "content": "hello"}],
+        owner_id=owner_id,
+        session_id="cycle-session",
+        depth=depth,
+        trace_id=trace_id,
+        policy=OrchestrationPolicy(max_depth=max_depth),
+    )
+
+
+@pytest.mark.asyncio
+async def test_delegate_blocks_revisiting_same_agent_on_same_trace(monkeypatch):
+    """A→B→A: when target is already in the visited set for this trace, refuse."""
+    from app.agents.orchestrator import _delegate, _visited_agents_by_trace
+
+    _visited_agents_by_trace.clear()
+    target_a_id = uuid4()
+    target_a = SimpleNamespace(id=target_a_id, name="AgentA", role_description="x")
+    owner_id = uuid4()
+
+    # Pre-seed visited as if A is already mid-flight on this trace.
+    trace = "trace-A2A"
+    _visited_agents_by_trace[trace] = {str(target_a_id)}
+
+    async def _unexpected(_request):
+        raise AssertionError("invoke_agent must NOT run when cycle detected")
+
+    monkeypatch.setattr("app.agents.orchestrator.invoke_agent", _unexpected)
+
+    result = await _delegate(_delegation_request(target=target_a, owner_id=owner_id, trace_id=trace))
+
+    assert result.failed is True
+    assert "cycle" in result.content.lower()
+    assert "AgentA" in result.content
+    assert result.trace_id == trace
+    # Failed cycle entries do NOT pollute the visited set with a new add.
+    assert _visited_agents_by_trace.get(trace) == {str(target_a_id)}
+
+    _visited_agents_by_trace.clear()
+
+
+@pytest.mark.asyncio
+async def test_delegate_allows_distinct_agents_on_same_trace(monkeypatch):
+    """A→B→C is fine — only revisits trip the detector."""
+    from app.agents.orchestrator import _delegate, _visited_agents_by_trace
+
+    _visited_agents_by_trace.clear()
+    trace = "trace-linear"
+    a_id, b_id, c_id = uuid4(), uuid4(), uuid4()
+    _visited_agents_by_trace[trace] = {str(a_id), str(b_id)}
+
+    target_c = SimpleNamespace(id=c_id, name="AgentC", role_description="x")
+
+    captured = {}
+
+    async def _stub_invoke(req):
+        captured["agent_id"] = req.agent_id
+        return SimpleNamespace(content="ok", parts=[], tokens_used=0, final_tools=None)
+
+    monkeypatch.setattr("app.agents.orchestrator.invoke_agent", _stub_invoke)
+
+    result = await _delegate(_delegation_request(target=target_c, owner_id=uuid4(), trace_id=trace))
+
+    assert result.failed is False
+    assert "cycle" not in result.content.lower()
+    assert captured["agent_id"] == c_id
+    # finally-clause must drop C from the set, leaving the seeded {A,B}.
+    assert _visited_agents_by_trace.get(trace) == {str(a_id), str(b_id)}
+
+    _visited_agents_by_trace.clear()
+
+
+@pytest.mark.asyncio
+async def test_delegate_cleans_up_visited_set_after_completion(monkeypatch):
+    """Successful single-hop delegation leaves no residue in the trace map."""
+    from app.agents.orchestrator import _delegate, _visited_agents_by_trace
+
+    _visited_agents_by_trace.clear()
+    target = SimpleNamespace(id=uuid4(), name="Solo", role_description="x")
+
+    async def _stub_invoke(_req):
+        return SimpleNamespace(content="done", parts=[], tokens_used=0, final_tools=None)
+
+    monkeypatch.setattr("app.agents.orchestrator.invoke_agent", _stub_invoke)
+
+    result = await _delegate(_delegation_request(target=target, owner_id=uuid4()))
+
+    assert result.failed is False
+    # When the trace's set drops to empty, the dict entry should be removed
+    # entirely (no per-trace memory leak).
+    assert result.trace_id not in _visited_agents_by_trace
+
+
+@pytest.mark.asyncio
+async def test_delegate_cleans_up_visited_set_after_invoke_exception(monkeypatch):
+    """If the underlying invoke_agent raises, finally still clears the agent
+    from the visited set so a retry on the same trace isn't false-positively
+    flagged as a cycle. _delegate wraps invoke errors into a failed result
+    rather than propagating, so we check both: result.failed AND visited cleanup."""
+    from app.agents.orchestrator import _delegate, _visited_agents_by_trace
+
+    _visited_agents_by_trace.clear()
+    target = SimpleNamespace(id=uuid4(), name="Crashy", role_description="x")
+
+    async def _explode(_req):
+        raise RuntimeError("downstream LLM blew up")
+
+    monkeypatch.setattr("app.agents.orchestrator.invoke_agent", _explode)
+
+    result = await _delegate(_delegation_request(target=target, owner_id=uuid4(), trace_id="t-recover"))
+
+    # Error gets converted to a failed result, not propagated.
+    assert result.failed is True
+    # Visited set fully cleaned regardless of how invoke_agent ended.
+    assert "t-recover" not in _visited_agents_by_trace
+
+
+@pytest.mark.asyncio
+async def test_delegate_concurrent_traces_do_not_interfere(monkeypatch):
+    """Two concurrent traces hitting the same agent must each see their own
+    visited set — no cross-trace cycle false positive."""
+    from app.agents.orchestrator import _delegate, _visited_agents_by_trace
+
+    _visited_agents_by_trace.clear()
+    shared_target = SimpleNamespace(id=uuid4(), name="Shared", role_description="x")
+
+    invocations: list[str] = []
+
+    async def _track(req):
+        invocations.append(req.session_context.session_id if req.session_context else "?")
+        await asyncio.sleep(0.01)
+        return SimpleNamespace(content="ok", parts=[], tokens_used=0, final_tools=None)
+
+    monkeypatch.setattr("app.agents.orchestrator.invoke_agent", _track)
+
+    async def run_trace(trace_id, session_id):
+        from app.agents.orchestrator import AgentDelegationRequest, OrchestrationPolicy
+
+        return await _delegate(
+            AgentDelegationRequest(
+                target=shared_target,
+                target_model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+                conversation_messages=[{"role": "user", "content": "x"}],
+                owner_id=uuid4(),
+                session_id=session_id,
+                trace_id=trace_id,
+                policy=OrchestrationPolicy(max_depth=5),
+            )
+        )
+
+    r1, r2 = await asyncio.gather(
+        run_trace("trace-1", "s1"),
+        run_trace("trace-2", "s2"),
+    )
+    assert r1.failed is False and r2.failed is False
+    assert _visited_agents_by_trace == {}  # both finally branches cleaned up
+

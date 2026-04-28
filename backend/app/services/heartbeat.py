@@ -1397,15 +1397,26 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                 from app.tools.workspace import ensure_workspace
 
                 runtime_config = await _resolve_runtime_config(agent_id)
-                workspace = await ensure_workspace(agent_id, tenant_id=str(agent.tenant_id) if agent.tenant_id else None)
-                await _maybe_run_skill_distillation(
-                    agent_id=agent_id,
-                    workspace=workspace,
-                    tenant_id=agent.tenant_id,
-                    runtime_config=runtime_config,
-                    model=model,
-                    current_session_id=str(session_id),
-                )
+                # P0-1b: skip skill distillation when tenant cannot be resolved.
+                # Distiller writes persistent skill files; without tenant context
+                # we cannot enforce capability policy. Surface as observability
+                # signal rather than failing the heartbeat tick.
+                if runtime_config.tenant_resolution_error:
+                    logger.warning(
+                        "[Heartbeat] Skipping skill distillation for {} — tenant resolution failed: {}",
+                        agent_id,
+                        runtime_config.tenant_resolution_error,
+                    )
+                else:
+                    workspace = await ensure_workspace(agent_id, tenant_id=str(agent.tenant_id) if agent.tenant_id else None)
+                    await _maybe_run_skill_distillation(
+                        agent_id=agent_id,
+                        workspace=workspace,
+                        tenant_id=agent.tenant_id,
+                        runtime_config=runtime_config,
+                        model=model,
+                        current_session_id=str(session_id),
+                    )
             except Exception as _distill_err:
                 logger.warning("[Heartbeat] Skill distillation setup failed for {}: {}", agent_id, _distill_err)
 

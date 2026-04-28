@@ -73,3 +73,9 @@ class RuntimeConfig:
     execution_mode: str | None = None
     runtime_continuity_enabled: bool = False
     skill_candidate_loop_enabled: bool = False
+    # P0-1b: when invoker._resolve_runtime_config cannot resolve tenant
+    # (missing agent_id / agent not found / DB exception), it now sets this
+    # sentinel instead of silently returning tenant_id=None. Kernel checks
+    # this alongside quota_message and aborts the invocation with an error
+    # result, preventing tools from running without tenant context.
+    tenant_resolution_error: str | None = None

@@ -148,15 +148,29 @@ def _session_metadata(session_context: SessionContext | None) -> dict[str, Any]:
 
 
 async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
+    # P0-1b: instead of silently returning tenant_id=None on failure paths,
+    # set the tenant_resolution_error sentinel so kernel.engine can early-exit
+    # with an error result before any tool runs. Governance (P0-1a) is the
+    # second line of defence in case a caller bypasses the kernel.
     if not agent_id:
-        return RuntimeConfig(tenant_id=None, max_tool_rounds=200)
+        logger.warning("[Invoker] _resolve_runtime_config called without agent_id — fail-closed")
+        return RuntimeConfig(
+            tenant_id=None,
+            max_tool_rounds=200,
+            tenant_resolution_error="No agent_id provided to runtime resolution",
+        )
 
     try:
         async with async_session() as db:
             result = await db.execute(select(Agent).where(Agent.id == agent_id))
             agent = result.scalar_one_or_none()
             if not agent:
-                return RuntimeConfig(tenant_id=None, max_tool_rounds=200)
+                logger.warning("[Invoker] Agent %s not found in DB — fail-closed", agent_id)
+                return RuntimeConfig(
+                    tenant_id=None,
+                    max_tool_rounds=200,
+                    tenant_resolution_error=f"Agent {agent_id} not found",
+                )
 
             # Token quota enforcement is now at User level (quota_guard.check_user_llm_quota)
             quota_message = None
@@ -178,8 +192,16 @@ async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
                 skill_candidate_loop_enabled=await _resolve_flag("skill_candidate_loop_v1"),
             )
     except Exception as exc:
-        logger.warning("Failed to resolve runtime config for agent %s: %s", agent_id, exc)
-        return RuntimeConfig(tenant_id=None, max_tool_rounds=200)
+        # Log full exception detail server-side for ops; surface only the
+        # exception class to the LLM/UI to avoid leaking SQL state, table
+        # names, or connection strings in DB errors. Code-reviewer flagged
+        # the original `f"...: {exc}"` as a potential information leak.
+        logger.exception("[Invoker] Failed to resolve runtime config for agent %s — fail-closed", agent_id)
+        return RuntimeConfig(
+            tenant_id=None,
+            max_tool_rounds=200,
+            tenant_resolution_error=f"Runtime config resolution failed for agent {agent_id} ({type(exc).__name__})",
+        )
 
 
 async def _resolve_current_user_name(user_id: uuid.UUID | None) -> str | None:
@@ -524,7 +546,15 @@ async def _resolve_tool_expansion(
     try:
         workspace = await ensure_workspace(request.agent_id)
         registry = _build_skill_registry_for_workspace(workspace)
-    except Exception:
+    except Exception as exc:
+        # Skill expansion is opportunistic — if workspace/registry can't be built
+        # (e.g. agent has no workspace yet, FS error), fall back to no expansion
+        # rather than failing the whole tool call. Log so this is observable.
+        logger.debug(
+            "[Invoker] Skill expansion skipped — workspace/registry unavailable for agent %s: %s",
+            request.agent_id,
+            exc,
+        )
         return None
 
     if tool_name == "load_skill":

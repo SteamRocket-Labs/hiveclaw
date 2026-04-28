@@ -395,7 +395,7 @@ def _fingerprint_prompt(prompt_prefix: str) -> str:
     return hashlib.sha256(prompt_prefix.encode("utf-8")).hexdigest()
 
 
-_FROZEN_PROMPT_CACHE_VERSION = "frozen-v2"
+_FROZEN_PROMPT_CACHE_VERSION = "frozen-v3"  # P1-1a: removed user_name + context_window_tokens
 _FROZEN_PROMPT_FILE_PATHS = ("soul.md", "relationships.md")
 _FROZEN_PROMPT_DIRS = ("skills",)
 _PROMPT_CACHE_KEY_FIELD = "prompt_cache_key"
@@ -423,7 +423,12 @@ def _invalidate_prompt_prefix_cache(session_context: SessionContext | None, *, r
 def _safe_file_stat_entry(root_label: str, root: Path, path: Path) -> list[Any] | None:
     try:
         stat = path.stat()
-    except OSError:
+    except OSError as exc:
+        # File may have been deleted/renamed between listing and stat — fall
+        # back to "not part of signature" rather than failing the cache key
+        # build. Logged at debug because this is expected during workspace
+        # mutation and would otherwise spam logs.
+        logger.debug("[Engine] stat() failed for %s under %s: %s — skipping signature entry", path, root_label, exc)
         return None
     try:
         rel = path.relative_to(root).as_posix()
@@ -478,9 +483,24 @@ def _build_frozen_prompt_cache_key(
     request: InvocationRequest,
     runtime_config: RuntimeConfig,
     *,
-    current_user_name: str | None,
+    current_user_name: str | None,  # accepted for back-compat; intentionally NOT in the key
 ) -> str:
-    """Build a provider-neutral cache key for the session-stable prompt prefix."""
+    """Build a provider-neutral cache key for the session-stable prompt prefix.
+
+    P1-1a: removed `current_user_name` and `context_window_tokens` from the key.
+    Both polluted the cache without representing real prefix changes:
+      * current_user_name is rendered in the *dynamic suffix*, not the frozen
+        prefix. Including it forced a miss every time a different user
+        addressed the same agent (collaboration scenarios, shared bots).
+      * context_window_tokens varies whenever a fallback model swap happens,
+        even though the prefix content (system, tasks, tools, soul) is
+        identical. model_provider + model_name already capture the cases
+        where the prefix really should change.
+
+    Cache version bumped to invalidate any persisted prompt_prefix entries
+    on the previous schema.
+    """
+    del current_user_name  # explicitly dropped from cache key — keep param for callers
     payload = {
         "version": _FROZEN_PROMPT_CACHE_VERSION,
         "agent_id": str(request.agent_id or ""),
@@ -488,10 +508,8 @@ def _build_frozen_prompt_cache_key(
         "agent_name": request.agent_name or "",
         "role_description": request.role_description or "",
         "execution_mode": request.execution_mode or "conversation",
-        "current_user_name": current_user_name or "",
         "model_provider": str(getattr(request.model, "provider", "") or ""),
         "model_name": str(getattr(request.model, "model", "") or ""),
-        "context_window_tokens": getattr(request.model, "max_input_tokens", None),
         "workspace_signature": _frozen_prompt_workspace_signature(request.agent_id),
     }
     encoded = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
@@ -898,6 +916,21 @@ class AgentKernel:
                 return _build_error_result("[Error] No LLM model configured — unable to invoke agent.")
 
             runtime_config = await _maybe_await(self._deps.resolve_runtime_config(request.agent_id))
+            # P0-1b: invoker fallback paths set tenant_resolution_error instead
+            # of silently returning tenant_id=None. Abort before any tool runs;
+            # governance (P0-1a) is the second line of defence if a caller
+            # bypasses the kernel entirely. Use getattr to stay compatible with
+            # test doubles that mock RuntimeConfig as SimpleNamespace.
+            if getattr(runtime_config, "tenant_resolution_error", None):
+                logger.error(
+                    "[Kernel] Tenant resolution failed for agent %s: %s — aborting invocation",
+                    request.agent_id,
+                    runtime_config.tenant_resolution_error,
+                )
+                return _build_error_result(
+                    f"[Error] Cannot invoke agent — tenant resolution failed: "
+                    f"{runtime_config.tenant_resolution_error}. Please retry or contact admin."
+                )
             if runtime_config.quota_message:
                 # Note: final_tools not included — not yet resolved at this point
                 return _build_error_result(runtime_config.quota_message)

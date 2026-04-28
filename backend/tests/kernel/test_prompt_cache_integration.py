@@ -309,3 +309,106 @@ async def test_prompt_too_long_retry_preserves_dynamic_context_blocks():
     assert "SNAPSHOT_BLOCK" in retry_prompt
     assert "RETRIEVAL_BLOCK" in retry_prompt
     assert "Rocky" in retry_prompt
+
+
+# ── P1-1a: cache key purity (no user_name / context_window pollution) ──────
+
+
+def _base_request(*, user_id, model=None):
+    """Build a minimal InvocationRequest for cache-key tests."""
+    from app.kernel.contracts import InvocationRequest
+
+    return InvocationRequest(
+        model=model or _make_model(),
+        messages=[{"role": "user", "content": "hi"}],
+        agent_name="StableAgent",
+        role_description="desc",
+        agent_id=uuid4(),
+        user_id=user_id,
+        session_context=SessionContext(session_id="s-cache", source="chat"),
+    )
+
+
+def test_cache_key_ignores_current_user_name():
+    """Two different users hitting the same agent must produce the SAME key —
+    user identity belongs in the dynamic suffix, not the frozen prefix."""
+    from app.kernel.contracts import RuntimeConfig
+    from app.kernel.engine import _build_frozen_prompt_cache_key
+
+    cfg = RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=10)
+    req = _base_request(user_id=uuid4())
+
+    key_alice = _build_frozen_prompt_cache_key(req, cfg, current_user_name="Alice")
+    key_bob = _build_frozen_prompt_cache_key(req, cfg, current_user_name="Bob")
+    key_none = _build_frozen_prompt_cache_key(req, cfg, current_user_name=None)
+
+    assert key_alice == key_bob == key_none, (
+        "current_user_name must not affect frozen-prefix cache key (P1-1a)"
+    )
+
+
+def test_cache_key_ignores_context_window_tokens():
+    """Same agent + same provider/model name but different max_input_tokens
+    (e.g. fallback model swap) must hit the SAME cache key."""
+    from app.kernel.contracts import RuntimeConfig
+    from app.kernel.engine import _build_frozen_prompt_cache_key
+
+    cfg = RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=10)
+    user_id = uuid4()
+
+    model_small = SimpleNamespace(
+        provider="openai", model="gpt-4.1", api_key="k", base_url=None,
+        max_output_tokens=None, max_input_tokens=8192,
+    )
+    model_large = SimpleNamespace(
+        provider="openai", model="gpt-4.1", api_key="k", base_url=None,
+        max_output_tokens=None, max_input_tokens=128_000,
+    )
+
+    # Build two requests differing only in max_input_tokens.
+    req_small = _base_request(user_id=user_id, model=model_small)
+    req_large = _base_request(user_id=user_id, model=model_large)
+    # Force same agent_id so the only varying field is context window.
+    req_large.agent_id = req_small.agent_id
+    req_large.session_context = req_small.session_context
+
+    key_small = _build_frozen_prompt_cache_key(req_small, cfg, current_user_name="x")
+    key_large = _build_frozen_prompt_cache_key(req_large, cfg, current_user_name="x")
+    assert key_small == key_large, (
+        "context_window_tokens must not affect frozen-prefix cache key (P1-1a)"
+    )
+
+
+def test_cache_key_changes_on_model_swap():
+    """Different model name (real model swap, not just window size) MUST
+    produce a different key — the prefix's token-budget shaping changes."""
+    from app.kernel.contracts import RuntimeConfig
+    from app.kernel.engine import _build_frozen_prompt_cache_key
+
+    cfg = RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=10)
+    user_id = uuid4()
+
+    req_a = _base_request(
+        user_id=user_id,
+        model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k",
+                              base_url=None, max_output_tokens=None),
+    )
+    req_b = _base_request(
+        user_id=user_id,
+        model=SimpleNamespace(provider="anthropic", model="claude-sonnet-4.6",
+                              api_key="k", base_url=None, max_output_tokens=None),
+    )
+    req_b.agent_id = req_a.agent_id
+    req_b.session_context = req_a.session_context
+
+    key_a = _build_frozen_prompt_cache_key(req_a, cfg, current_user_name="x")
+    key_b = _build_frozen_prompt_cache_key(req_b, cfg, current_user_name="x")
+    assert key_a != key_b, "model swap must invalidate cache (different provider/name)"
+
+
+def test_cache_key_version_bumped_for_p1_1a():
+    """Sanity check that the version constant reflects the schema change so
+    persisted prefixes from older deployments invalidate cleanly on rollout."""
+    from app.kernel.engine import _FROZEN_PROMPT_CACHE_VERSION
+
+    assert _FROZEN_PROMPT_CACHE_VERSION == "frozen-v3"

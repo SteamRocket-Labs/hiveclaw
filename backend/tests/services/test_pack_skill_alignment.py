@@ -52,4 +52,5 @@ def test_mcp_pack_guide_is_parseable_skill_markdown():
         "import_mcp_server",
         "list_mcp_resources",
         "read_mcp_resource",
+        "call_mcp_tool",
     }

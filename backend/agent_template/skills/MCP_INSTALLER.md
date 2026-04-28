@@ -6,6 +6,7 @@ tools:
   - import_mcp_server
   - list_mcp_resources
   - read_mcp_resource
+  - call_mcp_tool
 is_system: true
 ---
 
@@ -175,3 +176,18 @@ Correct response: `这个 MCP 服务只能在本地机器上跑（需要 Docker�
 - API keys and OAuth tokens never appear in your text output to the user.
 - When a platform skill exists for the same system, the user is told to use that skill instead.
 </success_criteria>
+
+## Invoking an Imported Tool
+
+<invoking_imported_tool>
+Once a server is imported and you can see its tools via `list_mcp_resources`,
+use `call_mcp_tool` to actually run one. Pass the Hive-side tool name
+from the listing and an arguments dict matching the tool's input schema
+(read it via `read_mcp_resource` first if you're unsure).
+
+`call_mcp_tool` opens a fresh MCPClient session per call and forwards
+the request to the remote server, then returns the result string. If the
+server is unreachable or returns an error you'll get a structured error
+envelope back — surface it to the user honestly rather than retrying
+blindly.
+</invoking_imported_tool>

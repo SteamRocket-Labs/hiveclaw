@@ -89,6 +89,7 @@ TOOL_PACKS: tuple[ToolPackSpec, ...] = (
             "import_mcp_server",
             "list_mcp_resources",
             "read_mcp_resource",
+            "call_mcp_tool",
         ),
     ),
 )

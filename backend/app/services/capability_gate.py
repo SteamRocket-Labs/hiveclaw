@@ -46,6 +46,7 @@ CAPABILITY_MAP: dict[str, str] = {
     "search_clawhub": "agent.tool.discover",
     "list_mcp_resources": "agent.mcp.read",
     "read_mcp_resource": "agent.mcp.read",
+    "call_mcp_tool": "agent.mcp.call",
     "send_feishu_message": "channel.feishu.message",
     "feishu_wiki_list": "channel.feishu.document",
     "feishu_doc_read": "channel.feishu.document",

@@ -1,0 +1,232 @@
+"""P1-W3-4 — call_mcp_tool actually invokes the remote MCP server.
+
+Before this handler the agent could only read MCP tool *metadata* from
+the database — there was no path to actually run a tool against the
+remote server. These tests pin the round trip:
+
+  - missing tool_name returns a clear `bad_arguments` error envelope
+  - non-imported tool name returns a `not_found` envelope
+  - disabled tool returns a `forbidden` envelope
+  - happy path constructs an MCPClient with the row's url + api_key
+    and forwards remote_name + arguments
+  - failures from the client surface as `operation_failed` envelopes
+
+The MCPClient itself is monkeypatched so the test stays hermetic — we
+only care that this handler wires DB lookup → client → result correctly.
+"""
+
+from __future__ import annotations
+
+import uuid
+from types import SimpleNamespace
+
+import pytest
+
+from app.tools.handlers.mcp import call_mcp_tool
+
+
+# ── DB fake ───────────────────────────────────────────────────
+
+
+class _FakeQueryResult:
+    def __init__(self, row):
+        self._row = row
+
+    def scalar_one_or_none(self):
+        return self._row
+
+
+class _FakeSession:
+    def __init__(self, row):
+        self._row = row
+        self.executed_statements: list = []
+
+    async def execute(self, stmt):
+        self.executed_statements.append(stmt)
+        return _FakeQueryResult(self._row)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+@pytest.fixture
+def install_fake_session(monkeypatch):
+    """Install an async_session() factory that yields a fake DB pre-loaded
+    with the given row (or None for "not found")."""
+
+    def _install(row):
+        session = _FakeSession(row)
+        monkeypatch.setattr("app.database.async_session", lambda: session)
+        return session
+
+    return _install
+
+
+# ── MCPClient fake ───────────────────────────────────────────
+
+
+class _SpyClient:
+    instances: list["_SpyClient"] = []
+
+    def __init__(self, server_url: str, api_key: str | None = None):
+        self.server_url = server_url
+        self.api_key = api_key
+        self.call_args: tuple[str, dict] | None = None
+        self.raise_on_call: Exception | None = None
+        type(self).instances.append(self)
+
+    async def call_tool(self, tool_name: str, arguments: dict) -> str:
+        self.call_args = (tool_name, arguments)
+        if self.raise_on_call:
+            raise self.raise_on_call
+        return f"OK from {tool_name} with {arguments}"
+
+
+@pytest.fixture(autouse=True)
+def reset_spy_clients():
+    _SpyClient.instances.clear()
+    yield
+    _SpyClient.instances.clear()
+
+
+@pytest.fixture
+def patch_mcp_client(monkeypatch):
+    monkeypatch.setattr("app.services.mcp_client.MCPClient", _SpyClient)
+
+
+# ── Validation paths ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_missing_tool_name_returns_bad_arguments_error():
+    out = await call_mcp_tool(uuid.uuid4(), {})
+    assert "bad_arguments" in out or "tool_name is required" in out
+
+
+@pytest.mark.asyncio
+async def test_non_dict_arguments_returns_bad_arguments_error(install_fake_session):
+    install_fake_session(None)
+    out = await call_mcp_tool(uuid.uuid4(), {"tool_name": "x", "arguments": "not a dict"})
+    assert "bad_arguments" in out or "must be an object" in out
+
+
+@pytest.mark.asyncio
+async def test_unknown_tool_returns_not_found(install_fake_session):
+    install_fake_session(None)
+    out = await call_mcp_tool(uuid.uuid4(), {"tool_name": "nope"})
+    assert "not_found" in out or "is not imported" in out
+
+
+@pytest.mark.asyncio
+async def test_disabled_tool_returns_forbidden(install_fake_session):
+    row = SimpleNamespace(
+        name="weather",
+        enabled=False,
+        mcp_server_url="https://mcp.example.com",
+        mcp_tool_name="get_weather",
+        config={},
+    )
+    install_fake_session(row)
+    out = await call_mcp_tool(uuid.uuid4(), {"tool_name": "weather"})
+    assert "forbidden" in out or "disabled" in out
+
+
+@pytest.mark.asyncio
+async def test_missing_server_url_returns_bad_state(install_fake_session):
+    row = SimpleNamespace(
+        name="weather",
+        enabled=True,
+        mcp_server_url=None,
+        mcp_tool_name="get_weather",
+        config={},
+    )
+    install_fake_session(row)
+    out = await call_mcp_tool(uuid.uuid4(), {"tool_name": "weather"})
+    assert "bad_state" in out or "no server URL" in out
+
+
+# ── Happy path ────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_happy_path_forwards_to_mcp_client(install_fake_session, patch_mcp_client):
+    row = SimpleNamespace(
+        name="weather",
+        enabled=True,
+        mcp_server_url="https://mcp.example.com",
+        mcp_tool_name="get_weather",
+        config={"api_key": "secret-key"},
+    )
+    install_fake_session(row)
+
+    out = await call_mcp_tool(uuid.uuid4(), {"tool_name": "weather", "arguments": {"city": "NYC"}})
+
+    assert len(_SpyClient.instances) == 1
+    client = _SpyClient.instances[0]
+    assert client.server_url == "https://mcp.example.com"
+    assert client.api_key == "secret-key"
+    assert client.call_args == ("get_weather", {"city": "NYC"})
+    assert "OK from get_weather" in out
+
+
+@pytest.mark.asyncio
+async def test_falls_back_to_hive_name_when_mcp_tool_name_unset(
+    install_fake_session, patch_mcp_client
+):
+    """Some imports populate `name` but leave `mcp_tool_name` unset; the
+    Hive-side name doubles as the remote name in that case."""
+    row = SimpleNamespace(
+        name="get_data",
+        enabled=True,
+        mcp_server_url="https://mcp.example.com",
+        mcp_tool_name=None,
+        config={},
+    )
+    install_fake_session(row)
+
+    await call_mcp_tool(uuid.uuid4(), {"tool_name": "get_data"})
+
+    assert _SpyClient.instances[0].call_args == ("get_data", {})
+
+
+@pytest.mark.asyncio
+async def test_client_failure_surfaces_as_operation_failed(
+    install_fake_session, patch_mcp_client
+):
+    row = SimpleNamespace(
+        name="weather",
+        enabled=True,
+        mcp_server_url="https://mcp.example.com",
+        mcp_tool_name="get_weather",
+        config={},
+    )
+    install_fake_session(row)
+
+    # Patch the spy class so the next instance raises on call.
+    original_init = _SpyClient.__init__
+
+    def init_with_failure(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        self.raise_on_call = ConnectionError("upstream down")
+
+    _SpyClient.__init__ = init_with_failure  # type: ignore[method-assign]
+    try:
+        out = await call_mcp_tool(uuid.uuid4(), {"tool_name": "weather"})
+    finally:
+        _SpyClient.__init__ = original_init  # type: ignore[method-assign]
+
+    assert "operation_failed" in out or "MCP call failed" in out
+
+
+# ── Capability mapping ───────────────────────────────────────
+
+
+def test_call_mcp_tool_is_in_capability_map() -> None:
+    """Sanity: the new handler must have a capability entry so the
+    capability gate doesn't drop it into the unmapped bucket."""
+    from app.services.capability_gate import CAPABILITY_MAP
+
+    assert CAPABILITY_MAP.get("call_mcp_tool") == "agent.mcp.call"

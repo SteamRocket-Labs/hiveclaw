@@ -51,6 +51,7 @@ def test_combined_openai_tools_matches_canonical_surface():
         "glob_search",
         "grep_search",
         "import_mcp_server",
+        "call_mcp_tool",
         "check_async_task",
         "cancel_async_task",
         "firecrawl_fetch",

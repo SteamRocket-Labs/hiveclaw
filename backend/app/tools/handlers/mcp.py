@@ -170,3 +170,118 @@ async def read_mcp_resource(agent_id: uuid.UUID, arguments: dict) -> str:
 async def import_mcp_server(agent_id: uuid.UUID, arguments: dict) -> str:
     from app.services.agent_tool_domains.web_mcp import _import_mcp_server
     return await _import_mcp_server(agent_id, arguments)
+
+
+# -- call_mcp_tool ------------------------------------------------------------
+# P1-W3-4: until this lands, the agent could only read MCP tool *metadata*
+# from the database — there was no path to actually invoke a tool on the
+# remote server. This handler fills that gap by resolving the imported
+# Tool row, opening an MCPClient session, and forwarding the call.
+
+@tool(ToolMeta(
+    name="call_mcp_tool",
+    description=(
+        "Invoke an imported MCP tool against its remote server. "
+        "Pass `tool_name` (the Hive-side name from list_mcp_resources) and "
+        "an `arguments` dict matching the tool's input schema. The result "
+        "is returned as a string."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "tool_name": {
+                "type": "string",
+                "description": "Hive-side name of the imported MCP tool (use list_mcp_resources to discover)",
+            },
+            "arguments": {
+                "type": "object",
+                "description": "Arguments matching the MCP tool's input schema",
+            },
+        },
+        "required": ["tool_name"],
+    },
+    category="mcp",
+    display_name="Call MCP Tool",
+    icon="\U0001f680",
+    pack="mcp_admin_pack",
+    adapter="agent_args",
+))
+async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
+    from sqlalchemy import select
+
+    from app.database import async_session
+    from app.models.tool import Tool
+    from app.services.mcp_client import MCPClient
+
+    tool_name = arguments.get("tool_name", "")
+    tool_args = arguments.get("arguments") or {}
+
+    if not tool_name:
+        return render_tool_error(
+            tool_name="call_mcp_tool",
+            error_class="bad_arguments",
+            message="tool_name is required.",
+            provider="mcp",
+            retryable=False,
+            actionable_hint="Discover MCP tool names via list_mcp_resources.",
+        )
+
+    if not isinstance(tool_args, dict):
+        return render_tool_error(
+            tool_name="call_mcp_tool",
+            error_class="bad_arguments",
+            message="`arguments` must be an object matching the MCP tool's input schema.",
+            provider="mcp",
+            retryable=False,
+            actionable_hint="Re-read the schema via read_mcp_resource and rebuild the arguments dict.",
+        )
+
+    async with async_session() as db:
+        result = await db.execute(
+            select(Tool).where(Tool.name == tool_name, Tool.type == "mcp")
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            return render_tool_error(
+                tool_name="call_mcp_tool",
+                error_class="not_found",
+                message=f"MCP tool '{tool_name}' is not imported. Use import_mcp_server first.",
+                provider="mcp",
+                retryable=False,
+                actionable_hint="Use list_mcp_resources to see what's available.",
+            )
+        if not row.enabled:
+            return render_tool_error(
+                tool_name="call_mcp_tool",
+                error_class="forbidden",
+                message=f"MCP tool '{tool_name}' is disabled.",
+                provider="mcp",
+                retryable=False,
+                actionable_hint="Have a platform admin re-enable it from the tools panel.",
+            )
+        if not row.mcp_server_url:
+            return render_tool_error(
+                tool_name="call_mcp_tool",
+                error_class="bad_state",
+                message=f"MCP tool '{tool_name}' has no server URL on file.",
+                provider="mcp",
+                retryable=False,
+                actionable_hint="Re-import the server via import_mcp_server.",
+            )
+
+        server_url = row.mcp_server_url
+        api_key = (row.config or {}).get("api_key") if isinstance(row.config, dict) else None
+        remote_name = row.mcp_tool_name or row.name
+
+    try:
+        client = MCPClient(server_url, api_key=api_key)
+        return await client.call_tool(remote_name, tool_args)
+    except Exception as exc:
+        return render_tool_error(
+            tool_name="call_mcp_tool",
+            error_class="operation_failed",
+            message=f"MCP call failed: {type(exc).__name__}: {str(exc)[:200]}",
+            provider="mcp",
+            retryable=True,
+            actionable_hint="Check the MCP server is reachable and the API key is valid.",
+        )

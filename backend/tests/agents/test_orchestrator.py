@@ -300,7 +300,15 @@ async def test_delegate_async_returns_handle_immediately(monkeypatch):
         await completed.wait()
         return SimpleNamespace(content="async result")
 
+    async def fake_create_task_record(**kwargs):
+        return kwargs["task_id"]
+
+    async def fake_update_runtime_task_record(*args, **kwargs):
+        return True
+
     monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke)
+    monkeypatch.setattr("app.agents.orchestrator.create_runtime_task_record", fake_create_task_record)
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
 
     target = SimpleNamespace(id=uuid4(), name="Worker", role_description="helper")
     model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None)
@@ -473,8 +481,12 @@ async def test_delegate_async_waits_for_activity_log_persistence(monkeypatch):
     async def fake_create_task(**kwargs):
         return kwargs["task_id"]
 
+    async def fake_update_runtime_task_record(*args, **kwargs):
+        return True
+
     monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke)
     monkeypatch.setattr("app.agents.orchestrator.create_runtime_task_record", fake_create_task)
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
     monkeypatch.setattr("app.services.activity_logger.log_activity", fake_log_activity)
 
     target = SimpleNamespace(id=uuid4(), name="Worker", role_description="helper")

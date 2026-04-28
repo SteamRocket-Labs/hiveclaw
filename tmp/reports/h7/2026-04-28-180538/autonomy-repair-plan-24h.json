@@ -1,0 +1,105 @@
+{
+  "schema": "autonomy_repair_plan.v1",
+  "mode": "dry_run",
+  "generated_at": "2026-04-28T10:05:39.151410+00:00",
+  "lookback_hours": 24,
+  "totals": {
+    "agents": 33,
+    "audit_findings": 2,
+    "actions": 2,
+    "auto_applyable_actions": 0,
+    "manual_actions": 2,
+    "by_action_type": {
+      "verify_runtime_ledger_after_deploy": 2
+    },
+    "by_risk": {
+      "low": 2
+    }
+  },
+  "actions": [
+    {
+      "action_id": "4b84d22f231b70a9",
+      "action_type": "verify_runtime_ledger_after_deploy",
+      "auto_apply": false,
+      "risk": "low",
+      "agent_id": "ec03ec3e-c4e8-417d-95f7-f84215e7b9c3",
+      "agent_name": "Web3研究员",
+      "tenant_id": "aac728fb-fe1c-45df-a2ff-a56e024a37a0",
+      "trigger_id": null,
+      "objective_id": null,
+      "focus_ref": null,
+      "summary": "Runtime ledger gaps are historical; verify with a short lookback after the deployed P1 code runs.",
+      "finding_categories": [
+        "trigger_runtime_gap"
+      ],
+      "evidence": {
+        "finding": {
+          "severity": "error",
+          "category": "trigger_runtime_gap",
+          "agent_id": "ec03ec3e-c4e8-417d-95f7-f84215e7b9c3",
+          "trigger_id": null,
+          "focus_ref": null,
+          "message": "Trigger reflection sessions exist in the lookback window, but no trigger RuntimeTask records exist.",
+          "evidence": {
+            "trigger_sessions": 1,
+            "trigger_runtime_tasks": 0
+          },
+          "recommendation": "P1 should create RuntimeTask(task_type='trigger') for every trigger attempt, including skips/failures."
+        }
+      },
+      "proposed_change": {},
+      "preconditions": [],
+      "manual_steps": [
+        "Run autonomous-audit with lookback_hours=1 after trigger/heartbeat activity.",
+        "Only fix code if the short-window runtime gap still reproduces."
+      ]
+    },
+    {
+      "action_id": "b93ae5661be4eb57",
+      "action_type": "verify_runtime_ledger_after_deploy",
+      "auto_apply": false,
+      "risk": "low",
+      "agent_id": "9c4e74b4-dee6-44ac-ab24-d7149f3ab3b0",
+      "agent_name": "高级嵌入式工程师",
+      "tenant_id": "aac728fb-fe1c-45df-a2ff-a56e024a37a0",
+      "trigger_id": null,
+      "objective_id": null,
+      "focus_ref": null,
+      "summary": "Runtime ledger gaps are historical; verify with a short lookback after the deployed P1 code runs.",
+      "finding_categories": [
+        "trigger_runtime_gap"
+      ],
+      "evidence": {
+        "finding": {
+          "severity": "error",
+          "category": "trigger_runtime_gap",
+          "agent_id": "9c4e74b4-dee6-44ac-ab24-d7149f3ab3b0",
+          "trigger_id": null,
+          "focus_ref": null,
+          "message": "Trigger reflection sessions exist in the lookback window, but no trigger RuntimeTask records exist.",
+          "evidence": {
+            "trigger_sessions": 1,
+            "trigger_runtime_tasks": 0
+          },
+          "recommendation": "P1 should create RuntimeTask(task_type='trigger') for every trigger attempt, including skips/failures."
+        }
+      },
+      "proposed_change": {},
+      "preconditions": [],
+      "manual_steps": [
+        "Run autonomous-audit with lookback_hours=1 after trigger/heartbeat activity.",
+        "Only fix code if the short-window runtime gap still reproduces."
+      ]
+    }
+  ],
+  "audit_totals": {
+    "agents": 33,
+    "findings": 2,
+    "errors": 2,
+    "warnings": 0,
+    "infos": 0,
+    "by_category": {
+      "trigger_runtime_gap": 2
+    }
+  }
+}

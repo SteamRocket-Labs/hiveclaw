@@ -160,19 +160,21 @@ async def _build_runtime_metadata_sections(
             )
             triggers = result.scalars().all()
             if triggers:
-                lines = ["You have the following active triggers:"]
-                _triggers_chars = 0
-                for t in triggers:
-                    config_str = str(t.config)[:80]
-                    reason_str = (t.reason or "")[:500]
-                    ref_str = f" (focus: {t.focus_ref})" if t.focus_ref else ""
-                    line = f"\n- **{t.name}** [{t.type}]{ref_str}\n  Config: `{config_str}`\n  Reason: {reason_str}"
-                    _triggers_chars += len(line)
-                    if _triggers_chars > triggers_budget_chars:
-                        lines.append(f"\n... and {len(triggers) - len(lines) + 1} more triggers (truncated)")
-                        break
-                    lines.append(line)
-                parts.append("\n## Active Triggers\n" + "\n".join(lines))
+                from app.runtime.prompt_sections import build_triggers_section
+
+                trigger_rows = [
+                    {
+                        "name": t.name,
+                        "type": t.type,
+                        "config": t.config or {},
+                        "reason": t.reason or "",
+                        "focus_ref": t.focus_ref,
+                    }
+                    for t in triggers
+                ]
+                trigger_section = build_triggers_section(trigger_rows, budget_chars=triggers_budget_chars)
+                if trigger_section:
+                    parts.append("\n" + trigger_section)
     except Exception as exc:
         logger.debug("Failed to load active triggers for agent {}: {}", agent_id, exc)
 
@@ -209,7 +211,7 @@ async def build_agent_context(
     *,
     include_memory_file: bool = True,  # deprecated: memory flows via 4-layer retriever
     include_runtime_metadata: bool = True,
-    include_focus: bool = True,  # deprecated: focus flows via retriever Working Memory
+    include_focus: bool = True,  # deprecated: focus flows via retriever Objective Projection
     budget_profile: ContextBudget | None = None,
     execution_mode: str = "conversation",
 ) -> str:
@@ -221,7 +223,7 @@ async def build_agent_context(
     - relationships.md → relationship descriptions
 
     NOTE: canonical memory files and focus.md are NOT loaded here. They flow through the
-    4-layer retrieval pipeline (MemoryRetriever), which reads focus.md as Working Memory
+    4-layer retrieval pipeline (MemoryRetriever), which reads focus.md as Objective Projection
     and canonical T3 markdown files as Semantic Memory. Loading them here as well would
     cause double-injection into the prompt.
     """

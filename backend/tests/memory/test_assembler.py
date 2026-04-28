@@ -27,13 +27,14 @@ class TestAssembleGroupsByKind:
         assembler = MemoryAssembler()
         result = assembler.assemble(items)
 
-        assert "[Working Memory]" in result
+        assert "[Objective Projection]" in result
+        assert "[Working Memory]" not in result
         assert "[Episodic Memory]" in result
         assert "[Semantic Memory]" in result
         assert "[External Memory]" in result
 
     def test_section_order(self) -> None:
-        """Working -> Episodic -> Semantic -> External."""
+        """Objective projection -> Episodic -> Semantic -> External."""
         items = [
             _make_item(MemoryKind.EXTERNAL, "external fact"),
             _make_item(MemoryKind.SEMANTIC, "semantic fact"),
@@ -43,7 +44,7 @@ class TestAssembleGroupsByKind:
         assembler = MemoryAssembler()
         result = assembler.assemble(items)
 
-        working_pos = result.index("[Working Memory]")
+        working_pos = result.index("[Objective Projection]")
         episodic_pos = result.index("[Episodic Memory]")
         semantic_pos = result.index("[Semantic Memory]")
         external_pos = result.index("[External Memory]")
@@ -63,7 +64,7 @@ class TestAssembleGroupsByKind:
         assert "[Semantic Memory]" in result
         assert "- fact one" in result
         assert "- fact two" in result
-        assert "[Working Memory]" not in result
+        assert "[Objective Projection]" not in result
 
     def test_working_memory_no_bullet(self) -> None:
         """Working memory content is rendered without bullet prefix."""
@@ -101,7 +102,7 @@ class TestAssembleBudgetTrim:
         assembler = MemoryAssembler()
         result = assembler.assemble(items, budget_chars=50)
 
-        assert "[Working Memory]" in result
+        assert "[Objective Projection]" in result
         assert "short" in result
 
     def test_budget_prioritizes_earlier_sections(self) -> None:
@@ -113,7 +114,7 @@ class TestAssembleBudgetTrim:
         assembler = MemoryAssembler()
         result = assembler.assemble(items, budget_chars=120)
 
-        assert "[Working Memory]" in result
+        assert "[Objective Projection]" in result
         # External may be trimmed out due to budget
         assert "B" * 100 not in result
 

@@ -15,9 +15,12 @@ Use `web_fetch` when you already have a specific URL.
 - Use `load_skill` to access full skill instructions when a task matches a skill name — \
 always load and read it first so you have the complete workflow.
 - Use `save_skill` after a workflow has succeeded repeatedly and the steps are clearly reusable. \
-One-off notes, transient state, and raw transcripts belong in memory, not skills.
-- Use objective tools for goal state: `list_objectives` to inspect, `propose_objective` for new work, \
-`update_objective` for blockers/status, and `complete_objective` only with concrete evidence.
+Do not save one-off notes, transient state, or raw transcripts as skills. Durable user corrections \
+go through `save_memory` only when the Memory Guide says they qualify; operational notes and \
+evidence belong in workspace artifacts.
+- Objective Ledger is the source of truth for goal state: `list_objectives` to inspect, \
+`propose_objective` for new work, `update_objective` for blockers/status, and \
+`complete_objective` only with concrete evidence. Trigger is wake policy; focus.md is a readable projection.
 - After writing files, verify the result with `read_file` if correctness is critical.\
 """
 

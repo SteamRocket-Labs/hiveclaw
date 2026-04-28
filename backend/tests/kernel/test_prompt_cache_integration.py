@@ -104,3 +104,73 @@ async def test_kernel_reuses_frozen_prefix_but_refreshes_dynamic_retrieval():
     assert second_prompt.count("SNAPSHOT_BLOCK") == 1
     assert "RETRIEVAL_1" in first_prompt
     assert "RETRIEVAL_2" in second_prompt
+
+
+@pytest.mark.asyncio
+async def test_tool_expansion_rebuild_preserves_dynamic_memory_and_effective_suffix():
+    from app.kernel.contracts import InvocationRequest, RuntimeConfig
+    from app.kernel.engine import AgentKernel, KernelDependencies, ToolExpansionResult
+
+    fake_client = _FakeClient([
+        SimpleNamespace(
+            content="",
+            tool_calls=[{"id": "call_1", "function": {"name": "load_skill", "arguments": '{"name":"research"}'}}],
+            reasoning_content=None,
+            usage={"total_tokens": 3},
+        ),
+        SimpleNamespace(content="done", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
+    ])
+
+    async def resolve_tool_expansion(_request, _tool_name, _args):
+        return ToolExpansionResult(
+            tools=[
+                {"type": "function", "function": {"name": "delegate_to_agent", "description": "", "parameters": {}}},
+                {"type": "function", "function": {"name": "web_search", "description": "", "parameters": {}}},
+            ],
+            active_packs=[{"name": "web_pack", "summary": "web research tools", "tools": ["web_search"]}],
+        )
+
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
+            resolve_current_user_name=lambda _user_id: "Rocky",
+            build_system_prompt=lambda *_args, **_kwargs: "FROZEN",
+            resolve_memory_context=lambda *_args, **_kwargs: "SNAPSHOT_BLOCK",
+            resolve_retrieval_context=lambda *_args, **_kwargs: "RETRIEVAL_BLOCK",
+            get_tools=lambda *_args, **_kwargs: [
+                {"type": "function", "function": {"name": "load_skill", "description": "", "parameters": {}}},
+            ],
+            resolve_tool_expansion=resolve_tool_expansion,
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda _model: fake_client,
+            execute_tool=lambda *_args, **_kwargs: "loaded",
+            persist_memory=lambda **_kwargs: None,
+            record_token_usage=lambda *_args, **_kwargs: None,
+            get_max_tokens=lambda *_args, **_kwargs: 1024,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens"),
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=_make_model(),
+            messages=[{"role": "user", "content": "coordinate this research"}],
+            agent_name="Coordinator",
+            role_description="desc",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            session_context=SessionContext(session_id="s-2", source="chat"),
+            execution_mode="coordinator",
+        )
+    )
+
+    assert result.content == "done"
+    assert fake_client.calls[1]["tools"][0]["function"]["name"] == "delegate_to_agent"
+    assert len(fake_client.calls[1]["tools"]) == 1
+
+    expanded_prompt = fake_client.calls[1]["messages"][0].content
+    assert "SNAPSHOT_BLOCK" in expanded_prompt
+    assert "RETRIEVAL_BLOCK" in expanded_prompt
+    assert "web_pack" in expanded_prompt
+    assert "coordinator mode" in expanded_prompt.lower()

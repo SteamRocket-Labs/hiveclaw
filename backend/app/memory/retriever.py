@@ -215,7 +215,7 @@ class MemoryRetriever:
         items.extend(self._retrieve_t3_direct(agent_id, query=query) or [])
         episodic_limit = retrieval_profile.episodic_limit if retrieval_profile else 3
         external_limit = retrieval_profile.external_limit if retrieval_profile else 5
-        semantic_limit = retrieval_profile.external_limit if retrieval_profile else 5
+        semantic_limit = retrieval_profile.semantic_limit if retrieval_profile else 5
         del limit  # prompt memory is sourced entirely from T3 markdown files.
 
         items.extend(await self._retrieve_episodic(agent_id, session_id, previous_limit=episodic_limit) or [])
@@ -234,7 +234,7 @@ class MemoryRetriever:
         items.extend(await self._retrieve_external(agent_id, query, tenant_id, limit=external_limit) or [])
         return items
 
-    # -- Working layer: agent's focus.md --
+    # -- Objective projection layer: focus.md compatibility projection --
 
     def _retrieve_working(self, agent_id: uuid.UUID) -> list[MemoryItem]:
         focus_file = self.data_root / str(agent_id) / "focus.md"

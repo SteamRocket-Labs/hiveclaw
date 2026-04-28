@@ -938,7 +938,7 @@ async def _invoke_agent_for_triggers(
                 context_parts.append(part)
                 trigger_names.append(t.name)
 
-            # G3: Inject focus.md so agent can track progress during trigger execution
+            # G3: Inject focus.md as Objective Ledger projection for compact trigger context.
             focus_context = ""
             explicit_context = ""
             if runtime_options.get("context_from"):
@@ -964,7 +964,7 @@ async def _invoke_agent_for_triggers(
                     if _focus_path.exists():
                         _focus_text = _focus_path.read_text(encoding="utf-8")[:1500]
                         if _focus_text.strip() and _focus_text.strip() not in ("# Focus", "# Agenda"):
-                            focus_context = f"\n\nCurrent Focus (your work priorities):\n{_focus_text}"
+                            focus_context = f"\n\nObjective Projection (focus.md, readable context only):\n{_focus_text}"
                         break
             except Exception as _focus_err:
                 logger.debug("[TriggerDaemon] Failed to read focus.md for trigger context: {}", _focus_err)
@@ -975,7 +975,9 @@ async def _invoke_agent_for_triggers(
                 + "\n---\n".join(context_parts)
                 + focus_context
                 + (f"\n\nExplicit Context From configured refs:\n{explicit_context}" if explicit_context else "")
-                + "\n\nIf you completed any focus.md task during this execution, use write_file to update focus.md and mark it [x]."
+                + "\n\nObjective Ledger is the source of truth. If you complete or block work, "
+                "use objective tools such as complete_objective or update_objective with concrete evidence. "
+                "Trigger is wake policy; focus.md is a readable projection, not a file to manually edit for state."
                 "\n==========================="
             )
 

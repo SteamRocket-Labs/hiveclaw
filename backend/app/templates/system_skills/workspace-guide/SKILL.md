@@ -1,6 +1,6 @@
 ---
 name: Workspace Guide
-description: Workspace structure, file operations, focus management, and messaging rules
+description: Workspace structure, file operations, objective projection, and messaging rules
 tools:
   - read_document
   - read_file
@@ -19,7 +19,7 @@ is_system: true
 
 <role>
 Use this skill when you need to read or write files in your workspace,
-manage your focus list, or deliver results through a channel. The
+inspect your objective ledger or focus projection, or deliver results through a channel. The
 workspace is where your long-lived work lives — chat history disappears
 after the session ends, but files in `workspace/`, `focus.md`, and
 `memory/` persist and can be shared, referenced, and built upon.
@@ -47,7 +47,7 @@ after the session ends, but files in `workspace/`, `focus.md`, and
 
 ```
 soul.md              — Your permanent identity (read-only, updated by dream)
-focus.md             — Readable projection of your objective ledger (YOU own canonical task rows)
+focus.md             — Readable projection of your objective ledger (not the source of truth)
 HEARTBEAT.md         — Heartbeat curation protocol
 relationships.md     — Your colleague list
 
@@ -104,8 +104,9 @@ Always use tools for file operations — tool results are the source of truth:
 ### Reading before writing
 Verify before asserting: `read_file` before claiming a file's contents, `glob_search` or `list_files` before writing to check for existing paths.
 
-### Focus management
-`focus.md` is the readable projection of your objective ledger. The ledger is canonical; use objective tools for state changes.
+### Objective projection
+Objective Ledger is the source of truth. Trigger is wake policy. focus.md is a readable projection.
+Use objective tools for state changes; read focus.md only as compact human-readable context.
 
 Format:
 ```markdown
@@ -174,7 +175,7 @@ propose_objective(
   risk_level="low",
   evidence={"request": "user asked for Q2 summary"}
 )
-# Then load Trigger Management Guide and set a once trigger with focus_ref="q2_summary"
+# Then load Trigger Management Guide and set a once wake policy with trigger_class="objective_task" and focus_ref="q2_summary"
 ```
 
 ### Example C — Do NOT write to managed directories

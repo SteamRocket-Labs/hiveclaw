@@ -81,6 +81,56 @@ async def test_retrieve_returns_working_and_t3_direct_layers(
 
 
 @pytest.mark.asyncio
+async def test_retrieve_uses_semantic_limit_for_semantic_backend(
+    monkeypatch,
+    data_root: Path,
+    agent_id: uuid.UUID,
+    retriever: MemoryRetriever,
+) -> None:
+    """Semantic backend retrieval must use semantic_limit, not external_limit."""
+    from app.runtime.context_budget import ContextBudget, TaskProfile
+
+    observed: dict[str, int] = {}
+
+    async def fake_semantic_backend(*_args, limit: int = 5, **_kwargs):
+        observed["semantic_limit"] = limit
+        return []
+
+    async def fake_external(*_args, limit: int = 5, **_kwargs):
+        observed["external_limit"] = limit
+        return []
+
+    monkeypatch.setattr(retriever, "_retrieve_semantic_backend", fake_semantic_backend)
+    monkeypatch.setattr(retriever, "_retrieve_external", fake_external)
+
+    profile = ContextBudget(
+        task_profile=TaskProfile(name="memory_recall", complexity="medium"),
+        system_prompt_budget_chars=60_000,
+        active_packs_budget_chars=2_000,
+        retrieval_budget_chars=3_000,
+        knowledge_budget_chars=3_000,
+        memory_budget_chars=4_000,
+        skill_catalog_budget_chars=4_000,
+        soul_budget_chars=16_000,
+        relationships_budget_chars=2_000,
+        company_info_budget_chars=5_000,
+        org_structure_budget_chars=2_000,
+        focus_budget_chars=3_000,
+        runtime_triggers_budget_chars=3_000,
+        restore_budget_chars=20_000,
+        restore_per_file_cap_chars=4_000,
+        semantic_limit=9,
+        episodic_limit=4,
+        external_limit=2,
+        rerank_max_select=5,
+    )
+
+    await retriever.retrieve(agent_id, "memory", session_id=None, tenant_id=str(uuid.uuid4()), retrieval_profile=profile)
+
+    assert observed == {"semantic_limit": 9, "external_limit": 2}
+
+
+@pytest.mark.asyncio
 async def test_retrieve_no_files(data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever) -> None:
     """Retriever returns empty list when no agent data exists."""
     items = await retriever.retrieve(agent_id, "anything", session_id=None, tenant_id=None)

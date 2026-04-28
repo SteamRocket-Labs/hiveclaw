@@ -16,8 +16,10 @@ from app.memory.types import MemoryItem, MemoryKind, parse_utc_timestamp
 _FRESHNESS_WARNING_DAYS = 7
 
 # Display order and section headers for each memory kind.
+# MemoryKind.WORKING is currently populated from focus.md for compatibility,
+# but focus.md is only the readable projection of the Objective Ledger.
 _SECTION_ORDER: list[tuple[MemoryKind, str]] = [
-    (MemoryKind.WORKING, "[Working Memory]"),
+    (MemoryKind.WORKING, "[Objective Projection]"),
     (MemoryKind.EPISODIC, "[Episodic Memory]"),
     (MemoryKind.SEMANTIC, "[Semantic Memory]"),
     (MemoryKind.EXTERNAL, "[External Memory]"),

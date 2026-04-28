@@ -18,6 +18,10 @@ either synchronously (quick consult) or asynchronously (background task).
 The skill covers three decisions: which tool to use, how to write the
 instruction so the worker actually succeeds, and how to follow up so the
 task doesn't fall off the radar.
+
+Objective Ledger is the source of truth. Trigger is wake policy. focus.md is a readable projection.
+If delegated work belongs to an objective, bind follow-up triggers as `objective_task`; otherwise
+use `scheduled_job` for standalone checks.
 </role>
 
 <when_to_use>
@@ -48,7 +52,7 @@ task doesn't fall off the radar.
 | Check progress of a delegated task | `check_async_task` | Returns running / completed / failed |
 | See all your spawned tasks | `list_async_tasks` | Use before creating new ones to avoid runaway fan-out |
 | Cancel a delegation | `cancel_async_task` | Use when the task is no longer needed |
-| Schedule a follow-up check | `set_trigger` type=once at="+15m" | See Trigger Management Guide |
+| Schedule a follow-up check | `set_trigger` type=once with `config.at` | See Trigger Management Guide |
 | Send a file to the current channel | `send_channel_file` | Workspace-relative path |
 
 **Quick decision**: Need the answer right now → `send_message_to_agent`.
@@ -80,7 +84,8 @@ Option A: Poll manually
     → check_async_task(task_id) → running / completed / failed
 
 Option B: Set a timed check (preferred for long tasks)
-    → set_trigger(type="once", at="+15m",
+    → set_trigger(type="once", config={"at": "<ISO timestamp>"},
+        trigger_class="objective_task" if this belongs to an objective else "scheduled_job",
         reason="check_async_task(task_id=xxx). If completed, read result and update/complete the objective with evidence.
                 If still running, set another once trigger 15 min later.")
 
@@ -95,7 +100,7 @@ When done:
 For tasks that take more than a few minutes, pair delegation with a once trigger:
 
 1. `delegate_to_agent(...)` → get task_id
-2. `set_trigger(type="once", at="+15m", reason="Check task_id=xxx result. If done, process and call complete_objective with evidence. If running, set another check in 15m. If failed, notify user.")`
+2. `set_trigger(type="once", config={"at": "<ISO timestamp>"}, trigger_class="objective_task" if bound to an objective else "scheduled_job", reason="Check task_id=xxx result. If done, process and call complete_objective with evidence. If running, set another check in 15m. If failed, notify user.")`
 3. Continue your own work — the trigger will wake you up to check
 
 This avoids blocking your current conversation waiting for a worker.
@@ -134,9 +139,11 @@ delegate_to_agent(
 )
 ```
 
-Then immediately:
+Then immediately compute an ISO timestamp for 15 minutes later and set the follow-up wake policy:
 ```
-set_trigger(type="once", at="+15m",
+set_trigger(type="once", config={"at": "2026-04-15T10:15:00+08:00"},
+  trigger_class="objective_task",
+  focus_ref="ai_infra_funding_summary",
   reason="check_async_task(task_id=<returned>). If completed, read workspace/ai-infra-funding-2026-04-13-to-15.md,
           summarize top-3 for user, call complete_objective with the file path as evidence. If running, set another 15m check. If failed, notify user.")
 ```

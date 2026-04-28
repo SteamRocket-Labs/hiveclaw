@@ -68,8 +68,9 @@ class TestRuntimeEnvironment:
 
 
 class TestExecutionModel:
-    def test_50_rounds_specified(self, prompt_text: str) -> None:
-        assert "50 rounds" in prompt_text
+    def test_tool_round_limit_is_configured_not_hardcoded(self, prompt_text: str) -> None:
+        assert "configured tool-round limit" in prompt_text
+        assert "50 rounds" not in prompt_text
 
     def test_parallel_tool_calls_encouraged(self, prompt_text: str) -> None:
         assert "Parallel tool calls" in prompt_text
@@ -110,8 +111,8 @@ class TestMemoryIntegration:
 
 class TestContextCompression:
     def test_compression_thresholds(self, prompt_text: str) -> None:
-        assert "85%" in prompt_text
         assert "90%" in prompt_text
+        assert "85%" not in prompt_text
 
     def test_tool_result_ttl(self, prompt_text: str) -> None:
         assert "60 minutes" in prompt_text

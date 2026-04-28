@@ -51,6 +51,8 @@ class TestCoordinatorMode:
         assert "still running" in prompt.lower() or "Waiting on" in prompt
         assert "## Status" in prompt
         assert "## Synthesis" in prompt
+        assert "Objective Ledger is the source of truth" in prompt
+        assert "Trigger is wake policy" in prompt
 
     def test_filter_keeps_only_allowed_tools(self) -> None:
         tools = [
@@ -75,6 +77,9 @@ class TestCoordinatorMode:
         assert "cancel_async_task" in COORDINATOR_ALLOWED_TOOLS
         assert "send_message_to_agent" in COORDINATOR_ALLOWED_TOOLS
         assert "check_async_task" in COORDINATOR_ALLOWED_TOOLS
+        assert "list_objectives" in COORDINATOR_ALLOWED_TOOLS
+        assert "update_objective" in COORDINATOR_ALLOWED_TOOLS
+        assert "complete_objective" in COORDINATOR_ALLOWED_TOOLS
         assert "read_file" in COORDINATOR_ALLOWED_TOOLS
         # But NOT domain tools
         assert "web_search" not in COORDINATOR_ALLOWED_TOOLS

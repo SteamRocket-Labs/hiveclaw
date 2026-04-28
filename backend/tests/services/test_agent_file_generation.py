@@ -63,7 +63,7 @@ def test_render_focus_from_blueprint_includes_runtime_capability_sections() -> N
     assert "## Starting Capabilities Available Now" in focus
     assert "## Capability Gaps To Validate" in focus
     assert "## Human Setup Still Required" in focus
-    assert "## Planned Trigger Work" in focus
+    assert "## Planned Wake Policies" in focus
     assert "## Heartbeat Exploration Topics" in focus
     assert "## First Success Check" in focus
     assert "- [ ] task_1 :: 建日报" in focus

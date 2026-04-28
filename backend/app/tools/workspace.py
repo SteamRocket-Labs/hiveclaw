@@ -209,7 +209,7 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
         if not lpath.exists():
             lpath.write_text(learnings_seed, encoding="utf-8")
 
-    # Pre-create focus.md (T1 working memory)
+    # Pre-create focus.md (Objective Ledger projection compatibility file)
     focus_path = ws / "focus.md"
     if not focus_path.exists():
         focus_path.write_text("# Focus\n\n## Tasks\n", encoding="utf-8")
@@ -278,7 +278,11 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
         try:
             hb_content = _HEARTBEAT_TEMPLATE_PATH.read_text(encoding="utf-8")
         except Exception:
-            hb_content = "# Heartbeat\n\nCheck focus.md, do one useful thing, reply HEARTBEAT_OK if nothing needed.\n"
+            hb_content = (
+                "# Heartbeat\n\n"
+                "Inspect the Objective Ledger and its focus.md projection, take one evidence-backed useful action, "
+                "then reply HEARTBEAT_OK if nothing needed.\n"
+            )
         (ws / "HEARTBEAT.md").write_text(hb_content, encoding="utf-8")
 
     # Pre-install system skills from templates (skip is_default: false)

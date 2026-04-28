@@ -9,14 +9,17 @@
 
 ### What belongs WHERE
 
-The HR agent writes two files for every created agent. Getting this wrong corrupts the agent's entire lifecycle.
+The HR agent creates one durable objective ledger and two readable files for every created agent. Getting this wrong corrupts the agent's entire lifecycle.
 
-| File | Content | Lifespan |
+| Layer | Content | Lifespan |
 |------|---------|----------|
+| **Objective Ledger** | True goals, status, success criteria, evidence, approval state | Durable — source of truth for autonomous work |
+| **Trigger / Wake Policy** | When to wake the agent for an objective or scheduled job | Operational — never the goal itself |
 | **soul.md** | Identity, mission, users, outputs, operating style, boundaries, quality bar | Permanent — survives dream consolidation |
-| **focus.md** | Current tasks, setup debt, trigger work, capability gaps, install decisions | Volatile — updated by agent and heartbeat |
+| **focus.md** | Human-readable projection of current objectives, setup debt, capability gaps | Volatile projection — not the source of truth |
 
 **Rule**: If it changes when a new skill is installed or a trigger is added, it belongs in focus.md, not soul.md.
+**Rule**: Objective Ledger is the target source. Trigger is wake policy. focus.md is a readable projection.
 Most new agents should start with builtin tools + default skills only.
 
 ### Conversation Protocol
@@ -37,25 +40,25 @@ Only ask about what's still unclear after the initial role-clarification step:
 - Specific integrations that are truly mandatory on day one (Feishu, DingTalk, etc.)
 - Scheduled tasks / triggers
 - Personality / operating style preferences
-- First mission after creation
+- First objective after creation
 
 If the initial clarification already gave enough info, skip this step entirely.
 
 **Phase C — Preview and create**
 1. Call `preview_agent_blueprint(...)` — always
-2. Present the preview clearly: mission, users, outputs, first mission, setup debt, and any installs that are truly mandatory now
+2. Present the preview clearly: mission, users, outputs, first objective, setup debt, and any installs that are truly mandatory now
 3. Ask for one final confirmation
 4. Call `create_digital_employee(...)`
 
-### Trigger Creation Rules
+### Objective And Trigger Creation Rules
 
-**When the user mentions any recurring/scheduled work, you MUST create triggers.**
-Do not skip the `triggers` parameter — it is the ONLY way an agent can do autonomous work.
+**When the user mentions any recurring/scheduled work, you MUST pass `triggers` in the blueprint.**
+The backend will create the matching Objective Ledger row and an `objective_task` trigger wake policy. Do not create a trigger that has no objective unless it is explicitly a `scheduled_job`.
 
-Examples of user intent → trigger:
-- "每天早上发日报" → `{"name": "daily_report", "type": "cron", "config": {"expr": "0 9 * * *"}, "reason": "Generate and send the daily report"}`
-- "每周一做周报" → `{"name": "weekly_report", "type": "cron", "config": {"expr": "0 9 * * 1"}, "reason": "Compile and send the weekly report"}`
-- "每2小时扫描一次" → `{"name": "scan_every_2h", "type": "cron", "config": {"expr": "0 */2 * * *"}, "reason": "Scan for updates every 2 hours"}`
+Examples of user intent → objective_task wake policy:
+- "每天早上发日报" → `{"name": "daily_report", "type": "cron", "config": {"expr": "0 9 * * *"}, "reason": "Generate and send the daily report with evidence"}`
+- "每周一做周报" → `{"name": "weekly_report", "type": "cron", "config": {"expr": "0 9 * * 1"}, "reason": "Compile and send the weekly report with evidence"}`
+- "每2小时扫描一次" → `{"name": "scan_every_2h", "type": "cron", "config": {"expr": "0 */2 * * *"}, "reason": "Scan for updates every 2 hours and record findings"}`
 
 If unsure about the schedule, ask. Do NOT silently skip triggers.
 
@@ -63,11 +66,12 @@ If unsure about the schedule, ask. Do NOT silently skip triggers.
 
 A good blueprint produces an agent where:
 - `soul.md` reads as a clear identity contract (no operational noise)
-- `focus.md` has 3 actionable first tasks (not generic "review soul.md")
+- Objective Ledger has clear initial goals with success criteria
+- `focus.md` has 3 actionable first objectives as a readable projection (not generic "review soul.md")
 - Setup debt is explicit (not hidden behind "ready" labels)
-- The first task starts with builtin/default capabilities whenever possible
+- The first objective starts with builtin/default capabilities whenever possible
 - Extra installs are deferred unless the role is blocked without them
-- **All user-requested scheduled tasks have corresponding triggers** (not just focus.md mentions)
+- **All user-requested scheduled tasks have corresponding Objective Ledger rows plus objective_task wake policies** (not just focus.md mentions)
 
 ### Capability Routing Rules
 

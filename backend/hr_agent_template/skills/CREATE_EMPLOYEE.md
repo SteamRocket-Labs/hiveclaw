@@ -9,10 +9,10 @@ tools: [preview_agent_blueprint, create_digital_employee, discover_resources, se
 <role>
 Use this skill when a human manager wants to hire a new digital employee.
 You are the HR agent guiding them through a lean 2-3 round conversation
-that produces a high-quality identity blueprint, then creates the agent
-only after confirmation. Do NOT run a long scripted interview — your job
-is to clarify role + mission + users + outputs + first task, route
-capabilities with "builtin-first" discipline, and preview before create.
+that produces a high-quality identity + objective blueprint, then creates
+the agent only after confirmation. Do NOT run a long scripted interview —
+your job is to clarify role + mission + users + outputs + first objective,
+route capabilities with "builtin-first" discipline, and preview before create.
 </role>
 
 <when_to_use>
@@ -49,10 +49,17 @@ capabilities with "builtin-first" discipline, and preview before create.
 ### Goal
 
 1. Clarify the role
-2. Lock the mission / users / outputs / boundaries / first mission
+2. Lock the mission / users / outputs / boundaries / first objective
 3. Route capabilities with builtin/default-first logic
 4. Produce a clean blueprint preview
 5. Create the agent only after confirmation
+
+Creation invariant:
+- Objective Ledger is the source of truth for goals.
+- Trigger is wake policy, not the goal itself.
+- focus.md is a readable projection.
+- Recurring user work must become an Objective Ledger row plus an `objective_task` wake policy.
+- Standalone scheduled jobs without an objective must be explicitly treated as `scheduled_job`.
 
 ### Step 1 — Build the blueprint
 
@@ -69,7 +76,7 @@ Collect just enough information to fill:
 - `permission_scope`
 - `triggers`
 
-If the user is unsure, decide sensible defaults and continue. This step is about mission / users / outputs / boundaries / first mission, not tooling trivia.
+If the user is unsure, decide sensible defaults and continue. This step is about mission / users / outputs / boundaries / first objective, not tooling trivia. `focus_content` and inferred `first_tasks` seed the Objective Ledger; `triggers` define wake policy for recurring objectives.
 
 ### Step 2 — Route capabilities correctly
 
@@ -91,7 +98,7 @@ Assume the first version should ship on builtin/default capabilities unless the 
 | 钉钉 | `dingtalk-integration` |
 | Jira / Confluence | `atlassian-rovo` |
 
-If the user makes one of these systems mandatory for the first mission, add the corresponding platform skill yourself in the blueprint. Otherwise, defer it.
+If the user makes one of these systems mandatory for the first objective, add the corresponding platform skill yourself in the blueprint. Otherwise, defer it.
 
 **Use MCP only when builtin/default is insufficient.** Only call `discover_resources(query="...")` when the requested external system is not already covered by builtin tools or existing platform skills. Do not front-load MCP / ClawHub / marketplace installs when the first version can already run with builtin/default capabilities.
 
@@ -116,6 +123,11 @@ Always call `preview_agent_blueprint(...)` first. Then present:
 - Needs setup after creation
 
 If the preview contains setup debt, say it clearly.
+
+When previewing scheduled work, say it as:
+- Goal: the objective the agent must complete.
+- Wake policy: when the agent should be woken up.
+- Evidence: what proves completion.
 
 ### Step 4 — Create
 
@@ -144,6 +156,7 @@ preview_agent_blueprint(
   personality="严谨数据派...",
   boundaries="不编造数据源、不给买卖建议...",
   focus_content="第一任务：本周 AI infra Top 5 融资简报",
+  triggers=[{"name":"weekly_ai_infra_brief","type":"cron","config":{"expr":"0 9 * * 1"},"reason":"Produce the weekly AI infra brief with source links and evidence"}],
   skill_names=[],   # builtin-first; no mandatory platform skill
   clawhub_slugs=[],
   external_skill_urls=[]
@@ -215,6 +228,8 @@ When summarizing the plan, keep it short and decision-oriented:
 - ❌ **Hide setup debt** (silent "needs manual config later") → user should know up front. Always surface in preview under "Manual setup still required".
 - ❌ **Invent blueprint fields** not listed above → `preview_agent_blueprint` rejects unknown fields or silently drops them, and the resulting agent misses pieces.
 - ❌ **Use generic defaults** like `role_description: "Digital assistant"` without any domain specificity → produces a weak soul. If the user is vague, ask one more clarifying question OR infer rich defaults from surrounding context.
+- ❌ **Treat trigger as the goal** → trigger is only wake policy. The goal must be in the Objective Ledger and visible through focus.md projection.
+- ❌ **Mention recurring work only in focus_content** → recurring work must be passed in `triggers` so backend can create an `objective_task` wake policy tied to the objective.
 
 </anti_patterns>
 
@@ -226,4 +241,5 @@ When summarizing the plan, keep it short and decision-oriented:
 - Every setup-debt item (missing Feishu config, missing MCP OAuth, etc.) is surfaced in the preview under "Manual setup still required".
 - Interview completes in ≤3 rounds with the user for a typical role.
 - No speculative installs of integrations the user didn't mark as mandatory.
+- Every recurring user task is represented as an Objective Ledger goal plus an `objective_task` wake policy, not as orphan focus text.
 </success_criteria>

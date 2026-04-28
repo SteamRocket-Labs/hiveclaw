@@ -203,7 +203,10 @@ def _get_default_heartbeat_instruction() -> str:
     try:
         return _HEARTBEAT_TEMPLATE_PATH.read_text(encoding="utf-8").strip()
     except Exception:
-        return "[Heartbeat] Check focus.md, do one useful thing, reply HEARTBEAT_OK if nothing needed."
+        return (
+            "[Heartbeat] Inspect Objective Ledger and its focus.md projection, do one evidence-backed useful thing, "
+            "reply HEARTBEAT_OK if nothing needed."
+        )
 
 
 def _compose_heartbeat_instruction(base_instruction: str) -> str:
@@ -583,7 +586,7 @@ async def _build_evolution_context(
             parts.append(
                 "\n---\n## Bootstrap Exhausted (10 failures)\n"
                 "Bootstrap has failed repeatedly. Stop attempting bootstrap actions.\n"
-                "Proceed directly with normal heartbeat: read focus.md and do one small task.\n"
+                "Proceed directly with normal heartbeat: inspect Objective Ledger and its focus.md projection, then do one small evidence-backed task.\n"
                 "Output: [OUTCOME:noop] [SCORE:1]"
             )
         elif total_failures >= 3:
@@ -594,7 +597,7 @@ async def _build_evolution_context(
                 "Your previous bootstrap attempts failed. Evolution files have been\n"
                 "auto-seeded with initial values. Skip bootstrapping and proceed with\n"
                 "the normal 4-phase heartbeat protocol.\n"
-                "Focus on ONE simple action: read focus.md and do something small.\n"
+                "Focus on ONE simple action: inspect Objective Ledger and its focus.md projection, then do something small with evidence.\n"
                 "Output: [OUTCOME:action_taken] [SCORE:3]"
             )
         else:
@@ -603,9 +606,9 @@ async def _build_evolution_context(
                 "You have very little activity history. This is normal for a new agent.\n"
                 "Instead of the normal heartbeat protocol, do these bootstrapping steps:\n"
                 "1. **Read soul.md** — understand your identity and role\n"
-                "2. **Read focus.md** — check if initial tasks were set during creation\n"
+                "2. **Inspect Objective Ledger and focus.md projection** — check if initial objectives were set during creation\n"
                 "3. **List and read your skills/** — understand your capabilities\n"
-                "4. **If focus.md is empty**: write an initial focus based on your role from soul.md\n"
+                "4. **If there is no active objective**: propose an initial objective based on your role from soul.md\n"
                 "5. **Write to evolution/lineage.md** with your bootstrap observations\n"
                 "6. Output: [OUTCOME:action_taken] [SCORE:3]\n\n"
                 "After bootstrapping, future heartbeats will follow the normal 4-phase protocol."

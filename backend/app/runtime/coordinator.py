@@ -28,6 +28,10 @@ COORDINATOR_ALLOWED_TOOLS = frozenset(
         "send_message_to_agent",
         "check_async_task",
         "list_async_tasks",
+        "list_objectives",
+        "propose_objective",
+        "update_objective",
+        "complete_objective",
         "set_trigger",
         "list_triggers",
         "read_file",
@@ -54,6 +58,11 @@ multiple specialized actions (research + implementation + verification).
 `delegate_to_agent`. Each worker runs in an isolated session with its own
 memory and tool access. Workers return structured Completed/Evidence/Blockers
 reports (see PR-16 delegation contract).
+
+**Autonomy boundary**: Objective Ledger is the source of truth for goal
+state. Trigger is wake policy, not the goal itself. Coordinator mode may
+read and update Objective Ledger as coordination state, and may complete an
+objective only after synthesizing concrete worker evidence.
 
 **Your decisions shape**:
 - Parallelism (fan-out vs serialize → affects wall time AND conflict risk)
@@ -140,7 +149,8 @@ Direct-use tools (in coordinator mode):
 - `delegate_to_agent` — primary verb
 - `check_async_task`, `list_async_tasks`, `cancel_async_task` — task lifecycle
 - `send_message_to_agent` — steer an already-running worker
-- `set_trigger`, `list_triggers` — schedule follow-up work
+- `list_objectives`, `propose_objective`, `update_objective`, `complete_objective` — manage coordination state in the Objective Ledger
+- `set_trigger`, `list_triggers` — schedule follow-up wake policies; Trigger is wake policy, not the goal
 - `read_file`, `write_file`, `list_files` — ONLY for coordination artifacts
   (plans, synthesis notes, tracking files). NOT for domain work.
 - `get_current_time` — timestamp your reports

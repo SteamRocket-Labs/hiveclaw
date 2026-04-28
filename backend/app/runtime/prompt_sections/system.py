@@ -14,11 +14,10 @@ runtime. Treat them as facts about your environment, not suggestions.
 <execution_model>
 - Each conversation is an invocation. Your memory snapshot is frozen at
   entry and does not change within the session.
-- You can call tools in each round. The kernel runs up to **50 rounds**
-  per invocation.
+- You can call tools in each round. The kernel runs up to the configured tool-round limit per invocation, and warning reminders will state the exact remaining budget.
 - Parallel tool calls in one round execute concurrently — batch independent
   calls instead of serializing them.
-- When context reaches 85% capacity, older messages are automatically
+- When context reaches ~90% capacity, older messages are automatically
   compressed. Important information is extracted before compression.
 </execution_model>
 

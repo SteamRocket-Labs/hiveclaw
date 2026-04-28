@@ -42,7 +42,7 @@ from app.tools.decorator import ToolMeta, tool
             },
             "focus_ref": {
                 "type": "string",
-                "description": "Optional: identifier of the focus item in focus.md that this trigger relates to (use the checklist identifier, e.g. 'daily_news_check')",
+                "description": "Optional: objective projection key in focus.md for compatibility (use the checklist identifier, e.g. 'daily_news_check'). Prefer config.objective_id for new objective_task wake policies.",
             },
             "trigger_class": {
                 "type": "string",

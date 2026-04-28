@@ -62,6 +62,23 @@ What this means for your output:
   rule per line.
 </pipeline_context>
 
+<autonomy_boundary>
+Objective Ledger is the source of truth for goals.
+Trigger is wake policy, not the goal itself.
+focus.md is a readable projection of the current objective state.
+
+Do not extract active objectives, trigger schedules, focus.md projection rows,
+Runtime Task / Attempt ids, objective_id, trigger_id, or external_conv_id
+values as durable memory. Those are operational state and belong in the
+Objective Ledger, Wake Policy, RuntimeTask/Attempt ledger, or session
+artifact. Extract only the reusable design lesson, for example:
+"User confirmed Objective Ledger is the source of truth for goals."
+Do not extract trigger schedules as memory unless the durable lesson is about
+how wake policies should be designed or governed.
+Do not extract runtime task instance state unless it is evidence for a
+reusable design or reliability lesson.
+</autonomy_boundary>
+
 <extraction_types>
 | category         | meaning                                              | strong signals                                    |
 |------------------|------------------------------------------------------|---------------------------------------------------|
@@ -174,7 +191,7 @@ Derivable or ephemeral — extracting these wastes memory:
 - Code patterns, file paths, project structure (workspace has it)
 - Git history / who-changed-what (`git log` has it)
 - Debugging steps or fix recipes (the fix is in the code; commit has context)
-- Ephemeral in-progress state (belongs in focus.md)
+- Ephemeral in-progress state (operational state belongs in the Objective Ledger; evidence belongs in workspace artifacts)
 - Info already in system prompt or skills (don't duplicate)
 - Raw tool arguments or full JSON payloads (extract *meaning*, not bytes)
 </what_to_skip>
@@ -246,6 +263,12 @@ _PROJECT_PATTERNS = re.compile(
     r"deadline|截止|发布|release|version|v\d|环境|production|staging|上线",
     re.IGNORECASE,
 )
+_AUTONOMY_INSTANCE_STATE_RE = re.compile(
+    r"(\bobjective_id\s*[:=]|\btrigger_id\s*[:=]|\bruntime_task_id\s*[:=]|\battempt_id\s*[:=]|"
+    r"\bexternal_conv_id\s*[:=]|\blast_fired_at\s*[:=]|\[OBJECTIVE_STATUS:|\[OBJECTIVE_EVIDENCE:|"
+    r"\bobjective:[0-9a-f]{8})",
+    re.IGNORECASE,
+)
 
 _PATTERN_MAP = [
     (_CORRECTION_PATTERNS, "feedback"),
@@ -254,6 +277,11 @@ _PATTERN_MAP = [
     (_DECISION_PATTERNS, "project"),
     (_PROJECT_PATTERNS, "project"),
 ]
+
+
+def _is_operational_autonomy_instance_state(content: str) -> bool:
+    """Return True for runtime/objective instance state that must not become memory."""
+    return bool(_AUTONOMY_INSTANCE_STATE_RE.search(content or ""))
 
 
 def _pattern_extract(messages: list[dict]) -> list[dict[str, str]]:
@@ -271,6 +299,8 @@ def _pattern_extract(messages: list[dict]) -> list[dict[str, str]]:
             continue
         content = msg.get("content", "")
         if not isinstance(content, str) or len(content) < 10 or len(content) > 1000:
+            continue
+        if _is_operational_autonomy_instance_state(content):
             continue
 
         for pattern, category in _PATTERN_MAP:
@@ -332,6 +362,8 @@ def _parse_extractions(raw: str) -> list[dict[str, str]]:
     for match in pattern.finditer(raw):
         category = match.group(1).lower()
         content = match.group(2).strip()
+        if _is_operational_autonomy_instance_state(content):
+            continue
         if content and category in _CATEGORY_FILE_MAP:
             results.append({"category": category, "content": content})
     return results[:8]

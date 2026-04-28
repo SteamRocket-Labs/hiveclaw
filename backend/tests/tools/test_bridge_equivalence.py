@@ -111,9 +111,9 @@ def test_governance_sets_include_canonical_metadata_without_runtime_init():
     assert "read_file" in SAFE_TOOLS
     assert "web_search" in SAFE_TOOLS
     assert "web_fetch" in SAFE_TOOLS
-    assert "save_memory" in SAFE_TOOLS
-    assert "save_skill" in SAFE_TOOLS
     assert "search_memory" in SAFE_TOOLS
+    assert "save_memory" in SENSITIVE_TOOLS
+    assert "save_skill" in SENSITIVE_TOOLS
     assert "send_feishu_message" in SENSITIVE_TOOLS
     assert "feishu_task_comment" in SENSITIVE_TOOLS
     assert "feishu_task_complete" in SENSITIVE_TOOLS

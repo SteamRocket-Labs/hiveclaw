@@ -116,7 +116,8 @@ _NON_TOOL_IDENTIFIERS: set[str] = {
     # Trigger config names (not tools)
     "from_agent_id", "from_user_identity", "on_message", "reply_to_current_sender",
     "focus_ref", "interval_min", "fire_on",
-    "blocked_pattern", "trigger_class", "objective_task",
+    "blocked_pattern", "trigger_class", "objective_task", "scheduled_job",
+    "event_wait", "system_maintenance",
     # Parameter/field names surfaced in tool-reference tables
     "max_tool_rounds", "message_id", "post_id", "task_id",
     "spreadsheet_url", "search", "attachments", "to", "subject", "body", "cc",
@@ -127,7 +128,7 @@ _NON_TOOL_IDENTIFIERS: set[str] = {
     "role_description", "primary_users", "core_outputs", "focus_content",
     "welcome_message", "heartbeat_topics", "permission_scope",
     "skill_names", "clawhub_slugs", "external_skill_urls", "triggers",
-    "personality", "boundaries",
+    "personality", "boundaries", "first_tasks",
     # Body section tokens that might match regex
     "role", "when_to_use", "do_not_use_when", "tool_reference",
     "workflows", "examples", "anti_patterns", "success_criteria",

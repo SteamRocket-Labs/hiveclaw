@@ -49,7 +49,7 @@ def load_skill(workspace: Path, arguments: dict, tenant_id: str | None = None) -
         "Usage:\n"
         "- Only use this after a workflow has succeeded repeatedly and the steps, decision rules, and verification pattern are stable.\n"
         "- Save durable, reusable instructions that will help future runs of a similar task.\n"
-        "- Do NOT save one-off notes, transient state, or raw transcripts as skills. User-specific facts belong in `save_memory` or workspace files instead.\n"
+        "- Do NOT save one-off notes, transient state, or raw transcripts as skills. Durable user corrections belong in `save_memory` when the Memory Guide qualifies them; operational notes and evidence belong in workspace files.\n"
         "- Include declared tools/packs only when they are truly part of the repeatable workflow.\n"
         "- Use `overwrite: true` only when intentionally updating an existing skill."
     ),

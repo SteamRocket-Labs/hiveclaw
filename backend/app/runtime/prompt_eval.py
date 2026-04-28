@@ -308,7 +308,7 @@ def evaluate_runtime_prompt_contracts(inputs: PromptEvalInputs | None = None) ->
             predicate=lambda: (
                 "save_skill" in (resolved.tools_section or "")
                 and "succeeded repeatedly" in (resolved.tools_section or "")
-                and "One-off notes" in (resolved.tools_section or "")
+                and "one-off notes" in (resolved.tools_section or "").lower()
             ),
             severity="medium",
             remediation="Restore tools-section guidance that restricts save_skill to repeated reusable workflows and forbids one-off notes/transcripts.",

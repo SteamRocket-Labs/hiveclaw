@@ -55,8 +55,9 @@ def _render_agent_soul_from_blueprint(
     """Render soul.md — the agent's durable identity contract.
 
     Soul is the top of the 4-layer memory pyramid (T0→T2→T3→soul).
-    Only permanent identity belongs here. Operational details (tools,
-    focus, triggers, capabilities) go to focus.md or prompt sections.
+    Only permanent identity belongs here. Operational details (current goals,
+    wake policies, capabilities) go to the Objective Ledger, focus projection,
+    or runtime prompt sections.
     """
     blueprint = blueprint or {}
     personality_lines = _lines_from_text(personality)
@@ -132,7 +133,7 @@ def _render_agent_soul_from_blueprint(
         "- **Dream** consolidates memory and promotes key insights to this soul",
         "- User corrections and confirmed patterns are the highest-value signals",
         "",
-        "_Operational details (current focus, tools, triggers, setup debt, capability choices) are in focus.md._",
+        "_Operational details live outside soul.md: Objective Ledger is the source of truth, Trigger is wake policy, and focus.md is a readable projection._",
     ]
     return "\n".join(parts).rstrip() + "\n"
 
@@ -149,11 +150,10 @@ def _render_focus_from_blueprint(
     manual_steps: list[str] | None = None,
     triggers: list[dict] | None = None,
 ) -> str:
-    """Render focus.md — the agent's current mission and tasks.
+    """Render focus.md — readable projection of the agent's current objectives.
 
-    Focus is volatile: updated by the agent, triggers, and heartbeat.
-    Only two things: what the mission is, and what to do next.
-    Everything else (capabilities, triggers, setup) lives in DB/system prompt.
+    Objective Ledger is canonical. This projection is volatile and helps humans
+    inspect current objectives, setup debt, wake policies, and first success checks.
     """
     focus_lines = _lines_from_text(focus_content)
     task_items = first_tasks or focus_lines[:3]
@@ -170,7 +170,7 @@ def _render_focus_from_blueprint(
         task_items,
         fallback=[
             "task_1 :: Read soul.md and restate the mission, users, and output contract in your own words.",
-            "task_2 :: Run the first mission using current builtin/default capabilities before requesting more tooling.",
+            "task_2 :: Run the first objective using current builtin/default capabilities before requesting more tooling.",
             "task_3 :: If a real capability gap blocks delivery, document the blocker clearly and evolve through the approved install path.",
         ],
     )
@@ -204,8 +204,8 @@ def _render_focus_from_blueprint(
         "## Human Setup Still Required",
         _markdown_bullets(manual_steps or [], fallback=["No manual setup blockers recorded."]),
         "",
-        "## Planned Trigger Work",
-        _markdown_bullets(trigger_lines, fallback=["No trigger work planned yet."]),
+        "## Planned Wake Policies",
+        _markdown_bullets(trigger_lines, fallback=["No wake policies planned yet."]),
         "",
         "## Heartbeat Exploration Topics",
         _markdown_bullets(heartbeat_lines, fallback=["No exploration topics declared yet."]),

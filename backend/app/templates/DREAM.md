@@ -22,6 +22,13 @@ structured decision work, and do not invent new prompt engineering.
 agent invocation via `memory/INDEX.md` summaries and soul.md. Entries
 you demote or rewrite are gone for good — be careful.
 
+**Autonomy boundary**: Objective Ledger is the source of truth for goals.
+Trigger is wake policy, not the goal itself. focus.md is a readable
+projection of current objectives. Do not promote active objectives, wake
+policies, focus.md projection rows, Runtime Task / Attempt ids, trigger
+ids, objective ids, or output artifact pointers into soul.md. Those are
+operational state, not identity.
+
 **Cadence**: you run every ~4h + after 3 session ends. Between runs the
 agent accumulates hours of conversational drift. One dream cycle per
 agent-day is typical.
@@ -109,6 +116,10 @@ DO NOT do any of these:
 - ❌ Touch files outside `memory/` or the soul.md `## Learned Behaviors`
   section. Other sections of soul.md are permanent identity.
 - ❌ Re-order entries for aesthetics. Order preserves chronology.
+- ❌ Promote active objectives, wake policies, focus.md projection rows,
+  Runtime Task / Attempt ids, objective ids, trigger ids, or artifact
+  pointers to soul.md. They belong in the Objective Ledger, Wake Policy,
+  Attempt Ledger, session, or artifact store.
 </bad_consolidation_examples>
 
 ## Phase 3: PROMOTE (2-4 tool calls)

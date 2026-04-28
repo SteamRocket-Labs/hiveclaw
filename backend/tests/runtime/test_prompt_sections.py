@@ -10,6 +10,7 @@ from app.runtime.prompt_sections import (
     build_scenario_section,
     build_system_section,
     build_tasks_section,
+    build_triggers_section,
     build_tools_section,
 )
 from app.runtime.context_budget import TaskProfile
@@ -25,7 +26,8 @@ class TestSystemSection:
     def test_has_execution_model(self) -> None:
         section = build_system_section()
         assert "### Execution Model" in section
-        assert "50 rounds" in section
+        assert "configured tool-round limit" in section
+        assert "50 rounds" not in section
 
     def test_has_tool_governance(self) -> None:
         assert "### Tool Governance" in build_system_section()
@@ -39,7 +41,7 @@ class TestSystemSection:
     def test_has_context_compression(self) -> None:
         section = build_system_section()
         assert "### Context Compression" in section
-        assert "85%" in section
+        assert "~90%" in section
         assert "60 minutes" in section
 
     def test_has_trust_boundaries(self) -> None:
@@ -73,7 +75,7 @@ class TestToolsSection:
         section = build_tools_section()
         assert "save_skill" in section
         assert "succeeded repeatedly" in section
-        assert "One-off notes" in section
+        assert "one-off notes" in section
 
 
 class TestMemorySection:
@@ -103,6 +105,31 @@ class TestMemorySection:
     def test_has_what_not_to_save(self) -> None:
         section = build_memory_section()
         assert "NOT:" in section
+
+
+class TestTriggersSection:
+    def test_active_triggers_are_rendered_as_wake_policies(self) -> None:
+        section = build_triggers_section(
+            [
+                {
+                    "name": "daily_brief",
+                    "type": "cron",
+                    "config": {
+                        "expr": "0 9 * * *",
+                        "trigger_class": "objective_task",
+                        "objective_id": "obj-123",
+                    },
+                    "reason": "Produce the daily brief and call complete_objective with the artifact path.",
+                    "focus_ref": "daily_brief",
+                }
+            ]
+        )
+
+        assert "wake policies, not goals" in section
+        assert "trigger_class: objective_task" in section
+        assert "objective_id: obj-123" in section
+        assert "focus_ref: daily_brief" in section
+        assert "complete_objective" in section
 
 
 class TestEnvironmentSection:

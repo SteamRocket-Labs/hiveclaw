@@ -483,7 +483,7 @@ def _build_restoration_context(
 
     # ── 1+2: Soul + Focus ──
     if _resolved_ws:
-        for rel_path, label in [("soul.md", "Agent Identity"), ("focus.md", "Working Memory")]:
+        for rel_path, label in [("soul.md", "Agent Identity"), ("focus.md", "Objective Projection")]:
             fpath = _resolved_ws / rel_path
             if not fpath.exists():
                 continue
@@ -780,6 +780,9 @@ class AgentKernel:
             if runtime_config.quota_message:
                 # Note: final_tools not included — not yet resolved at this point
                 return _build_error_result(runtime_config.quota_message)
+            runtime_execution_mode = getattr(runtime_config, "execution_mode", None)
+            if not request.execution_mode and runtime_execution_mode:
+                request.execution_mode = runtime_execution_mode
 
             resolved_memory_context = await _maybe_await(
                 self._deps.resolve_memory_context(request, runtime_config.tenant_id)
@@ -804,8 +807,8 @@ class AgentKernel:
             # within a session. Memory lives in the dynamic suffix which is
             # rebuilt every round regardless.
             #
-            # Previously this checked memory hash and invalidated frozen prefix
-            # when memory changed — but memory isn't in the frozen prefix, so
+            # Previously this checked memory hash and rebuilt the frozen prefix.
+            # Memory is a dynamic suffix, so
             # that was wasted work (full prompt rebuild + DB queries for the
             # same agent_context). Removed to maximize both application-level
             # cache hits and Anthropic API prefix cache hits.
@@ -1016,8 +1019,9 @@ class AgentKernel:
                                 role="system",
                                 content=(
                                     f"⚠️ You have used {round_i}/{max_rounds} tool rounds. "
-                                    "If the current task is not yet complete, save progress to focus.md soon "
-                                    "and use set_trigger to schedule a continuation trigger for the remaining work."
+                                    "If the current task is not yet complete, update Objective Ledger with blockers/status "
+                                    "and preserve concrete evidence in workspace artifacts. Trigger is wake policy, not the goal; "
+                                    "only create or update a wake policy when an existing objective needs a future attempt."
                                 ),
                             )
                         )
@@ -1025,7 +1029,11 @@ class AgentKernel:
                         api_messages.append(
                             LLMMessage(
                                 role="system",
-                                content="🚨 Only 2 tool rounds remaining. Save progress to focus.md and set a continuation trigger immediately.",
+                                content=(
+                                    "🚨 Only 2 tool rounds remaining. Objective Ledger is the source of truth: "
+                                    "record current status/blockers with evidence, preserve artifacts, and stop cleanly if unfinished. "
+                                    "Trigger is wake policy; do not create a trigger unless a real objective needs a future attempt."
+                                ),
                             )
                         )
 
@@ -1573,10 +1581,14 @@ class AgentKernel:
                                                 prompt_prefix,
                                                 build_dynamic_prompt_suffix(
                                                     active_packs=session_context.active_packs,
+                                                    memory_snapshot=resolved_memory_context,
                                                     retrieval_context=resolved_retrieval_context,
-                                                    system_prompt_suffix=request.system_prompt_suffix,
+                                                    system_prompt_suffix=_effective_suffix,
                                                     budget_profile=budget_profile,
                                                     latest_user_query=latest_user_query,
+                                                    user_name=current_user_name or "",
+                                                    channel=session_context.channel,
+                                                    agent_name=request.agent_name,
                                                 ),
                                                 context_window_tokens=_ctx_window,
                                                 budget_profile=budget_profile,

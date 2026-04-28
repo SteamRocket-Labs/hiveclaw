@@ -149,6 +149,8 @@ def test_core_tool_descriptions_define_when_not_to_use_and_fallbacks() -> None:
     assert "Do NOT load a skill speculatively" in tools["load_skill"]
     assert "Only use this after a workflow has succeeded repeatedly" in tools["save_skill"]
     assert "Do NOT save one-off notes, transient state, or raw transcripts as skills" in tools["save_skill"]
+    assert "Durable user corrections belong in `save_memory`" in tools["save_skill"]
+    assert "operational notes and evidence belong in workspace files" in tools["save_skill"]
     assert "This only returns summaries" in tools["tool_search"]
     assert "Do NOT use this as a general way to browse admin-only MCP extensions" in tools["tool_search"]
     assert "Return skill slugs" in tools["search_clawhub"]
@@ -297,7 +299,7 @@ def test_hr_templates_prefer_identity_first_and_install_later() -> None:
     hr_soul = (project_root / "backend" / "hr_agent_template" / "soul.md").read_text(encoding="utf-8")
     hr_focus = (project_root / "backend" / "hr_agent_template" / "focus.md").read_text(encoding="utf-8")
 
-    assert "mission / users / outputs / boundaries / first mission" in hr_create_employee
+    assert "mission / users / outputs / boundaries / first objective" in hr_create_employee
     assert "Do not front-load MCP / ClawHub / marketplace installs" in hr_create_employee
     assert "identity-first, install-later" in hr_soul
     assert "Most new agents should start with builtin tools + default skills only" in hr_soul
@@ -318,3 +320,118 @@ def test_hr_templates_use_blueprint_flow_instead_of_five_round_protocol() -> Non
     assert "5-round" not in hr_focus.lower()
     assert "Blueprint" in hr_soul
     assert "Phase A" in hr_soul
+
+
+def test_hr_templates_align_with_objective_ledger_and_wake_policy() -> None:
+    project_root = Path(__file__).resolve().parents[3]
+    hr_create_employee = (project_root / "backend" / "hr_agent_template" / "skills" / "CREATE_EMPLOYEE.md").read_text(
+        encoding="utf-8"
+    )
+    hr_guide = (
+        project_root / "backend" / "hr_agent_template" / "skills" / "hr-guide" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    hr_soul = (project_root / "backend" / "hr_agent_template" / "soul.md").read_text(encoding="utf-8")
+    hr_focus = (project_root / "backend" / "hr_agent_template" / "focus.md").read_text(encoding="utf-8")
+
+    combined = "\n".join([hr_create_employee, hr_guide, hr_soul, hr_focus])
+
+    assert "Objective Ledger" in combined
+    assert "Trigger is wake policy" in combined
+    assert "focus.md is a readable projection" in combined
+    assert "objective_task" in combined
+    assert "scheduled_job" in combined
+    assert "ONLY way an agent can do autonomous work" not in combined
+    assert "set up the agent's first trigger" not in combined
+
+
+def test_agent_autonomy_prompt_surfaces_share_objective_wake_contract() -> None:
+    project_root = Path(__file__).resolve().parents[3]
+    prompt_surface_paths = [
+        "backend/app/runtime/prompt_sections/executing_actions.py",
+        "backend/app/runtime/prompt_sections/tools.py",
+        "backend/app/runtime/prompt_sections/memory.py",
+        "backend/app/runtime/prompt_sections/triggers.py",
+        "backend/app/services/agent_context.py",
+        "backend/app/services/agent_manager.py",
+        "backend/app/templates/HEARTBEAT.md",
+        "backend/hr_agent_template/HEARTBEAT.md",
+        "backend/app/templates/system_skills/workspace-guide/SKILL.md",
+        "backend/app/templates/system_skills/trigger-guide/SKILL.md",
+        "backend/app/templates/system_skills/delegation-guide/SKILL.md",
+        "backend/app/templates/system_skills/memory-guide/SKILL.md",
+        "backend/app/templates/system_skills/dingtalk-integration/SKILL.md",
+        "backend/app/tools/handlers/triggers.py",
+        "backend/app/tools/handlers/hr.py",
+    ]
+    combined = "\n".join((project_root / path).read_text(encoding="utf-8") for path in prompt_surface_paths)
+
+    assert "Objective Ledger is the source of truth" in combined
+    assert "Trigger is wake policy" in combined
+    assert "focus.md is a readable projection" in combined
+    assert "objective_task" in combined
+    assert "scheduled_job" in combined
+    assert "event_wait" in combined
+
+    banned_phrases = [
+        "focus.md             — Readable projection of your objective ledger (YOU own canonical task rows)",
+        "**T1** (focus.md): current task list, volatile",
+        "ephemeral task details (those belong in focus.md)",
+        "manage your focus list",
+        "autonomous actions — those are handled by triggers",
+        "handled by triggers or explicit runtime permissions",
+        "set_trigger(type=\"once\", at=",
+        "first mission",
+        "focus item",
+        "Before creating a task trigger",
+        "Create a task trigger without",
+    ]
+    for phrase in banned_phrases:
+        assert phrase not in combined
+
+
+def test_runtime_prompt_surfaces_do_not_reintroduce_legacy_focus_truth_source() -> None:
+    project_root = Path(__file__).resolve().parents[3]
+    prompt_surface_paths = [
+        "backend/app/kernel/engine.py",
+        "backend/app/runtime/invoker.py",
+        "backend/app/runtime/prompt_sections/tools.py",
+        "backend/app/services/heartbeat.py",
+        "backend/app/services/trigger_daemon.py",
+        "backend/app/services/auto_dream.py",
+        "backend/app/services/extract_agent.py",
+        "backend/app/services/agent_context.py",
+        "backend/app/tools/workspace.py",
+        "backend/app/tools/handlers/hr.py",
+        "backend/app/memory/assembler.py",
+        "backend/app/memory/retriever.py",
+    ]
+    combined = "\n".join((project_root / path).read_text(encoding="utf-8") for path in prompt_surface_paths)
+
+    required_phrases = [
+        "Objective Ledger is the source of truth",
+        "Trigger is wake policy",
+        "focus.md is a readable projection",
+        "Objective Projection",
+    ]
+    for phrase in required_phrases:
+        assert phrase in combined
+
+    banned_phrases = [
+        "One-off notes, transient state, and raw transcripts belong in memory",
+        "these belong in focus.md, not memory",
+        "Ephemeral in-progress state (belongs in focus.md)",
+        "Read focus.md for your full mission and task list",
+        "Check focus.md, do one useful thing",
+        "read focus.md and do one small task",
+        "read focus.md and do something small",
+        "Read focus.md** — check if initial tasks were set during creation",
+        "write an initial focus based on your role from soul.md",
+        "If you completed any focus.md task during this execution",
+        '"Working Memory"',
+        "focus flows via retriever Working Memory",
+        "reads focus.md as Working Memory",
+        "Working Memory bloat",
+        "memory change invalidates it before reuse",
+    ]
+    for phrase in banned_phrases:
+        assert phrase not in combined

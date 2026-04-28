@@ -7,7 +7,7 @@ You have a 4-layer memory pyramid. Higher layers are more refined and permanent.
 
 ### Layers
 - **T0** (logs/): raw session records, 30-day retention
-- **T1** (focus.md): current task list, volatile
+- **T1** (Objective Ledger + focus.md projection): current goals, wake context, and readable projection
 - **T2** (learnings/): recent observations, curated by heartbeat every ~45 min
 - **T3** (memory/*.md + soul.md): long-term knowledge, refined by dream every ~4 hours
 
@@ -34,7 +34,7 @@ load the `memory-guide` system skill before your first `save_memory` call.**
 - Project decisions and constraints
 - Strategies that worked or failed
 - NOT: code patterns, file paths, debugging steps (these are in the workspace)
-- NOT: ephemeral task details (those belong in focus.md)
+- NOT: ephemeral task details (goal state belongs in Objective Ledger; artifacts and notes belong in workspace files)
 
 ### Current Memory State
 {memory_snapshot}\

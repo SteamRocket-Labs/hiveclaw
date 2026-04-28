@@ -11,6 +11,9 @@ understand how the channel works. DingTalk is currently an **inbound-only
 conversation bridge** — you reply in the current conversation and the
 channel handler delivers it back. You do NOT have proactive DingTalk tools
 to look up users or send outbound messages to DingTalk by ID.
+
+Objective Ledger is the source of truth. Trigger is wake policy. focus.md is a readable projection.
+Simple reminders in the current DingTalk thread are standalone `scheduled_job` wake policies.
 </role>
 
 <when_to_use>
@@ -35,7 +38,7 @@ relevant tools you WILL use come from other skill packs:
 |------|-------------------------|
 | Reply in the current DingTalk conversation | (automatic — your normal assistant reply is sent back by the channel handler) |
 | Schedule a follow-up later in this conversation | `set_trigger` (from Trigger Management Guide) |
-| Wait for the user's next DingTalk message | `set_trigger` with `type="on_message"`, `reply_to_current_sender: true`, and `max_fires: 1` |
+| Wait for the user's next DingTalk message | `set_trigger` with `type="on_message"`, `reply_to_current_sender: true`, `trigger_class="event_wait"`, and `max_fires: 1` |
 | List your active triggers | `list_triggers` |
 | Contact another digital employee instead | `send_message_to_agent` |
 
@@ -50,7 +53,7 @@ Just reply normally. No tool call needed — the channel handler forwards your a
 
 ### 2. Setting up a follow-up
 User asks: "跟我一小时后再提醒一下"
-- Call `set_trigger(type="once", at="+1h", reason="Remind the user about <topic>. Reply in the current DingTalk thread when triggered.")`
+- Get current time, compute the exact ISO timestamp, then call `set_trigger(type="once", config={"at": "<ISO timestamp>"}, trigger_class="scheduled_job", reason="Remind the user about <topic>. Reply in the current DingTalk thread when triggered.")`
 - Trust the awakening context's Reply Channel to send the result back through DingTalk.
 
 ### 3. Needing to contact someone NOT in this conversation
@@ -67,7 +70,7 @@ If the user asks you to "DM someone else on DingTalk" — you cannot do it direc
 
 ### Example A — Scheduled reminder in DingTalk
 Input: `帮我 30 分钟后提醒一下开会`
-Action: `set_trigger(type="once", at="+30m", reason="Remind the user about the meeting. Reply in the current DingTalk thread when triggered.")`
+Action: after checking current time, `set_trigger(type="once", config={"at": "<ISO timestamp 30 minutes later>"}, trigger_class="scheduled_job", reason="Remind the user about the meeting. Reply in the current DingTalk thread when triggered.")`
 Output to user: `好的，已设置 30 分钟后的提醒，我会在这个 DingTalk 对话里通知你。`
 
 ### Example B — User asks to message a third party
@@ -90,5 +93,5 @@ Correct response: `我在当前 DingTalk 对话里无法主动发消息给 Alice
 <success_criteria>
 - You only claim delivery when the channel handler has processed your reply (i.e. you replied in the current conversation).
 - You never fabricate DingTalk identifiers or tool names.
-- Scheduled follow-ups in DingTalk threads use `set_trigger` with a reason that describes the target channel explicitly.
+- Scheduled follow-ups in DingTalk threads use `set_trigger` with `trigger_class="scheduled_job"` and a reason that describes the target channel explicitly.
 </success_criteria>

@@ -981,7 +981,7 @@ def _build_create_employee_result(
                 "mcp_server_ids": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Smithery MCP server IDs to install only when the first mission is blocked without them (e.g. ['LinkupPlatform/linkup-mcp-server']). Found via discover_resources.",
+                    "description": "Smithery MCP server IDs to install only when the first objective is blocked without them (e.g. ['LinkupPlatform/linkup-mcp-server']). Found via discover_resources.",
                 },
                 "clawhub_slugs": {
                     "type": "array",
@@ -1487,7 +1487,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                             type="once",
                             config={"at": _fire_at, "trigger_class": "scheduled_job"},
                             reason=(
-                                f"Read focus.md for your full mission and task list. Start with this first task: {_boot_task}\n\n"
+                                f"Inspect the Objective Ledger and focus.md projection for your mission. Start with this first task: {_boot_task}\n\n"
                                 "After completing it, update the objective ledger with evidence."
                             ),
                         )
@@ -1858,7 +1858,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
         name="preview_agent_blueprint",
         description=(
             "Preview a structured digital-employee blueprint before creation. "
-            "Use this after clarifying mission, users, outputs, boundaries, and first mission. "
+            "Use this after clarifying mission, users, outputs, boundaries, and first objective. "
             "Prefer identity-first, install-later previews; only plan installs when capability gaps are mandatory on day one."
         ),
         parameters={
@@ -1887,7 +1887,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                 "skill_names": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Extra platform skills only if the first mission is blocked without them.",
+                    "description": "Extra platform skills only if the first objective is blocked without them.",
                 },
                 "external_skill_urls": {
                     "type": "array",
@@ -1902,12 +1902,12 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                 "mcp_server_ids": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Requested MCP servers only when builtin/default capabilities are insufficient for the first mission.",
+                    "description": "Requested MCP servers only when builtin/default capabilities are insufficient for the first objective.",
                 },
                 "clawhub_slugs": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Requested ClawHub skills only when builtin/default capabilities are insufficient for the first mission.",
+                    "description": "Requested ClawHub skills only when builtin/default capabilities are insufficient for the first objective.",
                 },
                 "permission_scope": {
                     "type": "string",

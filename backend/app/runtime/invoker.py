@@ -289,8 +289,8 @@ async def _resolve_memory_context(
     tenant_id: uuid.UUID | None,
 ) -> str:
     # ALWAYS load memory — even when prompt_prefix is cached.
-    # The engine uses memory hash to invalidate the prompt cache,
-    # so it needs fresh memory context every round.
+    # The engine injects memory as a dynamic suffix outside the frozen prefix,
+    # so fresh memory can vary without invalidating the stable system prompt cache.
     parts: list[str] = []
     session_id = request.memory_session_id
     if not session_id and request.session_context:

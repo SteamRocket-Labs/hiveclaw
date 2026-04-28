@@ -22,6 +22,8 @@ from app.models.system_settings import SystemSetting
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services.autonomous_audit import build_autonomous_audit_report
+from app.services.autonomy_repair_plan import apply_autonomy_repair_plan, build_autonomy_repair_plan
+from app.services.harness_canary import run_harness_canary
 from app.services.harness_validation_report import build_harness_validation_report
 
 logger = logging.getLogger(__name__)
@@ -64,6 +66,23 @@ class PlatformSettingsOut(BaseModel):
 class PlatformSettingsUpdate(BaseModel):
     allow_self_create_company: bool | None = None
     invitation_code_enabled: bool | None = None
+
+
+class AutonomyRepairApplyRequest(BaseModel):
+    action_ids: list[str] | None = Field(
+        default=None,
+        description="Optional stable repair action IDs to apply. Omit to apply all auto-applyable actions under max_risk.",
+    )
+    max_risk: str = Field(default="medium", pattern="^(low|medium|high)$")
+
+
+class HarnessCanaryRunRequest(BaseModel):
+    tenant_id: uuid.UUID | None = None
+    agent_id: uuid.UUID | None = None
+    include_h4: bool = True
+    include_h5: bool = True
+    max_agents: int = Field(default=50, ge=1, le=500)
+    force: bool = False
 
 
 # ─── Company Management ────────────────────────────────
@@ -280,6 +299,66 @@ async def get_harness_validation(
         tenant_id=tenant_id,
         agent_id=agent_id,
         lookback_hours=lookback_hours,
+    )
+
+
+@router.get("/autonomy-repair-plan")
+async def get_autonomy_repair_plan(
+    tenant_id: uuid.UUID | None = Query(default=None),
+    agent_id: uuid.UUID | None = Query(default=None),
+    lookback_hours: int = Query(default=24, ge=1, le=720),
+    current_user: User = Depends(require_role("platform_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return a read-only dry-run repair plan for autonomous audit findings."""
+    del current_user
+    return await build_autonomy_repair_plan(
+        db=db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        lookback_hours=lookback_hours,
+    )
+
+
+@router.post("/autonomy-repair-plan/apply")
+async def post_autonomy_repair_plan_apply(
+    payload: AutonomyRepairApplyRequest | None = None,
+    tenant_id: uuid.UUID | None = Query(default=None),
+    agent_id: uuid.UUID | None = Query(default=None),
+    lookback_hours: int = Query(default=24, ge=1, le=720),
+    current_user: User = Depends(require_role("platform_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Apply auto-applyable autonomy repair actions with precondition checks."""
+    del current_user
+    payload = payload or AutonomyRepairApplyRequest()
+    return await apply_autonomy_repair_plan(
+        db=db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        lookback_hours=lookback_hours,
+        action_ids=payload.action_ids,
+        max_risk=payload.max_risk,
+    )
+
+
+@router.post("/harness-canary/run")
+async def post_harness_canary_run(
+    payload: HarnessCanaryRunRequest | None = None,
+    current_user: User = Depends(require_role("platform_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Write explicit H4/H5 canary evidence for autonomous harness verification."""
+    del current_user
+    payload = payload or HarnessCanaryRunRequest()
+    return await run_harness_canary(
+        db=db,
+        tenant_id=payload.tenant_id,
+        agent_id=payload.agent_id,
+        include_h4=payload.include_h4,
+        include_h5=payload.include_h5,
+        max_agents=payload.max_agents,
+        force=payload.force,
     )
 
 

@@ -66,8 +66,12 @@ def build_objective_trigger_payload(objective: Any, *, now: datetime | None = No
 
 def objective_has_enabled_wake(objective: Any, triggers: list[Any]) -> bool:
     objective_id = str(getattr(objective, "id", "") or "")
+    objective_agent_id = str(getattr(objective, "agent_id", "") or "")
     key = normalize_focus_task_id(str(getattr(objective, "objective_key", "") or ""))
     for trigger in triggers:
+        trigger_agent_id = str(getattr(trigger, "agent_id", "") or "")
+        if objective_agent_id and trigger_agent_id and trigger_agent_id != objective_agent_id:
+            continue
         if not bool(getattr(trigger, "is_enabled", False)):
             continue
         config = getattr(trigger, "config", None) or {}
@@ -89,6 +93,17 @@ def _can_auto_wake(objective: Any) -> bool:
     return str(getattr(objective, "status", "") or "open") in ACTIVE_OBJECTIVE_STATUSES
 
 
+def _existing_trigger_for_name(triggers: list[Any], *, agent_id: uuid.UUID, name: str) -> Any | None:
+    agent_id_str = str(agent_id)
+    for trigger in triggers:
+        trigger_agent_id = str(getattr(trigger, "agent_id", "") or "")
+        if trigger_agent_id and trigger_agent_id != agent_id_str:
+            continue
+        if str(getattr(trigger, "name", "") or "") == name:
+            return trigger
+    return None
+
+
 async def reconcile_agent_objective_wake_policies(
     db: AsyncSession,
     *,
@@ -106,6 +121,7 @@ async def reconcile_agent_objective_wake_policies(
     triggers = list(trigger_result.scalars().all())
 
     created = 0
+    updated = 0
     skipped = 0
     for objective in objectives:
         if not _can_auto_wake(objective):
@@ -114,6 +130,15 @@ async def reconcile_agent_objective_wake_policies(
         if objective_has_enabled_wake(objective, triggers):
             continue
         payload = build_objective_trigger_payload(objective)
+        existing_trigger = _existing_trigger_for_name(triggers, agent_id=agent_id, name=payload["name"])
+        if existing_trigger is not None:
+            existing_trigger.type = payload["type"]
+            existing_trigger.config = payload["config"]
+            existing_trigger.reason = payload["reason"]
+            existing_trigger.focus_ref = payload["focus_ref"]
+            existing_trigger.is_enabled = True
+            updated += 1
+            continue
         trigger = AgentTrigger(
             agent_id=agent_id,
             name=payload["name"],
@@ -125,11 +150,17 @@ async def reconcile_agent_objective_wake_policies(
         db.add(trigger)
         triggers.append(trigger)
         created += 1
-    if created:
+    if created or updated:
         await db.flush()
-    if commit and created:
+    if commit and (created or updated):
         await db.commit()
-    return {"agent_id": str(agent_id), "objectives": len(objectives), "created": created, "skipped": skipped}
+    return {
+        "agent_id": str(agent_id),
+        "objectives": len(objectives),
+        "created": created,
+        "updated": updated,
+        "skipped": skipped,
+    }
 
 
 async def reconcile_all_objective_wake_policies() -> dict[str, Any]:
@@ -140,12 +171,14 @@ async def reconcile_all_objective_wake_policies() -> dict[str, Any]:
             )
             agent_ids = sorted({row[0] for row in result.all()})
             created = 0
+            updated = 0
             for agent_id in agent_ids:
                 report = await reconcile_agent_objective_wake_policies(db, agent_id=agent_id, commit=False)
                 created += int(report.get("created") or 0)
-            if created:
+                updated += int(report.get("updated") or 0)
+            if created or updated:
                 await db.commit()
-            return {"agents_checked": len(agent_ids), "created": created}
+            return {"agents_checked": len(agent_ids), "created": created, "updated": updated}
     except Exception as exc:
         logger.debug("[ObjectiveWake] reconcile all failed: {}", exc)
-        return {"agents_checked": 0, "created": 0, "error": str(exc)}
+        return {"agents_checked": 0, "created": 0, "updated": 0, "error": str(exc)}

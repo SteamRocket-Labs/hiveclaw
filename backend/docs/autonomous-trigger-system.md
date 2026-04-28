@@ -894,6 +894,145 @@ backend/tests/architecture/test_harness_validation_contract.py
 - 不写 RuntimeTask，不生成 evolution candidate，不自动修复 artifact。
 ```
 
+2026-04-28 生产修复 dry-run 层已补齐：
+
+```text
+backend/app/services/autonomy_repair_plan.py
+- 输入：/admin/autonomous-audit 的 findings + 当前 Agent / Trigger / Objective / tenant default model 快照。
+- 输出：只读 dry-run repair actions，不修改 DB，不写 focus.md，不触发 agent。
+- 所有 action 都带 action_id、action_type、risk、auto_apply、proposed_change、preconditions、manual_steps。
+- 自动可应用只表示“证据足够、未来 apply endpoint 可以执行”，dry-run endpoint 本身永远不执行修复。
+
+GET /api/admin/autonomy-repair-plan
+- platform_admin only。
+- query：tenant_id?、agent_id?、lookback_hours=24。
+- 用于把 audit findings 转成可审阅的生产修复计划。
+```
+
+当前 dry-run action 分类：
+
+```text
+create_objective_wake_policy
+- active objective / orphan focus 已有 objective ledger 证据时，预测创建 objective_task trigger。
+- 复用 objective_wake_reconciler.build_objective_trigger_payload。
+
+classify_scheduled_trigger
+- cron / once / interval 无 focus_ref 且未标 trigger_class 时，预测标记 trigger_class=scheduled_job。
+
+assign_default_primary_model
+- agent 有自主唤醒路径但无 primary_model_id，且 tenant 有 enabled default model 时，预测补 primary_model_id。
+
+repair_trigger_focus_ref_from_objective
+- trigger.focus_ref 缺失/过期，但 trigger.config.objective_id 仍绑定有效 objective 时，预测把 focus_ref 修回 objective_key。
+
+disable_completed_focus_trigger
+- trigger 仍绑定 completed focus/objective 时，预测 disable trigger。
+
+review_missing_focus_ref / configure_primary_model / review_orphan_focus_task
+- 证据不足或业务意图不确定，必须人工确认，不自动修复。
+```
+
+生产验证命令：
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://<railway-domain>/api/admin/autonomy-repair-plan?lookback_hours=1" \
+  | jq '.totals'
+```
+
+受控应用入口：
+
+```text
+POST /api/admin/autonomy-repair-plan/apply
+- platform_admin only。
+- body.action_ids 可选；不传表示应用当前计划中 max_risk 允许的所有 auto_apply=true action。
+- body.max_risk 默认 medium；合法值 low / medium / high。
+- 每条 action 应用前重新检查 precondition；不满足则 skipped，不会强行写。
+- 当前支持的 apply action：
+  - classify_scheduled_trigger
+  - create_objective_wake_policy
+  - assign_default_primary_model
+  - repair_trigger_focus_ref_from_objective
+  - disable_completed_focus_trigger
+  - create_objective_for_existing_trigger
+  - disable_model_blocked_heartbeat
+```
+
+`create_objective_for_existing_trigger` 的边界：
+
+```text
+它只把已经 enabled 的 trigger 纳入 objective ledger，不新增唤醒频率。
+如果同 agent + focus_ref 已有 objective，则复用 objective 并补 trigger.config.objective_id。
+如果没有 objective，则创建 source=trigger_repair 的 open objective，然后把 trigger 标为 objective_task。
+```
+
+`disable_model_blocked_heartbeat` 的边界：
+
+```text
+只在 agent 无 primary_model、无 enabled trigger、且 heartbeat 是唯一 autonomous wake path 时自动关闭 heartbeat。
+如果 agent 有 enabled trigger 但无模型，仍要求人工先配置模型或显式停用 trigger。
+```
+
+2026-04-28 Harness canary 写入入口已补齐：
+
+```text
+POST /api/admin/harness-canary/run
+- platform_admin only。
+- 目的：证明 H4/H5 harness 生产通路可写、可恢复、可审计。
+- 默认目标：有 heartbeat 或 enabled trigger 的 autonomous agents。
+- 默认幂等：已有 H4 long-task artifact 或 H5 evolution ledger 的 agent 会 skipped。
+- body:
+  - tenant_id?
+  - agent_id?
+  - include_h4=true
+  - include_h5=true
+  - max_agents=50
+  - force=false
+```
+
+H4 canary 写入：
+
+```text
+- RuntimeTask(task_type="harness_canary", status="completed")
+- runtime_artifacts/long_tasks/<runtime_task_id>/plan.json
+- runtime_artifacts/long_tasks/<runtime_task_id>/progress.jsonl
+- runtime_artifacts/long_tasks/<runtime_task_id>/validation_report.json
+```
+
+H5 canary 写入：
+
+```text
+- evolution/evolution_ledger.jsonl
+  - evolution_candidate.v1
+  - evolution_eval_run.v1
+  - evolution_promotion_decision.v1(decision="hold")
+- evolution/evolution_validation_report.json
+```
+
+Canary 边界：
+
+```text
+- 不创建或修改 objective。
+- 不创建、启用或停用 trigger。
+- 不修改 skill / prompt / model / permission。
+- 不把 canary 当成自然业务目标完成或真实行为 promotion。
+- 所有写入 metadata 都显式标记 harness_canary=true 和 no_behavior_change=true。
+```
+
+生产验证命令：
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  "https://<railway-domain>/api/admin/harness-canary/run" \
+  -d '{"include_h4":true,"include_h5":true,"max_agents":50}' \
+  | jq '.totals'
+
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://<railway-domain>/api/admin/harness-validation?lookback_hours=1" \
+  | jq '.totals'
+```
+
 ## P0 边界
 
 P0 做：

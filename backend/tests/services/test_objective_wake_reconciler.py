@@ -129,3 +129,64 @@ async def test_reconcile_agent_objective_wake_policies_does_not_duplicate_existi
     assert report["created"] == 0
     assert session.added == []
     assert session.commits == 0
+
+
+@pytest.mark.asyncio
+async def test_reconcile_agent_objective_wake_policies_reuses_existing_trigger_name():
+    from app.services.objective_wake_reconciler import build_objective_trigger_payload, reconcile_agent_objective_wake_policies
+
+    agent_id = uuid4()
+    objective_id = uuid4()
+    objective = SimpleNamespace(
+        id=objective_id,
+        agent_id=agent_id,
+        tenant_id=uuid4(),
+        objective_key="task_1",
+        description="Create the first report",
+        status="active",
+        priority=0,
+        success_criteria=None,
+        metadata_json={},
+    )
+    payload = build_objective_trigger_payload(objective)
+    existing = SimpleNamespace(
+        agent_id=agent_id,
+        name=payload["name"],
+        type="once",
+        config={"at": "2026-04-27T09:00:00+00:00"},
+        reason="Old wake policy",
+        focus_ref=None,
+        is_enabled=False,
+    )
+    session = _FakeSession(objectives=[objective], triggers=[existing])
+
+    report = await reconcile_agent_objective_wake_policies(session, agent_id=agent_id)
+
+    assert report["created"] == 0
+    assert report["updated"] == 1
+    assert session.added == []
+    assert session.commits == 1
+    assert existing.is_enabled is True
+    assert existing.focus_ref == "task_1"
+    assert existing.config["trigger_class"] == "objective_task"
+    assert existing.config["objective_id"] == str(objective_id)
+
+
+def test_objective_has_enabled_wake_ignores_other_agents_same_focus_ref():
+    from app.services.objective_wake_reconciler import objective_has_enabled_wake
+
+    agent_id = uuid4()
+    other_agent_id = uuid4()
+    objective = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        objective_key="task_1",
+    )
+    other_agent_trigger = SimpleNamespace(
+        agent_id=other_agent_id,
+        is_enabled=True,
+        focus_ref="task_1",
+        config={"trigger_class": "objective_task"},
+    )
+
+    assert objective_has_enabled_wake(objective, [other_agent_trigger]) is False

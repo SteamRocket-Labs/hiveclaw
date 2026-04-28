@@ -1,0 +1,1 @@
+{"schema":"autonomy_repair_plan.v1","mode":"dry_run","generated_at":"2026-04-28T00:06:38.591878+00:00","lookback_hours":1,"totals":{"agents":33,"audit_findings":0,"actions":0,"auto_applyable_actions":0,"manual_actions":0,"by_action_type":{},"by_risk":{}},"actions":[],"audit_totals":{"agents":33,"findings":0,"errors":0,"warnings":0,"infos":0,"by_category":{}}}

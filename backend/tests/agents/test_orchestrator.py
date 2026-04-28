@@ -904,3 +904,97 @@ async def test_delegate_concurrent_traces_do_not_interfere(monkeypatch):
     assert r1.failed is False and r2.failed is False
     assert _visited_agents_by_trace == {}  # both finally branches cleaned up
 
+
+# ── P1-W3-2 — AgentDelegationResult JSON serialization ──────────
+
+
+class TestDelegationResultSerialization:
+    """to_dict / to_json carry enough structure that a parent agent can
+    branch on the outcome without regex-matching the content prefix."""
+
+    def test_ok_status_when_no_failure_flags(self) -> None:
+        from app.agents.orchestrator import AgentDelegationResult
+
+        result = AgentDelegationResult(
+            content="answer body",
+            child_session_id="cs",
+            trace_id="t",
+            depth=1,
+        )
+        payload = result.to_dict()
+
+        assert payload["status"] == "ok"
+        assert payload["content"] == "answer body"
+        assert payload["child_session_id"] == "cs"
+        assert payload["trace_id"] == "t"
+        assert payload["depth"] == 1
+        assert payload["failed"] is False
+        assert payload["timed_out"] is False
+        assert payload["depth_limited"] is False
+
+    def test_status_is_depth_limited_when_both_flags_set(self) -> None:
+        from app.agents.orchestrator import AgentDelegationResult
+
+        result = AgentDelegationResult(
+            content="...",
+            child_session_id="cs",
+            trace_id="t",
+            depth=3,
+            failed=True,
+            depth_limited=True,
+        )
+        assert result.to_dict()["status"] == "depth_limited"
+
+    def test_status_is_timed_out_when_failure_came_from_timeout(self) -> None:
+        from app.agents.orchestrator import AgentDelegationResult
+
+        result = AgentDelegationResult(
+            content="...",
+            child_session_id="cs",
+            trace_id="t",
+            depth=1,
+            failed=True,
+            timed_out=True,
+        )
+        assert result.to_dict()["status"] == "timed_out"
+
+    def test_status_is_failed_for_generic_failure(self) -> None:
+        from app.agents.orchestrator import AgentDelegationResult
+
+        result = AgentDelegationResult(
+            content="...",
+            child_session_id="cs",
+            trace_id="t",
+            depth=1,
+            failed=True,
+        )
+        assert result.to_dict()["status"] == "failed"
+
+    def test_to_json_round_trips_through_json_loads(self) -> None:
+        import json
+        from app.agents.orchestrator import AgentDelegationResult
+
+        result = AgentDelegationResult(
+            content="hello 世界",
+            child_session_id="cs",
+            trace_id="t",
+            depth=2,
+            timed_out=True,
+            failed=True,
+        )
+        decoded = json.loads(result.to_json())
+
+        assert decoded["status"] == "timed_out"
+        assert decoded["content"] == "hello 世界"  # ensure_ascii=False preserves CJK
+        assert decoded["depth"] == 2
+
+    def test_to_json_is_valid_json_for_clean_result(self) -> None:
+        import json
+        from app.agents.orchestrator import AgentDelegationResult
+
+        result = AgentDelegationResult(
+            content="ok", child_session_id="cs", trace_id="t", depth=1
+        )
+        # Will raise on malformed JSON.
+        json.loads(result.to_json())
+

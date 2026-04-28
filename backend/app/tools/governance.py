@@ -107,6 +107,10 @@ class ToolGovernanceContext:
     tenant_id: str | None
     tool_name: str
     arguments: dict[str, Any]
+    # P1-W3-3: when this invocation is a child delegation, the parent's
+    # token narrows the child's capability set and carries an expiry.
+    # `None` means "not a delegated invocation" (web chat, trigger, etc.).
+    delegation_token: Any | None = None
 
 
 @dataclass(slots=True)
@@ -326,6 +330,50 @@ async def _run_governance_inner(
             _escalated_capability = (
                 getattr(cap_result, "capability", None) if getattr(cap_result, "escalate_to_l3", False) else None
             )
+
+            # P1-W3-3 — delegation token enforcement.
+            # When this invocation came in through delegate_to_agent, the
+            # parent's token narrows the child's capability set and carries
+            # an expiry. Expired or out-of-scope calls are denied here so a
+            # runaway child cannot keep spending parent capacity past TTL.
+            if context.delegation_token is not None:
+                from app.agents.delegation_token import validate_delegation_token
+
+                _cap_name = getattr(cap_result, "capability", "") or ""
+                token_check = validate_delegation_token(
+                    context.delegation_token,
+                    capability=_cap_name or None,
+                )
+                if not token_check.valid:
+                    message = f"🔒 Delegation token rejected: {token_check.reason}"
+                    await _maybe_await(
+                        deps.write_audit_event(
+                            event_type="delegation.token_denied",
+                            severity="warn",
+                            actor_type="agent",
+                            actor_id=context.agent_id,
+                            tenant_id=tenant_uuid,
+                            action="delegation_token_denied",
+                            resource_type="tool",
+                            resource_id=None,
+                            details={
+                                "tool": context.tool_name,
+                                "capability": _cap_name,
+                                "reason": token_check.reason,
+                            },
+                        )
+                    )
+                    await _emit_event(
+                        event_callback,
+                        {
+                            "type": "permission",
+                            "tool_name": context.tool_name,
+                            "status": "delegation_token_denied",
+                            "message": message,
+                            "reason": token_check.reason,
+                        },
+                    )
+                    return message
         except Exception as exc:
             # Fail-closed: block tool when capability gate is unavailable
             logger.warning("Capability gate check failed for tool %s (fail-closed): %s", context.tool_name, exc)

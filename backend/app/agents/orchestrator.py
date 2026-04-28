@@ -388,6 +388,40 @@ class AgentDelegationResult:
     depth_limited: bool = False
     failed: bool = False
 
+    def to_dict(self) -> dict[str, Any]:
+        """P1-W3-2: structured representation for parent agents that need
+        to branch on status (timed_out / depth_limited / failed) without
+        regex-matching the content prefix.
+
+        Includes a derived `status` so callers don't have to reconstruct
+        it from individual flags. `content` is preserved verbatim — the
+        message body is still the primary communication channel.
+        """
+        if self.failed and self.depth_limited:
+            status = "depth_limited"
+        elif self.failed and self.timed_out:
+            status = "timed_out"
+        elif self.failed:
+            status = "failed"
+        else:
+            status = "ok"
+        return {
+            "status": status,
+            "content": self.content,
+            "child_session_id": self.child_session_id,
+            "trace_id": self.trace_id,
+            "depth": self.depth,
+            "timed_out": self.timed_out,
+            "depth_limited": self.depth_limited,
+            "failed": self.failed,
+        }
+
+    def to_json(self) -> str:
+        """JSON-encoded `to_dict()` payload — the surface tool callers consume."""
+        import json
+
+        return json.dumps(self.to_dict(), ensure_ascii=False)
+
 
 def _normalize_delegation_message(message: dict[str, Any]) -> str:
     role = str(message.get("role") or "unknown").strip().lower()

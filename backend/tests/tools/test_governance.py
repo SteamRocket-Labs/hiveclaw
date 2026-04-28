@@ -547,3 +547,213 @@ async def test_governance_fail_closed_blocks_dangerous_command_without_tenant():
     # without tenant we cannot resolve the policy that would have approved/denied it.
     assert audit_calls[0]["event_type"] == "capability.tenant_missing"
     assert events[0]["status"] == "blocked"
+
+
+# ── P1-W3-3 — delegation token enforcement in governance ──────
+
+
+@pytest.mark.asyncio
+async def test_governance_denies_when_delegation_token_expired():
+    from app.agents.delegation_token import issue_delegation_token
+    from app.services.capability_gate import CapabilityCheckResult
+    from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    audit_calls: list[dict] = []
+    events: list[dict] = []
+
+    async def resolve_security_zone(_agent_id):
+        return "standard"
+
+    async def check_capability(_t, _a, _tool):
+        return CapabilityCheckResult(
+            allowed=True, capability="workspace.file.read"
+        )
+
+    async def write_audit(**kwargs):
+        audit_calls.append(kwargs)
+
+    async def request_approval(*_a, **_kw):
+        raise AssertionError("approval should not run after token denial")
+
+    expired_token = issue_delegation_token(
+        parent_agent_id=uuid4(),
+        child_agent_id=agent_id,
+        granted_capabilities=frozenset({"workspace.file.read"}),
+        ttl_seconds=10.0,
+        now=0.0,
+    )
+    # Pretend "now" is past expiry by passing a token whose expires_at is
+    # already < real time.
+
+    message = await run_tool_governance(
+        ToolGovernanceContext(
+            agent_id=agent_id,
+            user_id=uuid4(),
+            tenant_id=str(tenant_id),
+            tool_name="read_file",
+            arguments={},
+            delegation_token=expired_token,
+        ),
+        GovernanceDependencies(
+            resolve_security_zone=resolve_security_zone,
+            check_capability=check_capability,
+            write_audit_event=write_audit,
+            request_approval=request_approval,
+        ),
+        event_callback=events.append,
+    )
+
+    assert message is not None
+    assert "Delegation token rejected" in message
+    assert "expired" in message
+    assert any(c["event_type"] == "delegation.token_denied" for c in audit_calls)
+    assert any(e["status"] == "delegation_token_denied" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_governance_denies_when_capability_outside_token_grant():
+    from app.agents.delegation_token import issue_delegation_token
+    from app.services.capability_gate import CapabilityCheckResult
+    from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    audit_calls: list[dict] = []
+    events: list[dict] = []
+
+    async def resolve_security_zone(_agent_id):
+        return "standard"
+
+    async def check_capability(_t, _a, _tool):
+        return CapabilityCheckResult(
+            allowed=True, capability="workspace.file.write"  # not in token grant
+        )
+
+    async def write_audit(**kwargs):
+        audit_calls.append(kwargs)
+
+    async def request_approval(*_a, **_kw):
+        raise AssertionError("approval should not run")
+
+    fresh_token = issue_delegation_token(
+        parent_agent_id=uuid4(),
+        child_agent_id=agent_id,
+        granted_capabilities=frozenset({"workspace.file.read"}),
+        ttl_seconds=300.0,  # not expired
+    )
+
+    message = await run_tool_governance(
+        ToolGovernanceContext(
+            agent_id=agent_id,
+            user_id=uuid4(),
+            tenant_id=str(tenant_id),
+            tool_name="write_file",
+            arguments={},
+            delegation_token=fresh_token,
+        ),
+        GovernanceDependencies(
+            resolve_security_zone=resolve_security_zone,
+            check_capability=check_capability,
+            write_audit_event=write_audit,
+            request_approval=request_approval,
+        ),
+        event_callback=events.append,
+    )
+
+    assert message is not None
+    assert "Delegation token rejected" in message
+    assert "not in delegation grant" in message
+
+
+@pytest.mark.asyncio
+async def test_governance_allows_when_token_grants_capability():
+    """A fresh, in-scope token must not block — falls through to normal flow."""
+    from app.agents.delegation_token import issue_delegation_token
+    from app.services.capability_gate import CapabilityCheckResult
+    from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+
+    async def resolve_security_zone(_agent_id):
+        return "standard"
+
+    async def check_capability(_t, _a, _tool):
+        return CapabilityCheckResult(allowed=True, capability="workspace.file.read")
+
+    async def write_audit(**_kw):
+        pass
+
+    async def request_approval(*_a, **_kw):
+        return {"granted": True}
+
+    fresh_token = issue_delegation_token(
+        parent_agent_id=uuid4(),
+        child_agent_id=agent_id,
+        granted_capabilities=frozenset({"workspace.file.read"}),
+        ttl_seconds=300.0,
+    )
+
+    message = await run_tool_governance(
+        ToolGovernanceContext(
+            agent_id=agent_id,
+            user_id=uuid4(),
+            tenant_id=str(tenant_id),
+            tool_name="read_file",
+            arguments={},
+            delegation_token=fresh_token,
+        ),
+        GovernanceDependencies(
+            resolve_security_zone=resolve_security_zone,
+            check_capability=check_capability,
+            write_audit_event=write_audit,
+            request_approval=request_approval,
+        ),
+    )
+
+    # No blocking message — None means "proceed with execution".
+    assert message is None
+
+
+@pytest.mark.asyncio
+async def test_governance_skips_token_check_when_no_token():
+    """Web chat / trigger / heartbeat have no delegation token; the
+    enforcement branch must short-circuit cleanly."""
+    from app.services.capability_gate import CapabilityCheckResult
+    from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+
+    async def resolve_security_zone(_a):
+        return "standard"
+
+    async def check_capability(_t, _a, _tool):
+        return CapabilityCheckResult(allowed=True, capability="workspace.file.read")
+
+    async def write_audit(**_kw):
+        pass
+
+    async def request_approval(*_a, **_kw):
+        return {"granted": True}
+
+    message = await run_tool_governance(
+        ToolGovernanceContext(
+            agent_id=agent_id,
+            user_id=uuid4(),
+            tenant_id=str(tenant_id),
+            tool_name="read_file",
+            arguments={},
+            # delegation_token defaults to None
+        ),
+        GovernanceDependencies(
+            resolve_security_zone=resolve_security_zone,
+            check_capability=check_capability,
+            write_audit_event=write_audit,
+            request_approval=request_approval,
+        ),
+    )
+
+    assert message is None  # passes through

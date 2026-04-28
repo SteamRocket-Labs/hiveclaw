@@ -20,6 +20,7 @@ from app.models.llm import LLMModel
 from app.models.user import User
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
+from app.services.llm_error_policy import is_llm_error_message
 from app.services.web_session_contract import apply_web_session_contract
 
 router = APIRouter(tags=["websocket"])
@@ -198,6 +199,9 @@ def _conversation_from_history_messages(history_messages) -> list[dict]:
                 logger.debug("[WS] Skipped malformed tool_call record: {}", exc)
             continue
 
+        if msg.role == "assistant" and is_llm_error_message(msg.content):
+            continue
+
         entry = {"role": msg.role, "content": msg.content}
         if getattr(msg, "thinking", None):
             entry["reasoning_content"] = msg.thinking
@@ -270,7 +274,8 @@ async def call_llm(
 
     if auto_close_session and agent_id is not None:
         close_messages = list(runtime_memory_messages or runtime_messages)
-        close_messages.append({"role": "assistant", "content": result.content})
+        if not is_llm_error_message(result.content):
+            close_messages.append({"role": "assistant", "content": result.content})
         try:
             from app.runtime.hooks import HookEvent, emit_hook
 
@@ -846,6 +851,7 @@ async def websocket_chat(
 
                     assistant_response = await llm_task
                     logger.info(f"[WS] LLM response: {assistant_response[:80]}")
+                    llm_failed = is_llm_error_message(assistant_response)
 
                     # Update last_active_at
                     from datetime import datetime, timezone as tz
@@ -859,7 +865,20 @@ async def websocket_chat(
 
                     # Token usage is tracked by record_token_usage in the kernel
                     from app.services.activity_logger import log_activity
-                    await log_activity(agent_id, "chat_reply", f"Replied to web chat: {assistant_response[:80]}", detail={"channel": "web", "user_text": content[:200], "reply": assistant_response[:500]})
+                    if llm_failed:
+                        await log_activity(
+                            agent_id,
+                            "llm_error",
+                            f"LLM failed: {assistant_response[:80]}",
+                            detail={"channel": "web", "user_text": content[:200], "reply": assistant_response[:500]},
+                        )
+                    else:
+                        await log_activity(
+                            agent_id,
+                            "chat_reply",
+                            f"Replied to web chat: {assistant_response[:80]}",
+                            detail={"channel": "web", "user_text": content[:200], "reply": assistant_response[:500]},
+                        )
                 except WebSocketDisconnect:
                     raise
                 except Exception as e:
@@ -869,14 +888,14 @@ async def websocket_chat(
                     # Sanitize error — strip potential secrets, show friendly message
                     _err_str = str(e)[:200]
                     if any(k in _err_str.lower() for k in ("api_key", "sk-", "secret", "password", "token=")):
-                        assistant_response = "AI 模型调用异常，请稍后重试。"
+                        assistant_response = "[LLM Error] AI 模型调用异常，请稍后重试。"
                     else:
-                        assistant_response = "AI 模型调用异常，请稍后重试。"
+                        assistant_response = "[LLM Error] AI 模型调用异常，请稍后重试。"
             else:
-                assistant_response = f"⚠️ {agent_name} has no LLM model configured. Please select a model in the agent's Settings tab."
+                assistant_response = f"[LLM Error] {agent_name} has no LLM model configured. Please select a model in the agent's Settings tab."
 
             # If task creation detected, create a real Task record
-            if task_match:
+            if task_match and not is_llm_error_message(assistant_response):
                 task_title = task_match.group(1).strip()
                 if task_title:
                     try:
@@ -902,7 +921,8 @@ async def websocket_chat(
                         logger.error(f"[WS] Failed to create task: {e}")
 
             # Add assistant response to conversation
-            conversation.append({"role": "assistant", "content": assistant_response})
+            if not is_llm_error_message(assistant_response):
+                conversation.append({"role": "assistant", "content": assistant_response})
 
             # Save assistant message
             async with async_session() as db:

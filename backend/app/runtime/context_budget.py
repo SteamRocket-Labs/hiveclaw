@@ -374,7 +374,7 @@ def resolve_turn_model_route(
         )
 
     routing_enabled = _routing_enabled(routing_config)
-    if routing_enabled is False:
+    if routing_enabled is not True:
         return TurnModelRoute(
             model=primary_model,
             fallback_model=fallback_model,

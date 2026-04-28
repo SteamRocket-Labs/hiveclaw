@@ -25,6 +25,7 @@ from app.services.chat_message_parts import (
     build_permission_event,
     build_tool_call_event,
 )
+from app.services.llm_error_policy import classify_llm_error, should_surface_without_model_fallback
 from app.services.llm_utils import LLMError, LLMMessage
 from app.tools.registry import is_parallel_safe_tool
 
@@ -231,27 +232,7 @@ def _truncate_head_for_ptl(messages: list[LLMMessage], drop_ratio: float = 0.2) 
 
 def _humanize_llm_error(exc: Exception) -> str:
     """Convert raw LLM errors to user-friendly messages for end users."""
-    msg = str(exc)
-    lower = msg.lower()
-    if (
-        "quota" in lower
-        or "insufficient_quota" in lower
-        or "quotaexhausted" in lower
-        or "allocated quota exceeded" in lower
-        or "token-plan quota has been exhausted" in lower
-    ):
-        return "[LLM Error] AI 模型额度已耗尽，请联系管理员检查模型额度或切换模型。"
-    if "429" in msg or "529" in msg or "overloaded" in lower or "rate_limit" in lower or "rate limit" in lower:
-        return "[LLM Error] AI 模型服务方暂时过载，请稍后重试。"
-    if "401" in msg or "403" in msg or "authentication" in lower or "unauthorized" in lower:
-        return "[LLM Error] AI 模型 API 认证失败，请联系管理员检查模型配置。"
-    if "timeout" in lower or "timed out" in lower:
-        return "[LLM Error] AI 模型服务方响应超时，请稍后重试。"
-    if "context_length" in lower or "too long" in lower or "too many tokens" in lower:
-        return "[LLM Error] 对话内容超出模型上下文长度限制，请开启新会话或清理历史消息。"
-    if "connection" in lower or "connect" in lower:
-        return "[LLM Error] 连接 AI 模型服务方失败，请稍后重试。"
-    return f"[LLM Error] AI 模型调用异常，请稍后重试。({msg[:80]})"
+    return classify_llm_error(exc).user_message
 
 
 def _build_error_result(
@@ -1199,7 +1180,11 @@ class AgentKernel:
                                             )
 
                             # ── Fallback model retry ──
-                            if fallback_model is not None and active_model is request.model:
+                            if (
+                                fallback_model is not None
+                                and active_model is request.model
+                                and not should_surface_without_model_fallback(exc)
+                            ):
                                 _fallback_reason = "prompt_too_long" if _is_prompt_too_long(exc) else "llm_error"
                                 await _emit_event({
                                     "type": "runtime_fallback",
@@ -1249,7 +1234,11 @@ class AgentKernel:
                                 type(exc).__name__,
                                 str(exc)[:300],
                             )
-                            if fallback_model is not None and active_model is request.model:
+                            if (
+                                fallback_model is not None
+                                and active_model is request.model
+                                and not should_surface_without_model_fallback(exc)
+                            ):
                                 await _emit_event({
                                     "type": "runtime_fallback",
                                     "reason": "unexpected_error",

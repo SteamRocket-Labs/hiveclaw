@@ -35,6 +35,24 @@ def test_humanize_llm_error_reports_quota_instead_of_auth_for_403_quota():
     assert message == "[LLM Error] AI 模型额度已耗尽，请联系管理员检查模型额度或切换模型。"
 
 
+def test_humanize_llm_error_reports_model_not_found_separately():
+    from app.kernel.engine import _humanize_llm_error
+    from app.services.llm_utils import LLMError
+
+    message = _humanize_llm_error(LLMError('HTTP 404: {"error":{"message":"Model Not Exist"}}'))
+
+    assert message == "[LLM Error] AI 模型名称不存在或未对当前账号开放，请联系管理员检查模型配置。"
+
+
+def test_humanize_llm_error_reports_provider_bad_request_separately():
+    from app.kernel.engine import _humanize_llm_error
+    from app.services.llm_utils import LLMError
+
+    message = _humanize_llm_error(LLMError('HTTP 400: {"error":{"message":"invalid model parameter"}}'))
+
+    assert message == "[LLM Error] AI 模型供应商拒绝了当前请求，请检查模型名称、参数或消息格式。"
+
+
 def test_build_restoration_context_prefers_newest_recent_files(tmp_path, monkeypatch):
     from app.kernel.engine import _build_restoration_context
     from app.runtime.session import SessionContext

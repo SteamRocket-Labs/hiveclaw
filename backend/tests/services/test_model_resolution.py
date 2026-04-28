@@ -2,7 +2,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 
-def test_choose_runtime_model_pair_adds_default_fallback_when_missing():
+def test_choose_runtime_model_pair_does_not_invent_default_fallback_when_missing():
     from app.services.model_resolution import choose_runtime_model_pair
 
     primary = SimpleNamespace(id=uuid4(), model="qwen3.6-plus")
@@ -11,10 +11,10 @@ def test_choose_runtime_model_pair_adds_default_fallback_when_missing():
     model, fallback = choose_runtime_model_pair(primary, None, default)
 
     assert model is primary
-    assert fallback is default
+    assert fallback is None
 
 
-def test_choose_runtime_model_pair_replaces_duplicate_fallback_with_default():
+def test_choose_runtime_model_pair_drops_duplicate_fallback_instead_of_replacing_it():
     from app.services.model_resolution import choose_runtime_model_pair
 
     model_id = uuid4()
@@ -25,7 +25,7 @@ def test_choose_runtime_model_pair_replaces_duplicate_fallback_with_default():
     model, fallback = choose_runtime_model_pair(primary, duplicate_fallback, default)
 
     assert model is primary
-    assert fallback is default
+    assert fallback is None
 
 
 def test_choose_runtime_model_pair_promotes_explicit_fallback_when_primary_missing():
@@ -37,4 +37,4 @@ def test_choose_runtime_model_pair_promotes_explicit_fallback_when_primary_missi
     model, fallback = choose_runtime_model_pair(None, explicit_fallback, default)
 
     assert model is explicit_fallback
-    assert fallback is default
+    assert fallback is None

@@ -112,7 +112,7 @@ def test_infer_task_profile_suggests_mcp_pack_for_explicit_platform_extension():
     assert "mcp_admin_pack" in profile.suggested_pack_names
 
 
-def test_resolve_turn_model_route_prefers_fallback_for_simple_general_turn():
+def test_resolve_turn_model_route_keeps_primary_for_simple_general_turn_without_explicit_routing():
     from types import SimpleNamespace
 
     from app.runtime.context_budget import resolve_turn_model_route
@@ -138,12 +138,48 @@ def test_resolve_turn_model_route_prefers_fallback_for_simple_general_turn():
         session_source="websocket",
     )
 
+    assert route.model is primary_model
+    assert route.fallback_model is fallback_model
+    assert route.supports_vision is True
+    assert route.reason == "primary_model"
+    assert route.task_profile.name == "general"
+    assert route.task_profile.complexity == "low"
+
+
+def test_resolve_turn_model_route_prefers_fallback_when_smart_routing_enabled():
+    from types import SimpleNamespace
+
+    from app.runtime.context_budget import resolve_turn_model_route
+
+    primary_model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1",
+        max_input_tokens=128000,
+        supports_vision=True,
+    )
+    fallback_model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1-mini",
+        max_input_tokens=32000,
+        supports_vision=False,
+    )
+
+    route = resolve_turn_model_route(
+        primary_model=primary_model,
+        fallback_model=fallback_model,
+        query="帮我润色这句话，让语气更礼貌。",
+        execution_mode="conversation",
+        session_source="websocket",
+        routing_config={"enabled": True},
+    )
+
     assert route.model is fallback_model
     assert route.fallback_model is primary_model
     assert route.supports_vision is False
     assert route.reason == "simple_turn_cheap_model"
     assert route.task_profile.name == "general"
     assert route.task_profile.complexity == "low"
+    assert route.config_source == "agent_config"
 
 
 def test_resolve_turn_model_route_keeps_primary_for_coding_turn():

@@ -25,6 +25,21 @@ def test_history_rehydration_maps_stored_thinking_to_reasoning_content():
     ]
 
 
+def test_history_rehydration_skips_llm_error_assistant_rows():
+    from app.api.websocket import _conversation_from_history_messages
+
+    entries = _conversation_from_history_messages([
+        SimpleNamespace(role="user", content="请继续", thinking=None),
+        SimpleNamespace(role="assistant", content="[LLM Error] AI 模型额度已耗尽，请联系管理员检查模型额度。", thinking=None),
+        SimpleNamespace(role="assistant", content="之前真实完成的结果", thinking=None),
+    ])
+
+    assert entries == [
+        {"role": "user", "content": "请继续"},
+        {"role": "assistant", "content": "之前真实完成的结果"},
+    ]
+
+
 @pytest.mark.asyncio
 async def test_call_llm_delegates_to_runtime_invoker(monkeypatch):
     from app.api.websocket import call_llm

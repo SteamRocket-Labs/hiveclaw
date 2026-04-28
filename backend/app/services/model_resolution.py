@@ -37,18 +37,17 @@ def choose_runtime_model_pair(
 ) -> tuple[Any | None, Any | None]:
     """Choose primary and fallback models for runtime invocation.
 
-    Explicit primary/fallback still wins. Tenant default is only used as a safety
-    fallback when no usable fallback is configured or the fallback duplicates
-    the active model.
+    The runtime must not invent a fallback model. A fallback is only used when
+    the agent has an explicit fallback configured by the user/admin.
     """
+    del default_model
     model = primary_model
     fallback = fallback_model
     if model is None and fallback is not None:
         model = fallback
         fallback = None
-    if model is not None and default_model is not None and (fallback is None or _same_model(model, fallback)):
-        if not _same_model(model, default_model):
-            fallback = default_model
+    if model is not None and fallback is not None and _same_model(model, fallback):
+        fallback = None
     return model, fallback
 
 
@@ -88,4 +87,3 @@ async def resolve_default_model_for_tenant(
         query = query.where(LLMModel.id != exclude_model_id)
     fallback_result = await db.execute(query.order_by(LLMModel.created_at.asc()).limit(1))
     return fallback_result.scalar_one_or_none()
-

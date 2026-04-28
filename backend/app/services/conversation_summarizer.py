@@ -3,6 +3,8 @@
 import logging
 import re
 
+from app.services.llm_error_policy import is_llm_error_message
+
 logger = logging.getLogger(__name__)
 
 # Default fallback when ProviderSpec is unavailable
@@ -266,7 +268,7 @@ def _extract_summary(messages: list[dict]) -> str:
             continue
         if role == "user":
             user_asks.append(content[:200])
-        elif role == "assistant" and "tool_calls" not in msg:
+        elif role == "assistant" and "tool_calls" not in msg and not is_llm_error_message(content):
             assistant_answers.append(content[:300])
 
     if not user_asks and not assistant_answers:
@@ -533,7 +535,7 @@ async def _llm_summarize(messages: list[dict], model_config: dict) -> str | None
         if role == "user":
             # Preserve user messages at higher fidelity — they encode intent
             conversation_text.append(f"user: {content[:800]}")
-        elif role == "assistant":
+        elif role == "assistant" and not is_llm_error_message(content):
             conversation_text.append(f"assistant: {content[:800]}")
 
     if not conversation_text:

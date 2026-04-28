@@ -596,7 +596,7 @@ async def get_metrics_leaderboards(
 async def audit_agent_extraction(
     agent_id: uuid.UUID,
     days: int = Query(7, ge=1, le=30),
-    _admin: User = Depends(require_role("admin")),
+    _admin: User = Depends(require_role("platform_admin")),
 ) -> dict:
     """Report which behavior T0 sessions are missing from T2 backfill."""
     from app.services.extract_agent import audit_extraction_completeness
@@ -609,7 +609,7 @@ async def backfill_agent_t2(
     agent_id: uuid.UUID,
     days: int = Query(7, ge=1, le=30),
     dry_run: bool = Query(False),
-    _admin: User = Depends(require_role("admin")),
+    _admin: User = Depends(require_role("platform_admin")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Replay missing behavior T0 sessions into T2 learnings.

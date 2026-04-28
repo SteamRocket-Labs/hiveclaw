@@ -41,7 +41,9 @@ class TestSystemSection:
     def test_has_context_compression(self) -> None:
         section = build_system_section()
         assert "### Context Compression" in section
-        assert "~90%" in section
+        # P1-W2-3: tightened from 90% → 75%, microcompact pressure surfaces 60%.
+        assert "~75%" in section
+        assert "~60%" in section
         assert "60 minutes" in section
 
     def test_has_trust_boundaries(self) -> None:

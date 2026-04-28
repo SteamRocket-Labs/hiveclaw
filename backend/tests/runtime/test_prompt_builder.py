@@ -287,3 +287,153 @@ class TestFrozenPrefixMetering:
         # the only place an "Output Efficiency" header could appear is the
         # deleted section — tone_style does not use that label.
         assert "Output Efficiency" not in prefix
+
+
+# ── P1-W2-1: Frozen prefix hard cap ────────────────────────────
+
+
+class TestFrozenPrefixHardCap:
+    """build_frozen_prompt_prefix must stay within `_FROZEN_PREFIX_CHAR_LIMIT`.
+
+    Skill catalog is dropped first because `load_skill` can hydrate any body
+    on demand — base sections drive behavior and trim only as last resort.
+    """
+
+    def setup_method(self) -> None:
+        from app.memory import metrics
+        metrics.reset_all()
+
+    def test_under_limit_no_trimming(self) -> None:
+        from app.runtime.prompt_builder import build_frozen_prompt_prefix
+
+        prefix = build_frozen_prompt_prefix(
+            agent_context="ctx", skill_catalog="## Skills\n- a\n- b"
+        )
+        assert "ctx" in prefix
+        assert "## Skills" in prefix  # catalog kept when budget allows
+
+    def test_skill_catalog_dropped_when_only_catalog_pushes_over_limit(self) -> None:
+        """Base fits, catalog is huge — drop it (load_skill replaces it)."""
+        from app.runtime.prompt_builder import (
+            _FROZEN_PREFIX_CHAR_LIMIT,
+            build_frozen_prompt_prefix,
+        )
+
+        # 30K-char catalog blows past the 28K char hard cap on its own.
+        bloated_catalog = "## Skills\n" + "\n".join(
+            f"- skill_{i}: {'x' * 30}" for i in range(800)
+        )
+        assert len(bloated_catalog) > _FROZEN_PREFIX_CHAR_LIMIT
+
+        prefix = build_frozen_prompt_prefix(
+            agent_context="tiny ctx", skill_catalog=bloated_catalog
+        )
+
+        assert len(prefix) <= _FROZEN_PREFIX_CHAR_LIMIT
+        assert "tiny ctx" in prefix  # base preserved
+        # Catalog body must not appear in full — accept either fully dropped
+        # or trimmed to fit leftover budget.
+        assert bloated_catalog not in prefix
+
+    def test_partial_catalog_kept_when_leftover_budget_fits(self) -> None:
+        """Base small, modest-size catalog — re-fit a trimmed catalog."""
+        from app.runtime.prompt_builder import build_frozen_prompt_prefix
+
+        # 30K catalog → fully dropped. 3K catalog → fits leftover budget.
+        catalog = "## Skills\n" + "\n".join(f"- skill_{i}" for i in range(150))
+        prefix = build_frozen_prompt_prefix(
+            agent_context="ctx", skill_catalog=catalog
+        )
+        # Base is small; catalog fits — should appear (full or trimmed).
+        assert "## Skills" in prefix
+
+    def test_tail_trim_when_base_alone_overflows(self) -> None:
+        """Base overflows on its own — last-resort tail trim with notice."""
+        from app.runtime.prompt_builder import (
+            _FROZEN_PREFIX_CHAR_LIMIT,
+            _FROZEN_PREFIX_TRIM_NOTICE,
+            build_frozen_prompt_prefix,
+        )
+
+        # Pump agent_context past the hard cap to force base trimming.
+        oversize_ctx = "soul_data " * 4000  # ~40K chars
+        prefix = build_frozen_prompt_prefix(agent_context=oversize_ctx)
+
+        assert len(prefix) <= _FROZEN_PREFIX_CHAR_LIMIT
+        assert prefix.endswith(_FROZEN_PREFIX_TRIM_NOTICE)
+        # Head of agent_context must be preserved (highest-value section).
+        assert prefix.startswith("soul_data")
+
+    def test_metering_records_post_trim_size(self) -> None:
+        """Metric snapshot reflects the trimmed size, not the pre-trim size.
+
+        Otherwise overrun_total stays elevated forever after a single big
+        prompt, masking subsequent regressions.
+        """
+        from app.memory import metrics
+        from app.runtime.prompt_builder import (
+            _FROZEN_PREFIX_CHAR_LIMIT,
+            build_frozen_prompt_prefix,
+        )
+
+        bloated_catalog = "## Skills\n" + "\n".join(f"- skill_{i}" for i in range(2000))
+        build_frozen_prompt_prefix(
+            agent_context="ctx", skill_catalog=bloated_catalog
+        )
+
+        snap = metrics.snapshot()
+        assert snap["frozen_prefix_chars"]["max"] <= _FROZEN_PREFIX_CHAR_LIMIT
+
+
+# ── P1-W2-2: Dynamic suffix per-section caps ──────────────────
+
+
+class TestDynamicSuffixCaps:
+    """Memory snapshot, system_prompt_suffix, and pack/knowledge sections all
+    enforce per-section budgets so a runaway upstream caller can't push the
+    dynamic block past round-trip-cost-sensible size."""
+
+    def test_memory_snapshot_trimmed_to_60pct_of_memory_budget(self) -> None:
+        from app.runtime.prompt_builder import build_dynamic_prompt_suffix
+
+        # 50K-char memory snapshot; default profile gives ~12K memory budget,
+        # so 60% = ~7200 chars. Body must be capped + trim notice present.
+        bloated_memory = "MEMORY-LINE\n" * 5000  # ~60K chars
+        suffix = build_dynamic_prompt_suffix(
+            memory_snapshot=bloated_memory,
+        )
+
+        assert "## Your Memory System" in suffix  # template still present
+        assert "MEMORY-LINE" in suffix  # body partially preserved
+        assert "memory snapshot trimmed" in suffix  # trim notice fired
+
+    def test_system_prompt_suffix_trimmed_to_5k_cap(self) -> None:
+        from app.runtime.prompt_builder import (
+            _SYSTEM_PROMPT_SUFFIX_CHAR_CAP,
+            build_dynamic_prompt_suffix,
+        )
+
+        # 20K-char rogue suffix.
+        bloated_suffix = "x " * 10000  # 20K chars
+        suffix = build_dynamic_prompt_suffix(
+            system_prompt_suffix=bloated_suffix,
+        )
+
+        # Final dynamic block must not contain the full pre-trim suffix.
+        # Allow some slack for the trim notice + headers.
+        assert len(suffix) < _SYSTEM_PROMPT_SUFFIX_CHAR_CAP + 500
+
+    def test_short_memory_snapshot_passes_through_unchanged(self) -> None:
+        from app.runtime.prompt_builder import build_dynamic_prompt_suffix
+
+        suffix = build_dynamic_prompt_suffix(memory_snapshot="just one line")
+
+        assert "just one line" in suffix
+        assert "memory snapshot trimmed" not in suffix
+
+    def test_short_system_suffix_passes_through_unchanged(self) -> None:
+        from app.runtime.prompt_builder import build_dynamic_prompt_suffix
+
+        suffix = build_dynamic_prompt_suffix(system_prompt_suffix="FINAL_SUFFIX")
+
+        assert "FINAL_SUFFIX" in suffix

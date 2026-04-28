@@ -108,14 +108,25 @@ async def test_tool_round_warnings_preserve_objective_wake_policy_boundary() -> 
 
 
 def test_system_prompt_context_threshold_matches_kernel_threshold() -> None:
-    from app.kernel.engine import _MIDLOOP_COMPACT_THRESHOLD
+    """The percentage in the system prompt must match the kernel constants
+    so the agent's mental model of when compaction fires stays accurate.
+
+    P1-W2-3: tightened from 0.90 to 0.75; the 60% pressure threshold for
+    aggressive microcompact is also surfaced.
+    """
+    from app.kernel.engine import (
+        _MICROCOMPACT_PRESSURE_THRESHOLD,
+        _MIDLOOP_COMPACT_THRESHOLD,
+    )
     from app.runtime.prompt_sections import build_system_section
 
     section = build_system_section()
 
-    assert _MIDLOOP_COMPACT_THRESHOLD == 0.90
-    assert "~90%" in section
-    assert "85%" not in section
+    assert _MIDLOOP_COMPACT_THRESHOLD == 0.75
+    assert _MICROCOMPACT_PRESSURE_THRESHOLD == 0.60
+    assert "~75%" in section
+    assert "~60%" in section
+    assert "~90%" not in section
 
 
 @pytest.mark.asyncio

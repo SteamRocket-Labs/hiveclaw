@@ -32,12 +32,29 @@ KnowledgeLookupFn = Callable[[str, uuid.UUID | None], Awaitable[str] | str]
 _ACTIVE_PACKS_CHAR_BUDGET = 2000
 _RETRIEVAL_CHAR_BUDGET = 3000
 _CONTINUITY_CHAR_BUDGET = 2500
+# P1-W2-2: Per-section caps in the dynamic suffix.
+# Memory body gets 60% of the memory budget; the remainder is for
+# continuity_context (which is also memory-flavored). System prompt suffix
+# is user-supplied — fixed ceiling stops a runaway upstream caller from
+# pushing the suffix past sensible round-trip cost.
+_MEMORY_SNAPSHOT_BUDGET_RATIO = 0.6
+_DEFAULT_MEMORY_SNAPSHOT_BUDGET = 8000
+_SYSTEM_PROMPT_SUFFIX_CHAR_CAP = 5000
 
-# P1-1b: Frozen-prefix token guard rails.
+# P1-1b/W2-1: Frozen-prefix token guard rails.
 # Hard limit follows audit recommendation (~8K tokens). Warn at 75% so
 # operators see growth before it breaches and silently kills cache hit-rate.
+# `_CHARS_PER_TOKEN_ESTIMATE` mirrors token_tracker.estimate_tokens_from_chars
+# (3.5 chars/token) — kept here so the inverse direction (token budget →
+# char budget) does not silently drift if either side changes.
 _FROZEN_PREFIX_TOKEN_WARN = 6000
 _FROZEN_PREFIX_TOKEN_LIMIT = 8000
+_CHARS_PER_TOKEN_ESTIMATE = 3.5
+_FROZEN_PREFIX_CHAR_LIMIT = int(_FROZEN_PREFIX_TOKEN_LIMIT * _CHARS_PER_TOKEN_ESTIMATE)
+_FROZEN_PREFIX_TRIM_NOTICE = (
+    "\n\n...(frozen prefix trimmed to stay under cache budget — "
+    "load extra skills via the load_skill tool)"
+)
 
 
 async def _maybe_await(value):
@@ -92,8 +109,12 @@ def build_frozen_prompt_prefix(
 
     P1-1b: Every build is metered. Token estimate above
     `_FROZEN_PREFIX_TOKEN_WARN` logs a warning; above
-    `_FROZEN_PREFIX_TOKEN_LIMIT` logs an error. Counters are exposed via
-    /api/admin/metrics/memory for trend monitoring.
+    `_FROZEN_PREFIX_TOKEN_LIMIT` logs an error.
+
+    P1-W2-1: Hard cap enforced at `_FROZEN_PREFIX_TOKEN_LIMIT`. Skill catalog
+    is dropped/trimmed first (it's a progressive-disclosure index — the
+    `load_skill` tool can pull full bodies on demand). Tail-trim is the
+    last resort.
     """
     from app.runtime.prompt_sections import (
         build_system_section,
@@ -103,19 +124,65 @@ def build_frozen_prompt_prefix(
 
     # tone_style is included by agent_context (via build_agent_context).
     # output_efficiency was merged into tone_style.py — do not re-inject.
-    parts = [
+    base_parts = [
         agent_context,
         build_system_section(),
         build_tasks_section(),
         build_tools_section(),
     ]
     del memory_snapshot  # kept for backward-compatible callers; memory lives in dynamic suffix
+
+    parts = list(base_parts)
     if skill_catalog:
         parts.append(skill_catalog)
     prefix = "\n\n".join(parts)
 
+    if estimate_tokens_from_chars(len(prefix)) > _FROZEN_PREFIX_TOKEN_LIMIT:
+        prefix = _enforce_frozen_prefix_budget(base_parts, skill_catalog)
+
     _meter_frozen_prefix(prefix)
     return prefix
+
+
+def _enforce_frozen_prefix_budget(base_parts: list[str], skill_catalog: str) -> str:
+    """Hard-cap the assembled prefix to `_FROZEN_PREFIX_CHAR_LIMIT`.
+
+    Strategy (in order of preference):
+      1. Drop the skill catalog entirely. It's the most replaceable section
+         because `load_skill` can hydrate any skill body on demand.
+      2. If base sections alone fit, optionally re-add a trimmed catalog
+         in the leftover budget so frequently-used skills stay visible.
+      3. If base sections alone overflow, tail-trim with a notice. This is
+         a last resort — base sections drive agent behavior and trimming
+         them risks behavior regression.
+    """
+    base_only = "\n\n".join(base_parts)
+
+    if len(base_only) <= _FROZEN_PREFIX_CHAR_LIMIT:
+        if not skill_catalog:
+            return base_only
+        # Reserve room for the "\n\n" join and the "\n..." marker that
+        # `_trim_block` may append (up to 4 extra chars over its budget).
+        leftover = _FROZEN_PREFIX_CHAR_LIMIT - len(base_only) - 6
+        # Below 200 chars, a trimmed catalog is just noise; drop it instead.
+        if leftover < 200:
+            return base_only
+        trimmed = _trim_block(skill_catalog, budget_chars=leftover)
+        if not trimmed:
+            return base_only
+        result = f"{base_only}\n\n{trimmed}"
+        # Defensive hard cap — `_trim_block` is best-effort.
+        if len(result) > _FROZEN_PREFIX_CHAR_LIMIT:
+            result = result[:_FROZEN_PREFIX_CHAR_LIMIT]
+        return result
+
+    # Base sections themselves overflow — tail-trim with a notice. We trim
+    # `base_only` (catalog already dropped) so the most critical content
+    # at the head (agent_context → system → tasks) is preserved.
+    available = _FROZEN_PREFIX_CHAR_LIMIT - len(_FROZEN_PREFIX_TRIM_NOTICE)
+    if available <= 0:
+        return base_only[:_FROZEN_PREFIX_CHAR_LIMIT]
+    return base_only[:available].rstrip() + _FROZEN_PREFIX_TRIM_NOTICE
 
 
 def _meter_frozen_prefix(prefix: str) -> None:
@@ -196,11 +263,15 @@ def build_dynamic_prompt_suffix(
 
     parts: list[str] = []
 
-    # § Memory (4-layer pyramid + current T3 snapshot)
-    if memory_snapshot:
-        parts.append(build_memory_section(memory_snapshot))
+    memory_budget_chars = getattr(budget_profile, "memory_budget_chars", _DEFAULT_MEMORY_SNAPSHOT_BUDGET)
 
-    memory_budget_chars = getattr(budget_profile, "memory_budget_chars", _CONTINUITY_CHAR_BUDGET)
+    # § Memory (4-layer pyramid + current T3 snapshot) — body capped to 60%
+    # of the memory budget so continuity_context has room to breathe in the
+    # remaining 40%.
+    if memory_snapshot:
+        snapshot_cap = max(int(memory_budget_chars * _MEMORY_SNAPSHOT_BUDGET_RATIO), 1500)
+        parts.append(build_memory_section(memory_snapshot, budget_chars=snapshot_cap))
+
     continuity_budget = min(
         max((memory_budget_chars // 3) if budget_profile else _CONTINUITY_CHAR_BUDGET, 800),
         _CONTINUITY_CHAR_BUDGET,
@@ -243,7 +314,9 @@ def build_dynamic_prompt_suffix(
         parts.append(env_section)
 
     if system_prompt_suffix:
-        parts.append(system_prompt_suffix)
+        # P1-W2-2: cap user-supplied suffix so an upstream caller can't push
+        # the dynamic block past sensible round-trip cost.
+        parts.append(_trim_block(system_prompt_suffix, budget_chars=_SYSTEM_PROMPT_SUFFIX_CHAR_CAP))
 
     return "\n\n".join(parts)
 

@@ -111,7 +111,10 @@ class TestMemoryIntegration:
 
 class TestContextCompression:
     def test_compression_thresholds(self, prompt_text: str) -> None:
-        assert "90%" in prompt_text
+        # P1-W2-3: tightened to 75% / 60% (microcompact pressure threshold).
+        assert "75%" in prompt_text
+        assert "60%" in prompt_text
+        assert "90%" not in prompt_text
         assert "85%" not in prompt_text
 
     def test_tool_result_ttl(self, prompt_text: str) -> None:

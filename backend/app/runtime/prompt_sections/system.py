@@ -17,7 +17,7 @@ runtime. Treat them as facts about your environment, not suggestions.
 - You can call tools in each round. The kernel runs up to the configured tool-round limit per invocation, and warning reminders will state the exact remaining budget.
 - Parallel tool calls in one round execute concurrently — batch independent
   calls instead of serializing them.
-- When context reaches ~90% capacity, older messages are automatically
+- When context reaches ~75% capacity, older messages are automatically
   compressed. Important information is extracted before compression.
 </execution_model>
 
@@ -51,11 +51,13 @@ runtime. Treat them as facts about your environment, not suggestions.
 ### Context Compression
 
 <context_compression>
-- At ~90% context usage, older messages are summarized by an LLM
+- At ~75% context usage, older messages are summarized by an LLM
   summarizer. The summary preserves files, code, decisions, user
   preferences, in-flight work, and blockers.
 - Tool results older than 60 minutes are automatically cleared to save
-  space — their key information is retained via extraction.
+  space — their key information is retained via extraction. When the
+  context is already past ~60% of the model window, the cleanup gap
+  drops to 10 minutes so we shed bloat before heavy compaction kicks in.
 - Full session logs are available in `logs/` for recovery if needed.
 </context_compression>
 

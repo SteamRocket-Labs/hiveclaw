@@ -31,8 +31,17 @@ from app.services.llm_utils import LLMError, LLMMessage
 from app.tools.registry import is_parallel_safe_tool
 
 # Mid-loop compaction: check every N rounds and compress when approaching context limit.
+# P1-W2-3: Tightened from 0.90 to 0.75 — the audit found that running to 90%
+# meant a single bursty round could push past the limit before the next check
+# fired, forcing reactive PTL retries. Compacting at 75% leaves headroom for
+# one more full round + safety margin.
 _MIDLOOP_COMPACT_CHECK_INTERVAL = 3
-_MIDLOOP_COMPACT_THRESHOLD = 0.90  # 90% of context window
+_MIDLOOP_COMPACT_THRESHOLD = 0.75
+# P1-W2-3: At ≥60% context utilization the time-based microcompact gets
+# aggressive — clear older tool results sooner so we don't slide into the
+# heavy-compaction zone. Below 60% the original 60-minute gap stays in force.
+_MICROCOMPACT_PRESSURE_THRESHOLD = 0.60
+_MICROCOMPACT_GAP_UNDER_PRESSURE_SECONDS = 600  # 10 min
 
 # Prompt-Too-Long reactive retry: compress and retry when provider rejects oversized prompt.
 # Strategy: attempt 1-2 = drop 20% oldest round-groups, attempt 3 = full compression fallback.
@@ -60,6 +69,23 @@ _TOOL_RESULTS_AGGREGATE_BUDGET = 200000  # chars per round
 _MICROCOMPACT_GAP_SECONDS = 3600  # 60 minutes — tool results older than this get cleared
 _MICROCOMPACT_KEEP_RECENT = 5     # always keep the N most recent tool results
 _MICROCOMPACT_CLEARED_MARKER = "[Old tool result cleared to save context space]"
+
+def _compute_microcompact_gap(used_tokens: int, model_window: int | None) -> int:
+    """Pick the microcompact gap based on current context pressure.
+
+    Returns `_MICROCOMPACT_GAP_UNDER_PRESSURE_SECONDS` (10min) when context
+    utilization is at or above `_MICROCOMPACT_PRESSURE_THRESHOLD` (60%);
+    otherwise the default `_MICROCOMPACT_GAP_SECONDS` (60min).
+
+    `model_window` may be unknown — in that case we keep the conservative
+    60min default rather than guessing.
+    """
+    if not isinstance(model_window, int) or model_window <= 0:
+        return _MICROCOMPACT_GAP_SECONDS
+    if used_tokens / model_window >= _MICROCOMPACT_PRESSURE_THRESHOLD:
+        return _MICROCOMPACT_GAP_UNDER_PRESSURE_SECONDS
+    return _MICROCOMPACT_GAP_SECONDS
+
 
 # Tools whose output should never be evicted (small, structural results).
 _EVICTION_EXEMPT_TOOLS = frozenset({
@@ -1814,6 +1840,9 @@ class AgentKernel:
 
                     # ── L1: Time-based microcompact — clear old tool results ──
                     # Clear tool results older than 60min, always keep the 5 most recent.
+                    # P1-W2-3: At ≥60% context utilization the gap drops to 10min
+                    # so we shed aging tool results before sliding into the heavy
+                    # compaction zone at 75%.
                     if (round_i + 1) % _MIDLOOP_COMPACT_CHECK_INTERVAL == 0:
                         import time as _time_mod
 
@@ -1833,11 +1862,19 @@ class AgentKernel:
                             _sorted_by_time = sorted(_tool_entries, key=lambda x: x[1], reverse=True)
                             _keep_indices = {x[0] for x in _sorted_by_time[:_MICROCOMPACT_KEEP_RECENT]}
 
+                            # Pressure check: if context utilization is already
+                            # ≥60% of the model window, the helper returns the
+                            # aggressive 10min gap.
+                            _model_window = getattr(active_model, "max_input_tokens", None) if active_model else None
+                            _used_chars = sum(len(m.content or "") for m in api_messages)
+                            _used_tokens = self._deps.estimate_tokens_from_chars(_used_chars)
+                            _gap_seconds = _compute_microcompact_gap(_used_tokens, _model_window)
+
                             _mc_cleared = 0
                             for _mi, _ts, _msg in _tool_entries:
                                 if _mi in _keep_indices:
                                     continue
-                                if (_now - _ts) < _MICROCOMPACT_GAP_SECONDS:
+                                if (_now - _ts) < _gap_seconds:
                                     continue
                                 # Check if the tool is exempt
                                 _tc_id = _msg.tool_call_id or ""
@@ -1856,8 +1893,14 @@ class AgentKernel:
                             if _mc_cleared:
                                 logger.info(
                                     "[Kernel] Microcompact: cleared %d old tool results (round %d, gap=%ds, kept=%d recent)",
-                                    _mc_cleared, round_i + 1, _MICROCOMPACT_GAP_SECONDS, _MICROCOMPACT_KEEP_RECENT,
-                                    extra={"metric": "microcompact", "cleared": _mc_cleared, "round": round_i + 1},
+                                    _mc_cleared, round_i + 1, _gap_seconds, _MICROCOMPACT_KEEP_RECENT,
+                                    extra={
+                                        "metric": "microcompact",
+                                        "cleared": _mc_cleared,
+                                        "round": round_i + 1,
+                                        "gap_seconds": _gap_seconds,
+                                        "under_pressure": _gap_seconds == _MICROCOMPACT_GAP_UNDER_PRESSURE_SECONDS,
+                                    },
                                 )
 
                     # ── L3: Mid-loop context compaction ──────────────────────────

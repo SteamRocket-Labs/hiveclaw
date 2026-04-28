@@ -233,6 +233,14 @@ def _humanize_llm_error(exc: Exception) -> str:
     """Convert raw LLM errors to user-friendly messages for end users."""
     msg = str(exc)
     lower = msg.lower()
+    if (
+        "quota" in lower
+        or "insufficient_quota" in lower
+        or "quotaexhausted" in lower
+        or "allocated quota exceeded" in lower
+        or "token-plan quota has been exhausted" in lower
+    ):
+        return "[LLM Error] AI 模型额度已耗尽，请联系管理员检查模型额度或切换模型。"
     if "429" in msg or "529" in msg or "overloaded" in lower or "rate_limit" in lower or "rate limit" in lower:
         return "[LLM Error] AI 模型服务方暂时过载，请稍后重试。"
     if "401" in msg or "403" in msg or "authentication" in lower or "unauthorized" in lower:

@@ -1,0 +1,120 @@
+2026-04-28 06:45:01 | INFO     | 9bcbe279-8dad-4951-a8e4-f452e7641db6 | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for 财税助理
+2026-04-28 06:45:01 | INFO     | 32363449-e2f6-4301-81a7-0807182bd2fd | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=1, skipped_hours=3, skipped_interval=28
+2026-04-28 06:45:01 | INFO     | f9641fd5-91b6-4474-b6ed-f5b7dea022bd | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #3 for 财税助理: no new T2 entries
+2026-04-28 06:46:04 | INFO     | 3f8c80ef-f771-426b-82af-d5fb85c80a74 | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=0, skipped_hours=3, skipped_interval=29
+2026-04-28 06:47:08 | INFO     | ff349371-e299-433b-9e39-ad7c62a17772 | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for 高级嵌入式工程师
+2026-04-28 06:47:08 | INFO     | 45046cad-8c95-4dcc-b7ba-def72602d047 | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for 日程管理助理
+2026-04-28 06:47:08 | INFO     | b7e12147-f327-428a-87d9-e3be82c68ad9 | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=2, skipped_hours=3, skipped_interval=27
+2026-04-28 06:47:08 | INFO     | 52ad7975-1a2b-4de1-b87c-27021db9502e | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #9 for 高级嵌入式工程师: no new T2 entries
+2026-04-28 06:47:08 | INFO     | 56e0ff05-5759-42ae-8611-e45283d9f68e | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #4 for 日程管理助理: no new T2 entries
+2026-04-28 06:48:12 | INFO     | b3d79ce8-aa6c-4e6a-a814-3454db0d44d2 | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=0, skipped_hours=3, skipped_interval=29
+2026-04-28 06:49:16 | INFO     | 9d8cf28b-2d64-4c75-9b03-bd0c1337b6a0 | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=0, skipped_hours=3, skipped_interval=29
+2026-04-28 06:50:20 | INFO     | 190f9f29-b934-402f-9afa-d5fc621abd12 | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=0, skipped_hours=3, skipped_interval=29
+2026-04-28 06:51:24 | INFO     | 1eeb0b4e-27b5-4b95-a9f6-a1f8ade950fc | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=0, skipped_hours=3, skipped_interval=29
+2026-04-28 06:52:14 | INFO     | e6aa883b-f68a-4e35-8367-2a970db35434 | app.api.websocket:websocket_chat:498 - [WS] SESSION_IDLE triggered for 学术圈研究员 (session 5d6a36cc-5a13-4cc2-bd52-dcb042a0b1af)
+2026-04-28 06:52:28 | INFO     | 19161993-b2fe-4a95-b3eb-d58ae6922232 | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=0, skipped_hours=3, skipped_interval=29
+2026-04-28 06:53:31 | INFO     | aec78bbb-414d-413d-b7e2-305412b0d431 | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=0, skipped_hours=3, skipped_interval=29
+2026-04-28 06:54:18 | INFO     | c75faf41-9893-4e8e-ac14-576acf9f6b84 | app.api.websocket:websocket_chat:498 - [WS] SESSION_IDLE triggered for __system_hr__ (session 628485fc-1201-4689-8052-66b67042d017)
+2026-04-28 06:54:35 | INFO     | 960c7567-8933-4bf3-bfaa-3cd1a808f61b | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=0, skipped_hours=3, skipped_interval=29
+2026-04-28 06:55:39 | INFO     | a4020117-1775-4706-b192-5656d2b86a64 | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=0, skipped_hours=3, skipped_interval=29
+2026-04-28 06:55:54 | INFO     | aebf89c0-4d96-49f4-95e1-05f971b4e310 | app.api.websocket:websocket_chat:498 - [WS] SESSION_IDLE triggered for 学术圈研究员 (session 5d6a36cc-5a13-4cc2-bd52-dcb042a0b1af)
+2026-04-28 06:56:43 | INFO     | e1f26230-8250-4355-b0b1-b86fc48c1315 | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for LinkedIn技术高管变动监控员工
+2026-04-28 06:56:43 | INFO     | d3c12276-81f9-4b62-9fea-3516e8e0b2b8 | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=1, skipped_hours=3, skipped_interval=28
+2026-04-28 06:56:43 | INFO     | 7691e49b-6ea1-40c1-a27a-1d48d4a3c89d | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #7 for LinkedIn技术高管变动监控员工: no new T2 entries
+2026-04-28 06:57:47 | INFO     | 63910edc-40ab-4eeb-bdae-03607233a0a1 | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=0, skipped_hours=3, skipped_interval=29
+2026-04-28 06:58:51 | INFO     | a984208a-f6ca-422b-8f4c-f3f961ee8cd7 | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for Alisa
+2026-04-28 06:58:51 | INFO     | be0c657c-1b28-4a26-977f-c2a504c279bf | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=1, skipped_hours=3, skipped_interval=28
+2026-04-28 06:58:51 | INFO     | de5023e4-ba7c-4023-982d-ecfbccce7e35 | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #8 for Alisa: no new T2 entries
+2026-04-28 06:59:55 | INFO     | 7ff5f51f-a67e-49f9-988f-8c5c47358202 | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=0, skipped_hours=3, skipped_interval=29
+2026-04-28 07:01:00 | INFO     | ece88f55-d6bc-41e1-92c1-11b31c812b4f | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=0, skipped_hours=3, skipped_interval=29
+2026-04-28 07:02:04 | INFO     | 05cc6edf-27c0-4c28-85fa-6b08fc61b26e | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for 财报大表姐
+2026-04-28 07:02:04 | INFO     | ac0d063d-88d0-4ca5-acda-87c20147a6d9 | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=1, skipped_hours=3, skipped_interval=28
+2026-04-28 07:02:04 | INFO     | 01c0b766-fea1-4011-a666-57f241cb47d9 | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #4 for 财报大表姐: no new T2 entries
+2026-04-28 07:03:07 | INFO     | 3accbcfe-f332-414e-84d6-b99535383a28 | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for 浙大系科技新闻观察员
+2026-04-28 07:03:07 | INFO     | ff0c777e-b97e-4c7e-a650-1dc6eba19b74 | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for BP智能评分分析员
+2026-04-28 07:03:07 | INFO     | 6592f9e6-5df2-44b9-90ae-17cb127ad480 | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for 展会雷达
+2026-04-28 07:03:07 | INFO     | 9c03d827-0c44-4026-931c-c36a83101901 | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #4 for 浙大系科技新闻观察员: no new T2 entries
+2026-04-28 07:03:07 | INFO     | b8dfdd44-6164-4d9b-a537-ed3d2b3f6df2 | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for Kickstarter 华人智能硬件众筹雷达
+2026-04-28 07:03:07 | INFO     | 8c19e88c-1cb7-4220-a26d-47ecb9ca3e68 | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=4, skipped_hours=3, skipped_interval=25
+2026-04-28 07:03:07 | INFO     | bc5624f2-fe4a-444d-942e-e456a46c60ca | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #3 for 展会雷达: no new T2 entries
+2026-04-28 07:03:07 | INFO     | 83efef74-7a4d-4e53-9854-af92ce02a932 | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #3 for BP智能评分分析员: no new T2 entries
+2026-04-28 07:03:07 | INFO     | bd134bca-78a7-4684-b6e5-8d8b377f3ead | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #3 for Kickstarter 华人智能硬件众筹雷达: no new T2 entries
+2026-04-28 07:03:27 | INFO     | 7da68bd8-7a4a-4d5c-b696-2cdb900f23e4 | app.api.websocket:websocket_chat:498 - [WS] SESSION_IDLE triggered for 学术圈研究员 (session 5d6a36cc-5a13-4cc2-bd52-dcb042a0b1af)
+2026-04-28 07:04:11 | INFO     | d691fd76-091a-4035-b621-244495b1f9e8 | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for V小姐看科技
+2026-04-28 07:04:11 | INFO     | 7528237c-dfdf-440c-8c4f-f7acf3c883f7 | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for 菜头
+2026-04-28 07:04:11 | INFO     | 688cbef5-2511-466b-a061-9d71c2e34b4e | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for 运营报告更新员
+2026-04-28 07:04:11 | INFO     | f942c1fb-9e15-4e0c-aade-cb6ef7cff777 | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #3 for V小姐看科技: no new T2 entries
+2026-04-28 07:04:11 | INFO     | 357bad2a-60b1-4555-b292-ed7d55d5784d | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=3, skipped_hours=3, skipped_interval=26
+2026-04-28 07:04:11 | INFO     | e0b89f48-8665-420d-9a97-ecac5438bf5e | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #3 for 菜头: no new T2 entries
+2026-04-28 07:04:11 | INFO     | ce55784d-8f23-4a86-ba7a-2d23977ade73 | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #3 for 运营报告更新员: no new T2 entries
+2026-04-28 07:04:30 | INFO     | 8525b356-4e7d-46e2-bb8a-c9c58ff5413e | app.services.heartbeat:_archive_lineage_entries:661 - [Heartbeat] Archived 1 rotated lineage entries for 5f6ec3c3-7477-4f27-bf4e-d782312c92f0
+2026-04-28 07:04:30 | INFO     | 68d73a48-0c4c-486b-a0e2-b302c03083f6 | app.services.heartbeat:_update_evolution_files:849 - [Heartbeat] Evolution files updated for agent 5f6ec3c3-7477-4f27-bf4e-d782312c92f0: noop
+2026-04-28 07:04:30 | INFO     | cdc7496e-e429-4330-8f07-250892283e3f | app.services.trigger_daemon:_invoke_agent_for_triggers:1279 - ⚡ Triggers fired for LinkedIn技术高管变动监控员工: ['check_linkedin_changes']
+2026-04-28 07:04:30 | INFO     | cce3dfde-73c3-4897-856c-66d741d39d7c | logging:callHandlers:1762 - [Hooks] TRIGGER_END: agent=5f6ec3c3-7477-4f27-bf4e-d782312c92f0 trigger=check_linkedin_changes
+2026-04-28 07:04:30 | INFO     | 712a2604-ce56-4204-9dd9-04050367b8ed | logging:callHandlers:1762 - [T0] Wrote trigger-0704-a77d.md for agent 5f6ec3c3-7477-4f27-bf4e-d782312c92f0 (2104 bytes)
+2026-04-28 07:05:15 | INFO     | 304013b8-b5c1-4b5e-b030-02d3cfaa6fe7 | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=0, skipped_hours=3, skipped_interval=29
+2026-04-28 07:06:19 | INFO     | 04ca5b72-d654-4cd9-a32d-f19f58d33f99 | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for BP智能评分分析员
+2026-04-28 07:06:19 | INFO     | 2ab4ec32-ccae-489f-9ca2-33e2f3673a69 | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=1, skipped_hours=3, skipped_interval=28
+2026-04-28 07:06:19 | INFO     | f3209ac9-3792-4f38-9864-2bb797b75b2d | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #3 for BP智能评分分析员: no new T2 entries
+2026-04-28 07:07:21 | INFO     | 6a215094-7a47-4b97-84e3-660af59b39e6 | app.api.websocket:websocket_chat:498 - [WS] SESSION_IDLE triggered for __system_hr__ (session 628485fc-1201-4689-8052-66b67042d017)
+2026-04-28 07:07:23 | INFO     | 0ae6cc4a-dd72-48fb-876b-d36d01fc0a7f | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for 募资小达人
+2026-04-28 07:07:23 | INFO     | c7c4778f-afec-4318-9cb8-05a250e78680 | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for Equity Analyst - Mapper
+2026-04-28 07:07:23 | INFO     | 4c8fa5b0-3293-4b89-b2e0-7bd9c8820c49 | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=2, skipped_hours=3, skipped_interval=27
+2026-04-28 07:07:23 | INFO     | 1b91a0af-fd4c-4fcd-9d34-520ea7dd0c52 | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #3 for 募资小达人: no new T2 entries
+2026-04-28 07:07:23 | INFO     | d4cc3591-3915-4d73-b818-cc142ecce8bf | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #9 for Equity Analyst - Mapper: no new T2 entries
+2026-04-28 07:08:27 | INFO     | c280b090-d48e-41e7-b9bf-6015985a596a | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=0, skipped_hours=3, skipped_interval=29
+2026-04-28 07:09:31 | INFO     | ada3541b-afeb-4a30-a2d9-ba3e390b35e4 | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #8 for __system_hr__: no new T2 entries
+2026-04-28 07:09:31 | INFO     | 1aedcea9-8508-4013-bebe-9c010437a7b2 | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #8 for 投融资信息整理员: no new T2 entries
+2026-04-28 07:09:31 | INFO     | f9c89eb4-b59f-40b9-a1d4-f5a4446d1c9e | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #2 for AI初创企业猎手: no new T2 entries
+2026-04-28 07:09:31 | INFO     | 7d8ac01d-c489-4b65-a9d4-5762fd922fea | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for __system_hr__
+2026-04-28 07:09:31 | INFO     | 75e6433f-86f1-4459-8d52-d24aff44c500 | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for 投融资信息整理员
+2026-04-28 07:09:31 | INFO     | 95918871-743d-44ca-a0a4-4737ae8fc513 | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for AI初创企业猎手
+2026-04-28 07:09:31 | INFO     | 0e2a5586-8dc7-4403-bf6d-d19e884f26c0 | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=3, skipped_hours=3, skipped_interval=26
+2026-04-28 07:10:35 | INFO     | 070c3cbb-9e8b-44f3-943f-a566f5fb8be7 | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for 学术圈研究员
+2026-04-28 07:10:35 | INFO     | 0ee69365-7f2c-4dcc-8016-2e6762f2b2d8 | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=1, skipped_hours=3, skipped_interval=28
+2026-04-28 07:10:35 | INFO     | 1d08e70b-be45-429a-9bc1-78d4602277b5 | app.services.heartbeat:_execute_heartbeat:1229 - [Heartbeat] Tick #2 (incremental, 23 new entries) for 学术圈研究员
+2026-04-28 07:10:35 | INFO     | d16d3f19-fed6-49ec-8812-7c269980ffd8 | logging:callHandlers:1762 - [Hooks] SESSION_START: agent=f5aefa50-91ff-4282-b4df-bb7baaa76e0b source=heartbeat model=glm-5.1
+2026-04-28 07:11:11 | INFO     | 2c9c7958-ddad-4dda-b6a4-5721d52fae17 | app.services.heartbeat:_update_evolution_files:849 - [Heartbeat] Evolution files updated for agent f5aefa50-91ff-4282-b4df-bb7baaa76e0b: noop
+2026-04-28 07:11:11 | INFO     | 13bf6db8-97c3-43b4-a7a3-f18760df2398 | app.services.heartbeat:_execute_heartbeat:1382 - [Heartbeat] Auto-dream triggered for agent f5aefa50-91ff-4282-b4df-bb7baaa76e0b
+2026-04-28 07:11:11 | INFO     | 45797b1f-7125-4d85-8c7c-056be246dcbe | logging:callHandlers:1762 - [Hooks] HEARTBEAT_TICK_END: agent=f5aefa50-91ff-4282-b4df-bb7baaa76e0b
+2026-04-28 07:11:11 | INFO     | 19f31240-953c-48dd-a243-1aee83794fb4 | logging:callHandlers:1762 - [T0] Wrote heartbeat-0711-0a14.md for agent f5aefa50-91ff-4282-b4df-bb7baaa76e0b (9066 bytes)
+2026-04-28 07:11:11 | INFO     | f10f5c0d-40be-4a6c-8aa8-02f6e6279c65 | app.services.heartbeat:_execute_heartbeat:1485 - 💓 Heartbeat for 学术圈研究员: noop score=0 — [LLM Error] AI 模型服务方暂时过载，请稍后重试。
+2026-04-28 07:11:12 | INFO     | b4f9d682-aacc-44e5-b48f-2f7bb2039a6e | app.services.heartbeat:_reset_heartbeat_session:132 - [Heartbeat] Session reset for f5aefa50-91ff-4282-b4df-bb7baaa76e0b
+2026-04-28 07:11:39 | INFO     | 36197523-01ea-496d-af36-b805d53a46d2 | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for __system_hr__
+2026-04-28 07:11:39 | INFO     | c650a983-2c2a-45a5-9427-7b8aced2ad9f | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=1, skipped_hours=3, skipped_interval=28
+2026-04-28 07:11:39 | INFO     | 2708ae8d-522d-44aa-941f-4028d61907b5 | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #7 for __system_hr__: no new T2 entries
+2026-04-28 07:12:43 | INFO     | 15f0561b-138c-4bcb-b6ed-c0eb8a72aa1e | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=0, skipped_hours=3, skipped_interval=29
+2026-04-28 07:13:47 | INFO     | 9eafb981-c6e5-49e5-9d21-f90c8cfab7c4 | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=0, skipped_hours=3, skipped_interval=29
+2026-04-28 07:14:51 | INFO     | d9f1f323-0f7b-4db6-98db-eb677fe45fba | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for Lumi
+2026-04-28 07:14:51 | INFO     | 5d9fee43-2f22-4d40-9aae-9b25e337578e | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for 众筹雷达
+2026-04-28 07:14:51 | INFO     | c48e15f9-7129-43c1-a28b-24a93366e9b2 | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=2, skipped_hours=3, skipped_interval=27
+2026-04-28 07:14:51 | INFO     | 4bf6d589-1e42-4d5d-8366-752d7bb60ee0 | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #8 for Lumi: no new T2 entries
+2026-04-28 07:14:51 | INFO     | 4757e600-165b-4c18-8c26-bf6b5492340f | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #8 for 众筹雷达: no new T2 entries
+2026-04-28 07:15:55 | INFO     | b3a09ad7-8ffc-486c-88b6-341a7bcdc503 | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=0, skipped_hours=3, skipped_interval=29
+2026-04-28 07:16:31 | INFO     | 172a6b8e-0b7a-4a1f-bb5a-9e2bc3918f99 | app.api.websocket:websocket_chat:498 - [WS] SESSION_IDLE triggered for 学术圈研究员 (session 5d6a36cc-5a13-4cc2-bd52-dcb042a0b1af)
+2026-04-28 07:16:59 | INFO     | 25f74a98-612a-41be-b302-8da5e04de28a | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=0, skipped_hours=3, skipped_interval=29
+2026-04-28 07:18:03 | INFO     | 8cbbe09d-3e88-4755-9c12-7519dcd542fb | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=0, skipped_hours=3, skipped_interval=29
+2026-04-28 07:18:10 | INFO     | 79504fc0-ac7c-4f1e-b338-d0ac3aeea6e7 | app.services.heartbeat:_workspace_full_sweep:1690 - [workspace-sync] full sweep: 2 tenants
+2026-04-28 07:19:07 | INFO     | bee526f6-f98b-49af-8554-5a31cbaf4b68 | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=0, skipped_hours=3, skipped_interval=29
+2026-04-28 07:20:10 | INFO     | 820ea571-3ee7-4412-bbc8-d59c7fcaa2dc | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for 会议小秘书·大头仔B
+2026-04-28 07:20:10 | INFO     | e3283c48-8a0f-479e-a26d-3810df68b075 | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=1, skipped_hours=3, skipped_interval=28
+2026-04-28 07:20:10 | INFO     | 3c1362b9-675d-4404-a382-034d796ea012 | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #3 for 会议小秘书·大头仔B: no new T2 entries
+2026-04-28 07:20:36 | INFO     | 3101b9d0-8d19-41ef-909a-5c9ef2fd9170 | app.api.websocket:websocket_chat:498 - [WS] SESSION_IDLE triggered for 学术圈研究员 (session 5d6a36cc-5a13-4cc2-bd52-dcb042a0b1af)
+2026-04-28 07:21:14 | INFO     | f4a21b0b-945e-4da2-9b16-d673f8642e50 | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for 机票舱位雷达·大头仔A
+2026-04-28 07:21:14 | INFO     | 40874c6a-97ea-4b0d-aec6-3864afb3f95f | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=1, skipped_hours=3, skipped_interval=28
+2026-04-28 07:21:14 | INFO     | 59289f96-1577-40e2-bca3-163b2735bae0 | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #3 for 机票舱位雷达·大头仔A: no new T2 entries
+2026-04-28 07:22:18 | INFO     | 1996a520-eb6e-438a-850d-b33688b69e8b | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for Web3研究员
+2026-04-28 07:22:18 | INFO     | 8f6dfca6-a530-4677-b7b3-d3cc04573753 | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=1, skipped_hours=3, skipped_interval=28
+2026-04-28 07:22:18 | INFO     | 4a148fc3-b5a9-43b6-8b0b-dcf1aab8f5d3 | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #9 for Web3研究员: no new T2 entries
+2026-04-28 07:23:22 | INFO     | 94f642cd-f183-4724-8990-f038375dc1db | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=0, skipped_hours=3, skipped_interval=29
+2026-04-28 07:24:26 | INFO     | 7e7a7745-1c5d-498f-9448-3dc676ed591e | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=0, skipped_hours=3, skipped_interval=29
+2026-04-28 07:25:29 | INFO     | 0b7ea5e4-a4d9-4db8-9f12-85c4be2506cd | app.services.heartbeat:_heartbeat_tick:1610 - 💓 Triggering heartbeat for 小红书AI创业猎手
+2026-04-28 07:25:29 | INFO     | 63fec964-c443-4156-90be-7a34c32b417d | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=1, skipped_hours=3, skipped_interval=28
+2026-04-28 07:25:30 | INFO     | ef1cdbd3-03de-4194-92a5-7934137d84c4 | app.services.heartbeat:_execute_heartbeat:1202 - [Heartbeat] Skip tick #10 for 小红书AI创业猎手: no new T2 entries
+2026-04-28 07:26:33 | INFO     | d7609bcc-e333-41b6-90c3-60fb0f8925d3 | app.services.heartbeat:_heartbeat_tick:1615 - [Heartbeat] tick: eligible=32, triggered=0, skipped_hours=3, skipped_interval=29
+2026-04-28 07:26:50 | INFO     | 2b38795e-9cd | app.core.middleware:dispatch:28 - --> GET /api/agents/d78ca319-4154-4dc4-ba87-d140f2993c6c/triggers [client: 160.16.56.12]
+2026-04-28 07:26:50 | INFO     | 2b38795e-9cd | app.core.middleware:dispatch:41 - <-- GET /api/agents/d78ca319-4154-4dc4-ba87-d140f2993c6c/triggers 200 0.030s
+2026-04-28 07:26:50 | INFO     | b20bd9e7-ed19-4676-a72a-a2b101509589 | logging:callHandlers:1762 - 160.16.56.12:0 - "GET /api/agents/d78ca319-4154-4dc4-ba87-d140f2993c6c/triggers HTTP/1.1" 200
+2026-04-28 07:26:58 | INFO     | 92248e16-1b7 | app.core.middleware:dispatch:28 - --> GET /api/agents/d78ca319-4154-4dc4-ba87-d140f2993c6c/triggers [client: 160.16.56.12]
+2026-04-28 07:26:58 | INFO     | 92248e16-1b7 | app.core.middleware:dispatch:41 - <-- GET /api/agents/d78ca319-4154-4dc4-ba87-d140f2993c6c/triggers 200 0.028s
+2026-04-28 07:26:58 | INFO     | ae5441b1-634c-4660-91f9-6b7a36a8a86f | logging:callHandlers:1762 - 160.16.56.12:0 - "GET /api/agents/d78ca319-4154-4dc4-ba87-d140f2993c6c/triggers HTTP/1.1" 200

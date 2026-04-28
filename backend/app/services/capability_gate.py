@@ -62,11 +62,24 @@ CAPABILITY_MAP: dict[str, str] = {
     "read_webpage": "external.web.read",
 }
 
+SYNTHETIC_CAPABILITY_TOOLS: dict[str, list[str]] = {
+    "workspace.command.dangerous": ["run_command"],
+    "workspace.command.secret_exfiltration": ["run_command"],
+}
+
+
+def _resolve_capability(tool_or_capability: str) -> str | None:
+    if tool_or_capability in CAPABILITY_MAP:
+        return CAPABILITY_MAP[tool_or_capability]
+    if tool_or_capability in SYNTHETIC_CAPABILITY_TOOLS:
+        return tool_or_capability
+    return None
+
 
 class CapabilityCheckResult:
     """Result of a capability gate check."""
 
-    __slots__ = ("allowed", "denied", "escalate_to_l3", "capability", "reason")
+    __slots__ = ("allowed", "denied", "escalate_to_l3", "capability", "reason", "policy_found")
 
     def __init__(
         self,
@@ -75,12 +88,14 @@ class CapabilityCheckResult:
         escalate_to_l3: bool = False,
         capability: str = "",
         reason: str = "",
+        policy_found: bool = True,
     ):
         self.allowed = allowed
         self.denied = denied
         self.escalate_to_l3 = escalate_to_l3
         self.capability = capability
         self.reason = reason
+        self.policy_found = policy_found
 
 
 async def check_capability(
@@ -98,7 +113,7 @@ async def check_capability(
 
     Returns CapabilityCheckResult with allowed/denied/escalate flags.
     """
-    capability = CAPABILITY_MAP.get(tool_name)
+    capability = _resolve_capability(tool_name)
     if not capability:
         # Tool not in high-risk map → always allowed
         return CapabilityCheckResult(allowed=True)
@@ -126,7 +141,7 @@ async def check_capability(
 
     if not policy:
         # No policy defined → backward compatible: allow everything
-        return CapabilityCheckResult(allowed=True)
+        return CapabilityCheckResult(allowed=True, capability=capability, policy_found=False)
 
     if not policy.allowed:
         # Explicitly denied
@@ -142,6 +157,7 @@ async def check_capability(
             denied=True,
             capability=capability,
             reason=f"Capability '{capability}' is not allowed for this agent",
+            policy_found=True,
         )
 
     if policy.requires_approval:
@@ -151,10 +167,11 @@ async def check_capability(
             escalate_to_l3=True,
             capability=capability,
             reason=f"Capability '{capability}' requires approval",
+            policy_found=True,
         )
 
     # Allowed without approval
-    return CapabilityCheckResult(allowed=True, capability=capability)
+    return CapabilityCheckResult(allowed=True, capability=capability, policy_found=True)
 
 
 def get_all_capabilities() -> list[dict]:
@@ -163,5 +180,7 @@ def get_all_capabilities() -> list[dict]:
     cap_tools: dict[str, list[str]] = {}
     for tool, cap in CAPABILITY_MAP.items():
         cap_tools.setdefault(cap, []).append(tool)
+    for cap, tools in SYNTHETIC_CAPABILITY_TOOLS.items():
+        cap_tools.setdefault(cap, []).extend(tools)
 
     return [{"capability": cap, "tools": tools} for cap, tools in sorted(cap_tools.items())]

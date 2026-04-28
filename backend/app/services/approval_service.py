@@ -237,6 +237,7 @@ class ApprovalService:
                     channel.app_secret,
                     receive_id,
                     id_type,
+                    agent.name,
                     approval.action_type,
                     json.dumps(approval.details, ensure_ascii=False)[:500],
                     str(approval.id),

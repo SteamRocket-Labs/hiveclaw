@@ -234,6 +234,7 @@ async def _run_governance_inner(
     if not context.tenant_id:
         logger.info("[Governance] No tenant_id — skipping capability checks for tool %s", context.tool_name)
 
+    tenant_uuid: uuid.UUID | None = None
     if context.tenant_id:
         try:
             tenant_uuid = uuid.UUID(context.tenant_id)
@@ -304,7 +305,76 @@ async def _run_governance_inner(
     dangerous_command = _detect_dangerous_command(context.tool_name, context.arguments)
     dangerous_reason = None
     if dangerous_command:
-        _escalated_capability, dangerous_reason = dangerous_command
+        dangerous_capability, dangerous_reason = dangerous_command
+        dangerous_allowed_by_specific_policy = False
+        if tenant_uuid is not None:
+            try:
+                dangerous_result = await _maybe_await(
+                    deps.check_capability(tenant_uuid, context.agent_id, dangerous_capability)
+                )
+                if dangerous_result is not None and not hasattr(dangerous_result, "denied"):
+                    logger.warning(
+                        "[Governance] Unexpected dangerous capability result type: %s — blocking (fail-closed)",
+                        type(dangerous_result),
+                    )
+                    return f"🔒 Tool '{context.tool_name}' blocked — capability check returned unexpected format."
+                if getattr(dangerous_result, "denied", False):
+                    message = f"🚫 Capability denied: {dangerous_result.reason}"
+                    await _maybe_await(
+                        deps.write_audit_event(
+                            event_type="capability.denied",
+                            severity="warn",
+                            actor_type="agent",
+                            actor_id=context.agent_id,
+                            tenant_id=tenant_uuid,
+                            action="capability_denied",
+                            resource_type="tool",
+                            resource_id=None,
+                            details={"tool": context.tool_name, "capability": dangerous_result.capability},
+                        )
+                    )
+                    await _emit_event(
+                        event_callback,
+                        {
+                            "type": "permission",
+                            "tool_name": context.tool_name,
+                            "status": "capability_denied",
+                            "message": message,
+                            "capability": dangerous_result.capability,
+                        },
+                    )
+                    return message
+                if getattr(dangerous_result, "escalate_to_l3", False):
+                    _escalated_capability = getattr(dangerous_result, "capability", None) or dangerous_capability
+                    dangerous_reason = getattr(dangerous_result, "reason", None) or dangerous_reason
+                else:
+                    dangerous_allowed_by_specific_policy = (
+                        getattr(dangerous_result, "capability", None) == dangerous_capability
+                        and (
+                            not hasattr(dangerous_result, "policy_found")
+                            or getattr(dangerous_result, "policy_found", False)
+                        )
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Dangerous command capability check failed for tool %s (fail-closed): %s",
+                    context.tool_name,
+                    exc,
+                )
+                message = f"🔒 Tool '{context.tool_name}' blocked — capability check unavailable. Please retry."
+                await _emit_event(
+                    event_callback,
+                    {
+                        "type": "permission",
+                        "tool_name": context.tool_name,
+                        "status": "blocked",
+                        "message": message,
+                        "capability": dangerous_capability,
+                    },
+                )
+                return message
+        if not dangerous_allowed_by_specific_policy and _escalated_capability is None:
+            _escalated_capability = dangerous_capability
 
     if _escalated_capability:
         try:

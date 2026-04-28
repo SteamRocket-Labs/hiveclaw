@@ -42,8 +42,14 @@ def test_capability_definitions_expose_policy_capabilities_for_frontend():
     assert "workspace.file.read" in definitions
     assert "workspace.file.write" in definitions
     assert "workspace.file.delete" in definitions
+    assert "workspace.command.execute" in definitions
+    assert "workspace.command.dangerous" in definitions
+    assert "workspace.command.secret_exfiltration" in definitions
     assert "agent.task.modify" in definitions
     assert "channel.feishu.document" in definitions
     assert "channel.feishu.base" in definitions
+    assert "run_command" in definitions["workspace.command.execute"]
+    assert "run_command" in definitions["workspace.command.dangerous"]
+    assert "run_command" in definitions["workspace.command.secret_exfiltration"]
     assert "feishu_doc_delete" in definitions["channel.feishu.document"]
     assert "feishu_base_record_delete" in definitions["channel.feishu.base"]

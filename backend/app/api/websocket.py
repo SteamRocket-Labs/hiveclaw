@@ -163,6 +163,48 @@ async def get_chat_history(
     return out
 
 
+def _conversation_from_history_messages(history_messages) -> list[dict]:
+    """Convert persisted chat rows back into provider-compatible conversation entries."""
+    conversation: list[dict] = []
+    for msg in history_messages:
+        if msg.role == "tool_call":
+            try:
+                tc_data = json.loads(msg.content)
+                tc_name = tc_data.get("name", "unknown")
+                tc_args = tc_data.get("args", {})
+                tc_result = tc_data.get("result", "")
+                tc_id = f"call_{msg.id}"
+                assistant_msg = {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": tc_id,
+                            "type": "function",
+                            "function": {"name": tc_name, "arguments": json.dumps(tc_args, ensure_ascii=False)},
+                        }
+                    ],
+                }
+                if tc_data.get("reasoning_content"):
+                    assistant_msg["reasoning_content"] = tc_data["reasoning_content"]
+                conversation.append(assistant_msg)
+
+                tool_result = str(tc_result)
+                if len(tool_result) > 50000:
+                    logger.info("[WS] Tool result truncated on reload: {}→50000 chars", len(tool_result))
+                    tool_result = tool_result[:50000] + "\n\n[... truncated, full output may be in workspace/tool_results/]"
+                conversation.append({"role": "tool", "tool_call_id": tc_id, "content": tool_result})
+            except Exception as exc:
+                logger.debug("[WS] Skipped malformed tool_call record: {}", exc)
+            continue
+
+        entry = {"role": msg.role, "content": msg.content}
+        if getattr(msg, "thinking", None):
+            entry["reasoning_content"] = msg.thinking
+        conversation.append(entry)
+    return conversation
+
+
 async def call_llm(
     model: LLMModel,
     messages: list[dict],
@@ -423,52 +465,9 @@ async def websocket_chat(
     manager.active_connections[agent_id_str].append((websocket, conv_id))
     logger.info(f"[WS] Ready! Agent={agent_name}")
 
-    # Build conversation context from history
+    # Build conversation context from history.
     # IMPORTANT: Include tool_call messages so the LLM maintains tool-calling behavior.
-    # Without them, Claude sees user→assistant-text patterns and learns to skip tools.
-    conversation: list[dict] = []
-    for msg in history_messages:
-        if msg.role == "tool_call":
-            # Convert stored tool_call JSON into OpenAI-format assistant+tool pair
-            try:
-                import json as _j_hist
-                tc_data = _j_hist.loads(msg.content)
-                tc_name = tc_data.get("name", "unknown")
-                tc_args = tc_data.get("args", {})
-                tc_result = tc_data.get("result", "")
-                tc_id = f"call_{msg.id}"  # synthetic tool_call_id
-                # Assistant message with tool_calls array
-                asst_msg = {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [{
-                        "id": tc_id,
-                        "type": "function",
-                        "function": {"name": tc_name, "arguments": _j_hist.dumps(tc_args, ensure_ascii=False)},
-                    }],
-                }
-                if tc_data.get("reasoning_content"):
-                    asst_msg["reasoning_content"] = tc_data["reasoning_content"]
-                conversation.append(asst_msg)
-                # Tool result message
-                # Aligned with kernel _TOOL_RESULT_EVICTION_THRESHOLD (50K, CC standard)
-                _tc_str = str(tc_result)
-                if len(_tc_str) > 50000:
-                    logger.info("[WS] Tool result truncated on reload: {}→50000 chars", len(_tc_str))
-                    _tc_str = _tc_str[:50000] + "\n\n[... truncated, full output may be in workspace/tool_results/]"
-                conversation.append({
-                    "role": "tool",
-                    "tool_call_id": tc_id,
-                    "content": _tc_str,
-                })
-            except Exception as _tc_parse_err:
-                logger.debug("[WS] Skipped malformed tool_call record: {}", _tc_parse_err)
-                continue
-        else:
-            entry = {"role": msg.role, "content": msg.content}
-            if hasattr(msg, 'thinking') and msg.thinking:
-                entry["thinking"] = msg.thinking
-            conversation.append(entry)
+    conversation = _conversation_from_history_messages(history_messages)
 
     try:
         # Send welcome message on new session (no history)

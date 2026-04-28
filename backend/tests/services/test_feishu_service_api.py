@@ -77,6 +77,34 @@ async def test_send_message_raises_with_stage_on_invalid_json(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_send_approval_card_uses_delivery_id_type_and_agent_name(monkeypatch):
+    from app.services.feishu_service import FeishuService
+
+    fake_client = _FakeAsyncClient([
+        _FakeResponse(status_code=200, payload={"tenant_access_token": "tenant-token"}),
+        _FakeResponse(status_code=200, payload={"code": 0, "data": {"message_id": "om_1"}}),
+    ])
+    monkeypatch.setattr("app.services.feishu_service.httpx.AsyncClient", lambda *args, **kwargs: fake_client)
+
+    service = FeishuService()
+    await service.send_approval_card(
+        "tenant-app",
+        "tenant-secret",
+        "ou_creator",
+        "open_id",
+        "Alisa 2",
+        "workspace.command.secret_exfiltration",
+        "{}",
+        "approval-id",
+    )
+
+    send_call = fake_client.calls[1]
+    assert "receive_id_type=open_id" in send_call[1]
+    assert send_call[2]["json"]["receive_id"] == "ou_creator"
+    assert "Alisa 2" in send_call[2]["json"]["content"]
+
+
+@pytest.mark.asyncio
 async def test_patch_message_raises_with_stage_on_business_error(monkeypatch):
     from app.services.feishu_service import FeishuService
 

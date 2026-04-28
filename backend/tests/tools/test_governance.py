@@ -288,6 +288,60 @@ async def test_governance_denies_feishu_doc_delete_in_standard_zone_when_policy_
 
 
 @pytest.mark.asyncio
+async def test_governance_allows_secret_command_when_specific_policy_allows_without_approval():
+    from app.services.capability_gate import CapabilityCheckResult
+    from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
+
+    checked_tools = []
+
+    async def resolve_security_zone(_agent_id):
+        return "standard"
+
+    async def check_capability(_tenant_id, _agent_id, tool_name):
+        checked_tools.append(tool_name)
+        if tool_name == "workspace.command.secret_exfiltration":
+            return CapabilityCheckResult(
+                allowed=True,
+                denied=False,
+                escalate_to_l3=False,
+                capability="workspace.command.secret_exfiltration",
+                reason="",
+            )
+        return CapabilityCheckResult(
+            allowed=True,
+            denied=False,
+            escalate_to_l3=False,
+            capability="workspace.command.execute",
+            reason="",
+        )
+
+    async def write_audit(**kwargs):
+        raise AssertionError("audit should not run when policy allows")
+
+    async def request_approval(*args, **kwargs):
+        raise AssertionError("approval should not run when explicit secret policy allows auto")
+
+    message = await run_tool_governance(
+        ToolGovernanceContext(
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            tenant_id=str(uuid4()),
+            tool_name="run_command",
+            arguments={"command": "env | grep -E '^FEISHU_'"},
+        ),
+        GovernanceDependencies(
+            resolve_security_zone=resolve_security_zone,
+            check_capability=check_capability,
+            write_audit_event=write_audit,
+            request_approval=request_approval,
+        ),
+    )
+
+    assert message is None
+    assert checked_tools == ["run_command", "workspace.command.secret_exfiltration"]
+
+
+@pytest.mark.asyncio
 async def test_governance_escalates_dangerous_run_command_even_when_capability_allows():
     from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
 

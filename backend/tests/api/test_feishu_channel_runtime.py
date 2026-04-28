@@ -43,6 +43,87 @@ class _SequenceDB:
 
 
 @pytest.mark.asyncio
+async def test_process_feishu_event_text_approval_resolves_latest_pending_without_llm(monkeypatch):
+    import app.api.feishu as feishu_api
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    creator_id = uuid4()
+    approval_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=creator_id, tenant_id=tenant_id, name="Alisa 2")
+    resolved_user = SimpleNamespace(id=creator_id, display_name="审批人")
+    approval = SimpleNamespace(
+        id=approval_id,
+        agent_id=agent_id,
+        action_type="workspace.command.secret_exfiltration",
+        status="pending",
+    )
+    db = _SequenceDB([agent, [approval]])
+    sent_messages: list[dict] = []
+
+    async def fake_resolve_sender_profile(*_args, **_kwargs):
+        return {"name": "审批人", "open_id": "ou_123", "user_id": "u_123"}
+
+    async def fake_resolve_feishu_user(*_args, **_kwargs):
+        return resolved_user
+
+    async def fake_resolve_approval(_db, target_approval_id, user, action):
+        assert target_approval_id == approval_id
+        assert user is resolved_user
+        assert action == "approve"
+        approval.status = "approved"
+        return approval
+
+    async def fake_send_message(app_id, app_secret, receive_id, msg_type, content, receive_id_type="open_id", **_kwargs):
+        sent_messages.append(
+            {
+                "app_id": app_id,
+                "app_secret": app_secret,
+                "receive_id": receive_id,
+                "receive_id_type": receive_id_type,
+                "msg_type": msg_type,
+                "content": content,
+            }
+        )
+        return {"data": {"message_id": "approval_reply"}}
+
+    async def fail_call_agent_llm(*_args, **_kwargs):
+        raise AssertionError("Approval command should not invoke the LLM")
+
+    monkeypatch.setattr(feishu_api, "_resolve_feishu_sender_profile", fake_resolve_sender_profile)
+    monkeypatch.setattr(
+        "app.services.channel_user_service.channel_user_service.resolve_or_create_feishu_user",
+        fake_resolve_feishu_user,
+    )
+    monkeypatch.setattr(feishu_api.approval_service, "resolve_approval", fake_resolve_approval)
+    monkeypatch.setattr(feishu_api.feishu_service, "send_message", fake_send_message)
+    monkeypatch.setattr(feishu_api, "_call_agent_llm", fail_call_agent_llm)
+
+    result = await feishu_api.process_feishu_event(
+        agent_id,
+        {
+            "header": {"event_type": "im.message.receive_v1", "event_id": "evt_approve_1"},
+            "event": {
+                "sender": {"sender_id": {"open_id": "ou_123", "user_id": "u_123"}},
+                "message": {
+                    "message_type": "text",
+                    "chat_type": "p2p",
+                    "content": json.dumps({"text": "放行!"}),
+                    "chat_id": "",
+                },
+            },
+        },
+        db,
+        tenant_channel_config=SimpleNamespace(app_id="app", app_secret="secret"),
+    )
+
+    assert result == {"code": 0, "msg": "approval resolved"}
+    assert db.commits == 1
+    assert sent_messages
+    assert "已批准" in sent_messages[0]["content"]
+
+
+@pytest.mark.asyncio
 async def test_process_feishu_event_text_binds_execution_identity_and_session_contract(monkeypatch):
     import app.api.feishu as feishu_api
     from app.core.execution_context import clear_execution_identity

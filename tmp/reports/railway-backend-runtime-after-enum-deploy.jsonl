@@ -1,0 +1,400 @@
+{"timestamp":"2026-04-28T07:35:24.830716364Z","level":"info","message":"Mounting volume on: /var/lib/containers/railwayapp/bind-mounts/8593cfa7-ca1b-423d-9609-a8252da8c19d/vol_299lpeuaitlp3lmx"}
+{"message":"Starting Container","timestamp":"2026-04-28T07:35:24.830735633Z","level":"info"}
+{"level":"info","message":"[entrypoint] Step 1: Creating/verifying database tables...","timestamp":"2026-04-28T07:35:28.231245963Z"}
+{"message":"[entrypoint] Tables created/verified","timestamp":"2026-04-28T07:35:29.225687505Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:29.225693194Z","level":"info","message":"[entrypoint] Column patches applied"}
+{"level":"info","message":"[entrypoint] Step 2: Running alembic migrations...","timestamp":"2026-04-28T07:35:29.225699814Z"}
+{"level":"error","timestamp":"2026-04-28T07:35:30.394674843Z","message":"INFO  [alembic.runtime.migration] Context impl PostgresqlImpl."}
+{"message":"INFO  [alembic.runtime.migration] Will assume transactional DDL.","timestamp":"2026-04-28T07:35:30.394683367Z","level":"error"}
+{"level":"error","message":"INFO  [alembic.runtime.migration] Running upgrade merge_channel_delivery_and_tenant_tool_heads_0413 -> add_tenant_memory_backend_0417, Add tenants.memory_backend column.","timestamp":"2026-04-28T07:35:30.422157058Z"}
+{"level":"error","timestamp":"2026-04-28T07:35:30.449273045Z","message":"INFO  [alembic.runtime.migration] Running upgrade add_tenant_memory_backend_0417 -> add_users_must_change_password_0418, Add users.must_change_password + reset Feishu-imported shadow passwords."}
+{"timestamp":"2026-04-28T07:35:30.768020052Z","level":"error","message":"INFO  [alembic.runtime.migration] Running upgrade add_users_must_change_password_0418 -> add_sso_scan_sessions_updated_at_0419, Add missing updated_at column to sso_scan_sessions."}
+{"message":"INFO  [alembic.runtime.migration] Running upgrade add_sso_scan_sessions_updated_at_0419 -> add_agent_objectives_0427, Add agent objective ledger.","timestamp":"2026-04-28T07:35:30.782044081Z","level":"error"}
+{"timestamp":"2026-04-28T07:35:30.829844889Z","message":"INFO  [alembic.runtime.migration] Running upgrade add_agent_objectives_0427 -> add_tool_runtime_activity_enum_0428, Add tool runtime activity enum values.","level":"error"}
+{"message":"[entrypoint] Step 2.5: Running data migrations...","timestamp":"2026-04-28T07:35:31.290604295Z","level":"info"}
+{"message":"2026-04-28 07:35:32.233 | INFO     | __main__:migrate:38 - No schedules found to migrate.","timestamp":"2026-04-28T07:35:32.253059728Z","level":"error"}
+{"message":"[entrypoint] Skipping lark-cli auth (no FEISHU_APP_ID/SECRET or lark-cli not installed)","timestamp":"2026-04-28T07:35:32.343723323Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:32.343730279Z","message":"[entrypoint] Step 3: Starting uvicorn...","level":"info"}
+{"message":"INFO:     Started server process [1]","level":"error","timestamp":"2026-04-28T07:35:38.492075722Z"}
+{"timestamp":"2026-04-28T07:35:38.492088979Z","level":"error","message":"INFO:     Waiting for application startup."}
+{"message":"2026-04-28 07:35:38 | INFO     | c18ad1db-4b3d-49b6-be83-9dbc47e6fd4b | app.main:lifespan:122 - [startup] Logging configured","timestamp":"2026-04-28T07:35:38.492096535Z","level":"info"}
+{"message":"2026-04-28 07:35:38 | INFO     | d6f70e99-72a0-4951-870f-aabfe0b591e2 | logging:callHandlers:1762 - [Collector] Collected 80 tools (79 canonical)","timestamp":"2026-04-28T07:35:38.562259126Z","level":"info"}
+{"level":"info","message":"2026-04-28 07:35:38 | INFO     | c8799331-7a2f-4b0a-b6c5-91315be021d1 | logging:callHandlers:1762 - SecretsProvider initialized with Fernet encryption","timestamp":"2026-04-28T07:35:38.592587727Z"}
+{"level":"info","timestamp":"2026-04-28T07:35:39.367452561Z","message":"2026-04-28 07:35:39 | INFO     | 4211c450-d6ac-4deb-a560-e6dec3269d20 | app.main:lifespan:188 - [startup] Database tables ready"}
+{"timestamp":"2026-04-28T07:35:39.758062467Z","level":"info","message":"2026-04-28 07:35:39 | INFO     | da9e524d-d782-46b9-bb97-993b9170ef63 | app.main:lifespan:208 - [startup] Objective ledger sync: {'agents': 33, 'synced': 33, 'created': 0, 'updated': 10}"}
+{"message":"2026-04-28 07:35:39 | INFO     | 57c301c7-5899-4fd2-8e45-db0edb58196c | app.main:lifespan:213 - [startup] seeding...","timestamp":"2026-04-28T07:35:39.758066504Z","level":"info"}
+{"level":"info","message":"[startup] ℹ️ enterprise_info_aac728fb-fe1c-45df-a2ff-a56e024a37a0 already exists, skipping migration","timestamp":"2026-04-28T07:35:39.803854372Z"}
+{"timestamp":"2026-04-28T07:35:40.400151628Z","message":"2026-04-28 07:35:40 | INFO     | ca3fbd5d-cc5b-481d-b9fc-bfb64b8cc8a4 | app.services.tool_seeder:seed_builtin_tools:114 - [ToolSeeder] Builtin tools seeded","level":"info"}
+{"message":"2026-04-28 07:35:40 | INFO     | 4f238710-c8ae-4689-b912-b3d86a8de591 | logging:callHandlers:1762 - [Collector] Collected 80 tools (79 canonical)","timestamp":"2026-04-28T07:35:40.400159475Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:40.400168087Z","level":"info","message":"2026-04-28 07:35:40 | INFO     | feb3a177-c186-48ac-bcee-ae9785009b51 | logging:callHandlers:1762 - [tool-audit] All 79 tools have at least one discovery path (pack / skill / prompt)."}
+{"timestamp":"2026-04-28T07:35:40.400175901Z","level":"info","message":"2026-04-28 07:35:40 | WARNING  | 9a94369a-2d38-474f-ba8a-a8a6ab2e7404 | app.main:lifespan:274 - [startup] Reconciled %d orphaned runtime task(s) after restart"}
+{"message":"2026-04-28 07:35:40 | INFO     | f6da1566-2d21-4b29-97fa-33ff99c507db | app.services.skill_seeder:seed_skills:509 - [SkillSeeder] Skills seeded","timestamp":"2026-04-28T07:35:40.535712902Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:40.587073741Z","message":"2026-04-28 07:35:40 | INFO     | 3ba89b23-bfcb-4ef7-92b8-d93285db60a0 | app.services.agent_manager:__init__:226 - Docker not available — OpenClaw containers will not be managed","level":"info"}
+{"message":"2026-04-28 07:35:41 | INFO     | 7f687c08-a9a2-4793-975d-e395bc2ef8da | app.services.skill_seeder:push_default_skills_to_existing_agents:633 - [SkillSeeder] All existing agents already have up-to-date default skills","level":"info","timestamp":"2026-04-28T07:35:41.885690156Z"}
+{"level":"info","timestamp":"2026-04-28T07:35:41.900672494Z","message":"2026-04-28 07:35:41 | INFO     | 6f6b0cfc-b8cf-4152-aff0-281d411aae34 | app.services.agent_seeder:seed_default_agents:110 - [AgentSeeder] Default agents already seeded (marker found), skipping"}
+{"level":"info","timestamp":"2026-04-28T07:35:41.947130681Z","message":"2026-04-28 07:35:41 | INFO     | 88dd1ab5-b924-43d1-b892-3b2e90c33007 | logging:callHandlers:1762 - [Hooks] Memory/objective hooks registered: 13 handlers (3 log + 2 extract + 6 T0 + 1 pending_reply + 1 objective_intake)"}
+{"timestamp":"2026-04-28T07:35:41.973685619Z","level":"info","message":"2026-04-28 07:35:41 | INFO     | e6f14413-afa1-4046-844b-ac20973726bf | app.services.trigger_daemon:backfill_null_reply_contexts:331 - [TriggerDaemon] Backfilled reply_context for trigger 'objective_trigger_awakening_context_source_trigger_single_trigger_fired_tr' (agent bd112fea-d3fb-40a1-8d1e-e53c566d0fde): channel=feishu"}
+{"level":"info","message":"2026-04-28 07:35:41 | INFO     | 0910640c-1ed0-461f-ad42-da92d2bd0e6b | app.services.trigger_daemon:backfill_null_reply_contexts:331 - [TriggerDaemon] Backfilled reply_context for trigger 'objective_trigger_awakening_context_source_trigger_single_trigger_fired_tr' (agent 5d657792-c30d-4f8a-8b3c-389e8583afb1): channel=feishu","timestamp":"2026-04-28T07:35:41.988402097Z"}
+{"message":"2026-04-28 07:35:42 | INFO     | fd1fb11e-f336-4a93-b13f-635c0d05a842 | app.main:lifespan:322 - [startup] Backfilled %d trigger reply_contexts (skipped %d)","timestamp":"2026-04-28T07:35:42.437572059Z","level":"info"}
+{"message":"2026-04-28 07:35:42 | INFO     | 42696f98-c3b3-4f49-8e5d-fc835b1b8a92 | app.main:lifespan:328 - [startup] starting background tasks...","timestamp":"2026-04-28T07:35:42.437578652Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:42.437583080Z","level":"info","message":"2026-04-28 07:35:42 | INFO     | 3f5abd93-4094-4632-87fb-98862cb403aa | app.main:lifespan:353 - [startup] created bg task: trigger_daemon"}
+{"message":"2026-04-28 07:35:42 | INFO     | 1be10ae1-f211-45e1-97dc-32e41bc8401c | app.main:lifespan:353 - [startup] created bg task: feishu_ws","timestamp":"2026-04-28T07:35:42.437589222Z","level":"info"}
+{"message":"2026-04-28 07:35:42 | INFO     | 4bd6118d-a57f-4985-bb82-f50d4b0c50f3 | app.main:lifespan:353 - [startup] created bg task: dingtalk_stream","timestamp":"2026-04-28T07:35:42.437595642Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:42.437603025Z","message":"2026-04-28 07:35:42 | INFO     | 560d804d-9ab8-4fb9-905a-3113fe9e8b84 | app.main:lifespan:353 - [startup] created bg task: wecom_stream","level":"info"}
+{"message":"2026-04-28 07:35:42 | INFO     | 650c66fd-de00-497b-b9af-174e34617525 | app.main:lifespan:353 - [startup] created bg task: wechat_personal_stream","timestamp":"2026-04-28T07:35:42.437610510Z","level":"info"}
+{"message":"2026-04-28 07:35:42 | INFO     | 399ca404-277b-4b7c-9353-461f34c648fd | app.main:lifespan:354 - [startup] all background tasks created!","level":"info","timestamp":"2026-04-28T07:35:42.437616976Z"}
+{"timestamp":"2026-04-28T07:35:42.437627262Z","message":"2026-04-28 07:35:42 | INFO     | 39b498c3-06dd-4eea-b320-18de2420b855 | app.services.trigger_daemon:start_trigger_daemon:1443 - ⚡ Trigger Daemon started (15s tick, heartbeat every ~60s)","level":"info"}
+{"message":"2026-04-28 07:35:42 | INFO     | 841b3e40-9fa3-4d84-848b-8d645b251f4c | app.services.feishu_ws:start_all:345 - [Feishu WS] Initializing all active Feishu channels...","timestamp":"2026-04-28T07:35:42.437633521Z","level":"info"}
+{"message":"2026-04-28 07:35:42 | INFO     | cb21dddd-f0cf-45f2-94bb-d2dd453a4f4f | app.services.dingtalk_stream:start_all:174 - [DingTalk Stream] Initializing all active DingTalk channels...","level":"info","timestamp":"2026-04-28T07:35:42.437639933Z"}
+{"message":"2026-04-28 07:35:42 | INFO     | 59afea59-3314-4fdf-a2fb-50ca01a76e20 | app.services.wecom_stream:start_all:215 - [WeCom Stream] Initializing all active WeCom AI Bot channels...","level":"info","timestamp":"2026-04-28T07:35:42.438896923Z"}
+{"message":"2026-04-28 07:35:42 | INFO     | 3f174c17-6352-48e8-87cc-00485e22a19d | app.main:_start_ss_local:80 - [Proxy] ss-local not found — Discord proxy disabled","level":"info","timestamp":"2026-04-28T07:35:42.438903631Z"}
+{"message":"2026-04-28 07:35:42 | INFO     | a355d9df-681d-40e3-a39d-9d29f5b450b7 | logging:callHandlers:1762 - Application startup complete.","timestamp":"2026-04-28T07:35:42.438909113Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:42.438913752Z","message":"2026-04-28 07:35:42 | INFO     | fd9d6bc7-a4cb-421e-bb5b-75d1008dd129 | app.services.feishu_ws:start_client:274 - [Feishu WS] Starting async WS client for agent 06048572-f955-47c1-954b-1303398a4971 (App ID: cli_a941e06424b99cd5)","level":"info"}
+{"timestamp":"2026-04-28T07:35:42.438918566Z","message":"2026-04-28 07:35:42 | INFO     | 089f29de-49e1-4ba4-99b4-b9d7a1a0d42c | app.services.feishu_ws:start_client:324 - [Feishu WS] Async WS task scheduled for agent 06048572-f955-47c1-954b-1303398a4971","level":"info"}
+{"level":"info","timestamp":"2026-04-28T07:35:42.438924025Z","message":"2026-04-28 07:35:42 | INFO     | fbba2ee9-ccec-42f1-b0c4-05ecc45fe1e1 | app.services.feishu_ws:start_client:274 - [Feishu WS] Starting async WS client for agent 5d657792-c30d-4f8a-8b3c-389e8583afb1 (App ID: cli_a945a16cf07b9ccf)"}
+{"timestamp":"2026-04-28T07:35:42.438928480Z","level":"info","message":"2026-04-28 07:35:42 | INFO     | 2b0d0da2-707f-4461-8c28-d7b6f85ae43f | app.services.feishu_ws:start_client:324 - [Feishu WS] Async WS task scheduled for agent 5d657792-c30d-4f8a-8b3c-389e8583afb1"}
+{"timestamp":"2026-04-28T07:35:42.438932917Z","message":"2026-04-28 07:35:42 | INFO     | efa08061-20ab-4757-b964-eef79e7028fe | app.services.feishu_ws:start_client:274 - [Feishu WS] Starting async WS client for agent bd112fea-d3fb-40a1-8d1e-e53c566d0fde (App ID: cli_a945a16d8d399ccb)","level":"info"}
+{"message":"2026-04-28 07:35:42 | INFO     | e8030930-cc37-4b6c-b7a0-681443814e2b | app.services.feishu_ws:start_client:324 - [Feishu WS] Async WS task scheduled for agent bd112fea-d3fb-40a1-8d1e-e53c566d0fde","timestamp":"2026-04-28T07:35:42.438937959Z","level":"info"}
+{"level":"info","timestamp":"2026-04-28T07:35:42.440925445Z","message":"2026-04-28 07:35:42 | INFO     | 5570e422-1763-47b3-a52e-9c32c53f9720 | app.services.feishu_ws:start_client:274 - [Feishu WS] Starting async WS client for agent f12b9e28-6edf-47e7-8dcf-d5fc2f802581 (App ID: cli_a95994a63778dbc4)"}
+{"timestamp":"2026-04-28T07:35:42.440933376Z","message":"2026-04-28 07:35:42 | INFO     | c0783473-451b-4e93-8cbb-5b0cdd812259 | app.services.feishu_ws:start_client:324 - [Feishu WS] Async WS task scheduled for agent f12b9e28-6edf-47e7-8dcf-d5fc2f802581","level":"info"}
+{"level":"info","message":"2026-04-28 07:35:42 | INFO     | 57d7cc16-4a7d-44f3-b96b-6d759fdd5ba4 | app.services.feishu_ws:start_client:274 - [Feishu WS] Starting async WS client for agent 5f6ec3c3-7477-4f27-bf4e-d782312c92f0 (App ID: cli_a917d27084b81cd1)","timestamp":"2026-04-28T07:35:42.440940500Z"}
+{"level":"info","message":"2026-04-28 07:35:42 | INFO     | 02b70f6c-57a0-49d2-874d-14883ab40c68 | app.services.feishu_ws:start_client:324 - [Feishu WS] Async WS task scheduled for agent 5f6ec3c3-7477-4f27-bf4e-d782312c92f0","timestamp":"2026-04-28T07:35:42.440946657Z"}
+{"message":"2026-04-28 07:35:42 | INFO     | f7bf1900-57e9-4407-b212-40b659ea8ad0 | app.services.feishu_ws:start_client:274 - [Feishu WS] Starting async WS client for agent de902431-f994-493b-8ef2-2430200a7697 (App ID: cli_a9142a58d4621cd6)","timestamp":"2026-04-28T07:35:42.440952781Z","level":"info"}
+{"level":"info","timestamp":"2026-04-28T07:35:42.440959559Z","message":"2026-04-28 07:35:42 | INFO     | 608ffdc8-861c-4b20-843d-5146882beb24 | app.services.feishu_ws:start_client:324 - [Feishu WS] Async WS task scheduled for agent de902431-f994-493b-8ef2-2430200a7697"}
+{"level":"info","timestamp":"2026-04-28T07:35:42.440965472Z","message":"2026-04-28 07:35:42 | INFO     | 8026939d-577c-4910-a164-47fb5a84c038 | app.services.feishu_ws:start_client:274 - [Feishu WS] Starting async WS client for agent d78ca319-4154-4dc4-ba87-d140f2993c6c (App ID: cli_a95cdce42cf85bc6)"}
+{"timestamp":"2026-04-28T07:35:42.440971106Z","level":"info","message":"2026-04-28 07:35:42 | INFO     | f925c964-54f3-4475-b3b8-3b987b6c3114 | app.services.feishu_ws:start_client:324 - [Feishu WS] Async WS task scheduled for agent d78ca319-4154-4dc4-ba87-d140f2993c6c"}
+{"message":"2026-04-28 07:35:42 | INFO     | c627b28a-86f7-4640-bb10-95822a758062 | app.services.feishu_ws:start_client:274 - [Feishu WS] Starting async WS client for agent 997e304f-a959-4931-a096-22873c5d88a3 (App ID: cli_a95dcef410ba9ccb)","timestamp":"2026-04-28T07:35:42.443171225Z","level":"info"}
+{"message":"2026-04-28 07:35:42 | INFO     | a6cd8c48-6d88-4249-8441-c934e4b55418 | app.services.feishu_ws:start_client:324 - [Feishu WS] Async WS task scheduled for agent 997e304f-a959-4931-a096-22873c5d88a3","level":"info","timestamp":"2026-04-28T07:35:42.443178313Z"}
+{"message":"2026-04-28 07:35:42 | INFO     | 2abb0233-e6c1-4b13-a065-840fd645091e | app.services.feishu_ws:start_client:274 - [Feishu WS] Starting async WS client for agent 7ebfa350-4481-40f2-bce9-82c9829da765 (App ID: cli_a952dd2a6a3a5cc0)","timestamp":"2026-04-28T07:35:42.443183233Z","level":"info"}
+{"message":"2026-04-28 07:35:42 | INFO     | 313d5879-4c88-4a3c-8ea9-f57009d38f35 | app.services.feishu_ws:start_client:324 - [Feishu WS] Async WS task scheduled for agent 7ebfa350-4481-40f2-bce9-82c9829da765","level":"info","timestamp":"2026-04-28T07:35:42.443189105Z"}
+{"timestamp":"2026-04-28T07:35:42.443193798Z","message":"2026-04-28 07:35:42 | INFO     | 5e9c2b94-7597-4d81-9501-691845a2e56c | app.services.feishu_ws:start_client:274 - [Feishu WS] Starting async WS client for agent 6a3eee20-a4c5-4dd9-8694-b74334a790de (App ID: cli_a952337915f95cc3)","level":"info"}
+{"message":"2026-04-28 07:35:42 | INFO     | 247a6b33-eea0-4fe6-80a9-3dc93d151dea | app.services.feishu_ws:start_client:324 - [Feishu WS] Async WS task scheduled for agent 6a3eee20-a4c5-4dd9-8694-b74334a790de","timestamp":"2026-04-28T07:35:42.443198960Z","level":"info"}
+{"message":"2026-04-28 07:35:42 | INFO     | 6c95e1b4-e97d-4142-8db8-8819320a70c2 | app.services.feishu_ws:start_client:274 - [Feishu WS] Starting async WS client for agent ec03ec3e-c4e8-417d-95f7-f84215e7b9c3 (App ID: cli_a9565e27b0b81cc7)","level":"info","timestamp":"2026-04-28T07:35:42.443203145Z"}
+{"level":"info","message":"2026-04-28 07:35:42 | INFO     | eea4299d-b28b-417d-a28e-57d9d903894c | app.services.feishu_ws:start_client:324 - [Feishu WS] Async WS task scheduled for agent ec03ec3e-c4e8-417d-95f7-f84215e7b9c3","timestamp":"2026-04-28T07:35:42.443207677Z"}
+{"message":"2026-04-28 07:35:42 | INFO     | 4d7714b2-a7a4-4f9a-b7e8-78e1200dd2cb | app.services.feishu_ws:start_client:274 - [Feishu WS] Starting async WS client for agent 5113f921-4a9b-44c2-8755-2f697600a087 (App ID: cli_a9698a8b65f81bd9)","level":"info","timestamp":"2026-04-28T07:35:42.445733687Z"}
+{"level":"info","timestamp":"2026-04-28T07:35:42.445741334Z","message":"2026-04-28 07:35:42 | INFO     | d6df16f4-b90e-42ca-a67d-dd1890ee2aa2 | app.services.feishu_ws:start_client:274 - [Feishu WS] Starting async WS client for agent 6d6605f2-214f-48fe-8e75-73d8083a7523 (App ID: cli_a9631acf7d785cbd)"}
+{"timestamp":"2026-04-28T07:35:42.445746811Z","message":"2026-04-28 07:35:42 | INFO     | 417cebde-c499-455e-a8b3-740967ffb817 | app.services.feishu_ws:start_client:324 - [Feishu WS] Async WS task scheduled for agent 5113f921-4a9b-44c2-8755-2f697600a087","level":"info"}
+{"level":"info","message":"2026-04-28 07:35:42 | INFO     | 8ee50c96-e612-40c9-b753-7c46c64316b0 | app.services.feishu_ws:start_client:324 - [Feishu WS] Async WS task scheduled for agent 6d6605f2-214f-48fe-8e75-73d8083a7523","timestamp":"2026-04-28T07:35:42.445752390Z"}
+{"message":"2026-04-28 07:35:42 | INFO     | 1b82ce25-0a2c-4152-982c-a0e7bc0db262 | app.services.feishu_ws:start_client:274 - [Feishu WS] Starting async WS client for agent 87bb800f-84e5-4c26-852f-9e5e65759729 (App ID: cli_a917d27084b81cd1)","timestamp":"2026-04-28T07:35:42.445759695Z","level":"info"}
+{"level":"info","message":"2026-04-28 07:35:42 | INFO     | 130a5eef-9e81-4ddc-8903-5827ef214ec9 | app.services.feishu_ws:start_client:324 - [Feishu WS] Async WS task scheduled for agent 87bb800f-84e5-4c26-852f-9e5e65759729","timestamp":"2026-04-28T07:35:42.445768385Z"}
+{"message":"    │   │    └ <Command main>","timestamp":"2026-04-28T07:35:46.467394527Z","level":"info"}
+{"message":"  File \"/usr/local/lib/python3.12/site-packages/click/core.py\", line 1435, in main","level":"info","timestamp":"2026-04-28T07:35:46.467394734Z"}
+{"timestamp":"2026-04-28T07:35:46.467407334Z","message":"    │   └ <built-in function exit>","level":"info"}
+{"timestamp":"2026-04-28T07:35:46.467409819Z","message":"    rv = self.invoke(ctx)","level":"info"}
+{"message":"    └ <module 'sys' (built-in)>","timestamp":"2026-04-28T07:35:46.467416852Z","level":"info"}
+{"message":"  File \"/usr/local/lib/python3.12/site-packages/click/core.py\", line 1514, in __call__","timestamp":"2026-04-28T07:35:46.467426465Z","level":"info"}
+{"level":"info","message":"         │    └ <function Command.invoke at 0x7f0b9bf96ac0>","timestamp":"2026-04-28T07:35:46.467430140Z"}
+{"timestamp":"2026-04-28T07:35:46.467437556Z","level":"info","message":"    return self.main(*args, **kwargs)"}
+{"level":"info","timestamp":"2026-04-28T07:35:46.467438652Z","message":"         └ <Command main>"}
+{"timestamp":"2026-04-28T07:35:46.467447320Z","message":"           │    │     │       └ {}","level":"info"}
+{"message":"  File \"/usr/local/lib/python3.12/site-packages/click/core.py\", line 1298, in invoke","level":"info","timestamp":"2026-04-28T07:35:46.467449755Z"}
+{"level":"info","message":"           │    │     └ ()","timestamp":"2026-04-28T07:35:46.467457201Z"}
+{"timestamp":"2026-04-28T07:35:46.467458975Z","level":"info","message":"    return ctx.invoke(self.callback, **ctx.params)"}
+{"message":"           └ <Command main>","timestamp":"2026-04-28T07:35:46.467472715Z","level":"info"}
+{"message":"2026-04-28 07:35:46 | ERROR    | a503ad66-a180-4bf6-9b92-9ec565a04a34 | app.services.feishu_ws:_run_async_client:318 - [Feishu WS] Async client exception for 5f6ec3c3-7477-4f27-bf4e-d782312c92f0: 1000040345: app_id or app_secret is invalid","level":"info","timestamp":"2026-04-28T07:35:46.467507370Z"}
+{"level":"info","timestamp":"2026-04-28T07:35:46.467516503Z","message":"Traceback (most recent call last):"}
+{"level":"info","message":"  File \"/usr/local/bin/uvicorn\", line 8, in <module>","timestamp":"2026-04-28T07:35:46.467530006Z"}
+{"message":"    sys.exit(main())","timestamp":"2026-04-28T07:35:46.467536977Z","level":"info"}
+{"level":"info","timestamp":"2026-04-28T07:35:46.468806308Z","message":"           │   │      │    │           │   └ {'host': '0.0.0.0', 'port': 8000, 'proxy_headers': True, 'forwarded_allow_ips': '*', 'app': 'app.main:app', 'uds': None, 'fd'..."}
+{"message":"           │   │      │    │           └ <click.core.Context object at 0x7f0b9d247140>","level":"info","timestamp":"2026-04-28T07:35:46.468813077Z"}
+{"message":"           │   │      │    └ <function main at 0x7f0b9bdd4cc0>","level":"info","timestamp":"2026-04-28T07:35:46.468818677Z"}
+{"message":"           │   └ <function Context.invoke at 0x7f0b9bf95d00>","level":"info","timestamp":"2026-04-28T07:35:46.468830133Z"}
+{"level":"info","timestamp":"2026-04-28T07:35:46.468841685Z","message":"  File \"/usr/local/lib/python3.12/site-packages/click/core.py\", line 853, in invoke"}
+{"message":"    return callback(*args, **kwargs)","timestamp":"2026-04-28T07:35:46.468847380Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:46.468852573Z","message":"           │         │       └ {'host': '0.0.0.0', 'port': 8000, 'proxy_headers': True, 'forwarded_allow_ips': '*', 'app': 'app.main:app', 'uds': None, 'fd'...","level":"info"}
+{"timestamp":"2026-04-28T07:35:46.468857814Z","message":"           │         └ ()","level":"info"}
+{"level":"info","message":"           └ <function main at 0x7f0b9bdd4cc0>","timestamp":"2026-04-28T07:35:46.468863393Z"}
+{"timestamp":"2026-04-28T07:35:46.468874633Z","level":"info","message":"    run("}
+{"timestamp":"2026-04-28T07:35:46.468888084Z","message":"  File \"/usr/local/lib/python3.12/site-packages/uvicorn/main.py\", line 617, in run","level":"info"}
+{"level":"info","message":"    server.run()","timestamp":"2026-04-28T07:35:46.468893565Z"}
+{"timestamp":"2026-04-28T07:35:46.468898944Z","level":"info","message":"    │      └ <function Server.run at 0x7f0b9bff2ac0>"}
+{"level":"info","message":"    └ <uvicorn.server.Server object at 0x7f0b9ce3adb0>","timestamp":"2026-04-28T07:35:46.468904231Z"}
+{"message":"  File \"/usr/local/lib/python3.12/site-packages/uvicorn/server.py\", line 75, in run","timestamp":"2026-04-28T07:35:46.468909428Z","level":"info"}
+{"message":"           │    │     │                  └ <Task pending name='Task-1' coro=<Server.serve() running at /usr/local/lib/python3.12/site-packages/uvicorn/server.py:79> wai...","level":"info","timestamp":"2026-04-28T07:35:46.470817157Z"}
+{"timestamp":"2026-04-28T07:35:46.470827503Z","level":"info","message":"    return asyncio_run(self.serve(sockets=sockets), loop_factory=self.config.get_loop_factory())"}
+{"timestamp":"2026-04-28T07:35:46.470836688Z","message":"           │           │    │             │                      │    │      └ <function Config.get_loop_factory at 0x7f0b9bf69940>","level":"info"}
+{"level":"info","timestamp":"2026-04-28T07:35:46.470842438Z","message":"           │           │    │             │                      │    └ <uvicorn.config.Config object at 0x7f0b9d05a240>"}
+{"level":"info","message":"           │           │    │             │                      └ <uvicorn.server.Server object at 0x7f0b9ce3adb0>","timestamp":"2026-04-28T07:35:46.470848240Z"}
+{"timestamp":"2026-04-28T07:35:46.470853640Z","message":"           │           │    │             └ None","level":"info"}
+{"level":"info","timestamp":"2026-04-28T07:35:46.470859709Z","message":"           │           │    └ <function Server.serve at 0x7f0b9bff2b60>"}
+{"level":"info","message":"           │           └ <uvicorn.server.Server object at 0x7f0b9ce3adb0>","timestamp":"2026-04-28T07:35:46.470865156Z"}
+{"timestamp":"2026-04-28T07:35:46.470875733Z","level":"info","message":"  File \"/usr/local/lib/python3.12/asyncio/runners.py\", line 195, in run"}
+{"message":"    return runner.run(main)","timestamp":"2026-04-28T07:35:46.470882551Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:46.470887988Z","message":"           │      │   └ <coroutine object Server.serve at 0x7f0b9bd73a00>","level":"info"}
+{"level":"info","message":"           │      └ <function Runner.run at 0x7f0b9c177920>","timestamp":"2026-04-28T07:35:46.470893634Z"}
+{"level":"info","timestamp":"2026-04-28T07:35:46.470899551Z","message":"           └ <asyncio.runners.Runner object at 0x7f0b9c1ecc20>"}
+{"message":"    return self._loop.run_until_complete(task)","timestamp":"2026-04-28T07:35:46.470910870Z","level":"info"}
+{"level":"info","timestamp":"2026-04-28T07:35:46.472806878Z","message":"          │               │    │     └ <lark_oapi.ws.model.EndpointResp object at 0x7f0b8a731fd0>"}
+{"level":"info","timestamp":"2026-04-28T07:35:46.472819856Z","message":"          │               │    └ 1000040345"}
+{"level":"info","timestamp":"2026-04-28T07:35:46.472832152Z","message":"          │               └ <lark_oapi.ws.model.EndpointResp object at 0x7f0b8a731fd0>"}
+{"message":"           └ <asyncio.runners.Runner object at 0x7f0b9c1ecc20>","timestamp":"2026-04-28T07:35:46.472836480Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:46.472841708Z","message":"","level":"info"}
+{"level":"info","message":"> File \"/app/app/services/feishu_ws.py\", line 305, in _run_async_client","timestamp":"2026-04-28T07:35:46.472847168Z"}
+{"message":"    await client._connect()","level":"info","timestamp":"2026-04-28T07:35:46.472851570Z"}
+{"level":"info","message":"    conn_url = self._get_conn_url()","timestamp":"2026-04-28T07:35:46.472875557Z"}
+{"timestamp":"2026-04-28T07:35:46.472879535Z","message":"               │    └ <function Client._get_conn_url at 0x7f0b93549260>","level":"info"}
+{"level":"info","message":"               └ <lark_oapi.ws.client.Client object at 0x7f0b8a730380>","timestamp":"2026-04-28T07:35:46.472985155Z"}
+{"level":"info","timestamp":"2026-04-28T07:35:46.474364220Z","message":""}
+{"message":"lark_oapi.ws.exception.ClientException: 1000040345: app_id or app_secret is invalid","timestamp":"2026-04-28T07:35:46.474369403Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.613396735Z","message":"2026-04-28 07:35:53 | ERROR    | 2fae9f86-fec1-4af4-981c-687fe566cf1d | app.services.feishu_ws:_run_async_client:318 - [Feishu WS] Async client exception for 06048572-f955-47c1-954b-1303398a4971: timed out during opening handshake","level":"info"}
+{"message":"Traceback (most recent call last):","level":"info","timestamp":"2026-04-28T07:35:53.613401351Z"}
+{"timestamp":"2026-04-28T07:35:53.613405531Z","message":"","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.613410861Z","level":"info","message":"  File \"/usr/local/lib/python3.12/site-packages/websockets/asyncio/client.py\", line 544, in __await_impl__"}
+{"message":"    self.connection = await self.create_connection()","timestamp":"2026-04-28T07:35:53.613414844Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.613419670Z","message":"    │                       │    └ <function connect.create_connection at 0x7f0b90cabce0>","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.613424451Z","level":"info","message":"    │                       └ <websockets.asyncio.client.connect object at 0x7f0b8a7bf080>"}
+{"timestamp":"2026-04-28T07:35:53.613428781Z","level":"info","message":"    └ <websockets.asyncio.client.connect object at 0x7f0b8a7bf080>"}
+{"level":"info","timestamp":"2026-04-28T07:35:53.613433373Z","message":"  File \"/usr/local/lib/python3.12/site-packages/websockets/asyncio/client.py\", line 470, in create_connection"}
+{"timestamp":"2026-04-28T07:35:53.613437482Z","level":"info","message":"    _, connection = await loop.create_connection(factory, **kwargs)"}
+{"timestamp":"2026-04-28T07:35:53.613443921Z","level":"info","message":"                          │    │                 │          └ {'ssl': True, 'server_hostname': 'msg-frontier.feishu.cn', 'host': 'msg-frontier.feishu.cn', 'port': 443}"}
+{"message":"                          │    │                 └ <function connect.create_connection.<locals>.factory at 0x7f0b8a62ad40>","level":"info","timestamp":"2026-04-28T07:35:53.613447933Z"}
+{"timestamp":"2026-04-28T07:35:53.613452410Z","level":"info","message":"                          │    └ <cyfunction Loop.create_connection at 0x7f0b9be7ef80>"}
+{"level":"info","message":"                          └ <uvloop.Loop running=True closed=False debug=False>","timestamp":"2026-04-28T07:35:53.613462031Z"}
+{"message":"  File \"uvloop/loop.pyx\", line 1979, in create_connection","timestamp":"2026-04-28T07:35:53.613466104Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.616390558Z","message":"                 └ <function _wait at 0x7f0b9c339c60>","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.616402259Z","message":"  File \"/usr/local/lib/python3.12/asyncio/tasks.py\", line 550, in _wait","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.616410646Z","message":"    await waiter","level":"info"}
+{"level":"info","timestamp":"2026-04-28T07:35:53.616418994Z","message":"          └ <Future cancelled>"}
+{"message":"","timestamp":"2026-04-28T07:35:53.616428715Z","level":"info"}
+{"message":"asyncio.exceptions.CancelledError","level":"info","timestamp":"2026-04-28T07:35:53.616436701Z"}
+{"level":"info","message":"","timestamp":"2026-04-28T07:35:53.616453879Z"}
+{"message":"The above exception was the direct cause of the following exception:","level":"info","timestamp":"2026-04-28T07:35:53.616461523Z"}
+{"timestamp":"2026-04-28T07:35:53.616480849Z","level":"info","message":"    await aio_wait(fs)"}
+{"timestamp":"2026-04-28T07:35:53.616487409Z","level":"info","message":"Traceback (most recent call last):"}
+{"timestamp":"2026-04-28T07:35:53.616495991Z","message":"    return await _wait(fs, timeout, return_when, loop)","level":"info"}
+{"level":"info","message":"  File \"/usr/local/lib/python3.12/site-packages/websockets/asyncio/client.py\", line 542, in __await_impl__","timestamp":"2026-04-28T07:35:53.616510411Z"}
+{"message":"                 │     │   │        └ 'ALL_COMPLETED'","timestamp":"2026-04-28T07:35:53.616511539Z","level":"info"}
+{"message":"                 │     │   └ None","timestamp":"2026-04-28T07:35:53.616519319Z","level":"info"}
+{"message":"    async with asyncio_timeout(self.open_timeout):","level":"info","timestamp":"2026-04-28T07:35:53.616526403Z"}
+{"timestamp":"2026-04-28T07:35:53.616537561Z","message":"                 │     └ {<Future finished result=<uvloop.loop....x7f0b8a6f36d0>>}","level":"info"}
+{"level":"info","timestamp":"2026-04-28T07:35:53.616545254Z","message":"               │               └ <websockets.asyncio.client.connect object at 0x7f0b8a7bf080>"}
+{"level":"info","message":"               └ <function timeout at 0x7f0b9c3f2de0>","timestamp":"2026-04-28T07:35:53.619246356Z"}
+{"message":"  File \"/usr/local/lib/python3.12/asyncio/timeouts.py\", line 115, in __aexit__","timestamp":"2026-04-28T07:35:53.619254140Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.619261808Z","message":"    raise TimeoutError from exc_val","level":"info"}
+{"message":"                            └ CancelledError()","timestamp":"2026-04-28T07:35:53.619268219Z","level":"info"}
+{"level":"info","timestamp":"2026-04-28T07:35:53.619279139Z","message":""}
+{"message":"TimeoutError","timestamp":"2026-04-28T07:35:53.619286773Z","level":"info"}
+{"message":"","timestamp":"2026-04-28T07:35:53.619300707Z","level":"info"}
+{"level":"info","message":"The above exception was the direct cause of the following exception:","timestamp":"2026-04-28T07:35:53.619308074Z"}
+{"message":"","timestamp":"2026-04-28T07:35:53.619315325Z","level":"info"}
+{"message":"","level":"info","timestamp":"2026-04-28T07:35:53.619322705Z"}
+{"level":"info","message":"","timestamp":"2026-04-28T07:35:53.619338525Z"}
+{"level":"info","timestamp":"2026-04-28T07:35:53.619345625Z","message":"  File \"/usr/local/bin/uvicorn\", line 8, in <module>"}
+{"timestamp":"2026-04-28T07:35:53.619352989Z","level":"info","message":"    sys.exit(main())"}
+{"level":"info","timestamp":"2026-04-28T07:35:53.619360370Z","message":"    │   │    └ <Command main>"}
+{"level":"info","timestamp":"2026-04-28T07:35:53.619367696Z","message":"    │   └ <built-in function exit>"}
+{"level":"info","timestamp":"2026-04-28T07:35:53.619382600Z","message":"  File \"/usr/local/lib/python3.12/site-packages/click/core.py\", line 1514, in __call__"}
+{"timestamp":"2026-04-28T07:35:53.619389321Z","level":"info","message":"    return self.main(*args, **kwargs)"}
+{"timestamp":"2026-04-28T07:35:53.619396160Z","message":"           │    │     │       └ {}","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.619403596Z","message":"           │    │     └ ()","level":"info"}
+{"level":"info","timestamp":"2026-04-28T07:35:53.619409951Z","message":"           │    └ <function Command.main at 0x7f0b9bf96de0>"}
+{"level":"info","message":"  File \"/usr/local/lib/python3.12/site-packages/click/core.py\", line 1435, in main","timestamp":"2026-04-28T07:35:53.619424657Z"}
+{"message":"         │    │      └ <click.core.Context object at 0x7f0b9d247140>","timestamp":"2026-04-28T07:35:53.621607920Z","level":"info"}
+{"message":"         │    └ <function Command.invoke at 0x7f0b9bf96ac0>","timestamp":"2026-04-28T07:35:53.621617388Z","level":"info"}
+{"message":"  File \"/usr/local/lib/python3.12/site-packages/click/core.py\", line 1298, in invoke","timestamp":"2026-04-28T07:35:53.621632350Z","level":"info"}
+{"message":"    return ctx.invoke(self.callback, **ctx.params)","level":"info","timestamp":"2026-04-28T07:35:53.621640532Z"}
+{"message":"           │   │      │    │           │   └ {'host': '0.0.0.0', 'port': 8000, 'proxy_headers': True, 'forwarded_allow_ips': '*', 'app': 'app.main:app', 'uds': None, 'fd'...","level":"info","timestamp":"2026-04-28T07:35:53.621647986Z"}
+{"level":"info","timestamp":"2026-04-28T07:35:53.621655645Z","message":"           │   │      │    │           └ <click.core.Context object at 0x7f0b9d247140>"}
+{"timestamp":"2026-04-28T07:35:53.621662442Z","message":"           │   │      │    └ <function main at 0x7f0b9bdd4cc0>","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.621669383Z","level":"info","message":"           │   │      └ <Command main>"}
+{"timestamp":"2026-04-28T07:35:53.621676669Z","level":"info","message":"           │   └ <function Context.invoke at 0x7f0b9bf95d00>"}
+{"timestamp":"2026-04-28T07:35:53.621697948Z","level":"info","message":"    return callback(*args, **kwargs)"}
+{"message":"           │         │       └ {'host': '0.0.0.0', 'port': 8000, 'proxy_headers': True, 'forwarded_allow_ips': '*', 'app': 'app.main:app', 'uds': None, 'fd'...","timestamp":"2026-04-28T07:35:53.621706725Z","level":"info"}
+{"message":"           │         └ ()","timestamp":"2026-04-28T07:35:53.621713702Z","level":"info"}
+{"message":"           └ <function main at 0x7f0b9bdd4cc0>","level":"info","timestamp":"2026-04-28T07:35:53.621720247Z"}
+{"timestamp":"2026-04-28T07:35:53.621726679Z","message":"  File \"/usr/local/lib/python3.12/site-packages/uvicorn/main.py\", line 441, in main","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.621733621Z","message":"    run(","level":"info"}
+{"message":"  File \"/usr/local/lib/python3.12/site-packages/uvicorn/main.py\", line 617, in run","timestamp":"2026-04-28T07:35:53.623609420Z","level":"info"}
+{"message":"    │      └ <function Server.run at 0x7f0b9bff2ac0>","timestamp":"2026-04-28T07:35:53.623624825Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.623639756Z","message":"  File \"/usr/local/lib/python3.12/site-packages/uvicorn/server.py\", line 75, in run","level":"info"}
+{"message":"    return asyncio_run(self.serve(sockets=sockets), loop_factory=self.config.get_loop_factory())","timestamp":"2026-04-28T07:35:53.623647305Z","level":"info"}
+{"message":"           │           │    │             │                      │    │      └ <function Config.get_loop_factory at 0x7f0b9bf69940>","level":"info","timestamp":"2026-04-28T07:35:53.623653927Z"}
+{"level":"info","message":"           │           │    │             │                      │    └ <uvicorn.config.Config object at 0x7f0b9d05a240>","timestamp":"2026-04-28T07:35:53.623660659Z"}
+{"timestamp":"2026-04-28T07:35:53.623675063Z","message":"           │           │    │             └ None","level":"info"}
+{"message":"           │           │    └ <function Server.serve at 0x7f0b9bff2b60>","level":"info","timestamp":"2026-04-28T07:35:53.623683707Z"}
+{"timestamp":"2026-04-28T07:35:53.623695813Z","message":"           │           └ <uvicorn.server.Server object at 0x7f0b9ce3adb0>","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.623702649Z","level":"info","message":"           └ <function run at 0x7f0b9c3f2200>"}
+{"timestamp":"2026-04-28T07:35:53.623709225Z","level":"info","message":"  File \"/usr/local/lib/python3.12/asyncio/runners.py\", line 195, in run"}
+{"message":"    return runner.run(main)","timestamp":"2026-04-28T07:35:53.623716512Z","level":"info"}
+{"message":"           │      │   └ <coroutine object Server.serve at 0x7f0b9bd73a00>","level":"info","timestamp":"2026-04-28T07:35:53.623723167Z"}
+{"timestamp":"2026-04-28T07:35:53.626000137Z","message":"           └ <asyncio.runners.Runner object at 0x7f0b9c1ecc20>","level":"info"}
+{"level":"info","message":"  File \"/usr/local/lib/python3.12/asyncio/runners.py\", line 118, in run","timestamp":"2026-04-28T07:35:53.626008063Z"}
+{"message":"    return self._loop.run_until_complete(task)","timestamp":"2026-04-28T07:35:53.626013679Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.626029085Z","message":"           │    └ <uvloop.Loop running=True closed=False debug=False>","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.626033024Z","level":"info","message":"           └ <asyncio.runners.Runner object at 0x7f0b9c1ecc20>"}
+{"timestamp":"2026-04-28T07:35:53.626037676Z","level":"info","message":""}
+{"level":"info","message":"> File \"/app/app/services/feishu_ws.py\", line 305, in _run_async_client","timestamp":"2026-04-28T07:35:53.626042698Z"}
+{"message":"    await client._connect()","timestamp":"2026-04-28T07:35:53.626046966Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.626051165Z","level":"info","message":"          │      └ <function Client._connect at 0x7f0b93549120>"}
+{"timestamp":"2026-04-28T07:35:53.626068385Z","message":"    conn = await websockets.connect(conn_url)","level":"info"}
+{"level":"info","message":"                 │          └ <class 'websockets.asyncio.client.connect'>","timestamp":"2026-04-28T07:35:53.626076196Z"}
+{"level":"info","message":"  File \"/usr/local/lib/python3.12/site-packages/websockets/asyncio/client.py\", line 581, in __await_impl__","timestamp":"2026-04-28T07:35:53.628690012Z"}
+{"message":"    raise TimeoutError(\"timed out during opening handshake\") from exc","timestamp":"2026-04-28T07:35:53.628702245Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.628716691Z","level":"info","message":""}
+{"message":"2026-04-28 07:35:53 | INFO     | 55c52633-0eb3-4d71-b835-5cd8792074d9 | logging:callHandlers:1762 - Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)","timestamp":"2026-04-28T07:35:53.628729823Z","level":"info"}
+{"level":"info","message":"2026-04-28 07:35:53 | INFO     | e2349703-3c4b-4d49-8468-ff72ffde2fbf | app.services.heartbeat:_workspace_full_sweep_loop:1708 - 📁 Workspace full-sweep loop started (3600s interval)","timestamp":"2026-04-28T07:35:53.628749335Z"}
+{"message":"2026-04-28 07:35:53 | ERROR    | d2bc1cc4-1c28-4aaf-89db-02dcace24d37 | app.services.feishu_ws:_run_async_client:318 - [Feishu WS] Async client exception for 5d657792-c30d-4f8a-8b3c-389e8583afb1: timed out during opening handshake","timestamp":"2026-04-28T07:35:53.776597147Z","level":"info"}
+{"message":"Traceback (most recent call last):","timestamp":"2026-04-28T07:35:53.776612596Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.776620462Z","level":"info","message":""}
+{"level":"info","message":"  File \"/usr/local/lib/python3.12/site-packages/websockets/asyncio/client.py\", line 546, in __await_impl__","timestamp":"2026-04-28T07:35:53.776627311Z"}
+{"level":"info","timestamp":"2026-04-28T07:35:53.776648207Z","message":"          │    └ <websockets.asyncio.client.ClientConnection object at 0x7f0b8a7bff20>"}
+{"message":"          └ <websockets.asyncio.client.connect object at 0x7f0b8a7bf9b0>","level":"info","timestamp":"2026-04-28T07:35:53.776655747Z"}
+{"message":"  File \"/usr/local/lib/python3.12/site-packages/websockets/asyncio/client.py\", line 105, in handshake","timestamp":"2026-04-28T07:35:53.776662082Z","level":"info"}
+{"message":"    await asyncio.wait(","level":"info","timestamp":"2026-04-28T07:35:53.776668884Z"}
+{"message":"          │       └ <function wait at 0x7f0b9c339a80>","timestamp":"2026-04-28T07:35:53.776675365Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.776681352Z","message":"          └ <module 'asyncio' from '/usr/local/lib/python3.12/asyncio/__init__.py'>","level":"info"}
+{"level":"info","message":"  File \"/usr/local/lib/python3.12/asyncio/tasks.py\", line 464, in wait","timestamp":"2026-04-28T07:35:53.776687044Z"}
+{"message":"                 │     │   │        │            └ <uvloop.Loop running=True closed=False debug=False>","level":"info","timestamp":"2026-04-28T07:35:53.776700771Z"}
+{"message":"The above exception was the direct cause of the following exception:","timestamp":"2026-04-28T07:35:53.778679249Z","level":"info"}
+{"level":"info","message":"          └ <Future cancelled>","timestamp":"2026-04-28T07:35:53.778699044Z"}
+{"timestamp":"2026-04-28T07:35:53.778704065Z","level":"info","message":""}
+{"level":"info","message":"","timestamp":"2026-04-28T07:35:53.778714274Z"}
+{"level":"info","timestamp":"2026-04-28T07:35:53.778718412Z","message":""}
+{"message":"The above exception was the direct cause of the following exception:","timestamp":"2026-04-28T07:35:53.778722220Z","level":"info"}
+{"message":"","timestamp":"2026-04-28T07:35:53.778728038Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.778750582Z","message":"  File \"/usr/local/lib/python3.12/site-packages/websockets/asyncio/client.py\", line 542, in __await_impl__","level":"info"}
+{"level":"info","timestamp":"2026-04-28T07:35:53.778756203Z","message":"    async with asyncio_timeout(self.open_timeout):"}
+{"level":"info","message":"               │               │    └ 10","timestamp":"2026-04-28T07:35:53.778761611Z"}
+{"message":"               │               └ <websockets.asyncio.client.connect object at 0x7f0b8a7bf9b0>","timestamp":"2026-04-28T07:35:53.778766850Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.778785124Z","level":"info","message":"    raise TimeoutError from exc_val"}
+{"timestamp":"2026-04-28T07:35:53.778791874Z","level":"info","message":"                            └ CancelledError()"}
+{"timestamp":"2026-04-28T07:35:53.778797966Z","level":"info","message":""}
+{"level":"info","message":"","timestamp":"2026-04-28T07:35:53.778807747Z"}
+{"timestamp":"2026-04-28T07:35:53.780703392Z","level":"info","message":""}
+{"level":"info","message":"Traceback (most recent call last):","timestamp":"2026-04-28T07:35:53.780711433Z"}
+{"level":"info","timestamp":"2026-04-28T07:35:53.780716765Z","message":""}
+{"message":"  File \"/usr/local/bin/uvicorn\", line 8, in <module>","timestamp":"2026-04-28T07:35:53.780722071Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.780743668Z","level":"info","message":"    │   └ <built-in function exit>"}
+{"message":"    └ <module 'sys' (built-in)>","level":"info","timestamp":"2026-04-28T07:35:53.780750030Z"}
+{"message":"  File \"/usr/local/lib/python3.12/site-packages/click/core.py\", line 1514, in __call__","timestamp":"2026-04-28T07:35:53.780758557Z","level":"info"}
+{"level":"info","timestamp":"2026-04-28T07:35:53.780768759Z","message":"           │    │     │       └ {}"}
+{"message":"           │    │     └ ()","timestamp":"2026-04-28T07:35:53.780774669Z","level":"info"}
+{"level":"info","timestamp":"2026-04-28T07:35:53.780779080Z","message":"           │    └ <function Command.main at 0x7f0b9bf96de0>"}
+{"level":"info","message":"           └ <Command main>","timestamp":"2026-04-28T07:35:53.780783572Z"}
+{"message":"  File \"/usr/local/lib/python3.12/site-packages/click/core.py\", line 1435, in main","timestamp":"2026-04-28T07:35:53.780789238Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.780797515Z","level":"info","message":"    rv = self.invoke(ctx)"}
+{"message":"         │    │      └ <click.core.Context object at 0x7f0b9d247140>","timestamp":"2026-04-28T07:35:53.780803297Z","level":"info"}
+{"level":"info","timestamp":"2026-04-28T07:35:53.780811634Z","message":"         └ <Command main>"}
+{"level":"info","message":"  File \"/usr/local/lib/python3.12/site-packages/click/core.py\", line 1298, in invoke","timestamp":"2026-04-28T07:35:53.780816597Z"}
+{"message":"    return ctx.invoke(self.callback, **ctx.params)","timestamp":"2026-04-28T07:35:53.780821126Z","level":"info"}
+{"message":"           │   │      │    │           │   └ {'host': '0.0.0.0', 'port': 8000, 'proxy_headers': True, 'forwarded_allow_ips': '*', 'app': 'app.main:app', 'uds': None, 'fd'...","level":"info","timestamp":"2026-04-28T07:35:53.780826082Z"}
+{"timestamp":"2026-04-28T07:35:53.783162919Z","message":"           │   │      │    │           └ <click.core.Context object at 0x7f0b9d247140>","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.783169686Z","level":"info","message":"           │   │      │    └ <function main at 0x7f0b9bdd4cc0>"}
+{"message":"           │   │      └ <Command main>","timestamp":"2026-04-28T07:35:53.783174836Z","level":"info"}
+{"message":"           │   └ <function Context.invoke at 0x7f0b9bf95d00>","level":"info","timestamp":"2026-04-28T07:35:53.783179769Z"}
+{"message":"           └ <click.core.Context object at 0x7f0b9d247140>","timestamp":"2026-04-28T07:35:53.783185138Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.783189550Z","level":"info","message":"  File \"/usr/local/lib/python3.12/site-packages/click/core.py\", line 853, in invoke"}
+{"level":"info","message":"    return callback(*args, **kwargs)","timestamp":"2026-04-28T07:35:53.783194126Z"}
+{"timestamp":"2026-04-28T07:35:53.783210622Z","message":"  File \"/usr/local/lib/python3.12/site-packages/uvicorn/main.py\", line 441, in main","level":"info"}
+{"level":"info","timestamp":"2026-04-28T07:35:53.783214564Z","message":"    run("}
+{"message":"    └ <function run at 0x7f0b9bf4fe20>","timestamp":"2026-04-28T07:35:53.783218544Z","level":"info"}
+{"level":"info","timestamp":"2026-04-28T07:35:53.783222739Z","message":"  File \"/usr/local/lib/python3.12/site-packages/uvicorn/main.py\", line 617, in run"}
+{"timestamp":"2026-04-28T07:35:53.783227188Z","message":"    server.run()","level":"info"}
+{"level":"info","message":"    │      └ <function Server.run at 0x7f0b9bff2ac0>","timestamp":"2026-04-28T07:35:53.783231267Z"}
+{"message":"    └ <uvicorn.server.Server object at 0x7f0b9ce3adb0>","level":"info","timestamp":"2026-04-28T07:35:53.783235103Z"}
+{"timestamp":"2026-04-28T07:35:53.783239170Z","message":"  File \"/usr/local/lib/python3.12/site-packages/uvicorn/server.py\", line 75, in run","level":"info"}
+{"message":"    return asyncio_run(self.serve(sockets=sockets), loop_factory=self.config.get_loop_factory())","timestamp":"2026-04-28T07:35:53.783243224Z","level":"info"}
+{"level":"info","timestamp":"2026-04-28T07:35:53.785813282Z","message":"           │           │    │             │                      │    │      └ <function Config.get_loop_factory at 0x7f0b9bf69940>"}
+{"level":"info","message":"           │           │    │             │                      └ <uvicorn.server.Server object at 0x7f0b9ce3adb0>","timestamp":"2026-04-28T07:35:53.785830417Z"}
+{"level":"info","message":"           │           │    └ <function Server.serve at 0x7f0b9bff2b60>","timestamp":"2026-04-28T07:35:53.785841666Z"}
+{"level":"info","timestamp":"2026-04-28T07:35:53.785847323Z","message":"           │           └ <uvicorn.server.Server object at 0x7f0b9ce3adb0>"}
+{"timestamp":"2026-04-28T07:35:53.785853451Z","level":"info","message":"           └ <function run at 0x7f0b9c3f2200>"}
+{"message":"  File \"/usr/local/lib/python3.12/asyncio/runners.py\", line 195, in run","level":"info","timestamp":"2026-04-28T07:35:53.785859870Z"}
+{"message":"    return runner.run(main)","level":"info","timestamp":"2026-04-28T07:35:53.785865309Z"}
+{"message":"           │      │   └ <coroutine object Server.serve at 0x7f0b9bd73a00>","timestamp":"2026-04-28T07:35:53.785870058Z","level":"info"}
+{"level":"info","timestamp":"2026-04-28T07:35:53.785874603Z","message":"           │      └ <function Runner.run at 0x7f0b9c177920>"}
+{"message":"           └ <asyncio.runners.Runner object at 0x7f0b9c1ecc20>","timestamp":"2026-04-28T07:35:53.785878377Z","level":"info"}
+{"level":"info","message":"    return self._loop.run_until_complete(task)","timestamp":"2026-04-28T07:35:53.785886489Z"}
+{"level":"info","message":"           │    │     └ <cyfunction Loop.run_until_complete at 0x7f0b9be7ebc0>","timestamp":"2026-04-28T07:35:53.785894657Z"}
+{"level":"info","message":"           │    └ <uvloop.Loop running=True closed=False debug=False>","timestamp":"2026-04-28T07:35:53.788519309Z"}
+{"level":"info","message":"           └ <asyncio.runners.Runner object at 0x7f0b9c1ecc20>","timestamp":"2026-04-28T07:35:53.788527475Z"}
+{"timestamp":"2026-04-28T07:35:53.788533165Z","message":"","level":"info"}
+{"level":"info","message":"    await client._connect()","timestamp":"2026-04-28T07:35:53.788542581Z"}
+{"message":"          └ <lark_oapi.ws.client.Client object at 0x7f0b8a732300>","timestamp":"2026-04-28T07:35:53.788553396Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.788557890Z","level":"info","message":""}
+{"level":"info","timestamp":"2026-04-28T07:35:53.788563839Z","message":"  File \"/usr/local/lib/python3.12/site-packages/lark_oapi/ws/client.py\", line 152, in _connect"}
+{"message":"    conn = await websockets.connect(conn_url)","timestamp":"2026-04-28T07:35:53.788569397Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.788578332Z","message":"                 │          └ <class 'app.services.feishu_ws._make_no_proxy_connect.<locals>._NoProxyConnect'>","level":"info"}
+{"message":"                 └ <module 'websockets' from '/usr/local/lib/python3.12/site-packages/websockets/__init__.py'>","level":"info","timestamp":"2026-04-28T07:35:53.788582696Z"}
+{"message":"  File \"/usr/local/lib/python3.12/site-packages/websockets/asyncio/client.py\", line 581, in __await_impl__","timestamp":"2026-04-28T07:35:53.788586798Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.788591750Z","level":"info","message":"    raise TimeoutError(\"timed out during opening handshake\") from exc"}
+{"message":"          └ <class 'TimeoutError'>","timestamp":"2026-04-28T07:35:53.788596306Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.788607057Z","message":"TimeoutError: timed out during opening handshake","level":"info"}
+{"message":"2026-04-28 07:35:53 | INFO     | cf41ec1a-9cd0-443a-b486-4686c24bac37 | app.services.wechat_personal_stream:start_client:113 - [WeChatPersonal Stream] Client started for agent 8cfe80df-e292-4674-8a88-dbd2f88057ef","timestamp":"2026-04-28T07:35:53.791104491Z","level":"info"}
+{"level":"info","message":"2026-04-28 07:35:53 | INFO     | 54889aca-11a6-4a09-862c-42f7c4724f83 | app.services.wechat_personal_stream:start_client:113 - [WeChatPersonal Stream] Client started for agent 7d0eeb79-269e-4b2d-9ac5-36e836e357ef","timestamp":"2026-04-28T07:35:53.791109311Z"}
+{"message":"2026-04-28 07:35:53 | INFO     | 997d14f8-2478-466d-a542-1d15c52270f4 | app.services.wechat_personal_stream:start_all:93 - [WeChatPersonal Stream] Started 3 client(s)","level":"info","timestamp":"2026-04-28T07:35:53.791113697Z"}
+{"level":"info","timestamp":"2026-04-28T07:35:53.791120293Z","message":"2026-04-28 07:35:53 | INFO     | 922ca3ba-d515-4122-be84-0d725145cb20 | app.services.wecom_stream:start_all:237 - [WeCom Stream] Started 0 WeCom AI Bot client(s)"}
+{"level":"info","message":"2026-04-28 07:35:53 | INFO     | e6866ea8-e007-4b7d-9210-cd3a6da9c93c | logging:callHandlers:1762 - connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633710508181572576&access_key=16232a7541348d8645abb4b70bda1436&service_id=33554678&ticket=b7efc994-067a-4fcc-a6fe-3fe120f20730 [conn_id=7633710508181572576]","timestamp":"2026-04-28T07:35:53.791124551Z"}
+{"level":"info","message":"2026-04-28 07:35:53 | INFO     | 46286e1a-eeb4-4438-a03e-2bdeb3b2e496 | logging:callHandlers:1762 - connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633710551396240316&access_key=8868bd52e0be0aa5bdc109135993af1a&service_id=33554678&ticket=9eb42081-abd5-478d-a4fc-5df10052d63f [conn_id=7633710551396240316]","timestamp":"2026-04-28T07:35:53.791128555Z"}
+{"timestamp":"2026-04-28T07:35:53.793862342Z","level":"info","message":"2026-04-28 07:35:53 | INFO     | 70698d25-2800-4192-aa78-8e192cb43873 | logging:callHandlers:1762 - connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633710519340239815&access_key=bd144de135f6627aff74f777c8cbe57b&service_id=33554678&ticket=77380c36-593b-4c7f-a091-504bebe37919 [conn_id=7633710519340239815]"}
+{"level":"info","message":"2026-04-28 07:35:53 | INFO     | 4ac58afc-e108-4db2-83df-31817eb8d341 | logging:callHandlers:1762 - connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633710528489999310&access_key=e13ef2191a6a0e6ec75aaf10d7cc1f8a&service_id=33554678&ticket=1437d6bc-8062-44af-92a9-7b9d19e98ee7 [conn_id=7633710528489999310]","timestamp":"2026-04-28T07:35:53.793867469Z"}
+{"level":"info","message":"2026-04-28 07:35:53 | INFO     | 9f35640c-4a44-4c01-9438-ac631cdf68a9 | logging:callHandlers:1762 - connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633710530620689337&access_key=503d83994bcad90319d247f31e256ed3&service_id=33554678&ticket=82b8b88e-6092-4370-82ad-fba25b40afed [conn_id=7633710530620689337]","timestamp":"2026-04-28T07:35:53.793874243Z"}
+{"message":"2026-04-28 07:35:53 | INFO     | 3a1a2422-acc6-4d39-9bd0-4060afedb0bd | logging:callHandlers:1762 - connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633710513923247036&access_key=557dbd84a021e1d1b38c64473ef3a326&service_id=33554678&ticket=30532d64-b43f-4fe0-962e-2c0ba741f880 [conn_id=7633710513923247036]","level":"info","timestamp":"2026-04-28T07:35:53.796416191Z"}
+{"message":"2026-04-28 07:35:53 | INFO     | 38eb0d32-8276-43c2-a62f-30a0bf38851d | logging:callHandlers:1762 - connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633710526858628053&access_key=410af9b8df46cbc82a8d90516039735a&service_id=33554678&ticket=ac5e6bb1-d51b-461e-b547-c7b33e620d43 [conn_id=7633710526858628053]","timestamp":"2026-04-28T07:35:53.805377106Z","level":"info"}
+{"timestamp":"2026-04-28T07:35:53.805384014Z","level":"info","message":"2026-04-28 07:35:53 | INFO     | 32ac74ce-fd04-412f-849a-6a18477c17bd | logging:callHandlers:1762 - connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633710543438449604&access_key=8824565190434dae6720181283b92c6e&service_id=33554678&ticket=80e54dde-dbb7-44f4-870b-0056025c620c [conn_id=7633710543438449604]"}
+{"timestamp":"2026-04-28T07:35:53.941427765Z","level":"info","message":"2026-04-28 07:35:53 | INFO     | 8f681485-f33e-4c83-8b5a-56d918007e7d | app.services.wechat_personal_stream:_run_poll_loop:145 - [WeChatPersonal Stream] Poll loop started for agent ec03ec3e-c4e8-417d-95f7-f84215e7b9c3"}
+{"level":"info","message":"2026-04-28 07:35:53 | INFO     | 296f2fa9-074f-4570-8c48-ae1a24145719 | app.services.wechat_personal_stream:_run_poll_loop:145 - [WeChatPersonal Stream] Poll loop started for agent 8cfe80df-e292-4674-8a88-dbd2f88057ef","timestamp":"2026-04-28T07:35:53.988499919Z"}
+{"message":"2026-04-28 07:35:53 | INFO     | b6bc5916-3697-496b-a12d-7fccb0343599 | app.services.wechat_personal_stream:_run_poll_loop:145 - [WeChatPersonal Stream] Poll loop started for agent 7d0eeb79-269e-4b2d-9ac5-36e836e357ef","level":"info","timestamp":"2026-04-28T07:35:53.990870316Z"}
+{"message":"2026-04-28 07:35:54 | INFO     | 1ee01e20-eeb | app.core.middleware:dispatch:41 - <-- GET /api/health 200 0.004s","level":"info","timestamp":"2026-04-28T07:35:54.512855752Z"}
+{"timestamp":"2026-04-28T07:35:54.512865144Z","level":"info","message":"2026-04-28 07:35:54 | INFO     | bf262a94-4851-4810-8bd0-6b5830721156 | logging:callHandlers:1762 - 100.64.0.2:60647 - \"GET /api/health HTTP/1.1\" 200"}
+{"level":"info","timestamp":"2026-04-28T07:35:54.512915048Z","message":"2026-04-28 07:35:54 | INFO     | 1ee01e20-eeb | app.core.middleware:dispatch:28 - --> GET /api/health [client: 100.64.0.2]"}
+{"level":"info","timestamp":"2026-04-28T07:36:07.925946288Z","message":"2026-04-28 07:36:07 | INFO     | 8afa6549-150 | app.core.middleware:dispatch:28 - --> GET /api/chat/sessions/5d6a36cc-5a13-4cc2-bd52-dcb042a0b1af/runtime-summary [client: 95.40.95.8]"}
+{"timestamp":"2026-04-28T07:36:09.915574592Z","level":"info","message":"2026-04-28 07:36:09 | INFO     | ac4ce868-3f5 | app.core.middleware:dispatch:41 - <-- GET /api/notifications/unread-count 200 0.026s"}
+{"timestamp":"2026-04-28T07:36:09.915581667Z","message":"2026-04-28 07:36:09 | INFO     | f2a0d5b4-09d1-4e44-897a-9febe4f5e6e9 | logging:callHandlers:1762 - 95.40.95.8:0 - \"GET /api/notifications/unread-count HTTP/1.1\" 200","level":"info"}
+{"level":"info","message":"2026-04-28 07:36:12 | INFO     | eb0452b5-bf7d-4863-adcd-9b4b9a20ba82 | logging:callHandlers:1762 - HTTP Request: POST https://ilinkai.weixin.qq.com/ilink/bot/getupdates \"HTTP/1.1 200 OK\"","timestamp":"2026-04-28T07:36:12.247190665Z"}
+{"message":"2026-04-28 07:36:12 | INFO     | 6b93c6eb-a884-487c-b834-789c20358dd2 | logging:callHandlers:1762 - HTTP Request: POST https://ilinkai.weixin.qq.com/ilink/bot/getupdates \"HTTP/1.1 200 OK\"","level":"info","timestamp":"2026-04-28T07:36:12.249363776Z"}
+{"timestamp":"2026-04-28T07:36:13.012819001Z","message":"2026-04-28 07:36:13 | INFO     | 7f924a0f-7b0 | app.core.middleware:dispatch:28 - --> GET /api/notifications/unread-count [client: 160.16.56.12]","level":"info"}
+{"timestamp":"2026-04-28T07:36:13.027870587Z","level":"info","message":"2026-04-28 07:36:13 | INFO     | 7f924a0f-7b0 | app.core.middleware:dispatch:41 - <-- GET /api/notifications/unread-count 200 0.022s"}
+{"timestamp":"2026-04-28T07:36:13.029862138Z","level":"info","message":"2026-04-28 07:36:13 | INFO     | 40126da6-4e33-434d-b3d1-9d226c0803f3 | logging:callHandlers:1762 - 160.16.56.12:0 - \"GET /api/notifications/unread-count HTTP/1.1\" 200"}
+{"message":"2026-04-28 07:36:14 | INFO     | 10161481-22c | app.core.middleware:dispatch:28 - --> GET /api/agents/bd112fea-d3fb-40a1-8d1e-e53c566d0fde/tasks/ [client: 23.165.184.66]","timestamp":"2026-04-28T07:36:14.292669130Z","level":"info"}
+{"message":"2026-04-28 07:36:14 | INFO     | 3b8e931b-f49 | app.core.middleware:dispatch:28 - --> GET /api/agents/700c554d-5fc6-41f9-8048-33da794ac244/tasks/ [client: 23.165.184.66]","timestamp":"2026-04-28T07:36:14.292674016Z","level":"info"}
+{"message":"2026-04-28 07:36:14 | INFO     | a0ecb44f-f7f | app.core.middleware:dispatch:28 - --> GET /api/agents/5f6ec3c3-7477-4f27-bf4e-d782312c92f0/tasks/ [client: 23.165.184.66]","timestamp":"2026-04-28T07:36:14.292683828Z","level":"info"}
+{"level":"info","message":"2026-04-28 07:36:14 | INFO     | ba8b452e-569 | app.core.middleware:dispatch:28 - --> GET /api/agents/5d657792-c30d-4f8a-8b3c-389e8583afb1/tasks/ [client: 23.165.184.66]","timestamp":"2026-04-28T07:36:14.292688281Z"}
+{"message":"2026-04-28 07:36:14 | INFO     | c178adfc-5ee | app.core.middleware:dispatch:28 - --> GET /api/agents/ff573b57-7c0f-4f3d-a505-4a31ba6329c9/tasks/ [client: 23.165.184.66]","timestamp":"2026-04-28T07:36:14.322630485Z","level":"info"}
+{"level":"info","timestamp":"2026-04-28T07:36:14.326871765Z","message":"2026-04-28 07:36:14 | INFO     | 16bfdb57-552 | app.core.middleware:dispatch:28 - --> GET /api/agents/ba9c26f1-973a-4192-938a-f0a6609402c8/tasks/ [client: 23.165.184.66]"}
+{"timestamp":"2026-04-28T07:36:14.334639618Z","level":"info","message":"2026-04-28 07:36:14 | INFO     | dd5dff85-a19 | app.core.middleware:dispatch:28 - --> GET /api/agents/997e304f-a959-4931-a096-22873c5d88a3/tasks/ [client: 23.165.184.66]"}
+{"message":"2026-04-28 07:36:14 | INFO     | 9fc3d8a4-40e | app.core.middleware:dispatch:41 - <-- GET /api/agents/ 200 0.071s","level":"info","timestamp":"2026-04-28T07:36:14.343956717Z"}
+{"message":"2026-04-28 07:36:14 | INFO     | a4450e8d-66bc-4a2c-9b70-b12bee5e8987 | logging:callHandlers:1762 - 23.165.184.66:0 - \"GET /api/agents/6d6605f2-214f-48fe-8e75-73d8083a7523/tasks/ HTTP/1.1\" 200","timestamp":"2026-04-28T07:36:14.343966495Z","level":"info"}
+{"message":"2026-04-28 07:36:14 | INFO     | 1d9c75a0-1c5 | app.core.middleware:dispatch:41 - <-- GET /api/agents/5113f921-4a9b-44c2-8755-2f697600a087/tasks/ 200 0.725s","timestamp":"2026-04-28T07:36:15.003720337Z","level":"info"}
+{"timestamp":"2026-04-28T07:36:15.003735210Z","level":"info","message":"2026-04-28 07:36:14 | INFO     | dc9dd316-98a5-4d72-8827-995b2f299987 | logging:callHandlers:1762 - 23.165.184.66:0 - \"GET /api/agents/5113f921-4a9b-44c2-8755-2f697600a087/tasks/ HTTP/1.1\" 200"}
+{"timestamp":"2026-04-28T07:36:15.003741833Z","level":"info","message":"2026-04-28 07:36:14 | INFO     | fe68fc5f-039a-4d10-85cf-e7e195d902aa | logging:callHandlers:1762 - 23.165.184.66:0 - \"GET /api/agents/e0b927c4-8d1a-4a48-87ce-f19680de8ebc/tasks/ HTTP/1.1\" 200"}
+{"timestamp":"2026-04-28T07:36:15.005483358Z","level":"info","message":"2026-04-28 07:36:15 | INFO     | 06f91168-56c | app.core.middleware:dispatch:41 - <-- GET /api/agents/f5aefa50-91ff-4282-b4df-bb7baaa76e0b/tasks/ 200 0.719s"}
+{"message":"2026-04-28 07:36:15 | INFO     | 35468047-6ae | app.core.middleware:dispatch:41 - <-- GET /api/agents/5b35b554-2d9a-428a-b6dc-840527e38398/tasks/ 200 0.683s","timestamp":"2026-04-28T07:36:15.012104256Z","level":"info"}
+{"timestamp":"2026-04-28T07:36:15.012108862Z","message":"2026-04-28 07:36:15 | INFO     | 05f19bf2-570 | app.core.middleware:dispatch:41 - <-- GET /api/agents/d78ca319-4154-4dc4-ba87-d140f2993c6c/tasks/ 200 0.722s","level":"info"}
+{"level":"info","message":"2026-04-28 07:36:15 | INFO     | b8ff5d13-dc70-4c74-b648-95a14255d1cd | logging:callHandlers:1762 - 23.165.184.66:0 - \"GET /api/agents/5b35b554-2d9a-428a-b6dc-840527e38398/tasks/ HTTP/1.1\" 200","timestamp":"2026-04-28T07:36:15.022350309Z"}
+{"level":"info","timestamp":"2026-04-28T07:36:15.022383560Z","message":"2026-04-28 07:36:15 | INFO     | a6adedab-0822-4ef9-8871-a9fe9c358784 | logging:callHandlers:1762 - 23.165.184.66:0 - \"GET /api/agents/f12b9e28-6edf-47e7-8dcf-d5fc2f802581/tasks/ HTTP/1.1\" 200"}
+{"level":"info","message":"2026-04-28 07:36:15 | INFO     | 9d7e3d57-8faa-4958-b9a0-eaab805f9718 | logging:callHandlers:1762 - 23.165.184.66:0 - \"GET /api/agents/724651d9-3133-49d0-b11f-1b53e788fb50/tasks/ HTTP/1.1\" 200","timestamp":"2026-04-28T07:36:15.024556140Z"}
+{"level":"info","message":"2026-04-28 07:36:15 | INFO     | 16bfdb57-552 | app.core.middleware:dispatch:41 - <-- GET /api/agents/ba9c26f1-973a-4192-938a-f0a6609402c8/tasks/ 200 0.694s","timestamp":"2026-04-28T07:36:15.026405858Z"}
+{"level":"info","timestamp":"2026-04-28T07:36:15.026416622Z","message":"2026-04-28 07:36:15 | INFO     | f26c7b01-abf7-4c88-927e-e5b4789e82ea | logging:callHandlers:1762 - 23.165.184.66:0 - \"GET /api/agents/22fdff42-53e3-4be5-9cb5-76881dd2a1a3/tasks/ HTTP/1.1\" 200"}
+{"level":"info","message":"2026-04-28 07:36:15 | INFO     | b8fa61b2-5ff | app.core.middleware:dispatch:41 - <-- GET /api/agents/6a3eee20-a4c5-4dd9-8694-b74334a790de/tasks/ 200 0.687s","timestamp":"2026-04-28T07:36:15.026420873Z"}
+{"timestamp":"2026-04-28T07:36:15.026424822Z","level":"info","message":"2026-04-28 07:36:15 | INFO     | 2a3e30a4-3bb4-49a7-8cb6-75fbf51c9383 | logging:callHandlers:1762 - 23.165.184.66:0 - \"GET /api/agents/ba9c26f1-973a-4192-938a-f0a6609402c8/tasks/ HTTP/1.1\" 200"}
+{"timestamp":"2026-04-28T07:36:15.807679949Z","message":"2026-04-28 07:36:15 | INFO     | 79697071-46f9-4c93-b7f7-ce305aa3b527 | app.api.websocket:websocket_chat:325 - [WS] Primary model loaded: qwen3.6-plus","level":"info"}
+{"level":"info","timestamp":"2026-04-28T07:36:15.807698692Z","message":"2026-04-28 07:36:15 | INFO     | 9c948d6f-6627-4d61-90d4-9da156030b16 | app.api.websocket:websocket_chat:424 - [WS] Ready! Agent=__system_hr__"}
+{"message":"2026-04-28 07:36:15 | INFO     | 99a90c18-bdc6-4802-b15f-d34d43a75430 | logging:callHandlers:1762 - 157.52.92.61:0 - \"WebSocket /ws/chat/5d99fe45-7ea9-4f7e-979c-c57bcb2cd4ea?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxNjAwMDIxZi0yNDNiLTRkZDctODVhMC1iY2Q0OWE1MDlmMjUiLCJyb2xlIjoibWVtYmVyIiwiZXhwIjoxNzc3NDQ3MDE4fQ.CcZbdMvBe0GjSBiLAuPxqEF1K89N1YCMxuJHhWcT30I&session_id=92379c4a-be44-4626-8ded-2bb8261290de\" [accepted]","level":"info","timestamp":"2026-04-28T07:36:15.807700939Z"}
+{"message":"2026-04-28 07:36:15 | INFO     | 6a07247f-b3e | app.core.middleware:dispatch:28 - --> GET /api/agents/962fe27a-5dff-4953-bce8-50260b98ec8b/activity [client: 23.165.184.66]","timestamp":"2026-04-28T07:36:15.809118336Z","level":"info"}
+{"message":"2026-04-28 07:36:15 | INFO     | 39b74194-84c | app.core.middleware:dispatch:28 - --> GET /api/agents/700c554d-5fc6-41f9-8048-33da794ac244/activity [client: 23.165.184.66]","level":"info","timestamp":"2026-04-28T07:36:15.809134369Z"}
+{"level":"info","timestamp":"2026-04-28T07:36:15.811970909Z","message":"2026-04-28 07:36:15 | INFO     | 579a8091-4a9 | app.core.middleware:dispatch:28 - --> GET /api/agents/6a3eee20-a4c5-4dd9-8694-b74334a790de/activity [client: 23.165.184.66]"}
+{"timestamp":"2026-04-28T07:36:15.811980935Z","message":"2026-04-28 07:36:15 | INFO     | 16395f25-6fe | app.core.middleware:dispatch:28 - --> GET /api/agents/997e304f-a959-4931-a096-22873c5d88a3/activity [client: 23.165.184.66]","level":"info"}
+{"timestamp":"2026-04-28T07:36:15.811990684Z","level":"info","message":"2026-04-28 07:36:15 | INFO     | efe90bf1-1e5 | app.core.middleware:dispatch:28 - --> GET /api/agents/5113f921-4a9b-44c2-8755-2f697600a087/activity [client: 23.165.184.66]"}
+{"timestamp":"2026-04-28T07:36:15.811997032Z","level":"info","message":"2026-04-28 07:36:15 | INFO     | f4ea97da-ff6 | app.core.middleware:dispatch:28 - --> GET /api/agents/5f6ec3c3-7477-4f27-bf4e-d782312c92f0/activity [client: 23.165.184.66]"}
+{"level":"info","timestamp":"2026-04-28T07:36:15.815620475Z","message":"2026-04-28 07:36:15 | INFO     | d8be6788-37f | app.core.middleware:dispatch:41 - <-- GET /api/agents/f5aefa50-91ff-4282-b4df-bb7baaa76e0b/activity 200 0.063s"}
+{"timestamp":"2026-04-28T07:36:15.815632063Z","level":"info","message":"2026-04-28 07:36:15 | INFO     | 792e2824-3eeb-45c8-9a70-73c44efcc795 | logging:callHandlers:1762 - 23.165.184.66:0 - \"GET /api/agents/f12b9e28-6edf-47e7-8dcf-d5fc2f802581/activity?limit=5 HTTP/1.1\" 200"}
+{"message":"2026-04-28 07:36:15 | INFO     | ef2ca738-3f7 | app.core.middleware:dispatch:41 - <-- GET /api/agents/ba9c26f1-973a-4192-938a-f0a6609402c8/activity 200 0.069s","timestamp":"2026-04-28T07:36:15.815637506Z","level":"info"}
+{"message":"2026-04-28 07:36:15 | INFO     | 8ce6d4d3-7d6 | app.core.middleware:dispatch:41 - <-- GET /api/agents/7ebfa350-4481-40f2-bce9-82c9829da765/activity 200 0.065s","timestamp":"2026-04-28T07:36:15.818023336Z","level":"info"}
+{"timestamp":"2026-04-28T07:36:15.818028434Z","message":"2026-04-28 07:36:15 | INFO     | 0e1df89a-2a48-4b11-8840-3d2ef7506a2d | logging:callHandlers:1762 - 23.165.184.66:0 - \"GET /api/agents/7ebfa350-4481-40f2-bce9-82c9829da765/activity?limit=5 HTTP/1.1\" 200","level":"info"}
+{"timestamp":"2026-04-28T07:36:15.818033283Z","level":"info","message":"2026-04-28 07:36:15 | INFO     | 579a8091-4a9 | app.core.middleware:dispatch:41 - <-- GET /api/agents/6a3eee20-a4c5-4dd9-8694-b74334a790de/activity 200 0.062s"}
+{"message":"2026-04-28 07:36:15 | INFO     | c92a2477-390a-4d27-9a9a-d27fd3ca9970 | logging:callHandlers:1762 - 23.165.184.66:0 - \"GET /api/agents/6a3eee20-a4c5-4dd9-8694-b74334a790de/activity?limit=5 HTTP/1.1\" 200","level":"info","timestamp":"2026-04-28T07:36:15.818037503Z"}
+{"message":"2026-04-28 07:36:15 | INFO     | 106362ae-7b8 | app.core.middleware:dispatch:41 - <-- GET /api/agents/ff573b57-7c0f-4f3d-a505-4a31ba6329c9/activity 200 0.053s","timestamp":"2026-04-28T07:36:15.821079974Z","level":"info"}
+{"level":"info","timestamp":"2026-04-28T07:36:15.821097724Z","message":"2026-04-28 07:36:15 | INFO     | 5cfa14ad-4048-45d2-91eb-bcf6cd1a6b84 | logging:callHandlers:1762 - 23.165.184.66:0 - \"GET /api/agents/ff573b57-7c0f-4f3d-a505-4a31ba6329c9/activity?limit=5 HTTP/1.1\" 200"}
+{"timestamp":"2026-04-28T07:36:15.821103814Z","level":"info","message":"2026-04-28 07:36:15 | INFO     | efe90bf1-1e5 | app.core.middleware:dispatch:41 - <-- GET /api/agents/5113f921-4a9b-44c2-8755-2f697600a087/activity 200 0.054s"}
+{"level":"info","message":"2026-04-28 07:36:15 | INFO     | 4dfe2412-d268-4c2a-bba0-8bc44ef206ea | logging:callHandlers:1762 - 23.165.184.66:0 - \"GET /api/agents/5113f921-4a9b-44c2-8755-2f697600a087/activity?limit=5 HTTP/1.1\" 200","timestamp":"2026-04-28T07:36:15.821115605Z"}
+{"timestamp":"2026-04-28T07:36:15.827559807Z","level":"info","message":"2026-04-28 07:36:15 | INFO     | 8e83163c-8dc | app.core.middleware:dispatch:28 - --> GET /api/agents/de902431-f994-493b-8ef2-2430200a7697/activity [client: 23.165.184.66]"}
+{"message":"2026-04-28 07:36:15 | INFO     | db4df488-427 | app.core.middleware:dispatch:41 - <-- GET /api/agents/22fdff42-53e3-4be5-9cb5-76881dd2a1a3/activity 200 0.038s","level":"info","timestamp":"2026-04-28T07:36:15.866275039Z"}
+{"timestamp":"2026-04-28T07:36:15.866297684Z","level":"info","message":"2026-04-28 07:36:15 | INFO     | 43e84c44-0aeb-4ec9-82ce-de20542f6919 | logging:callHandlers:1762 - 23.165.184.66:0 - \"GET /api/agents/22fdff42-53e3-4be5-9cb5-76881dd2a1a3/activity?limit=5 HTTP/1.1\" 200"}
+{"timestamp":"2026-04-28T07:36:15.956090323Z","level":"info","message":"2026-04-28 07:36:15 | INFO     | 17888c7c-6b8 | app.core.middleware:dispatch:28 - --> GET /api/agents/724651d9-3133-49d0-b11f-1b53e788fb50/activity [client: 23.165.184.66]"}
+{"level":"info","message":"2026-04-28 07:36:15 | INFO     | 2f73450e-af5 | app.core.middleware:dispatch:41 - <-- GET /api/agents/5d657792-c30d-4f8a-8b3c-389e8583afb1/activity 200 0.022s","timestamp":"2026-04-28T07:36:15.973208818Z"}
+{"level":"info","timestamp":"2026-04-28T07:36:15.990014353Z","message":"2026-04-28 07:36:15 | INFO     | 0f40c980-1d65-45b2-afad-fc51346930e4 | logging:callHandlers:1762 - 23.165.184.66:0 - \"GET /api/agents/677f4eb4-10c4-448b-9f24-992965112542/activity?limit=5 HTTP/1.1\" 200"}
+{"message":"2026-04-28 07:36:17 | INFO     | e4c86c7d-c11 | app.core.middleware:dispatch:41 - <-- GET /api/agents/700c554d-5fc6-41f9-8048-33da794ac244/activity/tool-failures 200 0.041s","timestamp":"2026-04-28T07:36:17.799276260Z","level":"info"}
+{"message":"2026-04-28 07:36:17 | INFO     | 39ba2cc1-201 | app.core.middleware:dispatch:28 - --> GET /api/agents/724651d9-3133-49d0-b11f-1b53e788fb50/activity/tool-failures [client: 23.165.184.66]","level":"info","timestamp":"2026-04-28T07:36:17.956024783Z"}
+{"level":"info","message":"2026-04-28 07:36:17 | INFO     | cf7ee2d3-85a | app.core.middleware:dispatch:28 - --> GET /api/agents/5d657792-c30d-4f8a-8b3c-389e8583afb1/activity/tool-failures [client: 23.165.184.66]","timestamp":"2026-04-28T07:36:17.958501867Z"}
+{"timestamp":"2026-04-28T07:36:17.968571913Z","level":"info","message":"2026-04-28 07:36:17 | INFO     | de4b6a5b-05c | app.core.middleware:dispatch:41 - <-- GET /api/agents/5113f921-4a9b-44c2-8755-2f697600a087/activity/tool-failures 200 0.047s"}

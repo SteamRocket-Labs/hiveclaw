@@ -25,11 +25,97 @@ from app.services.channel_user_service import channel_user_service
 from app.services.feishu_identity_maintenance import build_feishu_p2p_conv_id, list_legacy_feishu_conv_ids
 from app.services.feishu_contacts_cache import upsert_feishu_contact_cache
 from app.services.feishu_service import feishu_service
+from app.services.approval_service import approval_service
 
 router = APIRouter(tags=["feishu"])
 
 _TOOL_STATUS_KEEP_LINES = 20
 _FEISHU_CARD_MARKDOWN_LIMIT = 2800
+_APPROVAL_ID_PATTERN = (
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+_APPROVE_TEXT_PATTERN = r"^\s*(放行|批准|同意|通过|approve|approved)(?:\s|[!！。,.，]|$)"
+_REJECT_TEXT_PATTERN = r"^\s*(拒绝|驳回|不通过|reject|rejected|deny|denied)(?:\s|[!！。,.，]|$)"
+
+
+def _parse_feishu_text_approval_action(text: str) -> str | None:
+    import re
+
+    if re.search(_APPROVE_TEXT_PATTERN, text or "", re.IGNORECASE):
+        return "approve"
+    if re.search(_REJECT_TEXT_PATTERN, text or "", re.IGNORECASE):
+        return "reject"
+    return None
+
+
+async def _try_resolve_feishu_text_approval(
+    *,
+    db: AsyncSession,
+    agent,
+    user_text: str,
+    resolved_user,
+    config,
+    receive_id: str,
+    receive_id_type: str,
+) -> dict | None:
+    """Resolve pending approvals from trusted Feishu text commands before invoking the agent."""
+    import json
+    import re
+
+    action = _parse_feishu_text_approval_action(user_text)
+    if not action:
+        return None
+
+    def _reply(text: str):
+        return feishu_service.send_message(
+            config.app_id,
+            config.app_secret,
+            receive_id,
+            "text",
+            json.dumps({"text": text}, ensure_ascii=False),
+            receive_id_type=receive_id_type,
+            stage="approval_text_reply",
+        )
+
+    if not agent:
+        await _reply("审批处理失败：未找到当前数字员工。")
+        return {"code": 0, "msg": "approval agent missing"}
+    if not resolved_user:
+        await _reply("审批处理失败：无法确认你的 Hive 用户身份，请先绑定飞书账号或到 Web 端处理。")
+        return {"code": 0, "msg": "approval user unresolved"}
+
+    from app.models.audit import ApprovalRequest
+
+    approval_uuid = None
+    match = re.search(_APPROVAL_ID_PATTERN, user_text or "")
+    if match:
+        approval_uuid = uuid.UUID(match.group(0))
+
+    query = select(ApprovalRequest).where(
+        ApprovalRequest.agent_id == agent.id,
+        ApprovalRequest.status == "pending",
+    )
+    if approval_uuid:
+        query = query.where(ApprovalRequest.id == approval_uuid)
+    query = query.order_by(ApprovalRequest.created_at.desc()).limit(1)
+
+    result = await db.execute(query)
+    pending = result.scalars().all()
+    approval = pending[0] if pending else None
+    if not approval:
+        await _reply("没有找到这个数字员工当前待处理的审批。")
+        return {"code": 0, "msg": "approval not found"}
+
+    try:
+        resolved = await approval_service.resolve_approval(db, approval.id, resolved_user, action)
+        await db.commit()
+    except ValueError as exc:
+        await _reply(f"审批处理失败：{exc}")
+        return {"code": 0, "msg": "approval resolve failed"}
+
+    status_text = "已批准" if action == "approve" else "已拒绝"
+    await _reply(f"{status_text}：{resolved.action_type}")
+    return {"code": 0, "msg": "approval resolved"}
 
 
 class _SerialPatchQueue:
@@ -956,6 +1042,28 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 "user_label": sender_name,
             }
 
+            # Resolve identity before history/LLM work so Feishu text approvals are handled in-channel.
+            resolved_user = None
+            if sender_profile.get("open_id") or sender_profile.get("user_id") or sender_profile.get("email"):
+                resolved_user = await channel_user_service.resolve_or_create_feishu_user(
+                    db,
+                    tenant_id=agent_tenant_id,
+                    profile=sender_profile,
+                )
+            platform_user_id = resolved_user.id if resolved_user else creator_id
+
+            approval_shortcut = await _try_resolve_feishu_text_approval(
+                db=db,
+                agent=agent_obj,
+                user_text=user_text,
+                resolved_user=resolved_user,
+                config=config,
+                receive_id=delivery_target["receive_id"],
+                receive_id_type=delivery_target["receive_id_type"],
+            )
+            if approval_shortcut is not None:
+                return approval_shortcut
+
             from app.services.memory_service import compute_history_limit_for_agent
             _hist_limit = await compute_history_limit_for_agent(agent_id)
 
@@ -979,17 +1087,13 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 .limit(_hist_limit)
             )
             history_msgs = history_result.scalars().all()
-            history = [{"role": m.role, "content": m.content} for m in reversed(history_msgs)]
+            history = []
+            for m in reversed(history_msgs):
+                entry = {"role": m.role, "content": m.content}
+                if getattr(m, "thinking", None):
+                    entry["reasoning_content"] = m.thinking
+                history.append(entry)
 
-            # --- Resolve Feishu sender identity through the provider-driven identity layer ---
-            resolved_user = None
-            if sender_profile.get("open_id") or sender_profile.get("user_id") or sender_profile.get("email"):
-                resolved_user = await channel_user_service.resolve_or_create_feishu_user(
-                    db,
-                    tenant_id=agent_tenant_id,
-                    profile=sender_profile,
-                )
-            platform_user_id = resolved_user.id if resolved_user else creator_id
             try:
                 from app.core.execution_context import set_delegated_user_identity
 

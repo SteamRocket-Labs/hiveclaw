@@ -24,6 +24,7 @@ class AgentActivityLog(Base):
             "schedule_run", "heartbeat", "plaza_post",
             "delegation_started", "delegation_completed", "delegation_failed",
             "delegation_killed", "delegation_error",
+            "tool_call_direct", "tool_call_approved",
             "channel_delivery_success", "channel_delivery_failed",
             "channel_delivery_unavailable", "channel_capability_denied",
             name="activity_action_enum",

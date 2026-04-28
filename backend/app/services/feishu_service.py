@@ -261,10 +261,18 @@ class FeishuService:
             data = self._parse_api_response(resp, stage=stage)
         return data.get("data", {}).get("user", {}) or {}
 
-    async def send_approval_card(self, app_id: str, app_secret: str,
-                                  creator_open_id: str, agent_name: str,
-                                  action_type: str, details: str, approval_id: str,
-                                  callback_url: str = "") -> dict:
+    async def send_approval_card(
+        self,
+        app_id: str,
+        app_secret: str,
+        creator_receive_id: str,
+        receive_id_type: str,
+        agent_name: str,
+        action_type: str,
+        details: str,
+        approval_id: str,
+        callback_url: str = "",
+    ) -> dict:
         """Send an interactive approval card with approve/reject buttons to the agent creator via Feishu.
 
         The card includes action buttons that POST back to the card-callback endpoint.
@@ -315,7 +323,12 @@ class FeishuService:
 
         content = json.dumps(card_json)
         return await self.send_message(
-            app_id, app_secret, creator_open_id, "interactive", content,
+            app_id,
+            app_secret,
+            creator_receive_id,
+            "interactive",
+            content,
+            receive_id_type=receive_id_type,
         )
 
     async def download_message_resource(self, app_id: str, app_secret: str,

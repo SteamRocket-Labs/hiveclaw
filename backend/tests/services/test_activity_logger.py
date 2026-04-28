@@ -5,6 +5,15 @@ import uuid
 import pytest
 
 
+def test_activity_action_enum_includes_tool_runtime_approval_events():
+    from app.models.activity_log import AgentActivityLog
+
+    action_enum = AgentActivityLog.__table__.c.action_type.type
+
+    assert "tool_call_direct" in action_enum.enums
+    assert "tool_call_approved" in action_enum.enums
+
+
 class _FailingSession:
     def __init__(self, *, fail_on_commit: bool):
         self.fail_on_commit = fail_on_commit

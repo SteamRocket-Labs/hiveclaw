@@ -1,6 +1,6 @@
 # Hive Agent 架构对齐方案 — 对标 Claude Code 与 Hermes Agent
 
-> **状态**:修订稿 v1.8 · 2026-04-27 · Phase 0R + H1-H6 第一版可执行 harness trunk 落地
+> **状态**:修订稿 v1.9 · 2026-04-28 · Phase 0R + H1-H6 工程闭环完成,进入 H7 Evidence Loop
 > **作者**:Claude (Opus 4.7) 草案 · Codex 复核修订 · 与 Codex 报告并列(参见 `agent-session-feishu-merge-review.md`)
 > **目标**:在当前 main 分支基础上,先冻结 Autonomy P0-P6 绿基线,再用 Harness H1-H6 达到全面对标 Claude Code、Hermes Agent 与主流 Harness Engineering 实践的极简、易拓展架构
 
@@ -17,14 +17,14 @@
    - RuntimeTask/Artifact 是执行账本
    - `focus.md` 是可读投影,不是事实源
    - Aware UI 默认展示目标/唤醒/结果/动作,内部 ID/config/metadata 只进 diagnostics
-5. **两个仍然没有闭环的战略差距(本文档第一优先级)**:
-   - **差距 A**:**Evals 驱动的 prompt 自动优化**——Hermes 生态已明确指向 DSPy + GEPA,但不能把 companion repo 直接等同为 Hermes Agent core 已全量落地;Hive 应先建 eval/bake-off/rollback
-   - **差距 B**:**闭环 skill auto-extraction/refinement**——Hermes 本地源码已有后台 memory/skill review;Hive 也已有 `skill_distiller` 与 candidate lifecycle,真正缺的是 outcome-driven refine 与用户审核 promote 闭环
-   - 这两个不是"锦上添花",是**架构层面真正需要补齐的系统能力**
+5. **两个战略差距已从"工程缺口"转为"效果证明缺口"**:
+   - **差距 A**:**Evals 驱动的 prompt 自动优化**——Hive 已有 eval/bake-off/evolution ledger/rollback contract;下一步需要真实 prompt candidate 的 reward 曲线证明收益。
+   - **差距 B**:**闭环 skill auto-extraction/refinement**——Hive 已有 `skill_distiller`、candidate/eval/promotion decision、validation report;下一步需要真实 skill draft 接受率、refine 成功率和 rollback 数据。
+   - 结论:工程账本已经闭合,但不能把 canary 当作长期自然效果。下一阶段是 H7 Evidence Loop。
 6. **架构债不在功能,而在多代叠层和缺少常绿护栏**——`agent_tools.py` facade、feature 的架构测试/治理文档、session/Feishu/tool runtime 主干仍值得吸收;但 autonomy trigger trunk 不能再按旧分支方案重做
 7. **路线改为一条主线 + 一个素材库**——主线是 Architecture Phase 0R → Harness H1-H6;旧 Architecture Phase 1-5 只作为工程素材,不再整段顺序执行
-8. **结论置信度分层**——"不能直接合并,但值得系统性吸收"信心约 96%;"自主目标/触发/执行/UI 基本闭环"信心约 90%;"Harness H4/H5 长任务与自进化闭环稳定提升任务达成率"信心约 60%-72%
-9. **Harness Engineering 重新定义下一步**——Autonomy P0-P6 解决的是 autonomy trunk;Harness H1-H6 必须解决 harness trunk:可执行规范、可观察环境、独立评价器、可恢复长任务、权限沙箱、上下文/记忆边界、eval 驱动的自我进化。
+8. **结论置信度分层**——"不能直接合并,但值得系统性吸收"信心约 96%;"自主目标/触发/执行/UI 工程闭环"信心约 95%;"Harness H1-H6 工程闭环"信心约 95%;"长期真实效果优于旧系统"仍需 7/14/30 天证据。
+9. **Harness Engineering 当前下一步**——Autonomy P0-P6 和 H1-H6 已经把目标、环境、反馈、权限、记忆、评价、回滚做成可执行 harness;下一步不再堆新机制,而是用 H7 Evidence Loop 连续采集真实运行数据。
 
 ---
 
@@ -972,7 +972,28 @@ backend/tests/architecture/test_session_context_contract.py
 - channel 命名漂移已修正：`chat_sessions` mine 视图使用 canonical `"microsoft_teams"`，不再使用旧 `"teams"`。
 - 当前真实 backend 回归基线：`1931 passed, 7 skipped, 4 warnings`。
 
-边界说明：这里的 H1-H6 是第一版可执行 harness trunk 和常绿护栏，不等于 H4/H5 的长期效果已经被生产数据证明。长任务 6 小时恢复率、skill draft 接受率、prompt/eval 自动优化收益仍需要真实运行周期继续度量。
+边界说明：这里的 H1-H6 已经从“第一版可执行 trunk”推进到“工程闭环完成并通过生产 canary”。2026-04-28 Railway 生产验证结果：
+
+```text
+backend deployment: 267ecc26-388b-47e9-aa78-31041974ea34 SUCCESS
+autonomous-audit 1h: findings=0
+autonomy-repair-plan 1h: actions=0
+harness-canary: agents_considered=33, agents_written=32, skipped=1(no autonomous wake path)
+harness-validation 1h/168h: findings=0, H4 passed=32, H5 passed=32
+```
+
+2026-04-28 Railway 日志复核追加结果：
+
+```text
+backend deployment: 4661d92f-00f3-459a-82b2-3f4bdf90ba53 SUCCESS
+startup migration reached: add_tool_runtime_activity_enum_0428
+healthcheck: /api/health => {"status":"ok","version":"1.7.0"}
+activity enum drift fixed: tool_call_direct / tool_call_approved added to activity_action_enum
+post-deploy runtime logs: no ActivityLog enum failure observed
+remaining runtime noise: Feishu WS invalid app_id/app_secret and transient opening-handshake timeout
+```
+
+这证明 H4/H5 的生产通路可写、可恢复、可审计；但它仍不等于“长期自然业务效果已经被证明”。长任务 6 小时恢复率、真实 objective 完成率、skill draft 接受率、prompt/eval 自动优化收益，需要进入 H7 Evidence Loop 持续度量。
 
 **H2-H6 关键设计**:
 
@@ -1028,7 +1049,53 @@ MemoryProvider 写入经验,SkillRefiner 生成候选
 Eval/Bakeoff 决定是否 promote 自我进化改动
 ```
 
-这条链路闭合后,才能说 Hive 的自主进化能力基本闭环。Autonomy P0-P6 让 agent "会醒、会做、会记账";Harness H1-H6 让 agent "会被环境约束、会被独立评价、会安全长期运行、会基于证据进化"。
+这条链路在工程层已经闭合。Autonomy P0-P6 让 agent "会醒、会做、会记账";Harness H1-H6 让 agent "会被环境约束、会被独立评价、会安全长期运行、会基于证据进化"。下一步 H7 不再新增第二套机制,只负责证明这套机制在真实周期里持续有效。
+
+### Harness H7 — Evidence Loop / Long-Run Proof
+
+**目标**:把“工程闭环已完成”升级为“长期效果被数据证明”。H7 不改 Objective / Trigger / RuntimeTask / Session / Memory / Permission 主干,只做证据采集、趋势报告和低风险真实任务验证。
+
+**H7 采集项**:
+
+```text
+Daily snapshots:
+- /api/admin/autonomous-audit?lookback_hours=24
+- /api/admin/autonomy-repair-plan?lookback_hours=24
+- /api/admin/harness-validation?lookback_hours=24
+
+Weekly snapshots:
+- /api/admin/harness-validation?lookback_hours=168
+- eval/bakeoff report
+- skill_distiller promoted/held/deferred/rollback counts
+- objective completion / skipped / failed / stale counts
+```
+
+**H7 真实任务样本**:
+
+```text
+research/report agent
+- 真实 objective: 定期产出一份可验证 report
+- 验证: RuntimeTask + artifact + validation report
+
+ops/monitoring agent
+- 真实 objective: 监控系统状态并在异常时产生 evidence
+- 验证: skip/failure reason 不允许 silent no-op
+
+self-evolution/skill agent
+- 真实 objective: 从重复工作中生成或 refine 一个 skill candidate
+- 验证: candidate/eval/decision/rollback_ref 全部进入 evolution ledger
+```
+
+**H7 验收标准**:
+
+```text
+- 7 天内 autonomous-audit current window 持续 0 critical finding。
+- repair-plan 持续无未处理 auto-applyable action。
+- 至少 3 个真实 objective 产生 RuntimeTask + artifact + validation report。
+- 至少 1 个真实 skill/evolution candidate 经过 eval + hold/promote decision。
+- 所有失败都有 skip/failure reason,不出现 silent no-op。
+- 不新增第二套 objective/trigger/runtime/session 机制。
+```
 
 ---
 
@@ -1230,28 +1297,29 @@ docs/backend-trunk-governance/
 | 内容 | 置信度 | 说明 |
 |------|------|-----|
 | 不能直接 merge 的判断 | 96% | 14 个真实冲突已用 git merge-tree 验证 |
-| 当前 Autonomy P6 绿基线成立 | 95% | backend pytest/ruff/alembic、frontend test/build、diff-check 已本机复核 |
-| 自主目标/触发/执行/UI 基本闭环 | 90% | Autonomy P0-P6 已覆盖 objective、wake policy、RuntimeTask、artifact、Aware UI;仍需长周期线上数据验证 |
-| Phase 0R 主干保护可行 | 88% | 重点从修 baseline 改为补 architecture tests 和选择性迁移 feature |
-| Phase 0R 集成方案可行 | 82% | 冲突表已逐个分析,但需要人工逐文件决策 |
-| Harness H1 架构护栏可达 | 90% | 主要是架构测试与边界收敛 |
-| Harness H2/H6 工具权限/session 收敛可达 | 82% | feature 治理资产可复用,但要适配当前 Autonomy P6 主干 |
-| Harness H3 ContextEngine/MemoryProvider 可达 | 78% | 需要重构接口但风险可控 |
-| Harness H4 Long Task Runtime 可达 | 70% | 需要真实长任务验证 |
-| Harness H5 self-evolution/evals 可达 | 60% | 需要实验数据,可能需要更长时间 |
-| **整体达成长期 harness 目标** | **72%** | 主要不确定来自 H4/H5 的真实长周期数据质量与算法效果 |
+| 当前 Autonomy P6 绿基线成立 | 98% | backend pytest/ruff、frontend test/build、Railway audit/repair current window 已复核 |
+| 自主目标/触发/执行/UI 工程闭环 | 95% | Autonomy P0-P6 已覆盖 objective、wake policy、RuntimeTask、artifact、Aware UI,生产 current window 0 finding |
+| Phase 0R 主干保护完成 | 95% | 架构测试已锁定 Objective/Wake/Runtime/Session/Memory/Permission 边界 |
+| Phase 0R 集成方案可行 | 82% | feature 分支只作为素材库,不再整段合并;如需 cherry-pick 仍需逐文件决策 |
+| Harness H1 架构护栏完成 | 95% | architecture tests 已覆盖 kernel/tool/objective/memory/context/session 边界 |
+| Harness H2/H6 工具权限/session 收敛完成 | 92% | ToolRuntimeBackend、SkillGuard、SessionKey、agent-pair session contract 已落地 |
+| Harness H3 ContextEngine/MemoryProvider 完成 | 90% | ContextEngine/MemoryProvider contract 与 source/fence/context_artifacts 已落地 |
+| Harness H4 Long Task Runtime 工程闭环完成 | 90% | long_task runtime/validation + production canary 已通过;真实 6h 恢复率进入 H7 度量 |
+| Harness H5 self-evolution/evals 工程闭环完成 | 88% | evolution ledger/eval/decision/validation + skill_distiller 接入已落地;真实收益进入 H7 度量 |
+| **整体达成长期 harness 工程目标** | **92%** | 工程闭环和生产 canary 已完成;剩余不确定来自 7/14/30 天真实效果数据 |
 
 ---
 
-## 11. 下一步(建议直接执行)
+## 11. 下一步:H7 Evidence Loop
 
-建议不再继续抽象讨论。Architecture Phase 0R 与 Harness H1-H6 的第一版可执行 trunk 已落地，下一步不再继续补同类空壳，而是进入真实子系统迁移和长期运行验证:
+建议不再继续补同类 harness 空壳。Architecture Phase 0R 与 Harness H1-H6 的工程闭环已经完成并通过 Railway production canary。下一步是主动采集真实运行证据,不是被动等待:
 
-1. 用 `/admin/harness-validation?lookback_hours=168` 在 Railway 生产环境读取真实 H4/H5 证据，收集 artifact 完整率、恢复率、validation report pass-rate、draft 接受率、eval reward 和 rollback 事件。
-2. 根据 harness validation findings 选择真实 agent 跑一轮长任务和 skill distiller，补齐缺失的 durable validation report。
-3. feature/session/Feishu/gateway 迁移线先收口：剩余旧 feature 架构测试多为 branch-specific `session_service` 约束或已被当前 `agent_pair_session`/H6 护栏覆盖，不再作为待合并代码源。
+1. 每天保存 `/admin/autonomous-audit`、`/admin/autonomy-repair-plan`、`/admin/harness-validation` 的 24h snapshot。
+2. 每周保存 168h snapshot,并汇总 objective completion、skipped/failed reason、skill_distiller decision、eval reward、rollback event。
+3. 选择 3 个低风险真实 agent 跑 7-14 天:research/report、ops/monitoring、self-evolution/skill。
+4. 如果 H7 数据出现 finding 或 silent no-op,只在原主干上修复,禁止新增第二套 objective/trigger/runtime/session 机制。
 
-完成 H4/H5 真实运行验证后,再决定是否继续从 `feature/agent-session-feishu` cherry-pick 单点治理资产。判断标准只有一个:不能产生第二套 autonomy trigger/session/tool/runtime 机制,不能回退当前 Autonomy P6 + Harness H1-H6 账本闭环。
+H7 完成后,再判断是否继续从 `feature/agent-session-feishu` cherry-pick 单点治理资产。判断标准只有一个:不能产生第二套 autonomy trigger/session/tool/runtime 机制,不能回退当前 Autonomy P6 + Harness H1-H6 账本闭环。
 
 ---
 

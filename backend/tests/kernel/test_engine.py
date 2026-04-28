@@ -24,6 +24,17 @@ class _FakeClient:
         return None
 
 
+def test_humanize_llm_error_reports_quota_instead_of_auth_for_403_quota():
+    from app.kernel.engine import _humanize_llm_error
+    from app.services.llm_utils import LLMError
+
+    message = _humanize_llm_error(
+        LLMError('HTTP 403: {"error":{"message":"Your token-plan quota has been exhausted."}}')
+    )
+
+    assert message == "[LLM Error] AI 模型额度已耗尽，请联系管理员检查模型额度或切换模型。"
+
+
 def test_build_restoration_context_prefers_newest_recent_files(tmp_path, monkeypatch):
     from app.kernel.engine import _build_restoration_context
     from app.runtime.session import SessionContext

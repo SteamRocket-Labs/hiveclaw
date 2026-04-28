@@ -1033,6 +1033,66 @@ curl -H "Authorization: Bearer $TOKEN" \
   | jq '.totals'
 ```
 
+2026-04-28 Railway 验收结果：
+
+```text
+backend deployment: 267ecc26-388b-47e9-aa78-31041974ea34 SUCCESS
+autonomous-audit 1h: findings=0
+autonomy-repair-plan 1h: actions=0
+harness-canary: agents_considered=33, agents_written=32, skipped=1(no autonomous wake path)
+harness-validation 1h/168h: findings=0, H4 passed=32, H5 passed=32
+```
+
+2026-04-28 Railway 日志复核：
+
+```text
+backend deployment: 4661d92f-00f3-459a-82b2-3f4bdf90ba53 SUCCESS
+startup migration reached: add_tool_runtime_activity_enum_0428
+healthcheck: /api/health => {"status":"ok","version":"1.7.0"}
+activity enum drift fixed: tool_call_direct / tool_call_approved added to activity_action_enum
+post-deploy runtime logs: no ActivityLog enum failure observed
+remaining runtime noise: Feishu WS invalid app_id/app_secret and transient opening-handshake timeout
+```
+
+## H7 Evidence Loop
+
+Autonomy P0-P6 与 Harness H1-H6 当前已经达到工程闭环：目标、唤醒、执行账本、artifact、session、memory、permission、validator 都走同一条主路径。下一步不是继续发明新机制,也不是被动等待,而是主动采集真实长期效果数据。
+
+H7 做：
+
+```text
+Daily snapshots:
+- /api/admin/autonomous-audit?lookback_hours=24
+- /api/admin/autonomy-repair-plan?lookback_hours=24
+- /api/admin/harness-validation?lookback_hours=24
+
+Weekly snapshots:
+- /api/admin/harness-validation?lookback_hours=168
+- objective completion / skipped / failed / stale counts
+- skill_distiller promoted / held / deferred / rollback counts
+- eval reward / baseline_reward / critical_regressions
+```
+
+H7 不做：
+
+```text
+- 不新增第二套 objective ledger。
+- 不新增第二套 trigger runtime。
+- 不把 memory 当 task queue。
+- 不把 canary 当自然业务成功数据。
+- 不绕开 RuntimeTask / artifact / validation report。
+```
+
+H7 验收标准：
+
+```text
+- 7 天内 current-window autonomous-audit 持续 0 critical finding。
+- repair-plan 持续无未处理 auto-applyable action。
+- 至少 3 个真实 objective 产生 RuntimeTask + artifact + validation report。
+- 至少 1 个真实 skill/evolution candidate 经过 eval + hold/promote decision。
+- 所有失败都有 skip/failure reason,不出现 silent no-op。
+```
+
 ## P0 边界
 
 P0 做：

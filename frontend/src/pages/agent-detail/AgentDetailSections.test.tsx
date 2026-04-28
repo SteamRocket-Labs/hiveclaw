@@ -633,6 +633,9 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Coordinator');
     expect(markup).toContain('Security Zone');
     expect(markup).toContain('Restricted');
+    expect(markup).toContain('Run Shell Commands');
+    expect(markup).toContain('Secret/Environment Reads');
+    expect(markup).toContain('value="approval" selected=""');
     expect(markup).toContain('welcomeMessage');
     expect(markup).toContain('value="deny" selected=""');
     expect(markup).not.toContain('value="L2"');

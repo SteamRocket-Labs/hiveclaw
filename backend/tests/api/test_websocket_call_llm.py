@@ -9,6 +9,22 @@ import pytest
 from app.runtime.session import SessionContext
 
 
+def test_history_rehydration_maps_stored_thinking_to_reasoning_content():
+    from app.api.websocket import _conversation_from_history_messages
+
+    entries = _conversation_from_history_messages([
+        SimpleNamespace(role="assistant", content="之前的回答", thinking="hidden reasoning"),
+    ])
+
+    assert entries == [
+        {
+            "role": "assistant",
+            "content": "之前的回答",
+            "reasoning_content": "hidden reasoning",
+        }
+    ]
+
+
 @pytest.mark.asyncio
 async def test_call_llm_delegates_to_runtime_invoker(monkeypatch):
     from app.api.websocket import call_llm

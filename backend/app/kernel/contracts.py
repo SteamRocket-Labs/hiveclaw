@@ -14,7 +14,7 @@ ChunkCallback = Callable[[str], Awaitable[None] | None]
 ThinkingCallback = Callable[[str], Awaitable[None] | None]
 ToolCallback = Callable[[dict], Awaitable[None] | None]
 EventCallback = Callable[[dict], Awaitable[None] | None]
-ToolExecutor = Callable[[str, dict], Awaitable[str] | str]
+ToolExecutor = Callable[..., Awaitable[str] | str]
 MessagePart = dict[str, Any]
 
 
@@ -55,6 +55,7 @@ class InvocationRequest:
     max_tool_rounds: int | None = None
     eviction_dir: Path | None = None
     execution_mode: str | None = None
+    delegation_token: Any | None = None
 
 
 @dataclass(slots=True)

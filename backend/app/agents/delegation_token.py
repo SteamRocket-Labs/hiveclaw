@@ -91,6 +91,7 @@ def validate_delegation_token(
     token: DelegationToken,
     *,
     capability: str | None = None,
+    child_agent_id: uuid.UUID | None = None,
     now: float | None = None,
 ) -> TokenValidationResult:
     """Confirm a token is usable for the requested capability.
@@ -100,6 +101,8 @@ def validate_delegation_token(
     """
     if token.is_expired(now=now):
         return TokenValidationResult(False, "delegation token expired")
+    if child_agent_id is not None and token.child_agent_id != child_agent_id:
+        return TokenValidationResult(False, "delegation token child agent mismatch")
     if capability is not None and not token.allows_capability(capability):
         return TokenValidationResult(
             False,

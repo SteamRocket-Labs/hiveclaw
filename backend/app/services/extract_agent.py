@@ -592,7 +592,8 @@ class ExtractAgent:
         source: str = "web",
         tenant_id: uuid.UUID | None = None,
         agent_name: str = "Agent",
-    ) -> None:
+        require_durable_enqueue: bool = False,
+    ) -> bool:
         """Fire-and-forget extraction that tracks the task for drain().
 
         P0-2a: persist payload to durable extract_queue *before* scheduling
@@ -601,6 +602,10 @@ class ExtractAgent:
         OOM, drain timeout, process crash), the entry stays on disk for
         P0-2b startup replay. This closes the data-loss window where a
         fire-and-forget task could die silently and lose its message batch.
+
+        Returns True when a fresh durable queue entry was written. Replay callers
+        set require_durable_enqueue=True and must keep the original payload when
+        this returns False.
 
         Use this instead of wrapping extract() in asyncio.create_task() externally.
         """
@@ -628,6 +633,14 @@ class ExtractAgent:
                 source,
                 exc,
             )
+            if require_durable_enqueue:
+                logger.error(
+                    "[Extractor] extract_queue.enqueue failed for agent %s (source=%s) and strict durability requested "
+                    "— not scheduling in-memory task",
+                    agent_id,
+                    source,
+                )
+                return False
 
         key = str(agent_id)
         task = asyncio.create_task(
@@ -678,6 +691,7 @@ class ExtractAgent:
                 )
 
         task.add_done_callback(_on_done)
+        return entry_id is not None
 
     async def drain(self, agent_id: uuid.UUID, timeout_s: float = 10.0) -> None:
         """Wait for any in-flight extraction to complete.

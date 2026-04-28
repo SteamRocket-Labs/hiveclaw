@@ -144,23 +144,27 @@ async def test_invoke_agent_keeps_core_tools_when_skill_read_has_no_declared_exp
         assert user_id
         return "SKILL_CONTENT"
 
-    fake_client = _FakeClient([
-        SimpleNamespace(
-            content="",
-            tool_calls=[{
-                "id": "call_1",
-                "function": {"name": "read_file", "arguments": '{"path":"skills/web-research/SKILL.md"}'},
-            }],
-            reasoning_content="reasoning",
-            usage={"total_tokens": 10},
-        ),
-        SimpleNamespace(
-            content="final answer",
-            tool_calls=[],
-            reasoning_content=None,
-            usage={"total_tokens": 8},
-        ),
-    ])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {"name": "read_file", "arguments": '{"path":"skills/web-research/SKILL.md"}'},
+                    }
+                ],
+                reasoning_content="reasoning",
+                usage={"total_tokens": 10},
+            ),
+            SimpleNamespace(
+                content="final answer",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 8},
+            ),
+        ]
+    )
 
     monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
     monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
@@ -189,6 +193,140 @@ async def test_invoke_agent_keeps_core_tools_when_skill_read_has_no_declared_exp
 
 
 @pytest.mark.asyncio
+async def test_invoke_agent_forwards_delegation_token_to_tool_governance(monkeypatch):
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    expected_token = object()
+    model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1",
+        api_key="test-key",
+        base_url=None,
+        max_output_tokens=None,
+    )
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {"name": "read_file", "arguments": '{"path":"focus.md"}'},
+                    }
+                ],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            ),
+            SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            ),
+        ]
+    )
+
+    async def fake_execute_tool(
+        tool_name,
+        args,
+        agent_id=None,
+        user_id=None,
+        event_callback=None,
+        delegation_token=None,
+    ):
+        assert tool_name == "read_file"
+        assert args == {"path": "focus.md"}
+        assert delegation_token is expected_token
+        return "focus contents"
+
+    async def fake_build_agent_context(*args, **kwargs):
+        return "BASE_PROMPT"
+
+    async def fake_fetch_relevant_knowledge(*args, **kwargs):
+        return ""
+
+    async def fake_empty_context(*args, **kwargs):
+        return ""
+
+    async def fake_resolve_runtime_config(_agent_id):
+        from app.kernel import RuntimeConfig
+
+        return RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=10)
+
+    monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
+    monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
+    monkeypatch.setattr("app.runtime.invoker.build_memory_snapshot", fake_empty_context)
+    monkeypatch.setattr("app.runtime.invoker.build_agent_runtime_context", fake_empty_context)
+    monkeypatch.setattr("app.runtime.invoker.build_memory_context", fake_empty_context)
+    monkeypatch.setattr("app.runtime.invoker._resolve_runtime_config", fake_resolve_runtime_config)
+    monkeypatch.setattr("app.runtime.invoker.maybe_compress_messages", lambda messages, **kwargs: messages)
+    monkeypatch.setattr(
+        "app.runtime.invoker.get_agent_tools_for_llm",
+        lambda *args, **kwargs: [
+            {
+                "type": "function",
+                "function": {"name": "read_file", "description": "", "parameters": {"type": "object"}},
+            }
+        ],
+    )
+    monkeypatch.setattr("app.runtime.invoker.execute_tool", fake_execute_tool)
+    monkeypatch.setattr("app.runtime.invoker.create_llm_client", lambda **kwargs: fake_client)
+    monkeypatch.setattr("app.runtime.invoker.record_token_usage", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.runtime.invoker.get_max_tokens", lambda *args, **kwargs: 2048)
+
+    result = await invoke_agent(
+        AgentInvocationRequest(
+            model=model,
+            messages=[{"role": "user", "content": "read focus"}],
+            agent_name="Reader",
+            role_description="Reads files",
+            agent_id=agent_id,
+            user_id=user_id,
+            delegation_token=expected_token,
+        )
+    )
+
+    assert result.content == "done"
+
+
+@pytest.mark.asyncio
+async def test_custom_tool_executor_receives_delegation_token(monkeypatch):
+    from app.runtime.invoker import AgentInvocationRequest, _execute_tool_with_request
+
+    expected_token = object()
+    seen: dict[str, object] = {}
+
+    async def custom_executor(tool_name, args, *, delegation_token=None, event_callback=None):
+        seen["tool_name"] = tool_name
+        seen["args"] = args
+        seen["delegation_token"] = delegation_token
+        seen["event_callback"] = event_callback
+        return "custom-ok"
+
+    async def emit_event(_payload):
+        return None
+
+    request = AgentInvocationRequest(
+        model=object(),
+        messages=[{"role": "user", "content": "x"}],
+        agent_name="Agent",
+        role_description="role",
+        tool_executor=custom_executor,
+        delegation_token=expected_token,
+    )
+
+    result = await _execute_tool_with_request("read_file", {"path": "focus.md"}, request, emit_event)
+
+    assert result == "custom-ok"
+    assert seen["tool_name"] == "read_file"
+    assert seen["args"] == {"path": "focus.md"}
+    assert seen["delegation_token"] is expected_token
+    assert seen["event_callback"] is emit_event
+
+
+@pytest.mark.asyncio
 async def test_resolve_tool_expansion_does_not_fallback_to_full_tools_when_workspace_fails(monkeypatch):
     from app.runtime.invoker import AgentInvocationRequest, _resolve_tool_expansion
 
@@ -196,14 +334,21 @@ async def test_resolve_tool_expansion_does_not_fallback_to_full_tools_when_works
         raise RuntimeError("workspace unavailable")
 
     async def fake_get_agent_tools_for_llm(*_args, **_kwargs):
-        return [{"type": "function", "function": {"name": "web_search", "description": "", "parameters": {"type": "object"}}}]
+        return [
+            {
+                "type": "function",
+                "function": {"name": "web_search", "description": "", "parameters": {"type": "object"}},
+            }
+        ]
 
     monkeypatch.setattr("app.runtime.invoker.ensure_workspace", fake_ensure_workspace)
     monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", fake_get_agent_tools_for_llm)
 
     result = await _resolve_tool_expansion(
         AgentInvocationRequest(
-            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None),
+            model=SimpleNamespace(
+                provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None
+            ),
             messages=[{"role": "user", "content": "load a skill"}],
             agent_name="Researcher",
             role_description="Research agent",
@@ -229,14 +374,16 @@ async def test_invoke_agent_emits_response_complete_and_session_close_hooks(monk
         base_url=None,
         max_output_tokens=None,
     )
-    fake_client = _FakeClient([
-        SimpleNamespace(
-            content="final answer",
-            tool_calls=[],
-            reasoning_content=None,
-            usage={"total_tokens": 5},
-        ),
-    ])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="final answer",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            ),
+        ]
+    )
     emitted: list[tuple[HookEvent, dict]] = []
 
     async def fake_emit_hook(event, **kwargs):
@@ -252,7 +399,9 @@ async def test_invoke_agent_emits_response_complete_and_session_close_hooks(monk
         return messages
 
     async def fake_get_agent_tools_for_llm(_agent_id, core_only=False, requested_names=None):
-        return [{"type": "function", "function": {"name": "read_file", "description": "", "parameters": {"type": "object"}}}]
+        return [
+            {"type": "function", "function": {"name": "read_file", "description": "", "parameters": {"type": "object"}}}
+        ]
 
     monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
     monkeypatch.setattr("app.kernel.engine.asyncio.ensure_future", lambda coro: asyncio.create_task(coro))
@@ -301,14 +450,16 @@ async def test_invoke_agent_emits_response_complete_only_once(monkeypatch):
         base_url=None,
         max_output_tokens=None,
     )
-    fake_client = _FakeClient([
-        SimpleNamespace(
-            content="final answer",
-            tool_calls=[],
-            reasoning_content=None,
-            usage={"total_tokens": 5},
-        ),
-    ])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="final answer",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            ),
+        ]
+    )
     emitted: list[tuple[HookEvent, dict]] = []
 
     async def fake_emit_hook(event, **kwargs):
@@ -427,14 +578,16 @@ async def test_invoke_agent_filters_excluded_tools_from_runtime_surface(monkeypa
         max_output_tokens=None,
     )
 
-    fake_client = _FakeClient([
-        SimpleNamespace(
-            content="done",
-            tool_calls=[],
-            reasoning_content=None,
-            usage={"total_tokens": 5},
-        ),
-    ])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            ),
+        ]
+    )
 
     async def fake_build_agent_context(*args, **kwargs):
         return "BASE_PROMPT"
@@ -447,9 +600,18 @@ async def test_invoke_agent_filters_excluded_tools_from_runtime_surface(monkeypa
 
     async def fake_get_agent_tools_for_llm(_agent_id, core_only=False, requested_names=None):
         return [
-            {"type": "function", "function": {"name": "read_file", "description": "", "parameters": {"type": "object"}}},
-            {"type": "function", "function": {"name": "delegate_to_agent", "description": "", "parameters": {"type": "object"}}},
-            {"type": "function", "function": {"name": "send_message_to_agent", "description": "", "parameters": {"type": "object"}}},
+            {
+                "type": "function",
+                "function": {"name": "read_file", "description": "", "parameters": {"type": "object"}},
+            },
+            {
+                "type": "function",
+                "function": {"name": "delegate_to_agent", "description": "", "parameters": {"type": "object"}},
+            },
+            {
+                "type": "function",
+                "function": {"name": "send_message_to_agent", "description": "", "parameters": {"type": "object"}},
+            },
         ]
 
     monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
@@ -488,14 +650,16 @@ async def test_invoke_agent_filters_allowed_tools_from_runtime_surface(monkeypat
         max_output_tokens=None,
     )
 
-    fake_client = _FakeClient([
-        SimpleNamespace(
-            content="done",
-            tool_calls=[],
-            reasoning_content=None,
-            usage={"total_tokens": 5},
-        ),
-    ])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            ),
+        ]
+    )
 
     async def fake_build_agent_context(*args, **kwargs):
         return "BASE_PROMPT"
@@ -508,9 +672,18 @@ async def test_invoke_agent_filters_allowed_tools_from_runtime_surface(monkeypat
 
     async def fake_get_agent_tools_for_llm(_agent_id, core_only=False, requested_names=None):
         return [
-            {"type": "function", "function": {"name": "read_file", "description": "", "parameters": {"type": "object"}}},
-            {"type": "function", "function": {"name": "write_file", "description": "", "parameters": {"type": "object"}}},
-            {"type": "function", "function": {"name": "search_memory", "description": "", "parameters": {"type": "object"}}},
+            {
+                "type": "function",
+                "function": {"name": "read_file", "description": "", "parameters": {"type": "object"}},
+            },
+            {
+                "type": "function",
+                "function": {"name": "write_file", "description": "", "parameters": {"type": "object"}},
+            },
+            {
+                "type": "function",
+                "function": {"name": "search_memory", "description": "", "parameters": {"type": "object"}},
+            },
         ]
 
     monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
@@ -549,14 +722,16 @@ async def test_invoke_agent_composes_system_prompt_once(monkeypatch):
         max_output_tokens=None,
     )
 
-    fake_client = _FakeClient([
-        SimpleNamespace(
-            content="done",
-            tool_calls=[],
-            reasoning_content=None,
-            usage={"total_tokens": 5},
-        ),
-    ])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            ),
+        ]
+    )
 
     async def fake_build_agent_context(*args, **kwargs):
         return "BASE_PROMPT"
@@ -696,7 +871,12 @@ async def test_invoke_agent_without_agent_id_uses_collected_initial_tools(monkey
     monkeypatch.setattr("app.runtime.invoker.get_agent_kernel", lambda: _FakeKernel())
     monkeypatch.setattr(
         "app.runtime.invoker.get_combined_openai_tools",
-        lambda: [{"type": "function", "function": {"name": "web_search", "description": "", "parameters": {"type": "object"}}}],
+        lambda: [
+            {
+                "type": "function",
+                "function": {"name": "web_search", "description": "", "parameters": {"type": "object"}},
+            }
+        ],
     )
 
     result = await invoke_agent(
@@ -734,14 +914,16 @@ async def test_invoke_agent_emits_compaction_events(monkeypatch):
         max_output_tokens=None,
     )
 
-    fake_client = _FakeClient([
-        SimpleNamespace(
-            content="done",
-            tool_calls=[],
-            reasoning_content=None,
-            usage={"total_tokens": 5},
-        ),
-    ])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            ),
+        ]
+    )
     runtime_events: list[dict] = []
 
     async def fake_build_agent_context(*args, **kwargs):
@@ -753,11 +935,13 @@ async def test_invoke_agent_emits_compaction_events(monkeypatch):
     async def fake_compress(messages, **kwargs):
         on_compaction = kwargs.get("on_compaction")
         assert on_compaction is not None
-        await on_compaction({
-            "summary": "older context compressed",
-            "original_message_count": len(messages),
-            "kept_message_count": 2,
-        })
+        await on_compaction(
+            {
+                "summary": "older context compressed",
+                "original_message_count": len(messages),
+                "kept_message_count": 2,
+            }
+        )
         return [{"role": "system", "content": "[Previous conversation summary]\nolder context compressed"}]
 
     monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
@@ -785,12 +969,14 @@ async def test_invoke_agent_emits_compaction_events(monkeypatch):
     )
 
     assert result.content == "done"
-    assert runtime_events == [{
-        "type": "session_compact",
-        "summary": "older context compressed",
-        "original_message_count": 3,
-        "kept_message_count": 2,
-    }]
+    assert runtime_events == [
+        {
+            "type": "session_compact",
+            "summary": "older context compressed",
+            "original_message_count": 3,
+            "kept_message_count": 2,
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -807,23 +993,30 @@ async def test_invoke_agent_forwards_permission_events(monkeypatch):
         max_output_tokens=None,
     )
 
-    fake_client = _FakeClient([
-        SimpleNamespace(
-            content="",
-            tool_calls=[{
-                "id": "call_1",
-                "function": {"name": "write_file", "arguments": '{"path":"workspace/focus.md","content":"todo"}'},
-            }],
-            reasoning_content="reasoning",
-            usage={"total_tokens": 10},
-        ),
-        SimpleNamespace(
-            content="request blocked",
-            tool_calls=[],
-            reasoning_content=None,
-            usage={"total_tokens": 8},
-        ),
-    ])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": '{"path":"workspace/focus.md","content":"todo"}',
+                        },
+                    }
+                ],
+                reasoning_content="reasoning",
+                usage={"total_tokens": 10},
+            ),
+            SimpleNamespace(
+                content="request blocked",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 8},
+            ),
+        ]
+    )
 
     runtime_events: list[dict] = []
 
@@ -839,19 +1032,29 @@ async def test_invoke_agent_forwards_permission_events(monkeypatch):
     async def fake_execute_tool(tool_name, args, agent_id=None, user_id=None, event_callback=None):
         assert tool_name == "write_file"
         assert event_callback is not None
-        await event_callback({
-            "type": "permission",
-            "tool_name": "write_file",
-            "status": "approval_required",
-            "message": "This action requires approval.",
-            "approval_id": "approval-123",
-        })
+        await event_callback(
+            {
+                "type": "permission",
+                "tool_name": "write_file",
+                "status": "approval_required",
+                "message": "This action requires approval.",
+                "approval_id": "approval-123",
+            }
+        )
         return "⏳ This action requires approval. An approval request has been sent. (Approval ID: approval-123)"
 
     monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
     monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
     monkeypatch.setattr("app.runtime.invoker.maybe_compress_messages", fake_compress)
-    monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", lambda *args, **kwargs: [{"type": "function", "function": {"name": "write_file", "description": "", "parameters": {"type": "object"}}}])
+    monkeypatch.setattr(
+        "app.runtime.invoker.get_agent_tools_for_llm",
+        lambda *args, **kwargs: [
+            {
+                "type": "function",
+                "function": {"name": "write_file", "description": "", "parameters": {"type": "object"}},
+            }
+        ],
+    )
     monkeypatch.setattr("app.runtime.invoker.execute_tool", fake_execute_tool)
     monkeypatch.setattr("app.runtime.invoker.create_llm_client", lambda **kwargs: fake_client)
     monkeypatch.setattr("app.runtime.invoker.record_token_usage", lambda *args, **kwargs: None)
@@ -870,13 +1073,15 @@ async def test_invoke_agent_forwards_permission_events(monkeypatch):
     )
 
     assert result.content == "request blocked"
-    assert runtime_events == [{
-        "type": "permission",
-        "tool_name": "write_file",
-        "status": "approval_required",
-        "message": "This action requires approval.",
-        "approval_id": "approval-123",
-    }]
+    assert runtime_events == [
+        {
+            "type": "permission",
+            "tool_name": "write_file",
+            "status": "approval_required",
+            "message": "This action requires approval.",
+            "approval_id": "approval-123",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -894,14 +1099,16 @@ async def test_invoke_agent_loads_and_persists_runtime_memory(monkeypatch):
         max_output_tokens=None,
     )
 
-    fake_client = _FakeClient([
-        SimpleNamespace(
-            content="done",
-            tool_calls=[],
-            reasoning_content=None,
-            usage={"total_tokens": 5},
-        ),
-    ])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            ),
+        ]
+    )
     captured = {}
 
     async def fake_resolve_runtime_config(_agent_id):
@@ -1366,7 +1573,9 @@ async def test_invoke_agent_aborts_when_tenant_resolution_fails(monkeypatch):
     bad_agent_id = uuid4()
     result = await invoke_agent(
         AgentInvocationRequest(
-            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None),
+            model=SimpleNamespace(
+                provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None
+            ),
             messages=[{"role": "user", "content": "hi"}],
             agent_name="Ghost",
             role_description="non-existent agent",

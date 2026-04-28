@@ -72,12 +72,14 @@ class ToolRuntimeService:
         agent_id: uuid.UUID,
         user_id: uuid.UUID,
         event_callback: EventCallback | None = None,
+        delegation_token: Any | None = None,
     ) -> str:
         runtime_context = await self.runtime_resolver.resolve(agent_id=agent_id, user_id=user_id)
         governance_context = await self.governance_resolver.build_context(
             runtime_context=runtime_context,
             tool_name=tool_name,
             arguments=arguments,
+            delegation_token=delegation_token,
         )
         governance_dependencies = self.governance_resolver.build_dependencies()
         governance_block = await _maybe_await(

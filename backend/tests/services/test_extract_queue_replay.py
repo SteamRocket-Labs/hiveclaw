@@ -61,6 +61,7 @@ async def test_replay_reschedules_each_entry_and_clears_old(queue_root, monkeypa
 
     def _capture_schedule(**kwargs):
         captured.append(kwargs)
+        return True
 
     fake_extractor = type("F", (), {"schedule_extract": staticmethod(_capture_schedule)})()
     monkeypatch.setattr(
@@ -88,9 +89,14 @@ async def test_replay_skips_stale_entries_beyond_max_age(queue_root, monkeypatch
     _plant_entry(queue_root, entry_id="ancient", age_seconds=10 * 24 * 3600)  # 10 days old
 
     captured: list[dict] = []
+
+    def _capture_stale(**kw):
+        captured.append(kw)
+        return True
+
     monkeypatch.setattr(
         "app.services.extract_agent.extract_agent",
-        type("F", (), {"schedule_extract": staticmethod(lambda **kw: captured.append(kw))})(),
+        type("F", (), {"schedule_extract": staticmethod(_capture_stale)})(),
     )
 
     result = await extract_queue_replay.replay_pending_extractions(max_age_seconds=24 * 3600)
@@ -128,6 +134,31 @@ async def test_replay_keeps_entry_when_schedule_extract_raises(queue_root, monke
 
 
 @pytest.mark.asyncio
+async def test_replay_keeps_entry_when_reschedule_lacks_durable_enqueue(queue_root, monkeypatch, caplog):
+    from app.services import extract_queue_replay
+
+    path = _plant_entry(queue_root, entry_id="durability-gap", source="web")
+    captured: list[dict] = []
+
+    def _non_durable_schedule(**kwargs):
+        captured.append(kwargs)
+        return False
+
+    monkeypatch.setattr(
+        "app.services.extract_agent.extract_agent",
+        type("F", (), {"schedule_extract": staticmethod(_non_durable_schedule)})(),
+    )
+
+    with caplog.at_level("ERROR"):
+        result = await extract_queue_replay.replay_pending_extractions()
+
+    assert result == {"scheduled": 0, "skipped_stale": 0, "failed": 1}
+    assert captured[0]["require_durable_enqueue"] is True
+    assert path.exists()
+    assert any("without a fresh durable queue entry" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_replay_skips_entry_with_malformed_uuid(queue_root, monkeypatch, caplog):
     from app.services import extract_queue_replay
 
@@ -138,9 +169,14 @@ async def test_replay_skips_entry_with_malformed_uuid(queue_root, monkeypatch, c
     )
 
     captured: list[dict] = []
+
+    def _capture_bad_uuid(**kw):
+        captured.append(kw)
+        return True
+
     monkeypatch.setattr(
         "app.services.extract_agent.extract_agent",
-        type("F", (), {"schedule_extract": staticmethod(lambda **kw: captured.append(kw))})(),
+        type("F", (), {"schedule_extract": staticmethod(_capture_bad_uuid)})(),
     )
 
     with caplog.at_level("WARNING"):
@@ -162,9 +198,14 @@ async def test_replay_handles_none_tenant_id(queue_root, monkeypatch):
     _plant_entry(queue_root, entry_id="no-tenant", tenant_id=None)
 
     captured: list[dict] = []
+
+    def _capture_no_tenant(**kw):
+        captured.append(kw)
+        return True
+
     monkeypatch.setattr(
         "app.services.extract_agent.extract_agent",
-        type("F", (), {"schedule_extract": staticmethod(lambda **kw: captured.append(kw))})(),
+        type("F", (), {"schedule_extract": staticmethod(_capture_no_tenant)})(),
     )
 
     result = await extract_queue_replay.replay_pending_extractions()

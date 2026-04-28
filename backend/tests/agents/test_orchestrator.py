@@ -32,6 +32,7 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
         max_output_tokens=None,
     )
     tool_executor = object()
+    owner_id = uuid4()
     captured = {}
 
     async def fake_invoke_agent(request):
@@ -44,7 +45,7 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
         target=target,
         target_model=target_model,
         conversation_messages=[{"role": "user", "content": "hello"}],
-        owner_id=uuid4(),
+        owner_id=owner_id,
         session_id="session-1",
         tool_executor=tool_executor,
         system_prompt_suffix="A2A_SUFFIX",
@@ -93,6 +94,15 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
     assert "Do NOT read or write long-term memory" in request.system_prompt_suffix
     assert request.session_context.metadata["delegation_tool_policy"] == "worker_safe"
     assert request.session_context.metadata["delegation_memory_policy"] == "isolated_no_long_term_memory"
+    assert request.delegation_token is not None
+    assert request.delegation_token.parent_agent_id == owner_id
+    assert request.delegation_token.child_agent_id == target.id
+    assert request.delegation_token.inherit_parent_capabilities is False
+    assert "workspace.file.read" in request.delegation_token.granted_capabilities
+    assert "workspace.file.write" in request.delegation_token.granted_capabilities
+    assert "agent.memory.write" not in request.delegation_token.granted_capabilities
+    assert request.session_context.metadata["delegation_token_id"] == request.delegation_token.delegation_id
+    assert "agent.memory.write" not in request.session_context.metadata["delegation_token_capabilities"]
 
 
 @pytest.mark.asyncio
@@ -122,6 +132,32 @@ async def test_delegate_to_agent_enforces_depth_limit(monkeypatch):
     assert result.timed_out is False
     assert result.depth_limited is True
     assert "delegation depth limit" in result.content.lower()
+
+
+@pytest.mark.asyncio
+async def test_delegate_fails_closed_when_delegation_token_cannot_be_issued(monkeypatch):
+    from app.agents.orchestrator import AgentDelegationRequest, _delegate
+
+    target = SimpleNamespace(id="not-a-uuid", name="Broken Target", role_description="Helpful")
+    target_model = SimpleNamespace(provider="openai", model="gpt-4.1")
+
+    async def _unexpected_invoke(_request):
+        raise AssertionError("invoke_agent must not run without a delegation token")
+
+    monkeypatch.setattr("app.agents.orchestrator.invoke_agent", _unexpected_invoke)
+
+    result = await _delegate(
+        AgentDelegationRequest(
+            target=target,
+            target_model=target_model,
+            conversation_messages=[{"role": "user", "content": "hello"}],
+            owner_id=uuid4(),
+            session_id="bad-token-child",
+        )
+    )
+
+    assert result.failed is True
+    assert "delegation token" in result.content.lower()
 
 
 @pytest.mark.asyncio
@@ -241,6 +277,17 @@ async def test_delegate_to_agent_supports_review_readonly_profile(monkeypatch):
     assert request.session_context.metadata["delegation_tool_policy"] == "worker_review_readonly"
     assert request.session_context.metadata["delegation_memory_policy"] == "read_only_long_term_memory"
     assert "Do NOT edit files" in request.system_prompt_suffix
+    assert request.delegation_token is not None
+    assert request.delegation_token.inherit_parent_capabilities is False
+    assert request.delegation_token.granted_capabilities == frozenset(
+        {
+            "workspace.file.read",
+            "agent.skill.read",
+            "agent.tool.discover",
+            "agent.memory.read",
+            "system.time.read",
+        }
+    )
 
 
 @pytest.mark.asyncio
@@ -992,9 +1039,6 @@ class TestDelegationResultSerialization:
         import json
         from app.agents.orchestrator import AgentDelegationResult
 
-        result = AgentDelegationResult(
-            content="ok", child_session_id="cs", trace_id="t", depth=1
-        )
+        result = AgentDelegationResult(content="ok", child_session_id="cs", trace_id="t", depth=1)
         # Will raise on malformed JSON.
         json.loads(result.to_json())
-

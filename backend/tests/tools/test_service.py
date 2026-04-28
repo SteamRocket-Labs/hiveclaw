@@ -26,8 +26,8 @@ class _FakeGovernanceResolver:
         self.context_calls = []
         self.deps_calls = 0
 
-    async def build_context(self, *, runtime_context, tool_name, arguments):
-        self.context_calls.append((runtime_context, tool_name, arguments))
+    async def build_context(self, *, runtime_context, tool_name, arguments, delegation_token=None):
+        self.context_calls.append((runtime_context, tool_name, arguments, delegation_token))
         return self.governance_context
 
     def build_dependencies(self):
@@ -92,11 +92,13 @@ async def test_tool_runtime_service_executes_through_registry_and_logs():
         {"path": "focus.md", "content": "x"},
         agent_id=context.agent_id,
         user_id=context.user_id,
+        delegation_token="delegation-token-1",
     )
 
     assert result == "OK"
     assert runtime_resolver.calls == [(context.agent_id, context.user_id)]
     assert governance_resolver.deps_calls == 1
+    assert governance_resolver.context_calls[0][3] == "delegation-token-1"
     assert ensured == [True]
     assert registry.calls[0].tool_name == "write_file"
     assert logged and logged[0][0][0] == context.agent_id

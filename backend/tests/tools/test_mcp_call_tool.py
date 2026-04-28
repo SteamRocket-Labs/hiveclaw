@@ -22,7 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.tools.handlers.mcp import call_mcp_tool
+from app.tools.handlers.mcp import call_mcp_tool, read_mcp_resource
 
 
 # ── DB fake ───────────────────────────────────────────────────
@@ -50,6 +50,10 @@ class _FakeSession:
 
     async def __aexit__(self, *exc):
         return False
+
+
+def _compiled_sql(stmt) -> str:
+    return str(stmt.compile(compile_kwargs={"literal_binds": False})).lower()
 
 
 @pytest.fixture
@@ -146,6 +150,52 @@ async def test_missing_server_url_returns_bad_state(install_fake_session):
     install_fake_session(row)
     out = await call_mcp_tool(uuid.uuid4(), {"tool_name": "weather"})
     assert "bad_state" in out or "no server URL" in out
+
+
+@pytest.mark.asyncio
+async def test_call_mcp_tool_lookup_is_scoped_to_enabled_agent_assignment(
+    install_fake_session, patch_mcp_client
+):
+    row = SimpleNamespace(
+        name="weather",
+        enabled=True,
+        mcp_server_url="https://mcp.example.com",
+        mcp_tool_name="get_weather",
+        config={},
+    )
+    session = install_fake_session(row)
+    agent_id = uuid.uuid4()
+
+    await call_mcp_tool(agent_id, {"tool_name": "weather"})
+
+    sql = _compiled_sql(session.executed_statements[0])
+    assert "join agent_tools" in sql
+    assert "agent_tools.agent_id" in sql
+    assert "agent_tools.enabled" in sql
+
+
+@pytest.mark.asyncio
+async def test_read_mcp_resource_lookup_is_scoped_to_enabled_agent_assignment(install_fake_session):
+    row = SimpleNamespace(
+        name="weather",
+        display_name="Weather",
+        description="Weather lookup",
+        enabled=True,
+        mcp_server_url="https://mcp.example.com",
+        mcp_server_name="weather-server",
+        mcp_tool_name="get_weather",
+        parameters_schema={"type": "object"},
+    )
+    session = install_fake_session(row)
+    agent_id = uuid.uuid4()
+
+    out = await read_mcp_resource(agent_id, {"tool_name": "weather"})
+
+    sql = _compiled_sql(session.executed_statements[0])
+    assert "## MCP Tool: weather" in out
+    assert "join agent_tools" in sql
+    assert "agent_tools.agent_id" in sql
+    assert "agent_tools.enabled" in sql
 
 
 # ── Happy path ────────────────────────────────────────────────

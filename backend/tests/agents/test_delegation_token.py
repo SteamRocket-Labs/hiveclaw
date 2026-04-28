@@ -18,7 +18,6 @@ import pytest
 
 from app.agents.delegation_token import (
     DEFAULT_DELEGATION_TTL_SECONDS,
-    DelegationToken,
     issue_delegation_token,
     validate_delegation_token,
 )
@@ -163,9 +162,7 @@ def test_validate_accepts_in_scope_unexpired_call() -> None:
         ttl_seconds=100.0,
         now=0.0,
     )
-    result = validate_delegation_token(
-        token, capability="agent.memory.read", now=10.0
-    )
+    result = validate_delegation_token(token, capability="agent.memory.read", now=10.0)
     assert result.valid is True
     assert result.reason == ""
 
@@ -178,9 +175,7 @@ def test_validate_rejects_expired_token_with_reason() -> None:
         ttl_seconds=100.0,
         now=0.0,
     )
-    result = validate_delegation_token(
-        token, capability="agent.memory.read", now=200.0
-    )
+    result = validate_delegation_token(token, capability="agent.memory.read", now=200.0)
     assert result.valid is False
     assert "expired" in result.reason
 
@@ -193,11 +188,31 @@ def test_validate_rejects_out_of_scope_capability() -> None:
         ttl_seconds=100.0,
         now=0.0,
     )
-    result = validate_delegation_token(
-        token, capability="workspace.file.write", now=10.0
-    )
+    result = validate_delegation_token(token, capability="workspace.file.write", now=10.0)
     assert result.valid is False
     assert "not in delegation grant" in result.reason
+
+
+def test_validate_rejects_token_for_different_child_agent() -> None:
+    child = uuid.uuid4()
+    other_child = uuid.uuid4()
+    token = issue_delegation_token(
+        parent_agent_id=uuid.uuid4(),
+        child_agent_id=child,
+        granted_capabilities=frozenset({"workspace.file.read"}),
+        ttl_seconds=100.0,
+        now=0.0,
+    )
+
+    result = validate_delegation_token(
+        token,
+        capability="workspace.file.read",
+        child_agent_id=other_child,
+        now=10.0,
+    )
+
+    assert result.valid is False
+    assert "child agent mismatch" in result.reason
 
 
 def test_validate_without_capability_only_checks_expiry() -> None:

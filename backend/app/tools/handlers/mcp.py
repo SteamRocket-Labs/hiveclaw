@@ -31,7 +31,12 @@ async def list_mcp_resources(agent_id: uuid.UUID, arguments: dict) -> str:
             result = await db.execute(
                 select(Tool)
                 .join(AgentTool, AgentTool.tool_id == Tool.id)
-                .where(AgentTool.agent_id == agent_id, Tool.type == "mcp", Tool.enabled.is_(True))
+                .where(
+                    AgentTool.agent_id == agent_id,
+                    AgentTool.enabled.is_(True),
+                    Tool.type == "mcp",
+                    Tool.enabled.is_(True),
+                )
             )
             tools = result.scalars().all()
             if not tools:
@@ -88,7 +93,7 @@ async def read_mcp_resource(agent_id: uuid.UUID, arguments: dict) -> str:
     from sqlalchemy import select
 
     from app.database import async_session
-    from app.models.tool import Tool
+    from app.models.tool import AgentTool, Tool
 
     tool_name = arguments.get("tool_name", "")
     if not tool_name:
@@ -104,7 +109,15 @@ async def read_mcp_resource(agent_id: uuid.UUID, arguments: dict) -> str:
     try:
         async with async_session() as db:
             result = await db.execute(
-                select(Tool).where(Tool.name == tool_name, Tool.type == "mcp")
+                select(Tool)
+                .join(AgentTool, AgentTool.tool_id == Tool.id)
+                .where(
+                    AgentTool.agent_id == agent_id,
+                    AgentTool.enabled.is_(True),
+                    Tool.name == tool_name,
+                    Tool.type == "mcp",
+                    Tool.enabled.is_(True),
+                )
             )
             t = result.scalar_one_or_none()
             if not t:
@@ -210,7 +223,7 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
     from sqlalchemy import select
 
     from app.database import async_session
-    from app.models.tool import Tool
+    from app.models.tool import AgentTool, Tool
     from app.services.mcp_client import MCPClient
 
     tool_name = arguments.get("tool_name", "")
@@ -238,7 +251,14 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
 
     async with async_session() as db:
         result = await db.execute(
-            select(Tool).where(Tool.name == tool_name, Tool.type == "mcp")
+            select(Tool)
+            .join(AgentTool, AgentTool.tool_id == Tool.id)
+            .where(
+                AgentTool.agent_id == agent_id,
+                AgentTool.enabled.is_(True),
+                Tool.name == tool_name,
+                Tool.type == "mcp",
+            )
         )
         row = result.scalar_one_or_none()
         if row is None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import Any
 
 from sqlalchemy import select
 
@@ -27,6 +28,7 @@ class ToolGovernanceResolver:
         runtime_context: ToolExecutionContext,
         tool_name: str,
         arguments: dict,
+        delegation_token: Any | None = None,
     ) -> ToolGovernanceContext:
         return ToolGovernanceContext(
             agent_id=runtime_context.agent_id,
@@ -34,6 +36,7 @@ class ToolGovernanceResolver:
             tenant_id=runtime_context.tenant_id,
             tool_name=tool_name,
             arguments=arguments,
+            delegation_token=delegation_token,
         )
 
     def build_dependencies(self) -> GovernanceDependencies:

@@ -31,6 +31,7 @@ async def test_tool_governance_resolver_builds_context_from_runtime_context():
         runtime_context=runtime_context,
         tool_name="write_file",
         arguments={"path": "focus.md", "content": "x"},
+        delegation_token="token-1",
     )
 
     assert context.agent_id == agent_id
@@ -38,6 +39,7 @@ async def test_tool_governance_resolver_builds_context_from_runtime_context():
     assert context.tenant_id == runtime_context.tenant_id
     assert context.tool_name == "write_file"
     assert context.arguments == {"path": "focus.md", "content": "x"}
+    assert context.delegation_token == "token-1"
 
 
 @pytest.mark.asyncio

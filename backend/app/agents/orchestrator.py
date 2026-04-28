@@ -10,8 +10,11 @@ from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
+from app.agents.delegation_token import DEFAULT_DELEGATION_TTL_SECONDS, issue_delegation_token
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
+from app.services.agent_tools import CORE_TOOL_NAMES
+from app.services.capability_gate import CAPABILITY_MAP
 from app.services.runtime_task_service import (
     create_runtime_task_record,
     get_runtime_task_record,
@@ -21,7 +24,7 @@ from app.services.runtime_task_service import (
 
 logger = logging.getLogger(__name__)
 
-ToolExecutor = Callable[[str, dict[str, Any]], Awaitable[str] | str]
+ToolExecutor = Callable[..., Awaitable[str] | str]
 _DELEGATION_BASE_EXCLUDED_TOOLS = (
     "delegate_to_agent",
     "send_message_to_agent",
@@ -137,6 +140,40 @@ _DELEGATION_TOOL_PROFILES: dict[str, DelegationToolProfile] = {
 
 def _resolve_delegation_tool_profile(name: str | None) -> DelegationToolProfile:
     return _DELEGATION_TOOL_PROFILES.get(name or "worker_safe", _DELEGATION_TOOL_PROFILES["worker_safe"])
+
+
+def _delegation_profile_tool_names(profile: DelegationToolProfile) -> set[str]:
+    tool_names = set(profile.allowed_tools)
+    if profile.core_tools_only:
+        tool_names |= CORE_TOOL_NAMES
+    tool_names.difference_update(profile.excluded_tools)
+    return tool_names
+
+
+def _delegation_capability_grants(profile: DelegationToolProfile) -> frozenset[str]:
+    return frozenset(
+        CAPABILITY_MAP[tool_name]
+        for tool_name in sorted(_delegation_profile_tool_names(profile))
+        if tool_name in CAPABILITY_MAP
+    )
+
+
+def _issue_delegation_token_for_request(
+    request: AgentDelegationRequest,
+    profile: DelegationToolProfile,
+) -> Any | None:
+    child_agent_id = _maybe_uuid(getattr(request.target, "id", None))
+    if child_agent_id is None:
+        logger.warning("[Orchestrator] Cannot issue delegation token: target agent has no valid UUID id")
+        return None
+    parent_agent_id = _maybe_uuid(request.parent_agent_id) or request.owner_id
+    ttl_seconds = max(DEFAULT_DELEGATION_TTL_SECONDS, float(request.policy.timeout_seconds) + 30.0)
+    return issue_delegation_token(
+        parent_agent_id=parent_agent_id,
+        child_agent_id=child_agent_id,
+        granted_capabilities=_delegation_capability_grants(profile),
+        ttl_seconds=ttl_seconds,
+    )
 
 
 def _build_delegated_worker_prompt(profile: DelegationToolProfile) -> str:
@@ -671,6 +708,15 @@ async def _delegate_after_cycle_check(
         "interaction_type": request.interaction_type,
     }
     if is_delegation:
+        delegation_token = _issue_delegation_token_for_request(request, tool_profile)
+        if delegation_token is None:
+            return AgentDelegationResult(
+                content="⚠️ Delegation token could not be issued; refusing to start unscoped delegated invocation.",
+                child_session_id=child_session_id,
+                trace_id=trace_id,
+                depth=request.depth,
+                failed=True,
+            )
         session_metadata.update(
             {
                 "delegation": True,
@@ -683,9 +729,15 @@ async def _delegate_after_cycle_check(
                 "delegation_tool_policy": tool_profile.tool_policy,
                 "delegation_memory_policy": tool_profile.memory_policy,
                 "delegation_allowed_tools": tool_profile.allowed_tools,
+                "delegation_token_id": delegation_token.delegation_id if delegation_token is not None else None,
+                "delegation_token_expires_at": delegation_token.expires_at if delegation_token is not None else None,
+                "delegation_token_capabilities": (
+                    sorted(delegation_token.granted_capabilities) if delegation_token is not None else []
+                ),
             }
         )
     else:
+        delegation_token = None
         session_metadata.update(
             {
                 "agent_message": True,
@@ -720,6 +772,7 @@ async def _delegate_after_cycle_check(
         allowed_tool_names=tool_profile.allowed_tools,
         excluded_tool_names=tool_profile.excluded_tools,
         max_tool_rounds=request.max_tool_rounds,
+        delegation_token=delegation_token,
     )
 
     delegation_result: AgentDelegationResult

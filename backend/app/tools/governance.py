@@ -167,7 +167,11 @@ async def run_tool_governance(
             timeout=_GOVERNANCE_TIMEOUT_SECONDS,
         )
     except asyncio.TimeoutError:
-        logger.warning("[Governance] Timeout (%ss) for tool %s — blocking (fail-closed)", _GOVERNANCE_TIMEOUT_SECONDS, context.tool_name)
+        logger.warning(
+            "[Governance] Timeout (%ss) for tool %s — blocking (fail-closed)",
+            _GOVERNANCE_TIMEOUT_SECONDS,
+            context.tool_name,
+        )
         return f"🔒 Tool '{context.tool_name}' blocked — governance check timed out. Please retry."
 
 
@@ -285,7 +289,9 @@ async def _run_governance_inner(
             tenant_uuid = uuid.UUID(context.tenant_id)
             cap_result = await _maybe_await(deps.check_capability(tenant_uuid, context.agent_id, context.tool_name))
             if cap_result is not None and not hasattr(cap_result, "denied"):
-                logger.warning("[Governance] Unexpected capability result type: %s — blocking (fail-closed)", type(cap_result))
+                logger.warning(
+                    "[Governance] Unexpected capability result type: %s — blocking (fail-closed)", type(cap_result)
+                )
                 return f"🔒 Tool '{context.tool_name}' blocked — capability check returned unexpected format."
             if getattr(cap_result, "denied", False):
                 message = f"🚫 Capability denied: {cap_result.reason}"
@@ -343,6 +349,7 @@ async def _run_governance_inner(
                 token_check = validate_delegation_token(
                     context.delegation_token,
                     capability=_cap_name or None,
+                    child_agent_id=context.agent_id,
                 )
                 if not token_check.valid:
                     message = f"🔒 Delegation token rejected: {token_check.reason}"
@@ -437,12 +444,11 @@ async def _run_governance_inner(
                     _escalated_capability = getattr(dangerous_result, "capability", None) or dangerous_capability
                     dangerous_reason = getattr(dangerous_result, "reason", None) or dangerous_reason
                 else:
-                    dangerous_allowed_by_specific_policy = (
-                        getattr(dangerous_result, "capability", None) == dangerous_capability
-                        and (
-                            not hasattr(dangerous_result, "policy_found")
-                            or getattr(dangerous_result, "policy_found", False)
-                        )
+                    dangerous_allowed_by_specific_policy = getattr(
+                        dangerous_result, "capability", None
+                    ) == dangerous_capability and (
+                        not hasattr(dangerous_result, "policy_found")
+                        or getattr(dangerous_result, "policy_found", False)
                     )
             except Exception as exc:
                 logger.warning(
@@ -467,14 +473,16 @@ async def _run_governance_inner(
 
     if _escalated_capability:
         try:
-            result_check = await _maybe_await(deps.request_approval(
-                agent_id=context.agent_id,
-                user_id=context.user_id,
-                tool_name=context.tool_name,
-                arguments=context.arguments,
-                capability=_escalated_capability,
-                reason=dangerous_reason,
-            ))
+            result_check = await _maybe_await(
+                deps.request_approval(
+                    agent_id=context.agent_id,
+                    user_id=context.user_id,
+                    tool_name=context.tool_name,
+                    arguments=context.arguments,
+                    capability=_escalated_capability,
+                    reason=dangerous_reason,
+                )
+            )
             message = (
                 "⏳ This action requires approval. An approval request has been sent. "
                 f"Please wait for approval before retrying. (Approval ID: {result_check.get('approval_id', 'N/A')})"

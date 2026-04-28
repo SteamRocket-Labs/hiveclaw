@@ -3,8 +3,8 @@
 Two behaviours pinned:
   1. Unmapped tool calls always increment a per-tool counter so operators
      can see drift before deciding to flip strict mode on.
-  2. Under STRICT_CAPABILITY_MAPPING, an unmapped tool is denied; under
-     the default lenient mode it's logged + allowed (legacy behaviour).
+  2. Under STRICT_CAPABILITY_MAPPING, an unmapped tool is denied; explicit
+     lenient mode still logs + allows for local compatibility.
 """
 
 from __future__ import annotations
@@ -121,13 +121,11 @@ async def test_lenient_mode_allows_unmapped_tool(monkeypatch) -> None:
     assert result.denied is False
 
 
-def test_settings_default_is_lenient() -> None:
-    """Lenient by default so this PR is observably behaviour-preserving;
-    operators flip strict on once P1-W2-9 startup reconciliation closes
-    the mapping gaps."""
+def test_settings_default_is_strict() -> None:
+    """Production default is fail-closed; lenient mode must be explicit."""
     from app.config import get_settings
 
-    assert get_settings().STRICT_CAPABILITY_MAPPING is False
+    assert get_settings().STRICT_CAPABILITY_MAPPING is True
 
 
 # ── P1-W2-9 — startup reconciliation ──────────────────────────

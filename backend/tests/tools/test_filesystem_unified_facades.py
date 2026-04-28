@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from pathlib import Path
 
 import pytest
 
@@ -65,7 +64,7 @@ def test_fs_read_glob_passes_pattern_default_star(monkeypatch, tmp_path):
     monkeypatch.setattr("app.tools.handlers.filesystem.glob_search", fake_glob)
 
     fs_read(tmp_path, {"path": "src", "mode": "glob"})
-    assert captured["args"] == {"path": "src", "pattern": "*"}
+    assert captured["args"] == {"root": "src", "pattern": "*"}
 
 
 def test_fs_read_grep_forwards_pattern(monkeypatch, tmp_path):
@@ -78,7 +77,7 @@ def test_fs_read_grep_forwards_pattern(monkeypatch, tmp_path):
     monkeypatch.setattr("app.tools.handlers.filesystem.grep_search", fake_grep)
 
     fs_read(tmp_path, {"path": ".", "mode": "grep", "pattern": "TODO"})
-    assert captured["args"] == {"path": ".", "pattern": "TODO"}
+    assert captured["args"] == {"root": ".", "pattern": "TODO"}
 
 
 def test_fs_read_unknown_mode_returns_clear_error(tmp_path):
@@ -98,7 +97,7 @@ def _run(coro):
 async def test_fs_write_default_mode_is_write(monkeypatch, tmp_path):
     captured: dict = {}
 
-    async def fake_write(workspace, args, tenant_id=None):
+    def fake_write(workspace, args, tenant_id=None):
         captured["args"] = args
         return "WROTE"
 
@@ -113,7 +112,7 @@ async def test_fs_write_default_mode_is_write(monkeypatch, tmp_path):
 async def test_fs_write_edit_threads_old_new_strings(monkeypatch, tmp_path):
     captured: dict = {}
 
-    async def fake_edit(workspace, args, tenant_id=None):
+    def fake_edit(workspace, args, tenant_id=None):
         captured["args"] = args
         return "EDITED"
 
@@ -123,14 +122,14 @@ async def test_fs_write_edit_threads_old_new_strings(monkeypatch, tmp_path):
         tmp_path,
         {"path": "f.md", "mode": "edit", "old_string": "A", "new_string": "B"},
     )
-    assert captured["args"] == {"path": "f.md", "old_string": "A", "new_string": "B"}
+    assert captured["args"] == {"path": "f.md", "old_text": "A", "new_text": "B"}
 
 
 @pytest.mark.asyncio
 async def test_fs_write_delete_dispatches_to_delete_file(monkeypatch, tmp_path):
     captured: dict = {}
 
-    async def fake_delete(workspace, args, tenant_id=None):
+    def fake_delete(workspace, args, tenant_id=None):
         captured["args"] = args
         return "DELETED"
 
@@ -211,6 +210,14 @@ def test_tools_section_prompt_mentions_unified_facades() -> None:
     assert "fs_read" in section
     assert "fs_write" in section
     assert "fs_list" in section
+
+
+def test_prompted_facades_are_first_round_core_tools() -> None:
+    """If the frozen prompt recommends the facade names, the first tool
+    surface must expose them without requiring a skill activation round."""
+    from app.services.agent_tools import CORE_TOOL_NAMES
+
+    assert {"fs_read", "fs_write", "fs_list"}.issubset(CORE_TOOL_NAMES)
 
 
 # Avoid pytest collection complaint about unused helper.

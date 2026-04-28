@@ -60,7 +60,7 @@ logger = logging.getLogger(__name__)
 ChunkCallback = Callable[[str], Awaitable[None] | None]
 ThinkingCallback = Callable[[str], Awaitable[None] | None]
 ToolCallback = Callable[[dict], Awaitable[None] | None]
-ToolExecutor = Callable[[str, dict], Awaitable[str] | str]
+ToolExecutor = Callable[..., Awaitable[str] | str]
 EventCallback = Callable[[dict], Awaitable[None] | None]
 
 
@@ -121,6 +121,7 @@ class AgentInvocationRequest:
     max_tool_rounds: int | None = None
     execution_mode: str | None = None
     smart_model_routing: dict[str, Any] | None = None
+    delegation_token: Any | None = None
 
 
 @dataclass(slots=True)
@@ -249,7 +250,9 @@ def _apply_vision_transform(api_messages: list[LLMMessage], supports_vision: boo
     return api_messages
 
 
-def _apply_cache_hints(api_messages: list[LLMMessage], provider: str, execution_mode: str = "conversation") -> list[LLMMessage]:
+def _apply_cache_hints(
+    api_messages: list[LLMMessage], provider: str, execution_mode: str = "conversation"
+) -> list[LLMMessage]:
     """Apply provider-specific prompt cache hints (Anthropic, OpenAI, DeepSeek, Gemini, etc.)."""
     from app.services.prompt_cache import apply_cache_hints
 
@@ -598,7 +601,11 @@ async def _resolve_tool_expansion(
             },
         )
 
-    if tool_name == "read_file":
+    if tool_name in {"read_file", "fs_read"}:
+        if tool_name == "fs_read":
+            mode = str(args.get("mode") or "text").strip().lower()
+            if mode != "text":
+                return None
         skill_path_arg = str(args.get("path", "") or "").strip()
         if "SKILL.md" not in skill_path_arg:
             return None
@@ -653,7 +660,18 @@ async def _execute_tool_with_request(
     emit_event: Callable[[dict], Any],
 ) -> str:
     if request.tool_executor:
-        return await _maybe_await(request.tool_executor(tool_name, args))
+        executor_kwargs: dict[str, Any] = {}
+        try:
+            executor_params = inspect.signature(request.tool_executor).parameters
+            accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in executor_params.values())
+        except (TypeError, ValueError):
+            executor_params = {}
+            accepts_kwargs = False
+        if accepts_kwargs or "delegation_token" in executor_params:
+            executor_kwargs["delegation_token"] = request.delegation_token
+        if accepts_kwargs or "event_callback" in executor_params:
+            executor_kwargs["event_callback"] = emit_event
+        return await _maybe_await(request.tool_executor(tool_name, args, **executor_kwargs))
 
     execute_kwargs: dict[str, Any] = {
         "agent_id": request.agent_id,
@@ -661,6 +679,8 @@ async def _execute_tool_with_request(
     }
     if "event_callback" in inspect.signature(execute_tool).parameters:
         execute_kwargs["event_callback"] = emit_event
+    if "delegation_token" in inspect.signature(execute_tool).parameters:
+        execute_kwargs["delegation_token"] = request.delegation_token
     return await execute_tool(
         tool_name,
         args,
@@ -705,12 +725,17 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
             _source = request.session_context.source
             if _source == "feishu":
                 from app.tools.packs import pack_for_name
+
                 _pack = pack_for_name("feishu_pack")
                 if _pack:
                     _channel_tools = list(_pack.tools)
-        tools = await _maybe_await(get_agent_tools_for_llm(
-            agent_id, core_only=core_only, requested_names=_channel_tools,
-        ))
+        tools = await _maybe_await(
+            get_agent_tools_for_llm(
+                agent_id,
+                core_only=core_only,
+                requested_names=_channel_tools,
+            )
+        )
         if allowed_tool_names:
             tools = [tool for tool in tools if tool["function"]["name"] in allowed_tool_names]
         if not excluded_tool_names:
@@ -763,6 +788,7 @@ def _resolve_eviction_dir(agent_id: uuid.UUID | None) -> "Path | None":
         return None
     from pathlib import Path
     from app.config import get_settings
+
     return Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "workspace" / "tool_results"
 
 
@@ -879,6 +905,7 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
         max_tool_rounds=request.max_tool_rounds,
         eviction_dir=_resolve_eviction_dir(request.agent_id),
         execution_mode=request.execution_mode,
+        delegation_token=request.delegation_token,
     )
 
     # ── SESSION_START hook ──
@@ -915,8 +942,12 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
             "tenant_id": session_metadata.get("tenant_id"),
             "turn_count": len(completed_messages),
             "reason": "invoke_return",
-            "important_files": list(getattr(request.session_context, "recent_files", []) or []) if request.session_context else [],
-            "pending_work": list(getattr(request.session_context, "pending_items", []) or []) if request.session_context else [],
+            "important_files": list(getattr(request.session_context, "recent_files", []) or [])
+            if request.session_context
+            else [],
+            "pending_work": list(getattr(request.session_context, "pending_items", []) or [])
+            if request.session_context
+            else [],
             "last_successful_step": result.content[:300],
         }
         await emit_hook(

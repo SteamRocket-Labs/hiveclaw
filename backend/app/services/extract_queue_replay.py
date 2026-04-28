@@ -6,12 +6,9 @@ payload remains on disk. On the next startup `replay_pending_extractions`
 scans the queue and re-schedules each surviving entry through the normal
 `extract_agent.schedule_extract` path.
 
-The old entry is removed once it has been handed to `schedule_extract`:
-the new schedule writes its own queue entry (covering the same payload),
-so leaving both around would double-process on every restart. If the
-new schedule then fails again, the queue retains the *new* entry rather
-than the old one — this is the deliberate trade-off so that retry counts
-don't accumulate forever and replay is idempotent.
+The old entry is removed only after `schedule_extract(require_durable_enqueue=True)`
+confirms it wrote a fresh queue entry for the same payload. If that fresh
+enqueue fails, the original payload remains on disk for the next startup.
 
 Stale entries (older than ``max_age_seconds``) are skipped — operators
 can inspect or purge them via ``extract_queue.purge_older_than``.
@@ -64,7 +61,7 @@ async def replay_pending_extractions(
             continue
 
         try:
-            extract_agent.schedule_extract(
+            durable_scheduled = extract_agent.schedule_extract(
                 agent_id=agent_uuid,
                 messages=entry.messages,
                 # Tag replay source so downstream metrics can distinguish
@@ -72,6 +69,7 @@ async def replay_pending_extractions(
                 source=f"replay:{entry.source}",
                 tenant_id=tenant_uuid,
                 agent_name=entry.agent_name,
+                require_durable_enqueue=True,
             )
         except Exception as exc:
             # schedule_extract itself failed (extremely rare — usually only
@@ -80,6 +78,14 @@ async def replay_pending_extractions(
                 "[QueueReplay] schedule_extract raised for entry %s: %s — leaving entry for next attempt",
                 entry.entry_id,
                 exc,
+            )
+            failed += 1
+            continue
+        if durable_scheduled is not True:
+            logger.error(
+                "[QueueReplay] schedule_extract returned without a fresh durable queue entry for %s — leaving "
+                "original entry for next attempt",
+                entry.entry_id,
             )
             failed += 1
             continue

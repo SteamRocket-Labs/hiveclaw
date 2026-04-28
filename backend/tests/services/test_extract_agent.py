@@ -531,6 +531,30 @@ class TestExtractAgent:
         assert any("extract_queue.enqueue failed" in r.message for r in caplog.records)
         # Task itself ran — no exception propagated to caller.
 
+    async def test_schedule_extract_strict_durability_returns_false_without_in_memory_task(
+        self, extractor: ExtractAgent, agent_id: uuid.UUID, monkeypatch, caplog,
+    ) -> None:
+        """Replay calls require a fresh durable entry before dropping the old one."""
+        from app.services import extract_queue
+
+        def _enqueue_fails(**_kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(extract_queue, "enqueue", _enqueue_fails)
+
+        with patch("app.services.extract_agent._append_to_learnings", return_value=1):
+            with caplog.at_level("ERROR"):
+                scheduled = extractor.schedule_extract(
+                    agent_id,
+                    [{"role": "user", "content": "do not lose this replay payload"}],
+                    source="replay:web",
+                    require_durable_enqueue=True,
+                )
+
+        assert scheduled is False
+        assert str(agent_id) not in extractor._in_flight
+        assert any("strict durability requested" in r.message for r in caplog.records)
+
 
 # ── PR-4: T0 → T2 backfill ──
 

@@ -11,6 +11,14 @@ def test_capability_map_covers_all_governance_classified_tools():
     assert missing == []
 
 
+def test_capability_map_covers_all_core_tools_when_strict_default_is_on():
+    from app.services.agent_tools import CORE_TOOL_NAMES
+
+    missing = sorted(tool for tool in CORE_TOOL_NAMES if tool not in CAPABILITY_MAP)
+
+    assert missing == []
+
+
 def test_safe_governance_tools_are_read_only():
     collected = collect_tools()
     definitions = {
@@ -38,6 +46,7 @@ def test_capability_map_covers_agent_settings_controls_and_destructive_feishu_to
         "send_feishu_message": "channel.feishu.message",
         "web_search": "external.web.search",
         "bing_search": "external.web.search",
+        "get_current_time": "system.time.read",
         "manage_tasks": "agent.task.modify",
         "feishu_task_create": "channel.feishu.task",
         "feishu_task_complete": "channel.feishu.task",

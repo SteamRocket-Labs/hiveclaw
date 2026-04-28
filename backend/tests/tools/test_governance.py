@@ -41,14 +41,19 @@ async def test_governance_blocks_unsafe_tool_in_public_zone():
         event_callback=events.append,
     )
 
-    assert message == "🔒 Tool 'write_file' is blocked — this agent is in the 'public' security zone and can only use safe read-only tools."
-    assert events == [{
-        "type": "permission",
-        "tool_name": "write_file",
-        "status": "blocked",
-        "message": "🔒 Tool 'write_file' is blocked — this agent is in the 'public' security zone and can only use safe read-only tools.",
-        "security_zone": "public",
-    }]
+    assert (
+        message
+        == "🔒 Tool 'write_file' is blocked — this agent is in the 'public' security zone and can only use safe read-only tools."
+    )
+    assert events == [
+        {
+            "type": "permission",
+            "tool_name": "write_file",
+            "status": "blocked",
+            "message": "🔒 Tool 'write_file' is blocked — this agent is in the 'public' security zone and can only use safe read-only tools.",
+            "security_zone": "public",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -138,24 +143,28 @@ async def test_governance_emits_capability_denied_and_audit():
     )
 
     assert message == "🚫 Capability denied: Capability 'workspace.code.execute' is not allowed for this agent"
-    assert audit_calls == [{
-        "event_type": "capability.denied",
-        "severity": "warn",
-        "actor_type": "agent",
-        "actor_id": agent_id,
-        "tenant_id": tenant_id,
-        "action": "capability_denied",
-        "resource_type": "tool",
-        "resource_id": None,
-        "details": {"tool": "execute_code", "capability": "workspace.code.execute"},
-    }]
-    assert events == [{
-        "type": "permission",
-        "tool_name": "execute_code",
-        "status": "capability_denied",
-        "message": "🚫 Capability denied: Capability 'workspace.code.execute' is not allowed for this agent",
-        "capability": "workspace.code.execute",
-    }]
+    assert audit_calls == [
+        {
+            "event_type": "capability.denied",
+            "severity": "warn",
+            "actor_type": "agent",
+            "actor_id": agent_id,
+            "tenant_id": tenant_id,
+            "action": "capability_denied",
+            "resource_type": "tool",
+            "resource_id": None,
+            "details": {"tool": "execute_code", "capability": "workspace.code.execute"},
+        }
+    ]
+    assert events == [
+        {
+            "type": "permission",
+            "tool_name": "execute_code",
+            "status": "capability_denied",
+            "message": "🚫 Capability denied: Capability 'workspace.code.execute' is not allowed for this agent",
+            "capability": "workspace.code.execute",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -206,17 +215,19 @@ async def test_governance_requests_approval_when_capability_requires_it():
         "⏳ This action requires approval. An approval request has been sent. "
         "Please wait for approval before retrying. (Approval ID: approval-1)"
     )
-    assert events == [{
-        "type": "permission",
-        "tool_name": "send_feishu_message",
-        "status": "approval_required",
-        "message": (
-            "⏳ This action requires approval. An approval request has been sent. "
-            "Please wait for approval before retrying. (Approval ID: approval-1)"
-        ),
-        "approval_id": "approval-1",
-        "capability": "channel.feishu.message",
-    }]
+    assert events == [
+        {
+            "type": "permission",
+            "tool_name": "send_feishu_message",
+            "status": "approval_required",
+            "message": (
+                "⏳ This action requires approval. An approval request has been sent. "
+                "Please wait for approval before retrying. (Approval ID: approval-1)"
+            ),
+            "approval_id": "approval-1",
+            "capability": "channel.feishu.message",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -267,24 +278,28 @@ async def test_governance_denies_feishu_doc_delete_in_standard_zone_when_policy_
     )
 
     assert message == "🚫 Capability denied: Capability 'channel.feishu.document' is not allowed for this agent"
-    assert audit_calls == [{
-        "event_type": "capability.denied",
-        "severity": "warn",
-        "actor_type": "agent",
-        "actor_id": agent_id,
-        "tenant_id": tenant_id,
-        "action": "capability_denied",
-        "resource_type": "tool",
-        "resource_id": None,
-        "details": {"tool": "feishu_doc_delete", "capability": "channel.feishu.document"},
-    }]
-    assert events == [{
-        "type": "permission",
-        "tool_name": "feishu_doc_delete",
-        "status": "capability_denied",
-        "message": "🚫 Capability denied: Capability 'channel.feishu.document' is not allowed for this agent",
-        "capability": "channel.feishu.document",
-    }]
+    assert audit_calls == [
+        {
+            "event_type": "capability.denied",
+            "severity": "warn",
+            "actor_type": "agent",
+            "actor_id": agent_id,
+            "tenant_id": tenant_id,
+            "action": "capability_denied",
+            "resource_type": "tool",
+            "resource_id": None,
+            "details": {"tool": "feishu_doc_delete", "capability": "channel.feishu.document"},
+        }
+    ]
+    assert events == [
+        {
+            "type": "permission",
+            "tool_name": "feishu_doc_delete",
+            "status": "capability_denied",
+            "message": "🚫 Capability denied: Capability 'channel.feishu.document' is not allowed for this agent",
+            "capability": "channel.feishu.document",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -396,14 +411,16 @@ async def test_governance_escalates_dangerous_run_command_even_when_capability_a
     assert approval_calls[0]["tool_name"] == "run_command"
     assert approval_calls[0]["capability"] == "workspace.command.dangerous"
     assert "recursive delete" in approval_calls[0]["reason"]
-    assert events == [{
-        "type": "permission",
-        "tool_name": "run_command",
-        "status": "approval_required",
-        "message": message,
-        "approval_id": "approval-danger",
-        "capability": "workspace.command.dangerous",
-    }]
+    assert events == [
+        {
+            "type": "permission",
+            "tool_name": "run_command",
+            "status": "approval_required",
+            "message": message,
+            "approval_id": "approval-danger",
+            "capability": "workspace.command.dangerous",
+        }
+    ]
 
 
 # ── P0-1a: tenant_id=None fail-closed for non-safe tools ──────────────
@@ -411,6 +428,7 @@ async def test_governance_escalates_dangerous_run_command_even_when_capability_a
 # missing / agent not found / DB exception) returned tenant_id=None and
 # governance silently skipped capability checks. Now: non-safe tools blocked,
 # safe tools (read-only) still permitted to support bootstrap/discovery paths.
+
 
 @pytest.mark.asyncio
 async def test_governance_fail_closed_when_tenant_missing_for_non_safe_tool():
@@ -456,12 +474,14 @@ async def test_governance_fail_closed_when_tenant_missing_for_non_safe_tool():
     assert audit_calls[0]["action"] == "tenant_missing_blocked"
     assert audit_calls[0]["tenant_id"] is None
     assert audit_calls[0]["details"] == {"tool": "edit_file"}
-    assert events == [{
-        "type": "permission",
-        "tool_name": "edit_file",
-        "status": "blocked",
-        "message": message,
-    }]
+    assert events == [
+        {
+            "type": "permission",
+            "tool_name": "edit_file",
+            "status": "blocked",
+            "message": message,
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -567,9 +587,7 @@ async def test_governance_denies_when_delegation_token_expired():
         return "standard"
 
     async def check_capability(_t, _a, _tool):
-        return CapabilityCheckResult(
-            allowed=True, capability="workspace.file.read"
-        )
+        return CapabilityCheckResult(allowed=True, capability="workspace.file.read")
 
     async def write_audit(**kwargs):
         audit_calls.append(kwargs)
@@ -628,7 +646,8 @@ async def test_governance_denies_when_capability_outside_token_grant():
 
     async def check_capability(_t, _a, _tool):
         return CapabilityCheckResult(
-            allowed=True, capability="workspace.file.write"  # not in token grant
+            allowed=True,
+            capability="workspace.file.write",  # not in token grant
         )
 
     async def write_audit(**kwargs):
@@ -665,6 +684,60 @@ async def test_governance_denies_when_capability_outside_token_grant():
     assert message is not None
     assert "Delegation token rejected" in message
     assert "not in delegation grant" in message
+
+
+@pytest.mark.asyncio
+async def test_governance_denies_when_delegation_token_belongs_to_other_child():
+    from app.agents.delegation_token import issue_delegation_token
+    from app.services.capability_gate import CapabilityCheckResult
+    from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    audit_calls: list[dict] = []
+    events: list[dict] = []
+
+    async def resolve_security_zone(_agent_id):
+        return "standard"
+
+    async def check_capability(_t, _a, _tool):
+        return CapabilityCheckResult(allowed=True, capability="workspace.file.read")
+
+    async def write_audit(**kwargs):
+        audit_calls.append(kwargs)
+
+    async def request_approval(*_a, **_kw):
+        raise AssertionError("approval should not run")
+
+    token_for_other_child = issue_delegation_token(
+        parent_agent_id=uuid4(),
+        child_agent_id=uuid4(),
+        granted_capabilities=frozenset({"workspace.file.read"}),
+        ttl_seconds=300.0,
+    )
+
+    message = await run_tool_governance(
+        ToolGovernanceContext(
+            agent_id=agent_id,
+            user_id=uuid4(),
+            tenant_id=str(tenant_id),
+            tool_name="read_file",
+            arguments={},
+            delegation_token=token_for_other_child,
+        ),
+        GovernanceDependencies(
+            resolve_security_zone=resolve_security_zone,
+            check_capability=check_capability,
+            write_audit_event=write_audit,
+            request_approval=request_approval,
+        ),
+        event_callback=events.append,
+    )
+
+    assert message is not None
+    assert "child agent mismatch" in message
+    assert any(c["event_type"] == "delegation.token_denied" for c in audit_calls)
+    assert any(e["status"] == "delegation_token_denied" for e in events)
 
 
 @pytest.mark.asyncio

@@ -17,7 +17,7 @@ import threading
 import uuid
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 from sqlalchemy import select
 
@@ -42,12 +42,12 @@ WORKSPACE_ROOT = Path(_settings.AGENT_DATA_DIR)
 
 # ContextVar set by each channel handler so send_channel_file knows where to send
 # Value: async callable(file_path: Path) -> None  |  None for web chat (returns URL)
-channel_file_sender: ContextVar = ContextVar('channel_file_sender', default=None)
+channel_file_sender: ContextVar = ContextVar("channel_file_sender", default=None)
 # For web chat: agent_id needed to build download URL
-channel_web_agent_id: ContextVar = ContextVar('channel_web_agent_id', default=None)
+channel_web_agent_id: ContextVar = ContextVar("channel_web_agent_id", default=None)
 # Set by Feishu channel handler — open_id of the message sender so calendar tool
 # can auto-invite them as attendee when no explicit attendee list is given
-channel_feishu_sender_open_id: ContextVar = ContextVar('channel_feishu_sender_open_id', default=None)
+channel_feishu_sender_open_id: ContextVar = ContextVar("channel_feishu_sender_open_id", default=None)
 ToolEventCallback = Callable[[dict], Awaitable[None] | None]
 
 _TOOL_EXECUTION_REGISTRY = ToolExecutionRegistry()
@@ -62,6 +62,7 @@ def _get_collected_tools():
     global _COLLECTED_TOOLS
     if _COLLECTED_TOOLS is None:
         from app.tools.collector import collect_tools
+
         _COLLECTED_TOOLS = collect_tools()
     return _COLLECTED_TOOLS
 
@@ -107,6 +108,7 @@ def _get_tool_runtime_service() -> ToolRuntimeService:
 
     async def _log_activity(*args, **kwargs) -> None:
         from app.services.activity_logger import log_activity
+
         await log_activity(*args, **kwargs)
 
     _TOOL_RUNTIME_SERVICE = ToolRuntimeService(
@@ -133,6 +135,9 @@ CORE_TOOL_NAMES = {
     "edit_file",
     "glob_search",
     "grep_search",
+    "fs_read",
+    "fs_write",
+    "fs_list",
     "load_skill",
     "save_skill",
     "search_memory",
@@ -259,7 +264,8 @@ async def _filter_unavailable_tools(agent_id: uuid.UUID, tools: list[dict]) -> l
     provider_backed = {"firecrawl_fetch", "xcrawl_scrape", "discover_resources", "import_mcp_server"}
     available = await _provider_available_tools(agent_id)
     return [
-        tool for tool in tools
+        tool
+        for tool in tools
         if tool["function"]["name"] not in provider_backed or tool["function"]["name"] in available
     ]
 
@@ -316,6 +322,7 @@ async def _agent_has_feishu(agent_id: uuid.UUID) -> bool:
     """Check if agent has a configured Feishu channel."""
     try:
         from app.models.channel_config import ChannelConfig
+
         async with async_session() as db:
             r = await db.execute(
                 select(ChannelConfig).where(
@@ -344,6 +351,7 @@ async def _agent_has_feishu_cli_access() -> bool:
 
 
 # ─── Dynamic Tool Loading from DB ──────────────────────────────
+
 
 async def get_agent_tools_for_llm(
     agent_id: uuid.UUID,
@@ -472,8 +480,7 @@ async def get_agent_tools_for_llm(
     fallback = [
         tool
         for tool in fallback
-        if tool["function"]["name"] not in _FEISHU_TOOL_NAMES
-        or tool["function"]["name"] in allowed_feishu_names
+        if tool["function"]["name"] not in _FEISHU_TOOL_NAMES or tool["function"]["name"] in allowed_feishu_names
     ]
     if core_only:
         fallback = [t for t in fallback if t["function"]["name"] in CORE_TOOL_NAMES]
@@ -507,12 +514,14 @@ async def execute_approved_tool(
         approval_id=approval_id,
     )
 
+
 async def execute_tool(
     tool_name: str,
     arguments: dict,
     agent_id: uuid.UUID,
     user_id: uuid.UUID,
     event_callback: ToolEventCallback | None = None,
+    delegation_token: Any | None = None,
 ) -> str:
     """Execute a tool call and return the result as a string."""
     return await _get_tool_runtime_service().execute(
@@ -521,6 +530,7 @@ async def execute_tool(
         agent_id=agent_id,
         user_id=user_id,
         event_callback=event_callback,
+        delegation_token=delegation_token,
     )
 
 
@@ -591,8 +601,9 @@ async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> 
         except ValueError:
             file_rel = rel_path
         from app.config import get_settings as _gs
+
         _s = _gs()
-        base_url = getattr(_s, 'BASE_URL', '').rstrip('/') or ''
+        base_url = getattr(_s, "BASE_URL", "").rstrip("/") or ""
         download_url = f"{base_url}/api/agents/{aid}/files/download?path={file_rel}"
         msg = f"✅ File ready: [{file_path.name}]({download_url})"
         if accompany_msg:

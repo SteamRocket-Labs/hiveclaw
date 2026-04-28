@@ -67,8 +67,9 @@ _TOOL_RESULT_PREVIEW_LENGTH = 4000  # chars to keep inline — was 2K, 256K mode
 _TOOL_RESULTS_AGGREGATE_BUDGET = 200000  # chars per round
 # Time-based microcompact: clear old tool results to delay heavy compaction.
 _MICROCOMPACT_GAP_SECONDS = 3600  # 60 minutes — tool results older than this get cleared
-_MICROCOMPACT_KEEP_RECENT = 5     # always keep the N most recent tool results
+_MICROCOMPACT_KEEP_RECENT = 5  # always keep the N most recent tool results
 _MICROCOMPACT_CLEARED_MARKER = "[Old tool result cleared to save context space]"
+
 
 def _compute_microcompact_gap(used_tokens: int, model_window: int | None) -> int:
     """Pick the microcompact gap based on current context pressure.
@@ -88,13 +89,28 @@ def _compute_microcompact_gap(used_tokens: int, model_window: int | None) -> int
 
 
 # Tools whose output should never be evicted (small, structural results).
-_EVICTION_EXEMPT_TOOLS = frozenset({
-    "list_files", "read_file", "load_skill", "tool_search",
-    "discover_resources", "list_triggers", "list_tasks", "get_task",
-    "get_current_time", "check_async_task", "list_async_tasks",
-    # Content-critical tools — already have their own internal truncation.
-    "web_search", "firecrawl_fetch", "xcrawl_scrape", "read_document",
-})
+_EVICTION_EXEMPT_TOOLS = frozenset(
+    {
+        "list_files",
+        "read_file",
+        "load_skill",
+        "tool_search",
+        "fs_read",
+        "fs_list",
+        "discover_resources",
+        "list_triggers",
+        "list_tasks",
+        "get_task",
+        "get_current_time",
+        "check_async_task",
+        "list_async_tasks",
+        # Content-critical tools — already have their own internal truncation.
+        "web_search",
+        "firecrawl_fetch",
+        "xcrawl_scrape",
+        "read_document",
+    }
+)
 
 logger = logging.getLogger(__name__)
 
@@ -188,31 +204,39 @@ def _build_runtime_memory_event_messages(session_context: Any | None) -> list[di
         tool_name = outcome.get("tool", "?")
         summary = outcome.get("summary", "")
         if summary:
-            events.append({
-                "role": "assistant",
-                "content": f"Runtime event: tool outcome {tool_name} — {summary}",
-            })
+            events.append(
+                {
+                    "role": "assistant",
+                    "content": f"Runtime event: tool outcome {tool_name} — {summary}",
+                }
+            )
 
     for path in getattr(session_context, "recent_writes", [])[-5:]:
         if path:
-            events.append({
-                "role": "assistant",
-                "content": f"Runtime event: wrote file {path}",
-            })
+            events.append(
+                {
+                    "role": "assistant",
+                    "content": f"Runtime event: wrote file {path}",
+                }
+            )
 
     for ref in getattr(session_context, "recent_external_refs", [])[-5:]:
         if ref:
-            events.append({
-                "role": "assistant",
-                "content": f"Runtime event: external reference {ref}",
-            })
+            events.append(
+                {
+                    "role": "assistant",
+                    "content": f"Runtime event: external reference {ref}",
+                }
+            )
 
     for item in getattr(session_context, "pending_items", [])[-5:]:
         if item:
-            events.append({
-                "role": "assistant",
-                "content": f"Runtime event: pending work {item}",
-            })
+            events.append(
+                {
+                    "role": "assistant",
+                    "content": f"Runtime event: pending work {item}",
+                }
+            )
 
     return events
 
@@ -293,6 +317,9 @@ def _should_expand_tools(tool_name: str, args: dict[str, Any]) -> bool:
         return True
     if tool_name == "read_file" and "SKILL.md" in str(args.get("path", "")):
         return True
+    if tool_name == "fs_read" and "SKILL.md" in str(args.get("path", "")):
+        mode = str(args.get("mode") or "text").strip().lower()
+        return mode == "text"
     return False
 
 
@@ -355,9 +382,7 @@ async def _execute_tool_with_hooks(
         return "Blocked by hook: " + (hook_result.reason or "policy"), effective_args, False
 
     try:
-        result = await _maybe_await(
-            execute_tool(tool_name, effective_args, request, emit_event)
-        )
+        result = await _maybe_await(execute_tool(tool_name, effective_args, request, emit_event))
     except Exception as exc:
         err = f"[Tool execution error] {type(exc).__name__}: {str(exc)[:200]}"
         await emit_hook(
@@ -389,15 +414,18 @@ async def _execute_tool_with_hooks(
     _session = request.session_context
     _args_dict = effective_args if isinstance(effective_args, dict) else {}
     if _session:
-        if tool_name == "read_file":
+        if tool_name in ("read_file", "fs_read"):
             _path = _args_dict.get("path", "")
             if _path:
                 _session.track_file_read(_path)
+        elif tool_name == "fs_list":
+            _path = _args_dict.get("path", "")
+            _session.track_tool_outcome(tool_name, "Listed " + (_path or "workspace root"))
         elif tool_name == "load_skill":
             _skill = _args_dict.get("skill_name") or _args_dict.get("name", "")
             if _skill:
                 _session.track_skill_loaded(_skill)
-        elif tool_name in ("write_file", "edit_file"):
+        elif tool_name in ("write_file", "edit_file", "fs_write"):
             _path = _args_dict.get("path", "")
             if _path:
                 _session.track_file_write(_path)
@@ -608,7 +636,7 @@ def _dicts_to_llm_messages(dicts: list[dict]) -> list[LLMMessage]:
 # Post-compact restoration uses ContextBudget.restore_budget when available.
 # These are fallback defaults when no budget profile is present.
 _POST_COMPACT_RESTORE_BUDGET = 60000  # chars (~17K tokens) — was 20K, too thin for 256K models
-_POST_COMPACT_PER_FILE_CAP = 8000    # chars per file — was 5K
+_POST_COMPACT_PER_FILE_CAP = 8000  # chars per file — was 5K
 
 
 def _build_restoration_context(
@@ -802,7 +830,9 @@ def _maybe_evict_tool_result(
         if result_len > _TOOL_RESULT_EVICTION_THRESHOLD:
             logger.info(
                 "[Kernel] Tool result kept (exempt): tool=%s, chars=%d, tool_call_id=%s",
-                tool_name, result_len, tool_call_id,
+                tool_name,
+                result_len,
+                tool_call_id,
             )
         return result
     if result_len <= _TOOL_RESULT_EVICTION_THRESHOLD:
@@ -810,7 +840,10 @@ def _maybe_evict_tool_result(
 
     logger.info(
         "[Kernel] Tool result evicted: tool=%s, chars=%d, threshold=%d, tool_call_id=%s",
-        tool_name, result_len, _TOOL_RESULT_EVICTION_THRESHOLD, tool_call_id,
+        tool_name,
+        result_len,
+        _TOOL_RESULT_EVICTION_THRESHOLD,
+        tool_call_id,
     )
 
     # Write full result to workspace file if eviction_dir provided
@@ -830,7 +863,7 @@ def _maybe_evict_tool_result(
         return (
             f"{preview}\n\n"
             f"[Full output saved to {eviction_path} — {len(result)} chars. "
-            f"Use read_file(\"{eviction_path}\") to retrieve.]"
+            f'Use read_file("{eviction_path}") to retrieve.]'
         )
     return (
         f"{preview}\n\n"
@@ -1003,7 +1036,12 @@ class AgentKernel:
             _ctx_window = getattr(request.model, "max_input_tokens", None) if request.model else None
 
             # B-01 fix: detect coordinator mode early, include prompt in suffix BEFORE budget enforcement
-            from app.runtime.coordinator import is_coordinator_mode, get_coordinator_prompt, filter_tools_for_coordinator
+            from app.runtime.coordinator import (
+                is_coordinator_mode,
+                get_coordinator_prompt,
+                filter_tools_for_coordinator,
+            )
+
             _is_coordinator = is_coordinator_mode(agent=runtime_config, request=request)
             _effective_suffix = request.system_prompt_suffix or ""
             if _is_coordinator:
@@ -1102,6 +1140,7 @@ class AgentKernel:
                     try:
                         from app.config import get_settings as _gs
                         from pathlib import Path as _P
+
                         _header = "# Session Compaction Summary (auto-saved)\n\n"
                         _content = _header + data["summary"] + "\n"
                         # Write to both workspace roots so heartbeat can find it
@@ -1134,9 +1173,7 @@ class AgentKernel:
                         )
 
                         manifest = build_recovery_manifest(request.session_context)
-                        manifest = merge_session_memory_into_manifest(
-                            manifest, agent_id=request.agent_id
-                        )
+                        manifest = merge_session_memory_into_manifest(manifest, agent_id=request.agent_id)
                         if not manifest.is_empty():
                             for _root in [
                                 _P(_gs().AGENT_DATA_DIR) / str(request.agent_id),
@@ -1179,7 +1216,10 @@ class AgentKernel:
                         _callback_failure_count += 1
                         logger.warning("[Kernel] on_chunk callback failed (%d): %s", _callback_failure_count, _cb_exc)
                         if _callback_failure_count == 3:
-                            logger.error("[Kernel] Multiple callback failures (%d) — client may be disconnected", _callback_failure_count)
+                            logger.error(
+                                "[Kernel] Multiple callback failures (%d) — client may be disconnected",
+                                _callback_failure_count,
+                            )
 
             async def _emit_thinking(text: str) -> None:
                 nonlocal _callback_failure_count
@@ -1189,9 +1229,14 @@ class AgentKernel:
                         await _maybe_await(request.on_thinking(text))
                     except Exception as _cb_exc:
                         _callback_failure_count += 1
-                        logger.warning("[Kernel] on_thinking callback failed (%d): %s", _callback_failure_count, _cb_exc)
+                        logger.warning(
+                            "[Kernel] on_thinking callback failed (%d): %s", _callback_failure_count, _cb_exc
+                        )
                         if _callback_failure_count == 3:
-                            logger.error("[Kernel] Multiple callback failures (%d) — client may be disconnected", _callback_failure_count)
+                            logger.error(
+                                "[Kernel] Multiple callback failures (%d) — client may be disconnected",
+                                _callback_failure_count,
+                            )
 
             messages = await _maybe_await(
                 self._deps.maybe_compress_messages(
@@ -1305,7 +1350,9 @@ class AgentKernel:
                         except _KernelCancelledError:
                             if request.agent_id and accumulated_tokens > 0:
                                 await _maybe_await(self._deps.record_token_usage(request.agent_id, accumulated_tokens))
-                            await self._persist_before_exit(request, runtime_config, "*[Generation stopped]*", api_messages)
+                            await self._persist_before_exit(
+                                request, runtime_config, "*[Generation stopped]*", api_messages
+                            )
                             return _build_cancelled_result(
                                 streamed_chunks,
                                 streamed_thinking,
@@ -1336,7 +1383,8 @@ class AgentKernel:
                                         # Attempt 1-2: drop 20% oldest round-groups.
                                         logger.warning(
                                             "[Kernel] PTL round-group drop (attempt %d/%d)",
-                                            ptl_retries, _PTL_MAX_RETRIES,
+                                            ptl_retries,
+                                            _PTL_MAX_RETRIES,
                                         )
                                         _truncated = _truncate_head_for_ptl(api_messages[1:], drop_ratio=0.2)
                                         # Rebuild system prompt
@@ -1351,7 +1399,9 @@ class AgentKernel:
                                             channel=session_ctx.channel if session_ctx else "",
                                             agent_name=request.agent_name,
                                         )
-                                        _ptl_prefix = (session_ctx.prompt_prefix if session_ctx else None) or prompt_prefix
+                                        _ptl_prefix = (
+                                            session_ctx.prompt_prefix if session_ctx else None
+                                        ) or prompt_prefix
                                         _ptl_system = assemble_runtime_prompt(
                                             _ptl_prefix,
                                             _ptl_dynamic,
@@ -1359,27 +1409,36 @@ class AgentKernel:
                                             budget_profile=budget_profile,
                                         )
                                         api_messages = [LLMMessage(role="system", content=_ptl_system)] + _truncated
-                                        await _emit_event({
-                                            "type": "session_compact",
-                                            "summary": "Prompt too long; dropped oldest round groups before retry.",
-                                            "original_message_count": _before_msgs,
-                                            "kept_message_count": len(api_messages),
-                                            "reason": "prompt_too_long_retry",
-                                            "strategy": "round_group",
-                                            "attempt": ptl_retries,
-                                        })
+                                        await _emit_event(
+                                            {
+                                                "type": "session_compact",
+                                                "summary": "Prompt too long; dropped oldest round groups before retry.",
+                                                "original_message_count": _before_msgs,
+                                                "kept_message_count": len(api_messages),
+                                                "reason": "prompt_too_long_retry",
+                                                "strategy": "round_group",
+                                                "attempt": ptl_retries,
+                                            }
+                                        )
                                         logger.info(
                                             "[Kernel] PTL round-group: %d→%d msgs (attempt %d/%d)",
-                                            _before_msgs, len(api_messages),
-                                            ptl_retries, _PTL_MAX_RETRIES,
-                                            extra={"metric": "ptl_retry", "attempt": ptl_retries, "strategy": "round_group"},
+                                            _before_msgs,
+                                            len(api_messages),
+                                            ptl_retries,
+                                            _PTL_MAX_RETRIES,
+                                            extra={
+                                                "metric": "ptl_retry",
+                                                "attempt": ptl_retries,
+                                                "strategy": "round_group",
+                                            },
                                         )
                                         continue
                                     else:
                                         # Attempt 3: full compression fallback
                                         logger.warning(
                                             "[Kernel] PTL full compress fallback (attempt %d/%d)",
-                                            ptl_retries, _PTL_MAX_RETRIES,
+                                            ptl_retries,
+                                            _PTL_MAX_RETRIES,
                                         )
                                         conv_dicts = _llm_messages_to_dicts(api_messages[1:])
                                         _before_chars = sum(len(d.get("content", "") or "") for d in conv_dicts)
@@ -1409,26 +1468,38 @@ class AgentKernel:
                                                 channel=session_ctx.channel if session_ctx else "",
                                                 agent_name=request.agent_name,
                                             )
-                                            _ptl_prefix = (session_ctx.prompt_prefix if session_ctx else None) or prompt_prefix
+                                            _ptl_prefix = (
+                                                session_ctx.prompt_prefix if session_ctx else None
+                                            ) or prompt_prefix
                                             _ptl_system = assemble_runtime_prompt(
                                                 _ptl_prefix,
                                                 _ptl_dynamic,
                                                 context_window_tokens=_ctx_window,
                                                 budget_profile=budget_profile,
                                             )
-                                            api_messages = [LLMMessage(role="system", content=_ptl_system)] + _dicts_to_llm_messages(compressed)
+                                            api_messages = [
+                                                LLMMessage(role="system", content=_ptl_system)
+                                            ] + _dicts_to_llm_messages(compressed)
                                             logger.info(
                                                 "[Kernel] PTL full compress: %d→%d chars, %d→%d msgs (attempt %d/%d)",
-                                                _before_chars, _after_chars,
-                                                _before_msgs, len(api_messages),
-                                                ptl_retries, _PTL_MAX_RETRIES,
-                                                extra={"metric": "ptl_retry", "attempt": ptl_retries, "strategy": "full_compress"},
+                                                _before_chars,
+                                                _after_chars,
+                                                _before_msgs,
+                                                len(api_messages),
+                                                ptl_retries,
+                                                _PTL_MAX_RETRIES,
+                                                extra={
+                                                    "metric": "ptl_retry",
+                                                    "attempt": ptl_retries,
+                                                    "strategy": "full_compress",
+                                                },
                                             )
                                             continue
                                         else:
                                             logger.warning(
                                                 "[Kernel] PTL compression insufficient: %d→%d chars (%.0f%%), falling through",
-                                                _before_chars, _after_chars,
+                                                _before_chars,
+                                                _after_chars,
                                                 (_after_chars / _before_chars * 100) if _before_chars else 0,
                                             )
 
@@ -1439,27 +1510,29 @@ class AgentKernel:
                                 and not should_surface_without_model_fallback(exc)
                             ):
                                 _fallback_reason = "prompt_too_long" if _is_prompt_too_long(exc) else "llm_error"
-                                await _emit_event({
-                                    "type": "runtime_fallback",
-                                    "reason": _fallback_reason,
-                                    "from_model": getattr(active_model, "model", None),
-                                    "to_model": getattr(fallback_model, "model", None),
-                                    "provider": getattr(fallback_model, "provider", None),
-                                    "part": {
-                                        "type": "event",
-                                        "event_type": "runtime_fallback",
-                                        "title": "Fallback Model Activated",
-                                        "text": (
-                                            f"Switched from {getattr(active_model, 'model', '?')} "
-                                            f"to {getattr(fallback_model, 'model', '?')} after {_fallback_reason}."
-                                        ),
-                                        "status": "info",
+                                await _emit_event(
+                                    {
+                                        "type": "runtime_fallback",
                                         "reason": _fallback_reason,
                                         "from_model": getattr(active_model, "model", None),
                                         "to_model": getattr(fallback_model, "model", None),
                                         "provider": getattr(fallback_model, "provider", None),
-                                    },
-                                })
+                                        "part": {
+                                            "type": "event",
+                                            "event_type": "runtime_fallback",
+                                            "title": "Fallback Model Activated",
+                                            "text": (
+                                                f"Switched from {getattr(active_model, 'model', '?')} "
+                                                f"to {getattr(fallback_model, 'model', '?')} after {_fallback_reason}."
+                                            ),
+                                            "status": "info",
+                                            "reason": _fallback_reason,
+                                            "from_model": getattr(active_model, "model", None),
+                                            "to_model": getattr(fallback_model, "model", None),
+                                            "provider": getattr(fallback_model, "provider", None),
+                                        },
+                                    }
+                                )
                                 await client.close()
                                 client = self._deps.create_client(fallback_model)
                                 active_model = fallback_model
@@ -1492,27 +1565,29 @@ class AgentKernel:
                                 and active_model is request.model
                                 and not should_surface_without_model_fallback(exc)
                             ):
-                                await _emit_event({
-                                    "type": "runtime_fallback",
-                                    "reason": "unexpected_error",
-                                    "from_model": getattr(active_model, "model", None),
-                                    "to_model": getattr(fallback_model, "model", None),
-                                    "provider": getattr(fallback_model, "provider", None),
-                                    "part": {
-                                        "type": "event",
-                                        "event_type": "runtime_fallback",
-                                        "title": "Fallback Model Activated",
-                                        "text": (
-                                            f"Switched from {getattr(active_model, 'model', '?')} "
-                                            f"to {getattr(fallback_model, 'model', '?')} after unexpected_error."
-                                        ),
-                                        "status": "info",
+                                await _emit_event(
+                                    {
+                                        "type": "runtime_fallback",
                                         "reason": "unexpected_error",
                                         "from_model": getattr(active_model, "model", None),
                                         "to_model": getattr(fallback_model, "model", None),
                                         "provider": getattr(fallback_model, "provider", None),
-                                    },
-                                })
+                                        "part": {
+                                            "type": "event",
+                                            "event_type": "runtime_fallback",
+                                            "title": "Fallback Model Activated",
+                                            "text": (
+                                                f"Switched from {getattr(active_model, 'model', '?')} "
+                                                f"to {getattr(fallback_model, 'model', '?')} after unexpected_error."
+                                            ),
+                                            "status": "info",
+                                            "reason": "unexpected_error",
+                                            "from_model": getattr(active_model, "model", None),
+                                            "to_model": getattr(fallback_model, "model", None),
+                                            "provider": getattr(fallback_model, "provider", None),
+                                        },
+                                    }
+                                )
                                 await client.close()
                                 client = self._deps.create_client(fallback_model)
                                 active_model = fallback_model
@@ -1529,7 +1604,12 @@ class AgentKernel:
                             if request.agent_id and accumulated_tokens > 0:
                                 await _maybe_await(self._deps.record_token_usage(request.agent_id, accumulated_tokens))
                             user_msg = _humanize_llm_error(exc)
-                            await self._persist_before_exit(request, runtime_config, f"[LLM call error] {type(exc).__name__}: {str(exc)[:200]}", api_messages)
+                            await self._persist_before_exit(
+                                request,
+                                runtime_config,
+                                f"[LLM call error] {type(exc).__name__}: {str(exc)[:200]}",
+                                api_messages,
+                            )
                             return _build_error_result(
                                 user_msg,
                                 tokens_used=accumulated_tokens,
@@ -1569,19 +1649,23 @@ class AgentKernel:
                             try:
                                 from app.runtime.hooks import HookEvent, emit_hook
 
-                                asyncio.ensure_future(emit_hook(
-                                    HookEvent.RESPONSE_COMPLETE,
-                                    agent_id=request.agent_id,
-                                    session_id=request.memory_session_id,
-                                    messages=_llm_messages_to_dicts(api_messages[1:]),
-                                    source=_session_source,
-                                    metadata={
-                                        "last_response": final_content[:2000] if final_content else "",
-                                        "turn_count": round_i + 1,
-                                        "tenant_id": str(runtime_config.tenant_id) if runtime_config.tenant_id else None,
-                                        "agent_name": request.agent_name or "Agent",
-                                    },
-                                ))
+                                asyncio.ensure_future(
+                                    emit_hook(
+                                        HookEvent.RESPONSE_COMPLETE,
+                                        agent_id=request.agent_id,
+                                        session_id=request.memory_session_id,
+                                        messages=_llm_messages_to_dicts(api_messages[1:]),
+                                        source=_session_source,
+                                        metadata={
+                                            "last_response": final_content[:2000] if final_content else "",
+                                            "turn_count": round_i + 1,
+                                            "tenant_id": str(runtime_config.tenant_id)
+                                            if runtime_config.tenant_id
+                                            else None,
+                                            "agent_name": request.agent_name or "Agent",
+                                        },
+                                    )
+                                )
                             except Exception as _hook_err:
                                 logger.debug("[Kernel] RESPONSE_COMPLETE hook failed (non-fatal): %s", _hook_err)
 
@@ -1625,7 +1709,8 @@ class AgentKernel:
                         except json.JSONDecodeError:
                             logger.warning(
                                 "[Kernel] Malformed tool arguments — returning error to LLM: tool=%s, raw=%s",
-                                tool_name, (raw_args or "")[:200],
+                                tool_name,
+                                (raw_args or "")[:200],
                             )
                             # Report parse error as tool result instead of silently using empty dict
                             _parse_err = (
@@ -1639,7 +1724,9 @@ class AgentKernel:
                                 try:
                                     await _maybe_await(request.on_tool_call(_err_event))
                                 except Exception as _cb_err:
-                                    logger.warning("[Kernel] on_tool_call callback failed for parse error event: %s", _cb_err)
+                                    logger.warning(
+                                        "[Kernel] on_tool_call callback failed for parse error event: %s", _cb_err
+                                    )
                             collected_parts.append(build_tool_call_event(_err_event)["part"])
                             continue
                         parsed_tool_calls.append((tc, tool_name, args))
@@ -1652,7 +1739,9 @@ class AgentKernel:
                         if request.cancel_event and request.cancel_event.is_set():
                             if request.agent_id and accumulated_tokens > 0:
                                 await _maybe_await(self._deps.record_token_usage(request.agent_id, accumulated_tokens))
-                            await self._persist_before_exit(request, runtime_config, "*[Generation stopped]*", api_messages)
+                            await self._persist_before_exit(
+                                request, runtime_config, "*[Generation stopped]*", api_messages
+                            )
                             return _build_cancelled_result(
                                 streamed_chunks,
                                 streamed_thinking,
@@ -1676,7 +1765,10 @@ class AgentKernel:
                                     logger.warning("[Kernel] on_tool_call(running) callback failed: %s", _cb_exc)
                                     _callback_failure_count += 1
                                     if _callback_failure_count == 3:
-                                        logger.error("[Kernel] Multiple callback failures (%d) — client may be disconnected", _callback_failure_count)
+                                        logger.error(
+                                            "[Kernel] Multiple callback failures (%d) — client may be disconnected",
+                                            _callback_failure_count,
+                                        )
 
                         # 2. Execute all tools concurrently via asyncio.gather
                         sem = asyncio.Semaphore(_PARALLEL_SEMAPHORE_LIMIT)
@@ -1723,25 +1815,43 @@ class AgentKernel:
                                     logger.warning("[Kernel] on_tool_call(done) callback failed: %s", _cb_exc)
                                     _callback_failure_count += 1
                                     if _callback_failure_count == 3:
-                                        logger.error("[Kernel] Multiple callback failures (%d) — client may be disconnected", _callback_failure_count)
+                                        logger.error(
+                                            "[Kernel] Multiple callback failures (%d) — client may be disconnected",
+                                            _callback_failure_count,
+                                        )
                             collected_parts.append(build_tool_call_event(done_payload)["part"])
                             _content = _maybe_evict_tool_result(tool_name, tc["id"], str(result), request.eviction_dir)
                             _round_tool_chars += len(_content)
-                            if _round_tool_chars > _TOOL_RESULTS_AGGREGATE_BUDGET and tool_name not in _EVICTION_EXEMPT_TOOLS:
-                                logger.info("[Kernel] Round aggregate budget exceeded (%d > %d), force-evicting %s", _round_tool_chars, _TOOL_RESULTS_AGGREGATE_BUDGET, tool_name)
-                                _content = _maybe_evict_tool_result(tool_name, tc["id"], str(result), request.eviction_dir)
+                            if (
+                                _round_tool_chars > _TOOL_RESULTS_AGGREGATE_BUDGET
+                                and tool_name not in _EVICTION_EXEMPT_TOOLS
+                            ):
+                                logger.info(
+                                    "[Kernel] Round aggregate budget exceeded (%d > %d), force-evicting %s",
+                                    _round_tool_chars,
+                                    _TOOL_RESULTS_AGGREGATE_BUDGET,
+                                    tool_name,
+                                )
+                                _content = _maybe_evict_tool_result(
+                                    tool_name, tc["id"], str(result), request.eviction_dir
+                                )
                                 if len(_content) == len(str(result)):
-                                    _content = str(result)[:_TOOL_RESULT_PREVIEW_LENGTH] + f"\n\n[... truncated to fit round aggregate budget ({_TOOL_RESULTS_AGGREGATE_BUDGET} chars)]"
-                            api_messages.append(
-                                LLMMessage(role="tool", tool_call_id=tc["id"], content=_content)
-                            )
+                                    _content = (
+                                        str(result)[:_TOOL_RESULT_PREVIEW_LENGTH]
+                                        + f"\n\n[... truncated to fit round aggregate budget ({_TOOL_RESULTS_AGGREGATE_BUDGET} chars)]"
+                                    )
+                            api_messages.append(LLMMessage(role="tool", tool_call_id=tc["id"], content=_content))
                     else:
                         # --- Sequential execution (original logic) ---
                         for tc, tool_name, args in parsed_tool_calls:
                             if request.cancel_event and request.cancel_event.is_set():
                                 if request.agent_id and accumulated_tokens > 0:
-                                    await _maybe_await(self._deps.record_token_usage(request.agent_id, accumulated_tokens))
-                                await self._persist_before_exit(request, runtime_config, "*[Generation stopped]*", api_messages)
+                                    await _maybe_await(
+                                        self._deps.record_token_usage(request.agent_id, accumulated_tokens)
+                                    )
+                                await self._persist_before_exit(
+                                    request, runtime_config, "*[Generation stopped]*", api_messages
+                                )
                                 return _build_cancelled_result(
                                     streamed_chunks,
                                     streamed_thinking,
@@ -1762,7 +1872,10 @@ class AgentKernel:
                                     logger.warning("[Kernel] on_tool_call(running) callback failed: %s", _cb_exc)
                                     _callback_failure_count += 1
                                     if _callback_failure_count == 3:
-                                        logger.error("[Kernel] Multiple callback failures (%d) — client may be disconnected", _callback_failure_count)
+                                        logger.error(
+                                            "[Kernel] Multiple callback failures (%d) — client may be disconnected",
+                                            _callback_failure_count,
+                                        )
 
                             result, args, executed = await _execute_tool_with_hooks(
                                 execute_tool=self._deps.execute_tool,
@@ -1784,9 +1897,7 @@ class AgentKernel:
                                         session_context = request.session_context
                                         if session_context is None:
                                             session_context = request.session_context = SessionContext()
-                                        new_packs = _merge_active_packs(
-                                            session_context, expansion_payload.active_packs
-                                        )
+                                        new_packs = _merge_active_packs(session_context, expansion_payload.active_packs)
                                         if new_packs:
                                             # P1.10: Delayed loading metrics
                                             _new_tool_count = sum(
@@ -1795,7 +1906,9 @@ class AgentKernel:
                                             _pack_names = [p.get("name", "?") for p in new_packs if isinstance(p, dict)]
                                             logger.info(
                                                 "[Kernel] Tool expansion: +%d tools via %s (trigger: %s)",
-                                                _new_tool_count, _pack_names, tool_name,
+                                                _new_tool_count,
+                                                _pack_names,
+                                                tool_name,
                                                 extra={
                                                     "metric": "tool_expansion",
                                                     "trigger_tool": tool_name,
@@ -1878,18 +1991,30 @@ class AgentKernel:
                                     logger.warning("[Kernel] on_tool_call(done) callback failed: %s", _cb_exc)
                                     _callback_failure_count += 1
                                     if _callback_failure_count == 3:
-                                        logger.error("[Kernel] Multiple callback failures (%d) — client may be disconnected", _callback_failure_count)
+                                        logger.error(
+                                            "[Kernel] Multiple callback failures (%d) — client may be disconnected",
+                                            _callback_failure_count,
+                                        )
                             collected_parts.append(build_tool_call_event(done_payload)["part"])
 
                             _content = _maybe_evict_tool_result(tool_name, tc["id"], str(result), request.eviction_dir)
                             _round_tool_chars += len(_content)
-                            if _round_tool_chars > _TOOL_RESULTS_AGGREGATE_BUDGET and tool_name not in _EVICTION_EXEMPT_TOOLS:
-                                logger.info("[Kernel] Round aggregate budget exceeded (%d > %d), force-evicting %s", _round_tool_chars, _TOOL_RESULTS_AGGREGATE_BUDGET, tool_name)
+                            if (
+                                _round_tool_chars > _TOOL_RESULTS_AGGREGATE_BUDGET
+                                and tool_name not in _EVICTION_EXEMPT_TOOLS
+                            ):
+                                logger.info(
+                                    "[Kernel] Round aggregate budget exceeded (%d > %d), force-evicting %s",
+                                    _round_tool_chars,
+                                    _TOOL_RESULTS_AGGREGATE_BUDGET,
+                                    tool_name,
+                                )
                                 if len(_content) == len(str(result)):
-                                    _content = str(result)[:_TOOL_RESULT_PREVIEW_LENGTH] + f"\n\n[... truncated to fit round aggregate budget ({_TOOL_RESULTS_AGGREGATE_BUDGET} chars)]"
-                            api_messages.append(
-                                LLMMessage(role="tool", tool_call_id=tc["id"], content=_content)
-                            )
+                                    _content = (
+                                        str(result)[:_TOOL_RESULT_PREVIEW_LENGTH]
+                                        + f"\n\n[... truncated to fit round aggregate budget ({_TOOL_RESULTS_AGGREGATE_BUDGET} chars)]"
+                                    )
+                            api_messages.append(LLMMessage(role="tool", tool_call_id=tc["id"], content=_content))
 
                     # ── L1: Time-based microcompact — clear old tool results ──
                     # Clear tool results older than 60min, always keep the 5 most recent.
@@ -1938,7 +2063,7 @@ class AgentKernel:
                                         for tc in (prev.tool_calls or [])
                                         if tc.get("id") == _tc_id
                                     )
-                                    for prev in api_messages[max(0, _mi - 5):_mi]
+                                    for prev in api_messages[max(0, _mi - 5) : _mi]
                                 )
                                 if not _is_exempt:
                                     _msg.content = _MICROCOMPACT_CLEARED_MARKER
@@ -1946,7 +2071,10 @@ class AgentKernel:
                             if _mc_cleared:
                                 logger.info(
                                     "[Kernel] Microcompact: cleared %d old tool results (round %d, gap=%ds, kept=%d recent)",
-                                    _mc_cleared, round_i + 1, _gap_seconds, _MICROCOMPACT_KEEP_RECENT,
+                                    _mc_cleared,
+                                    round_i + 1,
+                                    _gap_seconds,
+                                    _MICROCOMPACT_KEEP_RECENT,
                                     extra={
                                         "metric": "microcompact",
                                         "cleared": _mc_cleared,
@@ -1960,10 +2088,14 @@ class AgentKernel:
                     if (round_i + 1) % _MIDLOOP_COMPACT_CHECK_INTERVAL == 0 and len(api_messages) > 6:
                         # Cancel check before potentially slow compression
                         if request.cancel_event and request.cancel_event.is_set():
-                            await self._persist_before_exit(request, runtime_config, "*[Generation stopped]*", api_messages)
+                            await self._persist_before_exit(
+                                request, runtime_config, "*[Generation stopped]*", api_messages
+                            )
                             return _build_cancelled_result(
-                                streamed_chunks, streamed_thinking,
-                                tokens_used=accumulated_tokens, final_tools=tools_for_llm,
+                                streamed_chunks,
+                                streamed_thinking,
+                                tokens_used=accumulated_tokens,
+                                final_tools=tools_for_llm,
                                 collected_parts=collected_parts,
                             )
                         # Note: system prompt tokens are NOT included in this compression
@@ -1996,9 +2128,7 @@ class AgentKernel:
                                 conv_dicts,
                                 model_provider=active_model.provider,
                                 model_name=active_model.model,
-                                max_input_tokens_override=getattr(
-                                    active_model, "max_input_tokens", None
-                                ),
+                                max_input_tokens_override=getattr(active_model, "max_input_tokens", None),
                                 tenant_id=runtime_config.tenant_id,
                                 compress_threshold=_MIDLOOP_COMPACT_THRESHOLD,
                                 on_compaction=_emit_compaction_event,
@@ -2018,8 +2148,9 @@ class AgentKernel:
                             restored_msgs = _dicts_to_llm_messages(compressed)
                             if _restored:
                                 # Insert restoration context right after the summary, before recent messages
-                                restored_msgs.insert(1 if len(restored_msgs) > 1 else 0,
-                                    LLMMessage(role="system", content=_restored))
+                                restored_msgs.insert(
+                                    1 if len(restored_msgs) > 1 else 0, LLMMessage(role="system", content=_restored)
+                                )
                             api_messages = [api_messages[0]] + restored_msgs
                             # Preserve pre-compaction parts so clients get full event history (C-02)
                             # Mark them as pre-compaction to avoid duplicate persistence
@@ -2040,28 +2171,34 @@ class AgentKernel:
                             # ── POST_COMPACTION hook: summary available ──
                             try:
                                 _compact_summary = compressed[0].get("content", "") if compressed else ""
-                                asyncio.ensure_future(_emit(
-                                    _HE.POST_COMPACTION,
-                                    agent_id=request.agent_id,
-                                    session_id=request.memory_session_id,
-                                    metadata={
-                                        "trigger": "auto",
-                                        "summary": _compact_summary[:3000],
-                                        "before_msgs": len(conv_dicts) + 1,
-                                        "after_msgs": len(api_messages),
-                                    },
-                                ))
+                                asyncio.ensure_future(
+                                    _emit(
+                                        _HE.POST_COMPACTION,
+                                        agent_id=request.agent_id,
+                                        session_id=request.memory_session_id,
+                                        metadata={
+                                            "trigger": "auto",
+                                            "summary": _compact_summary[:3000],
+                                            "before_msgs": len(conv_dicts) + 1,
+                                            "after_msgs": len(api_messages),
+                                        },
+                                    )
+                                )
                             except Exception as _post_err:
                                 logger.debug("[Kernel] POST_COMPACTION hook failed (non-fatal): %s", _post_err)
                             # Persist compacted state so recovery doesn't lose progress
                             await self._persist_before_exit(
-                                request, runtime_config,
-                                "[checkpoint] mid-loop compaction", api_messages,
+                                request,
+                                runtime_config,
+                                "[checkpoint] mid-loop compaction",
+                                api_messages,
                             )
 
                 if request.agent_id and accumulated_tokens > 0:
                     await _maybe_await(self._deps.record_token_usage(request.agent_id, accumulated_tokens))
-                await self._persist_before_exit(request, runtime_config, "[Error] Too many tool call rounds", api_messages)
+                await self._persist_before_exit(
+                    request, runtime_config, "[Error] Too many tool call rounds", api_messages
+                )
                 return _build_error_result(
                     "[Error] Too many tool call rounds",
                     tokens_used=accumulated_tokens,

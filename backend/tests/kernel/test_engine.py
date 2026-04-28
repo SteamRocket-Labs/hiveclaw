@@ -108,7 +108,67 @@ def test_build_persisted_memory_messages_includes_runtime_events():
     assert any("Runtime event: tool outcome web_search" in content for content in contents)
     assert any("Runtime event: wrote file workspace/deploy-plan.md" in content for content in contents)
     assert any("Runtime event: external reference https://docs.example.com/deploy" in content for content in contents)
-    assert any("Runtime event: pending work Verify rollback checklist before production deploy" in content for content in contents)
+    assert any(
+        "Runtime event: pending work Verify rollback checklist before production deploy" in content
+        for content in contents
+    )
+
+
+def test_should_expand_tools_treats_fs_read_skill_file_like_read_file():
+    from app.kernel.engine import _should_expand_tools
+
+    assert _should_expand_tools("fs_read", {"mode": "text", "path": "skills/research/SKILL.md"}) is True
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_with_hooks_tracks_filesystem_facade_events(monkeypatch):
+    from app.kernel.contracts import InvocationRequest
+    from app.kernel.engine import _execute_tool_with_hooks
+    from app.runtime.session import SessionContext
+
+    async def fake_emit_hook(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+
+    session = SessionContext(session_id="s1")
+    session.prompt_prefix = "cached-prefix"
+    session.metadata["prompt_cache_key"] = "old-key"
+    request = InvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "inspect files"}],
+        agent_name="Agent",
+        role_description="role",
+        session_context=session,
+        memory_session_id="s1",
+    )
+
+    async def fake_execute_tool(_tool_name, _tool_args, _request, _emit_event):
+        return "ok"
+
+    async def emit_event(_event):
+        return None
+
+    await _execute_tool_with_hooks(
+        execute_tool=fake_execute_tool,
+        request=request,
+        tool_name="fs_read",
+        tool_args={"mode": "text", "path": "focus.md"},
+        emit_event=emit_event,
+    )
+    await _execute_tool_with_hooks(
+        execute_tool=fake_execute_tool,
+        request=request,
+        tool_name="fs_write",
+        tool_args={"mode": "edit", "path": "soul.md"},
+        emit_event=emit_event,
+    )
+
+    assert "focus.md" in session.recent_files
+    assert "soul.md" in session.recent_writes
+    assert session.prompt_prefix is None
+    assert "prompt_cache_key" not in session.metadata
+    assert session.metadata["prompt_cache_invalidated_reason"] == "fs_write:soul.md"
 
 
 @pytest.mark.asyncio
@@ -162,23 +222,27 @@ async def test_agent_kernel_handles_tool_round_and_collects_parts():
     async def persist_memory(**kwargs):
         persisted_payloads.append(kwargs)
 
-    fake_client = _FakeClient([
-        SimpleNamespace(
-            content="",
-            tool_calls=[{
-                "id": "call_1",
-                "function": {"name": "read_file", "arguments": '{"path":"skills/web-research/SKILL.md"}'},
-            }],
-            reasoning_content="reasoning",
-            usage={"total_tokens": 10},
-        ),
-        SimpleNamespace(
-            content="final answer",
-            tool_calls=[],
-            reasoning_content="final reasoning",
-            usage={"total_tokens": 8},
-        ),
-    ])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {"name": "read_file", "arguments": '{"path":"skills/web-research/SKILL.md"}'},
+                    }
+                ],
+                reasoning_content="reasoning",
+                usage={"total_tokens": 10},
+            ),
+            SimpleNamespace(
+                content="final answer",
+                tool_calls=[],
+                reasoning_content="final reasoning",
+                usage={"total_tokens": 8},
+            ),
+        ]
+    )
 
     kernel = AgentKernel(
         KernelDependencies(
@@ -290,15 +354,17 @@ async def test_agent_kernel_emits_ptl_round_group_retry_event():
         max_input_tokens=128000,
         supports_vision=False,
     )
-    fake_client = _FakeClient([
-        LLMError("HTTP 400: context_length_exceeded - maximum context length exceeded"),
-        SimpleNamespace(
-            content="recovered after ptl retry",
-            tool_calls=[],
-            reasoning_content=None,
-            usage={"total_tokens": 6},
-        ),
-    ])
+    fake_client = _FakeClient(
+        [
+            LLMError("HTTP 400: context_length_exceeded - maximum context length exceeded"),
+            SimpleNamespace(
+                content="recovered after ptl retry",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 6},
+            ),
+        ]
+    )
 
     kernel = AgentKernel(
         KernelDependencies(
@@ -376,17 +442,21 @@ async def test_agent_kernel_emits_runtime_fallback_event_after_prompt_too_long()
         max_input_tokens=200000,
         supports_vision=False,
     )
-    primary_client = _FakeClient([
-        LLMError("HTTP 400: context_length_exceeded - maximum context length exceeded"),
-    ])
-    fallback_client = _FakeClient([
-        SimpleNamespace(
-            content="fallback recovered",
-            tool_calls=[],
-            reasoning_content=None,
-            usage={"total_tokens": 9},
-        ),
-    ])
+    primary_client = _FakeClient(
+        [
+            LLMError("HTTP 400: context_length_exceeded - maximum context length exceeded"),
+        ]
+    )
+    fallback_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="fallback recovered",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 9},
+            ),
+        ]
+    )
 
     def create_client(model):
         if model is primary_model:
@@ -459,23 +529,27 @@ async def test_agent_kernel_keeps_core_tools_when_load_skill_has_no_declared_exp
         name = "core_tool" if core_only else "expanded_tool"
         return [{"type": "function", "function": {"name": name, "description": "", "parameters": {"type": "object"}}}]
 
-    fake_client = _FakeClient([
-        SimpleNamespace(
-            content="",
-            tool_calls=[{
-                "id": "call_1",
-                "function": {"name": "load_skill", "arguments": '{"name":"web research"}'},
-            }],
-            reasoning_content=None,
-            usage={"total_tokens": 2},
-        ),
-        SimpleNamespace(
-            content="done",
-            tool_calls=[],
-            reasoning_content=None,
-            usage={"total_tokens": 2},
-        ),
-    ])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {"name": "load_skill", "arguments": '{"name":"web research"}'},
+                    }
+                ],
+                reasoning_content=None,
+                usage={"total_tokens": 2},
+            ),
+            SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 2},
+            ),
+        ]
+    )
 
     kernel = AgentKernel(
         KernelDependencies(
@@ -549,42 +623,50 @@ async def test_agent_kernel_prefers_declared_tool_subset_after_load_skill():
                     },
                 }
             ],
-            active_packs=[{
-                "name": "web_pack",
-                "summary": "网页搜索与抓取能力",
-                "tools": ["web_search"],
-                "source": "system",
-            }],
-            event_payload={
-                "type": "pack_activation",
-                "packs": [{
+            active_packs=[
+                {
                     "name": "web_pack",
                     "summary": "网页搜索与抓取能力",
                     "tools": ["web_search"],
                     "source": "system",
-                }],
+                }
+            ],
+            event_payload={
+                "type": "pack_activation",
+                "packs": [
+                    {
+                        "name": "web_pack",
+                        "summary": "网页搜索与抓取能力",
+                        "tools": ["web_search"],
+                        "source": "system",
+                    }
+                ],
                 "message": "Activated web_pack",
                 "status": "info",
             },
         )
 
-    fake_client = _FakeClient([
-        SimpleNamespace(
-            content="",
-            tool_calls=[{
-                "id": "call_1",
-                "function": {"name": "load_skill", "arguments": '{"name":"web research"}'},
-            }],
-            reasoning_content=None,
-            usage={"total_tokens": 2},
-        ),
-        SimpleNamespace(
-            content="done",
-            tool_calls=[],
-            reasoning_content=None,
-            usage={"total_tokens": 2},
-        ),
-    ])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {"name": "load_skill", "arguments": '{"name":"web research"}'},
+                    }
+                ],
+                reasoning_content=None,
+                usage={"total_tokens": 2},
+            ),
+            SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 2},
+            ),
+        ]
+    )
 
     kernel = AgentKernel(
         KernelDependencies(
@@ -648,41 +730,49 @@ async def test_agent_kernel_does_not_auto_expand_without_skill_or_mcp_trigger():
         name = "core_tool" if core_only else "expanded_tool"
         return [{"type": "function", "function": {"name": name, "description": "", "parameters": {"type": "object"}}}]
 
-    fake_client = _FakeClient([
-        SimpleNamespace(
-            content="",
-            tool_calls=[{
-                "id": "call_1",
-                "function": {"name": "list_files", "arguments": '{"path":"skills"}'},
-            }],
-            reasoning_content=None,
-            usage={"total_tokens": 2},
-        ),
-        SimpleNamespace(
-            content="",
-            tool_calls=[{
-                "id": "call_2",
-                "function": {"name": "list_files", "arguments": '{"path":"workspace"}'},
-            }],
-            reasoning_content=None,
-            usage={"total_tokens": 2},
-        ),
-        SimpleNamespace(
-            content="",
-            tool_calls=[{
-                "id": "call_3",
-                "function": {"name": "list_files", "arguments": '{"path":"memory"}'},
-            }],
-            reasoning_content=None,
-            usage={"total_tokens": 2},
-        ),
-        SimpleNamespace(
-            content="done",
-            tool_calls=[],
-            reasoning_content=None,
-            usage={"total_tokens": 2},
-        ),
-    ])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {"name": "list_files", "arguments": '{"path":"skills"}'},
+                    }
+                ],
+                reasoning_content=None,
+                usage={"total_tokens": 2},
+            ),
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_2",
+                        "function": {"name": "list_files", "arguments": '{"path":"workspace"}'},
+                    }
+                ],
+                reasoning_content=None,
+                usage={"total_tokens": 2},
+            ),
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_3",
+                        "function": {"name": "list_files", "arguments": '{"path":"memory"}'},
+                    }
+                ],
+                reasoning_content=None,
+                usage={"total_tokens": 2},
+            ),
+            SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 2},
+            ),
+        ]
+    )
 
     kernel = AgentKernel(
         KernelDependencies(
@@ -745,11 +835,13 @@ async def test_midloop_compaction_triggers_after_interval():
         if len(messages) > 4:
             on_compaction = kwargs.get("on_compaction")
             if on_compaction:
-                result = on_compaction({
-                    "summary": "compressed",
-                    "original_message_count": len(messages),
-                    "kept_message_count": 3,
-                })
+                result = on_compaction(
+                    {
+                        "summary": "compressed",
+                        "original_message_count": len(messages),
+                        "kept_message_count": 3,
+                    }
+                )
                 if result is not None:
                     await result
             summary = {"role": "system", "content": "[Summary of previous conversation]"}
@@ -759,34 +851,45 @@ async def test_midloop_compaction_triggers_after_interval():
     # 4 tool-call rounds then a final text response
     responses = []
     for i in range(4):
-        responses.append(SimpleNamespace(
-            content="",
-            tool_calls=[{
-                "id": f"call_{i}",
-                "function": {"name": "list_files", "arguments": f'{{"path":"dir{i}"}}'},
-            }],
+        responses.append(
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": f"call_{i}",
+                        "function": {"name": "list_files", "arguments": f'{{"path":"dir{i}"}}'},
+                    }
+                ],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            )
+        )
+    responses.append(
+        SimpleNamespace(
+            content="all done",
+            tool_calls=[],
             reasoning_content=None,
-            usage={"total_tokens": 5},
-        ))
-    responses.append(SimpleNamespace(
-        content="all done",
-        tool_calls=[],
-        reasoning_content=None,
-        usage={"total_tokens": 3},
-    ))
+            usage={"total_tokens": 3},
+        )
+    )
 
     fake_client = _FakeClient(responses)
 
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda *_a, **_kw: RuntimeConfig(
-                tenant_id=uuid4(), max_tool_rounds=10, quota_message=None,
+                tenant_id=uuid4(),
+                max_tool_rounds=10,
+                quota_message=None,
             ),
             resolve_current_user_name=lambda *_a, **_kw: "Rocky",
             build_system_prompt=lambda *_a, **_kw: "SYSTEM",
             resolve_memory_context=lambda *_a, **_kw: "",
             get_tools=lambda *_a, **_kw: [
-                {"type": "function", "function": {"name": "list_files", "description": "", "parameters": {"type": "object"}}}
+                {
+                    "type": "function",
+                    "function": {"name": "list_files", "description": "", "parameters": {"type": "object"}},
+                }
             ],
             maybe_compress_messages=maybe_compress_messages,
             create_client=lambda _model: fake_client,
@@ -876,36 +979,47 @@ async def test_large_tool_result_evicted_in_kernel_loop():
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
 
     model = SimpleNamespace(
-        provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None,
+        provider="openai",
+        model="gpt-4.1",
+        api_key="k",
+        base_url=None,
+        max_output_tokens=None,
     )
 
-    fake_client = _FakeClient([
-        SimpleNamespace(
-            content="",
-            tool_calls=[{"id": "c1", "function": {"name": "run_code", "arguments": '{"code":"test"}'}}],
-            reasoning_content=None,
-            usage={"total_tokens": 5},
-        ),
-        SimpleNamespace(
-            content="done",
-            tool_calls=[],
-            reasoning_content=None,
-            usage={"total_tokens": 3},
-        ),
-    ])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[{"id": "c1", "function": {"name": "run_code", "arguments": '{"code":"test"}'}}],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            ),
+            SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 3},
+            ),
+        ]
+    )
 
     large_result = "RESULT_LINE\n" * 5000  # ~60000 chars (exceeds 50K eviction threshold)
 
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda *_a, **_kw: RuntimeConfig(
-                tenant_id=uuid4(), max_tool_rounds=5, quota_message=None,
+                tenant_id=uuid4(),
+                max_tool_rounds=5,
+                quota_message=None,
             ),
             resolve_current_user_name=lambda *_a, **_kw: "Rocky",
             build_system_prompt=lambda *_a, **_kw: "SYSTEM",
             resolve_memory_context=lambda *_a, **_kw: "",
             get_tools=lambda *_a, **_kw: [
-                {"type": "function", "function": {"name": "run_code", "description": "", "parameters": {"type": "object"}}}
+                {
+                    "type": "function",
+                    "function": {"name": "run_code", "description": "", "parameters": {"type": "object"}},
+                }
             ],
             maybe_compress_messages=lambda messages, **kw: messages,
             create_client=lambda _m: fake_client,
@@ -945,20 +1059,26 @@ async def test_persist_memory_called_on_max_rounds_exceeded():
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
 
     model = SimpleNamespace(
-        provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None,
+        provider="openai",
+        model="gpt-4.1",
+        api_key="k",
+        base_url=None,
+        max_output_tokens=None,
     )
     persist_calls: list[dict] = []
 
     # 3 rounds of tool calls, max_tool_rounds=2 → will exceed
-    fake_client = _FakeClient([
-        SimpleNamespace(
-            content="",
-            tool_calls=[{"id": f"c{i}", "function": {"name": "list_files", "arguments": '{}'}}],
-            reasoning_content=None,
-            usage={"total_tokens": 3},
-        )
-        for i in range(3)
-    ])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[{"id": f"c{i}", "function": {"name": "list_files", "arguments": "{}"}}],
+                reasoning_content=None,
+                usage={"total_tokens": 3},
+            )
+            for i in range(3)
+        ]
+    )
 
     async def persist_memory(**kwargs):
         persist_calls.append(kwargs)
@@ -966,13 +1086,18 @@ async def test_persist_memory_called_on_max_rounds_exceeded():
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda *_a, **_kw: RuntimeConfig(
-                tenant_id=uuid4(), max_tool_rounds=2, quota_message=None,
+                tenant_id=uuid4(),
+                max_tool_rounds=2,
+                quota_message=None,
             ),
             resolve_current_user_name=lambda *_a, **_kw: "Rocky",
             build_system_prompt=lambda *_a, **_kw: "SYSTEM",
             resolve_memory_context=lambda *_a, **_kw: "",
             get_tools=lambda *_a, **_kw: [
-                {"type": "function", "function": {"name": "list_files", "description": "", "parameters": {"type": "object"}}}
+                {
+                    "type": "function",
+                    "function": {"name": "list_files", "description": "", "parameters": {"type": "object"}},
+                }
             ],
             maybe_compress_messages=lambda messages, **kw: messages,
             create_client=lambda _m: fake_client,
@@ -1010,13 +1135,18 @@ async def test_persist_memory_called_on_llm_error():
     from app.services.llm_utils import LLMError
 
     model = SimpleNamespace(
-        provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None,
+        provider="openai",
+        model="gpt-4.1",
+        api_key="k",
+        base_url=None,
+        max_output_tokens=None,
     )
     persist_calls: list[dict] = []
 
     class _ErrorClient:
         async def stream(self, **kwargs):
             raise LLMError("rate limit exceeded")
+
         async def close(self):
             pass
 
@@ -1026,7 +1156,9 @@ async def test_persist_memory_called_on_llm_error():
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda *_a, **_kw: RuntimeConfig(
-                tenant_id=uuid4(), max_tool_rounds=5, quota_message=None,
+                tenant_id=uuid4(),
+                max_tool_rounds=5,
+                quota_message=None,
             ),
             resolve_current_user_name=lambda *_a, **_kw: "Rocky",
             build_system_prompt=lambda *_a, **_kw: "SYSTEM",
@@ -1065,35 +1197,44 @@ class TestPromptTooLongDetection:
 
     def test_openai_context_length_exceeded(self) -> None:
         from app.kernel.engine import _is_prompt_too_long
+
         exc = Exception("HTTP 400: context_length_exceeded - This model's maximum context length is 128000 tokens")
         assert _is_prompt_too_long(exc) is True
 
     def test_anthropic_too_long(self) -> None:
         from app.kernel.engine import _is_prompt_too_long
-        exc = Exception("Anthropic stream error (invalid_request_error): prompt is too long: 210000 tokens > 200000 maximum")
+
+        exc = Exception(
+            "Anthropic stream error (invalid_request_error): prompt is too long: 210000 tokens > 200000 maximum"
+        )
         assert _is_prompt_too_long(exc) is True
 
     def test_gemini_request_too_large(self) -> None:
         from app.kernel.engine import _is_prompt_too_long
+
         exc = Exception("HTTP 400: request too large for model")
         assert _is_prompt_too_long(exc) is True
 
     def test_input_too_long(self) -> None:
         from app.kernel.engine import _is_prompt_too_long
+
         exc = Exception("input too long for this model")
         assert _is_prompt_too_long(exc) is True
 
     def test_unrelated_error_not_detected(self) -> None:
         from app.kernel.engine import _is_prompt_too_long
+
         exc = Exception("HTTP 500: Internal server error")
         assert _is_prompt_too_long(exc) is False
 
     def test_rate_limit_not_detected(self) -> None:
         from app.kernel.engine import _is_prompt_too_long
+
         exc = Exception("Rate limited after 3 attempts: 429 Too Many Requests")
         assert _is_prompt_too_long(exc) is False
 
     def test_connection_error_not_detected(self) -> None:
         from app.kernel.engine import _is_prompt_too_long
+
         exc = Exception("Connection failed after 3 attempts: timeout")
         assert _is_prompt_too_long(exc) is False

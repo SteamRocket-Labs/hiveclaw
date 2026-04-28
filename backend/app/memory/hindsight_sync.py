@@ -1,12 +1,29 @@
 """Incremental sync from T3 markdown to Hindsight bank.
 
-Called from heartbeat after T3 normalization. Design:
+Design:
 - T3 MD is the source of truth; Hindsight is a derived index.
 - Incremental: only re-sync files whose mtime advanced past the cursor.
 - Idempotent: each bullet gets a deterministic document_id so retries
   don't produce duplicates in Hindsight.
-- Non-blocking: all errors are caught and logged; heartbeat never fails
-  because of a sync hiccup.
+- Non-blocking: all errors are caught and logged; the trigger source
+  (heartbeat / dream / admin) never fails because of a sync hiccup.
+
+P1-W3-8 — Sync trigger points (canonical list):
+  1. **Heartbeat tick** (`services/heartbeat.py`) — fires after T2→T3
+     curation completes. This is the primary cadence; cursor advances
+     here capture the bulk of new memory.
+  2. **Dream completion** (`services/auto_dream.py`) — fires after
+     `_apply_dream_decisions` rewrites soul / T3 / preservation flags.
+     Without this trigger the recall layer sees stale data until the
+     next heartbeat (~45min later). Cursor handles dedup so heartbeat
+     and dream syncing the same files in quick succession is cheap.
+  3. **Admin rebuild** (`admin/rebuild_hindsight.py`) — manual reset
+     for operators after data migrations or schema bumps. Resets the
+     cursor and re-syncs the entire T3 surface.
+
+Anywhere else syncing T3→Hindsight is a regression — those are the only
+three windows where the upstream MD has actually changed. Adding new
+trigger points should require a comment here so the policy stays clear.
 """
 
 from __future__ import annotations

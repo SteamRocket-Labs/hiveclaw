@@ -1196,6 +1196,23 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
         t3_removed,
         t2_removed,
     )
+
+    # P1-W3-8 — propagate fresh T3 to the Hindsight derived index.
+    # Heartbeat is the primary trigger but dream rewrites T3 too; without
+    # this call the recall layer sees stale data until the next heartbeat
+    # tick. Best-effort — sync_t3_to_hindsight already swallows errors.
+    try:
+        from app.memory.hindsight_sync import sync_t3_to_hindsight
+
+        synced = await sync_t3_to_hindsight(agent_id, tenant_id)
+        if synced:
+            logger.info(
+                "[AutoDream] Hindsight sync after dream: %d items (agent=%s)",
+                synced, agent_id,
+            )
+    except Exception as exc:
+        logger.warning("[AutoDream] Post-dream Hindsight sync failed: %s", exc)
+
     return result
 
 

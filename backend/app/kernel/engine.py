@@ -957,10 +957,10 @@ class AgentKernel:
             # Prompt cache: reuse frozen prefix if available and still matches
             # the session-stable inputs that are rendered into that prefix.
             # The frozen prefix is session-stable by design — it contains
-            # agent_context (soul, identity, skills catalog, company info) +
-            # system + tasks + tools + output_efficiency. None of these change
-            # within a session. Memory lives in the dynamic suffix which is
-            # rebuilt every round regardless.
+            # agent_context (soul, identity, tone_style, skills catalog, company info) +
+            # system + tasks + tools. None of these change within a session.
+            # Memory lives in the dynamic suffix which is rebuilt every round
+            # regardless.
             #
             # Memory is a dynamic suffix, so it does not invalidate this key.
             # Static identity, execution mode, model window, and prompt-rendered

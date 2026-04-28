@@ -12,11 +12,13 @@ import inspect
 import uuid
 from typing import Any, Awaitable, Callable
 
+from app.memory.metrics import record_frozen_prefix_metering
 from app.runtime.context_budget import ContextBudget, compute_context_budget, compute_system_prompt_budget
 from app.runtime.context import RuntimeContext
 from app.services.agent_context import build_agent_context
 from app.services.knowledge_inject import fetch_relevant_knowledge
 from app.services.prompt_cache import PROMPT_CACHE_BOUNDARY  # noqa: F401
+from app.services.token_tracker import estimate_tokens_from_chars
 
 
 BuildAgentContextFn = Callable[[uuid.UUID | None, str, str, str | None], Awaitable[str]]
@@ -30,6 +32,12 @@ KnowledgeLookupFn = Callable[[str, uuid.UUID | None], Awaitable[str] | str]
 _ACTIVE_PACKS_CHAR_BUDGET = 2000
 _RETRIEVAL_CHAR_BUDGET = 3000
 _CONTINUITY_CHAR_BUDGET = 2500
+
+# P1-1b: Frozen-prefix token guard rails.
+# Hard limit follows audit recommendation (~8K tokens). Warn at 75% so
+# operators see growth before it breaches and silently kills cache hit-rate.
+_FROZEN_PREFIX_TOKEN_WARN = 6000
+_FROZEN_PREFIX_TOKEN_LIMIT = 8000
 
 
 async def _maybe_await(value):
@@ -81,27 +89,73 @@ def build_frozen_prompt_prefix(
     Contains: agent identity/soul/role, § System, § Doing Tasks, § Using Your Tools,
     and skill catalog.
     These do NOT change within a single session.
+
+    P1-1b: Every build is metered. Token estimate above
+    `_FROZEN_PREFIX_TOKEN_WARN` logs a warning; above
+    `_FROZEN_PREFIX_TOKEN_LIMIT` logs an error. Counters are exposed via
+    /api/admin/metrics/memory for trend monitoring.
     """
     from app.runtime.prompt_sections import (
-        build_output_efficiency_section,
         build_system_section,
         build_tasks_section,
         build_tools_section,
     )
 
-    # NOTE: tone_style is already included by agent_context (via build_agent_context).
-    # Do NOT add build_tone_style_section() here — it would double-inject.
+    # tone_style is included by agent_context (via build_agent_context).
+    # output_efficiency was merged into tone_style.py — do not re-inject.
     parts = [
         agent_context,
         build_system_section(),
         build_tasks_section(),
         build_tools_section(),
-        build_output_efficiency_section(),
     ]
     del memory_snapshot  # kept for backward-compatible callers; memory lives in dynamic suffix
     if skill_catalog:
         parts.append(skill_catalog)
-    return "\n\n".join(parts)
+    prefix = "\n\n".join(parts)
+
+    _meter_frozen_prefix(prefix)
+    return prefix
+
+
+def _meter_frozen_prefix(prefix: str) -> None:
+    """Sample the frozen prefix size and bump warn/overrun counters.
+
+    Isolated for testability — callers don't need a logger fixture.
+    """
+    import logging
+
+    chars = len(prefix)
+    tokens = estimate_tokens_from_chars(chars)
+    warn = tokens >= _FROZEN_PREFIX_TOKEN_WARN
+    overrun = tokens >= _FROZEN_PREFIX_TOKEN_LIMIT
+    record_frozen_prefix_metering(chars=chars, tokens=tokens, warn=warn, overrun=overrun)
+
+    if not warn:
+        return
+
+    logger = logging.getLogger(__name__)
+    extra = {
+        "metric": "frozen_prefix_size",
+        "chars": chars,
+        "tokens": tokens,
+        "warn_threshold": _FROZEN_PREFIX_TOKEN_WARN,
+        "hard_limit": _FROZEN_PREFIX_TOKEN_LIMIT,
+    }
+    if overrun:
+        logger.error(
+            "[PromptBuilder] frozen prefix exceeds hard limit: ~%d tokens (chars=%d, limit=%d) — "
+            "prompt cache hit-rate will degrade and per-call cost will rise. "
+            "Trim agent_context / system / tasks / tools sections.",
+            tokens, chars, _FROZEN_PREFIX_TOKEN_LIMIT,
+            extra=extra,
+        )
+    else:
+        logger.warning(
+            "[PromptBuilder] frozen prefix above warn threshold: ~%d tokens (chars=%d, warn=%d, limit=%d)",
+            tokens, chars, _FROZEN_PREFIX_TOKEN_WARN, _FROZEN_PREFIX_TOKEN_LIMIT,
+            extra=extra,
+        )
 
 
 # ── Dynamic Suffix (per-round) ──────────────────────────────────

@@ -86,6 +86,20 @@ _extract_replay_skipped_stale_total: int = 0
 _extract_replay_failed_total: int = 0
 
 
+# ── Frozen prompt prefix metering (P1-1b) ─────────────────────
+# build_frozen_prompt_prefix produces the cache-key boundary every
+# session. If it grows beyond budget, prompt cache hit-rate degrades
+# and per-call cost rises. Operators need visibility on:
+#  - rolling distribution (latency-style sliding window of last N samples)
+#  - count of warns (>= warn threshold) and hard-limit breaches
+# Sample window so we can show p50/p95/max without unbounded memory.
+
+_frozen_prefix_chars_window: LatencyWindow = LatencyWindow()
+_frozen_prefix_tokens_window: LatencyWindow = LatencyWindow()
+_frozen_prefix_warn_total: int = 0
+_frozen_prefix_overrun_total: int = 0
+
+
 # ── Public API ────────────────────────────────────────────────
 
 
@@ -151,12 +165,18 @@ def snapshot() -> dict[str, Any]:
             "skipped_stale": _extract_replay_skipped_stale_total,
             "failed": _extract_replay_failed_total,
         },
+        # P1-1b frozen prompt prefix metering
+        "frozen_prefix_chars": _frozen_prefix_chars_window.snapshot(),
+        "frozen_prefix_tokens": _frozen_prefix_tokens_window.snapshot(),
+        "frozen_prefix_warn_total": _frozen_prefix_warn_total,
+        "frozen_prefix_overrun_total": _frozen_prefix_overrun_total,
     }
 
 
 def reset_all() -> None:
     """For testing — clear every counter."""
     global _extract_replay_scheduled_total, _extract_replay_skipped_stale_total, _extract_replay_failed_total
+    global _frozen_prefix_warn_total, _frozen_prefix_overrun_total
     _recall_total.clear()
     _recall_error_total.clear()
     _recall_empty_total.clear()
@@ -173,6 +193,10 @@ def reset_all() -> None:
     _extract_replay_scheduled_total = 0
     _extract_replay_skipped_stale_total = 0
     _extract_replay_failed_total = 0
+    _frozen_prefix_chars_window.samples.clear()
+    _frozen_prefix_tokens_window.samples.clear()
+    _frozen_prefix_warn_total = 0
+    _frozen_prefix_overrun_total = 0
 
 
 # ── Extraction recorders (P0-2c) ──────────────────────────────
@@ -205,6 +229,26 @@ def record_extract_replay_outcome(*, scheduled: int, skipped_stale: int, failed:
     _extract_replay_scheduled_total += scheduled
     _extract_replay_skipped_stale_total += skipped_stale
     _extract_replay_failed_total += failed
+
+
+# ── Frozen prefix recorders (P1-1b) ───────────────────────────
+
+
+def record_frozen_prefix_metering(
+    *, chars: int, tokens: int, warn: bool = False, overrun: bool = False
+) -> None:
+    """Record one frozen-prefix build sample.
+
+    `warn` and `overrun` are independent flags — overrun implies warn but
+    callers signal both explicitly so snapshots reflect actual breach severity.
+    """
+    global _frozen_prefix_warn_total, _frozen_prefix_overrun_total
+    _frozen_prefix_chars_window.observe(float(chars))
+    _frozen_prefix_tokens_window.observe(float(tokens))
+    if warn:
+        _frozen_prefix_warn_total += 1
+    if overrun:
+        _frozen_prefix_overrun_total += 1
 
 
 class RecallTimer:

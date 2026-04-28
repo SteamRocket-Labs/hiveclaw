@@ -8,8 +8,7 @@ FROZEN PREFIX (session-stable):
   § System — kernel execution model, governance (system.py)
   § Doing Tasks — code style, security guidance (tasks.py)
   § Using Your Tools — tool preferences (tools.py)
-  § Tone and Style — output format, language (tone_style.py)
-  § Output Efficiency — response format rules (output_efficiency.py)
+  § Tone and Style — output format, language (tone_style.py, includes output efficiency)
   § Skills Catalog — progressive disclosure index (skills_catalog.py)
   § Relationships — colleagues, org structure (relationships.py)
 
@@ -25,7 +24,6 @@ DYNAMIC SUFFIX (per-round):
 from .active_packs import build_active_packs_section
 from .environment import build_environment_section
 from .executing_actions import build_executing_actions_section
-from .output_efficiency import build_output_efficiency_section
 from .identity import build_identity_section
 from .knowledge import build_knowledge_section
 from .memory import build_memory_section
@@ -46,7 +44,6 @@ __all__ = [
     "build_executing_actions_section",
     "build_tools_section",
     "build_tone_style_section",
-    "build_output_efficiency_section",
     "build_skills_catalog_section",
     "build_relationships_section",
     # Dynamic suffix

@@ -183,3 +183,107 @@ def test_dynamic_suffix_trims_large_retrieval_but_keeps_suffix():
 
     assert "FINAL_SUFFIX" in suffix
     assert len(suffix) < 3200
+
+
+# ── P1-1b: Frozen prefix metering ──────────────────────────────
+
+
+class TestFrozenPrefixMetering:
+    """build_frozen_prompt_prefix records every build and warns over 6K tokens."""
+
+    def setup_method(self) -> None:
+        from app.memory import metrics
+        metrics.reset_all()
+
+    def test_small_prefix_records_sample_no_warn(self) -> None:
+        from app.memory import metrics
+        from app.runtime.prompt_builder import build_frozen_prompt_prefix
+
+        prefix = build_frozen_prompt_prefix(agent_context="tiny")
+        snap = metrics.snapshot()
+
+        assert snap["frozen_prefix_chars"]["count"] == 1
+        assert snap["frozen_prefix_tokens"]["count"] == 1
+        assert snap["frozen_prefix_warn_total"] == 0
+        assert snap["frozen_prefix_overrun_total"] == 0
+        # tiny + section bodies stays under 6K tokens
+        assert snap["frozen_prefix_tokens"]["max"] < 6000
+        assert "tiny" in prefix
+
+    def test_warn_threshold_bumps_warn_counter_only(self, caplog) -> None:
+        import logging
+
+        from app.memory import metrics
+        from app.runtime.prompt_builder import _meter_frozen_prefix
+
+        # 6000 tokens × 3.5 chars/token = 21000 chars. Stay below 8000-token
+        # hard limit (28000 chars) so we get a warn but not an overrun.
+        bloated = "x" * 22000
+        with caplog.at_level(logging.WARNING, logger="app.runtime.prompt_builder"):
+            _meter_frozen_prefix(bloated)
+
+        snap = metrics.snapshot()
+        assert snap["frozen_prefix_warn_total"] == 1
+        assert snap["frozen_prefix_overrun_total"] == 0
+        assert any(
+            "above warn threshold" in rec.message and rec.levelno == logging.WARNING
+            for rec in caplog.records
+        )
+
+    def test_hard_limit_bumps_both_counters_logs_error(self, caplog) -> None:
+        import logging
+
+        from app.memory import metrics
+        from app.runtime.prompt_builder import _meter_frozen_prefix
+
+        # 8000 tokens × 3.5 chars/token = 28000 chars; pad past the limit.
+        oversized = "x" * 35000
+        with caplog.at_level(logging.ERROR, logger="app.runtime.prompt_builder"):
+            _meter_frozen_prefix(oversized)
+
+        snap = metrics.snapshot()
+        assert snap["frozen_prefix_warn_total"] == 1
+        assert snap["frozen_prefix_overrun_total"] == 1
+        assert any(
+            "exceeds hard limit" in rec.message and rec.levelno == logging.ERROR
+            for rec in caplog.records
+        )
+
+    def test_repeated_calls_accumulate_in_window(self) -> None:
+        from app.memory import metrics
+        from app.runtime.prompt_builder import build_frozen_prompt_prefix
+
+        for _ in range(5):
+            build_frozen_prompt_prefix(agent_context="hello")
+
+        snap = metrics.snapshot()
+        assert snap["frozen_prefix_chars"]["count"] == 5
+        assert snap["frozen_prefix_tokens"]["count"] == 5
+
+    def test_output_efficiency_section_no_longer_imported(self) -> None:
+        """Deprecated section was deleted; importing it must fail.
+
+        Catches accidental re-introduction via copy/paste from old branches.
+        """
+        with pytest.raises(ImportError):
+            from app.runtime.prompt_sections import (  # noqa: F401
+                build_output_efficiency_section,
+            )
+
+    def test_output_efficiency_module_file_removed(self) -> None:
+        """The module file itself must be gone."""
+        from pathlib import Path
+
+        from app.runtime import prompt_sections
+
+        sections_dir = Path(prompt_sections.__file__).parent
+        assert not (sections_dir / "output_efficiency.py").exists()
+
+    def test_frozen_prefix_does_not_include_output_efficiency_marker(self) -> None:
+        """Sanity: frozen prefix must not carry the deprecated section header."""
+        from app.runtime.prompt_builder import build_frozen_prompt_prefix
+
+        prefix = build_frozen_prompt_prefix(agent_context="ctx")
+        # the only place an "Output Efficiency" header could appear is the
+        # deleted section — tone_style does not use that label.
+        assert "Output Efficiency" not in prefix

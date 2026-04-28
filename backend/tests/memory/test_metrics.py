@@ -279,3 +279,72 @@ class TestExtractionMetrics:
         ):
             assert key in snap
         assert snap["extract_replay"] == {"scheduled": 0, "skipped_stale": 0, "failed": 0}
+
+
+class TestFrozenPrefixMetrics:
+    """P1-1b — frozen prompt prefix size sampling and warn/overrun counters."""
+
+    def test_record_sample_populates_window(self):
+        from app.memory.metrics import record_frozen_prefix_metering, snapshot
+
+        record_frozen_prefix_metering(chars=1000, tokens=300)
+        record_frozen_prefix_metering(chars=2000, tokens=600)
+
+        snap = snapshot()
+        assert snap["frozen_prefix_chars"]["count"] == 2
+        assert snap["frozen_prefix_tokens"]["count"] == 2
+        assert snap["frozen_prefix_chars"]["max"] == 2000.0
+        assert snap["frozen_prefix_tokens"]["max"] == 600.0
+        assert snap["frozen_prefix_warn_total"] == 0
+        assert snap["frozen_prefix_overrun_total"] == 0
+
+    def test_warn_flag_increments_warn_only(self):
+        from app.memory.metrics import record_frozen_prefix_metering, snapshot
+
+        record_frozen_prefix_metering(chars=22000, tokens=6300, warn=True)
+        snap = snapshot()
+        assert snap["frozen_prefix_warn_total"] == 1
+        assert snap["frozen_prefix_overrun_total"] == 0
+
+    def test_overrun_flag_independent_from_warn(self):
+        from app.memory.metrics import record_frozen_prefix_metering, snapshot
+
+        record_frozen_prefix_metering(chars=35000, tokens=10000, warn=True, overrun=True)
+        snap = snapshot()
+        assert snap["frozen_prefix_warn_total"] == 1
+        assert snap["frozen_prefix_overrun_total"] == 1
+
+    def test_reset_all_clears_frozen_prefix(self):
+        from app.memory.metrics import (
+            record_frozen_prefix_metering,
+            reset_all,
+            snapshot,
+        )
+
+        record_frozen_prefix_metering(chars=1000, tokens=300)
+        record_frozen_prefix_metering(chars=22000, tokens=6300, warn=True, overrun=False)
+
+        reset_all()
+        snap = snapshot()
+        assert snap["frozen_prefix_chars"]["count"] == 0
+        assert snap["frozen_prefix_tokens"]["count"] == 0
+        assert snap["frozen_prefix_warn_total"] == 0
+        assert snap["frozen_prefix_overrun_total"] == 0
+
+    def test_snapshot_includes_frozen_prefix_keys_even_when_empty(self):
+        from app.memory.metrics import reset_all, snapshot
+
+        reset_all()
+        snap = snapshot()
+        for key in (
+            "frozen_prefix_chars",
+            "frozen_prefix_tokens",
+            "frozen_prefix_warn_total",
+            "frozen_prefix_overrun_total",
+        ):
+            assert key in snap
+        # Empty windows expose count=0 so dashboards can render without errors.
+        assert snap["frozen_prefix_chars"] == {"count": 0}
+        assert snap["frozen_prefix_tokens"] == {"count": 0}
+        assert snap["frozen_prefix_warn_total"] == 0
+        assert snap["frozen_prefix_overrun_total"] == 0

@@ -12,16 +12,51 @@ with the md-first architecture.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import logging
 import json
+import os
 import re as _re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterator
 
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+@contextlib.contextmanager
+def _dream_writeback_lock(agent_id: uuid.UUID) -> Iterator[None]:
+    """P1-W2-10: serialize soul.md / T3 / preservation_flags writes.
+
+    Two dream invocations can race when the heartbeat scheduler and a
+    trigger end both decide to fire dream within the same window. Both
+    paths run `_apply_dream_decisions`, which does multi-step
+    read-modify-write on shared MD files. flock makes that sequence
+    atomic per agent.
+
+    The lock file lives under the agent's workspace root. If the
+    workspace doesn't exist yet (very early bootstrap) we no-op the
+    lock — there's nothing to protect.
+    """
+    agent_root = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
+    if not agent_root.exists():
+        yield
+        return
+
+    lock_path = agent_root / ".dream_writeback.lock"
+    lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(lock_fd)
 
 # Consolidation gates — tuned for active agents that run heartbeats/triggers.
 # Both conditions must be met: enough time elapsed AND enough new sessions.
@@ -452,7 +487,17 @@ def _write_preservation_flags(agent_id: uuid.UUID, flags: list[dict]) -> None:
 
 
 def _apply_dream_decisions(agent_id: uuid.UUID, decision: dict) -> dict:
-    """Execute a parsed dream decision: rewrite soul + T3 + preservation sidecar."""
+    """Execute a parsed dream decision: rewrite soul + T3 + preservation sidecar.
+
+    P1-W2-10: held under `_dream_writeback_lock` so concurrent dream invocations
+    (heartbeat-fired vs trigger-end-fired) can't interleave their MD writes.
+    """
+    with _dream_writeback_lock(agent_id):
+        return _apply_dream_decisions_unlocked(agent_id, decision)
+
+
+def _apply_dream_decisions_unlocked(agent_id: uuid.UUID, decision: dict) -> dict:
+    """Inner body — kept lock-free so unit tests can drive it directly."""
     report = {
         "soul_added": 0,
         "t3_merges_applied": 0,

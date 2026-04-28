@@ -305,6 +305,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[startup] Default agents seed failed: {e}")
 
+    # P1-W2-9: reconcile registered tools against the capability mapping.
+    # Surfaces drift (new tools without policy, dead policy entries) at
+    # boot rather than waiting for an unmapped tool to be invoked.
+    try:
+        from app.services.capability_gate import audit_capability_mapping
+        audit_capability_mapping()
+    except Exception as e:
+        logger.warning(f"[startup] Capability mapping audit failed (non-fatal): {e}")
+
     # P0-2b: replay extractions persisted by P0-2a that didn't reach
     # mark_done before the previous process died (LLM crash, OOM, deploy
     # restart, drain timeout). Best-effort — failures here just leave the

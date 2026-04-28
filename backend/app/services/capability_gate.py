@@ -111,6 +111,116 @@ SYNTHETIC_CAPABILITY_TOOLS: dict[str, list[str]] = {
 }
 
 
+# P1-W2-8: counter exposed via /api/admin/metrics for unmapped tool drift.
+# Per-tool because it lets operators see *which* tool is missing — a single
+# total would just say "something is wrong" without a fix-handle.
+_unmapped_tool_counts: dict[str, int] = {}
+
+
+def _record_unmapped_tool(tool_name: str) -> None:
+    _unmapped_tool_counts[tool_name] = _unmapped_tool_counts.get(tool_name, 0) + 1
+
+
+def get_unmapped_tool_counts() -> dict[str, int]:
+    """Snapshot of unmapped-tool hit counts. Read by /api/admin/metrics."""
+    return dict(_unmapped_tool_counts)
+
+
+def reset_unmapped_tool_counts() -> None:
+    """Test hook — clear counter between scenarios."""
+    _unmapped_tool_counts.clear()
+
+
+# Tools that intentionally bypass the capability gate. These are kernel-
+# level discovery / introspection helpers that need to work for any agent
+# regardless of policy state. Keep this aligned with `_STATIC_SAFE_TOOLS`
+# in `app.tools.governance` — duplication is intentional so a refactor of
+# either side fails loud here instead of silently changing semantics.
+_CAPABILITY_GATE_EXEMPT_TOOLS: frozenset[str] = frozenset({
+    "list_files",
+    "read_file",
+    "load_skill",
+    "web_fetch",
+    "web_search",
+    "firecrawl_fetch",
+    "xcrawl_scrape",
+    "read_document",
+    "list_tasks",
+    "get_task",
+    # Discovery / introspection — must work without capability policy
+    "tool_search",
+    "discover_resources",
+    "search_clawhub",
+    "list_mcp_resources",
+    "read_mcp_resource",
+    "get_current_time",
+    "check_async_task",
+    "list_async_tasks",
+})
+
+
+def audit_capability_mapping() -> dict[str, list[str]]:
+    """Compare collected tools against CAPABILITY_MAP. Log + return drift.
+
+    Run at startup so operators see drift immediately instead of waiting
+    for an unmapped tool to actually be invoked. Returns:
+        {
+            "unmapped": [tool names known to the registry but not in
+                         CAPABILITY_MAP and not exempt],
+            "stale":    [tool names in CAPABILITY_MAP that the registry
+                         no longer knows about],
+        }
+    """
+    from app.tools.collector import collect_tools
+
+    try:
+        collected = collect_tools()
+    except Exception as exc:
+        logger.error("[CapabilityGate] Audit aborted — collect_tools failed: %s", exc)
+        return {"unmapped": [], "stale": []}
+
+    # `collected.safe` + `collected.sensitive` covers every governance-
+    # registered tool. Aliases are filtered upstream by the collector.
+    registered: set[str] = set(getattr(collected, "safe", set())) | set(
+        getattr(collected, "sensitive", set())
+    )
+
+    mapped = set(CAPABILITY_MAP.keys())
+    exempt = _CAPABILITY_GATE_EXEMPT_TOOLS
+
+    unmapped = sorted(t for t in registered if t not in mapped and t not in exempt)
+    stale = sorted(t for t in mapped if t not in registered)
+
+    if unmapped:
+        logger.warning(
+            "[CapabilityGate] %d tool(s) registered but missing from CAPABILITY_MAP: %s. "
+            "These will be %s at the capability gate. Add them to CAPABILITY_MAP or to "
+            "_CAPABILITY_GATE_EXEMPT_TOOLS as appropriate.",
+            len(unmapped),
+            ", ".join(unmapped),
+            "denied (STRICT_CAPABILITY_MAPPING)" if _strict_mode_active() else "allowed (lenient mode)",
+        )
+    if stale:
+        logger.warning(
+            "[CapabilityGate] %d capability mapping(s) refer to tools no longer in the "
+            "registry: %s. Consider removing them from CAPABILITY_MAP.",
+            len(stale),
+            ", ".join(stale),
+        )
+    if not unmapped and not stale:
+        logger.info("[CapabilityGate] Mapping audit clean — every registered tool has a capability binding.")
+
+    return {"unmapped": unmapped, "stale": stale}
+
+
+def _strict_mode_active() -> bool:
+    """Helper for the audit log — kept independent so test monkeypatches
+    don't have to touch the import path twice."""
+    from app.config import get_settings
+
+    return bool(get_settings().STRICT_CAPABILITY_MAPPING)
+
+
 def _resolve_capability(tool_or_capability: str) -> str | None:
     if tool_or_capability in CAPABILITY_MAP:
         return CAPABILITY_MAP[tool_or_capability]
@@ -154,11 +264,35 @@ async def check_capability(
     2. Tenant default policy (tenant_id + agent_id=NULL + capability)
     3. No policy → allowed (backward compatible default)
 
+    P1-W2-8: tools missing from CAPABILITY_MAP are always counted; under
+    `STRICT_CAPABILITY_MAPPING=True` they are denied (fail-closed).
+
     Returns CapabilityCheckResult with allowed/denied/escalate flags.
     """
     capability = _resolve_capability(tool_name)
     if not capability:
-        # Tool not in high-risk map → always allowed
+        _record_unmapped_tool(tool_name)
+        from app.config import get_settings
+
+        if get_settings().STRICT_CAPABILITY_MAPPING:
+            logger.warning(
+                "[CapabilityGate] Tool %r unmapped — denying (STRICT_CAPABILITY_MAPPING=True)",
+                tool_name,
+            )
+            return CapabilityCheckResult(
+                allowed=False,
+                denied=True,
+                capability="",
+                reason=f"Tool '{tool_name}' missing from CAPABILITY_MAP under strict enforcement",
+                policy_found=False,
+            )
+        # Lenient mode: log + allow (legacy behaviour). Operators see
+        # the unmapped_total counter and can flip strict on once the gap
+        # is closed via P1-W2-9 (startup reconciliation).
+        logger.info(
+            "[CapabilityGate] Tool %r unmapped — allowed (lenient mode); add to CAPABILITY_MAP",
+            tool_name,
+        )
         return CapabilityCheckResult(allowed=True)
 
     # Look up agent-specific policy first

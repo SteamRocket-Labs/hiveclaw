@@ -100,6 +100,13 @@ class Settings(BaseSettings):
     # Default per-agent heartbeat interval when an Agent row has no override.
     # Production: 45 minutes (matches the legacy mapped_column default).
     HEARTBEAT_DEFAULT_INTERVAL_MINUTES: int = 45
+
+    # Capability mapping enforcement (P1-W2-8)
+    # When True, any tool absent from CAPABILITY_MAP is denied at the
+    # capability gate (fail-closed). Default False keeps the legacy
+    # lenient behaviour but every unmapped tool is still logged + counted
+    # so operators can audit drift before flipping the switch in prod.
+    STRICT_CAPABILITY_MAPPING: bool = False
     OPENVIKING_API_KEY: str = ""
 
     # Hindsight memory backend (read-side accelerator for T3 MD; optional)

@@ -28,6 +28,12 @@ CAPABILITY_MAP: dict[str, str] = {
     "write_file": "workspace.file.write",
     "edit_file": "workspace.file.write",
     "delete_file": "workspace.file.delete",
+    # P1-W3-6 unified facades — same capability buckets as the underlying
+    # per-action tools so policy enforcement is identical regardless of
+    # which surface the LLM picks.
+    "fs_read": "workspace.file.read",
+    "fs_write": "workspace.file.write",
+    "fs_list": "workspace.file.read",
     "execute_code": "workspace.code.execute",
     "run_command": "workspace.command.execute",
     "get_task": "agent.task.read",

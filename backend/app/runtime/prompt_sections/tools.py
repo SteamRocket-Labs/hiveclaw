@@ -5,9 +5,13 @@ _TOOLS_SECTION = """\
 
 - Prefer dedicated tools over shell commands — they integrate with the platform and produce \
 better results:
-  - Read files: `read_file` instead of cat/head/tail
-  - Write files: `write_file` instead of echo redirection
+  - Read files: `read_file` (or `fs_read` with mode=text/document/glob/grep) instead of cat/head/tail
+  - Write files: `write_file` (or `fs_write` with mode=write/edit/delete) instead of echo redirection
+  - List files: `list_files` (or `fs_list`) instead of find -type f
   - Search by name/content: use file search tools instead of find/grep
+- The `fs_read` / `fs_write` / `fs_list` facades dispatch to the underlying \
+per-action tools via a `mode` parameter; pick whichever surface keeps the \
+intent clearest.
 - For internet lookup, `load_skill` for the matching research workflow first, then use `web_search`. \
 Use `web_fetch` when you already have a specific URL.
 - Call multiple tools in parallel when they are independent — don't serialize unnecessarily.

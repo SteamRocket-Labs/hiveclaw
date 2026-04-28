@@ -373,3 +373,159 @@ async def execute_code(workspace: Path, arguments: dict, tenant_id: str | None =
 async def run_command(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
     from app.services.agent_tools import _run_command
     return await _run_command(workspace, arguments)
+
+
+# ── P1-W3-6 — Unified filesystem facades ─────────────────────────
+# Audit observation: nine fine-grained tools (list/read/write/edit/
+# delete/glob/grep/read_document/execute_code) overload the LLM's tool
+# selection step. The three facades below dispatch to the existing
+# implementations via a `mode` parameter, so an LLM that follows the
+# rubric in `tools` section can choose one tool then narrow by mode.
+# Old per-action tools stay registered for backwards compatibility —
+# new agent prompts can ship with only the facades on day one.
+
+
+@tool(ToolMeta(
+    name="fs_read",
+    description=(
+        "Unified filesystem read. Pick a `mode`:\n"
+        "  - `text` (default): plain text / markdown / json — same as read_file\n"
+        "  - `document`: PDF / Word / Excel — same as read_document\n"
+        "  - `glob`: list paths matching a pattern — same as glob_search\n"
+        "  - `grep`: search file contents for a regex — same as grep_search\n"
+        "Always provide `path` (file path or starting directory). For grep also "
+        "provide `pattern`; for glob, `pattern` defaults to '*'."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "mode": {
+                "type": "string",
+                "enum": ["text", "document", "glob", "grep"],
+                "description": "Read mode (default text)",
+            },
+            "path": {"type": "string", "description": "File or directory path"},
+            "pattern": {
+                "type": "string",
+                "description": "Glob pattern or regex (used by glob/grep modes)",
+            },
+        },
+        "required": ["path"],
+    },
+    category="filesystem",
+    display_name="Read (unified)",
+    icon="\U0001f4d6",
+    read_only=True,
+    parallel_safe=True,
+    governance="safe",
+    adapter="workspace_args",
+))
+def fs_read(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+    mode = (arguments.get("mode") or "text").strip().lower()
+    if mode == "text":
+        return read_file(workspace, {"path": arguments.get("path", "")}, tenant_id)
+    if mode == "document":
+        return read_document(workspace, {"path": arguments.get("path", "")}, tenant_id)
+    if mode == "glob":
+        return glob_search(
+            workspace,
+            {
+                "path": arguments.get("path", ""),
+                "pattern": arguments.get("pattern") or "*",
+            },
+            tenant_id,
+        )
+    if mode == "grep":
+        return grep_search(
+            workspace,
+            {
+                "path": arguments.get("path", ""),
+                "pattern": arguments.get("pattern") or "",
+            },
+            tenant_id,
+        )
+    return f"⚠️ fs_read: unknown mode {mode!r}. Use one of: text, document, glob, grep."
+
+
+@tool(ToolMeta(
+    name="fs_write",
+    description=(
+        "Unified filesystem write. Pick a `mode`:\n"
+        "  - `write` (default): full replace — same as write_file\n"
+        "  - `edit`: in-place edit — same as edit_file (needs `old_string`/`new_string`)\n"
+        "  - `delete`: remove file — same as delete_file\n"
+        "Always provide `path`. For `write`, also `content`. For `edit`, "
+        "also `old_string` and `new_string`."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "mode": {
+                "type": "string",
+                "enum": ["write", "edit", "delete"],
+                "description": "Write mode (default write)",
+            },
+            "path": {"type": "string", "description": "File path"},
+            "content": {"type": "string", "description": "New content (write mode)"},
+            "old_string": {"type": "string", "description": "Existing snippet (edit mode)"},
+            "new_string": {"type": "string", "description": "Replacement snippet (edit mode)"},
+        },
+        "required": ["path"],
+    },
+    category="filesystem",
+    display_name="Write (unified)",
+    icon="\U0001f4dd",
+    governance="sensitive",
+    adapter="workspace_args",
+))
+async def fs_write(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+    mode = (arguments.get("mode") or "write").strip().lower()
+    if mode == "write":
+        return await write_file(
+            workspace,
+            {
+                "path": arguments.get("path", ""),
+                "content": arguments.get("content", ""),
+            },
+            tenant_id,
+        )
+    if mode == "edit":
+        return await edit_file(
+            workspace,
+            {
+                "path": arguments.get("path", ""),
+                "old_string": arguments.get("old_string", ""),
+                "new_string": arguments.get("new_string", ""),
+            },
+            tenant_id,
+        )
+    if mode == "delete":
+        return await delete_file(workspace, {"path": arguments.get("path", "")}, tenant_id)
+    return f"⚠️ fs_write: unknown mode {mode!r}. Use one of: write, edit, delete."
+
+
+@tool(ToolMeta(
+    name="fs_list",
+    description=(
+        "Unified filesystem listing. Wraps list_files. Provide `path` "
+        "(directory, defaults to root) to enumerate immediate children."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Directory path (defaults to root)",
+            },
+        },
+    },
+    category="filesystem",
+    display_name="List (unified)",
+    icon="\U0001f5c2",
+    read_only=True,
+    parallel_safe=True,
+    governance="safe",
+    adapter="workspace_args",
+))
+def fs_list(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+    return list_files(workspace, {"path": arguments.get("path", "")}, tenant_id)

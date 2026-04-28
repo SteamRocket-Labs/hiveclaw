@@ -123,6 +123,11 @@ SESSION_IDLE/CLOSE      RESPONSE_COMPLETE      Heartbeat (45min)     Dream (4h+3
   feeds T2 backfill     T0 backfill fallback)
 ```
 
+**Cadence configuration (P1-W2-5)**: the `evolution_daemon` ticks every
+`HEARTBEAT_TICK_SECONDS` (default 60s) and per-agent heartbeat intervals
+default to `HEARTBEAT_DEFAULT_INTERVAL_MINUTES` (45min). Both live on
+`Settings` and can be overridden via env vars for dev/staging.
+
 **T0 layout (split by role, since PR-1):**
 
 ```

@@ -1647,8 +1647,12 @@ async def _heartbeat_tick():
                     skipped_hours += 1
                     continue
 
-                # Check interval
-                interval = timedelta(minutes=agent.heartbeat_interval_minutes or 45)
+                # Check interval (P1-W2-5: fallback uses configurable default)
+                from app.config import get_settings
+                interval = timedelta(
+                    minutes=agent.heartbeat_interval_minutes
+                    or get_settings().HEARTBEAT_DEFAULT_INTERVAL_MINUTES
+                )
                 if agent.last_heartbeat_at and (now - agent.last_heartbeat_at) < interval:
                     skipped_interval += 1
                     continue

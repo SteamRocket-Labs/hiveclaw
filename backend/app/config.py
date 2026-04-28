@@ -92,6 +92,14 @@ class Settings(BaseSettings):
 
     # OpenViking knowledge backbone (optional — set URL to enable)
     OPENVIKING_URL: str = ""
+
+    # Self-evolution cadence (P1-W2-5)
+    # Tick frequency for the evolution daemon (heartbeat dispatcher).
+    # Production: 60s. Dev/staging may set 5-15s to exercise the path.
+    HEARTBEAT_TICK_SECONDS: int = 60
+    # Default per-agent heartbeat interval when an Agent row has no override.
+    # Production: 45 minutes (matches the legacy mapped_column default).
+    HEARTBEAT_DEFAULT_INTERVAL_MINUTES: int = 45
     OPENVIKING_API_KEY: str = ""
 
     # Hindsight memory backend (read-side accelerator for T3 MD; optional)

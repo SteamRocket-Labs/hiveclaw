@@ -1441,25 +1441,14 @@ async def _tick():
 
 
 async def start_trigger_daemon():
-    """Start the background trigger daemon loop. Called from FastAPI startup."""
-    logger.info("⚡ Trigger Daemon started (15s tick, heartbeat every ~60s)")
+    """Start the background trigger daemon loop. Called from FastAPI startup.
 
-    # Workspace sync was previously inline in _heartbeat_tick but blocked the
-    # event loop on Volume I/O. Decoupled into independent background loops:
-    #   - dirty consumer (60s, only syncs changed tenants/agents)
-    #   - full sweep safety net (3600s)
-    # Plus Redis pub/sub listener so peer backends converge on dirty marks.
-    try:
-        from app.services.heartbeat import _workspace_full_sweep_loop, _workspace_sync_loop
-        from app.services.workspace_sync_dirty import start_redis_listener
+    P1-W2-4: heartbeat + workspace sync moved to `evolution_daemon` so a
+    slow heartbeat tick or workspace volume I/O can't push trigger schedule
+    jitter past TICK_INTERVAL. This loop is now single-purpose.
+    """
+    logger.info(f"⚡ Trigger Daemon started ({TICK_INTERVAL}s tick)")
 
-        await start_redis_listener()
-        asyncio.create_task(_workspace_sync_loop())
-        asyncio.create_task(_workspace_full_sweep_loop())
-    except Exception as e:
-        logger.error(f"[TriggerDaemon] Failed to spawn workspace sync loops: {e}", exc_info=True)
-
-    _heartbeat_counter = 0
     while True:
         try:
             await _tick()
@@ -1467,25 +1456,5 @@ async def start_trigger_daemon():
             logger.error(f"Trigger Daemon error: {e}")
             import traceback
             traceback.print_exc()
-
-        # Run heartbeat check every 4th tick (~60 seconds)
-        _heartbeat_counter += 1
-        if _heartbeat_counter >= 4:
-            _heartbeat_counter = 0
-            try:
-                from app.services.heartbeat import _heartbeat_tick
-                await _heartbeat_tick()
-            except Exception as e:
-                logger.error(f"Heartbeat tick error: {e}")
-
-            # Cleanup expired pending reply contexts (piggyback on heartbeat cadence)
-            try:
-                from app.services.pending_reply_service import cleanup_expired_replies
-
-                async with async_session() as _pr_db:
-                    await cleanup_expired_replies(_pr_db)
-                    await _pr_db.commit()
-            except Exception as e:
-                logger.debug(f"PendingReply cleanup error (non-fatal): {e}")
 
         await asyncio.sleep(TICK_INTERVAL)

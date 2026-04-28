@@ -182,6 +182,7 @@ async def _run_governance_inner(
     event_callback: EventCallback | None = None,
 ) -> str | None:
     """Inner governance logic, wrapped by timeout in run_tool_governance."""
+    restricted_zone_approval_reason = None
     try:
         zone = await _maybe_await(deps.resolve_security_zone(context.agent_id))
         zone = zone or "restricted"
@@ -202,21 +203,7 @@ async def _run_governance_inner(
             )
             return message
         if zone == "restricted" and context.tool_name in SENSITIVE_TOOLS:
-            message = (
-                f"🔒 Tool '{context.tool_name}' requires approval — this agent is in the "
-                "'restricted' security zone. Please ask an admin to approve this action."
-            )
-            await _emit_event(
-                event_callback,
-                {
-                    "type": "permission",
-                    "tool_name": context.tool_name,
-                    "status": "approval_required",
-                    "message": message,
-                    "security_zone": zone,
-                },
-            )
-            return message
+            restricted_zone_approval_reason = "restricted security zone"
     except Exception as exc:
         # Fail-closed: block ALL tools when security zone check fails, not just sensitive ones
         logger.warning(
@@ -336,6 +323,10 @@ async def _run_governance_inner(
             _escalated_capability = (
                 getattr(cap_result, "capability", None) if getattr(cap_result, "escalate_to_l3", False) else None
             )
+            _approval_reason = None
+            if restricted_zone_approval_reason:
+                _escalated_capability = _escalated_capability or getattr(cap_result, "capability", None) or context.tool_name
+                _approval_reason = _approval_reason or restricted_zone_approval_reason
 
             # P1-W3-3 — delegation token enforcement.
             # When this invocation came in through delegate_to_agent, the
@@ -397,6 +388,7 @@ async def _run_governance_inner(
             return message
     else:
         _escalated_capability = None
+        _approval_reason = None
 
     dangerous_command = _detect_dangerous_command(context.tool_name, context.arguments)
     dangerous_reason = None
@@ -468,8 +460,11 @@ async def _run_governance_inner(
                     },
                 )
                 return message
-        if not dangerous_allowed_by_specific_policy and _escalated_capability is None:
+        if not dangerous_allowed_by_specific_policy and (
+            _escalated_capability is None or _approval_reason == restricted_zone_approval_reason
+        ):
             _escalated_capability = dangerous_capability
+            _approval_reason = dangerous_reason
 
     if _escalated_capability:
         try:
@@ -480,7 +475,7 @@ async def _run_governance_inner(
                     tool_name=context.tool_name,
                     arguments=context.arguments,
                     capability=_escalated_capability,
-                    reason=dangerous_reason,
+                    reason=dangerous_reason or _approval_reason,
                 )
             )
             message = (

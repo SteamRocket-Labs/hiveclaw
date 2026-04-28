@@ -157,6 +157,7 @@ def test_collect_real_handlers_include_memory_tools():
     assert "save_skill" in names
     assert "save_memory" in names
     assert "search_memory" in names
+    assert {"list_tasks", "get_task", "manage_tasks"} <= names
 
     delegate_schema = next(tool for tool in collected.openai_tools if tool["function"]["name"] == "delegate_to_agent")
     profile_enum = delegate_schema["function"]["parameters"]["properties"]["tool_profile"]["enum"]

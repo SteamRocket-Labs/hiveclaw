@@ -231,6 +231,76 @@ async def test_governance_requests_approval_when_capability_requires_it():
 
 
 @pytest.mark.asyncio
+async def test_restricted_zone_sensitive_tool_creates_real_approval_request():
+    from app.services.capability_gate import CapabilityCheckResult
+    from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
+
+    approval_calls = []
+    events = []
+
+    async def resolve_security_zone(_agent_id):
+        return "restricted"
+
+    async def check_capability(_tenant_id, _agent_id, tool_name):
+        assert tool_name == "write_file"
+        return CapabilityCheckResult(
+            allowed=True,
+            denied=False,
+            escalate_to_l3=False,
+            capability="workspace.file.write",
+            policy_found=True,
+        )
+
+    async def write_audit(**_kwargs):
+        return None
+
+    async def request_approval(*, agent_id, user_id, tool_name, arguments, capability, reason=None):
+        approval_calls.append(
+            {
+                "agent_id": agent_id,
+                "user_id": user_id,
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "capability": capability,
+                "reason": reason,
+            }
+        )
+        return {"allowed": False, "approval_id": "approval-restricted"}
+
+    message = await run_tool_governance(
+        ToolGovernanceContext(
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            tenant_id=str(uuid4()),
+            tool_name="write_file",
+            arguments={"path": "focus.md", "content": "x"},
+        ),
+        GovernanceDependencies(
+            resolve_security_zone=resolve_security_zone,
+            check_capability=check_capability,
+            write_audit_event=write_audit,
+            request_approval=request_approval,
+        ),
+        event_callback=events.append,
+    )
+
+    assert "Approval ID: approval-restricted" in message
+    assert approval_calls[0]["tool_name"] == "write_file"
+    assert approval_calls[0]["capability"] == "workspace.file.write"
+    assert approval_calls[0]["reason"] == "restricted security zone"
+    assert events == [
+        {
+            "type": "permission",
+            "tool_name": "write_file",
+            "status": "approval_required",
+            "message": message,
+            "approval_id": "approval-restricted",
+            "capability": "workspace.file.write",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_governance_denies_feishu_doc_delete_in_standard_zone_when_policy_denies():
     from app.services.capability_gate import CapabilityCheckResult
     from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance

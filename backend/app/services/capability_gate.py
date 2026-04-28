@@ -153,8 +153,6 @@ _CAPABILITY_GATE_EXEMPT_TOOLS: frozenset[str] = frozenset({
     "firecrawl_fetch",
     "xcrawl_scrape",
     "read_document",
-    "list_tasks",
-    "get_task",
     # Discovery / introspection — must work without capability policy
     "tool_search",
     "discover_resources",
@@ -187,11 +185,17 @@ def audit_capability_mapping() -> dict[str, list[str]]:
         logger.error("[CapabilityGate] Audit aborted — collect_tools failed: %s", exc)
         return {"unmapped": [], "stale": []}
 
-    # `collected.safe` + `collected.sensitive` covers every governance-
-    # registered tool. Aliases are filtered upstream by the collector.
-    registered: set[str] = set(getattr(collected, "safe", set())) | set(
-        getattr(collected, "sensitive", set())
-    )
+    # Use the execution registry, not just the governance-classified subsets:
+    # capability policies must cover every executable tool name, including
+    # aliases such as `bing_search` and compatibility entries. Tests and
+    # lightweight collectors may still expose only the legacy safe/sensitive
+    # sets, so keep that fallback to avoid hiding startup-audit failures behind
+    # a collector shape mismatch.
+    exec_registry = getattr(collected, "exec_registry", None)
+    if exec_registry is not None and hasattr(exec_registry, "names"):
+        registered: set[str] = set(exec_registry.names())
+    else:
+        registered = set(getattr(collected, "safe", set())) | set(getattr(collected, "sensitive", set()))
 
     mapped = set(CAPABILITY_MAP.keys())
     exempt = _CAPABILITY_GATE_EXEMPT_TOOLS

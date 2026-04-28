@@ -11,6 +11,14 @@ def test_capability_map_covers_all_governance_classified_tools():
     assert missing == []
 
 
+def test_capability_mapping_audit_has_no_runtime_registry_drift():
+    from app.services.capability_gate import audit_capability_mapping
+
+    drift = audit_capability_mapping()
+
+    assert drift == {"unmapped": [], "stale": []}
+
+
 def test_capability_map_covers_all_core_tools_when_strict_default_is_on():
     from app.services.agent_tools import CORE_TOOL_NAMES
 

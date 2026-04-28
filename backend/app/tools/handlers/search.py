@@ -141,6 +141,7 @@ async def web_search(arguments: dict) -> str:
     parallel_safe=True,
     governance="safe",
     pack="web_pack",
+    aliases=("read_webpage",),
     adapter="args_only",
 ))
 async def web_fetch(arguments: dict) -> str:

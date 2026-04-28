@@ -55,6 +55,7 @@ def test_combined_openai_tools_matches_canonical_surface():
         "check_async_task",
         "cancel_async_task",
         "firecrawl_fetch",
+        "get_task",
         "get_current_time",
         "list_mcp_resources",
         "list_async_tasks",
@@ -63,9 +64,11 @@ def test_combined_openai_tools_matches_canonical_surface():
         "fs_read",
         "fs_write",
         "fs_list",
+        "list_tasks",
         "list_objectives",
         "list_triggers",
         "load_skill",
+        "manage_tasks",
         "save_skill",
         "plaza_add_comment",
         "plaza_create_post",
@@ -116,7 +119,10 @@ def test_governance_sets_include_canonical_metadata_without_runtime_init():
     assert "web_search" in SAFE_TOOLS
     assert "web_fetch" in SAFE_TOOLS
     assert "search_memory" in SAFE_TOOLS
+    assert "list_tasks" in SAFE_TOOLS
+    assert "get_task" in SAFE_TOOLS
     assert "save_memory" in SENSITIVE_TOOLS
+    assert "manage_tasks" in SENSITIVE_TOOLS
     assert "save_skill" in SENSITIVE_TOOLS
     assert "send_feishu_message" in SENSITIVE_TOOLS
     assert "feishu_task_comment" in SENSITIVE_TOOLS

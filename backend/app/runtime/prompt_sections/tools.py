@@ -25,6 +25,8 @@ evidence belong in workspace artifacts.
 - Objective Ledger is the source of truth for goal state: `list_objectives` to inspect, \
 `propose_objective` for new work, `update_objective` for blockers/status, and \
 `complete_objective` only with concrete evidence. Trigger is wake policy; focus.md is a readable projection.
+- DB-backed task ledger is separate from objectives: use `list_tasks` and `get_task` \
+to inspect tasks, and `manage_tasks` to create, update, or delete them. Do not edit tasks.json directly.
 - After writing files, verify the result with `read_file` if correctness is critical.\
 """
 

@@ -40,6 +40,10 @@ class ToolExecutionRegistry:
     def register(self, tool_name: str, executor: ToolExecutor) -> None:
         self._executors[tool_name] = executor
 
+    def names(self) -> frozenset[str]:
+        """Return every executable tool name, including aliases."""
+        return frozenset(self._executors.keys())
+
     async def try_execute(self, request: ToolExecutionRequest) -> str | None:
         executor = self._executors.get(request.tool_name)
         if executor is None:

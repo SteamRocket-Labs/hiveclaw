@@ -83,6 +83,46 @@ def test_compose_heartbeat_instruction_adds_strategy_boundary() -> None:
     assert "Do NOT turn lineage into a raw task transcript" in text
 
 
+def test_compact_heartbeat_runtime_messages_trims_single_oversized_message() -> None:
+    from app.services.heartbeat import (
+        _HEARTBEAT_MESSAGE_MAX_CHARS,
+        _compact_heartbeat_runtime_messages,
+    )
+
+    huge_payload = "BEGIN-" + ("x" * (_HEARTBEAT_MESSAGE_MAX_CHARS * 3)) + "-END"
+
+    compacted = _compact_heartbeat_runtime_messages([{"role": "user", "content": huge_payload}])
+
+    assert len(compacted) == 1
+    content = compacted[0]["content"]
+    assert len(content) <= _HEARTBEAT_MESSAGE_MAX_CHARS
+    assert "truncated to fit heartbeat context budget" in content
+    assert content.startswith("BEGIN-")
+    assert content.endswith("-END")
+
+
+def test_compact_heartbeat_runtime_messages_summarizes_middle_history() -> None:
+    from app.services.heartbeat import (
+        _HEARTBEAT_CONTEXT_MAX_CHARS,
+        _compact_heartbeat_runtime_messages,
+    )
+
+    messages = [{"role": "user", "content": "base heartbeat instruction"}]
+    messages.extend(
+        {"role": "assistant" if idx % 2 else "user", "content": f"old-{idx}-" + ("x" * 7000)}
+        for idx in range(24)
+    )
+    messages.append({"role": "user", "content": "latest tick payload"})
+
+    compacted = _compact_heartbeat_runtime_messages(messages)
+    total_chars = sum(len(msg.get("content") or "") for msg in compacted)
+
+    assert total_chars <= _HEARTBEAT_CONTEXT_MAX_CHARS
+    assert compacted[0]["content"].startswith("base heartbeat instruction")
+    assert any("Heartbeat context compacted" in (msg.get("content") or "") for msg in compacted)
+    assert compacted[-1]["content"] == "latest tick payload"
+
+
 def test_parse_heartbeat_outcome_noop():
     from app.services.heartbeat import _parse_heartbeat_outcome
 

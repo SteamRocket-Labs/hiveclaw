@@ -66,6 +66,114 @@ _t2_mtimes: dict[uuid.UUID, dict[str, float]] = {}
 # Anthropic prompt cache hits within multi-round ticks).
 _heartbeat_session_ctxs: dict[uuid.UUID, "SessionContext"] = {}
 
+_HEARTBEAT_MESSAGE_MAX_CHARS = 24_000
+_HEARTBEAT_CONTEXT_MAX_CHARS = 80_000
+_HEARTBEAT_RECENT_MESSAGE_COUNT = 8
+_HEARTBEAT_T2_FULL_MAX_CHARS = 24_000
+_HEARTBEAT_T2_INCREMENTAL_MAX_CHARS = 16_000
+_HEARTBEAT_T3_MAX_CHARS = 8_000
+_HEARTBEAT_EVOLUTION_CONTEXT_MAX_CHARS = 16_000
+_HEARTBEAT_COMPACT_SUMMARY_MAX_CHARS = 6_000
+
+
+def _heartbeat_content_chars(message: dict) -> int:
+    content = message.get("content")
+    return len(content) if isinstance(content, str) else 0
+
+
+def _heartbeat_context_chars(messages: list[dict]) -> int:
+    return sum(_heartbeat_content_chars(message) for message in messages)
+
+
+def _truncate_heartbeat_text(text: str, max_chars: int, label: str) -> str:
+    """Trim a single heartbeat section while preserving its opening and latest tail."""
+    if len(text) <= max_chars:
+        return text
+
+    marker = (
+        f"\n\n[... {label} truncated to fit heartbeat context budget; "
+        f"omitted {len(text) - max_chars:,} chars ...]\n\n"
+    )
+    if max_chars <= len(marker) + 200:
+        return text[: max(0, max_chars - len(marker))] + marker[:max_chars]
+
+    head_chars = max(100, int((max_chars - len(marker)) * 0.6))
+    tail_chars = max_chars - len(marker) - head_chars
+    return text[:head_chars] + marker + text[-tail_chars:]
+
+
+def _cap_heartbeat_message(message: dict, max_chars: int = _HEARTBEAT_MESSAGE_MAX_CHARS) -> dict:
+    content = message.get("content")
+    if not isinstance(content, str):
+        return dict(message)
+    capped = dict(message)
+    capped["content"] = _truncate_heartbeat_text(content, max_chars, f"{message.get('role', 'message')} message")
+    return capped
+
+
+def _build_heartbeat_context_summary(messages: list[dict]) -> dict:
+    lines = [
+        "[Heartbeat context compacted]",
+        f"Compacted {len(messages)} older heartbeat messages before invocation.",
+        "This preserves continuity without replaying the full raw heartbeat transcript.",
+    ]
+    for idx, message in enumerate(messages[-12:], start=max(1, len(messages) - 11)):
+        content = str(message.get("content") or "").replace("\n", " ").strip()
+        if len(content) > 260:
+            content = content[:260] + "..."
+        lines.append(f"- #{idx} {message.get('role', 'unknown')}: {content}")
+    return {
+        "role": "system",
+        "content": _truncate_heartbeat_text(
+            "\n".join(lines),
+            _HEARTBEAT_COMPACT_SUMMARY_MAX_CHARS,
+            "heartbeat context summary",
+        ),
+    }
+
+
+def _compact_heartbeat_runtime_messages(messages: list[dict]) -> list[dict]:
+    """Keep heartbeat continuity bounded before it reaches the kernel.
+
+    Kernel compaction handles multi-message LLM loops, but heartbeat can create
+    a single very large initialization message from T2/T3 files. This guard caps
+    both single-message payloads and accumulated KAIROS history deterministically.
+    """
+    if not messages:
+        return []
+
+    capped = [_cap_heartbeat_message(message) for message in messages]
+    if _heartbeat_context_chars(capped) <= _HEARTBEAT_CONTEXT_MAX_CHARS:
+        return capped
+
+    keep_recent = min(_HEARTBEAT_RECENT_MESSAGE_COUNT, max(0, len(capped) - 1))
+    first = [_cap_heartbeat_message(capped[0])]
+    recent = capped[-keep_recent:] if keep_recent else []
+    middle = capped[1:-keep_recent] if keep_recent else capped[1:]
+    summary = _build_heartbeat_context_summary(middle)
+    compacted = first + [summary] + recent
+
+    if _heartbeat_context_chars(compacted) <= _HEARTBEAT_CONTEXT_MAX_CHARS:
+        return compacted
+
+    remaining = max(_HEARTBEAT_CONTEXT_MAX_CHARS - _heartbeat_content_chars(summary), 1)
+    first_budget = min(_HEARTBEAT_MESSAGE_MAX_CHARS, max(4_000, remaining // 3))
+    recent_budget = max(1_000, (remaining - first_budget) // max(len(recent), 1))
+    compacted = [_cap_heartbeat_message(first[0], first_budget), summary]
+    compacted.extend(_cap_heartbeat_message(message, recent_budget) for message in recent)
+
+    # Final defensive pass for pathological inputs.
+    while _heartbeat_context_chars(compacted) > _HEARTBEAT_CONTEXT_MAX_CHARS:
+        largest_idx = max(range(len(compacted)), key=lambda idx: _heartbeat_content_chars(compacted[idx]))
+        largest = compacted[largest_idx]
+        largest_chars = _heartbeat_content_chars(largest)
+        if largest_chars <= 1_000:
+            break
+        overflow = _heartbeat_context_chars(compacted) - _HEARTBEAT_CONTEXT_MAX_CHARS
+        compacted[largest_idx] = _cap_heartbeat_message(largest, max(1_000, largest_chars - overflow - 200))
+
+    return compacted
+
 
 async def _create_heartbeat_runtime_task(agent_id: uuid.UUID) -> str | None:
     try:
@@ -160,7 +268,11 @@ def _read_t2_full(agent_id: uuid.UUID) -> str:
     entries, current_mtimes = load_t2_entries(Path(get_settings().AGENT_DATA_DIR), agent_id)
     _t2_mtimes[agent_id] = current_mtimes
     snapshot = render_t2_snapshot(entries)
-    return snapshot or "(no learnings yet)"
+    return _truncate_heartbeat_text(
+        snapshot or "(no learnings yet)",
+        _HEARTBEAT_T2_FULL_MAX_CHARS,
+        "T2 full snapshot",
+    )
 
 
 def _read_t3_summary(agent_id: uuid.UUID) -> str:
@@ -182,7 +294,11 @@ def _read_t3_summary(agent_id: uuid.UUID) -> str:
                     parts.append(f"### {fname}\n{content[:500]}")
             except Exception as exc:
                 logger.debug("[Heartbeat] Failed to read T3 {}: {}", fpath, exc)
-    return "\n\n".join(parts) if parts else "(no memory files)"
+    return _truncate_heartbeat_text(
+        "\n\n".join(parts) if parts else "(no memory files)",
+        _HEARTBEAT_T3_MAX_CHARS,
+        "T3 summary",
+    )
 
 
 def _read_incremental_t2(agent_id: uuid.UUID) -> str:
@@ -195,7 +311,11 @@ def _read_incremental_t2(agent_id: uuid.UUID) -> str:
         _t2_mtimes.get(agent_id, {}),
     )
     _t2_mtimes[agent_id] = current_mtimes
-    return render_t2_snapshot(entries)
+    return _truncate_heartbeat_text(
+        render_t2_snapshot(entries),
+        _HEARTBEAT_T2_INCREMENTAL_MAX_CHARS,
+        "incremental T2 snapshot",
+    )
 
 
 def _get_default_heartbeat_instruction() -> str:
@@ -614,7 +734,11 @@ async def _build_evolution_context(
                 "After bootstrapping, future heartbeats will follow the normal 4-phase protocol."
             )
 
-    return "\n\n".join(parts) if parts else ""
+    return _truncate_heartbeat_text(
+        "\n\n".join(parts) if parts else "",
+        _HEARTBEAT_EVOLUTION_CONTEXT_MAX_CHARS,
+        "heartbeat evolution context",
+    )
 
 
 _LINEAGE_ARCHIVE_MAX = 500
@@ -1203,7 +1327,9 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                 heartbeat_instruction += f"\n\n## Current T2 Learnings\n{t2_content}"
                 heartbeat_instruction += f"\n\n## Current T3 Memory (reference — don't duplicate these)\n{t3_summary}"
 
-                runtime_messages = [{"role": "user", "content": heartbeat_instruction}]
+                runtime_messages = _compact_heartbeat_runtime_messages(
+                    [{"role": "user", "content": heartbeat_instruction}]
+                )
 
                 # Create new DB session (only on first tick)
                 session = ChatSession(
@@ -1271,6 +1397,8 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                     agent.name,
                 )
 
+            runtime_messages = _compact_heartbeat_runtime_messages(runtime_messages)
+
             # Tool call persistence callback
             async def _on_tool_call(data: dict) -> None:
                 if data.get("status") != "done":
@@ -1332,7 +1460,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
 
             # KAIROS: append assistant response to persistent context
             runtime_messages.append({"role": "assistant", "content": reply or ""})
-            _heartbeat_contexts[agent_id] = runtime_messages
+            _heartbeat_contexts[agent_id] = _compact_heartbeat_runtime_messages(runtime_messages)
 
             # Save assistant reply to Reflection Session
             async with async_session() as db2:

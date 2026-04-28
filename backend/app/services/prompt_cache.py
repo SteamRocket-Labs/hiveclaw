@@ -6,7 +6,7 @@ This module does NOT hardcode provider names. Instead it uses two
 mechanisms that work for ANY LLM provider, present or future:
 
 1. **Hint injection**: a boolean `supports_cache_control` flag decides
-   whether to inject Anthropic-style `cache_control` markers. The flag
+   whether to inject explicit `cache_control` markers. The flag
    defaults to auto-detection but can be overridden per model config.
    Any unknown provider gets NO markers (safe default — most providers
    either cache automatically or don't cache at all).
@@ -66,10 +66,9 @@ class CacheMetrics:
 
 
 # ── Capability detection ────────────────────────────────────────
-# Only ONE capability matters for hint injection: does the provider
-# accept `cache_control` content blocks? Currently only Anthropic does.
-# This is the only provider-name check in the entire module, and it
-# defaults to False for any unknown provider (safe passthrough).
+# Only ONE capability matters for hint injection: does the provider accept
+# explicit `cache_control` content blocks? Capability metadata is the source
+# of truth; unknown providers default to safe passthrough.
 
 def _supports_cache_control(provider: str) -> bool:
     """Does this provider's API accept cache_control markers in content blocks?
@@ -102,8 +101,8 @@ def apply_cache_hints(
 
     This is capability-driven: unknown providers get passthrough (safe).
     The `supports_cache_control_override` parameter allows per-model opt-in
-    without touching this module (e.g., if a new provider adopts
-    Anthropic's cache_control protocol, set override=True in model config).
+    without touching this module (e.g., if a new provider adopts explicit
+    cache-control blocks, set override=True in model config).
 
     Args:
         messages: LLMMessage list (system + user/assistant history)
@@ -130,7 +129,7 @@ def _apply_cache_control_hints(
     *,
     execution_mode: str = "conversation",
 ) -> list:
-    """Apply cache_control content-block hints (Anthropic protocol).
+    """Apply explicit cache_control content-block hints.
 
     TTL strategy:
     - conversation: 5-min default (frequent requests keep the sliding window

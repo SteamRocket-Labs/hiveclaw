@@ -49,8 +49,8 @@ def build_scenario_section(
                 "- Separate confirmed facts from your own inference, and say when a point is an inference.",
                 "- When multiple sources disagree, compare recency and provenance instead of averaging them.",
                 "",
-                "**Good**: `Per Anthropic's 2026-03-12 release notes, Claude 4.6 supports 1M-token context (primary source: anthropic.com/news). Inference: likely replaces Opus 4.5 for long-context workflows.`",
-                "**Bad**: `Claude 4.6 probably supports longer context.` (no source, no date, speculation unmarked)",
+                "**Good**: `Per ModelVendor's 2026-03-12 release notes, Model X supports 1M-token context (primary source: vendor.example/news). Inference: likely replaces the previous long-context model for this workflow.`",
+                "**Bad**: `Model X probably supports longer context.` (no source, no date, speculation unmarked)",
                 "</research_playbook>",
             ]
         )

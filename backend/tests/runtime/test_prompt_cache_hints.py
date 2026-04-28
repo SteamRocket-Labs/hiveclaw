@@ -1,4 +1,4 @@
-"""Tests for provider-specific prompt cache hints."""
+"""Tests for capability-driven prompt cache hints."""
 
 from app.services.llm_client import LLMMessage, apply_prompt_cache_hints
 
@@ -24,7 +24,7 @@ def test_anthropic_provider_injects_cache_hints():
         assert msg.content[0]["cache_control"] == {"type": "ephemeral"}
 
 
-def test_claude_provider_also_injects_hints():
+def test_model_name_does_not_enable_cache_hints_without_provider_capability():
     messages = [
         LLMMessage(role="system", content="System prompt"),
         LLMMessage(role="user", content="Hi"),
@@ -32,8 +32,7 @@ def test_claude_provider_also_injects_hints():
     result = apply_prompt_cache_hints(messages, "claude-3-opus")
 
     sys_msg = result[0]
-    assert isinstance(sys_msg.content, list)
-    assert sys_msg.content[0]["cache_control"]["type"] == "ephemeral"
+    assert sys_msg.content == "System prompt"
 
 
 def test_non_anthropic_provider_unchanged():

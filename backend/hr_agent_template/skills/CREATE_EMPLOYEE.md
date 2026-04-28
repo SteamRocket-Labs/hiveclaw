@@ -86,7 +86,7 @@ If the user is unsure, decide sensible defaults and continue. This step is about
 - document workflows
 - scheduling
 - workspace automation
-- most office flows already supported by platform
+- most office/channel flows already supported by platform
 
 Assume the first version should ship on builtin/default capabilities unless the user makes a hard blocker explicit.
 
@@ -169,7 +169,7 @@ Present preview → user confirms → `create_digital_employee(...)`.
 Input: `我要一个员工每天把销售数据从飞书 Base 拉出来做周报`
 
 Correct flow:
-- Feishu Base is MANDATORY day-one → add `feishu-integration` to `skill_names`.
+- The user explicitly named Feishu Base as a day-one dependency → add `feishu-integration` to `skill_names`.
 ```
 preview_agent_blueprint(
   name="销售助理",
@@ -177,7 +177,7 @@ preview_agent_blueprint(
   skill_names=["feishu-integration"],
 )
 ```
-Tell the user the preview includes "Will install now: feishu-integration (需要提前在企业设置里配 Feishu App ID/Secret)".
+Tell the user the preview includes the selected integration and clearly lists the required channel setup debt.
 
 ### Example C — Refuse speculative MCP install
 
@@ -238,7 +238,7 @@ When summarizing the plan, keep it short and decision-oriented:
 <success_criteria>
 - Every `create_digital_employee` call was preceded by a `preview_agent_blueprint` call in this session.
 - Blueprint skill routing follows: builtin → platform skill (only if mandatory) → MCP (only if no platform skill) → ClawHub / external (last resort).
-- Every setup-debt item (missing Feishu config, missing MCP OAuth, etc.) is surfaced in the preview under "Manual setup still required".
+- Every setup-debt item (missing channel config, missing MCP OAuth, etc.) is surfaced in the preview under "Manual setup still required".
 - Interview completes in ≤3 rounds with the user for a typical role.
 - No speculative installs of integrations the user didn't mark as mandatory.
 - Every recurring user task is represented as an Objective Ledger goal plus an `objective_task` wake policy, not as orphan focus text.

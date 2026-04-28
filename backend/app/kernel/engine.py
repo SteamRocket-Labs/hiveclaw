@@ -8,6 +8,7 @@ import inspect
 import json
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from app.core.execution_context import (
@@ -31,10 +32,9 @@ from app.tools.registry import is_parallel_safe_tool
 
 # Mid-loop compaction: check every N rounds and compress when approaching context limit.
 _MIDLOOP_COMPACT_CHECK_INTERVAL = 3
-_MIDLOOP_COMPACT_THRESHOLD = 0.90  # 90% of context window (CC uses ~92.8%)
+_MIDLOOP_COMPACT_THRESHOLD = 0.90  # 90% of context window
 
 # Prompt-Too-Long reactive retry: compress and retry when provider rejects oversized prompt.
-# Aligned with Claude Code MAX_PTL_RETRIES = 3.
 # Strategy: attempt 1-2 = drop 20% oldest round-groups, attempt 3 = full compression fallback.
 _PTL_MAX_RETRIES = 3
 # Provider-specific error patterns indicating prompt exceeds context window.
@@ -52,14 +52,11 @@ _PTL_ERROR_PATTERNS = (
 )
 
 # Large tool result eviction: save to workspace file and keep truncated preview.
-# Aligned with Claude Code's DEFAULT_MAX_RESULT_SIZE_CHARS (50,000).
-_TOOL_RESULT_EVICTION_THRESHOLD = 50000  # chars (CC: 50K)
+_TOOL_RESULT_EVICTION_THRESHOLD = 50000  # chars
 _TOOL_RESULT_PREVIEW_LENGTH = 4000  # chars to keep inline — was 2K, 256K models can afford more context
 # Per-round aggregate budget: prevents N parallel tools from overloading context.
-# Aligned with Claude Code's MAX_TOOL_RESULTS_PER_MESSAGE_CHARS (200,000).
-_TOOL_RESULTS_AGGREGATE_BUDGET = 200000  # chars per round (CC: 200K)
+_TOOL_RESULTS_AGGREGATE_BUDGET = 200000  # chars per round
 # Time-based microcompact: clear old tool results to delay heavy compaction.
-# Aligned with Claude Code TimeBasedMCConfig: gapThresholdMinutes=60, keepRecent=5.
 _MICROCOMPACT_GAP_SECONDS = 3600  # 60 minutes — tool results older than this get cleared
 _MICROCOMPACT_KEEP_RECENT = 5     # always keep the N most recent tool results
 _MICROCOMPACT_CLEARED_MARKER = "[Old tool result cleared to save context space]"
@@ -203,7 +200,8 @@ def _is_prompt_too_long(exc: Exception) -> bool:
 def _group_messages_by_api_round(messages: list[LLMMessage]) -> list[list[LLMMessage]]:
     """Group messages by API round (each round ends with a non-tool-calling assistant msg).
 
-    Aligned with Claude Code groupMessagesByApiRound().
+    Used by prompt-too-long retry and microcompaction so tool calls and tool
+    results are preserved as coherent round groups.
     """
     groups: list[list[LLMMessage]] = []
     current: list[LLMMessage] = []
@@ -220,7 +218,8 @@ def _group_messages_by_api_round(messages: list[LLMMessage]) -> list[list[LLMMes
 def _truncate_head_for_ptl(messages: list[LLMMessage], drop_ratio: float = 0.2) -> list[LLMMessage]:
     """Drop the oldest N% of round-groups to reduce prompt size.
 
-    Aligned with Claude Code truncateHeadForPTLRetry().
+    This preserves recent rounds and keeps assistant tool calls paired with
+    their tool results.
     """
     groups = _group_messages_by_api_round(messages)
     if len(groups) <= 2:
@@ -377,6 +376,8 @@ async def _execute_tool_with_hooks(
             if _path:
                 _session.track_file_write(_path)
                 _session.track_tool_outcome(tool_name, "Wrote " + _path)
+                if _is_frozen_prompt_workspace_path(_path):
+                    _invalidate_prompt_prefix_cache(_session, reason=f"{tool_name}:{_path}")
         elif tool_name in ("web_search", "firecrawl_fetch", "xcrawl_scrape", "read_document", "read_mcp_resource"):
             _ref = _args_dict.get("url") or _args_dict.get("query") or _args_dict.get("path", "")
             if _ref:
@@ -392,6 +393,126 @@ async def _execute_tool_with_hooks(
 
 def _fingerprint_prompt(prompt_prefix: str) -> str:
     return hashlib.sha256(prompt_prefix.encode("utf-8")).hexdigest()
+
+
+_FROZEN_PROMPT_CACHE_VERSION = "frozen-v2"
+_FROZEN_PROMPT_FILE_PATHS = ("soul.md", "relationships.md")
+_FROZEN_PROMPT_DIRS = ("skills",)
+_PROMPT_CACHE_KEY_FIELD = "prompt_cache_key"
+
+
+def _is_frozen_prompt_workspace_path(path: str) -> bool:
+    """Return True when a workspace write affects the frozen prompt prefix."""
+    normalized = str(path or "").strip().replace("\\", "/").lstrip("/")
+    if not normalized:
+        return False
+    if normalized in _FROZEN_PROMPT_FILE_PATHS:
+        return True
+    return any(normalized == dirname or normalized.startswith(f"{dirname}/") for dirname in _FROZEN_PROMPT_DIRS)
+
+
+def _invalidate_prompt_prefix_cache(session_context: SessionContext | None, *, reason: str) -> None:
+    if session_context is None:
+        return
+    session_context.prompt_prefix = None
+    session_context.prompt_fingerprint = None
+    session_context.metadata.pop(_PROMPT_CACHE_KEY_FIELD, None)
+    session_context.metadata["prompt_cache_invalidated_reason"] = reason
+
+
+def _safe_file_stat_entry(root_label: str, root: Path, path: Path) -> list[Any] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    try:
+        rel = path.relative_to(root).as_posix()
+    except ValueError:
+        rel = path.name
+    return [root_label, rel, stat.st_mtime_ns, stat.st_size]
+
+
+def _frozen_prompt_workspace_signature(agent_id: Any | None) -> str:
+    """Fingerprint workspace files that are rendered into the frozen prompt prefix.
+
+    This keeps prompt-prefix reuse high while preventing stale cache hits after
+    identity, relationship, or skill files change.
+    """
+    if not agent_id:
+        return ""
+
+    try:
+        from app.config import get_settings
+
+        roots = [
+            ("tool", Path("/tmp/hive_workspaces") / str(agent_id)),
+            ("persistent", Path(get_settings().AGENT_DATA_DIR) / str(agent_id)),
+        ]
+    except Exception:
+        roots = [("tool", Path("/tmp/hive_workspaces") / str(agent_id))]
+
+    entries: list[list[Any]] = []
+    for root_label, root in roots:
+        for rel_path in _FROZEN_PROMPT_FILE_PATHS:
+            entry = _safe_file_stat_entry(root_label, root, root / rel_path)
+            if entry:
+                entries.append(entry)
+        for dirname in _FROZEN_PROMPT_DIRS:
+            skill_dir = root / dirname
+            if not skill_dir.exists():
+                continue
+            try:
+                candidates = sorted(path for path in skill_dir.rglob("*.md") if path.is_file())
+            except OSError:
+                continue
+            for path in candidates:
+                entry = _safe_file_stat_entry(root_label, root, path)
+                if entry:
+                    entries.append(entry)
+
+    payload = json.dumps(entries, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _build_frozen_prompt_cache_key(
+    request: InvocationRequest,
+    runtime_config: RuntimeConfig,
+    *,
+    current_user_name: str | None,
+) -> str:
+    """Build a provider-neutral cache key for the session-stable prompt prefix."""
+    payload = {
+        "version": _FROZEN_PROMPT_CACHE_VERSION,
+        "agent_id": str(request.agent_id or ""),
+        "tenant_id": str(runtime_config.tenant_id or ""),
+        "agent_name": request.agent_name or "",
+        "role_description": request.role_description or "",
+        "execution_mode": request.execution_mode or "conversation",
+        "current_user_name": current_user_name or "",
+        "model_provider": str(getattr(request.model, "provider", "") or ""),
+        "model_name": str(getattr(request.model, "model", "") or ""),
+        "context_window_tokens": getattr(request.model, "max_input_tokens", None),
+        "workspace_signature": _frozen_prompt_workspace_signature(request.agent_id),
+    }
+    encoded = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _cached_prompt_prefix(session_context: SessionContext | None, cache_key: str) -> str | None:
+    if session_context is None or not session_context.prompt_prefix:
+        return None
+    if session_context.metadata.get(_PROMPT_CACHE_KEY_FIELD) != cache_key:
+        return None
+    return session_context.prompt_prefix
+
+
+def _store_prompt_prefix_cache(session_context: SessionContext | None, prompt_prefix: str, cache_key: str) -> None:
+    if session_context is None:
+        return
+    session_context.prompt_prefix = prompt_prefix
+    session_context.prompt_fingerprint = _fingerprint_prompt(prompt_prefix)
+    session_context.metadata[_PROMPT_CACHE_KEY_FIELD] = cache_key
+    session_context.metadata.pop("prompt_cache_invalidated_reason", None)
 
 
 def _clone_api_messages(messages: list[LLMMessage]) -> list[LLMMessage]:
@@ -439,7 +560,7 @@ def _dicts_to_llm_messages(dicts: list[dict]) -> list[LLMMessage]:
     ]
 
 
-# Post-compaction context restoration budget (CC: 50K tokens ≈ 200K chars; Hive uses 20K chars)
+# Post-compaction context restoration budget.
 # Post-compact restoration uses ContextBudget.restore_budget when available.
 # These are fallback defaults when no budget profile is present.
 _POST_COMPACT_RESTORE_BUDGET = 60000  # chars (~17K tokens) — was 20K, too thin for 256K models
@@ -800,19 +921,24 @@ class AgentKernel:
             session_ctx = request.session_context
             budget_profile = session_ctx.metadata.get("context_budget") if session_ctx else None
             latest_user_query = _latest_user_query(request.messages)
-            # Prompt cache: reuse frozen prefix if available.
+            # Prompt cache: reuse frozen prefix if available and still matches
+            # the session-stable inputs that are rendered into that prefix.
             # The frozen prefix is session-stable by design — it contains
             # agent_context (soul, identity, skills catalog, company info) +
             # system + tasks + tools + output_efficiency. None of these change
             # within a session. Memory lives in the dynamic suffix which is
             # rebuilt every round regardless.
             #
-            # Previously this checked memory hash and rebuilt the frozen prefix.
-            # Memory is a dynamic suffix, so
-            # that was wasted work (full prompt rebuild + DB queries for the
-            # same agent_context). Removed to maximize both application-level
-            # cache hits and Anthropic API prefix cache hits.
-            _cache_valid = bool(session_ctx and session_ctx.prompt_prefix)
+            # Memory is a dynamic suffix, so it does not invalidate this key.
+            # Static identity, execution mode, model window, and prompt-rendered
+            # workspace files do invalidate it.
+            _prompt_cache_key = _build_frozen_prompt_cache_key(
+                request,
+                runtime_config,
+                current_user_name=current_user_name,
+            )
+            _cached_prefix = _cached_prompt_prefix(session_ctx, _prompt_cache_key)
+            _cache_valid = bool(_cached_prefix)
 
             # Resolve model context window for dynamic prompt budget
             _ctx_window = getattr(request.model, "max_input_tokens", None) if request.model else None
@@ -832,7 +958,7 @@ class AgentKernel:
                 extra={"metric": "prompt_cache", "cache_hit": _cache_valid},
             )
 
-            if _cache_valid and session_ctx and session_ctx.prompt_prefix:
+            if _cache_valid and _cached_prefix:
                 # Session has a valid frozen prefix — only rebuild dynamic suffix
                 dynamic_suffix = build_dynamic_prompt_suffix(
                     active_packs=session_ctx.active_packs if session_ctx else [],
@@ -846,7 +972,7 @@ class AgentKernel:
                     agent_name=request.agent_name,
                 )
                 system_prompt = assemble_runtime_prompt(
-                    session_ctx.prompt_prefix,
+                    _cached_prefix,
                     dynamic_suffix,
                     context_window_tokens=_ctx_window,
                     budget_profile=budget_profile,
@@ -862,8 +988,7 @@ class AgentKernel:
                     )
                 )
                 if session_ctx is not None:
-                    session_ctx.prompt_prefix = prompt_prefix
-                    session_ctx.prompt_fingerprint = _fingerprint_prompt(prompt_prefix)
+                    _store_prompt_prefix_cache(session_ctx, prompt_prefix, _prompt_cache_key)
                     session_ctx._memory_hash = hashlib.sha256(resolved_memory_context.encode("utf-8")).hexdigest()[:16]
                 dynamic_suffix = build_dynamic_prompt_suffix(
                     active_packs=session_ctx.active_packs if session_ctx else [],
@@ -1037,7 +1162,7 @@ class AgentKernel:
                             )
                         )
 
-                    # Apply provider-specific cache hints (e.g., Anthropic prefix caching)
+                    # Apply capability-driven cache hints.
                     ptl_retries = 0
                     while True:
                         stream_messages = _clone_api_messages(api_messages)
@@ -1096,7 +1221,7 @@ class AgentKernel:
                                     _before_msgs = len(api_messages)
 
                                     if ptl_retries <= 2:
-                                        # Attempt 1-2: drop 20% oldest round-groups (CC: truncateHeadForPTLRetry)
+                                        # Attempt 1-2: drop 20% oldest round-groups.
                                         logger.warning(
                                             "[Kernel] PTL round-group drop (attempt %d/%d)",
                                             ptl_retries, _PTL_MAX_RETRIES,
@@ -1105,10 +1230,14 @@ class AgentKernel:
                                         # Rebuild system prompt
                                         _ptl_dynamic = build_dynamic_prompt_suffix(
                                             active_packs=session_ctx.active_packs if session_ctx else [],
+                                            memory_snapshot=resolved_memory_context,
                                             retrieval_context=resolved_retrieval_context,
                                             system_prompt_suffix=_effective_suffix,
                                             budget_profile=budget_profile,
                                             latest_user_query=latest_user_query,
+                                            user_name=current_user_name or "",
+                                            channel=session_ctx.channel if session_ctx else "",
+                                            agent_name=request.agent_name,
                                         )
                                         _ptl_prefix = (session_ctx.prompt_prefix if session_ctx else None) or prompt_prefix
                                         _ptl_system = assemble_runtime_prompt(
@@ -1159,10 +1288,14 @@ class AgentKernel:
                                         if _after_chars < _before_chars * 0.8:
                                             _ptl_dynamic = build_dynamic_prompt_suffix(
                                                 active_packs=session_ctx.active_packs if session_ctx else [],
+                                                memory_snapshot=resolved_memory_context,
                                                 retrieval_context=resolved_retrieval_context,
                                                 system_prompt_suffix=_effective_suffix,
                                                 budget_profile=budget_profile,
                                                 latest_user_query=latest_user_query,
+                                                user_name=current_user_name or "",
+                                                channel=session_ctx.channel if session_ctx else "",
+                                                agent_name=request.agent_name,
                                             )
                                             _ptl_prefix = (session_ctx.prompt_prefix if session_ctx else None) or prompt_prefix
                                             _ptl_system = assemble_runtime_prompt(
@@ -1399,7 +1532,7 @@ class AgentKernel:
                             continue
                         parsed_tool_calls.append((tc, tool_name, args))
 
-                    # Per-round aggregate budget tracker (CC: MAX_TOOL_RESULTS_PER_MESSAGE_CHARS)
+                    # Per-round aggregate budget tracker.
                     _round_tool_chars = 0
 
                     if len(parsed_tool_calls) > 1 and _can_parallelize_batch(response.tool_calls):
@@ -1566,17 +1699,32 @@ class AgentKernel:
                                                 "status": "info",
                                             }
                                             await _emit_event(event_payload)
-                                            prompt_prefix = session_context.prompt_prefix or await _maybe_await(
-                                                self._deps.build_system_prompt(
-                                                    request,
-                                                    runtime_config.tenant_id,
-                                                    resolved_memory_context,
-                                                    current_user_name,
-                                                )
+                                            _current_prompt_cache_key = _build_frozen_prompt_cache_key(
+                                                request,
+                                                runtime_config,
+                                                current_user_name=current_user_name,
                                             )
-                                            session_context.prompt_prefix = prompt_prefix
-                                            session_context.prompt_fingerprint = _fingerprint_prompt(prompt_prefix)
-                                            session_context._memory_hash = hashlib.sha256(resolved_memory_context.encode("utf-8")).hexdigest()[:16]
+                                            prompt_prefix = _cached_prompt_prefix(
+                                                session_context,
+                                                _current_prompt_cache_key,
+                                            )
+                                            if prompt_prefix is None:
+                                                prompt_prefix = await _maybe_await(
+                                                    self._deps.build_system_prompt(
+                                                        request,
+                                                        runtime_config.tenant_id,
+                                                        resolved_memory_context,
+                                                        current_user_name,
+                                                    )
+                                                )
+                                                _store_prompt_prefix_cache(
+                                                    session_context,
+                                                    prompt_prefix,
+                                                    _current_prompt_cache_key,
+                                                )
+                                                session_context._memory_hash = hashlib.sha256(
+                                                    resolved_memory_context.encode("utf-8")
+                                                ).hexdigest()[:16]
                                             system_prompt = assemble_runtime_prompt(
                                                 prompt_prefix,
                                                 build_dynamic_prompt_suffix(
@@ -1632,8 +1780,7 @@ class AgentKernel:
                             )
 
                     # ── L1: Time-based microcompact — clear old tool results ──
-                    # Aligned with Claude Code TimeBasedMCConfig: clear tool results
-                    # older than 60min, always keep the 5 most recent.
+                    # Clear tool results older than 60min, always keep the 5 most recent.
                     if (round_i + 1) % _MIDLOOP_COMPACT_CHECK_INTERVAL == 0:
                         import time as _time_mod
 
@@ -1729,7 +1876,7 @@ class AgentKernel:
                             )
                         )
                         if len(compressed) < len(conv_dicts):
-                            # Post-compaction restoration: re-inject soul + focus (CC pattern)
+                            # Post-compaction restoration: re-inject identity + objective projection
                             _restored = ""
                             if request.agent_id:
                                 try:

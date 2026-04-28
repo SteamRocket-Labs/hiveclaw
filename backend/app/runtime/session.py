@@ -16,7 +16,8 @@ class SessionContext:
     # Prompt cache: frozen prefix reused within the same session
     prompt_prefix: str | None = None
     prompt_fingerprint: str | None = None
-    # Memory hash for cache invalidation — rebuilt when memory context changes
+    # Legacy compatibility field. Memory now flows through the dynamic suffix,
+    # so it must not invalidate the frozen prompt prefix.
     _memory_hash: str | None = None
     # Post-compact restoration: track session runtime events
     recent_files: list[str] = field(default_factory=list)  # file paths read by agent

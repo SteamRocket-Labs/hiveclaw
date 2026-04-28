@@ -2,9 +2,6 @@
 
 Provides a lightweight pub/sub mechanism for tool execution, session lifecycle,
 and compaction events. Handlers are async callables registered per event type.
-
-Inspired by Claude Code's 23-event hook system, but starting with the most
-critical events and expanding based on demand.
 """
 
 from __future__ import annotations
@@ -26,7 +23,7 @@ class HookEvent(StrEnum):
 
     Session lifecycle (4, replaces old SESSION_END):
         SESSION_START      — invoke begins, frozen prompt assembled
-        RESPONSE_COMPLETE  — each agent response, main extraction trigger (CC Stop hook)
+        RESPONSE_COMPLETE  — each agent response, main extraction trigger
         SESSION_IDLE       — idle timeout, incremental T0 write (cursor-based)
         SESSION_CLOSE      — WebSocket disconnect / new session / invoke return, drain
 

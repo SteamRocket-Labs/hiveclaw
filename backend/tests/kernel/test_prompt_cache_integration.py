@@ -17,7 +17,10 @@ class _FakeClient:
         self.calls.append(kwargs)
         if not self._responses:
             raise AssertionError("No fake response prepared")
-        return self._responses.pop(0)
+        outcome = self._responses.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
     async def close(self) -> None:
         return None
@@ -41,6 +44,7 @@ async def test_kernel_reuses_frozen_prefix_but_refreshes_dynamic_retrieval():
     build_calls = {"count": 0}
     retrieval_calls: list[str] = []
     session_ctx = SessionContext(session_id="s-1", source="chat")
+    tenant_id = uuid4()
 
     async def build_system_prompt(request, tenant_id, memory_context, current_user_name):
         del request, tenant_id, memory_context, current_user_name
@@ -60,7 +64,7 @@ async def test_kernel_reuses_frozen_prefix_but_refreshes_dynamic_retrieval():
 
     kernel = AgentKernel(
         KernelDependencies(
-            resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
+            resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=tenant_id, max_tool_rounds=3),
             resolve_current_user_name=lambda _user_id: "Rocky",
             build_system_prompt=build_system_prompt,
             resolve_memory_context=lambda *_args, **_kwargs: "SNAPSHOT_BLOCK",
@@ -104,6 +108,82 @@ async def test_kernel_reuses_frozen_prefix_but_refreshes_dynamic_retrieval():
     assert second_prompt.count("SNAPSHOT_BLOCK") == 1
     assert "RETRIEVAL_1" in first_prompt
     assert "RETRIEVAL_2" in second_prompt
+
+
+@pytest.mark.asyncio
+async def test_kernel_rebuilds_frozen_prefix_when_prompt_cache_key_changes():
+    from app.kernel.contracts import InvocationRequest, RuntimeConfig
+    from app.kernel.engine import AgentKernel, KernelDependencies
+
+    build_calls: list[str] = []
+    session_ctx = SessionContext(session_id="s-shared", source="chat")
+    tenant_id = uuid4()
+
+    async def build_system_prompt(request, tenant_id, memory_context, current_user_name):
+        del tenant_id, memory_context, current_user_name
+        build_calls.append(f"{request.agent_id}:{request.execution_mode or 'conversation'}")
+        return f"FROZEN::{request.agent_name}::{request.execution_mode or 'conversation'}"
+
+    fake_client = _FakeClient([
+        SimpleNamespace(content="first", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
+        SimpleNamespace(content="second", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
+    ])
+
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=tenant_id, max_tool_rounds=3),
+            resolve_current_user_name=lambda _user_id: "Rocky",
+            build_system_prompt=build_system_prompt,
+            resolve_memory_context=lambda *_args, **_kwargs: "",
+            resolve_retrieval_context=lambda *_args, **_kwargs: "",
+            get_tools=lambda *_args, **_kwargs: [],
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda _model: fake_client,
+            execute_tool=lambda *_args, **_kwargs: "OK",
+            persist_memory=lambda **_kwargs: None,
+            record_token_usage=lambda *_args, **_kwargs: None,
+            get_max_tokens=lambda *_args, **_kwargs: 1024,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens"),
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    first_agent_id = uuid4()
+    second_agent_id = uuid4()
+
+    await kernel.handle(
+        InvocationRequest(
+            model=_make_model(),
+            messages=[{"role": "user", "content": "hello"}],
+            agent_name="FirstAgent",
+            role_description="desc",
+            agent_id=first_agent_id,
+            user_id=uuid4(),
+            session_context=session_ctx,
+        )
+    )
+    await kernel.handle(
+        InvocationRequest(
+            model=_make_model(),
+            messages=[{"role": "user", "content": "coordinate"}],
+            agent_name="SecondAgent",
+            role_description="desc",
+            agent_id=second_agent_id,
+            user_id=uuid4(),
+            session_context=session_ctx,
+            execution_mode="coordinator",
+        )
+    )
+
+    assert len(build_calls) == 2
+    assert f"{first_agent_id}:conversation" in build_calls
+    assert f"{second_agent_id}:coordinator" in build_calls
+
+    first_prompt = fake_client.calls[0]["messages"][0].content
+    second_prompt = fake_client.calls[1]["messages"][0].content
+    assert "FROZEN::FirstAgent::conversation" in first_prompt
+    assert "FROZEN::SecondAgent::coordinator" in second_prompt
+    assert "FROZEN::FirstAgent::conversation" not in second_prompt
 
 
 @pytest.mark.asyncio
@@ -174,3 +254,58 @@ async def test_tool_expansion_rebuild_preserves_dynamic_memory_and_effective_suf
     assert "RETRIEVAL_BLOCK" in expanded_prompt
     assert "web_pack" in expanded_prompt
     assert "coordinator mode" in expanded_prompt.lower()
+
+
+@pytest.mark.asyncio
+async def test_prompt_too_long_retry_preserves_dynamic_context_blocks():
+    from app.kernel.contracts import InvocationRequest, RuntimeConfig
+    from app.kernel.engine import AgentKernel, KernelDependencies
+    from app.services.llm_utils import LLMError
+
+    fake_client = _FakeClient([
+        LLMError("HTTP 400: context_length_exceeded - maximum context length exceeded"),
+        SimpleNamespace(content="done", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
+    ])
+
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
+            resolve_current_user_name=lambda _user_id: "Rocky",
+            build_system_prompt=lambda *_args, **_kwargs: "FROZEN",
+            resolve_memory_context=lambda *_args, **_kwargs: "SNAPSHOT_BLOCK",
+            resolve_retrieval_context=lambda *_args, **_kwargs: "RETRIEVAL_BLOCK",
+            get_tools=lambda *_args, **_kwargs: [],
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda _model: fake_client,
+            execute_tool=lambda *_args, **_kwargs: "OK",
+            persist_memory=lambda **_kwargs: None,
+            record_token_usage=lambda *_args, **_kwargs: None,
+            get_max_tokens=lambda *_args, **_kwargs: 1024,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens"),
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=_make_model(),
+            messages=[
+                {"role": "user", "content": "m1"},
+                {"role": "assistant", "content": "m2"},
+                {"role": "user", "content": "m3"},
+                {"role": "assistant", "content": "m4"},
+                {"role": "user", "content": "m5"},
+            ],
+            agent_name="Agent",
+            role_description="desc",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            session_context=SessionContext(session_id="s-ptl", source="chat", channel="web"),
+        )
+    )
+
+    assert result.content == "done"
+    retry_prompt = fake_client.calls[1]["messages"][0].content
+    assert "SNAPSHOT_BLOCK" in retry_prompt
+    assert "RETRIEVAL_BLOCK" in retry_prompt
+    assert "Rocky" in retry_prompt

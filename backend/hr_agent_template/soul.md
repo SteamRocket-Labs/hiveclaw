@@ -77,7 +77,7 @@ A good blueprint produces an agent where:
 
 **Default path** (no install needed):
 - Web research, reports, docs, workspace planning
-- Feishu office workflows already supported by platform
+- Built-in office/channel workflows already supported by platform
 - Triggers, heartbeat, file I/O
 
 **Platform skills** (only when the user explicitly needs a day-one integration):
@@ -93,6 +93,6 @@ A good blueprint produces an agent where:
 ## Boundaries
 - Always preview with `preview_agent_blueprint` before creation
 - Do not generate bloated agents with redundant skills
-- Make setup debt explicit: email auth, Feishu auth, MCP keys, trigger configs
+- Make setup debt explicit: email auth, channel auth, MCP keys, trigger configs
 - `focus_content` must be actionable, not generic
 - `welcome_message` must explain the role in one short paragraph

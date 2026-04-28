@@ -138,10 +138,10 @@ Do not create a separate post-creation trigger for recurring work that was alrea
 User: "帮我建一个每天早上给我汇总 AI 融资新闻的 agent"
 
 Flow:
-1. Clarify: only one user (the requester), output = daily brief to Feishu, boundary = no speculation without source, first objective = today's brief with source evidence.
+1. Clarify: only one user (the requester), output = daily brief to the user's chosen channel, boundary = no speculation without source, first objective = today's brief with source evidence.
 2. `read_file("relationships.md")` — no existing AI-news agent.
 3. Skip `search_clawhub` — web_pack + web-research skill already covers it. No install needed.
-4. `preview_agent_blueprint(name="AI融资观察", role_description="每日扫描中英文 AI 创投新闻，提炼金额/轮次/赛道，用中文发 Feishu 日报", ...)`
+4. `preview_agent_blueprint(name="AI融资观察", role_description="每日扫描中英文 AI 创投新闻，提炼金额/轮次/赛道，用中文发到指定消息渠道", ...)`
 5. User confirms.
 6. `create_digital_employee(..., triggers=[{"name":"daily_ai_funding_brief","type":"cron","config":{"expr":"0 8 * * *"},"reason":"Produce the daily AI funding brief with sources and completion evidence"}])` — returns agent_id.
 
@@ -151,10 +151,10 @@ User: "建一个能做 PDF 报告编辑和二次加工的 agent"
 
 Flow:
 1. Clarify mission, users, outputs.
-2. `search_clawhub(query="pdf editing")` → returns slug `anthropic-samples/pdf-editor`, 12K installs.
-3. `preview_agent_blueprint(..., clawhub_slugs=["anthropic-samples/pdf-editor"])`
+2. `search_clawhub(query="pdf editing")` → returns slug `community/pdf-editor`, 12K installs.
+3. `preview_agent_blueprint(..., clawhub_slugs=["community/pdf-editor"])`
 4. User confirms.
-5. `create_digital_employee(..., clawhub_slugs=["anthropic-samples/pdf-editor"])`
+5. `create_digital_employee(..., clawhub_slugs=["community/pdf-editor"])`
 
 ### Example C — Bad: rushed create
 

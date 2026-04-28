@@ -110,6 +110,15 @@ class TestHintInjection:
         result = apply_cache_hints([msg], "anthropic", supports_cache_control_override=False)
         assert result[0].content == msg.content  # unchanged
 
+    def test_legacy_wrapper_is_capability_driven_not_provider_name_driven(self):
+        """Backward-compatible wrapper must not bind cache behavior to provider names."""
+        from app.services.llm_client import apply_prompt_cache_hints
+
+        msg = self._system_msg()
+        result = apply_prompt_cache_hints([msg], "claude-compatible-but-unregistered")
+
+        assert result[0].content == msg.content
+
 
 class TestUniversalMetricsProbe:
     """Metrics extraction should work for ANY provider via field probing."""

@@ -197,7 +197,6 @@ async def _t0_session_idle(ctx: HookContext) -> None:
     Extraction is NOT triggered here — RESPONSE_COMPLETE already extracts
     after every agent response (cursor-based, no duplicates). SESSION_IDLE
     only writes the T0 snapshot and marks the session for dream gate counting.
-    Aligned with Claude Code: CC has no idle-triggered extraction either.
     """
     agent_id = _parse_agent_id(ctx)
     if not agent_id:

@@ -79,16 +79,16 @@ If a page requires login/auth, search for public alternatives (press releases, G
 
 ### Example A — Current funding lookup
 
-Input: `帮我查一下 Anthropic 最近一轮融资的规模和领投方`
+Input: `帮我查一下某家 AI 公司最近一轮融资的规模和领投方`
 
 Correct flow:
 ```
-web_search(query="Anthropic latest funding round 2026 amount lead investor")
+web_search(query="<company name> latest funding round 2026 amount lead investor")
   → returns top 3 results with dates and URLs
-web_fetch(url="<most authoritative link, e.g. Anthropic's own announcement>")
+web_fetch(url="<most authoritative link, e.g. the company's own announcement>")
   → reads the actual funding announcement
 ```
-Output with citation: `根据 Anthropic 2026-03 官方公告（<URL>），最近一轮融资 $3.5B，由 XXX 领投…`
+Output with citation: `根据该公司 2026-03 官方公告（<URL>），最近一轮融资 $3.5B，由 XXX 领投…`
 
 ### Example B — JS-blocked page escalation
 

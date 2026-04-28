@@ -212,7 +212,7 @@ async def maybe_compress_messages(
     threshold = compress_threshold if compress_threshold is not None else config.get("compress_threshold", 82) / 100.0
     recent_count = keep_recent if keep_recent is not None else config.get("keep_recent", 10)
 
-    # Resolve context window — reserve space for summary output (CC: MAX_OUTPUT_TOKENS_FOR_SUMMARY=20K)
+    # Resolve context window — reserve space for summary output.
     _SUMMARY_OUTPUT_RESERVE = 20000
     context_limit = _get_input_context_limit(model_provider, model_name, max_input_tokens_override)
     effective_limit = max(context_limit - _SUMMARY_OUTPUT_RESERVE, context_limit // 2)

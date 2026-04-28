@@ -113,7 +113,7 @@ def _load_skills_index(agent_id: uuid.UUID, *, budget_chars: int = 8000) -> str:
 
     Supports two formats:
     - Flat file:   skills/my-skill.md
-    - Folder:      skills/my-skill/SKILL.md  (Claude-style, with optional scripts/, references/)
+    - Folder:      skills/my-skill/SKILL.md  (directory-style, with optional scripts/, references/)
 
     Uses progressive disclosure: only name+description go into the system
     prompt. The model is instructed to call read_file to load full content

@@ -127,7 +127,7 @@ class TestScenarioPR29Deepening:
         assert "</research_playbook>" in out
         assert "**Good**:" in out
         assert "**Bad**:" in out
-        assert "Claude 4.6" in out  # concrete good example anchor
+        assert "Model X" in out  # concrete good example anchor
 
     def test_coding_playbook_has_xml_and_examples(self) -> None:
         out = build_scenario_section(self._profile("coding"))

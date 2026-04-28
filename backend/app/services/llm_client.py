@@ -2147,11 +2147,4 @@ def apply_prompt_cache_hints(messages: list[LLMMessage], provider: str) -> list[
     """
     from app.services.prompt_cache import apply_cache_hints
 
-    provider_name = str(provider or "").lower()
-    supports_cache_control_override = True if provider_name.startswith("claude") else None
-    return apply_cache_hints(
-        messages,
-        provider,
-        execution_mode="conversation",
-        supports_cache_control_override=supports_cache_control_override,
-    )
+    return apply_cache_hints(messages, provider, execution_mode="conversation")

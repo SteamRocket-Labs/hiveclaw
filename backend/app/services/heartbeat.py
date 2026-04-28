@@ -1675,6 +1675,19 @@ async def _heartbeat_tick():
         logger.error(f"Heartbeat tick error: {e}", exc_info=True)
         await write_audit_log("heartbeat_error", {"error": str(e)[:300]})
 
+    # P1-W2-7: prune skills idle past TTL across all cached heartbeat
+    # session contexts. Web-chat sessions are recreated per request, so
+    # they don't accumulate; only the long-lived heartbeat ctxs need this.
+    try:
+        total_pruned = 0
+        for ctx in list(_heartbeat_session_ctxs.values()):
+            dropped = ctx.prune_expired_skills()
+            total_pruned += len(dropped)
+        if total_pruned:
+            logger.info(f"[Heartbeat] Pruned {total_pruned} expired skill activations")
+    except Exception as e:
+        logger.warning(f"[Heartbeat] Skill prune failed (non-fatal): {e}")
+
 
 async def _sync_one_tenant(tenant_id: uuid.UUID) -> None:
     """Run sync_all_for_tenant in an isolated session with one retry."""

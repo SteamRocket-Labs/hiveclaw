@@ -29,7 +29,9 @@ KnowledgeLookupFn = Callable[[str, uuid.UUID | None], Awaitable[str] | str]
 # apply_cache_hints() splits on it per provider.
 
 # Default fallbacks when no task-aware budget profile is provided.
-_ACTIVE_PACKS_CHAR_BUDGET = 2000
+# P1-W2-6: pack budget tightened from 2000 → 1200 (matches the new
+# active_packs section default; packs are referential, not full docs).
+_ACTIVE_PACKS_CHAR_BUDGET = 1200
 _RETRIEVAL_CHAR_BUDGET = 3000
 _CONTINUITY_CHAR_BUDGET = 2500
 # P1-W2-2: Per-section caps in the dynamic suffix.

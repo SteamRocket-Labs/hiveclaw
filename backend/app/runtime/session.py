@@ -2,8 +2,17 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any
+
+# P1-W2-7: skills loaded via the `load_skill` tool need lifecycle hygiene.
+# Without it, a long-running session accumulates every skill it ever
+# touched into the prompt prefix and into recovery manifests, even after
+# the agent has moved on. Default TTL keeps a skill in the active set for
+# 1 hour after its last use; subsequent prunes drop it. Refcounts let an
+# explicit unload_skill call symmetrically pair with each load.
+_DEFAULT_SKILL_TTL_SECONDS = 3600
 
 
 @dataclass(slots=True)
@@ -22,6 +31,10 @@ class SessionContext:
     # Post-compact restoration: track session runtime events
     recent_files: list[str] = field(default_factory=list)  # file paths read by agent
     active_skills: list[str] = field(default_factory=list)  # skill names loaded via load_skill
+    # P1-W2-7: per-skill bookkeeping (refcount + last_used_at_ts) parallel
+    # to active_skills. The list is the public read surface (kept as
+    # `list[str]` for backwards compat); this dict drives unload + prune.
+    _skill_metadata: dict[str, dict[str, float]] = field(default_factory=dict)
     recent_writes: list[str] = field(default_factory=list)  # file paths written by agent
     recent_tool_outcomes: list[dict[str, str]] = field(default_factory=list)  # [{tool, summary}]
     recent_external_refs: list[str] = field(default_factory=list)  # URLs/resources fetched
@@ -35,10 +48,59 @@ class SessionContext:
         if len(self.recent_files) > 10:
             self.recent_files.pop(0)
 
-    def track_skill_loaded(self, skill_name: str) -> None:
-        """Record a skill activation for post-compact restoration."""
-        if skill_name not in self.active_skills:
+    def track_skill_loaded(self, skill_name: str, *, now: float | None = None) -> None:
+        """Record a skill activation. Bumps refcount and refreshes last_used_at."""
+        ts = now if now is not None else time.time()
+        entry = self._skill_metadata.get(skill_name)
+        if entry is None:
+            self._skill_metadata[skill_name] = {
+                "refcount": 1.0,
+                "loaded_at": ts,
+                "last_used_at": ts,
+            }
             self.active_skills.append(skill_name)
+        else:
+            entry["refcount"] += 1.0
+            entry["last_used_at"] = ts
+
+    def unload_skill(self, skill_name: str) -> bool:
+        """Decrement refcount; remove from active set when it hits zero.
+
+        Returns True if the skill was fully unloaded (last reference released),
+        False if it remained referenced or wasn't loaded to begin with.
+        """
+        entry = self._skill_metadata.get(skill_name)
+        if entry is None:
+            return False
+        entry["refcount"] -= 1.0
+        if entry["refcount"] <= 0:
+            self._skill_metadata.pop(skill_name, None)
+            if skill_name in self.active_skills:
+                self.active_skills.remove(skill_name)
+            return True
+        return False
+
+    def prune_expired_skills(
+        self,
+        *,
+        ttl_seconds: int = _DEFAULT_SKILL_TTL_SECONDS,
+        now: float | None = None,
+    ) -> list[str]:
+        """Drop skills whose last_used_at + ttl < now. Returns the names dropped.
+
+        Called periodically (e.g. heartbeat tick) to keep prompt prefix and
+        recovery manifests from accumulating stale skill names.
+        """
+        ts = now if now is not None else time.time()
+        expired: list[str] = []
+        for name, entry in list(self._skill_metadata.items()):
+            if ts - entry["last_used_at"] >= ttl_seconds:
+                expired.append(name)
+        for name in expired:
+            self._skill_metadata.pop(name, None)
+            if name in self.active_skills:
+                self.active_skills.remove(name)
+        return expired
 
     def track_file_write(self, path: str) -> None:
         """Record a file write for post-compact restoration. Keeps last 5."""

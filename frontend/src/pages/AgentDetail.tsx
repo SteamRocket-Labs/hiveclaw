@@ -64,24 +64,26 @@ function AgentDetailInner() {
         window.history.replaceState(null, '', `#${tab}`);
     };
 
-    const { data: agent, isLoading } = useQuery({
+    const { data: agent, isLoading, error: agentError } = useQuery({
         queryKey: ['agent', id],
         queryFn: () => agentApi.getById(id!),
         enabled: !!id,
+        retry: false,
     });
+    const canLoadAgentScopedData = !!id && !!agent;
 
     // ── Aware tab data: triggers ──
     const { data: awareTriggers = [], refetch: refetchTriggers } = useQuery({
         queryKey: ['triggers', id],
         queryFn: () => triggerApi.list(id!),
-        enabled: !!id && activeTab === 'aware',
+        enabled: canLoadAgentScopedData && activeTab === 'aware',
         refetchInterval: activeTab === 'aware' ? 5000 : false,
     });
 
     const { data: autonomyOverview, refetch: refetchAutonomy } = useQuery({
         queryKey: ['autonomy-overview', id],
         queryFn: () => autonomyApi.getOverview(id!, { lookbackHours: 24 }),
-        enabled: !!id && activeTab === 'aware',
+        enabled: canLoadAgentScopedData && activeTab === 'aware',
         refetchInterval: activeTab === 'aware' ? 5000 : false,
     });
 
@@ -89,7 +91,7 @@ function AgentDetailInner() {
     const { data: focusFile } = useQuery({
         queryKey: ['file', id, 'focus.md'],
         queryFn: () => fileApi.read(id!, 'focus.md').catch(() => null),
-        enabled: !!id && activeTab === 'aware',
+        enabled: canLoadAgentScopedData && activeTab === 'aware',
     });
 
     // ── Aware tab data: reflection sessions (trigger monologues) ──
@@ -99,7 +101,7 @@ function AgentDetailInner() {
             const all = await chatApi.listSessions(id!, 'all').catch(() => [] as any[]);
             return all.filter((s: any) => s.source_channel === 'trigger');
         },
-        enabled: !!id && activeTab === 'aware',
+        enabled: canLoadAgentScopedData && activeTab === 'aware',
         refetchInterval: activeTab === 'aware' ? 10000 : false,
     });
 
@@ -117,28 +119,28 @@ function AgentDetailInner() {
     const { data: activityLogs = [] } = useQuery({
         queryKey: ['activity', id],
         queryFn: () => activityApi.list(id!, 100),
-        enabled: !!id && (activeTab === 'activityLog' || activeTab === 'status'),
+        enabled: canLoadAgentScopedData && (activeTab === 'activityLog' || activeTab === 'status'),
         refetchInterval: activeTab === 'activityLog' ? 10000 : false,
     });
 
     const { data: capabilityInstalls = [] } = useQuery<AgentCapabilityInstall[]>({
         queryKey: ['agent-capability-installs', id],
         queryFn: () => agentApi.getCapabilityInstalls(id!),
-        enabled: !!id && activeTab === 'status',
+        enabled: canLoadAgentScopedData && activeTab === 'status',
         staleTime: 30_000,
     });
 
     const { data: channelCapabilities = [] } = useQuery<AgentChannelCapability[]>({
         queryKey: ['agent-channel-capabilities', id],
         queryFn: () => agentApi.getChannelCapabilities(id!),
-        enabled: !!id && activeTab === 'status',
+        enabled: canLoadAgentScopedData && activeTab === 'status',
         staleTime: 30_000,
     });
 
     const { data: toolFailureSummary } = useQuery({
         queryKey: ['activity', 'tool-failures', id],
         queryFn: () => activityApi.getToolFailureSummary(id!, 24, 200),
-        enabled: !!id && activeTab === 'activityLog',
+        enabled: canLoadAgentScopedData && activeTab === 'activityLog',
         refetchInterval: activeTab === 'activityLog' ? 10000 : false,
     });
 
@@ -487,13 +489,13 @@ function AgentDetailInner() {
     }, [id]);
 
     useEffect(() => {
-        if (!id || !token || activeTab !== 'chat') return;
+        if (!canLoadAgentScopedData || !token || activeTab !== 'chat') return;
         fetchMySessions(false, id).then((data: any) => {
             if (currentAgentIdRef.current !== id) return;
             setSessionsLoading(false);
             if (data && data.length > 0) selectSession(data[0]);
         });
-    }, [id, token, activeTab]);
+    }, [canLoadAgentScopedData, id, token, activeTab]);
 
     const ensureSessionSocket = (sess: any, agentId: string, authToken: string) => {
         const sessionId = String(sess.id);
@@ -671,7 +673,7 @@ function AgentDetailInner() {
     };
 
     useEffect(() => {
-        if (!id || !token || activeTab !== 'chat') return;
+        if (!canLoadAgentScopedData || !token || activeTab !== 'chat') return;
         if (!activeSession) {
             syncActiveSocketState(null, id);
             return;
@@ -683,7 +685,7 @@ function AgentDetailInner() {
         }
         ensureSessionSocket(activeSession, id, token);
         syncActiveSocketState(activeSession, id);
-    }, [id, token, activeTab, activeSession?.id]);
+    }, [canLoadAgentScopedData, id, token, activeTab, activeSession?.id]);
 
     useEffect(() => {
         return () => {
@@ -908,7 +910,7 @@ function AgentDetailInner() {
     const { data: metrics } = useQuery({
         queryKey: ['metrics', id],
         queryFn: () => agentApi.getMetrics(id!).catch(() => null),
-        enabled: !!id && activeTab === 'status',
+        enabled: canLoadAgentScopedData && activeTab === 'status',
         retry: false,
     });
 
@@ -921,7 +923,7 @@ function AgentDetailInner() {
     const { data: persistedRuntimeSummary } = useQuery({
         queryKey: ['chat-runtime-summary', id, activeSession?.id],
         queryFn: () => chatApi.getRuntimeSummary(String(activeSession!.id)),
-        enabled: !!id && activeTab === 'chat' && !!activeSession?.id,
+        enabled: canLoadAgentScopedData && activeTab === 'chat' && !!activeSession?.id,
         refetchInterval: activeTab === 'chat' && activeSession?.id ? 10000 : false,
     });
 
@@ -947,7 +949,7 @@ function AgentDetailInner() {
     const { data: permData } = useQuery({
         queryKey: ['agent-permissions', id],
         queryFn: () => agentApi.getPermissions(id!),
-        enabled: !!id && activeTab === 'settings',
+        enabled: canLoadAgentScopedData && activeTab === 'settings',
     });
 
     const canManage = !!agent && ((agent as any).access_level === 'manage' || isAdmin);
@@ -960,7 +962,7 @@ function AgentDetailInner() {
     } = useQuery<CapabilityDefinition[]>({
         queryKey: ['capability-definitions'],
         queryFn: () => enterpriseApi.listCapabilityDefinitions(),
-        enabled: !!id && activeTab === 'settings' && canManageCapabilityPolicies,
+        enabled: canLoadAgentScopedData && activeTab === 'settings' && canManageCapabilityPolicies,
         retry: false,
     });
 
@@ -971,7 +973,7 @@ function AgentDetailInner() {
     } = useQuery<CapabilityPolicy[]>({
         queryKey: ['capability-policies', id],
         queryFn: () => enterpriseApi.listCapabilityPolicies(id!),
-        enabled: !!id && activeTab === 'settings' && canManageCapabilityPolicies,
+        enabled: canLoadAgentScopedData && activeTab === 'settings' && canManageCapabilityPolicies,
         retry: false,
     });
 
@@ -998,7 +1000,7 @@ function AgentDetailInner() {
     const { data: fileContent } = useQuery({
         queryKey: ['file-content', id, viewingFile],
         queryFn: () => fileApi.read(id!, viewingFile!),
-        enabled: !!viewingFile,
+        enabled: canLoadAgentScopedData && !!viewingFile,
     });
 
     // ─── Task creation & detail ───────────────────────────────────
@@ -1014,8 +1016,16 @@ function AgentDetailInner() {
         return () => window.removeEventListener('storage', handler);
     }, [(agent as any)?.agent_class, navigate]);
 
-    if (isLoading || !agent) {
+    if (isLoading) {
         return <div style={{ padding: '40px', color: 'var(--text-tertiary)' }}>{t('common.loading')}</div>;
+    }
+
+    if (!agent) {
+        const status = (agentError as { status?: number } | null | undefined)?.status;
+        const message = status === 403
+            ? t('agent.detail.accessDenied', 'You do not have access to this employee.')
+            : t('agent.detail.loadFailed', 'Unable to load this employee right now.');
+        return <div style={{ padding: '40px', color: 'var(--text-tertiary)' }}>{message}</div>;
     }
 
     // Compute display status (including OpenClaw disconnected detection)

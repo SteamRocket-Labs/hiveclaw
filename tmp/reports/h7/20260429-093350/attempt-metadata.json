@@ -1,0 +1,30 @@
+{
+  "timestamp": "2026-04-29T09:33:50+08:00",
+  "base_url": "https://backend-production-326d.up.railway.app",
+  "monday_168h_required": false,
+  "token_resolution": {
+    "selected_source": "chrome_local_storage_leveldb",
+    "selected_path": "/Users/rocky243/Library/Application Support/Google/Chrome/Profile 5/Local Storage/leveldb/009336.ldb",
+    "selection_rule": "non-expired JWT with payload role=platform_admin",
+    "environment_sources_checked": [
+      "HIVE_PLATFORM_ADMIN_TOKEN",
+      "HIVE_ADMIN_TOKEN",
+      "HIVE_TOKEN"
+    ],
+    "repo_env_checked": ".h7.env",
+    "token_printed": false,
+    "token_written_to_disk": false
+  },
+  "request_outcome": {
+    "curl_error": "curl: (6) Could not resolve host: backend-production-326d.up.railway.app",
+    "node_fetch_error": {
+      "name": "TypeError",
+      "message": "fetch failed",
+      "cause": {
+        "name": "Error",
+        "message": "getaddrinfo ENOTFOUND backend-production-326d.up.railway.app",
+        "code": "ENOTFOUND"
+      }
+    }
+  }
+}

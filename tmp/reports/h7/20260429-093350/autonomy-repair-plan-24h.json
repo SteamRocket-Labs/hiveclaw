@@ -1,0 +1,12 @@
+{
+  "endpoint": "/api/admin/autonomy-repair-plan",
+  "lookback_hours": 24,
+  "status": "request_failed_before_http_response",
+  "base_url": "https://backend-production-326d.up.railway.app",
+  "error_type": "dns_resolution_failure",
+  "error_message": "Could not resolve host: backend-production-326d.up.railway.app",
+  "evidence": {
+    "curl": "curl: (6) Could not resolve host: backend-production-326d.up.railway.app",
+    "node_fetch": "getaddrinfo ENOTFOUND backend-production-326d.up.railway.app"
+  }
+}

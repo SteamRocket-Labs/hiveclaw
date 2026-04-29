@@ -236,6 +236,10 @@
       "approvalsTooltip": "Actions waiting for your review before they can proceed",
       "settings": "Settings"
     },
+    "detail": {
+      "accessDenied": "You do not have access to this employee.",
+      "loadFailed": "Unable to load this employee right now."
+    },
     "fields": {
       "name": "Name",
       "role": "👤 Role",

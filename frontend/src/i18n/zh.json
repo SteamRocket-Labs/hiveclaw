@@ -235,6 +235,10 @@
       "approvalsTooltip": "需要你确认后才能继续的操作",
       "settings": "设置"
     },
+    "detail": {
+      "accessDenied": "你无权访问这位数字员工。",
+      "loadFailed": "暂时无法加载这位数字员工。"
+    },
     "fields": {
       "name": "名称",
       "role": "👤 角色",

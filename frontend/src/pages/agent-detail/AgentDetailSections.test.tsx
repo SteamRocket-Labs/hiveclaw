@@ -12,6 +12,7 @@ import AgentSkillsSection from './AgentSkillsSection';
 import AgentStatusSection from './AgentStatusSection';
 import AgentWorkspaceSection from './AgentWorkspaceSection';
 import CopyMessageButton from './CopyMessageButton';
+import OpenClawSettings from '../OpenClawSettings';
 import RelationshipEditor from './RelationshipEditor';
 import ToolsManager from './ToolsManager';
 
@@ -669,6 +670,81 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Access Permissions');
     expect(markup).toContain('Channel Config Mock');
     expect(markup).toContain('deleteAgent');
+  });
+
+  it('lets admins edit access permissions for non-owned agents', () => {
+    const markup = renderToStaticMarkup(
+      <AgentSettingsSection
+        agentId="agent-1"
+        agent={{
+          id: 'agent-1',
+          agent_type: 'native',
+          primary_model_id: 'model-1',
+          fallback_model_id: '',
+          max_triggers: 10,
+          min_poll_interval_min: 5,
+          webhook_rate_limit: 5,
+          security_zone: 'standard',
+        }}
+        llmModels={[
+          { id: 'model-1', label: 'GPT-5.4', provider: 'openai', model: 'gpt-5.4', enabled: true },
+        ]}
+        permData={{
+          is_owner: false,
+          scope_type: 'company',
+          scope_ids: [],
+          access_level: 'use',
+          scope_names: [],
+        }}
+        canManage
+        canManageCapabilityPolicies
+        capabilityPolicies={[]}
+        capabilityDefinitions={[{ capability: 'workspace.file.read', tools: ['read_file'] }]}
+        capabilityPolicyLoading={false}
+        capabilityPolicyError=""
+        settingsForm={{
+          primary_model_id: 'model-1',
+          fallback_model_id: '',
+          max_triggers: 10,
+          min_poll_interval_min: 5,
+          webhook_rate_limit: 5,
+          smart_model_routing_enabled: false,
+          security_zone: 'standard',
+        }}
+        onSettingsFormChange={vi.fn()}
+        settingsSaving={false}
+        settingsSaved={false}
+        settingsError=""
+        onSetSettingsSaving={vi.fn()}
+        onSetSettingsSaved={vi.fn()}
+        onSetSettingsError={vi.fn()}
+        onResetSettingsInit={vi.fn()}
+        wmDraft=""
+        wmSaved={false}
+        onSetWmDraft={vi.fn()}
+        onSetWmSaved={vi.fn()}
+        showDeleteConfirm={false}
+        onSetShowDeleteConfirm={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('Default Access Level');
+    expect(markup).not.toMatch(/name="perm_scope"[^>]*disabled/);
+    expect(markup).not.toMatch(/Only the creator or admin can change permissions/);
+  });
+
+  it('lets admins edit OpenClaw access permissions for non-owned agents', () => {
+    const markup = renderToStaticMarkup(
+      <OpenClawSettings
+        agent={{ id: 'agent-1', name: 'OpenClaw Agent', agent_type: 'openclaw', has_api_key: false }}
+        agentId="agent-1"
+        isAdmin
+      />,
+    );
+
+    expect(markup).toContain('Default Access Level');
+    expect(markup).not.toMatch(/name="perm_scope_oc"[^>]*disabled/);
+    expect(markup).not.toMatch(/Only the creator or admin can change permissions/);
   });
 
   it('renders AgentChatSection as a standalone chat module', () => {

@@ -525,9 +525,10 @@ async def update_agent_permissions(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Update agent permission scope (owner or platform_admin only)."""
+    """Update agent permission scope (owner or admin only)."""
     agent, _access = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
+    is_admin = current_user.role in ("platform_admin", "org_admin")
+    if not is_agent_creator(current_user, agent) and not is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only owner or admin can change permissions")
 
     scope_type = data.get("scope_type", "company")

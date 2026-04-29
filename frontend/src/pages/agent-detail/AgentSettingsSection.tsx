@@ -534,7 +534,11 @@ export default function AgentSettingsSection({
     } catch {}
   };
 
+  const isOwner = permData?.is_owner ?? false;
+  const canManageAccessPermissions = isOwner || canManageCapabilityPolicies;
+
   const handleScopeChange = async (newScope: string) => {
+    if (!canManageAccessPermissions) return;
     try {
       await agentApi.updatePermissions(agentId, {
         scope_type: newScope,
@@ -549,6 +553,7 @@ export default function AgentSettingsSection({
   };
 
   const handleAccessLevelChange = async (newLevel: string) => {
+    if (!canManageAccessPermissions) return;
     try {
       await agentApi.updatePermissions(agentId, {
         scope_type: permData?.scope_type || 'company',
@@ -562,7 +567,6 @@ export default function AgentSettingsSection({
     }
   };
 
-  const isOwner = permData?.is_owner ?? false;
   const currentScope = permData?.scope_type || 'company';
   const currentAccessLevel = permData?.access_level || 'use';
   const scopeNames = permData?.scope_names || [];
@@ -975,10 +979,10 @@ export default function AgentSettingsSection({
                 gap: '10px',
                 padding: '12px 14px',
                 borderRadius: '8px',
-                cursor: isOwner ? 'pointer' : 'default',
+                cursor: canManageAccessPermissions ? 'pointer' : 'default',
                 border: currentScope === scope ? '1px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
                 background: currentScope === scope ? 'rgba(99,102,241,0.06)' : 'transparent',
-                opacity: isOwner ? 1 : 0.7,
+                opacity: canManageAccessPermissions ? 1 : 0.7,
                 transition: 'all 0.15s',
               }}
             >
@@ -986,7 +990,7 @@ export default function AgentSettingsSection({
                 type="radio"
                 name="perm_scope"
                 checked={currentScope === scope}
-                disabled={!isOwner}
+                disabled={!canManageAccessPermissions}
                 onChange={() => handleScopeChange(scope)}
                 style={{ accentColor: 'var(--accent-primary)' }}
               />
@@ -1001,7 +1005,7 @@ export default function AgentSettingsSection({
           ))}
         </div>
 
-        {currentScope === 'company' && isOwner && (
+        {currentScope === 'company' && canManageAccessPermissions && (
           <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '12px' }}>
             <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '8px' }}>
               {t('agent.settings.perm.defaultAccess', 'Default Access Level')}
@@ -1046,7 +1050,7 @@ export default function AgentSettingsSection({
           </div>
         )}
 
-        {!isOwner && (
+        {!canManageAccessPermissions && (
           <div style={{ marginTop: '12px', fontSize: '11px', color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
             {t('agent.settings.perm.readOnly', 'Only the creator or admin can change permissions')}
           </div>

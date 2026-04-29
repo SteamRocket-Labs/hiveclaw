@@ -1405,7 +1405,7 @@ function AgentDetailInner() {
                 {/* ── Settings Tab ── */}
                 {
                     activeTab === 'settings' && (agent as any)?.agent_type === 'openclaw' && (
-                        <OpenClawSettings agent={agent} agentId={id!} />
+                        <OpenClawSettings agent={agent} agentId={id!} isAdmin={isAdmin} />
                     )
                 }
                 {

@@ -31,6 +31,12 @@ is required. It is the wrong channel for real-time internal coordination.
 - `send_email` fails with a configuration error — tell the user to set up email credentials in tool settings before retrying
 </do_not_use_when>
 
+## Credential Boundary
+
+- Email credentials are managed by tool settings or platform channel config, not by agent-visible shell state.
+- Do not inspect environment variables or use `run_command` to look for SMTP, IMAP, password, token, or API key values.
+- If `send_email`, `read_emails`, or `reply_email` reports auth/config failure, report the configuration gap and stop; do not switch to shell/env workarounds.
+
 ## Tool Reference
 
 <tool_reference>

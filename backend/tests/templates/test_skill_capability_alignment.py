@@ -150,6 +150,49 @@ def _discover_skill_files() -> list[Path]:
 
 _SKILL_FILES = _discover_skill_files()
 
+_MANAGED_CREDENTIAL_BOUNDARY_SKILLS: dict[str, tuple[str, ...]] = {
+    "app/templates/skills/xlsx-processor/SKILL.md": (
+        "do not inspect environment variables",
+        "run_command",
+        "configuration gap",
+    ),
+    "app/templates/system_skills/atlassian-rovo/SKILL.md": (
+        "do not inspect environment variables",
+        "run_command",
+        "configuration gap",
+    ),
+    "app/templates/system_skills/dingtalk-integration/SKILL.md": (
+        "do not inspect environment variables",
+        "run_command",
+        "configuration gap",
+    ),
+    "app/templates/system_skills/email-guide/SKILL.md": (
+        "do not inspect environment variables",
+        "run_command",
+        "configuration gap",
+    ),
+    "app/templates/system_skills/feishu-integration/SKILL.md": (
+        "do not inspect environment variables",
+        "run_command",
+        "channel config",
+    ),
+    "app/templates/system_skills/messaging-guide/SKILL.md": (
+        "do not inspect environment variables",
+        "run_command",
+        "configuration gap",
+    ),
+    "app/templates/system_skills/web-research/SKILL.md": (
+        "do not inspect environment variables",
+        "run_command",
+        "configuration gap",
+    ),
+    "app/templates/system_skills/workspace-guide/SKILL.md": (
+        "do not inspect environment variables",
+        "run_command",
+        "configuration gap",
+    ),
+}
+
 
 def _extract_candidate_tool_references(body: str) -> set[str]:
     """Pull every backtick-wrapped snake_case identifier out of a skill body."""
@@ -188,6 +231,30 @@ class TestSkillDiscovery:
             parsed = parser.parse_file(path, relative_path=rel)
             assert parsed.metadata.name, f"{rel} has no parseable name"
             assert parsed.body, f"{rel} has no body after frontmatter"
+
+    def test_skill_templates_do_not_instruct_managed_channel_env_credentials(self) -> None:
+        from app.services.managed_capability_guard import detect_managed_credential_guidance
+
+        offenders: list[str] = []
+        for path in _SKILL_FILES:
+            rel = str(path.relative_to(_BACKEND_ROOT))
+            content = path.read_text(encoding="utf-8")
+            if detect_managed_credential_guidance(content):
+                offenders.append(rel)
+
+        assert not offenders, (
+            "Skill templates must use platform channel configuration and dedicated tools, "
+            f"not managed credential env setup/probing: {offenders}"
+        )
+
+    def test_managed_capability_skills_state_credential_boundary(self) -> None:
+        for rel, required_phrases in _MANAGED_CREDENTIAL_BOUNDARY_SKILLS.items():
+            content = (_BACKEND_ROOT / rel).read_text(encoding="utf-8").lower()
+            missing = [phrase for phrase in required_phrases if phrase not in content]
+            assert not missing, (
+                f"{rel}: managed capability skills must state the platform credential boundary. "
+                f"Missing phrases: {missing}"
+            )
 
 
 @pytest.mark.parametrize("skill_path", _SKILL_FILES, ids=lambda p: str(p.relative_to(_BACKEND_ROOT)))

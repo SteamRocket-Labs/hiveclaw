@@ -1,0 +1,38 @@
+{
+  "timestamp": "2026-04-29T20:51:43.098422+08:00",
+  "base_url": "https://backend-production-326d.up.railway.app",
+  "resolution": {
+    "host": "backend-production-326d.up.railway.app",
+    "ip": "198.18.0.191",
+    "ok": true
+  },
+  "token_resolution": {
+    "success": true,
+    "sources_checked": [
+      "HIVE_PLATFORM_ADMIN_TOKEN",
+      "HIVE_ADMIN_TOKEN",
+      "HIVE_TOKEN",
+      ".h7.env",
+      "browser_local_storage_leveldb"
+    ],
+    "selected_source": "browser_local_storage_leveldb",
+    "selected_key": null,
+    "selected_path": "/Users/rocky243/Library/Application Support/Google/Chrome/Profile 5/Local Storage/leveldb/009350.log",
+    "token_written_to_disk": false,
+    "token_printed": false
+  },
+  "endpoints": {
+    "autonomous-audit-24h": {
+      "ok": true,
+      "status": 200
+    },
+    "autonomy-repair-plan-24h": {
+      "ok": true,
+      "status": 200
+    },
+    "harness-validation-24h": {
+      "ok": true,
+      "status": 200
+    }
+  }
+}

@@ -35,6 +35,12 @@ releases, prices, people, current stats, APIs that evolved).
 - The URL requires auth you cannot provide — report it; don't fake a result
 </do_not_use_when>
 
+## Credential Boundary
+
+- Web/search provider credentials are managed by tool config or platform config.
+- Do not inspect environment variables or use `run_command` to look for Exa, Tavily, Firecrawl, XCrawl, Google, or API key values.
+- If a web tool reports auth/config failure, report the configuration gap and use another available public-source path; do not switch to shell/env probing.
+
 ## Tool Reference
 
 <tool_reference>

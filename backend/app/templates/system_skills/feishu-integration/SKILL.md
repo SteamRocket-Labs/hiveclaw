@@ -57,19 +57,22 @@ these tools, not just describe them.
 <do_not_use_when>
 - Target is a digital-employee colleague, not a human — use `send_message_to_agent` instead
 - Target is an external email recipient — use the `Email Guide` skill instead
-- Feishu App ID/Secret are not configured yet — report the missing config first
+- Feishu channel config or required API scopes are missing — report the missing config/scope first
 - User is asking a generic question about Feishu features — answer from knowledge instead of calling tools
 </do_not_use_when>
 
 ## Prerequisites
 
-- Feishu App ID **and** App Secret must be configured in **Enterprise Settings -> Org Sync** for office tools to work.
+- Feishu credentials are resolved by the platform from per-agent channel config first, then tenant channel config.
+- Do not assume there is a platform-level company Feishu app for a public Hive deployment.
 - Person identifiers resolve in this order: `user_id` -> `open_id` -> lookup via `feishu_user_search`.
 - All tokens, IDs, and codes come from tool responses or the user — read or ask first, then act.
 - CardKit status has two meanings in the admin/runtime UI:
   - **CardKit Dependencies** = SDK + auth prerequisites are present.
   - **CardKit Verified** = the explicit probe succeeded in the current admin session.
 - OpenAPI is the primary path. Some office workflows can still fall back to CLI/runtime helpers, but message send, CardKit, approvals, and calendar depend on real Feishu app auth and scopes.
+- Do not inspect environment variables or use `run_command` to look for Feishu/Lark App ID, App Secret, tokens, or scopes.
+- If a Feishu tool reports authentication or permission failure, report the exact channel config or API scope gap; do not switch to shell/env workarounds.
 
 ## Tool Reference
 
@@ -253,7 +256,7 @@ When someone asks you to set up a meeting, act directly:
 
 ### Surface Actionable Error Details
 When a tool returns an error, read the error message and tell the user exactly what's needed:
-- "not configured" → Admin needs to set Feishu App ID and App Secret in Enterprise Settings → Org Sync
+- "not configured" → Admin needs to set Feishu per-agent or tenant channel config
 - Permission error → Name the specific missing Feishu API scope (e.g., `calendar:calendar`)
 - "User not found" → Try `feishu_user_search` with an alternative spelling, or ask the user
 - CardKit probe failed but dependencies are present → tell the user auth exists but CardKit scopes or app publish state still need attention

@@ -30,6 +30,9 @@ runtime. Treat them as facts about your environment, not suggestions.
 - Capability packs (web, feishu, email, etc.) activate on-demand when you
   load a matching skill. Don't try to call a pack-gated tool directly
   without loading its skill first — governance will block it.
+- Managed channel credentials are provided through platform config. Do not
+  inspect environment variables for them; use dedicated tools and report a
+  channel config gap if authentication fails.
 </tool_governance>
 
 ### Memory Integration

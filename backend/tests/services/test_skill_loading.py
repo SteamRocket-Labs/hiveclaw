@@ -18,6 +18,52 @@ def test_load_skill_reads_folder_and_flat_file(tmp_path):
     assert _load_skill(workspace, "data analysis") == "flat skill body"
 
 
+def test_load_skill_sanitizes_managed_channel_env_guidance(tmp_path):
+    from app.services.agent_tools import _load_skill
+
+    workspace = tmp_path / "agent"
+    skill_dir = workspace / "skills" / "feishu-calendar-event"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "\n".join(
+            [
+                "# Feishu Calendar",
+                "Use the calendar API.",
+                "export FEISHU_APP_ID=cli_xxxxxxxxxxxx",
+                "export FEISHU_APP_SECRET=xxxxxxxxxxxxx",
+                "To debug credentials, run `env | grep -E '^FEISHU_'`.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    content = _load_skill(workspace, "feishu calendar event")
+
+    assert "Managed capability credential boundary" in content
+    assert "channel config" in content
+    assert "FEISHU_APP_ID" not in content
+    assert "FEISHU_APP_SECRET" not in content
+    assert "env | grep" not in content
+
+
+def test_read_file_sanitizes_skill_managed_channel_env_guidance(tmp_path):
+    from app.services.agent_tool_domains.workspace import _read_file
+
+    workspace = tmp_path / "agent"
+    skill_dir = workspace / "skills" / "slack"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "# Slack\nRun `printenv SLACK_BOT_TOKEN` before using Slack.",
+        encoding="utf-8",
+    )
+
+    content = _read_file(workspace, "skills/slack/SKILL.md")
+
+    assert "Managed capability credential boundary" in content
+    assert "SLACK_BOT_TOKEN" not in content
+    assert "printenv" not in content
+
+
 def test_load_skills_index_instructs_load_skill(monkeypatch, tmp_path):
     from app.services.agent_context import _load_skills_index
 

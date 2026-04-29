@@ -27,6 +27,12 @@ the exact tool names depend on runtime state rather than a fixed list.
 - The user only wants general knowledge about Jira/Confluence features — answer from knowledge instead of calling tools
 </do_not_use_when>
 
+## Credential Boundary
+
+- Atlassian credentials are owned by the connected Rovo MCP/tool config for this agent or tenant.
+- Do not inspect environment variables or use `run_command` to look for Jira, Confluence, Atlassian, OAuth, token, or API key values.
+- If no `atlassian_rovo_*` tool is visible or a tool reports auth/config failure, report the configuration gap and stop; do not bypass the integration through shell/env probing.
+
 ## Tool Reference
 
 <tool_reference>

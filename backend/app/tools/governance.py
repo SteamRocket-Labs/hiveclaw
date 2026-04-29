@@ -394,6 +394,44 @@ async def _run_governance_inner(
     dangerous_reason = None
     if dangerous_command:
         dangerous_capability, dangerous_reason = dangerous_command
+        if dangerous_capability == "workspace.command.secret_exfiltration":
+            from app.services.managed_capability_guard import (
+                detect_managed_credential_command,
+                managed_credential_block_message,
+            )
+
+            managed_finding = detect_managed_credential_command(str(context.arguments.get("command", "")))
+            if managed_finding:
+                message = managed_credential_block_message(managed_finding)
+                await _maybe_await(
+                    deps.write_audit_event(
+                        event_type="capability.denied",
+                        severity="warn",
+                        actor_type="agent",
+                        actor_id=context.agent_id,
+                        tenant_id=tenant_uuid,
+                        action="managed_credential_env_blocked",
+                        resource_type="tool",
+                        resource_id=None,
+                        details={
+                            "tool": context.tool_name,
+                            "capability": dangerous_capability,
+                            "credential_family": managed_finding.family,
+                        },
+                    )
+                )
+                await _emit_event(
+                    event_callback,
+                    {
+                        "type": "permission",
+                        "tool_name": context.tool_name,
+                        "status": "blocked",
+                        "message": message,
+                        "capability": dangerous_capability,
+                        "credential_family": managed_finding.family,
+                    },
+                )
+                return message
         dangerous_allowed_by_specific_policy = False
         if tenant_uuid is not None:
             try:

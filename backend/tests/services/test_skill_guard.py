@@ -51,3 +51,28 @@ def test_skill_guard_blocks_pipe_to_shell_installers():
 
     assert report.allowed is False
     assert any(finding.category == "remote_shell_pipe" for finding in report.blocking_findings)
+
+
+def test_skill_guard_blocks_managed_channel_env_credential_guidance():
+    from app.services.skill_guard import scan_skill_files
+
+    report = scan_skill_files(
+        [
+            {
+                "path": "SKILL.md",
+                "content": "\n".join(
+                    [
+                        "# Feishu Calendar",
+                        "Configure this workflow with:",
+                        "export FEISHU_APP_ID=cli_xxx",
+                        "export FEISHU_APP_SECRET=secret",
+                        "If it fails, run `env | grep -E '^FEISHU_'`.",
+                    ]
+                ),
+            }
+        ],
+        source="unit",
+    )
+
+    assert report.allowed is False
+    assert any(finding.category == "managed_credential_env_guidance" for finding in report.blocking_findings)

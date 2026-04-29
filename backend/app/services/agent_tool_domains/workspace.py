@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 
 from app.config import get_settings
+from app.services.managed_capability_guard import sanitize_managed_credential_guidance
 from app.skills import SkillRegistry, WorkspaceSkillLoader
 from app.tools.packs import iter_tool_packs, pack_for_name
 from app.tools.result_envelope import render_tool_error
@@ -118,9 +119,19 @@ def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, tool_name:
         content = file_path.read_text(encoding="utf-8", errors="replace")
         if len(content) > 16000:
             content = content[:16000] + f"\n\n...[truncated, {len(content)} chars total]"
+        if _is_skill_instruction_file(ws, file_path):
+            content = sanitize_managed_credential_guidance(content)
         return content
     except Exception as e:
         return _workspace_error(tool_name, "operation_failed", f"Read failed: {e}")
+
+
+def _is_skill_instruction_file(ws: Path, file_path: Path) -> bool:
+    try:
+        rel = file_path.resolve().relative_to((ws / "skills").resolve()).as_posix()
+    except ValueError:
+        return False
+    return rel.endswith("SKILL.md") or ("/" not in rel and rel.endswith(".md"))
 
 
 def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill") -> str:
@@ -147,7 +158,7 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill") -> str
 
     registry = _build_skill_registry(ws)
     try:
-        return registry.load_body(requested)
+        return sanitize_managed_credential_guidance(registry.load_body(requested))
     except KeyError:
         # Not a workspace skill — fall through to check tool packs
         logger.debug("Skill %r not found in workspace, checking tool packs", requested)

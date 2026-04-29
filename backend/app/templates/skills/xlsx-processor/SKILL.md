@@ -40,6 +40,13 @@ smallest `execute_code` script, deliver the file if needed.
 - A plain text/CSV export would suffice — skip the xlsx generation
 </do_not_use_when>
 
+## Credential Boundary
+
+- Local workbook processing needs no external credentials.
+- Feishu Sheets credentials are resolved by the Feishu tools from platform channel config.
+- Do not inspect environment variables or use `run_command` to look for Feishu/Lark credentials.
+- If a Feishu sheet tool reports auth/config failure, report the configuration gap and stop; do not fall back to shell/env probing.
+
 ## Tool Reference
 
 <tool_reference>

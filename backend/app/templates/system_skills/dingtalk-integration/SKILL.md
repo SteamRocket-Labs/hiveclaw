@@ -27,6 +27,12 @@ Simple reminders in the current DingTalk thread are standalone `scheduled_job` w
 - You need to send a proactive DingTalk message to a user outside the current thread — there is no tool for that; do not invent one
 </do_not_use_when>
 
+## Credential Boundary
+
+- DingTalk channel credentials and reply targets are managed by the platform channel config and runtime handler.
+- Do not inspect environment variables or use `run_command` to look for DingTalk app, secret, token, webhook, or robot credentials.
+- If DingTalk delivery or trigger wakeup reports auth/config failure, report the configuration gap and stop; do not invent outbound tools or shell/env workarounds.
+
 ## Tool Reference
 
 <tool_reference>

@@ -92,6 +92,13 @@ class TestToolGovernance:
         assert "pack-gated tool" in prompt_text
         assert "governance will block it" in prompt_text
 
+    def test_managed_credentials_are_never_shell_env_probed(self, prompt_text: str) -> None:
+        normalized = " ".join(prompt_text.split())
+        lowered = normalized.lower()
+        assert "managed channel credentials" in lowered
+        assert "do not inspect environment variables" in lowered
+        assert "dedicated tools" in lowered
+
 
 class TestMemoryIntegration:
     def test_pyramid_timing_documented(self, prompt_text: str) -> None:

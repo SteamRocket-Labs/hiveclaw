@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from app.services.managed_capability_guard import detect_managed_credential_guidance
+
 
 @dataclass(frozen=True, slots=True)
 class SkillGuardFinding:
@@ -115,6 +117,23 @@ def scan_skill_files(files: Iterable[dict[str, Any]], *, source: str = "unknown"
                     path=path,
                     message="Skill content appears to contain embedded credentials or private key material.",
                     evidence={"path": path},
+                )
+            )
+        managed_credential_findings = detect_managed_credential_guidance(content)
+        if managed_credential_findings:
+            findings.append(
+                SkillGuardFinding(
+                    severity="block",
+                    category="managed_credential_env_guidance",
+                    path=path,
+                    message=(
+                        "Skill instructs agents to configure or inspect platform-managed "
+                        "channel credentials via shell environment variables."
+                    ),
+                    evidence={
+                        "path": path,
+                        "families": sorted({finding.family for finding in managed_credential_findings}),
+                    },
                 )
             )
         if _REMOTE_SHELL_PIPE_RE.search(content):

@@ -18,6 +18,8 @@ from app.tools.decorator import ToolMeta, tool
         "- Use this when the current task clearly matches a known skill in the catalog.\n"
         "- Load one relevant skill at a time, then follow its instructions.\n"
         "- Do NOT load a skill speculatively if the task does not clearly match it.\n"
+        "- Do NOT use `run_command` to inspect platform or channel credential env vars from a skill; "
+        "use dedicated tools and platform channel config instead.\n"
         "- If no skill matches, use your builtin tools directly instead of guessing."
     ),
     parameters={

@@ -40,6 +40,12 @@ tasks) load the Feishu Integration skill.
 - You want to write to long-term memory — use Memory Guide (`save_memory`), not a message
 </do_not_use_when>
 
+## Credential Boundary
+
+- Channel credentials and reply targets are supplied by platform channel config and the current runtime context.
+- Do not inspect environment variables or use `run_command` to look for chat app IDs, bot tokens, webhook secrets, or channel credentials.
+- If a messaging tool reports auth/config failure or the current reply target is missing, report the configuration gap and stop; do not guess credentials or switch transports silently.
+
 ## Decision Tree
 
 <tool_reference>

@@ -1,0 +1,1041 @@
+{
+  "generated_at": "2026-04-29T12:51:43.637097+00:00",
+  "lookback_hours": 24,
+  "totals": {
+    "agents": 35,
+    "findings": 18,
+    "errors": 8,
+    "warnings": 10,
+    "infos": 0,
+    "by_category": {
+      "noncanonical_focus_item": 8,
+      "completed_focus_trigger_active": 8,
+      "blocked_objective": 2
+    }
+  },
+  "findings": [
+    {
+      "severity": "warning",
+      "category": "noncanonical_focus_item",
+      "agent_id": "bef8b286-b923-4e29-84c9-022f995ae6b3",
+      "trigger_id": null,
+      "focus_ref": null,
+      "message": "focus.md contains a task-like line that the canonical parser will ignore.",
+      "evidence": {
+        "line_no": 14,
+        "line": "2 你好，我是你的前端设计提示词研究助手     3 中英双语    4 输出必须带来源链接"
+      },
+      "recommendation": "Rewrite the line as '- [ ] task_id :: description' so the trigger audit can track it."
+    },
+    {
+      "severity": "error",
+      "category": "completed_focus_trigger_active",
+      "agent_id": "bef8b286-b923-4e29-84c9-022f995ae6b3",
+      "trigger_id": "61462d78-3e58-4c75-8943-0298ac779c13",
+      "focus_ref": "1_50_prompt_skill",
+      "message": "Enabled trigger 'objective_1_50_prompt_skill' is still bound to completed focus task '1_50_prompt_skill'.",
+      "evidence": {
+        "trigger_name": "objective_1_50_prompt_skill"
+      },
+      "recommendation": "Disable the trigger or reopen the focus task if it still needs work."
+    },
+    {
+      "severity": "error",
+      "category": "completed_focus_trigger_active",
+      "agent_id": "f12b9e28-6edf-47e7-8dcf-d5fc2f802581",
+      "trigger_id": "6ae7c1da-44a1-4db1-93a7-335b431efa41",
+      "focus_ref": "trigger_awakening_context_source_trigger_single_trigger_fired_tr",
+      "message": "Enabled trigger 'objective_trigger_awakening_context_source_trigger_single_trigger_fired_tr' is still bound to completed focus task 'trigger_awakening_context_source_trigger_single_trigger_fired_tr'.",
+      "evidence": {
+        "trigger_name": "objective_trigger_awakening_context_source_trigger_single_trigger_fired_tr"
+      },
+      "recommendation": "Disable the trigger or reopen the focus task if it still needs work."
+    },
+    {
+      "severity": "warning",
+      "category": "blocked_objective",
+      "agent_id": "bb87d853-eab5-4687-bc33-45e262f96925",
+      "trigger_id": null,
+      "focus_ref": "nda",
+      "message": "Objective 'nda' is blocked.",
+      "evidence": {
+        "objective_id": "604bab3b-39e9-47a8-a4e0-7c10f6850641",
+        "blocked_reason": "缺少两个关键信息，无法继续提交NDA审批：1) Lindsay的飞书账号——在飞书通讯录中搜索\"Lindsay\"无结果，需要用户提供飞书真实姓名、open_id或工作邮箱；2) NDA审批代码(approval_code)——飞书审批API必须提供approval_code才能提交，当前未知，需要用户提供或从飞书管理后台获取。"
+      },
+      "recommendation": "Resolve the blocker, create a recovery objective, or reject/snooze the objective."
+    },
+    {
+      "severity": "warning",
+      "category": "blocked_objective",
+      "agent_id": "bb87d853-eab5-4687-bc33-45e262f96925",
+      "trigger_id": null,
+      "focus_ref": "0428_pdf_workspace_uploads",
+      "message": "Objective '0428_pdf_workspace_uploads' is blocked.",
+      "evidence": {
+        "objective_id": "b79d1875-48a3-44fd-9d52-639c8d65952a",
+        "blocked_reason": "PDF已在上一轮会话中完成解析（提取字段：致函对象=无界动力(北京)技术研发有限公司, 出具方=上海常春藤投资有限公司, 日期=2026年4月16日, 保密期限=自函生效之日起二年, 事项=常春藤资本拟通过旗下基金对无界动力进行战略投资前尽职调查的保密承诺），但NDA审批提交仍被阻塞，需要：1) Lindsay的飞书账号信息；2) NDA审批代码(approval_code)。"
+      },
+      "recommendation": "Resolve the blocker, create a recovery objective, or reject/snooze the objective."
+    },
+    {
+      "severity": "error",
+      "category": "completed_focus_trigger_active",
+      "agent_id": "bb87d853-eab5-4687-bc33-45e262f96925",
+      "trigger_id": "9a81d820-a80b-4d56-8627-18d4316eb141",
+      "focus_ref": "trigger_awakening_context_source_trigger_single_trigger_fired_tr",
+      "message": "Enabled trigger 'objective_trigger_awakening_context_source_trigger_single_trigger_fired_tr' is still bound to completed focus task 'trigger_awakening_context_source_trigger_single_trigger_fired_tr'.",
+      "evidence": {
+        "trigger_name": "objective_trigger_awakening_context_source_trigger_single_trigger_fired_tr"
+      },
+      "recommendation": "Disable the trigger or reopen the focus task if it still needs work."
+    },
+    {
+      "severity": "warning",
+      "category": "noncanonical_focus_item",
+      "agent_id": "06048572-f955-47c1-954b-1303398a4971",
+      "trigger_id": null,
+      "focus_ref": null,
+      "message": "focus.md contains a task-like line that the canonical parser will ignore.",
+      "evidence": {
+        "line_no": 19,
+        "line": "- [ ] sole_social_media_monitoring ::"
+      },
+      "recommendation": "Rewrite the line as '- [ ] task_id :: description' so the trigger audit can track it."
+    },
+    {
+      "severity": "error",
+      "category": "completed_focus_trigger_active",
+      "agent_id": "06048572-f955-47c1-954b-1303398a4971",
+      "trigger_id": "3580cbda-7193-4ba2-ab82-303c0cd9adb4",
+      "focus_ref": "sole_social_media_monitoring",
+      "message": "Enabled trigger 'weekly_sole_social_media_report' is still bound to completed focus task 'sole_social_media_monitoring'.",
+      "evidence": {
+        "trigger_name": "weekly_sole_social_media_report"
+      },
+      "recommendation": "Disable the trigger or reopen the focus task if it still needs work."
+    },
+    {
+      "severity": "error",
+      "category": "completed_focus_trigger_active",
+      "agent_id": "06048572-f955-47c1-954b-1303398a4971",
+      "trigger_id": "a3dcaef2-026d-49b8-a65e-fb9392108feb",
+      "focus_ref": "sole_social_media_monitoring",
+      "message": "Enabled trigger 'daily_sole_social_media_report' is still bound to completed focus task 'sole_social_media_monitoring'.",
+      "evidence": {
+        "trigger_name": "daily_sole_social_media_report"
+      },
+      "recommendation": "Disable the trigger or reopen the focus task if it still needs work."
+    },
+    {
+      "severity": "warning",
+      "category": "noncanonical_focus_item",
+      "agent_id": "ec03ec3e-c4e8-417d-95f7-f84215e7b9c3",
+      "trigger_id": null,
+      "focus_ref": null,
+      "message": "focus.md contains a task-like line that the canonical parser will ignore.",
+      "evidence": {
+        "line_no": 11,
+        "line": "1. 核心资金流：BTC/ETH 净流向（交易所/ETF）、链上 TVL 变化（包含 TVL/MC、稳定币流动等指标）"
+      },
+      "recommendation": "Rewrite the line as '- [ ] task_id :: description' so the trigger audit can track it."
+    },
+    {
+      "severity": "warning",
+      "category": "noncanonical_focus_item",
+      "agent_id": "ec03ec3e-c4e8-417d-95f7-f84215e7b9c3",
+      "trigger_id": null,
+      "focus_ref": null,
+      "message": "focus.md contains a task-like line that the canonical parser will ignore.",
+      "evidence": {
+        "line_no": 12,
+        "line": "2. RWA 专项情报：核心协议动态、收益率变动、机构接入"
+      },
+      "recommendation": "Rewrite the line as '- [ ] task_id :: description' so the trigger audit can track it."
+    },
+    {
+      "severity": "warning",
+      "category": "noncanonical_focus_item",
+      "agent_id": "ec03ec3e-c4e8-417d-95f7-f84215e7b9c3",
+      "trigger_id": null,
+      "focus_ref": null,
+      "message": "focus.md contains a task-like line that the canonical parser will ignore.",
+      "evidence": {
+        "line_no": 13,
+        "line": "3. 近期融资大事件：> $5M，含机构背景、轮次"
+      },
+      "recommendation": "Rewrite the line as '- [ ] task_id :: description' so the trigger audit can track it."
+    },
+    {
+      "severity": "warning",
+      "category": "noncanonical_focus_item",
+      "agent_id": "ec03ec3e-c4e8-417d-95f7-f84215e7b9c3",
+      "trigger_id": null,
+      "focus_ref": null,
+      "message": "focus.md contains a task-like line that the canonical parser will ignore.",
+      "evidence": {
+        "line_no": 14,
+        "line": "4. 潜力项目拆解：每日 3 个 RWA/DeFi 项目，不重复，含机制、TVL/MC、风险、催化剂"
+      },
+      "recommendation": "Rewrite the line as '- [ ] task_id :: description' so the trigger audit can track it."
+    },
+    {
+      "severity": "warning",
+      "category": "noncanonical_focus_item",
+      "agent_id": "ec03ec3e-c4e8-417d-95f7-f84215e7b9c3",
+      "trigger_id": null,
+      "focus_ref": null,
+      "message": "focus.md contains a task-like line that the canonical parser will ignore.",
+      "evidence": {
+        "line_no": 15,
+        "line": "5. 交易员笔记：基于上述数据的逻辑判断（事实/判断/推测）"
+      },
+      "recommendation": "Rewrite the line as '- [ ] task_id :: description' so the trigger audit can track it."
+    },
+    {
+      "severity": "error",
+      "category": "completed_focus_trigger_active",
+      "agent_id": "8cfe80df-e292-4674-8a88-dbd2f88057ef",
+      "trigger_id": "2c213372-7455-4cd1-a11c-28b5ace27429",
+      "focus_ref": "trigger_awakening_context_source_trigger_single_trigger_fired_tr",
+      "message": "Enabled trigger 'objective_trigger_awakening_context_source_trigger_single_trigger_fired_tr' is still bound to completed focus task 'trigger_awakening_context_source_trigger_single_trigger_fired_tr'.",
+      "evidence": {
+        "trigger_name": "objective_trigger_awakening_context_source_trigger_single_trigger_fired_tr"
+      },
+      "recommendation": "Disable the trigger or reopen the focus task if it still needs work."
+    },
+    {
+      "severity": "warning",
+      "category": "noncanonical_focus_item",
+      "agent_id": "6d6605f2-214f-48fe-8e75-73d8083a7523",
+      "trigger_id": null,
+      "focus_ref": null,
+      "message": "focus.md contains a task-like line that the canonical parser will ignore.",
+      "evidence": {
+        "line_no": 22,
+        "line": "- [ ] bright_data_mc"
+      },
+      "recommendation": "Rewrite the line as '- [ ] task_id :: description' so the trigger audit can track it."
+    },
+    {
+      "severity": "error",
+      "category": "completed_focus_trigger_active",
+      "agent_id": "7d0eeb79-269e-4b2d-9ac5-36e836e357ef",
+      "trigger_id": "38d175ea-acfa-4926-bc1f-6ddd17ed7b06",
+      "focus_ref": "trigger_awakening_context_source_trigger_single_trigger_fired_tr",
+      "message": "Enabled trigger 'objective_trigger_awakening_context_source_trigger_single_trigger_fired_tr' is still bound to completed focus task 'trigger_awakening_context_source_trigger_single_trigger_fired_tr'.",
+      "evidence": {
+        "trigger_name": "objective_trigger_awakening_context_source_trigger_single_trigger_fired_tr"
+      },
+      "recommendation": "Disable the trigger or reopen the focus task if it still needs work."
+    },
+    {
+      "severity": "error",
+      "category": "completed_focus_trigger_active",
+      "agent_id": "6a3eee20-a4c5-4dd9-8694-b74334a790de",
+      "trigger_id": "acd59f2e-f270-42a7-b98b-aab3ca6646cc",
+      "focus_ref": "task",
+      "message": "Enabled trigger 'objective_task' is still bound to completed focus task 'task'.",
+      "evidence": {
+        "trigger_name": "objective_task"
+      },
+      "recommendation": "Disable the trigger or reopen the focus task if it still needs work."
+    }
+  ],
+  "agents": [
+    {
+      "agent_id": "bef8b286-b923-4e29-84c9-022f995ae6b3",
+      "agent_name": "__system_hr__",
+      "tenant_id": "aac728fb-fe1c-45df-a2ff-a56e024a37a0",
+      "findings": [
+        {
+          "severity": "warning",
+          "category": "noncanonical_focus_item",
+          "agent_id": "bef8b286-b923-4e29-84c9-022f995ae6b3",
+          "trigger_id": null,
+          "focus_ref": null,
+          "message": "focus.md contains a task-like line that the canonical parser will ignore.",
+          "evidence": {
+            "line_no": 14,
+            "line": "2 你好，我是你的前端设计提示词研究助手     3 中英双语    4 输出必须带来源链接"
+          },
+          "recommendation": "Rewrite the line as '- [ ] task_id :: description' so the trigger audit can track it."
+        },
+        {
+          "severity": "error",
+          "category": "completed_focus_trigger_active",
+          "agent_id": "bef8b286-b923-4e29-84c9-022f995ae6b3",
+          "trigger_id": "61462d78-3e58-4c75-8943-0298ac779c13",
+          "focus_ref": "1_50_prompt_skill",
+          "message": "Enabled trigger 'objective_1_50_prompt_skill' is still bound to completed focus task '1_50_prompt_skill'.",
+          "evidence": {
+            "trigger_name": "objective_1_50_prompt_skill"
+          },
+          "recommendation": "Disable the trigger or reopen the focus task if it still needs work."
+        }
+      ],
+      "counts": {
+        "enabled_triggers": 6,
+        "focus_tasks": 6,
+        "active_focus_tasks": 5,
+        "completed_focus_tasks": 1,
+        "trigger_sessions": 2,
+        "heartbeat_sessions": 2,
+        "trigger_runtime_tasks": 2,
+        "heartbeat_runtime_tasks": 12
+      }
+    },
+    {
+      "agent_id": "e0b927c4-8d1a-4a48-87ce-f19680de8ebc",
+      "agent_name": "小红书AI创业猎手",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 2,
+        "focus_tasks": 1,
+        "active_focus_tasks": 1,
+        "completed_focus_tasks": 0,
+        "trigger_sessions": 2,
+        "heartbeat_sessions": 3,
+        "trigger_runtime_tasks": 2,
+        "heartbeat_runtime_tasks": 20
+      }
+    },
+    {
+      "agent_id": "5113f921-4a9b-44c2-8755-2f697600a087",
+      "agent_name": "浙大系科技新闻观察员",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 4,
+        "focus_tasks": 4,
+        "active_focus_tasks": 3,
+        "completed_focus_tasks": 1,
+        "trigger_sessions": 2,
+        "heartbeat_sessions": 2,
+        "trigger_runtime_tasks": 2,
+        "heartbeat_runtime_tasks": 5
+      }
+    },
+    {
+      "agent_id": "ff573b57-7c0f-4f3d-a505-4a31ba6329c9",
+      "agent_name": "众筹雷达",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 3,
+        "focus_tasks": 3,
+        "active_focus_tasks": 2,
+        "completed_focus_tasks": 0,
+        "trigger_sessions": 2,
+        "heartbeat_sessions": 2,
+        "trigger_runtime_tasks": 2,
+        "heartbeat_runtime_tasks": 12
+      }
+    },
+    {
+      "agent_id": "d180ce8a-b634-4334-9e53-7aa0dd1e5b5d",
+      "agent_name": "前端设计规范与提示词助手",
+      "tenant_id": "aac728fb-fe1c-45df-a2ff-a56e024a37a0",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 2,
+        "focus_tasks": 1,
+        "active_focus_tasks": 0,
+        "completed_focus_tasks": 1,
+        "trigger_sessions": 2,
+        "heartbeat_sessions": 4,
+        "trigger_runtime_tasks": 2,
+        "heartbeat_runtime_tasks": 4
+      }
+    },
+    {
+      "agent_id": "bd112fea-d3fb-40a1-8d1e-e53c566d0fde",
+      "agent_name": "投融资信息整理员",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 3,
+        "focus_tasks": 1,
+        "active_focus_tasks": 1,
+        "completed_focus_tasks": 0,
+        "trigger_sessions": 2,
+        "heartbeat_sessions": 1,
+        "trigger_runtime_tasks": 2,
+        "heartbeat_runtime_tasks": 12
+      }
+    },
+    {
+      "agent_id": "7ebfa350-4481-40f2-bce9-82c9829da765",
+      "agent_name": "机票舱位雷达·大头仔A",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 0,
+        "focus_tasks": 0,
+        "active_focus_tasks": 0,
+        "completed_focus_tasks": 0,
+        "trigger_sessions": 0,
+        "heartbeat_sessions": 4,
+        "trigger_runtime_tasks": 0,
+        "heartbeat_runtime_tasks": 12
+      }
+    },
+    {
+      "agent_id": "c6d17bd1-2b1e-4a71-98c0-ee10964f9a05",
+      "agent_name": "__system_hr__",
+      "tenant_id": "1531c50f-5271-4b1d-9be8-0e562c2670f9",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 0,
+        "focus_tasks": 0,
+        "active_focus_tasks": 0,
+        "completed_focus_tasks": 0,
+        "trigger_sessions": 0,
+        "heartbeat_sessions": 0,
+        "trigger_runtime_tasks": 0,
+        "heartbeat_runtime_tasks": 0
+      }
+    },
+    {
+      "agent_id": "5f6ec3c3-7477-4f27-bf4e-d782312c92f0",
+      "agent_name": "LinkedIn技术高管变动监控员工",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 5,
+        "focus_tasks": 2,
+        "active_focus_tasks": 1,
+        "completed_focus_tasks": 1,
+        "trigger_sessions": 50,
+        "heartbeat_sessions": 3,
+        "trigger_runtime_tasks": 50,
+        "heartbeat_runtime_tasks": 18
+      }
+    },
+    {
+      "agent_id": "f12b9e28-6edf-47e7-8dcf-d5fc2f802581",
+      "agent_name": "Alisa",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "findings": [
+        {
+          "severity": "error",
+          "category": "completed_focus_trigger_active",
+          "agent_id": "f12b9e28-6edf-47e7-8dcf-d5fc2f802581",
+          "trigger_id": "6ae7c1da-44a1-4db1-93a7-335b431efa41",
+          "focus_ref": "trigger_awakening_context_source_trigger_single_trigger_fired_tr",
+          "message": "Enabled trigger 'objective_trigger_awakening_context_source_trigger_single_trigger_fired_tr' is still bound to completed focus task 'trigger_awakening_context_source_trigger_single_trigger_fired_tr'.",
+          "evidence": {
+            "trigger_name": "objective_trigger_awakening_context_source_trigger_single_trigger_fired_tr"
+          },
+          "recommendation": "Disable the trigger or reopen the focus task if it still needs work."
+        }
+      ],
+      "counts": {
+        "enabled_triggers": 2,
+        "focus_tasks": 1,
+        "active_focus_tasks": 0,
+        "completed_focus_tasks": 1,
+        "trigger_sessions": 2,
+        "heartbeat_sessions": 2,
+        "trigger_runtime_tasks": 2,
+        "heartbeat_runtime_tasks": 14
+      }
+    },
+    {
+      "agent_id": "5d657792-c30d-4f8a-8b3c-389e8583afb1",
+      "agent_name": "Lumi",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 3,
+        "focus_tasks": 1,
+        "active_focus_tasks": 1,
+        "completed_focus_tasks": 0,
+        "trigger_sessions": 2,
+        "heartbeat_sessions": 1,
+        "trigger_runtime_tasks": 2,
+        "heartbeat_runtime_tasks": 12
+      }
+    },
+    {
+      "agent_id": "9e4f6d75-c753-44d0-a628-4e9b3f582704",
+      "agent_name": "Equity Analyst - Mapper",
+      "tenant_id": "aac728fb-fe1c-45df-a2ff-a56e024a37a0",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 3,
+        "focus_tasks": 2,
+        "active_focus_tasks": 2,
+        "completed_focus_tasks": 0,
+        "trigger_sessions": 1,
+        "heartbeat_sessions": 1,
+        "trigger_runtime_tasks": 1,
+        "heartbeat_runtime_tasks": 12
+      }
+    },
+    {
+      "agent_id": "9c4e74b4-dee6-44ac-ab24-d7149f3ab3b0",
+      "agent_name": "高级嵌入式工程师",
+      "tenant_id": "aac728fb-fe1c-45df-a2ff-a56e024a37a0",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 2,
+        "focus_tasks": 1,
+        "active_focus_tasks": 1,
+        "completed_focus_tasks": 0,
+        "trigger_sessions": 2,
+        "heartbeat_sessions": 4,
+        "trigger_runtime_tasks": 2,
+        "heartbeat_runtime_tasks": 32
+      }
+    },
+    {
+      "agent_id": "09890d3e-7ba0-43b5-a402-edb50f1dacfe",
+      "agent_name": "Kickstarter 华人智能硬件众筹雷达",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 1,
+        "focus_tasks": 0,
+        "active_focus_tasks": 0,
+        "completed_focus_tasks": 0,
+        "trigger_sessions": 0,
+        "heartbeat_sessions": 2,
+        "trigger_runtime_tasks": 0,
+        "heartbeat_runtime_tasks": 5
+      }
+    },
+    {
+      "agent_id": "f5aefa50-91ff-4282-b4df-bb7baaa76e0b",
+      "agent_name": "学术圈研究员",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 1,
+        "focus_tasks": 1,
+        "active_focus_tasks": 1,
+        "completed_focus_tasks": 0,
+        "trigger_sessions": 0,
+        "heartbeat_sessions": 1,
+        "trigger_runtime_tasks": 0,
+        "heartbeat_runtime_tasks": 5
+      }
+    },
+    {
+      "agent_id": "700c554d-5fc6-41f9-8048-33da794ac244",
+      "agent_name": "V小姐看科技",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 2,
+        "focus_tasks": 3,
+        "active_focus_tasks": 0,
+        "completed_focus_tasks": 3,
+        "trigger_sessions": 1,
+        "heartbeat_sessions": 2,
+        "trigger_runtime_tasks": 1,
+        "heartbeat_runtime_tasks": 5
+      }
+    },
+    {
+      "agent_id": "bb87d853-eab5-4687-bc33-45e262f96925",
+      "agent_name": "飞书审批助手",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "findings": [
+        {
+          "severity": "warning",
+          "category": "blocked_objective",
+          "agent_id": "bb87d853-eab5-4687-bc33-45e262f96925",
+          "trigger_id": null,
+          "focus_ref": "nda",
+          "message": "Objective 'nda' is blocked.",
+          "evidence": {
+            "objective_id": "604bab3b-39e9-47a8-a4e0-7c10f6850641",
+            "blocked_reason": "缺少两个关键信息，无法继续提交NDA审批：1) Lindsay的飞书账号——在飞书通讯录中搜索\"Lindsay\"无结果，需要用户提供飞书真实姓名、open_id或工作邮箱；2) NDA审批代码(approval_code)——飞书审批API必须提供approval_code才能提交，当前未知，需要用户提供或从飞书管理后台获取。"
+          },
+          "recommendation": "Resolve the blocker, create a recovery objective, or reject/snooze the objective."
+        },
+        {
+          "severity": "warning",
+          "category": "blocked_objective",
+          "agent_id": "bb87d853-eab5-4687-bc33-45e262f96925",
+          "trigger_id": null,
+          "focus_ref": "0428_pdf_workspace_uploads",
+          "message": "Objective '0428_pdf_workspace_uploads' is blocked.",
+          "evidence": {
+            "objective_id": "b79d1875-48a3-44fd-9d52-639c8d65952a",
+            "blocked_reason": "PDF已在上一轮会话中完成解析（提取字段：致函对象=无界动力(北京)技术研发有限公司, 出具方=上海常春藤投资有限公司, 日期=2026年4月16日, 保密期限=自函生效之日起二年, 事项=常春藤资本拟通过旗下基金对无界动力进行战略投资前尽职调查的保密承诺），但NDA审批提交仍被阻塞，需要：1) Lindsay的飞书账号信息；2) NDA审批代码(approval_code)。"
+          },
+          "recommendation": "Resolve the blocker, create a recovery objective, or reject/snooze the objective."
+        },
+        {
+          "severity": "error",
+          "category": "completed_focus_trigger_active",
+          "agent_id": "bb87d853-eab5-4687-bc33-45e262f96925",
+          "trigger_id": "9a81d820-a80b-4d56-8627-18d4316eb141",
+          "focus_ref": "trigger_awakening_context_source_trigger_single_trigger_fired_tr",
+          "message": "Enabled trigger 'objective_trigger_awakening_context_source_trigger_single_trigger_fired_tr' is still bound to completed focus task 'trigger_awakening_context_source_trigger_single_trigger_fired_tr'.",
+          "evidence": {
+            "trigger_name": "objective_trigger_awakening_context_source_trigger_single_trigger_fired_tr"
+          },
+          "recommendation": "Disable the trigger or reopen the focus task if it still needs work."
+        }
+      ],
+      "counts": {
+        "enabled_triggers": 6,
+        "focus_tasks": 6,
+        "active_focus_tasks": 5,
+        "completed_focus_tasks": 1,
+        "trigger_sessions": 5,
+        "heartbeat_sessions": 1,
+        "trigger_runtime_tasks": 7,
+        "heartbeat_runtime_tasks": 3
+      }
+    },
+    {
+      "agent_id": "06048572-f955-47c1-954b-1303398a4971",
+      "agent_name": "KEN的营销巡航舰",
+      "tenant_id": "aac728fb-fe1c-45df-a2ff-a56e024a37a0",
+      "findings": [
+        {
+          "severity": "warning",
+          "category": "noncanonical_focus_item",
+          "agent_id": "06048572-f955-47c1-954b-1303398a4971",
+          "trigger_id": null,
+          "focus_ref": null,
+          "message": "focus.md contains a task-like line that the canonical parser will ignore.",
+          "evidence": {
+            "line_no": 19,
+            "line": "- [ ] sole_social_media_monitoring ::"
+          },
+          "recommendation": "Rewrite the line as '- [ ] task_id :: description' so the trigger audit can track it."
+        },
+        {
+          "severity": "error",
+          "category": "completed_focus_trigger_active",
+          "agent_id": "06048572-f955-47c1-954b-1303398a4971",
+          "trigger_id": "3580cbda-7193-4ba2-ab82-303c0cd9adb4",
+          "focus_ref": "sole_social_media_monitoring",
+          "message": "Enabled trigger 'weekly_sole_social_media_report' is still bound to completed focus task 'sole_social_media_monitoring'.",
+          "evidence": {
+            "trigger_name": "weekly_sole_social_media_report"
+          },
+          "recommendation": "Disable the trigger or reopen the focus task if it still needs work."
+        },
+        {
+          "severity": "error",
+          "category": "completed_focus_trigger_active",
+          "agent_id": "06048572-f955-47c1-954b-1303398a4971",
+          "trigger_id": "a3dcaef2-026d-49b8-a65e-fb9392108feb",
+          "focus_ref": "sole_social_media_monitoring",
+          "message": "Enabled trigger 'daily_sole_social_media_report' is still bound to completed focus task 'sole_social_media_monitoring'.",
+          "evidence": {
+            "trigger_name": "daily_sole_social_media_report"
+          },
+          "recommendation": "Disable the trigger or reopen the focus task if it still needs work."
+        }
+      ],
+      "counts": {
+        "enabled_triggers": 4,
+        "focus_tasks": 2,
+        "active_focus_tasks": 1,
+        "completed_focus_tasks": 1,
+        "trigger_sessions": 2,
+        "heartbeat_sessions": 5,
+        "trigger_runtime_tasks": 3,
+        "heartbeat_runtime_tasks": 14
+      }
+    },
+    {
+      "agent_id": "d78ca319-4154-4dc4-ba87-d140f2993c6c",
+      "agent_name": "Alisa 2",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 4,
+        "focus_tasks": 3,
+        "active_focus_tasks": 3,
+        "completed_focus_tasks": 0,
+        "trigger_sessions": 3,
+        "heartbeat_sessions": 1,
+        "trigger_runtime_tasks": 3,
+        "heartbeat_runtime_tasks": 1
+      }
+    },
+    {
+      "agent_id": "5b35b554-2d9a-428a-b6dc-840527e38398",
+      "agent_name": "财报大表姐",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 2,
+        "focus_tasks": 3,
+        "active_focus_tasks": 1,
+        "completed_focus_tasks": 2,
+        "trigger_sessions": 0,
+        "heartbeat_sessions": 1,
+        "trigger_runtime_tasks": 0,
+        "heartbeat_runtime_tasks": 5
+      }
+    },
+    {
+      "agent_id": "ec03ec3e-c4e8-417d-95f7-f84215e7b9c3",
+      "agent_name": "Web3研究员",
+      "tenant_id": "aac728fb-fe1c-45df-a2ff-a56e024a37a0",
+      "findings": [
+        {
+          "severity": "warning",
+          "category": "noncanonical_focus_item",
+          "agent_id": "ec03ec3e-c4e8-417d-95f7-f84215e7b9c3",
+          "trigger_id": null,
+          "focus_ref": null,
+          "message": "focus.md contains a task-like line that the canonical parser will ignore.",
+          "evidence": {
+            "line_no": 11,
+            "line": "1. 核心资金流：BTC/ETH 净流向（交易所/ETF）、链上 TVL 变化（包含 TVL/MC、稳定币流动等指标）"
+          },
+          "recommendation": "Rewrite the line as '- [ ] task_id :: description' so the trigger audit can track it."
+        },
+        {
+          "severity": "warning",
+          "category": "noncanonical_focus_item",
+          "agent_id": "ec03ec3e-c4e8-417d-95f7-f84215e7b9c3",
+          "trigger_id": null,
+          "focus_ref": null,
+          "message": "focus.md contains a task-like line that the canonical parser will ignore.",
+          "evidence": {
+            "line_no": 12,
+            "line": "2. RWA 专项情报：核心协议动态、收益率变动、机构接入"
+          },
+          "recommendation": "Rewrite the line as '- [ ] task_id :: description' so the trigger audit can track it."
+        },
+        {
+          "severity": "warning",
+          "category": "noncanonical_focus_item",
+          "agent_id": "ec03ec3e-c4e8-417d-95f7-f84215e7b9c3",
+          "trigger_id": null,
+          "focus_ref": null,
+          "message": "focus.md contains a task-like line that the canonical parser will ignore.",
+          "evidence": {
+            "line_no": 13,
+            "line": "3. 近期融资大事件：> $5M，含机构背景、轮次"
+          },
+          "recommendation": "Rewrite the line as '- [ ] task_id :: description' so the trigger audit can track it."
+        },
+        {
+          "severity": "warning",
+          "category": "noncanonical_focus_item",
+          "agent_id": "ec03ec3e-c4e8-417d-95f7-f84215e7b9c3",
+          "trigger_id": null,
+          "focus_ref": null,
+          "message": "focus.md contains a task-like line that the canonical parser will ignore.",
+          "evidence": {
+            "line_no": 14,
+            "line": "4. 潜力项目拆解：每日 3 个 RWA/DeFi 项目，不重复，含机制、TVL/MC、风险、催化剂"
+          },
+          "recommendation": "Rewrite the line as '- [ ] task_id :: description' so the trigger audit can track it."
+        },
+        {
+          "severity": "warning",
+          "category": "noncanonical_focus_item",
+          "agent_id": "ec03ec3e-c4e8-417d-95f7-f84215e7b9c3",
+          "trigger_id": null,
+          "focus_ref": null,
+          "message": "focus.md contains a task-like line that the canonical parser will ignore.",
+          "evidence": {
+            "line_no": 15,
+            "line": "5. 交易员笔记：基于上述数据的逻辑判断（事实/判断/推测）"
+          },
+          "recommendation": "Rewrite the line as '- [ ] task_id :: description' so the trigger audit can track it."
+        }
+      ],
+      "counts": {
+        "enabled_triggers": 4,
+        "focus_tasks": 3,
+        "active_focus_tasks": 3,
+        "completed_focus_tasks": 0,
+        "trigger_sessions": 1,
+        "heartbeat_sessions": 5,
+        "trigger_runtime_tasks": 1,
+        "heartbeat_runtime_tasks": 31
+      }
+    },
+    {
+      "agent_id": "997e304f-a959-4931-a096-22873c5d88a3",
+      "agent_name": "菜头",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 0,
+        "focus_tasks": 0,
+        "active_focus_tasks": 0,
+        "completed_focus_tasks": 0,
+        "trigger_sessions": 0,
+        "heartbeat_sessions": 2,
+        "trigger_runtime_tasks": 0,
+        "heartbeat_runtime_tasks": 5
+      }
+    },
+    {
+      "agent_id": "5d99fe45-7ea9-4f7e-979c-c57bcb2cd4ea",
+      "agent_name": "__system_hr__",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 4,
+        "focus_tasks": 4,
+        "active_focus_tasks": 4,
+        "completed_focus_tasks": 0,
+        "trigger_sessions": 3,
+        "heartbeat_sessions": 2,
+        "trigger_runtime_tasks": 3,
+        "heartbeat_runtime_tasks": 12
+      }
+    },
+    {
+      "agent_id": "de902431-f994-493b-8ef2-2430200a7697",
+      "agent_name": "BP智能评分分析员",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 0,
+        "focus_tasks": 0,
+        "active_focus_tasks": 0,
+        "completed_focus_tasks": 0,
+        "trigger_sessions": 0,
+        "heartbeat_sessions": 2,
+        "trigger_runtime_tasks": 0,
+        "heartbeat_runtime_tasks": 5
+      }
+    },
+    {
+      "agent_id": "22fdff42-53e3-4be5-9cb5-76881dd2a1a3",
+      "agent_name": "会议小秘书·大头仔B",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 2,
+        "focus_tasks": 1,
+        "active_focus_tasks": 1,
+        "completed_focus_tasks": 0,
+        "trigger_sessions": 2,
+        "heartbeat_sessions": 4,
+        "trigger_runtime_tasks": 2,
+        "heartbeat_runtime_tasks": 12
+      }
+    },
+    {
+      "agent_id": "ba9c26f1-973a-4192-938a-f0a6609402c8",
+      "agent_name": "创始人画像大师",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 1,
+        "focus_tasks": 1,
+        "active_focus_tasks": 1,
+        "completed_focus_tasks": 0,
+        "trigger_sessions": 0,
+        "heartbeat_sessions": 3,
+        "trigger_runtime_tasks": 0,
+        "heartbeat_runtime_tasks": 12
+      }
+    },
+    {
+      "agent_id": "677f4eb4-10c4-448b-9f24-992965112542",
+      "agent_name": "BP智能评分分析员",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 0,
+        "focus_tasks": 0,
+        "active_focus_tasks": 0,
+        "completed_focus_tasks": 0,
+        "trigger_sessions": 0,
+        "heartbeat_sessions": 2,
+        "trigger_runtime_tasks": 0,
+        "heartbeat_runtime_tasks": 5
+      }
+    },
+    {
+      "agent_id": "87bb800f-84e5-4c26-852f-9e5e65759729",
+      "agent_name": "运营报告更新员",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 2,
+        "focus_tasks": 2,
+        "active_focus_tasks": 2,
+        "completed_focus_tasks": 0,
+        "trigger_sessions": 0,
+        "heartbeat_sessions": 2,
+        "trigger_runtime_tasks": 0,
+        "heartbeat_runtime_tasks": 5
+      }
+    },
+    {
+      "agent_id": "724651d9-3133-49d0-b11f-1b53e788fb50",
+      "agent_name": "AI初创企业猎手",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 2,
+        "focus_tasks": 0,
+        "active_focus_tasks": 0,
+        "completed_focus_tasks": 0,
+        "trigger_sessions": 6,
+        "heartbeat_sessions": 2,
+        "trigger_runtime_tasks": 6,
+        "heartbeat_runtime_tasks": 12
+      }
+    },
+    {
+      "agent_id": "8cfe80df-e292-4674-8a88-dbd2f88057ef",
+      "agent_name": "财税助理",
+      "tenant_id": "aac728fb-fe1c-45df-a2ff-a56e024a37a0",
+      "findings": [
+        {
+          "severity": "error",
+          "category": "completed_focus_trigger_active",
+          "agent_id": "8cfe80df-e292-4674-8a88-dbd2f88057ef",
+          "trigger_id": "2c213372-7455-4cd1-a11c-28b5ace27429",
+          "focus_ref": "trigger_awakening_context_source_trigger_single_trigger_fired_tr",
+          "message": "Enabled trigger 'objective_trigger_awakening_context_source_trigger_single_trigger_fired_tr' is still bound to completed focus task 'trigger_awakening_context_source_trigger_single_trigger_fired_tr'.",
+          "evidence": {
+            "trigger_name": "objective_trigger_awakening_context_source_trigger_single_trigger_fired_tr"
+          },
+          "recommendation": "Disable the trigger or reopen the focus task if it still needs work."
+        }
+      ],
+      "counts": {
+        "enabled_triggers": 4,
+        "focus_tasks": 2,
+        "active_focus_tasks": 0,
+        "completed_focus_tasks": 2,
+        "trigger_sessions": 2,
+        "heartbeat_sessions": 3,
+        "trigger_runtime_tasks": 2,
+        "heartbeat_runtime_tasks": 11
+      }
+    },
+    {
+      "agent_id": "6d6605f2-214f-48fe-8e75-73d8083a7523",
+      "agent_name": "展会雷达",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "findings": [
+        {
+          "severity": "warning",
+          "category": "noncanonical_focus_item",
+          "agent_id": "6d6605f2-214f-48fe-8e75-73d8083a7523",
+          "trigger_id": null,
+          "focus_ref": null,
+          "message": "focus.md contains a task-like line that the canonical parser will ignore.",
+          "evidence": {
+            "line_no": 22,
+            "line": "- [ ] bright_data_mc"
+          },
+          "recommendation": "Rewrite the line as '- [ ] task_id :: description' so the trigger audit can track it."
+        }
+      ],
+      "counts": {
+        "enabled_triggers": 5,
+        "focus_tasks": 2,
+        "active_focus_tasks": 1,
+        "completed_focus_tasks": 1,
+        "trigger_sessions": 3,
+        "heartbeat_sessions": 2,
+        "trigger_runtime_tasks": 3,
+        "heartbeat_runtime_tasks": 5
+      }
+    },
+    {
+      "agent_id": "7d0eeb79-269e-4b2d-9ac5-36e836e357ef",
+      "agent_name": "家用健身器械竞品与舆情监测经理",
+      "tenant_id": "aac728fb-fe1c-45df-a2ff-a56e024a37a0",
+      "findings": [
+        {
+          "severity": "error",
+          "category": "completed_focus_trigger_active",
+          "agent_id": "7d0eeb79-269e-4b2d-9ac5-36e836e357ef",
+          "trigger_id": "38d175ea-acfa-4926-bc1f-6ddd17ed7b06",
+          "focus_ref": "trigger_awakening_context_source_trigger_single_trigger_fired_tr",
+          "message": "Enabled trigger 'objective_trigger_awakening_context_source_trigger_single_trigger_fired_tr' is still bound to completed focus task 'trigger_awakening_context_source_trigger_single_trigger_fired_tr'.",
+          "evidence": {
+            "trigger_name": "objective_trigger_awakening_context_source_trigger_single_trigger_fired_tr"
+          },
+          "recommendation": "Disable the trigger or reopen the focus task if it still needs work."
+        }
+      ],
+      "counts": {
+        "enabled_triggers": 2,
+        "focus_tasks": 1,
+        "active_focus_tasks": 0,
+        "completed_focus_tasks": 1,
+        "trigger_sessions": 2,
+        "heartbeat_sessions": 4,
+        "trigger_runtime_tasks": 2,
+        "heartbeat_runtime_tasks": 5
+      }
+    },
+    {
+      "agent_id": "a2f762f4-bb40-4be5-be56-f826e92ba3ed",
+      "agent_name": "__system_hr__",
+      "tenant_id": "aac728fb-fe1c-45df-a2ff-a56e024a37a0",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 0,
+        "focus_tasks": 1,
+        "active_focus_tasks": 0,
+        "completed_focus_tasks": 1,
+        "trigger_sessions": 1,
+        "heartbeat_sessions": 2,
+        "trigger_runtime_tasks": 1,
+        "heartbeat_runtime_tasks": 4
+      }
+    },
+    {
+      "agent_id": "6a3eee20-a4c5-4dd9-8694-b74334a790de",
+      "agent_name": "日程管理助理",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "findings": [
+        {
+          "severity": "error",
+          "category": "completed_focus_trigger_active",
+          "agent_id": "6a3eee20-a4c5-4dd9-8694-b74334a790de",
+          "trigger_id": "acd59f2e-f270-42a7-b98b-aab3ca6646cc",
+          "focus_ref": "task",
+          "message": "Enabled trigger 'objective_task' is still bound to completed focus task 'task'.",
+          "evidence": {
+            "trigger_name": "objective_task"
+          },
+          "recommendation": "Disable the trigger or reopen the focus task if it still needs work."
+        }
+      ],
+      "counts": {
+        "enabled_triggers": 7,
+        "focus_tasks": 3,
+        "active_focus_tasks": 2,
+        "completed_focus_tasks": 1,
+        "trigger_sessions": 1,
+        "heartbeat_sessions": 4,
+        "trigger_runtime_tasks": 1,
+        "heartbeat_runtime_tasks": 11
+      }
+    },
+    {
+      "agent_id": "962fe27a-5dff-4953-bce8-50260b98ec8b",
+      "agent_name": "募资小达人",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "findings": [],
+      "counts": {
+        "enabled_triggers": 6,
+        "focus_tasks": 5,
+        "active_focus_tasks": 5,
+        "completed_focus_tasks": 0,
+        "trigger_sessions": 2,
+        "heartbeat_sessions": 5,
+        "trigger_runtime_tasks": 4,
+        "heartbeat_runtime_tasks": 12
+      }
+    }
+  ]
+}

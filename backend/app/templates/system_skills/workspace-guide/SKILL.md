@@ -87,6 +87,12 @@ Always use tools for file operations — tool results are the source of truth:
 | Search available tools/skills when the current toolset is unclear | `tool_search` |
 | Send a file to the current channel's user | `send_channel_file` |
 
+### Credential Boundary for `run_command`
+
+- `run_command` is for workspace diagnostics, build/test commands, and local file-oriented checks.
+- Do not inspect environment variables or use `run_command` to discover platform, provider, or channel credentials.
+- If an integration tool reports auth/config failure, report the configuration gap from that tool; do not look for app IDs, secrets, tokens, or API keys in shell env.
+
 ### Messaging Tools
 
 | Target | Tool |

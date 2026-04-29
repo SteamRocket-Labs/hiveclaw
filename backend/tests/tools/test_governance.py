@@ -412,7 +412,7 @@ async def test_governance_allows_secret_command_when_specific_policy_allows_with
             user_id=uuid4(),
             tenant_id=str(uuid4()),
             tool_name="run_command",
-            arguments={"command": "env | grep -E '^FEISHU_'"},
+            arguments={"command": "printenv CUSTOM_TOKEN"},
         ),
         GovernanceDependencies(
             resolve_security_zone=resolve_security_zone,
@@ -424,6 +424,87 @@ async def test_governance_allows_secret_command_when_specific_policy_allows_with
 
     assert message is None
     assert checked_tools == ["run_command", "workspace.command.secret_exfiltration"]
+
+
+@pytest.mark.asyncio
+async def test_governance_blocks_managed_channel_env_probe_without_approval_request():
+    from app.services.capability_gate import CapabilityCheckResult
+    from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
+
+    approval_calls = []
+    audit_calls = []
+    events = []
+
+    async def resolve_security_zone(_agent_id):
+        return "standard"
+
+    async def check_capability(_tenant_id, _agent_id, tool_name):
+        return CapabilityCheckResult(
+            allowed=True,
+            denied=False,
+            escalate_to_l3=False,
+            capability=tool_name if tool_name.startswith("workspace.") else "workspace.command.execute",
+            reason="",
+        )
+
+    async def write_audit(**kwargs):
+        audit_calls.append(kwargs)
+
+    async def request_approval(*args, **kwargs):
+        approval_calls.append(kwargs)
+        return {"allowed": False, "approval_id": "should-not-exist"}
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+
+    message = await run_tool_governance(
+        ToolGovernanceContext(
+            agent_id=agent_id,
+            user_id=uuid4(),
+            tenant_id=str(tenant_id),
+            tool_name="run_command",
+            arguments={"command": "env | grep -E '^FEISHU_'"},
+        ),
+        GovernanceDependencies(
+            resolve_security_zone=resolve_security_zone,
+            check_capability=check_capability,
+            write_audit_event=write_audit,
+            request_approval=request_approval,
+        ),
+        event_callback=events.append,
+    )
+
+    assert message is not None
+    assert "managed channel credentials" in message
+    assert "dedicated tools" in message
+    assert approval_calls == []
+    assert audit_calls == [
+        {
+            "event_type": "capability.denied",
+            "severity": "warn",
+            "actor_type": "agent",
+            "actor_id": agent_id,
+            "tenant_id": tenant_id,
+            "action": "managed_credential_env_blocked",
+            "resource_type": "tool",
+            "resource_id": None,
+            "details": {
+                "tool": "run_command",
+                "capability": "workspace.command.secret_exfiltration",
+                "credential_family": "feishu",
+            },
+        }
+    ]
+    assert events == [
+        {
+            "type": "permission",
+            "tool_name": "run_command",
+            "status": "blocked",
+            "message": message,
+            "capability": "workspace.command.secret_exfiltration",
+            "credential_family": "feishu",
+        }
+    ]
 
 
 @pytest.mark.asyncio

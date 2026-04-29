@@ -147,6 +147,7 @@ def test_core_tool_descriptions_define_when_not_to_use_and_fallbacks() -> None:
     assert "Use this to schedule future work" in tools["set_trigger"]
     assert "Do NOT create a trigger without a clear reason" in tools["set_trigger"]
     assert "Do NOT load a skill speculatively" in tools["load_skill"]
+    assert "Do NOT use `run_command` to inspect platform or channel credential env vars" in tools["load_skill"]
     assert "Only use this after a workflow has succeeded repeatedly" in tools["save_skill"]
     assert "Do NOT save one-off notes, transient state, or raw transcripts as skills" in tools["save_skill"]
     assert "Durable user corrections belong in `save_memory`" in tools["save_skill"]

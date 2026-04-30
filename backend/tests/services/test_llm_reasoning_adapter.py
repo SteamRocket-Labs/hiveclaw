@@ -125,17 +125,26 @@ def test_minimax_maps_reasoning_split_without_fake_effort():
     assert kwargs == {"reasoning_split": True}
 
 
-def test_deepseek_reasoner_does_not_emit_fake_reasoning_controls():
+def test_deepseek_maps_official_thinking_controls_and_omits_temperature():
     kwargs = build_reasoning_kwargs(
-        _model(provider="deepseek", model="deepseek-reasoner", reasoning_effort="high"),
+        _model(provider="deepseek", model="deepseek-v4-pro", reasoning_mode="enabled", reasoning_effort="max"),
         tools_enabled=False,
     )
 
-    assert kwargs == {}
+    assert kwargs == {"thinking": {"type": "enabled"}, "reasoning_effort": "max", "_omit_temperature": True}
 
 
-def test_deepseek_payload_strips_reasoning_content_from_input_history():
-    client = OpenAICompatibleClient(api_key="test", model="deepseek-reasoner", base_url="https://api.deepseek.com/v1")
+def test_deepseek_disabled_thinking_keeps_sampling_controls_available():
+    kwargs = build_reasoning_kwargs(
+        _model(provider="deepseek", model="deepseek-v4-flash", reasoning_mode="disabled", reasoning_effort="max"),
+        tools_enabled=True,
+    )
+
+    assert kwargs == {"thinking": {"type": "disabled"}}
+
+
+def test_deepseek_payload_preserves_reasoning_content_for_tool_turns_and_omits_temperature():
+    client = OpenAICompatibleClient(api_key="test", model="deepseek-v4-pro", base_url="https://api.deepseek.com")
     payload = client._build_payload(
         [
             LLMMessage(role="assistant", content="answer", reasoning_content="private chain"),
@@ -144,9 +153,11 @@ def test_deepseek_payload_strips_reasoning_content_from_input_history():
         tools=None,
         temperature=0.7,
         max_tokens=512,
+        _omit_temperature=True,
     )
 
-    assert "reasoning_content" not in payload["messages"][0]
+    assert payload["messages"][0]["reasoning_content"] == "private chain"
+    assert "temperature" not in payload
 
 
 def test_provider_manifest_exposes_reasoning_capabilities_and_recommended_models():
@@ -159,5 +170,13 @@ def test_provider_manifest_exposes_reasoning_capabilities_and_recommended_models
     assert manifest["minimax"]["reasoning_strategy"] == "minimax_reasoning_split"
     assert manifest["kimi"]["reasoning_strategy"] == "kimi_thinking"
     assert manifest["zhipu"]["reasoning_strategy"] == "glm_thinking"
-    assert manifest["deepseek"]["supports_tools_with_reasoning"] is False
+    assert manifest["deepseek"]["default_base_url"] == "https://api.deepseek.com"
+    assert manifest["deepseek"]["reasoning_strategy"] == "deepseek_thinking"
+    assert manifest["deepseek"]["supported_reasoning_modes"] == ["provider_default", "enabled", "disabled"]
+    assert manifest["deepseek"]["supported_reasoning_efforts"] == ["high", "max"]
+    assert manifest["deepseek"]["supports_tools_with_reasoning"] is True
+    assert [item["model"] for item in manifest["deepseek"]["recommended_models"]] == [
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+    ]
     assert manifest["qwen"]["recommended_models"]

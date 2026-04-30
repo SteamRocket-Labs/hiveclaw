@@ -13,6 +13,7 @@ from typing import Any
 
 _OPENAI_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 _ANTHROPIC_EFFORTS = {"low", "medium", "high"}
+_DEEPSEEK_EFFORTS = {"high", "max"}
 
 
 def _attr(model_config: Any, name: str, default: Any = None) -> Any:
@@ -128,9 +129,19 @@ def build_reasoning_kwargs(model_config: Any, *, tools_enabled: bool) -> dict[st
             kwargs["reasoning_split"] = True
 
     elif provider == "deepseek":
-        # deepseek-reasoner emits reasoning_content but does not expose a real
-        # effort/budget control. Sending fake controls causes validation drift.
-        kwargs = {}
+        # DeepSeek V4 thinking mode supports high/max reasoning effort. When
+        # thinking is enabled/default, sampling controls such as temperature are
+        # ignored by the provider, so omit temperature instead of showing a fake
+        # active dial.
+        if _is_disabled(model_config):
+            kwargs["thinking"] = {"type": "disabled"}
+        else:
+            if _is_enabled(model_config):
+                kwargs["thinking"] = {"type": "enabled"}
+            clean_effort = _clean_effort(effort, _DEEPSEEK_EFFORTS)
+            if clean_effort:
+                kwargs["reasoning_effort"] = clean_effort
+            kwargs["_omit_temperature"] = True
 
     provider_options = _attr(model_config, "provider_options", None)
     if isinstance(provider_options, dict):

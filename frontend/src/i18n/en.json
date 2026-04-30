@@ -1054,7 +1054,9 @@
       "reasoningBudgetPlaceholder": "Provider default",
       "textVerbosity": "Text Verbosity",
       "preserveReasoning": "Preserve reasoning for multi-turn tool use",
-      "reasoningNoToolsWarning": "This provider reasoning model is not recommended for tool-calling agents.",
+      "reasoningNoToolsWarning": "This provider does not expose tool calling while reasoning is enabled.",
+      "deepseekThinkingFact": "DeepSeek thinking mode keeps tool calling available. Preserve reasoning_content for tool-call turns; temperature is ignored while thinking is enabled.",
+      "deepseekTemperatureDesc": "DeepSeek thinking mode ignores temperature; disable thinking mode before tuning sampling.",
       "reasoningModes": {
         "provider_default": "Provider Default",
         "enabled": "Enabled",
@@ -1067,6 +1069,7 @@
         "low": "Low",
         "medium": "Medium",
         "high": "High",
+        "max": "Max",
         "xhigh": "Extra High",
         "auto": "Auto"
       },

@@ -59,6 +59,37 @@ export interface WorkspaceLlmModelForm {
   provider_options: string;
 }
 
+type ProviderDefaultPatch = Partial<WorkspaceLlmModelForm>;
+
+export function buildProviderDefaultPatch(
+  providerOptions: WorkspaceLlmProviderSpec[],
+  newProvider: string,
+  current: Pick<WorkspaceLlmModelForm, 'max_output_tokens' | 'max_input_tokens'>,
+): ProviderDefaultPatch {
+  const spec = providerOptions.find((provider) => provider.provider === newProvider);
+  const firstRecommendation = spec?.recommended_models?.[0];
+  const recommendedModel = firstRecommendation ? String(firstRecommendation.model || '') : '';
+  const recommendedLabel = firstRecommendation ? String(firstRecommendation.label || recommendedModel) : '';
+
+  return {
+    provider: newProvider,
+    model: recommendedModel,
+    label: recommendedLabel,
+    base_url: spec?.default_base_url || '',
+    supports_vision: Boolean(firstRecommendation?.supports_vision),
+    max_output_tokens: spec ? String(spec.default_max_tokens) : current.max_output_tokens,
+    max_input_tokens: spec?.max_input_tokens ? String(spec.max_input_tokens) : current.max_input_tokens,
+    temperature: '',
+    reasoning_mode: 'provider_default',
+    reasoning_effort: '',
+    reasoning_budget_tokens: '',
+    reasoning_display: '',
+    preserve_reasoning: false,
+    text_verbosity: '',
+    provider_options: '',
+  };
+}
+
 interface WorkspaceLlmSectionProps {
   models: WorkspaceLlmModel[];
   providerOptions: WorkspaceLlmProviderSpec[];
@@ -102,26 +133,15 @@ export default function WorkspaceLlmSection({
   const reasoningModes = selectedProvider?.supported_reasoning_modes || ['provider_default'];
   const reasoningEfforts = selectedProvider?.supported_reasoning_efforts || [];
   const hasReasoningControls = Boolean(selectedProvider?.reasoning_strategy && selectedProvider.reasoning_strategy !== 'none');
-  const showReasoningEffort = reasoningEfforts.length > 0 && modelForm.reasoning_mode !== 'provider_default';
+  const isDeepSeekThinking = selectedProvider?.reasoning_strategy === 'deepseek_thinking';
+  const deepSeekThinkingActive = isDeepSeekThinking && modelForm.reasoning_mode !== 'disabled';
+  const showReasoningEffort = reasoningEfforts.length > 0 && modelForm.reasoning_mode !== 'disabled' && (modelForm.reasoning_mode !== 'provider_default' || isDeepSeekThinking);
   const showReasoningBudget = Boolean(selectedProvider?.supports_reasoning_budget) && modelForm.reasoning_mode !== 'provider_default';
   const showPreserveReasoning = Boolean(selectedProvider?.supports_reasoning_preservation);
   const showTextVerbosity = Boolean(selectedProvider?.supports_text_verbosity);
 
   const applyProviderDefaults = (newProvider: string) => {
-    const spec = providerOptions.find((provider) => provider.provider === newProvider);
-    onModelFormChange({
-      provider: newProvider,
-      base_url: spec?.default_base_url || '',
-      max_output_tokens: spec ? String(spec.default_max_tokens) : modelForm.max_output_tokens,
-      max_input_tokens: spec?.max_input_tokens ? String(spec.max_input_tokens) : modelForm.max_input_tokens,
-      reasoning_mode: 'provider_default',
-      reasoning_effort: '',
-      reasoning_budget_tokens: '',
-      reasoning_display: '',
-      preserve_reasoning: false,
-      text_verbosity: '',
-      provider_options: '',
-    });
+    onModelFormChange(buildProviderDefaultPatch(providerOptions, newProvider, modelForm));
   };
 
   const renderReasoningControls = () => {
@@ -134,7 +154,13 @@ export default function WorkspaceLlmSection({
             <select
               className="form-input"
               value={modelForm.reasoning_mode}
-              onChange={(event) => onModelFormChange({ reasoning_mode: event.target.value })}
+              onChange={(event) => {
+                const nextMode = event.target.value;
+                onModelFormChange({
+                  reasoning_mode: nextMode,
+                  temperature: isDeepSeekThinking && nextMode !== 'disabled' ? '' : modelForm.temperature,
+                });
+              }}
             >
               {reasoningModes.map((mode) => (
                 <option key={mode} value={mode}>{t(`enterprise.llm.reasoningModes.${mode}`, mode)}</option>
@@ -199,7 +225,12 @@ export default function WorkspaceLlmSection({
         </div>
         {selectedProvider?.supports_tools_with_reasoning === false ? (
           <div style={{ fontSize: '11px', color: 'var(--warning, #f59e0b)', marginTop: '4px' }}>
-            {t('enterprise.llm.reasoningNoToolsWarning', 'This provider reasoning model is not recommended for tool-calling agents.')}
+            {t('enterprise.llm.reasoningNoToolsWarning', 'This provider does not expose tool calling while reasoning is enabled.')}
+          </div>
+        ) : null}
+        {isDeepSeekThinking ? (
+          <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+            {t('enterprise.llm.deepseekThinkingFact', 'DeepSeek thinking mode keeps tool calling available. Preserve reasoning_content for tool-call turns; temperature is ignored while thinking is enabled.')}
           </div>
         ) : null}
       </div>
@@ -319,10 +350,15 @@ export default function WorkspaceLlmSection({
                 min="0"
                 max="2"
                 placeholder={t('enterprise.llm.temperaturePlaceholder', 'e.g. 0.7 or 1.0 (Leave empty for default)')}
-                value={modelForm.temperature}
+                disabled={deepSeekThinkingActive}
+                value={deepSeekThinkingActive ? '' : modelForm.temperature}
                 onChange={(event) => onModelFormChange({ temperature: event.target.value })}
               />
-              <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.temperatureDesc', 'Leave empty to use the provider default. o1/o3 reasoning models usually require 1.0')}</div>
+              <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                {deepSeekThinkingActive
+                  ? t('enterprise.llm.deepseekTemperatureDesc', 'DeepSeek thinking mode ignores temperature; disable thinking mode before tuning sampling.')
+                  : t('enterprise.llm.temperatureDesc', 'Leave empty to use the provider default. o1/o3 reasoning models usually require 1.0')}
+              </div>
             </div>
             {renderReasoningControls()}
           </div>
@@ -396,8 +432,12 @@ export default function WorkspaceLlmSection({
                   </div>
                   <div className="form-group">
                     <label className="form-label">{t('enterprise.llm.temperature', 'Temperature')}</label>
-                    <input className="form-input" type="number" step="0.1" min="0" max="2" placeholder={t('enterprise.llm.temperaturePlaceholder', 'e.g. 0.7 or 1.0 (Leave empty for default)')} value={modelForm.temperature} onChange={(event) => onModelFormChange({ temperature: event.target.value })} />
-                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.temperatureDesc', 'Leave empty to use the provider default. o1/o3 reasoning models usually require 1.0')}</div>
+                    <input className="form-input" type="number" step="0.1" min="0" max="2" placeholder={t('enterprise.llm.temperaturePlaceholder', 'e.g. 0.7 or 1.0 (Leave empty for default)')} disabled={deepSeekThinkingActive} value={deepSeekThinkingActive ? '' : modelForm.temperature} onChange={(event) => onModelFormChange({ temperature: event.target.value })} />
+                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                      {deepSeekThinkingActive
+                        ? t('enterprise.llm.deepseekTemperatureDesc', 'DeepSeek thinking mode ignores temperature; disable thinking mode before tuning sampling.')
+                        : t('enterprise.llm.temperatureDesc', 'Leave empty to use the provider default. o1/o3 reasoning models usually require 1.0')}
+                    </div>
                   </div>
                   {renderReasoningControls()}
                 </div>

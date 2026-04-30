@@ -1049,7 +1049,9 @@
       "reasoningBudgetPlaceholder": "提供商默认值",
       "textVerbosity": "文本详细度",
       "preserveReasoning": "为多轮工具调用保留推理内容",
-      "reasoningNoToolsWarning": "该提供商的推理模型不建议作为工具调用型 Agent 主模型。",
+      "reasoningNoToolsWarning": "该提供商在开启推理时不暴露工具调用能力。",
+      "deepseekThinkingFact": "DeepSeek thinking mode 支持工具调用；发生工具调用时需要在后续请求中保留 reasoning_content，thinking 开启时 temperature 不生效。",
+      "deepseekTemperatureDesc": "DeepSeek thinking mode 会忽略 temperature；如需调节采样，请先关闭 thinking mode。",
       "reasoningModes": {
         "provider_default": "提供商默认",
         "enabled": "开启",
@@ -1062,6 +1064,7 @@
         "low": "低",
         "medium": "中",
         "high": "高",
+        "max": "最大",
         "xhigh": "极高",
         "auto": "自动"
       },

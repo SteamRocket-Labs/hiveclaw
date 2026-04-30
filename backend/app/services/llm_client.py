@@ -239,10 +239,9 @@ class OpenAICompatibleClient(LLMClient):
         return url
 
     def _strip_reasoning_content_from_inputs(self) -> bool:
-        """DeepSeek reasoner rejects prior reasoning_content in request history."""
+        """Whether this OpenAI-compatible provider rejects prior reasoning_content."""
         model = (self.model or "").lower()
-        base_url = (self.base_url or "").lower()
-        return "deepseek-reasoner" in model or "deepseek.com" in base_url
+        return "deepseek-reasoner-legacy" in model
 
     def _build_payload(
         self,
@@ -254,6 +253,7 @@ class OpenAICompatibleClient(LLMClient):
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build request payload."""
+        omit_temperature = bool(kwargs.pop("_omit_temperature", False))
         # Demote mid-conversation system messages to user role.
         # Only the first system message is kept as-is; providers like MiniMax
         # reject system role anywhere except position 0.
@@ -276,9 +276,10 @@ class OpenAICompatibleClient(LLMClient):
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": sanitized,
-            "temperature": temperature,
             "stream": stream,
         }
+        if not omit_temperature:
+            payload["temperature"] = temperature
 
         # Request usage stats in streaming responses (OpenAI extension)
         if stream:
@@ -1810,17 +1811,18 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         provider="deepseek",
         display_name="DeepSeek",
         protocol="openai_compatible",
-        default_base_url="https://api.deepseek.com/v1",
+        default_base_url="https://api.deepseek.com",
         default_max_tokens=8192,
-        max_input_tokens=64000,
+        max_input_tokens=1000000,
         chars_per_token=3.3,
-        reasoning_strategy="deepseek_reasoning_output",
-        supported_reasoning_modes=("provider_default",),
+        reasoning_strategy="deepseek_thinking",
+        supported_reasoning_modes=("provider_default", "enabled", "disabled"),
+        supported_reasoning_efforts=("high", "max"),
         supports_reasoning_preservation=True,
-        supports_tools_with_reasoning=False,
+        supports_tools_with_reasoning=True,
         recommended_models=(
-            {"model": "deepseek-chat", "label": "DeepSeek Chat", "supports_reasoning": False},
-            {"model": "deepseek-reasoner", "label": "DeepSeek Reasoner", "supports_reasoning": True, "supports_tools": False},
+            {"model": "deepseek-v4-flash", "label": "DeepSeek V4 Flash", "supports_reasoning": True, "supports_tools": True},
+            {"model": "deepseek-v4-pro", "label": "DeepSeek V4 Pro", "supports_reasoning": True, "supports_tools": True},
         ),
     ),
     "qwen": ProviderSpec(

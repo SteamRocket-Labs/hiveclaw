@@ -25,7 +25,7 @@ import WorkspaceUsersSection from './workspace/WorkspaceUsersSection';
 
 interface LLMModel {
     id: string; provider: string; model: string; label: string;
-    base_url?: string; api_key_masked?: string; max_tokens_per_day?: number; enabled: boolean; supports_vision?: boolean; max_output_tokens?: number | null; max_input_tokens?: number | null; temperature?: number | null; created_at?: string;
+    base_url?: string; api_key_masked?: string; max_tokens_per_day?: number; enabled: boolean; supports_vision?: boolean; max_output_tokens?: number | null; max_input_tokens?: number | null; temperature?: number | null; reasoning_mode?: string | null; reasoning_effort?: string | null; reasoning_budget_tokens?: number | null; reasoning_display?: string | null; preserve_reasoning?: boolean | null; text_verbosity?: string | null; provider_options?: Record<string, unknown> | null; created_at?: string;
 }
 
 interface LLMProviderSpec {
@@ -35,6 +35,15 @@ interface LLMProviderSpec {
     default_base_url?: string | null;
     supports_tool_choice: boolean;
     default_max_tokens: number;
+    max_input_tokens?: number;
+    reasoning_strategy?: string;
+    supported_reasoning_modes?: string[];
+    supported_reasoning_efforts?: string[];
+    supports_reasoning_budget?: boolean;
+    supports_reasoning_preservation?: boolean;
+    supports_text_verbosity?: boolean;
+    supports_tools_with_reasoning?: boolean;
+    recommended_models?: Array<Record<string, unknown>>;
 }
 
 export type EnterpriseSettingsTab =
@@ -57,17 +66,17 @@ interface EnterpriseSettingsProps {
 }
 
 const FALLBACK_LLM_PROVIDERS: LLMProviderSpec[] = [
-    { provider: 'anthropic', display_name: 'Anthropic', protocol: 'anthropic', default_base_url: 'https://api.anthropic.com', supports_tool_choice: false, default_max_tokens: 8192 },
-    { provider: 'openai', display_name: 'OpenAI', protocol: 'openai_compatible', default_base_url: 'https://api.openai.com/v1', supports_tool_choice: true, default_max_tokens: 16384 },
+    { provider: 'anthropic', display_name: 'Anthropic', protocol: 'anthropic', default_base_url: 'https://api.anthropic.com', supports_tool_choice: false, default_max_tokens: 8192, reasoning_strategy: 'anthropic_thinking', supported_reasoning_modes: ['provider_default', 'enabled', 'adaptive'], supported_reasoning_efforts: ['low', 'medium', 'high'], supports_reasoning_budget: true, supports_reasoning_preservation: true },
+    { provider: 'openai', display_name: 'OpenAI', protocol: 'openai_compatible', default_base_url: 'https://api.openai.com/v1', supports_tool_choice: true, default_max_tokens: 16384, reasoning_strategy: 'openai_chat_reasoning', supported_reasoning_modes: ['provider_default', 'enabled', 'disabled'], supported_reasoning_efforts: ['minimal', 'low', 'medium', 'high'], supports_text_verbosity: true },
     { provider: 'azure', display_name: 'Azure OpenAI', protocol: 'openai_compatible', default_base_url: '', supports_tool_choice: true, default_max_tokens: 16384 },
-    { provider: 'deepseek', display_name: 'DeepSeek', protocol: 'openai_compatible', default_base_url: 'https://api.deepseek.com/v1', supports_tool_choice: true, default_max_tokens: 8192 },
-    { provider: 'minimax', display_name: 'MiniMax', protocol: 'openai_compatible', default_base_url: 'https://api.minimaxi.com/v1', supports_tool_choice: true, default_max_tokens: 16384 },
-    { provider: 'qwen', display_name: 'Qwen (DashScope)', protocol: 'openai_compatible', default_base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', supports_tool_choice: true, default_max_tokens: 8192 },
-    { provider: 'zhipu', display_name: 'Zhipu', protocol: 'openai_compatible', default_base_url: 'https://open.bigmodel.cn/api/paas/v4', supports_tool_choice: true, default_max_tokens: 8192 },
+    { provider: 'deepseek', display_name: 'DeepSeek', protocol: 'openai_compatible', default_base_url: 'https://api.deepseek.com/v1', supports_tool_choice: true, default_max_tokens: 8192, reasoning_strategy: 'deepseek_reasoning_output', supported_reasoning_modes: ['provider_default'], supports_reasoning_preservation: true, supports_tools_with_reasoning: false },
+    { provider: 'minimax', display_name: 'MiniMax', protocol: 'openai_compatible', default_base_url: 'https://api.minimaxi.com/v1', supports_tool_choice: true, default_max_tokens: 16384, reasoning_strategy: 'minimax_reasoning_split', supported_reasoning_modes: ['provider_default'], supports_reasoning_preservation: true },
+    { provider: 'qwen', display_name: 'Qwen (DashScope)', protocol: 'openai_compatible', default_base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', supports_tool_choice: true, default_max_tokens: 8192, reasoning_strategy: 'qwen_thinking', supported_reasoning_modes: ['provider_default', 'enabled', 'disabled'], supported_reasoning_efforts: ['auto'], supports_reasoning_budget: true, supports_reasoning_preservation: true },
+    { provider: 'zhipu', display_name: 'Zhipu / GLM', protocol: 'openai_compatible', default_base_url: 'https://open.bigmodel.cn/api/paas/v4', supports_tool_choice: true, default_max_tokens: 8192, reasoning_strategy: 'glm_thinking', supported_reasoning_modes: ['provider_default', 'enabled', 'disabled'], supports_reasoning_preservation: true },
     { provider: 'baidu', display_name: 'Baidu (Qianfan)', protocol: 'openai_compatible', default_base_url: 'https://qianfan.baidubce.com/v2', supports_tool_choice: false, default_max_tokens: 4096 },
     { provider: 'gemini', display_name: 'Gemini', protocol: 'gemini', default_base_url: 'https://generativelanguage.googleapis.com/v1beta', supports_tool_choice: true, default_max_tokens: 8192 },
     { provider: 'openrouter', display_name: 'OpenRouter', protocol: 'openai_compatible', default_base_url: 'https://openrouter.ai/api/v1', supports_tool_choice: true, default_max_tokens: 4096 },
-    { provider: 'kimi', display_name: 'Kimi (Moonshot)', protocol: 'openai_compatible', default_base_url: 'https://api.moonshot.cn/v1', supports_tool_choice: true, default_max_tokens: 8192 },
+    { provider: 'kimi', display_name: 'Kimi (Moonshot)', protocol: 'openai_compatible', default_base_url: 'https://api.moonshot.cn/v1', supports_tool_choice: true, default_max_tokens: 8192, reasoning_strategy: 'kimi_thinking', supported_reasoning_modes: ['provider_default', 'enabled', 'disabled'], supports_reasoning_preservation: true },
     { provider: 'vllm', display_name: 'vLLM', protocol: 'openai_compatible', default_base_url: 'http://localhost:8000/v1', supports_tool_choice: true, default_max_tokens: 4096 },
     { provider: 'ollama', display_name: 'Ollama', protocol: 'openai_compatible', default_base_url: 'http://localhost:11434/v1', supports_tool_choice: true, default_max_tokens: 4096 },
     { provider: 'sglang', display_name: 'SGLang', protocol: 'openai_compatible', default_base_url: 'http://localhost:30000/v1', supports_tool_choice: true, default_max_tokens: 4096 },
@@ -407,7 +416,7 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
     });
     const [showAddModel, setShowAddModel] = useState(false);
     const [editingModelId, setEditingModelId] = useState<string | null>(null);
-    const [modelForm, setModelForm] = useState({ provider: 'anthropic', model: '', api_key: '', base_url: '', label: '', supports_vision: false, max_output_tokens: '' as string, max_input_tokens: '' as string, temperature: '' as string });
+    const [modelForm, setModelForm] = useState({ provider: 'anthropic', model: '', api_key: '', base_url: '', label: '', supports_vision: false, max_output_tokens: '' as string, max_input_tokens: '' as string, temperature: '' as string, reasoning_mode: 'provider_default', reasoning_effort: '', reasoning_budget_tokens: '', reasoning_display: '', preserve_reasoning: false, text_verbosity: '', provider_options: '' });
     const { data: providerSpecs = [] } = useQuery({
         queryKey: ['llm-provider-specs'],
         queryFn: () => enterpriseApi.getLLMProviders() as Promise<LLMProviderSpec[]>,
@@ -458,6 +467,13 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
             max_output_tokens: defaultSpec ? String(defaultSpec.default_max_tokens) : '4096',
             max_input_tokens: '',
             temperature: '',
+            reasoning_mode: 'provider_default',
+            reasoning_effort: '',
+            reasoning_budget_tokens: '',
+            reasoning_display: '',
+            preserve_reasoning: false,
+            text_verbosity: '',
+            provider_options: '',
         });
         setShowAddModel(true);
     };
@@ -504,13 +520,32 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
         await runModelTest(testData);
     };
 
-    const handleCreateModel = () => {
-        addModel.mutate({
+    const buildModelPayload = () => {
+        let providerOptionsPayload: Record<string, unknown> | null = null;
+        if (modelForm.provider_options.trim()) {
+            try {
+                providerOptionsPayload = JSON.parse(modelForm.provider_options);
+            } catch {
+                providerOptionsPayload = null;
+            }
+        }
+        return {
             ...modelForm,
             max_output_tokens: modelForm.max_output_tokens ? Number(modelForm.max_output_tokens) : null,
             max_input_tokens: modelForm.max_input_tokens ? Number(modelForm.max_input_tokens) : null,
             temperature: modelForm.temperature !== '' ? Number(modelForm.temperature) : null,
-        });
+            reasoning_mode: modelForm.reasoning_mode || 'provider_default',
+            reasoning_effort: modelForm.reasoning_effort || null,
+            reasoning_budget_tokens: modelForm.reasoning_budget_tokens ? Number(modelForm.reasoning_budget_tokens) : null,
+            reasoning_display: modelForm.reasoning_display || null,
+            preserve_reasoning: modelForm.preserve_reasoning,
+            text_verbosity: modelForm.text_verbosity || null,
+            provider_options: providerOptionsPayload,
+        };
+    };
+
+    const handleCreateModel = () => {
+        addModel.mutate(buildModelPayload());
     };
 
     const handleTestExistingModel = async () => {
@@ -528,12 +563,7 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
         if (!editingModelId) return;
         updateModel.mutate({
             id: editingModelId,
-            data: {
-                ...modelForm,
-                max_output_tokens: modelForm.max_output_tokens ? Number(modelForm.max_output_tokens) : null,
-                max_input_tokens: modelForm.max_input_tokens ? Number(modelForm.max_input_tokens) : null,
-                temperature: modelForm.temperature !== '' ? Number(modelForm.temperature) : null,
-            },
+            data: buildModelPayload(),
         });
     };
 
@@ -558,6 +588,13 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
             max_output_tokens: model.max_output_tokens ? String(model.max_output_tokens) : '',
             max_input_tokens: model.max_input_tokens ? String(model.max_input_tokens) : '',
             temperature: model.temperature !== null && model.temperature !== undefined ? String(model.temperature) : '',
+            reasoning_mode: model.reasoning_mode || 'provider_default',
+            reasoning_effort: model.reasoning_effort || '',
+            reasoning_budget_tokens: model.reasoning_budget_tokens ? String(model.reasoning_budget_tokens) : '',
+            reasoning_display: model.reasoning_display || '',
+            preserve_reasoning: model.preserve_reasoning || false,
+            text_verbosity: model.text_verbosity || '',
+            provider_options: model.provider_options ? JSON.stringify(model.provider_options, null, 2) : '',
         });
         setShowAddModel(true);
     };

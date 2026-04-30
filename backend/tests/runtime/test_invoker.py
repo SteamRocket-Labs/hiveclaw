@@ -193,6 +193,78 @@ async def test_invoke_agent_keeps_core_tools_when_skill_read_has_no_declared_exp
 
 
 @pytest.mark.asyncio
+async def test_invoke_agent_applies_model_temperature_and_reasoning_kwargs(monkeypatch):
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    model = SimpleNamespace(
+        provider="qwen",
+        model="qwen3-max",
+        api_key="test-key",
+        base_url=None,
+        max_output_tokens=None,
+        temperature=0.2,
+        reasoning_mode="enabled",
+        reasoning_effort=None,
+        reasoning_budget_tokens=4096,
+        preserve_reasoning=True,
+        text_verbosity=None,
+        provider_options=None,
+    )
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            )
+        ]
+    )
+
+    async def fake_empty_context(*args, **kwargs):
+        return ""
+
+    async def fake_resolve_runtime_config(_agent_id):
+        from app.kernel import RuntimeConfig
+
+        return RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=10)
+
+    async def fake_build_agent_context(*args, **kwargs):
+        return "BASE_PROMPT"
+
+    monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
+    monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_empty_context)
+    monkeypatch.setattr("app.runtime.invoker.build_memory_snapshot", fake_empty_context)
+    monkeypatch.setattr("app.runtime.invoker.build_agent_runtime_context", fake_empty_context)
+    monkeypatch.setattr("app.runtime.invoker.build_memory_context", fake_empty_context)
+    monkeypatch.setattr("app.runtime.invoker._resolve_runtime_config", fake_resolve_runtime_config)
+    monkeypatch.setattr("app.runtime.invoker.maybe_compress_messages", lambda messages, **kwargs: messages)
+    monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", lambda *args, **kwargs: [])
+    monkeypatch.setattr("app.runtime.invoker.create_llm_client", lambda **kwargs: fake_client)
+    monkeypatch.setattr("app.runtime.invoker.record_token_usage", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.runtime.invoker.get_max_tokens", lambda *args, **kwargs: 2048)
+
+    result = await invoke_agent(
+        AgentInvocationRequest(
+            model=model,
+            messages=[{"role": "user", "content": "hello"}],
+            agent_name="Qwen Agent",
+            role_description="Tests reasoning config",
+            agent_id=agent_id,
+            user_id=user_id,
+        )
+    )
+
+    assert result.content == "done"
+    assert fake_client.calls[0]["temperature"] == 0.2
+    assert fake_client.calls[0]["enable_thinking"] is True
+    assert fake_client.calls[0]["thinking_budget"] == 4096
+    assert fake_client.calls[0]["preserve_thinking"] is True
+
+
+@pytest.mark.asyncio
 async def test_invoke_agent_forwards_delegation_token_to_tool_governance(monkeypatch):
     from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 

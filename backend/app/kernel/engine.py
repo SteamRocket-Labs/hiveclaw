@@ -27,6 +27,7 @@ from app.services.chat_message_parts import (
     build_tool_call_event,
 )
 from app.services.llm_error_policy import classify_llm_error, should_surface_without_model_fallback
+from app.services.llm_reasoning import build_reasoning_kwargs, resolve_temperature
 from app.services.llm_utils import LLMError, LLMMessage
 from app.tools.registry import is_parallel_safe_tool
 
@@ -1336,15 +1337,20 @@ class AgentKernel:
                             )
 
                         try:
+                            reasoning_kwargs = build_reasoning_kwargs(
+                                active_model,
+                                tools_enabled=bool(tools_for_llm),
+                            )
                             response = await _stream_with_cancel(
                                 client,
                                 cancel_event=request.cancel_event,
                                 messages=stream_messages,
                                 tools=tools_for_llm if tools_for_llm else None,
-                                temperature=0.7,
+                                temperature=resolve_temperature(active_model),
                                 max_tokens=max_tokens,
                                 on_chunk=_emit_chunk,
                                 on_thinking=_emit_thinking,
+                                **reasoning_kwargs,
                             )
                             break
                         except _KernelCancelledError:

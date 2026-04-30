@@ -1,0 +1,62 @@
+### Harness H7 — Evidence Loop / Long-Run Proof
+
+**目标**:把“工程闭环已完成”升级为“长期效果被数据证明”。H7 不改 Objective / Trigger / RuntimeTask / Session / Memory / Permission 主干,只做证据采集、趋势报告和低风险真实任务验证。
+
+**H7 采集项**:
+
+```text
+Daily snapshots:
+- /api/admin/autonomous-audit?lookback_hours=24
+- /api/admin/autonomy-repair-plan?lookback_hours=24
+- /api/admin/harness-validation?lookback_hours=24
+
+Weekly snapshots:
+- /api/admin/harness-validation?lookback_hours=168
+- eval/bakeoff report
+- skill_distiller promoted/held/deferred/rollback counts
+- objective completion / skipped / failed / stale counts
+```
+
+**H7 真实任务样本**:
+
+```text
+research/report agent
+- 真实 objective: 定期产出一份可验证 report
+- 验证: RuntimeTask + artifact + validation report
+
+ops/monitoring agent
+- 真实 objective: 监控系统状态并在异常时产生 evidence
+- 验证: skip/failure reason 不允许 silent no-op
+
+self-evolution/skill agent
+- 真实 objective: 从重复工作中生成或 refine 一个 skill candidate
+- 验证: candidate/eval/decision/rollback_ref 全部进入 evolution ledger
+```
+
+**H7 验收标准**:
+
+```text
+- 7 天内 autonomous-audit current window 持续 0 critical finding。
+- repair-plan 持续无未处理 auto-applyable action。
+- 至少 3 个真实 objective 产生 RuntimeTask + artifact + validation report。
+- 至少 1 个真实 skill/evolution candidate 经过 eval + hold/promote decision。
+- 所有失败都有 skip/failure reason,不出现 silent no-op。
+- 不新增第二套 objective/trigger/runtime/session 机制。
+```
+
+---
+
+## 7. 第一刀:本周可立即执行的 6 个动作
+
+按优先级:
+
+| # | 动作 | 风险 | 时间 | 谁做 |
+|---|------|------|-----|-----|
+| 1 | 给当前 Autonomy P6 trunk 补 architecture tests:Objective Ledger / Wake Policy / RuntimeTask / Artifact / UI diagnostics 边界 | 低 | 0.5-1 天 | Claude/Codex |
+| 2 | 增加 H1 harness architecture tests:Kernel / ToolRuntime / Permission / ContextEngine / MemoryProvider / SessionContext | 中 | 0.5-1 天 | Claude/Codex |
+| 3 | 移植 feature 的 trunk-governance 文档和非 autonomy 架构测试,逐个适配当前接口 | 中 | 0.5-1 天 | Claude/Codex |
+| 4 | 选择性迁移 session identifiers / channel message contracts / Feishu canonical user_id,不覆盖 Autonomy P6 API | 中 | 1-2 天 | Claude/Codex + 用户 review |
+| 5 | 开始 skill outcome/refine 账本设计,直接复用 RuntimeTask artifact 数据 | 中 | 0.5-1 天 | Claude/Codex |
+| 6 | 开始 eval/pass-rate 数据集设计,用 objective/runtime ledger 作为样本来源 | 中 | 0.5-1 天 | Claude/Codex |
+
+**全部完成 = 当前 Autonomy P6 自主闭环从"功能可用

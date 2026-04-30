@@ -3,8 +3,8 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, func
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -27,6 +27,14 @@ class LLMModel(Base):
     supports_vision: Mapped[bool] = mapped_column(Boolean, default=False)
     max_output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)  # Per-model output token limit override
     max_input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)  # Context window override
+    temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reasoning_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reasoning_effort: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reasoning_budget_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reasoning_display: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    preserve_reasoning: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    text_verbosity: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    provider_options: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

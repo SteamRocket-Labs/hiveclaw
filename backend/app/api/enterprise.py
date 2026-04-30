@@ -209,6 +209,14 @@ async def add_llm_model(
         supports_vision=data.supports_vision,
         max_output_tokens=data.max_output_tokens,
         max_input_tokens=data.max_input_tokens,
+        temperature=data.temperature,
+        reasoning_mode=data.reasoning_mode,
+        reasoning_effort=data.reasoning_effort,
+        reasoning_budget_tokens=data.reasoning_budget_tokens,
+        reasoning_display=data.reasoning_display,
+        preserve_reasoning=data.preserve_reasoning,
+        text_verbosity=data.text_verbosity,
+        provider_options=data.provider_options,
         tenant_id=target_tenant_id,
     )
     db.add(model)
@@ -344,6 +352,22 @@ async def update_llm_model(
             model.max_output_tokens = data.max_output_tokens
         if hasattr(data, "max_input_tokens") and data.max_input_tokens is not None:
             model.max_input_tokens = data.max_input_tokens
+        if "temperature" in data.model_fields_set:
+            model.temperature = data.temperature
+        if "reasoning_mode" in data.model_fields_set:
+            model.reasoning_mode = data.reasoning_mode
+        if "reasoning_effort" in data.model_fields_set:
+            model.reasoning_effort = data.reasoning_effort
+        if "reasoning_budget_tokens" in data.model_fields_set:
+            model.reasoning_budget_tokens = data.reasoning_budget_tokens
+        if "reasoning_display" in data.model_fields_set:
+            model.reasoning_display = data.reasoning_display
+        if "preserve_reasoning" in data.model_fields_set:
+            model.preserve_reasoning = data.preserve_reasoning
+        if "text_verbosity" in data.model_fields_set:
+            model.text_verbosity = data.text_verbosity
+        if "provider_options" in data.model_fields_set:
+            model.provider_options = data.provider_options
 
         try:
             from app.core.policy import write_audit_event

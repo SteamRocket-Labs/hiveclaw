@@ -238,6 +238,12 @@ class OpenAICompatibleClient(LLMClient):
             url = url[: -len("/chat/completions")]
         return url
 
+    def _strip_reasoning_content_from_inputs(self) -> bool:
+        """DeepSeek reasoner rejects prior reasoning_content in request history."""
+        model = (self.model or "").lower()
+        base_url = (self.base_url or "").lower()
+        return "deepseek-reasoner" in model or "deepseek.com" in base_url
+
     def _build_payload(
         self,
         messages: list[LLMMessage],
@@ -255,6 +261,8 @@ class OpenAICompatibleClient(LLMClient):
         sanitized: list[dict] = []
         for m in messages:
             fmt = m.to_openai_format()
+            if self._strip_reasoning_content_from_inputs():
+                fmt.pop("reasoning_content", None)
             if fmt["role"] == "system":
                 if not seen_system:
                     seen_system = True
@@ -1706,12 +1714,25 @@ class ProviderSpec:
     chars_per_token: float = 3.5
     # Cost tier hint: "cheap" / "standard" / "premium" (used by context_budget)
     cost_tier: str = "standard"
+    # Reasoning/thinking controls exposed to the admin model settings UI.
+    reasoning_strategy: str = "none"
+    supported_reasoning_modes: tuple[str, ...] = ("provider_default",)
+    supported_reasoning_efforts: tuple[str, ...] = ()
+    supports_reasoning_budget: bool = False
+    supports_reasoning_preservation: bool = False
+    supports_text_verbosity: bool = False
+    supports_tools_with_reasoning: bool = True
+    recommended_models: tuple[dict[str, Any], ...] = ()
 
 
 # Provider aliases accepted for compatibility
 PROVIDER_ALIASES: dict[str, str] = {
     "openai_response": "openai-response",
     "openairesponses": "openai-response",
+    "moonshot": "kimi",
+    "glm": "zhipu",
+    "zai": "zhipu",
+    "z.ai": "zhipu",
 }
 
 MAX_OUTPUT_TOKENS_HARD_LIMIT = 65536
@@ -1729,6 +1750,15 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         max_input_tokens=200000,
         supports_cache_control=True,
         chars_per_token=3.5,
+        reasoning_strategy="anthropic_thinking",
+        supported_reasoning_modes=("provider_default", "enabled", "adaptive"),
+        supported_reasoning_efforts=("low", "medium", "high"),
+        supports_reasoning_budget=True,
+        supports_reasoning_preservation=True,
+        recommended_models=(
+            {"model": "claude-sonnet-4-5", "label": "Claude Sonnet 4.5", "supports_reasoning": True},
+            {"model": "claude-opus-4-7", "label": "Claude Opus 4.7", "supports_reasoning": True, "reasoning_mode": "adaptive"},
+        ),
     ),
     "openai": ProviderSpec(
         provider="openai",
@@ -1739,6 +1769,14 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         max_input_tokens=128000,
         use_completion_tokens=True,
         chars_per_token=4.0,
+        reasoning_strategy="openai_chat_reasoning",
+        supported_reasoning_modes=("provider_default", "enabled", "disabled"),
+        supported_reasoning_efforts=("minimal", "low", "medium", "high"),
+        supports_text_verbosity=True,
+        recommended_models=(
+            {"model": "gpt-5.1", "label": "GPT-5.1", "supports_reasoning": True},
+            {"model": "gpt-5.1-mini", "label": "GPT-5.1 Mini", "supports_reasoning": True},
+        ),
     ),
     "openai-response": ProviderSpec(
         provider="openai-response",
@@ -1749,6 +1787,14 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         max_input_tokens=128000,
         use_completion_tokens=True,
         chars_per_token=4.0,
+        reasoning_strategy="openai_responses",
+        supported_reasoning_modes=("provider_default", "enabled", "disabled"),
+        supported_reasoning_efforts=("none", "minimal", "low", "medium", "high", "xhigh"),
+        supports_text_verbosity=True,
+        recommended_models=(
+            {"model": "gpt-5.1", "label": "GPT-5.1", "supports_reasoning": True},
+            {"model": "gpt-5.1-mini", "label": "GPT-5.1 Mini", "supports_reasoning": True},
+        ),
     ),
     "azure": ProviderSpec(
         provider="azure",
@@ -1768,6 +1814,14 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         default_max_tokens=8192,
         max_input_tokens=64000,
         chars_per_token=3.3,
+        reasoning_strategy="deepseek_reasoning_output",
+        supported_reasoning_modes=("provider_default",),
+        supports_reasoning_preservation=True,
+        supports_tools_with_reasoning=False,
+        recommended_models=(
+            {"model": "deepseek-chat", "label": "DeepSeek Chat", "supports_reasoning": False},
+            {"model": "deepseek-reasoner", "label": "DeepSeek Reasoner", "supports_reasoning": True, "supports_tools": False},
+        ),
     ),
     "qwen": ProviderSpec(
         provider="qwen",
@@ -1784,6 +1838,15 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
             "qwen-turbo": 8192,
             "qwen-max": 8192,
         },
+        reasoning_strategy="qwen_thinking",
+        supported_reasoning_modes=("provider_default", "enabled", "disabled"),
+        supported_reasoning_efforts=("auto",),
+        supports_reasoning_budget=True,
+        supports_reasoning_preservation=True,
+        recommended_models=(
+            {"model": "qwen3-max", "label": "Qwen3 Max", "supports_reasoning": True},
+            {"model": "qwen3-coder-plus", "label": "Qwen3 Coder Plus", "supports_reasoning": True},
+        ),
     ),
     "minimax": ProviderSpec(
         provider="minimax",
@@ -1793,6 +1856,12 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         default_max_tokens=16384,
         max_input_tokens=204800,
         supports_cache_control=True,
+        reasoning_strategy="minimax_reasoning_split",
+        supported_reasoning_modes=("provider_default",),
+        supports_reasoning_preservation=True,
+        recommended_models=(
+            {"model": "MiniMax-M2.7", "label": "MiniMax M2.7", "supports_reasoning": True},
+        ),
     ),
     "openrouter": ProviderSpec(
         provider="openrouter",
@@ -1804,11 +1873,18 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
     ),
     "zhipu": ProviderSpec(
         provider="zhipu",
-        display_name="Zhipu",
+        display_name="Zhipu / GLM",
         protocol="openai_compatible",
         default_base_url="https://open.bigmodel.cn/api/paas/v4",
         default_max_tokens=8192,
         max_input_tokens=128000,
+        reasoning_strategy="glm_thinking",
+        supported_reasoning_modes=("provider_default", "enabled", "disabled"),
+        supports_reasoning_preservation=True,
+        recommended_models=(
+            {"model": "glm-4.7", "label": "GLM-4.7", "supports_reasoning": True},
+            {"model": "glm-5", "label": "GLM-5", "supports_reasoning": True},
+        ),
     ),
     "gemini": ProviderSpec(
         provider="gemini",
@@ -1826,6 +1902,13 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         default_base_url="https://api.moonshot.cn/v1",
         default_max_tokens=8192,
         max_input_tokens=128000,
+        reasoning_strategy="kimi_thinking",
+        supported_reasoning_modes=("provider_default", "enabled", "disabled"),
+        supports_reasoning_preservation=True,
+        recommended_models=(
+            {"model": "kimi-k2-thinking", "label": "Kimi K2 Thinking", "supports_reasoning": True, "reasoning_mode": "enabled"},
+            {"model": "kimi-k2.5", "label": "Kimi K2.5", "supports_reasoning": True},
+        ),
     ),
     "vllm": ProviderSpec(
         provider="vllm",
@@ -1886,6 +1969,14 @@ def get_provider_manifest() -> list[dict[str, Any]]:
             "default_max_tokens": spec.default_max_tokens,
             "max_input_tokens": spec.max_input_tokens,
             "model_max_tokens": spec.model_max_tokens,
+            "reasoning_strategy": spec.reasoning_strategy,
+            "supported_reasoning_modes": list(spec.supported_reasoning_modes),
+            "supported_reasoning_efforts": list(spec.supported_reasoning_efforts),
+            "supports_reasoning_budget": spec.supports_reasoning_budget,
+            "supports_reasoning_preservation": spec.supports_reasoning_preservation,
+            "supports_text_verbosity": spec.supports_text_verbosity,
+            "supports_tools_with_reasoning": spec.supports_tools_with_reasoning,
+            "recommended_models": list(spec.recommended_models),
             "aliases": [k for k, v in PROVIDER_ALIASES.items() if v == spec.provider],
         })
     return out

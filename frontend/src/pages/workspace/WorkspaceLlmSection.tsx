@@ -13,6 +13,13 @@ export interface WorkspaceLlmModel {
   max_output_tokens?: number | null;
   max_input_tokens?: number | null;
   temperature?: number | null;
+  reasoning_mode?: string | null;
+  reasoning_effort?: string | null;
+  reasoning_budget_tokens?: number | null;
+  reasoning_display?: string | null;
+  preserve_reasoning?: boolean | null;
+  text_verbosity?: string | null;
+  provider_options?: Record<string, unknown> | null;
 }
 
 export interface WorkspaceLlmProviderSpec {
@@ -22,6 +29,15 @@ export interface WorkspaceLlmProviderSpec {
   default_base_url?: string | null;
   supports_tool_choice: boolean;
   default_max_tokens: number;
+  max_input_tokens?: number;
+  reasoning_strategy?: string;
+  supported_reasoning_modes?: string[];
+  supported_reasoning_efforts?: string[];
+  supports_reasoning_budget?: boolean;
+  supports_reasoning_preservation?: boolean;
+  supports_text_verbosity?: boolean;
+  supports_tools_with_reasoning?: boolean;
+  recommended_models?: Array<Record<string, unknown>>;
 }
 
 export interface WorkspaceLlmModelForm {
@@ -34,6 +50,13 @@ export interface WorkspaceLlmModelForm {
   max_output_tokens: string;
   max_input_tokens: string;
   temperature: string;
+  reasoning_mode: string;
+  reasoning_effort: string;
+  reasoning_budget_tokens: string;
+  reasoning_display: string;
+  preserve_reasoning: boolean;
+  text_verbosity: string;
+  provider_options: string;
 }
 
 interface WorkspaceLlmSectionProps {
@@ -74,6 +97,114 @@ export default function WorkspaceLlmSection({
   onSetDefaultModel,
 }: WorkspaceLlmSectionProps) {
   const { t } = useTranslation();
+  const selectedProvider = providerOptions.find((provider) => provider.provider === modelForm.provider);
+  const recommendedModels = selectedProvider?.recommended_models || [];
+  const reasoningModes = selectedProvider?.supported_reasoning_modes || ['provider_default'];
+  const reasoningEfforts = selectedProvider?.supported_reasoning_efforts || [];
+  const hasReasoningControls = Boolean(selectedProvider?.reasoning_strategy && selectedProvider.reasoning_strategy !== 'none');
+  const showReasoningEffort = reasoningEfforts.length > 0 && modelForm.reasoning_mode !== 'provider_default';
+  const showReasoningBudget = Boolean(selectedProvider?.supports_reasoning_budget) && modelForm.reasoning_mode !== 'provider_default';
+  const showPreserveReasoning = Boolean(selectedProvider?.supports_reasoning_preservation);
+  const showTextVerbosity = Boolean(selectedProvider?.supports_text_verbosity);
+
+  const applyProviderDefaults = (newProvider: string) => {
+    const spec = providerOptions.find((provider) => provider.provider === newProvider);
+    onModelFormChange({
+      provider: newProvider,
+      base_url: spec?.default_base_url || '',
+      max_output_tokens: spec ? String(spec.default_max_tokens) : modelForm.max_output_tokens,
+      max_input_tokens: spec?.max_input_tokens ? String(spec.max_input_tokens) : modelForm.max_input_tokens,
+      reasoning_mode: 'provider_default',
+      reasoning_effort: '',
+      reasoning_budget_tokens: '',
+      reasoning_display: '',
+      preserve_reasoning: false,
+      text_verbosity: '',
+      provider_options: '',
+    });
+  };
+
+  const renderReasoningControls = () => {
+    if (!hasReasoningControls) return null;
+    return (
+      <div className="form-group" style={{ gridColumn: 'span 2' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+          <div className="form-group">
+            <label className="form-label">{t('enterprise.llm.reasoningMode', 'Reasoning Mode')}</label>
+            <select
+              className="form-input"
+              value={modelForm.reasoning_mode}
+              onChange={(event) => onModelFormChange({ reasoning_mode: event.target.value })}
+            >
+              {reasoningModes.map((mode) => (
+                <option key={mode} value={mode}>{t(`enterprise.llm.reasoningModes.${mode}`, mode)}</option>
+              ))}
+            </select>
+          </div>
+          {showReasoningEffort ? (
+            <div className="form-group">
+              <label className="form-label">{t('enterprise.llm.reasoningEffort', 'Reasoning Effort')}</label>
+              <select
+                className="form-input"
+                value={modelForm.reasoning_effort}
+                onChange={(event) => onModelFormChange({ reasoning_effort: event.target.value })}
+              >
+                <option value="">{t('enterprise.llm.providerDefault', 'Provider default')}</option>
+                {reasoningEfforts.map((effort) => (
+                  <option key={effort} value={effort}>{t(`enterprise.llm.reasoningEfforts.${effort}`, effort)}</option>
+                ))}
+              </select>
+            </div>
+          ) : null}
+          {showReasoningBudget ? (
+            <div className="form-group">
+              <label className="form-label">{t('enterprise.llm.reasoningBudgetTokens', 'Thinking Budget Tokens')}</label>
+              <input
+                className="form-input"
+                type="number"
+                min="1"
+                placeholder={t('enterprise.llm.reasoningBudgetPlaceholder', 'Provider default')}
+                value={modelForm.reasoning_budget_tokens}
+                onChange={(event) => onModelFormChange({ reasoning_budget_tokens: event.target.value })}
+              />
+            </div>
+          ) : null}
+          {showTextVerbosity ? (
+            <div className="form-group">
+              <label className="form-label">{t('enterprise.llm.textVerbosity', 'Text Verbosity')}</label>
+              <select
+                className="form-input"
+                value={modelForm.text_verbosity}
+                onChange={(event) => onModelFormChange({ text_verbosity: event.target.value })}
+              >
+                <option value="">{t('enterprise.llm.providerDefault', 'Provider default')}</option>
+                {['low', 'medium', 'high'].map((level) => (
+                  <option key={level} value={level}>{t(`enterprise.llm.reasoningEfforts.${level}`, level)}</option>
+                ))}
+              </select>
+            </div>
+          ) : null}
+          {showPreserveReasoning ? (
+            <div className="form-group" style={{ alignSelf: 'end' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px' }}>
+                <input
+                  type="checkbox"
+                  checked={modelForm.preserve_reasoning}
+                  onChange={(event) => onModelFormChange({ preserve_reasoning: event.target.checked })}
+                />
+                {t('enterprise.llm.preserveReasoning', 'Preserve reasoning for multi-turn tool use')}
+              </label>
+            </div>
+          ) : null}
+        </div>
+        {selectedProvider?.supports_tools_with_reasoning === false ? (
+          <div style={{ fontSize: '11px', color: 'var(--warning, #f59e0b)', marginTop: '4px' }}>
+            {t('enterprise.llm.reasoningNoToolsWarning', 'This provider reasoning model is not recommended for tool-calling agents.')}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
 
   return (
     <div>
@@ -91,13 +222,7 @@ export default function WorkspaceLlmSection({
                 className="form-input"
                 value={modelForm.provider}
                 onChange={(event) => {
-                  const newProvider = event.target.value;
-                  const spec = providerOptions.find((provider) => provider.provider === newProvider);
-                  onModelFormChange({
-                    provider: newProvider,
-                    base_url: spec?.default_base_url || '',
-                    max_output_tokens: spec ? String(spec.default_max_tokens) : modelForm.max_output_tokens,
-                  });
+                  applyProviderDefaults(event.target.value);
                 }}
               >
                 {providerOptions.map((provider) => (
@@ -109,10 +234,20 @@ export default function WorkspaceLlmSection({
               <label className="form-label">{t('enterprise.llm.model')}</label>
               <input
                 className="form-input"
+                list="llm-model-recommendations"
                 placeholder={t('enterprise.llm.modelPlaceholder', 'e.g. claude-sonnet-4-20250514')}
                 value={modelForm.model}
                 onChange={(event) => onModelFormChange({ model: event.target.value })}
               />
+              {recommendedModels.length > 0 ? (
+                <datalist id="llm-model-recommendations">
+                  {recommendedModels.map((item) => {
+                    const model = String(item.model || '');
+                    const label = String(item.label || model);
+                    return model ? <option key={model} value={model}>{label}</option> : null;
+                  })}
+                </datalist>
+              ) : null}
             </div>
             <div className="form-group">
               <label className="form-label">{t('enterprise.llm.label')}</label>
@@ -189,6 +324,7 @@ export default function WorkspaceLlmSection({
               />
               <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.temperatureDesc', 'Leave empty to use the provider default. o1/o3 reasoning models usually require 1.0')}</div>
             </div>
+            {renderReasoningControls()}
           </div>
           <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', alignItems: 'center' }}>
             <button className="btn btn-secondary" onClick={onCancelModelForm}>{t('common.cancel')}</button>
@@ -207,7 +343,7 @@ export default function WorkspaceLlmSection({
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                   <div className="form-group">
                     <label className="form-label">{t('enterprise.llm.provider')}</label>
-                    <select className="form-input" value={modelForm.provider} onChange={(event) => onModelFormChange({ provider: event.target.value })}>
+                    <select className="form-input" value={modelForm.provider} onChange={(event) => applyProviderDefaults(event.target.value)}>
                       {providerOptions.map((provider) => (
                         <option key={provider.provider} value={provider.provider}>{provider.display_name}</option>
                       ))}
@@ -218,7 +354,16 @@ export default function WorkspaceLlmSection({
                   </div>
                   <div className="form-group">
                     <label className="form-label">{t('enterprise.llm.model')}</label>
-                    <input className="form-input" placeholder={t('enterprise.llm.modelPlaceholder', 'e.g. claude-sonnet-4-20250514')} value={modelForm.model} onChange={(event) => onModelFormChange({ model: event.target.value })} />
+                    <input className="form-input" list="llm-model-recommendations" placeholder={t('enterprise.llm.modelPlaceholder', 'e.g. claude-sonnet-4-20250514')} value={modelForm.model} onChange={(event) => onModelFormChange({ model: event.target.value })} />
+                    {recommendedModels.length > 0 ? (
+                      <datalist id="llm-model-recommendations">
+                        {recommendedModels.map((item) => {
+                          const model = String(item.model || '');
+                          const label = String(item.label || model);
+                          return model ? <option key={model} value={model}>{label}</option> : null;
+                        })}
+                      </datalist>
+                    ) : null}
                   </div>
                   <div className="form-group">
                     <label className="form-label">{t('enterprise.llm.label')}</label>
@@ -254,6 +399,7 @@ export default function WorkspaceLlmSection({
                     <input className="form-input" type="number" step="0.1" min="0" max="2" placeholder={t('enterprise.llm.temperaturePlaceholder', 'e.g. 0.7 or 1.0 (Leave empty for default)')} value={modelForm.temperature} onChange={(event) => onModelFormChange({ temperature: event.target.value })} />
                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.temperatureDesc', 'Leave empty to use the provider default. o1/o3 reasoning models usually require 1.0')}</div>
                   </div>
+                  {renderReasoningControls()}
                 </div>
                 <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', alignItems: 'center' }}>
                   <button className="btn btn-secondary" onClick={onCancelModelForm}>{t('common.cancel')}</button>

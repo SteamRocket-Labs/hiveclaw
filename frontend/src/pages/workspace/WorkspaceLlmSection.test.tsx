@@ -47,6 +47,13 @@ describe('WorkspaceLlmSection', () => {
           max_output_tokens: '',
           max_input_tokens: '',
           temperature: '',
+          reasoning_mode: 'provider_default',
+          reasoning_effort: '',
+          reasoning_budget_tokens: '',
+          reasoning_display: '',
+          preserve_reasoning: false,
+          text_verbosity: '',
+          provider_options: '',
         }}
         onStartCreateModel={() => {}}
         onCancelModelForm={() => {}}

@@ -17,6 +17,13 @@ export interface LLMModel {
   max_output_tokens?: number | null;
   max_input_tokens?: number | null;
   temperature?: number | null;
+  reasoning_mode?: string | null;
+  reasoning_effort?: string | null;
+  reasoning_budget_tokens?: number | null;
+  reasoning_display?: string | null;
+  preserve_reasoning?: boolean | null;
+  text_verbosity?: string | null;
+  provider_options?: Record<string, unknown> | null;
   created_at?: string;
 }
 
@@ -78,6 +85,15 @@ export interface LLMProviderSpec {
   default_base_url?: string | null;
   supports_tool_choice: boolean;
   default_max_tokens: number;
+  max_input_tokens?: number;
+  reasoning_strategy?: string;
+  supported_reasoning_modes?: string[];
+  supported_reasoning_efforts?: string[];
+  supports_reasoning_budget?: boolean;
+  supports_reasoning_preservation?: boolean;
+  supports_text_verbosity?: boolean;
+  supports_tools_with_reasoning?: boolean;
+  recommended_models?: Array<Record<string, unknown>>;
 }
 
 export interface LLMTestResult {

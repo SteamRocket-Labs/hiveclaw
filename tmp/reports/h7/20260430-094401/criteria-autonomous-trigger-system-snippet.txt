@@ -1,0 +1,81 @@
+## H7 Evidence Loop
+
+Autonomy P0-P6 与 Harness H1-H6 当前已经达到工程闭环：目标、唤醒、执行账本、artifact、session、memory、permission、validator 都走同一条主路径。下一步不是继续发明新机制,也不是被动等待,而是主动采集真实长期效果数据。
+
+H7 做：
+
+```text
+Daily snapshots:
+- /api/admin/autonomous-audit?lookback_hours=24
+- /api/admin/autonomy-repair-plan?lookback_hours=24
+- /api/admin/harness-validation?lookback_hours=24
+
+Weekly snapshots:
+- /api/admin/harness-validation?lookback_hours=168
+- objective completion / skipped / failed / stale counts
+- skill_distiller promoted / held / deferred / rollback counts
+- eval reward / baseline_reward / critical_regressions
+```
+
+H7 不做：
+
+```text
+- 不新增第二套 objective ledger。
+- 不新增第二套 trigger runtime。
+- 不把 memory 当 task queue。
+- 不把 canary 当自然业务成功数据。
+- 不绕开 RuntimeTask / artifact / validation report。
+```
+
+H7 验收标准：
+
+```text
+- 7 天内 current-window autonomous-audit 持续 0 critical finding。
+- repair-plan 持续无未处理 auto-applyable action。
+- 至少 3 个真实 objective 产生 RuntimeTask + artifact + validation report。
+- 至少 1 个真实 skill/evolution candidate 经过 eval + hold/promote decision。
+- 所有失败都有 skip/failure reason,不出现 silent no-op。
+```
+
+## P0 边界
+
+P0 做：
+
+- 新增只读审计服务。
+- 新增 platform admin endpoint。
+- 汇总 focus、trigger、runtime task、heartbeat/trigger session 四类事实。
+- 报告当前自主系统断点。
+
+P0 不做：
+
+- 不新增 `agent_objectives` 表。
+- 不改 trigger firing 行为。
+- 不自动 cancel / repair。
+- 不改 heartbeat 运行逻辑。
+- 不要求前端 UI 立刻接入。
+- 不把 `focus.md` 改成 DB 投影。
+
+## 测试与验收
+
+验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+
+pytest tests/services/test_focus_state.py \
+       tests/services/test_autonomous_audit.py \
+       tests/api/test_admin_autonomous_audit.py \
+       tests/services/test_runtime_task_service.py \
+       tests/services/test_trigger_daemon.py \
+       tests/services/test_trigger_reconciler.py
+```
+
+P0 视为完成，当且仅当：
+
+- 审计 endpoint 能在 Railway 上返回当前自主系统断点。
+- 报告至少覆盖 focus、trigger、runtime task、heartbeat/trigger session 四类事实。
+- 报告是只读的，不改变任何线上行为。
+- 所有新增测试通过。
+- 文档明确说明当前架构问题、P0 范围、P1-P6 路线。
+- 当前已知问题能被报告出来：无模型阻塞、trigger/heartbeat runtime gap、focus/trigger 绑定缺失或失效。

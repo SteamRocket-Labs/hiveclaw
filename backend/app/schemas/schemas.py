@@ -266,6 +266,14 @@ class LLMModelCreate(BaseModel):
     supports_vision: bool = False
     max_output_tokens: int | None = Field(default=None, ge=1, le=65536)
     max_input_tokens: int | None = None
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    reasoning_mode: str | None = None
+    reasoning_effort: str | None = None
+    reasoning_budget_tokens: int | None = Field(default=None, ge=1, le=200000)
+    reasoning_display: str | None = None
+    preserve_reasoning: bool | None = None
+    text_verbosity: str | None = None
+    provider_options: dict | None = None
 
 class LLMModelUpdate(BaseModel):
     provider: str | None = None
@@ -278,6 +286,14 @@ class LLMModelUpdate(BaseModel):
     supports_vision: bool | None = None
     max_output_tokens: int | None = Field(default=None, ge=1, le=65536)
     max_input_tokens: int | None = None
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    reasoning_mode: str | None = None
+    reasoning_effort: str | None = None
+    reasoning_budget_tokens: int | None = Field(default=None, ge=1, le=200000)
+    reasoning_display: str | None = None
+    preserve_reasoning: bool | None = None
+    text_verbosity: str | None = None
+    provider_options: dict | None = None
 
 
 class LLMModelOut(BaseModel):
@@ -292,6 +308,14 @@ class LLMModelOut(BaseModel):
     supports_vision: bool = False
     max_output_tokens: int | None = None
     max_input_tokens: int | None = None
+    temperature: float | None = None
+    reasoning_mode: str | None = None
+    reasoning_effort: str | None = None
+    reasoning_budget_tokens: int | None = None
+    reasoning_display: str | None = None
+    preserve_reasoning: bool | None = None
+    text_verbosity: str | None = None
+    provider_options: dict | None = None
     created_at: datetime
     is_default: bool = False
 

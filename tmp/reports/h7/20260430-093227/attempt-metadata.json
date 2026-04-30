@@ -1,0 +1,48 @@
+{
+  "timestamp": "2026-04-30T09:38:44.151942+08:00",
+  "base_url": "https://backend-production-326d.up.railway.app",
+  "resolution": {
+    "host": "backend-production-326d.up.railway.app",
+    "ip": null,
+    "ok": false,
+    "error": "[Errno 8] nodename nor servname provided, or not known"
+  },
+  "token_resolution": {
+    "success": false,
+    "sources_checked": [
+      "HIVE_PLATFORM_ADMIN_TOKEN",
+      "HIVE_ADMIN_TOKEN",
+      "HIVE_TOKEN",
+      ".h7.env",
+      "browser_local_storage_leveldb"
+    ],
+    "selected_source": "browser_local_storage_leveldb",
+    "selected_key": null,
+    "selected_path": "/Users/rocky243/Library/Application Support/Google/Chrome/Profile 5/Local Storage/leveldb/009359.ldb",
+    "browser_candidate_count": 1,
+    "candidate_expires_at": "2026-04-30T15:24:34+08:00",
+    "probe_error": "<urlopen error [Errno 8] nodename nor servname provided, or not known>",
+    "token_written_to_disk": false,
+    "token_printed": false
+  },
+  "endpoints": {
+    "autonomous-audit-24h": {
+      "attempted": false,
+      "ok": false,
+      "status": null,
+      "error": "DNS resolution failed before request"
+    },
+    "autonomy-repair-plan-24h": {
+      "attempted": false,
+      "ok": false,
+      "status": null,
+      "error": "DNS resolution failed before request"
+    },
+    "harness-validation-24h": {
+      "attempted": false,
+      "ok": false,
+      "status": null,
+      "error": "DNS resolution failed before request"
+    }
+  }
+}

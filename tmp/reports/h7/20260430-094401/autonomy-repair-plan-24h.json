@@ -1,0 +1,396 @@
+{
+  "schema": "autonomy_repair_plan.v1",
+  "mode": "dry_run",
+  "generated_at": "2026-04-30T01:44:03.025715+00:00",
+  "lookback_hours": 24,
+  "totals": {
+    "agents": 35,
+    "audit_findings": 12,
+    "actions": 12,
+    "auto_applyable_actions": 9,
+    "manual_actions": 3,
+    "by_action_type": {
+      "disable_completed_focus_trigger": 9,
+      "manual_review_blocked_objective": 1,
+      "manual_review_noncanonical_focus_item": 2
+    },
+    "by_risk": {
+      "low": 9,
+      "medium": 3
+    }
+  },
+  "actions": [
+    {
+      "action_id": "7bf772be08e33a4f",
+      "action_type": "disable_completed_focus_trigger",
+      "auto_apply": true,
+      "risk": "low",
+      "agent_id": "9e4f6d75-c753-44d0-a628-4e9b3f582704",
+      "agent_name": "Equity Analyst - Mapper",
+      "tenant_id": "aac728fb-fe1c-45df-a2ff-a56e024a37a0",
+      "trigger_id": "21874dcc-3eab-4b87-9763-2d83605cfec0",
+      "objective_id": null,
+      "focus_ref": "trigger_awakening_context_source_trigger_single_trigger_fired_tr",
+      "summary": "Disable trigger bound to a completed focus objective.",
+      "finding_categories": [
+        "completed_focus_trigger_active"
+      ],
+      "evidence": {
+        "trigger_name": "objective_trigger_awakening_context_source_trigger_single_trigger_fired_tr"
+      },
+      "proposed_change": {
+        "set_trigger": {
+          "is_enabled": false
+        }
+      },
+      "preconditions": [
+        "Trigger is still enabled and bound to the completed focus_ref."
+      ],
+      "manual_steps": []
+    },
+    {
+      "action_id": "ef861badcbab1694",
+      "action_type": "disable_completed_focus_trigger",
+      "auto_apply": true,
+      "risk": "low",
+      "agent_id": "06048572-f955-47c1-954b-1303398a4971",
+      "agent_name": "KEN的营销巡航舰",
+      "tenant_id": "aac728fb-fe1c-45df-a2ff-a56e024a37a0",
+      "trigger_id": "3580cbda-7193-4ba2-ab82-303c0cd9adb4",
+      "objective_id": null,
+      "focus_ref": "sole_social_media_monitoring",
+      "summary": "Disable trigger bound to a completed focus objective.",
+      "finding_categories": [
+        "completed_focus_trigger_active"
+      ],
+      "evidence": {
+        "trigger_name": "weekly_sole_social_media_report"
+      },
+      "proposed_change": {
+        "set_trigger": {
+          "is_enabled": false
+        }
+      },
+      "preconditions": [
+        "Trigger is still enabled and bound to the completed focus_ref."
+      ],
+      "manual_steps": []
+    },
+    {
+      "action_id": "5991aec119e77f42",
+      "action_type": "disable_completed_focus_trigger",
+      "auto_apply": true,
+      "risk": "low",
+      "agent_id": "06048572-f955-47c1-954b-1303398a4971",
+      "agent_name": "KEN的营销巡航舰",
+      "tenant_id": "aac728fb-fe1c-45df-a2ff-a56e024a37a0",
+      "trigger_id": "a3dcaef2-026d-49b8-a65e-fb9392108feb",
+      "objective_id": null,
+      "focus_ref": "sole_social_media_monitoring",
+      "summary": "Disable trigger bound to a completed focus objective.",
+      "finding_categories": [
+        "completed_focus_trigger_active"
+      ],
+      "evidence": {
+        "trigger_name": "daily_sole_social_media_report"
+      },
+      "proposed_change": {
+        "set_trigger": {
+          "is_enabled": false
+        }
+      },
+      "preconditions": [
+        "Trigger is still enabled and bound to the completed focus_ref."
+      ],
+      "manual_steps": []
+    },
+    {
+      "action_id": "159d6793bf7d498c",
+      "action_type": "disable_completed_focus_trigger",
+      "auto_apply": true,
+      "risk": "low",
+      "agent_id": "bef8b286-b923-4e29-84c9-022f995ae6b3",
+      "agent_name": "__system_hr__",
+      "tenant_id": "aac728fb-fe1c-45df-a2ff-a56e024a37a0",
+      "trigger_id": "af671f6c-662f-4101-b24f-b8ebb9f3cbc5",
+      "objective_id": null,
+      "focus_ref": "1_2_24_7_3_workspace_4_ui",
+      "summary": "Disable trigger bound to a completed focus objective.",
+      "finding_categories": [
+        "completed_focus_trigger_active"
+      ],
+      "evidence": {
+        "trigger_name": "objective_1_2_24_7_3_workspace_4_ui"
+      },
+      "proposed_change": {
+        "set_trigger": {
+          "is_enabled": false
+        }
+      },
+      "preconditions": [
+        "Trigger is still enabled and bound to the completed focus_ref."
+      ],
+      "manual_steps": []
+    },
+    {
+      "action_id": "c1c2825c3d229246",
+      "action_type": "disable_completed_focus_trigger",
+      "auto_apply": true,
+      "risk": "low",
+      "agent_id": "ff573b57-7c0f-4f3d-a505-4a31ba6329c9",
+      "agent_name": "众筹雷达",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "trigger_id": "6b30890f-2bea-4a1e-a4d1-e3b5d13ad02d",
+      "objective_id": null,
+      "focus_ref": "trigger_awakening_context_source_trigger_single_trigger_fired_tr",
+      "summary": "Disable trigger bound to a completed focus objective.",
+      "finding_categories": [
+        "completed_focus_trigger_active"
+      ],
+      "evidence": {
+        "trigger_name": "objective_trigger_awakening_context_source_trigger_single_trigger_fired_tr"
+      },
+      "proposed_change": {
+        "set_trigger": {
+          "is_enabled": false
+        }
+      },
+      "preconditions": [
+        "Trigger is still enabled and bound to the completed focus_ref."
+      ],
+      "manual_steps": []
+    },
+    {
+      "action_id": "a30ff3a3939cadca",
+      "action_type": "disable_completed_focus_trigger",
+      "auto_apply": true,
+      "risk": "low",
+      "agent_id": "962fe27a-5dff-4953-bce8-50260b98ec8b",
+      "agent_name": "募资小达人",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "trigger_id": "36a46d6a-4a1f-4c90-aee9-6bcd43167e03",
+      "objective_id": null,
+      "focus_ref": "file_1_docx_file_location_workspace_uploads_1_do",
+      "summary": "Disable trigger bound to a completed focus objective.",
+      "finding_categories": [
+        "completed_focus_trigger_active"
+      ],
+      "evidence": {
+        "trigger_name": "objective_file_1_docx_file_location_workspace_uploads_1_do"
+      },
+      "proposed_change": {
+        "set_trigger": {
+          "is_enabled": false
+        }
+      },
+      "preconditions": [
+        "Trigger is still enabled and bound to the completed focus_ref."
+      ],
+      "manual_steps": []
+    },
+    {
+      "action_id": "3493e6e3fd071d35",
+      "action_type": "disable_completed_focus_trigger",
+      "auto_apply": true,
+      "risk": "low",
+      "agent_id": "7d0eeb79-269e-4b2d-9ac5-36e836e357ef",
+      "agent_name": "家用健身器械竞品与舆情监测经理",
+      "tenant_id": "aac728fb-fe1c-45df-a2ff-a56e024a37a0",
+      "trigger_id": "38d175ea-acfa-4926-bc1f-6ddd17ed7b06",
+      "objective_id": null,
+      "focus_ref": "trigger_awakening_context_source_trigger_single_trigger_fired_tr",
+      "summary": "Disable trigger bound to a completed focus objective.",
+      "finding_categories": [
+        "completed_focus_trigger_active"
+      ],
+      "evidence": {
+        "trigger_name": "objective_trigger_awakening_context_source_trigger_single_trigger_fired_tr"
+      },
+      "proposed_change": {
+        "set_trigger": {
+          "is_enabled": false
+        }
+      },
+      "preconditions": [
+        "Trigger is still enabled and bound to the completed focus_ref."
+      ],
+      "manual_steps": []
+    },
+    {
+      "action_id": "bb6cb077c16d1784",
+      "action_type": "disable_completed_focus_trigger",
+      "auto_apply": true,
+      "risk": "low",
+      "agent_id": "bd112fea-d3fb-40a1-8d1e-e53c566d0fde",
+      "agent_name": "投融资信息整理员",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "trigger_id": "37342925-6945-4bab-85eb-e32f2bcb51de",
+      "objective_id": null,
+      "focus_ref": "trigger_awakening_context_source_trigger_single_trigger_fired_tr",
+      "summary": "Disable trigger bound to a completed focus objective.",
+      "finding_categories": [
+        "completed_focus_trigger_active"
+      ],
+      "evidence": {
+        "trigger_name": "objective_trigger_awakening_context_source_trigger_single_trigger_fired_tr"
+      },
+      "proposed_change": {
+        "set_trigger": {
+          "is_enabled": false
+        }
+      },
+      "preconditions": [
+        "Trigger is still enabled and bound to the completed focus_ref."
+      ],
+      "manual_steps": []
+    },
+    {
+      "action_id": "5de5d05dcea1fe86",
+      "action_type": "disable_completed_focus_trigger",
+      "auto_apply": true,
+      "risk": "low",
+      "agent_id": "8cfe80df-e292-4674-8a88-dbd2f88057ef",
+      "agent_name": "财税助理",
+      "tenant_id": "aac728fb-fe1c-45df-a2ff-a56e024a37a0",
+      "trigger_id": "2c213372-7455-4cd1-a11c-28b5ace27429",
+      "objective_id": null,
+      "focus_ref": "trigger_awakening_context_source_trigger_single_trigger_fired_tr",
+      "summary": "Disable trigger bound to a completed focus objective.",
+      "finding_categories": [
+        "completed_focus_trigger_active"
+      ],
+      "evidence": {
+        "trigger_name": "objective_trigger_awakening_context_source_trigger_single_trigger_fired_tr"
+      },
+      "proposed_change": {
+        "set_trigger": {
+          "is_enabled": false
+        }
+      },
+      "preconditions": [
+        "Trigger is still enabled and bound to the completed focus_ref."
+      ],
+      "manual_steps": []
+    },
+    {
+      "action_id": "6740ed970b668da3",
+      "action_type": "manual_review_blocked_objective",
+      "auto_apply": false,
+      "risk": "medium",
+      "agent_id": "f12b9e28-6edf-47e7-8dcf-d5fc2f802581",
+      "agent_name": "Alisa",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "trigger_id": null,
+      "objective_id": null,
+      "focus_ref": "daily_news_report_20260430",
+      "summary": "Manual review required for this audit finding.",
+      "finding_categories": [
+        "blocked_objective"
+      ],
+      "evidence": {
+        "finding": {
+          "severity": "warning",
+          "category": "blocked_objective",
+          "agent_id": "f12b9e28-6edf-47e7-8dcf-d5fc2f802581",
+          "trigger_id": null,
+          "focus_ref": "daily_news_report_20260430",
+          "message": "Objective 'daily_news_report_20260430' is blocked.",
+          "evidence": {
+            "objective_id": "5a7ab0f0-7f45-467f-8c3c-972dea3cc4a7",
+            "blocked_reason": "已生成并校验 workspace/daily_news_report_20260430.md，但通过当前 Feishu 回复目标发送摘要消息失败：send_channel_message 返回 code=10014, msg=app secret invalid。send_channel_file 仅生成了文件链接，未能确认飞书侧实际送达。需修复 Feishu app secret 配置后重发。"
+          },
+          "recommendation": "Resolve the blocker, create a recovery objective, or reject/snooze the objective."
+        }
+      },
+      "proposed_change": {},
+      "preconditions": [],
+      "manual_steps": [
+        "Inspect the audit evidence and choose the least invasive repair."
+      ]
+    },
+    {
+      "action_id": "e05f6a8a13b4368a",
+      "action_type": "manual_review_noncanonical_focus_item",
+      "auto_apply": false,
+      "risk": "medium",
+      "agent_id": "06048572-f955-47c1-954b-1303398a4971",
+      "agent_name": "KEN的营销巡航舰",
+      "tenant_id": "aac728fb-fe1c-45df-a2ff-a56e024a37a0",
+      "trigger_id": null,
+      "objective_id": null,
+      "focus_ref": null,
+      "summary": "Manual review required for this audit finding.",
+      "finding_categories": [
+        "noncanonical_focus_item"
+      ],
+      "evidence": {
+        "finding": {
+          "severity": "warning",
+          "category": "noncanonical_focus_item",
+          "agent_id": "06048572-f955-47c1-954b-1303398a4971",
+          "trigger_id": null,
+          "focus_ref": null,
+          "message": "focus.md contains a task-like line that the canonical parser will ignore.",
+          "evidence": {
+            "line_no": 19,
+            "line": "- [ ] sole_social_media_monitoring ::"
+          },
+          "recommendation": "Rewrite the line as '- [ ] task_id :: description' so the trigger audit can track it."
+        }
+      },
+      "proposed_change": {},
+      "preconditions": [],
+      "manual_steps": [
+        "Inspect the audit evidence and choose the least invasive repair."
+      ]
+    },
+    {
+      "action_id": "5ab6cb624a8dbd0e",
+      "action_type": "manual_review_noncanonical_focus_item",
+      "auto_apply": false,
+      "risk": "medium",
+      "agent_id": "6d6605f2-214f-48fe-8e75-73d8083a7523",
+      "agent_name": "展会雷达",
+      "tenant_id": "e253fb02-c516-498e-98f2-e6f6d59c65f5",
+      "trigger_id": null,
+      "objective_id": null,
+      "focus_ref": null,
+      "summary": "Manual review required for this audit finding.",
+      "finding_categories": [
+        "noncanonical_focus_item"
+      ],
+      "evidence": {
+        "finding": {
+          "severity": "warning",
+          "category": "noncanonical_focus_item",
+          "agent_id": "6d6605f2-214f-48fe-8e75-73d8083a7523",
+          "trigger_id": null,
+          "focus_ref": null,
+          "message": "focus.md contains a task-like line that the canonical parser will ignore.",
+          "evidence": {
+            "line_no": 22,
+            "line": "- [ ] bright_data_mc"
+          },
+          "recommendation": "Rewrite the line as '- [ ] task_id :: description' so the trigger audit can track it."
+        }
+      },
+      "proposed_change": {},
+      "preconditions": [],
+      "manual_steps": [
+        "Inspect the audit evidence and choose the least invasive repair."
+      ]
+    }
+  ],
+  "audit_totals": {
+    "agents": 35,
+    "findings": 12,
+    "errors": 9,
+    "warnings": 3,
+    "infos": 0,
+    "by_category": {
+      "completed_focus_trigger_active": 9,
+      "blocked_objective": 1,
+      "noncanonical_focus_item": 2
+    }
+  }
+}

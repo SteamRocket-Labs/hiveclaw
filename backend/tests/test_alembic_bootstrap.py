@@ -162,3 +162,37 @@ def test_run_migrations_with_bootstrap_commits_after_probe_autobegins(tmp_path: 
 
     assert "users" in tables
     assert versions == ["rev_a"]
+
+
+def test_run_migrations_with_bootstrap_commits_normal_path_after_probe_autobegins(tmp_path: Path) -> None:
+    from app.db_bootstrap import run_migrations_with_bootstrap
+
+    db_path = tmp_path / "normal_probe.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    metadata = MetaData()
+
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE migration_marker (value TEXT NOT NULL)"))
+
+    class _InsertMigrationContext(_DummyAlembicContext):
+        def run_migrations(self) -> None:
+            super().run_migrations()
+            self.configured_with["connection"].execute(
+                text("INSERT INTO migration_marker (value) VALUES ('committed')")
+            )
+
+    context = _InsertMigrationContext()
+
+    with engine.connect() as conn:
+        run_migrations_with_bootstrap(
+            conn,
+            alembic_context=context,
+            metadata=metadata,
+            heads=["rev_a"],
+            should_bootstrap_fn=lambda probe_conn: probe_conn.execute(text("SELECT 1")).scalar() == 0,
+        )
+
+    with engine.connect() as verify_conn:
+        values = [row[0] for row in verify_conn.execute(text("SELECT value FROM migration_marker"))]
+
+    assert values == ["committed"]

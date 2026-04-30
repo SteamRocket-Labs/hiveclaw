@@ -84,3 +84,5 @@ def run_migrations_with_bootstrap(
     alembic_context.configure(connection=connection, target_metadata=metadata)
     with alembic_context.begin_transaction():
         alembic_context.run_migrations()
+    if connection.in_transaction() and not had_transaction:
+        connection.commit()

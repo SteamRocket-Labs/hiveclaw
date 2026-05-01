@@ -120,6 +120,31 @@ async def list_agents(
 HR_AGENT_NAME = "__system_hr__"
 
 
+async def _get_existing_hr_agent(db: AsyncSession, tenant_id: uuid.UUID, *, lock_rows: bool) -> Agent | None:
+    stmt = (
+        select(Agent)
+        .where(
+            Agent.tenant_id == tenant_id,
+            Agent.agent_class == "internal_system",
+            Agent.name == HR_AGENT_NAME,
+        )
+        .order_by(Agent.created_at.asc(), Agent.id.asc())
+    )
+    if lock_rows:
+        stmt = stmt.with_for_update()
+
+    result = await db.execute(stmt)
+    hr_agents = list(result.scalars().all())
+    if len(hr_agents) > 1:
+        logger.error(
+            "[HR] Duplicate system HR agents found for tenant %s; using canonical agent %s and ignoring %s duplicate(s)",
+            tenant_id,
+            hr_agents[0].id,
+            len(hr_agents) - 1,
+        )
+    return hr_agents[0] if hr_agents else None
+
+
 @router.get("/system/hr")
 async def get_or_create_hr_agent(
     current_user: User = Depends(get_current_user),
@@ -130,15 +155,10 @@ async def get_or_create_hr_agent(
     if not tenant_id:
         raise HTTPException(status_code=400, detail="User has no tenant")
 
-    # Look up existing HR agent (with row lock to prevent duplicate creation)
-    result = await db.execute(
-        select(Agent).where(
-            Agent.tenant_id == tenant_id,
-            Agent.agent_class == "internal_system",
-            Agent.name == HR_AGENT_NAME,
-        ).with_for_update(skip_locked=True)
-    )
-    hr_agent = result.scalar_one_or_none()
+    # Look up existing HR agent with a row lock to prevent duplicate creation.
+    # If legacy duplicates exist, choose the oldest row deterministically rather
+    # than turning the workspace HR page into a 500.
+    hr_agent = await _get_existing_hr_agent(db, tenant_id, lock_rows=True)
 
     # Shared: find default model for tenant
     from app.models.llm import LLMModel
@@ -256,14 +276,7 @@ async def get_or_create_hr_agent(
     except Exception:
         # Race condition: another request created the HR agent first
         await db.rollback()
-        retry_result = await db.execute(
-            select(Agent).where(
-                Agent.tenant_id == tenant_id,
-                Agent.agent_class == "internal_system",
-                Agent.name == HR_AGENT_NAME,
-            )
-        )
-        existing = retry_result.scalar_one_or_none()
+        existing = await _get_existing_hr_agent(db, tenant_id, lock_rows=False)
         if existing:
             return {"id": str(existing.id), "name": existing.name, "status": existing.status}
         raise HTTPException(status_code=500, detail="Failed to create HR agent")

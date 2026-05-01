@@ -37,6 +37,34 @@ class SkillRegistry:
     def load_body(self, name: str) -> str:
         return self.resolve(name).body
 
+    def load_body_with_dependencies(self, name: str) -> str:
+        """Load required skill bodies before the requested skill body.
+
+        Missing dependencies are included as explicit warnings so callers can
+        keep running while preserving the tolerant skill-loading contract.
+        """
+        parts: list[str] = []
+        visited: set[str] = set()
+
+        def append_skill(skill_name: str) -> None:
+            normalized_name = self._normalize(skill_name)
+            if normalized_name in visited:
+                return
+            visited.add(normalized_name)
+
+            try:
+                skill = self.resolve(skill_name)
+            except KeyError:
+                parts.append(f"<!-- Missing required skill: {skill_name} -->")
+                return
+
+            for dependency in skill.metadata.requires_skills:
+                append_skill(dependency)
+            parts.append(skill.body)
+
+        append_skill(name)
+        return "\n\n".join(part for part in parts if part)
+
     def render_catalog(self, *, budget_chars: int = 8000) -> str:
         """Render skill catalog with budget-aware truncation.
 

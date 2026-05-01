@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
+from typing import Any
 
+import yaml
 from .types import ParsedSkill, SkillMetadata
+
+logger = logging.getLogger(__name__)
 
 
 class SkillParser:
@@ -31,87 +36,46 @@ class SkillParser:
         stripped = content.strip()
         name = (default_name or path.stem).replace("_", " ").replace("-", " ")
         description = ""
-        declared_tools: list[str] = []
-        declared_packs: list[str] = []
-        is_system = False
         body = stripped
+        frontmatter: dict[str, Any] = {}
 
         match = self.FRONTMATTER_PATTERN.match(stripped)
         if match:
-            frontmatter = match.group(1)
             body = match.group(2).strip()
-            lines = frontmatter.splitlines()
-            i = 0
-            while i < len(lines):
-                raw_line = lines[i]
-                line = raw_line.strip()
-                if line.lower().startswith("name:"):
-                    value = line[5:].strip().strip('"').strip("'")
-                    if value:
-                        name = value
-                elif line.lower().startswith("description:"):
-                    value = line[12:].strip().strip('"').strip("'")
-                    if value:
-                        description = value[:200]
-                elif line.lower().startswith("tools:"):
-                    inline_value = line[6:].strip()
-                    if inline_value:
-                        declared_tools.extend(
-                            item.strip().strip('"').strip("'")
-                            for item in inline_value.strip("[]").split(",")
-                            if item.strip()
-                        )
-                    else:
-                        i += 1
-                        while i < len(lines):
-                            tool_line = lines[i]
-                            stripped_tool_line = tool_line.strip()
-                            if stripped_tool_line.startswith("- "):
-                                value = stripped_tool_line[2:].strip().strip('"').strip("'")
-                                if value:
-                                    declared_tools.append(value)
-                                i += 1
-                                continue
-                            if tool_line.startswith((" ", "\t")) and not stripped_tool_line:
-                                i += 1
-                                continue
-                            i -= 1
-                            break
-                elif line.lower().startswith("is_system:"):
-                    value = line[10:].strip().strip('"').strip("'").lower()
-                    is_system = value in ("true", "yes", "1")
-                elif line.lower().startswith("packs:"):
-                    inline_value = line[6:].strip()
-                    if inline_value:
-                        declared_packs.extend(
-                            item.strip().strip('"').strip("'")
-                            for item in inline_value.strip("[]").split(",")
-                            if item.strip()
-                        )
-                    else:
-                        i += 1
-                        while i < len(lines):
-                            pack_line = lines[i]
-                            stripped_pack_line = pack_line.strip()
-                            if stripped_pack_line.startswith("- "):
-                                value = stripped_pack_line[2:].strip().strip('"').strip("'")
-                                if value:
-                                    declared_packs.append(value)
-                                i += 1
-                                continue
-                            if pack_line.startswith((" ", "\t")) and not stripped_pack_line:
-                                i += 1
-                                continue
-                            i -= 1
-                            break
-                i += 1
+            try:
+                loaded = yaml.safe_load(match.group(1)) or {}
+                if isinstance(loaded, dict):
+                    frontmatter = loaded
+                else:
+                    logger.warning("Skill %s frontmatter is not a mapping", relative_path)
+            except yaml.YAMLError as exc:
+                logger.warning("Skill %s has invalid YAML frontmatter: %s", relative_path, exc)
+
+        if frontmatter:
+            name = self._string_value(frontmatter.get("name")) or name
+            description = self._string_value(frontmatter.get("description"))[:1024]
+
+        declared_tools = self._string_tuple(frontmatter.get("tools"))
+        declared_packs = self._string_tuple(frontmatter.get("packs"))
+        allowed_tools = self._string_tuple(frontmatter.get("allowed-tools"))
+        is_system = self._bool_value(frontmatter.get("is_system"), default=False)
+
+        metadata = frontmatter.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        nested_hive = metadata.get("hive")
+        nested_hive = nested_hive if isinstance(nested_hive, dict) else {}
+
+        def hive_value(key: str, default: Any = None) -> Any:
+            return metadata.get(f"hive.{key}", nested_hive.get(key, default))
 
         if not description:
             for line in body.splitlines():
                 line = line.strip()
                 if line and not line.startswith("#"):
-                    description = line[:200]
+                    description = line[:1024]
                     break
+
+        estimated_runtime = self._optional_int(hive_value("estimated_runtime_minutes"))
 
         return ParsedSkill(
             metadata=SkillMetadata(
@@ -120,8 +84,61 @@ class SkillParser:
                 declared_tools=tuple(declared_tools),
                 declared_packs=tuple(declared_packs),
                 is_system=is_system,
+                license=self._string_value(frontmatter.get("license")),
+                compatibility=self._string_value(frontmatter.get("compatibility")),
+                allowed_tools=allowed_tools,
+                version=self._string_value(hive_value("version")) or "0.0.0",
+                pack=self._string_value(hive_value("pack")),
+                requires_skills=self._string_tuple(hive_value("requires_skills")),
+                locale=self._string_value(hive_value("locale")) or "cloud",
+                invocation=self._string_value(hive_value("invocation")) or "both",
+                cost_tier=self._string_value(hive_value("cost_tier")),
+                estimated_runtime_minutes=estimated_runtime,
+                output_artifacts=self._string_tuple(hive_value("output_artifacts")),
+                author=self._string_value(hive_value("author")),
+                security_zone=self._string_value(hive_value("security_zone")),
+                raw_metadata=dict(metadata),
             ),
             body=body,
             file_path=path,
             relative_path=relative_path,
         )
+
+    @staticmethod
+    def _string_value(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        return str(value).strip()
+
+    @classmethod
+    def _string_tuple(cls, value: Any) -> tuple[str, ...]:
+        if value is None:
+            return ()
+        if isinstance(value, str):
+            separators = "," if "," in value else None
+            items = value.split(separators) if separators else value.split()
+            return tuple(item.strip() for item in items if item.strip())
+        if isinstance(value, (list, tuple, set)):
+            return tuple(item for item in (cls._string_value(item) for item in value) if item)
+        return (cls._string_value(value),) if cls._string_value(value) else ()
+
+    @staticmethod
+    def _bool_value(value: Any, *, default: bool) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "yes", "1", "on"}
+        return bool(value)
+
+    @classmethod
+    def _optional_int(cls, value: Any) -> int | None:
+        if value is None or value == "":
+            return None
+        try:
+            return int(cls._string_value(value))
+        except (TypeError, ValueError):
+            return None

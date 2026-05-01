@@ -4,6 +4,7 @@ import json
 import logging
 import uuid
 from collections import defaultdict
+from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.agent import Agent
 from app.models.channel_config import ChannelConfig
 from app.models.llm import LLMModel
+from app.packs.catalog_reader import PackCatalogReader, PackManifest
 from app.services.agent_tools import CORE_TOOL_NAMES, get_combined_openai_tools
 from app.services.capability_gate import CAPABILITY_MAP
 from app.services.llm_client import get_provider_spec
@@ -21,6 +23,9 @@ from app.tools import ensure_workspace
 from app.tools.packs import TOOL_PACKS, ToolPackSpec, infer_static_pack_names, pack_for_name
 
 logger = logging.getLogger(__name__)
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_PACKS_DIR = _REPO_ROOT / "packs"
 
 # Kernel tools must mirror the runtime's real minimal toolset.
 # Lazy-computed from the canonical collected tool surface.
@@ -102,9 +107,49 @@ def _pack_to_dict(pack: ToolPackSpec) -> dict:
     }
 
 
+def _manifest_pack_to_dict(manifest: PackManifest) -> dict:
+    """Serialize a pack.yaml manifest for catalog surfaces only."""
+    capabilities = set()
+    for tool in manifest.tool_names:
+        cap = CAPABILITY_MAP.get(tool)
+        if cap:
+            capabilities.add(cap)
+
+    return {
+        "name": manifest.name,
+        "summary": manifest.description,
+        "source": "manifest",
+        "activation_mode": "通过 pack.yaml catalog 展示；runtime 仍由 @tool(ToolMeta.pack) 决定",
+        "tools": list(manifest.tool_names),
+        "capabilities": sorted(capabilities),
+        "requires_channel": None,
+        "version": manifest.version,
+        "license": manifest.license,
+        "author": manifest.author,
+        "skills": list(manifest.skills),
+        "data_sources": manifest.data_sources,
+        "mcp_servers": list(manifest.mcp_servers),
+        "credential_requirements": list(manifest.credential_requirements),
+        "activation": manifest.activation,
+        "sandbox_requirements": manifest.sandbox_requirements,
+        "runtime_source_of_truth": "tool_decorator",
+    }
+
+
+def _load_manifest_pack_catalog() -> list[dict]:
+    reader = PackCatalogReader(_PACKS_DIR)
+    reader.discover()
+    return [_manifest_pack_to_dict(manifest) for manifest in reader.list_packs()]
+
+
 def get_pack_catalog() -> list[dict]:
     """Return full pack catalog with capability annotations."""
-    return [_pack_to_dict(p) for p in TOOL_PACKS]
+    catalog = [_pack_to_dict(p) for p in TOOL_PACKS]
+    existing_names = {pack["name"] for pack in catalog}
+    for manifest_pack in _load_manifest_pack_catalog():
+        if manifest_pack["name"] not in existing_names:
+            catalog.append(manifest_pack)
+    return catalog
 
 
 async def get_tenant_pack_catalog(db: AsyncSession, tenant_id: uuid.UUID | None) -> list[dict]:

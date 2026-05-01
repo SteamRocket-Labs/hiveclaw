@@ -1,0 +1,69 @@
+name: office_pack
+version: "0.1.0"
+description: |
+  Office productivity skill package for document, spreadsheet, presentation,
+  PDF, weekly report, meeting minutes, and pitch deck workflows.
+license: Proprietary
+author: Hive Office Team
+
+tools:
+  - name: office_gmail_search
+    locale: cloud
+    governance:
+      security_zone: restricted
+      credential_scope: tenant
+  - name: office_gmail_send
+    locale: cloud
+    governance:
+      security_zone: restricted
+      credential_scope: tenant
+  - name: office_outlook_search
+    locale: cloud
+    governance:
+      security_zone: restricted
+      credential_scope: tenant
+  - name: office_gcal_create_event
+    locale: cloud
+    governance:
+      security_zone: restricted
+      credential_scope: tenant
+
+skills:
+  - skills/docx-generator
+  - skills/xlsx-processor
+  - skills/pptx-generator
+  - skills/pdf-generator
+  - skills/weekly-report-generator
+  - skills/meeting-minutes
+  - skills/pitch-deck-generator
+
+data_sources:
+  public_default: []
+  paid_optional:
+    - google_workspace
+    - microsoft_365
+
+mcp_servers: []
+
+credential_requirements:
+  - key: google_oauth_connection
+    scope: tenant
+    storage: encrypted_tool_config
+  - key: microsoft_oauth_connection
+    scope: tenant
+    storage: encrypted_tool_config
+  - key: imap_smtp_connection
+    scope: tenant
+    storage: encrypted_tool_config
+
+activation:
+  required_capabilities:
+    - office_productivity
+  default_state: inactive
+
+sandbox_requirements:
+  pip_packages:
+    - markitdown>=0.1.0
+    - docxtpl>=0.16.8
+    - pypandoc>=1.14
+    - weasyprint>=62.0

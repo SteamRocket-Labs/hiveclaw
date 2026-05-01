@@ -1,0 +1,74 @@
+name: deep_research_pack
+version: "0.1.0"
+description: |
+  Source-attributed deep research workflows with planning, collection,
+  citation compilation, contradiction checks, and report assembly.
+license: Proprietary
+author: Hive Research Team
+
+tools:
+  - name: research_plan
+    locale: cloud
+    governance:
+      security_zone: public
+  - name: research_search_sources
+    locale: cloud
+    governance:
+      security_zone: public
+  - name: research_fetch_source
+    locale: cloud
+    governance:
+      security_zone: public
+  - name: research_extract_claims
+    locale: cloud
+    governance:
+      security_zone: public
+  - name: research_compile_citations
+    locale: cloud
+    governance:
+      security_zone: public
+  - name: research_check_contradictions
+    locale: cloud
+    governance:
+      security_zone: public
+  - name: research_build_report
+    locale: cloud
+    governance:
+      security_zone: public
+
+skills:
+  - skills/topic-deep-dive
+  - skills/industry-research
+  - skills/source-ledger-audit
+
+data_sources:
+  public_default:
+    - web_search
+    - web_fetch
+    - firecrawl_fetch
+  paid_optional:
+    - tavily
+    - exa
+    - firecrawl
+
+mcp_servers: []
+
+credential_requirements:
+  - key: tavily_api_key
+    scope: tenant
+    storage: encrypted_tool_config
+    injected_as: per_invocation_env
+    env_name: TAVILY_API_KEY
+  - key: exa_api_key
+    scope: tenant
+    storage: encrypted_tool_config
+    injected_as: per_invocation_env
+    env_name: EXA_API_KEY
+
+activation:
+  required_capabilities:
+    - web_research
+  default_state: inactive
+
+sandbox_requirements:
+  pip_packages: []

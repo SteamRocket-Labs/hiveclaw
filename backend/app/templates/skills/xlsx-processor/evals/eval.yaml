@@ -1,0 +1,5 @@
+cases:
+  - name: basic_workbook
+    input: "Create an XLSX workbook with inputs and formulas."
+    expected_artifacts:
+      - model.xlsx

@@ -54,7 +54,9 @@ class SourceLedger(BaseModel):
         self.field_sources[field_path] = tuple(existing)
 
     def sources_for_field(self, field_path: str) -> tuple[SourceRecord, ...]:
-        return tuple(self.records[source_id] for source_id in self.field_sources.get(field_path, ()) if source_id in self.records)
+        return tuple(
+            self.records[source_id] for source_id in self.field_sources.get(field_path, ()) if source_id in self.records
+        )
 
     def is_verified(self, field_path: str) -> bool:
         return bool(self.sources_for_field(field_path))
@@ -103,3 +105,68 @@ class IPOEvent(BaseModel):
     status: str
     expected_listing_date: datetime | None = None
     source_ids: tuple[str, ...] = ()
+
+
+class EntityResolution(BaseModel):
+    entity: EntityMasterRecord
+    source_ledger: SourceLedger
+
+
+class PriceHistoryResult(BaseModel):
+    symbol: str
+    market: MarketRegion
+    freq: str = "1d"
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+    source_ledger: SourceLedger
+
+
+class FinancialStatementsResult(BaseModel):
+    entity_id: str
+    market: MarketRegion
+    period: str
+    data: dict[str, Any] = Field(default_factory=dict)
+    source_ledger: SourceLedger
+
+
+class FilingSearchResult(BaseModel):
+    entity_id: str
+    market: MarketRegion
+    filings: list[FilingRecord] = Field(default_factory=list)
+    source_ledger: SourceLedger
+
+
+class FilingContentResult(BaseModel):
+    filing_id: str
+    content: dict[str, Any] = Field(default_factory=dict)
+    source_ledger: SourceLedger
+
+
+class IPOPipelineResult(BaseModel):
+    market: MarketRegion | None = None
+    events: list[IPOEvent] = Field(default_factory=list)
+    source_ledger: SourceLedger
+
+
+class FundingRoundsResult(BaseModel):
+    entity_id: str | None = None
+    rounds: list[FundingRound] = Field(default_factory=list)
+    source_ledger: SourceLedger
+
+
+class CompanyRegistryResult(BaseModel):
+    entity: EntityMasterRecord
+    registry: dict[str, Any] = Field(default_factory=dict)
+    source_ledger: SourceLedger
+
+
+class SourceLedgerResult(BaseModel):
+    entity_id: str | None = None
+    field: str | None = None
+    source_ledger: SourceLedger
+
+
+class CompsResult(BaseModel):
+    entity_id: str
+    metric: str
+    peers: list[dict[str, Any]] = Field(default_factory=list)
+    source_ledger: SourceLedger

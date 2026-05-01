@@ -111,6 +111,18 @@ CAPABILITY_MAP: dict[str, str] = {
     "firecrawl_fetch": "external.web.read",
     "xcrawl_scrape": "external.web.read",
     "read_webpage": "external.web.read",
+    "finance_resolve_entity": "finance.data.read",
+    "finance_get_source_ledger": "finance.data.read",
+    "finance_get_price_history": "finance.data.read",
+    "finance_get_financial_statements": "finance.data.read",
+    "finance_search_filings": "finance.data.read",
+    "finance_get_filing": "finance.data.read",
+    "finance_get_ipo_pipeline": "finance.primary_market.read",
+    "finance_get_funding_rounds": "finance.primary_market.read",
+    "finance_get_company_registry": "finance.registry.read",
+    "finance_compute_dcf": "finance.analysis.run",
+    "finance_build_comps": "finance.analysis.run",
+    "finance_compile_research_packet": "finance.analysis.run",
 }
 
 SYNTHETIC_CAPABILITY_TOOLS: dict[str, list[str]] = {

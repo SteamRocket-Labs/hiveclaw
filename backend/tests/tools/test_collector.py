@@ -16,47 +16,53 @@ def setup_function():
 def _register_sample_tools():
     """Register a few sample tools for testing."""
 
-    @tool(ToolMeta(
-        name="web_search",
-        description="Search the web",
-        parameters={"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]},
-        category="search",
-        display_name="Web Search",
-        icon="\U0001f50d",
-        read_only=True,
-        parallel_safe=True,
-        governance="safe",
-        pack="web_pack",
-        adapter="args_only",
-    ))
+    @tool(
+        ToolMeta(
+            name="web_search",
+            description="Search the web",
+            parameters={"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]},
+            category="search",
+            display_name="Web Search",
+            icon="\U0001f50d",
+            read_only=True,
+            parallel_safe=True,
+            governance="safe",
+            pack="web_pack",
+            adapter="args_only",
+        )
+    )
     async def web_search(arguments: dict) -> str:
         return f"results for {arguments['q']}"
 
-    @tool(ToolMeta(
-        name="write_file",
-        description="Write a file",
-        parameters={"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}},
-        category="file",
-        display_name="Write File",
-        governance="sensitive",
-        adapter="workspace_args",
-    ))
+    @tool(
+        ToolMeta(
+            name="write_file",
+            description="Write a file",
+            parameters={"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}},
+            category="file",
+            display_name="Write File",
+            governance="sensitive",
+            adapter="workspace_args",
+        )
+    )
     async def write_file(workspace, arguments, tenant_id=None) -> str:
         return "written"
 
-    @tool(ToolMeta(
-        name="firecrawl_fetch",
-        description="Fetch via Firecrawl",
-        parameters={"type": "object", "properties": {"q": {"type": "string"}}},
-        category="search",
-        display_name="Firecrawl Fetch",
-        read_only=True,
-        parallel_safe=True,
-        governance="safe",
-        pack="web_pack",
-        aliases=("bing_search",),
-        adapter="args_only",
-    ))
+    @tool(
+        ToolMeta(
+            name="firecrawl_fetch",
+            description="Fetch via Firecrawl",
+            parameters={"type": "object", "properties": {"q": {"type": "string"}}},
+            category="search",
+            display_name="Firecrawl Fetch",
+            read_only=True,
+            parallel_safe=True,
+            governance="safe",
+            pack="web_pack",
+            aliases=("bing_search",),
+            adapter="args_only",
+        )
+    )
     async def firecrawl_fetch(arguments: dict) -> str:
         return "firecrawl results"
 
@@ -162,6 +168,32 @@ def test_collect_real_handlers_include_memory_tools():
     delegate_schema = next(tool for tool in collected.openai_tools if tool["function"]["name"] == "delegate_to_agent")
     profile_enum = delegate_schema["function"]["parameters"]["properties"]["tool_profile"]["enum"]
     assert profile_enum == ["worker_safe", "memory_readonly", "review_readonly", "research_readonly"]
+
+
+def test_collect_real_handlers_include_finance_pack_tools():
+    clear_registry()
+    for module_name in HANDLER_MODULES:
+        importlib.reload(importlib.import_module(module_name))
+
+    collected = collect_tools()
+    names = {tool["function"]["name"] for tool in collected.openai_tools}
+    expected = {
+        "finance_resolve_entity",
+        "finance_get_source_ledger",
+        "finance_get_price_history",
+        "finance_get_financial_statements",
+        "finance_search_filings",
+        "finance_get_filing",
+        "finance_get_ipo_pipeline",
+        "finance_get_funding_rounds",
+        "finance_get_company_registry",
+        "finance_compute_dcf",
+        "finance_build_comps",
+        "finance_compile_research_packet",
+    }
+
+    assert expected <= names
+    assert expected <= set(collected.pack_tool_groups["finance_pack"])
 
 
 def test_handler_module_manifest_matches_handlers_directory():

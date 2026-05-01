@@ -29,10 +29,7 @@ def test_capability_map_covers_all_core_tools_when_strict_default_is_on():
 
 def test_safe_governance_tools_are_read_only():
     collected = collect_tools()
-    definitions = {
-        tool["function"]["name"]: tool["function"]["description"]
-        for tool in collected.openai_tools
-    }
+    definitions = {tool["function"]["name"]: tool["function"]["description"] for tool in collected.openai_tools}
     non_read_only_safe = sorted(tool for tool in collected.safe_tools if tool not in collected.read_only_names)
 
     assert non_read_only_safe == [], definitions
@@ -68,6 +65,26 @@ def test_capability_map_covers_agent_settings_controls_and_destructive_feishu_to
         "feishu_base_record_upsert": "channel.feishu.base",
         "feishu_base_record_upload_attachment": "channel.feishu.base",
         "feishu_base_record_delete": "channel.feishu.base",
+    }
+
+    for tool_name, capability in expected.items():
+        assert CAPABILITY_MAP.get(tool_name) == capability
+
+
+def test_capability_map_covers_finance_pack_tools():
+    expected = {
+        "finance_resolve_entity": "finance.data.read",
+        "finance_get_source_ledger": "finance.data.read",
+        "finance_get_price_history": "finance.data.read",
+        "finance_get_financial_statements": "finance.data.read",
+        "finance_search_filings": "finance.data.read",
+        "finance_get_filing": "finance.data.read",
+        "finance_get_ipo_pipeline": "finance.primary_market.read",
+        "finance_get_funding_rounds": "finance.primary_market.read",
+        "finance_get_company_registry": "finance.registry.read",
+        "finance_compute_dcf": "finance.analysis.run",
+        "finance_build_comps": "finance.analysis.run",
+        "finance_compile_research_packet": "finance.analysis.run",
     }
 
     for tool_name, capability in expected.items():

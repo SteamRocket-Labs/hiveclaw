@@ -40,22 +40,33 @@ class ToolAuditReport:
             "total_tools": self.total_tools,
             "orphans": sorted(self.orphans),
             "unregistered_system_skill_dirs": sorted(self.unregistered_system_skill_dirs),
-            "covered_by_pack_only": sorted(
-                self.covered_by_pack - self.covered_by_skill - self.covered_by_prompt
-            ),
-            "covered_by_skill_only": sorted(
-                self.covered_by_skill - self.covered_by_pack - self.covered_by_prompt
-            ),
-            "covered_by_prompt_only": sorted(
-                self.covered_by_prompt - self.covered_by_pack - self.covered_by_skill
-            ),
+            "covered_by_pack_only": sorted(self.covered_by_pack - self.covered_by_skill - self.covered_by_prompt),
+            "covered_by_skill_only": sorted(self.covered_by_skill - self.covered_by_pack - self.covered_by_prompt),
+            "covered_by_prompt_only": sorted(self.covered_by_prompt - self.covered_by_pack - self.covered_by_skill),
         }
 
 
 def _pack_tools() -> frozenset[str]:
     from app.tools.packs import TOOL_PACKS
 
-    return frozenset(tool for pack in TOOL_PACKS for tool in pack.tools)
+    tools = {tool for pack in TOOL_PACKS for tool in pack.tools}
+
+    # Manifest-backed packs are catalog-side in v1, but they are still valid
+    # discovery paths for tool coverage. Keep this independent from
+    # app.services.pack_service so the startup audit does not pull in service
+    # wiring just to read pack.yaml files.
+    try:
+        from app.packs.catalog_reader import PackCatalogReader
+
+        repo_root = Path(__file__).resolve().parents[3]
+        reader = PackCatalogReader(repo_root / "packs")
+        reader.discover()
+        for manifest in reader.list_packs():
+            tools.update(manifest.tool_names)
+    except Exception as exc:
+        logger.debug("[tool-audit] failed to read manifest pack catalog: %s", exc)
+
+    return frozenset(tools)
 
 
 def _template_skill_declared_tools(backend_root: Path | None = None) -> frozenset[str]:
@@ -91,9 +102,7 @@ def _template_skill_declared_tools(backend_root: Path | None = None) -> frozense
     return frozenset(declared)
 
 
-def _prompt_section_mentions(
-    tool_names: Iterable[str], backend_root: Path | None = None
-) -> frozenset[str]:
+def _prompt_section_mentions(tool_names: Iterable[str], backend_root: Path | None = None) -> frozenset[str]:
     if backend_root is None:
         backend_root = Path(__file__).resolve().parents[2]
     sections_root = backend_root / "app" / "runtime" / "prompt_sections"

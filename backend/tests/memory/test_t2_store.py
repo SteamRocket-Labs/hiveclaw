@@ -46,6 +46,66 @@ def test_parse_t2_entry_line_reads_metadata() -> None:
     assert entry["content"] == "tool call failed after timeout"
 
 
+def test_t2_entry_supports_evidence_envelope_roundtrip() -> None:
+    from app.memory.t2_store import format_t2_entry, parse_t2_entry_line
+
+    line = format_t2_entry(
+        category="feedback",
+        content="User requires evidence-tagged memory writes",
+        source="web",
+        timestamp="2026-05-02",
+        evidence="user_stated",
+        confidence=0.91,
+        volatility="stable",
+        source_refs=["t0:behavior/chat-2026-05-02.md#L12-L18", "trace:rt-1"],
+        novelty=0.72,
+        reusability=0.83,
+    )
+    entry = parse_t2_entry_line(line)
+
+    assert "[ev=user_stated]" in line
+    assert "[conf=0.91]" in line
+    assert "[vol=stable]" in line
+    assert "[refs=t0:behavior/chat-2026-05-02.md#L12-L18,trace:rt-1]" in line
+    assert "[nov=0.72]" in line
+    assert "[reuse=0.83]" in line
+    assert entry is not None
+    assert entry["evidence"] == "user_stated"
+    assert entry["confidence"] == 0.91
+    assert entry["volatility"] == "stable"
+    assert entry["source_refs"] == ["t0:behavior/chat-2026-05-02.md#L12-L18", "trace:rt-1"]
+    assert entry["novelty"] == 0.72
+    assert entry["reusability"] == 0.83
+
+
+def test_append_t2_entries_defaults_evidence_envelope(tmp_path: Path) -> None:
+    from app.memory.t2_store import append_t2_entries, load_t2_entries
+
+    agent_id = uuid.uuid4()
+    written = append_t2_entries(
+        tmp_path,
+        agent_id,
+        extractions=[
+            {
+                "category": "blocked_pattern",
+                "content": "Repeated list_files calls with identical args should stop",
+                "evidence": "system_observed",
+                "source_refs": ["trace:loop-1"],
+                "volatility": "stable",
+            }
+        ],
+        source="system",
+        timestamp="2026-05-02",
+    )
+
+    entries, _mtimes = load_t2_entries(tmp_path, agent_id)
+
+    assert written == 1
+    assert entries[0]["evidence"] == "system_observed"
+    assert entries[0]["source_refs"] == ["trace:loop-1"]
+    assert entries[0]["volatility"] == "stable"
+
+
 def test_render_t2_snapshot_groups_by_priority_and_repetition() -> None:
     from app.memory.t2_store import render_t2_snapshot
 

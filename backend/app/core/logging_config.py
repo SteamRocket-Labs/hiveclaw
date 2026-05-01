@@ -62,11 +62,13 @@ def intercept_standard_logging():
                 level, record.getMessage()
             )
 
-    # Replace all standard logger handlers
+    # Replace root standard logger handler. Child loggers should still
+    # propagate so pytest caplog and other logging observers can attach at root.
     logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
     for name in logging.root.manager.loggerDict:
-        logging.getLogger(name).handlers = [InterceptHandler()]
-        logging.getLogger(name).propagate = False
+        child_logger = logging.getLogger(name)
+        child_logger.handlers = []
+        child_logger.propagate = True
 
     # Suppress per-request success logs from chat providers and channel polling.
     # We still keep warnings/errors from these clients.

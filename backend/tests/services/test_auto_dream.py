@@ -221,12 +221,16 @@ class TestApplyDreamDecisions:
                 {
                     "content": "always prefer concise output",
                     "source_file": "feedback.md",
+                    "source_refs": ["t3:memory/feedback.md#entry:a", "t3:memory/feedback.md#entry:b"],
+                    "evidence": "system_observed",
                     "section": "Learned Behaviors",
                     "reason": "repeated 4x",
                 },
                 {
                     "content": "break problems into 3 phases",
                     "source_file": "strategies.md",
+                    "source_refs": ["t3:memory/strategies.md#entry:a", "t3:memory/strategies.md#entry:b"],
+                    "evidence": "system_observed",
                     "section": "Core Strategies",
                     "reason": "applied across tasks",
                 },
@@ -448,6 +452,8 @@ class TestRunDreamIntegration:
                 {
                     "content": "always prefer concise output",
                     "source_file": "feedback.md",
+                    "source_refs": ["t3:memory/feedback.md#entry:a", "t3:memory/feedback.md#entry:b"],
+                    "evidence": "system_observed",
                     "section": "Learned Behaviors",
                     "reason": "repeated across sessions",
                 }
@@ -603,3 +609,18 @@ class TestDreamUserPromptBuilder:
     def test_builder_handles_no_t3_files(self) -> None:
         out = _build_dream_consolidation_user_prompt("A", "soul", {})
         assert "(no T3 files)" in out
+
+
+def test_dream_consolidator_template_is_loaded_into_prompt() -> None:
+    from app.services.auto_dream import _build_dream_consolidation_user_prompt
+
+    out = _build_dream_consolidation_user_prompt(
+        "Alice",
+        "# Soul\n",
+        {"feedback.md": "- [2026-05-02] User requires evidence-tagged memory"},
+    )
+
+    assert "memory_promotion_candidate" in out
+    assert "source_refs" in out
+    assert "rollback_ref" in out
+    assert "dream may propose candidates" in out.lower()

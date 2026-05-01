@@ -189,8 +189,9 @@ class MemoryRetriever:
     DB-dependent layers degrade gracefully with logging.
     """
 
-    def __init__(self, *, data_root: Path) -> None:
+    def __init__(self, *, data_root: Path, use_t3_index_first: bool = False) -> None:
         self.data_root = Path(data_root)
+        self.use_t3_index_first = use_t3_index_first
 
     async def retrieve(
         self,
@@ -212,7 +213,10 @@ class MemoryRetriever:
         """
         items: list[MemoryItem] = []
         items.extend(self._retrieve_working(agent_id) or [])
-        items.extend(self._retrieve_t3_direct(agent_id, query=query) or [])
+        if self.use_t3_index_first:
+            items.extend(self._retrieve_t3_index_first(agent_id, query=query) or [])
+        else:
+            items.extend(self._retrieve_t3_direct(agent_id, query=query) or [])
         episodic_limit = retrieval_profile.episodic_limit if retrieval_profile else 3
         external_limit = retrieval_profile.external_limit if retrieval_profile else 5
         semantic_limit = retrieval_profile.semantic_limit if retrieval_profile else 5
@@ -328,6 +332,83 @@ class MemoryRetriever:
                 )
 
         return items
+
+    def _retrieve_t3_index_first(self, agent_id: uuid.UUID, *, query: str = "") -> list[MemoryItem]:
+        """P0 direct + P1/P2 index-guided retrieval.
+
+        This is intentionally a separate path so callers can run shadow
+        comparisons before switching production retrieval.
+        """
+        from app.memory.md_store import parse_entry_line
+
+        ws = self.data_root / str(agent_id)
+        index_text = ""
+        try:
+            index_text = (ws / "memory" / "INDEX.md").read_text(encoding="utf-8", errors="replace")
+        except (FileNotFoundError, OSError):
+            index_text = ""
+        index_lower = index_text.lower()
+
+        items: list[MemoryItem] = []
+        for rel_path, category, base_score, is_p0 in self._T3_FILES:
+            filename = rel_path.split("/")[-1]
+            if not is_p0 and query and filename.lower() not in index_lower:
+                continue
+            fpath = ws / rel_path
+            try:
+                content = fpath.read_text(encoding="utf-8").strip()
+            except (FileNotFoundError, OSError):
+                continue
+            if not content:
+                continue
+            for line in extract_entry_lines(content):
+                entry_content, timestamp = parse_entry_line(line)
+                if not entry_content:
+                    continue
+                if is_p0:
+                    score = base_score
+                else:
+                    relevance = _score_relevance(f"{filename} {entry_content} {index_text}", query)
+                    if query and relevance <= 0:
+                        continue
+                    score = base_score * max(relevance, 0.15)
+                metadata: dict[str, Any] = {
+                    "category": category,
+                    "source_type": "t3_index_first",
+                }
+                if timestamp:
+                    metadata["timestamp"] = timestamp
+                items.append(
+                    MemoryItem(
+                        kind=MemoryKind.SEMANTIC,
+                        content=f"[{category}] {entry_content}",
+                        score=round(score, 4),
+                        source=rel_path,
+                        metadata=metadata,
+                    )
+                )
+        return items
+
+    def retrieve_t3_index_shadow(self, agent_id: uuid.UUID, *, query: str = "") -> dict[str, Any]:
+        direct = self._retrieve_t3_direct(agent_id, query=query)
+        index_first = self._retrieve_t3_index_first(agent_id, query=query)
+        direct_p0 = {item.content for item in direct if item.source in {"memory/feedback.md", "memory/blocked.md"}}
+        index_p0 = {item.content for item in index_first if item.source in {"memory/feedback.md", "memory/blocked.md"}}
+        direct_p1p2 = {item.content for item in direct if item.source not in {"memory/feedback.md", "memory/blocked.md"}}
+        index_p1p2 = {item.content for item in index_first if item.source not in {"memory/feedback.md", "memory/blocked.md"}}
+        overlap = len(direct_p1p2 & index_p1p2)
+        miss_count = max(0, len(direct_p1p2 - index_p1p2))
+        return {
+            "query": query,
+            "direct_count": len(direct),
+            "index_count": len(index_first),
+            "p0_preserved": direct_p0 <= index_p0,
+            "p1_p2_overlap": overlap,
+            "p1_p2_direct_count": len(direct_p1p2),
+            "p1_p2_index_count": len(index_p1p2),
+            "p1_p2_miss_count": miss_count,
+            "p1_p2_miss_rate": round(miss_count / len(direct_p1p2), 4) if direct_p1p2 else 0.0,
+        }
 
     # -- Episodic layer: session summaries from DB --
 

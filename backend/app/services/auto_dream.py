@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import hashlib
 import logging
 import json
 import os
@@ -325,11 +326,24 @@ def _build_dream_consolidation_user_prompt(
     soul = soul_excerpt.strip()
     if len(soul) > 3000:
         soul = soul[:3000] + "\n…(truncated)"
-    return _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE.format(
+    base_prompt = _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE.format(
         agent_name=agent_name or "Agent",
         soul_excerpt=soul or "(empty)",
         t3_block=t3_block,
     )
+    return _load_dream_consolidator_instruction() + "\n\n" + base_prompt
+
+
+def _load_dream_consolidator_instruction() -> str:
+    path = Path(__file__).parent.parent / "templates" / "DREAM_CONSOLIDATOR.md"
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return (
+            "<promotion_pipeline>\n"
+            "Dream may propose candidates; memory promotions require source_refs and rollback_ref.\n"
+            "</promotion_pipeline>"
+        )
 
 
 def _parse_dream_decision(raw_text: str) -> dict | None:
@@ -558,6 +572,8 @@ def _apply_dream_decisions_unlocked(agent_id: uuid.UUID, decision: dict) -> dict
     """Inner body — kept lock-free so unit tests can drive it directly."""
     report = {
         "soul_added": 0,
+        "memory_candidates_recorded": 0,
+        "memory_candidates_held": 0,
         "t3_merges_applied": 0,
         "contradictions_resolved": 0,
         "preservation_flags_added": 0,
@@ -565,6 +581,7 @@ def _apply_dream_decisions_unlocked(agent_id: uuid.UUID, decision: dict) -> dict
 
     # --- soul promotions: group by section, one write per section ---
     soul_path = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "soul.md"
+    workspace = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
     grouped_promotions: dict[str, list[str]] = {}
     for promo in decision.get("soul_promotions") or []:
         if not isinstance(promo, dict):
@@ -574,7 +591,53 @@ def _apply_dream_decisions_unlocked(agent_id: uuid.UUID, decision: dict) -> dict
             section = "Learned Behaviors"
         content = str(promo.get("content") or "").strip()
         if content:
-            grouped_promotions.setdefault(section, []).append(content)
+            try:
+                from app.services.evolution_ledger import (
+                    decide_memory_promotion,
+                    record_memory_promotion_candidate,
+                    record_memory_promotion_decision,
+                )
+
+                source_file = str(promo.get("source_file") or "unknown").strip()
+                source_refs = promo.get("source_refs") or [f"t3:memory/{source_file}"]
+                candidate = record_memory_promotion_candidate(
+                    workspace,
+                    target_type="memory:soul",
+                    target_id=f"soul.md#{section}",
+                    proposed_diff=f"+ - {content}",
+                    source_refs=source_refs,
+                    evidence=str(promo.get("evidence") or "system_observed"),
+                    novelty=promo.get("novelty"),
+                    reusability=promo.get("reusability"),
+                    volatility=str(promo.get("volatility") or "stable"),
+                    metadata={"source_file": source_file, "reason": str(promo.get("reason") or "")},
+                )
+                report["memory_candidates_recorded"] += 1
+                promotion_decision = decide_memory_promotion(candidate)
+                if promotion_decision["decision"] == "promote":
+                    rollback_ref = f"soul.md@before-dream:{datetime.now(timezone.utc).isoformat()}"
+                    record_memory_promotion_decision(
+                        workspace,
+                        candidate_id=candidate["candidate_id"],
+                        decision="promote",
+                        reason=promotion_decision["reason"],
+                        rollback_ref=rollback_ref,
+                        metadata={"section": section},
+                    )
+                    grouped_promotions.setdefault(section, []).append(content)
+                else:
+                    report["memory_candidates_held"] += 1
+                    record_memory_promotion_decision(
+                        workspace,
+                        candidate_id=candidate["candidate_id"],
+                        decision="hold",
+                        reason=promotion_decision["reason"],
+                        rollback_ref=None,
+                        metadata={"section": section},
+                    )
+            except Exception as exc:
+                logger.warning("[Dream] Memory promotion ledger failed; holding promotion for %s: %s", agent_id, exc)
+                report["memory_candidates_held"] += 1
 
     for section in _SOUL_SECTION_ORDER:
         entries = grouped_promotions.get(section)
@@ -860,12 +923,19 @@ def _promote_repeated_feedback_to_soul(agent_id: uuid.UUID, feedback_content: st
 
     from app.memory.md_store import extract_entry_lines, parse_entry_line
 
-    raw_entries = [parse_entry_line(line)[0] for line in extract_entry_lines(feedback_content)]
+    raw_entries = [
+        {
+            "content": parse_entry_line(line)[0],
+            "source_ref": f"t3:memory/feedback.md#entry:{hashlib.sha256(line.encode('utf-8')).hexdigest()[:12]}",
+        }
+        for line in extract_entry_lines(feedback_content)
+    ]
     if len(raw_entries) < 3:
         return {"count": 0, "decisions": []}
 
     clusters: list[dict[str, object]] = []
-    for entry in raw_entries:
+    for raw_entry in raw_entries:
+        entry = str(raw_entry["content"])
         normalized = entry.strip().lower()
         if not normalized:
             continue
@@ -878,6 +948,9 @@ def _promote_repeated_feedback_to_soul(agent_id: uuid.UUID, feedback_content: st
                 longest = str(cluster["content"])
                 if len(entry) > len(longest):
                     cluster["content"] = entry
+                source_refs = cluster.setdefault("source_refs", [])
+                if isinstance(source_refs, list):
+                    source_refs.append(str(raw_entry["source_ref"]))
                 matched = True
                 break
         if not matched:
@@ -886,6 +959,7 @@ def _promote_repeated_feedback_to_soul(agent_id: uuid.UUID, feedback_content: st
                     "representative": normalized,
                     "content": entry,
                     "count": 1,
+                    "source_refs": [str(raw_entry["source_ref"])],
                 }
             )
 
@@ -902,7 +976,57 @@ def _promote_repeated_feedback_to_soul(agent_id: uuid.UUID, feedback_content: st
     if not new_clusters:
         return {"count": 0, "decisions": []}
 
-    new_behaviors = [str(c["content"]) for c in new_clusters]
+    workspace = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
+    approved_clusters: list[dict[str, object]] = []
+    for cluster in new_clusters:
+        content = str(cluster["content"])
+        try:
+            from app.services.evolution_ledger import (
+                decide_memory_promotion,
+                record_memory_promotion_candidate,
+                record_memory_promotion_decision,
+            )
+
+            candidate = record_memory_promotion_candidate(
+                workspace,
+                target_type="memory:soul",
+                target_id="soul.md#Learned Behaviors",
+                proposed_diff=f"+ - {content}",
+                source_refs=list(cluster.get("source_refs") or [])[:5],
+                evidence="system_observed",
+                novelty=0.7,
+                reusability=0.8,
+                volatility="stable",
+                metadata={
+                    "source_file": "feedback.md",
+                    "repetition_count": int(cluster["count"]),
+                    "reason": "feedback repeated 3+ times → promoted to soul",
+                },
+            )
+            decision = decide_memory_promotion(candidate)
+            if decision["decision"] == "promote":
+                record_memory_promotion_decision(
+                    workspace,
+                    candidate_id=candidate["candidate_id"],
+                    decision="promote",
+                    reason=decision["reason"],
+                    rollback_ref=f"soul.md@before-pattern-promotion:{datetime.now(timezone.utc).isoformat()}",
+                )
+                approved_clusters.append(cluster)
+            else:
+                record_memory_promotion_decision(
+                    workspace,
+                    candidate_id=candidate["candidate_id"],
+                    decision="hold",
+                    reason=decision["reason"],
+                )
+        except Exception as exc:
+            logger.warning("[Dream] Feedback promotion ledger failed for %s: %s", agent_id, exc)
+
+    if not approved_clusters:
+        return {"count": 0, "decisions": []}
+
+    new_behaviors = [str(c["content"]) for c in approved_clusters]
     header = "## Learned Behaviors"
     behavior_block = "\n".join(f"- {content}" for content in new_behaviors) + "\n"
     if header in existing:
@@ -920,7 +1044,7 @@ def _promote_repeated_feedback_to_soul(agent_id: uuid.UUID, feedback_content: st
             "repetition_count": int(c["count"]),
             "reason": "feedback repeated 3+ times → promoted to soul",
         }
-        for c in new_clusters
+        for c in approved_clusters
     ]
     return {"count": len(new_behaviors), "decisions": decisions}
 

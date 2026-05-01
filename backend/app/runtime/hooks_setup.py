@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from pathlib import Path
 
 from app.runtime.hooks import (
     HookContext,
@@ -132,6 +133,17 @@ def _parse_agent_id(ctx: HookContext) -> uuid.UUID | None:
 _t0_cursors: dict[str, int] = {}  # "agent_id:session_id" → message index of last T0 write
 
 
+def _is_reportable_session(messages: list[dict], metadata: dict) -> bool:
+    if metadata.get("loop_guard_triggered") or metadata.get("failed") or metadata.get("partial_failure"):
+        return True
+    if metadata.get("commit") or metadata.get("deployment") or metadata.get("external_action"):
+        return True
+    if len(messages) >= int(metadata.get("reportable_message_threshold") or 12):
+        return True
+    text = "\n".join(str(msg.get("content") or "") for msg in messages[-6:])
+    return any(marker in text.lower() for marker in ("wrong", "错了", "不是", "failed", "失败", "loop guard"))
+
+
 async def _t0_session_close(ctx: HookContext) -> None:
     """SESSION_CLOSE → drain extractor + write incremental T0 (cursor-based)."""
     agent_id = _parse_agent_id(ctx)
@@ -159,6 +171,21 @@ async def _t0_session_close(ctx: HookContext) -> None:
         messages=new_messages,
         metadata={**ctx.metadata, "source": ctx.source or "web", "cursor_start": cursor},
     )
+    if _is_reportable_session(messages, ctx.metadata):
+        try:
+            from app.config import get_settings
+            from app.services.reflection_service import create_reportable_reflection
+
+            create_reportable_reflection(
+                data_root=Path(get_settings().AGENT_DATA_DIR),
+                agent_id=agent_id,
+                session_id=str(ctx.session_id or ""),
+                reason=str(ctx.metadata.get("reason") or "session_close_reportable"),
+                messages=messages,
+                metadata=ctx.metadata,
+            )
+        except Exception as exc:
+            logger.debug("[Hooks] reportable reflection skipped for %s: %s", agent_id, exc)
     _t0_cursors[session_key] = len(messages)
 
 

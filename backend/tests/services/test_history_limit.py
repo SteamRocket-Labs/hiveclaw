@@ -40,8 +40,8 @@ def test_compute_history_limit_huge_model():
 def test_compute_history_limit_override_takes_precedence():
     """max_input_tokens_override should override provider default."""
     from app.services.memory_service import compute_history_limit
-    limit_default = compute_history_limit("deepseek", "deepseek-chat")  # 64k default
-    limit_override = compute_history_limit("deepseek", "deepseek-chat", max_input_tokens_override=200_000)
+    limit_default = compute_history_limit("openai", "gpt-4o")  # 128k default
+    limit_override = compute_history_limit("openai", "gpt-4o", max_input_tokens_override=200_000)
     assert limit_override > limit_default
 
 

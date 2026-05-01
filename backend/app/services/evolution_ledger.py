@@ -74,6 +74,43 @@ def record_evolution_candidate(
     )
 
 
+def record_memory_promotion_candidate(
+    workspace: Path,
+    *,
+    target_type: str,
+    target_id: str,
+    proposed_diff: str,
+    source_refs: list[str],
+    evidence: str,
+    novelty: float | int | None = None,
+    reusability: float | int | None = None,
+    volatility: str = "stable",
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    refs = [str(ref).strip() for ref in source_refs if str(ref).strip()]
+    if not refs:
+        raise ValueError("memory promotion candidate requires at least one source_ref")
+    candidate_id = _candidate_id(target_type, target_id, proposed_diff, refs)
+    return _append(
+        workspace,
+        {
+            "schema": "memory_promotion_candidate.v1",
+            "event": "memory_promotion_candidate",
+            "candidate_id": candidate_id,
+            "target_type": target_type,
+            "target_id": target_id,
+            "source_refs": refs,
+            "evidence": (evidence or "inferred").strip().lower(),
+            "novelty": round(float(novelty), 2) if novelty is not None else None,
+            "reusability": round(float(reusability), 2) if reusability is not None else None,
+            "volatility": (volatility or "stable").strip().lower(),
+            "diff_hash": hashlib.sha256(proposed_diff.encode("utf-8")).hexdigest(),
+            "diff_preview": proposed_diff[:1000],
+            "metadata": metadata or {},
+        },
+    )
+
+
 def record_eval_run(
     workspace: Path,
     *,
@@ -115,6 +152,24 @@ def decide_promotion(eval_run: dict[str, Any], *, min_reward_delta: float = 0.0)
     return {"decision": "promote", "reason": "reward beat baseline with no critical regressions"}
 
 
+def decide_memory_promotion(candidate: dict[str, Any]) -> dict[str, str]:
+    evidence = str(candidate.get("evidence") or "inferred").lower()
+    volatility = str(candidate.get("volatility") or "stable").lower()
+    target_type = str(candidate.get("target_type") or "")
+    source_refs = candidate.get("source_refs") or []
+    if evidence == "inferred":
+        return {"decision": "hold", "reason": "inferred evidence cannot be promoted directly"}
+    if volatility in {"ephemeral", "session"}:
+        return {"decision": "hold", "reason": f"{volatility} memory is not durable enough to promote"}
+    if target_type == "memory:soul" and evidence not in {"user_stated", "tool_verified", "system_observed"}:
+        return {"decision": "hold", "reason": "soul promotion requires verified evidence"}
+    if target_type == "memory:soul" and not source_refs:
+        return {"decision": "hold", "reason": "soul promotion requires source_refs"}
+    if target_type == "memory:soul" and evidence == "system_observed" and len(source_refs) < 2:
+        return {"decision": "hold", "reason": "system_observed soul promotion requires multiple source_refs"}
+    return {"decision": "promote", "reason": "memory promotion candidate passed evidence and volatility gates"}
+
+
 def record_promotion_decision(
     workspace: Path,
     *,
@@ -129,6 +184,31 @@ def record_promotion_decision(
         {
             "schema": "evolution_promotion_decision.v1",
             "event": "promotion_decision",
+            "candidate_id": candidate_id,
+            "decision": decision,
+            "reason": reason,
+            "rollback_ref": rollback_ref,
+            "metadata": metadata or {},
+        },
+    )
+
+
+def record_memory_promotion_decision(
+    workspace: Path,
+    *,
+    candidate_id: str,
+    decision: str,
+    reason: str,
+    rollback_ref: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if decision == "promote" and not rollback_ref:
+        raise ValueError("promoted memory decisions require rollback_ref")
+    return _append(
+        workspace,
+        {
+            "schema": "memory_promotion_decision.v1",
+            "event": "memory_promotion_decision",
             "candidate_id": candidate_id,
             "decision": decision,
             "reason": reason,

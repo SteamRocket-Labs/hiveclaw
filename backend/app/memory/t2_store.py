@@ -30,11 +30,10 @@ T2_FILE_HEADERS: dict[str, str] = {
 
 _ENTRY_RE = re.compile(
     r"^- \[(?P<timestamp>[^\]]+)\]"
-    r"(?:\[w=(?P<weight>\d+(?:\.\d+)?)\])?"
-    r"(?:\[src=(?P<source>[^\]]+)\])?"
-    r"(?:\[cat=(?P<category>[^\]]+)\])?"
+    r"(?P<meta>(?:\[[^\]]+\])*)"
     r"\s+(?P<content>.+?)\s*$"
 )
+_META_RE = re.compile(r"\[(?P<key>[a-zA-Z_]+)=(?P<value>[^\]]*)\]")
 _WHITESPACE_RE = re.compile(r"\s+")
 
 _HUMAN_SOURCES = {
@@ -146,6 +145,33 @@ def _normalize_content(content: str) -> str:
     return _WHITESPACE_RE.sub(" ", content).strip().lower()
 
 
+def _clamp_score(value: float | str | None, default: float | None = None) -> float | None:
+    if value is None:
+        return default
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return default
+    return round(min(1.0, max(0.0, score)), 2)
+
+
+def _normalize_refs(source_refs: list[str] | tuple[str, ...] | str | None) -> list[str]:
+    if source_refs is None:
+        return []
+    if isinstance(source_refs, str):
+        raw = source_refs.split(",")
+    else:
+        raw = list(source_refs)
+    return [str(ref).strip() for ref in raw if str(ref).strip()]
+
+
+def _parse_meta(meta: str) -> dict[str, str]:
+    return {
+        match.group("key").strip().lower(): match.group("value").strip()
+        for match in _META_RE.finditer(meta or "")
+    }
+
+
 def format_t2_entry(
     *,
     category: str,
@@ -153,12 +179,41 @@ def format_t2_entry(
     source: str,
     timestamp: str | None = None,
     weight: float | None = None,
+    evidence: str | None = None,
+    confidence: float | str | None = None,
+    volatility: str | None = None,
+    source_refs: list[str] | tuple[str, ...] | str | None = None,
+    novelty: float | str | None = None,
+    reusability: float | str | None = None,
 ) -> str:
     ts = timestamp or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     final_weight = compute_t2_weight(category, source) if weight is None else round(weight, 2)
     normalized_source = (source or "runtime").strip().lower() or "runtime"
     normalized_category = (category or "general").strip().lower() or "general"
-    return f"- [{ts}][w={final_weight:.2f}][src={normalized_source}][cat={normalized_category}] {content.strip()}"
+    meta_parts = [
+        f"[w={final_weight:.2f}]",
+        f"[src={normalized_source}]",
+        f"[cat={normalized_category}]",
+    ]
+    normalized_evidence = (evidence or "").strip().lower()
+    if normalized_evidence:
+        meta_parts.append(f"[ev={normalized_evidence}]")
+    confidence_score = _clamp_score(confidence)
+    if confidence_score is not None:
+        meta_parts.append(f"[conf={confidence_score:.2f}]")
+    normalized_volatility = (volatility or "").strip().lower()
+    if normalized_volatility:
+        meta_parts.append(f"[vol={normalized_volatility}]")
+    refs = _normalize_refs(source_refs)
+    if refs:
+        meta_parts.append(f"[refs={','.join(refs)}]")
+    novelty_score = _clamp_score(novelty)
+    if novelty_score is not None:
+        meta_parts.append(f"[nov={novelty_score:.2f}]")
+    reusability_score = _clamp_score(reusability)
+    if reusability_score is not None:
+        meta_parts.append(f"[reuse={reusability_score:.2f}]")
+    return f"- [{ts}]{''.join(meta_parts)} {content.strip()}"
 
 
 def parse_t2_entry_line(line: str, *, fallback_category: str | None = None, fallback_source: str | None = None) -> dict | None:
@@ -166,18 +221,38 @@ def parse_t2_entry_line(line: str, *, fallback_category: str | None = None, fall
     if not match:
         return None
 
-    category = (match.group("category") or fallback_category or "general").strip().lower()
-    source = (match.group("source") or fallback_source or "runtime").strip().lower()
-    weight_raw = match.group("weight")
+    metadata = _parse_meta(match.group("meta") or "")
+    category = (metadata.get("cat") or fallback_category or "general").strip().lower()
+    source = (metadata.get("src") or fallback_source or "runtime").strip().lower()
+    weight_raw = metadata.get("w")
     weight = compute_t2_weight(category, source) if weight_raw is None else round(float(weight_raw), 2)
+    evidence = (metadata.get("ev") or metadata.get("evidence") or "").strip().lower()
+    confidence = _clamp_score(metadata.get("conf"))
+    volatility = (metadata.get("vol") or metadata.get("volatility") or "").strip().lower()
+    source_refs = _normalize_refs(metadata.get("refs") or metadata.get("source_refs"))
+    novelty = _clamp_score(metadata.get("nov") or metadata.get("novelty"))
+    reusability = _clamp_score(metadata.get("reuse") or metadata.get("reusability"))
 
-    return {
+    parsed = {
         "timestamp": match.group("timestamp").strip(),
         "weight": weight,
         "source": source,
         "category": category,
         "content": match.group("content").strip(),
     }
+    if evidence:
+        parsed["evidence"] = evidence
+    if confidence is not None:
+        parsed["confidence"] = confidence
+    if volatility:
+        parsed["volatility"] = volatility
+    if source_refs:
+        parsed["source_refs"] = source_refs
+    if novelty is not None:
+        parsed["novelty"] = novelty
+    if reusability is not None:
+        parsed["reusability"] = reusability
+    return parsed
 
 
 def append_t2_entries(
@@ -206,6 +281,12 @@ def append_t2_entries(
                 content=content,
                 source=source,
                 timestamp=timestamp,
+                evidence=extraction.get("evidence") or extraction.get("ev"),
+                confidence=extraction.get("confidence") or extraction.get("conf"),
+                volatility=extraction.get("volatility") or extraction.get("vol"),
+                source_refs=extraction.get("source_refs") or extraction.get("refs"),
+                novelty=extraction.get("novelty") or extraction.get("nov"),
+                reusability=extraction.get("reusability") or extraction.get("reuse"),
             )
         )
 

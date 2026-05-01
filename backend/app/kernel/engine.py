@@ -18,6 +18,7 @@ from app.core.execution_context import (
     set_execution_identity,
 )
 from app.kernel.contracts import InvocationRequest, InvocationResult, RuntimeConfig
+from app.kernel.loop_guard import LoopGuard, LoopGuardDecision
 from app.runtime.session import SessionContext
 from app.services.chat_message_parts import (
     build_active_packs_event,
@@ -1122,6 +1123,7 @@ class AgentKernel:
             streamed_chunks: list[str] = []
             streamed_thinking: list[str] = []
             _callback_failure_count: int = 0
+            loop_guard = LoopGuard()
 
             async def _emit_event(event: dict[str, Any]) -> None:
                 if request.on_event:
@@ -1132,6 +1134,29 @@ class AgentKernel:
                 part = _event_to_part(event)
                 if part:
                     collected_parts.append(part)
+
+            async def _abort_for_loop_guard(decision: LoopGuardDecision) -> InvocationResult:
+                message = f"[Loop Guard] Stopped repeated non-progress pattern: {decision.message}"
+                await _emit_event(
+                    {
+                        "type": "loop_guard",
+                        "part": {
+                            "type": "event",
+                            "event_type": "loop_guard_triggered",
+                            "title": "Loop Guard Triggered",
+                            "text": message,
+                            "status": "warning",
+                            **decision.trace_event,
+                        },
+                    }
+                )
+                await self._persist_before_exit(request, runtime_config, message, api_messages)
+                return InvocationResult(
+                    content=message,
+                    tokens_used=accumulated_tokens,
+                    final_tools=tools_for_llm,
+                    parts=collected_parts + [{"type": "text", "text": message}],
+                )
 
             async def _emit_compaction_event(data: dict[str, Any]) -> None:
                 await _emit_event({"type": "session_compact", **data})
@@ -1630,6 +1655,10 @@ class AgentKernel:
                         ) + len(response.content or "")
                         accumulated_tokens += self._deps.estimate_tokens_from_chars(round_chars)
 
+                    text_loop_decision = loop_guard.observe_assistant_text(response.content)
+                    if text_loop_decision:
+                        return await _abort_for_loop_guard(text_loop_decision)
+
                     if not response.tool_calls:
                         final_content = response.content or "[LLM returned empty content]"
                         if request.agent_id and runtime_config.tenant_id:
@@ -1739,6 +1768,10 @@ class AgentKernel:
 
                     # Per-round aggregate budget tracker.
                     _round_tool_chars = 0
+                    for _tc, tool_name, args in parsed_tool_calls:
+                        call_loop_decision = loop_guard.observe_tool_call(tool_name, args)
+                        if call_loop_decision:
+                            return await _abort_for_loop_guard(call_loop_decision)
 
                     if len(parsed_tool_calls) > 1 and _can_parallelize_batch(response.tool_calls):
                         # --- Parallel execution for read-only tools ---
@@ -1807,6 +1840,9 @@ class AgentKernel:
                         # 3. Emit "done" events and append tool results in original order
                         for (tc, tool_name, _original_args), execution in zip(parsed_tool_calls, results):
                             result, effective_args, _executed = execution
+                            result_loop_decision = loop_guard.observe_tool_result(tool_name, effective_args, str(result))
+                            if result_loop_decision:
+                                return await _abort_for_loop_guard(result_loop_decision)
                             done_payload = {
                                 "name": tool_name,
                                 "args": effective_args,
@@ -1890,6 +1926,9 @@ class AgentKernel:
                                 tool_args=args,
                                 emit_event=_emit_event,
                             )
+                            result_loop_decision = loop_guard.observe_tool_result(tool_name, args, str(result))
+                            if result_loop_decision:
+                                return await _abort_for_loop_guard(result_loop_decision)
 
                             if request.expand_tools and request.agent_id:
                                 if executed and _should_expand_tools(tool_name, args):

@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.runtime.recovery_manifest import RecoveryManifest, build_recovery_manifest
+from app.runtime.recovery_manifest import build_recovery_manifest
 from app.runtime.session import SessionContext
 
 

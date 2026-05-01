@@ -89,7 +89,7 @@ tools/executors/ — core.py, extended.py, integrations.py
 | `runtime/session.py` | `SessionContext` — tracks source, channel, active_packs per invocation |
 | `core/execution_context.py` | `ExecutionIdentity` ContextVar — agent_bot vs delegated_user, read by audit |
 
-**Execution flow:** Every entry point builds an `InvocationRequest` and calls `invoke_agent()`. The kernel runs a multi-round LLM loop (max 50 rounds) with streaming callbacks. Context compaction at 85% threshold, tool result eviction at 50KB/result.
+**Execution flow:** Every entry point builds an `InvocationRequest` and calls `invoke_agent()`. The kernel runs a multi-round LLM loop with streaming callbacks. Round budget: `max_tool_rounds` defaults to **200** (`models/agent.py:63`, `invoker.py:160/172/189/203`); heartbeat overrides to **15** (`heartbeat.py:1454`, "OBSERVE ~3 + CURATE ~8 + LOG ~4"). Round-pressure warnings injected at 80% and `max_rounds - 2` (`engine.py:1297-1298`). Context compaction is **proactive** (≥75% utilization, checked every 3 rounds) + **reactive** (prompt-too-long retries with truncation). Individual tool results >50KB spill to `workspace/logs/.../artifacts/`; per-round aggregate budget 200K chars. Hive currently lacks Mercury-style semantic loop detection (repeated tool/args, identical-failure loops) — only the round cap protects against infinite loops.
 
 ### Tool System (`app/tools/`)
 
@@ -169,10 +169,12 @@ logs/YYYY-MM-DD/
 | File | Purpose |
 |------|---------|
 | `services/t0_logger.py` | Write T0 MD logs (chat, trigger, delegation, heartbeat, dream) |
-| `services/extract_agent.py` | LLM extraction T0→T2 (cursor-based, per-response via RESPONSE_COMPLETE hook) |
-| `services/heartbeat.py` | T2→T3 curation (KAIROS persistent session, 45min ticks) |
-| `services/auto_dream.py` | T3→soul consolidation (4h + 3 sessions gate) |
-| `memory/retriever.py` | Read T3 MD files directly into prompt |
+| `services/extract_agent.py` | LLM extraction T0→T2 (cursor-based, per-response via RESPONSE_COMPLETE hook). T2 entries carry `[w=][src=][cat=]` metadata (`t2_store.py:149`); source bucket weights at `t2_store.py:68` |
+| `services/heartbeat.py` | T2→T3 curation (KAIROS persistent session, 45min ticks). Loads `templates/HEARTBEAT.md`; per-agent `workspace/HEARTBEAT.md` overrides via `_load_heartbeat_instruction` (heartbeat.py:413) — **already SOP-driven** |
+| `services/auto_dream.py` | T3→soul consolidation (4h + 3 sessions gate). `templates/DREAM.md` covers the **procedural** file-maintenance side (dedup, cap enforcement, lineage). The **structured-decision** side (soul promotions, T3 merges, contradictions, preservation flags) still runs through `_DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE` in Python (auto_dream.py:117) — DREAM.md is **not yet** wired as the consolidator's protocol source. Anti-pattern list at auto_dream.py:229 is detailed; positive scoring (novelty/reusability) is missing |
+| `services/evolution_ledger.py` | `evolution_ledger.jsonl` — candidate → eval (with `traces`) → promotion audit chain for automatic prompt/skill/policy changes. Distinct from per-invocation runtime trace (not yet implemented) |
+| `memory/retriever.py` | Read T3 into prompt. P0 (`feedback.md`/`blocked.md`) injected in full at `_retrieve_t3_direct` (retriever.py:267); P1/P2 (`knowledge.md`/`strategies.md`/`user.md`) scored per-entry against query |
+| `memory/md_store.py` | `rebuild_index` (md_store.py:232) maintains `memory/INDEX.md` — currently a **shadow artifact**, retriever does not route through it. `auto_dream._update_index_md` (auto_dream.py:833) regenerates it after each dream |
 | `runtime/hooks_setup.py` | Hook handlers: T0 writers, extraction triggers, drain on close |
 
 ### Hook System (`app/runtime/hooks.py`)

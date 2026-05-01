@@ -16,6 +16,29 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
+def find_pack_dirs(anchor: Path | None = None) -> tuple[Path, ...]:
+    """Find pack manifest roots for both repo and packaged backend layouts.
+
+    Local development keeps pack manifests at `<repo>/packs`. Railway backend
+    deployments use `backend` as the build root, so deployable manifests may
+    live at `<backend>/packs` inside the container. Return nearest roots first
+    and de-duplicate paths.
+    """
+    start = (anchor or Path(__file__).resolve()).resolve()
+    ancestors = (start, *start.parents) if start.is_dir() else start.parents
+    seen: set[Path] = set()
+    pack_dirs: list[Path] = []
+
+    for ancestor in ancestors:
+        candidate = ancestor / "packs"
+        has_manifest = candidate.is_dir() and any(pack.joinpath("pack.yaml").is_file() for pack in candidate.iterdir())
+        if has_manifest and candidate not in seen:
+            seen.add(candidate)
+            pack_dirs.append(candidate)
+
+    return tuple(pack_dirs)
+
+
 @dataclass(frozen=True, slots=True)
 class PackManifest:
     name: str

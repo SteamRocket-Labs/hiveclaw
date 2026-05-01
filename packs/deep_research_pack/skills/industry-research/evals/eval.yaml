@@ -1,0 +1,11 @@
+name: industry-research
+cases:
+  - name: industry_landscape_packet
+    input: "Build an industry research brief for enterprise AI agent platforms across US and China."
+    expected_tools:
+      - web_search
+      - web_fetch
+      - write_file
+    expected_artifacts:
+      - industry-research.md
+

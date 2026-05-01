@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.agent import Agent
 from app.models.channel_config import ChannelConfig
 from app.models.llm import LLMModel
-from app.packs.catalog_reader import PackCatalogReader, PackManifest
+from app.packs.catalog_reader import PackCatalogReader, PackManifest, find_pack_dirs
 from app.services.agent_tools import CORE_TOOL_NAMES, get_combined_openai_tools
 from app.services.capability_gate import CAPABILITY_MAP
 from app.services.llm_client import get_provider_spec
@@ -24,8 +24,7 @@ from app.tools.packs import TOOL_PACKS, ToolPackSpec, infer_static_pack_names, p
 
 logger = logging.getLogger(__name__)
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-_PACKS_DIR = _REPO_ROOT / "packs"
+_PACKS_DIRS = find_pack_dirs(Path(__file__).resolve())
 
 # Kernel tools must mirror the runtime's real minimal toolset.
 # Lazy-computed from the canonical collected tool surface.
@@ -137,9 +136,13 @@ def _manifest_pack_to_dict(manifest: PackManifest) -> dict:
 
 
 def _load_manifest_pack_catalog() -> list[dict]:
-    reader = PackCatalogReader(_PACKS_DIR)
-    reader.discover()
-    return [_manifest_pack_to_dict(manifest) for manifest in reader.list_packs()]
+    manifests: dict[str, PackManifest] = {}
+    for packs_dir in _PACKS_DIRS:
+        reader = PackCatalogReader(packs_dir)
+        reader.discover()
+        for manifest in reader.list_packs():
+            manifests.setdefault(manifest.name, manifest)
+    return [_manifest_pack_to_dict(manifest) for manifest in manifests.values()]
 
 
 def get_pack_catalog() -> list[dict]:

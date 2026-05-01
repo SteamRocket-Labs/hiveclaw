@@ -1,0 +1,5 @@
+cases:
+  - name: weekly_report_markdown
+    input: "Create a weekly report from supplied notes."
+    expected_artifacts:
+      - weekly-report.md

@@ -1,0 +1,10 @@
+name: ipo-pipeline-monitor
+cases:
+  - name: monitor_cross_market_ipo_pipeline
+    input: "Build an IPO pipeline update across US, HK, and A-share markets."
+    expected_tools:
+      - finance_run_workflow
+      - finance_get_ipo_pipeline
+      - finance_search_filings
+    expected_artifacts:
+      - ipo-pipeline.md

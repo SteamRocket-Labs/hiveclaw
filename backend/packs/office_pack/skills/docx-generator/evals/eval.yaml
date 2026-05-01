@@ -1,0 +1,5 @@
+cases:
+  - name: basic_docx_report
+    input: "Create a two-section DOCX report."
+    expected_artifacts:
+      - report.docx

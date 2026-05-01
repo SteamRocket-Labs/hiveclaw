@@ -1,0 +1,5 @@
+cases:
+  - name: basic_pdf_report
+    input: "Render a source-attributed PDF report."
+    expected_artifacts:
+      - report.pdf

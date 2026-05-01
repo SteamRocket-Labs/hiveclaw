@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.packs.catalog_reader import PackCatalogReader
+from app.packs.catalog_reader import PackCatalogReader, find_pack_dirs
+from app.tools.collector import collect_tools
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+PACK_ROOTS = (REPO_ROOT / "packs", REPO_ROOT / "backend" / "packs")
+REQUIRED_CLOUD_PACKS = {"deep_research_pack", "finance_pack", "office_pack"}
 
 
 def test_pack_catalog_reader_loads_manifest_without_runtime_side_effects(tmp_path):
@@ -104,3 +107,64 @@ def test_repo_pack_manifests_cover_cloud_capability_packs():
     assert manifests["finance_pack"].data_sources["public_default"]
     assert "skills/topic-deep-dive" in manifests["deep_research_pack"].skills
     assert "skills/weekly-report-generator" in manifests["office_pack"].skills
+
+
+def test_repo_and_deploy_pack_manifests_are_full_skill_packages():
+    failures: list[str] = []
+
+    for pack_root in PACK_ROOTS:
+        reader = PackCatalogReader(pack_root)
+        reader.discover()
+        manifests = {manifest.name: manifest for manifest in reader.list_packs()}
+
+        missing_packs = REQUIRED_CLOUD_PACKS - set(manifests)
+        if missing_packs:
+            failures.append(f"{pack_root.relative_to(REPO_ROOT)} missing packs {sorted(missing_packs)}")
+            continue
+
+        for manifest in manifests.values():
+            if not manifest.skills:
+                failures.append(f"{manifest.manifest_path.relative_to(REPO_ROOT)} does not declare skills")
+                continue
+            pack_dir = manifest.manifest_path.parent
+            for skill_ref in manifest.skills:
+                skill_dir = pack_dir / skill_ref
+                if not (skill_dir / "SKILL.md").is_file():
+                    failures.append(f"{manifest.name} skill {skill_ref} missing SKILL.md in {pack_dir.relative_to(REPO_ROOT)}")
+                if not (skill_dir / "references").is_dir():
+                    failures.append(f"{manifest.name} skill {skill_ref} missing references/ in {pack_dir.relative_to(REPO_ROOT)}")
+                if not (skill_dir / "templates").is_dir():
+                    failures.append(f"{manifest.name} skill {skill_ref} missing templates/ in {pack_dir.relative_to(REPO_ROOT)}")
+                if not (skill_dir / "evals" / "eval.yaml").is_file():
+                    failures.append(f"{manifest.name} skill {skill_ref} missing evals/eval.yaml in {pack_dir.relative_to(REPO_ROOT)}")
+
+    assert not failures, "\n".join(failures)
+
+
+def test_pack_manifest_tools_are_registered_backend_tools():
+    registered_tools = {tool["function"]["name"] for tool in collect_tools().openai_tools}
+    failures: list[str] = []
+
+    for pack_root in PACK_ROOTS:
+        reader = PackCatalogReader(pack_root)
+        reader.discover()
+        for manifest in reader.list_packs():
+            for tool_name in manifest.tool_names:
+                if tool_name not in registered_tools:
+                    failures.append(f"{manifest.manifest_path.relative_to(REPO_ROOT)} references unknown tool {tool_name}")
+
+    assert not failures, "\n".join(failures)
+
+
+def test_find_pack_dirs_supports_repo_and_packaged_backend_layouts(tmp_path):
+    repo_packs = tmp_path / "packs"
+    backend_packs = tmp_path / "backend" / "packs"
+    service_file = tmp_path / "backend" / "app" / "services" / "pack_service.py"
+    (repo_packs / "office_pack").mkdir(parents=True)
+    (backend_packs / "finance_pack").mkdir(parents=True)
+    (repo_packs / "office_pack" / "pack.yaml").write_text("name: office_pack\n", encoding="utf-8")
+    (backend_packs / "finance_pack" / "pack.yaml").write_text("name: finance_pack\n", encoding="utf-8")
+    service_file.parent.mkdir(parents=True, exist_ok=True)
+    service_file.write_text("# test anchor\n", encoding="utf-8")
+
+    assert find_pack_dirs(service_file) == (backend_packs, repo_packs)

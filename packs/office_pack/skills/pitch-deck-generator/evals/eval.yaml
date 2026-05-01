@@ -1,0 +1,5 @@
+cases:
+  - name: pitch_deck_outline_and_pptx
+    input: "Create a Seed pitch deck from a company brief."
+    expected_artifacts:
+      - pitch-deck.pptx

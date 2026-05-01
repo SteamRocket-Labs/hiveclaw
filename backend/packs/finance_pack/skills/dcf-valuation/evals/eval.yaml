@@ -1,0 +1,10 @@
+name: dcf-valuation
+cases:
+  - name: compute_explicit_dcf
+    input: "Run a DCF using explicit free cash flow forecasts and discount assumptions."
+    expected_tools:
+      - finance_get_financial_statements
+      - finance_compute_dcf
+      - finance_get_source_ledger
+    expected_artifacts:
+      - dcf-valuation.md

@@ -1,0 +1,11 @@
+name: topic-deep-dive
+cases:
+  - name: source_attributed_topic_research
+    input: "Research the current state of AI browser agents with primary sources and contradiction checks."
+    expected_tools:
+      - web_search
+      - web_fetch
+      - write_file
+    expected_artifacts:
+      - topic-deep-dive.md
+

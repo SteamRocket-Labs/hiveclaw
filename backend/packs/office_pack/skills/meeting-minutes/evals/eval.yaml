@@ -1,0 +1,5 @@
+cases:
+  - name: meeting_minutes_markdown
+    input: "Extract minutes from a supplied transcript."
+    expected_artifacts:
+      - meeting-minutes.md

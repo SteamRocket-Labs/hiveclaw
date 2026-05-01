@@ -1,0 +1,5 @@
+cases:
+  - name: basic_pitch_deck
+    input: "Create a five-slide investor deck."
+    expected_artifacts:
+      - deck.pptx

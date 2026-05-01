@@ -1,0 +1,10 @@
+name: portfolio-risk-review
+cases:
+  - name: review_portfolio_holdings
+    input: "Review a portfolio of AAPL, 0700.HK, and 600519.SS for data coverage and risk notes."
+    expected_tools:
+      - finance_run_workflow
+      - finance_get_price_history
+      - finance_get_source_ledger
+    expected_artifacts:
+      - portfolio-risk-review.md

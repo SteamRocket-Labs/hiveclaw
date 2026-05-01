@@ -13,7 +13,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 REPO_ROOT = BACKEND_ROOT.parent
 SKILL_ROOT = BACKEND_ROOT / "app" / "templates" / "skills"
 SYSTEM_SKILL_ROOT = BACKEND_ROOT / "app" / "templates" / "system_skills"
-FINANCE_PACK_SKILL_ROOT = REPO_ROOT / "packs" / "finance_pack" / "skills"
+PACK_ROOTS = (REPO_ROOT / "packs", BACKEND_ROOT / "packs")
 
 
 def _assert_full_skill_package(skill_dir: Path) -> None:
@@ -46,7 +46,15 @@ def test_all_system_template_skills_are_full_packages():
 
 
 def _all_package_dirs() -> list[Path]:
-    roots = (SKILL_ROOT, SYSTEM_SKILL_ROOT, FINANCE_PACK_SKILL_ROOT)
+    roots = [SKILL_ROOT, SYSTEM_SKILL_ROOT]
+    for pack_root in PACK_ROOTS:
+        if not pack_root.is_dir():
+            continue
+        roots.extend(
+            pack_dir / "skills"
+            for pack_dir in sorted(pack_root.iterdir())
+            if (pack_dir / "skills").is_dir()
+        )
     return [skill_dir for root in roots for skill_dir in sorted(root.iterdir()) if skill_dir.is_dir()]
 
 

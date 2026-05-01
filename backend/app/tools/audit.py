@@ -56,13 +56,13 @@ def _pack_tools() -> frozenset[str]:
     # app.services.pack_service so the startup audit does not pull in service
     # wiring just to read pack.yaml files.
     try:
-        from app.packs.catalog_reader import PackCatalogReader
+        from app.packs.catalog_reader import PackCatalogReader, find_pack_dirs
 
-        repo_root = Path(__file__).resolve().parents[3]
-        reader = PackCatalogReader(repo_root / "packs")
-        reader.discover()
-        for manifest in reader.list_packs():
-            tools.update(manifest.tool_names)
+        for packs_dir in find_pack_dirs(Path(__file__).resolve()):
+            reader = PackCatalogReader(packs_dir)
+            reader.discover()
+            for manifest in reader.list_packs():
+                tools.update(manifest.tool_names)
     except Exception as exc:
         logger.debug("[tool-audit] failed to read manifest pack catalog: %s", exc)
 

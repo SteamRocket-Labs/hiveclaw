@@ -1,0 +1,184 @@
+name: finance_pack
+version: "0.1.0"
+description: |
+  Finance data and analysis pack covering US, HK, and A-share primary and
+  secondary market research. Default data sources are public/free; paid sources
+  are tenant-scoped optional integrations.
+license: Proprietary
+author: Hive Finance Team
+
+tools:
+  - name: finance_get_provider_status
+    locale: cloud
+    governance:
+      security_zone: public
+  - name: finance_resolve_entity
+    locale: cloud
+    governance:
+      security_zone: public
+  - name: finance_get_source_ledger
+    locale: cloud
+    governance:
+      security_zone: public
+  - name: finance_get_price_history
+    locale: cloud
+    governance:
+      security_zone: public
+  - name: finance_get_financial_statements
+    locale: cloud
+    governance:
+      security_zone: public
+  - name: finance_search_filings
+    locale: cloud
+    governance:
+      security_zone: public
+  - name: finance_get_filing
+    locale: cloud
+    governance:
+      security_zone: public
+  - name: finance_get_ipo_pipeline
+    locale: cloud
+    governance:
+      security_zone: public
+  - name: finance_get_funding_rounds
+    locale: cloud
+    governance:
+      security_zone: restricted
+  - name: finance_get_company_registry
+    locale: cloud
+    governance:
+      security_zone: restricted
+  - name: finance_compute_dcf
+    locale: cloud
+    governance:
+      security_zone: public
+  - name: finance_build_comps
+    locale: cloud
+    governance:
+      security_zone: public
+  - name: finance_compile_research_packet
+    locale: cloud
+    governance:
+      security_zone: public
+  - name: finance_run_workflow
+    locale: cloud
+    governance:
+      security_zone: public
+
+skills:
+  - skills/secondary-equity-deep-dive
+  - skills/dcf-valuation
+  - skills/comps-valuation
+  - skills/ipo-pipeline-monitor
+  - skills/primary-market-due-diligence
+  - skills/portfolio-risk-review
+  - skills/ic-memo-generator
+
+mcp_servers:
+  - name: openbb_optional
+    enabled_by_default: false
+    license_note: AGPL/commercial license required if Hive hosts or modifies OpenBB Platform/MCP
+    transport: stdio
+    command: openbb-mcp
+    args: ["--default-categories", "admin", "--tool-discovery"]
+    credential_scope: tenant
+  - name: edgartools_optional
+    enabled_by_default: false
+    transport: stdio
+    command: uvx
+    args: ["--from", "edgartools[ai]", "edgartools-mcp"]
+    credential_scope: tenant
+
+data_sources:
+  public_default:
+    - sec_edgar
+    - hkexnews
+    - cninfo
+    - akshare
+    - tushare
+    - yfinance
+    - gleif
+    - sanctions_lists
+  paid_optional:
+    - fmp
+    - polygon
+    - eodhd
+    - crunchbase
+    - pitchbook
+    - capital_iq
+    - mergermarket
+    - wind
+    - ifind
+    - choice
+    - qichacha
+    - tianyancha
+
+credential_requirements:
+  - key: edgar_identity
+    scope: tenant
+    storage: encrypted_tool_config
+    injected_as: per_invocation_env
+    env_name: EDGAR_IDENTITY
+  - key: fmp_api_key
+    scope: tenant
+    storage: encrypted_tool_config
+    injected_as: per_invocation_env
+    env_name: FMP_API_KEY
+  - key: polygon_api_key
+    scope: tenant
+    storage: encrypted_tool_config
+    injected_as: per_invocation_env
+    env_name: POLYGON_API_KEY
+  - key: eodhd_api_key
+    scope: tenant
+    storage: encrypted_tool_config
+    injected_as: per_invocation_env
+    env_name: EODHD_API_KEY
+  - key: tushare_token
+    scope: tenant
+    storage: encrypted_tool_config
+    injected_as: per_invocation_env
+    env_name: TUSHARE_TOKEN
+  - key: wind_client_id
+    scope: tenant
+    storage: encrypted_tool_config
+    injected_as: per_invocation_env
+    env_name: WIND_CLIENT_ID
+  - key: wind_client_secret
+    scope: tenant
+    storage: encrypted_tool_config
+    injected_as: per_invocation_env
+    env_name: WIND_CLIENT_SECRET
+  - key: ifind_token
+    scope: tenant
+    storage: encrypted_tool_config
+    injected_as: per_invocation_env
+    env_name: IFIND_TOKEN
+  - key: choice_token
+    scope: tenant
+    storage: encrypted_tool_config
+    injected_as: per_invocation_env
+    env_name: CHOICE_TOKEN
+  - key: qichacha_api_key
+    scope: tenant
+    storage: encrypted_tool_config
+    injected_as: per_invocation_env
+    env_name: QICHACHA_API_KEY
+  - key: tianyancha_api_key
+    scope: tenant
+    storage: encrypted_tool_config
+    injected_as: per_invocation_env
+    env_name: TIANYANCHA_API_KEY
+
+activation:
+  required_capabilities:
+    - finance_data_access
+  default_state: inactive
+
+sandbox_requirements:
+  pip_packages:
+    - akshare>=1.18.59,<1.20
+    - tushare>=1.4.0
+    - yfinance>=0.2.40
+    - edgartools>=5.30
+    - stockstats>=0.6

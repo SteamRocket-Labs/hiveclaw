@@ -1,0 +1,11 @@
+name: primary-market-due-diligence
+cases:
+  - name: run_private_company_diligence
+    input: "Run a primary-market diligence workflow for a private company."
+    expected_tools:
+      - finance_get_provider_status
+      - finance_get_company_registry
+      - finance_get_funding_rounds
+      - finance_run_workflow
+    expected_artifacts:
+      - primary-market-due-diligence.md

@@ -1,0 +1,9 @@
+name: comps-valuation
+cases:
+  - name: build_peer_multiple_table
+    input: "Build an EV/Revenue comps table for AAPL, MSFT, and GOOGL."
+    expected_tools:
+      - finance_build_comps
+      - finance_get_source_ledger
+    expected_artifacts:
+      - comps-valuation.md

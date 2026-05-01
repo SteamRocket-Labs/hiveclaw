@@ -1,0 +1,13 @@
+name: feishu-integration
+cases:
+  - name: create_doc_and_share
+    input: "Create a Feishu doc from this meeting summary and share it with Alice."
+    expected_tools:
+      - feishu_doc_create
+      - feishu_user_search
+      - feishu_doc_share
+  - name: read_sheet
+    input: "Read the Feishu Sheet at this token and summarize the first tab."
+    expected_tools:
+      - feishu_sheet_info
+      - feishu_sheet_read

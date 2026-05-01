@@ -111,6 +111,7 @@ CAPABILITY_MAP: dict[str, str] = {
     "firecrawl_fetch": "external.web.read",
     "xcrawl_scrape": "external.web.read",
     "read_webpage": "external.web.read",
+    "finance_get_provider_status": "finance.data.read",
     "finance_resolve_entity": "finance.data.read",
     "finance_get_source_ledger": "finance.data.read",
     "finance_get_price_history": "finance.data.read",
@@ -123,6 +124,7 @@ CAPABILITY_MAP: dict[str, str] = {
     "finance_compute_dcf": "finance.analysis.run",
     "finance_build_comps": "finance.analysis.run",
     "finance_compile_research_packet": "finance.analysis.run",
+    "finance_run_workflow": "finance.analysis.run",
 }
 
 SYNTHETIC_CAPABILITY_TOOLS: dict[str, list[str]] = {
@@ -156,25 +158,27 @@ def reset_unmapped_tool_counts() -> None:
 # regardless of policy state. Keep this aligned with `_STATIC_SAFE_TOOLS`
 # in `app.tools.governance` — duplication is intentional so a refactor of
 # either side fails loud here instead of silently changing semantics.
-_CAPABILITY_GATE_EXEMPT_TOOLS: frozenset[str] = frozenset({
-    "list_files",
-    "read_file",
-    "load_skill",
-    "web_fetch",
-    "web_search",
-    "firecrawl_fetch",
-    "xcrawl_scrape",
-    "read_document",
-    # Discovery / introspection — must work without capability policy
-    "tool_search",
-    "discover_resources",
-    "search_clawhub",
-    "list_mcp_resources",
-    "read_mcp_resource",
-    "get_current_time",
-    "check_async_task",
-    "list_async_tasks",
-})
+_CAPABILITY_GATE_EXEMPT_TOOLS: frozenset[str] = frozenset(
+    {
+        "list_files",
+        "read_file",
+        "load_skill",
+        "web_fetch",
+        "web_search",
+        "firecrawl_fetch",
+        "xcrawl_scrape",
+        "read_document",
+        # Discovery / introspection — must work without capability policy
+        "tool_search",
+        "discover_resources",
+        "search_clawhub",
+        "list_mcp_resources",
+        "read_mcp_resource",
+        "get_current_time",
+        "check_async_task",
+        "list_async_tasks",
+    }
+)
 
 
 def audit_capability_mapping() -> dict[str, list[str]]:

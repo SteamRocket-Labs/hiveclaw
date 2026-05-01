@@ -1,0 +1,10 @@
+name: messaging-guide
+cases:
+  - name: send_file_to_current_requester
+    input: "Send the generated PDF to the person in this current channel."
+    expected_tools:
+      - send_channel_file
+  - name: route_agent_message_to_delegation
+    input: "Tell another digital employee to review my draft."
+    expected_behavior:
+      - use Delegation Guide instead of human messaging tools

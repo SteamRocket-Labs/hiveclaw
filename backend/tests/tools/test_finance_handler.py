@@ -6,7 +6,9 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_finance_handlers_return_json_with_source_ledger() -> None:
+async def test_finance_handlers_return_json_with_source_ledger(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.finance_data.connectors.static_public import StaticPublicFinanceConnector
+    from app.finance_data.service import FinanceDataService
     from app.tools.handlers.finance import (
         finance_compile_research_packet,
         finance_get_financial_statements,
@@ -14,6 +16,13 @@ async def test_finance_handlers_return_json_with_source_ledger() -> None:
         finance_resolve_entity,
         finance_search_filings,
     )
+
+    service = FinanceDataService(connectors=[StaticPublicFinanceConnector()])
+
+    async def fake_service(_tool_name: str):
+        return service
+
+    monkeypatch.setattr("app.tools.handlers.finance._finance_service", fake_service)
 
     resolved = json.loads(await finance_resolve_entity({"query": "AAPL", "region": "us"}))
     entity_id = resolved["data"]["entity"]["entity_id"]
@@ -103,3 +112,54 @@ async def test_finance_compute_dcf_and_build_comps_are_deterministic() -> None:
     assert comps["data"]["entity_id"] == "entity:us:aapl"
     assert comps["data"]["metric"] == "ev_revenue"
     assert comps["data"]["peers"][0]["symbol"] == "MSFT"
+
+
+@pytest.mark.asyncio
+async def test_finance_provider_status_and_run_workflow_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.finance_data.connectors.static_public import StaticPublicFinanceConnector
+    from app.finance_data.service import FinanceDataService
+    from app.tools.handlers.finance import finance_get_provider_status, finance_run_workflow
+
+    service = FinanceDataService(connectors=[StaticPublicFinanceConnector()])
+
+    async def fake_service(_tool_name: str):
+        return service
+
+    async def fake_config(_tool_name: str):
+        return {
+            "provider_mode": "tenant_paid",
+            "fmp_api_key": "secret-fmp",
+            "wind_client_id": "wind-client",
+            "wind_client_secret": "secret-wind",
+        }
+
+    monkeypatch.setattr("app.tools.handlers.finance._finance_service", fake_service)
+    monkeypatch.setattr("app.tools.handlers.finance._finance_tool_config", fake_config)
+
+    status = json.loads(await finance_get_provider_status({}))
+    workflow = json.loads(
+        await finance_run_workflow(
+            {
+                "workflow": "secondary-equity-deep-dive",
+                "query": "AAPL",
+                "region": "us",
+                "peer_set": ["MSFT", "GOOGL"],
+                "assumptions": {
+                    "discount_rate": 0.10,
+                    "terminal_growth_rate": 0.03,
+                    "net_debt": 50,
+                    "shares_outstanding": 25,
+                },
+            }
+        )
+    )
+
+    assert status["ok"] is True
+    assert status["data"]["provider_mode"] == "tenant_paid"
+    assert status["data"]["paid_sources"]["fmp"]["configured"] is True
+    assert "secret-fmp" not in json.dumps(status)
+
+    assert workflow["ok"] is True
+    assert workflow["data"]["workflow"] == "secondary-equity-deep-dive"
+    assert workflow["data"]["quality_gates"]["valuation_recomputable"] == "passed"
+    assert workflow["data"]["artifacts"]["memo_markdown"].startswith("# Apple Inc.")

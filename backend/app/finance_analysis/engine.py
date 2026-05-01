@@ -15,7 +15,9 @@ class FinanceAnalysisEngine:
 
     def run_dcf(self, packet: ResearchPacket, assumptions: DcfAssumptions) -> ValuationResult:
         free_cash_flows = packet.financials.get("free_cash_flow")
-        if not isinstance(free_cash_flows, list) or not all(isinstance(value, (int, float)) for value in free_cash_flows):
+        if not isinstance(free_cash_flows, list) or not all(
+            isinstance(value, (int, float)) for value in free_cash_flows
+        ):
             raise ValueError("ResearchPacket.financials['free_cash_flow'] must be a numeric list")
 
         result = compute_dcf([float(value) for value in free_cash_flows], assumptions)

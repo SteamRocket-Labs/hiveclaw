@@ -1,0 +1,10 @@
+name: ic-memo-generator
+cases:
+  - name: generate_ic_memo_from_workflow
+    input: "Generate an investment committee memo for a public-company research workflow."
+    expected_tools:
+      - finance_run_workflow
+      - finance_compile_research_packet
+      - finance_get_source_ledger
+    expected_artifacts:
+      - ic-memo.md

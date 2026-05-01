@@ -73,3 +73,12 @@ class ArtifactBundle(BaseModel):
     source_ids: tuple[str, ...] = ()
     analysis_results: tuple[AnalysisResult, ...] = ()
     files: tuple[str, ...] = ()
+
+
+class WorkflowRunResult(BaseModel):
+    workflow: str
+    entity_id: str | None = None
+    quality_gates: dict[str, str] = Field(default_factory=dict)
+    analysis_results: list[dict[str, Any]] = Field(default_factory=list)
+    artifacts: dict[str, Any] = Field(default_factory=dict)
+    source_ids: tuple[str, ...] = ()

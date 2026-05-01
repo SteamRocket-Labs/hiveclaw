@@ -19,9 +19,13 @@ def compute_dcf(free_cash_flows: list[float], assumptions: DcfAssumptions) -> Va
         raise ValueError("shares_outstanding must be positive when provided")
 
     discount_rate = assumptions.discount_rate
-    present_value_fcf = sum(fcf / ((1 + discount_rate) ** period) for period, fcf in enumerate(free_cash_flows, start=1))
-    terminal_value = free_cash_flows[-1] * (1 + assumptions.terminal_growth_rate) / (
-        discount_rate - assumptions.terminal_growth_rate
+    present_value_fcf = sum(
+        fcf / ((1 + discount_rate) ** period) for period, fcf in enumerate(free_cash_flows, start=1)
+    )
+    terminal_value = (
+        free_cash_flows[-1]
+        * (1 + assumptions.terminal_growth_rate)
+        / (discount_rate - assumptions.terminal_growth_rate)
     )
     discounted_terminal_value = terminal_value / ((1 + discount_rate) ** len(free_cash_flows))
     enterprise_value = present_value_fcf + discounted_terminal_value

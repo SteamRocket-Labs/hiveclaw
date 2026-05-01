@@ -1,0 +1,12 @@
+name: delegation-guide
+cases:
+  - name: delegate_background_research
+    input: "Ask another agent to research three independent vendor options while I keep coding."
+    expected_tools:
+      - delegate_to_agent
+      - check_async_task
+  - name: avoid_delegating_blocker
+    input: "The next local edit depends on reading one file."
+    expected_behavior:
+      - do the immediate read locally
+      - do not create unnecessary async work

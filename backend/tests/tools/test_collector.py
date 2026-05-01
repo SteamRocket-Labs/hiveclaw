@@ -178,6 +178,7 @@ def test_collect_real_handlers_include_finance_pack_tools():
     collected = collect_tools()
     names = {tool["function"]["name"] for tool in collected.openai_tools}
     expected = {
+        "finance_get_provider_status",
         "finance_resolve_entity",
         "finance_get_source_ledger",
         "finance_get_price_history",
@@ -190,6 +191,7 @@ def test_collect_real_handlers_include_finance_pack_tools():
         "finance_compute_dcf",
         "finance_build_comps",
         "finance_compile_research_packet",
+        "finance_run_workflow",
     }
 
     assert expected <= names

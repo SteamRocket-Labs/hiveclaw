@@ -291,6 +291,15 @@ Plan would be:
         "files": [],  # populated at runtime from templates/system_skills/
     },
     {
+        "name": "Finance Research",
+        "description": "Finance data, valuation, filings, primary-market diligence, IPO pipeline, and research workflow guide",
+        "category": "finance",
+        "icon": "💹",
+        "folder_name": "finance-research",
+        "is_default": True,
+        "files": [],  # populated at runtime from templates/system_skills/
+    },
+    {
         "name": "Memory Guide",
         "description": "Authoritative rules for save_memory / search_memory — categories, T3 routing, escape-hatch conditions",
         "category": "system",
@@ -412,12 +421,24 @@ async def seed_skills():
                 logger.warning("[SkillSeeder] MCP_INSTALLER.md not found in agent_template/skills/")
 
         # System operational guides + channel integration skills — load ALL files from templates/system_skills/<folder>/
-        elif s["folder_name"] in (
-            "workspace-guide", "trigger-guide", "web-research",
-            "feishu-integration", "plaza-guide", "email-guide",
-            "dingtalk-integration", "atlassian-rovo",
-            "memory-guide", "messaging-guide", "delegation-guide",
-        ) and not s["files"]:
+        elif (
+            s["folder_name"]
+            in (
+                "workspace-guide",
+                "trigger-guide",
+                "web-research",
+                "feishu-integration",
+                "plaza-guide",
+                "email-guide",
+                "finance-research",
+                "dingtalk-integration",
+                "atlassian-rovo",
+                "memory-guide",
+                "messaging-guide",
+                "delegation-guide",
+            )
+            and not s["files"]
+        ):
             _sys_skills_dir = Path(__file__).parent.parent / "templates" / "system_skills"
             skill_dir = _sys_skills_dir / s["folder_name"]
             if skill_dir.exists():
@@ -436,10 +457,18 @@ async def seed_skills():
                 logger.warning(f"[SkillSeeder] {s['folder_name']}/ not found in templates/system_skills/")
 
         # Agent behavioral & discovery skills — load ALL files from templates/skills/<folder>/
-        elif s["folder_name"] in (
-            "find-skills", "skill-vetter",
-            "pdf-generator", "docx-generator", "xlsx-processor", "pptx-generator",
-        ) and not s["files"]:
+        elif (
+            s["folder_name"]
+            in (
+                "find-skills",
+                "skill-vetter",
+                "pdf-generator",
+                "docx-generator",
+                "xlsx-processor",
+                "pptx-generator",
+            )
+            and not s["files"]
+        ):
             _agent_skills_dir = Path(__file__).parent.parent / "templates" / "skills"
             skill_dir = _agent_skills_dir / s["folder_name"]
             if skill_dir.exists():
@@ -461,9 +490,7 @@ async def seed_skills():
 
     async with async_session() as db:
         for skill_data in BUILTIN_SKILLS:
-            result = await db.execute(
-                select(Skill).where(Skill.folder_name == skill_data["folder_name"])
-            )
+            result = await db.execute(select(Skill).where(Skill.folder_name == skill_data["folder_name"]))
             existing = result.scalar_one_or_none()
             is_default = skill_data.get("is_default", False)
             if existing:
@@ -475,9 +502,8 @@ async def seed_skills():
                 existing.is_default = is_default
                 # Sync files — add missing ones
                 from sqlalchemy.orm import selectinload
-                res2 = await db.execute(
-                    select(Skill).where(Skill.id == existing.id).options(selectinload(Skill.files))
-                )
+
+                res2 = await db.execute(select(Skill).where(Skill.id == existing.id).options(selectinload(Skill.files)))
                 sk = res2.scalar_one()
                 existing_paths = {f.path: f for f in sk.files}
                 for f in skill_data["files"]:
@@ -581,7 +607,7 @@ async def cleanup_retired_builtin_skills() -> dict:
 
 async def push_default_skills_to_existing_agents():
     """Deploy all is_default skills into the workspace of every existing agent that is missing them.
-    
+
     Called at startup after seed_skills() so existing agents automatically receive new default skills
     like MCP_INSTALLER without requiring manual re-creation.
     """
@@ -592,9 +618,7 @@ async def push_default_skills_to_existing_agents():
 
     async with async_session() as db:
         # Load all is_default skills with their files
-        default_skills_r = await db.execute(
-            select(Skill).where(Skill.is_default).options(selectinload(Skill.files))
-        )
+        default_skills_r = await db.execute(select(Skill).where(Skill.is_default).options(selectinload(Skill.files)))
         default_skills = default_skills_r.scalars().all()
         if not default_skills:
             return

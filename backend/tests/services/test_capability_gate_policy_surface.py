@@ -73,6 +73,7 @@ def test_capability_map_covers_agent_settings_controls_and_destructive_feishu_to
 
 def test_capability_map_covers_finance_pack_tools():
     expected = {
+        "finance_get_provider_status": "finance.data.read",
         "finance_resolve_entity": "finance.data.read",
         "finance_get_source_ledger": "finance.data.read",
         "finance_get_price_history": "finance.data.read",
@@ -85,6 +86,7 @@ def test_capability_map_covers_finance_pack_tools():
         "finance_compute_dcf": "finance.analysis.run",
         "finance_build_comps": "finance.analysis.run",
         "finance_compile_research_packet": "finance.analysis.run",
+        "finance_run_workflow": "finance.analysis.run",
     }
 
     for tool_name, capability in expected.items():

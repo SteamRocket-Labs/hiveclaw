@@ -9,8 +9,10 @@ from pydantic import BaseModel
 
 from app.finance_analysis.calculators.dcf import compute_dcf
 from app.finance_analysis.schemas import DcfAssumptions
+from app.finance_analysis.workflow_runner import FinanceWorkflowRunner
+from app.finance_data.config import FinanceProviderConfig
 from app.finance_data.schemas import MarketRegion, SourceLedger
-from app.finance_data.service import get_default_finance_data_service
+from app.finance_data.service import build_finance_data_service_from_config
 from app.tools.decorator import ToolMeta, tool
 
 
@@ -32,10 +34,22 @@ _MARKET_ALIASES: dict[str, MarketRegion] = {
 
 _FINANCE_CONFIG = {
     "provider_mode": "public_default",
+    "public_live_enabled": True,
     "edgar_identity": "",
     "fmp_api_key": "",
+    "polygon_api_key": "",
+    "eodhd_api_key": "",
     "tushare_token": "",
-    "paid_data_provider": "",
+    "wind_client_id": "",
+    "wind_client_secret": "",
+    "ifind_token": "",
+    "choice_token": "",
+    "qichacha_api_key": "",
+    "tianyancha_api_key": "",
+    "crunchbase_api_key": "",
+    "pitchbook_api_key": "",
+    "capital_iq_client_id": "",
+    "capital_iq_client_secret": "",
 }
 
 _FINANCE_CONFIG_SCHEMA = {
@@ -49,6 +63,12 @@ _FINANCE_CONFIG_SCHEMA = {
                 {"value": "tenant_paid", "label": "Tenant paid provider"},
             ],
             "default": "public_default",
+        },
+        {
+            "key": "public_live_enabled",
+            "label": "Enable live public HTTP sources",
+            "type": "boolean",
+            "default": True,
         },
         {
             "key": "edgar_identity",
@@ -70,19 +90,75 @@ _FINANCE_CONFIG_SCHEMA = {
             "default": "",
         },
         {
-            "key": "paid_data_provider",
-            "label": "Paid provider",
-            "type": "select",
-            "options": [
-                {"value": "", "label": "None"},
-                {"value": "polygon", "label": "Polygon"},
-                {"value": "eodhd", "label": "EODHD"},
-                {"value": "wind", "label": "Wind"},
-                {"value": "ifind", "label": "iFinD"},
-                {"value": "choice", "label": "Choice"},
-                {"value": "capital_iq", "label": "Capital IQ"},
-                {"value": "pitchbook", "label": "PitchBook"},
-            ],
+            "key": "polygon_api_key",
+            "label": "Polygon API key",
+            "type": "password",
+            "default": "",
+        },
+        {
+            "key": "eodhd_api_key",
+            "label": "EODHD API key",
+            "type": "password",
+            "default": "",
+        },
+        {
+            "key": "wind_client_id",
+            "label": "Wind client id",
+            "type": "password",
+            "default": "",
+        },
+        {
+            "key": "wind_client_secret",
+            "label": "Wind client secret",
+            "type": "password",
+            "default": "",
+        },
+        {
+            "key": "ifind_token",
+            "label": "iFinD token",
+            "type": "password",
+            "default": "",
+        },
+        {
+            "key": "choice_token",
+            "label": "Choice token",
+            "type": "password",
+            "default": "",
+        },
+        {
+            "key": "qichacha_api_key",
+            "label": "Qichacha API key",
+            "type": "password",
+            "default": "",
+        },
+        {
+            "key": "tianyancha_api_key",
+            "label": "Tianyancha API key",
+            "type": "password",
+            "default": "",
+        },
+        {
+            "key": "crunchbase_api_key",
+            "label": "Crunchbase API key",
+            "type": "password",
+            "default": "",
+        },
+        {
+            "key": "pitchbook_api_key",
+            "label": "PitchBook API key",
+            "type": "password",
+            "default": "",
+        },
+        {
+            "key": "capital_iq_client_id",
+            "label": "Capital IQ client id",
+            "type": "password",
+            "default": "",
+        },
+        {
+            "key": "capital_iq_client_secret",
+            "label": "Capital IQ client secret",
+            "type": "password",
             "default": "",
         },
     ]
@@ -139,8 +215,46 @@ def _peer_set(arguments: dict[str, Any]) -> list[str]:
     return []
 
 
-def _service():
-    return get_default_finance_data_service()
+async def _finance_tool_config(tool_name: str) -> dict[str, Any]:
+    try:
+        from app.core.execution_context import get_tool_tenant_id
+        from app.services.tool_config_service import resolve_tool_config
+
+        return await resolve_tool_config(tool_name, get_tool_tenant_id())
+    except Exception:
+        return dict(_FINANCE_CONFIG)
+
+
+async def _finance_service(tool_name: str):
+    return build_finance_data_service_from_config(await _finance_tool_config(tool_name))
+
+
+@tool(
+    ToolMeta(
+        name="finance_get_provider_status",
+        description=(
+            "Inspect finance data provider readiness without exposing secrets. "
+            "Shows public source status and which tenant-scoped paid providers are configured."
+        ),
+        parameters=_schema({}),
+        category="finance",
+        display_name="Get Finance Provider Status",
+        read_only=True,
+        parallel_safe=True,
+        governance="safe",
+        pack="finance_pack",
+        adapter="args_only",
+        config=_FINANCE_CONFIG,
+        config_schema=_FINANCE_CONFIG_SCHEMA,
+    )
+)
+async def finance_get_provider_status(arguments: dict) -> str:
+    try:
+        config = FinanceProviderConfig.from_tool_config(await _finance_tool_config("finance_get_provider_status"))
+        service = build_finance_data_service_from_config(config)
+        return _ok(service.provider_status())
+    except Exception as exc:
+        return _error(exc)
 
 
 @tool(
@@ -174,7 +288,8 @@ def _service():
 )
 async def finance_resolve_entity(arguments: dict) -> str:
     try:
-        result = _service().resolve_entity(
+        service = await _finance_service("finance_resolve_entity")
+        result = service.resolve_entity(
             query=str(arguments.get("query") or ""),
             region=_market(arguments.get("region")),
         )
@@ -206,7 +321,8 @@ async def finance_resolve_entity(arguments: dict) -> str:
 )
 async def finance_get_source_ledger(arguments: dict) -> str:
     try:
-        result = _service().get_source_ledger(
+        service = await _finance_service("finance_get_source_ledger")
+        result = service.get_source_ledger(
             entity_id=arguments.get("entity_id"),
             field=arguments.get("field"),
         )
@@ -245,7 +361,8 @@ async def finance_get_source_ledger(arguments: dict) -> str:
 )
 async def finance_get_price_history(arguments: dict) -> str:
     try:
-        result = _service().get_price_history(
+        service = await _finance_service("finance_get_price_history")
+        result = service.get_price_history(
             symbol=str(arguments.get("symbol") or ""),
             market=_market(arguments.get("market"), default=MarketRegion.US) or MarketRegion.US,
             start=arguments.get("start"),
@@ -282,7 +399,8 @@ async def finance_get_price_history(arguments: dict) -> str:
 )
 async def finance_get_financial_statements(arguments: dict) -> str:
     try:
-        result = _service().get_financial_statements(
+        service = await _finance_service("finance_get_financial_statements")
+        result = service.get_financial_statements(
             entity_id=str(arguments.get("entity_id") or ""),
             market=_market(arguments.get("market"), default=MarketRegion.US) or MarketRegion.US,
             period=str(arguments.get("period") or "annual"),
@@ -323,7 +441,8 @@ async def finance_get_financial_statements(arguments: dict) -> str:
 )
 async def finance_search_filings(arguments: dict) -> str:
     try:
-        result = _service().search_filings(
+        service = await _finance_service("finance_search_filings")
+        result = service.search_filings(
             entity_id=str(arguments.get("entity_id") or ""),
             market=_market(arguments.get("market"), default=MarketRegion.US) or MarketRegion.US,
             form_type=arguments.get("form_type"),
@@ -360,7 +479,8 @@ async def finance_search_filings(arguments: dict) -> str:
 )
 async def finance_get_filing(arguments: dict) -> str:
     try:
-        result = _service().get_filing(
+        service = await _finance_service("finance_get_filing")
+        result = service.get_filing(
             filing_id=str(arguments.get("filing_id") or ""),
             extract_tables=bool(arguments.get("extract_tables")),
         )
@@ -392,7 +512,8 @@ async def finance_get_filing(arguments: dict) -> str:
 )
 async def finance_get_ipo_pipeline(arguments: dict) -> str:
     try:
-        result = _service().get_ipo_pipeline(
+        service = await _finance_service("finance_get_ipo_pipeline")
+        result = service.get_ipo_pipeline(
             market=_market(arguments.get("market")),
             status=arguments.get("status"),
         )
@@ -424,7 +545,8 @@ async def finance_get_ipo_pipeline(arguments: dict) -> str:
 )
 async def finance_get_funding_rounds(arguments: dict) -> str:
     try:
-        result = _service().get_funding_rounds(
+        service = await _finance_service("finance_get_funding_rounds")
+        result = service.get_funding_rounds(
             entity_id=arguments.get("entity_id"),
             market=_market(arguments.get("market")),
         )
@@ -461,7 +583,8 @@ async def finance_get_funding_rounds(arguments: dict) -> str:
 )
 async def finance_get_company_registry(arguments: dict) -> str:
     try:
-        result = _service().get_company_registry(
+        service = await _finance_service("finance_get_company_registry")
+        result = service.get_company_registry(
             entity_id=str(arguments.get("entity_id") or ""),
             region=_market(arguments.get("region")),
         )
@@ -545,7 +668,8 @@ async def finance_compute_dcf(arguments: dict) -> str:
 )
 async def finance_build_comps(arguments: dict) -> str:
     try:
-        result = _service().build_comps(
+        service = await _finance_service("finance_build_comps")
+        result = service.build_comps(
             entity_id=str(arguments.get("entity_id") or ""),
             peer_set=_peer_set(arguments),
             metric=str(arguments.get("metric") or "ev_revenue"),
@@ -579,10 +703,78 @@ async def finance_build_comps(arguments: dict) -> str:
 )
 async def finance_compile_research_packet(arguments: dict) -> str:
     try:
-        packet = _service().compile_research_packet(
+        service = await _finance_service("finance_compile_research_packet")
+        packet = service.compile_research_packet(
             entity_id=str(arguments.get("entity_id") or ""),
             workflow=str(arguments.get("workflow") or "secondary-equity-deep-dive"),
         )
         return _ok(packet.model_dump(mode="json", exclude={"source_ledger"}), packet.source_ledger)
+    except Exception as exc:
+        return _error(exc)
+
+
+@tool(
+    ToolMeta(
+        name="finance_run_workflow",
+        description=(
+            "Run an end-to-end finance workflow and return memo artifacts, analysis results, quality gates, "
+            "and source ledger. Supported workflows: secondary-equity-deep-dive, primary-market-due-diligence, "
+            "ipo-pipeline-monitor, portfolio-risk-review."
+        ),
+        parameters=_schema(
+            {
+                "workflow": {
+                    "type": "string",
+                    "enum": [
+                        "secondary-equity-deep-dive",
+                        "primary-market-due-diligence",
+                        "ipo-pipeline-monitor",
+                        "portfolio-risk-review",
+                    ],
+                    "description": "Workflow name.",
+                },
+                "query": {"type": "string", "description": "Company/ticker query when entity_id is not known."},
+                "entity_id": {"type": "string", "description": "Optional normalized entity id."},
+                "region": {"type": "string", "enum": ["us", "hk", "cn_a"], "description": "Optional entity region."},
+                "market": {"type": "string", "enum": ["us", "hk", "cn_a"], "description": "Optional market filter."},
+                "status": {"type": "string", "description": "Optional IPO/funding status filter."},
+                "peer_set": {"type": "array", "items": {"type": "string"}, "description": "Optional peer symbols."},
+                "holdings": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Optional portfolio holdings for portfolio-risk-review.",
+                },
+                "assumptions": {"type": "object", "description": "Optional DCF assumptions."},
+            },
+            ["workflow"],
+        ),
+        category="finance",
+        display_name="Run Finance Workflow",
+        read_only=True,
+        parallel_safe=True,
+        governance="safe",
+        pack="finance_pack",
+        adapter="args_only",
+        config=_FINANCE_CONFIG,
+        config_schema=_FINANCE_CONFIG_SCHEMA,
+    )
+)
+async def finance_run_workflow(arguments: dict) -> str:
+    try:
+        service = await _finance_service("finance_run_workflow")
+        runner = FinanceWorkflowRunner(service)
+        peer_set = _peer_set(arguments)
+        result = runner.run_workflow(
+            workflow=str(arguments.get("workflow") or "secondary-equity-deep-dive"),
+            query=arguments.get("query"),
+            entity_id=arguments.get("entity_id"),
+            region=_market(arguments.get("region")),
+            market=_market(arguments.get("market")),
+            status=arguments.get("status"),
+            peer_set=peer_set or None,
+            holdings=arguments.get("holdings") if isinstance(arguments.get("holdings"), list) else None,
+            assumptions=arguments.get("assumptions") if isinstance(arguments.get("assumptions"), dict) else None,
+        )
+        return _ok(result)
     except Exception as exc:
         return _error(exc)

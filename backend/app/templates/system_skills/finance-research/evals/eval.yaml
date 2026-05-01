@@ -1,0 +1,8 @@
+name: finance-research
+cases:
+  - input: "Analyze AAPL with a DCF and comps"
+    expected_tools:
+      - finance_run_workflow
+  - input: "Check whether Wind is configured"
+    expected_tools:
+      - finance_get_provider_status

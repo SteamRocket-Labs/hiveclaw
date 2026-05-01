@@ -176,6 +176,11 @@ _MANAGED_CREDENTIAL_BOUNDARY_SKILLS: dict[str, tuple[str, ...]] = {
         "run_command",
         "channel config",
     ),
+    "app/templates/system_skills/finance-research/SKILL.md": (
+        "do not inspect environment variables",
+        "run_command",
+        "configuration gap",
+    ),
     "app/templates/system_skills/messaging-guide/SKILL.md": (
         "do not inspect environment variables",
         "run_command",

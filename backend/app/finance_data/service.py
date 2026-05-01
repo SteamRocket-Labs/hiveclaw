@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+import httpx
+
+from app.finance_data.config import FinanceProviderConfig
 from app.finance_analysis.schemas import ResearchPacket
 from app.finance_data.connectors.base import FinanceDataConnector
+from app.finance_data.connectors.public_http import PublicHttpFinanceConnector
 from app.finance_data.connectors.static_public import StaticPublicFinanceConnector
 from app.finance_data.schemas import (
     CompanyRegistryResult,
@@ -38,8 +42,21 @@ def _merge_ledgers(*ledgers: SourceLedger) -> SourceLedger:
 class FinanceDataService:
     """Coordinate finance data connectors and normalize "not found" handling."""
 
-    def __init__(self, connectors: Iterable[FinanceDataConnector] | None = None) -> None:
+    def __init__(
+        self,
+        connectors: Iterable[FinanceDataConnector] | None = None,
+        *,
+        provider_config: FinanceProviderConfig | None = None,
+    ) -> None:
         self.connectors = tuple(connectors or (StaticPublicFinanceConnector(),))
+        self.provider_config = provider_config or FinanceProviderConfig()
+
+    def provider_status(self) -> dict:
+        connector_names = [connector.name for connector in self.connectors]
+        status = self.provider_config.provider_status()
+        status["active_connectors"] = connector_names
+        status["fallback_policy"] = "public_live_first_static_fallback"
+        return status
 
     def resolve_entity(self, *, query: str, region: MarketRegion | None = None) -> EntityResolution:
         query = query.strip()
@@ -201,5 +218,20 @@ _DEFAULT_SERVICE: FinanceDataService | None = None
 def get_default_finance_data_service() -> FinanceDataService:
     global _DEFAULT_SERVICE
     if _DEFAULT_SERVICE is None:
-        _DEFAULT_SERVICE = FinanceDataService()
+        _DEFAULT_SERVICE = build_finance_data_service_from_config({})
     return _DEFAULT_SERVICE
+
+
+def build_finance_data_service_from_config(
+    config: dict | FinanceProviderConfig | None,
+    *,
+    http_client: httpx.Client | None = None,
+) -> FinanceDataService:
+    provider_config = (
+        config if isinstance(config, FinanceProviderConfig) else FinanceProviderConfig.from_tool_config(config or {})
+    )
+    connectors: list[FinanceDataConnector] = []
+    if provider_config.public_live_enabled:
+        connectors.append(PublicHttpFinanceConnector(config=provider_config, client=http_client))
+    connectors.append(StaticPublicFinanceConnector())
+    return FinanceDataService(connectors=connectors, provider_config=provider_config)

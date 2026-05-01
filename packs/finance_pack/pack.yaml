@@ -8,6 +8,10 @@ license: Proprietary
 author: Hive Finance Team
 
 tools:
+  - name: finance_get_provider_status
+    locale: cloud
+    governance:
+      security_zone: public
   - name: finance_resolve_entity
     locale: cloud
     governance:
@@ -53,6 +57,10 @@ tools:
     governance:
       security_zone: public
   - name: finance_compile_research_packet
+    locale: cloud
+    governance:
+      security_zone: public
+  - name: finance_run_workflow
     locale: cloud
     governance:
       security_zone: public
@@ -116,11 +124,51 @@ credential_requirements:
     storage: encrypted_tool_config
     injected_as: per_invocation_env
     env_name: FMP_API_KEY
+  - key: polygon_api_key
+    scope: tenant
+    storage: encrypted_tool_config
+    injected_as: per_invocation_env
+    env_name: POLYGON_API_KEY
+  - key: eodhd_api_key
+    scope: tenant
+    storage: encrypted_tool_config
+    injected_as: per_invocation_env
+    env_name: EODHD_API_KEY
   - key: tushare_token
     scope: tenant
     storage: encrypted_tool_config
     injected_as: per_invocation_env
     env_name: TUSHARE_TOKEN
+  - key: wind_client_id
+    scope: tenant
+    storage: encrypted_tool_config
+    injected_as: per_invocation_env
+    env_name: WIND_CLIENT_ID
+  - key: wind_client_secret
+    scope: tenant
+    storage: encrypted_tool_config
+    injected_as: per_invocation_env
+    env_name: WIND_CLIENT_SECRET
+  - key: ifind_token
+    scope: tenant
+    storage: encrypted_tool_config
+    injected_as: per_invocation_env
+    env_name: IFIND_TOKEN
+  - key: choice_token
+    scope: tenant
+    storage: encrypted_tool_config
+    injected_as: per_invocation_env
+    env_name: CHOICE_TOKEN
+  - key: qichacha_api_key
+    scope: tenant
+    storage: encrypted_tool_config
+    injected_as: per_invocation_env
+    env_name: QICHACHA_API_KEY
+  - key: tianyancha_api_key
+    scope: tenant
+    storage: encrypted_tool_config
+    injected_as: per_invocation_env
+    env_name: TIANYANCHA_API_KEY
 
 activation:
   required_capabilities:

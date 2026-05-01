@@ -261,6 +261,28 @@ class TestSkillDiscovery:
                 f"Missing phrases: {missing}"
             )
 
+    def test_skill_installation_guides_do_not_instruct_blocked_shell_network_paths(
+        self, parser: SkillParser
+    ) -> None:
+        find_skills = _BACKEND_ROOT / "app" / "templates" / "skills" / "find-skills" / "SKILL.md"
+        skill_vetter = _BACKEND_ROOT / "app" / "templates" / "skills" / "skill-vetter" / "SKILL.md"
+
+        find_content = find_skills.read_text(encoding="utf-8")
+        vetter_content = skill_vetter.read_text(encoding="utf-8")
+        vetter = parser.parse_file(
+            skill_vetter,
+            relative_path="app/templates/skills/skill-vetter/SKILL.md",
+        )
+
+        assert "import subprocess" not in find_content
+        assert "subprocess.run" not in find_content
+
+        assert "execute_code` with `curl" not in vetter_content
+        assert "curl -s \"https://api.github.com/repos/OWNER/REPO\"" not in vetter_content
+        assert "jq '{stars:" not in vetter_content
+        assert "execute_code" not in vetter.metadata.declared_tools
+        assert {"web_search", "web_fetch", "firecrawl_fetch"} <= set(vetter.metadata.declared_tools)
+
 
 @pytest.mark.parametrize("skill_path", _SKILL_FILES, ids=lambda p: str(p.relative_to(_BACKEND_ROOT)))
 class TestCapabilityAlignment:

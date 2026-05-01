@@ -145,7 +145,7 @@ The skill is written to `skills/` and becomes available via `load_skill`.
 User: `怎么做 React 性能优化？`
 
 Flow:
-1. `execute_code(code='import subprocess; print(subprocess.run(["npx","skills","find","react-performance"], capture_output=True, text=True).stdout)')`
+1. `execute_code(language="bash", code="npx skills find react-performance")`
    → top result: `vercel-labs/agent-skills@react-best-practices`, 185K installs
 2. `web_fetch(url="https://github.com/vercel-labs/agent-skills/blob/main/react-best-practices/SKILL.md")`
    → read-only guide, no code execution, no network calls

@@ -1,137 +1,196 @@
-# Hive
+<div align="center">
+  <h1>Hive</h1>
+  <h3>Open-source digital employees with persistent identity and long-term memory.</h3>
+  <p><strong>English</strong> | <a href="README.zh-CN.md">简体中文</a></p>
+</div>
 
-Open-source multi-agent collaboration platform for enterprise. Build persistent "digital employees" with identity, long-term memory, private workspaces, and autonomous execution.
+<div align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache_2.0-blue.svg" alt="License"></a>
+  <a href="#"><img src="https://img.shields.io/badge/python-3.12-blue.svg" alt="Python"></a>
+  <a href="#"><img src="https://img.shields.io/badge/react-19-61dafb.svg" alt="React"></a>
+  <a href="#"><img src="https://img.shields.io/badge/postgres-15-336791.svg" alt="PostgreSQL"></a>
+</div>
 
-## Features
+<br>
 
-- **Persistent Agent Identity** — Each agent has a soul contract, focus priorities, memory, skills, and workspace that persist across conversations
-- **4-Layer Memory Pyramid** — T0 raw logs → T2 episodic learnings → T3 semantic memory → soul.md identity, with automatic extraction, heartbeat curation, and dream consolidation
-- **15-Event Hook System** — Lifecycle event bus powering the memory pipeline: per-response extraction, cursor-based T0 writes, session idle/close handling
-- **HR Agent with LLM Soul Refinement** — Conversational agent creation in 2-3 rounds; LLM crafts rich, role-specific soul contracts with system-aware prompts
-- **6-Channel Integration** — Feishu/Lark, Slack, Discord, DingTalk, WeChat Work, Microsoft Teams
-- **Tool Governance** — Security zones, capability policies, and human-in-the-loop approval flows
-- **Autonomous Triggers** — Cron, interval, webhook, poll, and event-driven execution
-- **Multi-Tenant** — Full tenant isolation with PostgreSQL RLS, per-tenant LLM pools, quotas, and org sync
-- **Skill System** — Markdown-based skill definitions with progressive loading and on-demand tool pack activation
-- **Agent Collaboration** — Agent-to-agent delegation, social plaza, and shared workspaces
-- **60+ Built-in Tools** — File I/O, web search, document processing, Feishu office suite, email, MCP integration
+Hive is a self-hosted platform for building **digital employees** — AI agents that remember the conversations they have, learn from them autonomously, live inside your team's IM tools, and act on their own when something needs doing. Instead of stateless chatbots that forget everything when the tab closes, Hive agents have an identity contract, a private workspace, and a 4-layer memory that consolidates while they "sleep."
 
-## Quick Start
+**What makes Hive different:**
+
+- **Persistent identity** — Each agent has a `soul.md` — its role, voice, boundaries, and quality bar. It survives across conversations, sessions, and even model swaps.
+- **4-layer memory pyramid** — Raw logs → learnings → semantic memory → identity. Memory is extracted from every response, curated every 45 minutes, and consolidated into the agent's soul roughly every 4 hours. No manual RAG setup.
+- **Heartbeat & Dream** — Background daemons think for the agent while you're away — organizing what it learned, deciding what's worth keeping, updating who it is.
+- **Lives in your chat** — First-class connectors for Feishu/Lark, Slack, Discord, DingTalk, WeChat Work, and Microsoft Teams. Same agent, same memory, every channel.
+- **Created by conversation** — An HR Agent interviews you in 2–3 rounds and builds a new digital employee for you. No prompt engineering required.
+- **Acts on its own** — Cron, interval, webhook, polling, and message-event triggers. Agents wake up to do work, not just answer.
+- **Enterprise-ready governance** — Security zones, capability policies, human-in-the-loop approvals, multi-tenant PostgreSQL RLS, full audit trail.
+- **60+ tools out of the box** — File I/O, web search, the entire Feishu office suite, email, plus MCP server import for anything else.
+
+> [!NOTE]
+> Hive is fully self-hostable. FastAPI + React + PostgreSQL + Redis, ships with Docker Compose, supports 14+ LLM providers (Anthropic, OpenAI, Gemini, DeepSeek, Qwen, MiniMax, Azure, OpenRouter, Zhipu, Kimi, vLLM, Ollama, …).
+
+## Quickstart
+
+**One-shot setup (recommended):**
 
 ```bash
-# Clone and setup
-git clone https://github.com/rocky2431/hive-agents.git && cd hive-agents
-bash setup.sh --dev
-
-# Start services
-bash restart.sh
-# Frontend → http://localhost:3008
-# Backend  → http://localhost:8008
+git clone https://github.com/rocky2431/hive-agents.git
+cd hive-agents
+bash setup.sh --dev      # provisions PostgreSQL, venv, frontend deps, seeds the DB
+bash restart.sh          # starts backend (:8008) and frontend (:3008)
 ```
 
-Or with Docker:
+Open http://localhost:3008, register the first user (becomes platform admin), and chat with the HR Agent to create your first employee.
+
+**Or with Docker:**
 
 ```bash
 cp .env.example .env
-docker compose up -d --build    # Full stack → http://localhost:3008
+docker compose up -d --build    # full stack on http://localhost:3008
 ```
 
-## Architecture
+> [!TIP]
+> The HR Agent creates new digital employees through a 2–3 round conversation. Tell it what role you need ("a customer support lead who handles billing escalations"), answer a few clarifying questions, and it generates the soul contract, opening tasks, and starter triggers automatically.
+
+## How it works
 
 ```
-Frontend (React 19 + Vite + TanStack Query)
-    |  /api proxy (:3008 -> :8008)
-    v
-Backend (FastAPI + SQLAlchemy async)
-    |
-    v
-PostgreSQL (asyncpg) + Redis
+                   +-----------------------------+
+                   |  Frontend (React 19 + Vite) |
+                   +--------------+--------------+
+                                  |  /api  /ws
+                   +--------------v--------------+
+                   |   Backend (FastAPI 3.12)    |
+                   +--------------+--------------+
+                                  |
+       +--------------+-----------+-----------+--------------+
+       |              |                       |              |
+   PostgreSQL      Redis              Background daemons     Agent FS
+   (RLS, async)   (cache, pubsub)    - Trigger (15s tick)    /data/agents/
+                                     - Feishu / DingTalk /     {agent_id}/
+                                       WeCom WS managers       soul.md
+                                     - Heartbeat / Dream       focus.md
+                                                               memory/
+                                                               logs/
+                                                               skills/
 ```
 
-### Agent Kernel
-
-All agent execution flows through a unified kernel:
+Every agent invocation — whether it comes from a chat message, a webhook, a cron trigger, or another agent delegating — flows through one stateless **kernel**:
 
 ```
-Entry Points (WebSocket, Feishu, Slack, Trigger, Heartbeat, Delegation)
-    -> runtime/invoker.py    (resolve deps, build prompt)
-    -> kernel/engine.py      (stateless LLM loop, DI-based)
-    -> tools/service.py      (governed tool execution)
-    -> tools/governance.py   (security zone -> capability gate -> approval)
+Entry point  →  invoker.py (resolve deps, build prompt)
+             →  kernel/engine.py (multi-round LLM loop, DI-based)
+             →  tools/service.py (governed execution)
+             →  tools/governance.py (security zone → capability → approval)
 ```
 
-### Memory Pipeline
+The kernel has **zero database imports** — all I/O goes through 14 injected callbacks. This means the same kernel runs WebSocket chat, Feishu webhooks, scheduled triggers, and agent-to-agent delegation, with identical semantics for context compaction, tool budgets, and prompt caching.
+
+## The Memory Pyramid
+
+This is the part that makes Hive feel different from "a chatbot with a vector store."
 
 ```
-T0 (raw logs) -> T2 (learnings) -> T3 (memory) -> soul.md
-     ^                ^                ^               ^
-SESSION_IDLE    RESPONSE_COMPLETE   Heartbeat        Dream
-cursor-based    per-response LLM    45min curation   4h+3s gate
+soul.md     ←  Dream         (4h + 3 sessions gate, T3→soul consolidation)
+   ↑
+T3 memory   ←  Heartbeat     (every 45 min, T2→T3 curation)
+   ↑                          feedback / knowledge / strategies / blocked / user
+T2 learnings ← Extract Agent (after every response, T0→T2 LLM extraction)
+   ↑
+T0 raw logs ← t0_logger      (cursor-based, written on session idle/close)
+              30-day retention
 ```
 
-MD files are the source of truth; SQLite is a recall-only FTS index.
+| Layer | Where | Written by | What it holds |
+|-------|-------|-----------|---------------|
+| **T0** | `logs/YYYY-MM-DD/behavior/` | session hooks | Full conversation MD — every message, tool call, tool result |
+| **T2** | `memory/learnings/*.md` | extraction LLM | Atomic learnings: facts, preferences, mistakes, patterns |
+| **T3** | `memory/{feedback,knowledge,strategies,blocked,user}.md` | Heartbeat daemon | Curated, deduplicated semantic memory |
+| **soul** | `soul.md` | Dream daemon | Permanent identity — role, voice, boundaries |
+| **focus** | `focus.md` | agent + heartbeat | Volatile operational priorities |
 
-### Backend
+Files are the source of truth. They're plain Markdown — you can read them, edit them, version them, copy them between deployments. No embeddings to rebuild, no vector store to migrate.
 
-| Layer | Count | Purpose |
-|-------|-------|---------|
-| API Routes | 48 | FastAPI routers (agents, auth, chat, enterprise, channels, admin) |
-| Models | 31 | SQLAlchemy ORM (async, tenant-scoped, RLS) |
-| Services | 58 | Business logic (LLM client, trigger daemon, channel streaming) |
-| Tool Handlers | 60+ | File I/O, web search, Feishu office, email, MCP |
-| Migrations | 35 | Alembic schema evolution |
+## Channels
 
-### Frontend
-
-| Layer | Purpose |
-|-------|---------|
-| 17 Pages | Dashboard, Agent Detail, Plaza, Enterprise Settings, Admin |
-| 20 API Domains | Typed HTTP adapters per feature |
-| State | TanStack Query (server) + Zustand (UI) |
-| i18n | English + Chinese |
-| Tests | 14 Vitest suites |
-
-## Channel Integrations
-
-| Channel | Connection | Features |
-|---------|-----------|----------|
-| Feishu/Lark | WebSocket / Webhook | Chat, Docs, Wiki, Sheets, Base, Tasks, Calendar |
+| Channel | Connection | Capabilities |
+|---------|-----------|--------------|
+| Feishu / Lark | WebSocket + Webhook | Chat, OAuth SSO, Docs, Wiki, Sheets, Base, Tasks, Calendar, approval cards (24 office tools) |
 | Slack | Bot API | Chat |
-| Discord | Bot Gateway | Chat (with SOCKS5 proxy support) |
+| Discord | Bot Gateway | Chat (optional SOCKS5 proxy) |
 | DingTalk | Stream SDK | Chat |
-| WeChat Work | WebSocket / Webhook | Chat (AES-CBC encrypted) |
+| WeChat Work | WebSocket + Webhook | Chat (AES-CBC encrypted) |
 | Microsoft Teams | Bot Framework | Chat |
 
-## Tech Stack
+Channel configs are **per-agent**, so different employees can live in different chat tools simultaneously — sales in Feishu, engineering in Slack, ops in DingTalk — all sharing the same Hive backend and tenant.
 
-| Component | Technology |
-|-----------|-----------|
-| Backend | Python 3.12, FastAPI, SQLAlchemy 2.0, asyncpg |
-| Frontend | React 19, TypeScript 5, Vite 6, React Router 7 |
-| Database | PostgreSQL 15 (RLS), Redis 7 |
-| LLM | OpenAI, Anthropic, Gemini, OpenAI-compatible |
-| Deployment | Docker, Railway |
-| License | Apache 2.0 |
+## Architecture at a glance
 
-## Development
+| Layer | Files | Notes |
+|-------|-------|-------|
+| API routers | 48 | Agents, auth, chat, enterprise, channels, admin, plaza, triggers, schedules |
+| ORM models | 31 | All tenant-scoped, RLS-enforced |
+| Services | 58 | LLM client (14+ providers), trigger daemon, channel streamers, quota guard, approval, audit |
+| Tool handlers | 60+ | filesystem · search · communication · email · feishu · plaza · skills · triggers · hr · mcp |
+| Kernel | 1 stateless engine | 50 max tool rounds · 85% compaction threshold · 50KB tool result eviction |
+| Migrations | 35 | Alembic, single-head invariant |
+| Frontend pages | 17 + 20 sub-sections | Dashboard, AgentDetail (11 tabs), EnterpriseSettings (13 sections), Plaza, Admin |
+| Frontend API | 20 typed domains | TanStack Query for server state, Zustand for UI state |
 
-```bash
-# Backend
-cd backend && source .venv/bin/activate
-uvicorn app.main:app --host 0.0.0.0 --port 8008 --reload
-ruff check app/ --fix && ruff format app/
-pytest
+For deeper technical detail, see [`ENGINEERING.md`](ENGINEERING.md) (architecture, invariants, runtime contracts) and [`AGENTS.md`](AGENTS.md) (developer reference for AI coding assistants).
 
-# Frontend
-cd frontend
-npm run dev        # Dev server on :3008
-npm run build      # Production build
+## Tech stack
 
-# Migrations
-cd backend
-alembic upgrade head
-alembic revision --autogenerate -m "description"
-```
+| Component | Choice |
+|-----------|--------|
+| Backend | Python 3.12, FastAPI, SQLAlchemy 2.0 async, asyncpg, Pydantic v2 |
+| Frontend | React 19, TypeScript 5, Vite 6, React Router 7, TanStack Query 5, Zustand 5 |
+| Database | PostgreSQL 15 with row-level security, Redis 7 |
+| LLM | Anthropic, OpenAI, Gemini, Azure, DeepSeek, Qwen, MiniMax, OpenRouter, Zhipu, Kimi, vLLM, Ollama, SGLang, custom OpenAI-compatible |
+| Migrations | Alembic |
+| Lint / format | Ruff (Python), ESLint + Prettier (TypeScript) |
+| Tests | pytest (backend), Vitest (frontend) |
+| Deployment | Docker Compose, Railway |
+
+## FAQ
+
+### Why should I use Hive instead of LangGraph / AutoGen / CrewAI?
+
+Those are **agent frameworks** — libraries you write code with. Hive is a **multi-agent platform** — a self-hostable product. If you want to give your colleagues a UI to spin up agents, plug them into Feishu, set up cron triggers, review their memory, and approve risky actions — that product layer is what Hive provides on top of an agent runtime.
+
+### What's the deal with `soul.md`?
+
+It's a Markdown file at the root of every agent's workspace describing **who the agent is** — role, primary users, core outputs, operating style, quality standards, boundaries, how it learns. Unlike a system prompt buried in code, the soul is a first-class artifact: editable, versionable, surfaced in the UI. The Dream daemon updates it as the agent grows. The agent's identity literally lives in a file.
+
+### Do I need to be on Feishu / Lark to use this?
+
+No. Feishu has the deepest integration (24 office tools, OAuth SSO, approval cards) because that's where the project started, but every channel is opt-in. You can run Hive entirely with Slack, Discord, or just the built-in web chat at `:3008`.
+
+### Can I run agents fully offline?
+
+Yes. Point the LLM provider at vLLM / Ollama / SGLang or any OpenAI-compatible endpoint. The memory pipeline, hooks, governance, triggers — everything runs locally.
+
+### Is it production-ready?
+
+It runs in production for the maintainers' own teams. It's still pre-1.0 in terms of API stability — expect schema migrations between minor versions (Alembic handles them). Multi-tenant isolation, audit logging, secret encryption, and approval flows are all in place; treat it like a young but earnest enterprise app.
+
+### How do I extend it?
+
+Three layers, in increasing order of effort:
+
+1. **Skills** — Markdown files with frontmatter that an agent can load on demand. Lowest barrier to entry; no code needed.
+2. **MCP servers** — Import any [Model Context Protocol](https://modelcontextprotocol.io) server through the UI; tools auto-register as a dynamic pack.
+3. **Native tools** — Add a handler in `backend/app/tools/handlers/`, register it in the runtime, write a governance entry. This is what's needed for tools that touch new credential types or need custom streaming.
+
+## Documentation
+
+- [`AGENTS.md`](AGENTS.md) — Technical reference for AI coding assistants (commands, invariants, conventions)
+- [`ENGINEERING.md`](ENGINEERING.md) — Full architecture: kernel, prompt assembly, governance, memory, deployment
+- [`CLAUDE.md`](CLAUDE.md) — Project guidance for Claude Code sessions
+
+## Acknowledgements
+
+The kernel-with-DI architecture and the 4-layer memory pipeline are inspired by Claude Code's session lifecycle and the broader agent-harness movement. The Feishu integration drew on first-hand pain from running an agent on lark-cli for several months. The `soul.md` / `focus.md` split came from observing what happens when an agent's identity gets edited every time a new tool is installed (it gets confused).
 
 ## License
 

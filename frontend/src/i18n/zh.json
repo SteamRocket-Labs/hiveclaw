@@ -767,6 +767,12 @@
       "platformTools": "内置操作",
       "agentInstalled": "员工自行添加的操作"
     },
+    "packs": {
+      "activeTitle": "已激活能力包",
+      "toolsLabel": "工具",
+      "skillsLabel": "技能",
+      "channelLabel": "渠道"
+    },
     "toolCategories": {
       "file": "文件",
       "filesystem": "文件系统",

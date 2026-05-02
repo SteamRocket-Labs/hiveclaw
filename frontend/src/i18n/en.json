@@ -763,6 +763,12 @@
       "platformTools": "Built-in Actions",
       "agentInstalled": "Employee-Added Actions"
     },
+    "packs": {
+      "activeTitle": "Active Capability Packs",
+      "toolsLabel": "Tools",
+      "skillsLabel": "Skills",
+      "channelLabel": "Channel"
+    },
     "toolCategories": {
       "file": "Files",
       "filesystem": "Filesystem",

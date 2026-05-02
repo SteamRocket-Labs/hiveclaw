@@ -88,12 +88,32 @@ export interface AgentChannelCapability {
   limitations: string[];
 }
 
+export interface AgentRuntimePack {
+  name: string;
+  summary?: string;
+  source?: string;
+  activation_mode?: string;
+  tools?: string[];
+  capabilities?: string[];
+  requires_channel?: string | null;
+  enabled?: boolean;
+  skills?: string[];
+}
+
+export interface AgentPacksResponse {
+  kernel_tools: string[];
+  available_packs: AgentRuntimePack[];
+  channel_backed_packs: AgentRuntimePack[];
+  skill_declared_packs: AgentRuntimePack[];
+}
+
 export const agentApi = {
   getHrAgent: () => get<HrAgentInfo>('/agents/system/hr'),
   list: (tenantId?: string) => get<Agent[]>(`/agents/${tenantId ? `?tenant_id=${tenantId}` : ''}`),
   getById: (id: string) => get<Agent>(`/agents/${id}`),
   getCapabilityInstalls: (id: string) => get<AgentCapabilityInstall[]>(`/agents/${id}/capability-installs`),
   getChannelCapabilities: (id: string) => get<AgentChannelCapability[]>(`/agents/${id}/channel-capabilities`),
+  getPacks: (id: string) => get<AgentPacksResponse>(`/agents/${id}/packs`),
   create: (data: AgentCreateParams) => post<Agent>('/agents/', data),
   update: (id: string, data: AgentUpdateParams) => patch<Agent>(`/agents/${id}`, data),
   remove: (id: string) => del(`/agents/${id}`),

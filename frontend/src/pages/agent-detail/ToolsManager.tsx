@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { agentApi, type AgentPacksResponse, type AgentRuntimePack } from '../../api/domains/agents';
 import { toolsApi } from '../../api/domains/tools';
 import { useAuthStore } from '../../stores';
 
@@ -63,6 +64,8 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
     },
   };
 
+  const [packsData, setPacksData] = useState<AgentPacksResponse | null>(null);
+
   const loadTools = async () => {
     try {
       const data = await toolsApi.listWithConfig(agentId).catch(() => toolsApi.list(agentId));
@@ -73,8 +76,18 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
     setLoading(false);
   };
 
+  const loadPacks = async () => {
+    try {
+      const data = await agentApi.getPacks(agentId);
+      setPacksData(data);
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
   useEffect(() => {
     void loadTools();
+    void loadPacks();
   }, [agentId]);
 
   const toggleTool = async (toolId: string, enabled: boolean) => {
@@ -261,9 +274,66 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
 
   const activeTools = toolTab === 'platform' ? systemTools : agentInstalledTools;
 
+  const allPacks: AgentRuntimePack[] = packsData
+    ? [
+        ...packsData.available_packs,
+        ...packsData.channel_backed_packs,
+        ...packsData.skill_declared_packs,
+      ]
+    : [];
+  const seenPackNames = new Set<string>();
+  const dedupedPacks = allPacks.filter((p) => {
+    if (seenPackNames.has(p.name)) return false;
+    seenPackNames.add(p.name);
+    return true;
+  });
+
   return (
     <>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        {dedupedPacks.length > 0 && (
+          <div>
+            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>
+              {t('agent.packs.activeTitle', 'Active Capability Packs')} ({dedupedPacks.length})
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '8px' }}>
+              {dedupedPacks.map((pack) => {
+                const enabled = pack.enabled !== false;
+                const toolCount = pack.tools?.length || 0;
+                const skillCount = pack.skills?.length || 0;
+                return (
+                  <div
+                    key={pack.name}
+                    className="card"
+                    style={{
+                      padding: '10px 12px',
+                      opacity: enabled ? 1 : 0.55,
+                      borderLeft: enabled ? '3px solid #22c55e' : '3px solid var(--bg-tertiary)',
+                    }}
+                    title={pack.activation_mode || ''}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px', marginBottom: '4px' }}>
+                      <span style={{ fontWeight: 600, fontSize: '13px' }}>{pack.name}</span>
+                      <span style={{ fontSize: '10px', color: enabled ? '#22c55e' : 'var(--text-tertiary)', fontWeight: 500 }}>
+                        {enabled ? t('common.enabled', 'On') : t('common.disabled', 'Off')}
+                      </span>
+                    </div>
+                    {pack.summary && (
+                      <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '6px', lineHeight: 1.4 }}>
+                        {pack.summary}
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', gap: '8px', fontSize: '10px', color: 'var(--text-tertiary)' }}>
+                      <span>{t('agent.packs.toolsLabel', 'Tools')}: {toolCount}</span>
+                      {skillCount > 0 && <span>{t('agent.packs.skillsLabel', 'Skills')}: {skillCount}</span>}
+                      {pack.requires_channel && <span>{t('agent.packs.channelLabel', 'Channel')}: {pack.requires_channel}</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
         <div style={{ display: 'flex', gap: '2px', background: 'var(--bg-tertiary)', borderRadius: '8px', padding: '3px' }}>
           <button
             onClick={() => setToolTab('platform')}

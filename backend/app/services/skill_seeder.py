@@ -26,6 +26,126 @@ def _is_seedable_skill_template_file(path: Path) -> bool:
     return path.suffix != ".pyc"
 
 
+_PACK_SKILL_ICONS = {
+    "comps-valuation": "📐",
+    "dcf-valuation": "🧮",
+    "ic-memo-generator": "📝",
+    "ipo-pipeline-monitor": "🚀",
+    "portfolio-risk-review": "🛡️",
+    "primary-market-due-diligence": "🔍",
+    "secondary-equity-deep-dive": "📈",
+    "docx-generator": "📄",
+    "xlsx-processor": "📊",
+    "pptx-generator": "🎞️",
+    "pdf-generator": "📑",
+    "weekly-report-generator": "🗓️",
+    "meeting-minutes": "🗒️",
+    "pitch-deck-generator": "🎯",
+    "industry-research": "🏭",
+    "topic-deep-dive": "🔬",
+    "source-ledger-audit": "📒",
+}
+
+
+def _extract_skill_frontmatter(content: str, *, fallback: str) -> tuple[str, str]:
+    """Parse YAML frontmatter from a SKILL.md and return (name, description).
+
+    Best-effort: malformed frontmatter returns (fallback, "") so seeding never
+    aborts on a single bad file.
+    """
+    if not content.startswith("---"):
+        return fallback, ""
+    end = content.find("\n---", 3)
+    if end < 0:
+        return fallback, ""
+    fm_text = content[4:end].strip()
+    try:
+        import yaml
+
+        data = yaml.safe_load(fm_text) or {}
+    except Exception:
+        return fallback, ""
+    if not isinstance(data, dict):
+        return fallback, ""
+    name = str(data.get("name") or fallback)
+    description = str(data.get("description") or "")
+    return name, description
+
+
+def _load_pack_skill_dicts() -> list[dict]:
+    """Scan backend/packs/*/pack.yaml and yield BUILTIN_SKILLS-shaped dicts.
+
+    Each pack manifest's `skills:` entries are resolved against the pack root.
+    Every file under the skill folder is collected so cookbooks, templates,
+    scripts, and references all reach the agent workspace alongside SKILL.md.
+    """
+    from app.packs.catalog_reader import PackCatalogReader, find_pack_dirs
+
+    skill_dicts: list[dict] = []
+    seen_folders: set[str] = set()
+
+    for packs_dir in find_pack_dirs(Path(__file__).resolve()):
+        reader = PackCatalogReader(packs_dir)
+        reader.discover()
+        for manifest in reader.list_packs():
+            pack_root = packs_dir / manifest.name
+            pack_category = manifest.name.replace("_pack", "")
+            for skill_rel in manifest.skills:
+                skill_dir = pack_root / skill_rel
+                if not skill_dir.is_dir():
+                    logger.warning(f"[SkillSeeder] Pack skill dir missing: {skill_dir}")
+                    continue
+                folder_name = skill_dir.name
+                if folder_name in seen_folders:
+                    continue
+                skill_md = skill_dir / "SKILL.md"
+                if not skill_md.is_file():
+                    logger.warning(f"[SkillSeeder] SKILL.md missing in {skill_dir}")
+                    continue
+
+                try:
+                    skill_md_content = skill_md.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    logger.warning(f"[SkillSeeder] SKILL.md not UTF-8: {skill_md}")
+                    continue
+                name, description = _extract_skill_frontmatter(
+                    skill_md_content, fallback=folder_name
+                )
+
+                files: list[dict] = []
+                for f in skill_dir.rglob("*"):
+                    if not f.is_file():
+                        continue
+                    rel = f.relative_to(skill_dir)
+                    if not _is_seedable_skill_template_file(rel):
+                        continue
+                    try:
+                        files.append({"path": str(rel), "content": f.read_text(encoding="utf-8")})
+                    except UnicodeDecodeError:
+                        logger.warning(f"[SkillSeeder] Skipping binary pack file: {rel}")
+
+                if not files:
+                    continue
+
+                skill_dicts.append(
+                    {
+                        "name": name,
+                        "description": description,
+                        "category": pack_category,
+                        "icon": _PACK_SKILL_ICONS.get(folder_name, "🧠"),
+                        "folder_name": folder_name,
+                        "is_default": True,
+                        "files": files,
+                    }
+                )
+                seen_folders.add(folder_name)
+                logger.info(
+                    f"[SkillSeeder] Discovered pack skill: {manifest.name}/{folder_name} ({len(files)} files)"
+                )
+
+    return skill_dicts
+
+
 BUILTIN_SKILLS = [
     {
         "name": "Complex Task Executor",
@@ -363,43 +483,10 @@ Plan would be:
         "is_default": True,
         "files": [],  # populated at runtime from templates/skills/
     },
-    # ─── Document processing skills (default, from templates/skills/) ──
-    {
-        "name": "PDF Generator",
-        "description": "Create, fill, and reformat professional PDF documents with design system",
-        "category": "productivity",
-        "icon": "📄",
-        "folder_name": "pdf-generator",
-        "is_default": True,
-        "files": [],
-    },
-    {
-        "name": "DOCX Generator",
-        "description": "Create and edit professional Word documents using OpenXML standards",
-        "category": "productivity",
-        "icon": "📝",
-        "folder_name": "docx-generator",
-        "is_default": True,
-        "files": [],
-    },
-    {
-        "name": "XLSX Processor",
-        "description": "Create, read, analyze, edit Excel spreadsheets with formulas and formatting",
-        "category": "productivity",
-        "icon": "📊",
-        "folder_name": "xlsx-processor",
-        "is_default": True,
-        "files": [],
-    },
-    {
-        "name": "PPTX Generator",
-        "description": "Generate, edit, and read PowerPoint presentations with PptxGenJS",
-        "category": "productivity",
-        "icon": "📽️",
-        "folder_name": "pptx-generator",
-        "is_default": True,
-        "files": [],
-    },
+    # Office document skills (pdf/docx/xlsx/pptx) are now sourced from
+    # backend/packs/office_pack/skills/ via _load_pack_skill_dicts() — the
+    # pack version ships with cookbooks, scripts, and templates that the
+    # earlier templates/skills/ stubs lacked.
 ]
 
 
@@ -488,8 +575,11 @@ async def seed_skills():
             else:
                 logger.warning(f"[SkillSeeder] {s['folder_name']}/ not found in templates/skills/")
 
+    pack_skill_dicts = _load_pack_skill_dicts()
+    all_skill_dicts = BUILTIN_SKILLS + pack_skill_dicts
+
     async with async_session() as db:
-        for skill_data in BUILTIN_SKILLS:
+        for skill_data in all_skill_dicts:
             result = await db.execute(select(Skill).where(Skill.folder_name == skill_data["folder_name"]))
             existing = result.scalar_one_or_none()
             is_default = skill_data.get("is_default", False)

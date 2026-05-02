@@ -37,6 +37,8 @@ export default function WorkspaceToolsSection({
     objectives: t('agent.toolCategories.objectives', 'Objectives'),
     plaza: t('agent.toolCategories.plaza', 'Plaza'),
     finance: t('agent.toolCategories.finance', 'Finance'),
+    office_pack: t('agent.toolCategories.office_pack', 'Office'),
+    deep_research_pack: t('agent.toolCategories.deep_research_pack', 'Deep Research'),
     social: t('agent.toolCategories.social', 'Social'),
     code: t('agent.toolCategories.code', 'Code & Execution'),
     discovery: t('agent.toolCategories.discovery', 'Discovery'),

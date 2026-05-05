@@ -10,7 +10,7 @@ from loguru import logger as _logger
 from uuid import uuid4
 
 trace_id_var: ContextVar[str] = ContextVar("trace_id", default=None)
-NOISY_HTTP_LOGGER_PREFIXES = ("httpx", "httpcore")
+NOISY_SUCCESS_LOGGER_PREFIXES = ("httpx", "httpcore", "uvicorn.access")
 
 
 def get_trace_id() -> str:
@@ -72,8 +72,8 @@ def intercept_standard_logging():
 
     # Suppress per-request success logs from chat providers and channel polling.
     # We still keep warnings/errors from these clients.
-    for name in tuple(logging.root.manager.loggerDict) + NOISY_HTTP_LOGGER_PREFIXES:
-        if not any(name == prefix or name.startswith(f"{prefix}.") for prefix in NOISY_HTTP_LOGGER_PREFIXES):
+    for name in tuple(logging.root.manager.loggerDict) + NOISY_SUCCESS_LOGGER_PREFIXES:
+        if not any(name == prefix or name.startswith(f"{prefix}.") for prefix in NOISY_SUCCESS_LOGGER_PREFIXES):
             continue
         logging.getLogger(name).setLevel(logging.WARNING)
 

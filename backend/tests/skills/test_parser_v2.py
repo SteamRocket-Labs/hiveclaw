@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from app.skills.loader import WorkspaceSkillLoader
@@ -119,6 +120,39 @@ Body survives.
     assert parsed.metadata.name == "broken skill"
     assert parsed.body.startswith("# Broken")
     assert "Body survives." in parsed.body
+
+
+def test_parser_logs_invalid_yaml_frontmatter_only_once_per_skill_path(tmp_path, caplog):
+    content = """---
+name: Broken
+metadata:
+  hive.version: [unterminated
+---
+# Broken
+"""
+
+    parser = SkillParser()
+
+    with caplog.at_level(logging.WARNING):
+        parser.parse_content(
+            content,
+            path=tmp_path / "duplicate-warning.md",
+            relative_path="skills/duplicate-warning.md",
+            default_name="duplicate-warning",
+        )
+        parser.parse_content(
+            content,
+            path=tmp_path / "duplicate-warning.md",
+            relative_path="skills/duplicate-warning.md",
+            default_name="duplicate-warning",
+        )
+
+    messages = [
+        record.message
+        for record in caplog.records
+        if "Skill skills/duplicate-warning.md has invalid YAML frontmatter:" in record.message
+    ]
+    assert len(messages) == 1
 
 
 def test_loader_lists_and_reads_folder_skill_resources(tmp_path):

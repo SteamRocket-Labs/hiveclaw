@@ -1,0 +1,232 @@
+{
+  "timestamp": "2026-05-02T09:37:02.839856+08:00",
+  "base_url": "https://backend-production-326d.up.railway.app",
+  "resolution": {
+    "host": "backend-production-326d.up.railway.app",
+    "ip": null,
+    "ok": false,
+    "error": "gaierror(8, 'nodename nor servname provided, or not known')"
+  },
+  "token_resolution": {
+    "success": true,
+    "sources_checked": [
+      "HIVE_PLATFORM_ADMIN_TOKEN",
+      "HIVE_ADMIN_TOKEN",
+      "HIVE_TOKEN",
+      ".h7.env",
+      "browser_local_storage_leveldb"
+    ],
+    "selected_source": "browser_local_storage_leveldb",
+    "selected_key": null,
+    "selected_path": "/Users/rocky243/Library/Application Support/Google/Chrome/Profile 5/Local Storage/leveldb/009472.ldb",
+    "candidate_expires_at": "2026-05-02T16:50:14+08:00",
+    "token_written_to_disk": false,
+    "token_printed": false,
+    "browser_candidate_count": 1,
+    "invalid_sources": [
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/007946.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/007946.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/007946.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/007946.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/007946.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/007947.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/009633.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/009633.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/009633.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/009635.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/010999.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/010999.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/010999.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/010999.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/010999.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/010999.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/010999.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/010999.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/010999.ldb",
+        "reason": "expired@2026-03-31T11:16:52+08:00"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/010999.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/011000.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/011001.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/011001.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/011002.ldb",
+        "reason": "expired@2026-05-01T14:19:29+08:00"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/011002.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/011123.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb/011147.log",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Profile 5/Local Storage/leveldb/009472.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Profile 5/Local Storage/leveldb/009472.ldb",
+        "reason": "role=None"
+      },
+      {
+        "source": "browser_local_storage_leveldb",
+        "key": null,
+        "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Profile 5/Local Storage/leveldb/009472.ldb",
+        "reason": "role=None"
+      }
+    ]
+  },
+  "endpoints": {
+    "autonomous-audit-24h": {
+      "attempted": true,
+      "ok": false,
+      "status": null,
+      "error": "URLError(gaierror(8, 'nodename nor servname provided, or not known'))",
+      "url": "https://backend-production-326d.up.railway.app/api/admin/autonomous-audit?lookback_hours=24"
+    },
+    "autonomy-repair-plan-24h": {
+      "attempted": true,
+      "ok": false,
+      "status": null,
+      "error": "URLError(gaierror(8, 'nodename nor servname provided, or not known'))",
+      "url": "https://backend-production-326d.up.railway.app/api/admin/autonomy-repair-plan?lookback_hours=24"
+    },
+    "harness-validation-24h": {
+      "attempted": true,
+      "ok": false,
+      "status": null,
+      "error": "URLError(gaierror(8, 'nodename nor servname provided, or not known'))",
+      "url": "https://backend-production-326d.up.railway.app/api/admin/harness-validation?lookback_hours=24"
+    }
+  }
+}

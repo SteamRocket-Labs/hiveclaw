@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -403,6 +404,41 @@ class TestExtractAgent:
     async def test_drain_no_task(self, extractor: ExtractAgent, agent_id: uuid.UUID) -> None:
         """Drain with no in-flight task should be a no-op."""
         await extractor.drain(agent_id, timeout_s=1.0)
+
+    async def test_drain_timeout_does_not_cancel_in_flight_task(
+        self, extractor: ExtractAgent, agent_id: uuid.UUID,
+    ) -> None:
+        """A drain timeout should stop waiting, not cancel the extractor task itself."""
+        key = str(agent_id)
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _slow_extract(*_args, **_kwargs) -> None:
+            started.set()
+            await release.wait()
+
+        with patch.object(extractor, "extract", _slow_extract):
+            extractor.schedule_extract(
+                agent_id,
+                [{"role": "user", "content": "this extraction should outlive the drain timeout"}],
+                source="web",
+            )
+            task = extractor._in_flight[key]
+            await asyncio.wait_for(started.wait(), timeout=1.0)
+
+            await extractor.drain(agent_id, timeout_s=0.01)
+            await asyncio.sleep(0)
+
+            assert key in extractor._in_flight
+            assert extractor._in_flight[key] is task
+            assert not task.done()
+
+            release.set()
+            await extractor.drain(agent_id, timeout_s=1.0)
+
+        assert task.done()
+        assert not task.cancelled()
+        assert key not in extractor._in_flight
 
     async def test_schedule_extract_tracks_task(self, extractor: ExtractAgent, agent_id: uuid.UUID) -> None:
         """schedule_extract stores task in _in_flight so drain() can await it."""

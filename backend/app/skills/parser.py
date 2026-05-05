@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,8 @@ import yaml
 from .types import ParsedSkill, SkillMetadata
 
 logger = logging.getLogger(__name__)
+_WARNED_FRONTMATTER_ISSUES: set[tuple[str, str, str]] = set()
+_WARNED_FRONTMATTER_LOCK = threading.Lock()
 
 
 class SkillParser:
@@ -47,9 +50,9 @@ class SkillParser:
                 if isinstance(loaded, dict):
                     frontmatter = loaded
                 else:
-                    logger.warning("Skill %s frontmatter is not a mapping", relative_path)
+                    self._warn_frontmatter_once(relative_path, "not_a_mapping", "frontmatter is not a mapping")
             except yaml.YAMLError as exc:
-                logger.warning("Skill %s has invalid YAML frontmatter: %s", relative_path, exc)
+                self._warn_frontmatter_once(relative_path, "invalid_yaml", str(exc))
 
         if frontmatter:
             name = self._string_value(frontmatter.get("name")) or name
@@ -142,3 +145,16 @@ class SkillParser:
             return int(cls._string_value(value))
         except (TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _warn_frontmatter_once(relative_path: str, issue_type: str, detail: str) -> None:
+        signature = (relative_path, issue_type, detail)
+        with _WARNED_FRONTMATTER_LOCK:
+            if signature in _WARNED_FRONTMATTER_ISSUES:
+                return
+            _WARNED_FRONTMATTER_ISSUES.add(signature)
+
+        if issue_type == "not_a_mapping":
+            logger.warning("Skill %s frontmatter is not a mapping", relative_path)
+            return
+        logger.warning("Skill %s has invalid YAML frontmatter: %s", relative_path, detail)

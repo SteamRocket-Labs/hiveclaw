@@ -727,7 +727,9 @@ class ExtractAgent:
         task = self._in_flight.get(key)
         if task and not task.done():
             try:
-                await asyncio.wait_for(task, timeout=timeout_s)
+                # Shield the task so a session-close timeout only stops waiting;
+                # it must not cancel the in-flight extractor itself.
+                await asyncio.wait_for(asyncio.shield(task), timeout=timeout_s)
             except asyncio.TimeoutError:
                 metrics.record_extract_drain_timeout()
                 logger.warning("[Extractor] Drain timeout for %s after %.1fs", agent_id, timeout_s)

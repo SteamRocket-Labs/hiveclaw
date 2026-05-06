@@ -37,3 +37,15 @@ def test_loop_guard_detects_repeated_assistant_text() -> None:
     assert decision is not None
     assert decision.reason == "repeated_assistant_text"
 
+
+def test_loop_guard_allows_many_distinct_successful_tool_calls() -> None:
+    from app.kernel.loop_guard import LoopGuard
+
+    guard = LoopGuard()
+
+    for index in range(60):
+        decision = guard.observe_tool_call(
+            "web_fetch",
+            {"url": f"https://arxiv.org/abs/2501.{index:05d}", "max_chars": 1500},
+        )
+        assert decision is None

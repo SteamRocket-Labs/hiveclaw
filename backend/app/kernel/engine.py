@@ -1136,14 +1136,22 @@ class AgentKernel:
                     collected_parts.append(part)
 
             async def _abort_for_loop_guard(decision: LoopGuardDecision) -> InvocationResult:
-                message = f"[Loop Guard] Stopped repeated non-progress pattern: {decision.message}"
+                if decision.reason == "total_tool_calls":
+                    message = (
+                        "[Tool Budget] 本次已达到工具调用预算，我已保留当前进度。"
+                        "请回复“继续”，我会从最近的上下文接着处理；如果任务很大，也可以让我分批处理。"
+                    )
+                    event_title = "Tool Budget Reached"
+                else:
+                    message = f"[Loop Guard] Stopped repeated non-progress pattern: {decision.message}"
+                    event_title = "Loop Guard Triggered"
                 await _emit_event(
                     {
                         "type": "loop_guard",
                         "part": {
                             "type": "event",
                             "event_type": "loop_guard_triggered",
-                            "title": "Loop Guard Triggered",
+                            "title": event_title,
                             "text": message,
                             "status": "warning",
                             **decision.trace_event,

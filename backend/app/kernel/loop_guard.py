@@ -44,7 +44,7 @@ class LoopGuard:
     def __init__(
         self,
         *,
-        total_tool_threshold: int = 25,
+        total_tool_threshold: int = 100,
         failed_tool_threshold: int = 12,
         identical_tool_threshold: int = 3,
         repeated_text_threshold: int = 3,
@@ -133,4 +133,3 @@ class LoopGuard:
                 "failed_tool_calls": self.failed_tool_calls,
             },
         )
-

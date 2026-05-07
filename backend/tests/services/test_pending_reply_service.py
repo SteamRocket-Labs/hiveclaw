@@ -9,6 +9,7 @@ from app.services.pending_reply_service import (
     normalize_identity,
     sender_identity_from_external_conv_id,
     sender_identity_from_session,
+    should_capture_pending_reply_context,
 )
 from app.services.channel_delivery_service import channel_delivery_target
 from datetime import datetime, timezone
@@ -138,6 +139,47 @@ class TestBuildTaskContext:
         ]
         ctx = build_task_context(messages, {"message": "hi bob"})
         assert ctx["agent_reasoning"] == "我来帮你联系Bob"
+
+
+class TestShouldCapturePendingReplyContext:
+    def test_skips_one_way_channel_delivery_without_originator(self) -> None:
+        recipient = {
+            "channel": "feishu",
+            "name": "翁吉义",
+            "identity": "feishu:7baa7g22",
+        }
+
+        assert not should_capture_pending_reply_context(
+            recipient=recipient,
+            originator_name="",
+            originator_identity="",
+        )
+
+    def test_skips_when_originator_is_same_as_recipient(self) -> None:
+        recipient = {
+            "channel": "feishu",
+            "name": "翁吉义",
+            "identity": "feishu:7baa7g22",
+        }
+
+        assert not should_capture_pending_reply_context(
+            recipient=recipient,
+            originator_name="翁吉义",
+            originator_identity="feishu:7baa7g22",
+        )
+
+    def test_captures_real_cross_user_reply_context(self) -> None:
+        recipient = {
+            "channel": "feishu",
+            "name": "王天怡",
+            "identity": "feishu:ou_tianyi",
+        }
+
+        assert should_capture_pending_reply_context(
+            recipient=recipient,
+            originator_name="慕涵",
+            originator_identity="web:muhan",
+        )
 
 
 class TestSenderIdentityFromExternalConvId:

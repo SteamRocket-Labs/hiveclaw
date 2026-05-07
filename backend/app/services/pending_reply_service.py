@@ -18,6 +18,7 @@ from app.models.pending_reply import PendingReplyContext
 logger = logging.getLogger(__name__)
 
 DEFAULT_EXPIRY_HOURS = 48
+PENDING_REPLY_CLAIM_LIMIT = 3
 
 # ── Tool → recipient arg mapping ──
 
@@ -31,6 +32,34 @@ _TOOL_RECIPIENT_MAP: dict[str, dict[str, str | list[str]]] = {
 }
 
 OUTBOUND_TOOL_NAMES = tuple(_TOOL_RECIPIENT_MAP.keys())
+
+
+def should_capture_pending_reply_context(
+    *,
+    recipient: dict | None,
+    originator_name: str = "",
+    originator_identity: str = "",
+) -> bool:
+    """Return true only for real cross-user pending reply handoffs.
+
+    Pending replies exist for "A asks the agent to message B, then B replies".
+    One-way channel deliveries such as scheduled morning briefs should not
+    create reply debt, otherwise the recipient's next normal chat is polluted
+    by stale outbound-report context.
+    """
+    if not recipient:
+        return False
+
+    normalized_originator_identity = (originator_identity or "").strip()
+    normalized_originator_name = (originator_name or "").strip()
+    if not normalized_originator_identity and not normalized_originator_name:
+        return False
+
+    recipient_identity = str(recipient.get("identity") or "").strip()
+    if normalized_originator_identity and recipient_identity == normalized_originator_identity:
+        return False
+
+    return True
 
 
 def normalize_identity(channel: str, identifier: str) -> str:
@@ -179,7 +208,11 @@ async def capture_pending_reply(
     the tool is not a messaging tool or required args are missing.
     """
     recipient = extract_recipient_info(tool_name, tool_args)
-    if not recipient:
+    if not should_capture_pending_reply_context(
+        recipient=recipient,
+        originator_name=originator_name,
+        originator_identity=originator_identity,
+    ):
         return None
 
     context = build_task_context(messages, tool_args)
@@ -255,14 +288,22 @@ async def claim_and_fulfill_pending_replies(
     the winner of the UPDATE gets rows back. The loser gets zero and skips injection.
     """
     now = datetime.now(timezone.utc)
-    result = await db.execute(
-        update(PendingReplyContext)
+    claimable_ids = (
+        select(PendingReplyContext.id)
         .where(
             PendingReplyContext.agent_id == agent_id,
             PendingReplyContext.recipient_identity == sender_identity,
             PendingReplyContext.status == "pending",
             PendingReplyContext.expires_at > now,
         )
+        .order_by(PendingReplyContext.created_at.desc())
+        .limit(PENDING_REPLY_CLAIM_LIMIT)
+        .with_for_update(skip_locked=True)
+        .subquery()
+    )
+    result = await db.execute(
+        update(PendingReplyContext)
+        .where(PendingReplyContext.id.in_(select(claimable_ids.c.id)))
         .values(status="fulfilled", fulfilled_at=now)
         .returning(PendingReplyContext)
     )

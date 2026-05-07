@@ -39,13 +39,43 @@ if not _HAS_LARK:
     )
 
 
+_FEISHU_WS_INITIAL_RETRY_DELAY_SECONDS = 5
+_FEISHU_WS_MAX_RETRY_DELAY_SECONDS = 60
+_FEISHU_WS_INVALID_CREDENTIALS_CODE = 1000040345
+
+
+def _is_non_retryable_feishu_ws_error(exc: Exception) -> bool:
+    """Classify Feishu SDK errors that require config changes instead of reconnect retries."""
+    code = getattr(exc, "code", None)
+    if code == _FEISHU_WS_INVALID_CREDENTIALS_CODE or str(code) == str(_FEISHU_WS_INVALID_CREDENTIALS_CODE):
+        return True
+
+    message = str(exc).lower()
+    return "app_id or app_secret is invalid" in message
+
+
+def _connect_supports_proxy_kwarg(orig_connect) -> bool:
+    """Return true only when the websockets connect callable explicitly accepts proxy."""
+    import inspect
+
+    try:
+        return "proxy" in inspect.signature(orig_connect).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def _make_no_proxy_connect(orig_connect):
     """Temporarily force `proxy=None` during the WebSocket handshake only."""
     import contextlib
 
+    supports_proxy_kwarg = _connect_supports_proxy_kwarg(orig_connect)
+
     class _NoProxyConnect:
         def __init__(self, *args, **kwargs):
-            kwargs.setdefault("proxy", None)
+            if supports_proxy_kwarg:
+                kwargs.setdefault("proxy", None)
+            else:
+                kwargs.pop("proxy", None)
             self._coro = orig_connect(*args, **kwargs)
             self._ws = None
 
@@ -298,24 +328,47 @@ class FeishuWSManager:
 
         # Direct Async runner bypassing the faulty client.start()
         async def _run_async_client():
+            retry_delay = _FEISHU_WS_INITIAL_RETRY_DELAY_SECONDS
             try:
-                # Internally _connect() opens socket and drops _receive_message_loop() onto the global loop
-                if no_proxy_ctx:
-                    async with no_proxy_ctx():
-                        await client._connect()
-                else:
-                    await client._connect()
-                # Start ping loop natively
-                asyncio.create_task(client._ping_loop())
-                
-                # Keep this task alive so it doesn't get canceled, and handle reconnections
                 while True:
-                    await asyncio.sleep(3600)  # Keep-alive
+                    try:
+                        # Internally _connect() opens socket and drops _receive_message_loop() onto the global loop
+                        if no_proxy_ctx:
+                            async with no_proxy_ctx():
+                                await client._connect()
+                        else:
+                            await client._connect()
+                        retry_delay = _FEISHU_WS_INITIAL_RETRY_DELAY_SECONDS
+                        # Start ping loop natively
+                        asyncio.create_task(client._ping_loop())
+
+                        # Keep this task alive so it doesn't get canceled, and handle reconnections
+                        while True:
+                            await asyncio.sleep(3600)  # Keep-alive
+                    except Exception as e:
+                        if _is_non_retryable_feishu_ws_error(e):
+                            logger.error(
+                                "[Feishu WS] Async client configuration error for "
+                                f"{agent_id}; disabling until credentials are updated: {type(e).__name__}: {e}"
+                            )
+                            await client._disconnect()
+                            self._clients.pop(agent_id, None)
+                            self._tasks.pop(agent_id, None)
+                            return
+
+                        logger.warning(
+                            "[Feishu WS] Async client connection failed for "
+                            f"{agent_id}; retrying in {retry_delay}s: {type(e).__name__}: {e}"
+                        )
+                        await client._disconnect()
+                        await asyncio.sleep(retry_delay)
+                        retry_delay = min(retry_delay * 2, _FEISHU_WS_MAX_RETRY_DELAY_SECONDS)
+                        self._clients[agent_id] = client
             except asyncio.CancelledError:
                 logger.info(f"[Feishu WS] Async client task cancelled for {agent_id}")
                 await client._disconnect()
             except Exception as e:
-                logger.opt(exception=True).error(f"[Feishu WS] Async client exception for {agent_id}: {e}")
+                logger.opt(exception=True).error(f"[Feishu WS] Async client fatal exception for {agent_id}: {e}")
                 await client._disconnect()
                 self._clients.pop(agent_id, None)
 

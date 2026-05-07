@@ -241,12 +241,22 @@ async def test_get_agent_feishu_runtime_status_reports_agent_access(monkeypatch)
     async def fake_agent_has_feishu_cli_access():
         return False
 
+    async def fake_get_feishu_token_status(target_agent_id):
+        assert target_agent_id == agent_id
+        return {
+            "configured": True,
+            "ok": True,
+            "app_id": "cli_demo",
+            "token": "tenant-token",
+        }
+
     monkeypatch.setattr(tools_api, "_require_manage_access", fake_require_manage_access)
     monkeypatch.setattr("app.api.tools.get_settings", lambda: SimpleNamespace(FEISHU_CLI_ENABLED=True, FEISHU_CLI_BIN="lark-cli"))
     monkeypatch.setattr("app.services.agent_tool_domains.feishu_cli._feishu_cli_available", fake_agent_has_feishu_cli_access)
     monkeypatch.setattr("app.services.agent_tools._agent_has_feishu", fake_agent_has_feishu)
     monkeypatch.setattr("app.services.agent_tools._agent_has_feishu_office_access", fake_agent_has_feishu_office_access)
     monkeypatch.setattr("app.services.agent_tools._agent_has_feishu_cli_access", fake_agent_has_feishu_cli_access)
+    monkeypatch.setattr(tools_api, "_get_feishu_token_status", fake_get_feishu_token_status)
 
     result = await tools_api.get_agent_feishu_runtime_status(
         agent_id=agent_id,
@@ -266,6 +276,63 @@ async def test_get_agent_feishu_runtime_status_reports_agent_access(monkeypatch)
     assert result["cardkit_ready"] is result["cardkit_dependency_ready"]
     assert "cardkit_ready" in result
     assert "tenant_channel_configured" in result
+
+
+@pytest.mark.asyncio
+async def test_get_agent_feishu_runtime_status_reports_invalid_channel_secret(monkeypatch):
+    import app.api.tools as tools_api
+
+    agent_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4())
+    db = _FakeDB([])
+
+    async def fake_require_manage_access(db_session, user, target_agent_id):
+        assert db_session is db
+        assert user is current_user
+        assert target_agent_id == agent_id
+        return SimpleNamespace(id=agent_id, tenant_id=current_user.tenant_id)
+
+    async def fake_agent_has_feishu(target_agent_id):
+        assert target_agent_id == agent_id
+        return True
+
+    async def fake_agent_has_feishu_office_access(target_agent_id):
+        assert target_agent_id == agent_id
+        return True
+
+    async def fake_agent_has_feishu_cli_access():
+        return False
+
+    async def fake_get_feishu_token_status(target_agent_id):
+        assert target_agent_id == agent_id
+        return {
+            "configured": True,
+            "ok": False,
+            "code": 10014,
+            "message": "app secret invalid",
+            "app_id": "cli_demo",
+        }
+
+    monkeypatch.setattr(tools_api, "_require_manage_access", fake_require_manage_access)
+    monkeypatch.setattr("app.api.tools.get_settings", lambda: SimpleNamespace(FEISHU_CLI_ENABLED=False, FEISHU_CLI_BIN="lark-cli"))
+    monkeypatch.setattr("app.services.agent_tool_domains.feishu_cli._feishu_cli_available", fake_agent_has_feishu_cli_access)
+    monkeypatch.setattr("app.services.agent_tools._agent_has_feishu", fake_agent_has_feishu)
+    monkeypatch.setattr("app.services.agent_tools._agent_has_feishu_office_access", fake_agent_has_feishu_office_access)
+    monkeypatch.setattr("app.services.agent_tools._agent_has_feishu_cli_access", fake_agent_has_feishu_cli_access)
+    monkeypatch.setattr(tools_api, "_get_feishu_token_status", fake_get_feishu_token_status, raising=False)
+
+    result = await tools_api.get_agent_feishu_runtime_status(
+        agent_id=agent_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    assert result["scope"] == "agent"
+    assert result["channel_configured"] is True
+    assert result["channel_auth_valid"] is False
+    assert result["office_access"] is False
+    assert result["ok"] is False
+    assert "app secret invalid" in result["message"]
 
 
 # ── MCP tool dedup tests ──────────────────────────────────────────────

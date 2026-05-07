@@ -6,7 +6,11 @@ import logging
 import uuid
 
 from app.services.feishu_contacts_cache import load_feishu_contacts_cache
-from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token
+from app.services.agent_tool_domains.feishu_helpers import (
+    _format_feishu_token_error,
+    _get_feishu_token,
+    _get_feishu_token_status,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +87,7 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
 
     creds = await _get_feishu_token(agent_id)
     if not creds:
-        return "❌ Agent has no Feishu channel configured."
+        return _format_feishu_token_error(await _get_feishu_token_status(agent_id))
 
     # ── 1. Local contacts cache ──────────────────────────────────────────────
     _cached_users = load_feishu_contacts_cache(agent_id).get("users", [])

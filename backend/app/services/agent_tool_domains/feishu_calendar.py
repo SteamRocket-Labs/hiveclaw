@@ -5,7 +5,9 @@ import uuid
 from datetime import datetime, timezone
 
 from app.services.agent_tool_domains.feishu_helpers import (
+    _format_feishu_token_error,
     _get_feishu_token,
+    _get_feishu_token_status,
     _get_agent_calendar_id,
     _feishu_resolve_open_id,
     _iso_to_ts,
@@ -29,7 +31,7 @@ async def _feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
 
     creds = await _get_feishu_token(agent_id)
     if not creds:
-        return "❌ Agent has no Feishu channel configured."
+        return _format_feishu_token_error(await _get_feishu_token_status(agent_id))
     _, token = creds
 
     now = datetime.now(timezone.utc)
@@ -192,7 +194,7 @@ async def _feishu_calendar_create(agent_id: uuid.UUID, arguments: dict) -> str:
 
     creds = await _get_feishu_token(agent_id)
     if not creds:
-        return "❌ Agent has no Feishu channel configured."
+        return _format_feishu_token_error(await _get_feishu_token_status(agent_id))
     _, token = creds
 
     # Resolve organizer open_id from email — soft failure
@@ -304,7 +306,7 @@ async def _feishu_calendar_update(agent_id: uuid.UUID, arguments: dict) -> str:
 
     creds = await _get_feishu_token(agent_id)
     if not creds:
-        return "❌ Agent has no Feishu channel configured."
+        return _format_feishu_token_error(await _get_feishu_token_status(agent_id))
     _, token = creds
 
     agent_cal_id, cal_err = await _get_agent_calendar_id(token)
@@ -350,7 +352,7 @@ async def _feishu_calendar_delete(agent_id: uuid.UUID, arguments: dict) -> str:
 
     creds = await _get_feishu_token(agent_id)
     if not creds:
-        return "❌ Agent has no Feishu channel configured."
+        return _format_feishu_token_error(await _get_feishu_token_status(agent_id))
     _, token = creds
 
     agent_cal_id, cal_err = await _get_agent_calendar_id(token)

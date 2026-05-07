@@ -74,6 +74,11 @@ def _normalize_url(value: str) -> str | None:
     return candidate
 
 
+def _is_feishu_open_api_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.netloc == "open.feishu.cn" and parsed.path.startswith("/open-apis/")
+
+
 def _invalid_argument_error(tool_name: str, message: str, *, provider: str, hint: str) -> str:
     return render_tool_error(
         tool_name=tool_name,
@@ -352,6 +357,19 @@ async def _web_fetch(arguments: dict) -> str:
             f"web_fetch received an invalid URL: {url}",
             provider="web_fetch",
             hint="Use a valid URL. If you only have keywords, use web_search first.",
+        )
+
+    if _is_feishu_open_api_url(normalized_url):
+        return render_tool_error(
+            tool_name="web_fetch",
+            error_class="wrong_tool",
+            message="web_fetch cannot call Feishu OpenAPI endpoints because it does not attach managed channel auth.",
+            provider="web_fetch",
+            retryable=False,
+            actionable_hint=(
+                "Use the Feishu tools instead: feishu_calendar_list/create/update/delete for calendar, "
+                "feishu_doc_read for docs, feishu_sheet_read for sheets, or load the Feishu Integration skill."
+            ),
         )
 
     max_chars = min(_safe_int(arguments.get("max_chars", 8000), 8000), 20000)

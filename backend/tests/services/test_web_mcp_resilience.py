@@ -125,6 +125,28 @@ async def test_web_fetch_extracts_html_content(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_web_fetch_rejects_feishu_open_api_urls_before_http(monkeypatch):
+    from app.services.agent_tool_domains import web_mcp
+
+    class FailingClient:
+        async def __aenter__(self):
+            raise AssertionError("web_fetch should not call Feishu OpenAPI directly")
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr("httpx.AsyncClient", lambda *args, **kwargs: FailingClient())
+
+    result = await web_mcp._web_fetch({
+        "url": "https://open.feishu.cn/open-apis/calendar/v4/calendars?page_size=100",
+    })
+
+    payload = _extract_tool_error_payload(result)
+    assert payload["error_class"] == "wrong_tool"
+    assert "feishu_calendar_list" in payload["actionable_hint"]
+
+
+@pytest.mark.asyncio
 async def test_web_search_falls_back_to_duckduckgo_when_provider_returns_error_string(monkeypatch):
     from app.services.agent_tool_domains import web_mcp
 

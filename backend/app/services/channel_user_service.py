@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+import logging
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +13,8 @@ from app.models.identity import ExternalIdentity, IdentityProvider
 from app.models.org import AgentRelationship, OrgMember
 from app.models.user import User
 from app.services.auth_provider import feishu_auth_provider
+
+logger = logging.getLogger(__name__)
 
 
 class ChannelUserService:
@@ -147,7 +150,7 @@ class ChannelUserService:
             return await feishu_auth_provider._find_or_create_user(db, provider, profile, tenant_id)
 
         await feishu_auth_provider._upsert_external_identity(db, provider, user, profile)
-        feishu_auth_provider._write_through_user_fields(user, profile)
+        await self._write_through_user_fields_safely(db, user, profile)
         feishu_auth_provider._hydrate_user_profile(user, profile)
         await db.flush()
         return user
@@ -266,6 +269,35 @@ class ChannelUserService:
             query = query.where(User.tenant_id == tenant_id)
         result = await db.execute(query.limit(1))
         return result.scalar_one_or_none()
+
+    async def _write_through_user_fields_safely(self, db: AsyncSession, user: User, profile: dict) -> None:
+        """Mirror Feishu IDs onto legacy user columns without breaking inbound delivery.
+
+        ExternalIdentity is the canonical binding. The legacy users.feishu_open_id
+        column is globally unique and can still contain old rows from previous
+        imports, so a stale owner must not make a fresh Feishu message roll back.
+        """
+        legacy_profile = dict(profile)
+        provider_open_id = (profile.get("open_id") or "").strip()
+        if provider_open_id:
+            result = await db.execute(
+                select(User.id)
+                .where(
+                    User.feishu_open_id == provider_open_id,
+                    User.id != user.id,
+                )
+                .limit(1)
+            )
+            conflicting_user_id = result.scalar_one_or_none()
+            if conflicting_user_id:
+                legacy_profile.pop("open_id", None)
+                logger.warning(
+                    "[Feishu] Skipping legacy feishu_open_id write-through for user %s: open_id is owned by %s",
+                    user.id,
+                    conflicting_user_id,
+                )
+
+        feishu_auth_provider._write_through_user_fields(user, legacy_profile)
 
 
 channel_user_service = ChannelUserService()

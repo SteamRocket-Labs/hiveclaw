@@ -20,6 +20,7 @@ from app.models.tenant_setting import TenantSetting
 from app.models.tool import AgentTool, Tool
 from app.models.user import User
 from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment
+from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token_status
 from app.services.email_service import test_connection as test_email_connection
 from app.services.mcp_client import MCPClient
 from app.services.tool_config_service import resolve_tool_config_for_tenant_display, update_tenant_tool_config
@@ -159,19 +160,38 @@ async def _build_feishu_runtime_status(
     channel_configured = await _agent_has_feishu(agent_id)
     office_access = await _agent_has_feishu_office_access(agent_id)
     cli_access = await _agent_has_feishu_cli_access()
+    channel_auth_valid: bool | None = None
+    channel_auth_error: str | None = None
+    if channel_configured:
+        token_status = await _get_feishu_token_status(agent_id)
+        channel_auth_valid = bool(token_status.get("ok"))
+        if not channel_auth_valid:
+            channel_auth_error = token_status.get("message") or "Feishu channel authentication failed."
+            office_access = False
+
     docs_ready = office_access or tenant_auth_ready
     base_ready = office_access or tenant_auth_ready
 
     payload.update(
         {
             "channel_configured": channel_configured,
+            "channel_auth_valid": channel_auth_valid,
+            "channel_auth_error": channel_auth_error,
             "office_access": office_access,
             "docs_read_ready": docs_ready,
             "base_tasks_ready": base_ready,
-            "cardkit_dependency_ready": _HAS_LARK and (channel_configured or tenant_auth_ready),
-            "ok": channel_configured or docs_ready or cli_enabled or cli_available,
+            "cardkit_dependency_ready": _HAS_LARK and (channel_auth_valid or tenant_auth_ready),
+            "ok": (channel_auth_valid if channel_configured else False) or docs_ready or cli_enabled or cli_available,
         }
     )
+    if channel_configured and channel_auth_valid is False:
+        payload["ok"] = False
+        payload["message"] = (
+            "Feishu channel config exists, but authentication failed: "
+            f"{channel_auth_error}. Update the app_secret and retest."
+        )
+        payload["cardkit_ready"] = payload["cardkit_dependency_ready"]
+        return payload
     payload["cardkit_ready"] = payload["cardkit_dependency_ready"]
     if channel_configured:
         payload["message"] = "Feishu channel auth is ready. CardKit dependencies and office tools are available for this agent."

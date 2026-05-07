@@ -34,3 +34,21 @@ def test_sanitize_standard_log_message_strips_websocket_query_string() -> None:
     assert sanitized == '91.103.122.193:0 - "WebSocket /ws/chat/f5aefa50-91ff-4282-b4df-bb7baaa76e0b" [accepted]'
     assert "secret-token" not in sanitized
     assert "session_id=" not in sanitized
+
+
+def test_sanitize_standard_log_message_redacts_lark_ws_sensitive_query_params() -> None:
+    from app.core.logging_config import sanitize_standard_log_message
+
+    raw = (
+        "connected to wss://msg-frontier.feishu.cn/ws/v2?"
+        "device_id=device-1&access_key=secret-access&ticket=secret-ticket&service_id=33554678"
+    )
+
+    sanitized = sanitize_standard_log_message(raw)
+
+    assert "access_key=secret-access" not in sanitized
+    assert "ticket=secret-ticket" not in sanitized
+    assert "access_key=<redacted>" in sanitized
+    assert "ticket=<redacted>" in sanitized
+    assert "device_id=device-1" in sanitized
+    assert "service_id=33554678" in sanitized

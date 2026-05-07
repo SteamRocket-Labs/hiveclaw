@@ -101,7 +101,8 @@ async def test_resolve_or_create_feishu_user_upserts_external_identity_for_exist
         "name": "Existing User",
     }
 
-    fake_db = SimpleNamespace(flush=AsyncMock())
+    no_open_id_owner = SimpleNamespace(scalar_one_or_none=lambda: None)
+    fake_db = SimpleNamespace(flush=AsyncMock(), execute=AsyncMock(return_value=no_open_id_owner))
 
     monkeypatch.setattr(service, "resolve_feishu_user", AsyncMock(return_value=existing_user))
     monkeypatch.setattr(channel_user_module.feishu_auth_provider, "_ensure_provider", AsyncMock(return_value=provider))
@@ -123,6 +124,58 @@ async def test_resolve_or_create_feishu_user_upserts_external_identity_for_exist
     write_through_mock.assert_called_once_with(existing_user, profile)
     hydrate_mock.assert_called_once_with(existing_user, profile)
     fake_db.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resolve_or_create_feishu_user_skips_legacy_open_id_when_owned_by_another_user(monkeypatch):
+    import app.services.channel_user_service as channel_user_module
+    from app.services.channel_user_service import ChannelUserService
+
+    service = ChannelUserService()
+    tenant_id = uuid4()
+    existing_user = SimpleNamespace(
+        id=uuid4(),
+        email="existing@test.com",
+        display_name="Existing User",
+        avatar_url=None,
+        feishu_open_id=None,
+        feishu_union_id=None,
+        feishu_user_id=None,
+    )
+    conflicting_user_id = uuid4()
+    provider = SimpleNamespace(id=uuid4())
+    profile = {
+        "user_id": "14f48fbd",
+        "open_id": "ou_conflicting",
+        "union_id": "on_union",
+        "email": "existing@test.com",
+        "name": "Existing User",
+    }
+
+    owner_result = SimpleNamespace(scalar_one_or_none=lambda: conflicting_user_id)
+
+    async def flush():
+        if existing_user.feishu_open_id == profile["open_id"]:
+            raise AssertionError("would violate ix_users_feishu_open_id")
+
+    fake_db = SimpleNamespace(execute=AsyncMock(return_value=owner_result), flush=AsyncMock(side_effect=flush))
+
+    monkeypatch.setattr(service, "resolve_feishu_user", AsyncMock(return_value=existing_user))
+    monkeypatch.setattr(channel_user_module.feishu_auth_provider, "_ensure_provider", AsyncMock(return_value=provider))
+    upsert_mock = AsyncMock()
+    monkeypatch.setattr(channel_user_module.feishu_auth_provider, "_upsert_external_identity", upsert_mock)
+
+    user = await service.resolve_or_create_feishu_user(
+        fake_db,
+        tenant_id=tenant_id,
+        profile=profile,
+    )
+
+    assert user is existing_user
+    assert existing_user.feishu_open_id is None
+    assert existing_user.feishu_user_id == profile["user_id"]
+    assert existing_user.feishu_union_id == profile["union_id"]
+    upsert_mock.assert_awaited_once_with(fake_db, provider, existing_user, profile)
 
 
 @pytest.mark.asyncio

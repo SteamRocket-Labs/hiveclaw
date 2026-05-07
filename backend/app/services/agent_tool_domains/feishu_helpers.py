@@ -10,6 +10,20 @@ from app.database import async_session
 logger = logging.getLogger(__name__)
 
 
+def _format_feishu_token_error(status: dict) -> str:
+    """Return a human-readable auth failure without exposing credentials."""
+    if not status.get("configured"):
+        return "❌ Agent has no Feishu channel configured."
+
+    message = status.get("message") or "unknown authentication error"
+    code = status.get("code")
+    code_suffix = f" (code {code})" if code is not None else ""
+    return (
+        "❌ Feishu channel is configured but authentication failed: "
+        f"{message}{code_suffix}. Please update the app_secret in the agent's Feishu channel settings."
+    )
+
+
 async def _get_feishu_app_credentials(agent_id: uuid.UUID) -> tuple[str, str] | None:
     """Get (app_id, app_secret) from agent channel config or tenant-level bot config."""
     from app.models.agent import Agent
@@ -48,20 +62,81 @@ async def _get_feishu_app_credentials(agent_id: uuid.UUID) -> tuple[str, str] | 
 
 async def _get_feishu_token(agent_id: uuid.UUID) -> tuple[str, str] | None:
     """Get (app_id, app_access_token) for the agent's configured Feishu channel."""
-    import httpx
+    status = await _get_feishu_token_status(agent_id)
+    if status.get("ok") and status.get("app_id") and status.get("token"):
+        return status["app_id"], status["token"]
+    if status.get("configured"):
+        logger.warning(
+            "[Feishu] Token request failed for app_id=%s: %s",
+            status.get("app_id"),
+            status.get("message"),
+        )
+    return None
+
+
+async def _get_feishu_token_status(agent_id: uuid.UUID) -> dict:
+    """Return token probe status for diagnostics, never exposing app_secret."""
     creds = await _get_feishu_app_credentials(agent_id)
     if not creds:
-        return None
+        return {
+            "configured": False,
+            "ok": False,
+            "message": "Agent has no Feishu channel configured.",
+        }
     app_id, app_secret = creds
+
+    try:
+        return await _request_feishu_tenant_access_token(app_id, app_secret)
+    except Exception as exc:
+        return {
+            "configured": True,
+            "ok": False,
+            "app_id": app_id,
+            "message": f"{type(exc).__name__}: {str(exc)[:160]}",
+        }
+
+
+async def _request_feishu_tenant_access_token(app_id: str, app_secret: str) -> dict:
+    """Call Feishu token API and normalize success/failure details."""
+    import httpx
 
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
             "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
             json={"app_id": app_id, "app_secret": app_secret},
         )
-        token = resp.json().get("tenant_access_token", "")
 
-    return (app_id, token) if token else None
+    try:
+        data = resp.json()
+    except Exception as exc:
+        return {
+            "configured": True,
+            "ok": False,
+            "app_id": app_id,
+            "http_status": resp.status_code,
+            "message": f"Invalid Feishu token response: {type(exc).__name__}",
+        }
+
+    token = data.get("tenant_access_token", "")
+    if token:
+        return {
+            "configured": True,
+            "ok": True,
+            "app_id": app_id,
+            "token": token,
+            "http_status": resp.status_code,
+            "code": data.get("code"),
+            "message": data.get("msg") or "ok",
+        }
+
+    return {
+        "configured": True,
+        "ok": False,
+        "app_id": app_id,
+        "http_status": resp.status_code,
+        "code": data.get("code"),
+        "message": data.get("msg") or "tenant_access_token missing",
+    }
 
 
 async def _get_agent_calendar_id(token: str) -> tuple[str | None, str | None]:

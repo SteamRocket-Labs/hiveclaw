@@ -13,6 +13,7 @@ from uuid import uuid4
 trace_id_var: ContextVar[str] = ContextVar("trace_id", default=None)
 NOISY_SUCCESS_LOGGER_PREFIXES = ("httpx", "httpcore", "uvicorn.access", "websockets.server", "websockets.legacy.server")
 _WEBSOCKET_QUERY_RE = re.compile(r'("WebSocket [^"?]+)\?[^"]+(")')
+_SENSITIVE_QUERY_PARAM_RE = re.compile(r"([?&](?:access_key|ticket|token|session_id|app_secret)=)[^&\s\"']+")
 
 
 def get_trace_id() -> str:
@@ -46,7 +47,8 @@ def configure_logging():
 
 def sanitize_standard_log_message(message: str) -> str:
     """Strip sensitive query strings from standard-library log messages."""
-    return _WEBSOCKET_QUERY_RE.sub(r"\1\2", str(message))
+    sanitized = _WEBSOCKET_QUERY_RE.sub(r"\1\2", str(message))
+    return _SENSITIVE_QUERY_PARAM_RE.sub(r"\1<redacted>", sanitized)
 
 
 def intercept_standard_logging():

@@ -250,9 +250,10 @@ async def test_platform_admin_can_test_selected_tenant_llm_model(monkeypatch):
     db = _FakeDB([_ScalarResult(SimpleNamespace(api_key="target-secret"))])
 
     class _FakeClient:
-        async def complete(self, messages, max_tokens):
+        async def complete(self, messages, max_tokens, **kwargs):
             assert messages[0].content == "Say 'ok' and nothing else."
             assert max_tokens == 16
+            assert "temperature" in kwargs
             return SimpleNamespace(content="ok")
 
     def fake_create_llm_client(provider, model, api_key, base_url):
@@ -284,6 +285,52 @@ async def test_platform_admin_can_test_selected_tenant_llm_model(monkeypatch):
     assert own_tenant_id not in params.values()
     assert result["success"] is True
     assert result["reply"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_llm_test_applies_gpt55_responses_request_options(monkeypatch):
+    import app.api.enterprise as enterprise_api
+
+    captured = {}
+
+    class _FakeClient:
+        async def complete(self, messages, max_tokens, **kwargs):
+            captured["messages"] = messages
+            captured["max_tokens"] = max_tokens
+            captured["kwargs"] = kwargs
+            return SimpleNamespace(content="ok")
+
+    def fake_create_llm_client(provider, model, api_key, base_url):
+        assert provider == "openai"
+        assert model == "gpt-5.5"
+        assert api_key == "sk-test"
+        assert base_url is None
+        return _FakeClient()
+
+    monkeypatch.setattr("app.services.llm_client.create_llm_client", fake_create_llm_client)
+
+    result = await enterprise_api.test_llm_model(
+        data=enterprise_api.LLMTestRequest(
+            provider="openai",
+            model="gpt-5.5",
+            api_key="sk-test",
+            temperature=0.7,
+            reasoning_mode="enabled",
+            reasoning_effort="high",
+            text_verbosity="low",
+        ),
+        current_user=SimpleNamespace(id=uuid4(), role="admin", tenant_id=uuid4()),
+        db=_FakeDB([]),
+    )
+
+    assert result["success"] is True
+    assert captured["max_tokens"] == 16
+    assert captured["kwargs"] == {
+        "temperature": 0.7,
+        "reasoning": {"effort": "high"},
+        "text": {"verbosity": "low"},
+        "_omit_temperature": True,
+    }
 
 
 @pytest.mark.asyncio

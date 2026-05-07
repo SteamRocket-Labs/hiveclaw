@@ -6,6 +6,7 @@ execute work; it turns signals into auditable objective ledger rows.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -13,6 +14,7 @@ from typing import Any
 
 from loguru import logger
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import Agent
@@ -205,6 +207,44 @@ def _merge_objective_status(existing_status: str | None, decision_status: str) -
     return proposed
 
 
+async def _load_objective_by_key(db: AsyncSession, agent_id: Any, objective_key: str) -> AgentObjective | None:
+    result = await db.execute(
+        select(AgentObjective).where(
+            AgentObjective.agent_id == agent_id,
+            AgentObjective.objective_key == objective_key,
+        )
+    )
+    objectives = result.scalars().all()
+    return objectives[0] if objectives else None
+
+
+def _apply_candidate_update(
+    objective: AgentObjective,
+    *,
+    candidate: ObjectiveCandidate,
+    decision: ObjectiveGateDecision,
+    tenant_id: uuid.UUID | None,
+) -> None:
+    objective.description = candidate.description or objective.description
+    objective.tenant_id = getattr(objective, "tenant_id", None) or tenant_id
+    objective.source = candidate.source or objective.source
+    if candidate.success_criteria:
+        objective.success_criteria = candidate.success_criteria
+    objective.status = _merge_objective_status(getattr(objective, "status", None), decision.status)
+    objective.priority = max(int(getattr(objective, "priority", 0) or 0), int(candidate.priority or 0))
+    objective.metadata_json = _merge_metadata(getattr(objective, "metadata_json", None), candidate, decision)
+
+
+@asynccontextmanager
+async def _nested_savepoint(db: AsyncSession):
+    begin_nested = getattr(db, "begin_nested", None)
+    if begin_nested is None:
+        yield
+        return
+    async with begin_nested():
+        yield
+
+
 async def upsert_objective_candidate(
     db: AsyncSession,
     agent: Any,
@@ -218,12 +258,7 @@ async def upsert_objective_candidate(
     tenant_id = _agent_tenant_id(agent) or candidate.tenant_id
     objective_key = normalize_focus_task_id(candidate.objective_key or candidate.description)
 
-    result = await db.execute(select(AgentObjective).where(AgentObjective.agent_id == agent_id))
-    existing_by_key = {
-        normalize_focus_task_id(str(objective.objective_key)): objective
-        for objective in result.scalars().all()
-    }
-    objective = existing_by_key.get(objective_key)
+    objective = await _load_objective_by_key(db, agent_id, objective_key)
     if objective is None:
         objective = AgentObjective(
             agent_id=agent_id,
@@ -236,17 +271,22 @@ async def upsert_objective_candidate(
             success_criteria=candidate.success_criteria,
             metadata_json=_merge_metadata(None, candidate, decision),
         )
-        db.add(objective)
-        await db.flush()
+        try:
+            async with _nested_savepoint(db):
+                db.add(objective)
+                await db.flush()
+        except IntegrityError:
+            logger.warning(
+                "[ObjectiveIntake] unique conflict for agent={} objective_key={}; refetching existing row",
+                agent_id,
+                objective_key,
+            )
+            objective = await _load_objective_by_key(db, agent_id, objective_key)
+            if objective is None:
+                raise
+            _apply_candidate_update(objective, candidate=candidate, decision=decision, tenant_id=tenant_id)
     else:
-        objective.description = candidate.description or objective.description
-        objective.tenant_id = getattr(objective, "tenant_id", None) or tenant_id
-        objective.source = candidate.source or objective.source
-        if candidate.success_criteria:
-            objective.success_criteria = candidate.success_criteria
-        objective.status = _merge_objective_status(getattr(objective, "status", None), decision.status)
-        objective.priority = max(int(getattr(objective, "priority", 0) or 0), int(candidate.priority or 0))
-        objective.metadata_json = _merge_metadata(getattr(objective, "metadata_json", None), candidate, decision)
+        _apply_candidate_update(objective, candidate=candidate, decision=decision, tenant_id=tenant_id)
 
     if commit:
         await db.commit()

@@ -67,7 +67,7 @@ interface EnterpriseSettingsProps {
 
 const FALLBACK_LLM_PROVIDERS: LLMProviderSpec[] = [
     { provider: 'anthropic', display_name: 'Anthropic', protocol: 'anthropic', default_base_url: 'https://api.anthropic.com', supports_tool_choice: false, default_max_tokens: 8192, reasoning_strategy: 'anthropic_thinking', supported_reasoning_modes: ['provider_default', 'enabled', 'adaptive'], supported_reasoning_efforts: ['low', 'medium', 'high'], supports_reasoning_budget: true, supports_reasoning_preservation: true },
-    { provider: 'openai', display_name: 'OpenAI', protocol: 'openai_compatible', default_base_url: 'https://api.openai.com/v1', supports_tool_choice: true, default_max_tokens: 16384, reasoning_strategy: 'openai_chat_reasoning', supported_reasoning_modes: ['provider_default', 'enabled', 'disabled'], supported_reasoning_efforts: ['minimal', 'low', 'medium', 'high'], supports_text_verbosity: true },
+    { provider: 'openai', display_name: 'OpenAI', protocol: 'openai_compatible', default_base_url: 'https://api.openai.com/v1', supports_tool_choice: true, default_max_tokens: 16384, reasoning_strategy: 'openai_chat_reasoning', supported_reasoning_modes: ['provider_default', 'enabled', 'disabled'], supported_reasoning_efforts: ['minimal', 'low', 'medium', 'high'], supports_text_verbosity: true, recommended_models: [{ model: 'gpt-5.5', label: 'GPT-5.5', supports_reasoning: true }, { model: 'gpt-5.4', label: 'GPT-5.4', supports_reasoning: true }, { model: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', supports_reasoning: true }] },
     { provider: 'azure', display_name: 'Azure OpenAI', protocol: 'openai_compatible', default_base_url: '', supports_tool_choice: true, default_max_tokens: 16384 },
     { provider: 'deepseek', display_name: 'DeepSeek', protocol: 'openai_compatible', default_base_url: 'https://api.deepseek.com', supports_tool_choice: true, default_max_tokens: 8192, max_input_tokens: 1000000, reasoning_strategy: 'deepseek_thinking', supported_reasoning_modes: ['provider_default', 'enabled', 'disabled'], supported_reasoning_efforts: ['high', 'max'], supports_reasoning_preservation: true, supports_tools_with_reasoning: true, recommended_models: [{ model: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash', supports_reasoning: true, supports_tools: true }, { model: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro', supports_reasoning: true, supports_tools: true }] },
     { provider: 'minimax', display_name: 'MiniMax', protocol: 'openai_compatible', default_base_url: 'https://api.minimaxi.com/v1', supports_tool_choice: true, default_max_tokens: 16384, reasoning_strategy: 'minimax_reasoning_split', supported_reasoning_modes: ['provider_default'], supports_reasoning_preservation: true },
@@ -454,6 +454,27 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
         setModelForm((current) => ({ ...current, ...patch }));
     };
 
+    const parseProviderOptions = (): Record<string, unknown> | null => {
+        if (!modelForm.provider_options.trim()) return null;
+        try {
+            return JSON.parse(modelForm.provider_options);
+        } catch {
+            return null;
+        }
+    };
+
+    const appendModelRuntimeSettings = (payload: Record<string, unknown>) => ({
+        ...payload,
+        temperature: modelForm.temperature !== '' ? Number(modelForm.temperature) : null,
+        reasoning_mode: modelForm.reasoning_mode || 'provider_default',
+        reasoning_effort: modelForm.reasoning_effort || null,
+        reasoning_budget_tokens: modelForm.reasoning_budget_tokens ? Number(modelForm.reasoning_budget_tokens) : null,
+        reasoning_display: modelForm.reasoning_display || null,
+        preserve_reasoning: modelForm.preserve_reasoning,
+        text_verbosity: modelForm.text_verbosity || null,
+        provider_options: parseProviderOptions(),
+    });
+
     const handleStartCreateModel = () => {
         setEditingModelId(null);
         const defaultSpec = providerOptions[0];
@@ -517,18 +538,10 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
             base_url: modelForm.base_url || undefined,
         };
         if (modelForm.api_key) testData.api_key = modelForm.api_key;
-        await runModelTest(testData);
+        await runModelTest(appendModelRuntimeSettings(testData));
     };
 
     const buildModelPayload = () => {
-        let providerOptionsPayload: Record<string, unknown> | null = null;
-        if (modelForm.provider_options.trim()) {
-            try {
-                providerOptionsPayload = JSON.parse(modelForm.provider_options);
-            } catch {
-                providerOptionsPayload = null;
-            }
-        }
         return {
             ...modelForm,
             max_output_tokens: modelForm.max_output_tokens ? Number(modelForm.max_output_tokens) : null,
@@ -540,7 +553,7 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
             reasoning_display: modelForm.reasoning_display || null,
             preserve_reasoning: modelForm.preserve_reasoning,
             text_verbosity: modelForm.text_verbosity || null,
-            provider_options: providerOptionsPayload,
+            provider_options: parseProviderOptions(),
         };
     };
 
@@ -556,7 +569,7 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
             model_id: editingModelId || undefined,
         };
         if (modelForm.api_key) testData.api_key = modelForm.api_key;
-        await runModelTest(testData);
+        await runModelTest(appendModelRuntimeSettings(testData));
     };
 
     const handleUpdateModel = () => {

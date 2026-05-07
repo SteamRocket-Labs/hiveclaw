@@ -1,7 +1,8 @@
 """Centralized logging configuration using loguru."""
 
-import sys
 import logging
+import re
+import sys
 from contextvars import ContextVar
 
 from loguru import logger as _logger
@@ -10,7 +11,8 @@ from loguru import logger as _logger
 from uuid import uuid4
 
 trace_id_var: ContextVar[str] = ContextVar("trace_id", default=None)
-NOISY_SUCCESS_LOGGER_PREFIXES = ("httpx", "httpcore", "uvicorn.access")
+NOISY_SUCCESS_LOGGER_PREFIXES = ("httpx", "httpcore", "uvicorn.access", "websockets.server", "websockets.legacy.server")
+_WEBSOCKET_QUERY_RE = re.compile(r'("WebSocket [^"?]+)\?[^"]+(")')
 
 
 def get_trace_id() -> str:
@@ -42,6 +44,11 @@ def configure_logging():
     return _logger
 
 
+def sanitize_standard_log_message(message: str) -> str:
+    """Strip sensitive query strings from standard-library log messages."""
+    return _WEBSOCKET_QUERY_RE.sub(r"\1\2", str(message))
+
+
 def intercept_standard_logging():
     """Redirect standard library logging to loguru."""
     class InterceptHandler(logging.Handler):
@@ -58,9 +65,7 @@ def intercept_standard_logging():
                 frame = frame.f_back
                 depth += 1
 
-            _logger.opt(depth=depth, exception=record.exc_info).log(
-                level, record.getMessage()
-            )
+            _logger.opt(depth=depth, exception=record.exc_info).log(level, sanitize_standard_log_message(record.getMessage()))
 
     # Replace root standard logger handler. Child loggers should still
     # propagate so pytest caplog and other logging observers can attach at root.

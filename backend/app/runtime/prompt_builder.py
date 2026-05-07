@@ -197,7 +197,7 @@ def _meter_frozen_prefix(prefix: str) -> None:
     chars = len(prefix)
     tokens = estimate_tokens_from_chars(chars)
     warn = tokens >= _FROZEN_PREFIX_TOKEN_WARN
-    overrun = tokens >= _FROZEN_PREFIX_TOKEN_LIMIT
+    overrun = tokens > _FROZEN_PREFIX_TOKEN_LIMIT
     record_frozen_prefix_metering(chars=chars, tokens=tokens, warn=warn, overrun=overrun)
 
     if not warn:

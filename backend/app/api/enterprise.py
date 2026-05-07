@@ -57,6 +57,14 @@ class LLMTestRequest(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
     model_id: str | None = None  # existing model ID to use stored API key
+    temperature: float | None = None
+    reasoning_mode: str | None = None
+    reasoning_effort: str | None = None
+    reasoning_budget_tokens: int | None = None
+    reasoning_display: str | None = None
+    preserve_reasoning: bool | None = None
+    text_verbosity: str | None = None
+    provider_options: dict | None = None
 
 
 @router.post("/llm-test")
@@ -69,6 +77,7 @@ async def test_llm_model(
     """Test an LLM model configuration by making a simple API call."""
     import time
     from app.services.llm_client import create_llm_client
+    from app.services.llm_reasoning import build_reasoning_kwargs, resolve_temperature
 
     target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
 
@@ -95,9 +104,24 @@ async def test_llm_model(
         # Simple test: ask model to say "ok"
         from app.services.llm_client import LLMMessage
 
+        model_config = {
+            "provider": data.provider,
+            "model": data.model,
+            "temperature": data.temperature,
+            "reasoning_mode": data.reasoning_mode or "provider_default",
+            "reasoning_effort": data.reasoning_effort,
+            "reasoning_budget_tokens": data.reasoning_budget_tokens,
+            "reasoning_display": data.reasoning_display,
+            "preserve_reasoning": data.preserve_reasoning,
+            "text_verbosity": data.text_verbosity,
+            "provider_options": data.provider_options,
+        }
+        reasoning_kwargs = build_reasoning_kwargs(model_config, tools_enabled=False)
         response = await client.complete(
             messages=[LLMMessage(role="user", content="Say 'ok' and nothing else.")],
+            temperature=resolve_temperature(model_config),
             max_tokens=16,
+            **reasoning_kwargs,
         )
         latency_ms = int((time.time() - start) * 1000)
         reply = (response.content or "")[:100] if response else ""

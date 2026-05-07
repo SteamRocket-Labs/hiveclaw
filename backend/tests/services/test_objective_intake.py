@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 
 class _ScalarsCollection:
@@ -43,6 +44,34 @@ class _FakeSession:
 
     async def commit(self):
         self.commits += 1
+
+
+class _AsyncNullContext:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _IntegrityRaceSession(_FakeSession):
+    def __init__(self, duplicate):
+        super().__init__(existing=[])
+        self.duplicate = duplicate
+
+    def add(self, value):
+        self.added.append(value)
+        if not getattr(value, "id", None):
+            value.id = uuid4()
+
+    def begin_nested(self):
+        return _AsyncNullContext()
+
+    async def flush(self):
+        self.flushes += 1
+        if self.flushes == 1:
+            self.existing = [self.duplicate]
+            raise IntegrityError("INSERT INTO agent_objectives ...", {}, Exception("uq_agent_objective_key"))
 
 
 def test_conversation_intake_promotes_explicit_user_request_to_active_objective():
@@ -199,3 +228,45 @@ async def test_upsert_candidate_does_not_downgrade_active_objective_to_proposed(
     assert objective is existing
     assert objective.status == "active"
     assert objective.priority == 2
+
+
+@pytest.mark.asyncio
+async def test_upsert_candidate_refetches_existing_objective_after_unique_conflict():
+    from app.services.objective_intake import ObjectiveCandidate, upsert_objective_candidate
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    existing = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        objective_key="task",
+        description="Existing task",
+        status="active",
+        priority=1,
+        source="conversation",
+        success_criteria=None,
+        blocked_reason=None,
+        metadata_json={"autonomy_class": "explicit_user_request"},
+        completed_at=None,
+    )
+    session = _IntegrityRaceSession(existing)
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
+    candidate = ObjectiveCandidate(
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        description="Existing task",
+        source="conversation",
+        autonomy_class="explicit_user_request",
+        risk_level="low",
+        confidence=0.95,
+        evidence={"message": "帮我执行当前 task"},
+        objective_key="task",
+    )
+
+    objective = await upsert_objective_candidate(session, agent, candidate)
+
+    assert objective is existing
+    assert objective.status == "active"
+    assert objective.metadata_json["autonomy_class"] == "explicit_user_request"
+    assert session.commits == 1

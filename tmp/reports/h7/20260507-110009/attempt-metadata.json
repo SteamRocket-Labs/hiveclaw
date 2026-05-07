@@ -1,0 +1,51 @@
+{
+  "run_started_at": "2026-05-07T11:00:09.994760+08:00",
+  "base_url": "https://backend-production-326d.up.railway.app",
+  "used_default_base_url": true,
+  "weekday_local": "Thursday",
+  "is_monday": false,
+  "snapshot_dir": "/Users/rocky243/vc-saas/hiveclaw-main/tmp/reports/h7/20260507-110009",
+  "token_sources": [
+    {
+      "source": "HIVE_PLATFORM_ADMIN_TOKEN",
+      "status": "missing"
+    },
+    {
+      "source": "HIVE_ADMIN_TOKEN",
+      "status": "missing"
+    },
+    {
+      "source": "HIVE_TOKEN",
+      "status": "missing"
+    },
+    {
+      "source": ".h7.env",
+      "status": "missing",
+      "path": "/Users/rocky243/vc-saas/hiveclaw-main/.h7.env"
+    },
+    {
+      "source": "browser_storage_fallback",
+      "status": "invalid_or_missing",
+      "scanned_roots": [
+        "/Users/rocky243/Library/Application Support/Google/Chrome",
+        "/Users/rocky243/Library/Application Support/Codex"
+      ],
+      "scanned_files": 42,
+      "valid_candidates": 0,
+      "selected_source_file": null,
+      "selected_exp": null,
+      "selected_role": null
+    }
+  ],
+  "endpoint_calls": [],
+  "selected_token_source": null,
+  "health_probe": {
+    "ok": false,
+    "status_code": null,
+    "payload": null,
+    "error": "URLError: <urlopen error [Errno 8] nodename nor servname provided, or not known>"
+  },
+  "final_status": "FAIL",
+  "summary_path": "/Users/rocky243/vc-saas/hiveclaw-main/tmp/reports/h7/20260507-110009/H7_SUMMARY.md",
+  "run_finished_at": "2026-05-07T11:00:12.518091+08:00"
+}

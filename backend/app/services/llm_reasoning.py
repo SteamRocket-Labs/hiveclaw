@@ -14,6 +14,7 @@ from typing import Any
 _OPENAI_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 _ANTHROPIC_EFFORTS = {"low", "medium", "high"}
 _DEEPSEEK_EFFORTS = {"high", "max"}
+_OPENAI_RESPONSES_ONLY_PREFIXES = ("gpt-5.5",)
 
 
 def _attr(model_config: Any, name: str, default: Any = None) -> Any:
@@ -28,6 +29,11 @@ def _provider(model_config: Any) -> str:
 
 def _model_name(model_config: Any) -> str:
     return str(_attr(model_config, "model", "") or "").strip().lower()
+
+
+def _requires_openai_responses(model_name: str) -> bool:
+    normalized = model_name.strip().lower().replace("_", "-")
+    return any(normalized.startswith(prefix) for prefix in _OPENAI_RESPONSES_ONLY_PREFIXES)
 
 
 def _reasoning_mode(model_config: Any) -> str:
@@ -70,7 +76,9 @@ def build_reasoning_kwargs(model_config: Any, *, tools_enabled: bool) -> dict[st
     effort = str(_attr(model_config, "reasoning_effort", "") or "").strip().lower()
     kwargs: dict[str, Any] = {}
 
-    if provider in {"openai-response", "openai_responses", "openairesponses"}:
+    if provider in {"openai-response", "openai_responses", "openairesponses"} or (
+        provider == "openai" and _requires_openai_responses(model_name)
+    ):
         if _is_disabled(model_config):
             kwargs["reasoning"] = {"effort": "minimal"}
         elif _is_enabled(model_config):
@@ -78,6 +86,8 @@ def build_reasoning_kwargs(model_config: Any, *, tools_enabled: bool) -> dict[st
         verbosity = str(_attr(model_config, "text_verbosity", "") or "").strip().lower()
         if verbosity in {"low", "medium", "high"}:
             kwargs["text"] = {"verbosity": verbosity}
+        if _requires_openai_responses(model_name):
+            kwargs["_omit_temperature"] = True
 
     elif provider == "openai":
         if _is_disabled(model_config):

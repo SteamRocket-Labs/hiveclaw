@@ -132,6 +132,19 @@ class LLMStreamChunk:
     usage: dict | None = None
 
 
+def _merge_tool_name_delta(current: str, delta: str) -> str:
+    """Merge streaming tool-name deltas from providers that may resend the full name."""
+    if not delta:
+        return current
+    if not current:
+        return delta
+    if delta == current:
+        return current
+    if delta.startswith(current):
+        return delta
+    return current + delta
+
+
 # ============================================================================
 # Type Definitions
 # ============================================================================
@@ -510,7 +523,10 @@ class OpenAICompatibleClient(LLMClient):
                                 tc["id"] = chunk.tool_call["id"]
                             fn_delta = chunk.tool_call.get("function", {})
                             if fn_delta.get("name"):
-                                tc["function"]["name"] += fn_delta["name"]
+                                tc["function"]["name"] = _merge_tool_name_delta(
+                                    tc["function"]["name"],
+                                    str(fn_delta["name"]),
+                                )
                             if fn_delta.get("arguments") is not None:
                                 arg_chunk = fn_delta["arguments"]
                                 if isinstance(arg_chunk, dict):
@@ -610,6 +626,8 @@ class OpenAIResponsesClient(LLMClient):
         url = self.base_url.rstrip("/")
         if url.endswith("/responses"):
             url = url[: -len("/responses")]
+        if url.endswith("/chat/completions"):
+            url = url[: -len("/chat/completions")]
         return url
 
     def _format_content_for_input(self, content: Any) -> Any:
@@ -692,12 +710,14 @@ class OpenAIResponsesClient(LLMClient):
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build request payload."""
+        omit_temperature = bool(kwargs.pop("_omit_temperature", False))
         payload: dict[str, Any] = {
             "model": self.model,
             "input": self._messages_to_input(messages),
-            "temperature": temperature,
             "stream": stream,
         }
+        if not omit_temperature:
+            payload["temperature"] = temperature
 
         if max_tokens:
             payload["max_output_tokens"] = max_tokens
@@ -1736,6 +1756,17 @@ PROVIDER_ALIASES: dict[str, str] = {
     "z.ai": "zhipu",
 }
 
+
+_OPENAI_RESPONSES_ONLY_MODEL_PREFIXES = ("gpt-5.5",)
+
+
+def _requires_openai_responses_api(provider: str, model: str | None) -> bool:
+    """Return True when an OpenAI model should use `/v1/responses` even if provider is `openai`."""
+    if normalize_provider(provider) != "openai":
+        return False
+    normalized_model = (model or "").strip().lower().replace("_", "-")
+    return any(normalized_model.startswith(prefix) for prefix in _OPENAI_RESPONSES_ONLY_MODEL_PREFIXES)
+
 MAX_OUTPUT_TOKENS_HARD_LIMIT = 65536
 
 
@@ -1775,8 +1806,9 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         supported_reasoning_efforts=("minimal", "low", "medium", "high"),
         supports_text_verbosity=True,
         recommended_models=(
-            {"model": "gpt-5.1", "label": "GPT-5.1", "supports_reasoning": True},
-            {"model": "gpt-5.1-mini", "label": "GPT-5.1 Mini", "supports_reasoning": True},
+            {"model": "gpt-5.5", "label": "GPT-5.5", "supports_reasoning": True},
+            {"model": "gpt-5.4", "label": "GPT-5.4", "supports_reasoning": True},
+            {"model": "gpt-5.4-mini", "label": "GPT-5.4 Mini", "supports_reasoning": True},
         ),
     ),
     "openai-response": ProviderSpec(
@@ -1793,8 +1825,9 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         supported_reasoning_efforts=("none", "minimal", "low", "medium", "high", "xhigh"),
         supports_text_verbosity=True,
         recommended_models=(
-            {"model": "gpt-5.1", "label": "GPT-5.1", "supports_reasoning": True},
-            {"model": "gpt-5.1-mini", "label": "GPT-5.1 Mini", "supports_reasoning": True},
+            {"model": "gpt-5.5", "label": "GPT-5.5", "supports_reasoning": True},
+            {"model": "gpt-5.4", "label": "GPT-5.4", "supports_reasoning": True},
+            {"model": "gpt-5.4-mini", "label": "GPT-5.4 Mini", "supports_reasoning": True},
         ),
     ),
     "azure": ProviderSpec(
@@ -2107,6 +2140,14 @@ def create_llm_client(
             model=model,
             timeout=timeout,
             supports_tool_choice=spec.supports_tool_choice,
+        )
+    elif _requires_openai_responses_api(normalized_provider, model):
+        return OpenAIResponsesClient(
+            api_key=api_key,
+            base_url=final_base_url,
+            model=model,
+            timeout=timeout,
+            supports_tool_choice=spec.supports_tool_choice if spec else True,
         )
     elif spec and spec.protocol == "gemini":
         return GeminiClient(

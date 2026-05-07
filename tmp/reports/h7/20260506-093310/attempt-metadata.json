@@ -1,0 +1,40 @@
+{
+  "timestamp": "2026-05-06T01:33:10.611950+00:00",
+  "snapshot_dir": "/Users/rocky243/vc-saas/hiveclaw-main/tmp/reports/h7/20260506-093310",
+  "base_url": "https://backend-production-326d.up.railway.app",
+  "token_source_attempts": [
+    {
+      "source": "HIVE_PLATFORM_ADMIN_TOKEN",
+      "status": "missing"
+    },
+    {
+      "source": "HIVE_ADMIN_TOKEN",
+      "status": "missing"
+    },
+    {
+      "source": "HIVE_TOKEN",
+      "status": "missing"
+    },
+    {
+      "source": ".h7.env",
+      "status": "missing",
+      "path": "/Users/rocky243/vc-saas/hiveclaw-main/.h7.env"
+    },
+    {
+      "source": "browser_local_storage",
+      "status": "no_valid_platform_admin_token",
+      "scanned_dirs": [
+        "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb"
+      ]
+    }
+  ],
+  "token_source_selected": null,
+  "base_url_source": "default",
+  "host_resolution": {
+    "ok": false,
+    "host": "backend-production-326d.up.railway.app",
+    "error": "[Errno 8] nodename nor servname provided, or not known"
+  },
+  "healthcheck": null,
+  "requests": []
+}

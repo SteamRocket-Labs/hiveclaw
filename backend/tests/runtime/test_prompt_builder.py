@@ -249,6 +249,26 @@ class TestFrozenPrefixMetering:
             for rec in caplog.records
         )
 
+    def test_exact_hard_limit_stays_warning_only(self, caplog) -> None:
+        import logging
+
+        from app.memory import metrics
+        from app.runtime.prompt_builder import _meter_frozen_prefix
+
+        # Exactly 8000 tokens × 3.5 chars/token = 28000 chars.
+        at_limit = "x" * 28000
+        with caplog.at_level(logging.WARNING, logger="app.runtime.prompt_builder"):
+            _meter_frozen_prefix(at_limit)
+
+        snap = metrics.snapshot()
+        assert snap["frozen_prefix_warn_total"] == 1
+        assert snap["frozen_prefix_overrun_total"] == 0
+        assert any(
+            "above warn threshold" in rec.message and rec.levelno == logging.WARNING
+            for rec in caplog.records
+        )
+        assert not any("exceeds hard limit" in rec.message for rec in caplog.records)
+
     def test_repeated_calls_accumulate_in_window(self) -> None:
         from app.memory import metrics
         from app.runtime.prompt_builder import build_frozen_prompt_prefix

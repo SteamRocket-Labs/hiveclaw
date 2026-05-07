@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from app.services.llm_client import LLMMessage, OpenAICompatibleClient, get_provider_manifest
+from app.services.llm_client import LLMMessage, OpenAICompatibleClient, OpenAIResponsesClient, create_llm_client, get_provider_manifest
 from app.services.llm_reasoning import build_reasoning_kwargs
 
 
@@ -157,6 +157,27 @@ def test_deepseek_payload_preserves_reasoning_content_for_tool_turns_and_omits_t
     )
 
     assert payload["messages"][0]["reasoning_content"] == "private chain"
+    assert "temperature" not in payload
+
+
+def test_openai_gpt55_routes_to_responses_and_omits_unsupported_temperature():
+    client = create_llm_client(provider="openai", api_key="test", model="gpt-5.5")
+
+    kwargs = build_reasoning_kwargs(
+        _model(provider="openai", model="gpt-5.5", reasoning_mode="provider_default", reasoning_effort=None),
+        tools_enabled=True,
+    )
+    payload = client._build_payload(
+        [LLMMessage(role="user", content="Say ok.")],
+        tools=None,
+        temperature=0.7,
+        max_tokens=16,
+        **kwargs,
+    )
+
+    assert isinstance(client, OpenAIResponsesClient)
+    assert payload["model"] == "gpt-5.5"
+    assert "input" in payload
     assert "temperature" not in payload
 
 

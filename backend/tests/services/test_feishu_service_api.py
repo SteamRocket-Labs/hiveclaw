@@ -105,6 +105,62 @@ async def test_send_approval_card_uses_delivery_id_type_and_agent_name(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_create_approval_instance_uses_user_id_field_for_tenant_user_ids(monkeypatch):
+    from app.services.feishu_service import FeishuService
+
+    fake_client = _FakeAsyncClient([
+        _FakeResponse(status_code=200, payload={"tenant_access_token": "tenant-token"}),
+        _FakeResponse(status_code=200, payload={"code": 0, "data": {"instance_code": "ins_user"}}),
+    ])
+    monkeypatch.setattr("app.services.feishu_service.httpx.AsyncClient", lambda *args, **kwargs: fake_client)
+
+    service = FeishuService()
+    payload = await service.create_approval_instance(
+        "tenant-app",
+        "tenant-secret",
+        "approval-code",
+        "u_submitter",
+        "{\"foo\":\"bar\"}",
+    )
+
+    assert payload == {"instance_code": "ins_user"}
+    create_call = fake_client.calls[1]
+    assert create_call[2]["json"] == {
+        "approval_code": "approval-code",
+        "user_id": "u_submitter",
+        "form": "{\"foo\":\"bar\"}",
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_approval_instance_keeps_open_id_field_for_open_ids(monkeypatch):
+    from app.services.feishu_service import FeishuService
+
+    fake_client = _FakeAsyncClient([
+        _FakeResponse(status_code=200, payload={"tenant_access_token": "tenant-token"}),
+        _FakeResponse(status_code=200, payload={"code": 0, "data": {"instance_code": "ins_open"}}),
+    ])
+    monkeypatch.setattr("app.services.feishu_service.httpx.AsyncClient", lambda *args, **kwargs: fake_client)
+
+    service = FeishuService()
+    payload = await service.create_approval_instance(
+        "tenant-app",
+        "tenant-secret",
+        "approval-code",
+        "ou_submitter",
+        "{\"foo\":\"bar\"}",
+    )
+
+    assert payload == {"instance_code": "ins_open"}
+    create_call = fake_client.calls[1]
+    assert create_call[2]["json"] == {
+        "approval_code": "approval-code",
+        "open_id": "ou_submitter",
+        "form": "{\"foo\":\"bar\"}",
+    }
+
+
+@pytest.mark.asyncio
 async def test_patch_message_raises_with_stage_on_business_error(monkeypatch):
     from app.services.feishu_service import FeishuService
 

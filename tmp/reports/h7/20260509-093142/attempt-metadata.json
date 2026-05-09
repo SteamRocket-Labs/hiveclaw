@@ -1,0 +1,106 @@
+{
+  "timestamp": "2026-05-09T09:33:00+08:00",
+  "weekday": "Saturday",
+  "snapshot_dir": "/Users/rocky243/vc-saas/hiveclaw-main/tmp/reports/h7/20260509-093142",
+  "base_url": "https://backend-production-326d.up.railway.app",
+  "base_url_source": "default",
+  "stage": "A_preflight_gate",
+  "stage_b_executed": false,
+  "preflight_result": "BLOCKED_PRECONDITION",
+  "blocker_categories": [
+    "BASE_URL_DNS_RESOLUTION_FAILED",
+    "API_HEALTH_UNREACHABLE",
+    "NO_VALID_PLATFORM_ADMIN_TOKEN"
+  ],
+  "access_path": {
+    "host": "backend-production-326d.up.railway.app",
+    "dns": {
+      "status": "error",
+      "error_type": "gaierror",
+      "error": "[Errno 8] nodename nor servname provided, or not known"
+    },
+    "health": {
+      "status": "error",
+      "http_status": null,
+      "error_type": "URLError",
+      "error": "<urlopen error [Errno 8] nodename nor servname provided, or not known>"
+    }
+  },
+  "token_sources": [
+    {
+      "source": "HIVE_PLATFORM_ADMIN_TOKEN",
+      "present": false
+    },
+    {
+      "source": "HIVE_ADMIN_TOKEN",
+      "present": false
+    },
+    {
+      "source": "HIVE_TOKEN",
+      "present": false
+    },
+    {
+      "source": ".h7.env",
+      "present": false
+    },
+    {
+      "source": "browser_storage_fallback",
+      "paths_scanned": [
+        {
+          "path": "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb",
+          "exists": true
+        },
+        {
+          "path": "/Users/rocky243/Library/Application Support/Codex/Local Storage/leveldb",
+          "exists": true
+        }
+      ],
+      "files_scanned": 30,
+      "jwt_candidates": 26,
+      "valid_platform_admin_candidates": 0,
+      "expired_platform_admin_candidates": 2,
+      "missing_exp_platform_admin_candidates": 0,
+      "latest_expired_platform_admin": "2026-05-01T06:19:29+00:00",
+      "selected_candidate": null
+    }
+  ],
+  "endpoint_status": {
+    "/api/health": {
+      "status": "not_ok",
+      "reason": "dns_resolution_failed_before_http"
+    },
+    "/api/admin/autonomous-audit?lookback_hours=24": {
+      "status": "not_called",
+      "reason": "preflight_blocked"
+    },
+    "/api/admin/autonomy-repair-plan?lookback_hours=24": {
+      "status": "not_called",
+      "reason": "preflight_blocked"
+    },
+    "/api/admin/harness-validation?lookback_hours=24": {
+      "status": "not_called",
+      "reason": "preflight_blocked"
+    },
+    "/api/admin/harness-validation?lookback_hours=168": {
+      "status": "not_applicable",
+      "reason": "not_monday"
+    }
+  },
+  "evidence_counts": {
+    "production_admin_json_collected": 0,
+    "required_admin_reports_missing": 3,
+    "one_hour_recheck_reports_missing": 3,
+    "monday_168h_reports_missing": 0
+  },
+  "repeated_blocker_context": {
+    "automation_memory_present": true,
+    "same_prerequisite_blocker_consecutive_prior_runs": 3,
+    "same_prerequisite_blocker_including_current_run": 4,
+    "note": "Automation memory shows 2026-05-06, 2026-05-07, and 2026-05-08 were all blocked before endpoint collection by the same missing-token plus unresolved-base-host prerequisites."
+  },
+  "next_recovery_actions": [
+    "Set HIVE_BASE_URL to a currently reachable production hostname before retrying any login or admin endpoint call.",
+    "Mint a fresh non-expired platform_admin bearer token and export it as HIVE_PLATFORM_ADMIN_TOKEN.",
+    "Rerun the H7 evidence loop only after both the base URL and token prerequisites are fixed."
+  ]
+}

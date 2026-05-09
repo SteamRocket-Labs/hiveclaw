@@ -1,0 +1,112 @@
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const mockState = vi.hoisted(() => ({
+  queryCalls: [] as Array<{ key: unknown[]; enabled: unknown }>,
+  hash: '#aware',
+  accessLevel: 'use',
+  userRole: 'member',
+}));
+
+vi.mock('react-i18next', () => ({
+  useTranslation: () => ({
+    t: (key: string, fallback?: string) => fallback ?? key,
+    i18n: { language: 'en' },
+  }),
+}));
+
+vi.mock('@tanstack/react-query', () => ({
+  useQuery: (options: { queryKey: unknown[]; enabled?: unknown }) => {
+    mockState.queryCalls.push({ key: options.queryKey, enabled: options.enabled });
+    const key = String(options.queryKey[0]);
+    if (key === 'agent') {
+      return {
+        data: { id: 'agent-aware', access_level: mockState.accessLevel },
+        isLoading: false,
+        isError: false,
+        error: null,
+      };
+    }
+    return {
+      data: [],
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    };
+  },
+  useQueryClient: () => ({
+    invalidateQueries: vi.fn(),
+  }),
+}));
+
+vi.mock('react-router-dom', () => ({
+  useParams: () => ({ id: 'agent-aware' }),
+  useLocation: () => ({ hash: mockState.hash, search: '', pathname: '/agents/agent-aware' }),
+  useNavigate: () => vi.fn(),
+}));
+
+vi.mock('../stores', () => {
+  const state = {
+    token: 'token',
+    user: {
+      id: 'user-1',
+      role: mockState.userRole,
+    },
+  };
+  const useAuthStore = ((selector: (input: typeof state) => unknown) => selector(state)) as unknown as typeof import('../stores').useAuthStore;
+  Object.assign(useAuthStore, {
+    getState: () => state,
+  });
+  return { useAuthStore };
+});
+
+vi.mock('../components/ConfirmModal', () => ({ default: () => null }));
+vi.mock('../components/FileBrowser', () => ({ default: () => null }));
+vi.mock('../components/PromptModal', () => ({ default: () => null }));
+vi.mock('./agent-detail/AgentApprovalsSection', () => ({ default: () => null }));
+vi.mock('./agent-detail/AgentActivityLogSection', () => ({ default: () => null }));
+vi.mock('./agent-detail/AgentAwareSection', () => ({ default: () => null }));
+vi.mock('./agent-detail/AgentChatSection', () => ({ default: () => null }));
+vi.mock('./agent-detail/AgentMindSection', () => ({ default: () => null }));
+vi.mock('./agent-detail/AgentSettingsSection', () => ({ default: () => null }));
+vi.mock('./agent-detail/AgentSkillsSection', () => ({ default: () => null }));
+vi.mock('./agent-detail/AgentStatusSection', () => ({ default: () => null }));
+vi.mock('./agent-detail/AgentWorkspaceSection', () => ({ default: () => null }));
+vi.mock('./agent-detail/RelationshipEditor', () => ({ default: () => null }));
+vi.mock('./agent-detail/ToolsManager', () => ({ default: () => null }));
+vi.mock('./OpenClawSettings', () => ({ default: () => null }));
+
+import AgentDetail from './AgentDetail';
+
+describe('AgentDetail aware reflection session gating', () => {
+  beforeEach(() => {
+    mockState.queryCalls.length = 0;
+    mockState.hash = '#aware';
+    mockState.accessLevel = 'use';
+    mockState.userRole = 'member';
+  });
+
+  it('disables reflection sessions query for non-managers on the aware tab', () => {
+    renderToStaticMarkup(<AgentDetail />);
+
+    const reflectionQuery = mockState.queryCalls.find(
+      (entry) => JSON.stringify(entry.key) === JSON.stringify(['reflection-sessions', 'agent-aware']),
+    );
+
+    expect(reflectionQuery?.enabled).toBe(false);
+  });
+
+  it('keeps reflection sessions query enabled for managers on the aware tab', () => {
+    mockState.accessLevel = 'manage';
+
+    renderToStaticMarkup(<AgentDetail />);
+
+    const reflectionQuery = mockState.queryCalls.find(
+      (entry) => JSON.stringify(entry.key) === JSON.stringify(['reflection-sessions', 'agent-aware']),
+    );
+
+    expect(reflectionQuery?.enabled).toBe(true);
+  });
+});

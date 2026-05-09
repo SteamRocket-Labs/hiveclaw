@@ -1,0 +1,19 @@
+{
+  "scanned_dirs": [
+    "/Users/rocky243/Library/Application Support/Google/Chrome/Default/Local Storage/leveldb",
+    "/Users/rocky243/Library/Application Support/Google/Chrome/System Profile/Local Storage/leveldb",
+    "/Users/rocky243/Library/Application Support/Google/Chrome/Profile 5/Local Storage/leveldb",
+    "/Users/rocky243/Library/Application Support/Codex/Local Storage/leveldb",
+    "/Users/rocky243/Library/Application Support/Codex/Partitions/codex-browser-app/Local Storage/leveldb"
+  ],
+  "scanned_files": 33,
+  "jwt_candidates_total": 29,
+  "valid_platform_admin_candidates": 0,
+  "invalid_counts": {
+    "decode_error": 0,
+    "expired": 23,
+    "wrong_role": 0,
+    "missing_exp": 6
+  },
+  "selected_candidate": null
+}

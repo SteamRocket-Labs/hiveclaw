@@ -58,6 +58,13 @@ class FeishuService:
 
         return data
 
+    @staticmethod
+    def _approval_submitter_payload(submitter_id: str) -> dict[str, str]:
+        submitter = (submitter_id or "").strip()
+        if submitter.startswith("ou_"):
+            return {"open_id": submitter}
+        return {"user_id": submitter}
+
     async def get_app_access_token(self) -> str:
         """Backward-compatible wrapper around tenant/app token fetch."""
         return await self.get_tenant_access_token(self.app_id, self.app_secret)
@@ -409,13 +416,14 @@ class FeishuService:
         form_data: str,
     ) -> dict:
         tenant_token = await self.get_tenant_access_token(app_id, app_secret)
+        submitter_payload = self._approval_submitter_payload(user_id)
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(
                 "https://open.feishu.cn/open-apis/approval/v4/instances",
                 json={
                     "approval_code": approval_code,
-                    "open_id": user_id,
                     "form": form_data,
+                    **submitter_payload,
                 },
                 headers={"Authorization": f"Bearer {tenant_token}"},
             )

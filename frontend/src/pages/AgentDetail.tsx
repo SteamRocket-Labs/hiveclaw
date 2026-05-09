@@ -63,6 +63,9 @@ function AgentDetailInner() {
         setActiveTabRaw(tab);
         window.history.replaceState(null, '', `#${tab}`);
     };
+    const token = useAuthStore((s) => s.token);
+    const currentUser = useAuthStore((s) => s.user);
+    const isAdmin = currentUser?.role === 'platform_admin' || currentUser?.role === 'org_admin';
 
     const { data: agent, isLoading, error: agentError } = useQuery({
         queryKey: ['agent', id],
@@ -71,6 +74,7 @@ function AgentDetailInner() {
         retry: false,
     });
     const canLoadAgentScopedData = !!id && !!agent;
+    const canManage = !!agent && ((agent as any).access_level === 'manage' || isAdmin);
 
     // ── Aware tab data: triggers ──
     const { data: awareTriggers = [], refetch: refetchTriggers } = useQuery({
@@ -101,7 +105,7 @@ function AgentDetailInner() {
             const all = await chatApi.listSessions(id!, 'all').catch(() => [] as any[]);
             return all.filter((s: any) => s.source_channel === 'trigger');
         },
-        enabled: canLoadAgentScopedData && activeTab === 'aware',
+        enabled: canLoadAgentScopedData && canManage && activeTab === 'aware',
         refetchInterval: activeTab === 'aware' ? 10000 : false,
     });
 
@@ -156,9 +160,6 @@ function AgentDetailInner() {
     const [allSessionsLoading, setAllSessionsLoading] = useState(false);
     const [agentExpired, setAgentExpired] = useState(false);
     // Websocket chat state (for 'me' conversation)
-    const token = useAuthStore((s) => s.token);
-    const currentUser = useAuthStore((s) => s.user);
-    const isAdmin = currentUser?.role === 'platform_admin' || currentUser?.role === 'org_admin';
     type SessionRuntimeKey = string;
     const wsMapRef = useRef<Record<SessionRuntimeKey, WebSocket>>({});
     const reconnectTimerRef = useRef<Record<SessionRuntimeKey, ReturnType<typeof setTimeout> | null>>({});
@@ -229,7 +230,10 @@ function AgentDetailInner() {
     };
 
     const fetchAllSessions = async () => {
-        if (!id) return;
+        if (!id || !canManage) {
+            if (currentAgentIdRef.current === id) setAllSessions([]);
+            return;
+        }
         setAllSessionsLoading(true);
         try {
             const all = await chatApi.listSessions(id, 'all');
@@ -952,7 +956,6 @@ function AgentDetailInner() {
         enabled: canLoadAgentScopedData && activeTab === 'settings',
     });
 
-    const canManage = !!agent && ((agent as any).access_level === 'manage' || isAdmin);
     const canManageCapabilityPolicies = isAdmin;
 
     const {

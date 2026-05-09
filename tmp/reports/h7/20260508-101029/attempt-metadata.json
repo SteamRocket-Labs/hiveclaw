@@ -1,0 +1,32 @@
+{
+  "timestamp": "2026-05-08T10:10:29.340736",
+  "snapshot_dir": "/Users/rocky243/vc-saas/hiveclaw-main/tmp/reports/h7/20260508-101029",
+  "base_url": "https://backend-production-326d.up.railway.app",
+  "token_source_probe": [
+    {
+      "source": "HIVE_PLATFORM_ADMIN_TOKEN",
+      "present": false,
+      "candidate_count": 0
+    },
+    {
+      "source": "HIVE_ADMIN_TOKEN",
+      "present": false,
+      "candidate_count": 0
+    },
+    {
+      "source": "HIVE_TOKEN",
+      "present": false,
+      "candidate_count": 0
+    },
+    {
+      "source": "repo_root_.h7.env",
+      "present": false,
+      "candidate_count": 0
+    }
+  ],
+  "dns_probe": {
+    "host": "backend-production-326d.up.railway.app",
+    "resolves": false,
+    "error": "gaierror: [Errno 8] nodename nor servname provided, or not known"
+  }
+}

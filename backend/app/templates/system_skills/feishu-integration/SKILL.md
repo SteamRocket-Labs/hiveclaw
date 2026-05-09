@@ -119,7 +119,7 @@ these tools, not just describe them.
 ### Approvals
 | Tool | Purpose | Key Params |
 |------|---------|------------|
-| `feishu_approval_create` | Create an approval instance | `approval_code` (**required**), `user_id` (**required**, pass the submitter's `open_id` from `feishu_user_search`), `form` (**required**) |
+| `feishu_approval_create` | Create an approval instance | `approval_code` (**required**), `user_id` (**required**, pass the submitter's `user_id` by default; `open_id` also works), `form` (**required**) |
 | `feishu_approval_query` | Query approval instances | `approval_code` (**required**), optional `status` filter |
 | `feishu_approval_get` | Read one approval instance | `instance_id` |
 

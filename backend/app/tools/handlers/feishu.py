@@ -868,12 +868,12 @@ async def feishu_doc_share(agent_id: uuid.UUID, arguments: dict) -> str:
 
 @tool(ToolMeta(
     name="feishu_approval_create",
-    description="Create a Feishu approval instance with the given approval code, submitter user_id, and form payload.",
+    description="Create a Feishu approval instance with the given approval code, submitter user_id/open_id, and form payload.",
     parameters={
         "type": "object",
         "properties": {
             "approval_code": {"type": "string", "description": "Approval definition code."},
-            "user_id": {"type": "string", "description": "Feishu user_id of the submitter."},
+            "user_id": {"type": "string", "description": "Feishu submitter identifier. user_id is preferred; open_id is also supported."},
             "form": {
                 "description": "Approval form payload. May be a JSON string or object accepted by Feishu Approval API.",
             },

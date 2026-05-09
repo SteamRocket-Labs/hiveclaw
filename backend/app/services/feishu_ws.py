@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from typing import Any, Dict
 import uuid
 
@@ -116,6 +117,48 @@ class FeishuWSManager:
         self._clients: Dict[uuid.UUID, ws.Client] = {}
         # Tasks for reconnection or ping loops if we want to cancel them later
         self._tasks: Dict[uuid.UUID, asyncio.Task] = {}
+
+    async def _mark_channel_status(
+        self,
+        agent_id: uuid.UUID,
+        *,
+        is_connected: bool,
+        connection_status: str,
+        error: str | None = None,
+        is_configured: bool | None = None,
+    ) -> None:
+        """Persist Feishu websocket health so bad credentials do not restart forever."""
+        now = datetime.now(timezone.utc)
+        try:
+            async with async_session() as db:
+                result = await db.execute(
+                    select(ChannelConfig).where(
+                        ChannelConfig.agent_id == agent_id,
+                        ChannelConfig.channel_type == "feishu",
+                    )
+                )
+                config = result.scalar_one_or_none()
+                if not config:
+                    return
+
+                config.is_connected = is_connected
+                config.last_tested_at = now
+                if is_configured is not None:
+                    config.is_configured = is_configured
+
+                extra = dict(config.extra_config or {})
+                extra["connection_status"] = connection_status
+                extra["last_connection_checked_at"] = now.isoformat()
+                if error:
+                    extra["last_connection_error"] = error[:500]
+                    extra["last_connection_error_at"] = now.isoformat()
+                else:
+                    extra.pop("last_connection_error", None)
+                    extra.pop("last_connection_error_at", None)
+                config.extra_config = extra
+                await db.commit()
+        except Exception as exc:
+            logger.debug(f"[Feishu WS] Failed to persist channel status for {agent_id}: {exc}")
 
     def _create_event_handler(self, agent_id: uuid.UUID) -> lark.EventDispatcherHandler:
         """Create an event dispatcher for a specific agent."""
@@ -338,6 +381,11 @@ class FeishuWSManager:
                                 await client._connect()
                         else:
                             await client._connect()
+                        await self._mark_channel_status(
+                            agent_id,
+                            is_connected=True,
+                            connection_status="connected",
+                        )
                         retry_delay = _FEISHU_WS_INITIAL_RETRY_DELAY_SECONDS
                         # Start ping loop natively
                         asyncio.create_task(client._ping_loop())
@@ -347,18 +395,33 @@ class FeishuWSManager:
                             await asyncio.sleep(3600)  # Keep-alive
                     except Exception as e:
                         if _is_non_retryable_feishu_ws_error(e):
+                            error = f"{type(e).__name__}: {e}"
                             logger.error(
                                 "[Feishu WS] Async client configuration error for "
-                                f"{agent_id}; disabling until credentials are updated: {type(e).__name__}: {e}"
+                                f"{agent_id}; disabling until credentials are updated: {error}"
+                            )
+                            await self._mark_channel_status(
+                                agent_id,
+                                is_connected=False,
+                                is_configured=False,
+                                connection_status="invalid_credentials",
+                                error=error,
                             )
                             await client._disconnect()
                             self._clients.pop(agent_id, None)
                             self._tasks.pop(agent_id, None)
                             return
 
+                        error = f"{type(e).__name__}: {e}"
                         logger.warning(
                             "[Feishu WS] Async client connection failed for "
-                            f"{agent_id}; retrying in {retry_delay}s: {type(e).__name__}: {e}"
+                            f"{agent_id}; retrying in {retry_delay}s: {error}"
+                        )
+                        await self._mark_channel_status(
+                            agent_id,
+                            is_connected=False,
+                            connection_status="transient_error",
+                            error=error,
                         )
                         await client._disconnect()
                         await asyncio.sleep(retry_delay)

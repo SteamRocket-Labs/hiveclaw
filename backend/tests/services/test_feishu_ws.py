@@ -225,6 +225,7 @@ async def test_start_client_keeps_client_registered_after_transient_connect_fail
             return None
 
     fake_client = _FakeClient()
+    status_updates: list[dict] = []
 
     def fake_create_task(coro, name=None):
         scheduled.append(coro)
@@ -236,6 +237,11 @@ async def test_start_client_keeps_client_registered_after_transient_connect_fail
 
     manager = feishu_ws.FeishuWSManager()
     monkeypatch.setattr(manager, "_create_event_handler", lambda _agent_id: object())
+
+    async def fake_mark_channel_status(agent_id_arg, **kwargs):
+        status_updates.append({"agent_id": agent_id_arg, **kwargs})
+
+    monkeypatch.setattr(manager, "_mark_channel_status", fake_mark_channel_status, raising=False)
     monkeypatch.setattr(feishu_ws, "_PROXY_PATCH_AVAILABLE", False, raising=False)
     monkeypatch.setattr(feishu_ws, "lark", SimpleNamespace(LogLevel=SimpleNamespace(INFO="info")))
     monkeypatch.setattr(feishu_ws, "ws", SimpleNamespace(Client=lambda *_args, **_kwargs: fake_client))
@@ -250,6 +256,14 @@ async def test_start_client_keeps_client_registered_after_transient_connect_fail
     assert fake_client.connect_calls == 1
     assert fake_client.disconnect_calls >= 1
     assert sleep_calls == [5]
+    assert status_updates == [
+        {
+            "agent_id": agent_id,
+            "is_connected": False,
+            "connection_status": "transient_error",
+            "error": "TimeoutError: ",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -260,7 +274,7 @@ async def test_start_client_does_not_retry_invalid_feishu_credentials(monkeypatc
     scheduled: list[object] = []
     sleep_calls: list[int] = []
 
-    class _FakeClientException(Exception):
+    class ClientException(Exception):
         code = 1000040345
 
         def __str__(self):
@@ -271,7 +285,7 @@ async def test_start_client_does_not_retry_invalid_feishu_credentials(monkeypatc
             self.disconnect_calls = 0
 
         async def _connect(self):
-            raise _FakeClientException
+            raise ClientException
 
         async def _disconnect(self):
             self.disconnect_calls += 1
@@ -280,6 +294,7 @@ async def test_start_client_does_not_retry_invalid_feishu_credentials(monkeypatc
             return None
 
     fake_client = _FakeClient()
+    status_updates: list[dict] = []
 
     def fake_create_task(coro, name=None):
         scheduled.append(coro)
@@ -291,6 +306,11 @@ async def test_start_client_does_not_retry_invalid_feishu_credentials(monkeypatc
 
     manager = feishu_ws.FeishuWSManager()
     monkeypatch.setattr(manager, "_create_event_handler", lambda _agent_id: object())
+
+    async def fake_mark_channel_status(agent_id_arg, **kwargs):
+        status_updates.append({"agent_id": agent_id_arg, **kwargs})
+
+    monkeypatch.setattr(manager, "_mark_channel_status", fake_mark_channel_status, raising=False)
     monkeypatch.setattr(feishu_ws, "_PROXY_PATCH_AVAILABLE", False, raising=False)
     monkeypatch.setattr(feishu_ws, "lark", SimpleNamespace(LogLevel=SimpleNamespace(INFO="info")))
     monkeypatch.setattr(feishu_ws, "ws", SimpleNamespace(Client=lambda *_args, **_kwargs: fake_client))
@@ -303,3 +323,12 @@ async def test_start_client_does_not_retry_invalid_feishu_credentials(monkeypatc
     assert agent_id not in manager._clients
     assert fake_client.disconnect_calls == 1
     assert sleep_calls == []
+    assert status_updates == [
+        {
+            "agent_id": agent_id,
+            "is_connected": False,
+            "is_configured": False,
+            "connection_status": "invalid_credentials",
+            "error": "ClientException: 1000040345: app_id or app_secret is invalid",
+        }
+    ]

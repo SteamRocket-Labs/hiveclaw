@@ -464,3 +464,115 @@ async def test_execute_heartbeat_marks_runtime_task_skipped_when_no_model(monkey
     assert updates[-1][0] == "heartbeat-task-1"
     assert updates[-1][1]["status"] == "skipped"
     assert updates[-1][1]["metadata_json"]["skip_reason"] == "no_model"
+
+
+@pytest.mark.asyncio
+async def test_execute_heartbeat_does_not_resurrect_session_state_after_reset(monkeypatch):
+    from app.services import heartbeat
+
+    agent_id = uuid4()
+    creator_id = uuid4()
+    model_id = uuid4()
+    tenant_id = uuid4()
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Reset Race Agent",
+        role_description="Watcher",
+        primary_model_id=model_id,
+        fallback_model_id=None,
+        creator_id=creator_id,
+        tenant_id=tenant_id,
+        last_heartbeat_at=None,
+    )
+    model = SimpleNamespace(
+        id=model_id,
+        provider="openai",
+        model="gpt-4.1",
+        api_key="key",
+        base_url=None,
+        max_output_tokens=None,
+        tenant_id=tenant_id,
+    )
+    participant = SimpleNamespace(id=uuid4(), type="agent", ref_id=agent_id)
+    fake_session = _FakeSession([agent, model, [], participant])
+
+    async def fake_invoke_agent(_request):
+        heartbeat._reset_heartbeat_session(agent_id)
+        return SimpleNamespace(content="Nothing changed\n[OUTCOME:noop] [SCORE:1]")
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.database.async_session", lambda: fake_session)
+    monkeypatch.setattr(heartbeat, "invoke_agent", fake_invoke_agent)
+    monkeypatch.setattr(heartbeat, "_load_heartbeat_instruction", lambda _id: "HB")
+    monkeypatch.setattr(heartbeat, "_update_evolution_files", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("app.core.execution_context.set_agent_bot_identity", lambda *a, **kw: None)
+    monkeypatch.setattr("app.services.activity_logger.log_activity", _noop)
+
+    heartbeat._heartbeat_contexts.pop(agent_id, None)
+    heartbeat._heartbeat_session_ids.pop(agent_id, None)
+    heartbeat._heartbeat_tick_counts.pop(agent_id, None)
+    heartbeat._heartbeat_session_ctxs.pop(agent_id, None)
+
+    await heartbeat._execute_heartbeat(agent_id, lease_acquired=True)
+
+    assert agent_id not in heartbeat._heartbeat_contexts
+    assert agent_id not in heartbeat._heartbeat_session_ids
+
+
+@pytest.mark.asyncio
+async def test_execute_heartbeat_recovers_from_incomplete_persistent_session(monkeypatch):
+    from app.services import heartbeat
+
+    agent_id = uuid4()
+    creator_id = uuid4()
+    model_id = uuid4()
+    tenant_id = uuid4()
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Recovered Heartbeat Agent",
+        role_description="Watcher",
+        primary_model_id=model_id,
+        fallback_model_id=None,
+        creator_id=creator_id,
+        tenant_id=tenant_id,
+        last_heartbeat_at=None,
+    )
+    model = SimpleNamespace(
+        id=model_id,
+        provider="openai",
+        model="gpt-4.1",
+        api_key="key",
+        base_url=None,
+        max_output_tokens=None,
+        tenant_id=tenant_id,
+    )
+    participant = SimpleNamespace(id=uuid4(), type="agent", ref_id=agent_id)
+    fake_session = _FakeSession([agent, model, [], participant])
+    captured = {}
+
+    async def fake_invoke_agent(request):
+        captured["request"] = request
+        return SimpleNamespace(content="Recovered\n[OUTCOME:noop] [SCORE:1]")
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.database.async_session", lambda: fake_session)
+    monkeypatch.setattr(heartbeat, "invoke_agent", fake_invoke_agent)
+    monkeypatch.setattr(heartbeat, "_load_heartbeat_instruction", lambda _id: "HB")
+    monkeypatch.setattr(heartbeat, "_update_evolution_files", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("app.core.execution_context.set_agent_bot_identity", lambda *a, **kw: None)
+    monkeypatch.setattr("app.services.activity_logger.log_activity", _noop)
+
+    heartbeat._heartbeat_contexts[agent_id] = [{"role": "user", "content": "stale context"}]
+    heartbeat._heartbeat_session_ids.pop(agent_id, None)
+    heartbeat._heartbeat_tick_counts[agent_id] = 3
+    heartbeat._heartbeat_session_ctxs.pop(agent_id, None)
+
+    await heartbeat._execute_heartbeat(agent_id, lease_acquired=True)
+
+    assert captured["request"].messages[0]["content"].startswith("HB")
+    assert agent_id in heartbeat._heartbeat_contexts
+    assert agent_id in heartbeat._heartbeat_session_ids

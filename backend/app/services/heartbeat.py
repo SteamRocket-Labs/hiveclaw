@@ -240,6 +240,17 @@ def _reset_heartbeat_session(agent_id: uuid.UUID) -> None:
     logger.info("[Heartbeat] Session reset for {}", agent_id)
 
 
+def _has_complete_heartbeat_session_state(agent_id: uuid.UUID) -> bool:
+    has_context = agent_id in _heartbeat_contexts
+    has_session_id = agent_id in _heartbeat_session_ids
+    if has_context and has_session_id:
+        return True
+    if has_context or has_session_id:
+        logger.warning("[Heartbeat] Incomplete persistent session state for {}; resetting cache", agent_id)
+        _reset_heartbeat_session(agent_id)
+    return False
+
+
 def _get_or_create_heartbeat_session_ctx(agent_id: uuid.UUID, session_id: uuid.UUID) -> "SessionContext":
     """Return a persistent SessionContext for heartbeat ticks.
 
@@ -1297,6 +1308,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                 recent_activities = []
 
             # ── KAIROS persistent session: first tick vs subsequent tick ──
+            has_persistent_session = _has_complete_heartbeat_session_state(agent_id)
             tick_count = _heartbeat_tick_counts.get(agent_id, 0) + 1
             _heartbeat_tick_counts[agent_id] = tick_count
 
@@ -1315,7 +1327,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
             agent_participant = p_result.scalar_one_or_none()
             agent_participant_id = agent_participant.id if agent_participant else None
 
-            if agent_id not in _heartbeat_contexts:
+            if not has_persistent_session:
                 # ═══ First tick: full initialization ═══
                 heartbeat_instruction = _load_heartbeat_instruction(agent_id)
                 if evolution_context:
@@ -1460,7 +1472,13 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
 
             # KAIROS: append assistant response to persistent context
             runtime_messages.append({"role": "assistant", "content": reply or ""})
-            _heartbeat_contexts[agent_id] = _compact_heartbeat_runtime_messages(runtime_messages)
+            if _heartbeat_session_ids.get(agent_id) == session_id:
+                _heartbeat_contexts[agent_id] = _compact_heartbeat_runtime_messages(runtime_messages)
+            else:
+                logger.info(
+                    "[Heartbeat] Session cache for {} was reset during execution; not restoring stale context",
+                    agent_id,
+                )
 
             # Save assistant reply to Reflection Session
             async with async_session() as db2:

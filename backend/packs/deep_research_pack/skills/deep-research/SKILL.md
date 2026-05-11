@@ -62,6 +62,7 @@ dedicated tools are unavailable.
 - Do not complete an objective after only `web_search -> write_file`; that is not deep research.
 - Every material claim must be source-bound or marked `unsupported`.
 - If fetched sources are insufficient, return gaps and next checks.
+- If the `synthesis` quality gate fails, do not present the report as completed; lead with the gap and ask for a narrower scope or more sources.
 - Prefer `deep_research_start` over manual delegation for large research; the tool owns progress, ledger, and artifacts.
 - Do not call `deep_research_run` for `depth=full` or `depth=flagship`; use `deep_research_start` directly.
 - Do not use `set_trigger` or `update_trigger` to poll Deep Research tasks. Use `deep_research_check` and the RuntimeTask/artifact UI.

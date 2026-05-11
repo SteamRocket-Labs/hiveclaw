@@ -40,10 +40,12 @@ class ResearchArtifactWriter:
         ledger: EvidenceLedger,
         evaluation: EvaluationResult,
         status: str,
+        report_markdown: str | None = None,
     ) -> ResearchRun:
         summary = _summary(status=status, ledger=ledger, gaps=evaluation.gaps)
         self.report_path.write_text(
-            _render_report(request=request, plan=plan, ledger=ledger, evaluation=evaluation, summary=summary),
+            report_markdown
+            or _render_report(request=request, plan=plan, ledger=ledger, evaluation=evaluation, summary=summary),
             encoding="utf-8",
         )
         final_payload = {

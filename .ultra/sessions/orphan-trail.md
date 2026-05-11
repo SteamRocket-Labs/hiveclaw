@@ -4,6 +4,9 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
+- 2026-05-11T09:06Z [sid:3b5e07e5]; branch:main; 1 files (orphan-trail.md); last commit: dcbedb9 Scope skill registry uniqueness and visibility by te
+- 2026-05-11T08:59Z [sid:a8821b5f]; branch:main; 6 files (orphan-trail.md, agents.py, files.py, +3); last commit: b4e90e7 Update AGENTS instructions for coding workflow
+- 2026-05-11T08:58Z [sid:3b5e07e5]; branch:main; 5 files (agents.py, files.py, skills.py, +2); last commit: b4e90e7 Update AGENTS instructions for coding workflow
 - 2026-05-02T02:06Z [sid:a194ca49]; branch:main; 3 files (orphan-trail.md, logging_config.py, test_logging_config.py); last commit: 524d5ec Render office/deep_research as inline tool groups, d
 - 2026-05-01T23:43Z [sid:2830313c]; branch:main; 14 files (orphan-trail.md, packs.py, test_pack_api_surface.py, +11); last commit: a4d93e6 Update commit message generation instructions
 - 2026-05-01T23:43Z [sid:a194ca49]; branch:main; 13 files (packs.py, test_pack_api_surface.py, adapter-cleanup.test.ts, +10); last commit: a4d93e6 Update commit message generation instructions

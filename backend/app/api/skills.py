@@ -181,6 +181,58 @@ def _skill_visible_to_user(skill: Skill, current_user: User) -> bool:
     return bool(current_user.tenant_id and skill.tenant_id == current_user.tenant_id)
 
 
+def _current_tenant_or_400(current_user: User):
+    """Return the tenant that should own custom skills."""
+    if not current_user.tenant_id:
+        raise HTTPException(400, "No tenant associated")
+    return current_user.tenant_id
+
+
+def _assert_mutable_custom_skill(skill: Skill) -> None:
+    """Builtin skills are global seed data; custom skills must be tenant-owned."""
+    if skill.is_builtin:
+        raise HTTPException(400, "Builtin skills are read-only")
+    if skill.tenant_id is None:
+        raise HTTPException(400, "Legacy unscoped custom skills cannot be modified; reinstall it under a tenant")
+
+
+async def _ensure_custom_skill_available(
+    db: AsyncSession,
+    *,
+    folder_name: str,
+    name: str | None,
+    tenant_id,
+    exclude_skill_id=None,
+) -> None:
+    """Prevent tenant custom skills from colliding with builtin or same-tenant skills."""
+    predicates = [Skill.folder_name == folder_name]
+    if name:
+        predicates.append(Skill.name == name)
+
+    query = (
+        select(Skill)
+        .where(
+            or_(*predicates),
+            or_(
+                and_(Skill.tenant_id.is_(None), Skill.is_builtin.is_(True)),
+                Skill.tenant_id == tenant_id,
+            ),
+        )
+        .limit(1)
+    )
+    if exclude_skill_id is not None:
+        query = query.where(Skill.id != exclude_skill_id)
+
+    result = await db.execute(query)
+    collision = result.scalar_one_or_none()
+    if collision:
+        raise HTTPException(
+            409,
+            "A skill with the same name or folder already exists in this tenant scope "
+            "or conflicts with a builtin skill.",
+        )
+
+
 async def _fetch_github_directory(
     owner: str, repo: str, path: str, branch: str = "main",
     token: str = "",
@@ -268,6 +320,8 @@ async def _save_skill_to_db(
 
     async with async_session() as db:
         tenant_uuid = _uuid.UUID(tenant_id) if tenant_id else None
+        if tenant_uuid is None:
+            raise HTTPException(400, "No tenant associated")
         if tenant_uuid:
             existing = await db.execute(
                 select(Skill).where(
@@ -397,6 +451,8 @@ async def install_from_clawhub(body: ClawhubInstallIn, current_user: User = Depe
     """Install a skill from ClawHub into the global registry."""
     # Resolve tenant GitHub token
     tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
+    if tenant_id is None:
+        raise HTTPException(400, "No tenant associated")
     token = await _get_github_token(tenant_id)
     slug = body.slug
 
@@ -507,6 +563,8 @@ async def install_from_clawhub(body: ClawhubInstallIn, current_user: User = Depe
 async def import_from_url(body: UrlImportIn, current_user: User = Depends(get_current_user)):
     """Import a skill from any GitHub URL into the global registry."""
     tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
+    if tenant_id is None:
+        raise HTTPException(400, "No tenant associated")
     token = await _get_github_token(tenant_id)
     parsed = _parse_github_url(body.url)
     if not parsed:
@@ -689,6 +747,13 @@ async def create_skill(
     )
     _guard_skill_files_or_raise(files_for_guard, source="admin_create")
     async with async_session() as db:
+        tenant_id = _current_tenant_or_400(current_user)
+        await _ensure_custom_skill_available(
+            db,
+            folder_name=body.folder_name,
+            name=body.name,
+            tenant_id=tenant_id,
+        )
         skill = Skill(
             name=body.name,
             description=body.description,
@@ -696,7 +761,7 @@ async def create_skill(
             icon=body.icon,
             folder_name=body.folder_name,
             is_builtin=False,
-            tenant_id=current_user.tenant_id,
+            tenant_id=tenant_id,
         )
         db.add(skill)
         await db.flush()
@@ -725,7 +790,11 @@ class SkillUpdateIn(BaseModel):
 
 
 @router.put("/{skill_id}")
-async def update_skill(skill_id: str, body: SkillUpdateIn, _=Depends(require_role("platform_admin"))):
+async def update_skill(
+    skill_id: str,
+    body: SkillUpdateIn,
+    current_user: User = Depends(require_role("platform_admin")),
+):
     """Update a skill's metadata and/or files."""
     if body.files is not None:
         _guard_skill_files_or_raise(
@@ -737,8 +806,17 @@ async def update_skill(skill_id: str, body: SkillUpdateIn, _=Depends(require_rol
             select(Skill).where(Skill.id == skill_id).options(selectinload(Skill.files))
         )
         skill = result.scalar_one_or_none()
-        if not skill:
+        if not skill or not _skill_visible_to_user(skill, current_user):
             raise HTTPException(404, "Skill not found")
+        _assert_mutable_custom_skill(skill)
+
+        await _ensure_custom_skill_available(
+            db,
+            folder_name=skill.folder_name,
+            name=body.name or skill.name,
+            tenant_id=skill.tenant_id,
+            exclude_skill_id=skill.id,
+        )
 
         if body.name is not None:
             skill.name = body.name
@@ -762,12 +840,15 @@ async def update_skill(skill_id: str, body: SkillUpdateIn, _=Depends(require_rol
 
 
 @router.delete("/{skill_id}")
-async def delete_skill(skill_id: str, _=Depends(require_role("platform_admin"))):
+async def delete_skill(
+    skill_id: str,
+    current_user: User = Depends(require_role("platform_admin")),
+):
     """Delete a skill (not builtin)."""
     async with async_session() as db:
         result = await db.execute(select(Skill).where(Skill.id == skill_id))
         skill = result.scalar_one_or_none()
-        if not skill:
+        if not skill or not _skill_visible_to_user(skill, current_user):
             raise HTTPException(404, "Skill not found")
         if skill.is_builtin:
             raise HTTPException(400, "Cannot delete builtin skill")
@@ -949,6 +1030,13 @@ async def browse_write(body: BrowseWriteIn, current_user: User = Depends(require
         result = await db.execute(skill_q)
         skill = result.scalar_one_or_none()
         if not skill:
+            tenant_id = _current_tenant_or_400(current_user)
+            await _ensure_custom_skill_available(
+                db,
+                folder_name=folder,
+                name=folder.replace("-", " ").title(),
+                tenant_id=tenant_id,
+            )
             # Auto-create skill from folder name, scoped to tenant
             skill = Skill(
                 name=folder.replace("-", " ").title(),
@@ -957,10 +1045,12 @@ async def browse_write(body: BrowseWriteIn, current_user: User = Depends(require
                 icon="--",
                 folder_name=folder,
                 is_builtin=False,
-                tenant_id=current_user.tenant_id,
+                tenant_id=tenant_id,
             )
             db.add(skill)
             await db.flush()
+        else:
+            _assert_mutable_custom_skill(skill)
 
         # Upsert file
         existing = None
@@ -990,7 +1080,7 @@ async def browse_delete(path: str, current_user: User = Depends(require_role("pl
         skill = result.scalar_one_or_none()
         if not skill:
             raise HTTPException(404, "Skill not found")
-        if skill.is_builtin and len(parts) == 1:
+        if skill.is_builtin:
             raise HTTPException(400, "Cannot delete builtin skill")
 
         if len(parts) == 1:

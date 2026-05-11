@@ -1,5 +1,30 @@
 import { get, post, put, del } from '../core';
 
+type ClawhubInstallInput = string | { slug: string };
+type UrlImportInput = string | { url: string };
+type SkillImportInput = string | { skill_id: string };
+type SkillSettingsInput =
+  | string
+  | {
+      github_token?: string | null;
+      clawhub_key?: string | null;
+    };
+
+const clawhubBody = (input: ClawhubInstallInput) =>
+  typeof input === 'string' ? { slug: input } : input;
+
+const urlBody = (input: UrlImportInput) =>
+  typeof input === 'string' ? { url: input } : input;
+
+const skillImportBody = (input: SkillImportInput) =>
+  typeof input === 'string' ? { skill_id: input } : input;
+
+const githubTokenBody = (input: SkillSettingsInput) =>
+  typeof input === 'string' ? { github_token: input } : input;
+
+const clawhubKeyBody = (input: SkillSettingsInput) =>
+  typeof input === 'string' ? { clawhub_key: input } : input;
+
 export const skillApi = {
   list: () => get<any[]>('/skills/'),
   get: (id: string) => get<any>(`/skills/${id}`),
@@ -15,19 +40,22 @@ export const skillApi = {
   clawhub: {
     search: (q: string) => get<any[]>(`/skills/clawhub/search?q=${encodeURIComponent(q)}`),
     detail: (slug: string) => get<any>(`/skills/clawhub/detail/${slug}`),
-    install: (data: any) => post<any>('/skills/clawhub/install', data),
+    install: (data: ClawhubInstallInput) => post<any>('/skills/clawhub/install', clawhubBody(data)),
   },
-  importFromUrl: (data: any) => post<any>('/skills/import-from-url', data),
+  importFromUrl: (data: UrlImportInput) => post<any>('/skills/import-from-url', urlBody(data)),
   agentImport: {
-    fromSkill: (agentId: string, data: any) => post<any>(`/agents/${agentId}/files/import-skill`, data),
-    fromClawhub: (agentId: string, data: any) => post<any>(`/agents/${agentId}/files/import-from-clawhub`, data),
-    fromUrl: (agentId: string, data: any) => post<any>(`/agents/${agentId}/files/import-from-url`, data),
+    fromSkill: (agentId: string, data: SkillImportInput) =>
+      post<any>(`/agents/${agentId}/files/import-skill`, skillImportBody(data)),
+    fromClawhub: (agentId: string, data: ClawhubInstallInput) =>
+      post<any>(`/agents/${agentId}/files/import-from-clawhub`, clawhubBody(data)),
+    fromUrl: (agentId: string, data: UrlImportInput) =>
+      post<any>(`/agents/${agentId}/files/import-from-url`, urlBody(data)),
   },
-  importPreview: (data: any) => post<any>('/skills/import-from-url/preview', data),
-  previewUrl: (data: any) => post<any>('/skills/import-from-url/preview', data),
+  importPreview: (data: UrlImportInput) => post<any>('/skills/import-from-url/preview', urlBody(data)),
+  previewUrl: (data: UrlImportInput) => post<any>('/skills/import-from-url/preview', urlBody(data)),
   settings: {
     getToken: () => get<any>('/skills/settings/token'),
-    setToken: (data: any) => put<any>('/skills/settings/token', data),
-    setClawhubKey: (data: any) => put<any>('/skills/settings/token', data),
+    setToken: (data: SkillSettingsInput) => put<any>('/skills/settings/token', githubTokenBody(data)),
+    setClawhubKey: (data: SkillSettingsInput) => put<any>('/skills/settings/token', clawhubKeyBody(data)),
   },
 };

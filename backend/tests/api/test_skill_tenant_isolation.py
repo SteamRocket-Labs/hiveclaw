@@ -27,12 +27,18 @@ class _AsyncSessionContext:
 
 
 class _CreateSkillSession:
-    def __init__(self):
+    def __init__(self, results=None):
         self.added = []
         self.committed = False
+        self._results = list(results or [_ScalarResult(None)])
 
     def add(self, value):
         self.added.append(value)
+
+    async def execute(self, _stmt):
+        if not self._results:
+            raise AssertionError("Unexpected execute() call")
+        return self._results.pop(0)
 
     async def flush(self):
         for value in self.added:
@@ -46,11 +52,22 @@ class _CreateSkillSession:
 class _QueuedDB:
     def __init__(self, results):
         self._results = list(results)
+        self.deleted = []
+        self.committed = False
 
     async def execute(self, _stmt):
         if not self._results:
             raise AssertionError("Unexpected execute() call")
         return self._results.pop(0)
+
+    async def flush(self):
+        return None
+
+    async def delete(self, value):
+        self.deleted.append(value)
+
+    async def commit(self):
+        self.committed = True
 
 
 def test_platform_admin_skill_scope_uses_selected_tenant():
@@ -108,6 +125,163 @@ async def test_create_skill_scopes_custom_skill_to_current_tenant(monkeypatch):
     assert created_skill.tenant_id == tenant_id
     assert result["name"] == "Tenant Workflow"
     assert session.committed is True
+
+
+@pytest.mark.asyncio
+async def test_create_skill_rejects_builtin_folder_collision(monkeypatch):
+    import app.api.skills as skills_api
+
+    tenant_id = uuid4()
+    global_builtin = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=None,
+        is_builtin=True,
+        folder_name="skill-creator",
+        name="Skill Creator",
+    )
+    session = _CreateSkillSession(results=[_ScalarResult(global_builtin)])
+
+    monkeypatch.setattr(skills_api, "async_session", lambda: _AsyncSessionContext(session))
+    monkeypatch.setattr(skills_api, "_guard_skill_files_or_raise", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(HTTPException) as exc:
+        await skills_api.create_skill(
+            skills_api.SkillCreateIn(
+                name="Tenant Skill Creator",
+                description="Tenant override attempt",
+                category="custom",
+                icon="",
+                folder_name="skill-creator",
+                files=[skills_api.SkillFileIn(path="SKILL.md", content="# Tenant Skill Creator")],
+            ),
+            current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=tenant_id),
+        )
+
+    assert exc.value.status_code == 409
+    assert session.added == []
+    assert session.committed is False
+
+
+@pytest.mark.asyncio
+async def test_update_skill_rejects_foreign_tenant_skill(monkeypatch):
+    import app.api.skills as skills_api
+
+    tenant_id = uuid4()
+    foreign_skill = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=uuid4(),
+        is_builtin=False,
+        name="Foreign",
+        description="before",
+        category="custom",
+        icon="",
+        folder_name="foreign",
+        files=[],
+    )
+    session = _QueuedDB([_ScalarResult(foreign_skill)])
+
+    monkeypatch.setattr(skills_api, "async_session", lambda: _AsyncSessionContext(session))
+
+    with pytest.raises(HTTPException) as exc:
+        await skills_api.update_skill(
+            str(foreign_skill.id),
+            skills_api.SkillUpdateIn(description="after"),
+            current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=tenant_id),
+        )
+
+    assert exc.value.status_code == 404
+    assert foreign_skill.description == "before"
+    assert session.committed is False
+
+
+@pytest.mark.asyncio
+async def test_update_skill_rejects_builtin_skill(monkeypatch):
+    import app.api.skills as skills_api
+
+    tenant_id = uuid4()
+    builtin_skill = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=None,
+        is_builtin=True,
+        name="Skill Creator",
+        description="before",
+        category="development",
+        icon="",
+        folder_name="skill-creator",
+        files=[],
+    )
+    session = _QueuedDB([_ScalarResult(builtin_skill)])
+
+    monkeypatch.setattr(skills_api, "async_session", lambda: _AsyncSessionContext(session))
+
+    with pytest.raises(HTTPException) as exc:
+        await skills_api.update_skill(
+            str(builtin_skill.id),
+            skills_api.SkillUpdateIn(description="after"),
+            current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=tenant_id),
+        )
+
+    assert exc.value.status_code == 400
+    assert builtin_skill.description == "before"
+    assert session.committed is False
+
+
+@pytest.mark.asyncio
+async def test_browse_write_rejects_builtin_skill_file_mutation(monkeypatch):
+    import app.api.skills as skills_api
+
+    tenant_id = uuid4()
+    skill_file = SimpleNamespace(path="SKILL.md", content="# Skill Creator")
+    builtin_skill = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=None,
+        is_builtin=True,
+        name="Skill Creator",
+        folder_name="skill-creator",
+        files=[skill_file],
+    )
+    session = _QueuedDB([_ScalarResult(builtin_skill)])
+
+    monkeypatch.setattr(skills_api, "async_session", lambda: _AsyncSessionContext(session))
+
+    with pytest.raises(HTTPException) as exc:
+        await skills_api.browse_write(
+            skills_api.BrowseWriteIn(path="skill-creator/SKILL.md", content="# Mutated"),
+            current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=tenant_id),
+        )
+
+    assert exc.value.status_code == 400
+    assert skill_file.content == "# Skill Creator"
+    assert session.committed is False
+
+
+@pytest.mark.asyncio
+async def test_browse_delete_rejects_builtin_skill_file_delete(monkeypatch):
+    import app.api.skills as skills_api
+
+    tenant_id = uuid4()
+    skill_file = SimpleNamespace(path="SKILL.md", content="# Skill Creator")
+    builtin_skill = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=None,
+        is_builtin=True,
+        name="Skill Creator",
+        folder_name="skill-creator",
+        files=[skill_file],
+    )
+    session = _QueuedDB([_ScalarResult(builtin_skill)])
+
+    monkeypatch.setattr(skills_api, "async_session", lambda: _AsyncSessionContext(session))
+
+    with pytest.raises(HTTPException) as exc:
+        await skills_api.browse_delete(
+            path="skill-creator/SKILL.md",
+            current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=tenant_id),
+        )
+
+    assert exc.value.status_code == 400
+    assert session.deleted == []
+    assert session.committed is False
 
 
 @pytest.mark.asyncio

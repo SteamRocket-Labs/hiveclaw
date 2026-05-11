@@ -24,14 +24,14 @@ def upgrade() -> None:
         """
         CREATE UNIQUE INDEX IF NOT EXISTS uq_skills_global_name
         ON skills (name)
-        WHERE tenant_id IS NULL
+        WHERE tenant_id IS NULL AND is_builtin IS TRUE
         """
     )
     op.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS uq_skills_global_folder_name
         ON skills (folder_name)
-        WHERE tenant_id IS NULL
+        WHERE tenant_id IS NULL AND is_builtin IS TRUE
         """
     )
     op.execute(

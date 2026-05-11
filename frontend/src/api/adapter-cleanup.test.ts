@@ -327,6 +327,45 @@ describe('request cleanup adapters', () => {
     expect(get).toHaveBeenCalledWith('/agents/agent-1/capability-installs');
   });
 
+  it('wraps skill adapter string arguments in backend payload shapes', async () => {
+    vi.doMock('./core/request', async () => {
+      const actual = await vi.importActual<typeof import('./core/request')>('./core/request');
+      return {
+        ...actual,
+        post: vi.fn(),
+        put: vi.fn(),
+      };
+    });
+    const { skillApi } = await import('./domains/skills');
+    const { post, put } = await import('./core/request');
+    vi.mocked(post).mockResolvedValue({});
+    vi.mocked(put).mockResolvedValue({});
+
+    await skillApi.clawhub.install('market-research');
+    await skillApi.importFromUrl('https://github.com/acme/skills/tree/main/research');
+    await skillApi.previewUrl('https://github.com/acme/skills/tree/main/research');
+    await skillApi.agentImport.fromSkill('agent-1', 'skill-1');
+    await skillApi.agentImport.fromClawhub('agent-1', 'market-research');
+    await skillApi.agentImport.fromUrl('agent-1', 'https://github.com/acme/skills/tree/main/research');
+    await skillApi.settings.setToken('ghp_test');
+    await skillApi.settings.setClawhubKey('ch_test');
+
+    expect(post).toHaveBeenCalledWith('/skills/clawhub/install', { slug: 'market-research' });
+    expect(post).toHaveBeenCalledWith('/skills/import-from-url', {
+      url: 'https://github.com/acme/skills/tree/main/research',
+    });
+    expect(post).toHaveBeenCalledWith('/skills/import-from-url/preview', {
+      url: 'https://github.com/acme/skills/tree/main/research',
+    });
+    expect(post).toHaveBeenCalledWith('/agents/agent-1/files/import-skill', { skill_id: 'skill-1' });
+    expect(post).toHaveBeenCalledWith('/agents/agent-1/files/import-from-clawhub', { slug: 'market-research' });
+    expect(post).toHaveBeenCalledWith('/agents/agent-1/files/import-from-url', {
+      url: 'https://github.com/acme/skills/tree/main/research',
+    });
+    expect(put).toHaveBeenCalledWith('/skills/settings/token', { github_token: 'ghp_test' });
+    expect(put).toHaveBeenCalledWith('/skills/settings/token', { clawhub_key: 'ch_test' });
+  });
+
   it('routes user management through usersApi', async () => {
     vi.doMock('./core/request', async () => {
       const actual = await vi.importActual<typeof import('./core/request')>('./core/request');

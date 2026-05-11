@@ -384,6 +384,23 @@ async def _get_visible_agent_tool(db: AsyncSession, agent: Agent, tool_id: uuid.
     return tool
 
 
+async def _get_agent_skill_declared_tool_names(agent_id: uuid.UUID) -> set[str]:
+    """Return tools explicitly declared by skills installed in this agent workspace."""
+    try:
+        from app.services.pack_service import _load_agent_skill_declared_packs
+
+        declared_packs = await _load_agent_skill_declared_packs(agent_id)
+    except Exception:
+        return set()
+
+    tool_names: set[str] = set()
+    for pack in declared_packs:
+        tools = pack.get("tools") if isinstance(pack, dict) else None
+        if isinstance(tools, list):
+            tool_names.update(str(name) for name in tools if name)
+    return tool_names
+
+
 def _serialize_agent_tool_row(tool: Tool, agent_tool: AgentTool | None) -> dict:
     agent_config = agent_tool.config if agent_tool else {}
     return {
@@ -705,6 +722,13 @@ async def list_agent_tools_with_config(
     db: AsyncSession = Depends(get_db),
 ):
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    assignments_result = await db.execute(
+        select(AgentTool)
+        .where(AgentTool.agent_id == agent_id)
+    )
+    assignments = {agent_tool.tool_id: agent_tool for agent_tool in assignments_result.scalars().all()}
+    skill_declared_tool_names = await _get_agent_skill_declared_tool_names(agent_id)
+
     tools_stmt = select(Tool).where(Tool.enabled.is_(True))
     if agent.tenant_id:
         tools_stmt = tools_stmt.where(
@@ -717,12 +741,11 @@ async def list_agent_tools_with_config(
         tools_stmt = tools_stmt.where(Tool.tenant_id.is_(None), Tool.type != "mcp")
     tools_result = await db.execute(tools_stmt.order_by(Tool.category.asc(), Tool.display_name.asc()))
     tool_rows = tools_result.scalars().all()
-
-    assignments_result = await db.execute(
-        select(AgentTool)
-        .where(AgentTool.agent_id == agent_id)
-    )
-    assignments = {agent_tool.tool_id: agent_tool for agent_tool in assignments_result.scalars().all()}
+    tool_rows = [
+        tool
+        for tool in tool_rows
+        if tool.is_default or tool.id in assignments or tool.name in skill_declared_tool_names
+    ]
     return [_serialize_agent_tool_row(tool, assignments.get(tool.id)) for tool in tool_rows]
 
 

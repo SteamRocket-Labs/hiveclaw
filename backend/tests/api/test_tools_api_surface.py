@@ -72,6 +72,27 @@ def _make_builtin_tool(*, name: str, category: str = "general", is_default: bool
     )
 
 
+def _make_mcp_tool(*, name: str, tenant_id):
+    return SimpleNamespace(
+        id=uuid4(),
+        name=name,
+        display_name=name.replace("_", " ").title(),
+        description=f"{name} description",
+        type="mcp",
+        category="mcp",
+        icon="🔌",
+        parameters_schema={"type": "object", "properties": {}},
+        config={},
+        config_schema={},
+        mcp_server_url="https://example.test/mcp",
+        mcp_server_name="Example MCP",
+        mcp_tool_name=name,
+        enabled=True,
+        is_default=False,
+        tenant_id=tenant_id,
+    )
+
+
 def test_tools_router_is_registered_in_app_surface():
     project_root = Path(__file__).resolve().parents[3]
     main_source = (project_root / "backend/app/main.py").read_text()
@@ -83,7 +104,7 @@ def test_tools_router_is_registered_in_app_surface():
 
 
 @pytest.mark.asyncio
-async def test_list_agent_tools_with_config_surfaces_unassigned_builtin_pack_tools():
+async def test_list_agent_tools_with_config_surfaces_only_agent_declared_pack_tools(monkeypatch):
     import app.api.tools as tools_api
 
     agent_id = uuid4()
@@ -95,13 +116,22 @@ async def test_list_agent_tools_with_config_surfaces_unassigned_builtin_pack_too
         category="deep_research_pack",
         is_default=False,
     )
+    default_tool = _make_builtin_tool(name="read_file", category="file", is_default=True)
+    undeclared_builtin = _make_builtin_tool(name="finance_quote", category="finance", is_default=False)
+    unassigned_mcp = _make_mcp_tool(name="apify_search_actors", tenant_id=tenant_id)
     db = _FakeDB(
         [
             _ScalarResult(agent),  # check_agent_access
-            _ListResult([deep_research_tool]),  # platform/tenant tool catalog
             _ListResult([]),  # existing AgentTool rows
+            _ListResult([default_tool, deep_research_tool, undeclared_builtin, unassigned_mcp]),  # visible catalog
         ]
     )
+
+    async def fake_skill_declared_tool_names(target_agent_id):
+        assert target_agent_id == agent_id
+        return {"deep_research_run"}
+
+    monkeypatch.setattr(tools_api, "_get_agent_skill_declared_tool_names", fake_skill_declared_tool_names)
 
     payload = await tools_api.list_agent_tools_with_config(
         agent_id=agent_id,
@@ -109,13 +139,13 @@ async def test_list_agent_tools_with_config_surfaces_unassigned_builtin_pack_too
         db=db,
     )
 
-    assert len(payload) == 1
-    row = payload[0]
-    assert row["name"] == "deep_research_run"
-    assert row["category"] == "deep_research_pack"
-    assert row["enabled"] is False
-    assert row["agent_tool_id"] is None
-    assert row["source"] == "system"
+    by_name = {row["name"]: row for row in payload}
+    assert set(by_name) == {"read_file", "deep_research_run"}
+    assert by_name["read_file"]["enabled"] is True
+    assert by_name["deep_research_run"]["category"] == "deep_research_pack"
+    assert by_name["deep_research_run"]["enabled"] is False
+    assert by_name["deep_research_run"]["agent_tool_id"] is None
+    assert by_name["deep_research_run"]["source"] == "system"
 
 
 @pytest.mark.asyncio

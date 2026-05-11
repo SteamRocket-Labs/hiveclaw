@@ -67,6 +67,17 @@ class Settings(BaseSettings):
     AGENT_DATA_DIR: str = _default_agent_data_dir()
     AGENT_TEMPLATE_DIR: str = "/app/agent_template"
 
+    # OfficeCLI (agentic document editing core)
+    OFFICECLI_BIN: str = "officecli"
+    OFFICECLI_SHA256: str = ""
+    OFFICECLI_TIMEOUT_SECONDS: int = 45
+
+    # ONLYOFFICE DocumentServer
+    ONLYOFFICE_DOCS_URL: str = ""
+    ONLYOFFICE_INTERNAL_DOCS_URL: str = ""
+    ONLYOFFICE_JWT_SECRET: str = ""
+    ONLYOFFICE_DOWNLOAD_TOKEN_EXPIRE_SECONDS: int = 300
+
     # Docker (for Agent containers)
     DOCKER_NETWORK: str = "hive_network"
     OPENCLAW_IMAGE: str = "openclaw:local"
@@ -86,6 +97,8 @@ class Settings(BaseSettings):
 
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
+    BASE_URL: str = ""
+    PUBLIC_BASE_URL: str = ""
 
     # Secrets encryption (set a strong random string in production)
     SECRETS_MASTER_KEY: str = ""

@@ -70,3 +70,37 @@ async def test_orchestrator_returns_partial_report_and_gaps_when_sources_fail(tm
     assert result.gaps
     assert (tmp_path / "report.md").read_text(encoding="utf-8").startswith("# Deep Research Report")
     assert json.loads((tmp_path / "final.json").read_text(encoding="utf-8"))["gaps"]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_does_not_complete_when_quality_gate_fails(tmp_path):
+    from app.services.deep_research.orchestrator import DeepResearchOrchestrator
+    from app.services.deep_research.schemas import ResearchRequest
+
+    async def fake_tool(tool_name: str, arguments: dict) -> str:
+        if tool_name == "web_search":
+            return "https://issuer.example/rwa"
+        if tool_name == "web_fetch":
+            return (
+                "Tokenized treasury products are a visible RWA adoption lane in 2026. "
+                "Issuers still face custody, liquidity, and regulatory disclosure risks."
+            )
+        return ""
+
+    result = await DeepResearchOrchestrator(fake_tool).run(
+        ResearchRequest(
+            question="Do a broad deep research brief on RWA adoption.",
+            mode="industry_research",
+            depth="full",
+            max_rounds=1,
+            max_sources=8,
+        ),
+        artifact_dir=tmp_path,
+    )
+
+    final = json.loads((tmp_path / "final.json").read_text(encoding="utf-8"))
+
+    assert result.status == "failed"
+    assert final["quality_gates"]["plurality"] == "failed"
+    assert final["quality_gates"]["completeness"] == "failed"
+    assert final["gaps"]

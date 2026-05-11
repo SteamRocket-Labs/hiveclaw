@@ -115,7 +115,7 @@ def _render_report(
     if ledger.claims:
         for claim in ledger.claims:
             sources = ", ".join(claim.source_ids) or "no fetched source"
-            lines.append(f"- [{claim.status.value}] {claim.text} (sources: {sources})")
+            lines.append(f"- [{claim.status.value}] {_clip_report_text(claim.text)} (sources: {sources})")
     else:
         lines.append("- No material claim reached the evidence threshold.")
 
@@ -143,3 +143,10 @@ def _render_report(
         lines.append("- Re-run with higher depth or narrower scope if a stronger source standard is required.")
     lines.append("")
     return "\n".join(lines)
+
+
+def _clip_report_text(value: str, *, limit: int = 500) -> str:
+    normalized = " ".join((value or "").split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[:limit].rstrip(" ,;，；") + "..."

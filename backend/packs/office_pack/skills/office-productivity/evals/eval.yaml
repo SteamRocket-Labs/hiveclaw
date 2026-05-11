@@ -4,7 +4,8 @@ cases:
   input: Create a Word memo from these notes.
   expected_tools:
   - read_file
-  - execute_code
+  - office_document_create
+  - office_document_validate
   - send_channel_file
   expected_artifacts:
   - office-productivity-artifact

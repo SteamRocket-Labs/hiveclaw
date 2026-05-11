@@ -26,6 +26,19 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends libpq5 curl && \
     rm -rf /var/lib/apt/lists/*
 
+ARG OFFICECLI_DOWNLOAD_URL
+ARG OFFICECLI_SHA256
+RUN if [ -n "$OFFICECLI_DOWNLOAD_URL" ]; then \
+        if [ -z "$OFFICECLI_SHA256" ]; then \
+            echo "OFFICECLI_SHA256 is required when OFFICECLI_DOWNLOAD_URL is set" >&2; \
+            exit 1; \
+        fi; \
+        curl -fsSL "$OFFICECLI_DOWNLOAD_URL" -o /usr/local/bin/officecli; \
+        echo "$OFFICECLI_SHA256  /usr/local/bin/officecli" | sha256sum -c -; \
+        chmod 0755 /usr/local/bin/officecli; \
+    fi
+ENV OFFICECLI_SKIP_UPDATE=1
+
 # Copy installed packages from deps stage
 COPY --from=deps /usr/local/lib/python3.12/site-packages/ /usr/local/lib/python3.12/site-packages/
 COPY --from=deps /usr/local/bin/ /usr/local/bin/

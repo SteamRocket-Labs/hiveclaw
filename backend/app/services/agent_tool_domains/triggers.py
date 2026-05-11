@@ -113,6 +113,8 @@ def _validate_trigger_config(tool_name: str, trigger_type: str, config: dict) ->
                 actionable_hint="Pass a valid ISO-8601 timestamp with timezone information.",
             )
     elif trigger_type == "interval":
+        if "minutes" not in config and "interval" in config:
+            config["minutes"] = config.get("interval")
         minutes = config.get("minutes")
         try:
             minutes_int = int(minutes)

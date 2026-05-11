@@ -34,7 +34,7 @@ from app.tools.decorator import ToolMeta, tool
             },
             "config": {
                 "type": "object",
-                "description": "Type-specific config. cron: {\"expr\": \"0 9 * * *\"}. once: {\"at\": \"2026-03-10T09:00:00+08:00\"}. interval: {\"minutes\": 30}. poll: {\"url\": \"...\", \"json_path\": \"$.status\", \"fire_on\": \"change\", \"interval_min\": 5}. on_message: {\"reply_to_current_sender\": true}, {\"from_user_identity\": \"telegram:123456:789\"}, {\"from_agent_id\": \"<uuid>\"}, optionally add {\"from_channel\": \"wecom\"}. event_wait triggers require max_fires or expires_at. Optional P5 fields: context_from, model_id, toolset, excluded_tool_names, workdir.",
+                "description": "Type-specific config. cron: {\"expr\": \"0 9 * * *\"}. once: {\"at\": \"2026-03-10T09:00:00+08:00\"}. interval: {\"minutes\": 30} (compatibility alias: {\"interval\": 30}). poll: {\"url\": \"...\", \"json_path\": \"$.status\", \"fire_on\": \"change\", \"interval_min\": 5}. on_message: {\"reply_to_current_sender\": true}, {\"from_user_identity\": \"telegram:123456:789\"}, {\"from_agent_id\": \"<uuid>\"}, optionally add {\"from_channel\": \"wecom\"}. event_wait triggers require max_fires or expires_at. Optional P5 fields: context_from, model_id, toolset, excluded_tool_names, workdir.",
             },
             "reason": {
                 "type": "string",

@@ -115,6 +115,33 @@ async def _find_objective(db, agent_id: uuid.UUID, *, objective_id: str | None, 
     return result.scalar_one_or_none()
 
 
+async def _cancel_completed_objective_triggers(db, agent_id: uuid.UUID, objective: Any) -> list[str]:
+    """Disable active objective triggers that are now obsolete after completion."""
+    from app.models.trigger import AgentTrigger
+
+    objective_id = str(getattr(objective, "id", "") or "")
+    objective_key = normalize_focus_task_id(str(getattr(objective, "objective_key", "") or ""))
+    result = await db.execute(
+        select(AgentTrigger).where(
+            AgentTrigger.agent_id == agent_id,
+            AgentTrigger.is_enabled.is_(True),
+        )
+    )
+    triggers = list(result.scalars().all())
+    cancelled: list[str] = []
+    for trigger in triggers:
+        config = dict(getattr(trigger, "config", None) or {})
+        config_objective_id = str(config.get("objective_id") or "").strip()
+        focus_ref = normalize_focus_task_id(str(getattr(trigger, "focus_ref", "") or ""))
+        trigger_class = str(config.get("trigger_class") or "").strip()
+        is_bound_by_objective_id = bool(objective_id and config_objective_id == objective_id)
+        is_bound_by_focus_ref = bool(objective_key and focus_ref == objective_key)
+        if trigger_class == "objective_task" and (is_bound_by_objective_id or is_bound_by_focus_ref):
+            trigger.is_enabled = False
+            cancelled.append(str(getattr(trigger, "name", "") or getattr(trigger, "id", "")))
+    return cancelled
+
+
 async def _handle_update_objective(agent_id: uuid.UUID, arguments: dict) -> str:
     objective_id = str(arguments.get("objective_id") or "").strip() or None
     objective_key = str(arguments.get("objective_key") or "").strip() or None
@@ -179,9 +206,16 @@ async def _handle_complete_objective(agent_id: uuid.UUID, arguments: dict) -> st
             evidence=evidence,
             result_summary=str(arguments.get("result_summary") or evidence),
         )
+        cancelled_triggers = await _cancel_completed_objective_triggers(db, agent_id, objective)
         await db.commit()
+    cleanup_note = (
+        f"\nCancelled obsolete triggers: {', '.join(cancelled_triggers)}.\n"
+        if cancelled_triggers
+        else ""
+    )
     return (
         f"✅ Objective '{objective.objective_key}' completed with evidence recorded.\n\n"
+        f"{cleanup_note}"
         "Do not call `complete_objective` for this objective again in this turn. "
         "Produce the final user-facing answer now."
     )

@@ -38,11 +38,13 @@ interface AgentChatSectionProps {
   historyContainerRef: React.RefObject<HTMLDivElement | null>;
   onHistoryScroll: () => void;
   historyMsgs: AgentChatMessage[];
+  historyMessagesSessionId: string | null;
   showHistoryScrollBtn: boolean;
   onScrollHistoryToBottom: () => void;
   chatContainerRef: React.RefObject<HTMLDivElement | null>;
   onChatScroll: () => void;
   chatMessages: AgentChatMessage[];
+  chatMessagesSessionId: string | null;
   runtimeSummary: ChatRuntimeSummary | null;
   transportNotice: string | null;
   isWaiting: boolean;
@@ -255,11 +257,13 @@ export default function AgentChatSection({
   historyContainerRef,
   onHistoryScroll,
   historyMsgs,
+  historyMessagesSessionId,
   showHistoryScrollBtn,
   onScrollHistoryToBottom,
   chatContainerRef,
   onChatScroll,
   chatMessages,
+  chatMessagesSessionId,
   runtimeSummary,
   transportNotice,
   isWaiting,
@@ -701,7 +705,10 @@ export default function AgentChatSection({
     },
   ];
 
-  const visibleTimeline = isReadOnlySession ? historyMsgs : chatMessages;
+  const activeSessionId = activeSession?.id ? String(activeSession.id) : null;
+  const visibleHistoryMsgs = historyMessagesSessionId === activeSessionId ? historyMsgs : [];
+  const visibleChatMessages = chatMessagesSessionId === activeSessionId ? chatMessages : [];
+  const visibleTimeline = isReadOnlySession ? visibleHistoryMsgs : visibleChatMessages;
   const hasInternalTrace = visibleTimeline.some((message) => message.role === 'tool_call');
 
   return (
@@ -1105,8 +1112,8 @@ export default function AgentChatSection({
               {(() => {
                 const isA2A = activeSession.source_channel === 'agent' || activeSession.participant_type === 'agent';
                 const thisAgentName = agent?.name;
-                const thisAgentPid = isA2A && thisAgentName ? historyMsgs.find((message) => message.sender_name === thisAgentName)?.participant_id : null;
-                return historyMsgs.map((message, index) => {
+                const thisAgentPid = isA2A && thisAgentName ? visibleHistoryMsgs.find((message) => message.sender_name === thisAgentName)?.participant_id : null;
+                return visibleHistoryMsgs.map((message, index) => {
                   const isLeft = isA2A && thisAgentPid ? message.participant_id !== thisAgentPid : message.role === 'assistant';
                   return renderConversationMessage(message, index, isLeft);
                 });
@@ -1142,14 +1149,14 @@ export default function AgentChatSection({
         ) : (
           <>
             <div ref={chatContainerRef} onScroll={onChatScroll} style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
-              {chatMessages.length === 0 && (
+              {visibleChatMessages.length === 0 && (
                 <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-tertiary)' }}>
                   <div style={{ fontSize: '13px', marginBottom: '4px' }}>{activeSession?.title || t('agent.chat.startChat')}</div>
                   <div style={{ fontSize: '12px' }}>{t('agent.chat.startConversation', { name: agent.name })}</div>
                   <div style={{ fontSize: '11px', marginTop: '4px', opacity: 0.7 }}>{t('agent.chat.fileSupport')}</div>
                 </div>
               )}
-              {chatMessages.map((message, index) => {
+              {visibleChatMessages.map((message, index) => {
                 return renderConversationMessage(message, index, message.role === 'assistant');
               })}
               {isWaiting && (

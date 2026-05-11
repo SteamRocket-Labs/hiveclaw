@@ -90,6 +90,8 @@ def test_minimal_kernel_tool_set_stays_small_and_explicit():
         "update_objective",
         "complete_objective",
         "set_trigger",
+        "update_trigger",
+        "cancel_trigger",
         "list_triggers",
         "send_message_to_agent",
         "delegate_to_agent",

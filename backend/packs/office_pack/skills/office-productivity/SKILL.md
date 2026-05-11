@@ -8,7 +8,12 @@ tools:
   - list_files
   - write_file
   - edit_file
-  - execute_code
+  - office_document_create
+  - office_document_view
+  - office_document_query
+  - office_document_apply
+  - office_document_validate
+  - office_document_dump
   - send_channel_file
   - send_email
   - read_emails
@@ -41,14 +46,14 @@ Use when Codex needs one entrypoint for office artifacts, including DOCX, XLSX, 
 
 1. Identify the requested artifact type: DOCX, XLSX, PPTX, PDF, meeting minutes, weekly report, or pitch deck.
 2. Read supplied source files first and choose the narrowest internal mode that can complete the artifact.
-3. Use deterministic generation or editing paths for structured files; avoid free-form prose when a template or script exists.
+3. Use OfficeCLI document tools for DOCX/XLSX/PPTX create, inspect, query, validate, and targeted edits.
 4. Save outputs under the workspace and deliver them only when the user asks for channel delivery.
 5. Flag missing inputs, invented facts, rendering risks, and manual review needs before final handoff.
 
 ## Quality Bar
 
 - Do not invent facts, owners, dates, recipients, source evidence, or external system state.
-- Prefer deterministic scripts or templates when the skill bundles them for this workflow.
+- Prefer OfficeCLI operations or bundled templates when the workflow touches structured Office files.
 - Keep the final output focused on the artifact or decision the user requested.
 - Surface missing credentials, unavailable tools, stale data, and unsupported claims as blockers instead of silently working around them.
 

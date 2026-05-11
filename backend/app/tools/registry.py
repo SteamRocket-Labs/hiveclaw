@@ -67,6 +67,14 @@ _CHANNEL = {
     "send_channel_file",
 }
 _WEB = {"web_search", "web_fetch", "firecrawl_fetch", "xcrawl_scrape"}
+_OFFICE = {
+    "office_document_create",
+    "office_document_view",
+    "office_document_query",
+    "office_document_apply",
+    "office_document_validate",
+    "office_document_dump",
+}
 
 _STATIC_READ_ONLY_TOOL_NAMES = {
     "read_file",
@@ -86,6 +94,10 @@ _STATIC_READ_ONLY_TOOL_NAMES = {
     "check_async_task",
     "list_async_tasks",
     "get_current_time",
+    "office_document_view",
+    "office_document_query",
+    "office_document_validate",
+    "office_document_dump",
 }
 
 _STATIC_PARALLEL_SAFE_TOOL_NAMES = {
@@ -102,6 +114,10 @@ _STATIC_PARALLEL_SAFE_TOOL_NAMES = {
     "check_async_task",
     "list_async_tasks",
     "get_current_time",
+    "office_document_view",
+    "office_document_query",
+    "office_document_validate",
+    "office_document_dump",
 }
 
 
@@ -161,6 +177,8 @@ def infer_category(tool_name: str) -> str:
         return "IM Channel"
     if tool_name in _WEB:
         return "Web Search"
+    if tool_name in _OFFICE:
+        return "Office"
     return "System"
 
 

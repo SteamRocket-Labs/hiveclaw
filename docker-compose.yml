@@ -23,12 +23,26 @@ services:
       timeout: 5s
       retries: 5
 
+  onlyoffice-documentserver:
+    image: onlyoffice/documentserver:9.3
+    restart: unless-stopped
+    environment:
+      JWT_ENABLED: "true"
+      JWT_SECRET: ${ONLYOFFICE_JWT_SECRET:-change-me-onlyoffice-secret}
+    ports:
+      - "${ONLYOFFICE_PORT:-8082}:80"
+    volumes:
+      - onlyoffice_data:/var/www/onlyoffice/Data
+      - onlyoffice_logs:/var/log/onlyoffice
+
   backend:
     build:
       context: ./backend
       args:
         CLAWITH_PIP_INDEX_URL: ${CLAWITH_PIP_INDEX_URL:-}
         CLAWITH_PIP_TRUSTED_HOST: ${CLAWITH_PIP_TRUSTED_HOST:-}
+        OFFICECLI_DOWNLOAD_URL: ${OFFICECLI_DOWNLOAD_URL:-}
+        OFFICECLI_SHA256: ${OFFICECLI_SHA256:-}
     restart: unless-stopped
     command: ["/bin/bash", "/app/entrypoint.sh"]
     environment:
@@ -46,6 +60,14 @@ services:
       # when no tenant-level token is configured. Raises API rate limit from 60 to 5,000/hr.
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       SS_CONFIG_FILE: /data/ss-nodes.json
+      OFFICECLI_BIN: ${OFFICECLI_BIN:-officecli}
+      OFFICECLI_SHA256: ${OFFICECLI_SHA256:-}
+      OFFICECLI_TIMEOUT_SECONDS: ${OFFICECLI_TIMEOUT_SECONDS:-45}
+      OFFICECLI_SKIP_UPDATE: "1"
+      ONLYOFFICE_DOCS_URL: ${ONLYOFFICE_DOCS_URL:-http://localhost:8082}
+      ONLYOFFICE_INTERNAL_DOCS_URL: ${ONLYOFFICE_INTERNAL_DOCS_URL:-http://onlyoffice-documentserver}
+      ONLYOFFICE_JWT_SECRET: ${ONLYOFFICE_JWT_SECRET:-change-me-onlyoffice-secret}
+      ONLYOFFICE_DOWNLOAD_TOKEN_EXPIRE_SECONDS: ${ONLYOFFICE_DOWNLOAD_TOKEN_EXPIRE_SECONDS:-300}
     volumes:
       - ./backend:/app
       - ./backend/agent_data:/data/agents
@@ -76,6 +98,8 @@ services:
 volumes:
   pgdata:
   redisdata:
+  onlyoffice_data:
+  onlyoffice_logs:
 
 
 networks:

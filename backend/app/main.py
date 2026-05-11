@@ -37,6 +37,7 @@ from app.api.messages import router as messages_router
 from app.api.notification import router as notification_router
 from app.api.oidc import router as oidc_router
 from app.api.onboarding import router as onboarding_router
+from app.api.office import router as office_router
 from app.api.objectives import router as objectives_router
 from app.api.organization import router as org_router
 from app.api.packs import router as packs_router
@@ -452,6 +453,7 @@ _api_routers = [
     chat_sessions_router, plaza_router, triggers_router, memory_router,
     oidc_router, capabilities_router, onboarding_router, packs_router,
     objectives_router,
+    office_router,
     autonomy_router,
     llm_proxy_router,
     desktop_auth_router,

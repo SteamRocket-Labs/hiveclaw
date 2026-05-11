@@ -48,6 +48,15 @@ def test_deep_research_skill_declares_only_dedicated_tools():
     assert "web_fetch" not in parsed.metadata.declared_tools
 
 
+def test_deep_research_skill_forbids_trigger_polling_and_full_sync_run():
+    skill_path = Path(__file__).resolve().parents[2] / "packs" / "deep_research_pack" / "skills" / "deep-research" / "SKILL.md"
+    content = skill_path.read_text(encoding="utf-8")
+
+    assert "Do not call `deep_research_run` for `depth=full` or `depth=flagship`" in content
+    assert "Do not use `set_trigger` or `update_trigger` to poll Deep Research tasks" in content
+    assert "Do not synthesize a separate report with `write_file`" in content
+
+
 def test_pack_skill_seeder_exposes_one_office_entrypoint():
     folders = _pack_skill_folders()
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from urllib.parse import urlparse
 
+from app.services.deep_research.extractor import clean_fetched_text
 from app.services.deep_research.schemas import SearchCandidate, SourceRecord, SourceType
 from app.services.deep_research.searcher import ToolInvoker
 
@@ -15,14 +16,15 @@ class ResearchReader:
         for tool_name in ("web_fetch", "firecrawl_fetch", "xcrawl_scrape"):
             content = await self.tool_invoker(tool_name, {"url": candidate.url, "max_chars": self.max_chars})
             text = _normalize_content(content)
-            if _has_usable_content(text):
+            cleaned = clean_fetched_text(text)
+            if _has_usable_content(cleaned):
                 return SourceRecord(
                     source_id="",
                     url=candidate.url,
                     title=_extract_title(text) or candidate.title or candidate.url,
                     publisher=_publisher_from_url(candidate.url),
                     source_type=source_type,
-                    content=text[: self.max_chars],
+                    content=cleaned[: self.max_chars],
                     lane_id=candidate.lane_id,
                     query=candidate.query,
                     fetch_tool=tool_name,
@@ -42,11 +44,18 @@ def _has_usable_content(text: str) -> bool:
 
 
 def _extract_title(text: str) -> str:
-    first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
-    for prefix in ("title:", "#"):
-        if first_line.lower().startswith(prefix):
-            return first_line[len(prefix):].strip()
-    return first_line[:120]
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        if "fetched content from:" in lowered:
+            continue
+        for prefix in ("title:", "#"):
+            if lowered.startswith(prefix):
+                return line[len(prefix):].strip()
+        return line[:120]
+    return ""
 
 
 def _publisher_from_url(url: str) -> str:

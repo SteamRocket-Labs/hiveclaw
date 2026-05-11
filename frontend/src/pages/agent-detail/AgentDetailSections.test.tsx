@@ -784,6 +784,7 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
+        historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
         chatContainerRef={React.createRef<HTMLDivElement>()}
@@ -791,6 +792,7 @@ describe('AgentDetail extracted sections', () => {
         chatMessages={[
           { role: 'assistant', content: 'Ship it' },
         ]}
+        chatMessagesSessionId="session-1"
         runtimeSummary={{
           model: {
             label: 'GPT-5.4',
@@ -843,6 +845,71 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('notes.md');
     expect(markup).toContain('chat-input');
     expect(markup).toContain('send');
+  });
+
+  it('does not render stale chat messages from a different active session', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Release Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-2',
+          user_id: 'user-1',
+          title: 'New RWA run',
+          created_at: '2026-05-12T02:11:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[
+          { role: 'assistant', content: 'Task ID: `old-task-id`' },
+        ]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('New RWA run');
+    expect(markup).not.toContain('old-task-id');
   });
 
   it('renders structured HR preview details for tool results', () => {

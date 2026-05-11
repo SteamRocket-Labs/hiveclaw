@@ -29,6 +29,8 @@ _DELEGATION_BASE_EXCLUDED_TOOLS = (
     "delegate_to_agent",
     "send_message_to_agent",
     "set_trigger",
+    "update_trigger",
+    "cancel_trigger",
     "send_channel_file",
     "check_async_task",
     "cancel_async_task",

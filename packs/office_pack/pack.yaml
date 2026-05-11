@@ -29,11 +29,32 @@ tools:
     governance:
       security_zone: restricted
       approval_required: false
-  - name: execute_code
+  - name: office_document_create
     locale: cloud
     governance:
       security_zone: restricted
       approval_required: false
+  - name: office_document_view
+    locale: cloud
+    governance:
+      security_zone: public
+  - name: office_document_query
+    locale: cloud
+    governance:
+      security_zone: public
+  - name: office_document_apply
+    locale: cloud
+    governance:
+      security_zone: restricted
+      approval_required: false
+  - name: office_document_validate
+    locale: cloud
+    governance:
+      security_zone: public
+  - name: office_document_dump
+    locale: cloud
+    governance:
+      security_zone: public
   - name: send_channel_file
     locale: cloud
     governance:
@@ -125,8 +146,7 @@ activation:
   default_state: inactive
 
 sandbox_requirements:
-  pip_packages:
-    - markitdown>=0.1.0
-    - docxtpl>=0.16.8
-    - pypandoc>=1.14
-    - weasyprint>=62.0
+  binaries:
+    - officecli
+  env:
+    - OFFICECLI_SKIP_UPDATE=1

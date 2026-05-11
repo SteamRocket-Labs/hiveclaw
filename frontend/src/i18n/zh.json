@@ -228,6 +228,8 @@
       "relationshipsTooltip": "与团队成员和其他数字员工的连接",
       "workspace": "工作区",
       "workspaceTooltip": "此员工的私有文件存储",
+      "office": "Office",
+      "officeTooltip": "DOCX、XLSX、PPTX 文件的所见即所得编辑",
       "chat": "聊天",
       "activityLog": "工作日志",
       "activityLogTooltip": "完整的操作、消息和系统事件记录",
@@ -500,6 +502,16 @@
       "eventTitle": "系统事件",
       "compactionMeta": "保留 {{kept}} / {{original}} 条消息"
     }
+    },
+    "office": {
+      "title": "Office",
+      "subtitle": "此工作区的 DOCX、XLSX、PPTX 在线编辑",
+      "pathLabel": "文档路径",
+      "open": "打开",
+      "create": "创建",
+      "save": "保存",
+      "disabledTitle": "ONLYOFFICE 未配置",
+      "emptyState": "打开或创建 Office 文档后开始编辑。"
     },
     "activityLog": {
       "title": "工作日志",

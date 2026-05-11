@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 from app.services.deep_research.ledger import EvidenceLedger
 from app.services.deep_research.schemas import ClaimStatus, EvaluationResult, ResearchRequest
 
@@ -7,11 +9,14 @@ from app.services.deep_research.schemas import ClaimStatus, EvaluationResult, Re
 class ResearchEvaluator:
     def evaluate(self, *, request: ResearchRequest, ledger: EvidenceLedger, round_index: int) -> EvaluationResult:
         summary = ledger.summary()
+        independent_hosts = _independent_hosts(ledger)
+        plurality_required = min(2, request.max_sources)
+        coverage_required = _required_source_count(request)
         gates = {
             "attribution": "passed" if summary["claim_count"] and summary["unsupported_claims"] == 0 else "failed",
-            "plurality": "passed" if summary["source_count"] >= min(2, request.max_sources) else "failed",
+            "plurality": "passed" if len(independent_hosts) >= plurality_required else "failed",
             "freshness": "passed",
-            "completeness": "passed" if summary["source_count"] >= min(2, request.max_sources) else "failed",
+            "completeness": "passed" if summary["source_count"] >= coverage_required else "failed",
             "contradiction": "warning" if summary["contradicted_claims"] else "passed",
         }
         gaps: list[str] = []
@@ -20,9 +25,12 @@ class ResearchEvaluator:
         if summary["unsupported_claims"]:
             gaps.append(f"{summary['unsupported_claims']} claim(s) remain unsupported by fetched sources.")
         if gates["plurality"] == "failed":
-            gaps.append("Fewer than two independent fetched sources are available.")
+            gaps.append(f"Fewer than {plurality_required} independent fetched source host(s) are available.")
         if gates["completeness"] == "failed" and round_index < request.max_rounds:
-            gaps.append("Additional source lanes should be searched before final confidence.")
+            gaps.append(
+                f"Coverage below {request.depth} depth requirement: "
+                f"{summary['source_count']} fetched source(s), need at least {coverage_required}."
+            )
 
         unsupported = [
             claim.text
@@ -40,3 +48,21 @@ class ResearchEvaluator:
             missing_sources=[] if summary["source_count"] else ["fetched_source"],
             unsupported_claims=unsupported,
         )
+
+
+def _required_source_count(request: ResearchRequest) -> int:
+    depth = (request.depth or "").strip().lower()
+    if depth in {"full", "flagship", "deep"}:
+        return min(request.max_sources, 4)
+    if depth in {"quick", "light"}:
+        return min(request.max_sources, 2)
+    return min(request.max_sources, 2)
+
+
+def _independent_hosts(ledger: EvidenceLedger) -> set[str]:
+    hosts: set[str] = set()
+    for source in ledger.sources.values():
+        host = urlparse(source.url).netloc.casefold().removeprefix("www.")
+        if host:
+            hosts.add(host)
+    return hosts

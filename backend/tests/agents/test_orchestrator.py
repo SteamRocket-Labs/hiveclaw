@@ -74,6 +74,8 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
         "delegate_to_agent",
         "send_message_to_agent",
         "set_trigger",
+        "update_trigger",
+        "cancel_trigger",
         "send_channel_file",
         "check_async_task",
         "cancel_async_task",

@@ -204,6 +204,17 @@ def test_trigger_class_defaults_to_objective_task_when_focus_ref_present():
     assert config["trigger_class"] == "objective_task"
 
 
+def test_interval_trigger_config_accepts_interval_alias():
+    from app.services.agent_tool_domains.triggers import _validate_trigger_config
+
+    config = {"interval": 5}
+
+    error = _validate_trigger_config("set_trigger", "interval", config)
+
+    assert error is None
+    assert config["minutes"] == 5
+
+
 @pytest.mark.asyncio
 async def test_objective_trigger_binding_writes_objective_id(monkeypatch):
     from app.services.agent_tool_domains import triggers as trigger_domain

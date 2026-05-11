@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import uuid
 from pathlib import Path
 from typing import Any
@@ -65,12 +66,32 @@ async def deep_research_run(request: ToolExecutionRequest) -> str:
     except ValueError as exc:
         return _json({"ok": False, "error": str(exc)})
 
+    if research_request.depth in {"full", "flagship"}:
+        return _json(
+            {
+                "ok": False,
+                "status": "route_to_async",
+                "error": "async_required",
+                "summary": (
+                    "Full or flagship Deep Research is a long-running workflow. "
+                    "Use deep_research_start instead of deep_research_run."
+                ),
+                "recommended_tool": "deep_research_start",
+                "next_action": (
+                    "Call deep_research_start with the same arguments. "
+                    "Do not create triggers to poll this task; use deep_research_check "
+                    "or the RuntimeTask/artifact UI."
+                ),
+            }
+        )
+
     run = await run_deep_research(
         request=research_request,
         agent_id=request.context.agent_id,
         user_id=request.context.user_id,
         workspace=request.context.workspace,
     )
+    _publish_workspace_packet(request.context.workspace, run.run_id, Path(run.artifact_dir))
     return _json({"ok": run.status == "completed", **_run_payload(run, request.context.workspace)})
 
 
@@ -138,13 +159,18 @@ async def deep_research_start(request: ToolExecutionRequest) -> str:
         output_paths=[_relative(request.context.workspace, _deep_research_dir(request.context.workspace, task_id))],
     )
     _schedule_deep_research_background(request, research_request, task_id)
+    workspace_artifact_dir = _workspace_export_dir(request.context.workspace, task_id.hex)
     return _json(
         {
             "ok": True,
             "task_id": task_id.hex,
             "status": "running",
             "artifact_dir": _relative(request.context.workspace, _deep_research_dir(request.context.workspace, task_id)),
-            "next_action": f"Use deep_research_check with task_id {task_id.hex} to inspect progress.",
+            "workspace_artifact_dir": _relative(request.context.workspace, workspace_artifact_dir),
+            "next_action": (
+                f"Use deep_research_check with task_id {task_id.hex} to inspect progress. "
+                "Do not create triggers to poll this task; the RuntimeTask/artifact UI tracks progress."
+            ),
         }
     )
 
@@ -242,16 +268,31 @@ async def deep_research_export(request: ToolExecutionRequest) -> str:
     final_path = artifact_dir / "final.json"
     report_path = artifact_dir / "report.md"
     if export_format == "json":
-        target = final_path
+        artifact_target = final_path
+        file_name = "final.json"
     elif export_format == "html":
-        target = artifact_dir / "report.html"
+        artifact_target = artifact_dir / "report.html"
         markdown = report_path.read_text(encoding="utf-8") if report_path.exists() else ""
-        target.write_text(f"<html><body><pre>{_escape_html(markdown)}</pre></body></html>", encoding="utf-8")
+        artifact_target.write_text(f"<html><body><pre>{_escape_html(markdown)}</pre></body></html>", encoding="utf-8")
+        file_name = "report.html"
     else:
-        target = report_path
-    if not target.exists():
+        artifact_target = report_path
+        file_name = "report.md"
+    if not artifact_target.exists():
         return _json({"ok": False, "error": "artifact_not_found", "task_id": task_id})
-    return _json({"ok": True, "task_id": task_id, "format": export_format, "path": _relative(request.context.workspace, target)})
+
+    workspace_dir = _publish_workspace_packet(request.context.workspace, task_id, artifact_dir)
+    target = workspace_dir / file_name
+    return _json(
+        {
+            "ok": True,
+            "task_id": task_id,
+            "format": export_format,
+            "path": _relative(request.context.workspace, target),
+            "workspace_artifact_dir": _relative(request.context.workspace, workspace_dir),
+            "artifact_path": _relative(request.context.workspace, artifact_target),
+        }
+    )
 
 
 def _schedule_deep_research_background(
@@ -268,11 +309,13 @@ def _schedule_deep_research_background(
                 workspace=request.context.workspace,
                 runtime_task_id=task_id,
             )
+            _publish_workspace_packet(request.context.workspace, task_id.hex, Path(run.artifact_dir))
+            run_payload = _run_payload(run, request.context.workspace)
             await update_runtime_task_record(
                 task_id.hex,
                 status=run.status,
                 result_summary=run.summary,
-                metadata_json={"deep_research_result": _run_payload(run, request.context.workspace)},
+                metadata_json={"deep_research_result": run_payload},
             )
             await record_long_task_progress(
                 agent_id=request.context.agent_id,
@@ -280,9 +323,9 @@ def _schedule_deep_research_background(
                 status=run.status,
                 delta=run.summary,
                 output_paths=[
-                    _relative(request.context.workspace, Path(run.report_path)),
-                    _relative(request.context.workspace, Path(run.sources_path)),
-                    _relative(request.context.workspace, Path(run.claims_path)),
+                    run_payload["report_path"],
+                    run_payload["sources_path"],
+                    run_payload["claims_path"],
                 ],
                 blocked_reason="; ".join(run.gaps) if run.status != "completed" else None,
             )
@@ -300,15 +343,28 @@ def _schedule_deep_research_background(
 
 
 def _run_payload(run: ResearchRun, workspace: Path) -> dict[str, Any]:
+    artifact_dir = Path(run.artifact_dir) if run.artifact_dir else Path()
+    workspace_dir = _workspace_export_dir(workspace, run.run_id)
+    workspace_report_path = workspace_dir / "report.md"
+    workspace_sources_path = workspace_dir / "sources.jsonl"
+    workspace_claims_path = workspace_dir / "claims.jsonl"
+    workspace_steps_path = workspace_dir / "steps.jsonl"
+    workspace_final_path = workspace_dir / "final.json"
     return {
         "status": run.status,
         "summary": run.summary,
-        "artifact_dir": _relative(workspace, Path(run.artifact_dir)),
-        "report_path": _relative(workspace, Path(run.report_path)),
-        "sources_path": _relative(workspace, Path(run.sources_path)),
-        "claims_path": _relative(workspace, Path(run.claims_path)),
-        "steps_path": _relative(workspace, Path(run.steps_path)),
-        "final_path": _relative(workspace, Path(run.final_path)),
+        "artifact_dir": _relative(workspace, artifact_dir),
+        "workspace_artifact_dir": _relative(workspace, workspace_dir) if workspace_dir.exists() else None,
+        "report_path": _relative(workspace, workspace_report_path if workspace_report_path.exists() else Path(run.report_path)),
+        "sources_path": _relative(workspace, workspace_sources_path if workspace_sources_path.exists() else Path(run.sources_path)),
+        "claims_path": _relative(workspace, workspace_claims_path if workspace_claims_path.exists() else Path(run.claims_path)),
+        "steps_path": _relative(workspace, workspace_steps_path if workspace_steps_path.exists() else Path(run.steps_path)),
+        "final_path": _relative(workspace, workspace_final_path if workspace_final_path.exists() else Path(run.final_path)),
+        "artifact_report_path": _relative(workspace, Path(run.report_path)),
+        "artifact_sources_path": _relative(workspace, Path(run.sources_path)),
+        "artifact_claims_path": _relative(workspace, Path(run.claims_path)),
+        "artifact_steps_path": _relative(workspace, Path(run.steps_path)),
+        "artifact_final_path": _relative(workspace, Path(run.final_path)),
         "source_count": run.source_count,
         "claim_count": run.claim_count,
         "quality_gates": run.quality_gates,
@@ -318,12 +374,34 @@ def _run_payload(run: ResearchRun, workspace: Path) -> dict[str, Any]:
 
 def _read_deep_research_artifact(workspace: Path, task_id: str) -> dict[str, Any]:
     artifact_dir = _deep_research_dir(workspace, task_id)
+    if (artifact_dir / "report.md").exists() or (artifact_dir / "final.json").exists():
+        _publish_workspace_packet(workspace, task_id, artifact_dir)
+    workspace_dir = _workspace_export_dir(workspace, task_id)
+    workspace_report_path = workspace_dir / "report.md"
+    workspace_sources_path = workspace_dir / "sources.jsonl"
+    workspace_claims_path = workspace_dir / "claims.jsonl"
+    workspace_final_path = workspace_dir / "final.json"
     final = _load_json(artifact_dir / "final.json") or {}
     return {
         "artifact_dir": _relative(workspace, artifact_dir),
+        "workspace_artifact_dir": _relative(workspace, workspace_dir) if workspace_dir.exists() else None,
         "status": final.get("status"),
         "summary": final.get("summary"),
-        "report_path": _relative(workspace, artifact_dir / "report.md") if (artifact_dir / "report.md").exists() else None,
+        "report_path": _relative(workspace, workspace_report_path)
+        if workspace_report_path.exists()
+        else (_relative(workspace, artifact_dir / "report.md") if (artifact_dir / "report.md").exists() else None),
+        "sources_path": _relative(workspace, workspace_sources_path)
+        if workspace_sources_path.exists()
+        else (_relative(workspace, artifact_dir / "sources.jsonl") if (artifact_dir / "sources.jsonl").exists() else None),
+        "claims_path": _relative(workspace, workspace_claims_path)
+        if workspace_claims_path.exists()
+        else (_relative(workspace, artifact_dir / "claims.jsonl") if (artifact_dir / "claims.jsonl").exists() else None),
+        "final_path": _relative(workspace, workspace_final_path)
+        if workspace_final_path.exists()
+        else (_relative(workspace, artifact_dir / "final.json") if (artifact_dir / "final.json").exists() else None),
+        "artifact_report_path": _relative(workspace, artifact_dir / "report.md")
+        if (artifact_dir / "report.md").exists()
+        else None,
         "source_count": final.get("source_count") or _jsonl_count(artifact_dir / "sources.jsonl"),
         "claim_count": final.get("claim_count") or _jsonl_count(artifact_dir / "claims.jsonl"),
         "quality_gates": final.get("quality_gates") or {},
@@ -336,6 +414,31 @@ def _read_deep_research_artifact(workspace: Path, task_id: str) -> dict[str, Any
 
 def _deep_research_dir(workspace: Path, task_id: uuid.UUID | str) -> Path:
     return workspace / "runtime_artifacts" / "long_tasks" / str(task_id).replace("-", "") / "deep_research"
+
+
+def _workspace_export_dir(workspace: Path, run_id: uuid.UUID | str) -> Path:
+    safe_id = str(run_id).strip() or "latest"
+    return workspace / "workspace" / "deep_research_reports" / safe_id
+
+
+def _publish_workspace_packet(workspace: Path, run_id: uuid.UUID | str, artifact_dir: Path) -> Path:
+    workspace_dir = _workspace_export_dir(workspace, run_id)
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    for file_name in (
+        "request.json",
+        "plan.json",
+        "steps.jsonl",
+        "sources.jsonl",
+        "claims.jsonl",
+        "evaluation.jsonl",
+        "report.md",
+        "report.html",
+        "final.json",
+    ):
+        source = artifact_dir / file_name
+        if source.exists() and source.is_file():
+            shutil.copyfile(source, workspace_dir / file_name)
+    return workspace_dir
 
 
 def _relative(workspace: Path, path: Path) -> str:

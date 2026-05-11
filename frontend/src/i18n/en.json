@@ -229,6 +229,8 @@
       "relationshipsTooltip": "Connections to team members and other digital employees",
       "workspace": "Workspace",
       "workspaceTooltip": "Private file storage for this employee",
+      "office": "Office",
+      "officeTooltip": "WYSIWYG editing for DOCX, XLSX, and PPTX files",
       "chat": "Chat",
       "activityLog": "Activity Log",
       "activityLogTooltip": "Complete history of actions, messages, and system events",
@@ -501,6 +503,16 @@
       "eventTitle": "System Event",
       "compactionMeta": "Kept {{kept}} of {{original}} messages"
     }
+    },
+    "office": {
+      "title": "Office",
+      "subtitle": "DOCX, XLSX, and PPTX editing for this workspace",
+      "pathLabel": "Document path",
+      "open": "Open",
+      "create": "Create",
+      "save": "Save",
+      "disabledTitle": "ONLYOFFICE is not configured",
+      "emptyState": "Open or create an Office document to start editing."
     },
     "activityLog": {
       "title": "Activity Log",

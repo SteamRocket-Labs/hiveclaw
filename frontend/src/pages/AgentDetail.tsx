@@ -12,6 +12,7 @@ import AgentActivityLogSection from './agent-detail/AgentActivityLogSection';
 import AgentAwareSection from './agent-detail/AgentAwareSection';
 import AgentChatSection from './agent-detail/AgentChatSection';
 import AgentMindSection from './agent-detail/AgentMindSection';
+import OfficeWorkbenchSection from './agent-detail/OfficeWorkbenchSection';
 import AgentSettingsSection from './agent-detail/AgentSettingsSection';
 import AgentSkillsSection from './agent-detail/AgentSkillsSection';
 import AgentStatusSection from './agent-detail/AgentStatusSection';
@@ -38,13 +39,13 @@ import { chatApi } from '../api/domains/chat';
 import { uploadFileWithProgress } from '../api/core/upload-progress';
 import { useAuthStore } from '../stores';
 
-const TABS = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings'] as const;
+const TABS = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'office', 'chat', 'activityLog', 'approvals', 'settings'] as const;
 
 /** Visual grouping of tabs for the tab bar — groups are separated by thin dividers */
 const TAB_GROUPS: { tabs: (typeof TABS[number])[]; }[] = [
     { tabs: ['status', 'chat'] },
     { tabs: ['aware', 'mind', 'tools', 'skills'] },
-    { tabs: ['workspace', 'relationships', 'activityLog', 'approvals'] },
+    { tabs: ['workspace', 'office', 'relationships', 'activityLog', 'approvals'] },
     { tabs: ['settings'] },
 ];
 
@@ -54,7 +55,7 @@ function AgentDetailInner() {
     const navigate = useNavigate();
     const queryClient = useQueryClient();
     const location = useLocation();
-    const validTabs = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings'];
+    const validTabs = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'office', 'chat', 'activityLog', 'approvals', 'settings'];
     const hashTab = location.hash?.replace('#', '');
     const [activeTab, setActiveTabRaw] = useState<string>(hashTab && validTabs.includes(hashTab) ? hashTab : 'status');
 
@@ -156,6 +157,7 @@ function AgentDetailInner() {
     const [chatScope, setChatScope] = useState<'mine' | 'all'>('mine');
     const [allUserFilter, setAllUserFilter] = useState<string>('');  // filter by username in All Users
     const [historyMsgs, setHistoryMsgs] = useState<AgentChatMessage[]>([]);
+    const [historyMessagesSessionId, setHistoryMessagesSessionId] = useState<string | null>(null);
     const [sessionsLoading, setSessionsLoading] = useState(false);
     const [allSessionsLoading, setAllSessionsLoading] = useState(false);
     const [agentExpired, setAgentExpired] = useState(false);
@@ -247,12 +249,16 @@ function AgentDetailInner() {
     const selectSession = async (sess: any) => {
         const targetAgentId = id;
         if (!targetAgentId) return;
-        const runtimeKey = buildSessionRuntimeKey(targetAgentId, String(sess.id));
+        const sessionId = String(sess.id);
+        const runtimeKey = buildSessionRuntimeKey(targetAgentId, sessionId);
         const runtimeState = sessionUiStateRef.current[runtimeKey] || { isWaiting: false, isStreaming: false };
-        activeSessionIdRef.current = sess.id;
+        const writableSession = isWritableSession(sess);
+        activeSessionIdRef.current = sessionId;
         setCreatedAgentId(null);
         setChatMessages([]);
+        setChatMessagesSessionId(writableSession ? sessionId : null);
         setHistoryMsgs([]);
+        setHistoryMessagesSessionId(writableSession ? null : sessionId);
         setTransportNotice(null);
         setIsStreaming(runtimeState.isStreaming);
         setIsWaiting(runtimeState.isWaiting);
@@ -266,16 +272,18 @@ function AgentDetailInner() {
         sessionMsgAbortRef.current = controller;
         const loadSeq = ++sessionLoadSeqRef.current;
         try {
-            const msgs = await chatApi.getSessionMessages(targetAgentId, String(sess.id), { signal: controller.signal });
+            const msgs = await chatApi.getSessionMessages(targetAgentId, sessionId, { signal: controller.signal });
             if (controller.signal.aborted || loadSeq !== sessionLoadSeqRef.current) return;
             if (currentAgentIdRef.current !== targetAgentId) return;
-            if (activeSessionIdRef.current !== sess.id) return;
+            if (activeSessionIdRef.current !== sessionId) return;
             const isAgentSession = sess.source_channel === 'agent' || sess.participant_type === 'agent';
             const preParsed = msgs.map((m: any) => parseChatMsg(normalizeStoredChatMessage(m)));
             
             if (!isAgentSession && sess.user_id === String(currentUser?.id)) {
+                setChatMessagesSessionId(sessionId);
                 setChatMessages(preParsed);
             } else {
+                setHistoryMessagesSessionId(sessionId);
                 setHistoryMsgs(preParsed);
             }
         } catch (err: any) {
@@ -308,7 +316,9 @@ function AgentDetailInner() {
                 activeSessionIdRef.current = null;
                 setActiveSession(null);
                 setChatMessages([]);
+                setChatMessagesSessionId(null);
                 setHistoryMsgs([]);
+                setHistoryMessagesSessionId(null);
                 setTransportNotice(null);
                 setWsConnected(false);
                 setIsStreaming(false);
@@ -350,6 +360,7 @@ function AgentDetailInner() {
         setExpirySaving(false);
     };
     const [chatMessages, setChatMessages] = useState<AgentChatMessage[]>([]);
+    const [chatMessagesSessionId, setChatMessagesSessionId] = useState<string | null>(null);
     const [chatInput, setChatInput] = useState('');
     const [wsConnected, setWsConnected] = useState(false);
     const [uploading, setUploading] = useState(false);
@@ -481,7 +492,9 @@ function AgentDetailInner() {
         activeSessionIdRef.current = null;
         setActiveSession(null);
         setChatMessages([]);
+        setChatMessagesSessionId(null);
         setHistoryMsgs([]);
+        setHistoryMessagesSessionId(null);
         setTransportNotice(null);
         setIsStreaming(false);
         setIsWaiting(false);
@@ -585,6 +598,7 @@ function AgentDetailInner() {
                 }
                 return;
             }
+            setChatMessagesSessionId(sessionId);
 
             // Idle dream events — ignored (extraction now per-response, not idle-triggered)
             if (d.type === 'dreaming') {
@@ -811,6 +825,7 @@ function AgentDetailInner() {
         setIsStreaming(false);
         setTransportNotice(null);
         setSessionUiState(activeRuntimeKey, { isWaiting: true, isStreaming: false });
+        setChatMessagesSessionId(String(activeSession.id));
         setChatMessages(prev => [...prev, parseChatMsg({ 
             role: 'user', 
             content: userMsg, 
@@ -1302,6 +1317,10 @@ function AgentDetailInner() {
                 }
 
                 {
+                    activeTab === 'office' && <OfficeWorkbenchSection agentId={id!} />
+                }
+
+                {
                     activeTab === 'chat' && (
                         <AgentChatSection
                             agent={agent}
@@ -1324,11 +1343,13 @@ function AgentDetailInner() {
                             historyContainerRef={historyContainerRef}
                             onHistoryScroll={handleHistoryScroll}
                             historyMsgs={historyMsgs}
+                            historyMessagesSessionId={historyMessagesSessionId}
                             showHistoryScrollBtn={showHistoryScrollBtn}
                             onScrollHistoryToBottom={scrollHistoryToBottom}
                             chatContainerRef={chatContainerRef}
                             onChatScroll={handleChatScroll}
                             chatMessages={chatMessages}
+                            chatMessagesSessionId={chatMessagesSessionId}
                             runtimeSummary={runtimeSummary}
                             transportNotice={transportNotice}
                             isWaiting={isWaiting}

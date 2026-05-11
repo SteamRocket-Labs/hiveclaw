@@ -6,15 +6,14 @@ from pathlib import Path
 from typing import Any
 
 from app.services.deep_research.evaluator import ResearchEvaluator
+from app.services.deep_research.extractor import extract_claims_from_source
 from app.services.deep_research.ledger import EvidenceLedger
 from app.services.deep_research.planner import build_research_plan
 from app.services.deep_research.reader import ResearchReader
 from app.services.deep_research.schemas import (
-    ClaimStatus,
     ResearchRequest,
     ResearchRun,
     ResearchStep,
-    SourceRecord,
     SourceType,
     new_id,
 )
@@ -40,6 +39,7 @@ class DeepResearchOrchestrator:
         reader = ResearchReader(self.tool_invoker)
         accepted_sources = 0
         evaluation = None
+        seen_source_urls: set[str] = set()
 
         for round_index in range(1, request.max_rounds + 1):
             writer.append_step(_step("search", "running", f"Starting research round {round_index}."))
@@ -57,6 +57,11 @@ class DeepResearchOrchestrator:
             for candidate in candidates:
                 if accepted_sources >= request.max_sources:
                     break
+                if candidate.url in seen_source_urls:
+                    writer.append_step(
+                        _step("read", "skipped", f"Skipped duplicate candidate URL {candidate.url}.")
+                    )
+                    continue
                 source_type = _source_type_for_lane(candidate.lane_id)
                 fetched = await reader.fetch_candidate(candidate, source_type=source_type)
                 if fetched is None:
@@ -74,8 +79,9 @@ class DeepResearchOrchestrator:
                     query=fetched.query,
                     fetch_tool=fetched.fetch_tool,
                 )
+                seen_source_urls.add(source.url)
                 accepted_sources += 1
-                _extract_claims(ledger, source)
+                extract_claims_from_source(ledger, source)
                 writer.append_step(
                     _step("read", "completed", f"Fetched and ledgered {source.url}.", {"source_id": source.source_id})
                 )
@@ -96,7 +102,12 @@ class DeepResearchOrchestrator:
         if evaluation is None:
             evaluation = self.evaluator.evaluate(request=request, ledger=ledger, round_index=request.max_rounds)
 
-        status = "completed" if ledger.sources and evaluation.quality_gates.get("attribution") == "passed" else "failed"
+        failed_gates = {gate for gate, state in evaluation.quality_gates.items() if state == "failed"}
+        status = (
+            "completed"
+            if ledger.sources and evaluation.quality_gates.get("attribution") == "passed" and not failed_gates
+            else "failed"
+        )
         return writer.finalize(request=request, plan=plan, ledger=ledger, evaluation=evaluation, status=status)
 
 
@@ -141,30 +152,3 @@ def _source_type_for_lane(lane_id: str) -> SourceType:
         "technical": SourceType.TECHNICAL,
         "secondary": SourceType.SECONDARY,
     }.get(lane_id, SourceType.UNKNOWN)
-
-
-def _extract_claims(ledger: EvidenceLedger, source: SourceRecord) -> None:
-    sentence = _first_material_sentence(source.content)
-    if not sentence:
-        ledger.add_claim(
-            text=f"No material claim extracted from {source.title}.",
-            status=ClaimStatus.UNSUPPORTED,
-            source_ids=[],
-            evidence="Fetched source did not contain enough textual evidence.",
-        )
-        return
-    ledger.add_claim(
-        text=sentence,
-        status=ClaimStatus.VERIFIED,
-        source_ids=[source.source_id],
-        evidence=sentence,
-    )
-
-
-def _first_material_sentence(content: str) -> str:
-    normalized = " ".join((content or "").split())
-    for sentence in normalized.split(". "):
-        cleaned = sentence.strip().strip(".")
-        if len(cleaned) >= 30:
-            return cleaned + "."
-    return ""

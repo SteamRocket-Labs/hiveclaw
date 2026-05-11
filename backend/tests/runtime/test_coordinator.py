@@ -80,6 +80,9 @@ class TestCoordinatorMode:
         assert "list_objectives" in COORDINATOR_ALLOWED_TOOLS
         assert "update_objective" in COORDINATOR_ALLOWED_TOOLS
         assert "complete_objective" in COORDINATOR_ALLOWED_TOOLS
+        assert "set_trigger" in COORDINATOR_ALLOWED_TOOLS
+        assert "update_trigger" in COORDINATOR_ALLOWED_TOOLS
+        assert "cancel_trigger" in COORDINATOR_ALLOWED_TOOLS
         assert "read_file" in COORDINATOR_ALLOWED_TOOLS
         # But NOT domain tools
         assert "web_search" not in COORDINATOR_ALLOWED_TOOLS

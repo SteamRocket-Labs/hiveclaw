@@ -33,6 +33,8 @@ COORDINATOR_ALLOWED_TOOLS = frozenset(
         "update_objective",
         "complete_objective",
         "set_trigger",
+        "update_trigger",
+        "cancel_trigger",
         "list_triggers",
         "read_file",
         "write_file",
@@ -150,7 +152,7 @@ Direct-use tools (in coordinator mode):
 - `check_async_task`, `list_async_tasks`, `cancel_async_task` — task lifecycle
 - `send_message_to_agent` — steer an already-running worker
 - `list_objectives`, `propose_objective`, `update_objective`, `complete_objective` — manage coordination state in the Objective Ledger
-- `set_trigger`, `list_triggers` — schedule follow-up wake policies; Trigger is wake policy, not the goal
+- `set_trigger`, `update_trigger`, `cancel_trigger`, `list_triggers` — manage follow-up wake policies; Trigger is wake policy, not the goal
 - `read_file`, `write_file`, `list_files` — ONLY for coordination artifacts
   (plans, synthesis notes, tracking files). NOT for domain work.
 - `get_current_time` — timestamp your reports

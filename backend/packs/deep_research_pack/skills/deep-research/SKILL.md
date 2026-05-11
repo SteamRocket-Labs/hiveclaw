@@ -53,7 +53,8 @@ dedicated tools are unavailable.
 3. Use `deep_research_start` for broad requests, flagship research, or when the user expects a reusable artifact.
 4. After `deep_research_start`, report the `task_id` and use `deep_research_check` for status instead of restarting the work.
 5. Treat `sources.jsonl`, `claims.jsonl`, `steps.jsonl`, `evaluation.jsonl`, `report.md`, and `final.json` as the source of truth.
-6. If quality gates fail, lead with the gaps and unsupported claims. Do not present a partial report as completed.
+6. For user-visible delivery, show the `workspace/deep_research_reports/<task_id>/...` path returned by `deep_research_check` or `deep_research_export`; do not present `runtime_artifacts/...` as the user's report path.
+7. If quality gates fail, lead with the gaps and unsupported claims. Do not present a partial report as completed.
 
 ## Hard Rules
 
@@ -62,6 +63,9 @@ dedicated tools are unavailable.
 - Every material claim must be source-bound or marked `unsupported`.
 - If fetched sources are insufficient, return gaps and next checks.
 - Prefer `deep_research_start` over manual delegation for large research; the tool owns progress, ledger, and artifacts.
+- Do not call `deep_research_run` for `depth=full` or `depth=flagship`; use `deep_research_start` directly.
+- Do not use `set_trigger` or `update_trigger` to poll Deep Research tasks. Use `deep_research_check` and the RuntimeTask/artifact UI.
+- Do not synthesize a separate report with `write_file`; use `deep_research_export` and summarize the workspace-visible Deep Research artifact paths instead.
 - Do not request or use raw web tools from this skill's normal tool surface. Web search/fetch belongs inside the Deep Research engine.
 - Use fallback web research only to recover when the dedicated Deep Research tool is unavailable or blocked, and explicitly label the output as fallback/partial.
 

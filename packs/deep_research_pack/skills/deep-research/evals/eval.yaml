@@ -1,0 +1,12 @@
+name: deep-research
+cases:
+  - name: topic_research_uses_sources
+    input: "Research this product category and cite sources."
+    expected_tools:
+      - web_search
+      - web_fetch
+  - name: audit_existing_draft
+    input: "Audit this draft against its source ledger."
+    expected_tools:
+      - read_file
+      - web_fetch

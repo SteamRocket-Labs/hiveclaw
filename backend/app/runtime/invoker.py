@@ -462,7 +462,11 @@ def _infer_active_packs(
     declared_pack_names: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     requested = set(tool_names)
-    packs = [_serialize_pack(pack) for pack in TOOL_PACKS if requested.intersection(pack.tools)]
+    packs = [
+        _serialize_pack(pack)
+        for pack in TOOL_PACKS
+        if pack.infer_from_tools and requested.intersection(pack.tools)
+    ]
     existing_names = {pack["name"] for pack in packs}
     for pack_name in declared_pack_names or []:
         if pack_name in existing_names:

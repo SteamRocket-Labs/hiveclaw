@@ -147,12 +147,10 @@ def _load_manifest_pack_catalog() -> list[dict]:
 
 def get_pack_catalog() -> list[dict]:
     """Return full pack catalog with capability annotations."""
-    catalog = [_pack_to_dict(p) for p in TOOL_PACKS]
-    existing_names = {pack["name"] for pack in catalog}
+    catalog_by_name = {pack.name: _pack_to_dict(pack) for pack in TOOL_PACKS}
     for manifest_pack in _load_manifest_pack_catalog():
-        if manifest_pack["name"] not in existing_names:
-            catalog.append(manifest_pack)
-    return catalog
+        catalog_by_name[manifest_pack["name"]] = manifest_pack
+    return list(catalog_by_name.values())
 
 
 async def get_tenant_pack_catalog(db: AsyncSession, tenant_id: uuid.UUID | None) -> list[dict]:
@@ -309,17 +307,28 @@ def collect_skill_declared_packs(skills: list[ParsedSkill]) -> list[dict]:
     grouped: dict[str, dict[str, set[str]]] = defaultdict(lambda: {"skills": set(), "tools": set()})
 
     for skill in skills:
-        explicit_packs = tuple(skill.metadata.declared_packs or ())
+        explicit_packs = tuple(
+            pack_name
+            for pack_name in [*(skill.metadata.declared_packs or ()), skill.metadata.pack]
+            if pack_name
+        )
         inferred_packs = infer_static_pack_names(skill.metadata.declared_tools)
-        pack_names: list[str] = []
+        pack_names: list[tuple[str, bool]] = []
         seen: set[str] = set()
         for pack_name in [*explicit_packs, *inferred_packs]:
             if pack_name and pack_name not in seen:
-                pack_names.append(pack_name)
+                pack_names.append((pack_name, pack_name in explicit_packs))
                 seen.add(pack_name)
-        for pack_name in pack_names:
+        for pack_name, is_explicit in pack_names:
+            declared_tools = tuple(skill.metadata.declared_tools)
+            pack_tools = declared_tools
+            if not is_explicit:
+                base = pack_for_name(pack_name)
+                if base:
+                    allowed_tools = set(base.tools)
+                    pack_tools = tuple(tool for tool in declared_tools if tool in allowed_tools)
             grouped[pack_name]["skills"].add(skill.metadata.name)
-            grouped[pack_name]["tools"].update(skill.metadata.declared_tools)
+            grouped[pack_name]["tools"].update(pack_tools)
 
     result: list[dict] = []
     for pack_name in sorted(grouped):

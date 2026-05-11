@@ -197,6 +197,9 @@ def test_collect_real_handlers_include_finance_pack_tools():
     assert expected <= names
     assert expected <= set(collected.pack_tool_groups["finance_pack"])
 
+    seed_by_name = {tool["name"]: tool for tool in collected.seed_list}
+    assert all(seed_by_name[name]["is_default"] is False for name in expected)
+
 
 def test_handler_module_manifest_matches_handlers_directory():
     actual = {

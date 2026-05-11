@@ -1,0 +1,6 @@
+name: finance-research
+cases:
+  - name: provider_status_only
+    input: "Check finance provider readiness."
+    expected_tools:
+      - finance_get_provider_status

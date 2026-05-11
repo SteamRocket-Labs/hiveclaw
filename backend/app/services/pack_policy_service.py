@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.system_settings import SystemSetting
+from app.packs.catalog_reader import PackCatalogReader, find_pack_dirs
+
+
+_MANIFEST_DEFAULT_ENABLEMENT: dict[str, bool] | None = None
 
 
 def tenant_pack_policy_key(tenant_id: uuid.UUID) -> str:
@@ -49,5 +54,30 @@ async def set_tenant_pack_policy(
     return policies
 
 
+def _manifest_default_enablement() -> dict[str, bool]:
+    """Return default enablement from pack manifests.
+
+    Static runtime packs without a manifest keep the historical default of
+    enabled. Manifest-backed packs must honor `activation.default_state`; an
+    inactive catalog package should not silently become available tenant-wide.
+    """
+    global _MANIFEST_DEFAULT_ENABLEMENT
+    if _MANIFEST_DEFAULT_ENABLEMENT is not None:
+        return _MANIFEST_DEFAULT_ENABLEMENT
+
+    defaults: dict[str, bool] = {}
+    for packs_dir in find_pack_dirs(Path(__file__).resolve()):
+        reader = PackCatalogReader(packs_dir)
+        reader.discover()
+        for manifest in reader.list_packs():
+            state = str((manifest.activation or {}).get("default_state") or "active").strip().lower()
+            defaults.setdefault(manifest.name, state in {"active", "enabled", "on", "true", "1"})
+
+    _MANIFEST_DEFAULT_ENABLEMENT = defaults
+    return defaults
+
+
 def is_pack_enabled(pack_policies: dict[str, bool], pack_name: str) -> bool:
-    return pack_policies.get(pack_name, True)
+    if pack_name in pack_policies:
+        return bool(pack_policies[pack_name])
+    return _manifest_default_enablement().get(pack_name, True)

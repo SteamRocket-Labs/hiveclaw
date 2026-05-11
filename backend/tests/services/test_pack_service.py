@@ -51,7 +51,7 @@ def test_manifest_backed_packs_are_catalog_only():
     assert finance["source"] == "manifest"
     assert finance["runtime_source_of_truth"] == "tool_decorator"
     assert "finance_compile_research_packet" in finance["tools"]
-    assert "skills/secondary-equity-deep-dive" in finance["skills"]
+    assert finance["skills"] == ["skills/finance-research"]
     assert finance["credential_requirements"]
     assert finance["requires_channel"] is None
 
@@ -237,6 +237,38 @@ def test_collect_skill_declared_packs_merges_explicit_and_inferred_packs():
         {
             "name": "web_pack",
             "skills": ["Web Research"],
+            "tools": ["firecrawl_fetch", "web_search"],
+        },
+    ]
+
+
+def test_collect_skill_declared_packs_uses_metadata_pack_without_tool_inference_noise():
+    skills = [
+        ParsedSkill(
+            metadata=SkillMetadata(
+                name="Deep Research",
+                description="",
+                declared_tools=("web_search", "firecrawl_fetch", "read_file"),
+                declared_packs=(),
+                pack="deep_research_pack",
+            ),
+            body="# Deep Research",
+            file_path=SimpleNamespace(),
+            relative_path="skills/deep-research/SKILL.md",
+        )
+    ]
+
+    declared = collect_skill_declared_packs(skills)
+
+    assert declared == [
+        {
+            "name": "deep_research_pack",
+            "skills": ["Deep Research"],
+            "tools": ["firecrawl_fetch", "read_file", "web_search"],
+        },
+        {
+            "name": "web_pack",
+            "skills": ["Deep Research"],
             "tools": ["firecrawl_fetch", "web_search"],
         },
     ]

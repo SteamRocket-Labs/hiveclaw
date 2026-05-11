@@ -66,13 +66,7 @@ tools:
       security_zone: public
 
 skills:
-  - skills/secondary-equity-deep-dive
-  - skills/dcf-valuation
-  - skills/comps-valuation
-  - skills/ipo-pipeline-monitor
-  - skills/primary-market-due-diligence
-  - skills/portfolio-risk-review
-  - skills/ic-memo-generator
+  - skills/finance-research
 
 mcp_servers:
   - name: openbb_optional

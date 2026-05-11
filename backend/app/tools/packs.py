@@ -14,6 +14,7 @@ class ToolPackSpec:
     source: str
     activation_mode: str
     tools: tuple[str, ...]
+    infer_from_tools: bool = True
 
 
 TOOL_PACKS: tuple[ToolPackSpec, ...] = (
@@ -94,9 +95,9 @@ TOOL_PACKS: tuple[ToolPackSpec, ...] = (
     ),
     ToolPackSpec(
         name="finance_pack",
-        summary="金融数据与分析能力：覆盖美股/港股/A股的实体识别、行情、财报、备案、IPO、融资、DCF/Comps 估值、研究包打包与端到端工作流。",
+        summary="金融数据与分析能力。当前为非默认实验能力，需租户显式启用并配置真实数据源后使用。",
         source="system",
-        activation_mode="通过 finance 类 skill（dcf-valuation/comps-valuation/ic-memo-generator 等）显式激活",
+        activation_mode="默认关闭；仅在租户显式启用 finance_pack 后供诊断或受控试用",
         tools=(
             "finance_get_provider_status",
             "finance_resolve_entity",
@@ -116,9 +117,9 @@ TOOL_PACKS: tuple[ToolPackSpec, ...] = (
     ),
     ToolPackSpec(
         name="office_pack",
-        summary="办公生产力能力：复用文件读写与代码执行能力，结合 docx/pdf/pptx/xlsx/会议纪要/周报/Pitch Deck 等 skill 流水线。",
+        summary="办公生产力能力：通过一个 Office Productivity skill 路由 DOCX、XLSX、PPTX、PDF、会议纪要、周报和 Pitch Deck。",
         source="system",
-        activation_mode="通过 office 类 skill（docx-generator/pdf-generator/weekly-report-generator 等）显式激活",
+        activation_mode="通过 Office Productivity skill 显式激活",
         tools=(
             "read_file",
             "read_document",
@@ -128,12 +129,13 @@ TOOL_PACKS: tuple[ToolPackSpec, ...] = (
             "execute_code",
             "send_channel_file",
         ),
+        infer_from_tools=False,
     ),
     ToolPackSpec(
         name="deep_research_pack",
-        summary="带来源归因的深度研究能力：复用网页搜索/抓取与文件读写，配合 topic-deep-dive/industry-research/source-ledger-audit 等 skill。",
+        summary="带来源归因的深度研究能力：通过一个 Deep Research skill 路由 topic、industry 和 source-ledger audit 模式。",
         source="system",
-        activation_mode="通过 research 类 skill（topic-deep-dive/industry-research/source-ledger-audit）显式激活",
+        activation_mode="通过 Deep Research skill 显式激活",
         tools=(
             "web_search",
             "web_fetch",
@@ -143,6 +145,7 @@ TOOL_PACKS: tuple[ToolPackSpec, ...] = (
             "write_file",
             "edit_file",
         ),
+        infer_from_tools=False,
     ),
 )
 
@@ -188,7 +191,7 @@ def pack_for_name(name: str) -> ToolPackSpec | None:
 
 
 def static_pack_names_for_tool(tool_name: str) -> tuple[str, ...]:
-    return tuple(pack.name for pack in TOOL_PACKS if tool_name in pack.tools)
+    return tuple(pack.name for pack in TOOL_PACKS if pack.infer_from_tools and tool_name in pack.tools)
 
 
 def infer_static_pack_names(tool_names: list[str] | tuple[str, ...]) -> tuple[str, ...]:

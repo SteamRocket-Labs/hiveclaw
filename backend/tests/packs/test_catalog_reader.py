@@ -102,11 +102,11 @@ def test_repo_pack_manifests_cover_cloud_capability_packs():
 
     assert {"deep_research_pack", "finance_pack", "office_pack"}.issubset(manifests)
     assert "finance_compile_research_packet" in manifests["finance_pack"].tool_names
-    assert "skills/secondary-equity-deep-dive" in manifests["finance_pack"].skills
+    assert manifests["finance_pack"].skills == ("skills/finance-research",)
     assert manifests["finance_pack"].credential_requirements
     assert manifests["finance_pack"].data_sources["public_default"]
-    assert "skills/topic-deep-dive" in manifests["deep_research_pack"].skills
-    assert "skills/weekly-report-generator" in manifests["office_pack"].skills
+    assert manifests["deep_research_pack"].skills == ("skills/deep-research",)
+    assert manifests["office_pack"].skills == ("skills/office-productivity",)
 
 
 def test_repo_and_deploy_pack_manifests_are_full_skill_packages():

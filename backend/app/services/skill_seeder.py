@@ -8,16 +8,7 @@ from sqlalchemy import select
 
 from app.database import async_session
 from app.models.skill import Skill, SkillFile
-
-
-RETIRED_BUILTIN_SKILL_FOLDERS = {
-    "web-research-guide",
-    "data-analysis",
-    "content-writing",
-    "competitive-analysis",
-    "meeting-notes",
-    "content-research-writer",
-}
+from app.skills.retired import RETIRED_BUILTIN_SKILL_FOLDERS
 
 
 def _is_seedable_skill_template_file(path: Path) -> bool:
@@ -88,6 +79,9 @@ def _load_pack_skill_dicts() -> list[dict]:
         reader = PackCatalogReader(packs_dir)
         reader.discover()
         for manifest in reader.list_packs():
+            if manifest.name == "finance_pack":
+                logger.info("[SkillSeeder] Skipping finance_pack skills; finance runtime is not default-ready")
+                continue
             pack_root = packs_dir / manifest.name
             pack_category = manifest.name.replace("_pack", "")
             for skill_rel in manifest.skills:
@@ -411,15 +405,6 @@ Plan would be:
         "files": [],  # populated at runtime from templates/system_skills/
     },
     {
-        "name": "Finance Research",
-        "description": "Finance data, valuation, filings, primary-market diligence, IPO pipeline, and research workflow guide",
-        "category": "finance",
-        "icon": "💹",
-        "folder_name": "finance-research",
-        "is_default": True,
-        "files": [],  # populated at runtime from templates/system_skills/
-    },
-    {
         "name": "Memory Guide",
         "description": "Authoritative rules for save_memory / search_memory — categories, T3 routing, escape-hatch conditions",
         "category": "system",
@@ -517,7 +502,6 @@ async def seed_skills():
                 "feishu-integration",
                 "plaza-guide",
                 "email-guide",
-                "finance-research",
                 "dingtalk-integration",
                 "atlassian-rovo",
                 "memory-guide",
@@ -644,7 +628,11 @@ def remove_retired_builtin_skill_dirs(
         target = skills_dir / folder_name
         if not target.exists():
             continue
-        shutil.rmtree(target)
+        try:
+            shutil.rmtree(target)
+        except OSError as exc:
+            logger.warning("[SkillSeeder] Failed to remove retired skill folder {}: {}", target, exc)
+            continue
         removed.append(folder_name)
     return removed
 

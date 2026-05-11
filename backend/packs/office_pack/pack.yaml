@@ -86,13 +86,7 @@ tools:
       credential_scope: tenant
 
 skills:
-  - skills/docx-generator
-  - skills/xlsx-processor
-  - skills/pptx-generator
-  - skills/pdf-generator
-  - skills/weekly-report-generator
-  - skills/meeting-minutes
-  - skills/pitch-deck-generator
+  - skills/office-productivity
 
 data_sources:
   public_default:

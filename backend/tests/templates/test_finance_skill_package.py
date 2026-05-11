@@ -49,12 +49,10 @@ def test_finance_system_skill_is_a_full_package_and_declares_runtime_tools() -> 
     assert (FINANCE_SYSTEM_SKILL / "evals" / "eval.yaml").is_file()
 
 
-def test_finance_skill_is_seeded_as_default_builtin_skill() -> None:
+def test_finance_skill_is_not_seeded_until_runtime_is_real() -> None:
     finance_skill = next((skill for skill in BUILTIN_SKILLS if skill["folder_name"] == "finance-research"), None)
 
-    assert finance_skill is not None
-    assert finance_skill["is_default"] is True
-    assert finance_skill["category"] == "finance"
+    assert finance_skill is None
 
 
 def test_finance_pack_manifest_skill_paths_exist() -> None:

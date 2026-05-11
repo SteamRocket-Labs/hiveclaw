@@ -1,0 +1,13 @@
+name: office-productivity
+cases:
+  - name: create_docx
+    input: "Create a Word memo from these notes."
+    expected_tools:
+      - read_file
+      - execute_code
+      - send_channel_file
+  - name: summarize_meeting
+    input: "Turn this transcript into meeting minutes."
+    expected_tools:
+      - read_file
+      - write_file

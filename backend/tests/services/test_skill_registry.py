@@ -63,6 +63,31 @@ def test_skill_parser_and_registry_preserve_declared_tools(tmp_path):
     assert registry.load_body("Web Research").startswith("# Web Research")
 
 
+def test_skill_loader_ignores_retired_builtin_skill_folders(tmp_path):
+    from app.skills.loader import WorkspaceSkillLoader
+    from app.skills.registry import SkillRegistry
+
+    workspace = tmp_path / "agent"
+    retired_skill = workspace / "skills" / "meeting-minutes"
+    active_skill = workspace / "skills" / "deep-research"
+    retired_skill.mkdir(parents=True)
+    active_skill.mkdir()
+    (retired_skill / "SKILL.md").write_text(
+        "---\nname: Meeting Minutes\ndescription: retired\n---\n# Meeting Minutes\n",
+        encoding="utf-8",
+    )
+    (active_skill / "SKILL.md").write_text(
+        "---\nname: Deep Research\ndescription: active\n---\n# Deep Research\n",
+        encoding="utf-8",
+    )
+
+    loader = WorkspaceSkillLoader()
+    registry = SkillRegistry()
+    registry.register_many(loader.load_from_workspace(workspace))
+
+    assert sorted(registry.names()) == ["Deep Research"]
+
+
 def test_skill_parser_supports_declared_packs(tmp_path):
     from app.skills.loader import WorkspaceSkillLoader
     from app.skills.registry import SkillRegistry

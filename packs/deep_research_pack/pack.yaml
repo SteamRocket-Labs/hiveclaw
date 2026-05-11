@@ -63,9 +63,7 @@ tools:
       credential_scope: tenant
 
 skills:
-  - skills/topic-deep-dive
-  - skills/industry-research
-  - skills/source-ledger-audit
+  - skills/deep-research
 
 data_sources:
   public_default:

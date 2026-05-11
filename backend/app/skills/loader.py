@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .parser import SkillParser
+from .retired import RETIRED_BUILTIN_SKILL_FOLDERS
 from .types import ParsedSkill
 
 RESOURCE_DIRS = frozenset({"references", "scripts", "templates", "assets", "evals"})
@@ -24,6 +25,8 @@ class WorkspaceSkillLoader:
         skills: list[ParsedSkill] = []
         for entry in sorted(skills_dir.iterdir()):
             if entry.name.startswith("."):
+                continue
+            if entry.name in RETIRED_BUILTIN_SKILL_FOLDERS:
                 continue
 
             if entry.is_dir():
@@ -100,6 +103,8 @@ class WorkspaceSkillLoader:
             return None
 
         normalized = self._normalize(skill_name)
+        if normalized in RETIRED_BUILTIN_SKILL_FOLDERS:
+            return None
         for parsed in self.load_from_workspace(workspace):
             if self._normalize(parsed.metadata.name) == normalized:
                 parent = parsed.file_path.parent

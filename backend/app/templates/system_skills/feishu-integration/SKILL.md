@@ -1,6 +1,6 @@
 ---
 name: Feishu Integration
-description: Feishu/Lark messaging, docs, wiki, sheets, base, approvals, tasks, and calendar guide
+description: "Use when Codex needs to perform real Feishu or Lark work, including messaging, docs, wiki, sheets, Base, approvals, tasks, and calendar actions through configured platform tools."
 tools:
   - send_feishu_message
   - feishu_user_search
@@ -33,6 +33,7 @@ tools:
   - feishu_calendar_delete
 is_system: true
 ---
+
 
 # Feishu Office Suite
 
@@ -289,3 +290,10 @@ DO NOT do any of these:
 - Destructive operations (delete, overwrite) only happen after explicit user confirmation in this session.
 - When a tool fails with a config error, you report the exact missing piece (App ID? scope? approval_code?) rather than "feishu isn't working".
 </success_criteria>
+
+## Bundled Resources
+
+Load resources by need, not by default:
+
+- `references/feishu-scope-boundary.md`: read only when this request needs its detailed rules, examples, or boundary notes.
+- `templates/feishu-action-plan.md`: use as the output scaffold when creating this artifact type.

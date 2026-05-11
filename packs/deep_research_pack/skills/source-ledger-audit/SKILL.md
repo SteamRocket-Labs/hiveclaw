@@ -1,6 +1,6 @@
 ---
 name: Source Ledger Audit
-description: Audit a research draft against its source ledger and flag unsupported claims, stale sources, and citation gaps.
+description: "Use when Codex needs to audit a draft, report, memo, or deck against cited sources, classify unsupported claims, stale evidence, contradictions, and replacement citation needs."
 tools:
   - read_file
   - web_fetch
@@ -10,37 +10,51 @@ tools:
   - edit_file
   - send_channel_file
 metadata:
-  version: "0.1"
+  version: '0.1'
   category: research
 ---
 
 # Source Ledger Audit
 
-Use this skill when the user already has a draft, report, memo, or research
-packet and wants evidence quality checked before sharing it.
+<role>
+Use when Codex needs to audit a draft, report, memo, or deck against cited sources, classify unsupported claims, stale evidence, contradictions, and replacement citation needs.
+</role>
 
-## Audit Steps
+<when_to_use>
+- The user asks for Source Ledger Audit output or a closely related workflow.
+- The task requires the declared tools, bundled references, or templates in this skill.
+- The result must be reusable, source-aware, or artifact-shaped rather than a short ad hoc answer.
+</when_to_use>
 
-1. Load the draft and source ledger with `read_file`.
-2. Re-fetch material sources with `web_fetch` when URLs are available.
-3. Use `firecrawl_fetch` or `xcrawl_scrape` only if configured and normal fetch
-   is blocked.
-4. Mark each material claim as supported, partially supported, contradicted, or
-   unsupported.
-5. Write an audit report with `write_file`. Use `edit_file` only if the user
-   asks to patch the original draft.
+## Operating Procedure
 
-## Finding Categories
+1. Read the draft and existing source ledger before judging any claim.
+2. Fetch every cited source with `web_fetch`; do not trust citation labels without source text.
+3. Classify each material claim as verified, inferred, contradicted, stale, or unsupported.
+4. Lead the output with blocking unsupported claims before prose suggestions.
+5. Write patch-ready replacement wording and replacement citation targets when available.
 
-- Unsupported claim.
-- Source does not say what the draft claims.
-- Stale source for a time-sensitive point.
-- Missing publisher, date, or URL.
-- Contradiction between sources.
-- Citation overreach.
+## Quality Bar
 
-## Output Standard
+- Do not invent facts, owners, dates, recipients, source evidence, or external system state.
+- Prefer deterministic scripts or templates when the skill bundles them for this workflow.
+- Keep the final output focused on the artifact or decision the user requested.
+- Surface missing credentials, unavailable tools, stale data, and unsupported claims as blockers instead of silently working around them.
 
-Lead with blocking findings, then provide a claim table. Keep line references or
-section names when available so the author can fix the draft quickly.
+<anti_patterns>
+- Do not treat a search result, filename, or prior memory as proof without reading the underlying source or file.
+- Do not load every reference file by default; use progressive disclosure and read only the relevant resource.
+- Do not call destructive or externally visible tools unless the user asked for that action and required confirmation is satisfied.
+</anti_patterns>
 
+<examples>
+- Input: "Create the requested artifact from these notes." Output: inspect the inputs, load the relevant template/reference, call the declared tools, save the artifact, and report validation notes.
+- Input: "Check whether this is safe / supported / current." Output: gather evidence first, classify unsupported or stale claims, and give a direct recommendation with source or file references.
+</examples>
+
+## Bundled Resources
+
+Load resources by need, not by default:
+
+- `references/playbook.md`: read only when this request needs its detailed rules, schemas, examples, or domain playbook.
+- `templates/report.md`: use as the output scaffold when creating this artifact type.

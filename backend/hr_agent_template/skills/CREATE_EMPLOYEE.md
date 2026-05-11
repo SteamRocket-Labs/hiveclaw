@@ -1,7 +1,15 @@
 ---
 name: create_employee
-description: Agent hiring guide — blueprint-first creation, builtin-first capability routing, and explicit setup warnings
-tools: [preview_agent_blueprint, create_digital_employee, discover_resources, search_clawhub, web_search, web_fetch, firecrawl_fetch, execute_code]
+description: "Use when Codex needs to create a digital employee through a blueprint-first HR workflow, route capabilities with builtin-first discipline, preview before creation, and require explicit confirmation."
+tools:
+  - preview_agent_blueprint
+  - create_digital_employee
+  - discover_resources
+  - search_clawhub
+  - web_search
+  - web_fetch
+  - firecrawl_fetch
+  - execute_code
 ---
 
 # Create Digital Employee — Blueprint Guide

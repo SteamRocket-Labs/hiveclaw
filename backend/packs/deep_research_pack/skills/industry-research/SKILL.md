@@ -1,6 +1,6 @@
 ---
 name: Industry Research
-description: Market and industry research workflow covering market structure, value chain, competitors, regulation, and adoption signals.
+description: "Use when Codex needs to build an industry landscape, market map, competitor structure, adoption signal review, regulatory scan, and source-attributed research report."
 tools:
   - web_search
   - web_fetch
@@ -11,7 +11,7 @@ tools:
   - delegate_to_agent
   - send_channel_file
 metadata:
-  version: "0.1"
+  version: '0.1'
   category: research
 ---
 
@@ -48,3 +48,20 @@ competitor scans, and customer-facing research packets.
 - Separate market facts from strategic interpretation.
 - Do not fabricate market size if the source set is weak.
 
+## Bundled Resources
+
+Load resources by need, not by default:
+
+- `references/playbook.md`: read only when this request needs its detailed rules, schemas, examples, or domain playbook.
+- `templates/report.md`: use as the output scaffold when creating this artifact type.
+
+## Anti-patterns
+
+- Do not treat a search result, filename, or prior memory as proof without reading the underlying source or file.
+- Do not load every reference file by default; use progressive disclosure and read only the relevant resource.
+- Do not call destructive or externally visible tools unless the user asked for that action and required confirmation is satisfied.
+
+## Examples
+
+- Input: "Create the requested artifact from these notes." Output: inspect the inputs, load the relevant template/reference, call the declared tools, save the artifact, and report validation notes.
+- Input: "Check whether this is safe / supported / current." Output: gather evidence first, classify unsupported or stale claims, and give a direct recommendation with source or file references.

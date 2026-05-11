@@ -1,6 +1,6 @@
 ---
 name: Delegation Guide
-description: Multi-agent delegation decisions, instruction quality, and async task lifecycle
+description: "Use when Codex needs to delegate bounded work to another agent, monitor asynchronous tasks, decide what must remain local, and reconcile delegated results into the current task."
 tools:
   - delegate_to_agent
   - send_message_to_agent
@@ -9,6 +9,7 @@ tools:
   - list_async_tasks
 is_system: true
 ---
+
 
 # Delegation Guide
 
@@ -186,3 +187,10 @@ You get the reply in the current round and relay it to the user.
 - You verify with `check_async_task` before claiming the delegated work is done.
 - Objective ledger is updated when delegated work produces follow-on tasks or completions.
 </success_criteria>
+
+## Bundled Resources
+
+Load resources by need, not by default:
+
+- `references/delegation-quality.md`: read only when this request needs its detailed rules, examples, or boundary notes.
+- `templates/delegation-brief.md`: use as the output scaffold when creating this artifact type.

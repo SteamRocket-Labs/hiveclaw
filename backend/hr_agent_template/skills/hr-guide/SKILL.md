@@ -1,12 +1,13 @@
 ---
 name: HR Guide
-description: Creating new digital employees — clarifying the role, previewing blueprints, searching installable skills on ClawHub, and issuing the final create call.
+description: "Use when Codex needs to hire or create a new digital employee, clarify role and mission, preview the blueprint, avoid duplicate colleagues, and call creation only after confirmation."
 tools:
   - search_clawhub
   - preview_agent_blueprint
   - create_digital_employee
 is_system: true
 ---
+
 
 # HR Guide
 

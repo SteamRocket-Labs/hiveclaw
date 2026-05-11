@@ -1,0 +1,16 @@
+name: hr-guide
+cases:
+  - name: preview_before_create
+    input: "Create a research analyst digital employee for weekly source-backed market briefs."
+    expected_tools:
+      - preview_agent_blueprint
+    expected_behavior:
+      - clarify mission, users, outputs, boundaries, and first objective
+      - preview the blueprint before creating the employee
+  - name: create_only_after_confirmation
+    input: "The blueprint is approved; create the employee with the same fields."
+    expected_tools:
+      - create_digital_employee
+    expected_behavior:
+      - require explicit confirmation before creation
+      - preserve the previewed blueprint fields

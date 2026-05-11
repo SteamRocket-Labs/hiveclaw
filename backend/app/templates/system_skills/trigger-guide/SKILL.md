@@ -1,6 +1,6 @@
 ---
 name: Trigger Management Guide
-description: Trigger creation, type selection, reason writing, and objective wake-policy binding
+description: "Use when Codex needs to create, inspect, update, or cancel reminders and recurring triggers while separating wake policy from the underlying objective and completion evidence."
 tools:
   - set_trigger
   - update_trigger
@@ -8,6 +8,7 @@ tools:
   - list_triggers
 is_system: true
 ---
+
 
 # Trigger Management Guide
 
@@ -213,3 +214,10 @@ set_trigger(type="cron",
 - Standalone scheduled jobs use trigger_class="scheduled_job" and declare context_from when they depend on prior context.
 - `list_triggers` is consulted before creating new triggers to avoid duplicates.
 </success_criteria>
+
+## Bundled Resources
+
+Load resources by need, not by default:
+
+- `references/trigger-design.md`: read only when this request needs its detailed rules, examples, or boundary notes.
+- `templates/trigger-reason.md`: use as the output scaffold when creating this artifact type.

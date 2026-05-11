@@ -1,14 +1,14 @@
 name: find-skills
 cases:
-  - name: discover_safe_external_skill
-    input: "Find a reputable skill for React performance review."
-    expected_tools:
-      - execute_code
-      - web_fetch
-    expected_artifacts:
-      - skill-recommendation.md
-  - name: reject_duplicate_skill
-    input: "Install another skill that does the same thing as find-skills."
-    expected_behavior:
-      - check existing skills before recommending
-      - refuse duplicate install loops
+- name: discover_safe_external_skill
+  input: Find a reputable skill for React performance review.
+  expected_tools:
+  - execute_code
+  - web_fetch
+  expected_artifacts:
+  - skill-recommendation.md
+- name: reject_duplicate_skill
+  input: Install another skill that does the same thing as find-skills.
+  expected_behavior:
+  - check existing skills before recommending
+  - refuse duplicate install loops

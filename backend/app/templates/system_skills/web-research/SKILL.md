@@ -1,6 +1,6 @@
 ---
 name: Web Research
-description: Web search and page reading tool guide — activates web_search / web_fetch / firecrawl_fetch / xcrawl_scrape
+description: "Use when Codex needs current web research, source retrieval, citation-backed answers, contradiction checks, and exact date handling for facts that may have changed."
 tools:
   - web_search
   - web_fetch
@@ -142,3 +142,10 @@ Wrong response: 编一个数字。
 - When search returns nothing, the response explicitly says so and offers a path forward (different search, waiting, alternative source).
 - No fabricated statistics, names, URLs, or dates.
 </success_criteria>
+
+## Bundled Resources
+
+Load resources by need, not by default:
+
+- `references/source-quality.md`: read only when this request needs its detailed rules, schemas, examples, or domain playbook.
+- `templates/research-brief.md`: use as the output scaffold when creating this artifact type.

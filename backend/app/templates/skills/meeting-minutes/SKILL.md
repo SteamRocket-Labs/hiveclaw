@@ -1,6 +1,6 @@
 ---
 name: Meeting Minutes
-description: Convert meeting notes or transcripts into decisions, action items, risks, and concise minutes.
+description: "Use when Codex needs to convert meeting notes, transcripts, or rough discussion fragments into concise minutes with decisions, action items, owners, risks, open questions, and follow-up artifacts."
 license: Proprietary
 tools:
   - read_file
@@ -8,7 +8,7 @@ tools:
   - execute_code
   - send_channel_file
 metadata:
-  hive.version: "0.1.0"
+  hive.version: 0.1.0
   hive.pack: office_pack
   hive.locale: cloud
   hive.invocation: both
@@ -48,3 +48,17 @@ actions, open questions, risks, and source notes.
 2. Extract decisions, action items, owners, due dates, risks, and open questions.
 3. Use `execute_code` if a structured transcript needs deterministic parsing.
 4. Save with `write_file`; deliver with `send_channel_file` only if requested.
+
+## Bundled Resources
+
+Load resources by need, not by default:
+
+- `references/extraction-rubric.md`: read only when this request needs its detailed rules, schemas, examples, or domain playbook.
+- `templates/minutes.md`: use as the output scaffold when creating this artifact type.
+
+## Quality Bar
+
+- Do not invent facts, owners, dates, recipients, source evidence, or external system state.
+- Prefer deterministic scripts or templates when the skill bundles them for this workflow.
+- Keep the final output focused on the artifact or decision the user requested.
+- Surface missing credentials, unavailable tools, stale data, and unsupported claims as blockers instead of silently working around them.

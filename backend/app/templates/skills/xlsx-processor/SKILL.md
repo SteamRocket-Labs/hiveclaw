@@ -1,6 +1,6 @@
 ---
 name: XLSX Processor
-description: "Cloud-first spreadsheet routing skill. Use for local Excel/CSV analysis, workbook creation or edits, and Feishu Sheets reading. Prefer deterministic tools and short execution loops over long tutorial-style reasoning."
+description: "Use when Codex needs to read, analyze, create, or edit spreadsheet workbooks, preserve formulas and tabular structure, or generate financial models and XLSX artifacts."
 license: MIT
 tools:
   - feishu_sheet_info
@@ -11,7 +11,7 @@ tools:
   - execute_code
   - send_channel_file
 metadata:
-  version: "3.0"
+  version: '3.0'
   category: productivity
 ---
 
@@ -196,3 +196,10 @@ If one of these is missing, infer the safest default and state it briefly.
 3. Apply the narrowest possible transformation
 4. Save only when needed
 5. Return the result path or analysis summary
+
+## Bundled Resources
+
+Load resources by need, not by default:
+
+- `references/workbook-cookbook.md`: read only when this request needs its detailed rules, schemas, examples, or domain playbook.
+- `templates/financial-model.md`: use as the output scaffold when creating this artifact type.

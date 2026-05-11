@@ -49,6 +49,7 @@ def validate_skill(skill_path):
         'metadata',
         'compatibility',
         'is_system',
+        'is_default',
     }
 
     # Check for unexpected properties (excluding nested keys under metadata)
@@ -114,6 +115,10 @@ def validate_skill(skill_path):
     is_system = frontmatter.get('is_system')
     if is_system is not None and not isinstance(is_system, bool):
         return False, f"is_system must be a boolean, got {type(is_system).__name__}"
+
+    is_default = frontmatter.get('is_default')
+    if is_default is not None and not isinstance(is_default, bool):
+        return False, f"is_default must be a boolean, got {type(is_default).__name__}"
 
     return True, "Skill is valid!"
 

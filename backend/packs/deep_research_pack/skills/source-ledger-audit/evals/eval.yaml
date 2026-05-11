@@ -1,10 +1,16 @@
 name: source-ledger-audit
 cases:
-  - name: audit_research_draft_sources
-    input: "Audit workspace/draft.md against workspace/source-ledger.md and produce a citation gap report."
-    expected_tools:
-      - read_file
-      - web_fetch
-      - write_file
-    expected_artifacts:
-      - source-ledger-audit.md
+- name: audit_research_draft_sources
+  input: Audit workspace/draft.md against workspace/source-ledger.md and produce a
+    citation gap report.
+  expected_tools:
+  - read_file
+  - web_fetch
+  - write_file
+  expected_artifacts:
+  - source-ledger-audit.md
+- name: handles_missing_or_unsafe_inputs
+  input: Run source-ledger-audit with incomplete inputs or unavailable provider configuration.
+  expected_behavior:
+  - state the missing inputs or configuration blocker
+  - do not fabricate unsupported content

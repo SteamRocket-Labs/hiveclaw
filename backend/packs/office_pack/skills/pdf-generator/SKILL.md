@@ -1,9 +1,6 @@
 ---
 name: PDF Generator
-description: >
-  Cloud-first PDF routing skill. Use for generating a new PDF, filling an existing PDF form,
-  or reformatting content into a print-ready PDF with deterministic scripts. Prefer narrow
-  execution paths and real output artifacts over long design tutorials.
+description: "Use when Codex needs to create print-ready PDF reports, fill PDF forms, render source-attributed documents, or produce a PDF artifact from structured markdown and workspace inputs."
 license: MIT
 tools:
   - read_file
@@ -12,7 +9,7 @@ tools:
   - execute_code
   - send_channel_file
 metadata:
-  version: "3.0"
+  version: '3.0'
   category: document-generation
 ---
 
@@ -174,3 +171,19 @@ If some details are missing, make one conservative assumption and proceed.
 3. Run one narrow PDF script
 4. Save the output
 5. Return the file path or extracted result
+
+## Bundled Resources
+
+Load resources by need, not by default:
+
+- `references/pdf-cookbook.md`: read only when this request needs its detailed rules, schemas, examples, or domain playbook.
+- `templates/report.md`: use as the output scaffold when creating this artifact type.
+- `scripts/fill_inspect.py`: run for deterministic generation or inspection, then validate its output on representative input.
+- `scripts/fill_write.py`: run for deterministic generation or inspection, then validate its output on representative input.
+- `scripts/make.sh`: run for deterministic generation or inspection, then validate its output on representative input.
+- `scripts/merge.py`: run for deterministic generation or inspection, then validate its output on representative input.
+- `scripts/palette.py`: run for deterministic generation or inspection, then validate its output on representative input.
+- `scripts/render_body.py`: run for deterministic generation or inspection, then validate its output on representative input.
+- `scripts/render_cover.py`: run for deterministic generation or inspection, then validate its output on representative input.
+
+When a script is used, run or validate it on representative input before final delivery and report any rendering or parsing failure.

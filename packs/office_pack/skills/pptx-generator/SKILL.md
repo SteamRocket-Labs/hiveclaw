@@ -1,9 +1,6 @@
 ---
 name: PPTX Generator
-description: >
-  Cloud-first presentation routing skill. Use for creating, reading, or editing PowerPoint
-  decks with deterministic scripts. Prefer small execution loops and explicit output
-  contracts over embedded design tutorials.
+description: "Use when Codex needs to create, inspect, or edit PowerPoint presentations, preserve slide structure, generate investor decks, or build a reusable PPTX artifact from source notes."
 license: MIT
 tools:
   - read_file
@@ -12,7 +9,7 @@ tools:
   - execute_code
   - send_channel_file
 metadata:
-  version: "3.0"
+  version: '3.0'
   category: productivity
 ---
 
@@ -170,3 +167,10 @@ If details are missing, make one conservative assumption and proceed.
 3. Run one narrow deck script
 4. Save the output
 5. Return the file path or extracted result
+
+## Bundled Resources
+
+Load resources by need, not by default:
+
+- `references/pptx-cookbook.md`: read only when this request needs its detailed rules, schemas, examples, or domain playbook.
+- `templates/pitch-deck-outline.md`: use as the output scaffold when creating this artifact type.

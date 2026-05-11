@@ -1,6 +1,6 @@
 ---
 name: Atlassian Rovo
-description: Jira / Confluence / Compass tool integration guide
+description: "Use when Codex needs to operate a configured Atlassian Rovo integration for Jira or Confluence tasks, verify runtime tool availability, and avoid unsupported authenticated web scraping fallbacks."
 ---
 
 # Atlassian Rovo Tools
@@ -111,3 +111,10 @@ Correct response: `这个数字员工目前没有安装 Atlassian 集成（工�
 - If the integration is not configured, you reported the missing state explicitly and offered a useful fallback (write to workspace, message the user later, etc.).
 - You never asserted "done" for an Atlassian action without a tool response backing it.
 </success_criteria>
+
+## Bundled Resources
+
+Load resources by need, not by default:
+
+- `references/runtime-boundary.md`: read only when this request needs its detailed rules, schemas, examples, or domain playbook.
+- `templates/rovo-action-report.md`: use as the output scaffold when creating this artifact type.

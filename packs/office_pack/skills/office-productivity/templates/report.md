@@ -4,4 +4,10 @@
 
 ## Chosen Mode
 
+## Inputs
+
 ## Output Files
+
+## Delivery
+
+## Verification

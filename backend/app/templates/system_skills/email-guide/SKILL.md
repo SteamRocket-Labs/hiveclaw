@@ -1,6 +1,6 @@
 ---
 name: Email Guide
-description: Email send, read, and reply guide — activates send_email / read_emails / reply_email
+description: "Use when Codex needs to read email threads, draft replies, send email artifacts, or handle mailbox workflows through configured email tools with explicit recipient and privacy checks."
 tools:
   - send_email
   - read_emails
@@ -161,3 +161,10 @@ Output: `已发送给 legal@acme.com，message_id=<ghi789@mail.example.com>，�
 - Attachments all exist in `workspace/` before `send_email` is called.
 - In conversation mode, the recipient address is confirmed with the user before sending.
 </success_criteria>
+
+## Bundled Resources
+
+Load resources by need, not by default:
+
+- `references/email-delivery-policy.md`: read only when this request needs its detailed rules, schemas, examples, or domain playbook.
+- `templates/email-draft.md`: use as the output scaffold when creating this artifact type.

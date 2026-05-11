@@ -1,6 +1,6 @@
 ---
 name: Memory Guide
-description: Authoritative rules for save_memory and search_memory — when, how, and what flows through the 4-layer pyramid automatically.
+description: "Use when Codex needs to decide whether information should become durable memory, save explicit user preferences, avoid transient memory pollution, and route memory updates safely."
 tools:
   - save_memory
   - search_memory
@@ -233,3 +233,10 @@ User: "我们之前怎么处理的并发登录？"
 - You do NOT write to `memory/learnings/`, `evolution/`, `logs/`, or `soul.md`.
 - When the user issues an imperative correction ("记住…", "remember this…", "never do X"), `save_memory` is called in the same response, with `category="feedback"` or `category="blocked_pattern"` as appropriate.
 </success_criteria>
+
+## Bundled Resources
+
+Load resources by need, not by default:
+
+- `references/memory-routing.md`: read only when this request needs its detailed rules, schemas, examples, or domain playbook.
+- `templates/memory-entry.md`: use as the output scaffold when creating this artifact type.

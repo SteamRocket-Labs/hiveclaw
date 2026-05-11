@@ -1,6 +1,6 @@
 ---
 name: Topic Deep Dive
-description: Source-attributed deep research workflow for a bounded question, issue, product, company, or policy topic.
+description: "Use when Codex needs to research a bounded topic, product, policy, company, or technical question with primary sources, contradiction checks, and a claim-level evidence ledger."
 tools:
   - web_search
   - web_fetch
@@ -11,42 +11,51 @@ tools:
   - delegate_to_agent
   - send_channel_file
 metadata:
-  version: "0.1"
+  version: '0.1'
   category: research
 ---
 
 # Topic Deep Dive
 
-Use this skill when the user asks for a careful research answer that needs
-fresh source collection, citation tracking, contradiction checks, and a
-deliverable research packet.
+<role>
+Use when Codex needs to research a bounded topic, product, policy, company, or technical question with primary sources, contradiction checks, and a claim-level evidence ledger.
+</role>
 
-## Operating Contract
+<when_to_use>
+- The user asks for Topic Deep Dive output or a closely related workflow.
+- The task requires the declared tools, bundled references, or templates in this skill.
+- The result must be reusable, source-aware, or artifact-shaped rather than a short ad hoc answer.
+</when_to_use>
 
-1. Define the question, scope, geography, time window, and exclusion rules.
-2. Search broadly with `web_search`, then fetch primary or high-quality sources
-   with `web_fetch`.
-3. Use `firecrawl_fetch` or `xcrawl_scrape` only when the normal fetch path is
-   blocked or the tenant has configured the paid provider.
-4. Maintain a source ledger while researching. Every material claim in the final
-   answer must point back to a fetched source.
-5. For broad tasks, use `delegate_to_agent` only for bounded side work such as
-   one geography, one competitor set, or one source class.
-6. Write a Markdown packet with `write_file` when the user asks for a reusable
-   artifact; send it with `send_channel_file` when channel delivery is needed.
+## Operating Procedure
 
-## Output Standard
+1. Restate the bounded question, scope, time window, and evidence standard.
+2. Search primary sources first, then fetch source pages and record dates.
+3. Build a claim ledger as research proceeds; do not rely on search snippets.
+4. Separate confirmed facts, inference, contradictions, stale data, and unresolved gaps.
+5. Write a concise source-attributed packet with the supplied template.
 
-- Executive answer first.
-- Evidence table with source title, publisher, date, URL, and how it was used.
-- Separate confirmed facts from inference.
-- Include contradictions, stale data warnings, and unresolved questions.
-- Do not cite search result snippets as facts. Fetch the source first.
+## Quality Bar
 
-## Stop Conditions
+- Do not invent facts, owners, dates, recipients, source evidence, or external system state.
+- Prefer deterministic scripts or templates when the skill bundles them for this workflow.
+- Keep the final output focused on the artifact or decision the user requested.
+- Surface missing credentials, unavailable tools, stale data, and unsupported claims as blockers instead of silently working around them.
 
-- A source is paywalled and no configured provider can fetch it.
-- The question requires private, customer, legal, medical, or investment advice
-  beyond available evidence.
-- The source set is too weak to support the requested confidence level.
+<anti_patterns>
+- Do not treat a search result, filename, or prior memory as proof without reading the underlying source or file.
+- Do not load every reference file by default; use progressive disclosure and read only the relevant resource.
+- Do not call destructive or externally visible tools unless the user asked for that action and required confirmation is satisfied.
+</anti_patterns>
 
+<examples>
+- Input: "Create the requested artifact from these notes." Output: inspect the inputs, load the relevant template/reference, call the declared tools, save the artifact, and report validation notes.
+- Input: "Check whether this is safe / supported / current." Output: gather evidence first, classify unsupported or stale claims, and give a direct recommendation with source or file references.
+</examples>
+
+## Bundled Resources
+
+Load resources by need, not by default:
+
+- `references/playbook.md`: read only when this request needs its detailed rules, schemas, examples, or domain playbook.
+- `templates/report.md`: use as the output scaffold when creating this artifact type.

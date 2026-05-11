@@ -1,6 +1,6 @@
 ---
 name: Pitch Deck Generator
-description: Generate investor pitch deck outlines and PPTX artifacts from a company brief and explicit assumptions.
+description: "Use when Codex needs to create investor, board, or sales pitch deck outlines and slide artifacts from a company brief, product narrative, fundraising context, or strategic memo."
 license: Proprietary
 tools:
   - read_file
@@ -8,7 +8,7 @@ tools:
   - execute_code
   - send_channel_file
 metadata:
-  hive.version: "0.1.0"
+  hive.version: 0.1.0
   hive.pack: office_pack
   hive.locale: cloud
   hive.invocation: both
@@ -50,3 +50,17 @@ outline JSON and notes.
 3. Use `execute_code` with `python-pptx` to render a clean deck.
 4. Save outline and deck with `write_file`; deliver with `send_channel_file`
    only if requested.
+
+## Bundled Resources
+
+Load resources by need, not by default:
+
+- `references/deck-structures.md`: read only when this request needs its detailed rules, schemas, examples, or domain playbook.
+- `templates/outline.md`: use as the output scaffold when creating this artifact type.
+
+## Quality Bar
+
+- Do not invent facts, owners, dates, recipients, source evidence, or external system state.
+- Prefer deterministic scripts or templates when the skill bundles them for this workflow.
+- Keep the final output focused on the artifact or decision the user requested.
+- Surface missing credentials, unavailable tools, stale data, and unsupported claims as blockers instead of silently working around them.

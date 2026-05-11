@@ -1,6 +1,6 @@
 ---
 name: Workspace Guide
-description: Workspace structure, file operations, objective projection, and messaging rules
+description: "Use when Codex needs to inspect, create, edit, or deliver workspace files while respecting managed-memory boundaries, file ownership, and artifact handoff rules."
 tools:
   - read_document
   - read_file
@@ -215,3 +215,10 @@ Correct response: `memory/learnings/ 是由记忆管道自动管理的，手动�
 - Automatically-managed directories (`memory/learnings/`, `evolution/`, `logs/`) are never written to by this agent directly.
 - Messages forwarded on behalf of someone else always name the original requester.
 </success_criteria>
+
+## Bundled Resources
+
+Load resources by need, not by default:
+
+- `references/workspace-boundary.md`: read only when this request needs its detailed rules, schemas, examples, or domain playbook.
+- `templates/workspace-artifact-plan.md`: use as the output scaffold when creating this artifact type.

@@ -1,6 +1,6 @@
 ---
 name: Finance Research
-description: Finance data, valuation, filings, primary-market diligence, IPO pipeline, and research workflow guide
+description: "Use when Codex needs to run source-ledger-backed finance research, provider readiness checks, filings review, DCF or comps workflows, and explicit market-data boundary reporting."
 tools:
   - finance_get_provider_status
   - finance_resolve_entity
@@ -153,3 +153,12 @@ finance_compute_dcf(financials={...}, assumptions={"discount_rate": 0.10, "termi
 - Paid provider gaps are described as configuration gaps, not data facts.
 - US/HK/A-share scope is stated explicitly.
 </success_criteria>
+
+## Bundled Resources
+
+Load resources by need, not by default:
+
+- `references/data-source-boundary.md`: read only when this request needs its detailed rules, schemas, examples, or domain playbook.
+- `references/workflow-playbooks.md`: read only when this request needs its detailed rules, schemas, examples, or domain playbook.
+- `templates/equity-deep-dive.md`: use as the output scaffold when creating this artifact type.
+- `templates/ic-memo.md`: use as the output scaffold when creating this artifact type.

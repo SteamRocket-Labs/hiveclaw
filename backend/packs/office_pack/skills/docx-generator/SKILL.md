@@ -1,9 +1,6 @@
 ---
 name: DOCX Generator
-description: >
-  Cloud-first DOCX routing skill. Use for creating, filling, or editing Word documents
-  with deterministic scripts and narrow output contracts. Prefer short execution loops
-  over long formatting tutorials.
+description: "Use when Codex needs to create, inspect, or edit DOCX documents, preserve professional formatting, generate corporate letters or reports, and produce a reusable document artifact from user notes or workspace files."
 license: MIT
 tools:
   - read_file
@@ -12,7 +9,7 @@ tools:
   - execute_code
   - send_channel_file
 metadata:
-  version: "3.0"
+  version: '3.0'
   category: document-processing
 ---
 
@@ -189,3 +186,17 @@ If one of these is missing, make the safest reasonable assumption and proceed.
 - ❌ **Produce a `.docx` when the user only wanted analysis** → wastes a round and creates a useless artifact. If the ask is "summarize this docx", return text, not a new file.
 
 </anti_patterns>
+
+## Bundled Resources
+
+Load resources by need, not by default:
+
+- `references/docx-cookbook.md`: read only when this request needs its detailed rules, schemas, examples, or domain playbook.
+- `templates/corporate-letter.md`: use as the output scaffold when creating this artifact type.
+
+## Quality Bar
+
+- Do not invent facts, owners, dates, recipients, source evidence, or external system state.
+- Prefer deterministic scripts or templates when the skill bundles them for this workflow.
+- Keep the final output focused on the artifact or decision the user requested.
+- Surface missing credentials, unavailable tools, stale data, and unsupported claims as blockers instead of silently working around them.

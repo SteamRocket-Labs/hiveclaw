@@ -1,6 +1,6 @@
 ---
 name: Messaging Guide
-description: Decision tree for delivering messages, files, and images to humans across channels — how to pick the right tool and avoid cross-channel mistakes.
+description: "Use when Codex needs to send files or messages through the current requester channel, choose between human messaging and agent delegation, and preserve delivery identity."
 tools:
   - send_web_message
   - send_channel_message
@@ -247,3 +247,10 @@ Correct: `get_current_time` first, compute "tomorrow" from the tool result.
 - Long outputs (reports, multi-section analyses, anything with tables or code blocks) are delivered as workspace files via `send_channel_file`, not as inline chat text.
 - `upload_image` is used when and only when a persistent public URL is required — not for every outbound image.
 </success_criteria>
+
+## Bundled Resources
+
+Load resources by need, not by default:
+
+- `references/channel-routing.md`: read only when this request needs its detailed rules, schemas, examples, or domain playbook.
+- `templates/delivery-plan.md`: use as the output scaffold when creating this artifact type.

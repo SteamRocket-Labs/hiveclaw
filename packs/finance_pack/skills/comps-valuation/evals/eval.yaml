@@ -1,9 +1,14 @@
 name: comps-valuation
 cases:
-  - name: build_peer_multiple_table
-    input: "Build an EV/Revenue comps table for AAPL, MSFT, and GOOGL."
-    expected_tools:
-      - finance_build_comps
-      - finance_get_source_ledger
-    expected_artifacts:
-      - comps-valuation.md
+- name: build_peer_multiple_table
+  input: Build an EV/Revenue comps table for AAPL, MSFT, and GOOGL.
+  expected_tools:
+  - finance_build_comps
+  - finance_get_source_ledger
+  expected_artifacts:
+  - comps-valuation.md
+- name: handles_missing_or_unsafe_inputs
+  input: Run comps-valuation with incomplete inputs or unavailable provider configuration.
+  expected_behavior:
+  - state the missing inputs or configuration blocker
+  - do not fabricate unsupported content

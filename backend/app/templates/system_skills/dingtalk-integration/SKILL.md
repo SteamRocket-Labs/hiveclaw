@@ -1,6 +1,6 @@
 ---
 name: DingTalk Integration
-description: DingTalk channel conversation behavior guide
+description: "Use when Codex needs to handle DingTalk-triggered requests, schedule reminders from DingTalk context, explain outbound limitations, and preserve channel identity boundaries."
 ---
 
 # DingTalk Channel Behavior
@@ -101,3 +101,10 @@ Correct response: `我在当前 DingTalk 对话里无法主动发消息给 Alice
 - You never fabricate DingTalk identifiers or tool names.
 - Scheduled follow-ups in DingTalk threads use `set_trigger` with `trigger_class="scheduled_job"` and a reason that describes the target channel explicitly.
 </success_criteria>
+
+## Bundled Resources
+
+Load resources by need, not by default:
+
+- `references/channel-boundary.md`: read only when this request needs its detailed rules, schemas, examples, or domain playbook.
+- `templates/follow-up-reason.md`: use as the output scaffold when creating this artifact type.

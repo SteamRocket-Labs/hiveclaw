@@ -1,6 +1,6 @@
 ---
 name: Find Skills
-description: 帮助发现和安装新技能。当用户问"怎么做X"、"有没有关于X的技能"时自动触发。搜索 → 排序 → 安全审查 → 安装。
+description: "Use when Codex needs to discover, compare, and recommend installable skills from trusted catalogs or repositories, especially when the user asks for capabilities not already covered by installed skills."
 tools:
   - execute_code
   - web_search
@@ -205,3 +205,10 @@ Flow:
 - No skill matching a red-flag category is installed, regardless of user insistence.
 - No duplicate skills installed (checked against existing `skills/`).
 </success_criteria>
+
+## Bundled Resources
+
+Load resources by need, not by default:
+
+- `references/source-vetting.md`: read only when this request needs its detailed rules, schemas, examples, or domain playbook.
+- `templates/recommendation.md`: use as the output scaffold when creating this artifact type.

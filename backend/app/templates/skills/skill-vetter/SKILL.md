@@ -1,6 +1,6 @@
 ---
 name: Skill Vetter
-description: 安全审查协议。安装任何第三方 skill 之前必须执行此审查流程，检测恶意代码、权限越界和安全风险。
+description: "Use when Codex needs to security-review a third-party skill before installation, inspect source files, classify permission and exfiltration risks, and produce an explicit install or reject recommendation."
 tools:
   - web_search
   - web_fetch
@@ -202,3 +202,10 @@ Report → 结论: 拒绝安装。原因：scripts/install.sh:12 明确读取 AW
 - Every review cites concrete evidence (file path, line pattern) for its risk rating.
 - `web_fetch` escalation to `firecrawl_fetch` happens whenever the initial read was incomplete.
 </success_criteria>
+
+## Bundled Resources
+
+Load resources by need, not by default:
+
+- `references/security-checklist.md`: read only when this request needs its detailed rules, schemas, examples, or domain playbook.
+- `templates/vetting-report.md`: use as the output scaffold when creating this artifact type.

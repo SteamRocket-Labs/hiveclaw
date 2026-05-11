@@ -9,7 +9,7 @@ import re
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -159,19 +159,25 @@ def _parse_github_url(url: str) -> dict | None:
 
 def _skill_scope_clause(current_user: User):
     """Build tenant visibility scope for skill reads."""
+    global_builtin = and_(Skill.tenant_id.is_(None), Skill.is_builtin.is_(True))
+    if current_user.tenant_id:
+        return or_(global_builtin, Skill.tenant_id == current_user.tenant_id)
     if current_user.role == "platform_admin":
         return None
-    if current_user.tenant_id:
-        return or_(Skill.tenant_id.is_(None), Skill.tenant_id == current_user.tenant_id)
-    return Skill.tenant_id.is_(None)
+    return global_builtin
 
 
 def _skill_visible_to_user(skill: Skill, current_user: User) -> bool:
     """Check whether the caller can read a specific skill."""
     if current_user.role == "platform_admin":
+        if current_user.tenant_id:
+            return (
+                (skill.tenant_id is None and bool(getattr(skill, "is_builtin", False)))
+                or str(skill.tenant_id) == str(current_user.tenant_id)
+            )
         return True
     if skill.tenant_id is None:
-        return True
+        return bool(getattr(skill, "is_builtin", False))
     return bool(current_user.tenant_id and skill.tenant_id == current_user.tenant_id)
 
 
@@ -261,9 +267,24 @@ async def _save_skill_to_db(
     import uuid as _uuid
 
     async with async_session() as db:
-        # folder_name is globally unique at the schema level, so conflict checks
-        # must also be global rather than tenant-scoped.
-        existing = await db.execute(select(Skill).where(Skill.folder_name == folder_name))
+        tenant_uuid = _uuid.UUID(tenant_id) if tenant_id else None
+        if tenant_uuid:
+            existing = await db.execute(
+                select(Skill).where(
+                    Skill.folder_name == folder_name,
+                    or_(
+                        and_(Skill.tenant_id.is_(None), Skill.is_builtin.is_(True)),
+                        Skill.tenant_id == tenant_uuid,
+                    ),
+                )
+            )
+        else:
+            existing = await db.execute(
+                select(Skill).where(
+                    Skill.folder_name == folder_name,
+                    Skill.tenant_id.is_(None),
+                )
+            )
         existing_skill = existing.scalar_one_or_none()
         if existing_skill:
             if on_conflict == "return_existing":
@@ -285,7 +306,7 @@ async def _save_skill_to_db(
             icon=icon,
             folder_name=folder_name,
             is_builtin=False,
-            tenant_id=_uuid.UUID(tenant_id) if tenant_id else None,
+            tenant_id=tenant_uuid,
         )
         db.add(skill)
         await db.flush()
@@ -301,9 +322,27 @@ async def _save_skill_to_db(
 
 async def _find_existing_skill_by_folder_name(folder_name: str, tenant_id: str | None = None) -> Skill | None:
     """Return an existing skill by folder name within the current scope."""
+    import uuid as _uuid
+
     async with async_session() as db:
-        _ = tenant_id
-        result = await db.execute(select(Skill).where(Skill.folder_name == folder_name))
+        tenant_uuid = _uuid.UUID(tenant_id) if tenant_id else None
+        if tenant_uuid:
+            result = await db.execute(
+                select(Skill).where(
+                    Skill.folder_name == folder_name,
+                    or_(
+                        and_(Skill.tenant_id.is_(None), Skill.is_builtin.is_(True)),
+                        Skill.tenant_id == tenant_uuid,
+                    ),
+                )
+            )
+        else:
+            result = await db.execute(
+                select(Skill).where(
+                    Skill.folder_name == folder_name,
+                    Skill.tenant_id.is_(None),
+                )
+            )
         return result.scalar_one_or_none()
 
 
@@ -633,7 +672,10 @@ async def get_skill(
 
 
 @router.post("/")
-async def create_skill(body: SkillCreateIn, _=Depends(require_role("platform_admin"))):
+async def create_skill(
+    body: SkillCreateIn,
+    current_user: User = Depends(require_role("platform_admin")),
+):
     """Create a custom skill."""
     files_for_guard = (
         [{"path": f.path, "content": f.content} for f in body.files]
@@ -654,6 +696,7 @@ async def create_skill(body: SkillCreateIn, _=Depends(require_role("platform_adm
             icon=body.icon,
             folder_name=body.folder_name,
             is_builtin=False,
+            tenant_id=current_user.tenant_id,
         )
         db.add(skill)
         await db.flush()
@@ -808,15 +851,13 @@ async def set_skill_token(
 @router.get("/browse/list")
 async def browse_list(path: str = "", current_user: User = Depends(get_current_user)):
     """List skill folders (root) or files/subdirs within a skill folder."""
-    import uuid as _uuid
-    from sqlalchemy import or_ as _or
-    tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
     async with async_session() as db:
         if not path or path == "/":
             # Root: list all skill folders (scoped by tenant)
             query = select(Skill).order_by(Skill.name)
-            if tenant_id:
-                query = query.where(_or(Skill.tenant_id.is_(None), Skill.tenant_id == _uuid.UUID(tenant_id)))
+            scope_clause = _skill_scope_clause(current_user)
+            if scope_clause is not None:
+                query = query.where(scope_clause)
             result = await db.execute(query)
             skills = result.scalars().all()
             return [
@@ -829,8 +870,9 @@ async def browse_list(path: str = "", current_user: User = Depends(get_current_u
         folder = clean.split("/")[0]
         # Resolve skill folder scoped by tenant
         skill_q = select(Skill).where(Skill.folder_name == folder).options(selectinload(Skill.files))
-        if tenant_id:
-            skill_q = skill_q.where(_or(Skill.tenant_id.is_(None), Skill.tenant_id == _uuid.UUID(tenant_id)))
+        scope_clause = _skill_scope_clause(current_user)
+        if scope_clause is not None:
+            skill_q = skill_q.where(scope_clause)
         result = await db.execute(skill_q)
         skill = result.scalar_one_or_none()
         if not skill:
@@ -868,17 +910,15 @@ async def browse_list(path: str = "", current_user: User = Depends(get_current_u
 @router.get("/browse/read")
 async def browse_read(path: str, current_user: User = Depends(get_current_user)):
     """Read a file from a skill folder."""
-    import uuid as _uuid
-    from sqlalchemy import or_ as _or
-    tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
     parts = path.strip("/").split("/", 1)
     if len(parts) < 2:
         raise HTTPException(400, "Path must include folder and file")
     folder, file_path = parts
     async with async_session() as db:
         skill_q = select(Skill).where(Skill.folder_name == folder).options(selectinload(Skill.files))
-        if tenant_id:
-            skill_q = skill_q.where(_or(Skill.tenant_id.is_(None), Skill.tenant_id == _uuid.UUID(tenant_id)))
+        scope_clause = _skill_scope_clause(current_user)
+        if scope_clause is not None:
+            skill_q = skill_q.where(scope_clause)
         result = await db.execute(skill_q)
         skill = result.scalar_one_or_none()
         if not skill:
@@ -897,17 +937,15 @@ class BrowseWriteIn(BaseModel):
 @router.put("/browse/write")
 async def browse_write(body: BrowseWriteIn, current_user: User = Depends(require_role("platform_admin"))):
     """Write a file in a skill folder. Creates the skill if the folder doesn't exist."""
-    import uuid as _uuid
-    from sqlalchemy import or_ as _or
-    tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
     parts = body.path.strip("/").split("/", 1)
     if len(parts) < 2:
         raise HTTPException(400, "Path must include folder and file")
     folder, file_path = parts
     async with async_session() as db:
         skill_q = select(Skill).where(Skill.folder_name == folder).options(selectinload(Skill.files))
-        if tenant_id:
-            skill_q = skill_q.where(_or(Skill.tenant_id.is_(None), Skill.tenant_id == _uuid.UUID(tenant_id)))
+        scope_clause = _skill_scope_clause(current_user)
+        if scope_clause is not None:
+            skill_q = skill_q.where(scope_clause)
         result = await db.execute(skill_q)
         skill = result.scalar_one_or_none()
         if not skill:
@@ -941,15 +979,13 @@ async def browse_write(body: BrowseWriteIn, current_user: User = Depends(require
 @router.delete("/browse/delete")
 async def browse_delete(path: str, current_user: User = Depends(require_role("platform_admin"))):
     """Delete a file or an entire skill folder."""
-    import uuid as _uuid
-    from sqlalchemy import or_ as _or
-    tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
     parts = path.strip("/").split("/", 1)
     folder = parts[0]
     async with async_session() as db:
         skill_q = select(Skill).where(Skill.folder_name == folder).options(selectinload(Skill.files))
-        if tenant_id:
-            skill_q = skill_q.where(_or(Skill.tenant_id.is_(None), Skill.tenant_id == _uuid.UUID(tenant_id)))
+        scope_clause = _skill_scope_clause(current_user)
+        if scope_clause is not None:
+            skill_q = skill_q.where(scope_clause)
         result = await db.execute(skill_q)
         skill = result.scalar_one_or_none()
         if not skill:

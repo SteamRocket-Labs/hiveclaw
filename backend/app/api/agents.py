@@ -377,9 +377,12 @@ async def create_agent(
 
         # Copy selected skills + mandatory default skills into agent workspace
         from app.models.skill import Skill
+        from app.api.skills import _skill_visible_to_user
         from sqlalchemy.orm import selectinload
 
-        default_result = await db.execute(select(Skill).where(Skill.is_default))
+        default_result = await db.execute(
+            select(Skill).where(Skill.is_default, Skill.tenant_id.is_(None))
+        )
         default_ids = {s.id for s in default_result.scalars().all()}
         all_skill_ids = set(data.skill_ids or []) | default_ids
 
@@ -393,7 +396,7 @@ async def create_agent(
                     select(Skill).where(Skill.id == sid).options(selectinload(Skill.files))
                 )
                 skill = result.scalar_one_or_none()
-                if not skill:
+                if not skill or not _skill_visible_to_user(skill, current_user):
                     continue
                 skill_folder = skills_dir / skill.folder_name
                 skill_folder.mkdir(parents=True, exist_ok=True)

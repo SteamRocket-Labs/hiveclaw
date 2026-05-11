@@ -241,7 +241,9 @@ async def import_skill_to_agent(
         select(Skill).where(Skill.id == body.skill_id).options(selectinload(Skill.files))
     )
     skill = result.scalar_one_or_none()
-    if not skill:
+    from app.api.skills import _skill_visible_to_user
+
+    if not skill or not _skill_visible_to_user(skill, current_user):
         raise HTTPException(status_code=404, detail="Skill not found")
 
     if not skill.files:

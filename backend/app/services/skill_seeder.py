@@ -580,7 +580,12 @@ async def seed_skills():
 
     async with async_session() as db:
         for skill_data in all_skill_dicts:
-            result = await db.execute(select(Skill).where(Skill.folder_name == skill_data["folder_name"]))
+            result = await db.execute(
+                select(Skill).where(
+                    Skill.folder_name == skill_data["folder_name"],
+                    Skill.tenant_id.is_(None),
+                )
+            )
             existing = result.scalar_one_or_none()
             is_default = skill_data.get("is_default", False)
             if existing:
@@ -708,7 +713,11 @@ async def push_default_skills_to_existing_agents():
 
     async with async_session() as db:
         # Load all is_default skills with their files
-        default_skills_r = await db.execute(select(Skill).where(Skill.is_default).options(selectinload(Skill.files)))
+        default_skills_r = await db.execute(
+            select(Skill)
+            .where(Skill.is_default, Skill.tenant_id.is_(None))
+            .options(selectinload(Skill.files))
+        )
         default_skills = default_skills_r.scalars().all()
         if not default_skills:
             return

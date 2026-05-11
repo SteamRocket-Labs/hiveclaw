@@ -165,6 +165,12 @@ async def _handle_complete_objective(agent_id: uuid.UUID, arguments: dict) -> st
         objective = await _find_objective(db, agent_id, objective_id=objective_id, objective_key=objective_key)
         if not objective:
             return _objective_error("complete_objective", "not_found", "Objective not found.")
+        if getattr(objective, "status", None) == "completed":
+            return (
+                f"ℹ️ Objective '{objective.objective_key}' is already completed; no state change was made.\n\n"
+                "Do not call `complete_objective` for this objective again in this turn. "
+                "Use the recorded evidence and produce the final user-facing answer now."
+            )
         from app.services.objective_evaluator import apply_attempt_evaluation
 
         apply_attempt_evaluation(
@@ -174,4 +180,8 @@ async def _handle_complete_objective(agent_id: uuid.UUID, arguments: dict) -> st
             result_summary=str(arguments.get("result_summary") or evidence),
         )
         await db.commit()
-    return f"✅ Objective '{objective.objective_key}' completed with evidence recorded."
+    return (
+        f"✅ Objective '{objective.objective_key}' completed with evidence recorded.\n\n"
+        "Do not call `complete_objective` for this objective again in this turn. "
+        "Produce the final user-facing answer now."
+    )

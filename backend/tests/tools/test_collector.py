@@ -201,6 +201,30 @@ def test_collect_real_handlers_include_finance_pack_tools():
     assert all(seed_by_name[name]["is_default"] is False for name in expected)
 
 
+def test_collect_real_handlers_include_deep_research_pack_tools():
+    clear_registry()
+    for module_name in HANDLER_MODULES:
+        importlib.reload(importlib.import_module(module_name))
+
+    collected = collect_tools()
+    names = {tool["function"]["name"] for tool in collected.openai_tools}
+    expected = {
+        "deep_research_run",
+        "deep_research_start",
+        "deep_research_check",
+        "deep_research_cancel",
+        "deep_research_export",
+    }
+
+    assert expected <= names
+    assert expected <= set(collected.pack_tool_groups["deep_research_pack"])
+
+    seed_by_name = {tool["name"]: tool for tool in collected.seed_list}
+    assert all(seed_by_name[name]["is_default"] is False for name in expected)
+    assert "deep_research_check" in collected.read_only_names
+    assert "deep_research_check" in collected.parallel_safe_names
+
+
 def test_handler_module_manifest_matches_handlers_directory():
     actual = {
         path.stem

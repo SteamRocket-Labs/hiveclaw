@@ -485,6 +485,14 @@ export default function AgentAwareSection({
               <button className="btn btn-ghost" style={{ fontSize: '11px', padding: '4px 8px' }} onClick={() => setArtifactView(null)}>{t('common.close', 'Close')}</button>
             </div>
             {artifactView.summary && <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>{artifactView.summary}</div>}
+            {artifactView.artifact_type === 'deep_research' && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '8px' }}>
+                {artifactView.status && <span className="badge">{t('agent.aware.researchStatus', 'Status')}: {artifactView.status}</span>}
+                <span className="badge">{t('agent.aware.researchSources', 'Sources')}: {artifactView.source_count || 0}</span>
+                <span className="badge">{t('agent.aware.researchClaims', 'Claims')}: {artifactView.claim_count || 0}</span>
+                {artifactView.gaps?.length > 0 && <span className="badge">{t('agent.aware.researchGaps', 'Gaps')}: {artifactView.gaps.length}</span>}
+              </div>
+            )}
             <pre style={{ fontSize: '11px', whiteSpace: 'pre-wrap', background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', maxHeight: '280px', overflow: 'auto' }}>{artifactView.final_reply}</pre>
           </div>
         )}

@@ -110,7 +110,9 @@ async def update_objective(agent_id: uuid.UUID, arguments: dict) -> str:
     name="complete_objective",
     description=(
         "Mark an objective completed, but only with concrete evidence. "
-        "Evidence can be an artifact path, sent-message confirmation, test output, or other verifiable result."
+        "Evidence can be an artifact path, sent-message confirmation, test output, or other verifiable result. "
+        "After this tool succeeds for an objective, do not call it again for that objective in the same turn; "
+        "return the final user-facing answer instead."
     ),
     parameters={
         "type": "object",

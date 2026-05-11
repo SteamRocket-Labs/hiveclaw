@@ -125,6 +125,11 @@ CAPABILITY_MAP: dict[str, str] = {
     "finance_build_comps": "finance.analysis.run",
     "finance_compile_research_packet": "finance.analysis.run",
     "finance_run_workflow": "finance.analysis.run",
+    "deep_research_run": "research.deep.run",
+    "deep_research_start": "research.deep.run",
+    "deep_research_check": "research.deep.read",
+    "deep_research_export": "research.deep.read",
+    "deep_research_cancel": "research.deep.modify",
 }
 
 SYNTHETIC_CAPABILITY_TOOLS: dict[str, list[str]] = {

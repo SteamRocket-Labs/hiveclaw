@@ -28,7 +28,20 @@ export interface CreateEmployeeSuccessToolMeta {
   manualSteps: string[];
 }
 
-export type ToolCallMeta = HrPreviewToolResult | CreateEmployeeSuccessToolMeta;
+export interface DeepResearchToolMeta {
+  kind: 'deep_research';
+  taskId: string | null;
+  status: string | null;
+  summary: string | null;
+  reportPath: string | null;
+  artifactDir: string | null;
+  sourceCount: number | null;
+  claimCount: number | null;
+  qualityGates: Record<string, string>;
+  gaps: string[];
+}
+
+export type ToolCallMeta = HrPreviewToolResult | CreateEmployeeSuccessToolMeta | DeepResearchToolMeta;
 
 export interface NormalizedToolCallResult {
   displayResult: string;
@@ -147,8 +160,59 @@ function buildPreviewDisplayResult(preview: HrPreviewToolResult): string {
   return 'Agent blueprint preview ready.';
 }
 
+function parseDeepResearchToolResult(toolName: string | undefined, rawResult: unknown): DeepResearchToolMeta | null {
+  if (!toolName?.startsWith('deep_research_')) {
+    return null;
+  }
+  const parsed = parseStructuredToolPayload(rawResult);
+  if (!parsed) {
+    return null;
+  }
+  const qualityGates: Record<string, string> = {};
+  if (parsed.quality_gates && typeof parsed.quality_gates === 'object' && !Array.isArray(parsed.quality_gates)) {
+    Object.entries(parsed.quality_gates as Record<string, unknown>).forEach(([key, value]) => {
+      if (typeof value === 'string') {
+        qualityGates[key] = value;
+      }
+    });
+  }
+  const sourceCount = typeof parsed.source_count === 'number' ? parsed.source_count : null;
+  const claimCount = typeof parsed.claim_count === 'number' ? parsed.claim_count : null;
+
+  return {
+    kind: 'deep_research',
+    taskId: typeof parsed.task_id === 'string' ? parsed.task_id : null,
+    status: typeof parsed.status === 'string' ? parsed.status : null,
+    summary: typeof parsed.summary === 'string' ? parsed.summary : null,
+    reportPath: typeof parsed.report_path === 'string' ? parsed.report_path : null,
+    artifactDir: typeof parsed.artifact_dir === 'string' ? parsed.artifact_dir : null,
+    sourceCount,
+    claimCount,
+    qualityGates,
+    gaps: normalizeStringList(parsed.gaps),
+  };
+}
+
+function buildDeepResearchDisplayResult(meta: DeepResearchToolMeta): string {
+  const status = meta.status || 'started';
+  if (status === 'running') {
+    return meta.taskId ? `Deep research running: ${meta.taskId}` : 'Deep research running';
+  }
+  return meta.summary || `Deep research ${status}`;
+}
+
 export function normalizeToolCallResult(toolName: string | undefined, rawResult: unknown): NormalizedToolCallResult {
   const raw = coerceToolResultToString(rawResult);
+
+  const deepResearch = parseDeepResearchToolResult(toolName, rawResult);
+  if (deepResearch) {
+    return {
+      displayResult: buildDeepResearchDisplayResult(deepResearch),
+      createdAgentId: null,
+      raw,
+      toolMeta: deepResearch,
+    };
+  }
 
   if (toolName === 'preview_agent_blueprint' || toolName === 'create_digital_employee') {
     const preview = parsePreviewAgentBlueprintResult(rawResult);

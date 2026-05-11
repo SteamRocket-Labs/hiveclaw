@@ -1,12 +1,36 @@
 name: deep_research_pack
 version: "0.1.0"
 description: |
-  Source-attributed deep research workflows with planning, collection,
-  citation compilation, contradiction checks, and report assembly.
+  First-class source-attributed deep research workflows with dedicated
+  planning, collection, source ledger, claim ledger, evaluation, and report tools.
 license: Proprietary
 author: Hive Research Team
 
 tools:
+  - name: deep_research_run
+    locale: cloud
+    governance:
+      security_zone: restricted
+      approval_required: false
+  - name: deep_research_start
+    locale: cloud
+    governance:
+      security_zone: restricted
+      approval_required: false
+  - name: deep_research_check
+    locale: cloud
+    governance:
+      security_zone: public
+  - name: deep_research_cancel
+    locale: cloud
+    governance:
+      security_zone: restricted
+      approval_required: false
+  - name: deep_research_export
+    locale: cloud
+    governance:
+      security_zone: restricted
+      approval_required: false
   - name: web_search
     locale: cloud
     governance:
@@ -25,43 +49,6 @@ tools:
     governance:
       security_zone: public
       credential_scope: tenant
-  - name: read_file
-    locale: cloud
-    governance:
-      security_zone: public
-  - name: write_file
-    locale: cloud
-    governance:
-      security_zone: restricted
-      approval_required: false
-  - name: edit_file
-    locale: cloud
-    governance:
-      security_zone: restricted
-      approval_required: false
-  - name: list_files
-    locale: cloud
-    governance:
-      security_zone: public
-  - name: grep_search
-    locale: cloud
-    governance:
-      security_zone: public
-  - name: glob_search
-    locale: cloud
-    governance:
-      security_zone: public
-  - name: delegate_to_agent
-    locale: cloud
-    governance:
-      security_zone: restricted
-      approval_required: false
-  - name: send_channel_file
-    locale: cloud
-    governance:
-      security_zone: restricted
-      credential_scope: tenant
-
 skills:
   - skills/deep-research
 
@@ -102,7 +89,8 @@ credential_requirements:
 
 activation:
   required_capabilities:
-    - web_research
+    - research.deep.run
+    - research.deep.read
   default_state: inactive
 
 sandbox_requirements:

@@ -369,7 +369,11 @@
       "selectObjective": "Select objective",
       "wakeName": "Wake name",
       "wakeReason": "Wake reason",
-      "evidence": "Evidence"
+      "evidence": "Evidence",
+      "researchStatus": "Status",
+      "researchSources": "Sources",
+      "researchClaims": "Claims",
+      "researchGaps": "Gaps"
     },
     "soul": {
       "title": "Soul — Personality & Instructions",
@@ -474,7 +478,16 @@
       "deferredCapabilities": "Deferred Capabilities",
       "warnings": "Warnings",
       "manualSteps": "Manual Steps",
-      "rawOutput": "Raw output"
+      "rawOutput": "Raw output",
+      "deepResearchTitle": "Deep Research",
+      "taskId": "Task",
+      "status": "Status",
+      "sources": "Sources",
+      "claims": "Claims",
+      "report": "Report",
+      "runState": "Run State",
+      "qualityGates": "Quality Gates",
+      "gaps": "Gaps"
     },
     "runtime": {
       "model": "Model",

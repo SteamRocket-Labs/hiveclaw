@@ -124,6 +124,41 @@ export function StructuredToolResultBody({
     return toolResult ? <RawToolResultBlock text={toolResult} /> : null;
   }
 
+  if (toolMeta.kind === 'deep_research') {
+    const gateRows = Object.entries(toolMeta.qualityGates).map(([gate, state]) => `${gate}: ${state}`);
+    const statRows = [
+      toolMeta.taskId ? `${t('agent.chat.toolResults.taskId', 'Task')}: ${toolMeta.taskId}` : '',
+      toolMeta.status ? `${t('agent.chat.toolResults.status', 'Status')}: ${toolMeta.status}` : '',
+      typeof toolMeta.sourceCount === 'number' ? `${t('agent.chat.toolResults.sources', 'Sources')}: ${toolMeta.sourceCount}` : '',
+      typeof toolMeta.claimCount === 'number' ? `${t('agent.chat.toolResults.claims', 'Claims')}: ${toolMeta.claimCount}` : '',
+      toolMeta.reportPath ? `${t('agent.chat.toolResults.report', 'Report')}: ${toolMeta.reportPath}` : '',
+    ].filter(Boolean);
+    const showRawOutput = rawText.length > 0 && rawText !== toolResult;
+    return (
+      <div style={{ display: 'grid', gap: '8px' }}>
+        <div style={{ display: 'grid', gap: '4px' }}>
+          <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--accent-text)' }}>
+            {t('agent.chat.toolResults.deepResearchTitle', 'Deep Research')}
+          </div>
+          {toolMeta.summary && <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{toolMeta.summary}</div>}
+        </div>
+        <StructuredToolSection label={t('agent.chat.toolResults.runState', 'Run State')} items={statRows} />
+        <StructuredToolSection label={t('agent.chat.toolResults.qualityGates', 'Quality Gates')} items={gateRows} />
+        <StructuredToolSection label={t('agent.chat.toolResults.gaps', 'Gaps')} items={toolMeta.gaps} />
+        {showRawOutput && (
+          <details>
+            <summary style={{ cursor: 'pointer', color: 'var(--text-tertiary)' }}>
+              {t('agent.chat.toolResults.rawOutput', 'Raw output')}
+            </summary>
+            <div style={{ marginTop: '6px' }}>
+              <RawToolResultBlock text={rawText} />
+            </div>
+          </details>
+        )}
+      </div>
+    );
+  }
+
   if (toolMeta.kind === 'hr_preview') {
     const showRawOutput = rawText.length > 0 && rawText !== toolResult;
     return (

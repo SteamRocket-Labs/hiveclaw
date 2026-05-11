@@ -586,6 +586,14 @@ async def read_agent_trigger_artifact_view(
     include_diagnostics: bool = False,
 ) -> dict[str, Any] | None:
     agent_root = (Path(get_settings().AGENT_DATA_DIR) / str(agent_id)).resolve()
+    deep_research = _read_deep_research_artifact_view(
+        agent_root=agent_root,
+        runtime_task_id=runtime_task_id,
+        include_diagnostics=include_diagnostics,
+    )
+    if deep_research is not None:
+        return deep_research
+
     artifact_path = (agent_root / "runtime_artifacts" / "triggers" / _safe_runtime_task_filename(runtime_task_id)).resolve()
     try:
         artifact_path.relative_to(agent_root)
@@ -600,4 +608,62 @@ async def read_agent_trigger_artifact_view(
     view = build_artifact_view(payload, include_diagnostics=include_diagnostics)
     if include_diagnostics:
         view.setdefault("diagnostics", {})["path"] = artifact_path.relative_to(agent_root).as_posix()
+    return view
+
+
+def _read_deep_research_artifact_view(
+    *,
+    agent_root: Path,
+    runtime_task_id: str,
+    include_diagnostics: bool = False,
+) -> dict[str, Any] | None:
+    safe_task_id = str(runtime_task_id).strip().replace("-", "")
+    artifact_dir = (agent_root / "runtime_artifacts" / "long_tasks" / safe_task_id / "deep_research").resolve()
+    try:
+        artifact_dir.relative_to(agent_root)
+    except ValueError:
+        return None
+    final_path = artifact_dir / "final.json"
+    report_path = artifact_dir / "report.md"
+    if not final_path.exists() and not report_path.exists():
+        return None
+
+    payload: dict[str, Any] = {}
+    if final_path.exists():
+        try:
+            loaded = json.loads(final_path.read_text(encoding="utf-8"))
+            payload = loaded if isinstance(loaded, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+    report = ""
+    if report_path.exists():
+        try:
+            report = report_path.read_text(encoding="utf-8")
+        except OSError:
+            report = ""
+
+    summary = str(payload.get("summary") or "").strip() or next(
+        (line.strip("# ").strip() for line in report.splitlines() if line.strip()),
+        "Deep research artifact",
+    )
+    view = {
+        "title": "Deep Research",
+        "created_at": payload.get("created_at"),
+        "summary": summary[:240],
+        "final_reply": report or json.dumps(payload, ensure_ascii=False, indent=2),
+        "artifact_type": "deep_research",
+        "status": payload.get("status"),
+        "source_count": payload.get("source_count", 0),
+        "claim_count": payload.get("claim_count", 0),
+        "quality_gates": payload.get("quality_gates", {}),
+        "gaps": payload.get("gaps", []),
+    }
+    if include_diagnostics:
+        view["diagnostics"] = {
+            "schema": payload.get("schema"),
+            "runtime_task_id": safe_task_id,
+            "path": artifact_dir.relative_to(agent_root).as_posix(),
+            "report_path": report_path.relative_to(agent_root).as_posix() if report_path.exists() else None,
+            "final_path": final_path.relative_to(agent_root).as_posix() if final_path.exists() else None,
+        }
     return view

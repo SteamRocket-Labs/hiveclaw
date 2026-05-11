@@ -1,0 +1,215 @@
+from __future__ import annotations
+
+import uuid
+from dataclasses import asdict, dataclass, field, is_dataclass
+from datetime import datetime, timezone
+from enum import StrEnum
+from typing import Any, Literal
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class ClaimStatus(StrEnum):
+    VERIFIED = "verified"
+    INFERRED = "inferred"
+    CONTRADICTED = "contradicted"
+    STALE = "stale"
+    UNSUPPORTED = "unsupported"
+
+
+class SourceType(StrEnum):
+    PRIMARY = "primary"
+    SECONDARY = "secondary"
+    DATASET = "dataset"
+    REGULATORY = "regulatory"
+    TECHNICAL = "technical"
+    UNKNOWN = "unknown"
+
+
+RunStatus = Literal["pending", "running", "completed", "failed", "killed"]
+
+
+@dataclass(slots=True)
+class SearchQuery:
+    query: str
+    lane_id: str = ""
+    rationale: str = ""
+
+
+@dataclass(slots=True)
+class ResearchLane:
+    lane_id: str
+    label: str
+    goal: str
+    queries: list[SearchQuery] = field(default_factory=list)
+    preferred_source_types: list[SourceType] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class ResearchPlan:
+    question: str
+    mode: str
+    lanes: list[ResearchLane]
+    scope: str = ""
+    time_window: str = ""
+    source_policy: str = "primary_preferred"
+    created_at: str = field(default_factory=utc_now)
+
+
+@dataclass(slots=True)
+class ResearchRequest:
+    question: str
+    mode: str = "topic_deep_dive"
+    scope: str = ""
+    depth: str = "standard"
+    source_policy: str = "primary_preferred"
+    time_window: str = ""
+    max_rounds: int = 2
+    max_sources: int = 8
+    concurrency: int = 4
+    token_budget: int | None = None
+    deadline_seconds: int | None = None
+    output_format: str = "markdown"
+
+    @classmethod
+    def from_arguments(cls, arguments: dict[str, Any]) -> "ResearchRequest":
+        question = str(arguments.get("question") or arguments.get("query") or "").strip()
+        if not question:
+            raise ValueError("deep research requires a non-empty question")
+        return cls(
+            question=question,
+            mode=str(arguments.get("mode") or "topic_deep_dive").strip() or "topic_deep_dive",
+            scope=str(arguments.get("scope") or "").strip(),
+            depth=str(arguments.get("depth") or "standard").strip() or "standard",
+            source_policy=str(arguments.get("source_policy") or "primary_preferred").strip() or "primary_preferred",
+            time_window=str(arguments.get("time_window") or "").strip(),
+            max_rounds=_coerce_int(arguments.get("max_rounds"), default=2, minimum=1, maximum=8),
+            max_sources=_coerce_int(arguments.get("max_sources"), default=8, minimum=1, maximum=50),
+            concurrency=_coerce_int(arguments.get("concurrency"), default=4, minimum=1, maximum=12),
+            token_budget=_coerce_optional_int(arguments.get("token_budget"), minimum=1),
+            deadline_seconds=_coerce_optional_int(arguments.get("deadline_seconds"), minimum=10),
+            output_format=str(arguments.get("output_format") or "markdown").strip() or "markdown",
+        )
+
+
+@dataclass(slots=True)
+class SearchCandidate:
+    url: str
+    title: str = ""
+    snippet: str = ""
+    lane_id: str = ""
+    query: str = ""
+    rank: int = 0
+    discovery_only: bool = True
+
+
+@dataclass(slots=True)
+class SourceRecord:
+    source_id: str
+    url: str
+    title: str
+    publisher: str
+    source_type: SourceType
+    content: str
+    fetched_at: str = field(default_factory=utc_now)
+    published_at: str | None = None
+    lane_id: str = ""
+    query: str = ""
+    fetch_tool: str = ""
+
+
+@dataclass(slots=True)
+class ClaimRecord:
+    claim_id: str
+    text: str
+    status: ClaimStatus
+    source_ids: list[str] = field(default_factory=list)
+    evidence: str = ""
+    notes: str = ""
+    contradiction_group: str | None = None
+    created_at: str = field(default_factory=utc_now)
+
+
+@dataclass(slots=True)
+class ResearchStep:
+    step_id: str
+    phase: str
+    status: str
+    message: str
+    detail: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now)
+
+
+@dataclass(slots=True)
+class EvaluationResult:
+    quality_gates: dict[str, str]
+    gaps: list[str] = field(default_factory=list)
+    next_queries: list[str] = field(default_factory=list)
+    missing_sources: list[str] = field(default_factory=list)
+    unsupported_claims: list[str] = field(default_factory=list)
+    created_at: str = field(default_factory=utc_now)
+
+
+@dataclass(slots=True)
+class ResearchArtifact:
+    artifact_dir: str
+    report_path: str
+    sources_path: str
+    claims_path: str
+    steps_path: str
+    final_path: str
+
+
+@dataclass(slots=True)
+class ResearchRun:
+    run_id: str
+    status: RunStatus
+    summary: str = ""
+    artifact_dir: str = ""
+    report_path: str = ""
+    sources_path: str = ""
+    claims_path: str = ""
+    steps_path: str = ""
+    final_path: str = ""
+    source_count: int = 0
+    claim_count: int = 0
+    quality_gates: dict[str, str] = field(default_factory=dict)
+    gaps: list[str] = field(default_factory=list)
+    created_at: str = field(default_factory=utc_now)
+    completed_at: str | None = None
+
+
+def new_id(prefix: str) -> str:
+    return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+def to_jsonable(value: Any) -> Any:
+    if isinstance(value, StrEnum):
+        return value.value
+    if is_dataclass(value):
+        return {key: to_jsonable(item) for key, item in asdict(value).items()}
+    if isinstance(value, dict):
+        return {str(key): to_jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [to_jsonable(item) for item in value]
+    return value
+
+
+def _coerce_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def _coerce_optional_int(value: Any, *, minimum: int) -> int | None:
+    if value in {None, ""}:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(minimum, parsed)

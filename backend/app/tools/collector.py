@@ -35,6 +35,7 @@ HANDLER_MODULES: tuple[str, ...] = (
     "app.tools.handlers.plaza",
     "app.tools.handlers.hr",
     "app.tools.handlers.finance",
+    "app.tools.handlers.deep_research",
 )
 
 

@@ -368,7 +368,11 @@
       "selectObjective": "选择目标",
       "wakeName": "唤醒名称",
       "wakeReason": "唤醒原因",
-      "evidence": "证据"
+      "evidence": "证据",
+      "researchStatus": "状态",
+      "researchSources": "来源",
+      "researchClaims": "结论",
+      "researchGaps": "缺口"
     },
     "soul": {
       "title": "Soul — 人格与行为指令",
@@ -473,7 +477,16 @@
       "deferredCapabilities": "延后能力",
       "warnings": "注意事项",
       "manualSteps": "人工后续步骤",
-      "rawOutput": "原始输出"
+      "rawOutput": "原始输出",
+      "deepResearchTitle": "深度研究",
+      "taskId": "任务",
+      "status": "状态",
+      "sources": "来源",
+      "claims": "结论",
+      "report": "报告",
+      "runState": "运行状态",
+      "qualityGates": "质量门槛",
+      "gaps": "缺口"
     },
     "runtime": {
       "model": "模型",

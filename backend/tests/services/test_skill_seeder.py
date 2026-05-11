@@ -27,6 +27,27 @@ def test_pack_skill_seeder_exposes_one_deep_research_entrypoint():
     assert "source-ledger-audit" not in folders
 
 
+def test_deep_research_skill_declares_only_dedicated_tools():
+    from app.skills.parser import SkillParser
+
+    skill_path = Path(__file__).resolve().parents[2] / "packs" / "deep_research_pack" / "skills" / "deep-research" / "SKILL.md"
+    parsed = SkillParser().parse_file(
+        skill_path,
+        relative_path="skills/deep-research/SKILL.md",
+        default_name="deep-research",
+    )
+
+    assert set(parsed.metadata.declared_tools) == {
+        "deep_research_run",
+        "deep_research_start",
+        "deep_research_check",
+        "deep_research_cancel",
+        "deep_research_export",
+    }
+    assert "web_search" not in parsed.metadata.declared_tools
+    assert "web_fetch" not in parsed.metadata.declared_tools
+
+
 def test_pack_skill_seeder_exposes_one_office_entrypoint():
     folders = _pack_skill_folders()
 

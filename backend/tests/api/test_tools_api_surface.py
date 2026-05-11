@@ -51,6 +51,27 @@ class _FakeDB:
         self.deleted.append(value)
 
 
+def _make_builtin_tool(*, name: str, category: str = "general", is_default: bool = False):
+    return SimpleNamespace(
+        id=uuid4(),
+        name=name,
+        display_name=name.replace("_", " ").title(),
+        description=f"{name} description",
+        type="builtin",
+        category=category,
+        icon="🔧",
+        parameters_schema={"type": "object", "properties": {}},
+        config={},
+        config_schema={},
+        mcp_server_url=None,
+        mcp_server_name=None,
+        mcp_tool_name=None,
+        enabled=True,
+        is_default=is_default,
+        tenant_id=None,
+    )
+
+
 def test_tools_router_is_registered_in_app_surface():
     project_root = Path(__file__).resolve().parents[3]
     main_source = (project_root / "backend/app/main.py").read_text()
@@ -59,6 +80,104 @@ def test_tools_router_is_registered_in_app_surface():
     assert "from app.api.tools import router as tools_router" in main_source
     assert "tools_router" in main_source
     assert tools_api_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_list_agent_tools_with_config_surfaces_unassigned_builtin_pack_tools():
+    import app.api.tools as tools_api
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id)
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, creator_id=current_user.id)
+    deep_research_tool = _make_builtin_tool(
+        name="deep_research_run",
+        category="deep_research_pack",
+        is_default=False,
+    )
+    db = _FakeDB(
+        [
+            _ScalarResult(agent),  # check_agent_access
+            _ListResult([deep_research_tool]),  # platform/tenant tool catalog
+            _ListResult([]),  # existing AgentTool rows
+        ]
+    )
+
+    payload = await tools_api.list_agent_tools_with_config(
+        agent_id=agent_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    assert len(payload) == 1
+    row = payload[0]
+    assert row["name"] == "deep_research_run"
+    assert row["category"] == "deep_research_pack"
+    assert row["enabled"] is False
+    assert row["agent_tool_id"] is None
+    assert row["source"] == "system"
+
+
+@pytest.mark.asyncio
+async def test_update_agent_tools_creates_missing_system_assignment(monkeypatch):
+    import app.api.tools as tools_api
+
+    agent_id = uuid4()
+    tool_id = uuid4()
+    tenant_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id)
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, creator_id=current_user.id)
+    deep_research_tool = _make_builtin_tool(
+        name="deep_research_run",
+        category="deep_research_pack",
+        is_default=False,
+    )
+    deep_research_tool.id = tool_id
+    db = _FakeDB(
+        [
+            _ScalarResult(None),  # _get_agent_tool
+            _ScalarResult(deep_research_tool),  # _get_visible_agent_tool
+        ]
+    )
+    created = {}
+
+    async def fake_require_manage_access(db_session, user, target_agent_id):
+        assert db_session is db
+        assert user is current_user
+        assert target_agent_id == agent_id
+        return agent
+
+    async def fake_ensure_assignment(db_session, *, agent_id, tool_id, enabled, source="system", **kwargs):
+        created.update(
+            {
+                "db": db_session,
+                "agent_id": agent_id,
+                "tool_id": tool_id,
+                "enabled": enabled,
+                "source": source,
+            }
+        )
+        return SimpleNamespace(id=uuid4()), True
+
+    monkeypatch.setattr(tools_api, "_require_manage_access", fake_require_manage_access)
+    monkeypatch.setattr(tools_api, "ensure_agent_tool_assignment", fake_ensure_assignment)
+
+    result = await tools_api.update_agent_tools(
+        agent_id=agent_id,
+        data=tools_api.AgentToolsUpdateIn(tools=[tools_api.AgentToolToggleIn(tool_id=str(tool_id), enabled=True)]),
+        current_user=current_user,
+        db=db,
+    )
+
+    assert result == {"ok": True}
+    assert created == {
+        "db": db,
+        "agent_id": agent_id,
+        "tool_id": tool_id,
+        "enabled": True,
+        "source": "system",
+    }
+    assert db.committed is True
 
 
 @pytest.mark.asyncio

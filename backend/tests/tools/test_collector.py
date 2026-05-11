@@ -221,6 +221,7 @@ def test_collect_real_handlers_include_deep_research_pack_tools():
 
     seed_by_name = {tool["name"]: tool for tool in collected.seed_list}
     assert all(seed_by_name[name]["is_default"] is False for name in expected)
+    assert all(seed_by_name[name]["category"] == "deep_research_pack" for name in expected)
     assert "deep_research_check" in collected.read_only_names
     assert "deep_research_check" in collected.parallel_safe_names
 

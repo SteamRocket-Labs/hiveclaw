@@ -370,6 +370,35 @@ async def _get_agent_tool(db: AsyncSession, agent_id: uuid.UUID, tool_id: uuid.U
     return result.scalar_one_or_none()
 
 
+def _tool_visible_to_agent_tenant(tool: Tool, tenant_id: uuid.UUID | None) -> bool:
+    if tool.tenant_id is None:
+        return tool.type != "mcp"
+    return bool(tenant_id and tool.tenant_id == tenant_id)
+
+
+async def _get_visible_agent_tool(db: AsyncSession, agent: Agent, tool_id: uuid.UUID) -> Tool | None:
+    result = await db.execute(select(Tool).where(Tool.id == tool_id, Tool.enabled.is_(True)))
+    tool = result.scalar_one_or_none()
+    if not tool or not _tool_visible_to_agent_tenant(tool, agent.tenant_id):
+        return None
+    return tool
+
+
+def _serialize_agent_tool_row(tool: Tool, agent_tool: AgentTool | None) -> dict:
+    agent_config = agent_tool.config if agent_tool else {}
+    return {
+        **_serialize_tool(
+            tool,
+            enabled=agent_tool.enabled if agent_tool else bool(tool.is_default),
+            config={**(tool.config or {}), **(agent_config or {})},
+        ),
+        "agent_tool_id": str(agent_tool.id) if agent_tool else None,
+        "source": agent_tool.source if agent_tool else "system",
+        "global_config": tool.config or {},
+        "agent_config": agent_config or {},
+    }
+
+
 async def _upsert_tenant_tool_assignments(
     db: AsyncSession,
     tenant_id: uuid.UUID | None,
@@ -675,26 +704,26 @@ async def list_agent_tools_with_config(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await check_agent_access(db, current_user, agent_id)
-    result = await db.execute(
-        select(AgentTool, Tool)
-        .join(Tool, Tool.id == AgentTool.tool_id)
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    tools_stmt = select(Tool).where(Tool.enabled.is_(True))
+    if agent.tenant_id:
+        tools_stmt = tools_stmt.where(
+            or_(
+                Tool.tenant_id == agent.tenant_id,
+                and_(Tool.tenant_id.is_(None), Tool.type != "mcp"),
+            )
+        )
+    else:
+        tools_stmt = tools_stmt.where(Tool.tenant_id.is_(None), Tool.type != "mcp")
+    tools_result = await db.execute(tools_stmt.order_by(Tool.category.asc(), Tool.display_name.asc()))
+    tool_rows = tools_result.scalars().all()
+
+    assignments_result = await db.execute(
+        select(AgentTool)
         .where(AgentTool.agent_id == agent_id)
-        .order_by(Tool.category.asc(), Tool.display_name.asc())
     )
-    rows = result.all()
-    return [
-        {
-            **_serialize_tool(
-                tool, enabled=agent_tool.enabled, config={**(tool.config or {}), **(agent_tool.config or {})}
-            ),
-            "agent_tool_id": str(agent_tool.id),
-            "source": agent_tool.source,
-            "global_config": tool.config or {},
-            "agent_config": agent_tool.config or {},
-        }
-        for agent_tool, tool in rows
-    ]
+    assignments = {agent_tool.tool_id: agent_tool for agent_tool in assignments_result.scalars().all()}
+    return [_serialize_agent_tool_row(tool, assignments.get(tool.id)) for tool in tool_rows]
 
 
 @router.get("/tools/agents/{agent_id}")
@@ -713,11 +742,23 @@ async def update_agent_tools(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await _require_manage_access(db, current_user, agent_id)
+    agent = await _require_manage_access(db, current_user, agent_id)
     for update_item in data.tools:
-        assignment = await _get_agent_tool(db, agent_id, uuid.UUID(update_item.tool_id))
+        tool_id = uuid.UUID(update_item.tool_id)
+        assignment = await _get_agent_tool(db, agent_id, tool_id)
         if assignment:
             assignment.enabled = update_item.enabled
+            continue
+        tool = await _get_visible_agent_tool(db, agent, tool_id)
+        if not tool:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tool not found")
+        await ensure_agent_tool_assignment(
+            db,
+            agent_id=agent_id,
+            tool_id=tool.id,
+            enabled=update_item.enabled,
+            source="system",
+        )
     await db.commit()
     return {"ok": True}
 

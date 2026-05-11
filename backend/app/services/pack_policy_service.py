@@ -13,6 +13,7 @@ from app.packs.catalog_reader import PackCatalogReader, find_pack_dirs
 
 
 _MANIFEST_DEFAULT_ENABLEMENT: dict[str, bool] | None = None
+_REGISTERED_TOOL_PACK_NAMES: dict[str, tuple[str, ...]] | None = None
 
 
 def tenant_pack_policy_key(tenant_id: uuid.UUID) -> str:
@@ -81,3 +82,35 @@ def is_pack_enabled(pack_policies: dict[str, bool], pack_name: str) -> bool:
     if pack_name in pack_policies:
         return bool(pack_policies[pack_name])
     return _manifest_default_enablement().get(pack_name, True)
+
+
+def policy_pack_names_for_tool(tool_name: str) -> tuple[str, ...]:
+    """Return policy-relevant pack names for a tool.
+
+    Static packs infer membership from `app.tools.packs`. Dedicated tool
+    handlers also declare `ToolMeta.pack`; this keeps first-class tools such as
+    `deep_research_run` attached to their pack without incorrectly tagging
+    shared dependencies like `web_search` as Deep Research.
+    """
+    global _REGISTERED_TOOL_PACK_NAMES
+    if _REGISTERED_TOOL_PACK_NAMES is None:
+        from app.tools.collector import collect_tools
+        from app.tools.packs import static_pack_names_for_tool
+
+        by_tool: dict[str, set[str]] = {}
+        for pack_name, names in collect_tools().pack_tool_groups.items():
+            for name in names:
+                by_tool.setdefault(name, set()).add(pack_name)
+        for name in tuple(by_tool):
+            by_tool[name].update(static_pack_names_for_tool(name))
+        _REGISTERED_TOOL_PACK_NAMES = {
+            name: tuple(sorted(pack_names))
+            for name, pack_names in by_tool.items()
+        }
+
+    if tool_name in _REGISTERED_TOOL_PACK_NAMES:
+        return _REGISTERED_TOOL_PACK_NAMES[tool_name]
+
+    from app.tools.packs import static_pack_names_for_tool
+
+    return static_pack_names_for_tool(tool_name)

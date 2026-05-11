@@ -148,11 +148,9 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
   const systemTools = tools.filter((tool) => tool.source !== 'user_installed');
   const agentInstalledTools = tools.filter((tool) => tool.source === 'user_installed');
 
-  // Packs without a dedicated category (office/deep_research) reuse generic
-  // tools (read_file, write_file, web_search, ...). Surface them as named
-  // groups so the Tools tab visually mirrors finance — same tool may appear
-  // under both its file/search category and the pack group it serves.
-  const SHADOW_PACK_NAMES = ['office_pack', 'deep_research_pack'];
+  // Office still reuses generic file/document tools. Deep Research has
+  // dedicated deep_research_* tools and renders through its own category.
+  const SHADOW_PACK_NAMES = ['office_pack'];
 
   const groupByCategory = (toolList: any[]) => {
     const categoryMap: Record<string, any[]> = {};

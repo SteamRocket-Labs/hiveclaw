@@ -272,3 +272,18 @@ def test_collect_skill_declared_packs_uses_metadata_pack_without_tool_inference_
             "tools": ["firecrawl_fetch", "web_search"],
         },
     ]
+
+
+def test_deep_research_runtime_pack_exposes_dedicated_tools_only():
+    from app.tools.packs import pack_for_name
+
+    pack = pack_for_name("deep_research_pack")
+
+    assert pack is not None
+    assert set(pack.tools) == {
+        "deep_research_run",
+        "deep_research_start",
+        "deep_research_check",
+        "deep_research_cancel",
+        "deep_research_export",
+    }

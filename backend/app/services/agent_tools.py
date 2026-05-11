@@ -374,7 +374,8 @@ async def get_agent_tools_for_llm(
     has_feishu_channel = await _agent_has_feishu(agent_id)
     has_feishu_cli_access = await _agent_has_feishu_cli_access()
     has_feishu_office_access = has_feishu_channel or has_feishu_cli_access
-    requested_set = set(requested_names or [])
+    explicit_requested_set = set(requested_names or [])
+    requested_set = set(explicit_requested_set)
     if requested_set:
         requested_set |= CORE_TOOL_NAMES
 
@@ -414,7 +415,7 @@ async def get_agent_tools_for_llm(
             for t in all_tools:
                 tid = str(t.id)
                 at = assignments.get(tid)
-                enabled = at.enabled if at else t.is_default
+                enabled = at.enabled if at else (t.is_default or t.name in explicit_requested_set)
                 if not enabled:
                     continue
 

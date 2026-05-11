@@ -7,10 +7,6 @@ tools:
   - deep_research_check
   - deep_research_cancel
   - deep_research_export
-  - web_search
-  - web_fetch
-  - firecrawl_fetch
-  - xcrawl_scrape
 metadata:
   version: '1.0'
   category: research
@@ -48,7 +44,7 @@ dedicated tools are unavailable.
 | Inspect running or completed long research | `deep_research_check` |
 | Stop an owned research task | `deep_research_cancel` |
 | Export markdown, JSON, or HTML artifact | `deep_research_export` |
-| Fallback discovery only when dedicated tools are unavailable | `web_search`, then `web_fetch` |
+| Fallback discovery only when dedicated tools are unavailable | Load the Web Research skill, then explicitly report that this is fallback mode |
 
 ## Workflow
 
@@ -66,7 +62,8 @@ dedicated tools are unavailable.
 - Every material claim must be source-bound or marked `unsupported`.
 - If fetched sources are insufficient, return gaps and next checks.
 - Prefer `deep_research_start` over manual delegation for large research; the tool owns progress, ledger, and artifacts.
-- Use fallback web tools only to recover when the dedicated Deep Research tool is unavailable or blocked.
+- Do not request or use raw web tools from this skill's normal tool surface. Web search/fetch belongs inside the Deep Research engine.
+- Use fallback web research only to recover when the dedicated Deep Research tool is unavailable or blocked, and explicitly label the output as fallback/partial.
 
 <examples>
 Input: "使用 deep research 做一次 RWA 项目的深度调研。"

@@ -1,9 +1,60 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+
+
+class _ListResult:
+    def __init__(self, values):
+        self._values = values
+
+    def scalars(self):
+        return SimpleNamespace(all=lambda: self._values)
+
+
+class _ScalarResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar_one_or_none(self):
+        return self._value
+
+
+class _FakeSession:
+    def __init__(self, results):
+        self._results = list(results)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def execute(self, _stmt):
+        if not self._results:
+            raise AssertionError("Unexpected execute() call")
+        return self._results.pop(0)
+
+
+def _make_tool(*, name: str, category: str = "general", is_default: bool = False):
+    return SimpleNamespace(
+        id=uuid4(),
+        name=name,
+        display_name=name.replace("_", " ").title(),
+        description=f"{name} description",
+        type="builtin",
+        category=category,
+        icon="🔧",
+        parameters_schema={"type": "object", "properties": {}},
+        enabled=True,
+        is_default=is_default,
+        tenant_id=None,
+        mcp_server_name=None,
+        mcp_server_url=None,
+    )
 
 
 @pytest.mark.asyncio
@@ -168,6 +219,52 @@ async def test_get_agent_tools_for_llm_db_failure_still_filters_feishu_access(mo
     assert "send_feishu_message" not in names
     assert "feishu_doc_read" not in names
     assert "feishu_base_table_list" not in names
+
+
+@pytest.mark.asyncio
+async def test_get_agent_tools_for_llm_requested_skill_tool_can_expand_non_default_without_assignment(monkeypatch):
+    from app.services import agent_tools as agent_tools_module
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    deep_research_tool = _make_tool(
+        name="deep_research_run",
+        category="deep_research_pack",
+        is_default=False,
+    )
+    default_core_tool = _make_tool(
+        name="read_file",
+        category="filesystem",
+        is_default=True,
+    )
+
+    def fake_async_session():
+        return _FakeSession(
+            [
+                _ScalarResult(SimpleNamespace(id=agent_id, tenant_id=tenant_id, agent_class="standard")),
+                _ScalarResult(None),  # no tenant pack policy row
+                _ListResult([default_core_tool, deep_research_tool]),
+                _ListResult([]),  # no AgentTool assignment exists yet
+            ]
+        )
+
+    async def no_feishu_channel(_agent_id):
+        return False
+
+    async def no_feishu_cli_access():
+        return False
+
+    monkeypatch.setattr(agent_tools_module, "async_session", fake_async_session)
+    monkeypatch.setattr(agent_tools_module, "_agent_has_feishu", no_feishu_channel)
+    monkeypatch.setattr(agent_tools_module, "_agent_has_feishu_cli_access", no_feishu_cli_access)
+
+    tools = await agent_tools_module.get_agent_tools_for_llm(
+        agent_id,
+        requested_names=["deep_research_run"],
+    )
+    names = {tool["function"]["name"] for tool in tools}
+
+    assert "deep_research_run" in names
 
 
 @pytest.mark.asyncio

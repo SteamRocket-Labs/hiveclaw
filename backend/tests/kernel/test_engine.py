@@ -293,6 +293,91 @@ async def test_agent_kernel_handles_tool_round_and_collects_parts():
 
 
 @pytest.mark.asyncio
+async def test_agent_kernel_sanitizes_malformed_tool_arguments_before_retry():
+    from app.kernel.contracts import InvocationRequest
+    from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
+
+    model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1",
+        api_key="test-key",
+        base_url=None,
+        max_output_tokens=None,
+    )
+
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_bad",
+                        "function": {
+                            "name": "web_fetch",
+                            "arguments": '{"url":"https://example.com/a"}{"url":"https://example.com/b"}',
+                        },
+                    }
+                ],
+                reasoning_content=None,
+                usage={"total_tokens": 2},
+            ),
+            SimpleNamespace(
+                content="recovered",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 2},
+            ),
+        ]
+    )
+
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda *_args, **_kwargs: RuntimeConfig(
+                tenant_id=uuid4(),
+                max_tool_rounds=3,
+                quota_message=None,
+            ),
+            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
+            resolve_memory_context=lambda *_args, **_kwargs: "",
+            get_tools=lambda *_args, **_kwargs: [
+                {
+                    "type": "function",
+                    "function": {"name": "web_fetch", "description": "", "parameters": {"type": "object"}},
+                }
+            ],
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda _model: fake_client,
+            execute_tool=lambda *_args, **_kwargs: "unused",
+            persist_memory=lambda **_kwargs: None,
+            record_token_usage=lambda *_args, **_kwargs: None,
+            get_max_tokens=lambda *_args, **_kwargs: 2048,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens"),
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=model,
+            messages=[{"role": "user", "content": "fetch both pages"}],
+            agent_name="Researcher",
+            role_description="Research agent",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+        )
+    )
+
+    assert result.content == "recovered"
+    assert len(fake_client.calls) == 2
+    retry_messages = fake_client.calls[1]["messages"]
+    assistant_with_bad_call = next(
+        message for message in retry_messages if message.role == "assistant" and message.tool_calls
+    )
+    assert assistant_with_bad_call.tool_calls[0]["function"]["arguments"] == "{}"
+
+
+@pytest.mark.asyncio
 async def test_runtime_invoker_delegates_to_agent_kernel(monkeypatch):
     from app.kernel.contracts import InvocationResult
     from app.runtime.invoker import AgentInvocationRequest, invoke_agent

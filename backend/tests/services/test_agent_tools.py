@@ -57,6 +57,16 @@ def _make_tool(*, name: str, category: str = "general", is_default: bool = False
     )
 
 
+def _make_agent_tool_assignment(*, tool_id, enabled: bool = True):
+    return SimpleNamespace(
+        id=uuid4(),
+        tool_id=tool_id,
+        enabled=enabled,
+        source="system",
+        config={},
+    )
+
+
 @pytest.mark.asyncio
 async def test_execute_approved_tool_prefers_tool_registry_executor(monkeypatch):
     from app.services.agent_tools import execute_approved_tool
@@ -267,6 +277,61 @@ async def test_get_agent_tools_for_llm_requested_skill_tool_can_expand_non_defau
     names = {tool["function"]["name"] for tool in tools}
 
     assert "deep_research_run" in names
+
+
+@pytest.mark.asyncio
+async def test_get_agent_tools_for_llm_hides_hr_only_assignment_from_regular_agent(monkeypatch):
+    from app.services import agent_tools as agent_tools_module
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    hr_tool = _make_tool(
+        name="create_digital_employee",
+        category="hr",
+        is_default=True,
+    )
+    default_core_tool = _make_tool(
+        name="read_file",
+        category="filesystem",
+        is_default=True,
+    )
+
+    def fake_async_session():
+        return _FakeSession(
+            [
+                _ScalarResult(
+                    SimpleNamespace(
+                        id=agent_id,
+                        tenant_id=tenant_id,
+                        agent_class="internal_tenant",
+                        name="Web3 Researcher",
+                    )
+                ),
+                _ScalarResult(None),  # no tenant pack policy row
+                _ListResult([default_core_tool, hr_tool]),
+                _ListResult([_make_agent_tool_assignment(tool_id=hr_tool.id, enabled=True)]),
+            ]
+        )
+
+    async def no_feishu_channel(_agent_id):
+        return False
+
+    async def no_feishu_cli_access():
+        return False
+
+    async def passthrough_available_tools(_agent_id, tools):
+        return tools
+
+    monkeypatch.setattr(agent_tools_module, "async_session", fake_async_session)
+    monkeypatch.setattr(agent_tools_module, "_agent_has_feishu", no_feishu_channel)
+    monkeypatch.setattr(agent_tools_module, "_agent_has_feishu_cli_access", no_feishu_cli_access)
+    monkeypatch.setattr(agent_tools_module, "_filter_unavailable_tools", passthrough_available_tools)
+
+    tools = await agent_tools_module.get_agent_tools_for_llm(agent_id)
+    names = {tool["function"]["name"] for tool in tools}
+
+    assert "read_file" in names
+    assert "create_digital_employee" not in names
 
 
 @pytest.mark.asyncio

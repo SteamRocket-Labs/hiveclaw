@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 
 
 class _ListResult:
@@ -149,6 +150,55 @@ async def test_list_agent_tools_with_config_surfaces_only_agent_declared_pack_to
 
 
 @pytest.mark.asyncio
+async def test_list_agent_tools_with_config_hides_hr_only_tool_from_regular_agent(monkeypatch):
+    import app.api.tools as tools_api
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id)
+    agent = SimpleNamespace(
+        id=agent_id,
+        tenant_id=tenant_id,
+        creator_id=current_user.id,
+        agent_class="internal_tenant",
+        name="Web3 Researcher",
+    )
+    hr_tool = _make_builtin_tool(name="create_digital_employee", category="hr", is_default=True)
+    assignment = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        tool_id=hr_tool.id,
+        enabled=True,
+        source="system",
+        config={},
+    )
+    default_tool = _make_builtin_tool(name="read_file", category="file", is_default=True)
+    db = _FakeDB(
+        [
+            _ScalarResult(agent),  # check_agent_access
+            _ListResult([assignment]),  # legacy AgentTool row exists
+            _ListResult([default_tool, hr_tool]),  # visible tenant catalog
+        ]
+    )
+
+    async def fake_skill_declared_tool_names(target_agent_id):
+        assert target_agent_id == agent_id
+        return set()
+
+    monkeypatch.setattr(tools_api, "_get_agent_skill_declared_tool_names", fake_skill_declared_tool_names)
+
+    payload = await tools_api.list_agent_tools_with_config(
+        agent_id=agent_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    names = {row["name"] for row in payload}
+    assert names == {"read_file"}
+    assert "create_digital_employee" not in names
+
+
+@pytest.mark.asyncio
 async def test_update_agent_tools_creates_missing_system_assignment(monkeypatch):
     import app.api.tools as tools_api
 
@@ -211,6 +261,100 @@ async def test_update_agent_tools_creates_missing_system_assignment(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_update_agent_tools_rejects_existing_hr_only_assignment_for_regular_agent(monkeypatch):
+    import app.api.tools as tools_api
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id)
+    agent = SimpleNamespace(
+        id=agent_id,
+        tenant_id=tenant_id,
+        creator_id=current_user.id,
+        agent_class="internal_tenant",
+        name="Web3 Researcher",
+    )
+    hr_tool = _make_builtin_tool(name="create_digital_employee", category="hr", is_default=True)
+    assignment = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        tool_id=hr_tool.id,
+        enabled=False,
+        source="system",
+        config={},
+    )
+    db = _FakeDB(
+        [
+            _ScalarResult(assignment),  # _get_agent_tool
+            _ScalarResult(hr_tool),  # visibility check for the assigned tool
+        ]
+    )
+
+    async def fake_require_manage_access(db_session, user, target_agent_id):
+        assert db_session is db
+        assert user is current_user
+        assert target_agent_id == agent_id
+        return agent
+
+    monkeypatch.setattr(tools_api, "_require_manage_access", fake_require_manage_access)
+
+    with pytest.raises(HTTPException) as exc:
+        await tools_api.update_agent_tools(
+            agent_id=agent_id,
+            data=tools_api.AgentToolsUpdateIn(
+                tools=[tools_api.AgentToolToggleIn(tool_id=str(hr_tool.id), enabled=True)]
+            ),
+            current_user=current_user,
+            db=db,
+        )
+
+    assert exc.value.status_code == 404
+    assert db.committed is False
+
+
+@pytest.mark.asyncio
+async def test_update_tool_config_rejects_hr_only_tool_for_regular_agent(monkeypatch):
+    import app.api.tools as tools_api
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id)
+    agent = SimpleNamespace(
+        id=agent_id,
+        tenant_id=tenant_id,
+        creator_id=current_user.id,
+        agent_class="internal_tenant",
+        name="Web3 Researcher",
+    )
+    hr_tool = _make_builtin_tool(name="create_digital_employee", category="hr", is_default=True)
+    db = _FakeDB([_ScalarResult(hr_tool)])
+
+    async def fake_require_manage_access(db_session, user, target_agent_id):
+        assert db_session is db
+        assert user is current_user
+        assert target_agent_id == agent_id
+        return agent
+
+    async def fail_ensure_assignment(*_args, **_kwargs):
+        raise AssertionError("HR-only tool config must not create an AgentTool assignment")
+
+    monkeypatch.setattr(tools_api, "_require_manage_access", fake_require_manage_access)
+    monkeypatch.setattr(tools_api, "ensure_agent_tool_assignment", fail_ensure_assignment)
+
+    with pytest.raises(HTTPException) as exc:
+        await tools_api.update_tool_config(
+            agent_id=agent_id,
+            tool_id=hr_tool.id,
+            data=tools_api.CategoryConfigIn(config={"enabled": True}),
+            current_user=current_user,
+            db=db,
+        )
+
+    assert exc.value.status_code == 404
+    assert db.committed is False
+
+
+@pytest.mark.asyncio
 async def test_create_tool_assigns_new_tool_to_current_tenant_agents():
     import app.api.tools as tools_api
 
@@ -218,11 +362,13 @@ async def test_create_tool_assigns_new_tool_to_current_tenant_agents():
     current_user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id)
     agent_one = SimpleNamespace(id=uuid4(), tenant_id=tenant_id)
     agent_two = SimpleNamespace(id=uuid4(), tenant_id=tenant_id)
-    db = _FakeDB([
-        _ListResult([agent_one, agent_two]),
-        _ScalarResult(None),
-        _ScalarResult(None),
-    ])
+    db = _FakeDB(
+        [
+            _ListResult([agent_one, agent_two]),
+            _ScalarResult(None),
+            _ScalarResult(None),
+        ]
+    )
 
     payload = tools_api.ToolCreateIn(
         name="mcp_demo_tool",
@@ -259,11 +405,13 @@ async def test_remove_agent_tool_uses_agent_manage_access_not_admin_role():
     current_user = SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4())
     agent_tool = SimpleNamespace(id=agent_tool_id, agent_id=agent_id, tool_id=tool_id)
     tool = SimpleNamespace(id=tool_id, type="mcp")
-    db = _FakeDB([
-        _ScalarResult(agent_tool),
-        _ScalarResult(None),
-        _ScalarResult(tool),
-    ])
+    db = _FakeDB(
+        [
+            _ScalarResult(agent_tool),
+            _ScalarResult(None),
+            _ScalarResult(tool),
+        ]
+    )
 
     async def fake_require_manage_access(db_session, user, target_agent_id):
         assert db_session is db
@@ -315,7 +463,9 @@ async def test_test_category_config_reports_feishu_cli_status(monkeypatch):
 
     monkeypatch.setattr(tools_api, "_require_manage_access", fake_require_manage_access)
     monkeypatch.setattr("app.services.agent_tool_domains.feishu_cli._feishu_cli_available", fake_cli_available)
-    monkeypatch.setattr("app.api.tools.get_settings", lambda: SimpleNamespace(FEISHU_CLI_ENABLED=True, FEISHU_CLI_BIN="lark-cli"))
+    monkeypatch.setattr(
+        "app.api.tools.get_settings", lambda: SimpleNamespace(FEISHU_CLI_ENABLED=True, FEISHU_CLI_BIN="lark-cli")
+    )
     monkeypatch.setattr(tools_api, "_probe_feishu_cardkit_status", fake_probe, raising=False)
 
     result = await tools_api.test_category_config(
@@ -346,7 +496,9 @@ async def test_get_feishu_runtime_status_reports_global_cli(monkeypatch):
         return True
 
     monkeypatch.setattr("app.services.agent_tool_domains.feishu_cli._feishu_cli_available", fake_cli_available)
-    monkeypatch.setattr("app.api.tools.get_settings", lambda: SimpleNamespace(FEISHU_CLI_ENABLED=True, FEISHU_CLI_BIN="lark-cli"))
+    monkeypatch.setattr(
+        "app.api.tools.get_settings", lambda: SimpleNamespace(FEISHU_CLI_ENABLED=True, FEISHU_CLI_BIN="lark-cli")
+    )
 
     result = await tools_api.get_feishu_runtime_status(current_user=current_user, db=db)
 
@@ -400,8 +552,12 @@ async def test_get_agent_feishu_runtime_status_reports_agent_access(monkeypatch)
         }
 
     monkeypatch.setattr(tools_api, "_require_manage_access", fake_require_manage_access)
-    monkeypatch.setattr("app.api.tools.get_settings", lambda: SimpleNamespace(FEISHU_CLI_ENABLED=True, FEISHU_CLI_BIN="lark-cli"))
-    monkeypatch.setattr("app.services.agent_tool_domains.feishu_cli._feishu_cli_available", fake_agent_has_feishu_cli_access)
+    monkeypatch.setattr(
+        "app.api.tools.get_settings", lambda: SimpleNamespace(FEISHU_CLI_ENABLED=True, FEISHU_CLI_BIN="lark-cli")
+    )
+    monkeypatch.setattr(
+        "app.services.agent_tool_domains.feishu_cli._feishu_cli_available", fake_agent_has_feishu_cli_access
+    )
     monkeypatch.setattr("app.services.agent_tools._agent_has_feishu", fake_agent_has_feishu)
     monkeypatch.setattr("app.services.agent_tools._agent_has_feishu_office_access", fake_agent_has_feishu_office_access)
     monkeypatch.setattr("app.services.agent_tools._agent_has_feishu_cli_access", fake_agent_has_feishu_cli_access)
@@ -463,8 +619,12 @@ async def test_get_agent_feishu_runtime_status_reports_invalid_channel_secret(mo
         }
 
     monkeypatch.setattr(tools_api, "_require_manage_access", fake_require_manage_access)
-    monkeypatch.setattr("app.api.tools.get_settings", lambda: SimpleNamespace(FEISHU_CLI_ENABLED=False, FEISHU_CLI_BIN="lark-cli"))
-    monkeypatch.setattr("app.services.agent_tool_domains.feishu_cli._feishu_cli_available", fake_agent_has_feishu_cli_access)
+    monkeypatch.setattr(
+        "app.api.tools.get_settings", lambda: SimpleNamespace(FEISHU_CLI_ENABLED=False, FEISHU_CLI_BIN="lark-cli")
+    )
+    monkeypatch.setattr(
+        "app.services.agent_tool_domains.feishu_cli._feishu_cli_available", fake_agent_has_feishu_cli_access
+    )
     monkeypatch.setattr("app.services.agent_tools._agent_has_feishu", fake_agent_has_feishu)
     monkeypatch.setattr("app.services.agent_tools._agent_has_feishu_office_access", fake_agent_has_feishu_office_access)
     monkeypatch.setattr("app.services.agent_tools._agent_has_feishu_cli_access", fake_agent_has_feishu_cli_access)
@@ -553,8 +713,12 @@ def test_list_tools_dedup_removes_mcp_duplicates_by_structural_identity():
 def test_list_tools_dedup_falls_back_to_display_name_when_mcp_tool_name_is_none():
     """Legacy MCP tools without mcp_tool_name fall back to display_name dedup."""
     tid = uuid4()
-    t1 = _make_tool(name="mcp_old_a", display_name="OldServer", tenant_id=tid, mcp_server_name="Old", mcp_tool_name=None)
-    t2 = _make_tool(name="mcp_old_b", display_name="OldServer", tenant_id=tid, mcp_server_name="Old", mcp_tool_name=None)
+    t1 = _make_tool(
+        name="mcp_old_a", display_name="OldServer", tenant_id=tid, mcp_server_name="Old", mcp_tool_name=None
+    )
+    t2 = _make_tool(
+        name="mcp_old_b", display_name="OldServer", tenant_id=tid, mcp_server_name="Old", mcp_tool_name=None
+    )
 
     seen_mcp: set[tuple[str | None, str | None]] = set()
     deduped = []
@@ -581,27 +745,37 @@ async def test_dedup_mcp_endpoint_merges_duplicates_and_preserves_agent_links():
     agent_id = uuid4()
 
     keeper = SimpleNamespace(
-        id=keeper_id, display_name="Twitter: LIKE", type="mcp",
-        mcp_server_name="Twitter", mcp_tool_name="LIKE",
-        tenant_id=tid, created_at=None,
+        id=keeper_id,
+        display_name="Twitter: LIKE",
+        type="mcp",
+        mcp_server_name="Twitter",
+        mcp_tool_name="LIKE",
+        tenant_id=tid,
+        created_at=None,
     )
     dup = SimpleNamespace(
-        id=dup_id, display_name="Twitter: LIKE", type="mcp",
-        mcp_server_name="Twitter", mcp_tool_name="LIKE",
-        tenant_id=tid, created_at=None,
+        id=dup_id,
+        display_name="Twitter: LIKE",
+        type="mcp",
+        mcp_server_name="Twitter",
+        mcp_tool_name="LIKE",
+        tenant_id=tid,
+        created_at=None,
     )
     dup_agent_tool = SimpleNamespace(id=uuid4(), agent_id=agent_id, tool_id=dup_id)
 
     current_user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tid)
 
-    db = _FakeDB([
-        # 1. select MCP tools for tenant (ordered by created_at asc)
-        _ListResult([keeper, dup]),
-        # 2. select AgentTool where tool_id == dup.id
-        _ListResult([dup_agent_tool]),
-        # 3. check if keeper already has link for this agent → no
-        _ScalarResult(None),
-    ])
+    db = _FakeDB(
+        [
+            # 1. select MCP tools for tenant (ordered by created_at asc)
+            _ListResult([keeper, dup]),
+            # 2. select AgentTool where tool_id == dup.id
+            _ListResult([dup_agent_tool]),
+            # 3. check if keeper already has link for this agent → no
+            _ScalarResult(None),
+        ]
+    )
 
     result = await tools_api.dedup_mcp_tools(tenant_id=str(tid), current_user=current_user, db=db)
 

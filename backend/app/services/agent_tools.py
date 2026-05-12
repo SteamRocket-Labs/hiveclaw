@@ -26,6 +26,7 @@ from app.models.agent import Agent
 from app.config import get_settings
 from app.services.channel_delivery_service import ChannelDeliveryService, channel_delivery_target
 from app.services.pack_policy_service import get_tenant_pack_policies, is_pack_enabled
+from app.services.tool_visibility import HR_ONLY_TOOL_NAMES, is_hr_agent, is_tool_allowed_for_agent
 from app.tools import (
     ToolExecutionRegistry,
     ToolGovernanceResolver,
@@ -387,9 +388,9 @@ async def get_agent_tools_for_llm(
         async with async_session() as db:
             agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
             agent = agent_result.scalar_one_or_none()
-            is_system_agent = agent is not None and getattr(agent, "agent_class", None) == "internal_system"
+            hr_agent = is_hr_agent(agent)
             _core = _get_always_core_tools()
-            if is_system_agent:
+            if hr_agent:
                 # HR agent: remove tool_search (searches own workspace, useless for HR)
                 _core = [t for t in _core if t["function"]["name"] != "tool_search"]
             _always_tools = (
@@ -400,7 +401,7 @@ async def get_agent_tools_for_llm(
                     has_feishu_office_access=has_feishu_office_access,
                     has_feishu_cli_access=has_feishu_cli_access,
                 )
-                + (_get_hr_tools() if is_system_agent else [])
+                + (_get_hr_tools() if hr_agent else [])
             )
             pack_policies = await get_tenant_pack_policies(db, getattr(agent, "tenant_id", None))
 
@@ -415,6 +416,8 @@ async def get_agent_tools_for_llm(
             result = []
             db_tool_names = set()
             for t in all_tools:
+                if not is_tool_allowed_for_agent(t, agent):
+                    continue
                 tid = str(t.id)
                 at = assignments.get(tid)
                 enabled = at.enabled if at else (t.is_default or t.name in explicit_requested_set)
@@ -459,7 +462,7 @@ async def get_agent_tools_for_llm(
                     if t["function"]["name"] not in db_tool_names:
                         result.append(t)
                 if core_only:
-                    keep = CORE_TOOL_NAMES | (_HR_TOOL_NAMES if is_system_agent else set())
+                    keep = CORE_TOOL_NAMES | (_HR_TOOL_NAMES if hr_agent else set())
                     result = [t for t in result if t["function"]["name"] in keep]
                 elif requested_set:
                     result = [t for t in result if t["function"]["name"] in requested_set]
@@ -485,6 +488,7 @@ async def get_agent_tools_for_llm(
         for tool in fallback
         if tool["function"]["name"] not in _FEISHU_TOOL_NAMES or tool["function"]["name"] in allowed_feishu_names
     ]
+    fallback = [tool for tool in fallback if tool["function"]["name"] not in HR_ONLY_TOOL_NAMES]
     if core_only:
         fallback = [t for t in fallback if t["function"]["name"] in CORE_TOOL_NAMES]
     elif requested_set:

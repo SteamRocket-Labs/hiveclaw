@@ -59,15 +59,18 @@ def test_hr_tool_meta_has_correct_attributes():
     """The create_digital_employee tool must have correct category and adapter."""
     import importlib
     import app.tools.handlers.hr as hr_mod
+
     # Force re-registration in case a prior test called clear_registry()
     importlib.reload(hr_mod)
 
     from app.tools.decorator import get_all_registered_tools
+
     all_metas = get_all_registered_tools()
     meta, _fn = all_metas["create_digital_employee"]
     assert meta.governance == "sensitive"  # agent creation requires governance approval
     assert meta.category == "hr"
     assert meta.adapter == "request"
+    assert meta.is_default is False
 
     preview_meta, _preview_fn = all_metas["preview_agent_blueprint"]
     assert preview_meta.governance == "safe"
@@ -155,7 +158,10 @@ def test_build_blueprint_preview_payload_auto_recommends_platform_skills() -> No
     assert payload["blueprint"]["effective_skill_names"] == []
     assert payload["blueprint"]["deferred_skill_names"] == ["feishu-integration", "atlassian-rovo"]
     assert payload["will_install"] == []
-    assert any("defer extra installs until a builtin/default dry run proves a real gap" in step for step in payload["manual_steps"])
+    assert any(
+        "defer extra installs until a builtin/default dry run proves a real gap" in step
+        for step in payload["manual_steps"]
+    )
     assert any("builtin workspace + web research" in item for item in payload["capability_routing"]["builtin_paths"])
 
 
@@ -194,7 +200,10 @@ def test_build_blueprint_preview_payload_keeps_external_skill_urls_separate_from
     assert payload["blueprint"]["external_skill_urls"] == [
         "https://github.com/acme/design-skills/tree/main/frontend-design-pro",
     ]
-    assert "external skill ref: https://github.com/acme/design-skills/tree/main/frontend-design-pro" in payload["will_install"]
+    assert (
+        "external skill ref: https://github.com/acme/design-skills/tree/main/frontend-design-pro"
+        in payload["will_install"]
+    )
 
 
 def test_build_blueprint_preview_payload_reclassifies_skills_ref_out_of_platform_skill_names() -> None:
@@ -214,7 +223,10 @@ def test_build_blueprint_preview_payload_reclassifies_skills_ref_out_of_platform
     assert payload["blueprint"]["skill_names"] == ["feishu-integration"]
     assert payload["blueprint"]["deferred_skill_names"] == []
     assert payload["blueprint"]["external_skill_refs"] == ["patricio0312rev/skills@design-to-component-translator"]
-    assert any("external skill ref: patricio0312rev/skills@design-to-component-translator" in item for item in payload["will_install"])
+    assert any(
+        "external skill ref: patricio0312rev/skills@design-to-component-translator" in item
+        for item in payload["will_install"]
+    )
 
 
 @pytest.mark.asyncio
@@ -292,13 +304,7 @@ async def test_install_external_skill_from_skills_ref_copies_cli_installed_skill
 
     async def fake_create_subprocess_exec(*cmd, **kwargs):
         assert cmd[:3] == ("bash", "-lc", "npx skills add patricio0312rev/skills@design-to-component-translator -y")
-        sandbox_skill_dir = (
-            tmp_path
-            / "exec-home"
-            / ".agents"
-            / "skills"
-            / "design-to-component-translator"
-        )
+        sandbox_skill_dir = tmp_path / "exec-home" / ".agents" / "skills" / "design-to-component-translator"
         sandbox_skill_dir.mkdir(parents=True, exist_ok=True)
         (sandbox_skill_dir / "SKILL.md").write_text("# Installed skill", encoding="utf-8")
         return _FakeProc()

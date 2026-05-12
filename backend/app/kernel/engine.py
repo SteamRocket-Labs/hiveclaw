@@ -603,6 +603,28 @@ def _clone_api_messages(messages: list[LLMMessage]) -> list[LLMMessage]:
     ]
 
 
+def _sanitize_tool_calls_for_history(tool_calls: list[dict]) -> list[dict]:
+    """Keep provider-bound assistant history valid even when the model emits bad JSON args."""
+    sanitized: list[dict] = []
+    for tool_call in tool_calls:
+        cloned_call = dict(tool_call)
+        function = dict(cloned_call.get("function") or {})
+        raw_arguments = function.get("arguments") or "{}"
+        if isinstance(raw_arguments, str):
+            try:
+                json.loads(raw_arguments)
+            except (TypeError, json.JSONDecodeError):
+                function["arguments"] = "{}"
+        else:
+            try:
+                function["arguments"] = json.dumps(raw_arguments)
+            except (TypeError, ValueError):
+                function["arguments"] = "{}"
+        cloned_call["function"] = function
+        sanitized.append(cloned_call)
+    return sanitized
+
+
 def _llm_messages_to_dicts(messages: list[LLMMessage]) -> list[dict]:
     """Convert LLMMessage list to plain dicts for compression."""
     result: list[dict] = []
@@ -1727,14 +1749,7 @@ class AgentKernel:
                         LLMMessage(
                             role="assistant",
                             content=response.content or None,
-                            tool_calls=[
-                                {
-                                    "id": tc["id"],
-                                    "type": "function",
-                                    "function": tc["function"],
-                                }
-                                for tc in response.tool_calls
-                            ],
+                            tool_calls=_sanitize_tool_calls_for_history(response.tool_calls),
                             reasoning_content=response.reasoning_content,
                         )
                     )

@@ -24,6 +24,7 @@ from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token_sta
 from app.services.email_service import test_connection as test_email_connection
 from app.services.mcp_client import MCPClient
 from app.services.tool_config_service import resolve_tool_config_for_tenant_display, update_tenant_tool_config
+from app.services.tool_visibility import is_tool_allowed_for_agent
 
 router = APIRouter(tags=["tools"])
 
@@ -144,18 +145,30 @@ async def _build_feishu_runtime_status(
         payload["cardkit_ready"] = payload["cardkit_dependency_ready"]
         payload["ok"] = docs_ready or cli_enabled
         if tenant_auth_ready and cli_available:
-            payload["message"] = "Tenant Feishu auth and CLI auth are both ready. CardKit dependencies are present and office tools can run."
+            payload["message"] = (
+                "Tenant Feishu auth and CLI auth are both ready. CardKit dependencies are present and office tools can run."
+            )
         elif tenant_auth_ready:
-            payload["message"] = "Tenant Feishu auth is ready. CardKit dependencies are present and OpenAPI-backed office tools can run."
+            payload["message"] = (
+                "Tenant Feishu auth is ready. CardKit dependencies are present and OpenAPI-backed office tools can run."
+            )
         elif cli_available:
             payload["message"] = "Feishu CLI is ready. Docs/Wiki/Sheets/Base/Tasks can use lark-cli."
         elif cli_enabled:
-            payload["message"] = "Feishu CLI is enabled but not authenticated. Run `lark-cli auth login` inside the cloud container."
+            payload["message"] = (
+                "Feishu CLI is enabled but not authenticated. Run `lark-cli auth login` inside the cloud container."
+            )
         else:
-            payload["message"] = "Feishu CLI is disabled. Enable it to unlock Base/Tasks office tooling in cloud deployments."
+            payload["message"] = (
+                "Feishu CLI is disabled. Enable it to unlock Base/Tasks office tooling in cloud deployments."
+            )
         return payload
 
-    from app.services.agent_tools import _agent_has_feishu, _agent_has_feishu_cli_access, _agent_has_feishu_office_access
+    from app.services.agent_tools import (
+        _agent_has_feishu,
+        _agent_has_feishu_cli_access,
+        _agent_has_feishu_office_access,
+    )
 
     channel_configured = await _agent_has_feishu(agent_id)
     office_access = await _agent_has_feishu_office_access(agent_id)
@@ -194,13 +207,19 @@ async def _build_feishu_runtime_status(
         return payload
     payload["cardkit_ready"] = payload["cardkit_dependency_ready"]
     if channel_configured:
-        payload["message"] = "Feishu channel auth is ready. CardKit dependencies and office tools are available for this agent."
+        payload["message"] = (
+            "Feishu channel auth is ready. CardKit dependencies and office tools are available for this agent."
+        )
     elif tenant_auth_ready:
-        payload["message"] = "Tenant Feishu auth is ready. Tenant webhook routing is available and CardKit dependencies are present."
+        payload["message"] = (
+            "Tenant Feishu auth is ready. Tenant webhook routing is available and CardKit dependencies are present."
+        )
     elif cli_access:
         payload["message"] = "lark-cli is ready. Feishu office tools can run even without a channel binding."
     elif cli_enabled:
-        payload["message"] = "Feishu CLI is enabled but not authenticated. Channel auth is also unavailable for this agent."
+        payload["message"] = (
+            "Feishu CLI is enabled but not authenticated. Channel auth is also unavailable for this agent."
+        )
     else:
         payload["message"] = "This agent has no Feishu channel auth. Configure it in Enterprise Settings → Channels."
     return payload
@@ -379,7 +398,11 @@ def _tool_visible_to_agent_tenant(tool: Tool, tenant_id: uuid.UUID | None) -> bo
 async def _get_visible_agent_tool(db: AsyncSession, agent: Agent, tool_id: uuid.UUID) -> Tool | None:
     result = await db.execute(select(Tool).where(Tool.id == tool_id, Tool.enabled.is_(True)))
     tool = result.scalar_one_or_none()
-    if not tool or not _tool_visible_to_agent_tenant(tool, agent.tenant_id):
+    if (
+        not tool
+        or not _tool_visible_to_agent_tenant(tool, agent.tenant_id)
+        or not is_tool_allowed_for_agent(tool, agent)
+    ):
         return None
     return tool
 
@@ -643,13 +666,19 @@ async def update_global_tool(
         # Builtin tool (shared across tenants): write to TenantToolConfig, never modify Tool.config.
         # This applies to ALL users including platform_admin — each tenant's config is isolated.
         await update_tenant_tool_config(
-            db, current_user.tenant_id, tool.id,
-            config=data.config, enabled=data.enabled,
+            db,
+            current_user.tenant_id,
+            tool.id,
+            config=data.config,
+            enabled=data.enabled,
         )
         # Also propagate to per-agent assignments for immediate effect
         await _upsert_tenant_tool_assignments(
-            db, current_user.tenant_id, tool,
-            enabled=data.enabled, config=data.config,
+            db,
+            current_user.tenant_id,
+            tool,
+            enabled=data.enabled,
+            config=data.config,
         )
     else:
         # Tenant-scoped tool (e.g. MCP): owning tenant can modify directly
@@ -722,10 +751,7 @@ async def list_agent_tools_with_config(
     db: AsyncSession = Depends(get_db),
 ):
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
-    assignments_result = await db.execute(
-        select(AgentTool)
-        .where(AgentTool.agent_id == agent_id)
-    )
+    assignments_result = await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id))
     assignments = {agent_tool.tool_id: agent_tool for agent_tool in assignments_result.scalars().all()}
     skill_declared_tool_names = await _get_agent_skill_declared_tool_names(agent_id)
 
@@ -744,7 +770,8 @@ async def list_agent_tools_with_config(
     tool_rows = [
         tool
         for tool in tool_rows
-        if tool.is_default or tool.id in assignments or tool.name in skill_declared_tool_names
+        if is_tool_allowed_for_agent(tool, agent)
+        and (tool.is_default or tool.id in assignments or tool.name in skill_declared_tool_names)
     ]
     return [_serialize_agent_tool_row(tool, assignments.get(tool.id)) for tool in tool_rows]
 
@@ -770,6 +797,8 @@ async def update_agent_tools(
         tool_id = uuid.UUID(update_item.tool_id)
         assignment = await _get_agent_tool(db, agent_id, tool_id)
         if assignment:
+            if not await _get_visible_agent_tool(db, agent, assignment.tool_id):
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tool not found")
             assignment.enabled = update_item.enabled
             continue
         tool = await _get_visible_agent_tool(db, agent, tool_id)
@@ -793,14 +822,14 @@ async def get_category_config(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await _require_manage_access(db, current_user, agent_id)
+    agent = await _require_manage_access(db, current_user, agent_id)
     result = await db.execute(
         select(AgentTool, Tool)
         .join(Tool, Tool.id == AgentTool.tool_id)
         .where(AgentTool.agent_id == agent_id, Tool.category == category)
         .order_by(Tool.display_name.asc())
     )
-    rows = result.all()
+    rows = [(agent_tool, tool) for agent_tool, tool in result.all() if is_tool_allowed_for_agent(tool, agent)]
     if not rows:
         return {"config": {}}
     agent_tool, tool = rows[0]
@@ -829,13 +858,13 @@ async def update_category_config(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await _require_manage_access(db, current_user, agent_id)
-    result = await db.execute(
-        select(AgentTool)
+    agent = await _require_manage_access(db, current_user, agent_id)
+    rows_result = await db.execute(
+        select(AgentTool, Tool)
         .join(Tool, Tool.id == AgentTool.tool_id)
         .where(AgentTool.agent_id == agent_id, Tool.category == category)
     )
-    assignments = result.scalars().all()
+    assignments = [agent_tool for agent_tool, tool in rows_result.all() if is_tool_allowed_for_agent(tool, agent)]
     for assignment in assignments:
         assignment.config = data.config
     await db.commit()
@@ -873,7 +902,9 @@ async def update_tool_config(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await _require_manage_access(db, current_user, agent_id)
+    agent = await _require_manage_access(db, current_user, agent_id)
+    if not await _get_visible_agent_tool(db, agent, tool_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tool not found")
     assignment, _ = await ensure_agent_tool_assignment(
         db,
         agent_id=agent_id,

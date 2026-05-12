@@ -1043,6 +1043,7 @@ def _build_create_employee_result(
         category="hr",
         display_name="Create Digital Employee",
         icon="\U0001f464",
+        is_default=False,
         governance="sensitive",
         adapter="request",
     )

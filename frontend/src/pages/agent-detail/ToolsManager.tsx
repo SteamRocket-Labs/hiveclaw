@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 
 import { agentApi, type AgentPacksResponse } from '../../api/domains/agents';
 import { toolsApi } from '../../api/domains/tools';
+import ToolIcon from '../../components/ToolIcon';
 import { useAuthStore } from '../../stores';
 
 type ToolsManagerProps = {
@@ -212,7 +213,7 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
             return (
               <div key={tool.id} className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1, minWidth: 0 }}>
-                  <span style={{ fontSize: '18px' }}>{tool.icon}</span>
+                  <ToolIcon tool={tool} />
                   <div style={{ minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                       <span style={{ fontWeight: 500, fontSize: '13px' }}>{tool.display_name}</span>

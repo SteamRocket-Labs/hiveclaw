@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.database import async_session
 from app.models.tool import Tool
 from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment
+from app.services.tool_visibility import HR_ONLY_TOOL_NAMES
 from app.tools.collector import collect_tools
 
 
@@ -51,7 +52,7 @@ async def seed_builtin_tools():
                 )
                 db.add(tool)
                 await db.flush()
-                if t["is_default"]:
+                if t["is_default"] and t["name"] not in HR_ONLY_TOOL_NAMES:
                     new_tool_ids.append(tool.id)
                 logger.info(f"[ToolSeeder] Created builtin tool: {t['name']}")
             else:
@@ -98,10 +99,10 @@ async def seed_builtin_tools():
                     )
             logger.info(f"[ToolSeeder] Auto-assigned {len(new_tool_ids)} new tools to {len(agent_ids)} agents")
 
-        existing_builtin_rows = await db.execute(
-            select(Tool).where(Tool.type == "builtin", Tool.tenant_id.is_(None))
+        existing_builtin_rows = await db.execute(select(Tool).where(Tool.type == "builtin", Tool.tenant_id.is_(None)))
+        stale_builtin_names = _names_of_stale_builtin_tools(
+            {tool.name for tool in existing_builtin_rows.scalars().all()}
         )
-        stale_builtin_names = _names_of_stale_builtin_tools({tool.name for tool in existing_builtin_rows.scalars().all()})
         if stale_builtin_names:
             stale_rows = await db.execute(
                 select(Tool).where(Tool.type == "builtin", Tool.tenant_id.is_(None), Tool.name.in_(stale_builtin_names))
@@ -114,9 +115,6 @@ async def seed_builtin_tools():
         logger.info("[ToolSeeder] Builtin tools seeded")
 
 
-_HR_ONLY_TOOLS = {"create_digital_employee"}
-
-
 async def assign_default_tools_to_agent(db, agent_id) -> int:
     """Assign all is_default=True tools to a newly created agent.
 
@@ -127,7 +125,7 @@ async def assign_default_tools_to_agent(db, agent_id) -> int:
     result = await db.execute(select(Tool).where(Tool.is_default.is_(True)))
     count = 0
     for tool in result.scalars():
-        if tool.name in _HR_ONLY_TOOLS:
+        if tool.name in HR_ONLY_TOOL_NAMES:
             continue
         _, created = await ensure_agent_tool_assignment(
             db,

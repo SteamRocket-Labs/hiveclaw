@@ -11,6 +11,7 @@ from app.services.deep_research.extractor import extract_claims_from_source
 from app.services.deep_research.ledger import EvidenceLedger
 from app.services.deep_research.planner import build_research_plan
 from app.services.deep_research.reader import ResearchReader
+from app.services.deep_research.reflector import ResearchReflector
 from app.services.deep_research.schemas import (
     ResearchRequest,
     ResearchRun,
@@ -133,9 +134,27 @@ class DeepResearchOrchestrator:
                 writer.append_lane_summary(summary)
             latest_lane_summaries = round_summaries
 
-            if not evaluation.next_queries or accepted_sources >= request.max_sources:
+            reflector = ResearchReflector(self.reasoner)
+            decision = await reflector.reflect(
+                request=request,
+                plan=plan,
+                ledger=ledger,
+                round_index=round_index,
+                source_notes=list(source_notes_by_id.values()),
+                lane_summaries=latest_lane_summaries,
+                evaluator_gaps=evaluation.gaps,
+                evaluator_next_queries=evaluation.next_queries,
+            )
+            writer.append_reflection(decision.to_jsonable())
+
+            if accepted_sources >= request.max_sources:
                 break
-            _append_next_queries(plan, evaluation.next_queries)
+            if decision.stop_signal:
+                break
+            follow_up_queries = [q["query"] for q in decision.next_queries if q.get("query")]
+            if not follow_up_queries:
+                break
+            _append_next_queries(plan, follow_up_queries)
 
         if evaluation is None:
             evaluation = self.evaluator.evaluate(request=request, ledger=ledger, round_index=request.max_rounds)
@@ -151,6 +170,7 @@ class DeepResearchOrchestrator:
                 source_notes=list(source_notes_by_id.values()),
                 lane_summaries=latest_lane_summaries,
             )
+            report_markdown = _apply_footnotes(report_markdown, ledger)
         except DeepResearchSynthesisFailed as exc:
             report_markdown = None
             error_message = str(exc) or "Synthesis failed"
@@ -403,14 +423,52 @@ async def _synthesize_report(
 
     Tier 1-2: no string-concat fallback. When the LLM cannot produce a deliverable,
     the caller marks the run failed and writes a failure notice — never a pasted dump.
+    Tier 2-2: prefer the two-stage draft -> review pipeline when the reasoner exposes
+    `draft_report` and `review_report`; fall back to the single-call `synthesize_report`.
     """
-    if reasoner is None or not hasattr(reasoner, "synthesize_report"):
-        raise DeepResearchSynthesisFailed(
-            "No synthesis reasoner is configured for this run."
-        )
+    if reasoner is None:
+        raise DeepResearchSynthesisFailed("No synthesis reasoner is configured for this run.")
 
     min_chars = _minimum_report_chars(request)
     errors: list[str] = []
+
+    if hasattr(reasoner, "draft_report") and hasattr(reasoner, "review_report"):
+        try:
+            drafts = await reasoner.draft_report(
+                request,
+                plan,
+                ledger,
+                evaluation,
+                source_notes=source_notes,
+                lane_summaries=lane_summaries,
+            )
+            if not isinstance(drafts, dict) or not any((drafts or {}).values()):
+                errors.append("two-stage: empty drafts dict")
+            else:
+                review = await reasoner.review_report(
+                    drafts,
+                    request=request,
+                    ledger=ledger,
+                    source_notes=source_notes,
+                    lane_summaries=lane_summaries,
+                )
+                report = ""
+                if isinstance(review, dict):
+                    report = str(review.get("merged_report") or "").strip()
+                elif isinstance(review, str):
+                    report = review.strip()
+                if report and len(report) >= min_chars:
+                    return report + "\n"
+                if report:
+                    errors.append(f"two-stage: merged report shorter than {min_chars} chars")
+                else:
+                    errors.append("two-stage: review returned empty report")
+        except Exception as exc:
+            errors.append(f"two-stage: {type(exc).__name__}: {exc}")
+
+    if not hasattr(reasoner, "synthesize_report"):
+        raise DeepResearchSynthesisFailed("; ".join(errors) or "Reasoner exposes no synthesis path")
+
     for attempt in range(1, 3):
         try:
             try:
@@ -425,16 +483,59 @@ async def _synthesize_report(
             except TypeError:
                 report = await reasoner.synthesize_report(request, plan, ledger, evaluation)
         except Exception as exc:
-            errors.append(f"attempt {attempt}: {type(exc).__name__}: {exc}")
+            errors.append(f"single-stage attempt {attempt}: {type(exc).__name__}: {exc}")
             continue
         if isinstance(report, str) and report.strip() and len(report.strip()) >= min_chars:
             return report.strip() + "\n"
         if isinstance(report, str) and report.strip():
-            errors.append(f"attempt {attempt}: report shorter than {min_chars} chars")
+            errors.append(f"single-stage attempt {attempt}: report shorter than {min_chars} chars")
         else:
-            errors.append(f"attempt {attempt}: empty or non-string response")
+            errors.append(f"single-stage attempt {attempt}: empty or non-string response")
 
     raise DeepResearchSynthesisFailed("; ".join(errors) or "Synthesis attempts exhausted")
+
+
+_INLINE_SOURCE_TOKEN_RE = re.compile(
+    r"\[(src_[a-zA-Z0-9_]{8,})\]"          # [src_ab12]
+    r"|(?<![`\-])(src_[a-zA-Z0-9_]{8,})\b"  # bare src_ab12 in prose
+)
+
+
+def _apply_footnotes(report: str | None, ledger: EvidenceLedger) -> str | None:
+    """Tier 2-5: rewrite inline [src_xxx] / bare src_xxx prose references as [^N]
+    footnote markers and append a `## Footnotes` block at the end of the report.
+    Backtick-quoted `src_xxx` entries (used inside `## Source Ledger`) are left intact
+    so the ledger keeps its native form.
+    """
+    if not report or not ledger.sources:
+        return report
+
+    used: dict[str, int] = {}
+
+    def _replace(match: re.Match) -> str:
+        sid = match.group(1) or match.group(2)
+        if sid not in ledger.sources:
+            return match.group(0)
+        if sid not in used:
+            used[sid] = len(used) + 1
+        return f"[^{used[sid]}]"
+
+    converted = _INLINE_SOURCE_TOKEN_RE.sub(_replace, report)
+
+    if not used:
+        return converted
+
+    if "## Footnotes" in converted:
+        return converted
+
+    lines = ["", "## Footnotes", ""]
+    for sid, num in sorted(used.items(), key=lambda kv: kv[1]):
+        source = ledger.sources[sid]
+        title = source.title or "Source"
+        publisher = source.publisher or "Unknown publisher"
+        url = source.url or ""
+        lines.append(f"[^{num}]: {title} — {publisher} — {url}")
+    return converted.rstrip() + "\n\n" + "\n".join(lines) + "\n"
 
 
 _SOURCE_REF_RE = re.compile(r"\[src_[a-zA-Z0-9_]+\]|`src_[a-zA-Z0-9_]+`|\bsrc_[a-zA-Z0-9_]+")
@@ -460,9 +561,12 @@ def _evaluate_synthesis_quality(report: str | None, *, request: ResearchRequest,
     if not ledger.sources:
         return "failed", "Synthesis quality failed: no fetched source is available for source-grounded synthesis."
     cited_source_ids = {source_id for source_id in ledger.sources if source_id in report}
+    footnote_markers = len(re.findall(r"\[\^\d+\]", report))
     required_citations = min(max(2, len(ledger.sources) // 2), len(ledger.sources))
-    if len(cited_source_ids) < required_citations:
-        return "failed", "Synthesis quality failed: report does not cite enough source ids from the evidence ledger."
+    # Tier 2-5: footnote markers count as citations too — the synthesis path now rewrites
+    # inline [src_xxx] to [^N] and emits a Footnotes table.
+    if max(len(cited_source_ids), footnote_markers) < required_citations:
+        return "failed", "Synthesis quality failed: report does not cite enough source ids or footnotes from the evidence ledger."
     required_sections = ("Executive", "Findings", "Source")
     if not all(section.casefold() in report.casefold() for section in required_sections):
         return "failed", "Synthesis quality failed: report is missing executive, findings, or source-grounded sections."

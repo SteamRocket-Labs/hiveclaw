@@ -125,7 +125,9 @@ async def test_orchestrator_uses_reasoner_to_write_analyst_grade_synthesis(tmp_p
     assert "## Executive Thesis" in report
     assert "## Market Map" in report
     assert "## Strategic Implications" in report
-    assert report.count("src_") >= 4
+    # T2-5: inline source ids are rewritten to [^N] footnotes; ledger entries stay as src_
+    assert report.count("[^") >= 4
+    assert "## Footnotes" in report
     assert "RWA is a big opportunity" not in report
     assert "RWA pre-IPO launchpad market map" in (tmp_path / "plan.json").read_text(encoding="utf-8")
 

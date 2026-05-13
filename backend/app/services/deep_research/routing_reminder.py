@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 _DEEP_RESEARCH_TOOLS = frozenset({"deep_research_run", "deep_research_start"})
 _TRIGGER_THRESHOLD = 3
+_HARD_REJECT_THRESHOLD = 5
 
 _DEEP_RESEARCH_KEYWORDS_EN = (
     "deep research",
@@ -143,6 +144,54 @@ def maybe_inject_routing_reminder(
         tracker.web_search_count,
     )
     return (tool_result or "") + reminder
+
+
+def should_hard_reject_web_search(
+    *,
+    session_id: str | None,
+    available_tool_names: Iterable[str] | None = None,
+    intent_hints: tuple[str, ...] = (),
+) -> str | None:
+    """Tier 2-6: governance-level hard reject signal for runaway web_search fan-out
+    under deep-research intent.
+
+    Returns a non-empty message (to feed back to the agent) when ALL of these hold:
+      - session has invoked web_search >= _HARD_REJECT_THRESHOLD times,
+      - deep_research_pack is visible (`deep_research_run`/`deep_research_start` in tools),
+      - intent_hints match deep-research keywords,
+      - deep_research_* has NOT been called in this session.
+
+    Returns None otherwise (let the call through). The counter is incremented on every
+    call so the threshold tracks invocation count regardless of who calls this probe.
+    """
+    if not session_id:
+        return None
+    tracker = _tracker_for(session_id)
+    tracker.web_search_count += 1
+
+    if tracker.deep_research_count > 0:
+        return None
+    if tracker.web_search_count < _HARD_REJECT_THRESHOLD + 1:
+        return None
+    if not _pack_visible(available_tool_names):
+        return None
+    if not _matches_intent(*intent_hints):
+        return None
+
+    logger.info(
+        "[DeepResearchRouting] Hard reject for session=%s after %d web_search calls",
+        session_id,
+        tracker.web_search_count,
+    )
+    return (
+        "🔒 web_search blocked — this session has already run "
+        f"{tracker.web_search_count - 1} web_search calls under a deep-research "
+        "intent without invoking deep_research_run or deep_research_start. "
+        "Use `deep_research_run` (for quick/standard depth) or "
+        "`deep_research_start` (for full/flagship) to produce a source-grounded "
+        "report. Manual web_search chaining will not produce an analyst-grade "
+        "deliverable and is being rejected to avoid wasted spend."
+    )
 
 
 def reset_session_state(session_id: str | None = None) -> None:

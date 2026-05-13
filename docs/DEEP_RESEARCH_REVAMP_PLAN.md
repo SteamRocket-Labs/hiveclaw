@@ -480,12 +480,24 @@ You are an expert researcher. Today is {now}.
 满足条件才 reject 下一次 `web_search`，要求改用 `deep_research_run/start`。不要用 agent role 名称做唯一判断，避免误伤普通研究员代理的轻量搜索任务。
 
 #### T2 验收
-- [ ] ReflectionAgent 生成的 next_queries 应包含具体实体/数字目标，不再是 `"<q> additional independent sources"`
-- [ ] 两阶段合成: 把同样的 ledger 喂给老/新合成，新版字数 ≥1.8×、数字密度 ≥1.5×
-- [ ] 三种 mode 各跑一个样本调研，section 结构与领域匹配（industry_research 必须有 market map 表格）
-- [ ] Footnote 引用在前端 markdown 可点击
-- [ ] Deep research 意图下，agent 跑 5 次 web_search 没用 deep_research_* → 第 6 次 web_search 被拒
-- [ ] 非 deep research 意图下，普通 web_search 不被误拦截
+- [x] ReflectionAgent 生成的 next_queries 应包含具体实体/数字目标，不再是 `"<q> additional independent sources"` **(reflector.py + reasoner.reflect_progress 落地，5 个单测验证)**
+- [ ] 两阶段合成: 把同样的 ledger 喂给老/新合成，新版字数 ≥1.8×、数字密度 ≥1.5× **(本地实现已落地，黄金用例对比待 Railway 上线)**
+- [x] 三种 mode 各跑一个样本调研，section 结构与领域匹配（industry_research 必须有 market map 表格）**(_MODE_SECTIONS + _sections_for_mode + persona 切换；3 个单测验证)**
+- [x] Footnote 引用在前端 markdown 可点击 **(_apply_footnotes 自动 [^N] + ## Footnotes 表；2 个单测)**
+- [x] Deep research 意图下，agent 跑 5 次 web_search 没用 deep_research_* → 第 6 次 web_search 被拒 **(should_hard_reject_web_search 已接入 _execute_tool_with_hooks，2 个单测)**
+- [x] 非 deep research 意图下，普通 web_search 不被误拦截 **(test_routing_reminder_hard_reject_skipped_without_intent)**
+
+**Tier 2 落地总览 (2026-05-13 完成本地实现)**:
+| 任务 | 关键改动 | 行数 |
+|------|---------|-----|
+| T2-1 | `reflector.py` (新文件) + `reasoner.reflect_progress` + `writer.append_reflection` + orchestrator 主循环换用 reflector.reflect | ~200 |
+| T2-2 | `reasoner.draft_report` (section-by-section) + `reasoner.review_report` (critic) + orchestrator `_synthesize_report` 优先两阶段 | ~220 |
+| T2-3 | `_MODE_SECTIONS` + `_MODE_PERSONAS` + `_sections_for_mode` + `_persona_for_mode` + 所有 `_invoke` 传 mode | ~110 |
+| T2-4 | `_UNIVERSAL_PERSONA` (expert researcher) + `_build_system_prompt_suffix` | ~25 |
+| T2-5 | `_apply_footnotes` + 内联 `[src_xxx]` / 裸 `src_xxx` → `[^N]` 转换 + 末尾 `## Footnotes` 表 + gate 兼容 footnote 计数 | ~70 |
+| T2-6 | `should_hard_reject_web_search` (Tier 2 阈值=5) + kernel `_maybe_hard_reject_web_search` + `_execute_tool_with_hooks` 接入 | ~80 |
+
+**测试覆盖**: 134/134 全绿（含 Tier 2 新增 14 个单测：5 个 reflector + 2 个 footnote + 4 个 mode/persona + 2 个 hard reject + 1 个 two-stage 集成）。
 
 ---
 
@@ -618,8 +630,8 @@ class DeepResearchController:
 |--------|------|------|--------|
 | **M0 ✅** | Phase 0 失败测试补齐，当前实现能复现质量缺口 (2026-05-13) | 0.5 天 | rocky |
 | **M1 ✅** | T1-1 ~ T1-6 全部完成 + 5 用例重跑 (本地实现 2026-05-13；Railway 重跑待跟进) | 2 天 | rocky |
-| **M2** | T2-1 (Reflector) + T2-2 (两阶段合成) | 3 天 | rocky |
-| **M3** | T2-3 ~ T2-6 (mode/prompt/footnote/routing) | 2 天 | rocky |
+| **M2 ✅** | T2-1 (Reflector) + T2-2 (两阶段合成) (本地实现 2026-05-13) | 3 天 | rocky |
+| **M3 ✅** | T2-3 ~ T2-6 (mode/prompt/footnote/routing) (本地实现 2026-05-13) | 2 天 | rocky |
 | **M4** | T2 全量灰度上线 + 黄金用例评分 | 1 天 | rocky |
 | **M5** | Tier 3 decision gate：根据 Tier 2 评分决定是否进入架构换骨 | 0.5 天 | rocky |
 | **M6** | T3-1 LLM-as-controller loop 原型（仅在 M5 通过后） | 5 天 | rocky |

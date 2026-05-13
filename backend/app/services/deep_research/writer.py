@@ -19,6 +19,7 @@ class ResearchArtifactWriter:
         self.final_path = self.artifact_dir / "final.json"
         self.source_notes_path = self.artifact_dir / "source_notes.jsonl"
         self.lane_summaries_path = self.artifact_dir / "lane_summaries.jsonl"
+        self.reflection_path = self.artifact_dir / "reflection.jsonl"
 
     def write_request(self, request: ResearchRequest) -> None:
         self.request_path.write_text(json.dumps(to_jsonable(request), ensure_ascii=False, indent=2), encoding="utf-8")
@@ -41,6 +42,10 @@ class ResearchArtifactWriter:
     def append_lane_summary(self, summary: dict) -> None:
         with self.lane_summaries_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(to_jsonable(summary), ensure_ascii=False) + "\n")
+
+    def append_reflection(self, decision: dict) -> None:
+        with self.reflection_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(to_jsonable(decision), ensure_ascii=False) + "\n")
 
     def finalize(
         self,
@@ -75,6 +80,7 @@ class ResearchArtifactWriter:
             "report_path": self.report_path.as_posix(),
             "source_notes_path": self.source_notes_path.as_posix() if self.source_notes_path.exists() else None,
             "lane_summaries_path": self.lane_summaries_path.as_posix() if self.lane_summaries_path.exists() else None,
+            "reflection_path": self.reflection_path.as_posix() if self.reflection_path.exists() else None,
             "created_at": utc_now(),
         }
         self.final_path.write_text(json.dumps(final_payload, ensure_ascii=False, indent=2), encoding="utf-8")

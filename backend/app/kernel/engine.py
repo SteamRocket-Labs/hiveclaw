@@ -366,6 +366,8 @@ async def _execute_tool_with_hooks(
     tool_name: str,
     tool_args: dict[str, Any],
     emit_event: Callable[[dict], Awaitable[None]],
+    tools_for_llm: list[dict] | None = None,
+    api_messages: list | None = None,
 ) -> tuple[str, dict[str, Any], bool]:
     """Execute a tool with consistent pre/post/failure hook semantics."""
     from app.runtime.hooks import HookEvent, emit_hook
@@ -382,6 +384,17 @@ async def _execute_tool_with_hooks(
         effective_args = hook_result.modified_args
     if hook_result and hook_result.block:
         return "Blocked by hook: " + (hook_result.reason or "policy"), effective_args, False
+
+    # Tier 2-6: deep-research-aware hard reject for runaway web_search fan-out.
+    if tool_name == "web_search":
+        rejection = _maybe_hard_reject_web_search(
+            tool_name=tool_name,
+            session_id=request.memory_session_id,
+            tools_for_llm=tools_for_llm,
+            api_messages=api_messages,
+        )
+        if rejection:
+            return rejection, effective_args, False
 
     try:
         result = await _maybe_await(execute_tool(tool_name, effective_args, request, emit_event))
@@ -686,6 +699,46 @@ def _expand_concatenated_tool_calls(tool_calls: list[dict]) -> list[dict]:
             split_call["function"] = {**function, "arguments": payload}
             expanded.append(split_call)
     return expanded
+
+
+def _maybe_hard_reject_web_search(
+    *,
+    tool_name: str,
+    session_id: str | None,
+    tools_for_llm: list[dict] | None,
+    api_messages: list | None,
+) -> str | None:
+    """Tier 2-6: deep-research-aware hard reject. Returns a rejection string when the
+    routing_reminder module decides this session has fanned out too many web_search
+    calls without invoking deep_research_*; otherwise None (let the call through)."""
+    try:
+        from app.services.deep_research.routing_reminder import should_hard_reject_web_search
+    except Exception:
+        return None
+
+    available_names: list[str] = []
+    for tool in tools_for_llm or []:
+        if isinstance(tool, dict):
+            name = (tool.get("function") or {}).get("name") or tool.get("name")
+            if name:
+                available_names.append(str(name))
+
+    intent_hints: list[str] = []
+    for message in (api_messages or [])[-10:]:
+        role = getattr(message, "role", None) or (message.get("role") if isinstance(message, dict) else None)
+        if role != "user":
+            continue
+        raw_content = getattr(message, "content", None)
+        if raw_content is None and isinstance(message, dict):
+            raw_content = message.get("content")
+        if raw_content:
+            intent_hints.append(str(raw_content)[:500])
+
+    return should_hard_reject_web_search(
+        session_id=session_id,
+        available_tool_names=available_names,
+        intent_hints=tuple(intent_hints),
+    )
 
 
 def _maybe_inject_routing_reminder(
@@ -1977,6 +2030,8 @@ class AgentKernel:
                                     tool_name=t_name,
                                     tool_args=t_args,
                                     emit_event=_emit_event,
+                                    tools_for_llm=tools_for_llm,
+                                    api_messages=api_messages,
                                 )
 
                         results = await asyncio.gather(
@@ -2089,6 +2144,8 @@ class AgentKernel:
                                 tool_name=tool_name,
                                 tool_args=args,
                                 emit_event=_emit_event,
+                                tools_for_llm=tools_for_llm,
+                                api_messages=api_messages,
                             )
                             result_loop_decision = loop_guard.observe_tool_result(tool_name, args, str(result))
                             if result_loop_decision:

@@ -53,6 +53,44 @@ async def test_runtime_reasoner_invokes_agent_with_tools_disabled(monkeypatch):
     }
 
 
+def test_build_system_prompt_suffix_includes_universal_persona():
+    """T2-4: every internal reasoning pass carries the expert-researcher persona."""
+    from app.services.deep_research.reasoner import _build_system_prompt_suffix
+
+    suffix = _build_system_prompt_suffix(mode=None)
+    assert "EXPERT RESEARCH PERSONA" in suffix
+    assert "highly experienced analyst" in suffix
+    assert "Tools are disabled" in suffix
+
+
+def test_build_system_prompt_suffix_adds_mode_specific_role():
+    """T2-3: mode-specific persona is appended on top of the universal one."""
+    from app.services.deep_research.reasoner import _build_system_prompt_suffix
+
+    industry = _build_system_prompt_suffix(mode="industry_research")
+    audit = _build_system_prompt_suffix(mode="source_ledger_audit")
+    deep_dive = _build_system_prompt_suffix(mode="topic_deep_dive")
+
+    assert "market analyst" in industry.lower()
+    assert "auditor" in audit.lower() or "fact-checker" in audit.lower()
+    assert "topic-deep-dive" in deep_dive.lower() or "topic deep dive" in deep_dive.lower()
+
+
+def test_sections_for_mode_picks_mode_specific_template():
+    """T2-3: each mode has its own section template."""
+    from app.services.deep_research.reasoner import _sections_for_mode
+
+    industry = _sections_for_mode("industry_research")
+    audit = _sections_for_mode("source_ledger_audit")
+    deep_dive = _sections_for_mode("topic_deep_dive")
+    default = _sections_for_mode("unknown_mode")
+
+    assert "Market Map" in industry
+    assert "Claim Audit Table" in audit
+    assert "Mechanism And Workflow" in deep_dive
+    assert default == industry  # unknown falls back to industry default
+
+
 def test_reasoner_exposes_summarize_source():
     """T1-1: RuntimeDeepResearchReasoner must expose summarize_source so per-source
     structured notes (key_entities, key_numbers, key_dates, mechanisms, limitations,

@@ -73,6 +73,152 @@ async def test_orchestrator_returns_partial_report_and_gaps_when_sources_fail(tm
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_marks_run_failed_when_reasoner_synthesis_raises(tmp_path):
+    """Tier 1-2: reasoner.synthesize_report failure must not be papered over by the
+    Python string-concat fallback. Run ends with status=failed and a short failure
+    notice in report.md; source/claim artifacts still persist for diagnosis."""
+    from app.services.deep_research.orchestrator import DeepResearchOrchestrator
+    from app.services.deep_research.schemas import ResearchRequest
+
+    class _FailingReasoner:
+        async def refine_plan(self, request, plan):
+            return plan
+
+        async def extract_claims(self, request, source):
+            return [
+                {
+                    "text": f"{source.publisher} reports a structural adoption shift.",
+                    "status": "verified",
+                    "source_ids": [source.source_id],
+                    "evidence": source.content[:200],
+                }
+            ]
+
+        async def synthesize_report(self, request, plan, ledger, evaluation):
+            raise RuntimeError("simulated LLM outage")
+
+    async def fake_tool(tool_name: str, arguments: dict) -> str:
+        if tool_name == "web_search":
+            return "https://a.example/x\nhttps://b.example/y"
+        if tool_name == "web_fetch":
+            url = arguments["url"]
+            return (
+                f"Title: Evidence for {url}\n"
+                "Detailed tokenized issuance discussion with concrete adoption signals "
+                "and disclosure workflow considerations."
+            )
+        raise AssertionError(f"unexpected tool: {tool_name}")
+
+    result = await DeepResearchOrchestrator(fake_tool, reasoner=_FailingReasoner()).run(
+        ResearchRequest(
+            question="test research",
+            mode="topic_deep_dive",
+            depth="standard",
+            max_rounds=1,
+            max_sources=2,
+        ),
+        artifact_dir=tmp_path,
+    )
+
+    assert result.status == "failed"
+    final = json.loads((tmp_path / "final.json").read_text(encoding="utf-8"))
+    assert final["status"] == "failed"
+    assert final["source_count"] >= 1, "Source artifacts must survive synthesis failure"
+    assert (tmp_path / "sources.jsonl").is_file()
+    assert (tmp_path / "claims.jsonl").is_file()
+
+    report = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert (
+        "not a completed" in report.lower() or "synthesis failed" in report.lower()
+    ), f"Failed run report.md must be a failure notice, got: {report[:300]}"
+    # And must not be the pasted fallback evidence dump
+    assert "Source-Grounded Findings" not in report
+    assert "Evidence coverage spans" not in report
+    # Gaps must explain the synthesis failure
+    assert any("synth" in gap.lower() for gap in final["gaps"])
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_persists_source_notes_and_lane_summaries(tmp_path):
+    """Tier 1-1: source_notes.jsonl and lane_summaries.jsonl must be written so the
+    synthesis stage can read structured per-source and per-lane evidence."""
+    from app.services.deep_research.orchestrator import DeepResearchOrchestrator
+    from app.services.deep_research.schemas import ResearchRequest
+
+    class _NotesReasoner:
+        async def refine_plan(self, request, plan):
+            return plan
+
+        async def summarize_source(self, request, source):
+            return {
+                "source_id": source.source_id,
+                "relevance_score": 0.8,
+                "credibility_score": 0.7,
+                "key_entities": ["Issuer A", "Regulator B"],
+                "key_numbers": ["35% growth"],
+                "key_dates": ["2026 Q2"],
+                "mechanisms": ["transfer restrictions"],
+                "limitations": ["jurisdiction limited to US"],
+                "source_bound_summary": f"{source.publisher} describes issuance workflow.",
+            }
+
+        async def extract_claims(self, request, source):
+            return [
+                {
+                    "text": f"{source.publisher} confirms a structural shift in issuance.",
+                    "status": "verified",
+                    "source_ids": [source.source_id],
+                    "evidence": source.content[:200],
+                }
+            ]
+
+        async def synthesize_report(self, request, plan, ledger, evaluation):
+            ids = list(ledger.sources)
+            return (
+                "# Brief\n\n## Executive Thesis\n\nThe issuer market grew 35% across 12 deals "
+                "in 2026 backed by Issuer A and Regulator B disclosures.\n\n"
+                "## Key Findings\n\nIssuer A and Regulator B disclosed the framework.\n\n"
+                f"## Source Ledger\n\n- `{ids[0]}` source A"
+            )
+
+    async def fake_tool(tool_name: str, arguments: dict) -> str:
+        if tool_name == "web_search":
+            return "https://a.example/x"
+        if tool_name == "web_fetch":
+            return (
+                "Title: Issuer A 2026 disclosure\n"
+                "Issuer A discloses a 35% growth across 12 jurisdictions in 2026, "
+                "driven by tokenized issuance workflows and controlled secondary venues. "
+                "Regulator B reviewed 17 filings under the relevant exemption."
+            )
+        raise AssertionError(tool_name)
+
+    await DeepResearchOrchestrator(fake_tool, reasoner=_NotesReasoner()).run(
+        ResearchRequest(
+            question="test",
+            mode="topic_deep_dive",
+            max_rounds=1,
+            max_sources=1,
+        ),
+        artifact_dir=tmp_path,
+    )
+
+    notes_path = tmp_path / "source_notes.jsonl"
+    summaries_path = tmp_path / "lane_summaries.jsonl"
+    assert notes_path.is_file(), "Tier 1-1 must write source_notes.jsonl"
+    assert summaries_path.is_file(), "Tier 1-1 must write lane_summaries.jsonl"
+
+    note_lines = [line for line in notes_path.read_text("utf-8").splitlines() if line.strip()]
+    assert note_lines, "source_notes.jsonl must contain at least one record"
+    note = json.loads(note_lines[0])
+    assert note.get("source_id")
+    assert "key_entities" in note
+
+    summary_lines = [line for line in summaries_path.read_text("utf-8").splitlines() if line.strip()]
+    assert summary_lines, "lane_summaries.jsonl must contain at least one record"
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_does_not_complete_when_quality_gate_fails(tmp_path):
     from app.services.deep_research.orchestrator import DeepResearchOrchestrator
     from app.services.deep_research.schemas import ResearchRequest

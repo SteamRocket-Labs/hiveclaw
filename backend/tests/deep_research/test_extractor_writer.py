@@ -31,7 +31,7 @@ def test_extractor_removes_fetch_envelope_and_keeps_claims_bounded(tmp_path):
     assert claims
     assert all("Fetched content from" not in claim.text for claim in claims)
     assert all("Navigation Login" not in claim.text for claim in claims)
-    assert all(len(claim.text) <= 320 for claim in claims)
+    assert all(len(claim.text) <= 600 for claim in claims)
     assert all(source.source_id in claim.source_ids for claim in claims)
 
 
@@ -221,7 +221,9 @@ async def test_reader_strips_fetch_envelope_before_persisting_source_content():
     assert "Fetched content from" not in source.content
 
 
-def test_writer_report_uses_citations_without_raw_content_dump(tmp_path):
+def test_writer_writes_supplied_report_markdown_verbatim_without_dumping_content(tmp_path):
+    """Tier 1-2: finalize writes the supplied report_markdown verbatim. The writer
+    never injects raw source content or auto-generates a pasted evidence ledger."""
     from app.services.deep_research.evaluator import ResearchEvaluator
     from app.services.deep_research.extractor import extract_claims_from_source
     from app.services.deep_research.ledger import EvidenceLedger
@@ -247,7 +249,21 @@ def test_writer_report_uses_citations_without_raw_content_dump(tmp_path):
     extract_claims_from_source(ledger, source)
     evaluation = ResearchEvaluator().evaluate(request=request, ledger=ledger, round_index=1)
 
-    writer.finalize(request=request, plan=plan, ledger=ledger, evaluation=evaluation, status="completed")
+    analyst_report = (
+        "# RWA Brief\n\n"
+        "## Executive Thesis\n\n"
+        f"Issuer A growth is backed by source `{source.source_id}`.\n\n"
+        "## Source Ledger\n\n"
+        f"- `{source.source_id}` Issuer A 2026 disclosure\n"
+    )
+    writer.finalize(
+        request=request,
+        plan=plan,
+        ledger=ledger,
+        evaluation=evaluation,
+        status="completed",
+        report_markdown=analyst_report,
+    )
 
     report = (tmp_path / "report.md").read_text(encoding="utf-8")
     final = json.loads((tmp_path / "final.json").read_text(encoding="utf-8"))
@@ -256,8 +272,52 @@ def test_writer_report_uses_citations_without_raw_content_dump(tmp_path):
     assert source.content not in report
     assert f"`{source.source_id}`" in report
     assert "Source Ledger" in report
-    assert len(report) < 12000
     assert final["claims"][0]["source_ids"] == [source.source_id]
+
+
+def test_writer_failure_notice_does_not_dump_raw_source_content(tmp_path):
+    """Tier 1-2: failed runs produce a short failure notice that preserves diagnostics
+    (gaps, counts) but never pastes raw source content or the legacy evidence dump."""
+    from app.services.deep_research.evaluator import ResearchEvaluator
+    from app.services.deep_research.extractor import extract_claims_from_source
+    from app.services.deep_research.ledger import EvidenceLedger
+    from app.services.deep_research.planner import build_research_plan
+    from app.services.deep_research.schemas import ResearchRequest, SourceType
+    from app.services.deep_research.writer import ResearchArtifactWriter
+
+    request = ResearchRequest(question="Research RWA adoption", max_sources=2)
+    plan = build_research_plan(request)
+    writer = ResearchArtifactWriter(tmp_path)
+    ledger = EvidenceLedger(tmp_path)
+    source = ledger.add_source(
+        url="https://example.com/rwa-report",
+        title="RWA Report",
+        publisher="Example Research",
+        source_type=SourceType.SECONDARY,
+        content=(
+            "📄 **Fetched content from: https://example.com/rwa-report**\n"
+            "Tokenized treasury products are a visible RWA adoption lane in 2026."
+        ),
+    )
+    extract_claims_from_source(ledger, source)
+    evaluation = ResearchEvaluator().evaluate(request=request, ledger=ledger, round_index=1)
+    evaluation.gaps.append("Synthesis failed; no user-deliverable report was produced.")
+
+    writer.finalize(
+        request=request,
+        plan=plan,
+        ledger=ledger,
+        evaluation=evaluation,
+        status="failed",
+        report_markdown=None,
+    )
+
+    report = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "Synthesis Failed" in report
+    assert "Fetched content from" not in report
+    assert source.content not in report
+    assert "Source-Grounded Findings" not in report
+    assert "Evidence coverage spans" not in report
 
 
 def test_evaluator_flags_full_research_without_source_plurality_or_coverage(tmp_path):

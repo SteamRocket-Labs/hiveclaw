@@ -66,7 +66,7 @@ class ResearchRequest:
     depth: str = "standard"
     source_policy: str = "primary_preferred"
     time_window: str = ""
-    max_rounds: int = 2
+    max_rounds: int = 4
     max_sources: int = 8
     concurrency: int = 4
     token_budget: int | None = None
@@ -78,14 +78,18 @@ class ResearchRequest:
         question = str(arguments.get("question") or arguments.get("query") or "").strip()
         if not question:
             raise ValueError("deep research requires a non-empty question")
+        depth = str(arguments.get("depth") or "standard").strip() or "standard"
+        max_rounds = _coerce_int(arguments.get("max_rounds"), default=4, minimum=1, maximum=12)
+        if depth in {"full", "flagship", "deep"}:
+            max_rounds = max(max_rounds, 6)
         return cls(
             question=question,
             mode=str(arguments.get("mode") or "topic_deep_dive").strip() or "topic_deep_dive",
             scope=str(arguments.get("scope") or "").strip(),
-            depth=str(arguments.get("depth") or "standard").strip() or "standard",
+            depth=depth,
             source_policy=str(arguments.get("source_policy") or "primary_preferred").strip() or "primary_preferred",
             time_window=str(arguments.get("time_window") or "").strip(),
-            max_rounds=_coerce_int(arguments.get("max_rounds"), default=2, minimum=1, maximum=8),
+            max_rounds=max_rounds,
             max_sources=_coerce_int(arguments.get("max_sources"), default=8, minimum=1, maximum=50),
             concurrency=_coerce_int(arguments.get("concurrency"), default=4, minimum=1, maximum=12),
             token_budget=_coerce_optional_int(arguments.get("token_budget"), minimum=1),

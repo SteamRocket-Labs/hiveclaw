@@ -381,6 +381,8 @@ def _read_deep_research_artifact(workspace: Path, task_id: str) -> dict[str, Any
     workspace_sources_path = workspace_dir / "sources.jsonl"
     workspace_claims_path = workspace_dir / "claims.jsonl"
     workspace_final_path = workspace_dir / "final.json"
+    workspace_source_notes_path = workspace_dir / "source_notes.jsonl"
+    workspace_lane_summaries_path = workspace_dir / "lane_summaries.jsonl"
     final = _load_json(artifact_dir / "final.json") or {}
     return {
         "artifact_dir": _relative(workspace, artifact_dir),
@@ -396,6 +398,20 @@ def _read_deep_research_artifact(workspace: Path, task_id: str) -> dict[str, Any
         "claims_path": _relative(workspace, workspace_claims_path)
         if workspace_claims_path.exists()
         else (_relative(workspace, artifact_dir / "claims.jsonl") if (artifact_dir / "claims.jsonl").exists() else None),
+        "source_notes_path": _relative(workspace, workspace_source_notes_path)
+        if workspace_source_notes_path.exists()
+        else (
+            _relative(workspace, artifact_dir / "source_notes.jsonl")
+            if (artifact_dir / "source_notes.jsonl").exists()
+            else None
+        ),
+        "lane_summaries_path": _relative(workspace, workspace_lane_summaries_path)
+        if workspace_lane_summaries_path.exists()
+        else (
+            _relative(workspace, artifact_dir / "lane_summaries.jsonl")
+            if (artifact_dir / "lane_summaries.jsonl").exists()
+            else None
+        ),
         "final_path": _relative(workspace, workspace_final_path)
         if workspace_final_path.exists()
         else (_relative(workspace, artifact_dir / "final.json") if (artifact_dir / "final.json").exists() else None),
@@ -431,6 +447,8 @@ def _publish_workspace_packet(workspace: Path, run_id: uuid.UUID | str, artifact
         "sources.jsonl",
         "claims.jsonl",
         "evaluation.jsonl",
+        "source_notes.jsonl",
+        "lane_summaries.jsonl",
         "report.md",
         "report.html",
         "final.json",

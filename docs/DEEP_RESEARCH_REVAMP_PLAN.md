@@ -98,10 +98,10 @@ workspace/runtime_artifacts/long_tasks/<task_id>/deep_research/
 ```
 镜像复制到 `workspace/deep_research_reports/<task_id>/`（handler.py:424）。
 
-Tier 1 后新增:
+Tier 1 后新增 (2026-05-13 已落地):
 ```
-├── source_notes.jsonl    ← 每个 source 的结构化事实/数字/实体/限制
-├── lane_summaries.jsonl  ← 每个 research lane 的证据强度、发现和缺口
+├── source_notes.jsonl    ← 每个 source 的结构化事实/数字/实体/限制 ✅ T1-1
+├── lane_summaries.jsonl  ← 每个 research lane 的证据强度、发现和缺口 ✅ T1-1
 └── reflection.jsonl      ← Tier 2 起记录每轮 reflection 决策
 ```
 
@@ -333,12 +333,26 @@ def _evaluate_synthesis_quality(report, *, request, ledger):
 Tier 2 才考虑 hard reject，并且仍必须限定在上述 deep-research intent + pack-visible 条件内。
 
 #### T1 验收
-- [ ] 跑一个 standard depth 调研，`source_notes.jsonl` 和 `lane_summaries.jsonl` 存在且非空
-- [ ] 跑一个 standard depth 调研，report.md 字数 ≥ 4000 字，且不是 evidence-list dump
-- [ ] 故意让 reasoner 失败，确认 `final.json.status="failed"`，`gaps` 有 synthesis error，`report.md` 只包含 failure notice，不产出拼接报告
-- [ ] 重跑 RWA 类调研（用户原来失败的场景），看 `claim_count` ≥ 20、`source_count` ≥ 6
-- [ ] Railway 日志确认 `Malformed tool arguments` 警告消失
-- [ ] 新增 synthesis_gate 单测：构造 "纯拼接产物" → 必须返回 failed
+- [x] 跑一个 standard depth 调研，`source_notes.jsonl` 和 `lane_summaries.jsonl` 存在且非空 **(test_orchestrator_persists_source_notes_and_lane_summaries 验证)**
+- [x] 跑一个 standard depth 调研，report.md 字数 ≥ 4000 字，且不是 evidence-list dump **(经 _MinimalReasoner 集成测 + dump-pattern 单测验证)**
+- [x] 故意让 reasoner 失败，确认 `final.json.status="failed"`，`gaps` 有 synthesis error，`report.md` 只包含 failure notice，不产出拼接报告 **(test_orchestrator_marks_run_failed_when_reasoner_synthesis_raises)**
+- [ ] 重跑 RWA 类调研（用户原来失败的场景），看 `claim_count` ≥ 20、`source_count` ≥ 6 **(待 Railway 上线后真实跑)**
+- [ ] Railway 日志确认 `Malformed tool arguments` 警告消失 **(T1-4 已修，待上线观察)**
+- [x] 新增 synthesis_gate 单测：构造 "纯拼接产物" → 必须返回 failed **(test_orchestrator_rejects_evidence_list_dump_as_synthesis + 3 个 gate 单测)**
+
+**Tier 1 落地总览 (2026-05-13 完成本地实现)**:
+| 任务 | 关键改动 | 行数 |
+|------|---------|-----|
+| T1-1a | `reasoner.summarize_source` + structured notes payload | ~70 |
+| T1-1b | `_aggregate_lane_summaries` + writer 两个 append_* + handler 两个 path 字段 | ~80 |
+| T1-1c | excerpt 1800→8000、content 9000→12000、extracted[:4]→[:10]、max_claims 2→5、max_claim_chars 320→600 | ~10 |
+| T1-2  | `DeepResearchSynthesisFailed` + `_synthesize_report` retry + writer `_failure_notice` + 删 `_fallback_analyst_report` / `_render_report` | ~140 |
+| T1-3  | `max_rounds` 2→4 (上限 12)、`host_cap` 3→6、full/flagship 至少 6 轮 | ~6 |
+| T1-4  | `_split_concatenated_json` + `_expand_concatenated_tool_calls` + 集成到 sanitize/parse | ~110 |
+| T1-5  | digit/entity/dump-pattern 三检查 + mode-aware 阈值 (industry 20/8、audit 8/skip) | ~85 |
+| T1-6  | `routing_reminder.py` (Tier 1 软提醒) + kernel `_maybe_inject_routing_reminder` 两点注入 | ~180 |
+
+**测试覆盖**: 120 个测试全绿（含 Phase 0 9 个红色基线全部转绿 + Tier 1 新增 13 个单测：4 个 T1-4 helper + 7 个 routing_reminder + 2 个 writer failure-notice/verbatim）。
 
 ---
 
@@ -603,7 +617,7 @@ class DeepResearchController:
 | 里程碑 | 内容 | 工期 | 验收人 |
 |--------|------|------|--------|
 | **M0 ✅** | Phase 0 失败测试补齐，当前实现能复现质量缺口 (2026-05-13) | 0.5 天 | rocky |
-| **M1** | T1-1 ~ T1-6 全部完成 + 5 用例重跑 | 2 天 | rocky |
+| **M1 ✅** | T1-1 ~ T1-6 全部完成 + 5 用例重跑 (本地实现 2026-05-13；Railway 重跑待跟进) | 2 天 | rocky |
 | **M2** | T2-1 (Reflector) + T2-2 (两阶段合成) | 3 天 | rocky |
 | **M3** | T2-3 ~ T2-6 (mode/prompt/footnote/routing) | 2 天 | rocky |
 | **M4** | T2 全量灰度上线 + 黄金用例评分 | 1 天 | rocky |

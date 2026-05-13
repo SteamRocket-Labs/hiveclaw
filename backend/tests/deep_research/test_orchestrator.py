@@ -5,6 +5,62 @@ import json
 import pytest
 
 
+class _MinimalReasoner:
+    """Smallest viable reasoner: returns an analyst-grade report that passes the Tier 1-5
+    gate (numbers + named entities + non-dump structure).
+
+    Tier 1-2 removed the Python string-concat fallback, so orchestrator tests that want
+    status=completed must supply a reasoner that yields analyst-grade output."""
+
+    async def synthesize_report(self, request, plan, ledger, evaluation, *, source_notes=None, lane_summaries=None):
+        ids = list(ledger.sources)
+        if len(ids) < 2:
+            ids = ids + ["src_pad_a", "src_pad_b"]
+        return f"""# RWA Adoption Brief
+
+## Executive Thesis
+
+In 2026, tokenized treasury products from BlackRock BUIDL, Securitize, Ondo Finance,
+and JPMorgan Onyx captured a measurable share of institutional RWA exposure. The four
+issuers report combined AUM of $1.24B across 14 tokenized treasury vehicles, backed by
+SEC, MAS, and SFC disclosures filed in Q2 2026. Sources: {ids[0]}, {ids[1]}.
+
+## Method And Source Standard
+
+Primary filings from BlackRock, Securitize, Ondo Finance, and JPMorgan were prioritised
+over secondary analyst commentary from Bernstein and Bloomberg.
+
+## Market Map
+
+| Lane | Players | Evidence |
+|---|---|---|
+| Issuance | BlackRock, Securitize, Ondo Finance | {ids[0]} |
+| Regulatory | SEC, MAS, SFC | {ids[1]} |
+
+## Key Findings
+
+- Tokenized treasuries remain the clearest RWA category with $1.24B traceable AUM
+  and 14 distinct vehicles across BlackRock BUIDL and Securitize in 2026.
+  Sources: {ids[0]}, {ids[1]}.
+- Custody handled by State Street and BNY Mellon remains the binding constraint;
+  18 of the top 20 institutional buyers cite custody concerns.
+
+## Strategic Implications
+
+- Bundle issuance, compliance, and reporting into one workflow.
+- Treat controlled secondary liquidity via Republic Forge or CartaX as the moat.
+
+## Contradictions And Gaps
+
+- Hong Kong SFC vs Singapore MAS transfer-restriction rules diverge for 5 product types.
+
+## Source Ledger
+
+- `{ids[0]}` Issuer A 2026 disclosure
+- `{ids[1]}` Regulator B Q2 2026 filing
+"""
+
+
 @pytest.mark.asyncio
 async def test_orchestrator_writes_source_claim_report_artifacts(tmp_path):
     from app.services.deep_research.orchestrator import DeepResearchOrchestrator
@@ -22,7 +78,7 @@ async def test_orchestrator_writes_source_claim_report_artifacts(tmp_path):
             )
         raise AssertionError(f"unexpected tool: {tool_name}")
 
-    result = await DeepResearchOrchestrator(fake_tool).run(
+    result = await DeepResearchOrchestrator(fake_tool, reasoner=_MinimalReasoner()).run(
         ResearchRequest(
             question="Do a deep research brief on RWA adoption.",
             mode="topic_deep_dive",
@@ -68,7 +124,10 @@ async def test_orchestrator_returns_partial_report_and_gaps_when_sources_fail(tm
 
     assert result.status == "failed"
     assert result.gaps
-    assert (tmp_path / "report.md").read_text(encoding="utf-8").startswith("# Deep Research Report")
+    report_text = (tmp_path / "report.md").read_text(encoding="utf-8")
+    # Tier 1-2: failed runs write a failure notice, never a pasted evidence-list dump
+    assert "Synthesis Failed" in report_text
+    assert "Source-Grounded Findings" not in report_text
     assert json.loads((tmp_path / "final.json").read_text(encoding="utf-8"))["gaps"]
 
 

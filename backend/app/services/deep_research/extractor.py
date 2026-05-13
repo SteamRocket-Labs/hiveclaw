@@ -115,8 +115,8 @@ def extract_claims_from_source(
     ledger: EvidenceLedger,
     source: SourceRecord,
     *,
-    max_claims: int = 2,
-    max_claim_chars: int = 320,
+    max_claims: int = 5,
+    max_claim_chars: int = 600,
 ) -> list[ClaimRecord]:
     """Extract bounded material claims from a fetched source.
 

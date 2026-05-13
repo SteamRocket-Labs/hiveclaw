@@ -24,6 +24,84 @@ class _FakeClient:
         return None
 
 
+def test_split_concatenated_json_returns_single_object_when_valid():
+    """T1-4: a single valid JSON object passes through untouched."""
+    from app.kernel.engine import _split_concatenated_json
+
+    assert _split_concatenated_json('{"query":"a"}') == ['{"query":"a"}']
+    assert _split_concatenated_json('  {"query":"a"}  ') == ['{"query":"a"}']
+
+
+def test_split_concatenated_json_splits_double_object():
+    """T1-4: DeepSeek-V4 style {"a":1}{"b":2} concatenation is split into separate payloads."""
+    from app.kernel.engine import _split_concatenated_json
+
+    result = _split_concatenated_json('{"query":"a"}{"query":"b"}')
+    assert result == ['{"query":"a"}', '{"query":"b"}']
+
+
+def test_split_concatenated_json_splits_with_whitespace_between():
+    """T1-4: whitespace between concatenated payloads is tolerated."""
+    from app.kernel.engine import _split_concatenated_json
+
+    result = _split_concatenated_json('{"query":"a"} {"query":"b"}\n{"query":"c"}')
+    assert result == ['{"query":"a"}', '{"query":"b"}', '{"query":"c"}']
+
+
+def test_split_concatenated_json_keeps_string_braces_intact():
+    """T1-4: a closing brace inside a string must not be treated as object boundary."""
+    from app.kernel.engine import _split_concatenated_json
+
+    payload = '{"query":"contains } brace"}'
+    assert _split_concatenated_json(payload) == [payload]
+
+
+def test_split_concatenated_json_falls_back_when_partial():
+    """T1-4: when the buffer is not cleanly split-able, return it as-is so the caller can
+    report a parse error rather than swallowing an unknown shape."""
+    from app.kernel.engine import _split_concatenated_json
+
+    assert _split_concatenated_json("garbage") == ["garbage"]
+    assert _split_concatenated_json('{"a":1}garbage{"b":2}') == ['{"a":1}garbage{"b":2}']
+
+
+def test_expand_concatenated_tool_calls_splits_each_payload():
+    """T1-4: concatenated tool_call.arguments expand into separate tool_calls with
+    distinct ids so every payload gets executed and every tool message can reference
+    a real tool_call id in the assistant history."""
+    from app.kernel.engine import _expand_concatenated_tool_calls
+
+    expanded = _expand_concatenated_tool_calls(
+        [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "web_search", "arguments": '{"query":"a"}{"query":"b"}'},
+            }
+        ]
+    )
+
+    assert [tc["id"] for tc in expanded] == ["call_1-split1", "call_1-split2"]
+    assert [tc["function"]["arguments"] for tc in expanded] == ['{"query":"a"}', '{"query":"b"}']
+    assert all(tc["type"] == "function" for tc in expanded)
+    assert all(tc["function"]["name"] == "web_search" for tc in expanded)
+
+
+def test_expand_concatenated_tool_calls_passes_through_clean_payloads():
+    """T1-4: a single valid payload is not duplicated or rewritten."""
+    from app.kernel.engine import _expand_concatenated_tool_calls
+
+    original = [
+        {
+            "id": "call_2",
+            "type": "function",
+            "function": {"name": "load_skill", "arguments": '{"slug":"deep-research"}'},
+        }
+    ]
+    expanded = _expand_concatenated_tool_calls(original)
+    assert expanded == original
+
+
 def test_humanize_llm_error_reports_quota_instead_of_auth_for_403_quota():
     from app.kernel.engine import _humanize_llm_error
     from app.services.llm_utils import LLMError
@@ -293,7 +371,11 @@ async def test_agent_kernel_handles_tool_round_and_collects_parts():
 
 
 @pytest.mark.asyncio
-async def test_agent_kernel_sanitizes_malformed_tool_arguments_before_retry():
+async def test_agent_kernel_splits_concatenated_tool_arguments_into_separate_calls():
+    """Tier 1-4: concatenated DeepSeek-V4 style args `{"a":1}{"b":2}` must be split into
+    two executable tool_calls (rather than dropped to `{}`). Both calls execute and the
+    assistant history records each split call with a unique id and a valid arguments JSON.
+    """
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
 
@@ -330,6 +412,12 @@ async def test_agent_kernel_sanitizes_malformed_tool_arguments_before_retry():
         ]
     )
 
+    executed_args: list[dict] = []
+
+    def _capture_execute(name: str, arguments: dict, *_args, **_kwargs):
+        executed_args.append(arguments)
+        return f"fetched-{arguments.get('url', 'unknown')}"
+
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda *_args, **_kwargs: RuntimeConfig(
@@ -348,7 +436,7 @@ async def test_agent_kernel_sanitizes_malformed_tool_arguments_before_retry():
             ],
             maybe_compress_messages=lambda messages, **_kwargs: messages,
             create_client=lambda _model: fake_client,
-            execute_tool=lambda *_args, **_kwargs: "unused",
+            execute_tool=_capture_execute,
             persist_memory=lambda **_kwargs: None,
             record_token_usage=lambda *_args, **_kwargs: None,
             get_max_tokens=lambda *_args, **_kwargs: 2048,
@@ -374,8 +462,21 @@ async def test_agent_kernel_sanitizes_malformed_tool_arguments_before_retry():
     assistant_with_bad_call = next(
         message for message in retry_messages if message.role == "assistant" and message.tool_calls
     )
-    assert assistant_with_bad_call.tool_calls[0]["function"]["arguments"] == "{}"
-    assert assistant_with_bad_call.tool_calls[0]["type"] == "function"
+
+    # Tier 1-4: the concatenated payload becomes two tool_calls, each with valid JSON
+    assert len(assistant_with_bad_call.tool_calls) == 2
+    first, second = assistant_with_bad_call.tool_calls
+    assert first["function"]["arguments"] == '{"url":"https://example.com/a"}'
+    assert second["function"]["arguments"] == '{"url":"https://example.com/b"}'
+    assert first["type"] == "function"
+    assert second["type"] == "function"
+    assert first["id"] != second["id"], "Split tool_calls must carry distinct ids"
+
+    # Both payloads were executed instead of being collapsed
+    assert {a.get("url") for a in executed_args} == {
+        "https://example.com/a",
+        "https://example.com/b",
+    }
 
 
 @pytest.mark.asyncio

@@ -15,7 +15,7 @@ _TRACKING_KEYS = {"fbclid", "gclid", "igshid", "mc_cid", "mc_eid", "ref"}
 
 
 class ResearchSearcher:
-    def __init__(self, tool_invoker: ToolInvoker, *, host_cap: int = 3):
+    def __init__(self, tool_invoker: ToolInvoker, *, host_cap: int = 6):
         self.tool_invoker = tool_invoker
         self.host_cap = max(1, host_cap)
 

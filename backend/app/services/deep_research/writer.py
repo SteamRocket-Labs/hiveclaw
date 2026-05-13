@@ -17,6 +17,8 @@ class ResearchArtifactWriter:
         self.evaluation_path = self.artifact_dir / "evaluation.jsonl"
         self.report_path = self.artifact_dir / "report.md"
         self.final_path = self.artifact_dir / "final.json"
+        self.source_notes_path = self.artifact_dir / "source_notes.jsonl"
+        self.lane_summaries_path = self.artifact_dir / "lane_summaries.jsonl"
 
     def write_request(self, request: ResearchRequest) -> None:
         self.request_path.write_text(json.dumps(to_jsonable(request), ensure_ascii=False, indent=2), encoding="utf-8")
@@ -32,6 +34,14 @@ class ResearchArtifactWriter:
         with self.evaluation_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(to_jsonable(evaluation), ensure_ascii=False) + "\n")
 
+    def append_source_note(self, note: dict) -> None:
+        with self.source_notes_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(to_jsonable(note), ensure_ascii=False) + "\n")
+
+    def append_lane_summary(self, summary: dict) -> None:
+        with self.lane_summaries_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(to_jsonable(summary), ensure_ascii=False) + "\n")
+
     def finalize(
         self,
         *,
@@ -43,11 +53,13 @@ class ResearchArtifactWriter:
         report_markdown: str | None = None,
     ) -> ResearchRun:
         summary = _summary(status=status, ledger=ledger, gaps=evaluation.gaps)
-        self.report_path.write_text(
-            report_markdown
-            or _render_report(request=request, plan=plan, ledger=ledger, evaluation=evaluation, summary=summary),
-            encoding="utf-8",
-        )
+        if status == "completed" and report_markdown:
+            self.report_path.write_text(report_markdown, encoding="utf-8")
+        else:
+            self.report_path.write_text(
+                _failure_notice(request=request, ledger=ledger, evaluation=evaluation),
+                encoding="utf-8",
+            )
         final_payload = {
             "schema": "deep_research_final.v1",
             "status": status,
@@ -61,6 +73,8 @@ class ResearchArtifactWriter:
             "sources": [to_jsonable(item) for item in ledger.sources.values()],
             "claims": [to_jsonable(item) for item in ledger.claims],
             "report_path": self.report_path.as_posix(),
+            "source_notes_path": self.source_notes_path.as_posix() if self.source_notes_path.exists() else None,
+            "lane_summaries_path": self.lane_summaries_path.as_posix() if self.lane_summaries_path.exists() else None,
             "created_at": utc_now(),
         }
         self.final_path.write_text(json.dumps(final_payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -88,67 +102,52 @@ def _summary(*, status: str, ledger: EvidenceLedger, gaps: list[str]) -> str:
     return f"Deep research produced a partial report with {len(gaps)} gap(s)."
 
 
-def _render_report(
+def _failure_notice(
     *,
     request: ResearchRequest,
-    plan: ResearchPlan,
     ledger: EvidenceLedger,
     evaluation: EvaluationResult,
-    summary: str,
 ) -> str:
+    """Short, honest failure notice. Tier 1-2: never pasted evidence-list dump."""
     lines = [
-        "# Deep Research Report",
+        "# Deep Research — Synthesis Failed",
         "",
-        "## Executive Answer",
+        "**This is not a completed Deep Research report.**",
         "",
-        summary,
+        f"Question: {request.question}",
         "",
-        "## Scope and Method",
+        "## What happened",
         "",
-        f"- Question: {request.question}",
-        f"- Mode: {request.mode}",
-        f"- Scope: {request.scope or 'narrowest useful scope'}",
-        f"- Source policy: {request.source_policy}",
-        f"- Lanes: {', '.join(lane.label for lane in plan.lanes)}",
+        (
+            "The Deep Research workflow ran but the analyst-grade synthesis step did not "
+            "produce a user-deliverable report. The evidence ledger and structured notes "
+            "have been preserved so the run can be diagnosed and re-attempted."
+        ),
         "",
-        "## Key Findings",
+        "## Diagnostics",
+        "",
+        f"- Sources fetched: {len(ledger.sources)}",
+        f"- Claims extracted: {len(ledger.claims)}",
+        f"- Quality gates: {', '.join(f'{name}={state}' for name, state in evaluation.quality_gates.items()) or 'none recorded'}",
+        "",
+        "## Gaps",
         "",
     ]
-    if ledger.claims:
-        for claim in ledger.claims:
-            sources = ", ".join(claim.source_ids) or "no fetched source"
-            lines.append(f"- [{claim.status.value}] {_clip_report_text(claim.text)} (sources: {sources})")
-    else:
-        lines.append("- No material claim reached the evidence threshold.")
-
-    lines.extend(["", "## Source Ledger", ""])
-    if ledger.sources:
-        for source in ledger.sources.values():
-            lines.append(f"- `{source.source_id}` {source.title} — {source.publisher} — {source.url}")
-    else:
-        lines.append("- No fetched source was accepted into the ledger.")
-
-    lines.extend(["", "## Quality Gates", ""])
-    for gate, state in evaluation.quality_gates.items():
-        lines.append(f"- {gate}: {state}")
-
-    lines.extend(["", "## Contradictions and Gaps", ""])
     if evaluation.gaps:
         lines.extend(f"- {gap}" for gap in evaluation.gaps)
     else:
-        lines.append("- No blocking evidence gap recorded.")
-
-    lines.extend(["", "## Next Checks", ""])
-    if evaluation.next_queries:
-        lines.extend(f"- Search: {query}" for query in evaluation.next_queries)
-    else:
-        lines.append("- Re-run with higher depth or narrower scope if a stronger source standard is required.")
-    lines.append("")
+        lines.append("- No specific gap was recorded by the evaluator.")
+    lines.extend(
+        [
+            "",
+            "## Re-run guidance",
+            "",
+            (
+                "Inspect `sources.jsonl`, `claims.jsonl`, `source_notes.jsonl`, and "
+                "`lane_summaries.jsonl` in the artifact directory. Re-run with an adjusted "
+                "scope, depth, or model configuration once the failure cause is understood."
+            ),
+            "",
+        ]
+    )
     return "\n".join(lines)
-
-
-def _clip_report_text(value: str, *, limit: int = 500) -> str:
-    normalized = " ".join((value or "").split())
-    if len(normalized) <= limit:
-        return normalized
-    return normalized[:limit].rstrip(" ,;，；") + "..."

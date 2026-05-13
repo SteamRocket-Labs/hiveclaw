@@ -603,6 +603,134 @@ def _clone_api_messages(messages: list[LLMMessage]) -> list[LLMMessage]:
     ]
 
 
+def _split_concatenated_json(raw: str) -> list[str]:
+    """Tier 1-4: split a string like '{"a":1}{"b":2}' into ['{"a":1}', '{"b":2}'].
+
+    DeepSeek-V4 and a handful of OpenAI-compatible providers stream multiple complete
+    tool_call JSON payloads into a single arguments buffer instead of emitting one delta
+    per call. The result is concatenated objects that fail json.loads — and historically
+    cost an entire tool round on Hive (see Railway 2026-05-13 Malformed-args warnings).
+
+    Returns [raw] when raw is a single valid JSON object or cannot be cleanly split.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return [text] if raw is not None else []
+    try:
+        json.loads(text)
+        return [text]
+    except (TypeError, json.JSONDecodeError):
+        pass
+
+    parts: list[str] = []
+    depth = 0
+    in_string = False
+    escape = False
+    start = 0
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if escape:
+            escape = False
+        elif in_string:
+            if ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                segment = text[start:i + 1].strip()
+                try:
+                    json.loads(segment)
+                    parts.append(segment)
+                    i += 1
+                    while i < len(text) and text[i].isspace():
+                        i += 1
+                    start = i
+                    continue
+                except (TypeError, json.JSONDecodeError):
+                    return [text]
+        i += 1
+
+    return parts if parts and start == len(text) else [text]
+
+
+def _expand_concatenated_tool_calls(tool_calls: list[dict]) -> list[dict]:
+    """Tier 1-4: split concatenated tool_call args into separate tool_call entries.
+
+    The model semantically intended N separate calls; concatenation in one buffer was a
+    streaming accident. By expanding here every payload gets executed AND every
+    tool-result message in the assistant history references a real tool_call id.
+    """
+    expanded: list[dict] = []
+    for tool_call in tool_calls:
+        function = tool_call.get("function") or {}
+        raw_args = function.get("arguments")
+        if not isinstance(raw_args, str):
+            expanded.append(tool_call)
+            continue
+        payloads = _split_concatenated_json(raw_args)
+        if len(payloads) <= 1:
+            expanded.append(tool_call)
+            continue
+        base_id = str(tool_call.get("id") or "call")
+        for index, payload in enumerate(payloads, start=1):
+            split_call = dict(tool_call)
+            split_call["id"] = f"{base_id}-split{index}"
+            split_call["type"] = tool_call.get("type") or "function"
+            split_call["function"] = {**function, "arguments": payload}
+            expanded.append(split_call)
+    return expanded
+
+
+def _maybe_inject_routing_reminder(
+    content: str,
+    *,
+    tool_name: str,
+    session_id: str | None,
+    tools_for_llm: list[dict] | None,
+    api_messages: list,
+) -> str:
+    """Tier 1-6 bridge: thin adapter between the kernel and the deep_research routing
+    reminder module. Extracts available tool names and recent user intent strings, then
+    delegates to maybe_inject_routing_reminder."""
+    try:
+        from app.services.deep_research.routing_reminder import maybe_inject_routing_reminder
+    except Exception:
+        return content
+
+    available_names: list[str] = []
+    for tool in tools_for_llm or []:
+        if isinstance(tool, dict):
+            name = (tool.get("function") or {}).get("name") or tool.get("name")
+            if name:
+                available_names.append(str(name))
+
+    intent_hints: list[str] = []
+    for message in (api_messages or [])[-10:]:
+        role = getattr(message, "role", None) or (message.get("role") if isinstance(message, dict) else None)
+        if role != "user":
+            continue
+        raw_content = getattr(message, "content", None)
+        if raw_content is None and isinstance(message, dict):
+            raw_content = message.get("content")
+        if raw_content:
+            intent_hints.append(str(raw_content)[:500])
+
+    return maybe_inject_routing_reminder(
+        content,
+        tool_name=tool_name,
+        session_id=session_id,
+        available_tool_names=available_names,
+        intent_hints=tuple(intent_hints),
+    )
+
+
 def _sanitize_tool_calls_for_history(tool_calls: list[dict]) -> list[dict]:
     """Keep provider-bound assistant history valid even when the model emits bad JSON args."""
     sanitized: list[dict] = []
@@ -1746,11 +1874,16 @@ class AgentKernel:
                             )["parts"],
                         )
 
+                    # Tier 1-4: recover from DeepSeek-V4 style concatenated tool_call args
+                    # so every payload becomes its own executable tool_call before history is
+                    # frozen for the next round.
+                    expanded_tool_calls = _expand_concatenated_tool_calls(response.tool_calls)
+
                     api_messages.append(
                         LLMMessage(
                             role="assistant",
                             content=response.content or None,
-                            tool_calls=_sanitize_tool_calls_for_history(response.tool_calls),
+                            tool_calls=_sanitize_tool_calls_for_history(expanded_tool_calls),
                             reasoning_content=response.reasoning_content,
                         )
                     )
@@ -1759,7 +1892,7 @@ class AgentKernel:
 
                     # Parse all tool calls upfront
                     parsed_tool_calls: list[tuple[dict, str, dict]] = []
-                    for tc in response.tool_calls:
+                    for tc in expanded_tool_calls:
                         fn = tc["function"]
                         tool_name = fn["name"]
                         raw_args = fn.get("arguments", "{}")
@@ -1906,6 +2039,13 @@ class AgentKernel:
                                         str(result)[:_TOOL_RESULT_PREVIEW_LENGTH]
                                         + f"\n\n[... truncated to fit round aggregate budget ({_TOOL_RESULTS_AGGREGATE_BUDGET} chars)]"
                                     )
+                            _content = _maybe_inject_routing_reminder(
+                                _content,
+                                tool_name=tool_name,
+                                session_id=request.memory_session_id,
+                                tools_for_llm=tools_for_llm,
+                                api_messages=api_messages,
+                            )
                             api_messages.append(LLMMessage(role="tool", tool_call_id=tc["id"], content=_content))
                     else:
                         # --- Sequential execution (original logic) ---
@@ -2083,6 +2223,13 @@ class AgentKernel:
                                         str(result)[:_TOOL_RESULT_PREVIEW_LENGTH]
                                         + f"\n\n[... truncated to fit round aggregate budget ({_TOOL_RESULTS_AGGREGATE_BUDGET} chars)]"
                                     )
+                            _content = _maybe_inject_routing_reminder(
+                                _content,
+                                tool_name=tool_name,
+                                session_id=request.memory_session_id,
+                                tools_for_llm=tools_for_llm,
+                                api_messages=api_messages,
+                            )
                             api_messages.append(LLMMessage(role="tool", tool_call_id=tc["id"], content=_content))
 
                     # ── L1: Time-based microcompact — clear old tool results ──

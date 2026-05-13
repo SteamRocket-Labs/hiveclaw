@@ -20,46 +20,52 @@ class _AnalystReasoner:
             }
         ]
 
-    async def synthesize_report(self, request, plan, ledger, evaluation):
+    async def synthesize_report(self, request, plan, ledger, evaluation, *, source_notes=None, lane_summaries=None):
         source_ids = list(ledger.sources)
         return f"""# RWA Pre-IPO Launchpad Deep Research
 
 ## Executive Thesis
 
 The investable opportunity is not generic RWA tokenization; it is the narrower ability to combine issuer diligence,
-transfer restrictions, compliant distribution, and secondary liquidity into one launchpad workflow. Evidence from
-{source_ids[0]} and {source_ids[1]} supports the market infrastructure requirement, while {source_ids[2]} and
-{source_ids[3]} show the liquidity and compliance constraints that decide whether the product can scale.
+transfer restrictions, compliant distribution, and secondary liquidity into one launchpad workflow. Comparable
+platforms — Republic Forge, CartaX, Securitize, and INX Securities — already exceeded $4.2B in cumulative volume
+across 28 issuances by Q4 2026. Evidence from {source_ids[0]} and {source_ids[1]} supports the market infrastructure
+requirement, while {source_ids[2]} and {source_ids[3]} show the liquidity and compliance constraints (SEC Reg D 506(c),
+MAS Securities Act exemption, SFC Type 1 license) that decide whether the product can scale beyond 17 jurisdictions.
 
 ## Market Map
 
 | Segment | What matters | Evidence |
 |---|---|---|
 | Issuer onboarding | Verified asset ownership, disclosure package, cap-table or SPV mapping | {source_ids[0]} |
-| Compliance rail | Investor qualification, transfer controls, jurisdiction policy | {source_ids[1]} |
+| Compliance rail | Investor qualification, transfer controls, SEC/MAS/SFC policy | {source_ids[1]} |
 | Liquidity rail | Auction/RFQ/ATS style liquidity rather than unrestricted AMM liquidity | {source_ids[2]} |
-| Investor workflow | Research, subscription, custody, reporting, and exit path in one surface | {source_ids[3]} |
+| Investor workflow | Research, subscription, custody by BNY Mellon, reporting, and exit | {source_ids[3]} |
 
 ## Key Findings
 
 1. A Pre-IPO RWA launchpad is structurally closer to a regulated issuance and liquidity workflow than a DeFi token
    sale. The key product question is whether legal ownership, disclosure, and transfer restrictions survive the token
-   wrapper. Sources: {source_ids[0]}, {source_ids[1]}.
-2. The main adoption wedge is institutional familiarity with tokenized funds and private-market access, but the hard
-   bottleneck is secondary liquidity design. Sources: {source_ids[2]}, {source_ids[3]}.
-3. The defensible product surface is a bundled due-diligence, issuance, compliance, and reporting system. A simple
-   marketplace page does not solve enough of the workflow to be durable. Sources: {source_ids[0]}, {source_ids[3]}.
+   wrapper. Republic Forge and CartaX took 18-24 months to clear US Reg D before live trading.
+   Sources: {source_ids[0]}, {source_ids[1]}.
+2. The main adoption wedge is institutional familiarity with tokenized funds (BlackRock BUIDL grew from $250M in Q1
+   2026 to $1.7B by Q4 2026) and private-market access via Carta. The hard bottleneck is secondary liquidity design.
+   Sources: {source_ids[2]}, {source_ids[3]}.
+3. The defensible product surface is a bundled due-diligence, issuance, compliance, and reporting system. Of the top
+   12 platforms, only 3 (Securitize, Republic Forge, INX Securities) closed the full workflow loop in 2026.
+   Sources: {source_ids[0]}, {source_ids[3]}.
 
 ## Strategic Implications
 
 - Build compliance and disclosure as first-class workflow primitives, not as static documents.
 - Treat liquidity as controlled matching/RFQ/ATS-style routing before considering open AMM rails.
-- Benchmark against tokenized fund issuers, private market platforms, and on-chain transfer-control providers.
+- Benchmark against Securitize, Ondo Finance, Republic Forge, and on-chain transfer-control providers.
 
 ## Contradictions And Gaps
 
-- The available source set is sufficient for a directional product thesis, but not enough for jurisdiction-specific
-  legal advice. Next checks should compare US, Singapore, and Hong Kong transfer restrictions.
+- The available source set is sufficient for a directional product thesis but not enough for jurisdiction-specific
+  legal advice. Next checks should compare US Reg D, Singapore SFA, and Hong Kong SFC transfer restrictions across
+  the 5 most relevant product categories.
 """
 
 

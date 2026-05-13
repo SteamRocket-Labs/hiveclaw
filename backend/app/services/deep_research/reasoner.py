@@ -102,13 +102,13 @@ class RuntimeDeepResearchReasoner:
                 "title": source.title,
                 "publisher": source.publisher,
                 "source_type": source.source_type.value,
-                "content": source.content[:9000],
+                "content": source.content[:12000],
             },
         }
         content = await self._invoke(
             "Extract source-bound material claims. Return JSON only.",
             (
-                "Return a JSON array of 1-5 material claims that matter to the research question. "
+                "Return a JSON array of 1-10 material claims that matter to the research question. "
                 "Each item must include text, status, source_ids, evidence, and optional notes. "
                 "Use only claims directly supported by this source content. If the source is weak, return []. "
                 "Do not infer beyond the source.\n\n"
@@ -118,7 +118,54 @@ class RuntimeDeepResearchReasoner:
         parsed = _parse_json_array(content)
         return [item for item in parsed if isinstance(item, dict)]
 
-    async def synthesize_report(self, request: ResearchRequest, plan: ResearchPlan, ledger, evaluation) -> str | None:
+    async def summarize_source(self, request: ResearchRequest, source: SourceRecord) -> dict[str, Any] | None:
+        """Extract structured per-source notes (entities, numbers, dates, mechanisms,
+        limitations, source-bound summary) so the synthesis stage gets focused facts
+        rather than 1.8K excerpts averaged across all sources."""
+        payload = {
+            "question": request.question,
+            "source": {
+                "source_id": source.source_id,
+                "url": source.url,
+                "title": source.title,
+                "publisher": source.publisher,
+                "source_type": source.source_type.value,
+                "content": source.content[:12000],
+            },
+        }
+        content = await self._invoke(
+            "Extract structured source notes. Return JSON only.",
+            (
+                "Read the source and produce structured notes. Return a JSON object with:\n"
+                "  - relevance_score: float 0-1 (how directly this source answers the question)\n"
+                "  - credibility_score: float 0-1 (primary>regulator>analyst>blog)\n"
+                "  - recency_signal: one of 'current' / 'recent' / 'stale' / 'undated'\n"
+                "  - key_entities: [str] named companies, regulators, products, agencies\n"
+                "  - key_numbers: [str] concrete metrics with units (e.g. '35% YoY', '$4.2B AUM')\n"
+                "  - key_dates: [str] specific dates or quarters\n"
+                "  - mechanisms: [str] how the thing actually works (workflow, routing, controls)\n"
+                "  - limitations: [str] what this source does not cover or explicitly disclaims\n"
+                "  - source_bound_summary: 2-4 sentences citing only this source\n"
+                "Do not infer beyond the source. If the source is unusable, return {}.\n\n"
+                f"{json.dumps(payload, ensure_ascii=False)}"
+            ),
+        )
+        parsed = _parse_json_object(content)
+        if not parsed:
+            return None
+        parsed["source_id"] = source.source_id
+        return parsed
+
+    async def synthesize_report(
+        self,
+        request: ResearchRequest,
+        plan: ResearchPlan,
+        ledger,
+        evaluation,
+        *,
+        source_notes: list[dict[str, Any]] | None = None,
+        lane_summaries: list[dict[str, Any]] | None = None,
+    ) -> str | None:
         payload = {
             "question": request.question,
             "mode": request.mode,
@@ -126,6 +173,8 @@ class RuntimeDeepResearchReasoner:
             "depth": request.depth,
             "source_policy": request.source_policy,
             "plan": to_jsonable(plan),
+            "source_notes": source_notes or [],
+            "lane_summaries": lane_summaries or [],
             "sources": [
                 {
                     "source_id": source.source_id,
@@ -134,7 +183,7 @@ class RuntimeDeepResearchReasoner:
                     "url": source.url,
                     "source_type": source.source_type.value,
                     "lane_id": source.lane_id,
-                    "excerpt": source.content[:1800],
+                    "excerpt": source.content[:8000],
                 }
                 for source in ledger.sources.values()
             ],
@@ -151,6 +200,11 @@ class RuntimeDeepResearchReasoner:
                 "`## Market Map`, `## Key Findings`, `## Strategic Implications`, "
                 "`## Contradictions And Gaps`, and `## Source Ledger`.\n"
                 "- Every material claim must cite source ids inline, e.g. [src_ab12].\n"
+                "- Use the structured `source_notes` (per-source facts: entities, numbers, "
+                "dates, mechanisms, limitations) and `lane_summaries` (per-lane evidence "
+                "strength, key findings, contradictions) as your primary substrate. Weave "
+                "specific entities, numbers, and dates from these notes into every section; "
+                "do not paraphrase generically.\n"
                 "- Prefer concrete numbers, named actors, product mechanics, and decision implications.\n"
                 "- Separate verified findings from inferred implications and gaps.\n"
                 "- Do not write generic educational text or ungrounded recommendations.\n\n"

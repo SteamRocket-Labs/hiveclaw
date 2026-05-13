@@ -254,7 +254,7 @@ class OpenAICompatibleClient(LLMClient):
     def _strip_reasoning_content_from_inputs(self) -> bool:
         """Whether this OpenAI-compatible provider rejects prior reasoning_content."""
         model = (self.model or "").lower()
-        return "deepseek-reasoner-legacy" in model or model.startswith("deepseek-v4-")
+        return "deepseek-reasoner-legacy" in model
 
     def _build_payload(
         self,

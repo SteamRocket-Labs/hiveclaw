@@ -143,7 +143,7 @@ def test_deepseek_disabled_thinking_keeps_sampling_controls_available():
     assert kwargs == {"thinking": {"type": "disabled"}}
 
 
-def test_deepseek_payload_strips_reasoning_content_before_provider_retry_and_omits_temperature():
+def test_deepseek_payload_preserves_reasoning_content_for_thinking_turns_and_omits_temperature():
     client = OpenAICompatibleClient(api_key="test", model="deepseek-v4-pro", base_url="https://api.deepseek.com")
     payload = client._build_payload(
         [
@@ -156,7 +156,7 @@ def test_deepseek_payload_strips_reasoning_content_before_provider_retry_and_omi
         _omit_temperature=True,
     )
 
-    assert "reasoning_content" not in payload["messages"][0]
+    assert payload["messages"][0]["reasoning_content"] == "private chain"
     assert "temperature" not in payload
 
 

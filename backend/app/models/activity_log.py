@@ -20,7 +20,7 @@ class AgentActivityLog(Base):
     action_type: Mapped[str] = mapped_column(
         Enum(
             "chat_reply", "tool_call", "feishu_msg_sent", "agent_msg_sent",
-            "web_msg_sent", "task_created", "task_updated", "file_written", "error",
+            "web_msg_sent", "task_created", "task_updated", "file_written", "error", "llm_error",
             "schedule_run", "heartbeat", "plaza_post",
             "delegation_started", "delegation_completed", "delegation_failed",
             "delegation_killed", "delegation_error",

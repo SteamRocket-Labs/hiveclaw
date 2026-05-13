@@ -254,7 +254,7 @@ class OpenAICompatibleClient(LLMClient):
     def _strip_reasoning_content_from_inputs(self) -> bool:
         """Whether this OpenAI-compatible provider rejects prior reasoning_content."""
         model = (self.model or "").lower()
-        return "deepseek-reasoner-legacy" in model
+        return "deepseek-reasoner-legacy" in model or model.startswith("deepseek-v4-")
 
     def _build_payload(
         self,
@@ -517,7 +517,11 @@ class OpenAICompatibleClient(LLMClient):
                         if chunk.tool_call:
                             idx = chunk.tool_call.get("index", 0)
                             while len(tool_calls_data) <= idx:
-                                tool_calls_data.append({"id": "", "function": {"name": "", "arguments": ""}})
+                                tool_calls_data.append({
+                                    "id": "",
+                                    "type": "function",
+                                    "function": {"name": "", "arguments": ""},
+                                })
                             tc = tool_calls_data[idx]
                             if chunk.tool_call.get("id"):
                                 tc["id"] = chunk.tool_call["id"]

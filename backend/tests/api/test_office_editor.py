@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 import pytest
@@ -57,6 +58,56 @@ async def test_office_editor_config_contains_onlyoffice_jwt(tmp_path, monkeypatc
     assert config["editorConfig"]["customization"]["forcesave"] is True
     decoded = jwt.decode(config["token"], "onlyoffice-secret", algorithms=["HS256"])
     assert decoded["document"]["key"] == config["document"]["key"]
+    download_token = parse_qs(urlparse(config["document"]["url"]).query)["token"][0]
+    callback_token = parse_qs(urlparse(config["editorConfig"]["callbackUrl"]).query)["token"][0]
+    download_claims = jwt.decode(download_token, "onlyoffice-secret", algorithms=["HS256"])
+    callback_claims = jwt.decode(callback_token, "onlyoffice-secret", algorithms=["HS256"])
+    assert callback_claims["purpose"] == "callback"
+    assert callback_claims["exp"] > download_claims["exp"]
+
+
+@pytest.mark.asyncio
+async def test_office_editor_config_uses_tenant_scoped_non_email_identity(tmp_path, monkeypatch):
+    import app.api.office as office_api
+
+    monkeypatch.setattr(office_api, "settings", _settings(tmp_path))
+
+    async def fake_access(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(office_api, "check_agent_access", fake_access)
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    tenant_id = uuid4()
+    workspace = tmp_path / str(agent_id) / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / "demo.docx").write_bytes(b"docx")
+
+    response = await office_api.get_editor_config(
+        agent_id=agent_id,
+        path="workspace/demo.docx",
+        mode="edit",
+        current_user=SimpleNamespace(
+            id=user_id,
+            tenant_id=tenant_id,
+            display_name="",
+            username="tenant-admin",
+            email="lurocky14@gmail.com",
+        ),
+        db=SimpleNamespace(),
+    )
+
+    editor_user = response["config"]["editorConfig"]["user"]
+    assert editor_user == {"id": f"{tenant_id}:{user_id}", "name": "tenant-admin"}
+    assert "lurocky14@gmail.com" not in str(response["config"])
+    decoded = jwt.decode(response["config"]["token"], "onlyoffice-secret", algorithms=["HS256"])
+    assert decoded["editorConfig"]["user"] == editor_user
+
+    active_session = office_api.OfficeDocumentService(tmp_path / str(agent_id)).get_active_editor_session(
+        "workspace/demo.docx"
+    )
+    assert active_session["user_id"] == editor_user["id"]
 
 
 @pytest.mark.asyncio

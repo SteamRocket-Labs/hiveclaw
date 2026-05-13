@@ -18,6 +18,7 @@ type OfficeWorkbenchSectionProps = {
 };
 
 const DEFAULT_PATH = 'workspace/demo.docx';
+const EDITOR_HEIGHT = 'clamp(560px, calc(100vh - 360px), 820px)';
 
 function inferKind(path: string): OfficeKind {
   const lower = path.toLowerCase();
@@ -26,12 +27,28 @@ function inferKind(path: string): OfficeKind {
   return 'docx';
 }
 
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === 'object' && 'message' in error) {
+    return String((error as { message?: unknown }).message || '');
+  }
+  return '';
+}
+
 function OnlyOfficeHost({ config }: { config: Extract<OfficeEditorConfig, { enabled: true }> }) {
   const [loadError, setLoadError] = useState('');
   const containerId = useMemo(() => {
     const document = config.config.document as { key?: string } | undefined;
     return `onlyoffice-editor-${document?.key || 'document'}`;
   }, [config.config]);
+  const editorConfig = useMemo(
+    () => ({
+      ...config.config,
+      width: '100%',
+      height: '100%',
+    }),
+    [config.config],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -40,11 +57,18 @@ function OnlyOfficeHost({ config }: { config: Extract<OfficeEditorConfig, { enab
 
     const mountEditor = () => {
       if (cancelled) return;
+      setLoadError('');
       if (!window.DocsAPI?.DocEditor) {
         setLoadError('DocsAPI unavailable');
         return;
       }
-      editor = new window.DocsAPI.DocEditor(containerId, config.config);
+      const host = document.getElementById(containerId);
+      if (host) host.innerHTML = '';
+      try {
+        editor = new window.DocsAPI.DocEditor(containerId, editorConfig);
+      } catch (error) {
+        setLoadError(getErrorMessage(error) || 'DocsAPI failed to mount');
+      }
     };
 
     const existing = document.getElementById(scriptId) as HTMLScriptElement | null;
@@ -68,14 +92,25 @@ function OnlyOfficeHost({ config }: { config: Extract<OfficeEditorConfig, { enab
       cancelled = true;
       editor?.destroyEditor?.();
     };
-  }, [config, containerId]);
+  }, [config.documentServerUrl, containerId, editorConfig]);
 
   return (
-    <div style={{ minHeight: '620px', border: '1px solid var(--border-primary)', borderRadius: 8, overflow: 'hidden' }}>
+    <div
+      className="office-workbench__editorShell"
+      style={{
+        width: '100%',
+        height: EDITOR_HEIGHT,
+        minHeight: 560,
+        border: '1px solid var(--border-primary)',
+        borderRadius: 8,
+        overflow: 'hidden',
+        background: 'var(--bg-elevated)',
+      }}
+    >
       {loadError ? (
         <div style={{ padding: 16, color: 'var(--danger)' }}>{loadError}</div>
       ) : (
-        <div id={containerId} style={{ width: '100%', height: 620 }} />
+        <div id={containerId} style={{ width: '100%', height: '100%', minHeight: 0 }} />
       )}
     </div>
   );
@@ -85,20 +120,24 @@ export default function OfficeWorkbenchSection({ agentId }: OfficeWorkbenchSecti
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [pathInput, setPathInput] = useState(DEFAULT_PATH);
-  const [selectedPath, setSelectedPath] = useState(DEFAULT_PATH);
+  const [selectedPath, setSelectedPath] = useState('');
 
   const editorQuery = useQuery({
     queryKey: ['office-editor-config', agentId, selectedPath],
     queryFn: () => officeApi.getEditorConfig(agentId, selectedPath, 'edit'),
-    enabled: Boolean(agentId && selectedPath),
+    enabled: Boolean(agentId && selectedPath.trim()),
     retry: false,
   });
 
   const createMutation = useMutation({
-    mutationFn: () => officeApi.createDocument(agentId, { path: pathInput, kind: inferKind(pathInput) }),
+    mutationFn: () => {
+      const normalizedPath = pathInput.trim();
+      return officeApi.createDocument(agentId, { path: normalizedPath, kind: inferKind(normalizedPath) });
+    },
     onSuccess: () => {
-      setSelectedPath(pathInput);
-      queryClient.invalidateQueries({ queryKey: ['office-editor-config', agentId, pathInput] });
+      const normalizedPath = pathInput.trim();
+      setSelectedPath(normalizedPath);
+      queryClient.invalidateQueries({ queryKey: ['office-editor-config', agentId, normalizedPath] });
     },
   });
 
@@ -108,19 +147,27 @@ export default function OfficeWorkbenchSection({ agentId }: OfficeWorkbenchSecti
 
   const config = editorQuery.data;
   const disabledConfig = config && !config.enabled ? config : null;
+  const editorError = editorQuery.isError ? getErrorMessage(editorQuery.error) : '';
 
   return (
-    <div style={{ padding: '20px 24px' }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(240px, 360px) minmax(0, 1fr)', gap: 20 }}>
-        <aside style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          <div>
+    <div className="office-workbench" style={{ padding: '20px 24px', minWidth: 0 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
+        <section
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: 14,
+            alignItems: 'end',
+          }}
+        >
+          <div style={{ flex: '1 1 220px', minWidth: 220 }}>
             <h3 style={{ margin: '0 0 6px', fontSize: 18 }}>{t('agent.office.title', 'Office')}</h3>
             <p style={{ margin: 0, color: 'var(--text-tertiary)', fontSize: 13 }}>
               {t('agent.office.subtitle', 'DOCX, XLSX, and PPTX editing for this workspace')}
             </p>
           </div>
 
-          <label style={{ display: 'grid', gap: 6, fontSize: 13, color: 'var(--text-secondary)' }}>
+          <label style={{ display: 'grid', gap: 6, flex: '1 1 320px', maxWidth: 520, fontSize: 13, color: 'var(--text-secondary)' }}>
             {t('agent.office.pathLabel', 'Document path')}
             <input
               value={pathInput}
@@ -138,8 +185,8 @@ export default function OfficeWorkbenchSection({ agentId }: OfficeWorkbenchSecti
             />
           </label>
 
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button className="btn btn-primary" onClick={() => setSelectedPath(pathInput)} disabled={!pathInput.trim()}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <button className="btn btn-primary" onClick={() => setSelectedPath(pathInput.trim())} disabled={!pathInput.trim()}>
               <IconPlayerPlay size={15} stroke={1.7} />
               {t('agent.office.open', 'Open')}
             </button>
@@ -164,20 +211,41 @@ export default function OfficeWorkbenchSection({ agentId }: OfficeWorkbenchSecti
               {t('agent.office.save', 'Save')}
             </button>
           </div>
+        </section>
 
-          {disabledConfig && (
-            <div style={{ border: '1px solid var(--border-primary)', borderRadius: 8, padding: 12, color: 'var(--text-secondary)' }}>
-              <strong style={{ display: 'block', marginBottom: 6 }}>{t('agent.office.disabledTitle', 'ONLYOFFICE is not configured')}</strong>
-              <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-                {(disabledConfig.required_env || []).join(', ') || disabledConfig.reason}
-              </div>
+        {disabledConfig && (
+          <div style={{ border: '1px solid var(--border-primary)', borderRadius: 8, padding: 12, color: 'var(--text-secondary)' }}>
+            <strong style={{ display: 'block', marginBottom: 6 }}>{t('agent.office.disabledTitle', 'ONLYOFFICE is not configured')}</strong>
+            <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+              {(disabledConfig.required_env || []).join(', ') || disabledConfig.reason}
             </div>
-          )}
-        </aside>
+          </div>
+        )}
 
-        <main>
-          {config?.enabled ? (
+        <main style={{ minWidth: 0 }}>
+          {config?.enabled && !editorError ? (
             <OnlyOfficeHost config={config} />
+          ) : editorError ? (
+            <div
+              style={{
+                minHeight: 420,
+                border: '1px dashed var(--border-primary)',
+                borderRadius: 8,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 8,
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'var(--text-tertiary)',
+                padding: 24,
+                textAlign: 'center',
+              }}
+            >
+              <strong style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
+                {t('agent.office.documentMissingTitle', 'Office document not found')}
+              </strong>
+              <span>{t('agent.office.documentMissingMessage', 'Create it first, then open it again.')}</span>
+            </div>
           ) : (
             <div
               style={{

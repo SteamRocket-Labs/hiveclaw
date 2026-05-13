@@ -8,6 +8,7 @@ from app.database import async_session
 from app.models.activity_log import AgentActivityLog
 
 _ACTION_TYPE_FALLBACKS = {
+    "llm_error": "error",
     "tool_call_direct": "tool_call",
     "tool_call_approved": "tool_call",
 }

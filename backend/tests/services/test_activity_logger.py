@@ -12,6 +12,7 @@ def test_activity_action_enum_includes_tool_runtime_approval_events():
 
     assert "tool_call_direct" in action_enum.enums
     assert "tool_call_approved" in action_enum.enums
+    assert "llm_error" in action_enum.enums
 
 
 class _FailingSession:
@@ -40,6 +41,11 @@ class _FailingSession:
 class _EnumDriftSession(_FailingSession):
     async def commit(self):
         raise RuntimeError('invalid input value for enum activity_action_enum: "tool_call_approved"')
+
+
+class _LlmErrorEnumDriftSession(_FailingSession):
+    async def commit(self):
+        raise RuntimeError('invalid input value for enum activity_action_enum: "llm_error"')
 
 
 @pytest.mark.asyncio
@@ -98,3 +104,26 @@ async def test_log_activity_falls_back_when_runtime_enum_value_is_missing(monkey
     assert second_session.added[0].action_type == "tool_call"
     assert second_session.added[0].detail_json["activity_type_original"] == "tool_call_approved"
     assert second_session.added[0].detail_json["activity_type_fallback"] == "tool_call"
+
+
+@pytest.mark.asyncio
+async def test_log_activity_falls_back_when_llm_error_enum_value_is_missing(monkeypatch):
+    from app.services.activity_logger import log_activity
+
+    first_session = _LlmErrorEnumDriftSession(fail_on_commit=True)
+    second_session = _FailingSession(fail_on_commit=False)
+    sessions = iter([first_session, second_session])
+    monkeypatch.setattr("app.services.activity_logger.async_session", lambda: next(sessions))
+
+    await log_activity(
+        agent_id=uuid.uuid4(),
+        action_type="llm_error",
+        summary="LLM failed",
+        detail={"channel": "web"},
+    )
+
+    assert first_session.rollback_calls == 1
+    assert len(second_session.added) == 1
+    assert second_session.added[0].action_type == "error"
+    assert second_session.added[0].detail_json["activity_type_original"] == "llm_error"
+    assert second_session.added[0].detail_json["activity_type_fallback"] == "error"

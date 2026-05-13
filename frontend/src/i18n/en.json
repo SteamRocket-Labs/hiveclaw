@@ -512,6 +512,8 @@
       "create": "Create",
       "save": "Save",
       "disabledTitle": "ONLYOFFICE is not configured",
+      "documentMissingTitle": "Office document not found",
+      "documentMissingMessage": "Create it first, then open it again.",
       "emptyState": "Open or create an Office document to start editing."
     },
     "activityLog": {

@@ -608,6 +608,7 @@ def _sanitize_tool_calls_for_history(tool_calls: list[dict]) -> list[dict]:
     sanitized: list[dict] = []
     for tool_call in tool_calls:
         cloned_call = dict(tool_call)
+        cloned_call["type"] = cloned_call.get("type") or "function"
         function = dict(cloned_call.get("function") or {})
         raw_arguments = function.get("arguments") or "{}"
         if isinstance(raw_arguments, str):

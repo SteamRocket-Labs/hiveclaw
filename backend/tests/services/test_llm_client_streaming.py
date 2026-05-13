@@ -55,6 +55,7 @@ async def test_openai_compatible_streaming_deduplicates_full_tool_names(monkeypa
     assert response.tool_calls == [
         {
             "id": "call_1",
+            "type": "function",
             "function": {
                 "name": "web_search",
                 "arguments": '{"query":"embodied world model"}',

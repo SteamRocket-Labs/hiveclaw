@@ -375,6 +375,7 @@ async def test_agent_kernel_sanitizes_malformed_tool_arguments_before_retry():
         message for message in retry_messages if message.role == "assistant" and message.tool_calls
     )
     assert assistant_with_bad_call.tool_calls[0]["function"]["arguments"] == "{}"
+    assert assistant_with_bad_call.tool_calls[0]["type"] == "function"
 
 
 @pytest.mark.asyncio

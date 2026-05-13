@@ -127,6 +127,26 @@ def _document_key(path: Path, rel_path: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
+def _clean_identity_value(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _editor_user_identity(current_user: User) -> dict[str, str]:
+    user_id = str(current_user.id)
+    tenant_id = _clean_identity_value(getattr(current_user, "tenant_id", None))
+    editor_id = f"{tenant_id}:{user_id}" if tenant_id else user_id
+    editor_name = (
+        _clean_identity_value(getattr(current_user, "display_name", None))
+        or _clean_identity_value(getattr(current_user, "username", None))
+        or _clean_identity_value(getattr(current_user, "name", None))
+        or user_id
+    )
+    return {"id": editor_id, "name": editor_name}
+
+
 def _download_url(agent_id: uuid.UUID, path: str) -> str:
     token = make_document_token(agent_id=agent_id, path=path, purpose="download")
     query = urlencode({"path": path, "token": token})
@@ -134,7 +154,12 @@ def _download_url(agent_id: uuid.UUID, path: str) -> str:
 
 
 def _callback_url(agent_id: uuid.UUID, path: str) -> str:
-    token = make_document_token(agent_id=agent_id, path=path, purpose="callback")
+    token = make_document_token(
+        agent_id=agent_id,
+        path=path,
+        purpose="callback",
+        expires_delta=timedelta(hours=12),
+    )
     query = urlencode({"path": path, "token": token})
     return f"{_public_base_url()}/api/agents/{agent_id}/office/callback?{query}"
 
@@ -200,10 +225,10 @@ async def get_editor_config(
 
     file_type = target.suffix.lower().lstrip(".")
     document_key = _document_key(target, path)
+    editor_user = _editor_user_identity(current_user)
     if mode == "edit":
-        service.set_active_editor_session(path, session_id=document_key, user_id=str(current_user.id))
+        service.set_active_editor_session(path, session_id=document_key, user_id=editor_user["id"])
 
-    user_name = getattr(current_user, "name", None) or getattr(current_user, "email", None) or str(current_user.id)
     config = {
         "document": {
             "fileType": file_type,
@@ -215,7 +240,7 @@ async def get_editor_config(
         "editorConfig": {
             "mode": mode,
             "callbackUrl": _callback_url(agent_id, path),
-            "user": {"id": str(current_user.id), "name": user_name},
+            "user": editor_user,
             "customization": {
                 "forcesave": True,
             },

@@ -39,6 +39,13 @@ class DeepResearchOrchestrator:
         self.evaluator = ResearchEvaluator()
 
     async def run(self, request: ResearchRequest, *, artifact_dir: str | Path) -> ResearchRun:
+        if getattr(request, "controller_mode", False):
+            from app.services.deep_research.controller import DeepResearchController
+
+            return await DeepResearchController(self.tool_invoker, reasoner=self.reasoner).run(
+                request, artifact_dir=artifact_dir
+            )
+
         artifact_path = Path(artifact_dir)
         writer = ResearchArtifactWriter(artifact_path)
         ledger = EvidenceLedger(artifact_path)

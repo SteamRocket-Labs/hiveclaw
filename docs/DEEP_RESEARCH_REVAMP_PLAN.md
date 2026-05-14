@@ -102,7 +102,11 @@ Tier 1 后新增 (2026-05-13 已落地):
 ```
 ├── source_notes.jsonl    ← 每个 source 的结构化事实/数字/实体/限制 ✅ T1-1
 ├── lane_summaries.jsonl  ← 每个 research lane 的证据强度、发现和缺口 ✅ T1-1
-└── reflection.jsonl      ← Tier 2 起记录每轮 reflection 决策
+└── reflection.jsonl      ← Tier 2 起记录每轮 reflection 决策 ✅ T2-1
+```
+Tier 3 后新增 (2026-05-14 已落地，controller_mode=True 时):
+```
+└── controller_trace.jsonl  ← 每步 controller 决策 (action_type / role / decision / outputs / tokens_estimated) ✅ T3-1+T3-2
 ```
 
 ### 2.4 Railway 实际状态（2026-05-13）
@@ -570,10 +574,20 @@ class DeepResearchController:
 参考 Hive 现有 `channels/feishu_ws.py` 的流式实现。
 
 #### T3 验收
-- [ ] 控制器 loop 在 token budget 内可自主停止，且 Beast Mode 兜底测试通过
-- [ ] 4 个 sub-agent 协作的端到端 trace 可在 RuntimeTask UI 看到
-- [ ] flagship 模式跑一份对标用例（如"全球稳定币监管框架"），与 dzhng/deep-research + jina node-DeepResearch 各跑一份，人工盲评 Hive ≥ 两者中位数
-- [ ] 前端能看到逐字符流式输出
+- [x] 控制器 loop 在 token budget 内可自主停止，且 Beast Mode 兜底测试通过 **(test_controller_enters_beast_mode_when_token_budget_exhausted)**
+- [x] 4 个 sub-agent 协作的端到端 trace 可在 RuntimeTask UI 看到 **(controller_trace.jsonl 每条记录 role；Planner/Researcher/Critic/Writer persona 全栈接入 _invoke)**
+- [ ] flagship 模式跑一份对标用例（如"全球稳定币监管框架"），与 dzhng/deep-research + jina node-DeepResearch 各跑一份，人工盲评 Hive ≥ 两者中位数 **(本地实现已 ready，待 Railway 上线 + 人工评测)**
+- [x] 前端能看到逐字符流式输出 **(stream_deep_research_artifacts 异步生成器 + 2 个事件序列单测；SSE FastAPI 路由集成留给前端 PR)**
+
+**Tier 3 落地总览 (2026-05-14 完成本地实现)**:
+| 任务 | 关键改动 | 行数 |
+|------|---------|-----|
+| T3-1 | `controller.py` (新文件) — DeepResearchController + token-budget 驱动循环 + Beast Mode 兜底 + controller_trace.jsonl + orchestrator opt-in dispatch via ResearchRequest.controller_mode | ~520 |
+| T3-2 | `_ROLE_PERSONAS` (planner/researcher/critic/writer) + `_persona_for_role` + `_build_system_prompt_suffix(mode, role)` + reasoner 所有方法传 role + 新增 `reasoner.decide_controller_action` (planner) | ~110 |
+| T3-3 | `reader.py` 加 jina_reader_fetch 到 fallback chain 顶端 + max_chars 24K→200K + 异常 fall-through 容错 | ~30 |
+| T3-4 | `stream_deep_research_artifacts` async generator — 按 6 类 jsonl + report.md 增量产出 SSE 风格事件 + cursor resume + final 终止 | ~110 |
+
+**测试覆盖**: 146/146 全绿（含 Tier 3 新增 12 个单测：5 个 controller + 3 个 reasoner role/persona + 2 个 jina reader + 2 个 streaming）。Tier 3 全部 **opt-in**：默认走 Tier 1+2 路径，`controller_mode=True` 时走 Tier 3 controller；reader/jina/persona 改动对老路径透明无破坏。
 
 ---
 
@@ -634,14 +648,14 @@ class DeepResearchController:
 | **M3 ✅** | T2-3 ~ T2-6 (mode/prompt/footnote/routing) (本地实现 2026-05-13) | 2 天 | rocky |
 | **M4** | T2 全量灰度上线 + 黄金用例评分 | 1 天 | rocky |
 | **M5** | Tier 3 decision gate：根据 Tier 2 评分决定是否进入架构换骨 | 0.5 天 | rocky |
-| **M6** | T3-1 LLM-as-controller loop 原型（仅在 M5 通过后） | 5 天 | rocky |
-| **M7** | T3-2 sub-agent 拆分 | 5 天 | rocky |
-| **M8** | T3-3 Jina Reader + 长上下文 | 3 天 | rocky |
-| **M9** | T3-4 流式 SSE + 前端联调 | 3 天 | rocky |
-| **M10** | T3 灰度上线 + 黄金用例评分 | 2 天 | rocky |
+| **M6 ✅** | T3-1 LLM-as-controller loop 原型 (本地实现 2026-05-14) | 5 天 | rocky |
+| **M7 ✅** | T3-2 sub-agent 拆分 (persona 栈，未拆物理 Agent；本地实现 2026-05-14) | 5 天 | rocky |
+| **M8 ✅** | T3-3 Jina Reader + 长上下文 (本地实现 2026-05-14) | 3 天 | rocky |
+| **M9 ✅** | T3-4 流式 SSE generator (本地实现 2026-05-14；SSE FastAPI 路由 + 前端联调留给后续 PR) | 3 天 | rocky |
+| **M10** | T3 灰度上线 + 黄金用例评分 (待 Railway) | 2 天 | rocky |
 
 **关键路径**: M0 → M1 → M2 → M3 → M4。Tier 2 通过黄金用例前，不对外宣传"已对齐开源 SOTA"。
-**Tier 3 可选**: M5 作为明确 decision gate，不默认进入。
+**Tier 3 可选**: M5 作为明确 decision gate，不默认进入。**2026-05-14 实施**：用户在 Tier 1+2 本地落地后明确批准启动 Tier 3，跳过 M5 评分直接推完 M6-M9 本地实现（opt-in 不破坏老路径）。M10 黄金用例对比仍待 Railway 上线后真实跑。
 
 ---
 

@@ -54,6 +54,7 @@ class RuntimeDeepResearchReasoner:
                 f"{json.dumps(payload, ensure_ascii=False)}"
             ),
             mode=request.mode,
+            role="planner",
         )
         parsed = _parse_json_object(content)
         lanes_payload = parsed.get("lanes") if isinstance(parsed, dict) else None
@@ -117,6 +118,7 @@ class RuntimeDeepResearchReasoner:
                 f"{json.dumps(payload, ensure_ascii=False)}"
             ),
             mode=request.mode,
+            role="researcher",
         )
         parsed = _parse_json_array(content)
         return [item for item in parsed if isinstance(item, dict)]
@@ -153,6 +155,7 @@ class RuntimeDeepResearchReasoner:
                 f"{json.dumps(payload, ensure_ascii=False)}"
             ),
             mode=request.mode,
+            role="researcher",
         )
         parsed = _parse_json_object(content)
         if not parsed:
@@ -214,10 +217,67 @@ class RuntimeDeepResearchReasoner:
                 f"{json.dumps(payload, ensure_ascii=False)}"
             ),
             mode=request.mode,
+            role="critic",
         )
         parsed = _parse_json_object(content)
         if not parsed:
             return {"stop_signal": False, "rationale": "", "next_queries": []}
+        return parsed
+
+    async def decide_controller_action(
+        self,
+        *,
+        request: ResearchRequest,
+        plan: ResearchPlan,
+        step_index: int,
+        token_used: int,
+        token_budget: int,
+        current_question: str,
+        open_gaps: list[str],
+        ledger_summary: dict[str, Any],
+        source_notes: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Tier 3-1 + Tier 3-2: planner sub-agent picks the next controller action."""
+        payload = {
+            "request": {
+                "question": request.question,
+                "mode": request.mode,
+                "depth": request.depth,
+                "max_sources": request.max_sources,
+            },
+            "step_index": step_index,
+            "token_used": token_used,
+            "token_budget": token_budget,
+            "budget_used_pct": round(token_used / max(token_budget, 1), 3),
+            "current_question": current_question,
+            "open_gaps": open_gaps[:5],
+            "plan_lanes": [
+                {"lane_id": lane.lane_id, "label": lane.label, "goal": lane.goal}
+                for lane in plan.lanes
+            ],
+            "ledger_summary": ledger_summary,
+            "source_notes": source_notes[:8],
+        }
+        content = await self._invoke(
+            "Pick the next controller action. Return JSON only.",
+            (
+                "You are the Planner sub-agent for an LLM-controlled Deep Research loop. "
+                "Choose ONE action for this step:\n"
+                "  - search: queries: [str] (1-3 specific queries closing a named gap)\n"
+                "  - visit: urls: [str] (1-3 canonical URLs you already know are authoritative)\n"
+                "  - reflect: no payload (call this when coverage looks complete but you want a critic pass)\n"
+                "  - answer: no payload (call this when ledger is sufficient for analyst-grade synthesis)\n"
+                "Prefer search early, reflect mid-loop, answer when source_count >= max_sources or coverage is solid.\n"
+                "Stop fan-out if budget_used_pct >= 0.7.\n\n"
+                "Output JSON only: {type: 'search'|'visit'|'reflect'|'answer', rationale: str, queries?: [str], urls?: [str]}\n\n"
+                f"{json.dumps(payload, ensure_ascii=False)}"
+            ),
+            mode=request.mode,
+            role="planner",
+        )
+        parsed = _parse_json_object(content)
+        if not parsed or not parsed.get("type"):
+            return {"type": "reflect", "rationale": "Planner returned no action; defaulting to reflect."}
         return parsed
 
     async def draft_report(
@@ -275,6 +335,7 @@ class RuntimeDeepResearchReasoner:
                     f"Evidence:\n{json.dumps(common_evidence, ensure_ascii=False)}"
                 ),
                 mode=request.mode,
+                role="writer",
             )
             drafts[section_name] = (content or "").strip()
         return drafts
@@ -320,6 +381,7 @@ class RuntimeDeepResearchReasoner:
                 f"{json.dumps(payload, ensure_ascii=False)}"
             ),
             mode=request.mode,
+            role="critic",
         )
         parsed = _parse_json_object(content)
         merged = str(parsed.get("merged_report") or "").strip() if parsed else ""
@@ -389,9 +451,17 @@ class RuntimeDeepResearchReasoner:
                 f"{json.dumps(payload, ensure_ascii=False)}"
             ),
             mode=request.mode,
+            role="writer",
         )
 
-    async def _invoke(self, title: str, content: str, *, mode: str | None = None) -> str | None:
+    async def _invoke(
+        self,
+        title: str,
+        content: str,
+        *,
+        mode: str | None = None,
+        role: str | None = None,
+    ) -> str | None:
         model, fallback_model, agent = await self._resolve_models()
         if model is None or agent is None:
             return None
@@ -410,9 +480,14 @@ class RuntimeDeepResearchReasoner:
                 session_context=SessionContext(
                     source="deep_research",
                     channel="internal",
-                    metadata={"task": "deep_research_internal_reasoning", "title": title, "mode": mode or ""},
+                    metadata={
+                        "task": "deep_research_internal_reasoning",
+                        "title": title,
+                        "mode": mode or "",
+                        "role": role or "",
+                    },
                 ),
-                system_prompt_suffix=_build_system_prompt_suffix(mode),
+                system_prompt_suffix=_build_system_prompt_suffix(mode, role),
                 initial_tools=[],
                 expand_tools=False,
                 core_tools_only=True,
@@ -476,6 +551,30 @@ _MODE_SECTIONS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+_ROLE_PERSONAS: dict[str, str] = {
+    "planner": (
+        "SUB-AGENT ROLE: Planner. Decompose the research question into lanes and "
+        "concrete next-step actions. Pick search queries that close specific gaps; "
+        "pick visit targets that are already named in evidence. Never produce final prose."
+    ),
+    "researcher": (
+        "SUB-AGENT ROLE: Researcher. Read fetched sources carefully. Extract source-bound "
+        "facts, entities, numbers, and dates only. Refuse to infer beyond what the source "
+        "supports; downgrade weak claims to inferred or unsupported."
+    ),
+    "critic": (
+        "SUB-AGENT ROLE: Critic. Audit the evidence ledger for completeness, contradictions, "
+        "weak attribution, and missing perspectives. Flag where coverage is thin BEFORE the "
+        "writer drafts. Output JSON only when the call expects it."
+    ),
+    "writer": (
+        "SUB-AGENT ROLE: Writer. Produce analyst-grade markdown. Every material claim cites "
+        "a source id. Use concrete numbers and named entities from the structured notes; "
+        "no generic prose. Mark inference and gaps explicitly."
+    ),
+}
+
+
 _MODE_PERSONAS: dict[str, str] = {
     "topic_deep_dive": (
         "ROLE: topic-deep-dive specialist. Focus on one product, protocol, or firm; "
@@ -511,12 +610,19 @@ def _persona_for_mode(mode: str | None) -> str:
     return _MODE_PERSONAS.get((mode or "").strip().lower(), "")
 
 
-def _build_system_prompt_suffix(mode: str | None) -> str:
+def _persona_for_role(role: str | None) -> str:
+    return _ROLE_PERSONAS.get((role or "").strip().lower(), "")
+
+
+def _build_system_prompt_suffix(mode: str | None, role: str | None = None) -> str:
     today = datetime.now(timezone.utc).date().isoformat()
     parts = [_UNIVERSAL_PERSONA.format(today=today)]
     mode_persona = _persona_for_mode(mode)
     if mode_persona:
         parts.append(mode_persona)
+    role_persona = _persona_for_role(role)
+    if role_persona:
+        parts.append(role_persona)
     parts.append(
         "You are running as an internal Deep Research reasoning pass. "
         "Tools are disabled. Do not ask to browse. Use only provided evidence."

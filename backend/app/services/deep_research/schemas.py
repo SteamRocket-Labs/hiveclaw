@@ -72,6 +72,7 @@ class ResearchRequest:
     token_budget: int | None = None
     deadline_seconds: int | None = None
     output_format: str = "markdown"
+    controller_mode: bool = False
 
     @classmethod
     def from_arguments(cls, arguments: dict[str, Any]) -> "ResearchRequest":
@@ -95,6 +96,7 @@ class ResearchRequest:
             token_budget=_coerce_optional_int(arguments.get("token_budget"), minimum=1),
             deadline_seconds=_coerce_optional_int(arguments.get("deadline_seconds"), minimum=10),
             output_format=str(arguments.get("output_format") or "markdown").strip() or "markdown",
+            controller_mode=bool(arguments.get("controller_mode") or False),
         )
 
 

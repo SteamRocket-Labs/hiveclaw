@@ -4,6 +4,7 @@ import asyncio
 import json
 import shutil
 import uuid
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -495,3 +496,138 @@ def _escape_html(value: str) -> str:
 
 def _json(payload: dict[str, Any]) -> str:
     return json.dumps(to_jsonable(payload), ensure_ascii=False, default=str)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Tier 3-4: streaming generator for SSE-style consumption.
+#
+# Yields incremental events as new lines appear in steps.jsonl /
+# claims.jsonl / source_notes.jsonl / lane_summaries.jsonl / reflection.jsonl
+# and finally a `report` event with the partial markdown plus a `final`
+# event when final.json appears. Idempotent across reconnects: callers can
+# pass `after_step_index` / `after_claim_index` cursors to resume.
+#
+# Designed to be wrapped by an SSE FastAPI route (deferred to API layer);
+# pure async-generator contract here so the kernel and tests can drive it.
+# ──────────────────────────────────────────────────────────────────────────
+
+_STREAM_FILES: tuple[tuple[str, str], ...] = (
+    ("step", "steps.jsonl"),
+    ("claim", "claims.jsonl"),
+    ("source_note", "source_notes.jsonl"),
+    ("lane_summary", "lane_summaries.jsonl"),
+    ("reflection", "reflection.jsonl"),
+    ("controller_trace", "controller_trace.jsonl"),
+)
+
+
+async def stream_deep_research_artifacts(
+    workspace: Path,
+    task_id: str,
+    *,
+    poll_interval_seconds: float = 0.5,
+    cursors: dict[str, int] | None = None,
+    deadline_seconds: float | None = None,
+    _now: Any = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """Async-generator that streams Deep Research artifact deltas as discrete events.
+
+    Each yielded event is a JSON-serialisable dict with at minimum:
+      - `event`: one of step/claim/source_note/lane_summary/reflection/
+        controller_trace/report/final/heartbeat
+      - `task_id`
+      - `timestamp` (ISO8601)
+      - `payload`: the decoded record (for line-oriented files) or text body
+
+    The generator terminates when:
+      - `final.json` has been emitted, OR
+      - `deadline_seconds` is exceeded since the first call, OR
+      - the caller closes / cancels the iterator.
+
+    `cursors` lets a reconnecting caller resume past previously-seen records.
+    """
+    import time as _time_mod
+    from datetime import datetime, timezone
+
+    artifact_dir = _deep_research_dir(workspace, task_id)
+    cursors = dict(cursors or {})
+    started_at = (_now or _time_mod.monotonic)()
+    final_emitted = False
+    last_report_text = ""
+
+    def _ts() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    while True:
+        emitted_any = False
+
+        for event_name, filename in _STREAM_FILES:
+            path = artifact_dir / filename
+            if not path.exists():
+                continue
+            try:
+                lines = [line for line in path.read_text("utf-8").splitlines() if line.strip()]
+            except OSError:
+                continue
+            cursor = cursors.get(event_name, 0)
+            if cursor >= len(lines):
+                continue
+            for line in lines[cursor:]:
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    payload = {"raw": line}
+                yield {
+                    "event": event_name,
+                    "task_id": task_id,
+                    "timestamp": _ts(),
+                    "payload": payload,
+                }
+                emitted_any = True
+            cursors[event_name] = len(lines)
+
+        report_path = artifact_dir / "report.md"
+        if report_path.exists():
+            try:
+                text = report_path.read_text("utf-8")
+            except OSError:
+                text = ""
+            if text != last_report_text:
+                yield {
+                    "event": "report",
+                    "task_id": task_id,
+                    "timestamp": _ts(),
+                    "payload": {"markdown": text, "chars": len(text)},
+                }
+                last_report_text = text
+                emitted_any = True
+
+        final_path = artifact_dir / "final.json"
+        if final_path.exists() and not final_emitted:
+            try:
+                final_payload = json.loads(final_path.read_text("utf-8"))
+            except (OSError, json.JSONDecodeError):
+                final_payload = {}
+            yield {
+                "event": "final",
+                "task_id": task_id,
+                "timestamp": _ts(),
+                "payload": final_payload,
+            }
+            final_emitted = True
+            return
+
+        if not emitted_any:
+            yield {
+                "event": "heartbeat",
+                "task_id": task_id,
+                "timestamp": _ts(),
+                "payload": {"cursors": dict(cursors)},
+            }
+
+        if deadline_seconds is not None:
+            elapsed = (_now or _time_mod.monotonic)() - started_at
+            if elapsed >= deadline_seconds:
+                return
+
+        await asyncio.sleep(poll_interval_seconds)

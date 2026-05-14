@@ -76,6 +76,76 @@ def test_build_system_prompt_suffix_adds_mode_specific_role():
     assert "topic-deep-dive" in deep_dive.lower() or "topic deep dive" in deep_dive.lower()
 
 
+def test_build_system_prompt_suffix_stacks_role_persona_on_top_of_mode():
+    """T3-2: role persona is appended after mode persona, before the tools-disabled tail."""
+    from app.services.deep_research.reasoner import _build_system_prompt_suffix
+
+    planner = _build_system_prompt_suffix(mode="industry_research", role="planner")
+    researcher = _build_system_prompt_suffix(mode="industry_research", role="researcher")
+    critic = _build_system_prompt_suffix(mode="industry_research", role="critic")
+    writer_persona = _build_system_prompt_suffix(mode="industry_research", role="writer")
+
+    assert "Planner" in planner
+    assert "Researcher" in researcher
+    assert "Critic" in critic
+    assert "Writer" in writer_persona
+    # Mode persona is still present
+    for prompt in (planner, researcher, critic, writer_persona):
+        assert "market analyst" in prompt.lower()
+        assert "Tools are disabled" in prompt
+
+
+def test_persona_for_role_returns_empty_for_unknown_role():
+    """T3-2: unknown role yields empty persona (no error)."""
+    from app.services.deep_research.reasoner import _persona_for_role
+
+    assert _persona_for_role("unknown") == ""
+    assert _persona_for_role(None) == ""
+    assert "Planner" in _persona_for_role("planner")
+
+
+@pytest.mark.asyncio
+async def test_decide_controller_action_invokes_planner_persona(monkeypatch, tmp_path):
+    """T3-2 + T3-1: reasoner.decide_controller_action calls _invoke with role=planner."""
+    from app.services.deep_research.planner import build_research_plan
+    from app.services.deep_research.reasoner import RuntimeDeepResearchReasoner
+    from app.services.deep_research.schemas import ResearchRequest
+
+    captured: dict[str, object] = {}
+
+    async def fake_invoke_agent(request):
+        captured["suffix"] = request.system_prompt_suffix
+        captured["metadata"] = request.session_context.metadata
+        captured["content"] = request.messages[0]["content"]
+        return type("Result", (), {"content": '{"type":"search","queries":["foo"],"rationale":"go"}'})()
+
+    monkeypatch.setattr(RuntimeDeepResearchReasoner, "_resolve_models", _fake_resolve_models)
+    monkeypatch.setattr("app.services.deep_research.reasoner.invoke_agent", fake_invoke_agent)
+
+    reasoner = RuntimeDeepResearchReasoner(agent_id=uuid.uuid4(), user_id=uuid.uuid4())
+    request = ResearchRequest(question="research X", mode="industry_research", max_sources=4)
+    plan = build_research_plan(request)
+
+    decision = await reasoner.decide_controller_action(
+        request=request,
+        plan=plan,
+        step_index=2,
+        token_used=2500,
+        token_budget=10000,
+        current_question="What is the regulator stance?",
+        open_gaps=["regulator stance"],
+        ledger_summary={"source_count": 1, "claim_count": 1, "lanes_covered": ["regulatory"]},
+        source_notes=[],
+    )
+
+    assert decision == {"type": "search", "queries": ["foo"], "rationale": "go"}
+    suffix = captured.get("suffix") or ""
+    assert "Planner" in suffix, "Planner persona must be present in system_prompt_suffix"
+    assert "market analyst" in suffix.lower(), "Industry mode persona must still be stacked"
+    metadata = captured.get("metadata") or {}
+    assert metadata.get("role") == "planner"
+
+
 def test_sections_for_mode_picks_mode_specific_template():
     """T2-3: each mode has its own section template."""
     from app.services.deep_research.reasoner import _sections_for_mode

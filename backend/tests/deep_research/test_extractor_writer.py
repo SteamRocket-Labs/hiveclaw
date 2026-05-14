@@ -198,6 +198,70 @@ def test_clean_fetched_text_removes_site_footer_after_article_body():
 
 
 @pytest.mark.asyncio
+async def test_reader_prefers_jina_reader_for_long_context_when_available():
+    """Tier 3-3: jina_reader_fetch sits ahead of web_fetch in the fallback chain so a
+    long-context full-page markdown is taken in preference to the truncated default."""
+    from app.services.deep_research.reader import ResearchReader
+    from app.services.deep_research.schemas import SearchCandidate, SourceType
+
+    invocations: list[str] = []
+    long_body = (
+        "Title: Issuer A full disclosure\n"
+        + "Issuer A reports detailed institutional adoption metrics across 14 vehicles. "
+        * 800  # ~80K chars, well past the legacy 24K cap
+    )
+
+    async def fake_tool(tool_name: str, arguments: dict) -> str:
+        invocations.append(tool_name)
+        if tool_name == "jina_reader_fetch":
+            return long_body
+        if tool_name == "web_fetch":
+            return "Title: Truncated\nShort fallback body, should not win."
+        raise AssertionError(f"unexpected tool: {tool_name}")
+
+    source = await ResearchReader(fake_tool).fetch_candidate(
+        SearchCandidate(url="https://issuer.example/full"),
+        source_type=SourceType.PRIMARY,
+    )
+
+    assert source is not None
+    assert invocations[0] == "jina_reader_fetch", "jina_reader_fetch must be tried first"
+    assert source.fetch_tool == "jina_reader_fetch"
+    # Tier 3-3: max_chars default is 200K so a ~80K body survives untruncated
+    assert len(source.content) > 40_000
+
+
+@pytest.mark.asyncio
+async def test_reader_falls_through_to_web_fetch_when_jina_unavailable():
+    """Tier 3-3: jina tool throwing or returning empty must not block the chain."""
+    from app.services.deep_research.reader import ResearchReader
+    from app.services.deep_research.schemas import SearchCandidate, SourceType
+
+    invocations: list[str] = []
+
+    async def fake_tool(tool_name: str, arguments: dict) -> str:
+        invocations.append(tool_name)
+        if tool_name == "jina_reader_fetch":
+            raise RuntimeError("jina backend not registered in this deployment")
+        if tool_name == "web_fetch":
+            return (
+                "Title: Issuer A disclosure\n"
+                "Issuer A reports tokenized treasury adoption growth across 14 vehicles in 2026 "
+                "across multiple regulatory jurisdictions including SEC, MAS, and SFC."
+            )
+        raise AssertionError(f"unexpected tool: {tool_name}")
+
+    source = await ResearchReader(fake_tool).fetch_candidate(
+        SearchCandidate(url="https://issuer.example/fallback"),
+        source_type=SourceType.PRIMARY,
+    )
+
+    assert source is not None
+    assert invocations == ["jina_reader_fetch", "web_fetch"]
+    assert source.fetch_tool == "web_fetch"
+
+
+@pytest.mark.asyncio
 async def test_reader_strips_fetch_envelope_before_persisting_source_content():
     from app.services.deep_research.reader import ResearchReader
     from app.services.deep_research.schemas import SearchCandidate, SourceType

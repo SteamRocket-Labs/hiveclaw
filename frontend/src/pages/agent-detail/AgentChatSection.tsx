@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 
 import MarkdownRenderer from '../../components/MarkdownRenderer';
 import CopyMessageButton from './CopyMessageButton';
+import DeepResearchStreamPanel from './DeepResearchStreamPanel';
 import type { ToolCallMeta } from './toolResultEnvelope';
 import {
   computeComposerHeight,
@@ -74,6 +75,14 @@ interface StructuredToolResultBodyProps {
   toolMeta?: ToolCallMeta | null;
   toolResult?: string;
   toolRawResult?: string;
+  agentId?: string;
+}
+
+const _LIVE_DEEP_RESEARCH_STATUSES = new Set(['running', 'pending', 'in_progress']);
+
+function _isLiveDeepResearchStatus(status: string | null | undefined): boolean {
+  if (!status) return false;
+  return _LIVE_DEEP_RESEARCH_STATUSES.has(status.toLowerCase());
 }
 
 function RawToolResultBlock({ text }: { text: string }) {
@@ -118,6 +127,7 @@ export function StructuredToolResultBody({
   toolMeta,
   toolResult,
   toolRawResult,
+  agentId,
 }: StructuredToolResultBodyProps) {
   const { t } = useTranslation();
   const rawText = typeof toolRawResult === 'string' && toolRawResult.trim() ? toolRawResult : '';
@@ -136,6 +146,10 @@ export function StructuredToolResultBody({
       toolMeta.reportPath ? `${t('agent.chat.toolResults.report', 'Report')}: ${toolMeta.reportPath}` : '',
     ].filter(Boolean);
     const showRawOutput = rawText.length > 0 && rawText !== toolResult;
+    const shouldStreamLive =
+      Boolean(agentId) &&
+      Boolean(toolMeta.taskId) &&
+      _isLiveDeepResearchStatus(toolMeta.status);
     return (
       <div style={{ display: 'grid', gap: '8px' }}>
         <div style={{ display: 'grid', gap: '4px' }}>
@@ -144,6 +158,9 @@ export function StructuredToolResultBody({
           </div>
           {toolMeta.summary && <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{toolMeta.summary}</div>}
         </div>
+        {shouldStreamLive && (
+          <DeepResearchStreamPanel agentId={agentId as string} taskId={toolMeta.taskId as string} />
+        )}
         <StructuredToolSection label={t('agent.chat.toolResults.runState', 'Run State')} items={statRows} />
         <StructuredToolSection label={t('agent.chat.toolResults.qualityGates', 'Quality Gates')} items={gateRows} />
         <StructuredToolSection label={t('agent.chat.toolResults.gaps', 'Gaps')} items={toolMeta.gaps} />
@@ -614,6 +631,7 @@ export default function AgentChatSection({
               toolMeta={msg.toolMeta}
               toolResult={msg.toolResult}
               toolRawResult={msg.toolRawResult}
+              agentId={agent?.id}
             />
           </div>
         )}

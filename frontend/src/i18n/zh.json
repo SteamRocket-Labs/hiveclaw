@@ -490,6 +490,26 @@
       "qualityGates": "质量门槛",
       "gaps": "缺口"
     },
+    "deepResearchStream": {
+      "status": {
+        "idle": "待启动",
+        "streaming": "进行中",
+        "completed": "已完成",
+        "failed": "失败",
+        "aborted": "已中止"
+      },
+      "taskLabel": "任务",
+      "abort": "停止流",
+      "sources": "来源",
+      "claims": "结论",
+      "lanes": "Lane",
+      "steps": "步骤",
+      "heartbeats": "心跳",
+      "latestReflection": "最近反思",
+      "latestControllerStep": "Controller 动作",
+      "reportPreview": "报告预览",
+      "errorLabel": "流错误"
+    },
     "runtime": {
       "model": "模型",
       "remaining": "剩余上下文",

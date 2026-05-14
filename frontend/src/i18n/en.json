@@ -491,6 +491,26 @@
       "qualityGates": "Quality Gates",
       "gaps": "Gaps"
     },
+    "deepResearchStream": {
+      "status": {
+        "idle": "Idle",
+        "streaming": "Streaming",
+        "completed": "Completed",
+        "failed": "Failed",
+        "aborted": "Aborted"
+      },
+      "taskLabel": "Task",
+      "abort": "Stop stream",
+      "sources": "Sources",
+      "claims": "Claims",
+      "lanes": "Lanes",
+      "steps": "Steps",
+      "heartbeats": "Heartbeats",
+      "latestReflection": "Latest reflection",
+      "latestControllerStep": "Controller action",
+      "reportPreview": "Report preview",
+      "errorLabel": "Stream error"
+    },
     "runtime": {
       "model": "Model",
       "remaining": "Context remaining",

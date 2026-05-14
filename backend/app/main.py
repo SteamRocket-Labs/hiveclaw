@@ -31,6 +31,7 @@ from app.api.files import router as files_router
 from app.api.files import upload_router as files_upload_router
 from app.api.gateway import router as gateway_router
 from app.api.guard_policies import router as guard_policies_router
+from app.api.deep_research import router as deep_research_router
 from app.api.llm_proxy import router as llm_proxy_router
 from app.api.memory import router as memory_router
 from app.api.messages import router as messages_router
@@ -464,6 +465,7 @@ _api_routers = [
     role_templates_router,
     tenant_channels_router,
     tools_router,
+    deep_research_router,
 ]
 
 for _r in _api_routers:

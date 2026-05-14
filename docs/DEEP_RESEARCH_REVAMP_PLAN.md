@@ -577,7 +577,7 @@ class DeepResearchController:
 - [x] 控制器 loop 在 token budget 内可自主停止，且 Beast Mode 兜底测试通过 **(test_controller_enters_beast_mode_when_token_budget_exhausted)**
 - [x] 4 个 sub-agent 协作的端到端 trace 可在 RuntimeTask UI 看到 **(controller_trace.jsonl 每条记录 role；Planner/Researcher/Critic/Writer persona 全栈接入 _invoke)**
 - [ ] flagship 模式跑一份对标用例（如"全球稳定币监管框架"），与 dzhng/deep-research + jina node-DeepResearch 各跑一份，人工盲评 Hive ≥ 两者中位数 **(本地实现已 ready，待 Railway 上线 + 人工评测)**
-- [x] 前端能看到逐字符流式输出 **(stream_deep_research_artifacts 异步生成器 + 2 个事件序列单测；SSE FastAPI 路由集成留给前端 PR)**
+- [x] 前端能看到逐字符流式输出 **(2026-05-14 补完整链路: FastAPI SSE 路由 `/api/deep-research/stream/:agent_id/:task_id` + 前端 `streamDeepResearch` async generator + `useDeepResearchStream` React hook + reducer 单测；后端 4 个 + 前端 12 个测试全绿)**
 
 **Tier 3 落地总览 (2026-05-14 完成本地实现)**:
 | 任务 | 关键改动 | 行数 |
@@ -651,7 +651,7 @@ class DeepResearchController:
 | **M6 ✅** | T3-1 LLM-as-controller loop 原型 (本地实现 2026-05-14) | 5 天 | rocky |
 | **M7 ✅** | T3-2 sub-agent 拆分 (persona 栈，未拆物理 Agent；本地实现 2026-05-14) | 5 天 | rocky |
 | **M8 ✅** | T3-3 Jina Reader + 长上下文 (本地实现 2026-05-14) | 3 天 | rocky |
-| **M9 ✅** | T3-4 流式 SSE generator (本地实现 2026-05-14；SSE FastAPI 路由 + 前端联调留给后续 PR) | 3 天 | rocky |
+| **M9 ✅** | T3-4 流式 SSE — generator + FastAPI 路由 + 前端 hook 三层全栈本地实现 (2026-05-14) | 3 天 | rocky |
 | **M10** | T3 灰度上线 + 黄金用例评分 (待 Railway) | 2 天 | rocky |
 
 **关键路径**: M0 → M1 → M2 → M3 → M4。Tier 2 通过黄金用例前，不对外宣传"已对齐开源 SOTA"。

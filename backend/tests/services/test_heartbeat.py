@@ -169,6 +169,20 @@ def test_parse_heartbeat_outcome_none_reply():
     assert score is None
 
 
+def test_format_heartbeat_exception_includes_type_when_message_is_empty():
+    import asyncio
+
+    from app.services.heartbeat import _format_heartbeat_exception
+
+    assert _format_heartbeat_exception(asyncio.TimeoutError()) == "TimeoutError"
+
+
+def test_format_heartbeat_exception_includes_type_and_message():
+    from app.services.heartbeat import _format_heartbeat_exception
+
+    assert _format_heartbeat_exception(ValueError("bad state")) == "ValueError: bad state"
+
+
 def test_parse_heartbeat_outcome_score_capped_at_10():
     from app.services.heartbeat import _parse_heartbeat_outcome
 

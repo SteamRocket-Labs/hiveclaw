@@ -42,6 +42,7 @@ if not _HAS_LARK:
 
 _FEISHU_WS_INITIAL_RETRY_DELAY_SECONDS = 5
 _FEISHU_WS_MAX_RETRY_DELAY_SECONDS = 60
+_FEISHU_WS_CONNECTION_HEALTHCHECK_SECONDS = 30
 _FEISHU_WS_INVALID_CREDENTIALS_CODE = 1000040345
 
 
@@ -53,6 +54,26 @@ def _is_non_retryable_feishu_ws_error(exc: Exception) -> bool:
 
     message = str(exc).lower()
     return "app_id or app_secret is invalid" in message
+
+
+def _describe_client_connection_state(client: Any) -> str:
+    conn = getattr(client, "_conn", None)
+    if conn is None:
+        return "missing"
+    if getattr(conn, "closed", False):
+        return "closed"
+    state = getattr(conn, "state", None)
+    state_name = getattr(state, "name", None)
+    if state_name:
+        return str(state_name).lower()
+    if state is not None:
+        return str(state).lower()
+    return "open"
+
+
+def _is_client_connection_alive(client: Any) -> bool:
+    state = _describe_client_connection_state(client)
+    return state not in {"missing", "closed", "closing"}
 
 
 def _connect_supports_proxy_kwarg(orig_connect) -> bool:
@@ -392,7 +413,10 @@ class FeishuWSManager:
 
                         # Keep this task alive so it doesn't get canceled, and handle reconnections
                         while True:
-                            await asyncio.sleep(3600)  # Keep-alive
+                            await asyncio.sleep(_FEISHU_WS_CONNECTION_HEALTHCHECK_SECONDS)
+                            if not _is_client_connection_alive(client):
+                                state = _describe_client_connection_state(client)
+                                raise ConnectionError(f"Feishu SDK websocket is no longer open ({state})")
                     except Exception as e:
                         if _is_non_retryable_feishu_ws_error(e):
                             error = f"{type(e).__name__}: {e}"

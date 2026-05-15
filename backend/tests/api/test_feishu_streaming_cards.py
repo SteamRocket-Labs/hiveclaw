@@ -114,3 +114,12 @@ def test_feishu_markdown_elements_fallback_to_placeholder_for_empty_text():
     elements = feishu_api._feishu_markdown_elements("", limit=280)
 
     assert elements == [{"tag": "markdown", "content": "..."}]
+
+
+def test_feishu_cardkit_stream_closed_error_is_detected():
+    import app.api.feishu as feishu_api
+
+    assert feishu_api._is_cardkit_stream_closed_error(
+        RuntimeError("Feishu CardKit stream_card_content failed: code=300309, msg=ErrMsg: streaming mode is closed;")
+    )
+    assert not feishu_api._is_cardkit_stream_closed_error(RuntimeError("Feishu CardKit stream timed out"))

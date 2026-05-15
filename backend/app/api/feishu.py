@@ -222,6 +222,11 @@ def _feishu_markdown_elements(
     return elements or [{"tag": "markdown", "content": "..."}]
 
 
+def _is_cardkit_stream_closed_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return "streaming mode is closed" in msg or ("code=300309" in msg and "stream" in msg)
+
+
 def _cache_feishu_sender(agent_id: uuid.UUID, *, open_id: str, user_id: str, name: str, email: str) -> None:
     """Persist a tiny sender cache for downstream name lookup tools."""
     if not open_id or not name:
@@ -1241,6 +1246,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
 
             cardkit_card_id: str | None = None
             cardkit_sequence: int = 0
+            cardkit_stream_disabled = False
             msg_id_for_patch: str | None = None
 
             _reply_target = chat_id if chat_type == "group" and chat_id else sender_open_id
@@ -1419,6 +1425,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
 
             async def _flush_stream(reason: str, force: bool = False):
                 nonlocal _last_flush_time, _last_flushed_hash, cardkit_sequence, _last_flushed_text
+                nonlocal cardkit_stream_disabled
                 if not cardkit_card_id and not msg_id_for_patch:
                     return
                 async with _flush_lock:
@@ -1427,7 +1434,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     if not force and now - _last_flush_time < flush_interval:
                         return
                     accumulated = "".join(_stream_buffer)
-                    if cardkit_card_id:
+                    if cardkit_card_id and not cardkit_stream_disabled:
                         done_visible = _tool_status_done[-_TOOL_STATUS_KEEP_LINES:]
                         running_visible = list(_tool_status_running.values())
                         all_tool_lines = done_visible + running_visible
@@ -1454,6 +1461,12 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                             except asyncio.TimeoutError:
                                 logger.warning(f"[Feishu] CardKit stream timed out, seq={cardkit_sequence}")
                             except Exception as exc:
+                                if _is_cardkit_stream_closed_error(exc):
+                                    cardkit_stream_disabled = True
+                                    logger.warning(
+                                        f"[Feishu] CardKit streaming disabled after server closed stream: {exc}"
+                                    )
+                                    return
                                 logger.warning(f"[Feishu] CardKit stream failed: {exc}")
                     elif msg_id_for_patch:
                         card = _build_card(accumulated, "".join(_thinking_buffer), streaming=True)

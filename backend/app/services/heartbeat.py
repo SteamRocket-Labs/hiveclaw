@@ -76,6 +76,12 @@ _HEARTBEAT_EVOLUTION_CONTEXT_MAX_CHARS = 16_000
 _HEARTBEAT_COMPACT_SUMMARY_MAX_CHARS = 6_000
 
 
+def _format_heartbeat_exception(exc: BaseException) -> str:
+    message = str(exc).strip()
+    exc_type = type(exc).__name__
+    return f"{exc_type}: {message}" if message else exc_type
+
+
 def _heartbeat_content_chars(message: dict) -> int:
     content = message.get("content")
     return len(content) if isinstance(content, str) else 0
@@ -1688,7 +1694,8 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
             )
 
     except Exception as e:
-        logger.error(f"Heartbeat error for agent {agent_id}: {e}", exc_info=True)
+        error_text = _format_heartbeat_exception(e)
+        logger.error(f"Heartbeat error for agent {agent_id}: {error_text}", exc_info=True)
         # CRITICAL: Update last_heartbeat_at even on failure to prevent
         # every-minute storm (if timestamp stays None, agent is always eligible)
         try:
@@ -1711,8 +1718,8 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
             await log_activity(
                 agent_id,
                 "heartbeat",
-                f"Heartbeat crash: {str(e)[:80]}",
-                detail={"outcome_type": "crash", "error": str(e)[:300]},
+                f"Heartbeat crash: {error_text[:80]}",
+                detail={"outcome_type": "crash", "error": error_text[:300]},
             )
         except Exception as log_err:
             logger.debug(f"Failed to log heartbeat crash to activity: {log_err}")
@@ -1723,7 +1730,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                 agent_id,
                 "crash",
                 None,
-                f"crash: {str(e)[:60]}",
+                f"crash: {error_text[:60]}",
                 source="heartbeat",
             )
         except Exception as _evo_crash_err:
@@ -1731,9 +1738,9 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
         await _update_heartbeat_runtime_task(
             runtime_task_id,
             status="failed",
-            result_summary=f"Heartbeat failed: {str(e)[:500]}",
+            result_summary=f"Heartbeat failed: {error_text[:500]}",
             session_id=heartbeat_session_id,
-            metadata_json={"error": str(e)[:1000]},
+            metadata_json={"error": error_text[:1000]},
         )
     finally:
         if lease_held:

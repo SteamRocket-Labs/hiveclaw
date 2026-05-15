@@ -228,6 +228,9 @@ async def test_start_client_keeps_client_registered_after_transient_connect_fail
     status_updates: list[dict] = []
 
     def fake_create_task(coro, name=None):
+        if name is None:
+            coro.close()
+            return SimpleNamespace(done=lambda: True, cancel=lambda: None, name=name)
         scheduled.append(coro)
         return SimpleNamespace(done=lambda: False, cancel=lambda: None, name=name)
 
@@ -263,6 +266,82 @@ async def test_start_client_keeps_client_registered_after_transient_connect_fail
             "connection_status": "transient_error",
             "error": "TimeoutError: ",
         }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_start_client_marks_transient_when_connected_socket_disappears(monkeypatch):
+    import app.services.feishu_ws as feishu_ws
+
+    agent_id = uuid4()
+    scheduled: list[object] = []
+    sleep_calls: list[int] = []
+
+    class _FakeClient:
+        def __init__(self):
+            self.connect_calls = 0
+            self.disconnect_calls = 0
+            self._conn = None
+
+        async def _connect(self):
+            self.connect_calls += 1
+            self._conn = SimpleNamespace(closed=False)
+
+        async def _disconnect(self):
+            self.disconnect_calls += 1
+            self._conn = None
+
+        async def _ping_loop(self):
+            return None
+
+    fake_client = _FakeClient()
+    status_updates: list[dict] = []
+
+    def fake_create_task(coro, name=None):
+        if name is None:
+            coro.close()
+            return SimpleNamespace(done=lambda: True, cancel=lambda: None, name=name)
+        scheduled.append(coro)
+        return SimpleNamespace(done=lambda: False, cancel=lambda: None, name=name)
+
+    async def fake_sleep(delay):
+        sleep_calls.append(delay)
+        if delay == feishu_ws._FEISHU_WS_CONNECTION_HEALTHCHECK_SECONDS:
+            fake_client._conn = None
+            return
+        raise asyncio.CancelledError
+
+    manager = feishu_ws.FeishuWSManager()
+    monkeypatch.setattr(manager, "_create_event_handler", lambda _agent_id: object())
+
+    async def fake_mark_channel_status(agent_id_arg, **kwargs):
+        status_updates.append({"agent_id": agent_id_arg, **kwargs})
+
+    monkeypatch.setattr(manager, "_mark_channel_status", fake_mark_channel_status, raising=False)
+    monkeypatch.setattr(feishu_ws, "_PROXY_PATCH_AVAILABLE", False, raising=False)
+    monkeypatch.setattr(feishu_ws, "lark", SimpleNamespace(LogLevel=SimpleNamespace(INFO="info")))
+    monkeypatch.setattr(feishu_ws, "ws", SimpleNamespace(Client=lambda *_args, **_kwargs: fake_client))
+    monkeypatch.setattr(feishu_ws.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr(feishu_ws.asyncio, "sleep", fake_sleep)
+
+    await manager.start_client(agent_id, "app_id", "app_secret")
+    await scheduled[0]
+
+    assert fake_client.connect_calls == 1
+    assert fake_client.disconnect_calls >= 1
+    assert sleep_calls[:2] == [feishu_ws._FEISHU_WS_CONNECTION_HEALTHCHECK_SECONDS, 5]
+    assert status_updates == [
+        {
+            "agent_id": agent_id,
+            "is_connected": True,
+            "connection_status": "connected",
+        },
+        {
+            "agent_id": agent_id,
+            "is_connected": False,
+            "connection_status": "transient_error",
+            "error": "ConnectionError: Feishu SDK websocket is no longer open (missing)",
+        },
     ]
 
 

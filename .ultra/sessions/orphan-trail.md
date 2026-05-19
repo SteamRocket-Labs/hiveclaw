@@ -4,6 +4,9 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
+- 2026-05-15T17:38Z [sid:51704f95]; branch:main; 4 files (orphan-trail.md, feishu_ws.py, test_feishu_ws.py, +1); last commit: 2aa4ad4 Handle closed CardKit stream errors in Feishu
+- 2026-05-15T16:42Z [sid:cdc78bec]; branch:main; 3 files (orphan-trail.md, feishu_ws.py, test_feishu_ws.py); last commit: 2aa4ad4 Handle closed CardKit stream errors in Feishu
+- 2026-05-15T16:42Z [sid:d919a46e]; branch:main; 2 files (feishu_ws.py, test_feishu_ws.py); last commit: 2aa4ad4 Handle closed CardKit stream errors in Feishu
 - 2026-05-15T04:37Z [sid:dc5d1b5a]; branch:main; 5 files (orphan-trail.md, feishu.py, heartbeat.py, +2); last commit: 660203e T3-4 UI: DeepResearchStreamPanel mounted on running 
 - 2026-05-13T04:28Z [sid:5b1c64f2]; branch:main; 2 files (llm_client.py, test_llm_reasoning_adapter.py); last commit: 52cdd06 Refine Hiveclaw agent instructions
 - 2026-05-11T09:06Z [sid:3b5e07e5]; branch:main; 1 files (orphan-trail.md); last commit: dcbedb9 Scope skill registry uniqueness and visibility by te

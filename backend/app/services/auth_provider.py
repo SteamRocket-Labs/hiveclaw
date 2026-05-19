@@ -23,6 +23,29 @@ FEISHU_USER_INFO_URL = "https://open.feishu.cn/open-apis/authen/v1/user_info"
 FEISHU_APP_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
 
 
+def _get_runtime_settings():
+    from app.config import get_settings as runtime_get_settings
+
+    return runtime_get_settings()
+
+
+def resolve_feishu_redirect_uri(settings_obj=None) -> str:
+    """Return the OAuth callback URL used for both authorize and token exchange."""
+    current_settings = settings_obj or _get_runtime_settings()
+    explicit = (getattr(current_settings, "FEISHU_REDIRECT_URI", "") or "").strip()
+    if explicit:
+        return explicit
+
+    public_base = (
+        (getattr(current_settings, "PUBLIC_BASE_URL", "") or "")
+        or (getattr(current_settings, "BASE_URL", "") or "")
+    ).strip()
+    if not public_base:
+        return ""
+
+    return f"{public_base.rstrip('/')}/api/auth/feishu/callback"
+
+
 class FeishuAuthProvider:
     """Authenticate and bind Feishu users through external identities."""
 
@@ -60,6 +83,14 @@ class FeishuAuthProvider:
         await db.flush()
         return user
 
+    async def get_oauth_config(
+        self,
+        db: AsyncSession,
+        tenant_id: uuid.UUID | None,
+    ) -> dict:
+        """Resolve tenant-first Feishu OAuth config for authorize URLs."""
+        return await self._load_provider_config(db, tenant_id)
+
     async def _ensure_provider(
         self,
         db: AsyncSession,
@@ -94,6 +125,9 @@ class FeishuAuthProvider:
         return provider
 
     async def _load_provider_config(self, db: AsyncSession, tenant_id: uuid.UUID | None) -> dict:
+        current_settings = _get_runtime_settings()
+        redirect_uri = resolve_feishu_redirect_uri(current_settings)
+
         if tenant_id:
             result = await db.execute(
                 select(TenantSetting).where(
@@ -104,16 +138,24 @@ class FeishuAuthProvider:
             setting = result.scalar_one_or_none()
             cfg = setting.value if setting and setting.value else {}
             if cfg.get("app_id") and cfg.get("app_secret"):
+                if not redirect_uri:
+                    raise RuntimeError("Feishu redirect URI not configured")
                 return {
                     "app_id": cfg["app_id"],
                     "app_secret": cfg["app_secret"],
+                    "redirect_uri": redirect_uri,
                     "source": "tenant_setting",
                 }
 
-        if settings.FEISHU_APP_ID and settings.FEISHU_APP_SECRET:
+        app_id = getattr(current_settings, "FEISHU_APP_ID", "") or ""
+        app_secret = getattr(current_settings, "FEISHU_APP_SECRET", "") or ""
+        if app_id and app_secret:
+            if not redirect_uri:
+                raise RuntimeError("Feishu redirect URI not configured")
             return {
-                "app_id": settings.FEISHU_APP_ID,
-                "app_secret": settings.FEISHU_APP_SECRET,
+                "app_id": app_id,
+                "app_secret": app_secret,
+                "redirect_uri": redirect_uri,
                 "source": "global_env",
             }
 
@@ -131,6 +173,10 @@ class FeishuAuthProvider:
 
     async def _exchange_code_for_user(self, config: dict, code: str) -> dict:
         # OAuth v2: exchange code directly with client credentials (no app_access_token needed)
+        redirect_uri = config.get("redirect_uri") or resolve_feishu_redirect_uri()
+        if not redirect_uri:
+            raise RuntimeError("Feishu redirect URI not configured")
+
         async with httpx.AsyncClient(timeout=15) as client:
             token_resp = await client.post(
                 FEISHU_TOKEN_URL_V2,
@@ -139,7 +185,7 @@ class FeishuAuthProvider:
                     "client_id": config["app_id"],
                     "client_secret": config["app_secret"],
                     "code": code,
-                    "redirect_uri": settings.FEISHU_REDIRECT_URI or "",
+                    "redirect_uri": redirect_uri,
                 },
             )
             token_resp.raise_for_status()
@@ -362,4 +408,3 @@ class FeishuAuthProvider:
 
 
 feishu_auth_provider = FeishuAuthProvider()
-

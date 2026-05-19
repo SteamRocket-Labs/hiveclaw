@@ -10,10 +10,12 @@ from loguru import logger
 try:
     import lark_oapi as lark
     import lark_oapi.ws as ws
+    import lark_oapi.ws.client as _lark_ws_client
     _HAS_LARK = True
 except ImportError:
     lark = None  # type: ignore
     ws = None    # type: ignore
+    _lark_ws_client = None  # type: ignore
     _HAS_LARK = False
 
 if _HAS_LARK:
@@ -74,6 +76,16 @@ def _describe_client_connection_state(client: Any) -> str:
 def _is_client_connection_alive(client: Any) -> bool:
     state = _describe_client_connection_state(client)
     return state not in {"missing", "closed", "closing"}
+
+
+def _bind_lark_ws_client_loop_to_current_loop() -> None:
+    """Ensure the SDK schedules its receive loop on uvicorn's running event loop."""
+    if _lark_ws_client is None:
+        return
+    running_loop = asyncio.get_running_loop()
+    if getattr(_lark_ws_client, "loop", None) is not running_loop:
+        _lark_ws_client.loop = running_loop
+        logger.debug("[Feishu WS] Bound lark SDK websocket loop to current running loop")
 
 
 def _connect_supports_proxy_kwarg(orig_connect) -> bool:
@@ -397,6 +409,7 @@ class FeishuWSManager:
                 while True:
                     try:
                         # Internally _connect() opens socket and drops _receive_message_loop() onto the global loop
+                        _bind_lark_ws_client_loop_to_current_loop()
                         if no_proxy_ctx:
                             async with no_proxy_ctx():
                                 await client._connect()

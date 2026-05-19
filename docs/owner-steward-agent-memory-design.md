@@ -229,27 +229,60 @@ first-person soul 应该表达“双重责任”：
 我会先整理事实和替代方案，再请求确认或走审批，而不是私自越界。
 ```
 
-## 6. Stable Memory, Dynamic Attention
+### 5.4 Coordination Primitives
 
-系统需要区分两个概念：
+`principal_stack` 描述了“谁对我有授权”，但当 agent 之间真的协作起来时，还缺一组 runtime 协作原语。否则 `delegating_agent` 只是个 schema 字段，没有实际机制。
 
-```text
-Persistence: 这条信息是否应该长期保留。
-Activation: 这条信息此刻是否应该进入上下文并影响行动。
-```
-
-稳定性和活跃度不能混为一谈。
-
-一条记忆可以很稳定但此刻不重要；也可以是短期信息但此刻极其重要。
-
-因此，memory system 不应该只存一个静态 `importance`。应该存稳定事实和动态激活分数：
+需要 4 个基础原语：
 
 ```text
-Memory = Evidence + Understanding + Activation
+Lease       同一 task 同时只允许一个 agent 持有，TTL 强制释放，
+            防止 A 和 B 重复执行同一委派。
+Signal      thread-aware 异步消息（info / request / response / alert / handoff），
+            让 A 委派 B 后能持续收到进度信号而不必同步等待。
+Checkpoint  agency_charter 的 Confirm First 触发后产生的具名等待对象：
+            approver = owner_user_id；超时自动 escalate 到 company admin。
+Sentinel    长期监视器（webhook / timer / threshold / pattern），命中后
+            可以升级为 Signal 或 Checkpoint。
 ```
 
+这 4 个原语不是新功能，是把 Hive 现有的 delegation + approval + heartbeat trigger 三套机制统一成可组合的 schema。归属：
+
+- `Lease` / `Signal` 落在 `app/agents/coordination.py`
+- `Checkpoint` 落在 `app/services/approval.py`（现有 approval flow 的对象化）
+- `Sentinel` 落在 `app/services/trigger_daemon.py`（现有 trigger 的扩展）
+
+`agency_charter` 的 Full Authority / Confirm First / Never Do 三档，在 runtime 上正好对应：
+
+```text
+Full Authority         -> 申请 Lease -> 执行 -> 写 evidence
+Confirm First          -> 创建 Checkpoint -> 等待 owner 决策或超时 escalate
+Never Do               -> 直接 refuse -> 写 audit
+```
+
+charter 与 coordination 原语之间是 **契约 ↔ 机制** 的关系，不应分开设计。agent 不能在 prompt 里默念“我应该先问”就够了；runtime 必须强制走 coordination 路径，charter zone 决定走哪一个分支。
+
+## 6. Memory Form, Lifecycle, and Attention
+
+系统需要区分四个概念：
+
+```text
+Form        这条信息的写入约束 —— 是否能脱离上下文独立理解。
+Lifecycle   这条信息当前处于试探 / 凝固 / 替代 / 归档哪一档。
+Persistence 这条信息是否应该长期保留。
+Activation  这条信息此刻是否应该进入上下文并影响行动。
+```
+
+四者解耦，否则 memory 系统容易变成无差别压缩。
+
+```text
+Memory = Form + Evidence + Understanding + Lifecycle + Activation
+```
+
+- **Form**：写入时是否符合自包含约束。
 - **Evidence**：发生过什么，来源是什么，可信度如何。
 - **Understanding**：agent 从证据中形成的稳定理解。
+- **Lifecycle**：当前 status 与版本链。
 - **Activation**：在当前目标、关系、风险和时间下，这条记忆有多应该被激活。
 
 衰减应该主要作用在 activation 上，不应该轻易删除 memory。
@@ -258,6 +291,107 @@ Memory = Evidence + Understanding + Activation
 Old memory should become quiet, not disappear.
 Contradicted memory should be versioned, not silently overwritten.
 ```
+
+### 6.1 Form Contract
+
+每条 memory entry 写入时必须是自包含的，否则被 retriever 召回到另一段上下文时会丢失意义，多 agent 跨 session 引用时尤其严重。
+
+强制规则：
+
+```text
+- 禁止代词：用具体主语替换“他/她/这/那”。
+- 禁止相对时间：用绝对时间戳替换“昨天/下周/最近”。
+- 显式 actor / target / location：动作必须有明确执行者和承受者。
+- 数值必须配单位和用途：“1800 元做生育力检查”才完整。
+```
+
+抽取端示例：
+
+```text
+BAD:  He'll ship it tomorrow.
+GOOD: Alice will ship the Q3 pricing draft to procurement on 2026-05-16.
+
+BAD:  用户说不要这样做。
+GOOD: 2026-05-15T14:00 owner (alice@acme) rejected agent's autonomous external reply
+      to vendor X regarding refund.
+```
+
+这条约束应写进 `services/extract_agent.py` 的提取 prompt，并在 `memory/md_store.py` 写入时做 lint。Form Contract 不是为了风格统一，是为了让一条记忆**可跨上下文 / 跨 agent / 跨时间引用**而不失意义。
+
+### 6.2 Lifecycle State Machine
+
+每条 memory entry 是一个状态机，不是一段静态 markdown：
+
+```text
+sketch       agent 主动判断 / dream 提案 / 待验证的早期假设。
+             有 expires_at；未被 feedback_signal 强化则自动 discard。
+active       已凝固，进入默认检索池。
+superseded   被新版本替代；保留可回查，不参与默认检索。
+archived     长期不用，落冷库。
+```
+
+每条 entry 的 frontmatter / metadata 包含：
+
+```text
+id:             unique
+version:        N
+parent_id:      上一版本 id, 可空
+supersedes:     被本条替代的 entry id 列表
+superseded_by:  被哪个新版本替代, 可空
+status:         sketch | active | superseded | archived
+expires_at:     仅 sketch 有
+access_count:   每次被 retriever 命中 +1
+last_accessed:  最近一次命中时间
+```
+
+关键转换规则：
+
+- `sketch -> active`：被 `feedback_signal.reaction=approved` 或 `reinforcement_signal` 达阈值触发。
+- `active -> superseded`：dream 或 heartbeat 产生新版本时，旧版本标 `superseded`，**不删除**。
+- `superseded -> archived`：长期无 access 后冷归档。
+- dream 改 soul.md frozen 段时，产出新版本 entry，旧版本保留可回滚，**owner 审批后才置 `is_latest=true`**。
+
+这条状态机让 §8.3 “frozen vs mutable” 的主张落到具体机制：frozen 不是“禁止改”，是“改必须经过 sketch → owner-approved → active”链路。
+
+新 4 层蒸馏图示（在原 T0/T2/T3/soul 之上加 T1 sketch buffer）：
+
+```text
+T0 raw logs
+  -> T1 sketch buffer  (主动判断 / dream 提案 / 待验证假设)
+  -> T2 learnings      (sketch promoted = active)
+  -> T3 semantic memory
+  -> soul.md           (frozen 段需 owner 审批才 promote)
+```
+
+### 6.3 Retention Formula
+
+`recency / staleness / reinforcement` 不应是抽象 component，应是可计算的 `retention_score`：
+
+```text
+retention(m) =
+    salience(m)                          # 写入时的基线重要性（来自 extractor 评估）
+  * exp(-lambda * delta_t)               # 时间衰减
+  + sigma * sum(1 / days_since_access)   # 访问反哺
+  + rho   * feedback_reinforce           # owner 反馈强化（approved +N，rejected -M）
+```
+
+其中：
+
+```text
+lambda    time decay 常数（按 category 不同：feedback lambda 小，task lambda 大）
+sigma     access boost 系数
+rho       feedback boost 系数
+```
+
+按 `retention_score` 分档：
+
+```text
+hot      >= 0.8      P0 注入候选
+warm     0.3 - 0.8   P1 / P2 评分参与
+cold     < 0.3       不进默认池，仅 explicit query 可召回
+```
+
+`retention_score` 是 §11 dynamic `activation_score` 的**输入**之一，不是 `activation_score` 本身。retention 衡量“是否还应该被记得”，activation 衡量“此刻是否相关”。两者解耦才能避免“记得久 = 被反复激活”这种 feedback loop。
 
 ## 7. Personality Construction
 
@@ -405,6 +539,39 @@ hard form: 做 action preflight / tool risk evaluator，拦高风险动作。
 company form: company charter / tenant policy / audit 决定哪些动作不能仅凭 owner 授权。
 ```
 
+### 9.1 Sensitivity Sub-Axis
+
+`visibility` 这一维不是连续的，而是有 4 档实质门槛。精英员工 agent 在企业 SaaS 下，必须把每条 memory 和每个 action 都标注敏感度——否则 “owner 喜欢周三开会” 和 “owner 银行卡尾号 1234” 会享受同等待遇，进入同一个 retriever 池、被同一个 channel 回显。
+
+| Level | 含义 | 例子 | 默认策略 |
+|---|---|---|---|
+| `PL1_public` | 组织内可共享 | "owner 喜欢早会"、产品定位 | 任意 agent 可见、可跨 channel 回显 |
+| `PL2_pii` | 个人可识别信息 | 邮箱、电话、地址、真名 | 默认 mask；落 typed placeholder；按需 unmask |
+| `PL3_sensitive` | 高敏 / 商业机密 / 健康 / 财务 | "Q3 打算砍 X 业务线"、薪资、合同金额 | 不允许进 soul；不允许跨 agent；不允许 channel 回显 |
+| `PL4_credential` | 凭证类 | 密码、API key、OTP、恢复码 | 零保留；落 PrivacyStore 占位符；不进任何 memory 层 |
+
+写入规范：
+
+```text
+- extract_agent.py 必须先经过 privacy_extractor，给每条 entry 打 sensitivity 标签。
+- T1/T2/T3 frontmatter 加 sensitivity 字段。
+- retriever 读取时，根据 current principal stack 应用 strip：
+    PL4 永远不召回；
+    PL3 仅 direct_owner 在场时召回；
+    PL2 跨 agent 时只传 typed placeholder；
+    PL1 全公开。
+- channel adapter 出站前再过一层 redact，防止 PL3 被 Feishu/Slack 直接外发。
+```
+
+Sensitivity 不是孤立维度，它和 principal stack 天然耦合：
+
+- PL4 默认 owner-only。
+- PL3 默认 owner + company_admin 可见。
+- PL2 跨 delegating agent 时只传 typed placeholder（`<Email_1>` / `<Health_Info_1>` 等），保留语义角色但屏蔽原值。
+- PL1 全公开。
+
+也就是说 sensitivity 是 principal stack 的**另一面**：principal stack 描述“谁能看到我”，sensitivity 描述“我能被谁看到”，两者由同一组策略表决定。
+
 ## 10. Memory Graph
 
 精英员工型 agent 需要图谱式理解，而不只是文件式总结。
@@ -432,6 +599,16 @@ OpenLoop
 AgencyCharter
 CompanyCharter
 FeedbackSignal
+DecisionTrace        # see §12.1: reasoning + alternatives + situational_factors
+Alternative          # decision 时考虑过但未选的方案
+SituationalFactor    # 决策环境特征（owner 在/不在、SLA、客户等级…）
+MemoryVersion        # entry 的版本节点；承载 supersedes 链
+SensitivityLabel     # PL1_public / PL2_pii / PL3_sensitive / PL4_credential
+PrivacyPlaceholder   # typed placeholder（<Email_1> 等）+ PrivacyStore 反向映射
+Lease                # task 互斥锁
+Signal               # agent 间 thread-aware 异步消息
+Checkpoint           # charter Confirm First 触发的具名等待对象
+Sentinel             # webhook / timer / threshold / pattern 监视器
 ```
 
 ### 10.2 Edge Types
@@ -458,6 +635,17 @@ requires_confirmation_for
 governs
 escalates_to
 conflicts_with
+supersedes_entry             # MemoryVersion 之间的版本链
+considered_alternative       # DecisionTrace -> Alternative
+under_situation              # DecisionTrace -> SituationalFactor
+sensitized_as                # 任意 entry -> SensitivityLabel
+masks_to                     # PII 原值 -> PrivacyPlaceholder
+holds_lease                  # Agent -> Lease
+sends_signal                 # Agent -> Signal
+awaits_checkpoint            # Agent -> Checkpoint
+monitored_by                 # Objective / Task -> Sentinel
+promoted_from                # active entry -> sketch 来源
+discarded_by                 # 过期 sketch -> 触发条件
 ```
 
 ### 10.3 Relationship Memory
@@ -519,8 +707,11 @@ activation_score =
   + charter_relevance
   + company_boundary_relevance
   + confidence_weight
+  + retention_score              # §6.3 公式输入
+  + decision_trace_link          # 与近期 decision_trace 关联可提升相关性
   - staleness_penalty
   - contradiction_penalty
+  - sensitivity_strip            # 当前 principal stack 不满足该条 PL 等级 -> 强制压低
 ```
 
 ### 11.1 Component Meaning
@@ -539,38 +730,93 @@ activation_score =
 | `charter_relevance` | 是否落在 Full Authority / Confirm First / Never Do 范围内 |
 | `company_boundary_relevance` | 是否触发 company charter / tenant policy / org approval 的边界 |
 | `confidence_weight` | 证据是否可靠，是否来自工具结果或明确 owner 陈述 |
+| `retention_score` | 来自 §6.3 公式：salience + 时间衰减 + 访问反哺 + feedback 强化 |
+| `decision_trace_link` | 是否与近期 `DecisionTrace` 通过 `refs` / 共享 `situational_factors` 关联 |
 | `staleness_penalty` | 是否可能已经过期 |
 | `contradiction_penalty` | 是否被新证据反证或存在冲突 |
+| `sensitivity_strip` | 当前 principal stack 不满足该条 entry 的 PL 级别 → 强制压低或剔除 |
 
-## 12. Feedback Signal
+## 12. Decision Trace and Feedback Signal
 
-当前 T2 metadata 已有 `w/src/cat/ev/conf/vol/nov/reuse` 这类框架，但 `feedback` 只是 category。
+精英员工的核心特征不是“做对”，而是**能解释为什么这么做**。当前 T2 metadata 只记 `[cat=feedback]`，单向收集 owner 反应；但缺了对称的另一边：agent 当时考虑过什么、为什么这么决定。
 
-需要增加极性与反应：
+把 `DecisionTrace` 和 `FeedbackSignal` 作为**同一条链路**记录。
 
-```text
-[reaction=approved|rejected|questioned|corrected|unclear]
-[polarity=positive|negative|neutral|mixed]
-```
+### 12.1 Decision Trace
 
-这不是为了“记录用户情绪”，而是为了让 agent 学会：
+每次 agent 做了一个非微观的判断（外发消息、状态切换、跨域协作、charter zone 边缘动作、放弃执行），必须留下 decision trace：
 
 ```text
-owner 对这种行为是鼓励、否定、要求更谨慎，还是只是在提供事实。
-如果反馈涉及公司边界，还要区分这是 owner 个人偏好，还是 company policy / organization rule。
+- [2026-05-15T14:00][cat=decision][action=external_reply][zone=confirm_first]
+  reasoning:
+    customer escalation tone implied urgency;
+    owner unavailable in 2h window
+  alternatives_considered:
+    - draft_only_and_wait: rejected (SLA breach risk)
+    - direct_reply_apologize: rejected (commits without owner sign-off)
+  chosen: prepared 2 draft options, escalated to backup approver
+  situational_factors: [owner_traveling, SLA_4h, customer_tier_A]
+  charter_zone: confirm_first
+  preflight: { reversibility: low, representativeness: high,
+               judgment_density: high, visibility: high,
+               domain_specialization: in_charter }
+  sensitivity: PL2_pii
 ```
 
-示例：
+字段：
 
 ```text
-- [2026-05-15][cat=feedback][ev=user_stated][reaction=rejected][polarity=negative]
-  User rejected autonomous external reply; next time prepare draft and ask first.
-
-- [2026-05-15][cat=feedback][ev=user_stated][reaction=approved][polarity=positive]
-  User approved local read-only log sweep before proposing fixes.
+reasoning                  自然语言，为什么这么做
+alternatives_considered    考虑过的备选 + 各自被否的原因
+chosen                     最终执行的动作
+situational_factors        当时的环境特征（人在 / 不在 / SLA / 客户等级 / 心情 / 风险）
+charter_zone               full_authority | confirm_first | never_do
+preflight                  5 维边界轴评分（见 §14.4）
+sensitivity                这次决定本身的 PL 级别
 ```
 
-Heartbeat / dream 后续处理时，`reaction=rejected/corrected` 的信号应优先进入 boundary / blocked_pattern / strategy，而不是只当普通 feedback。
+### 12.2 Feedback Signal
+
+feedback signal 是 owner / company 对某条 decision trace（或其结果）的反应：
+
+```text
+- [2026-05-15T16:30][cat=feedback][refs=decision/abc123]
+  reaction: approved | rejected | questioned | corrected | unclear
+  polarity: positive | negative | neutral | mixed
+  source:   direct_owner | company_admin | downstream_consequence
+  rationale_from_owner: "draft 多准备一种语气更好"   # 可空
+```
+
+不是为了记录用户情绪，而是为了让 agent 学到：
+
+```text
+- 这种 situational_factors 下，owner 认可这种 chosen action。
+- charter 是否需要收紧（从 full_authority -> confirm_first）或放宽。
+- 哪一个 alternative 其实是 owner 偏好的。
+- 反馈来自 owner 个人偏好，还是 company policy / organization rule。
+```
+
+注意 `reaction=unclear` 是一等公民——owner 没有明确表态时，**不要**猜测成 approved 或 rejected，留作 evidence 累积。
+
+### 12.3 Linking and Learning
+
+decision trace 与 feedback signal 通过 `refs` 形成显式链路：
+
+```text
+decision_trace ──refs←── feedback_signal
+                  │
+                  └── 后续 dream 用这条链做 charter calibration
+```
+
+heartbeat / dream 处理时：
+
+- `feedback.reaction = rejected / corrected` → 进 boundary / blocked_pattern / strategy。
+- 相同 `situational_factors` 下重复 `reaction=approved` → 提议把对应动作从 `confirm_first` 升到 `full_authority`。
+- 相同 `situational_factors` 下出现 `reaction=rejected` → 提议把动作从 `full_authority` 降到 `confirm_first`。
+- `reaction=unclear` 不参与升降，仅作 evidence 累积。
+- 当 `feedback.source = company_admin` 与 `direct_owner` 反向时，**优先 company_admin**，并触发 `conflicts_with` 边到 owner 偏好节点。
+
+这套结构让 agent 不仅“被动等反馈”，而是“主动留 trace 等被校准”——这才是精英员工的工作方式：动作前知道自己为什么这么决定，动作后能从反馈里精确改写哪一段判断。
 
 ## 13. Long-Term Goals vs Short-Term Goals
 
@@ -728,6 +974,32 @@ how understanding changed
 
 否则主动性无法变成学习，只会变成随机行为。
 
+### 14.6 Coordination Primitives Runtime
+
+§5.4 定义了 `Lease / Signal / Checkpoint / Sentinel` 四个原语。在 proactive loop 内部，它们的触发时机：
+
+```text
+Observe       订阅相关 Sentinel；轮询 Signal inbox
+Interpret     判断本动作是否需要 Lease（同 task 互斥）
+Prioritize    Checkpoint 等待中的 task 优先级降到 prepare_only
+Prepare       仅本地操作，不需要 Lease
+Preflight     若动作进入 confirm_first，预创建 Checkpoint draft
+Act or Ask    Act -> 申请 Lease -> 执行；
+              Ask -> 提交 Checkpoint + 发 Signal 给 approver
+Record        evidence 关联 Lease / Signal / Checkpoint id
+Update        Checkpoint 超时未响应 -> 自动 escalate 到 company tier
+```
+
+charter zone 到 coordination 原语的映射：
+
+```text
+full_authority   -> lease_acquire -> act -> record
+confirm_first    -> checkpoint_create -> wait -> owner_respond | timeout escalate
+never_do         -> refuse -> audit_log
+```
+
+这把 agency_charter 从“prompt 里的指南”变成“runtime 必经路径”——agent 不能仅靠默念“我应该先问”就够了，runtime 强制走 coordination 原语，charter zone 决定走哪一个分支。**契约（charter） 与 机制（coordination） 在这里合一**。
+
 ## 15. Current Code Shadows
 
 当前系统不是完全没有这些概念，而是“形似神不至”。
@@ -803,6 +1075,100 @@ backend/app/runtime/prompt_sections/executing_actions.py
 - 没有 reversibility / representativeness / judgment_density / visibility / domain_specialization。
 - 也没有把这些维度传入 runtime preflight。
 
+### 15.5 Lifecycle Shadow
+
+已有：
+
+```text
+backend/app/memory/md_store.py
+  写 T2 / T3 markdown 段；rebuild_index 维护 INDEX.md。
+
+backend/app/services/auto_dream.py
+  dream consolidation 直接修改 T3 文件内容（auto_dream.py:117）。
+```
+
+缺口：
+
+- T0 / T2 / T3 entry 没有 `id / version / parent_id / supersedes / superseded_by / status / expires_at / access_count` 字段。
+- dream 是**覆盖式**更新；soul promotion 后无 audit lineage，无法回滚。
+- 没有 sketch 区——agent 主动判断 / dream 提案直接进 active 池，未被 feedback 强化也不会过期。
+- `retriever.py:267` 没有访问反哺：被检索命中的 entry 不会自动累积 `access_count`。
+- `auto_dream.py:229` 只有负面 anti-pattern，缺正向 scoring（novelty / reusability / charter_alignment）。
+
+### 15.6 Decision Trace Shadow
+
+已有：
+
+```text
+backend/app/kernel/engine.py
+  multi-round LLM loop；tool_calls 写入 chat-*.md。
+
+backend/app/services/extract_agent.py
+  T0 -> T2 提取，含 [cat=feedback]。
+```
+
+缺口：
+
+- tool_call 在 `chat-*.md` 里 inline，但**没有结构化** `reasoning / alternatives_considered / situational_factors / charter_zone`。
+- preflight 不存在；5 维边界轴只在 prompt 文字提示，不落 entry。
+- feedback 与具体 decision 之间没有 `refs` 显式链路——retriever 无法把 “owner approved X” 反向定位到那次 X 的当时考虑。
+- dream 只能从“结果”里学，看不到“决策路径”。
+
+### 15.7 Sensitivity Shadow
+
+已有：几乎为零。
+
+```text
+backend/app/memory/user.md
+  存在但与其它 T3 段同等待遇。
+```
+
+缺口：
+
+- 无 PL1–PL4 分级；无 `sensitivity` frontmatter 字段。
+- `services/extract_agent.py` 是单一 LLM call，**没有 privacy_extractor 角色**——PII / 凭证 / 高敏内容直接进 T0 / T2 / T3。
+- 没有 typed placeholder / PrivacyStore 反向映射。
+- channel adapter（feishu / slack / mail）出站前**没有 redact**，PL3 内容可能被直接外发。
+- `retriever.py:267` P0 注入不按 principal stack 应用 strip。
+
+### 15.8 Coordination Shadow
+
+已有：
+
+```text
+backend/app/agents/delegate_to_agent.py
+  同步函数调用 + SessionContext(source="agent", core_tools_only=True)。
+
+backend/app/services/approval.py
+  现有 approval flow（流程式，非对象式）。
+
+backend/app/services/trigger_daemon.py
+  定时 / 事件触发 heartbeat。
+```
+
+缺口：
+
+- 无 `Lease`：两个 agent 接同一 task 会重复执行，没有互斥。
+- 无 `Signal`：A 委派 B 后是同步等待；B 中途想反问 A 没有 thread-aware inbox。
+- `agency_charter` 的 confirm_first 没有落到具名 `Checkpoint` 对象；approval 流程结束后无法被 dream 引用做 charter calibration。
+- `trigger_daemon` 触发后只能跑 heartbeat，**不能升级为 Signal 或 Checkpoint**（缺 Sentinel 抽象）。
+- 没有 timeout → company tier 自动 escalation 通道。
+
+### 15.9 Form Contract Shadow
+
+已有：
+
+```text
+backend/app/services/extract_agent.py
+  free-form markdown 段落抽取。
+```
+
+缺口：
+
+- 没有“禁止代词、禁止相对时间、显式 actor/target/location/数值单位”的写入约束。
+- 多 agent 跨 session 引用某条 learning 时，常因代词或相对时间失去意义。
+- `md_store.py` 写入路径上没有 lint。
+
 ## 16. Engineering Direction
 
 第一阶段不应该推翻现有 T0/T2/T3/soul，而应该把人格构造层、动态认知层和 runtime preflight 接上。
@@ -833,6 +1199,31 @@ backend/app/services/action_preflight.py
 backend/app/services/proactive_employee.py
   Controlled proactive loop: observe, prioritize, prepare, preflight,
   act-or-ask, record evidence.
+
+backend/app/memory/lifecycle_store.py
+  Sketch / active / superseded / archived state machine; version chain;
+  supersedes lineage; expires_at handling for sketches.
+
+backend/app/memory/retention.py
+  Retention formula: salience * exp(-lambda * delta_t) + sigma * access_boost
+  + rho * feedback_reinforce; hot / warm / cold tiering; access_log writer.
+
+backend/app/services/decision_trace.py
+  DecisionTrace schema; reasoning / alternatives_considered / situational_factors
+  capture; refs link to feedback_signal; consume by dream for charter calibration.
+
+backend/app/services/privacy_layer.py
+  PL1-PL4 classifier (privacy_extractor role); typed placeholder substitution;
+  PrivacyStore reverse map; retriever-side strip by principal stack;
+  channel adapter outbound redact.
+
+backend/app/agents/coordination.py
+  Lease + Signal + Checkpoint + Sentinel primitives; charter_zone -> runtime
+  path mapping; timeout -> company tier escalation chain.
+
+backend/app/memory/form_lint.py
+  Self-contained form contract enforcement: no pronouns, no relative time,
+  explicit actor / target / location / units. Used by extract_agent and md_store.
 ```
 
 ### 16.2 Existing Modules To Reconnect
@@ -868,6 +1259,42 @@ backend/app/services/heartbeat.py
 backend/app/services/agent_context.py
   Context should include principal stack, company charter, owner charter, and relationship understanding,
   not only static relationship files.
+
+backend/app/services/t0_logger.py
+  T0 writers must call privacy_layer.classify() before persisting; attach
+  sensitivity frontmatter; enforce form_lint on the rendered entry body.
+
+backend/app/services/extract_agent.py
+  Split into privacy_extractor + learning_extractor; emit form-contract-compliant
+  entries (no pronouns, absolute timestamps); attach sensitivity + lifecycle fields.
+
+backend/app/memory/md_store.py
+  Persist lifecycle frontmatter (id / version / parent_id / supersedes /
+  superseded_by / status / expires_at / access_count); refuse writes that fail
+  form_lint; bump access_count on retriever hits.
+
+backend/app/services/auto_dream.py
+  Stop in-place rewrite of T3 / soul. Produce a new version entry; mark prior
+  entries superseded; emit dream proposals into sketch buffer for owner approval;
+  add positive scoring (novelty / reusability / charter_alignment) next to
+  existing anti-pattern list.
+
+backend/app/services/approval.py
+  Materialize approval flows into Checkpoint objects with approver, deadline,
+  escalation chain; link Checkpoint id back to the originating DecisionTrace.
+
+backend/app/services/trigger_daemon.py
+  Generalize triggers into Sentinel primitives (webhook / timer / threshold /
+  pattern); on fire, choose between Signal injection and Checkpoint creation.
+
+backend/app/agents/delegate_to_agent.py
+  Wrap delegation with Lease acquire; create a Signal channel between caller and
+  callee; surface progress and rollback through Signal rather than synchronous
+  return only.
+
+backend/app/api/feishu*.py, backend/app/api/slack*.py, ... (all channel adapters)
+  Outbound redact pass: never emit PL3 / PL4 content over external channels;
+  PL2 outbound only when typed placeholder unmasking is explicitly authorized.
 ```
 
 ## 17. Implementation Order
@@ -883,6 +1310,12 @@ Goal: make the target explicit without runtime behavior changes.
 - Define `FeedbackSignal` metadata fields.
 - Define `ActionPreflight` decision contract.
 - Define frozen vs mutable soul sections.
+- Define `DecisionTrace` schema (reasoning / alternatives / situational_factors / charter_zone / preflight / sensitivity).
+- Define memory `Lifecycle` fields (id / version / parent_id / supersedes / superseded_by / status / expires_at / access_count).
+- Define `RetentionScore` formula constants (lambda, sigma, rho) per category.
+- Define `SensitivityLabel` set (PL1_public / PL2_pii / PL3_sensitive / PL4_credential) and per-level default policy table.
+- Define `Coordination` primitives schema (Lease / Signal / Checkpoint / Sentinel).
+- Define Form Contract lint rules.
 
 ### Phase 1: HR Creation POC
 
@@ -932,6 +1365,54 @@ Goal: evolve heartbeat from curation-only into controlled proactive employee che
 - Never take unauthorized external-facing or irreversible actions.
 - Record evidence and owner reaction.
 
+### Phase 6: Form Contract
+
+Goal: every memory entry written from now on is self-contained.
+
+- Implement `memory/form_lint.py`.
+- Update extract prompt: no pronouns, absolute timestamps, explicit actor/target/location.
+- Reject writes that fail lint in `md_store.py`.
+- Backfill is **not** required; only enforce going forward.
+
+### Phase 7: Decision Trace and Refined Feedback Link
+
+Goal: agents leave a structured trace for every non-trivial decision; feedback links back to the trace.
+
+- Implement `services/decision_trace.py` and the `DecisionTrace` schema from Phase 0.
+- Have `kernel/engine.py` emit a `DecisionTrace` entry before any `confirm_first` / `external_visible` / `irreversible_or_sensitive` tool call.
+- Extend `extract_agent.py` to attach `refs=decision/<id>` on follow-up feedback signals.
+- Extend `auto_dream.py` to read `decision_trace.refs <- feedback_signal` chains for charter calibration proposals.
+
+### Phase 8: Sensitivity Layer
+
+Goal: every memory entry and every channel-bound action is classified and policy-gated.
+
+- Implement `services/privacy_layer.py` with a `privacy_extractor` role.
+- Add `sensitivity` frontmatter to T0 / T1 / T2 / T3.
+- Implement PrivacyStore + typed placeholder substitution.
+- Apply `sensitivity_strip` in `memory/retriever.py` based on principal stack.
+- Add outbound redact pass to every channel adapter.
+
+### Phase 9: Memory Lifecycle State Machine
+
+Goal: dream and heartbeat stop being destructive; everything is auditable and reversible.
+
+- Implement `memory/lifecycle_store.py` and `memory/retention.py`.
+- Switch `auto_dream.py` from in-place rewrite to new-version + supersedes lineage.
+- Introduce T1 sketch buffer: dream proposals and agent self-judgments land in sketch with `expires_at`.
+- Owner-approved sketches `promote` to active; unapproved ones `discard` on expiry.
+- Hook `retriever` to bump `access_count` / `last_accessed` on hits.
+
+### Phase 10: Coordination Primitives Runtime
+
+Goal: `agency_charter` zones are enforced by runtime, not just prompt.
+
+- Implement `agents/coordination.py` with `Lease / Signal / Checkpoint / Sentinel`.
+- Wrap `delegate_to_agent` with Lease acquire + Signal channel.
+- Object-ify `approval.py` into Checkpoint with deadline + escalation chain.
+- Generalize `trigger_daemon.py` into Sentinel primitives.
+- Map charter zone → coordination path: `full_authority` → Lease+Act, `confirm_first` → Checkpoint, `never_do` → Refuse+Audit.
+
 ## 18. Tests To Write First
 
 ```bash
@@ -947,7 +1428,13 @@ pytest \
   tests/memory/test_activation_scoring.py \
   tests/memory/test_understanding_store.py \
   tests/runtime/test_prompt_memory_activation.py \
-  tests/services/test_proactive_employee.py
+  tests/services/test_proactive_employee.py \
+  tests/services/test_decision_trace.py \
+  tests/memory/test_lifecycle_state_machine.py \
+  tests/memory/test_retention_formula.py \
+  tests/memory/test_form_contract.py \
+  tests/services/test_privacy_layer.py \
+  tests/agents/test_coordination_primitives.py
 ```
 
 Expected coverage:
@@ -964,6 +1451,17 @@ Expected coverage:
 - ambiguous feedback uses `reaction=unclear`, not guessed approval/rejection.
 - first-person soul preserves Agency Charter framing in prompt.
 - heartbeat can propose a proactive employee action without taking unauthorized external action.
+- a `confirm_first` action emits a DecisionTrace with reasoning + at least one alternative considered.
+- feedback_signal with `refs=decision/<id>` correctly links back and influences charter calibration in dream.
+- dream produces a new-version entry and marks the prior entry `superseded` rather than overwriting.
+- a sketch entry expires and is discarded after `expires_at` if not reinforced.
+- retention_score formula returns a hot value for recently-accessed + feedback-approved entries.
+- privacy_extractor classifies a credential as PL4 and the entry never lands in any memory layer.
+- a PL3 entry is suppressed by `sensitivity_strip` when current_user != direct_owner.
+- channel adapter refuses to emit PL3 content even if the agent asks it to.
+- a Form Contract violation (pronoun / relative time) is rejected at md_store write time.
+- two delegations targeting the same task acquire Lease serially, not concurrently.
+- a Checkpoint left unanswered past deadline auto-escalates to company_admin.
 
 ## 19. Open Questions
 
@@ -978,6 +1476,14 @@ Expected coverage:
 | Archetype vs capability pack | Archetype is personality/work style; capability pack is technical ability. How should they coordinate without coupling? |
 | Cross-agent playbook | How to build “同类经验” without leaking tenant data? |
 | Semantic episode closure | Can AgentGal-style topic closure work for enterprise tasks, or should it be objective/result based? |
+| Decision trace granularity | What counts as a “non-trivial” decision worth a trace? Per-tool whitelist, per-zone rule, or LLM self-judgment? |
+| Sketch expiry policy | Default expires_at per archetype, or learned from feedback latency distribution? |
+| Sensitivity false-negative cost | What is the safe-side bias when privacy_extractor is uncertain — escalate to PL3 by default, or to PL2? |
+| Retention constants | Are lambda / sigma / rho global, per-tenant, per-archetype, or learned? How to evaluate without leaking memory drift? |
+| Approval migration | How to migrate the current `services/approval.py` flows into Checkpoint objects without breaking in-flight approvals? |
+| Retriever self-evolution | Should retriever weights be a future `evolution_ledger` action space (EvolveMem-style)? Out of scope for now. |
+| Episode segmentation (enterprise) | Should T0 be sub-segmented per session by topic boundary (MAGMA-style) when one chat covers multiple projects? Out of scope for now. |
+| LLM-planned retrieval | Should `retriever.py` evolve to intent-classification + parallel multi-view + adequacy reflection (SimpleMem-style)? Out of scope for now. |
 
 ## 20. Non-Goals
 
@@ -1003,10 +1509,14 @@ company elite employee cognition system
   = first-person identity
   + company charter
   + owner agency charter
+  + self-contained memory form
+  + memory lifecycle (sketch / active / superseded / archived)
   + dynamic memory activation
   + relationship understanding
-  + feedback learning
-  + action preflight
+  + decision trace + feedback learning
+  + sensitivity layer (PL1 ~ PL4)
+  + action preflight (5-axis)
+  + coordination primitives (Lease / Signal / Checkpoint / Sentinel)
   + controlled proactivity
 ```
 
@@ -1028,6 +1538,11 @@ to: understand owner, company, goals, relationships, boundaries,
 - 主动发现 open loops 和风险；
 - 在权限边界内准备、推进、提醒；
 - 在高风险处停下来请示；
-- 用 evidence 和 owner feedback 更新 understanding，而不是用单次上下文改写自我。
+- 用 evidence 和 owner feedback 更新 understanding，而不是用单次上下文改写自我；
+- 写下来的记忆是自包含的，跨上下文 / 跨 agent 引用不丢意义；
+- 做决定时留下 reasoning + alternatives + situational_factors 的可追溯 trace，反馈通过 refs 链回这条 trace；
+- 每条记忆和每个 action 都有 sensitivity 等级，PL3 / PL4 不会被错误外发；
+- 改变 soul / 改变 charter 必经过 sketch → owner-approved → active 链路，旧版本保留可回滚；
+- agent ↔ agent 协作走 Lease + Signal + Checkpoint，charter zone 决定 runtime 路径，agent 不能仅靠默念契约绕过审批。
 
 这才是“能力很强但有边界感”的 agent。

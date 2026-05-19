@@ -115,6 +115,7 @@ def test_feishu_sso_init_uses_current_oauth_authorize_contract(monkeypatch: pyte
 
     settings = SimpleNamespace(
         FEISHU_APP_ID="cli_test_app_id",
+        FEISHU_APP_SECRET="secret",
         FEISHU_REDIRECT_URI="https://example.com/api/auth/feishu/callback",
     )
     monkeypatch.setattr("app.config.get_settings", lambda: settings)
@@ -160,6 +161,35 @@ def test_feishu_bind_init_returns_503_when_platform_env_missing(monkeypatch: pyt
 
     assert response.status_code == 503
     assert "not configured" in response.json()["detail"].lower()
+
+
+def test_feishu_bind_init_uses_tenant_oauth_config_when_platform_env_missing(monkeypatch: pytest.MonkeyPatch):
+    """Tenant Feishu settings are the source of truth in multi-tenant production."""
+    tenant_id = uuid4()
+    current_user = _fake_user(tenant_id)
+    tenant_setting = SimpleNamespace(value={"app_id": "tenant_app_id", "app_secret": "tenant_secret"})
+    db = _FakeDB(execute_results=[tenant_setting])
+    app = _build_app(db, current_user=current_user)
+
+    settings = SimpleNamespace(
+        FEISHU_APP_ID="",
+        FEISHU_APP_SECRET="",
+        FEISHU_REDIRECT_URI="",
+        PUBLIC_BASE_URL="https://backend.example.com",
+        BASE_URL="",
+    )
+    monkeypatch.setattr("app.config.get_settings", lambda: settings)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.post("/auth/feishu/bind/init")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "client_id=tenant_app_id" in payload["authorize_url"]
+    assert "redirect_uri=https%3A%2F%2Fbackend.example.com%2Fapi%2Fauth%2Ffeishu%2Fcallback" in payload["authorize_url"]
+    assert db.added[0].tenant_id == tenant_id
+    assert db.added[0].user_id == current_user.id
+    assert db.added[0].status == "pending_bind"
 
 
 def test_feishu_sso_init_returns_503_when_only_redirect_uri_missing(monkeypatch: pytest.MonkeyPatch):

@@ -307,6 +307,26 @@ async def _resolve_feishu_sender_profile(
 FEISHU_AUTHORIZE_URL = "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
 
 
+async def _resolve_feishu_oauth_authorize_config(db: AsyncSession, tenant_id: uuid.UUID | None) -> tuple[str, str]:
+    """Resolve the OAuth app and callback URL for authorize-url generation."""
+    try:
+        config = await feishu_auth_provider.get_oauth_config(db, tenant_id)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Feishu SSO not configured on this deployment",
+        ) from exc
+
+    app_id = (config.get("app_id") or "").strip()
+    redirect_uri = (config.get("redirect_uri") or "").strip()
+    if not app_id or not redirect_uri:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Feishu SSO not configured on this deployment",
+        )
+    return app_id, redirect_uri
+
+
 @router.get("/auth/feishu/sso/available")
 async def feishu_sso_available():
     """Check if Feishu SSO login is available (app configured)."""
@@ -324,20 +344,7 @@ async def feishu_sso_init(
     from datetime import datetime, timedelta, timezone
     from urllib.parse import urlencode
 
-    from app.config import get_settings
-
-    _settings = get_settings()
-    # FEISHU_APP_ID / FEISHU_REDIRECT_URI are *platform* deployment settings
-    # (not per-tenant admin config). If missing, the deployment itself has no
-    # Feishu ISV app registered — detect here instead of shipping an empty
-    # client_id= URL that Feishu rejects as "app_id 请求不合法" (20028).
-    app_id = _settings.FEISHU_APP_ID
-    redirect_uri = _settings.FEISHU_REDIRECT_URI
-    if not app_id or not redirect_uri:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Feishu SSO not configured on this deployment",
-        )
+    app_id, redirect_uri = await _resolve_feishu_oauth_authorize_config(db, tenant_id)
 
     session = SSOScanSession(
         id=uuid.uuid4(),
@@ -396,18 +403,7 @@ async def feishu_bind_init(
     from datetime import datetime, timedelta, timezone
     from urllib.parse import urlencode
 
-    from app.config import get_settings
-
-    _settings = get_settings()
-    # Same platform-level preflight as sso/init — missing env = deployment
-    # hasn't registered with Feishu; don't ship broken URLs.
-    app_id = _settings.FEISHU_APP_ID
-    redirect_uri = _settings.FEISHU_REDIRECT_URI
-    if not app_id or not redirect_uri:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Feishu SSO not configured on this deployment",
-        )
+    app_id, redirect_uri = await _resolve_feishu_oauth_authorize_config(db, current_user.tenant_id)
 
     session = SSOScanSession(
         id=uuid.uuid4(),

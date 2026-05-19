@@ -85,6 +85,29 @@ type EventPart = {
 };
 
 const RUNTIME_EVENT_TYPES = new Set<RuntimeEventType>(['permission', 'session_compact', 'pack_activation', 'team_memory']);
+const RAW_COMPACTION_SECTION_LABELS = [
+  'Task Ledger',
+  'Decision Ledger',
+  'Artifact Ledger',
+  'Tool Ledger',
+  'Preference Ledger',
+  'Pending Ledger',
+  'Primary Request and Intent',
+  'Key Technical Decisions',
+  'Files and Code Sections',
+  'Problem Solving',
+  'Errors and Fixes',
+  'All User Messages',
+  'User Preferences',
+  'Tool Outcomes',
+  'Pending Tasks',
+  'Current Work',
+  'Recovery Context',
+];
+const RAW_COMPACTION_SECTION_PATTERN = RAW_COMPACTION_SECTION_LABELS
+  .map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  .join('|');
+const RAW_COMPACTION_SECTION_RE = new RegExp(`^\\*\\*(${RAW_COMPACTION_SECTION_PATTERN}):\\*\\*`, 'gim');
 
 function isRuntimeEventType(value: unknown): value is RuntimeEventType {
   return typeof value === 'string' && RUNTIME_EVENT_TYPES.has(value as RuntimeEventType);
@@ -104,6 +127,106 @@ function normalizePackNames(packs: EventPart['packs'] | undefined): string[] | u
     .map((pack) => (typeof pack === 'string' ? pack : pack?.name))
     .filter((name): name is string => Boolean(name));
   return names.length > 0 ? names : undefined;
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'string' || !value.trim().startsWith('{')) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isRawCompactionSummaryContent(content: unknown): content is string {
+  if (typeof content !== 'string') return false;
+  const text = content.trim();
+  if (!text) return false;
+  RAW_COMPACTION_SECTION_RE.lastIndex = 0;
+  const sectionCount = Array.from(text.matchAll(RAW_COMPACTION_SECTION_RE)).length;
+  return sectionCount >= 2 && /\*\*Recovery Context:\*\*/i.test(text);
+}
+
+function extractCompactionSection(content: string, label: string): string {
+  const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const sectionRe = new RegExp(
+    `\\*\\*${escapedLabel}:\\*\\*\\s*([\\s\\S]*?)(?=\\n\\*\\*(?:${RAW_COMPACTION_SECTION_PATTERN}):\\*\\*|$)`,
+    'i',
+  );
+  const match = content.match(sectionRe);
+  if (!match) return '';
+  return cleanCompactionSection(match[1]);
+}
+
+function cleanCompactionSection(value: string): string {
+  const cleaned = value
+    .replace(/\*\[Generation stopped\]\*/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned || cleaned === '-' || /^\(?none captured\)?$/i.test(cleaned) || /^\(?unknown\)?$/i.test(cleaned)) {
+    return '';
+  }
+  return cleaned;
+}
+
+function truncateVisibleSummary(value: string, maxLength = 260): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength - 3).trimEnd()}...`;
+}
+
+function getEmbeddedRuntimeEventPayload(payload: any): Record<string, unknown> | null {
+  const jsonEvent = payload?.role === 'system' ? parseJsonObject(payload?.content) : null;
+  const jsonEventType = jsonEvent?.event_type || jsonEvent?.type;
+  if (isRuntimeEventType(jsonEventType)) {
+    return {
+      ...jsonEvent,
+      type: jsonEventType,
+      timestamp: payload?.timestamp,
+      created_at: payload?.created_at,
+      id: payload?.id,
+      sender_name: payload?.sender_name,
+      participant_id: payload?.participant_id,
+    };
+  }
+
+  if ((payload?.role === 'assistant' || payload?.role === 'event') && isRawCompactionSummaryContent(payload?.content)) {
+    return {
+      type: 'session_compact',
+      title: 'Context Compacted',
+      summary: payload.content,
+      timestamp: payload?.timestamp,
+      created_at: payload?.created_at,
+      id: payload?.id,
+      sender_name: payload?.sender_name,
+      participant_id: payload?.participant_id,
+    };
+  }
+
+  return null;
+}
+
+export function getCompactionDisplayContent(content: string): {
+  compacted: boolean;
+  visible: string;
+  details: string | null;
+} {
+  const text = typeof content === 'string' ? content.trim() : '';
+  if (!isRawCompactionSummaryContent(text)) {
+    return { compacted: false, visible: text, details: null };
+  }
+
+  const visible =
+    extractCompactionSection(text, 'Current Work') ||
+    extractCompactionSection(text, 'Primary Request and Intent') ||
+    extractCompactionSection(text, 'Task Ledger') ||
+    extractCompactionSection(text, 'Pending Tasks');
+
+  return {
+    compacted: true,
+    visible: truncateVisibleSummary(visible),
+    details: text,
+  };
 }
 
 export function computeComposerHeight(scrollHeight: number): number {
@@ -201,7 +324,11 @@ export function getRuntimeEventMessage(payload: any): AgentChatMessage | null {
     role: 'event',
     content,
     eventType,
-    eventTitle: payload?.eventTitle || payload?.title || part?.title,
+    eventTitle:
+      payload?.eventTitle ||
+      payload?.title ||
+      part?.title ||
+      (eventType === 'session_compact' ? 'Context Compacted' : undefined),
     eventStatus: payload?.eventStatus || payload?.status || part?.status || 'info',
     eventToolName: payload?.eventToolName || payload?.tool_name || part?.tool_name,
     eventApprovalId: payload?.eventApprovalId || payload?.approval_id || part?.approval_id,
@@ -235,8 +362,14 @@ export function getRuntimeEventMessage(payload: any): AgentChatMessage | null {
   };
 }
 
+export function normalizeRuntimeEventMessage(payload: any): AgentChatMessage | null {
+  const embeddedPayload = getEmbeddedRuntimeEventPayload(payload);
+  if (embeddedPayload) return getRuntimeEventMessage(embeddedPayload);
+  return getRuntimeEventMessage(payload);
+}
+
 export function normalizeStoredChatMessage(payload: any): AgentChatMessage {
-  const eventMessage = getRuntimeEventMessage(payload);
+  const eventMessage = normalizeRuntimeEventMessage(payload);
   if (eventMessage) return eventMessage;
 
   if (payload?.role === 'tool_call') {

@@ -7,6 +7,7 @@ import DeepResearchStreamPanel from './DeepResearchStreamPanel';
 import type { ToolCallMeta } from './toolResultEnvelope';
 import {
   computeComposerHeight,
+  getCompactionDisplayContent,
   type AgentChatMessage,
   type ChatRuntimeSummary,
 } from './chatRuntime';
@@ -369,6 +370,7 @@ export default function AgentChatSection({
       if (msg.eventCapability) metaParts.push(msg.eventCapability);
       if (msg.eventSecurityZone) metaParts.push(`zone:${msg.eventSecurityZone}`);
       if (msg.eventApprovalId) metaParts.push(`approval:${msg.eventApprovalId}`);
+      const compactionDisplay = msg.eventType === 'session_compact' ? getCompactionDisplayContent(msg.content) : null;
 
       return (
         <div key={`event-${index}`} style={{ paddingLeft: '36px', marginBottom: '8px' }}>
@@ -386,7 +388,30 @@ export default function AgentChatSection({
                 {msg.eventTitle || t('agent.chat.runtime.eventTitle', 'Runtime Event')}
               </span>
             </div>
-            <div style={{ fontSize: '12px', lineHeight: 1.6, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+            {compactionDisplay?.compacted ? (
+              <div style={{ display: 'grid', gap: '6px' }}>
+                <div style={{ fontSize: '12px', lineHeight: 1.6, color: 'var(--text-secondary)' }}>
+                  {t('agent.chat.runtime.compactedNotice', 'Context was compressed. The active working state was preserved.')}
+                </div>
+                {compactionDisplay.visible && (
+                  <div style={{ fontSize: '12px', lineHeight: 1.6, color: 'var(--text-tertiary)', whiteSpace: 'pre-wrap' }}>
+                    {compactionDisplay.visible}
+                  </div>
+                )}
+                {compactionDisplay.details && (
+                  <details style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                    <summary style={{ cursor: 'pointer', userSelect: 'none' }}>
+                      {t('agent.chat.runtime.compactionDetails', 'Show compression details')}
+                    </summary>
+                    <div style={{ marginTop: '6px' }}>
+                      <RawToolResultBlock text={compactionDisplay.details} />
+                    </div>
+                  </details>
+                )}
+              </div>
+            ) : (
+              <div style={{ fontSize: '12px', lineHeight: 1.6, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+            )}
             {(msg.eventReason || msg.eventNextStep) && (
               <div style={{ marginTop: '8px', fontSize: '11px', color: 'var(--text-tertiary)', lineHeight: 1.6 }}>
                 {msg.eventReason && <div>{msg.eventReason}</div>}

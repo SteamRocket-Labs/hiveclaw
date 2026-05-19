@@ -520,6 +520,8 @@
       "showTrace": "显示技术详情",
       "hideTrace": "隐藏技术详情",
       "eventTitle": "系统事件",
+      "compactedNotice": "上下文已自动压缩，当前工作状态已保留。",
+      "compactionDetails": "显示压缩详情",
       "compactionMeta": "保留 {{kept}} / {{original}} 条消息"
     }
     },

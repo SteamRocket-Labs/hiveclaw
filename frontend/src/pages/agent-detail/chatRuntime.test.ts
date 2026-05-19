@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildRuntimeSummary,
   computeComposerHeight,
+  getCompactionDisplayContent,
   getRuntimeEventMessage,
   getTransportNotice,
   normalizeStoredChatMessage,
@@ -101,6 +102,66 @@ describe('chatRuntime helpers', () => {
       keptMessageCount: 8,
       timestamp: '2026-04-02T10:00:00Z',
     });
+  });
+
+  it('normalizes persisted system compaction events from JSON content', () => {
+    const message = normalizeStoredChatMessage({
+      role: 'system',
+      content: JSON.stringify({
+        type: 'session_compact',
+        summary: 'Compacted older turns and kept the active work context.',
+        original_message_count: 42,
+        kept_message_count: 9,
+        continuity_sections_injected: ['Current Work'],
+      }),
+      created_at: '2026-05-18T08:00:00Z',
+    });
+
+    expect(message).toMatchObject({
+      role: 'event',
+      eventType: 'session_compact',
+      eventTitle: 'Context Compacted',
+      content: 'Compacted older turns and kept the active work context.',
+      originalMessageCount: 42,
+      keptMessageCount: 9,
+      continuitySectionsInjected: ['Current Work'],
+      timestamp: '2026-05-18T08:00:00Z',
+    });
+  });
+
+  it('normalizes legacy assistant recovery summaries into compaction events', () => {
+    const message = normalizeStoredChatMessage({
+      role: 'assistant',
+      content: [
+        '**Primary Request and Intent:** Repair the web chat after context compression.',
+        '**Tool Outcomes:** Search ran successfully.',
+        '**Current Work:** Hide the recovery summary from the default chat transcript.',
+        '**Recovery Context:** Raw session log available at logs/ for full detail',
+      ].join('\n'),
+      created_at: '2026-05-18T08:05:00Z',
+    });
+
+    expect(message).toMatchObject({
+      role: 'event',
+      eventType: 'session_compact',
+      eventTitle: 'Context Compacted',
+      content: expect.stringContaining('Hide the recovery summary'),
+      timestamp: '2026-05-18T08:05:00Z',
+    });
+  });
+
+  it('keeps raw compaction summaries out of the default visible event body', () => {
+    const display = getCompactionDisplayContent([
+      '**Primary Request and Intent:** Repair the web chat after context compression.',
+      '**Tool Outcomes:** Search ran successfully.',
+      '**Current Work:** Hide the recovery summary from the default chat transcript while preserving details.',
+      '**Recovery Context:** Raw session log available at logs/ for full detail',
+    ].join('\n'));
+
+    expect(display.compacted).toBe(true);
+    expect(display.visible).toBe('Hide the recovery summary from the default chat transcript while preserving details.');
+    expect(display.visible).not.toContain('Recovery Context');
+    expect(display.details).toContain('Recovery Context');
   });
 
   it('clamps composer height to the configured min and max', () => {

@@ -97,7 +97,7 @@ these tools, not just describe them.
 ### Wiki
 | Tool | Purpose | Key Params |
 |------|---------|------------|
-| `feishu_wiki_list` | List wiki sub-pages | `node_token` (from /wiki/ URL), optional `recursive` |
+| `feishu_wiki_list` | List wiki pages | `node_token` (page URL/token or `/wiki/space/<space_id>` URL), optional `space_id`, optional `recursive` |
 
 ### Sheets
 | Tool | Purpose | Key Params |
@@ -244,6 +244,7 @@ Output: new field name + Base URL, confirmed by tool response.
 
 ### Read Before Write
 - Discover structure first: `feishu_base_field_list` before `feishu_base_record_upsert`, `feishu_sheet_info` before `feishu_sheet_read`, `feishu_wiki_list` before `feishu_doc_read`
+- For Feishu Wiki, sharing one page does not imply access to the whole knowledge space. If `feishu_wiki_list` reports permission/listing issues, ask for space membership or concrete page links.
 - Use real tokens/IDs from tool responses. Feishu URLs can be passed directly to doc/sheet tools — they parse the token automatically
 - For `feishu_doc_share`, always include the `action` parameter (`add`/`remove`/`list`)
 - For approvals, ask the user for the real `approval_code` when it's unknown

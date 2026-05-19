@@ -13,7 +13,7 @@ type RelationshipEditorProps = {
   readOnly?: boolean;
 };
 
-export default function RelationshipEditor({ agentId, agent }: RelationshipEditorProps) {
+export default function RelationshipEditor({ agentId, agent, readOnly = false }: RelationshipEditorProps) {
   const { t } = useTranslation();
   const qc = useQueryClient();
 
@@ -27,7 +27,7 @@ export default function RelationshipEditor({ agentId, agent }: RelationshipEdito
   const { data: fetchedUsers = [] } = useQuery({
     queryKey: ['users', tenantId],
     queryFn: () => usersApi.list(tenantId) as Promise<any[]>,
-    enabled: !!tenantId,
+    enabled: !!tenantId && !readOnly,
   });
   // If user list is empty (member 403), at least include the current user
   const users = fetchedUsers.length > 0 ? fetchedUsers
@@ -45,6 +45,7 @@ export default function RelationshipEditor({ agentId, agent }: RelationshipEdito
     : null;
 
   const handleBind = async (userId: string) => {
+    if (readOnly) return;
     setBinding(true);
     try {
       await put(`/agents/${agentId}/owner`, { owner_user_id: userId });
@@ -57,6 +58,7 @@ export default function RelationshipEditor({ agentId, agent }: RelationshipEdito
   };
 
   const handleUnbind = async () => {
+    if (readOnly) return;
     if (!confirm(t('agent.relationships.confirmUnbind'))) return;
     setBinding(true);
     try {
@@ -86,30 +88,36 @@ export default function RelationshipEditor({ agentId, agent }: RelationshipEdito
                 {ownerUser.email} &middot; {t('agent.relationships.tokenCountOwner')}
               </div>
             </div>
-            <button className="btn btn-ghost" style={{ fontSize: '12px', color: 'var(--error)' }} onClick={handleUnbind} disabled={binding}>
-              {t('agent.relationships.unbind')}
-            </button>
+            {!readOnly && (
+              <button className="btn btn-ghost" style={{ fontSize: '12px', color: 'var(--error)' }} onClick={handleUnbind} disabled={binding}>
+                {t('agent.relationships.unbind')}
+              </button>
+            )}
           </div>
         ) : agent?.owner_user_id ? (
           <div style={{ fontSize: '12px', color: 'var(--text-secondary)', padding: '8px 0' }}>
             {t('agent.relationships.boundTo')} (ID: {agent.owner_user_id})
-            <button className="btn btn-ghost" style={{ fontSize: '12px', color: 'var(--error)', marginLeft: '8px' }} onClick={handleUnbind} disabled={binding}>
-              {t('agent.relationships.unbind')}
-            </button>
+            {!readOnly && (
+              <button className="btn btn-ghost" style={{ fontSize: '12px', color: 'var(--error)', marginLeft: '8px' }} onClick={handleUnbind} disabled={binding}>
+                {t('agent.relationships.unbind')}
+              </button>
+            )}
           </div>
         ) : (
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '8px 0' }}>
             <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', flex: 1 }}>
               {t('agent.relationships.noOwner')}
             </div>
-            <button className="btn btn-primary" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={() => setShowPicker(true)} disabled={binding}>
-              {t('agent.relationships.bindEmployee')}
-            </button>
+            {!readOnly && (
+              <button className="btn btn-primary" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={() => setShowPicker(true)} disabled={binding}>
+                {t('agent.relationships.bindEmployee')}
+              </button>
+            )}
           </div>
         )}
 
         {/* User picker */}
-        {showPicker && (
+        {showPicker && !readOnly && (
           <div style={{ marginTop: '12px', padding: '12px', borderRadius: '8px', background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)' }}>
             <div style={{ fontSize: '12px', fontWeight: 500, marginBottom: '8px' }}>
               {t('agent.relationships.selectEmployee')}

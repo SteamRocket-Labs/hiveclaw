@@ -117,3 +117,80 @@ async def test_feishu_wiki_list_prefers_cli_when_available(monkeypatch: pytest.M
     assert "Child A" in result
     assert "child-a" in result
     assert "<tool_error>" not in result
+
+
+@pytest.mark.asyncio
+async def test_feishu_wiki_list_accepts_space_url_with_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.agent_tool_domains import feishu_wiki
+
+    async def fake_cli_available() -> bool:
+        return True
+
+    async def fake_cli_api_request(method: str, path: str, *, params=None, body=None):
+        assert method == "GET"
+        assert path == "/open-apis/wiki/v2/spaces/7641410841677564878/nodes"
+        assert params == {"page_size": 50}
+        assert body is None
+        return {
+            "code": 0,
+            "data": {
+                "items": [
+                    {
+                        "title": "运营报告",
+                        "node_token": "wiki-page-token",
+                        "obj_token": "doc-token",
+                        "has_child": False,
+                    }
+                ]
+            },
+        }
+
+    monkeypatch.setattr(feishu_wiki, "_feishu_cli_available", fake_cli_available)
+    monkeypatch.setattr(feishu_wiki, "_feishu_cli_api_request", fake_cli_api_request)
+
+    result = await feishu_wiki._feishu_wiki_list(
+        "agent-1",
+        {"node_token": "https://example.feishu.cn/wiki/space/7641410841677564878"},
+    )
+
+    assert "知识库空间 `7641410841677564878`" in result
+    assert "运营报告" in result
+    assert "wiki-page-token" in result
+
+
+@pytest.mark.asyncio
+async def test_feishu_wiki_list_surfaces_cli_listing_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.agent_tool_domains import feishu_wiki
+
+    responses = [
+        {
+            "code": 0,
+            "data": {
+                "node": {
+                    "obj_token": "doc-123",
+                    "origin_space_id": "space-1",
+                    "has_child": True,
+                    "title": "Root",
+                    "node_token": "wiki-node",
+                }
+            },
+        },
+        {"code": 131403, "msg": "permission denied"},
+    ]
+
+    async def fake_cli_available() -> bool:
+        return True
+
+    async def fake_cli_api_request(method: str, path: str, *, params=None, body=None):
+        assert method == "GET"
+        assert body is None
+        return responses.pop(0)
+
+    monkeypatch.setattr(feishu_wiki, "_feishu_cli_available", fake_cli_available)
+    monkeypatch.setattr(feishu_wiki, "_feishu_cli_api_request", fake_cli_api_request)
+
+    result = await feishu_wiki._feishu_wiki_list("agent-1", {"node_token": "wiki-node"})
+
+    assert "无法列出 Wiki 节点" in result
+    assert "permission denied" in result
+    assert "只分享了知识库里的单个页面" in result

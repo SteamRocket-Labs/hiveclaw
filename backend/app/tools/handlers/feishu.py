@@ -44,25 +44,30 @@ async def _check_feishu_cli_access() -> bool:
 @tool(ToolMeta(
     name="feishu_wiki_list",
     description=(
-        "List all sub-pages (child nodes) of a Feishu Wiki (\u77e5\u8bc6\u5e93) page. "
-        "Works with wiki URLs like 'https://xxx.feishu.cn/wiki/NodeToken'. "
-        "Use this when a wiki page has child pages you need to explore. "
+        "List visible pages in a Feishu Wiki (\u77e5\u8bc6\u5e93). "
+        "Works with wiki page URLs like 'https://xxx.feishu.cn/wiki/NodeToken' "
+        "and wiki space URLs like 'https://xxx.feishu.cn/wiki/space/SpaceId'. "
+        "Use a page URL/node token to list its child pages, or a space URL/space_id to list root pages. "
         "Returns titles, node_tokens, and obj_tokens for each sub-page. "
-        "Each sub-page can then be read with feishu_doc_read using its node_token."
+        "Each page can then be read with feishu_doc_read using its node_token."
     ),
     parameters={
         "type": "object",
         "properties": {
             "node_token": {
                 "type": "string",
-                "description": "Wiki node token from the URL, e.g. 'HrGawgXxLiqoS5kT6pUczya3nEc' from 'https://xxx.feishu.cn/wiki/HrGawgXxLiqoS5kT6pUczya3nEc'",
+                "description": "Wiki node token/page URL, or a wiki space URL like 'https://xxx.feishu.cn/wiki/space/7641410841677564878'",
+            },
+            "space_id": {
+                "type": "string",
+                "description": "Optional wiki space ID when you want to list root pages of a knowledge base space.",
             },
             "recursive": {
                 "type": "boolean",
                 "description": "If true, also list sub-pages of sub-pages (up to 2 levels deep). Default false.",
             },
         },
-        "required": ["node_token"],
+        "required": [],
     },
     category="feishu",
     display_name="Feishu Wiki List",

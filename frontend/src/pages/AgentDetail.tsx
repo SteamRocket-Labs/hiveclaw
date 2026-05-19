@@ -21,6 +21,7 @@ import {
     buildRuntimeSummary,
     getRuntimeEventMessage,
     getTransportNotice,
+    normalizeRuntimeEventMessage,
     normalizeStoredChatMessage,
     type AgentChatMessage,
     type ChatRuntimeSummary,
@@ -451,6 +452,8 @@ function AgentDetailInner() {
         };
     };
     const parseChatMsg = (msg: AgentChatMessage): AgentChatMessage => {
+        const runtimeEvent = normalizeRuntimeEventMessage(msg);
+        if (runtimeEvent) return runtimeEvent;
         if (msg.role === 'tool_call') return normalizeToolCallMessage(msg);
         if (msg.role !== 'user') return msg;
         let parsed = { ...msg };

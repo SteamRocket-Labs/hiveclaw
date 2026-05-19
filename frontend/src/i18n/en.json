@@ -521,6 +521,8 @@
       "showTrace": "Show technical details",
       "hideTrace": "Hide technical details",
       "eventTitle": "System Event",
+      "compactedNotice": "Context was compressed. The active working state was preserved.",
+      "compactionDetails": "Show compression details",
       "compactionMeta": "Kept {{kept}} of {{original}} messages"
     }
     },

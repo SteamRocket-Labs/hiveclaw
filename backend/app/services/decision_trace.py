@@ -89,6 +89,9 @@ class DecisionTraceStore:
         ref = f"decision/{decision_id}"
         return [feedback for feedback in self._feedback if feedback.refs == ref]
 
+    def decisions(self) -> list[DecisionTrace]:
+        return list(self._decisions.values())
+
     def calibration_candidates(self) -> list[dict[str, str]]:
         candidates: list[dict[str, str]] = []
         for feedback in self._feedback:
@@ -107,4 +110,3 @@ class DecisionTraceStore:
                 }
             )
         return candidates
-

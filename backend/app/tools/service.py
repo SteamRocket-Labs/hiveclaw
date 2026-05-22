@@ -12,6 +12,16 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from app.services.action_preflight import (
+    ActionPreflightInput,
+    ActionPreflightResult,
+    ActionPreflightService,
+    BoundaryAxisLevel,
+    CharterZone,
+    PreflightDecision,
+)
+from app.services.decision_trace import DecisionTraceStore
+from app.services.privacy_layer import PrivacyLayer
 from app.tools.governance import EventCallback, GovernanceDependencies, ToolGovernanceContext
 from app.tools.result_envelope import render_tool_error
 from app.tools.runtime import ToolExecutionContext, ToolExecutionRegistry, ToolExecutionRequest
@@ -28,6 +38,22 @@ ActivityLogger = Callable[..., Awaitable[None] | None]
 EnsureRegistry = Callable[[], None]
 
 _TOOL_ERROR_PAYLOAD_RE = re.compile(r"<tool_error>(.*?)</tool_error>", re.DOTALL)
+_EXTERNAL_VISIBLE_TOOLS = frozenset(
+    {
+        "send_feishu_message",
+        "send_web_message",
+        "send_email",
+        "reply_email",
+        "plaza_create_post",
+        "plaza_add_comment",
+    }
+)
+_COMPANY_CONFLICT_PATTERNS = (
+    "bypass company policy",
+    "share credentials",
+    "expose pl3",
+    "expose pl4",
+)
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -59,10 +85,17 @@ class ToolRuntimeService:
     direct_fallback_executor: FallbackExecutor
     activity_logger: ActivityLogger | None = None
     backend: ToolRuntimeBackend | None = None
+    preflight_service: ActionPreflightService | None = None
+    decision_trace_store: DecisionTraceStore | None = None
+    preflight_enabled: bool = True
 
     def __post_init__(self) -> None:
         if self.backend is None:
             self.backend = LocalToolRuntimeBackend()
+        if self.preflight_service is None:
+            self.preflight_service = ActionPreflightService()
+        if self.decision_trace_store is None:
+            self.decision_trace_store = DecisionTraceStore()
 
     async def execute(
         self,
@@ -91,6 +124,10 @@ class ToolRuntimeService:
         )
         if governance_block:
             return governance_block
+
+        preflight_block = await self._preflight_tool_execution(tool_name, arguments, runtime_context)
+        if preflight_block:
+            return preflight_block
 
         _TOOL_TIMEOUTS: dict[str, float] = {
             "execute_code": 120.0,
@@ -121,7 +158,14 @@ class ToolRuntimeService:
                         detail={
                             "tool": tool_name,
                             "backend": self.backend.name if self.backend else "unknown",
-                            "args": {k: (_json.dumps(v, ensure_ascii=False, default=str)[:100] if isinstance(v, (dict, list)) else str(v)[:100]) for k, v in arguments.items()},
+                            "args": {
+                                k: (
+                                    _json.dumps(v, ensure_ascii=False, default=str)[:100]
+                                    if isinstance(v, (dict, list))
+                                    else str(v)[:100]
+                                )
+                                for k, v in arguments.items()
+                            },
                             "result": result[:300],
                         },
                     )
@@ -330,3 +374,97 @@ class ToolRuntimeService:
             )
 
         return await self.backend.execute(request, _execute_request)
+
+    async def _preflight_tool_execution(
+        self,
+        tool_name: str,
+        arguments: dict,
+        runtime_context: ToolExecutionContext,
+    ) -> str | None:
+        if not self.preflight_enabled or self.preflight_service is None:
+            return None
+
+        preflight_input = _build_tool_preflight_input(tool_name, arguments)
+        preflight = self.preflight_service.evaluate(preflight_input)
+        if preflight.decision == PreflightDecision.DO:
+            return None
+
+        if self.decision_trace_store is not None:
+            self.decision_trace_store.record_decision(
+                action=preflight_input.action,
+                chosen=preflight.decision.value,
+                reasoning="Tool runtime preflight blocked execution before registry/backend invocation.",
+                alternatives_considered=["execute tool immediately", "ask owner or escalate before execution"],
+                situational_factors=preflight.reasons,
+                charter_zone=preflight_input.charter_zone.value,
+                preflight=preflight.as_decision_trace_preflight(),
+                sensitivity=preflight_input.sensitivity.value,
+            )
+
+        await self._log_preflight_decision(tool_name, runtime_context, preflight)
+        return _render_preflight_block(tool_name, preflight)
+
+    async def _log_preflight_decision(
+        self,
+        tool_name: str,
+        runtime_context: ToolExecutionContext,
+        preflight: ActionPreflightResult,
+    ) -> None:
+        if not self.activity_logger:
+            return
+        await _maybe_await(
+            self.activity_logger(
+                runtime_context.agent_id,
+                "action_preflight",
+                f"Preflight {preflight.decision.value} for {tool_name}",
+                detail={
+                    "tool": tool_name,
+                    "decision": preflight.decision.value,
+                    "reasons": preflight.reasons,
+                    "requires_checkpoint": preflight.requires_checkpoint,
+                    "requires_audit": preflight.requires_audit,
+                    "escalation_target": preflight.escalation_target,
+                },
+            )
+        )
+
+
+def _build_tool_preflight_input(tool_name: str, arguments: dict) -> ActionPreflightInput:
+    args_text = _json.dumps(arguments, ensure_ascii=False, default=str)
+    privacy = PrivacyLayer().classify_and_mask(args_text)
+    sensitivity = privacy.sensitivity
+    lower_action = f"{tool_name} {args_text}".lower()
+    company_conflict = any(pattern in lower_action for pattern in _COMPANY_CONFLICT_PATTERNS)
+
+    if tool_name in _EXTERNAL_VISIBLE_TOOLS:
+        return ActionPreflightInput(
+            action=f"send external message via {tool_name}",
+            reversibility=BoundaryAxisLevel.MEDIUM,
+            representativeness=BoundaryAxisLevel.HIGH,
+            judgment_density=BoundaryAxisLevel.HIGH,
+            visibility=BoundaryAxisLevel.HIGH,
+            domain_specialization=BoundaryAxisLevel.MEDIUM,
+            charter_zone=CharterZone.CONFIRM_FIRST,
+            sensitivity=sensitivity,
+            company_boundary_conflict=company_conflict,
+        )
+
+    return ActionPreflightInput(
+        action=f"execute local tool {tool_name}",
+        reversibility=BoundaryAxisLevel.LOW,
+        representativeness=BoundaryAxisLevel.LOW,
+        judgment_density=BoundaryAxisLevel.LOW,
+        visibility=BoundaryAxisLevel.LOW,
+        domain_specialization=BoundaryAxisLevel.LOW,
+        charter_zone=CharterZone.FULL_AUTHORITY,
+        sensitivity=sensitivity,
+        company_boundary_conflict=company_conflict,
+    )
+
+
+def _render_preflight_block(tool_name: str, preflight: ActionPreflightResult) -> str:
+    reason_text = ",".join(preflight.reasons) if preflight.reasons else "unspecified"
+    suffix = ""
+    if preflight.escalation_target:
+        suffix = f" escalation_target={preflight.escalation_target}"
+    return f"[Preflight:{preflight.decision.value}] {tool_name} was not executed. reasons={reason_text}{suffix}"

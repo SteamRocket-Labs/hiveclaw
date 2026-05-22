@@ -253,6 +253,92 @@ def _extract_tool_error_payload(result: str) -> dict:
 
 
 @pytest.mark.asyncio
+async def test_tool_runtime_service_preflight_asks_before_external_visible_tool():
+    from app.services.decision_trace import DecisionTraceStore
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id="tenant-1",
+        workspace=Path("/tmp/ws"),
+    )
+    registry = _FakeRegistry("SHOULD_NOT_RUN")
+    traces = DecisionTraceStore()
+
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(SimpleNamespace(), SimpleNamespace()),
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+        decision_trace_store=traces,
+    )
+
+    result = await service.execute(
+        "send_feishu_message",
+        {"message": "Send external vendor reply about pricing"},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+    )
+
+    assert result.startswith("[Preflight:ask]")
+    assert "send_feishu_message" in result
+    assert registry.calls == []
+    decisions = traces.decisions()
+    assert len(decisions) == 1
+    assert decisions[0].chosen == "ask"
+    assert decisions[0].preflight["decision"] == "ask"
+
+
+@pytest.mark.asyncio
+async def test_tool_runtime_service_preflight_refuses_credential_arguments():
+    from app.services.decision_trace import DecisionTraceStore
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id="tenant-1",
+        workspace=Path("/tmp/ws"),
+    )
+    registry = _FakeRegistry("SHOULD_NOT_RUN")
+    traces = DecisionTraceStore()
+
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(SimpleNamespace(), SimpleNamespace()),
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+        decision_trace_store=traces,
+    )
+
+    result = await service.execute(
+        "write_file",
+        {"path": "secrets.txt", "content": "api_key=sk-1234567890abcdefghijklmnop"},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+    )
+
+    assert result.startswith("[Preflight:refuse]")
+    assert "pl4_zero_retention" in result
+    assert registry.calls == []
+    decisions = traces.decisions()
+    assert len(decisions) == 1
+    assert decisions[0].chosen == "refuse"
+    assert decisions[0].sensitivity == "PL4_credential"
+
+
+@pytest.mark.asyncio
 async def test_tool_runtime_service_timeout_returns_structured_error():
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService

@@ -17,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.channel_config import ChannelConfig
 from app.services.activity_logger import log_activity
+from app.services.outbound_privacy import redact_outbound
+from app.services.principal_context import PrincipalStack
 
 channel_delivery_target: ContextVar[dict[str, Any] | None] = ContextVar("channel_delivery_target", default=None)
 
@@ -39,7 +41,9 @@ class ChannelDeliveryService:
 
     @staticmethod
     def resolve_capabilities(channel: str, connected_config: ChannelConfig | Any | None) -> dict[str, Any]:
-        connected = bool(getattr(connected_config, "is_configured", False) and getattr(connected_config, "is_connected", True))
+        connected = bool(
+            getattr(connected_config, "is_configured", False) and getattr(connected_config, "is_connected", True)
+        )
         base: dict[str, Any] = {
             "channel": channel,
             "connected": connected,
@@ -59,62 +63,72 @@ class ChannelDeliveryService:
 
         if channel == "feishu":
             base["official_api"] = True
-            base["capabilities"].update({
-                "live_text": True,
-                "inbound_file": True,
-                "outbound_file": True,
-                "deferred_text": True,
-                "deferred_file": True,
-                "on_message_current_sender": True,
-                "on_message_by_name": True,
-            })
+            base["capabilities"].update(
+                {
+                    "live_text": True,
+                    "inbound_file": True,
+                    "outbound_file": True,
+                    "deferred_text": True,
+                    "deferred_file": True,
+                    "on_message_current_sender": True,
+                    "on_message_by_name": True,
+                }
+            )
         elif channel == "telegram":
             base["official_api"] = True
-            base["capabilities"].update({
-                "live_text": True,
-                "inbound_file": True,
-                "outbound_file": True,
-                "deferred_text": True,
-                "deferred_file": True,
-                "on_message_current_sender": True,
-                "on_message_by_name": False,
-            })
+            base["capabilities"].update(
+                {
+                    "live_text": True,
+                    "inbound_file": True,
+                    "outbound_file": True,
+                    "deferred_text": True,
+                    "deferred_file": True,
+                    "on_message_current_sender": True,
+                    "on_message_by_name": False,
+                }
+            )
             base["limitations"].append("Telegram 仅支持回当前会话，不支持按人名主动寻址。")
         elif channel == "wecom":
             base["official_api"] = True
-            base["capabilities"].update({
-                "live_text": True,
-                "inbound_file": False,
-                "outbound_file": False,
-                "deferred_text": True,
-                "deferred_file": False,
-                "on_message_current_sender": True,
-                "on_message_by_name": False,
-            })
+            base["capabilities"].update(
+                {
+                    "live_text": True,
+                    "inbound_file": False,
+                    "outbound_file": False,
+                    "deferred_text": True,
+                    "deferred_file": False,
+                    "on_message_current_sender": True,
+                    "on_message_by_name": False,
+                }
+            )
             base["limitations"].append("WeCom 当前仅承诺文本闭环；文件回发仍显式标记为 unsupported。")
         elif channel == "wechat_personal":
             base["official_api"] = False
             base["third_party_transport"] = "ilink"
-            base["capabilities"].update({
-                "live_text": True,
-                "inbound_file": True,
-                "outbound_file": True,
-                "deferred_text": "conditional",
-                "deferred_file": "conditional",
-                "on_message_current_sender": True,
-                "on_message_by_name": False,
-            })
+            base["capabilities"].update(
+                {
+                    "live_text": True,
+                    "inbound_file": True,
+                    "outbound_file": True,
+                    "deferred_text": "conditional",
+                    "deferred_file": "conditional",
+                    "on_message_current_sender": True,
+                    "on_message_by_name": False,
+                }
+            )
             base["limitations"].append("个人微信延迟回投依赖近期会话 context token，有效期过后不可保证发送。")
         elif channel == "web":
-            base["capabilities"].update({
-                "live_text": True,
-                "inbound_file": True,
-                "outbound_file": False,
-                "deferred_text": True,
-                "deferred_file": False,
-                "on_message_current_sender": True,
-                "on_message_by_name": False,
-            })
+            base["capabilities"].update(
+                {
+                    "live_text": True,
+                    "inbound_file": True,
+                    "outbound_file": False,
+                    "deferred_text": True,
+                    "deferred_file": False,
+                    "on_message_current_sender": True,
+                    "on_message_by_name": False,
+                }
+            )
             base["limitations"].append("Web 通过站内会话与在线 WebSocket 推送闭环，不依赖外部渠道配置。")
         return base
 
@@ -203,8 +217,12 @@ class ChannelDeliveryService:
         return DeliveryResult(ok=True, status="success", channel=channel, message=message, detail=detail)
 
     @staticmethod
-    def _failed(channel: str, message: str, *, status: str = "failed", retryable: bool = False, **detail: Any) -> DeliveryResult:
-        return DeliveryResult(ok=False, status=status, channel=channel, message=message, retryable=retryable, detail=detail)
+    def _failed(
+        channel: str, message: str, *, status: str = "failed", retryable: bool = False, **detail: Any
+    ) -> DeliveryResult:
+        return DeliveryResult(
+            ok=False, status=status, channel=channel, message=message, retryable=retryable, detail=detail
+        )
 
     @staticmethod
     async def send_text(
@@ -215,18 +233,46 @@ class ChannelDeliveryService:
         text: str,
         delivery_mode: str = "live",
         extra_detail: dict[str, Any] | None = None,
+        principal_stack: PrincipalStack | None = None,
     ) -> DeliveryResult:
         target = ChannelDeliveryService.normalize_reply_target(reply_target)
         if not target:
-            result = ChannelDeliveryService._failed("unknown", "No reply target available for channel delivery.", status="unavailable")
-            await ChannelDeliveryService._log_result(agent_id, result, delivery_mode=delivery_mode, reply_target=reply_target, extra_detail=extra_detail)
+            result = ChannelDeliveryService._failed(
+                "unknown", "No reply target available for channel delivery.", status="unavailable"
+            )
+            await ChannelDeliveryService._log_result(
+                agent_id, result, delivery_mode=delivery_mode, reply_target=reply_target, extra_detail=extra_detail
+            )
             return result
 
         channel = target["channel"]
+
+        redact_decision = redact_outbound(text, channel=channel, principal_stack=principal_stack)
+        redact_detail = {
+            "outbound_sensitivity": redact_decision.sensitivity.value,
+            "outbound_redact_reason": redact_decision.reason,
+        }
+        if redact_decision.rejected:
+            result = ChannelDeliveryService._failed(
+                channel,
+                redact_decision.reason or "Outbound content blocked by privacy gate.",
+                status="denied",
+                **redact_detail,
+            )
+            await ChannelDeliveryService._log_result(
+                agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail
+            )
+            return result
+        text = redact_decision.text
+
         config = None if channel == "web" else await ChannelDeliveryService._load_config(db, agent_id, channel)
         if channel != "web" and (not config or not getattr(config, "is_configured", False)):
-            result = ChannelDeliveryService._failed(channel, f"{channel} channel is not configured for this agent.", status="unavailable")
-            await ChannelDeliveryService._log_result(agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail)
+            result = ChannelDeliveryService._failed(
+                channel, f"{channel} channel is not configured for this agent.", status="unavailable"
+            )
+            await ChannelDeliveryService._log_result(
+                agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail
+            )
             return result
 
         try:
@@ -234,13 +280,19 @@ class ChannelDeliveryService:
                 from app.services.feishu_service import FeishuService
 
                 receive_id = target.get("receive_id") or target.get("open_id") or target.get("chat_id")
-                receive_id_type = target.get("receive_id_type") or ("chat_id" if target.get("chat_type") == "group" else "open_id")
+                receive_id_type = target.get("receive_id_type") or (
+                    "chat_id" if target.get("chat_type") == "group" else "open_id"
+                )
                 if not receive_id:
                     raise ValueError("missing receive_id")
                 payload = json.dumps({"text": text})
                 service = FeishuService()
-                await service.send_message(config.app_id, config.app_secret, receive_id, "text", payload, receive_id_type=receive_id_type)
-                result = ChannelDeliveryService._success(channel, "Feishu message delivered.", receive_id=receive_id, receive_id_type=receive_id_type)
+                await service.send_message(
+                    config.app_id, config.app_secret, receive_id, "text", payload, receive_id_type=receive_id_type
+                )
+                result = ChannelDeliveryService._success(
+                    channel, "Feishu message delivered.", receive_id=receive_id, receive_id_type=receive_id_type
+                )
             elif channel == "telegram":
                 from app.api.telegram import _send_telegram_message
 
@@ -267,11 +319,17 @@ class ChannelDeliveryService:
                         status="unavailable",
                         to_user_id=to_user_id,
                     )
-                    await ChannelDeliveryService._log_result(agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail)
+                    await ChannelDeliveryService._log_result(
+                        agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail
+                    )
                     return result
                 client = ILinkClient(base_url)
-                await client.send_message(bot_token=bot_token, to_user_id=to_user_id, context_token=context_token, text=text)
-                result = ChannelDeliveryService._success(channel, "WeChat personal message delivered.", to_user_id=to_user_id)
+                await client.send_message(
+                    bot_token=bot_token, to_user_id=to_user_id, context_token=context_token, text=text
+                )
+                result = ChannelDeliveryService._success(
+                    channel, "WeChat personal message delivered.", to_user_id=to_user_id
+                )
             elif channel == "wecom":
                 from app.api.wecom import _send_wecom_text_message
 
@@ -288,7 +346,9 @@ class ChannelDeliveryService:
                     to_user=to_user,
                     text=text,
                 )
-                result = ChannelDeliveryService._success(channel, "WeCom message delivered.", user_id=to_user, agent_id=wecom_agent_id)
+                result = ChannelDeliveryService._success(
+                    channel, "WeCom message delivered.", user_id=to_user, agent_id=wecom_agent_id
+                )
             elif channel == "web":
                 from app.api.websocket import manager as ws_manager
                 from app.models.agent import Agent as AgentModel
@@ -362,12 +422,16 @@ class ChannelDeliveryService:
                     session_id=str(session.id),
                 )
             else:
-                result = ChannelDeliveryService._failed(channel, f"Channel '{channel}' is not supported by unified delivery.", status="denied")
+                result = ChannelDeliveryService._failed(
+                    channel, f"Channel '{channel}' is not supported by unified delivery.", status="denied"
+                )
         except Exception as exc:
             logger.warning(f"[ChannelDelivery] Text delivery failed via {channel}: {exc}")
             result = ChannelDeliveryService._failed(channel, str(exc), retryable=True)
 
-        await ChannelDeliveryService._log_result(agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail)
+        await ChannelDeliveryService._log_result(
+            agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail
+        )
         return result
 
     @staticmethod
@@ -383,21 +447,31 @@ class ChannelDeliveryService:
     ) -> DeliveryResult:
         target = ChannelDeliveryService.normalize_reply_target(reply_target)
         if not target:
-            result = ChannelDeliveryService._failed("unknown", "No reply target available for channel file delivery.", status="unavailable")
-            await ChannelDeliveryService._log_result(agent_id, result, delivery_mode=delivery_mode, reply_target=reply_target, extra_detail=extra_detail)
+            result = ChannelDeliveryService._failed(
+                "unknown", "No reply target available for channel file delivery.", status="unavailable"
+            )
+            await ChannelDeliveryService._log_result(
+                agent_id, result, delivery_mode=delivery_mode, reply_target=reply_target, extra_detail=extra_detail
+            )
             return result
 
         channel = target["channel"]
         config = await ChannelDeliveryService._load_config(db, agent_id, channel)
         if not config or not getattr(config, "is_configured", False):
-            result = ChannelDeliveryService._failed(channel, f"{channel} channel is not configured for this agent.", status="unavailable")
-            await ChannelDeliveryService._log_result(agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail)
+            result = ChannelDeliveryService._failed(
+                channel, f"{channel} channel is not configured for this agent.", status="unavailable"
+            )
+            await ChannelDeliveryService._log_result(
+                agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail
+            )
             return result
 
         path = Path(file_path)
         if not path.exists():
             result = ChannelDeliveryService._failed(channel, f"File not found: {path}", status="failed")
-            await ChannelDeliveryService._log_result(agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail)
+            await ChannelDeliveryService._log_result(
+                agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail
+            )
             return result
 
         try:
@@ -405,7 +479,9 @@ class ChannelDeliveryService:
                 from app.services.feishu_service import FeishuService
 
                 receive_id = target.get("receive_id") or target.get("open_id") or target.get("chat_id")
-                receive_id_type = target.get("receive_id_type") or ("chat_id" if target.get("chat_type") == "group" else "open_id")
+                receive_id_type = target.get("receive_id_type") or (
+                    "chat_id" if target.get("chat_type") == "group" else "open_id"
+                )
                 if not receive_id:
                     raise ValueError("missing receive_id")
                 await FeishuService().upload_and_send_file(
@@ -424,7 +500,9 @@ class ChannelDeliveryService:
                 if chat_id in (None, ""):
                     raise ValueError("missing chat_id")
                 await _send_telegram_file(config.app_secret, chat_id, path, message)
-                result = ChannelDeliveryService._success(channel, "Telegram file delivered.", file_name=path.name, chat_id=chat_id)
+                result = ChannelDeliveryService._success(
+                    channel, "Telegram file delivered.", file_name=path.name, chat_id=chat_id
+                )
             elif channel == "wechat_personal":
                 from app.services.wechat_ilink_client import (
                     ILinkClient,
@@ -448,13 +526,23 @@ class ChannelDeliveryService:
                         status="unavailable",
                         to_user_id=to_user_id,
                     )
-                    await ChannelDeliveryService._log_result(agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail)
+                    await ChannelDeliveryService._log_result(
+                        agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail
+                    )
                     return result
                 mime = mimetypes.guess_type(str(path))[0] or ""
-                media_type = MEDIA_TYPE_IMAGE if mime.startswith("image/") else MEDIA_TYPE_VIDEO if mime.startswith("video/") else MEDIA_TYPE_FILE
+                media_type = (
+                    MEDIA_TYPE_IMAGE
+                    if mime.startswith("image/")
+                    else MEDIA_TYPE_VIDEO
+                    if mime.startswith("video/")
+                    else MEDIA_TYPE_FILE
+                )
                 client = ILinkClient(base_url)
                 if message:
-                    await client.send_message(bot_token=bot_token, to_user_id=to_user_id, context_token=context_token, text=message)
+                    await client.send_message(
+                        bot_token=bot_token, to_user_id=to_user_id, context_token=context_token, text=message
+                    )
                 upload = await client.upload_media(
                     bot_token=bot_token,
                     to_user_id=to_user_id,
@@ -469,12 +557,18 @@ class ChannelDeliveryService:
                     media_type=media_type,
                     file_name=path.name,
                 )
-                result = ChannelDeliveryService._success(channel, "WeChat personal file delivered.", file_name=path.name, to_user_id=to_user_id)
+                result = ChannelDeliveryService._success(
+                    channel, "WeChat personal file delivered.", file_name=path.name, to_user_id=to_user_id
+                )
             else:
-                result = ChannelDeliveryService._failed(channel, f"Channel '{channel}' is not supported by unified file delivery.", status="denied")
+                result = ChannelDeliveryService._failed(
+                    channel, f"Channel '{channel}' is not supported by unified file delivery.", status="denied"
+                )
         except Exception as exc:
             logger.warning(f"[ChannelDelivery] File delivery failed via {channel}: {exc}")
             result = ChannelDeliveryService._failed(channel, str(exc), retryable=True, file_name=path.name)
 
-        await ChannelDeliveryService._log_result(agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail)
+        await ChannelDeliveryService._log_result(
+            agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail
+        )
         return result

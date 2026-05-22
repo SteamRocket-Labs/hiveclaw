@@ -108,6 +108,49 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_delegate_async_serializes_duplicate_work_with_coordination_lease(monkeypatch):
+    from app.agents.coordination import coordination_runtime
+    from app.agents.orchestrator import delegate_async
+
+    coordination_runtime.reset()
+    target = SimpleNamespace(id=uuid4(), name="Target Agent", role_description="Helpful")
+    target_model = SimpleNamespace(provider="openai", model="gpt-4.1")
+    owner_id = uuid4()
+    parent_id = uuid4()
+
+    async def fake_create_runtime_task_record(**_kwargs):
+        return None
+
+    async def fake_update_runtime_task_record(*_args, **_kwargs):
+        return None
+
+    async def fake_persist_delegation_event(**_kwargs):
+        return None
+
+    monkeypatch.setattr("app.agents.orchestrator.create_runtime_task_record", fake_create_runtime_task_record)
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr("app.agents.orchestrator._persist_delegation_event", fake_persist_delegation_event)
+    monkeypatch.setattr("app.agents.orchestrator._spawn_async_delegation_task", lambda **_kwargs: None)
+
+    kwargs = {
+        "target": target,
+        "target_model": target_model,
+        "conversation_messages": [{"role": "user", "content": "Prepare the market map"}],
+        "owner_id": owner_id,
+        "session_id": "session-lease",
+        "parent_agent_id": parent_id,
+    }
+    first = await delegate_async(**kwargs)
+    second = await delegate_async(**kwargs)
+
+    assert first.status == "running"
+    assert first.coordination_lease_id
+    assert second.status == "blocked_by_lease"
+    assert second.blocked_by_lease_id == first.coordination_lease_id
+    assert coordination_runtime.read_signals(str(target.id), thread_id=first.signal_thread_id)
+
+
+@pytest.mark.asyncio
 async def test_delegate_to_agent_enforces_depth_limit(monkeypatch):
     from app.agents.orchestrator import AgentDelegationRequest, OrchestrationPolicy, _delegate
 

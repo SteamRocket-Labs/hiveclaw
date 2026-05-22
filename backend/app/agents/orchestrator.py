@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import uuid
@@ -10,6 +11,7 @@ from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
+from app.agents.coordination import coordination_runtime
 from app.agents.delegation_token import DEFAULT_DELEGATION_TTL_SECONDS, issue_delegation_token
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
@@ -397,6 +399,10 @@ class AsyncDelegationHandle:
     task_id: str
     trace_id: str
     target_name: str
+    status: str = "running"
+    coordination_lease_id: str | None = None
+    blocked_by_lease_id: str | None = None
+    signal_thread_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -415,6 +421,14 @@ class AgentDelegationRequest:
     depth: int = 1
     policy: OrchestrationPolicy = field(default_factory=OrchestrationPolicy)
     interaction_type: str = "delegation"
+
+
+def _delegation_coordination_key(request: AgentDelegationRequest) -> str:
+    parent = str(request.parent_agent_id or request.owner_id)
+    target = str(getattr(request.target, "id", getattr(request.target, "name", "unknown")))
+    prompt = request.conversation_messages[-1].get("content", "") if request.conversation_messages else ""
+    digest = hashlib.sha256(str(prompt).strip().encode("utf-8")).hexdigest()[:16]
+    return f"delegation:{parent}:{target}:{digest}"
 
 
 @dataclass(slots=True)
@@ -962,7 +976,37 @@ async def delegate_async(
         policy=policy or OrchestrationPolicy(timeout_seconds=120.0),
         interaction_type=interaction_type,
     )
+    coordination_key = _delegation_coordination_key(request)
+    lease_ttl = int((policy or request.policy).timeout_seconds) + 60
+    lease_result = coordination_runtime.acquire_lease(
+        task_key=coordination_key,
+        agent_id=str(parent_agent_id or owner_id),
+        ttl_seconds=max(lease_ttl, 60),
+    )
+    if not lease_result.acquired:
+        return AsyncDelegationHandle(
+            task_id=lease_result.existing_lease_id or "blocked_by_lease",
+            trace_id=real_trace_id,
+            target_name=getattr(target, "name", "unknown"),
+            status="blocked_by_lease",
+            blocked_by_lease_id=lease_result.existing_lease_id,
+        )
+    signal = coordination_runtime.send_signal(
+        from_agent_id=str(parent_agent_id or owner_id),
+        to_agent_id=str(getattr(target, "id", "")),
+        content=conversation_messages[-1].get("content", "") if conversation_messages else "",
+        signal_type="delegation_started",
+        thread_id=real_trace_id,
+    )
     metadata_json = _build_runtime_task_metadata(request)
+    metadata_json.update(
+        {
+            "coordination_lease_id": lease_result.lease.id if lease_result.lease else None,
+            "coordination_task_key": coordination_key,
+            "signal_id": signal.id,
+            "signal_thread_id": signal.thread_id,
+        }
+    )
 
     try:
         await create_runtime_task_record(
@@ -1001,7 +1045,13 @@ async def delegate_async(
         status="started",
     )
     logger.info("[Orchestrator] Async delegation started: task_id=%s target=%s", task_id, target.name)
-    return AsyncDelegationHandle(task_id=task_id, trace_id=real_trace_id, target_name=target.name)
+    return AsyncDelegationHandle(
+        task_id=task_id,
+        trace_id=real_trace_id,
+        target_name=target.name,
+        coordination_lease_id=lease_result.lease.id if lease_result.lease else None,
+        signal_thread_id=signal.thread_id,
+    )
 
 
 async def check_async_delegation(

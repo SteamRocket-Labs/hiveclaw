@@ -288,11 +288,13 @@ async def test_tool_runtime_service_preflight_asks_before_external_visible_tool(
 
     assert result.startswith("[Preflight:ask]")
     assert "send_feishu_message" in result
+    assert "checkpoint=" in result
     assert registry.calls == []
     decisions = traces.decisions()
     assert len(decisions) == 1
     assert decisions[0].chosen == "ask"
     assert decisions[0].preflight["decision"] == "ask"
+    assert decisions[0].preflight["checkpoint_id"]
 
 
 @pytest.mark.asyncio

@@ -10,8 +10,10 @@ import re
 import traceback
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any, Awaitable, Callable
 
+from app.agents.coordination import CoordinationRuntime, coordination_runtime
 from app.services.action_preflight import (
     ActionPreflightInput,
     ActionPreflightResult,
@@ -87,6 +89,7 @@ class ToolRuntimeService:
     backend: ToolRuntimeBackend | None = None
     preflight_service: ActionPreflightService | None = None
     decision_trace_store: DecisionTraceStore | None = None
+    coordination_runtime: CoordinationRuntime | None = None
     preflight_enabled: bool = True
 
     def __post_init__(self) -> None:
@@ -96,6 +99,8 @@ class ToolRuntimeService:
             self.preflight_service = ActionPreflightService()
         if self.decision_trace_store is None:
             self.decision_trace_store = DecisionTraceStore()
+        if self.coordination_runtime is None:
+            self.coordination_runtime = coordination_runtime
 
     async def execute(
         self,
@@ -389,7 +394,25 @@ class ToolRuntimeService:
         if preflight.decision == PreflightDecision.DO:
             return None
 
+        checkpoint_id = ""
+        if preflight.requires_checkpoint and self.coordination_runtime is not None:
+            checkpoint = self.coordination_runtime.create_checkpoint(
+                action=preflight_input.action,
+                approver_id=str(runtime_context.user_id),
+                escalation_chain=[preflight.escalation_target or "company_admin"],
+                deadline_at=datetime.now(UTC) + timedelta(minutes=30),
+                metadata={
+                    "tool_name": tool_name,
+                    "agent_id": str(runtime_context.agent_id),
+                    "decision": preflight.decision.value,
+                },
+            )
+            checkpoint_id = checkpoint.id
+
         if self.decision_trace_store is not None:
+            preflight_trace = preflight.as_decision_trace_preflight()
+            if checkpoint_id:
+                preflight_trace["checkpoint_id"] = checkpoint_id
             self.decision_trace_store.record_decision(
                 action=preflight_input.action,
                 chosen=preflight.decision.value,
@@ -397,12 +420,12 @@ class ToolRuntimeService:
                 alternatives_considered=["execute tool immediately", "ask owner or escalate before execution"],
                 situational_factors=preflight.reasons,
                 charter_zone=preflight_input.charter_zone.value,
-                preflight=preflight.as_decision_trace_preflight(),
+                preflight=preflight_trace,
                 sensitivity=preflight_input.sensitivity.value,
             )
 
         await self._log_preflight_decision(tool_name, runtime_context, preflight)
-        return _render_preflight_block(tool_name, preflight)
+        return _render_preflight_block(tool_name, preflight, checkpoint_id=checkpoint_id)
 
     async def _log_preflight_decision(
         self,
@@ -462,9 +485,11 @@ def _build_tool_preflight_input(tool_name: str, arguments: dict) -> ActionPrefli
     )
 
 
-def _render_preflight_block(tool_name: str, preflight: ActionPreflightResult) -> str:
+def _render_preflight_block(tool_name: str, preflight: ActionPreflightResult, *, checkpoint_id: str = "") -> str:
     reason_text = ",".join(preflight.reasons) if preflight.reasons else "unspecified"
     suffix = ""
     if preflight.escalation_target:
         suffix = f" escalation_target={preflight.escalation_target}"
+    if checkpoint_id:
+        suffix += f" checkpoint={checkpoint_id}"
     return f"[Preflight:{preflight.decision.value}] {tool_name} was not executed. reasons={reason_text}{suffix}"

@@ -38,6 +38,14 @@ def _markdown_bullets(lines: list[str], fallback: list[str] | None = None) -> st
     return "\n".join(f"- {item}" for item in items)
 
 
+def _list_from_blueprint(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        return _lines_from_text(value)
+    return []
+
+
 def _render_focus_tasks(task_items: list[str], fallback: list[str]) -> tuple[str, list[tuple[str, str]]]:
     return _shared_render_focus_tasks(task_items, fallback)
 
@@ -65,6 +73,18 @@ def _render_agent_soul_from_blueprint(
     primary_users = [str(item) for item in blueprint.get("primary_users", []) if str(item).strip()]
     core_outputs = [str(item) for item in blueprint.get("core_outputs", []) if str(item).strip()]
     quality_standards = [str(q) for q in blueprint.get("quality_standards", []) if str(q).strip()]
+    company_name = str(blueprint.get("company_name") or "the company").strip() or "the company"
+    owner_name = str(blueprint.get("owner_name") or creator_name).strip() or creator_name
+    company_charter = blueprint.get("company_charter") if isinstance(blueprint.get("company_charter"), dict) else {}
+    owner_agency_charter = (
+        blueprint.get("owner_agency_charter") if isinstance(blueprint.get("owner_agency_charter"), dict) else {}
+    )
+    company_goals = _list_from_blueprint(company_charter.get("goals"))
+    company_boundaries = _list_from_blueprint(company_charter.get("boundaries"))
+    company_escalation = _list_from_blueprint(company_charter.get("escalation"))
+    full_authority = _list_from_blueprint(owner_agency_charter.get("full_authority"))
+    confirm_first = _list_from_blueprint(owner_agency_charter.get("confirm_first"))
+    never_do = _list_from_blueprint(owner_agency_charter.get("never_do"))
     mission = role_description.strip() or "执行明确业务任务并持续维护高质量工作产出"
     operating_style = personality_lines or [
         "Work in a structured, detail-oriented way.",
@@ -80,6 +100,69 @@ def _render_agent_soul_from_blueprint(
         f"- **Role**: {mission}",
         f"- **Creator**: {creator_name}",
         f"- **Created**: {created_at}",
+        "",
+        "## First-Person Accountability",
+        (
+            f"我是 {company_name} 的精英员工型 agent，直接支持 {owner_name}。"
+            f"我负责把“{mission}”这项使命推进成可审阅、可追踪、可交付的结果，"
+            f"同时守住 {company_name} 的公司边界、数据边界和长期声誉。"
+        ),
+        "",
+        "## Frozen Company Charter",
+        "**Company Goals**",
+        _markdown_bullets(
+            company_goals,
+            fallback=[
+                f"Protect {company_name}'s data boundaries, compliance posture, and reputation.",
+                "Support cross-team work without bypassing platform governance.",
+            ],
+        ),
+        "",
+        "**Company Boundaries**",
+        _markdown_bullets(
+            company_boundaries,
+            fallback=[
+                "Do not share credentials, secrets, or PL4 material.",
+                "Do not bypass company policy, approval, or audit requirements.",
+                "Do not expose PL3/PL4 sensitive data outside authorized channels.",
+            ],
+        ),
+        "",
+        "**Company Escalation**",
+        _markdown_bullets(
+            company_escalation,
+            fallback=["Escalate owner/company conflicts to a company admin or the explicit approval path."],
+        ),
+        "",
+        "## Frozen Owner Agency Charter",
+        "**Full Authority**",
+        _markdown_bullets(
+            full_authority,
+            fallback=[
+                "Prepare local drafts, research briefs, summaries, and options.",
+                "Run read-only checks and organize evidence for the owner.",
+            ],
+        ),
+        "",
+        "**Confirm First**",
+        _markdown_bullets(
+            confirm_first,
+            fallback=[
+                "Send external messages or represent the owner/company to third parties.",
+                "Make production, budget, legal, customer, or irreversible changes.",
+            ],
+        ),
+        "",
+        "**Never Do**",
+        _markdown_bullets(
+            never_do,
+            fallback=[
+                "Share credentials or secrets.",
+                "Bypass company policy, audit, or approval gates.",
+            ],
+        ),
+        "",
+        "_These charter sections are frozen. Dream and heartbeat may propose updates, but active changes require explicit owner/admin approval._",
         "",
         "## What Good Looks Like",
         _markdown_bullets(
@@ -181,7 +264,11 @@ def _render_focus_from_blueprint(
         "# Focus",
         "",
         "## Initial Mission",
-        (focus_lines[0] if focus_lines else "Understand the mission, verify capabilities, and deliver a first visible outcome."),
+        (
+            focus_lines[0]
+            if focus_lines
+            else "Understand the mission, verify capabilities, and deliver a first visible outcome."
+        ),
         "",
         "## Who This Agent Serves",
         _markdown_bullets(primary_users or [], fallback=["The creator and their immediate team."]),
@@ -198,7 +285,9 @@ def _render_focus_from_blueprint(
         "## Capability Gaps To Validate",
         _markdown_bullets(
             deferred_capabilities or [],
-            fallback=["No deferred capability candidates recorded yet — prove the first version with builtin/default capabilities first."],
+            fallback=[
+                "No deferred capability candidates recorded yet — prove the first version with builtin/default capabilities first."
+            ],
         ),
         "",
         "## Human Setup Still Required",
@@ -211,7 +300,9 @@ def _render_focus_from_blueprint(
         _markdown_bullets(heartbeat_lines, fallback=["No exploration topics declared yet."]),
         "",
         "## First Success Check",
-        _markdown_bullets(success_checks, fallback=["Deliver one concrete output and verify the handoff path end-to-end."]),
+        _markdown_bullets(
+            success_checks, fallback=["Deliver one concrete output and verify the handoff path end-to-end."]
+        ),
     ]
     return "\n".join(parts).rstrip() + "\n"
 
@@ -255,7 +346,8 @@ class AgentManager:
         if template_dir.exists():
             # Copy template — skip dotfiles (AI tool configs like .claude, .vibe, etc.)
             shutil.copytree(
-                str(template_dir), str(agent_dir),
+                str(template_dir),
+                str(agent_dir),
                 ignore=shutil.ignore_patterns(".*"),
             )
             # Ensure required dirs exist even if template was incomplete
@@ -278,6 +370,7 @@ class AgentManager:
         soul_path = agent_dir / "soul.md"
         # Get creator name
         from app.models.user import User
+
         result = await db.execute(select(User).where(User.id == agent.creator_id))
         creator = result.scalar_one_or_none()
         creator_name = creator.display_name if creator else "Unknown"
@@ -304,11 +397,14 @@ class AgentManager:
         hb_path = agent_dir / "HEARTBEAT.md"
         if not hb_path.exists():
             hb_template = Path(__file__).parent.parent / "templates" / "HEARTBEAT.md"
-            hb_content = hb_template.read_text(encoding="utf-8") if hb_template.exists() else "# Heartbeat Instructions\n"
+            hb_content = (
+                hb_template.read_text(encoding="utf-8") if hb_template.exists() else "# Heartbeat Instructions\n"
+            )
             hb_path.write_text(hb_content, encoding="utf-8")
 
         # Bootstrap evolution directory for self-evolution heartbeat engine
         from app.tools.workspace import _bootstrap_evolution_files
+
         _bootstrap_evolution_files(agent_dir)
 
         # Ensure relationships.md exists — format aligned with workspace_sync.py
@@ -372,16 +468,12 @@ class AgentManager:
 
         logger.info(f"Initialized agent files at {agent_dir}")
 
-    async def _push_default_skills_to_agent(
-        self, db: AsyncSession, agent_id: uuid.UUID, agent_dir: Path
-    ) -> None:
+    async def _push_default_skills_to_agent(self, db: AsyncSession, agent_id: uuid.UUID, agent_dir: Path) -> None:
         """Write default skill files from DB into a single agent's workspace."""
         from app.models.skill import Skill
         from sqlalchemy.orm import selectinload
 
-        result = await db.execute(
-            select(Skill).where(Skill.is_default).options(selectinload(Skill.files))
-        )
+        result = await db.execute(select(Skill).where(Skill.is_default).options(selectinload(Skill.files)))
         default_skills = result.scalars().all()
         skills_dir = agent_dir / "skills"
         for skill in default_skills:
@@ -403,10 +495,12 @@ class AgentManager:
 
             async with _async_session() as db:
                 result = await db.execute(
-                    select(LLMModelDB).where(
+                    select(LLMModelDB)
+                    .where(
                         LLMModelDB.tenant_id == agent.tenant_id,
                         LLMModelDB.enabled.is_(True),
-                    ).limit(1)
+                    )
+                    .limit(1)
                 )
                 fallback = result.scalar_one_or_none()
                 if fallback:
@@ -467,7 +561,9 @@ class AgentManager:
         if not model:
             fallback_str = await self._resolve_fallback_model_string(agent)
             if fallback_str:
-                logger.info("[AgentManager] Agent %s has no primary model — using tenant fallback: %s", agent.id, fallback_str)
+                logger.info(
+                    "[AgentManager] Agent %s has no primary model — using tenant fallback: %s", agent.id, fallback_str
+                )
 
         # Generate OpenClaw config
         config = self._generate_openclaw_config(agent, model)

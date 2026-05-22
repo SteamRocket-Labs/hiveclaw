@@ -763,6 +763,14 @@ def _build_blueprint_preview_payload(arguments: dict) -> dict:
     )
     personality = str(arguments.get("personality", "")).strip()
     boundaries = str(arguments.get("boundaries", "")).strip()
+    company_charter = _normalize_charter_payload(
+        arguments.get("company_charter"),
+        allowed_keys=("goals", "boundaries", "escalation"),
+    )
+    owner_agency_charter = _normalize_charter_payload(
+        arguments.get("owner_agency_charter"),
+        allowed_keys=("full_authority", "confirm_first", "never_do"),
+    )
     raw_requested_skill_names = _dedupe_strings(
         [item for item in _parse_list(arguments.get("skill_names")) if isinstance(item, str)]
     )
@@ -849,6 +857,8 @@ def _build_blueprint_preview_payload(arguments: dict) -> dict:
             "core_outputs": core_outputs,
             "personality": personality,
             "boundaries": boundaries,
+            "company_charter": company_charter,
+            "owner_agency_charter": owner_agency_charter,
             "skill_names": install_now_skill_names,
             "requested_skill_names": requested_skill_names,
             "effective_skill_names": install_now_skill_names,
@@ -888,6 +898,17 @@ def _build_blueprint_preview_payload(arguments: dict) -> dict:
         "manual_steps": manual_steps,
         "warnings": _dedupe_strings(warnings),
     }
+
+
+def _normalize_charter_payload(value: object, *, allowed_keys: tuple[str, ...]) -> dict[str, list[str]]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, list[str]] = {}
+    for key in allowed_keys:
+        items = _dedupe_strings([item for item in _parse_list(value.get(key)) if isinstance(item, str)])
+        if items:
+            result[key] = items
+    return result
 
 
 def _build_create_employee_result(
@@ -962,6 +983,24 @@ def _build_create_employee_result(
                 "boundaries": {
                     "type": "string",
                     "description": "Hard rules and red lines specific to this role's risk profile (e.g. 'Never fabricate financial data', 'Do not share user PII externally'). One per line, 3-5 lines.",
+                },
+                "company_charter": {
+                    "type": "object",
+                    "description": "Optional company-level charter overlay for goals, boundaries, and escalation rules.",
+                    "properties": {
+                        "goals": {"type": "array", "items": {"type": "string"}},
+                        "boundaries": {"type": "array", "items": {"type": "string"}},
+                        "escalation": {"type": "array", "items": {"type": "string"}},
+                    },
+                },
+                "owner_agency_charter": {
+                    "type": "object",
+                    "description": "Optional owner authorization charter with full_authority, confirm_first, and never_do zones.",
+                    "properties": {
+                        "full_authority": {"type": "array", "items": {"type": "string"}},
+                        "confirm_first": {"type": "array", "items": {"type": "string"}},
+                        "never_do": {"type": "array", "items": {"type": "string"}},
+                    },
                 },
                 "skill_names": {
                     "type": "array",
@@ -1246,6 +1285,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
             default_max_triggers = 20
             default_min_poll = 5
             default_webhook_rate = 5
+            tenant_obj = None
             if effective_tenant_id:
                 from app.models.tenant import Tenant
 
@@ -1331,6 +1371,12 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                 "ready_now": list(preview_payload["ready_now"]),
                 "deferred_capabilities": list(preview_payload["blueprint"].get("deferred_capabilities", [])),
                 "manual_steps": manual_steps,
+                "company_id": str(effective_tenant_id) if effective_tenant_id else "",
+                "company_name": getattr(tenant_obj, "name", None) or "the company",
+                "owner_id": str(user.id),
+                "owner_name": user.display_name or user.username or str(user.id),
+                "company_charter": preview_payload["blueprint"].get("company_charter", {}),
+                "owner_agency_charter": preview_payload["blueprint"].get("owner_agency_charter", {}),
             }
             await agent_manager.initialize_agent_files(
                 db,

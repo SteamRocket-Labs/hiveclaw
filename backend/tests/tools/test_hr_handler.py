@@ -36,6 +36,8 @@ def test_create_digital_employee_schema_has_required_name():
     assert "skill_names" in params["properties"]
     assert "external_skill_urls" in params["properties"]
     assert "permission_scope" in params["properties"]
+    assert "company_charter" in params["properties"]
+    assert "owner_agency_charter" in params["properties"]
 
 
 def test_hr_tool_included_in_hr_tools_set():
@@ -113,6 +115,12 @@ def test_build_blueprint_preview_payload_summarizes_ready_install_and_manual_ste
             "core_outputs": ["日报", "周报"],
             "personality": "严谨\n结论先行",
             "boundaries": "不捏造来源",
+            "company_charter": {"goals": ["保护公司声誉"], "boundaries": ["不绕过合规审批"]},
+            "owner_agency_charter": {
+                "full_authority": ["准备投研草稿"],
+                "confirm_first": ["对外发送日报"],
+                "never_do": ["分享凭证"],
+            },
             "skill_names": ["feishu-integration", "feishu-integration"],
             "mcp_server_ids": ["smithery/github", "smithery/github"],
             "clawhub_slugs": ["market-research-agent", "market-research-agent"],
@@ -126,6 +134,8 @@ def test_build_blueprint_preview_payload_summarizes_ready_install_and_manual_ste
     assert payload["blueprint"]["name"] == "研究助理"
     assert payload["blueprint"]["primary_users"] == ["投资团队", "研究团队"]
     assert payload["blueprint"]["core_outputs"] == ["日报", "周报"]
+    assert payload["blueprint"]["company_charter"]["goals"] == ["保护公司声誉"]
+    assert payload["blueprint"]["owner_agency_charter"]["confirm_first"] == ["对外发送日报"]
     assert payload["blueprint"]["skill_names"] == ["feishu-integration"]
     assert payload["blueprint"]["deferred_skill_names"] == []
     assert payload["blueprint"]["mcp_server_ids"] == ["smithery/github"]

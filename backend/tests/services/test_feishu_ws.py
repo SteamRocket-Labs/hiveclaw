@@ -316,6 +316,73 @@ async def test_start_client_disables_sdk_auto_reconnect(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_start_client_suppresses_expected_lark_receive_loop_disconnect(monkeypatch):
+    import app.services.feishu_ws as feishu_ws
+
+    agent_id = uuid4()
+    scheduled: list[object] = []
+    receive_loops: list[object] = []
+
+    class _FakeLarkLoop:
+        def create_task(self, coro):
+            receive_loops.append(coro)
+            return SimpleNamespace(done=lambda: False, cancel=lambda: None)
+
+    class _FakeClient:
+        def __init__(self):
+            self._conn = None
+            self.disconnect_calls = 0
+
+        async def _connect(self):
+            self._conn = SimpleNamespace(closed=False)
+            feishu_ws._lark_ws_client.loop.create_task(self._receive_message_loop())
+
+        async def _disconnect(self):
+            self.disconnect_calls += 1
+            self._conn = None
+
+        async def _ping_loop(self):
+            return None
+
+        async def _receive_message_loop(self):
+            raise ConnectionError("no close frame received or sent")
+
+    fake_client = _FakeClient()
+
+    def fake_create_task(coro, name=None):
+        if name is None:
+            coro.close()
+            return SimpleNamespace(done=lambda: True, cancel=lambda: None, name=name)
+        scheduled.append(coro)
+        return SimpleNamespace(done=lambda: False, cancel=lambda: None, name=name)
+
+    async def fake_sleep(_delay):
+        raise asyncio.CancelledError
+
+    manager = feishu_ws.FeishuWSManager()
+    monkeypatch.setattr(manager, "_create_event_handler", lambda _agent_id: object())
+
+    async def fake_mark_channel_status(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(manager, "_mark_channel_status", fake_mark_channel_status, raising=False)
+    monkeypatch.setattr(feishu_ws, "_PROXY_PATCH_AVAILABLE", False, raising=False)
+    monkeypatch.setattr(feishu_ws, "_lark_ws_client", SimpleNamespace(loop=_FakeLarkLoop()), raising=False)
+    monkeypatch.setattr(feishu_ws, "_bind_lark_ws_client_loop_to_current_loop", lambda: None)
+    monkeypatch.setattr(feishu_ws, "lark", SimpleNamespace(LogLevel=SimpleNamespace(INFO="info")))
+    monkeypatch.setattr(feishu_ws, "ws", SimpleNamespace(Client=lambda *_args, **_kwargs: fake_client))
+    monkeypatch.setattr(feishu_ws.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr(feishu_ws.asyncio, "sleep", fake_sleep)
+
+    await manager.start_client(agent_id, "app_id", "app_secret")
+    await scheduled[0]
+
+    assert len(receive_loops) == 1
+    await receive_loops[0]
+    assert fake_client.disconnect_calls >= 1
+
+
+@pytest.mark.asyncio
 async def test_start_client_keeps_client_registered_after_transient_connect_failure(monkeypatch):
     import app.services.feishu_ws as feishu_ws
 

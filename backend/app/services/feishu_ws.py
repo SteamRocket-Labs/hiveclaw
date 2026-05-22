@@ -78,6 +78,63 @@ def _is_client_connection_alive(client: Any) -> bool:
     return state not in {"missing", "closed", "closing"}
 
 
+def _is_expected_lark_receive_loop_disconnect(exc: Exception) -> bool:
+    """Return true for normal SDK websocket close signals handled by our reconnect loop."""
+    exc_name = type(exc).__name__
+    if isinstance(exc, (ConnectionError, ConnectionResetError)):
+        return True
+    if "ConnectionClosed" in exc_name:
+        return True
+
+    message = str(exc).lower()
+    return (
+        "no close frame received or sent" in message
+        or "connection reset by peer" in message
+        or "connection is closed" in message
+    )
+
+
+def _patch_lark_receive_loop_for_supervised_reconnect(client: Any, agent_id: uuid.UUID) -> None:
+    """Prevent SDK receive-loop task exceptions from escaping our outer reconnect supervisor."""
+    if getattr(client, "_hive_receive_loop_patched", False):
+        return
+    if not callable(getattr(client, "_receive_message_loop", None)):
+        return
+
+    async def _receive_message_loop() -> None:
+        try:
+            while True:
+                conn = getattr(client, "_conn", None)
+                if conn is None:
+                    raise ConnectionError("connection is closed")
+
+                msg = await conn.recv()
+                sdk_loop = getattr(_lark_ws_client, "loop", None)
+                loop = sdk_loop or asyncio.get_running_loop()
+                loop.create_task(client._handle_message(msg))
+        except Exception as exc:
+            try:
+                await client._disconnect()
+            except Exception as disconnect_exc:
+                logger.debug(
+                    "[Feishu WS] Failed to disconnect after receive loop ended for "
+                    f"{agent_id}: {type(disconnect_exc).__name__}: {disconnect_exc}"
+                )
+
+            if _is_expected_lark_receive_loop_disconnect(exc):
+                logger.info(
+                    "[Feishu WS] Receive loop ended for "
+                    f"{agent_id}; reconnect supervisor will retry: {type(exc).__name__}: {exc}"
+                )
+                return
+
+            logger.opt(exception=True).error(f"[Feishu WS] Receive loop crashed for {agent_id}: {exc}")
+            raise
+
+    client._receive_message_loop = _receive_message_loop
+    client._hive_receive_loop_patched = True
+
+
 def _bind_lark_ws_client_loop_to_current_loop() -> None:
     """Ensure the SDK schedules its receive loop on uvicorn's running event loop."""
     if _lark_ws_client is None:
@@ -400,6 +457,7 @@ class FeishuWSManager:
             log_level=lark.LogLevel.INFO,
             auto_reconnect=False,
         )
+        _patch_lark_receive_loop_for_supervised_reconnect(client, agent_id)
         self._clients[agent_id] = client
         no_proxy_ctx = _make_no_proxy_connect(_orig_websockets_connect) if _PROXY_PATCH_AVAILABLE else None
 

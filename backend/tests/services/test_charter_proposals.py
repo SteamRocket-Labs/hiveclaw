@@ -1,9 +1,10 @@
-"""Phase 15: charter calibration approval surface tests."""
+"""Phase 15 redo: PostgreSQL-backed charter proposal store tests."""
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -11,125 +12,246 @@ from app.services.charter_proposals import (
     CharterProposalStore,
     ProposalAlreadyDecided,
     ProposalKind,
+    ProposalStatus,
 )
 
 
-@pytest.fixture
-def db_path(tmp_path: Path) -> Path:
-    return tmp_path / "charter_proposals.db"
+class _ExecuteResult:
+    def __init__(
+        self,
+        *,
+        scalar: Any = None,
+        scalars: list[Any] | None = None,
+    ) -> None:
+        self._scalar = scalar
+        self._scalars = scalars
+
+    def scalar_one_or_none(self):
+        return self._scalar
+
+    def scalars(self):
+        return _ScalarsView(self._scalars or [])
+
+
+class _ScalarsView:
+    def __init__(self, values: list[Any]) -> None:
+        self._values = values
+
+    def all(self):
+        return list(self._values)
+
+
+class _FakeSession:
+    def __init__(self) -> None:
+        self.added: list[Any] = []
+        self.flushes = 0
+        self.execute_calls: list[Any] = []
+        self.results: list[_ExecuteResult] = []
+
+    def queue(self, *results: _ExecuteResult) -> None:
+        self.results.extend(results)
+
+    async def execute(self, stmt):
+        self.execute_calls.append(stmt)
+        if self.results:
+            return self.results.pop(0)
+        return _ExecuteResult()
+
+    def add(self, row):
+        self.added.append(row)
+
+    async def flush(self):
+        self.flushes += 1
+
+
+class _Row:
+    def __init__(self, **kwargs) -> None:
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
 
 @pytest.fixture
-def store(db_path: Path) -> CharterProposalStore:
-    return CharterProposalStore(db_path)
+def session() -> _FakeSession:
+    return _FakeSession()
 
 
-def _submit_default(store: CharterProposalStore) -> str:
-    proposal = store.submit(
-        agent_id="agent-1",
-        decision_id="decision/dec-1",
-        action="send_feishu_message",
-        proposal_kind=ProposalKind.CONSIDER_FULL_AUTHORITY,
-        reason="Owner approved an external vendor reply twice in confirm_first",
-    )
-    return proposal.id
+@pytest.fixture
+def tenant_id() -> uuid.UUID:
+    return uuid.uuid4()
 
 
-class TestSubmitAndList:
-    def test_submit_creates_pending_proposal(self, store: CharterProposalStore) -> None:
-        proposal = store.submit(
+@pytest.fixture
+def now() -> datetime:
+    return datetime(2026, 5, 22, 12, 0, tzinfo=timezone.utc)
+
+
+class TestSubmit:
+    @pytest.mark.asyncio
+    async def test_submit_persists_row_with_pending_status(
+        self, session: _FakeSession, tenant_id: uuid.UUID, now: datetime
+    ) -> None:
+        store = CharterProposalStore(session, tenant_id=tenant_id, now=lambda: now)
+        proposal = await store.submit(
             agent_id="agent-1",
             decision_id="decision/dec-1",
             action="send_feishu_message",
-            proposal_kind=ProposalKind.TIGHTEN_TO_CONFIRM_FIRST,
-            reason="Owner rejected a full-authority send",
+            proposal_kind=ProposalKind.CONSIDER_FULL_AUTHORITY,
+            reason="Owner approved twice in confirm_first",
         )
         assert proposal.status == "pending"
         assert proposal.decided_at is None
-        assert proposal.decided_by is None
+        assert proposal.proposal_kind == "consider_full_authority"
+        assert len(session.added) == 1
+        assert session.added[0].tenant_id == tenant_id
+        assert session.flushes == 1
 
-    def test_list_pending_only_returns_open_proposals(self, store: CharterProposalStore) -> None:
-        proposal_id = _submit_default(store)
-        store.approve(proposal_id, by="alice")
-        assert store.list_pending() == []
 
-    def test_list_pending_filters_by_agent(self, store: CharterProposalStore) -> None:
-        _submit_default(store)
-        store.submit(
-            agent_id="agent-2",
-            decision_id="decision/dec-2",
-            action="post_to_plaza",
-            proposal_kind=ProposalKind.CONSIDER_FULL_AUTHORITY,
-            reason="agent-2 has cleared confirm_first 3x",
+class TestGetAndList:
+    @pytest.mark.asyncio
+    async def test_get_decodes_row_or_returns_none(
+        self, session: _FakeSession, tenant_id: uuid.UUID, now: datetime
+    ) -> None:
+        store = CharterProposalStore(session, tenant_id=tenant_id, now=lambda: now)
+        row_id = uuid.uuid4()
+        row = _Row(
+            id=row_id,
+            agent_id="agent-1",
+            decision_id="decision/dec-1",
+            action="send_feishu_message",
+            proposal_kind="consider_full_authority",
+            reason="repeat approval",
+            status="pending",
+            created_at=now,
+            decided_at=None,
+            decided_by=None,
+            decision_reason=None,
         )
-        pending_for_agent_1 = store.list_pending(agent_id="agent-1")
-        pending_for_agent_2 = store.list_pending(agent_id="agent-2")
-        assert len(pending_for_agent_1) == 1
-        assert len(pending_for_agent_2) == 1
-        assert pending_for_agent_1[0].agent_id == "agent-1"
+        session.queue(_ExecuteResult(scalar=row))
+        loaded = await store.get(str(row_id))
+        assert loaded is not None
+        assert loaded.id == str(row_id)
+        assert loaded.reason == "repeat approval"
+
+        session.queue(_ExecuteResult(scalar=None))
+        missing = await store.get(str(uuid.uuid4()))
+        assert missing is None
+
+    @pytest.mark.asyncio
+    async def test_list_pending_returns_rows(self, session: _FakeSession, tenant_id: uuid.UUID, now: datetime) -> None:
+        store = CharterProposalStore(session, tenant_id=tenant_id, now=lambda: now)
+        row = _Row(
+            id=uuid.uuid4(),
+            agent_id="agent-1",
+            decision_id="decision/dec-1",
+            action="send_feishu_message",
+            proposal_kind="consider_full_authority",
+            reason="r",
+            status="pending",
+            created_at=now,
+            decided_at=None,
+            decided_by=None,
+            decision_reason=None,
+        )
+        session.queue(_ExecuteResult(scalars=[row]))
+        pending = await store.list_pending(agent_id="agent-1")
+        assert len(pending) == 1
+        assert pending[0].agent_id == "agent-1"
 
 
 class TestApproveReject:
-    def test_approve_sets_status_and_metadata(self, store: CharterProposalStore) -> None:
-        proposal_id = _submit_default(store)
-        approved = store.approve(proposal_id, by="alice", decision_reason="LGTM")
+    @pytest.mark.asyncio
+    async def test_approve_sets_decision_metadata(
+        self, session: _FakeSession, tenant_id: uuid.UUID, now: datetime
+    ) -> None:
+        store = CharterProposalStore(session, tenant_id=tenant_id, now=lambda: now)
+        row = _Row(
+            id=uuid.uuid4(),
+            agent_id="agent-1",
+            decision_id="decision/dec-1",
+            action="x",
+            proposal_kind="consider_full_authority",
+            reason="r",
+            status="pending",
+            created_at=now,
+            decided_at=None,
+            decided_by=None,
+            decision_reason=None,
+        )
+        session.queue(
+            _ExecuteResult(scalar=row),
+            _ExecuteResult(),  # UPDATE statement
+        )
+        approved = await store.approve(str(row.id), by="alice", decision_reason="LGTM")
         assert approved.status == "approved"
         assert approved.decided_by == "alice"
-        assert approved.decided_at is not None
         assert approved.decision_reason == "LGTM"
+        assert approved.decided_at is not None
+        assert session.flushes >= 1
 
-    def test_reject_sets_status_and_metadata(self, store: CharterProposalStore) -> None:
-        proposal_id = _submit_default(store)
-        rejected = store.reject(proposal_id, by="alice", decision_reason="Still risky")
-        assert rejected.status == "rejected"
-        assert rejected.decision_reason == "Still risky"
+    @pytest.mark.asyncio
+    async def test_double_decision_raises(self, session: _FakeSession, tenant_id: uuid.UUID, now: datetime) -> None:
+        store = CharterProposalStore(session, tenant_id=tenant_id, now=lambda: now)
+        already_decided_row = _Row(
+            id=uuid.uuid4(),
+            agent_id="agent-1",
+            decision_id="d",
+            action="x",
+            proposal_kind="consider_full_authority",
+            reason="r",
+            status="approved",
+            created_at=now,
+            decided_at=now,
+            decided_by="alice",
+            decision_reason=None,
+        )
+        session.queue(_ExecuteResult(scalar=already_decided_row))
+        with pytest.raises(ProposalAlreadyDecided):
+            await store.approve(str(already_decided_row.id), by="alice")
 
-    def test_double_decision_raises(self, store: CharterProposalStore) -> None:
-        proposal_id = _submit_default(store)
-        store.approve(proposal_id, by="alice")
-        with pytest.raises(ProposalAlreadyDecided):
-            store.approve(proposal_id, by="alice")
-        with pytest.raises(ProposalAlreadyDecided):
-            store.reject(proposal_id, by="alice")
+    @pytest.mark.asyncio
+    async def test_decide_unknown_raises_keyerror(
+        self, session: _FakeSession, tenant_id: uuid.UUID, now: datetime
+    ) -> None:
+        store = CharterProposalStore(session, tenant_id=tenant_id, now=lambda: now)
+        session.queue(_ExecuteResult(scalar=None))
+        with pytest.raises(KeyError):
+            await store.approve(str(uuid.uuid4()), by="alice")
 
 
 class TestExpire:
-    def test_expire_stale_marks_old_pending_as_expired(self, store: CharterProposalStore) -> None:
-        old_time = datetime.now(timezone.utc) - timedelta(days=14)
-        proposal = store.submit(
+    @pytest.mark.asyncio
+    async def test_expire_stale_marks_old_pending(
+        self, session: _FakeSession, tenant_id: uuid.UUID, now: datetime
+    ) -> None:
+        store = CharterProposalStore(session, tenant_id=tenant_id, now=lambda: now)
+        old_row = _Row(
+            id=uuid.uuid4(),
             agent_id="agent-1",
-            decision_id="decision/old",
-            action="send_email",
-            proposal_kind=ProposalKind.CONSIDER_FULL_AUTHORITY,
+            decision_id="d",
+            action="x",
+            proposal_kind="consider_full_authority",
             reason="stale",
-            created_at=old_time,
+            status="pending",
+            created_at=now - timedelta(days=14),
+            decided_at=None,
+            decided_by=None,
+            decision_reason=None,
         )
-        recent_id = _submit_default(store)
-        expired_ids = store.expire_stale(max_age_days=7)
-        assert proposal.id in expired_ids
-        assert recent_id not in expired_ids
-        refreshed = store.get(proposal.id)
-        assert refreshed is not None
-        assert refreshed.status == "expired"
+        session.queue(
+            _ExecuteResult(scalars=[old_row]),
+            _ExecuteResult(),  # UPDATE
+        )
+        expired = await store.expire_stale(max_age_days=7)
+        assert expired == [str(old_row.id)]
 
 
-class TestReload:
-    def test_proposals_survive_store_reopen(self, db_path: Path) -> None:
-        first = CharterProposalStore(db_path)
-        proposal_id = _submit_default(first)
-        first.approve(proposal_id, by="alice")
+class TestEnums:
+    def test_proposal_status_values(self) -> None:
+        assert ProposalStatus.PENDING.value == "pending"
+        assert ProposalStatus.APPROVED.value == "approved"
+        assert ProposalStatus.REJECTED.value == "rejected"
+        assert ProposalStatus.EXPIRED.value == "expired"
 
-        second = CharterProposalStore(db_path)
-        loaded = second.get(proposal_id)
-        assert loaded is not None
-        assert loaded.status == "approved"
-        assert loaded.decided_by == "alice"
-
-
-class TestUnknown:
-    def test_get_unknown_returns_none(self, store: CharterProposalStore) -> None:
-        assert store.get("missing") is None
-
-    def test_approve_unknown_raises(self, store: CharterProposalStore) -> None:
-        with pytest.raises(KeyError):
-            store.approve("missing", by="alice")
+    def test_proposal_kind_values(self) -> None:
+        assert ProposalKind.CONSIDER_FULL_AUTHORITY.value == "consider_full_authority"
+        assert ProposalKind.TIGHTEN_TO_CONFIRM_FIRST.value == "tighten_to_confirm_first"

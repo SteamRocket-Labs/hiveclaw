@@ -109,11 +109,13 @@ async def test_prompt_builder_includes_active_packs_section(monkeypatch):
         system_prompt_suffix="",
         runtime_context=RuntimeContext(
             session=SessionContext(
-                active_packs=[{
-                    "name": "web_pack",
-                    "summary": "网页搜索与抓取能力",
-                    "tools": ["web_search", "firecrawl_fetch"],
-                }]
+                active_packs=[
+                    {
+                        "name": "web_pack",
+                        "summary": "网页搜索与抓取能力",
+                        "tools": ["web_search", "firecrawl_fetch"],
+                    }
+                ]
             )
         ),
     )
@@ -128,33 +130,39 @@ class TestModelAwareBudget:
 
     def test_default_budget_when_no_context_window(self) -> None:
         from app.runtime.prompt_builder import _compute_system_prompt_budget
+
         budget = _compute_system_prompt_budget(None)
         assert budget == 60000
 
     def test_default_budget_when_zero(self) -> None:
         from app.runtime.prompt_builder import _compute_system_prompt_budget
+
         assert _compute_system_prompt_budget(0) == 60000
 
     def test_small_model_gets_floor_budget(self) -> None:
         from app.runtime.prompt_builder import _compute_system_prompt_budget
+
         # 8K context → 8000 * 0.20 * 3.5 = 5600 → clamped to floor 15000
         budget = _compute_system_prompt_budget(8000)
         assert budget == 15000
 
     def test_large_model_gets_scaled_budget(self) -> None:
         from app.runtime.prompt_builder import _compute_system_prompt_budget
+
         # 200K context → 200000 * 0.20 * 3.5 = 140000 (within 180K ceiling)
         budget = _compute_system_prompt_budget(200000)
         assert budget == 140000
 
     def test_medium_model_proportional(self) -> None:
         from app.runtime.prompt_builder import _compute_system_prompt_budget
+
         # 64K context → 64000 * 0.20 * 3.5 = 44800
         budget = _compute_system_prompt_budget(64000)
         assert budget == 44800
 
     def test_assemble_trims_frozen_when_over_budget(self) -> None:
         from app.runtime.prompt_builder import PROMPT_CACHE_BOUNDARY, assemble_runtime_prompt
+
         frozen = "A" * 20000
         dynamic = "B" * 100
         # 8K model → budget 15000 → 20000 + 100 > 15000 → should trim
@@ -165,6 +173,7 @@ class TestModelAwareBudget:
 
     def test_assemble_no_trim_when_within_budget(self) -> None:
         from app.runtime.prompt_builder import assemble_runtime_prompt
+
         frozen = "A" * 1000
         dynamic = "B" * 100
         result = assemble_runtime_prompt(frozen, dynamic, context_window_tokens=200000)
@@ -185,6 +194,79 @@ def test_dynamic_suffix_trims_large_retrieval_but_keeps_suffix():
     assert len(suffix) < 3200
 
 
+def test_dynamic_suffix_includes_runtime_metadata_before_environment():
+    from app.runtime.prompt_builder import build_dynamic_prompt_suffix
+
+    suffix = build_dynamic_prompt_suffix(
+        runtime_metadata_context="## Runtime Metadata\nACTIVE_TRIGGER\nCurrent Conversation: Rocky",
+        user_name="Rocky",
+        channel="web",
+    )
+
+    assert "## Runtime Metadata" in suffix
+    assert "ACTIVE_TRIGGER" in suffix
+    assert suffix.index("## Runtime Metadata") < suffix.index("## Environment")
+
+
+@pytest.mark.asyncio
+async def test_runtime_metadata_lives_after_cache_boundary(monkeypatch):
+    from app.runtime.context import RuntimeContext
+    from app.runtime.prompt_builder import PROMPT_CACHE_BOUNDARY, build_runtime_prompt
+    from app.runtime.session import SessionContext
+
+    agent_id = uuid4()
+
+    async def fake_build_agent_context(
+        _agent_id,
+        _agent_name,
+        _role_description,
+        *,
+        current_user_name=None,
+        include_runtime_metadata=True,
+        budget_profile=None,
+    ):
+        del budget_profile
+        assert current_user_name == "Rocky"
+        assert include_runtime_metadata is False
+        return "FROZEN_AGENT_CONTEXT"
+
+    async def fake_runtime_context(_agent_id, *, current_user_name=None, budget_profile=None):
+        del budget_profile
+        assert _agent_id == agent_id
+        assert current_user_name == "Rocky"
+        return "## Runtime Metadata\nACTIVE_TRIGGER\nCurrent Conversation: Rocky"
+
+    async def fake_fetch_relevant_knowledge(query, tenant_id=None, **_kwargs):
+        assert query == "check status"
+        assert tenant_id == agent_id
+        return ""
+
+    monkeypatch.setattr("app.runtime.prompt_builder.build_agent_runtime_context", fake_runtime_context)
+    monkeypatch.setattr("app.runtime.prompt_builder.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
+
+    prompt = await build_runtime_prompt(
+        agent_id=agent_id,
+        agent_name="Ops Agent",
+        role_description="Operations",
+        messages=[{"role": "user", "content": "check status"}],
+        tenant_id=agent_id,
+        current_user_name="Rocky",
+        memory_context="",
+        system_prompt_suffix="",
+        runtime_context=RuntimeContext(
+            session=SessionContext(session_id="s-runtime", source="task", channel="web"),
+        ),
+        build_agent_context_fn=fake_build_agent_context,
+    )
+
+    frozen, dynamic = prompt.split(PROMPT_CACHE_BOUNDARY, 1)
+    assert "FROZEN_AGENT_CONTEXT" in frozen
+    assert "ACTIVE_TRIGGER" not in frozen
+    assert "Current Conversation: Rocky" not in frozen
+    assert "ACTIVE_TRIGGER" in dynamic
+    assert "Current Conversation: Rocky" in dynamic
+
+
 # ── P1-1b: Frozen prefix metering ──────────────────────────────
 
 
@@ -193,6 +275,7 @@ class TestFrozenPrefixMetering:
 
     def setup_method(self) -> None:
         from app.memory import metrics
+
         metrics.reset_all()
 
     def test_small_prefix_records_sample_no_warn(self) -> None:
@@ -225,10 +308,7 @@ class TestFrozenPrefixMetering:
         snap = metrics.snapshot()
         assert snap["frozen_prefix_warn_total"] == 1
         assert snap["frozen_prefix_overrun_total"] == 0
-        assert any(
-            "above warn threshold" in rec.message and rec.levelno == logging.WARNING
-            for rec in caplog.records
-        )
+        assert any("above warn threshold" in rec.message and rec.levelno == logging.WARNING for rec in caplog.records)
 
     def test_hard_limit_bumps_both_counters_logs_error(self, caplog) -> None:
         import logging
@@ -244,10 +324,7 @@ class TestFrozenPrefixMetering:
         snap = metrics.snapshot()
         assert snap["frozen_prefix_warn_total"] == 1
         assert snap["frozen_prefix_overrun_total"] == 1
-        assert any(
-            "exceeds hard limit" in rec.message and rec.levelno == logging.ERROR
-            for rec in caplog.records
-        )
+        assert any("exceeds hard limit" in rec.message and rec.levelno == logging.ERROR for rec in caplog.records)
 
     def test_exact_hard_limit_stays_warning_only(self, caplog) -> None:
         import logging
@@ -263,10 +340,7 @@ class TestFrozenPrefixMetering:
         snap = metrics.snapshot()
         assert snap["frozen_prefix_warn_total"] == 1
         assert snap["frozen_prefix_overrun_total"] == 0
-        assert any(
-            "above warn threshold" in rec.message and rec.levelno == logging.WARNING
-            for rec in caplog.records
-        )
+        assert any("above warn threshold" in rec.message and rec.levelno == logging.WARNING for rec in caplog.records)
         assert not any("exceeds hard limit" in rec.message for rec in caplog.records)
 
     def test_repeated_calls_accumulate_in_window(self) -> None:
@@ -321,14 +395,13 @@ class TestFrozenPrefixHardCap:
 
     def setup_method(self) -> None:
         from app.memory import metrics
+
         metrics.reset_all()
 
     def test_under_limit_no_trimming(self) -> None:
         from app.runtime.prompt_builder import build_frozen_prompt_prefix
 
-        prefix = build_frozen_prompt_prefix(
-            agent_context="ctx", skill_catalog="## Skills\n- a\n- b"
-        )
+        prefix = build_frozen_prompt_prefix(agent_context="ctx", skill_catalog="## Skills\n- a\n- b")
         assert "ctx" in prefix
         assert "## Skills" in prefix  # catalog kept when budget allows
 
@@ -340,14 +413,10 @@ class TestFrozenPrefixHardCap:
         )
 
         # 30K-char catalog blows past the 28K char hard cap on its own.
-        bloated_catalog = "## Skills\n" + "\n".join(
-            f"- skill_{i}: {'x' * 30}" for i in range(800)
-        )
+        bloated_catalog = "## Skills\n" + "\n".join(f"- skill_{i}: {'x' * 30}" for i in range(800))
         assert len(bloated_catalog) > _FROZEN_PREFIX_CHAR_LIMIT
 
-        prefix = build_frozen_prompt_prefix(
-            agent_context="tiny ctx", skill_catalog=bloated_catalog
-        )
+        prefix = build_frozen_prompt_prefix(agent_context="tiny ctx", skill_catalog=bloated_catalog)
 
         assert len(prefix) <= _FROZEN_PREFIX_CHAR_LIMIT
         assert "tiny ctx" in prefix  # base preserved
@@ -361,9 +430,7 @@ class TestFrozenPrefixHardCap:
 
         # 30K catalog → fully dropped. 3K catalog → fits leftover budget.
         catalog = "## Skills\n" + "\n".join(f"- skill_{i}" for i in range(150))
-        prefix = build_frozen_prompt_prefix(
-            agent_context="ctx", skill_catalog=catalog
-        )
+        prefix = build_frozen_prompt_prefix(agent_context="ctx", skill_catalog=catalog)
         # Base is small; catalog fits — should appear (full or trimmed).
         assert "## Skills" in prefix
 
@@ -397,9 +464,7 @@ class TestFrozenPrefixHardCap:
         )
 
         bloated_catalog = "## Skills\n" + "\n".join(f"- skill_{i}" for i in range(2000))
-        build_frozen_prompt_prefix(
-            agent_context="ctx", skill_catalog=bloated_catalog
-        )
+        build_frozen_prompt_prefix(agent_context="ctx", skill_catalog=bloated_catalog)
 
         snap = metrics.snapshot()
         assert snap["frozen_prefix_chars"]["max"] <= _FROZEN_PREFIX_CHAR_LIMIT

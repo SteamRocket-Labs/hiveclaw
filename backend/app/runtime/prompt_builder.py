@@ -15,7 +15,7 @@ from typing import Any, Awaitable, Callable
 from app.memory.metrics import record_frozen_prefix_metering
 from app.runtime.context_budget import ContextBudget, compute_context_budget, compute_system_prompt_budget
 from app.runtime.context import RuntimeContext
-from app.services.agent_context import build_agent_context
+from app.services.agent_context import build_agent_context, build_agent_runtime_context
 from app.services.knowledge_inject import fetch_relevant_knowledge
 from app.services.prompt_cache import PROMPT_CACHE_BOUNDARY  # noqa: F401
 from app.services.token_tracker import estimate_tokens_from_chars
@@ -54,8 +54,7 @@ _FROZEN_PREFIX_TOKEN_LIMIT = 8000
 _CHARS_PER_TOKEN_ESTIMATE = 3.5
 _FROZEN_PREFIX_CHAR_LIMIT = int(_FROZEN_PREFIX_TOKEN_LIMIT * _CHARS_PER_TOKEN_ESTIMATE)
 _FROZEN_PREFIX_TRIM_NOTICE = (
-    "\n\n...(frozen prefix trimmed to stay under cache budget — "
-    "load extra skills via the load_skill tool)"
+    "\n\n...(frozen prefix trimmed to stay under cache budget — load extra skills via the load_skill tool)"
 )
 
 
@@ -216,13 +215,18 @@ def _meter_frozen_prefix(prefix: str) -> None:
             "[PromptBuilder] frozen prefix exceeds hard limit: ~%d tokens (chars=%d, limit=%d) — "
             "prompt cache hit-rate will degrade and per-call cost will rise. "
             "Trim agent_context / system / tasks / tools sections.",
-            tokens, chars, _FROZEN_PREFIX_TOKEN_LIMIT,
+            tokens,
+            chars,
+            _FROZEN_PREFIX_TOKEN_LIMIT,
             extra=extra,
         )
     else:
         logger.warning(
             "[PromptBuilder] frozen prefix above warn threshold: ~%d tokens (chars=%d, warn=%d, limit=%d)",
-            tokens, chars, _FROZEN_PREFIX_TOKEN_WARN, _FROZEN_PREFIX_TOKEN_LIMIT,
+            tokens,
+            chars,
+            _FROZEN_PREFIX_TOKEN_WARN,
+            _FROZEN_PREFIX_TOKEN_LIMIT,
             extra=extra,
         )
 
@@ -242,6 +246,7 @@ def build_dynamic_prompt_suffix(
     active_packs: list[dict[str, Any]] | None = None,
     retrieval_context: str = "",
     continuity_context: str = "",
+    runtime_metadata_context: str = "",
     system_prompt_suffix: str = "",
     budget_profile: ContextBudget | None = None,
     latest_user_query: str = "",
@@ -282,6 +287,12 @@ def build_dynamic_prompt_suffix(
         continuity_block = _trim_block(continuity_context, budget_chars=continuity_budget)
         if continuity_block:
             parts.append(f"## Session Continuity\n{continuity_block}")
+
+    runtime_budget = getattr(budget_profile, "runtime_triggers_budget_chars", 3000)
+    if runtime_metadata_context:
+        runtime_block = _trim_block(runtime_metadata_context, budget_chars=runtime_budget)
+        if runtime_block:
+            parts.append(runtime_block)
 
     packs_budget = budget_profile.active_packs_budget_chars if budget_profile else _ACTIVE_PACKS_CHAR_BUDGET
     retrieval_budget = budget_profile.retrieval_budget_chars if budget_profile else _RETRIEVAL_CHAR_BUDGET
@@ -353,9 +364,14 @@ def assemble_runtime_prompt(
             the budget scales proportionally instead of using the fixed 60K default.
     """
     import logging
+
     _logger = logging.getLogger(__name__)
 
-    budget = budget_profile.system_prompt_budget_chars if budget_profile else _compute_system_prompt_budget(context_window_tokens)
+    budget = (
+        budget_profile.system_prompt_budget_chars
+        if budget_profile
+        else _compute_system_prompt_budget(context_window_tokens)
+    )
     prompt = _join_prompt_sections(frozen_prefix, dynamic_suffix)
 
     # P0.4 Observability: log prompt budget metrics
@@ -364,7 +380,11 @@ def assemble_runtime_prompt(
     _total_len = len(prompt)
     _logger.debug(
         "[PromptBuilder] Prompt budget: %d/%d chars (%d frozen + %d dynamic, ctx_window=%s)",
-        _total_len, budget, _frozen_len, _dynamic_len, context_window_tokens or "default",
+        _total_len,
+        budget,
+        _frozen_len,
+        _dynamic_len,
+        context_window_tokens or "default",
         extra={
             "metric": "prompt_budget",
             "frozen_chars": _frozen_len,
@@ -379,7 +399,10 @@ def assemble_runtime_prompt(
         overshoot = len(prompt) - budget
         _logger.warning(
             "[PromptBuilder] System prompt exceeds budget: %d chars (budget=%d, ctx_window=%s, overshoot=%d) — trimming frozen prefix",
-            len(prompt), budget, context_window_tokens or "default", overshoot,
+            len(prompt),
+            budget,
+            context_window_tokens or "default",
+            overshoot,
         )
         # Trim frozen prefix from the end, preserve the cache boundary + dynamic suffix.
         if dynamic_suffix:
@@ -451,6 +474,11 @@ async def build_runtime_prompt(
     _build_kwargs = {"current_user_name": current_user_name}
     if "budget_profile" in inspect.signature(build_context).parameters:
         _build_kwargs["budget_profile"] = budget_profile
+    if "include_runtime_metadata" in inspect.signature(build_context).parameters:
+        # Runtime metadata contains time, current user, and trigger state. It
+        # changes between turns and must not live in the session-stable frozen
+        # prefix, otherwise prompt-cache reuse can make it stale.
+        _build_kwargs["include_runtime_metadata"] = False
     agent_context = await build_context(
         agent_id,
         agent_name,
@@ -465,6 +493,7 @@ async def build_runtime_prompt(
 
     retrieval = ""
     continuity_context = ""
+    runtime_metadata_context = ""
     if agent_id and last_user_msg:
         _knowledge_kwargs = {}
         if "max_tokens" in inspect.signature(fetch_knowledge).parameters:
@@ -501,6 +530,16 @@ async def build_runtime_prompt(
         except Exception:
             continuity_context = ""
 
+    if agent_id:
+        try:
+            runtime_metadata_context = await build_agent_runtime_context(
+                agent_id,
+                current_user_name=current_user_name,
+                budget_profile=budget_profile,
+            )
+        except Exception:
+            runtime_metadata_context = ""
+
     active_packs = []
     if runtime_context and runtime_context.session.active_packs:
         active_packs = runtime_context.session.active_packs
@@ -509,6 +548,7 @@ async def build_runtime_prompt(
         active_packs=active_packs,
         memory_snapshot=memory_context,
         continuity_context=continuity_context,
+        runtime_metadata_context=runtime_metadata_context,
         retrieval_context=retrieval,
         system_prompt_suffix=system_prompt_suffix,
         budget_profile=budget_profile,

@@ -12,6 +12,8 @@ import uuid
 from pathlib import Path
 import asyncio
 
+from app.services.archetype import apply_archetype_defaults
+
 from app.api.skills import _fetch_github_directory, _get_github_token, _parse_github_url
 from app.config import get_settings
 from app.services.capability_reuse_service import reuse_existing_skill_for_agent
@@ -771,6 +773,18 @@ def _build_blueprint_preview_payload(arguments: dict) -> dict:
         arguments.get("owner_agency_charter"),
         allowed_keys=("full_authority", "confirm_first", "never_do"),
     )
+    archetype_filled = apply_archetype_defaults(
+        {
+            "role_description": role_description,
+            "primary_users": primary_users,
+            "core_outputs": core_outputs,
+            "company_charter": company_charter,
+            "owner_agency_charter": owner_agency_charter,
+        }
+    )
+    company_charter = archetype_filled["company_charter"]
+    owner_agency_charter = archetype_filled["owner_agency_charter"]
+    archetype = archetype_filled["archetype"]
     raw_requested_skill_names = _dedupe_strings(
         [item for item in _parse_list(arguments.get("skill_names")) if isinstance(item, str)]
     )
@@ -857,6 +871,7 @@ def _build_blueprint_preview_payload(arguments: dict) -> dict:
             "core_outputs": core_outputs,
             "personality": personality,
             "boundaries": boundaries,
+            "archetype": archetype,
             "company_charter": company_charter,
             "owner_agency_charter": owner_agency_charter,
             "skill_names": install_now_skill_names,

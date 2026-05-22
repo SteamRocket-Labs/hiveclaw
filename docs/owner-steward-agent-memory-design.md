@@ -1368,124 +1368,152 @@ backend/app/api/feishu*.py, backend/app/api/slack*.py, ... (all channel adapters
   PL2 outbound only when typed placeholder unmasking is explicitly authorized.
 ```
 
-## 17. Implementation Order
+## 17. Runtime-Gated Implementation Order
 
-Implementation order should follow one rule:
+Implementation order still follows the safety-first rule:
 
 ```text
-Build the memory safety substrate before making agents look more autonomous.
+Build the judgment substrate before making agents look more autonomous.
 ```
 
-If HR personality and first-person soul are built first, the product will feel better but the runtime will still lack privacy, lineage, form, activation, and owner/company accountability. That creates a dangerous illusion: the agent sounds like an elite employee before it has the control plane required to behave like one.
+The earlier phase list was directionally right, but too module-oriented. A phase is **not complete** when a file or class exists. A phase is complete only when the production runtime uses it, tests cover the intended boundary, and the behavior has a practical smoke proving that it helps the agent act more like a company elite employee.
 
-### Phase 0: Canonical Contract
+### 17.1 Phase Completion Contract
 
-Goal: make the target explicit without runtime behavior changes.
+Every phase must close with an evidence packet:
 
-- Finalize this document.
-- Define `MemoryControlPlane` as the umbrella contract over existing T0/T1/T2/T3/soul.
-- Define `AgencyCharter` schema.
-- Define `CompanyCharter` schema.
-- Define `PrincipalStack` schema.
-- Define `FeedbackSignal` metadata fields.
-- Define `ActionPreflight` decision contract.
-- Define frozen vs mutable soul sections.
-- Define `DecisionTrace` schema (reasoning / alternatives / situational_factors / charter_zone / preflight / sensitivity).
-- Define memory `Lifecycle` fields (id / version / parent_id / supersedes / superseded_by / status / expires_at / access_count).
-- Define `RetentionScore` formula constants (lambda, sigma, rho) per category.
-- Define `SensitivityLabel` set (PL1_public / PL2_pii / PL3_sensitive / PL4_credential) and per-level default policy table.
-- Define `Coordination` primitives schema (Lease / Signal / Checkpoint / Sentinel).
-- Define Form Contract lint rules.
+```text
+Phase Evidence Packet =
+  Code paths changed
+  + Runtime entrypoint wired
+  + Red/green tests
+  + Practical utility smoke
+  + Safety/regression notes
+  + Documentation update in this section
+```
 
-### Phase 1: Memory Safety Substrate
+Required fields:
 
-Goal: make every newly written memory safe, attributable, and inspectable before changing agent behavior.
+| Field | Meaning |
+|---|---|
+| `Runtime gate` | The production path that now must pass through this capability. |
+| `Tests` | Exact test command and pass/fail output. |
+| `Utility smoke` | A practical example showing the phase helps owner/company judgment, not just unit correctness. |
+| `Evidence refs` | File paths, test names, deployment id if deployed, or log/query evidence if runtime behavior was checked. |
+| `Residual risk` | What is still intentionally out of scope. |
 
-- Implement `services/principal_context.py` with platform / company / owner / creator / current user / delegating agent resolution.
-- Implement `services/privacy_layer.py` with `privacy_extractor`, PL1-PL4 classification, typed placeholders, and PrivacyStore reverse mapping.
-- Implement `memory/form_lint.py` and enforce self-contained write rules for new memory entries.
-- Add `sensitivity`, `evidence_refs`, `status`, `version`, `parent_id`, `supersedes`, `superseded_by`, `expires_at`, `access_count`, and `last_accessed` metadata to new T1/T2/T3 entries.
-- Implement `memory/retention.py` and an access log writer.
-- Reject PL4 writes before any memory layer; store only typed placeholder metadata when needed for audit.
-- Do not backfill old memory in this phase. Forward enforcement is enough.
+If a phase changes behavior that can call an LLM, experiments may use the configured DeepSeek V4 Pro runtime **only through a temporary environment variable** such as `DEEPSEEK_API_KEY`. Raw API keys must never be committed, logged, written to docs, or stored in memory.
 
-### Phase 2: Activation and Retrieval Control
+### Phase 1: Identity and Charter Substrate
 
-Goal: make memory retrieval owner-aware, company-aware, goal-aware, and sensitivity-aware.
+Goal: define who the agent serves, which company context it belongs to, and which charter boundaries govern its judgment.
 
-- Implement `memory/activation.py`.
-- Candidate retrieval still reads current T0/T2/T3/soul-compatible stores.
-- Rerank candidates using objective relevance, principal relevance, company relevance, relationship impact, open-loop pressure, consequence weight, recency, reinforcement, feedback, charter relevance, confidence, retention score, contradiction penalty, and sensitivity strip.
-- Apply `sensitivity_strip` based on current `PrincipalStack`.
-- Include activation reasons in prompt assembly for debuggability.
-- Bump `access_count` and `last_accessed` for activated entries, not for every candidate.
+- Implement `services/agency_charter.py` with `CompanyCharter`, `OwnerAgencyCharter`, and a resolved `AgentAccountabilityContext`.
+- Extend `PrincipalStack` usage so `direct_owner`, `company`, `creator`, `current_user`, and `delegating_agent` are explicit inputs to memory/action decisions.
+- Define charter zones as executable data: `full_authority`, `confirm_first`, `never_do`.
+- Provide a safe default charter for existing agents when no explicit charter exists.
+- Runtime gate: memory activation and action preflight can request a resolved accountability context instead of inventing identity from prompt text.
+- Utility smoke: given owner Alice and company Acme, the system can explain that the agent directly supports Alice while still escalating Acme charter conflicts.
 
-### Phase 3: Decision Trace and Feedback Learning
+### Phase 2: Memory Write Safety
 
-Goal: let agents learn from owner/company approval, rejection, correction, and unclear reactions by linking feedback back to the decision that created it.
+Goal: every newly written memory is safe, attributable, self-contained, and inspectable before it enters any durable layer.
 
-- Implement `services/decision_trace.py` and the `DecisionTrace` schema from Phase 0.
+- Apply `privacy_layer.classify_and_mask()` before new T0/T1/T2/T3 writes.
+- Reject PL4 credentials before persistence.
+- Apply `form_lint` to agent-authored durable facts.
+- Persist `sensitivity`, `evidence_refs`, `status`, `version`, `parent_id`, `supersedes`, `superseded_by`, `expires_at`, `access_count`, and `last_accessed` metadata for new entries.
+- Add retention/access logging for activated entries.
+- Runtime gate: `save_memory`, extract/write paths, and future T0/T2 writers must all use the same safety substrate.
+- Utility smoke: an API key is rejected; a self-contained owner preference is stored with sensitivity/status/version metadata.
+
+### Phase 3: Memory Read and Activation Runtime
+
+Goal: prompt memory retrieval is owner-aware, company-aware, goal-aware, and sensitivity-aware by default.
+
+- Build `ActivationContext` from the resolved accountability context, current objective/focus, company terms, owner terms, and current query.
+- Production `memory_service.build_memory_context()` must pass `activation_context` into `MemoryRetriever.retrieve()`.
+- Apply `sensitivity_strip` based on the current `PrincipalStack`.
+- Include activation reasons in prompt assembly.
+- Bump `access_count` and `last_accessed` only for activated entries.
+- Runtime gate: every prompt memory context assembled for an agent turn goes through activation unless explicitly running in a legacy compatibility mode.
+- Utility smoke: PL3 memory is omitted when current user is not the direct owner; the direct owner can activate it, and prompt output includes `why=...`.
+
+### Phase 4: Decision Trace and Action Preflight Loop
+
+Goal: every non-trivial action has a preflight judgment before execution and can later explain why it acted, asked, escalated, or refused.
+
+- Wire `ActionPreflightService` into tool/external-action execution boundaries.
+- Map the 5 boundary axes plus charter zone, company conflict, runtime permission, and sensitivity into `do | prepare_only | ask | refuse | escalate`.
+- Emit `DecisionTrace` for confirm-first, never-do, external-visible, irreversible, sensitive, or company-conflict actions.
+- Log preflight output into the trace.
+- Runtime gate: high-risk tool/action calls cannot bypass preflight even if prompt text says they are allowed.
+- Utility smoke: an external vendor reply becomes `ask`; a company charter conflict becomes `escalate`; a low-risk local summary becomes `do`.
+
+### Phase 5: Feedback Learning and Dream Calibration
+
+Goal: owner/company reactions update future judgment by linking feedback back to the decision that created it.
+
 - Add `reaction`, `polarity`, `source`, and `rationale_from_owner` to feedback entries.
 - Update `extract_agent.py` to classify feedback as `approved | rejected | questioned | corrected | unclear`.
-- Use `reaction=unclear` when the owner signal is ambiguous. Do not infer approval from silence.
-- Have high-risk, confirm-first, external-visible, irreversible, or sensitive actions emit a `DecisionTrace`.
-- Attach `refs=decision/<id>` when later feedback maps to a prior decision.
-- Extend `auto_dream.py` to read `decision_trace.refs <- feedback_signal` chains for charter calibration proposals.
+- Use `reaction=unclear` when the signal is ambiguous; never infer approval from silence.
+- Attach `refs=decision/<id>` when feedback maps to a prior decision.
+- Extend `auto_dream.py` to consume decision-feedback chains and propose charter/memory calibration.
+- Runtime gate: dream can propose boundary changes only from traced decisions plus explicit feedback.
+- Utility smoke: repeated approval can propose moving an action toward `full_authority`; rejection proposes tightening to `confirm_first`.
 
-### Phase 4: HR Creation and First-Person Charter
+### Phase 6: First-Person Soul and HR Creation
 
-Goal: make newly created agents visibly feel like company elite employees, after memory safety and activation are in place.
+Goal: newly created agents visibly and operationally feel like company elite employees after the safety and activation substrate exists.
 
 - Add archetype inference in HR soul refinement.
-- Generate default agency charter.
-- Inject company charter overlay.
-- Expose charter to owner for editing before final creation.
-- Render first-person soul with frozen Company Charter and Agency Charter.
-- Keep capability packs separate from archetype.
-- Soul / charter mutation must go through sketch -> owner-approved -> active.
+- Generate default company charter and owner agency charter.
+- Expose charter fields to owner/admin before final creation.
+- Render first-person soul with frozen Company Charter and Agency Charter sections.
+- Keep capability packs separate from archetype/personality.
+- Soul/charter mutation must go through sketch -> owner-approved -> active.
+- Runtime gate: new agent creation cannot silently create an agent with no accountability context.
+- Utility smoke: a new agent's first-person identity states the company, direct owner, allowed autonomy, confirm-first boundaries, and never-do boundaries.
 
-### Phase 5: Action Preflight
+### Phase 7: Coordination Runtime
 
-Goal: enforce boundary sense before tools/actions.
+Goal: `agency_charter` zones are enforced by runtime coordination primitives, not just prompt text.
 
-- Implement 5-axis action preflight.
-- Map preflight result to `do | prepare_only | ask | refuse`.
-- Include company-boundary conflict detection and escalation result.
-- Keep hard runtime/tool governance as final gate.
-- Log preflight results into `DecisionTrace`.
-- Make company charter conflicts escalate or refuse instead of being silently treated as owner preference.
+- Wire `Lease` into cross-agent delegation so duplicate work is serialized.
+- Wire `Signal` into delegation progress/handoff instead of synchronous return only.
+- Object-ify approval flows into `Checkpoint` with approver, deadline, escalation chain, and trace linkage.
+- Generalize triggers into `Sentinel` primitives that can produce Signal or Checkpoint events.
+- Map charter zone to runtime path: `full_authority -> Lease + Act`, `confirm_first -> Checkpoint`, `never_do -> Refuse + Audit`.
+- Runtime gate: `delegate_to_agent`, approval, and trigger execution all use coordination primitives for governed work.
+- Utility smoke: two agents cannot acquire the same task lease at once; confirm-first action creates a checkpoint and escalates on timeout.
 
-### Phase 6: Coordination Primitives Runtime
+### Phase 8: Proactive Employee Loop and Eval-Driven Policy Evolution
 
-Goal: `agency_charter` zones are enforced by runtime, not just prompt.
-
-- Implement `agents/coordination.py` with `Lease / Signal / Checkpoint / Sentinel`.
-- Wrap `delegate_to_agent` with Lease acquire + Signal channel.
-- Object-ify `approval.py` into Checkpoint with deadline + escalation chain.
-- Generalize `trigger_daemon.py` into Sentinel primitives.
-- Map charter zone -> coordination path: `full_authority` -> Lease+Act, `confirm_first` -> Checkpoint, `never_do` -> Refuse+Audit.
-- Link Lease / Signal / Checkpoint / Sentinel ids back to DecisionTrace and evidence refs.
-
-### Phase 7: Proactive Employee Loop
-
-Goal: evolve heartbeat from curation-only into controlled proactive employee check-in.
+Goal: heartbeat evolves from curation-only into a controlled proactive employee loop, and memory policy improves from replay evidence rather than hand-tuned constants.
 
 - Observe objectives, company charter, owner charter, open loops, recent feedback, relationship changes, Sentinel events, and Signal inbox.
-- Interpret which items matter to owner and company now.
-- Prepare low-risk artifacts, drafts, checks, summaries, and options.
-- Run preflight before any action.
-- Act only in full-authority zones; ask through Checkpoint in confirm-first zones; refuse never-do zones.
-- Record evidence and owner/company reaction.
-
-### Phase 8: Eval-Driven Memory Policy Evolution
-
-Goal: make retrieval and memory policy improve from evidence instead of hand-tuned constants.
-
+- Interpret owner/company importance and prepare low-risk artifacts first.
+- Run preflight before any proactive action.
+- Act only in full-authority zones; ask via Checkpoint in confirm-first zones; refuse never-do zones.
 - Add telemetry for zero-hit retrievals, over-broad retrievals, owner corrections, sensitivity strips, and activation reasons.
-- Build a replay set from anonymized decision traces and feedback signals.
+- Build replay sets from anonymized decision traces and feedback signals.
 - Tune activation weights, retention constants, context budgets, and retrieval profiles through guarded experiments.
 - Auto-revert policy changes when replay quality drops.
-- Keep policy evolution bounded: it may change retrieval weights and budgets, not company charter or owner authorization rules.
+- Runtime gate: proactive behavior must always produce evidence and must not mutate charter/company rules automatically.
+- Utility smoke: heartbeat can prepare a low-risk follow-up draft from an open loop, but external sending requires checkpoint approval.
+
+### 17.2 Phase Evidence Ledger
+
+| Phase | Status | Evidence packet |
+|---|---|---|
+| 1 Identity and Charter Substrate | Completed 2026-05-22 | Code paths: `backend/app/services/agency_charter.py`, `backend/tests/services/test_agency_charter.py`. Runtime gate available: downstream memory activation and action preflight can now consume `AgentAccountabilityContext` instead of reconstructing owner/company identity from prompt text. Tests: red run failed with `ModuleNotFoundError: No module named 'app.services.agency_charter'`; green run `pytest tests/services/test_agency_charter.py tests/services/test_principal_context.py tests/services/test_action_preflight.py tests/memory/test_activation_scoring.py tests/memory/test_retrieval_pipeline.py::test_activation_context_suppresses_pl3_when_current_user_is_not_owner tests/memory/test_retrieval_pipeline.py::test_activation_context_adds_reasons_and_updates_score` -> `15 passed in 0.25s`; lint `ruff check app/services/agency_charter.py tests/services/test_agency_charter.py && ruff format --check app/services/agency_charter.py tests/services/test_agency_charter.py` -> passed. Utility smoke: default context states the agent directly supports Alice within Acme's company charter, while an owner-authorized external refund commitment still exposes `company_boundary_conflict` and `company-admin` escalation. Residual risk: production memory/action runtime enforcement remains Phase 3/4. |
+| 2 Memory Write Safety | Partial | `save_memory` uses privacy/form metadata, but T0/T2/channel write paths are not fully gated. |
+| 3 Memory Read and Activation Runtime | Partial | `MemoryRetriever` supports `activation_context`, but production `memory_service` does not yet pass it. |
+| 4 Decision Trace and Action Preflight Loop | Partial | `ActionPreflightService` and `DecisionTraceStore` exist, but action runtime is not gated. |
+| 5 Feedback Learning and Dream Calibration | Not complete | Feedback metadata and dream calibration are not wired. |
+| 6 First-Person Soul and HR Creation | Not complete | Charter schema and HR creation wiring are not implemented. |
+| 7 Coordination Runtime | Partial | In-memory primitives exist, but delegation/approval/trigger runtime is not wired. |
+| 8 Proactive Employee Loop and Eval-Driven Policy Evolution | Not complete | No proactive employee loop or replay policy guard yet. |
 
 ## 18. Acceptance Criteria
 

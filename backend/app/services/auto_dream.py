@@ -59,6 +59,7 @@ def _dream_writeback_lock(agent_id: uuid.UUID) -> Iterator[None]:
         finally:
             os.close(lock_fd)
 
+
 # Consolidation gates — tuned for active agents that run heartbeats/triggers.
 # Both conditions must be met: enough time elapsed AND enough new sessions.
 MIN_HOURS_BETWEEN_DREAMS = 4  # B4 fix: lowered from 6 for better coverage
@@ -410,9 +411,7 @@ async def _dream_llm_consolidate(
         return None
 
     soul_path = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "soul.md"
-    soul_excerpt = (
-        soul_path.read_text(encoding="utf-8", errors="replace") if soul_path.exists() else ""
-    )
+    soul_excerpt = soul_path.read_text(encoding="utf-8", errors="replace") if soul_path.exists() else ""
     user_prompt = _build_dream_consolidation_user_prompt(agent_name, soul_excerpt, t3_files)
 
     # P1-W3-10 — autonomous LLM call surfaces in metrics so operators
@@ -734,8 +733,6 @@ def _apply_dream_decisions_unlocked(agent_id: uuid.UUID, decision: dict) -> dict
     return report
 
 
-
-
 # Dream gate expansion: heartbeat ticks also count toward triggering dreams
 MIN_HEARTBEAT_TICKS_SINCE_DREAM = 2
 _heartbeat_ticks_since_dream: dict[str, int] = {}
@@ -830,14 +827,8 @@ def _consolidate_t3_files(agent_id: uuid.UUID) -> dict[str, int]:
         # Cap: keep most recent (last N entries), but protected entries are sticky.
         protected_markers = protected_by_file.get(fname, [])
         if len(deduped) > _T3_MAX_ENTRIES_PER_FILE and protected_markers:
-            protected_lines = [
-                line for line in deduped
-                if any(marker in line for marker in protected_markers)
-            ]
-            non_protected = [
-                line for line in deduped
-                if not any(marker in line for marker in protected_markers)
-            ]
+            protected_lines = [line for line in deduped if any(marker in line for marker in protected_markers)]
+            non_protected = [line for line in deduped if not any(marker in line for marker in protected_markers)]
             # Keep all protected + last N-len(protected) non-protected.
             keep_non_protected = max(0, _T3_MAX_ENTRIES_PER_FILE - len(protected_lines))
             deduped = protected_lines + non_protected[-keep_non_protected:]
@@ -852,7 +843,11 @@ def _consolidate_t3_files(agent_id: uuid.UUID) -> dict[str, int]:
             _write_t3_file(agent_id, fname, new_content)
             logger.info(
                 "[Dream] T3 %s: %d → %d entries (%d removed, %d protected)",
-                fname, before, after, removed, len(protected_by_file.get(fname, [])),
+                fname,
+                before,
+                after,
+                removed,
+                len(protected_by_file.get(fname, [])),
             )
         stats[fname] = removed
 
@@ -970,9 +965,7 @@ def _promote_repeated_feedback_to_soul(agent_id: uuid.UUID, feedback_content: st
     soul_path = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "soul.md"
     existing = soul_path.read_text(encoding="utf-8", errors="replace") if soul_path.exists() else "# Soul\n\n"
     existing_lower = existing.lower()
-    new_clusters = [
-        c for c in promotable_clusters if str(c["content"]).lower() not in existing_lower
-    ]
+    new_clusters = [c for c in promotable_clusters if str(c["content"]).lower() not in existing_lower]
     if not new_clusters:
         return {"count": 0, "decisions": []}
 
@@ -1047,6 +1040,37 @@ def _promote_repeated_feedback_to_soul(agent_id: uuid.UUID, feedback_content: st
         for c in approved_clusters
     ]
     return {"count": len(new_behaviors), "decisions": decisions}
+
+
+def propose_charter_calibrations_from_feedback(decision_store) -> list[dict[str, str]]:
+    """Convert explicit decision-linked feedback into charter calibration proposals.
+
+    This helper is intentionally proposal-only. Dream may surface these entries,
+    but charter mutation still requires the owner-approved path.
+    """
+    proposals: list[dict[str, str]] = []
+    for candidate in decision_store.calibration_candidates():
+        reaction = candidate.get("reaction")
+        charter_zone = candidate.get("charter_zone")
+        if reaction == "approved" and charter_zone == "confirm_first":
+            proposals.append(
+                {
+                    "decision_id": candidate["decision_id"],
+                    "action": candidate["action"],
+                    "proposal": "consider_full_authority",
+                    "reason": "Owner approved a confirm-first action; repeated evidence may justify broader authority.",
+                }
+            )
+        elif reaction in {"rejected", "corrected", "questioned"} and charter_zone == "full_authority":
+            proposals.append(
+                {
+                    "decision_id": candidate["decision_id"],
+                    "action": candidate["action"],
+                    "proposal": "tighten_to_confirm_first",
+                    "reason": "Owner pushed back on a full-authority action; repeated evidence should narrow autonomy.",
+                }
+            )
+    return proposals
 
 
 def record_heartbeat_tick(agent_id: uuid.UUID) -> None:
@@ -1254,9 +1278,7 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
     before_count = _count_t3_entries(agent_id)
 
     # Step 1: LLM consolidation (graceful fallback to None on any error).
-    llm_decision: dict | None = await _dream_llm_consolidate(
-        agent_id, tenant_id, t3_files, agent_name
-    )
+    llm_decision: dict | None = await _dream_llm_consolidate(agent_id, tenant_id, t3_files, agent_name)
     llm_apply_report: dict = {}
     dream_reasoning = ""
     if llm_decision is not None:
@@ -1265,7 +1287,8 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
             llm_apply_report = _apply_dream_decisions(agent_id, llm_decision)
             logger.info(
                 "[Dream] LLM consolidation for %s applied: %s",
-                agent_id, llm_apply_report,
+                agent_id,
+                llm_apply_report,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("[Dream] Failed to apply LLM decisions for %s: %s", agent_id, exc)
@@ -1358,9 +1381,7 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
                 "promotion_decisions": promotion_decisions,
                 "dream_reasoning": dream_reasoning,
                 "llm_apply_report": llm_apply_report,
-                "cleanup_summary": (
-                    f"focus cleaned + blocklist reviewed; T2 truncated {t2_removed}"
-                ),
+                "cleanup_summary": (f"focus cleaned + blocklist reviewed; T2 truncated {t2_removed}"),
             },
         )
     except Exception as _hook_err:
@@ -1390,7 +1411,8 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
         if synced:
             logger.info(
                 "[AutoDream] Hindsight sync after dream: %d items (agent=%s)",
-                synced, agent_id,
+                synced,
+                agent_id,
             )
     except Exception as exc:
         logger.warning("[AutoDream] Post-dream Hindsight sync failed: %s", exc)
@@ -1454,6 +1476,7 @@ def _mark_dreamed(
         _persist_dream_state(uuid.UUID(hex=key))
     except Exception:
         logger.debug("[AutoDream] Failed to persist dream state for %s", key)
+
 
 # ── Focus cleanup: remove stale items from focus.md (断点 B8 fix) ──
 

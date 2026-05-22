@@ -98,9 +98,7 @@ class TestPatternExtract:
         assert len(results) == 1
 
     def test_max_8(self) -> None:
-        msgs = [
-            {"role": "user", "content": f"Don't use approach {i}, it's wrong and bad"} for i in range(20)
-        ]
+        msgs = [{"role": "user", "content": f"Don't use approach {i}, it's wrong and bad"} for i in range(20)]
         results = _pattern_extract(msgs)
         assert len(results) <= 8
 
@@ -175,9 +173,11 @@ class TestBuildConversationText:
 
     def test_tool_messages(self) -> None:
         msgs = [
-            {"role": "assistant", "content": "Searching...", "tool_calls": [
-                {"id": "tc1", "function": {"name": "web_search", "arguments": "{}"}}
-            ]},
+            {
+                "role": "assistant",
+                "content": "Searching...",
+                "tool_calls": [{"id": "tc1", "function": {"name": "web_search", "arguments": "{}"}}],
+            },
             {"role": "tool", "tool_call_id": "tc1", "content": "Found 5 results"},
         ]
         text = _build_conversation_text(msgs)
@@ -185,9 +185,11 @@ class TestBuildConversationText:
 
     def test_skips_low_value_tools(self) -> None:
         msgs = [
-            {"role": "assistant", "content": "", "tool_calls": [
-                {"id": "tc1", "function": {"name": "get_current_time", "arguments": "{}"}}
-            ]},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "tc1", "function": {"name": "get_current_time", "arguments": "{}"}}],
+            },
             {"role": "tool", "tool_call_id": "tc1", "content": "2026-04-06T10:00:00Z"},
         ]
         text = _build_conversation_text(msgs)
@@ -233,6 +235,34 @@ class TestParseExtractions:
         results = _parse_extractions(raw)
         assert len(results) == 2
 
+    def test_feedback_extraction_adds_reaction_metadata(self) -> None:
+        raw = (
+            "[feedback][ev=user_stated][refs=decision/dec-1] "
+            "User approved asking before sending the external vendor reply"
+        )
+        results = _parse_extractions(raw)
+
+        assert results == [
+            {
+                "category": "feedback",
+                "content": "User approved asking before sending the external vendor reply",
+                "evidence": "user_stated",
+                "source_refs": "decision/dec-1",
+                "reaction": "approved",
+                "polarity": "positive",
+                "feedback_source": "direct_owner",
+                "rationale_from_owner": "User approved asking before sending the external vendor reply",
+                "decision_ref": "decision/dec-1",
+            }
+        ]
+
+    def test_feedback_extraction_keeps_ambiguous_signal_unclear(self) -> None:
+        raw = "[feedback][ev=user_stated] User mentioned the external vendor reply"
+        results = _parse_extractions(raw)
+
+        assert results[0]["reaction"] == "unclear"
+        assert results[0]["polarity"] == "neutral"
+
 
 class TestExtractPromptContract:
     def test_prompt_blocks_external_instruction_following(self) -> None:
@@ -258,6 +288,32 @@ class TestAppendToLearnings:
         content = filepath.read_text()
         assert "User prefers concise output" in content
         assert "[w=1.00][src=web][cat=feedback]" in content
+
+    def test_persists_feedback_reaction_metadata(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
+        with patch("app.services.extract_agent.get_settings") as mock:
+            mock.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
+            written = _append_to_learnings(
+                agent_id,
+                [
+                    {
+                        "category": "feedback",
+                        "content": "User corrected the vendor reply tone",
+                        "reaction": "corrected",
+                        "polarity": "negative",
+                        "feedback_source": "direct_owner",
+                        "rationale_from_owner": "Tone was too aggressive",
+                        "decision_ref": "decision/dec-2",
+                    }
+                ],
+                source="web",
+            )
+
+        content = (tmp_agent_dir / str(agent_id) / "memory" / "learnings" / "insights.md").read_text()
+        assert written == 1
+        assert "[reaction=corrected]" in content
+        assert "[polarity=negative]" in content
+        assert "[feedback_source=direct_owner]" in content
+        assert "[decision_ref=decision/dec-2]" in content
 
     def test_writes_errors(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
         with patch("app.services.extract_agent.get_settings") as mock:
@@ -329,7 +385,10 @@ class TestExtractAgent:
         mock_llm.assert_not_called()
 
     async def test_pattern_fallback_when_no_tenant(
-        self, extractor: ExtractAgent, agent_id: uuid.UUID, tmp_agent_dir: Path,
+        self,
+        extractor: ExtractAgent,
+        agent_id: uuid.UUID,
+        tmp_agent_dir: Path,
     ) -> None:
         """Without tenant_id, LLM is skipped → pattern fallback."""
         with patch("app.services.extract_agent.get_settings") as mock:
@@ -345,7 +404,10 @@ class TestExtractAgent:
         assert "mock" in filepath.read_text().lower() or "database" in filepath.read_text().lower()
 
     async def test_llm_path(
-        self, extractor: ExtractAgent, agent_id: uuid.UUID, tmp_agent_dir: Path,
+        self,
+        extractor: ExtractAgent,
+        agent_id: uuid.UUID,
+        tmp_agent_dir: Path,
     ) -> None:
         """LLM extraction writes to T2."""
         tenant_id = uuid.uuid4()
@@ -406,7 +468,9 @@ class TestExtractAgent:
         await extractor.drain(agent_id, timeout_s=1.0)
 
     async def test_drain_timeout_does_not_cancel_in_flight_task(
-        self, extractor: ExtractAgent, agent_id: uuid.UUID,
+        self,
+        extractor: ExtractAgent,
+        agent_id: uuid.UUID,
     ) -> None:
         """A drain timeout should stop waiting, not cancel the extractor task itself."""
         key = str(agent_id)
@@ -445,7 +509,9 @@ class TestExtractAgent:
         key = str(agent_id)
         with patch("app.services.extract_agent._append_to_learnings", return_value=1):
             extractor.schedule_extract(
-                agent_id, [{"role": "user", "content": "Don't use mocks, always use real DB"}], source="web",
+                agent_id,
+                [{"role": "user", "content": "Don't use mocks, always use real DB"}],
+                source="web",
             )
             assert key in extractor._in_flight
             await extractor.drain(agent_id, timeout_s=5.0)
@@ -461,17 +527,23 @@ class TestExtractAgent:
         assert key not in extractor._in_flight
 
     async def test_back_to_back_schedule_does_not_orphan_drain(
-        self, extractor: ExtractAgent, agent_id: uuid.UUID,
+        self,
+        extractor: ExtractAgent,
+        agent_id: uuid.UUID,
     ) -> None:
         """Two rapid schedule_extract calls must not cause drain() to miss the second task."""
         key = str(agent_id)
         with patch("app.services.extract_agent._append_to_learnings", return_value=1):
             extractor.schedule_extract(
-                agent_id, [{"role": "user", "content": "Don't use mocks ever in tests"}], source="web",
+                agent_id,
+                [{"role": "user", "content": "Don't use mocks ever in tests"}],
+                source="web",
             )
             task1 = extractor._in_flight[key]
             extractor.schedule_extract(
-                agent_id, [{"role": "user", "content": "Always use real DB for integration"}], source="web",
+                agent_id,
+                [{"role": "user", "content": "Always use real DB for integration"}],
+                source="web",
             )
             task2 = extractor._in_flight[key]
             assert task2 is not task1
@@ -484,7 +556,11 @@ class TestExtractAgent:
     # ── P0-2a: durable extract_queue integration ────────────────────────────
 
     async def test_schedule_extract_enqueues_durable_entry_and_marks_done_on_success(
-        self, extractor: ExtractAgent, agent_id: uuid.UUID, tmp_path: Path, monkeypatch,
+        self,
+        extractor: ExtractAgent,
+        agent_id: uuid.UUID,
+        tmp_path: Path,
+        monkeypatch,
     ) -> None:
         """schedule_extract must persist a queue entry, then delete it on success."""
         from app.config import get_settings
@@ -513,7 +589,11 @@ class TestExtractAgent:
         assert list(queue_root.glob("*.json")) == []
 
     async def test_schedule_extract_leaves_entry_on_task_failure(
-        self, extractor: ExtractAgent, agent_id: uuid.UUID, tmp_path: Path, monkeypatch,
+        self,
+        extractor: ExtractAgent,
+        agent_id: uuid.UUID,
+        tmp_path: Path,
+        monkeypatch,
     ) -> None:
         """If the underlying extract() task raises, the queue entry must remain
         for P0-2b startup replay rather than being silently dropped."""
@@ -543,7 +623,11 @@ class TestExtractAgent:
         assert remaining[0].source == "web"
 
     async def test_schedule_extract_continues_when_enqueue_fails(
-        self, extractor: ExtractAgent, agent_id: uuid.UUID, monkeypatch, caplog,
+        self,
+        extractor: ExtractAgent,
+        agent_id: uuid.UUID,
+        monkeypatch,
+        caplog,
     ) -> None:
         """If durable enqueue fails (FS error), schedule_extract still runs the
         in-process task — degrading to the pre-P0-2a behaviour rather than
@@ -568,7 +652,11 @@ class TestExtractAgent:
         # Task itself ran — no exception propagated to caller.
 
     async def test_schedule_extract_strict_durability_returns_false_without_in_memory_task(
-        self, extractor: ExtractAgent, agent_id: uuid.UUID, monkeypatch, caplog,
+        self,
+        extractor: ExtractAgent,
+        agent_id: uuid.UUID,
+        monkeypatch,
+        caplog,
     ) -> None:
         """Replay calls require a fresh durable entry before dropping the old one."""
         from app.services import extract_queue
@@ -662,10 +750,7 @@ class TestReplayMessagesFromT0:
         assert "5 results" in msgs[2]["content"]
 
     def test_replays_multi_turn(self, tmp_path: Path) -> None:
-        body = (
-            "## Turn 1\n**User**: q1\n**Agent**: a1\n"
-            "## Turn 2\n**User**: q2\n**Agent**: a2\n"
-        )
+        body = "## Turn 1\n**User**: q1\n**Agent**: a1\n## Turn 2\n**User**: q2\n**Agent**: a2\n"
         path = _write_chat_md(tmp_path, session_id="s3", body=body)
         msgs = replay_messages_from_t0(path)["messages"]
         assert [m["content"] for m in msgs] == ["q1", "a1", "q2", "a2"]
@@ -758,12 +843,13 @@ class TestAuditAndBackfill:
             )
 
             fake_extractions = [{"category": "feedback", "content": "prefer concise answers"}]
-            with patch(
-                "app.services.extract_agent._pattern_extract",
-                return_value=fake_extractions,
-            ), patch(
-                "app.services.extract_agent._append_to_learnings", return_value=1
-            ) as mock_append:
+            with (
+                patch(
+                    "app.services.extract_agent._pattern_extract",
+                    return_value=fake_extractions,
+                ),
+                patch("app.services.extract_agent._append_to_learnings", return_value=1) as mock_append,
+            ):
                 report = await backfill_missing_extractions(agent_id, days=30)
 
             assert report["extracted"] >= 1

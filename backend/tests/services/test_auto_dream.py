@@ -185,9 +185,7 @@ class TestUpsertSoulSection:
 
     def test_appends_to_existing_section(self, tmp_path: Path) -> None:
         soul_path = tmp_path / "soul.md"
-        soul_path.write_text(
-            "# Soul\n\n## Learned Behaviors\n- always ask first\n", encoding="utf-8"
-        )
+        soul_path.write_text("# Soul\n\n## Learned Behaviors\n- always ask first\n", encoding="utf-8")
         added = _upsert_soul_section(soul_path, "Learned Behaviors", ["verify after each step"])
         assert added == 1
         content = soul_path.read_text(encoding="utf-8")
@@ -196,9 +194,7 @@ class TestUpsertSoulSection:
 
     def test_dedup_skips_existing_entry(self, tmp_path: Path) -> None:
         soul_path = tmp_path / "soul.md"
-        soul_path.write_text(
-            "# Soul\n\n## Learned Behaviors\n- Always Ask First\n", encoding="utf-8"
-        )
+        soul_path.write_text("# Soul\n\n## Learned Behaviors\n- Always Ask First\n", encoding="utf-8")
         added = _upsert_soul_section(soul_path, "Learned Behaviors", ["always ask first"])
         # Case-insensitive dedup: nothing new.
         assert added == 0
@@ -209,9 +205,7 @@ class TestApplyDreamDecisions:
         agent_id = uuid.uuid4()
         agent_dir = tmp_path / str(agent_id)
         (agent_dir / "memory").mkdir(parents=True)
-        (agent_dir / "soul.md").write_text(
-            "# Soul\n\n## Identity\n- Name: Test\n", encoding="utf-8"
-        )
+        (agent_dir / "soul.md").write_text("# Soul\n\n## Identity\n- Name: Test\n", encoding="utf-8")
         return agent_id
 
     def test_writes_soul_promotions_into_targeted_sections(self, tmp_path: Path) -> None:
@@ -358,9 +352,7 @@ class TestConsolidateRespectsPreservation:
         lines = [protected_line]
         for i in range(60):
             lines.append(f"- [2026-04-{(i % 28) + 1:02d}] routine observation {i}")
-        (mem_dir / "feedback.md").write_text(
-            "# Feedback\n\n" + "\n".join(lines) + "\n", encoding="utf-8"
-        )
+        (mem_dir / "feedback.md").write_text("# Feedback\n\n" + "\n".join(lines) + "\n", encoding="utf-8")
 
         # Write preservation sidecar flagging the foundational line.
         import json
@@ -392,9 +384,7 @@ class TestConsolidateRespectsPreservation:
         for i in range(60):
             unique = rnd.randbytes(12).hex()
             lines.append(f"- [2026-04-{(i % 28) + 1:02d}] {unique}")
-        (mem_dir / "feedback.md").write_text(
-            "# Feedback\n\n" + "\n".join(lines) + "\n", encoding="utf-8"
-        )
+        (mem_dir / "feedback.md").write_text("# Feedback\n\n" + "\n".join(lines) + "\n", encoding="utf-8")
 
         with patch("app.services.auto_dream.get_settings") as mock_settings:
             mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
@@ -416,13 +406,16 @@ class TestRunDreamIntegration:
         mem_dir = tmp_path / str(agent_id) / "memory"
         mem_dir.mkdir(parents=True)
         (tmp_path / str(agent_id) / "soul.md").write_text("# Soul\n\n## Identity\n", encoding="utf-8")
-        (mem_dir / "feedback.md").write_text(
-            "# Feedback\n\n- [2026-04-10] prefer concise\n", encoding="utf-8"
-        )
+        (mem_dir / "feedback.md").write_text("# Feedback\n\n- [2026-04-10] prefer concise\n", encoding="utf-8")
 
-        with patch("app.services.auto_dream.get_settings") as mock_settings, \
-             patch("app.services.auto_dream._dream_llm_consolidate", return_value=None) as mock_llm, \
-             patch("app.services.auto_dream._read_all_t3", return_value={"feedback.md": "# Feedback\n\n- [2026-04-10] prefer concise\n"}):
+        with (
+            patch("app.services.auto_dream.get_settings") as mock_settings,
+            patch("app.services.auto_dream._dream_llm_consolidate", return_value=None) as mock_llm,
+            patch(
+                "app.services.auto_dream._read_all_t3",
+                return_value={"feedback.md": "# Feedback\n\n- [2026-04-10] prefer concise\n"},
+            ),
+        ):
             mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
             result = await run_dream(agent_id, tenant_id)
 
@@ -438,9 +431,7 @@ class TestRunDreamIntegration:
         tenant_id = uuid.uuid4()
         mem_dir = tmp_path / str(agent_id) / "memory"
         mem_dir.mkdir(parents=True)
-        (tmp_path / str(agent_id) / "soul.md").write_text(
-            "# Soul\n\n## Identity\n", encoding="utf-8"
-        )
+        (tmp_path / str(agent_id) / "soul.md").write_text("# Soul\n\n## Identity\n", encoding="utf-8")
         (mem_dir / "feedback.md").write_text(
             "# Feedback\n\n- [2026-04-10] user always prefers concise output\n",
             encoding="utf-8",
@@ -463,8 +454,10 @@ class TestRunDreamIntegration:
         async def fake_llm(*_args, **_kwargs):
             return fake_decision
 
-        with patch("app.services.auto_dream.get_settings") as mock_settings, \
-             patch("app.services.auto_dream._dream_llm_consolidate", side_effect=fake_llm):
+        with (
+            patch("app.services.auto_dream.get_settings") as mock_settings,
+            patch("app.services.auto_dream._dream_llm_consolidate", side_effect=fake_llm),
+        ):
             mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
             await run_dream(agent_id, tenant_id)
 
@@ -491,7 +484,9 @@ class TestDreamSystemPromptStructure:
     def test_system_prompt_demands_json_only(self) -> None:
         # Guardrail against LLM wrapping output in prose or code fences.
         assert "No prose" in _AUTO_DREAM_SYSTEM_PROMPT or "no prose" in _AUTO_DREAM_SYSTEM_PROMPT
-        assert "no code fences" in _AUTO_DREAM_SYSTEM_PROMPT.lower() or "no markdown" in _AUTO_DREAM_SYSTEM_PROMPT.lower()
+        assert (
+            "no code fences" in _AUTO_DREAM_SYSTEM_PROMPT.lower() or "no markdown" in _AUTO_DREAM_SYSTEM_PROMPT.lower()
+        )
 
 
 class TestDreamUserPromptTemplateStructure:
@@ -601,9 +596,7 @@ class TestDreamUserPromptBuilder:
         assert "<few_shot_example_1>" in out
 
     def test_builder_truncates_long_soul(self) -> None:
-        out = _build_dream_consolidation_user_prompt(
-            "A", "X" * 5000, {"feedback.md": "Y"}
-        )
+        out = _build_dream_consolidation_user_prompt("A", "X" * 5000, {"feedback.md": "Y"})
         assert "truncated" in out
 
     def test_builder_handles_no_t3_files(self) -> None:
@@ -624,3 +617,38 @@ def test_dream_consolidator_template_is_loaded_into_prompt() -> None:
     assert "source_refs" in out
     assert "rollback_ref" in out
     assert "dream may propose candidates" in out.lower()
+
+
+def test_feedback_decision_chains_propose_charter_calibration_without_mutation() -> None:
+    from app.services.auto_dream import propose_charter_calibrations_from_feedback
+    from app.services.decision_trace import DecisionTraceStore
+
+    store = DecisionTraceStore()
+    decision = store.record_decision(
+        action="send external vendor reply",
+        chosen="ask",
+        reasoning="External-visible reply needed owner confirmation.",
+        alternatives_considered=["send directly"],
+        situational_factors=["charter_confirm_first"],
+        charter_zone="confirm_first",
+        preflight={"decision": "ask"},
+        sensitivity="PL1_public",
+    )
+    store.record_feedback(
+        decision_id=decision.id,
+        reaction="approved",
+        polarity="positive",
+        source="direct_owner",
+        rationale_from_owner="Asking first was correct this time.",
+    )
+
+    proposals = propose_charter_calibrations_from_feedback(store)
+
+    assert proposals == [
+        {
+            "decision_id": decision.id,
+            "action": "send external vendor reply",
+            "proposal": "consider_full_authority",
+            "reason": "Owner approved a confirm-first action; repeated evidence may justify broader authority.",
+        }
+    ]

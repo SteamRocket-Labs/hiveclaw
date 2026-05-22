@@ -269,6 +269,11 @@ def parse_t2_entry_line(
         "access_count",
         "last_accessed",
         "retention_score",
+        "reaction",
+        "polarity",
+        "feedback_source",
+        "rationale_from_owner",
+        "decision_ref",
     ):
         if metadata.get(key):
             parsed[key] = metadata[key]
@@ -307,6 +312,7 @@ def append_t2_entries(
         )
         if decision.rejected:
             continue
+        metadata = {**decision.metadata, **_feedback_metadata(extraction)}
         grouped.setdefault(t2_target_file(category), []).append(
             format_t2_entry(
                 category=decision.category,
@@ -319,7 +325,7 @@ def append_t2_entries(
                 source_refs=source_refs,
                 novelty=extraction.get("novelty") or extraction.get("nov"),
                 reusability=extraction.get("reusability") or extraction.get("reuse"),
-                metadata=decision.metadata,
+                metadata=metadata,
             )
         )
 
@@ -355,6 +361,17 @@ def append_t2_entries(
         written += len(new_lines)
 
     return written
+
+
+def _feedback_metadata(extraction: dict[str, str]) -> dict[str, str]:
+    if (extraction.get("category") or "").strip().lower() != "feedback":
+        return {}
+    keys = ("reaction", "polarity", "feedback_source", "rationale_from_owner", "decision_ref")
+    return {key: _sanitize_meta(str(extraction[key])) for key in keys if extraction.get(key)}
+
+
+def _sanitize_meta(value: str) -> str:
+    return " ".join(value.replace("[", "(").replace("]", ")").split())
 
 
 def _infer_category_from_file(filename: str) -> str:

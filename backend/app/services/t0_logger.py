@@ -36,8 +36,10 @@ from sqlalchemy import select
 
 from app.config import get_settings
 from app.database import async_session
+from app.memory.form_lint import lint_memory_form
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
+from app.services.privacy_layer import PrivacyLayer, PrivacyStore
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +53,37 @@ _SYSTEM_TYPES: frozenset[str] = frozenset({"heartbeat", "dream"})
 _ARTIFACT_THRESHOLD_CHARS = 8000
 _ARTIFACT_PREVIEW_CHARS = 500
 _ARTIFACT_REFERENCE_PREFIX = "[artifact: "
+
+_T0_FRONTMATTER_BLOCK_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
+_T0_LINT_SAMPLE_CHARS = 4000
+
+
+def _apply_t0_privacy_gate(content: str) -> str:
+    """Phase 10: mask credentials and annotate T0 frontmatter with sensitivity + form lint.
+
+    T0 must not durably store PL4 credentials. PL2/PL3 content is preserved so
+    the behavior log remains faithful for replay, but the frontmatter now
+    carries `t0_sensitivity` so downstream extract/retriever can route by it,
+    and `t0_form_warnings` flags pronoun/relative-time fragments worth
+    rewriting before they reach T2.
+    """
+    if not content:
+        return content
+    layer = PrivacyLayer(PrivacyStore())
+    decision = layer.classify_and_mask(content)
+    text = decision.sanitized_text
+    lint = lint_memory_form(text[:_T0_LINT_SAMPLE_CHARS])
+    warnings = sorted({violation.code for violation in lint.violations if violation.code != "empty"})
+
+    inject_lines = [f"t0_sensitivity: {decision.sensitivity.value}"]
+    if warnings:
+        inject_lines.append(f"t0_form_warnings: [{', '.join(warnings)}]")
+    inject = "\n".join(inject_lines)
+
+    match = _T0_FRONTMATTER_BLOCK_RE.match(text)
+    if match:
+        return f"---\n{match.group(1)}\n{inject}\n---\n{text[match.end() :]}"
+    return f"---\n{inject}\n---\n\n{text}"
 
 
 def _category_of(behavior_type: str) -> str:
@@ -234,9 +267,7 @@ def _render_messages_with_tools(
                         result = fallback_results[fallback_idx]
                         fallback_idx += 1
                     tool_lines.append(
-                        _render_tool_call_with_result(
-                            tc, result, max_args=max_args, max_result=max_result
-                        )
+                        _render_tool_call_with_result(tc, result, max_args=max_args, max_result=max_result)
                     )
                 if tool_lines:
                     body_parts.append("**Tools**:\n" + "\n".join(tool_lines))
@@ -296,15 +327,17 @@ def _format_chat_log(messages: list[dict], metadata: dict[str, Any]) -> str:
                 if name and name not in tools_used:
                     tools_used.append(name)
 
-    front = _yaml_frontmatter({
-        "type": "chat",
-        "session_id": session_id,
-        "source": source,
-        "user": user_name,
-        "started": started_at.isoformat(),
-        "turns": turn_count,
-        "tools": tools_used or [],
-    })
+    front = _yaml_frontmatter(
+        {
+            "type": "chat",
+            "session_id": session_id,
+            "source": source,
+            "user": user_name,
+            "started": started_at.isoformat(),
+            "turns": turn_count,
+            "tools": tools_used or [],
+        }
+    )
 
     body = _render_messages_with_tools(messages, start_with_user_turn=True)
     errors = _extract_errors_section(messages)
@@ -315,14 +348,16 @@ def _format_chat_log(messages: list[dict], metadata: dict[str, Any]) -> str:
 def _format_trigger_log(messages: list[dict], metadata: dict[str, Any]) -> str:
     """Format a trigger execution as T0 MD with full tool chain."""
     now = _coerce_datetime(metadata.get("executed_at")) or datetime.now(timezone.utc)
-    front = _yaml_frontmatter({
-        "type": "trigger",
-        "trigger_name": metadata.get("trigger_name", "unknown"),
-        "trigger_type": metadata.get("trigger_type", "unknown"),
-        "executed": now.isoformat(),
-        "status": metadata.get("status", "unknown"),
-        "duration_ms": metadata.get("duration_ms", 0),
-    })
+    front = _yaml_frontmatter(
+        {
+            "type": "trigger",
+            "trigger_name": metadata.get("trigger_name", "unknown"),
+            "trigger_type": metadata.get("trigger_type", "unknown"),
+            "executed": now.isoformat(),
+            "status": metadata.get("status", "unknown"),
+            "duration_ms": metadata.get("duration_ms", 0),
+        }
+    )
 
     instruction = metadata.get("instruction", "")
     result = metadata.get("result", "")
@@ -346,14 +381,16 @@ def _format_trigger_log(messages: list[dict], metadata: dict[str, Any]) -> str:
 def _format_delegation_log(messages: list[dict], metadata: dict[str, Any]) -> str:
     """Format a delegation execution as T0 MD with full tool chain."""
     now = _coerce_datetime(metadata.get("delegated_at")) or datetime.now(timezone.utc)
-    front = _yaml_frontmatter({
-        "type": "delegation",
-        "from": metadata.get("from_agent", "unknown"),
-        "to": metadata.get("to_agent", "unknown"),
-        "task": metadata.get("task", ""),
-        "delegated": now.isoformat(),
-        "status": metadata.get("status", "unknown"),
-    })
+    front = _yaml_frontmatter(
+        {
+            "type": "delegation",
+            "from": metadata.get("from_agent", "unknown"),
+            "to": metadata.get("to_agent", "unknown"),
+            "task": metadata.get("task", ""),
+            "delegated": now.isoformat(),
+            "status": metadata.get("status", "unknown"),
+        }
+    )
 
     task_text = metadata.get("task", "")
     result = metadata.get("result", "")
@@ -382,15 +419,17 @@ def _format_heartbeat_log(messages: list[dict], metadata: dict[str, Any]) -> str
     consider".
     """
     now = _coerce_datetime(metadata.get("executed_at")) or datetime.now(timezone.utc)
-    front = _yaml_frontmatter({
-        "type": "heartbeat",
-        "tick": metadata.get("tick", 0),
-        "session_started": metadata.get("session_started", now.isoformat()),
-        "executed": now.isoformat(),
-        "new_t2": metadata.get("new_t2", 0),
-        "distilled": metadata.get("distilled", 0),
-        "score": metadata.get("score", 0),
-    })
+    front = _yaml_frontmatter(
+        {
+            "type": "heartbeat",
+            "tick": metadata.get("tick", 0),
+            "session_started": metadata.get("session_started", now.isoformat()),
+            "executed": now.isoformat(),
+            "new_t2": metadata.get("new_t2", 0),
+            "distilled": metadata.get("distilled", 0),
+            "score": metadata.get("score", 0),
+        }
+    )
 
     new_t2_entries = metadata.get("new_t2_entries", [])
     distillation = metadata.get("distillation", [])
@@ -406,10 +445,7 @@ def _format_heartbeat_log(messages: list[dict], metadata: dict[str, Any]) -> str
         rendered_inputs = "\n".join(f"- {_truncate(str(item), 200)}" for item in t2_inputs)
         sections.append(f"## T2 Inputs Considered\n{rendered_inputs}")
     if messages:
-        sections.append(
-            "## Tool Calls\n"
-            + _render_messages_with_tools(messages, start_with_user_turn=False)
-        )
+        sections.append("## Tool Calls\n" + _render_messages_with_tools(messages, start_with_user_turn=False))
 
     t2_section = "\n".join(f"- {e}" for e in new_t2_entries) if new_t2_entries else "(none)"
     distill_section = "\n".join(f"- {d}" for d in distillation) if distillation else "(none)"
@@ -446,13 +482,15 @@ def _format_dream_log(messages: list[dict], metadata: dict[str, Any]) -> str:
     or promoted what it did, so soul-evolution is traceable later.
     """
     now = _coerce_datetime(metadata.get("executed_at")) or datetime.now(timezone.utc)
-    front = _yaml_frontmatter({
-        "type": "dream",
-        "executed": now.isoformat(),
-        "t3_processed": metadata.get("t3_processed", 0),
-        "deduped": metadata.get("deduped", 0),
-        "promoted_to_soul": metadata.get("promoted_to_soul", 0),
-    })
+    front = _yaml_frontmatter(
+        {
+            "type": "dream",
+            "executed": now.isoformat(),
+            "t3_processed": metadata.get("t3_processed", 0),
+            "deduped": metadata.get("deduped", 0),
+            "promoted_to_soul": metadata.get("promoted_to_soul", 0),
+        }
+    )
 
     dream_reasoning = (metadata.get("dream_reasoning") or "").strip()
     dedup_decisions = metadata.get("dedup_decisions") or []
@@ -478,9 +516,7 @@ def _format_dream_log(messages: list[dict], metadata: dict[str, Any]) -> str:
             lines.append(f'- {file_name}: kept "{kept}" (dropped {dropped_count}: {reason})')
         sections.append("## Dedup Decisions\n" + ("\n".join(lines) if lines else "(none)"))
     else:
-        sections.append(
-            f"## Dedup\n{_truncate(legacy_dedup_summary, 2000) if legacy_dedup_summary else '(none)'}"
-        )
+        sections.append(f"## Dedup\n{_truncate(legacy_dedup_summary, 2000) if legacy_dedup_summary else '(none)'}")
 
     # Promotion section: prefer structured decisions, fall back to legacy list.
     if promotion_decisions:
@@ -495,18 +531,13 @@ def _format_dream_log(messages: list[dict], metadata: dict[str, Any]) -> str:
             lines.append(f'- "{excerpt}" ← {source} (repeated {repetition}x: {reason})')
         sections.append("## Soul Promotions\n" + ("\n".join(lines) if lines else "(none)"))
     else:
-        promo_section = (
-            "\n".join(f"- {p}" for p in legacy_promotions) if legacy_promotions else "(none)"
-        )
+        promo_section = "\n".join(f"- {p}" for p in legacy_promotions) if legacy_promotions else "(none)"
         sections.append(f"## Soul Promotion\n{promo_section}")
 
     sections.append(f"## Cleanup\n{_truncate(cleanup, 2000) if cleanup else '(none)'}")
 
     if messages:
-        sections.append(
-            "## Tool Calls\n"
-            + _render_messages_with_tools(messages, start_with_user_turn=False)
-        )
+        sections.append("## Tool Calls\n" + _render_messages_with_tools(messages, start_with_user_turn=False))
 
     return front + "\n\n" + "\n\n".join(sections) + "\n"
 
@@ -567,6 +598,7 @@ def write_t0_log(
         )
 
         content = formatter(spilled_messages, metadata)
+        content = _apply_t0_privacy_gate(content)
         filepath.write_text(content, encoding="utf-8")
         logger.info("[T0] Wrote %s for agent %s (%d bytes)", filepath.name, agent_id, len(content))
         return filepath
@@ -773,7 +805,9 @@ def _extract_existing_session_ids(files: Iterable[Path]) -> set[str]:
     return session_ids
 
 
-async def backfill_recent_chat_logs(agent_id: uuid.UUID, recent_days: int = 30, limit_sessions: int = 20) -> dict[str, int]:
+async def backfill_recent_chat_logs(
+    agent_id: uuid.UUID, recent_days: int = 30, limit_sessions: int = 20
+) -> dict[str, int]:
     """Backfill recent chat sessions into T0 logs when raw files are missing."""
     logs_dir = _agent_logs_dir(agent_id)
     existing_session_ids = _extract_existing_session_ids(logs_dir.rglob("chat-*.md")) if logs_dir.exists() else set()
@@ -906,11 +940,7 @@ def migrate_t0_layout(agent_id: uuid.UUID) -> dict[str, int]:
     agent_root.mkdir(parents=True, exist_ok=True)
     try:
         with open(marker, "x", encoding="utf-8") as f:
-            f.write(
-                f"migrated_at: {datetime.now(timezone.utc).isoformat()}\n"
-                f"moved: {moved}\n"
-                f"skipped: {skipped}\n"
-            )
+            f.write(f"migrated_at: {datetime.now(timezone.utc).isoformat()}\nmoved: {moved}\nskipped: {skipped}\n")
     except FileExistsError:
         logger.debug("[T0] Layout marker already written for agent %s (concurrent migration)", agent_id)
 

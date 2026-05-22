@@ -32,9 +32,12 @@ def _default_agent_data_dir() -> str:
 
 def _read_version() -> str:
     """Read version from local VERSION file, fallback to root."""
-    for candidate in [Path(__file__).resolve().parent.parent / "VERSION",
-                      Path(__file__).resolve().parent.parent.parent / "VERSION",
-                      Path("/app/VERSION"), Path("/VERSION")]:
+    for candidate in [
+        Path(__file__).resolve().parent.parent / "VERSION",
+        Path(__file__).resolve().parent.parent.parent / "VERSION",
+        Path("/app/VERSION"),
+        Path("/VERSION"),
+    ]:
         try:
             return candidate.read_text(encoding="utf-8").strip()
         except OSError:
@@ -119,6 +122,14 @@ class Settings(BaseSettings):
     # capability gate (fail-closed). Set False only for explicit local
     # compatibility windows; unmapped tools are always logged + counted.
     STRICT_CAPABILITY_MAPPING: bool = True
+
+    # Coordination backend (Phase 17 wiring)
+    # "memory" — in-process Lease/Signal/Checkpoint (default, fine for
+    # single-process Hive deployments).
+    # "postgres" — durable PostgreSQL-backed coordination; requires the
+    # caller to provide an AsyncSession + tenant_id when picking a
+    # gateway (see `app/agents/coordination_wiring.py:pick_gateway`).
+    COORDINATION_BACKEND: str = "memory"
     OPENVIKING_API_KEY: str = ""
 
     # Hindsight memory backend (read-side accelerator for T3 MD; optional)

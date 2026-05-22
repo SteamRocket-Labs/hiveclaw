@@ -12,6 +12,10 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from app.agents.coordination import coordination_runtime
+from app.agents.coordination_gateway import (
+    CoordinationGateway,
+    InProcessCoordinationGateway,
+)
 from app.agents.delegation_token import DEFAULT_DELEGATION_TTL_SECONDS, issue_delegation_token
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
@@ -955,9 +959,17 @@ async def delegate_async(
     depth: int = 1,
     policy: OrchestrationPolicy | None = None,
     interaction_type: str = "delegation",
+    coordination_gateway: CoordinationGateway | None = None,
 ) -> AsyncDelegationHandle:
-    """Launch a child agent in the background and return immediately."""
+    """Launch a child agent in the background and return immediately.
+
+    `coordination_gateway` defaults to the in-process runtime so existing
+    callers and single-process deployments behave exactly as before.
+    Multi-worker production wires a `CoordinationRepository(session,
+    tenant_id)` so lease / signal state lives in PostgreSQL.
+    """
     _cleanup_stale_tasks()
+    gateway: CoordinationGateway = coordination_gateway or InProcessCoordinationGateway(coordination_runtime)
     task_id = uuid.uuid4().hex
     real_trace_id = trace_id or uuid.uuid4().hex
     request = AgentDelegationRequest(
@@ -978,7 +990,7 @@ async def delegate_async(
     )
     coordination_key = _delegation_coordination_key(request)
     lease_ttl = int((policy or request.policy).timeout_seconds) + 60
-    lease_result = coordination_runtime.acquire_lease(
+    lease_result = await gateway.acquire_lease(
         task_key=coordination_key,
         agent_id=str(parent_agent_id or owner_id),
         ttl_seconds=max(lease_ttl, 60),
@@ -991,7 +1003,7 @@ async def delegate_async(
             status="blocked_by_lease",
             blocked_by_lease_id=lease_result.existing_lease_id,
         )
-    signal = coordination_runtime.send_signal(
+    signal = await gateway.send_signal(
         from_agent_id=str(parent_agent_id or owner_id),
         to_agent_id=str(getattr(target, "id", "")),
         content=conversation_messages[-1].get("content", "") if conversation_messages else "",

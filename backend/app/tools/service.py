@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Awaitable, Callable
 
 from app.agents.coordination import CoordinationRuntime, coordination_runtime
+from app.agents.coordination_gateway import CoordinationGateway, InProcessCoordinationGateway
 from app.services.action_preflight import (
     ActionPreflightInput,
     ActionPreflightResult,
@@ -90,6 +91,7 @@ class ToolRuntimeService:
     preflight_service: ActionPreflightService | None = None
     decision_trace_store: DecisionTraceStore | None = None
     coordination_runtime: CoordinationRuntime | None = None
+    coordination_gateway: CoordinationGateway | None = None
     preflight_enabled: bool = True
 
     def __post_init__(self) -> None:
@@ -101,6 +103,8 @@ class ToolRuntimeService:
             self.decision_trace_store = DecisionTraceStore()
         if self.coordination_runtime is None:
             self.coordination_runtime = coordination_runtime
+        if self.coordination_gateway is None:
+            self.coordination_gateway = InProcessCoordinationGateway(self.coordination_runtime)
 
     async def execute(
         self,
@@ -395,8 +399,8 @@ class ToolRuntimeService:
             return None
 
         checkpoint_id = ""
-        if preflight.requires_checkpoint and self.coordination_runtime is not None:
-            checkpoint = self.coordination_runtime.create_checkpoint(
+        if preflight.requires_checkpoint and self.coordination_gateway is not None:
+            checkpoint = await self.coordination_gateway.create_checkpoint(
                 action=preflight_input.action,
                 approver_id=str(runtime_context.user_id),
                 escalation_chain=[preflight.escalation_target or "company_admin"],

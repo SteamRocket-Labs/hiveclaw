@@ -79,6 +79,38 @@ Hive 的记忆是一组扁平快照，缺少目标投影、关系投影和人格
 
 因此，4 层蒸馏如果没有方向性，就容易变成无差别压缩。人的记忆不是静态文件夹，而是随目标、关系、风险和时间动态调整注意力的系统。
 
+### 2.1 Memory Control Plane Conclusion
+
+最终目标不是把四层蒸馏做得更复杂，也不是把所有长期记忆换成一个更大的 graph 或 vector store。
+
+更准确的架构目标是：
+
+```text
+Memory Control Plane =
+  Principal Stack
+  + Privacy / Sensitivity Gate
+  + Self-contained Memory Form
+  + Lifecycle / Versioning
+  + Dynamic Retention / Activation
+  + Relationship / Decision Graph
+  + Decision Trace / Feedback Learning
+  + Coordination Runtime
+```
+
+四层蒸馏仍然保留，但它只是存储和沉淀路径。`Memory Control Plane` 决定：
+
+```text
+what gets stored,
+what must be masked or rejected,
+what becomes active now,
+what changes the agent's understanding,
+what requires owner confirmation,
+what is blocked by company governance,
+and what should be proposed rather than silently mutated.
+```
+
+换句话说，Hive 不应该只做更好的 memory compression，而应该做一个能支撑“公司精英员工判断力”的 memory governance layer。这个 layer 让 agent 在 owner、company、relationship、goal、evidence、boundary 之间做稳定且可解释的取舍。
+
 ## 3. Product Definition: Elite Employee Agent
 
 ### 3.1 What It Is
@@ -392,6 +424,45 @@ cold     < 0.3       不进默认池，仅 explicit query 可召回
 ```
 
 `retention_score` 是 §11 dynamic `activation_score` 的**输入**之一，不是 `activation_score` 本身。retention 衡量“是否还应该被记得”，activation 衡量“此刻是否相关”。两者解耦才能避免“记得久 = 被反复激活”这种 feedback loop。
+
+### 6.4 External Reference Synthesis
+
+对四个外部 memory 项目的参考结论是：吸收架构原则，不直接引入外部仓库作为 Hive 的核心记忆系统。
+
+| Reference | Useful Signal | Hive Decision |
+|---|---|---|
+| `rohitg00/agentmemory` | lifecycle hooks、hybrid retrieval、retention、audit、Lease / Signal / Checkpoint / Sentinel 这类 runtime primitives 应该一等化 | 采纳 hooks + retention + coordination primitives 的思想；不把外部 sidecar 作为 Hive 的 source of truth |
+| `MemTensor/MemPrivacy` | privacy 必须发生在写入前；PL1-PL4、typed placeholder、local reverse map 比后置 redact 更安全 | 采纳 PL1-PL4 + typed placeholder + PrivacyStore；把它放在 T0/T1/T2/T3 写入前和 channel 出站前 |
+| `FredJiang0324/MAGMA` | long-horizon memory 需要 event / entity / temporal / causal graph 才能支持多跳和关系变化理解 | 采纳 graph schema 和 temporal/causal linking；不照搬研究型 query heuristics |
+| `aiming-lab/SimpleMem` | memory entry 必须 semantic-lossless、自包含；retrieval policy 应该由 telemetry/eval 迭代，而不是永久固定 | 采纳 form contract、multi-view retrieval、telemetry-driven policy evolution；不直接替换现有 T0/T2/T3/soul |
+
+这些参考共同指向同一个结论：
+
+```text
+Hive should keep its current memory layers,
+but add a Memory Control Plane above them.
+```
+
+具体取舍：
+
+- `agentmemory` 证明 runtime 事件、跨 session hooks、coordination primitives 和 retention/access log 是工程必需品。
+- `MemPrivacy` 证明 sensitivity 不是 assembler 或 channel adapter 的小补丁，而是 memory write path 的前置 gate。
+- `MAGMA` 证明 relationship / decision / temporal causality 应该是图谱理解，不能只靠 markdown bullet 和 embedding 相似度。
+- `SimpleMem / EvolveMem` 证明写入端要 lossless and self-contained，检索端要可解释、可调参、可通过失败样本自我改进。
+
+因此，Hive 第一阶段不应追求“最大图数据库化”，而应优先完成：
+
+```text
+principal_stack
+privacy_layer
+form_lint
+lifecycle metadata
+retention/access log
+activation rerank
+decision_trace refs
+```
+
+这些是让后续 graph、proactivity、agent-agent coordination 有稳定语义基础的前置条件。
 
 ## 7. Personality Construction
 
@@ -1299,11 +1370,20 @@ backend/app/api/feishu*.py, backend/app/api/slack*.py, ... (all channel adapters
 
 ## 17. Implementation Order
 
+Implementation order should follow one rule:
+
+```text
+Build the memory safety substrate before making agents look more autonomous.
+```
+
+If HR personality and first-person soul are built first, the product will feel better but the runtime will still lack privacy, lineage, form, activation, and owner/company accountability. That creates a dangerous illusion: the agent sounds like an elite employee before it has the control plane required to behave like one.
+
 ### Phase 0: Canonical Contract
 
 Goal: make the target explicit without runtime behavior changes.
 
 - Finalize this document.
+- Define `MemoryControlPlane` as the umbrella contract over existing T0/T1/T2/T3/soul.
 - Define `AgencyCharter` schema.
 - Define `CompanyCharter` schema.
 - Define `PrincipalStack` schema.
@@ -1317,9 +1397,44 @@ Goal: make the target explicit without runtime behavior changes.
 - Define `Coordination` primitives schema (Lease / Signal / Checkpoint / Sentinel).
 - Define Form Contract lint rules.
 
-### Phase 1: HR Creation POC
+### Phase 1: Memory Safety Substrate
 
-Goal: make newly created agents visibly feel more like elite employee agents.
+Goal: make every newly written memory safe, attributable, and inspectable before changing agent behavior.
+
+- Implement `services/principal_context.py` with platform / company / owner / creator / current user / delegating agent resolution.
+- Implement `services/privacy_layer.py` with `privacy_extractor`, PL1-PL4 classification, typed placeholders, and PrivacyStore reverse mapping.
+- Implement `memory/form_lint.py` and enforce self-contained write rules for new memory entries.
+- Add `sensitivity`, `evidence_refs`, `status`, `version`, `parent_id`, `supersedes`, `superseded_by`, `expires_at`, `access_count`, and `last_accessed` metadata to new T1/T2/T3 entries.
+- Implement `memory/retention.py` and an access log writer.
+- Reject PL4 writes before any memory layer; store only typed placeholder metadata when needed for audit.
+- Do not backfill old memory in this phase. Forward enforcement is enough.
+
+### Phase 2: Activation and Retrieval Control
+
+Goal: make memory retrieval owner-aware, company-aware, goal-aware, and sensitivity-aware.
+
+- Implement `memory/activation.py`.
+- Candidate retrieval still reads current T0/T2/T3/soul-compatible stores.
+- Rerank candidates using objective relevance, principal relevance, company relevance, relationship impact, open-loop pressure, consequence weight, recency, reinforcement, feedback, charter relevance, confidence, retention score, contradiction penalty, and sensitivity strip.
+- Apply `sensitivity_strip` based on current `PrincipalStack`.
+- Include activation reasons in prompt assembly for debuggability.
+- Bump `access_count` and `last_accessed` for activated entries, not for every candidate.
+
+### Phase 3: Decision Trace and Feedback Learning
+
+Goal: let agents learn from owner/company approval, rejection, correction, and unclear reactions by linking feedback back to the decision that created it.
+
+- Implement `services/decision_trace.py` and the `DecisionTrace` schema from Phase 0.
+- Add `reaction`, `polarity`, `source`, and `rationale_from_owner` to feedback entries.
+- Update `extract_agent.py` to classify feedback as `approved | rejected | questioned | corrected | unclear`.
+- Use `reaction=unclear` when the owner signal is ambiguous. Do not infer approval from silence.
+- Have high-risk, confirm-first, external-visible, irreversible, or sensitive actions emit a `DecisionTrace`.
+- Attach `refs=decision/<id>` when later feedback maps to a prior decision.
+- Extend `auto_dream.py` to read `decision_trace.refs <- feedback_signal` chains for charter calibration proposals.
+
+### Phase 4: HR Creation and First-Person Charter
+
+Goal: make newly created agents visibly feel like company elite employees, after memory safety and activation are in place.
 
 - Add archetype inference in HR soul refinement.
 - Generate default agency charter.
@@ -1327,26 +1442,9 @@ Goal: make newly created agents visibly feel more like elite employee agents.
 - Expose charter to owner for editing before final creation.
 - Render first-person soul with frozen Company Charter and Agency Charter.
 - Keep capability packs separate from archetype.
+- Soul / charter mutation must go through sketch -> owner-approved -> active.
 
-### Phase 2: Feedback Learning
-
-Goal: let agents learn from owner approval/rejection/correction.
-
-- Add `reaction` / `polarity` to T2 entries.
-- Update extract prompt and parser.
-- Update heartbeat curation rules to treat negative/corrective feedback as boundary/strategy signal.
-- Add tests for ambiguous feedback using `reaction=unclear`.
-
-### Phase 3: Principal Stack + Activation
-
-Goal: make memory retrieval owner-aware, company-aware, and goal-aware.
-
-- Resolve platform governance / company / creator / owner / current user / delegating agent into explicit principal stack.
-- Add activation scoring.
-- Rerank memory candidates using objective, company charter, owner charter, relationship, feedback, and open-loop features.
-- Include activation reasons in prompt assembly for debuggability.
-
-### Phase 4: Action Preflight
+### Phase 5: Action Preflight
 
 Goal: enforce boundary sense before tools/actions.
 
@@ -1354,56 +1452,10 @@ Goal: enforce boundary sense before tools/actions.
 - Map preflight result to `do | prepare_only | ask | refuse`.
 - Include company-boundary conflict detection and escalation result.
 - Keep hard runtime/tool governance as final gate.
-- Log decisions for audit and future feedback learning.
+- Log preflight results into `DecisionTrace`.
+- Make company charter conflicts escalate or refuse instead of being silently treated as owner preference.
 
-### Phase 5: Proactive Employee Loop
-
-Goal: evolve heartbeat from curation-only into controlled proactive employee check-in.
-
-- Observe objectives, company charter, owner charter, open loops, recent feedback, relationship changes.
-- Propose or prepare safe actions.
-- Never take unauthorized external-facing or irreversible actions.
-- Record evidence and owner reaction.
-
-### Phase 6: Form Contract
-
-Goal: every memory entry written from now on is self-contained.
-
-- Implement `memory/form_lint.py`.
-- Update extract prompt: no pronouns, absolute timestamps, explicit actor/target/location.
-- Reject writes that fail lint in `md_store.py`.
-- Backfill is **not** required; only enforce going forward.
-
-### Phase 7: Decision Trace and Refined Feedback Link
-
-Goal: agents leave a structured trace for every non-trivial decision; feedback links back to the trace.
-
-- Implement `services/decision_trace.py` and the `DecisionTrace` schema from Phase 0.
-- Have `kernel/engine.py` emit a `DecisionTrace` entry before any `confirm_first` / `external_visible` / `irreversible_or_sensitive` tool call.
-- Extend `extract_agent.py` to attach `refs=decision/<id>` on follow-up feedback signals.
-- Extend `auto_dream.py` to read `decision_trace.refs <- feedback_signal` chains for charter calibration proposals.
-
-### Phase 8: Sensitivity Layer
-
-Goal: every memory entry and every channel-bound action is classified and policy-gated.
-
-- Implement `services/privacy_layer.py` with a `privacy_extractor` role.
-- Add `sensitivity` frontmatter to T0 / T1 / T2 / T3.
-- Implement PrivacyStore + typed placeholder substitution.
-- Apply `sensitivity_strip` in `memory/retriever.py` based on principal stack.
-- Add outbound redact pass to every channel adapter.
-
-### Phase 9: Memory Lifecycle State Machine
-
-Goal: dream and heartbeat stop being destructive; everything is auditable and reversible.
-
-- Implement `memory/lifecycle_store.py` and `memory/retention.py`.
-- Switch `auto_dream.py` from in-place rewrite to new-version + supersedes lineage.
-- Introduce T1 sketch buffer: dream proposals and agent self-judgments land in sketch with `expires_at`.
-- Owner-approved sketches `promote` to active; unapproved ones `discard` on expiry.
-- Hook `retriever` to bump `access_count` / `last_accessed` on hits.
-
-### Phase 10: Coordination Primitives Runtime
+### Phase 6: Coordination Primitives Runtime
 
 Goal: `agency_charter` zones are enforced by runtime, not just prompt.
 
@@ -1411,21 +1463,64 @@ Goal: `agency_charter` zones are enforced by runtime, not just prompt.
 - Wrap `delegate_to_agent` with Lease acquire + Signal channel.
 - Object-ify `approval.py` into Checkpoint with deadline + escalation chain.
 - Generalize `trigger_daemon.py` into Sentinel primitives.
-- Map charter zone → coordination path: `full_authority` → Lease+Act, `confirm_first` → Checkpoint, `never_do` → Refuse+Audit.
+- Map charter zone -> coordination path: `full_authority` -> Lease+Act, `confirm_first` -> Checkpoint, `never_do` -> Refuse+Audit.
+- Link Lease / Signal / Checkpoint / Sentinel ids back to DecisionTrace and evidence refs.
 
-## 18. Tests To Write First
+### Phase 7: Proactive Employee Loop
+
+Goal: evolve heartbeat from curation-only into controlled proactive employee check-in.
+
+- Observe objectives, company charter, owner charter, open loops, recent feedback, relationship changes, Sentinel events, and Signal inbox.
+- Interpret which items matter to owner and company now.
+- Prepare low-risk artifacts, drafts, checks, summaries, and options.
+- Run preflight before any action.
+- Act only in full-authority zones; ask through Checkpoint in confirm-first zones; refuse never-do zones.
+- Record evidence and owner/company reaction.
+
+### Phase 8: Eval-Driven Memory Policy Evolution
+
+Goal: make retrieval and memory policy improve from evidence instead of hand-tuned constants.
+
+- Add telemetry for zero-hit retrievals, over-broad retrievals, owner corrections, sensitivity strips, and activation reasons.
+- Build a replay set from anonymized decision traces and feedback signals.
+- Tune activation weights, retention constants, context budgets, and retrieval profiles through guarded experiments.
+- Auto-revert policy changes when replay quality drops.
+- Keep policy evolution bounded: it may change retrieval weights and budgets, not company charter or owner authorization rules.
+
+## 18. Acceptance Criteria
+
+This design is not complete until these conditions are true:
+
+- PL4 credentials never enter T0/T1/T2/T3/soul. They are rejected or represented only as typed placeholders with restricted reverse mapping.
+- Every active memory has evidence refs, sensitivity, lifecycle status, and enough form to stand alone outside its original context.
+- A retrieved memory can explain why it was activated: objective, principal, company, relationship, feedback, risk, or open-loop reason.
+- A contradicted memory is versioned and down-ranked, not overwritten or silently deleted.
+- Dream and heartbeat never rewrite T3 / soul in place. They produce sketch or new-version proposals.
+- Frozen soul and charter changes require owner approval before becoming active.
+- Feedback can link back to a DecisionTrace through `refs=decision/<id>`.
+- Company charter conflicts cannot be downgraded to owner preference. They must escalate, ask, or refuse.
+- Cross-agent delegation uses Lease and Signal, not only synchronous function calls.
+- Confirm-first actions produce Checkpoint objects with approver, deadline, escalation chain, and trace linkage.
+- Channel adapters apply outbound redact and cannot emit PL3 / PL4 content by accident.
+- Retrieval policy changes are evaluated through replay or telemetry before becoming default.
+
+## 19. Tests To Write First
 
 ```bash
 cd /Users/rocky243/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 
 pytest \
+  tests/memory/test_memory_control_plane_contract.py \
   tests/services/test_agency_charter.py \
   tests/services/test_principal_context.py \
   tests/services/test_principal_stack.py \
   tests/services/test_action_preflight.py \
   tests/memory/test_feedback_signal.py \
   tests/memory/test_activation_scoring.py \
+  tests/memory/test_activation_reasons.py \
+  tests/memory/test_sensitivity_strip.py \
+  tests/memory/test_access_log.py \
   tests/memory/test_understanding_store.py \
   tests/runtime/test_prompt_memory_activation.py \
   tests/services/test_proactive_employee.py \
@@ -1434,7 +1529,8 @@ pytest \
   tests/memory/test_retention_formula.py \
   tests/memory/test_form_contract.py \
   tests/services/test_privacy_layer.py \
-  tests/agents/test_coordination_primitives.py
+  tests/agents/test_coordination_primitives.py \
+  tests/memory/test_policy_evolution_guard.py
 ```
 
 Expected coverage:
@@ -1463,7 +1559,7 @@ Expected coverage:
 - two delegations targeting the same task acquire Lease serially, not concurrently.
 - a Checkpoint left unanswered past deadline auto-escalates to company_admin.
 
-## 19. Open Questions
+## 20. Open Questions
 
 | Question | Tension |
 |---|---|
@@ -1481,11 +1577,11 @@ Expected coverage:
 | Sensitivity false-negative cost | What is the safe-side bias when privacy_extractor is uncertain — escalate to PL3 by default, or to PL2? |
 | Retention constants | Are lambda / sigma / rho global, per-tenant, per-archetype, or learned? How to evaluate without leaking memory drift? |
 | Approval migration | How to migrate the current `services/approval.py` flows into Checkpoint objects without breaking in-flight approvals? |
-| Retriever self-evolution | Should retriever weights be a future `evolution_ledger` action space (EvolveMem-style)? Out of scope for now. |
-| Episode segmentation (enterprise) | Should T0 be sub-segmented per session by topic boundary (MAGMA-style) when one chat covers multiple projects? Out of scope for now. |
-| LLM-planned retrieval | Should `retriever.py` evolve to intent-classification + parallel multi-view + adequacy reflection (SimpleMem-style)? Out of scope for now. |
+| Retriever self-evolution | Which retrieval parameters are safe to tune automatically, and which require owner/company review? |
+| Episode segmentation (enterprise) | Should T0 be sub-segmented per session by topic boundary (MAGMA-style) when one chat covers multiple projects, or should objective/result boundaries dominate? |
+| LLM-planned retrieval | Should `retriever.py` evolve to intent-classification + parallel multi-view + adequacy reflection (SimpleMem-style), and how should failures be replayed safely? |
 
-## 20. Non-Goals
+## 21. Non-Goals
 
 This design does not mean:
 
@@ -1496,28 +1592,31 @@ This design does not mean:
 - owner accountability should bypass company charter or platform governance;
 - autonomy should replace explicit authorization;
 - archetype should automatically grant tools;
-- first-person soul should replace runtime permission checks.
+- first-person soul should replace runtime permission checks;
+- external memory projects should be imported wholesale as Hive's source of truth.
 
 The goal is to add directionality and judgment, not to remove safety.
 
-## 21. Summary
+## 22. Summary
 
-Hive 当前的 memory system 已经有长期沉淀能力，但要成为公司语境下 owner 理想中的精英员工型 agent，还需要从“记忆分层系统”升级为：
+Hive 当前的 memory system 已经有长期沉淀能力，但要成为公司语境下 owner 理想中的精英员工型 agent，还需要从“记忆分层系统”升级为 **Memory Control Plane**：
 
 ```text
-company elite employee cognition system
-  = first-person identity
+Memory Control Plane
+  = principal stack
+  + privacy / sensitivity gate
+  + self-contained memory form
+  + lifecycle / versioning
+  + retention / activation
+  + first-person identity
   + company charter
   + owner agency charter
-  + self-contained memory form
-  + memory lifecycle (sketch / active / superseded / archived)
-  + dynamic memory activation
-  + relationship understanding
+  + relationship / decision graph
   + decision trace + feedback learning
-  + sensitivity layer (PL1 ~ PL4)
   + action preflight (5-axis)
   + coordination primitives (Lease / Signal / Checkpoint / Sentinel)
   + controlled proactivity
+  + eval-driven policy evolution
 ```
 
 核心变化是：

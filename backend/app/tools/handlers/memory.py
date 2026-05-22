@@ -60,12 +60,14 @@ def save_memory(agent_id: uuid.UUID, arguments: dict) -> str:
     from pathlib import Path
 
     from app.config import get_settings
+    from app.memory.form_lint import enforce_memory_form
     from app.memory.md_store import (
         MEMORY_DEDUP_THRESHOLD,
         append_t3_entry,
         find_similar_t3_entries,
     )
     from app.memory.types import MEMORY_CATEGORIES
+    from app.services.privacy_layer import PrivacyLayer
 
     content = (arguments.get("content") or "").strip()
     if not content:
@@ -75,6 +77,16 @@ def save_memory(agent_id: uuid.UUID, arguments: dict) -> str:
     if category not in MEMORY_CATEGORIES:
         category = "general"
 
+    privacy_decision = PrivacyLayer().classify_and_mask(content)
+    if privacy_decision.rejected:
+        return f"[Rejected] {privacy_decision.sensitivity.value}: {privacy_decision.reason}"
+    content_to_store = privacy_decision.sanitized_text
+
+    try:
+        enforce_memory_form(content_to_store)
+    except ValueError as exc:
+        return f"[Rejected] {exc}"
+
     settings = get_settings()
     data_root = Path(settings.AGENT_DATA_DIR)
 
@@ -83,7 +95,7 @@ def save_memory(agent_id: uuid.UUID, arguments: dict) -> str:
     similar = find_similar_t3_entries(
         data_root,
         agent_id,
-        content=content[:2000],
+        content=content_to_store[:2000],
         category=category,
         threshold=MEMORY_DEDUP_THRESHOLD,
         limit=1,
@@ -104,11 +116,19 @@ def save_memory(agent_id: uuid.UUID, arguments: dict) -> str:
         data_root,
         agent_id,
         category=category,
-        content=content[:2000],
+        content=content_to_store[:2000],
         timestamp=timestamp,
+        metadata={
+            "sensitivity": privacy_decision.sensitivity.value,
+            "status": "active",
+            "version": "1",
+        },
     )
 
-    return f"Saved to long-term memory [{category}]: {content[:80]}{'...' if len(content) > 80 else ''}"
+    return (
+        f"Saved to long-term memory [{category}]: "
+        f"{content_to_store[:80]}{'...' if len(content_to_store) > 80 else ''}"
+    )
 
 
 # -- search_memory -------------------------------------------------------------

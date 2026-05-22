@@ -52,7 +52,11 @@ _CATEGORY_TO_SPEC = {
     for category in spec["categories"]
 }
 
-_ENTRY_WITH_DATE_RE = re.compile(r"^- \[(?P<timestamp>[^\]]+)\]\s+(?P<content>.+?)\s*$")
+_ENTRY_WITH_DATE_RE = re.compile(
+    r"^- \[(?P<timestamp>[^\]]+)\]"
+    r"(?P<meta>(?:\[[^\]]+\])*)"
+    r"\s+(?P<content>.+?)\s*$"
+)
 _ENTRY_BARE_RE = re.compile(r"^- (?P<content>.+?)\s*$")
 
 
@@ -206,6 +210,7 @@ def append_t3_entry(
     category: str,
     content: str,
     timestamp: str | None = None,
+    metadata: dict[str, str] | None = None,
 ) -> Path:
     spec = t3_spec_for_category(category)
     mem_dir = ensure_t3_layout(data_root, agent_id)
@@ -219,7 +224,12 @@ def append_t3_entry(
             return path
 
     date_label = timestamp or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    entry = f"- [{date_label}] {content.strip()}"
+    meta_text = "".join(
+        f"[{key}={value}]"
+        for key, value in (metadata or {}).items()
+        if key and value
+    )
+    entry = f"- [{date_label}]{meta_text} {content.strip()}"
     updated = existing.rstrip()
     if updated:
         updated += "\n"
@@ -558,5 +568,4 @@ def validate_and_normalize_t3(
             report["files_touched"].append(spec["filename"])
 
     return report
-
 

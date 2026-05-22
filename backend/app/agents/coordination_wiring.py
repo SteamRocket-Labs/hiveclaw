@@ -17,9 +17,10 @@ PostgreSQL-backed repository when a session + tenant_id are available.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import uuid
-from typing import Awaitable, Callable
+from typing import AsyncIterator, Awaitable, Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +30,7 @@ from app.agents.coordination_gateway import (
 )
 from app.agents.coordination_repository import CoordinationRepository
 from app.config import get_settings
+from app.database import async_session
 
 logger = logging.getLogger(__name__)
 
@@ -65,3 +67,57 @@ GatewayFactory = Callable[[AsyncSession, uuid.UUID], Awaitable[CoordinationGatew
 async def gateway_from_session(session: AsyncSession, tenant_id: uuid.UUID) -> CoordinationGateway:
     """Async factory: hand back a `CoordinationGateway` for the given scope."""
     return pick_gateway(session=session, tenant_id=tenant_id)
+
+
+@contextlib.asynccontextmanager
+async def gateway_scope(
+    explicit_gateway: CoordinationGateway | None = None,
+    *,
+    tenant_id: uuid.UUID | str | None = None,
+) -> AsyncIterator[CoordinationGateway]:
+    """Yield the right gateway for the surrounding call site.
+
+    Decision order:
+      1. `explicit_gateway` wins — caller already knows what it wants.
+      2. `COORDINATION_BACKEND=postgres` + tenant_id present → open a
+         fresh `async_session()` and yield a `CoordinationRepository`.
+         The session is committed on clean exit, rolled back on error.
+      3. Otherwise → in-process gateway (no session opened).
+
+    Always returns a `CoordinationGateway` so call sites do not need to
+    branch on backend choice.
+    """
+    if explicit_gateway is not None:
+        yield explicit_gateway
+        return
+
+    backend = (getattr(get_settings(), "COORDINATION_BACKEND", "memory") or "memory").lower()
+    if backend != "postgres":
+        yield InProcessCoordinationGateway()
+        return
+
+    if tenant_id is None:
+        logger.warning("COORDINATION_BACKEND=postgres but tenant_id is missing — falling back to in-process gateway")
+        yield InProcessCoordinationGateway()
+        return
+
+    if isinstance(tenant_id, str):
+        try:
+            tenant_uuid = uuid.UUID(tenant_id)
+        except ValueError:
+            logger.warning(
+                "COORDINATION_BACKEND=postgres but tenant_id=%r is not a valid UUID — falling back",
+                tenant_id,
+            )
+            yield InProcessCoordinationGateway()
+            return
+    else:
+        tenant_uuid = tenant_id
+
+    async with async_session() as session:
+        try:
+            yield CoordinationRepository(session, tenant_id=tenant_uuid)
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise

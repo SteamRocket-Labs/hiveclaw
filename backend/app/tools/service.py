@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable
 
 from app.agents.coordination import CoordinationRuntime, coordination_runtime
 from app.agents.coordination_gateway import CoordinationGateway, InProcessCoordinationGateway
+from app.agents.coordination_wiring import gateway_scope
 from app.services.action_preflight import (
     ActionPreflightInput,
     ActionPreflightResult,
@@ -399,18 +400,20 @@ class ToolRuntimeService:
             return None
 
         checkpoint_id = ""
-        if preflight.requires_checkpoint and self.coordination_gateway is not None:
-            checkpoint = await self.coordination_gateway.create_checkpoint(
-                action=preflight_input.action,
-                approver_id=str(runtime_context.user_id),
-                escalation_chain=[preflight.escalation_target or "company_admin"],
-                deadline_at=datetime.now(UTC) + timedelta(minutes=30),
-                metadata={
-                    "tool_name": tool_name,
-                    "agent_id": str(runtime_context.agent_id),
-                    "decision": preflight.decision.value,
-                },
-            )
+        if preflight.requires_checkpoint:
+            tenant_id = getattr(runtime_context, "tenant_id", None)
+            async with gateway_scope(self.coordination_gateway, tenant_id=tenant_id) as gateway:
+                checkpoint = await gateway.create_checkpoint(
+                    action=preflight_input.action,
+                    approver_id=str(runtime_context.user_id),
+                    escalation_chain=[preflight.escalation_target or "company_admin"],
+                    deadline_at=datetime.now(UTC) + timedelta(minutes=30),
+                    metadata={
+                        "tool_name": tool_name,
+                        "agent_id": str(runtime_context.agent_id),
+                        "decision": preflight.decision.value,
+                    },
+                )
             checkpoint_id = checkpoint.id
 
         if self.decision_trace_store is not None:

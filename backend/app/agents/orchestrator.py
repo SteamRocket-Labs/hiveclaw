@@ -11,11 +11,8 @@ from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
-from app.agents.coordination import coordination_runtime
-from app.agents.coordination_gateway import (
-    CoordinationGateway,
-    InProcessCoordinationGateway,
-)
+from app.agents.coordination_gateway import CoordinationGateway
+from app.agents.coordination_wiring import gateway_scope
 from app.agents.delegation_token import DEFAULT_DELEGATION_TTL_SECONDS, issue_delegation_token
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
@@ -960,16 +957,17 @@ async def delegate_async(
     policy: OrchestrationPolicy | None = None,
     interaction_type: str = "delegation",
     coordination_gateway: CoordinationGateway | None = None,
+    tenant_id: uuid.UUID | str | None = None,
 ) -> AsyncDelegationHandle:
     """Launch a child agent in the background and return immediately.
 
-    `coordination_gateway` defaults to the in-process runtime so existing
-    callers and single-process deployments behave exactly as before.
-    Multi-worker production wires a `CoordinationRepository(session,
-    tenant_id)` so lease / signal state lives in PostgreSQL.
+    `coordination_gateway` defaults to None so `gateway_scope()` picks the
+    right backend per `settings.COORDINATION_BACKEND` (memory = in-process
+    runtime, postgres = `CoordinationRepository` opened on a fresh session
+    scoped to `tenant_id`). Callers that already hold an
+    `AsyncSession`-bound gateway pass it in explicitly.
     """
     _cleanup_stale_tasks()
-    gateway: CoordinationGateway = coordination_gateway or InProcessCoordinationGateway(coordination_runtime)
     task_id = uuid.uuid4().hex
     real_trace_id = trace_id or uuid.uuid4().hex
     request = AgentDelegationRequest(
@@ -990,26 +988,27 @@ async def delegate_async(
     )
     coordination_key = _delegation_coordination_key(request)
     lease_ttl = int((policy or request.policy).timeout_seconds) + 60
-    lease_result = await gateway.acquire_lease(
-        task_key=coordination_key,
-        agent_id=str(parent_agent_id or owner_id),
-        ttl_seconds=max(lease_ttl, 60),
-    )
-    if not lease_result.acquired:
-        return AsyncDelegationHandle(
-            task_id=lease_result.existing_lease_id or "blocked_by_lease",
-            trace_id=real_trace_id,
-            target_name=getattr(target, "name", "unknown"),
-            status="blocked_by_lease",
-            blocked_by_lease_id=lease_result.existing_lease_id,
+    async with gateway_scope(coordination_gateway, tenant_id=tenant_id) as gateway:
+        lease_result = await gateway.acquire_lease(
+            task_key=coordination_key,
+            agent_id=str(parent_agent_id or owner_id),
+            ttl_seconds=max(lease_ttl, 60),
         )
-    signal = await gateway.send_signal(
-        from_agent_id=str(parent_agent_id or owner_id),
-        to_agent_id=str(getattr(target, "id", "")),
-        content=conversation_messages[-1].get("content", "") if conversation_messages else "",
-        signal_type="delegation_started",
-        thread_id=real_trace_id,
-    )
+        if not lease_result.acquired:
+            return AsyncDelegationHandle(
+                task_id=lease_result.existing_lease_id or "blocked_by_lease",
+                trace_id=real_trace_id,
+                target_name=getattr(target, "name", "unknown"),
+                status="blocked_by_lease",
+                blocked_by_lease_id=lease_result.existing_lease_id,
+            )
+        signal = await gateway.send_signal(
+            from_agent_id=str(parent_agent_id or owner_id),
+            to_agent_id=str(getattr(target, "id", "")),
+            content=conversation_messages[-1].get("content", "") if conversation_messages else "",
+            signal_type="delegation_started",
+            thread_id=real_trace_id,
+        )
     metadata_json = _build_runtime_task_metadata(request)
     metadata_json.update(
         {

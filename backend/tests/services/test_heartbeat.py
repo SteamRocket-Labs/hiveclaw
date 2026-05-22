@@ -66,9 +66,7 @@ def test_parse_heartbeat_outcome_structured_tags():
 def test_parse_heartbeat_outcome_accepts_curated_alias():
     from app.services.heartbeat import _parse_heartbeat_outcome
 
-    outcome, score = _parse_heartbeat_outcome(
-        "Curated 3 learnings into feedback.md.\n\n[OUTCOME:curated] [SCORE:7]"
-    )
+    outcome, score = _parse_heartbeat_outcome("Curated 3 learnings into feedback.md.\n\n[OUTCOME:curated] [SCORE:7]")
     assert outcome == "action_taken"
     assert score == 7
 
@@ -109,8 +107,7 @@ def test_compact_heartbeat_runtime_messages_summarizes_middle_history() -> None:
 
     messages = [{"role": "user", "content": "base heartbeat instruction"}]
     messages.extend(
-        {"role": "assistant" if idx % 2 else "user", "content": f"old-{idx}-" + ("x" * 7000)}
-        for idx in range(24)
+        {"role": "assistant" if idx % 2 else "user", "content": f"old-{idx}-" + ("x" * 7000)} for idx in range(24)
     )
     messages.append({"role": "user", "content": "latest tick payload"})
 
@@ -126,9 +123,7 @@ def test_compact_heartbeat_runtime_messages_summarizes_middle_history() -> None:
 def test_parse_heartbeat_outcome_noop():
     from app.services.heartbeat import _parse_heartbeat_outcome
 
-    outcome, score = _parse_heartbeat_outcome(
-        "Nothing to do right now. HEARTBEAT_OK\n[OUTCOME:noop] [SCORE:0]"
-    )
+    outcome, score = _parse_heartbeat_outcome("Nothing to do right now. HEARTBEAT_OK\n[OUTCOME:noop] [SCORE:0]")
     assert outcome == "noop"
     assert score == 0
 
@@ -136,9 +131,7 @@ def test_parse_heartbeat_outcome_noop():
 def test_parse_heartbeat_outcome_failure():
     from app.services.heartbeat import _parse_heartbeat_outcome
 
-    outcome, score = _parse_heartbeat_outcome(
-        "Attempted to search but got rate limited.\n[OUTCOME:failure] [SCORE:2]"
-    )
+    outcome, score = _parse_heartbeat_outcome("Attempted to search but got rate limited.\n[OUTCOME:failure] [SCORE:2]")
     assert outcome == "failure"
     assert score == 2
 
@@ -332,6 +325,29 @@ async def test_build_evolution_context_suggests_save_skill_for_repeated_workflow
     assert "save_skill" in result
     assert "load_skill" in result
     assert "workflow" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_build_evolution_context_includes_proactive_steward_plan():
+    from app.services.heartbeat import _build_evolution_context
+
+    agent_id = uuid4()
+    activities = [
+        SimpleNamespace(
+            action_type="task_updated",
+            summary="Investor memo follow-up is waiting on a local draft.",
+            detail_json={"open_loop": True, "objective_id": "objective-1"},
+        ),
+        SimpleNamespace(action_type="chat_reply", summary="OK", detail_json={}),
+        SimpleNamespace(action_type="chat_reply", summary="OK2", detail_json={}),
+        SimpleNamespace(action_type="chat_reply", summary="OK3", detail_json={}),
+    ]
+
+    result = await _build_evolution_context(agent_id, activities)
+
+    assert "Proactive Steward Context" in result
+    assert "Prepare local draft" in result
+    assert "Evidence: task_updated" in result
 
 
 # ─── plaza executor limits ──────────────────────────────────────

@@ -97,8 +97,7 @@ def _truncate_heartbeat_text(text: str, max_chars: int, label: str) -> str:
         return text
 
     marker = (
-        f"\n\n[... {label} truncated to fit heartbeat context budget; "
-        f"omitted {len(text) - max_chars:,} chars ...]\n\n"
+        f"\n\n[... {label} truncated to fit heartbeat context budget; omitted {len(text) - max_chars:,} chars ...]\n\n"
     )
     if max_chars <= len(marker) + 200:
         return text[: max(0, max_chars - len(marker))] + marker[:max_chars]
@@ -550,7 +549,14 @@ def _skill_already_covers_tools(ws_root, frequent_tools: list[str]) -> str | Non
 
 
 async def _build_evolution_context(
-    agent_id: uuid.UUID, recent_activities: list, tick_count: int = 0
+    agent_id: uuid.UUID,
+    recent_activities: list,
+    tick_count: int = 0,
+    *,
+    owner_id: uuid.UUID | str | None = None,
+    owner_name: str | None = None,
+    company_id: uuid.UUID | str | None = None,
+    company_name: str | None = None,
 ) -> str:
     """Build structured evolution context from activity logs and workspace evolution files.
 
@@ -647,6 +653,27 @@ async def _build_evolution_context(
 
         parts.append(pattern_section)
 
+        try:
+            from app.services.agency_charter import build_default_accountability_context
+            from app.services.proactive_employee_loop import build_proactive_employee_plan
+
+            proactive_plan = build_proactive_employee_plan(
+                agent_id=str(agent_id),
+                accountability=build_default_accountability_context(
+                    company_id=str(company_id or "heartbeat-company"),
+                    company_name=company_name or "Company",
+                    owner_id=str(owner_id or agent_id),
+                    owner_name=owner_name or "Owner",
+                    current_user_id=str(owner_id or agent_id),
+                    current_user_name=owner_name or "Owner",
+                ),
+                recent_activities=recent_activities,
+            )
+            if proactive_plan.markdown:
+                parts.append(proactive_plan.markdown)
+        except Exception as exc:
+            logger.debug("[Heartbeat] proactive steward context skipped for {}: {}", agent_id, exc)
+
         # 4. Skill creation hint — detect repeated tool-use patterns worth codifying
         _SKILL_THRESHOLD = 3  # same tool combo used 3+ times → suggest skill
         if top_tools and tool_count >= 6:
@@ -696,9 +723,7 @@ async def _build_evolution_context(
                     "This counts as a high-value heartbeat action (score 7+)."
                 )
                 if tick_count:
-                    _save_skill_opportunity_state(
-                        ws_root, tick=tick_count, tools=list(frequent_tools)
-                    )
+                    _save_skill_opportunity_state(ws_root, tick=tick_count, tools=list(frequent_tools))
             elif suppression_note:
                 logger.debug(
                     "[Heartbeat] skill opportunity suppressed for {}: {}",
@@ -1239,7 +1264,9 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
             fallback_model = None
             if agent.fallback_model_id:
                 fallback_result = await db.execute(
-                    select(LLMModel).where(LLMModel.id == agent.fallback_model_id, LLMModel.tenant_id == agent.tenant_id)
+                    select(LLMModel).where(
+                        LLMModel.id == agent.fallback_model_id, LLMModel.tenant_id == agent.tenant_id
+                    )
                 )
                 fallback_model = fallback_result.scalar_one_or_none()
 
@@ -1320,7 +1347,11 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
 
             try:
                 evolution_context = await _build_evolution_context(
-                    agent_id, recent_activities, tick_count=tick_count
+                    agent_id,
+                    recent_activities,
+                    tick_count=tick_count,
+                    owner_id=agent.creator_id,
+                    company_id=agent.tenant_id,
                 )
             except Exception as e:
                 logger.warning(f"Failed to build evolution context for heartbeat: {e}")
@@ -1463,9 +1494,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                             identity_id=agent_id,
                             label=f"Agent: {agent.name} (heartbeat)",
                         ),
-                        session_context=_get_or_create_heartbeat_session_ctx(
-                            agent_id, session_id
-                        ),
+                        session_context=_get_or_create_heartbeat_session_ctx(agent_id, session_id),
                         on_tool_call=_on_tool_call,
                         tool_executor=_build_heartbeat_tool_executor(agent_id, agent.creator_id),
                         core_tools_only=False,
@@ -1560,7 +1589,9 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                         runtime_config.tenant_resolution_error,
                     )
                 else:
-                    workspace = await ensure_workspace(agent_id, tenant_id=str(agent.tenant_id) if agent.tenant_id else None)
+                    workspace = await ensure_workspace(
+                        agent_id, tenant_id=str(agent.tenant_id) if agent.tenant_id else None
+                    )
                     await _maybe_run_skill_distillation(
                         agent_id=agent_id,
                         workspace=workspace,
@@ -1597,9 +1628,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                 from app.config import get_settings as _get_settings
                 from app.memory.md_store import validate_and_normalize_t3
 
-                normalization_report = validate_and_normalize_t3(
-                    Path(_get_settings().AGENT_DATA_DIR), agent_id
-                )
+                normalization_report = validate_and_normalize_t3(Path(_get_settings().AGENT_DATA_DIR), agent_id)
                 if normalization_report["fixed"] or normalization_report["warnings"]:
                     logger.info(
                         "[Heartbeat] T3 normalization for {}: fixed={} warnings={} files={}",
@@ -1620,7 +1649,8 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                 if synced:
                     logger.info(
                         "[Heartbeat] Hindsight sync: {} T3 items (agent={})",
-                        synced, agent_id,
+                        synced,
+                        agent_id,
                     )
             except Exception as _hs_err:
                 # sync_t3_to_hindsight already has its own try/except and only
@@ -1646,10 +1676,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                         reasoning_text = _c.strip()
                         break
                     if isinstance(_c, list):
-                        _texts = [
-                            str(p.get("text", "")) for p in _c
-                            if isinstance(p, dict) and p.get("type") == "text"
-                        ]
+                        _texts = [str(p.get("text", "")) for p in _c if isinstance(p, dict) and p.get("type") == "text"]
                         if _texts:
                             reasoning_text = " ".join(_texts).strip()
                             break
@@ -1802,9 +1829,9 @@ async def _heartbeat_tick():
 
                 # Check interval (P1-W2-5: fallback uses configurable default)
                 from app.config import get_settings
+
                 interval = timedelta(
-                    minutes=agent.heartbeat_interval_minutes
-                    or get_settings().HEARTBEAT_DEFAULT_INTERVAL_MINUTES
+                    minutes=agent.heartbeat_interval_minutes or get_settings().HEARTBEAT_DEFAULT_INTERVAL_MINUTES
                 )
                 if agent.last_heartbeat_at and (now - agent.last_heartbeat_at) < interval:
                     skipped_interval += 1

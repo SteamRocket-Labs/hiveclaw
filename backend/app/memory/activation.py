@@ -19,6 +19,16 @@ class ActivationContext:
 
 
 @dataclass(frozen=True, slots=True)
+class ActivationPolicy:
+    goal_weight: float = 0.25
+    owner_weight: float = 0.2
+    company_weight: float = 0.15
+    open_loop_weight: float = 0.2
+    retention_weight: float = 0.2
+    confidence_weight: float = 0.05
+
+
+@dataclass(frozen=True, slots=True)
 class ActivationDecision:
     item: MemoryItem
     score: float
@@ -27,34 +37,38 @@ class ActivationDecision:
 
 
 class ActivationScorer:
+    def __init__(self, policy: ActivationPolicy | None = None) -> None:
+        self.policy = policy or ActivationPolicy()
+
     def score(self, item: MemoryItem, context: ActivationContext) -> ActivationDecision:
         sensitivity = str(item.metadata.get("sensitivity", "PL1_public"))
         if not context.principal_stack.can_access_sensitivity(sensitivity):
             return ActivationDecision(item=item, score=0.0, reasons=["sensitivity_strip"], suppressed=True)
 
+        policy = self.policy
         score = float(item.score)
         reasons: list[str] = []
         content = item.content
         query_terms = _terms(context.query)
 
         if _overlap(query_terms | set(context.goal_terms), content):
-            score += 0.25
+            score += policy.goal_weight
             reasons.append("goal_relevance")
         if _overlap(set(context.owner_terms) | {"owner"}, content):
-            score += 0.2
+            score += policy.owner_weight
             reasons.append("principal_relevance")
         if _overlap(set(context.company_terms), content):
-            score += 0.15
+            score += policy.company_weight
             reasons.append("company_relevance")
         if item.metadata.get("open_loop"):
-            score += 0.2
+            score += policy.open_loop_weight
             reasons.append("open_loop_pressure")
         retention_score = _float_meta(item, "retention_score")
         if retention_score > 0:
-            score += retention_score * 0.2
+            score += retention_score * policy.retention_weight
             reasons.append("retention_score")
         if _float_meta(item, "confidence", default=0.0) >= 0.8:
-            score += 0.05
+            score += policy.confidence_weight
             reasons.append("confidence_weight")
 
         return ActivationDecision(item=item, score=round(min(score, 1.0), 4), reasons=reasons)
@@ -76,4 +90,3 @@ def _float_meta(item: MemoryItem, key: str, default: float = 0.0) -> float:
         return float(item.metadata.get(key, default))
     except (TypeError, ValueError):
         return default
-

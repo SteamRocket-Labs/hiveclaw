@@ -262,6 +262,60 @@ async def test_start_client_binds_lark_sdk_receive_loop_to_running_loop(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_start_client_disables_sdk_auto_reconnect(monkeypatch):
+    import app.services.feishu_ws as feishu_ws
+
+    agent_id = uuid4()
+    client_kwargs: dict[str, object] = {}
+    scheduled: list[object] = []
+
+    class _FakeClient:
+        def __init__(self):
+            self._conn = None
+
+        async def _connect(self):
+            self._conn = SimpleNamespace(closed=False)
+
+        async def _disconnect(self):
+            self._conn = None
+
+        async def _ping_loop(self):
+            return None
+
+    def fake_client(*_args, **kwargs):
+        client_kwargs.update(kwargs)
+        return _FakeClient()
+
+    def fake_create_task(coro, name=None):
+        if name is None:
+            coro.close()
+            return SimpleNamespace(done=lambda: True, cancel=lambda: None, name=name)
+        scheduled.append(coro)
+        return SimpleNamespace(done=lambda: False, cancel=lambda: None, name=name)
+
+    async def fake_sleep(_delay):
+        raise asyncio.CancelledError
+
+    manager = feishu_ws.FeishuWSManager()
+    monkeypatch.setattr(manager, "_create_event_handler", lambda _agent_id: object())
+
+    async def fake_mark_channel_status(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(manager, "_mark_channel_status", fake_mark_channel_status, raising=False)
+    monkeypatch.setattr(feishu_ws, "_PROXY_PATCH_AVAILABLE", False, raising=False)
+    monkeypatch.setattr(feishu_ws, "lark", SimpleNamespace(LogLevel=SimpleNamespace(INFO="info")))
+    monkeypatch.setattr(feishu_ws, "ws", SimpleNamespace(Client=fake_client))
+    monkeypatch.setattr(feishu_ws.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr(feishu_ws.asyncio, "sleep", fake_sleep)
+
+    await manager.start_client(agent_id, "app_id", "app_secret")
+    await scheduled[0]
+
+    assert client_kwargs["auto_reconnect"] is False
+
+
+@pytest.mark.asyncio
 async def test_start_client_keeps_client_registered_after_transient_connect_failure(monkeypatch):
     import app.services.feishu_ws as feishu_ws
 

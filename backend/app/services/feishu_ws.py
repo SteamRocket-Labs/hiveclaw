@@ -398,6 +398,7 @@ class FeishuWSManager:
             app_secret,
             event_handler=event_handler,
             log_level=lark.LogLevel.INFO,
+            auto_reconnect=False,
         )
         self._clients[agent_id] = client
         no_proxy_ctx = _make_no_proxy_connect(_orig_websockets_connect) if _PROXY_PATCH_AVAILABLE else None

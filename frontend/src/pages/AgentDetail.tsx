@@ -36,7 +36,7 @@ import { enterpriseApi, type CapabilityDefinition, type CapabilityPolicy } from 
 import { fileApi } from '../api/domains/files';
 import { triggerApi } from '../api/domains/triggers';
 import { autonomyApi } from '../api/domains/autonomy';
-import { chatApi } from '../api/domains/chat';
+import { chatApi, type SessionRun } from '../api/domains/chat';
 import { uploadFileWithProgress } from '../api/core/upload-progress';
 import { useAuthStore } from '../stores';
 
@@ -169,12 +169,28 @@ function AgentDetailInner() {
     const reconnectDisabledRef = useRef<Record<SessionRuntimeKey, boolean>>({});
     const reconnectAttemptsRef = useRef<Record<SessionRuntimeKey, number>>({});
     const sessionUiStateRef = useRef<Record<SessionRuntimeKey, { isWaiting: boolean; isStreaming: boolean }>>({});
+    const activeRunStateRef = useRef<Record<SessionRuntimeKey, { runId: string; status: string }>>({});
     const activeSessionIdRef = useRef<string | null>(null);
     const currentAgentIdRef = useRef<string | undefined>(id);
     const sessionMsgAbortRef = useRef<AbortController | null>(null);
     const sessionLoadSeqRef = useRef(0);
+    const [activeRunStateBySession, setActiveRunStateBySession] = useState<Record<SessionRuntimeKey, { runId: string; status: string }>>({});
 
     const buildSessionRuntimeKey = (agentId: string, sessionId: string) => `${agentId}:${sessionId}`;
+    const isLiveRun = (run?: SessionRun | null) => !!run && ['pending', 'running'].includes(String(run.status || '').toLowerCase());
+
+    const setActiveRunState = (key: SessionRuntimeKey, run: { runId: string; status: string } | null) => {
+        if (run) {
+            activeRunStateRef.current = { ...activeRunStateRef.current, [key]: run };
+            setActiveRunStateBySession(prev => ({ ...prev, [key]: run }));
+            setSessionUiState(key, { isWaiting: true, isStreaming: false });
+            return;
+        }
+        const next = { ...activeRunStateRef.current };
+        delete next[key];
+        activeRunStateRef.current = next;
+        setActiveRunStateBySession(next);
+    };
 
     const clearReconnectTimer = (key: SessionRuntimeKey) => {
         const timer = reconnectTimerRef.current[key];
@@ -253,6 +269,7 @@ function AgentDetailInner() {
         const sessionId = String(sess.id);
         const runtimeKey = buildSessionRuntimeKey(targetAgentId, sessionId);
         const runtimeState = sessionUiStateRef.current[runtimeKey] || { isWaiting: false, isStreaming: false };
+        const activeRunState = activeRunStateRef.current[runtimeKey];
         const writableSession = isWritableSession(sess);
         activeSessionIdRef.current = sessionId;
         setCreatedAgentId(null);
@@ -262,7 +279,7 @@ function AgentDetailInner() {
         setHistoryMessagesSessionId(writableSession ? null : sessionId);
         setTransportNotice(null);
         setIsStreaming(runtimeState.isStreaming);
-        setIsWaiting(runtimeState.isWaiting);
+        setIsWaiting(runtimeState.isWaiting || !!activeRunState);
         setActiveSession(sess);
         setAgentExpired(false);
         syncActiveSocketState(sess, targetAgentId);
@@ -503,6 +520,8 @@ function AgentDetailInner() {
         setIsWaiting(false);
         setWsConnected(false);
         wsRef.current = null;
+        activeRunStateRef.current = {};
+        setActiveRunStateBySession({});
         setChatScope('mine');
         setAgentExpired(false);
         settingsInitRef.current = false;
@@ -559,12 +578,13 @@ function AgentDetailInner() {
         };
         ws.onclose = (e) => {
             if (wsMapRef.current[key] === ws) delete wsMapRef.current[key];
-            setSessionUiState(key, { isWaiting: false, isStreaming: false });
+            const runStillActive = !!activeRunStateRef.current[key];
+            setSessionUiState(key, { isWaiting: runStillActive, isStreaming: false });
             const isActiveRuntime = currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId;
             if (isActiveRuntime) {
                 wsRef.current = null;
                 setWsConnected(false);
-                setIsWaiting(false);
+                setIsWaiting(runStillActive);
                 setIsStreaming(false);
             }
             if (e.code === 4003 || e.code === 4002) {
@@ -584,6 +604,24 @@ function AgentDetailInner() {
         ws.onmessage = (e) => {
             const d = JSON.parse(e.data);
             const isActiveRuntime = currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId;
+            if (d.type === 'run_started' && d.run_id) {
+                setActiveRunState(key, { runId: String(d.run_id), status: d.status || 'running' });
+                if (isActiveRuntime) {
+                    setIsWaiting(true);
+                    setIsStreaming(false);
+                }
+                return;
+            }
+            if (d.type === 'run_cancelled') {
+                setActiveRunState(key, null);
+                setSessionUiState(key, { isWaiting: false, isStreaming: false });
+                if (isActiveRuntime) {
+                    setIsWaiting(false);
+                    setIsStreaming(false);
+                }
+                fetchMySessions(true, agentId);
+                return;
+            }
             if (['thinking', 'chunk', 'tool_call', 'done', 'error', 'quota_exceeded'].includes(d.type)) {
                 const nextStreaming = ['thinking', 'chunk', 'tool_call'].includes(d.type);
                 const endStreaming = ['done', 'error', 'quota_exceeded'].includes(d.type);
@@ -591,6 +629,7 @@ function AgentDetailInner() {
                     isWaiting: false,
                     isStreaming: endStreaming ? false : nextStreaming,
                 });
+                if (endStreaming) setActiveRunState(key, null);
             }
             if (!isActiveRuntime) {
                 if (['done', 'error', 'quota_exceeded', 'trigger_notification'].includes(d.type)) {
@@ -785,11 +824,10 @@ function AgentDetailInner() {
         }
     }, [activeSession?.id, activeTab]);
 
-    const sendChatMsg = () => {
+    const sendChatMsg = async () => {
         if (!id || !activeSession?.id) return;
         const activeRuntimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
-        const activeSocket = wsMapRef.current[activeRuntimeKey];
-        if (!activeSocket || activeSocket.readyState !== WebSocket.OPEN) return;
+        if (activeRunStateRef.current[activeRuntimeKey]) return;
         if (!chatInput.trim() && attachedFiles.length === 0) return;
         
         let userMsg = chatInput.trim();
@@ -836,14 +874,22 @@ function AgentDetailInner() {
             imageUrl: attachedFiles.length === 1 ? attachedFiles[0].imageUrl : undefined, 
             timestamp: new Date().toISOString() 
         })]);
-        activeSocket.send(JSON.stringify({
-            content: contentForLLM, 
-            display_content: userMsg, 
-            file_name: attachedFiles.map(f => f.name).join(', ') 
-        }));
-        
         setChatInput(''); 
         setAttachedFiles([]);
+        try {
+            const run = await chatApi.startSessionRun(id, String(activeSession.id), {
+                content: contentForLLM,
+                display_content: userMsg,
+                file_name: attachedFiles.map(f => f.name).join(', '),
+            });
+            setActiveRunState(activeRuntimeKey, { runId: run.run_id, status: run.status || 'running' });
+        } catch (err: any) {
+            setIsWaiting(false);
+            setIsStreaming(false);
+            setSessionUiState(activeRuntimeKey, { isWaiting: false, isStreaming: false });
+            const msg = err?.message || t('agent.chat.runStartFailed', 'Failed to start run');
+            setChatMessages(prev => [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })]);
+        }
     };
 
     const handleChatFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -949,11 +995,40 @@ function AgentDetailInner() {
         refetchInterval: activeTab === 'chat' && activeSession?.id ? 10000 : false,
     });
 
+    const { data: activeSessionRun } = useQuery({
+        queryKey: ['chat-active-run', id, activeSession?.id],
+        queryFn: () => chatApi.getActiveSessionRun(id!, String(activeSession!.id)),
+        enabled: canLoadAgentScopedData && activeTab === 'chat' && !!activeSession?.id && !!activeSession && isWritableSession(activeSession),
+        refetchInterval: activeTab === 'chat' && activeSession?.id ? 3000 : false,
+    });
+
+    useEffect(() => {
+        if (!id || !activeSession?.id || !isWritableSession(activeSession)) return;
+        const key = buildSessionRuntimeKey(id, String(activeSession.id));
+        if (activeSessionRun && isLiveRun(activeSessionRun)) {
+            setActiveRunState(key, { runId: activeSessionRun.run_id, status: activeSessionRun.status });
+            setIsWaiting(true);
+            setIsStreaming(false);
+            return;
+        }
+        if (activeRunStateRef.current[key]) {
+            setActiveRunState(key, null);
+            setSessionUiState(key, { isWaiting: false, isStreaming: false });
+            setIsWaiting(false);
+            setIsStreaming(false);
+            selectSession(activeSession);
+            fetchMySessions(true, id);
+        }
+    }, [activeSessionRun, activeSession?.id, id]);
+
     const supportsVision = !!agent?.primary_model_id && llmModels.some(
         (m: any) => m.id === agent.primary_model_id && m.supports_vision
     );
 
     const activeTimelineMessages = activeSession && isWritableSession(activeSession) ? chatMessages : historyMsgs;
+    const currentActiveRunState = id && activeSession?.id
+        ? activeRunStateBySession[buildSessionRuntimeKey(id, String(activeSession.id))] || null
+        : null;
 
     const runtimeSummary: ChatRuntimeSummary | null = React.useMemo(() => {
         if (!activeSession) return null;
@@ -1356,6 +1431,7 @@ function AgentDetailInner() {
                             runtimeSummary={runtimeSummary}
                             transportNotice={transportNotice}
                             isWaiting={isWaiting}
+                            activeRunStatus={currentActiveRunState?.status || null}
 
                             chatEndRef={chatEndRef}
                             showScrollBtn={showScrollBtn}
@@ -1377,12 +1453,20 @@ function AgentDetailInner() {
                             onAbortGeneration={() => {
                                 if (!id || !activeSession?.id) return;
                                 const activeRuntimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
-                                const activeSocket = wsMapRef.current[activeRuntimeKey];
-                                if (activeSocket?.readyState === WebSocket.OPEN) {
-                                    activeSocket.send(JSON.stringify({ type: 'abort' }));
+                                const activeRun = activeRunStateRef.current[activeRuntimeKey];
+                                if (activeRun?.runId) {
+                                    chatApi.cancelSessionRun(id, String(activeSession.id), activeRun.runId).catch((err) => {
+                                        console.warn('Failed to cancel chat run:', err);
+                                    });
+                                    setActiveRunState(activeRuntimeKey, null);
                                     setIsStreaming(false);
                                     setIsWaiting(false);
                                     setSessionUiState(activeRuntimeKey, { isWaiting: false, isStreaming: false });
+                                    return;
+                                }
+                                const activeSocket = wsMapRef.current[activeRuntimeKey];
+                                if (activeSocket?.readyState === WebSocket.OPEN) {
+                                    activeSocket.send(JSON.stringify({ type: 'abort' }));
                                 }
                             }}
                         />

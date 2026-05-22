@@ -200,6 +200,37 @@ describe('request cleanup adapters', () => {
     expect(get).toHaveBeenCalledWith('/agents/agent-1/sessions?scope=all');
   });
 
+  it('routes durable chat run APIs through chatApi', async () => {
+    vi.doMock('./core/request', async () => {
+      const actual = await vi.importActual<typeof import('./core/request')>('./core/request');
+      return {
+        ...actual,
+        get: vi.fn(),
+        post: vi.fn(),
+      };
+    });
+    const { chatApi } = await import('./domains/chat');
+    const { get, post } = await import('./core/request');
+    vi.mocked(get).mockResolvedValue({ run_id: 'run-1', status: 'running' });
+    vi.mocked(post).mockResolvedValue({ run_id: 'run-1', status: 'running' });
+
+    await chatApi.startSessionRun('agent-1', 'session-1', {
+      content: 'Plan this',
+      display_content: 'Plan this',
+      file_name: '',
+    });
+    await chatApi.getActiveSessionRun('agent-1', 'session-1');
+    await chatApi.cancelSessionRun('agent-1', 'session-1', 'run-1');
+
+    expect(post).toHaveBeenCalledWith('/agents/agent-1/sessions/session-1/runs', {
+      content: 'Plan this',
+      display_content: 'Plan this',
+      file_name: '',
+    });
+    expect(get).toHaveBeenCalledWith('/agents/agent-1/sessions/session-1/runs/active');
+    expect(post).toHaveBeenCalledWith('/agents/agent-1/sessions/session-1/runs/run-1/cancel', {});
+  });
+
   it('routes notification center queries through notificationsApi with query params', async () => {
     vi.doMock('./core/request', async () => {
       const actual = await vi.importActual<typeof import('./core/request')>('./core/request');

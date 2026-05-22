@@ -1,7 +1,6 @@
 """WebSocket chat endpoint for real-time agent conversations."""
 
 import asyncio
-import json
 import os
 import uuid
 
@@ -21,6 +20,14 @@ from app.models.user import User
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
 from app.services.llm_error_policy import is_llm_error_message
+from app.services.web_chat_broker import web_chat_broker
+from app.services.web_chat_runtime import (
+    ActiveWebChatRunExists,
+    cancel_web_chat_run,
+    conversation_from_history_messages as _conversation_from_history_messages,
+    get_active_web_chat_run,
+    start_web_chat_run,
+)
 from app.services.web_session_contract import apply_web_session_contract
 
 router = APIRouter(tags=["websocket"])
@@ -103,7 +110,7 @@ class ConnectionManager:
             return session
 
 
-manager = ConnectionManager()
+manager = web_chat_broker
 
 
 async def _claim_pending_reply_suffix_for_session(
@@ -162,51 +169,6 @@ async def get_chat_history(
     for m in messages:
         out.append(serialize_chat_message(m))
     return out
-
-
-def _conversation_from_history_messages(history_messages) -> list[dict]:
-    """Convert persisted chat rows back into provider-compatible conversation entries."""
-    conversation: list[dict] = []
-    for msg in history_messages:
-        if msg.role == "tool_call":
-            try:
-                tc_data = json.loads(msg.content)
-                tc_name = tc_data.get("name", "unknown")
-                tc_args = tc_data.get("args", {})
-                tc_result = tc_data.get("result", "")
-                tc_id = f"call_{msg.id}"
-                assistant_msg = {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": tc_id,
-                            "type": "function",
-                            "function": {"name": tc_name, "arguments": json.dumps(tc_args, ensure_ascii=False)},
-                        }
-                    ],
-                }
-                if tc_data.get("reasoning_content"):
-                    assistant_msg["reasoning_content"] = tc_data["reasoning_content"]
-                conversation.append(assistant_msg)
-
-                tool_result = str(tc_result)
-                if len(tool_result) > 50000:
-                    logger.info("[WS] Tool result truncated on reload: {}→50000 chars", len(tool_result))
-                    tool_result = tool_result[:50000] + "\n\n[... truncated, full output may be in workspace/tool_results/]"
-                conversation.append({"role": "tool", "tool_call_id": tc_id, "content": tool_result})
-            except Exception as exc:
-                logger.debug("[WS] Skipped malformed tool_call record: {}", exc)
-            continue
-
-        if msg.role == "assistant" and is_llm_error_message(msg.content):
-            continue
-
-        entry = {"role": msg.role, "content": msg.content}
-        if getattr(msg, "thinking", None):
-            entry["reasoning_content"] = msg.thinking
-        conversation.append(entry)
-    return conversation
 
 
 async def call_llm(
@@ -329,7 +291,6 @@ async def websocket_chat(
     # Verify access and load agent + model
     agent_name = ""
     agent_type = ""  # Track agent type for OpenClaw routing
-    role_description = ""
     welcome_message = ""
     llm_model = None
     fallback_llm_model = None
@@ -359,7 +320,6 @@ async def websocket_chat(
                 return
             agent_name = agent.name
             agent_type = agent.agent_type or ""
-            role_description = agent.role_description or ""
             welcome_message = agent.welcome_message or ""
             logger.info(f"[WS] Agent: {agent_name}, type: {agent_type}, model_id: {agent.primary_model_id}")
 
@@ -497,8 +457,6 @@ async def websocket_chat(
         if welcome_message and not history_messages:
             await websocket.send_json({"type": "done", "role": "assistant", "content": welcome_message})
 
-        runtime_session_context = await manager.get_or_create_runtime_session(agent_id_str, conv_id)
-
         # Session idle detection: two-phase timeout
         # Phase 1: After IDLE seconds of no input → SESSION_IDLE hook (T0 log + session summary)
         # Phase 2: After WS_IDLE_TIMEOUT seconds total → SESSION_CLOSE + disconnect
@@ -577,394 +535,71 @@ async def websocket_chat(
             content = data.get("content", "")
             display_content = data.get("display_content", "")  # User-facing display text
             file_name = data.get("file_name", "")  # Original file name for attachment display
+            if data.get("type") == "abort":
+                try:
+                    run_id = data.get("run_id")
+                    async with async_session() as run_db:
+                        active_run = None
+                        if not run_id:
+                            active_run = await get_active_web_chat_run(
+                                db=run_db,
+                                agent_id=agent_id,
+                                session_id=conv_id,
+                            )
+                            run_id = active_run.get("run_id") if active_run else None
+                        if run_id:
+                            payload = await cancel_web_chat_run(
+                                db=run_db,
+                                agent_id=agent_id,
+                                session_id=conv_id,
+                                run_id=run_id,
+                                user_id=user_id,
+                            )
+                            await websocket.send_json({"type": "run_cancelled", **payload})
+                except Exception as abort_err:
+                    logger.warning("[WS] Failed to cancel web chat run: {}", abort_err)
+                    await websocket.send_json({"type": "error", "content": "Failed to stop run"})
+                continue
             logger.info(f"[WS] Received: {content[:50]}")
 
             if not content:
                 continue
 
-            # ── Quota checks (M-14: intentionally before message save) ──
+            # Durable web chat run: execution now lives outside the WebSocket
+            # lifecycle. This keeps closing/reloading the page from cancelling
+            # the underlying agent run; the socket only subscribes to events.
             try:
-                from app.services.quota_guard import check_user_token_quota, QuotaExceeded
-                await check_user_token_quota(user_id)
-            except QuotaExceeded as qe:
-                await websocket.send_json({"type": "done", "role": "assistant", "content": f"⚠️ {qe.message}"})
-                continue
-            except Exception as quota_err:
-                if "expired" in str(quota_err).lower():
-                    await websocket.send_json({"type": "done", "role": "assistant", "content": f"⚠️ {quota_err}"})
-                    continue
-                raise
-
-            # Add user message to conversation (full LLM context)
-            conversation.append({"role": "user", "content": content})
-
-            # Save user message — display_content for history display, content for LLM
-            # Prefix with [file:name] if there's a file attachment so history can show it
-            saved_content = display_content if display_content else content
-            if file_name:
-                saved_content = f"[file:{file_name}]\n{saved_content}"
-            async with async_session() as db:
-                user_msg = ChatMessage(
-                    agent_id=agent_id,
-                    user_id=user_id,
-                    role="user",
-                    content=saved_content,
-                    conversation_id=conv_id,
-                )
-                db.add(user_msg)
-                # Update session last_message_at + auto-title on first message
-                from app.models.chat_session import ChatSession as _CS
-                from datetime import datetime as _dt2, timezone as _tz2
-                _now = _dt2.now(_tz2.utc)
-                _sess_r = await db.execute(
-                    select(_CS).where(_CS.id == uuid.UUID(conv_id))
-                )
-                _sess = _sess_r.scalar_one_or_none()
-                if _sess:
-                    _sess.last_message_at = _now
-                    if not history_messages and _sess.title.startswith("Session "):
-                        # Use display_content for title (avoids raw base64/markers)
-                        title_src = display_content if display_content else content
-                        # Clean up common prefixes from image/file messages
-                        clean_title = title_src.replace("[图片] ", "📷 ").replace("[image_data:", "").strip()
-                        if file_name and not clean_title:
-                            clean_title = f"📎 {file_name}"
-                        _sess.title = clean_title[:40] if clean_title else content[:40]
-                await db.commit()
-            logger.info("[WS] User message saved")
-
-            # ── OpenClaw routing: insert into gateway_messages instead of LLM ──
-            if agent_type == "openclaw":
-                from app.models.gateway_message import GatewayMessage as GwMsg
-                async with async_session() as db:
-                    gw_msg = GwMsg(
-                        agent_id=agent_id,
-                        sender_user_id=user_id,
-                        conversation_id=conv_id,
-                        content=content,
-                        status="pending",
+                async with async_session() as run_db:
+                    session_result = await run_db.execute(
+                        select(ChatSession).where(
+                            ChatSession.id == uuid.UUID(str(conv_id)),
+                            ChatSession.agent_id == agent_id,
+                            ChatSession.user_id == user_id,
+                        )
                     )
-                    db.add(gw_msg)
-                    await db.commit()
-                logger.info("[WS] OpenClaw: message queued for gateway poll")
-                await websocket.send_json({
-                    "type": "done",
-                    "role": "assistant",
-                    "content": "Message forwarded to OpenClaw agent. Waiting for response..."
-                })
-                continue
-
-            # Detect task creation intent
-            import re
-            task_match = re.search(
-                r'(?:创建|新建|添加|建一个|帮我建|create|add)(?:一个|a )?(?:任务|待办|todo|task)[，,：：:\\s]*(.+)',
-                content, re.IGNORECASE
-            )
-
-            # Track thinking content for storage
-            thinking_content: list[str] = []
-            # Accumulate streamed chunks for partial-response save on disconnect (H-16)
-            streamed_chunks: list[str] = []
-
-            # Call LLM with streaming
-            if llm_model:
-                try:
-                    logger.info(f"[WS] Calling LLM {llm_model.model} (streaming)...")
-
-                    async def stream_to_ws(text: str):
-                        """Send each chunk to client in real-time."""
-                        from app.services.chat_message_parts import build_chunk_event
-
-                        streamed_chunks.append(text)
-                        await websocket.send_json(build_chunk_event(text))
-
-                    async def tool_call_to_ws(data: dict):
-                        """Send tool call info to client and persist completed ones."""
-                        from app.services.chat_message_parts import build_tool_call_event
-
-                        await websocket.send_json(build_tool_call_event(data))
-                        # Save completed tool calls to DB so they persist in chat history
-                        if data.get("status") == "done":
-                            try:
-                                import json as _json_tc
-                                raw_result = data.get("result") or ""
-                                # Aligned with kernel _TOOL_RESULT_EVICTION_THRESHOLD (50K, CC standard)
-                                _raw_str = str(raw_result)
-                                if len(_raw_str) > 50000:
-                                    logger.info("[WS] Tool result truncated on save: {}->50000 chars (tool={})", len(_raw_str), data.get("name", "?"))
-                                    _raw_str = _raw_str[:50000] + "\n\n[... truncated]"
-                                async with async_session() as _tc_db:
-                                    tc_msg = ChatMessage(
-                                        agent_id=agent_id,
-                                        user_id=user_id,
-                                        role="tool_call",
-                                        content=_json_tc.dumps({
-                                            "name": data.get("name", ""),
-                                            "args": data.get("args"),
-                                            "status": "done",
-                                            "result": _raw_str,
-                                            "reasoning_content": data.get("reasoning_content"),
-                                        }),
-                                        conversation_id=conv_id,
-                                    )
-                                    _tc_db.add(tc_msg)
-                                    await _tc_db.commit()
-                            except Exception as _tc_err:
-                                logger.warning(f"[WS] Failed to save tool_call: {_tc_err}")
-                    
-                    async def thinking_to_ws(text: str):
-                        """Send thinking chunks to client for collapsible display."""
-                        from app.services.chat_message_parts import build_thinking_event
-
-                        thinking_content.append(text)
-                        await websocket.send_json(build_thinking_event(text))
-
-                    async def runtime_event_to_ws(data: dict):
-                        from app.services.chat_message_parts import (
-                            build_active_packs_event,
-                            build_compaction_event,
-                            build_permission_event,
-                        )
-
-                        if data.get("type") == "permission":
-                            event_payload = build_permission_event(data)
-                        elif data.get("type") == "session_compact":
-                            event_payload = build_compaction_event(data)
-                        elif data.get("type") == "pack_activation":
-                            event_payload = build_active_packs_event(data)
-                        else:
-                            event_payload = data
-                        await websocket.send_json(event_payload)
-                        if data.get("type") in {"permission", "session_compact", "pack_activation"}:
-                            try:
-                                async with async_session() as _event_db:
-                                    event_msg = ChatMessage(
-                                        agent_id=agent_id,
-                                        user_id=user_id,
-                                        role="system",
-                                        content=json.dumps(data, ensure_ascii=False),
-                                        conversation_id=conv_id,
-                                    )
-                                    _event_db.add(event_msg)
-                                    await _event_db.commit()
-                            except Exception as _event_err:
-                                logger.warning(f"[WS] Failed to save runtime event: {_event_err}")
-
-                    # Run call_llm as a cancellable task
-                    cancel_event = asyncio.Event()
-                    pending_reply_suffix = ""
-                    try:
-                        async with async_session() as _pending_db:
-                            pending_reply_suffix = await _claim_pending_reply_suffix_for_session(
-                                _pending_db,
-                                agent_id=agent_id,
-                                session_id=conv_id,
-                            )
-                    except Exception as _pending_err:
-                        logger.warning("[WS] Pending reply injection failed (non-fatal): %s", _pending_err)
-                    llm_task = asyncio.create_task(call_llm(
-                        llm_model,
-                        conversation,
-                        agent_name,
-                        role_description,
-                        fallback_model=fallback_llm_model,
-                        agent_id=agent_id,
-                        user_id=user_id,
-                        on_chunk=stream_to_ws,
-                        on_tool_call=tool_call_to_ws,
-                        on_thinking=thinking_to_ws,
-                        on_event=runtime_event_to_ws,
-                        supports_vision=getattr(llm_model, 'supports_vision', False),
-                        session_id=conv_id,
-                        memory_messages=conversation,
-                        cancel_event=cancel_event,
-                        session_context=runtime_session_context,
-                        session_source="web",
-                        session_channel="web",
-                        system_prompt_suffix=pending_reply_suffix,
-                        execution_identity=ExecutionIdentityRef(
-                            identity_type="delegated_user",
-                            identity_id=user.id,
-                            label=f"{user.display_name or user.username} via web",
-                        ),
-                    ))
-
-                    # Listen for abort while LLM is running
-                    while not llm_task.done():
-                        try:
-                            msg = await asyncio.wait_for(
-                                websocket.receive_json(), timeout=0.5
-                            )
-                            if msg.get("type") == "abort":
-                                logger.info("[WS] Abort received, signalling runtime cancel")
-                                cancel_event.set()
-                                break
-                        except asyncio.TimeoutError:
-                            continue
-                        except WebSocketDisconnect:
-                            cancel_event.set()
-                            # Give kernel time to persist before cancelling
-                            try:
-                                assistant_response = await asyncio.wait_for(llm_task, timeout=3.0)
-                                logger.info("[WS] Kernel finished gracefully after disconnect")
-                            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
-                                llm_task.cancel()
-                                assistant_response = None
-                                logger.info("[WS] Kernel cleanup timed out, force cancelled")
-                            # Save partial streamed content even if kernel didn't finish (H-16)
-                            if not assistant_response and streamed_chunks:
-                                assistant_response = "".join(streamed_chunks)
-                                logger.info("[WS] Saving partial response ({} chunks) after disconnect", len(streamed_chunks))
-                            # Best-effort save of partial response
-                            if assistant_response:
-                                try:
-                                    async with async_session() as _dc_db:
-                                        _dc_msg = ChatMessage(
-                                            agent_id=agent_id, user_id=user_id,
-                                            role="assistant", content=assistant_response,
-                                            thinking="".join(thinking_content) if thinking_content else None,
-                                            conversation_id=conv_id,
-                                        )
-                                        _dc_db.add(_dc_msg)
-                                        await _dc_db.commit()
-                                except Exception as _dc_err:
-                                    logger.debug(f"[WS] Partial save on disconnect failed: {_dc_err}")
-
-                            # Best-effort memory persistence on disconnect (BP-2 fix)
-                            # Without this, all learnings from the session are lost.
-                            if conversation and len(conversation) > 1 and agent.tenant_id:
-                                try:
-                                    from app.services.memory_service import persist_runtime_memory
-                                    await asyncio.wait_for(
-                                        persist_runtime_memory(
-                                            agent_id=agent_id,
-                                            session_id=conv_id,
-                                            tenant_id=agent.tenant_id,
-                                            messages=conversation,
-                                        ),
-                                        timeout=5.0,
-                                    )
-                                    logger.info("[WS] Memory persisted on disconnect for session {}", conv_id)
-                                except Exception as _mem_err:
-                                    logger.debug("[WS] Memory persist on disconnect failed (non-fatal): {}", _mem_err)
-                            raise
-
-                    assistant_response = await llm_task
-                    logger.info(f"[WS] LLM response: {assistant_response[:80]}")
-                    llm_failed = is_llm_error_message(assistant_response)
-
-                    # Update last_active_at
-                    from datetime import datetime, timezone as tz
-                    async with async_session() as _db:
-                        from app.models.agent import Agent as AgentModel
-                        _ar = await _db.execute(select(AgentModel).where(AgentModel.id == agent_id))
-                        _agent = _ar.scalar_one_or_none()
-                        if _agent:
-                            _agent.last_active_at = datetime.now(tz.utc)
-                            await _db.commit()
-
-                    # Token usage is tracked by record_token_usage in the kernel
-                    from app.services.activity_logger import log_activity
-                    if llm_failed:
-                        await log_activity(
-                            agent_id,
-                            "llm_error",
-                            f"LLM failed: {assistant_response[:80]}",
-                            detail={"channel": "web", "user_text": content[:200], "reply": assistant_response[:500]},
-                        )
-                    else:
-                        await log_activity(
-                            agent_id,
-                            "chat_reply",
-                            f"Replied to web chat: {assistant_response[:80]}",
-                            detail={"channel": "web", "user_text": content[:200], "reply": assistant_response[:500]},
-                        )
-                except WebSocketDisconnect:
-                    raise
-                except Exception as e:
-                    logger.error(f"[WS] LLM error: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    # Sanitize error — strip potential secrets, show friendly message
-                    _err_str = str(e)[:200]
-                    if any(k in _err_str.lower() for k in ("api_key", "sk-", "secret", "password", "token=")):
-                        assistant_response = "[LLM Error] AI 模型调用异常，请稍后重试。"
-                    else:
-                        assistant_response = "[LLM Error] AI 模型调用异常，请稍后重试。"
-            else:
-                assistant_response = f"[LLM Error] {agent_name} has no LLM model configured. Please select a model in the agent's Settings tab."
-
-            # If task creation detected, create a real Task record
-            if task_match and not is_llm_error_message(assistant_response):
-                task_title = task_match.group(1).strip()
-                if task_title:
-                    try:
-                        from app.models.task import Task
-                        from app.services.task_executor import execute_task
-                        import asyncio as _asyncio
-                        async with async_session() as db:
-                            task = Task(
-                                agent_id=agent_id,
-                                title=task_title,
-                                created_by=user_id,
-                                status="pending",
-                                priority="medium",
-                            )
-                            db.add(task)
-                            await db.commit()
-                            await db.refresh(task)
-                            task_id = task.id
-                        _asyncio.create_task(execute_task(task_id, agent_id))
-                        assistant_response += f"\n\n📋 Task synced to task board: [{task_title}]"
-                        logger.info(f"[WS] Created task: {task_title}")
-                    except Exception as e:
-                        logger.error(f"[WS] Failed to create task: {e}")
-
-            # Add assistant response to conversation
-            if not is_llm_error_message(assistant_response):
-                conversation.append({"role": "assistant", "content": assistant_response})
-
-            # Save assistant message
-            async with async_session() as db:
-                asst_msg = ChatMessage(
-                    agent_id=agent_id,
-                    user_id=user_id,
-                    role="assistant",
-                    content=assistant_response,
-                    thinking=''.join(thinking_content) if thinking_content else None,
-                    conversation_id=conv_id,
-                )
-                db.add(asst_msg)
-                await db.commit()
-            logger.info("[WS] Assistant message saved")
-
-            # Send done signal with final content (for non-streaming clients)
-            from app.services.chat_message_parts import build_done_event
-
-            await websocket.send_json(
-                build_done_event(
-                    assistant_response,
-                    thinking="".join(thinking_content) if thinking_content else None,
-                )
-            )
-            logger.info("[WS] Response done sent to client")
+                    run_session = session_result.scalar_one_or_none()
+                    if not run_session:
+                        await websocket.send_json({"type": "error", "content": "Session not found"})
+                        continue
+                    payload = await start_web_chat_run(
+                        db=run_db,
+                        agent=agent,
+                        user=user,
+                        session=run_session,
+                        content=content,
+                        display_content=display_content,
+                        file_name=file_name,
+                    )
+                await websocket.send_json({"type": "run_started", **payload})
+            except ActiveWebChatRunExists as active_err:
+                await websocket.send_json({"type": "run_started", **active_err.run})
+            except Exception as run_err:
+                logger.error("[WS] Failed to start durable web chat run: {}", run_err)
+                await websocket.send_json({"type": "error", "content": "Failed to start run"})
+            continue
 
     except WebSocketDisconnect:
         logger.info(f"[WS] Client disconnected: {agent_name}")
-        # SESSION_CLOSE hook: drain pending extractions on disconnect
-        try:
-            from app.runtime.hooks import HookEvent, emit_hook
-
-            await emit_hook(
-                HookEvent.SESSION_CLOSE,
-                agent_id=agent_id,
-                session_id=conv_id,
-                messages=conversation,
-                source="websocket",
-                metadata={"reason": "ws_disconnect"},
-            )
-        except Exception as _close_err:
-            logger.debug("[WS] SESSION_CLOSE hook on disconnect failed (non-fatal): {}", _close_err)
         await manager.disconnect(agent_id_str, websocket)
     except Exception as e:
         logger.error(f"[WS] Error in message loop: {type(e).__name__}: {e}")

@@ -468,6 +468,8 @@
       "uploadFailed": "上传失败，请重试",
       "askAboutFile": "关于 {{name}} 的问题...",
     "thinking": "思考中...",
+    "continuingRun": "Agent 正在继续执行...",
+    "runStartFailed": "启动执行失败",
     "toolResults": {
       "blueprintPreviewTitle": "Agent 蓝图预览",
       "createdTitle": "数字员工已创建",

@@ -50,6 +50,7 @@ interface AgentChatSectionProps {
   runtimeSummary: ChatRuntimeSummary | null;
   transportNotice: string | null;
   isWaiting: boolean;
+  activeRunStatus?: string | null;
 
   chatEndRef: React.RefObject<HTMLDivElement | null>;
   showScrollBtn: boolean;
@@ -285,6 +286,7 @@ export default function AgentChatSection({
   runtimeSummary,
   transportNotice,
   isWaiting,
+  activeRunStatus,
 
   chatEndRef,
   showScrollBtn,
@@ -1228,7 +1230,11 @@ export default function AgentChatSection({
                         <span />
                         <span />
                       </div>
-                      <span style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('agent.chat.thinking', 'Thinking...')}</span>
+                      <span style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>
+                        {activeRunStatus
+                          ? t('agent.chat.continuingRun', 'Agent is continuing this run...')
+                          : t('agent.chat.thinking', 'Thinking...')}
+                      </span>
                     </div>
                   </div>
                 </div>

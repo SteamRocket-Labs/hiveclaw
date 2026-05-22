@@ -68,6 +68,21 @@ export interface SessionRuntimeSummary {
   last_retry_reason?: string | null;
 }
 
+export interface StartSessionRunInput {
+  content: string;
+  display_content?: string;
+  file_name?: string;
+}
+
+export interface SessionRun {
+  run_id: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'killed' | 'skipped' | string;
+  created_at?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  result_summary?: string | null;
+}
+
 export const chatApi = {
   getHistory: (agentId: string, conversationId?: string) => {
     const qs = conversationId ? `?conversation_id=${conversationId}` : '';
@@ -85,4 +100,10 @@ export const chatApi = {
     get<ChatMessage[]>(`/agents/${agentId}/sessions/${sessionId}/messages`, options),
   getRuntimeSummary: (sessionId: string, options?: RequestOptions) =>
     get<SessionRuntimeSummary>(`/chat/sessions/${sessionId}/runtime-summary`, options),
+  startSessionRun: (agentId: string, sessionId: string, input: StartSessionRunInput) =>
+    post<SessionRun>(`/agents/${agentId}/sessions/${sessionId}/runs`, input),
+  getActiveSessionRun: (agentId: string, sessionId: string) =>
+    get<SessionRun | null>(`/agents/${agentId}/sessions/${sessionId}/runs/active`),
+  cancelSessionRun: (agentId: string, sessionId: string, runId: string) =>
+    post<SessionRun>(`/agents/${agentId}/sessions/${sessionId}/runs/${runId}/cancel`, {}),
 };

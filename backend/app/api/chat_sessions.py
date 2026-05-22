@@ -17,6 +17,12 @@ from app.models.chat_session import ChatSession
 from app.models.agent import Agent
 from app.models.user import User
 from app.services.chat_message_parts import serialize_chat_message, split_inline_tools
+from app.services.web_chat_runtime import (
+    ActiveWebChatRunExists,
+    cancel_web_chat_run,
+    get_active_web_chat_run,
+    start_web_chat_run,
+)
 
 router = APIRouter(prefix="/agents", tags=["chat-sessions"])
 
@@ -56,6 +62,39 @@ class CreateSessionIn(BaseModel):
 
 class PatchSessionIn(BaseModel):
     title: str
+
+
+class StartSessionRunIn(BaseModel):
+    content: str
+    display_content: str = ""
+    file_name: str = ""
+
+
+class SessionRunOut(BaseModel):
+    run_id: str
+    status: str
+    created_at: Optional[str] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    result_summary: Optional[str] = None
+
+
+async def _get_run_session_and_agent(
+    *,
+    db: AsyncSession,
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    current_user: User,
+) -> tuple[ChatSession, Agent, str]:
+    result = await db.execute(select(ChatSession).where(ChatSession.id == session_id, ChatSession.agent_id == agent_id))
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if str(session.user_id) != str(current_user.id) and not _can_manage_sessions(current_user, agent, access_level):
+        raise HTTPException(status_code=403, detail="Not authorized to use this session")
+    return session, agent, access_level
 
 
 @router.get("/{agent_id}/sessions")
@@ -255,6 +294,76 @@ async def rename_session(
     session.title = body.title
     await db.commit()
     return {"id": str(session.id), "title": session.title}
+
+
+@router.post("/{agent_id}/sessions/{session_id}/runs", status_code=201)
+async def start_session_run(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    body: StartSessionRunIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Start a durable in-process web chat run for a session."""
+    session, agent, _access_level = await _get_run_session_and_agent(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+    )
+    try:
+        return await start_web_chat_run(
+            db=db,
+            agent=agent,
+            user=current_user,
+            session=session,
+            content=body.content,
+            display_content=body.display_content,
+            file_name=body.file_name,
+        )
+    except ActiveWebChatRunExists as exc:
+        raise HTTPException(status_code=409, detail=exc.run) from exc
+
+
+@router.get("/{agent_id}/sessions/{session_id}/runs/active")
+async def get_active_session_run(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the active durable web chat run for a session, if one exists."""
+    await _get_run_session_and_agent(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+    )
+    return await get_active_web_chat_run(db=db, agent_id=agent_id, session_id=session_id)
+
+
+@router.post("/{agent_id}/sessions/{session_id}/runs/{run_id}/cancel")
+async def cancel_session_run(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    run_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Explicitly stop an active durable web chat run."""
+    await _get_run_session_and_agent(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+    )
+    return await cancel_web_chat_run(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        run_id=run_id,
+        user_id=current_user.id,
+    )
 
 
 @router.delete("/{agent_id}/sessions/{session_id}", status_code=204)

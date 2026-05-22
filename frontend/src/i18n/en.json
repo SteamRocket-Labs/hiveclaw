@@ -469,6 +469,8 @@
       "uploadFailed": "Upload failed — please try again",
       "askAboutFile": "Ask about {{name}}...",
     "thinking": "Thinking...",
+    "continuingRun": "Agent is continuing this run...",
+    "runStartFailed": "Failed to start run",
     "toolResults": {
       "blueprintPreviewTitle": "Agent Blueprint Preview",
       "createdTitle": "Digital Employee Created",

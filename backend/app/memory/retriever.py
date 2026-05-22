@@ -236,16 +236,35 @@ class MemoryRetriever:
         )
         items.extend(await self._retrieve_external(agent_id, query, tenant_id, limit=external_limit) or [])
         if activation_context:
-            return self._apply_activation(items, activation_context)
+            return self._apply_activation(items, activation_context, agent_id=agent_id)
         return items
 
-    def _apply_activation(self, items: list[MemoryItem], context: ActivationContext) -> list[MemoryItem]:
+    def _apply_activation(
+        self,
+        items: list[MemoryItem],
+        context: ActivationContext,
+        *,
+        agent_id: uuid.UUID,
+    ) -> list[MemoryItem]:
+        from app.memory.access_log import bump_access
+
         scorer = ActivationScorer()
         activated: list[MemoryItem] = []
         for item in items:
             decision = scorer.score(item, context)
             if decision.suppressed:
                 continue
+            entry_id = item.metadata.get("entry_id")
+            if entry_id and item.source:
+                try:
+                    bump_access(
+                        self.data_root,
+                        agent_id,
+                        file_relpath=item.source,
+                        entry_id=str(entry_id),
+                    )
+                except (OSError, ValueError) as exc:
+                    logger.debug("[retriever] access bump failed for %s: %s", entry_id, exc)
             metadata = {
                 **item.metadata,
                 "activation_score": decision.score,

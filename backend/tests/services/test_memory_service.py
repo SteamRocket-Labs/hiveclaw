@@ -172,10 +172,12 @@ async def test_persist_runtime_memory_strips_null_bytes_from_summary(monkeypatch
 def test_extract_summary_ignores_llm_error_assistant_messages():
     from app.services.memory_service import _extract_summary
 
-    summary = _extract_summary([
-        {"role": "user", "content": "查一下日程"},
-        {"role": "assistant", "content": "[LLM Error] AI 模型服务方已限流，请稍后重试。"},
-    ])
+    summary = _extract_summary(
+        [
+            {"role": "user", "content": "查一下日程"},
+            {"role": "assistant", "content": "[LLM Error] AI 模型服务方已限流，请稍后重试。"},
+        ]
+    )
 
     assert "AI 模型服务方已限流" not in summary
     assert "查一下日程" in summary
@@ -238,6 +240,114 @@ async def test_build_memory_context_passes_rerank_model_config(monkeypatch, tmp_
         "base_url": None,
     }
 
+
+@pytest.mark.asyncio
+async def test_build_memory_context_passes_activation_context(monkeypatch):
+    from app.services import memory_service
+    from app.services.agency_charter import build_default_accountability_context
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    owner_id = uuid4()
+    viewer_id = uuid4()
+    captured = {}
+
+    class _FakeRetriever:
+        async def retrieve(
+            self,
+            _agent_id,
+            _query,
+            _session_id,
+            _tenant_id,
+            *,
+            rerank_model_config=None,
+            limit=20,
+            activation_context=None,
+        ):
+            del rerank_model_config, limit
+            captured["activation_context"] = activation_context
+            return ["memory-item"]
+
+    class _FakeAssembler:
+        def assemble(self, items):
+            return "ASSEMBLED"
+
+    async def fake_resolve_accountability_context(*_args, **_kwargs):
+        return build_default_accountability_context(
+            company_id=str(tenant_id),
+            company_name="Acme",
+            owner_id=str(owner_id),
+            owner_name="Alice",
+            current_user_id=str(viewer_id),
+            current_user_name="Bob",
+        )
+
+    monkeypatch.setattr(memory_service, "MemoryRetriever", lambda **_kwargs: _FakeRetriever())
+    monkeypatch.setattr(memory_service, "MemoryAssembler", lambda: _FakeAssembler())
+    monkeypatch.setattr(memory_service, "_get_rerank_model_config", lambda _tenant_id: None, raising=False)
+    monkeypatch.setattr(memory_service, "_resolve_accountability_context", fake_resolve_accountability_context)
+
+    context = await memory_service.build_memory_context(
+        agent_id,
+        tenant_id,
+        session_id="session-1",
+        query="Q3 salary planning for Acme",
+        current_user_id=viewer_id,
+        current_user_name="Bob",
+    )
+
+    activation_context = captured["activation_context"]
+    assert context == "ASSEMBLED"
+    assert activation_context.query == "Q3 salary planning for Acme"
+    assert activation_context.principal_stack.direct_owner.id == str(owner_id)
+    assert activation_context.principal_stack.current_user.id == str(viewer_id)
+    assert "alice" in activation_context.owner_terms
+    assert "acme" in activation_context.company_terms
+
+
+@pytest.mark.asyncio
+async def test_build_memory_context_omits_pl3_for_non_owner(monkeypatch, tmp_path):
+    from app.memory.md_store import ensure_t3_layout
+    from app.services import memory_service
+    from app.services.agency_charter import build_default_accountability_context
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    owner_id = uuid4()
+    viewer_id = uuid4()
+    mem_dir = ensure_t3_layout(tmp_path, agent_id)
+    (mem_dir / "knowledge.md").write_text(
+        "# Knowledge\n\n"
+        "- [2026-05-22][sensitivity=PL3_sensitive] Q3 salary planning requires owner-only handling\n"
+        "- [2026-05-22][sensitivity=PL1_public] Acme salary planning policy uses the approved budget template\n",
+        encoding="utf-8",
+    )
+
+    async def fake_resolve_accountability_context(*_args, **_kwargs):
+        return build_default_accountability_context(
+            company_id=str(tenant_id),
+            company_name="Acme",
+            owner_id=str(owner_id),
+            owner_name="Alice",
+            current_user_id=str(viewer_id),
+            current_user_name="Bob",
+        )
+
+    monkeypatch.setattr(memory_service, "get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    monkeypatch.setattr(memory_service, "_get_rerank_model_config", lambda _tenant_id: None, raising=False)
+    monkeypatch.setattr(memory_service, "_resolve_accountability_context", fake_resolve_accountability_context)
+
+    context = await memory_service.build_memory_context(
+        agent_id,
+        tenant_id,
+        query="salary planning",
+        current_user_id=viewer_id,
+        current_user_name="Bob",
+    )
+
+    assert "owner-only handling" not in context
+    assert "approved budget template" in context
+    assert "why=" in context
 
 
 @pytest.mark.asyncio

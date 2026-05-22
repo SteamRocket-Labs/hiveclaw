@@ -101,3 +101,58 @@ async def test_resolve_retrieval_context_routes_last_user_query(monkeypatch):
         "memory_recall",
         "knowledge_relevant",
     ]
+
+
+@pytest.mark.asyncio
+async def test_resolve_retrieval_context_passes_current_user_to_memory(monkeypatch):
+    from app.runtime import invoker
+    from app.runtime.invoker import AgentInvocationRequest
+
+    user_id = uuid4()
+    captured = {}
+
+    async def fake_resolve_current_user_name(_user_id):
+        assert _user_id == user_id
+        return "Bob"
+
+    async def fake_build_memory_context(
+        agent_id,
+        tenant_id,
+        *,
+        session_id=None,
+        query="",
+        current_user_id=None,
+        current_user_name=None,
+    ):
+        del agent_id, tenant_id, session_id, query
+        captured["current_user_id"] = current_user_id
+        captured["current_user_name"] = current_user_name
+        return ""
+
+    async def fake_fetch_relevant_knowledge(*_args, **_kwargs):
+        return ""
+
+    async def fake_build_agent_runtime_context(*_args, **_kwargs):
+        return ""
+
+    monkeypatch.setattr(invoker, "_resolve_current_user_name", fake_resolve_current_user_name)
+    monkeypatch.setattr(invoker, "build_memory_context", fake_build_memory_context)
+    monkeypatch.setattr(invoker, "fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
+    monkeypatch.setattr(invoker, "build_agent_runtime_context", fake_build_agent_runtime_context)
+
+    request = AgentInvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "latest question"}],
+        agent_name="Agent",
+        role_description="desc",
+        agent_id=uuid4(),
+        user_id=user_id,
+        session_context=SessionContext(session_id="s-3"),
+    )
+
+    await invoker._resolve_retrieval_context(request, uuid4())
+
+    assert captured == {
+        "current_user_id": user_id,
+        "current_user_name": "Bob",
+    }

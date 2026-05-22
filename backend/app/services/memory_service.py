@@ -20,11 +20,16 @@ from sqlalchemy import select
 
 from app.config import get_settings
 from app.database import async_session
+from app.memory.activation import ActivationContext
 from app.memory import MemoryAssembler, MemoryRetriever
+from app.models.agent import Agent
 from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
+from app.models.tenant import Tenant
 from app.models.tenant_setting import TenantSetting
+from app.models.user import User
 from app.runtime.context_budget import ContextBudget, compute_context_budget
+from app.services.agency_charter import AgentAccountabilityContext, build_default_accountability_context
 from app.services.conversation_summarizer import estimate_tokens, _extract_summary
 
 logger = logging.getLogger(__name__)
@@ -54,6 +59,8 @@ async def build_memory_snapshot(
     session_id: str | None = None,
     context_window_tokens: int | None = None,
     budget_profile: ContextBudget | None = None,
+    current_user_id: uuid.UUID | str | None = None,
+    current_user_name: str | None = None,
 ) -> str:
     """Build a session-start memory snapshot for frozen prompt prefixes."""
     return await build_memory_context(
@@ -63,6 +70,8 @@ async def build_memory_snapshot(
         query="",
         context_window_tokens=context_window_tokens,
         budget_profile=budget_profile,
+        current_user_id=current_user_id,
+        current_user_name=current_user_name,
     )
 
 
@@ -74,6 +83,9 @@ async def build_memory_context(
     query: str = "",
     context_window_tokens: int | None = None,
     budget_profile: ContextBudget | None = None,
+    current_user_id: uuid.UUID | str | None = None,
+    current_user_name: str | None = None,
+    legacy_compatibility: bool = False,
 ) -> str:
     """Build a self-consistent memory context for any runtime entrypoint.
 
@@ -94,8 +106,19 @@ async def build_memory_context(
             "rerank_model_config": rerank_model_config,
             "limit": max(50, retrieval_profile.semantic_limit * 2),
         }
-        if "retrieval_profile" in inspect.signature(retriever.retrieve).parameters:
+        retrieve_params = inspect.signature(retriever.retrieve).parameters
+        if "retrieval_profile" in retrieve_params:
             retrieve_kwargs["retrieval_profile"] = retrieval_profile
+        if "activation_context" in retrieve_params and not legacy_compatibility:
+            activation_context = await _resolve_activation_context(
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                query=query,
+                current_user_id=current_user_id,
+                current_user_name=current_user_name,
+            )
+            if activation_context:
+                retrieve_kwargs["activation_context"] = activation_context
         items = await retriever.retrieve(
             agent_id,
             query,
@@ -117,6 +140,106 @@ async def _maybe_await(value):
     if inspect.isawaitable(value):
         return await value
     return value
+
+
+async def _resolve_activation_context(
+    *,
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    query: str,
+    current_user_id: uuid.UUID | str | None,
+    current_user_name: str | None,
+) -> ActivationContext | None:
+    accountability = await _resolve_accountability_context(
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        current_user_id=current_user_id,
+        current_user_name=current_user_name,
+    )
+    if not accountability:
+        return None
+    return ActivationContext(
+        query=query,
+        principal_stack=accountability.principal_stack,
+        owner_terms=_label_terms(
+            accountability.owner_charter.owner_id,
+            accountability.owner_charter.owner_name,
+        ),
+        company_terms=_label_terms(
+            accountability.company_charter.company_id,
+            accountability.company_charter.company_name,
+        ),
+    )
+
+
+async def _resolve_accountability_context(
+    *,
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    current_user_id: uuid.UUID | str | None,
+    current_user_name: str | None,
+) -> AgentAccountabilityContext | None:
+    try:
+        async with async_session() as db:
+            agent_result = await db.execute(select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id))
+            agent = agent_result.scalar_one_or_none()
+
+            tenant_result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+            tenant = tenant_result.scalar_one_or_none()
+
+            current_user_uuid = _coerce_uuid(current_user_id)
+            owner_uuid = (
+                getattr(agent, "owner_user_id", None) or getattr(agent, "creator_id", None) or current_user_uuid
+            )
+            creator_uuid = getattr(agent, "creator_id", None)
+
+            owner = await _fetch_user(db, owner_uuid)
+            creator = await _fetch_user(db, creator_uuid)
+            current_user = await _fetch_user(db, current_user_uuid)
+
+            owner_id = str(owner_uuid or agent_id)
+            owner_name = _display_name(owner) or owner_id
+            creator_id = str(creator_uuid) if creator_uuid else None
+            creator_name = _display_name(creator) if creator else None
+            resolved_current_user_id = str(current_user_uuid) if current_user_uuid else None
+            resolved_current_user_name = current_user_name or _display_name(current_user)
+
+            return build_default_accountability_context(
+                company_id=str(tenant_id),
+                company_name=getattr(tenant, "name", None) or str(tenant_id),
+                owner_id=owner_id,
+                owner_name=owner_name,
+                current_user_id=resolved_current_user_id,
+                current_user_name=resolved_current_user_name,
+                creator_id=creator_id,
+                creator_name=creator_name,
+            )
+    except Exception as exc:
+        logger.debug("Failed to resolve activation accountability context for agent %s: %s", agent_id, exc)
+        return None
+
+
+async def _fetch_user(db, user_id: uuid.UUID | None) -> User | None:
+    if not user_id:
+        return None
+    result = await db.execute(select(User).where(User.id == user_id))
+    return result.scalar_one_or_none()
+
+
+def _display_name(user: User | None) -> str | None:
+    if not user:
+        return None
+    return getattr(user, "display_name", None) or getattr(user, "username", None) or getattr(user, "email", None)
+
+
+def _label_terms(*values: str | None) -> list[str]:
+    terms: list[str] = []
+    for value in values:
+        for token in str(value or "").replace("-", " ").replace("_", " ").split():
+            normalized = token.strip().lower()
+            if normalized and normalized not in terms:
+                terms.append(normalized)
+    return terms
 
 
 def compute_history_limit(

@@ -326,10 +326,17 @@ async def _resolve_memory_context(
     if request.agent_id and tenant_id:
         _snapshot_kwargs = {"session_id": session_id}
         _snapshot_sig = inspect.signature(build_memory_snapshot).parameters
+        current_user_name = None
+        if request.user_id and ("current_user_id" in _snapshot_sig or "current_user_name" in _snapshot_sig):
+            current_user_name = await _resolve_current_user_name(request.user_id)
         if "context_window_tokens" in _snapshot_sig:
             _snapshot_kwargs["context_window_tokens"] = context_window_tokens
         if "budget_profile" in _snapshot_sig:
             _snapshot_kwargs["budget_profile"] = budget_profile
+        if "current_user_id" in _snapshot_sig:
+            _snapshot_kwargs["current_user_id"] = request.user_id
+        if "current_user_name" in _snapshot_sig:
+            _snapshot_kwargs["current_user_name"] = current_user_name
         runtime_memory_context = await build_memory_snapshot(request.agent_id, tenant_id, **_snapshot_kwargs)
         if runtime_memory_context:
             parts.append(
@@ -395,6 +402,10 @@ async def _resolve_retrieval_context(
             _memory_kwargs["context_window_tokens"] = context_window_tokens
         if "budget_profile" in _memory_sig:
             _memory_kwargs["budget_profile"] = budget_profile
+        if "current_user_id" in _memory_sig:
+            _memory_kwargs["current_user_id"] = request.user_id
+        if "current_user_name" in _memory_sig:
+            _memory_kwargs["current_user_name"] = current_user_name
         memory_recall = await build_memory_context(request.agent_id, tenant_id, **_memory_kwargs)
         if memory_recall:
             parts.append(
@@ -463,9 +474,7 @@ def _infer_active_packs(
 ) -> list[dict[str, Any]]:
     requested = set(tool_names)
     packs = [
-        _serialize_pack(pack)
-        for pack in TOOL_PACKS
-        if pack.infer_from_tools and requested.intersection(pack.tools)
+        _serialize_pack(pack) for pack in TOOL_PACKS if pack.infer_from_tools and requested.intersection(pack.tools)
     ]
     existing_names = {pack["name"] for pack in packs}
     for pack_name in declared_pack_names or []:

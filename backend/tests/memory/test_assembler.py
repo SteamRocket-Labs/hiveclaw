@@ -8,9 +8,7 @@ from app.memory.assembler import MemoryAssembler, _freshness_suffix
 from app.memory.types import MemoryItem, MemoryKind
 
 
-def _make_item(
-    kind: MemoryKind, content: str, score: float = 0.5, **metadata
-) -> MemoryItem:
+def _make_item(kind: MemoryKind, content: str, score: float = 0.5, **metadata) -> MemoryItem:
     return MemoryItem(kind=kind, content=content, score=score, source="test", metadata=metadata)
 
 
@@ -216,8 +214,11 @@ class TestFreshnessSuffix:
         """Raw naive datetime in metadata should not raise TypeError."""
         naive_old = datetime.now() - timedelta(days=10)
         item = MemoryItem(
-            kind=MemoryKind.SEMANTIC, content="fact", score=0.5,
-            source="test", metadata={"timestamp": naive_old},
+            kind=MemoryKind.SEMANTIC,
+            content="fact",
+            score=0.5,
+            source="test",
+            metadata={"timestamp": naive_old},
         )
         suffix = _freshness_suffix(item)
         # Age may vary by 1 day depending on time-of-day and tz offset
@@ -262,3 +263,16 @@ class TestAssembleFreshnessIntegration:
         assembler = MemoryAssembler()
         result = assembler.assemble(items)
         assert "[general]" not in result
+
+    def test_activation_reasons_rendered_compactly(self) -> None:
+        items = [
+            _make_item(
+                MemoryKind.SEMANTIC,
+                "Salary planning for Acme is an open loop",
+                activation_reasons=["goal_relevance", "open_loop_pressure"],
+            )
+        ]
+        assembler = MemoryAssembler()
+        result = assembler.assemble(items)
+
+        assert "[why=goal_relevance,open_loop_pressure]" in result

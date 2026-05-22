@@ -9,6 +9,8 @@ import pytest
 
 from app.memory.retriever import MemoryRetriever, _score_relevance
 from app.memory.types import MemoryKind
+from app.memory.activation import ActivationContext
+from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
 
 
 @pytest.fixture()
@@ -46,6 +48,20 @@ def _setup_t3_file(data_root: Path, agent_id: uuid.UUID, filename: str, content:
     memory_dir = data_root / str(agent_id) / "memory"
     memory_dir.mkdir(parents=True, exist_ok=True)
     (memory_dir / filename).write_text(content, encoding="utf-8")
+
+
+def _activation_context(*, current_user_id: str = "owner-1", owner_id: str = "owner-1") -> ActivationContext:
+    return ActivationContext(
+        query="salary planning",
+        principal_stack=PrincipalStack(
+            company=Principal(PrincipalRole.COMPANY, "company-1", "Acme"),
+            direct_owner=Principal(PrincipalRole.OWNER, owner_id, "Alice"),
+            current_user=Principal(PrincipalRole.CURRENT_USER, current_user_id, "Current User"),
+        ),
+        goal_terms=["salary", "planning"],
+        owner_terms=["alice", "owner"],
+        company_terms=["acme"],
+    )
 
 
 @pytest.mark.asyncio
@@ -125,7 +141,9 @@ async def test_retrieve_uses_semantic_limit_for_semantic_backend(
         rerank_max_select=5,
     )
 
-    await retriever.retrieve(agent_id, "memory", session_id=None, tenant_id=str(uuid.uuid4()), retrieval_profile=profile)
+    await retriever.retrieve(
+        agent_id, "memory", session_id=None, tenant_id=str(uuid.uuid4()), retrieval_profile=profile
+    )
 
     assert observed == {"semantic_limit": 9, "external_limit": 2}
 
@@ -194,6 +212,67 @@ async def test_t3_direct_preserves_priority_order(
         "memory/user.md",
     ]
     assert semantic_items[0].score > semantic_items[1].score > semantic_items[2].score
+
+
+@pytest.mark.asyncio
+async def test_activation_context_suppresses_pl3_when_current_user_is_not_owner(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    retriever: MemoryRetriever,
+) -> None:
+    _setup_t3_file(
+        data_root,
+        agent_id,
+        "knowledge.md",
+        "# Knowledge\n- [2026-05-22][sensitivity=PL3_sensitive] Q3 salary planning requires owner-only handling\n",
+    )
+
+    items = await retriever.retrieve(
+        agent_id,
+        "salary planning",
+        session_id=None,
+        tenant_id=None,
+        activation_context=_activation_context(current_user_id="viewer-1"),
+    )
+
+    assert all("salary planning" not in item.content for item in items)
+
+
+@pytest.mark.asyncio
+async def test_activation_context_adds_reasons_and_updates_score(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    retriever: MemoryRetriever,
+) -> None:
+    _setup_t3_file(
+        data_root,
+        agent_id,
+        "knowledge.md",
+        "# Knowledge\n"
+        "- [2026-05-22][sensitivity=PL1_public][retention_score=0.5][confidence=0.9] "
+        "Salary planning for Acme is an open loop for Alice\n",
+    )
+
+    items = await retriever.retrieve(
+        agent_id,
+        "salary planning",
+        session_id=None,
+        tenant_id=None,
+        activation_context=_activation_context(),
+    )
+
+    semantic_items = [item for item in items if item.kind == MemoryKind.SEMANTIC]
+    assert len(semantic_items) == 1
+    item = semantic_items[0]
+    assert item.metadata["activation_reasons"] == [
+        "goal_relevance",
+        "principal_relevance",
+        "company_relevance",
+        "retention_score",
+        "confidence_weight",
+    ]
+    assert item.metadata["activation_score"] == item.score
+    assert item.score > 0.8
 
 
 def test_semantic_scoring_relevant_higher() -> None:

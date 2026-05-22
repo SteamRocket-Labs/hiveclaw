@@ -47,6 +47,16 @@ def _freshness_suffix(item: MemoryItem) -> str:
     return ""
 
 
+def _activation_suffix(item: MemoryItem) -> str:
+    reasons = item.metadata.get("activation_reasons")
+    if not isinstance(reasons, list) or not reasons:
+        return ""
+    compact = [str(reason).strip() for reason in reasons if str(reason).strip()]
+    if not compact:
+        return ""
+    return f" [why={','.join(compact[:4])}]"
+
+
 class MemoryAssembler:
     """Assemble retrieved memory items into a prompt section."""
 
@@ -86,10 +96,15 @@ class MemoryAssembler:
             header_len = len(header) + 1
             for item in kind_items:
                 freshness = _freshness_suffix(item) if kind != MemoryKind.WORKING else ""
+                activation = _activation_suffix(item) if kind != MemoryKind.WORKING else ""
                 # B-06 fix: render category prefix for non-general types so LLM sees memory taxonomy
                 _cat = item.metadata.get("category", "")
                 _cat_prefix = f"[{_cat}] " if _cat and _cat != "general" and kind != MemoryKind.WORKING else ""
-                line = f"- {_cat_prefix}{item.content}{freshness}" if kind != MemoryKind.WORKING else item.content
+                line = (
+                    f"- {_cat_prefix}{item.content}{activation}{freshness}"
+                    if kind != MemoryKind.WORKING
+                    else item.content
+                )
                 line_len = len(line) + 1  # +1 for newline
                 if total_chars + line_len > budget_chars:
                     break

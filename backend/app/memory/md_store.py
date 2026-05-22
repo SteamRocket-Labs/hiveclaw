@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -46,11 +47,7 @@ T3_FILE_SPECS = (
     },
 )
 
-_CATEGORY_TO_SPEC = {
-    category: spec
-    for spec in T3_FILE_SPECS
-    for category in spec["categories"]
-}
+_CATEGORY_TO_SPEC = {category: spec for spec in T3_FILE_SPECS for category in spec["categories"]}
 
 _ENTRY_WITH_DATE_RE = re.compile(
     r"^- \[(?P<timestamp>[^\]]+)\]"
@@ -58,6 +55,14 @@ _ENTRY_WITH_DATE_RE = re.compile(
     r"\s+(?P<content>.+?)\s*$"
 )
 _ENTRY_BARE_RE = re.compile(r"^- (?P<content>.+?)\s*$")
+_META_TOKEN_RE = re.compile(r"\[([^\]=]+)=([^\]]+)\]")
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedMemoryEntry:
+    content: str
+    timestamp: str | None
+    metadata: dict[str, str]
 
 
 def memory_dir(data_root: Path, agent_id: uuid.UUID) -> Path:
@@ -87,16 +92,31 @@ def extract_entry_lines(content: str) -> list[str]:
     return lines
 
 
-def parse_entry_line(line: str) -> tuple[str, str | None]:
+def parse_entry_record(line: str) -> ParsedMemoryEntry:
     match = _ENTRY_WITH_DATE_RE.match(line)
     if match:
-        return match.group("content").strip(), match.group("timestamp").strip()
+        meta_raw = match.group("meta") or ""
+        metadata = {
+            key.strip(): value.strip()
+            for key, value in _META_TOKEN_RE.findall(meta_raw)
+            if key.strip() and value.strip()
+        }
+        return ParsedMemoryEntry(
+            content=match.group("content").strip(),
+            timestamp=match.group("timestamp").strip(),
+            metadata=metadata,
+        )
 
     match = _ENTRY_BARE_RE.match(line)
     if match:
-        return match.group("content").strip(), None
+        return ParsedMemoryEntry(content=match.group("content").strip(), timestamp=None, metadata={})
 
-    return line.strip().lstrip("-").strip(), None
+    return ParsedMemoryEntry(content=line.strip().lstrip("-").strip(), timestamp=None, metadata={})
+
+
+def parse_entry_line(line: str) -> tuple[str, str | None]:
+    record = parse_entry_record(line)
+    return record.content, record.timestamp
 
 
 def _normalize_entry_content(content: str) -> str:
@@ -192,12 +212,17 @@ def find_similar_t3_entries(
                 continue
             sim = jaccard_similarity(content, existing_content)
             if sim >= threshold:
-                hits.append((sim, {
-                    "content": existing_content,
-                    "category": spec["shadow_category"],
-                    "timestamp": timestamp or "",
-                    "similarity": round(sim, 3),
-                }))
+                hits.append(
+                    (
+                        sim,
+                        {
+                            "content": existing_content,
+                            "category": spec["shadow_category"],
+                            "timestamp": timestamp or "",
+                            "similarity": round(sim, 3),
+                        },
+                    )
+                )
 
     hits.sort(key=lambda item: item[0], reverse=True)
     return [fact for _sim, fact in hits[:limit]]
@@ -224,11 +249,7 @@ def append_t3_entry(
             return path
 
     date_label = timestamp or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    meta_text = "".join(
-        f"[{key}={value}]"
-        for key, value in (metadata or {}).items()
-        if key and value
-    )
+    meta_text = "".join(f"[{key}={value}]" for key, value in (metadata or {}).items() if key and value)
     entry = f"- [{date_label}]{meta_text} {content.strip()}"
     updated = existing.rstrip()
     if updated:
@@ -342,6 +363,7 @@ def search_t3_facts(
 
 
 # ── Temporal filtering ──
+
 
 def _filter_facts_by_date(
     facts: list[dict],
@@ -568,4 +590,3 @@ def validate_and_normalize_t3(
             report["files_touched"].append(spec["filename"])
 
     return report
-

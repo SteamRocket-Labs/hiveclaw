@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from app.memory.activation import ActivationContext, ActivationScorer
 from app.memory.md_store import extract_entry_lines
 from app.memory.types import MemoryItem, MemoryKind
 from app.runtime.context_budget import ContextBudget
@@ -24,7 +25,7 @@ _RERANK_MAX_SELECT = 5
 logger = logging.getLogger(__name__)
 
 _CJK_RE = _re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uF900-\uFAFF]")
-_PUNCTUATION_CHARS = frozenset("，。！？；：""''（）【】、…—《》·,.!?;:\"'()[]{}/ \t\n\r")
+_PUNCTUATION_CHARS = frozenset("，。！？；：''（）【】、…—《》·,.!?;:\"'()[]{}/ \t\n\r")
 
 
 def _has_cjk(text: str) -> bool:
@@ -105,9 +106,7 @@ async def _rerank_semantic_items(
     except ImportError:
         return items[:max_select]
 
-    manifest_lines = [
-        str(i) + ": " + item.content[:150] for i, item in enumerate(items)
-    ]
+    manifest_lines = [str(i) + ": " + item.content[:150] for i, item in enumerate(items)]
     manifest = "\n".join(manifest_lines)
     system_prompt = (
         "<role>\n"
@@ -142,13 +141,9 @@ async def _rerank_semantic_items(
     user_prompt = (
         "<query>" + query + "</query>\n\n"
         "<candidate_memories>\n"
-        "Format: `<index>: <content preview, truncated at 150 chars>`\n\n"
-        + manifest
-        + "\n</candidate_memories>\n\n"
+        "Format: `<index>: <content preview, truncated at 150 chars>`\n\n" + manifest + "\n</candidate_memories>\n\n"
         "<task>\n"
-        "Select up to "
-        + str(max_select)
-        + " memory indices most useful for the query above.\n"
+        "Select up to " + str(max_select) + " memory indices most useful for the query above.\n"
         "Return only the JSON object defined in <output_contract>.\n"
         "</task>"
     )
@@ -203,6 +198,7 @@ class MemoryRetriever:
         limit: int = 50,
         rerank_model_config: dict | None = None,
         retrieval_profile: ContextBudget | None = None,
+        activation_context: ActivationContext | None = None,
     ) -> list[MemoryItem]:
         """Retrieve memory items from all four layers.
 
@@ -231,12 +227,40 @@ class MemoryRetriever:
 
         items.extend(
             await self._retrieve_semantic_backend(
-                agent_id, query, tenant_id, limit=semantic_limit,
+                agent_id,
+                query,
+                tenant_id,
+                limit=semantic_limit,
             )
             or []
         )
         items.extend(await self._retrieve_external(agent_id, query, tenant_id, limit=external_limit) or [])
+        if activation_context:
+            return self._apply_activation(items, activation_context)
         return items
+
+    def _apply_activation(self, items: list[MemoryItem], context: ActivationContext) -> list[MemoryItem]:
+        scorer = ActivationScorer()
+        activated: list[MemoryItem] = []
+        for item in items:
+            decision = scorer.score(item, context)
+            if decision.suppressed:
+                continue
+            metadata = {
+                **item.metadata,
+                "activation_score": decision.score,
+                "activation_reasons": decision.reasons,
+            }
+            activated.append(
+                MemoryItem(
+                    kind=item.kind,
+                    content=item.content,
+                    score=decision.score,
+                    source=item.source,
+                    metadata=metadata,
+                )
+            )
+        return sorted(activated, key=lambda item: item.score, reverse=True)
 
     # -- Objective projection layer: focus.md compatibility projection --
 
@@ -261,11 +285,11 @@ class MemoryRetriever:
     # P1/P2 files are scored per-entry by relevance to the current query.
     _T3_FILES: list[tuple[str, str, float, bool]] = [
         #  (path, category, base_score, is_p0)
-        ("memory/feedback.md", "feedback", 0.95, True),        # P0
+        ("memory/feedback.md", "feedback", 0.95, True),  # P0
         ("memory/blocked.md", "blocked_pattern", 0.95, True),  # P0
-        ("memory/knowledge.md", "knowledge", 0.80, False),     # P1
-        ("memory/strategies.md", "strategy", 0.80, False),     # P1
-        ("memory/user.md", "user", 0.70, False),               # P2
+        ("memory/knowledge.md", "knowledge", 0.80, False),  # P1
+        ("memory/strategies.md", "strategy", 0.80, False),  # P1
+        ("memory/user.md", "user", 0.70, False),  # P2
     ]
 
     def _retrieve_t3_direct(self, agent_id: uuid.UUID, *, query: str = "") -> list[MemoryItem]:
@@ -280,7 +304,7 @@ class MemoryRetriever:
         budget trimming to drop individual low-relevance entries instead of
         losing an entire file.
         """
-        from app.memory.md_store import parse_entry_line
+        from app.memory.md_store import parse_entry_record
 
         ws = self.data_root / str(agent_id)
         items: list[MemoryItem] = []
@@ -300,7 +324,8 @@ class MemoryRetriever:
                 continue
 
             for line in lines:
-                entry_content, timestamp = parse_entry_line(line)
+                record = parse_entry_record(line)
+                entry_content = record.content
                 if not entry_content:
                     continue
 
@@ -315,11 +340,12 @@ class MemoryRetriever:
                     score = base_score * max(relevance, 0.15)
 
                 metadata: dict[str, Any] = {
+                    **record.metadata,
                     "category": category,
                     "source_type": "t3_direct",
                 }
-                if timestamp:
-                    metadata["timestamp"] = timestamp
+                if record.timestamp:
+                    metadata["timestamp"] = record.timestamp
 
                 items.append(
                     MemoryItem(
@@ -339,7 +365,7 @@ class MemoryRetriever:
         This is intentionally a separate path so callers can run shadow
         comparisons before switching production retrieval.
         """
-        from app.memory.md_store import parse_entry_line
+        from app.memory.md_store import parse_entry_record
 
         ws = self.data_root / str(agent_id)
         index_text = ""
@@ -362,7 +388,8 @@ class MemoryRetriever:
             if not content:
                 continue
             for line in extract_entry_lines(content):
-                entry_content, timestamp = parse_entry_line(line)
+                record = parse_entry_record(line)
+                entry_content = record.content
                 if not entry_content:
                     continue
                 if is_p0:
@@ -373,11 +400,12 @@ class MemoryRetriever:
                         continue
                     score = base_score * max(relevance, 0.15)
                 metadata: dict[str, Any] = {
+                    **record.metadata,
                     "category": category,
                     "source_type": "t3_index_first",
                 }
-                if timestamp:
-                    metadata["timestamp"] = timestamp
+                if record.timestamp:
+                    metadata["timestamp"] = record.timestamp
                 items.append(
                     MemoryItem(
                         kind=MemoryKind.SEMANTIC,
@@ -394,8 +422,12 @@ class MemoryRetriever:
         index_first = self._retrieve_t3_index_first(agent_id, query=query)
         direct_p0 = {item.content for item in direct if item.source in {"memory/feedback.md", "memory/blocked.md"}}
         index_p0 = {item.content for item in index_first if item.source in {"memory/feedback.md", "memory/blocked.md"}}
-        direct_p1p2 = {item.content for item in direct if item.source not in {"memory/feedback.md", "memory/blocked.md"}}
-        index_p1p2 = {item.content for item in index_first if item.source not in {"memory/feedback.md", "memory/blocked.md"}}
+        direct_p1p2 = {
+            item.content for item in direct if item.source not in {"memory/feedback.md", "memory/blocked.md"}
+        }
+        index_p1p2 = {
+            item.content for item in index_first if item.source not in {"memory/feedback.md", "memory/blocked.md"}
+        }
         overlap = len(direct_p1p2 & index_p1p2)
         miss_count = max(0, len(direct_p1p2 - index_p1p2))
         return {

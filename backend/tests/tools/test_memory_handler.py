@@ -36,6 +36,42 @@ def test_save_memory_writes_t3_file_and_index(tmp_path: Path) -> None:
     assert "feedback.md" in index_path.read_text(encoding="utf-8")
 
 
+def test_save_memory_persists_control_plane_metadata(tmp_path: Path) -> None:
+    from app.memory.md_store import parse_entry_record
+    from app.tools.handlers.memory import save_memory
+
+    agent_id = uuid.uuid4()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "app.config.get_settings",
+            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+        )
+
+        result = save_memory(
+            agent_id,
+            {
+                "content": "Owner Alice email is alice@example.com for vendor escalation.",
+                "category": "user",
+            },
+        )
+
+    user_path = tmp_path / str(agent_id) / "memory" / "user.md"
+    body = user_path.read_text(encoding="utf-8")
+    entry_line = next(line for line in body.splitlines() if line.startswith("- ["))
+    record = parse_entry_record(entry_line)
+
+    assert result.startswith("Saved to long-term memory [user]")
+    assert "alice@example.com" not in body
+    assert "<Email_1>" in body
+    assert record.metadata["sensitivity"] == "PL2_pii"
+    assert record.metadata["status"] == "active"
+    assert record.metadata["version"] == "1"
+    assert record.metadata["access_count"] == "0"
+    assert record.metadata["last_accessed"] == "never"
+    assert record.metadata["entry_id"]
+
+
 def test_save_memory_maps_project_to_knowledge(tmp_path: Path) -> None:
     from app.tools.handlers.memory import save_memory
 

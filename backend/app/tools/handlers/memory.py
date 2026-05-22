@@ -11,63 +11,71 @@ from app.tools.decorator import ToolMeta, tool
 
 # -- save_memory ---------------------------------------------------------------
 
-@tool(ToolMeta(
-    name="save_memory",
-    description=(
-        "Persist a fact to your long-term memory so it is available in future conversations.\n\n"
-        "Use this tool when you encounter information worth remembering across sessions:\n"
-        "- User corrections or preferences (category: feedback)\n"
-        "- Important project decisions or deadlines (category: project)\n"
-        "- Successful approaches worth reusing (category: strategy)\n"
-        "- Approaches proven to fail (category: blocked_pattern)\n"
-        "- Hard rules you must follow (category: constraint)\n"
-        "- External system references, URLs, tool names (category: reference)\n"
-        "- User role, knowledge, working style (category: user)\n\n"
-        "Each fact should be a single, concise statement (under 200 chars is ideal).\n"
-        "Do NOT store transient task state, raw tool output, or debugging logs."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "content": {
-                "type": "string",
-                "description": "The fact to remember. Keep concise and durable.",
+
+@tool(
+    ToolMeta(
+        name="save_memory",
+        description=(
+            "Persist a fact to your long-term memory so it is available in future conversations.\n\n"
+            "Use this tool when you encounter information worth remembering across sessions:\n"
+            "- User corrections or preferences (category: feedback)\n"
+            "- Important project decisions or deadlines (category: project)\n"
+            "- Successful approaches worth reusing (category: strategy)\n"
+            "- Approaches proven to fail (category: blocked_pattern)\n"
+            "- Hard rules you must follow (category: constraint)\n"
+            "- External system references, URLs, tool names (category: reference)\n"
+            "- User role, knowledge, working style (category: user)\n\n"
+            "Each fact should be a single, concise statement (under 200 chars is ideal).\n"
+            "Do NOT store transient task state, raw tool output, or debugging logs."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "The fact to remember. Keep concise and durable.",
+                },
+                "category": {
+                    "type": "string",
+                    "enum": [
+                        "user",
+                        "feedback",
+                        "project",
+                        "reference",
+                        "constraint",
+                        "strategy",
+                        "blocked_pattern",
+                        "general",
+                    ],
+                    "description": "Memory category for retrieval prioritization.",
+                },
+                "subject": {
+                    "type": "string",
+                    "description": "Optional topic/subject tag for grouping related facts.",
+                },
             },
-            "category": {
-                "type": "string",
-                "enum": [
-                    "user", "feedback", "project", "reference",
-                    "constraint", "strategy", "blocked_pattern", "general",
-                ],
-                "description": "Memory category for retrieval prioritization.",
-            },
-            "subject": {
-                "type": "string",
-                "description": "Optional topic/subject tag for grouping related facts.",
-            },
+            "required": ["content", "category"],
         },
-        "required": ["content", "category"],
-    },
-    category="memory",
-    display_name="Save Memory",
-    icon="\U0001f9e0",
-    read_only=False,
-    parallel_safe=False,
-    governance="sensitive",
-    adapter="agent_args",
-))
+        category="memory",
+        display_name="Save Memory",
+        icon="\U0001f9e0",
+        read_only=False,
+        parallel_safe=False,
+        governance="sensitive",
+        adapter="agent_args",
+    )
+)
 def save_memory(agent_id: uuid.UUID, arguments: dict) -> str:
     from pathlib import Path
 
     from app.config import get_settings
-    from app.memory.form_lint import enforce_memory_form
     from app.memory.md_store import (
         MEMORY_DEDUP_THRESHOLD,
         append_t3_entry,
         find_similar_t3_entries,
     )
     from app.memory.types import MEMORY_CATEGORIES
-    from app.services.privacy_layer import PrivacyLayer
+    from app.memory.write_gate import prepare_memory_write
 
     content = (arguments.get("content") or "").strip()
     if not content:
@@ -77,15 +85,10 @@ def save_memory(agent_id: uuid.UUID, arguments: dict) -> str:
     if category not in MEMORY_CATEGORIES:
         category = "general"
 
-    privacy_decision = PrivacyLayer().classify_and_mask(content)
-    if privacy_decision.rejected:
-        return f"[Rejected] {privacy_decision.sensitivity.value}: {privacy_decision.reason}"
-    content_to_store = privacy_decision.sanitized_text
-
-    try:
-        enforce_memory_form(content_to_store)
-    except ValueError as exc:
-        return f"[Rejected] {exc}"
+    write_decision = prepare_memory_write(content, category=category, evidence_refs=["tool:save_memory"])
+    if write_decision.rejected:
+        return f"[Rejected] {write_decision.sensitivity}: {write_decision.reason}"
+    content_to_store = write_decision.content
 
     settings = get_settings()
     data_root = Path(settings.AGENT_DATA_DIR)
@@ -118,67 +121,65 @@ def save_memory(agent_id: uuid.UUID, arguments: dict) -> str:
         category=category,
         content=content_to_store[:2000],
         timestamp=timestamp,
-        metadata={
-            "sensitivity": privacy_decision.sensitivity.value,
-            "status": "active",
-            "version": "1",
-        },
+        metadata=write_decision.metadata,
     )
 
     return (
-        f"Saved to long-term memory [{category}]: "
-        f"{content_to_store[:80]}{'...' if len(content_to_store) > 80 else ''}"
+        f"Saved to long-term memory [{category}]: {content_to_store[:80]}{'...' if len(content_to_store) > 80 else ''}"
     )
 
 
 # -- search_memory -------------------------------------------------------------
 
-@tool(ToolMeta(
-    name="search_memory",
-    description=(
-        "Search your long-term memory and past session history.\n\n"
-        "Use this tool when you need to recall:\n"
-        "- What a user told you in a previous conversation\n"
-        "- Decisions, preferences, or constraints from past sessions\n"
-        "- Strategies that worked or approaches that failed\n"
-        "- Any fact you saved previously with save_memory\n\n"
-        "Returns matching facts and recalled session snippets ranked by relevance."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "Search keywords or phrase to find in memory.",
+
+@tool(
+    ToolMeta(
+        name="search_memory",
+        description=(
+            "Search your long-term memory and past session history.\n\n"
+            "Use this tool when you need to recall:\n"
+            "- What a user told you in a previous conversation\n"
+            "- Decisions, preferences, or constraints from past sessions\n"
+            "- Strategies that worked or approaches that failed\n"
+            "- Any fact you saved previously with save_memory\n\n"
+            "Returns matching facts and recalled session snippets ranked by relevance."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search keywords or phrase to find in memory.",
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["facts", "sessions", "all"],
+                    "description": "Search scope: 'facts' (semantic memory only), 'sessions' (past conversation recall), 'all' (both). Default: all.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum results to return. Default: 10.",
+                },
+                "date_from": {
+                    "type": "string",
+                    "description": "Only include facts on or after this date (YYYY-MM-DD). Use get_current_time to resolve relative dates like 'last month'.",
+                },
+                "date_to": {
+                    "type": "string",
+                    "description": "Only include facts on or before this date (YYYY-MM-DD).",
+                },
             },
-            "scope": {
-                "type": "string",
-                "enum": ["facts", "sessions", "all"],
-                "description": "Search scope: 'facts' (semantic memory only), 'sessions' (past conversation recall), 'all' (both). Default: all.",
-            },
-            "limit": {
-                "type": "integer",
-                "description": "Maximum results to return. Default: 10.",
-            },
-            "date_from": {
-                "type": "string",
-                "description": "Only include facts on or after this date (YYYY-MM-DD). Use get_current_time to resolve relative dates like 'last month'.",
-            },
-            "date_to": {
-                "type": "string",
-                "description": "Only include facts on or before this date (YYYY-MM-DD).",
-            },
+            "required": ["query"],
         },
-        "required": ["query"],
-    },
-    category="memory",
-    display_name="Search Memory",
-    icon="\U0001f50d",
-    read_only=True,
-    parallel_safe=True,
-    governance="safe",
-    adapter="agent_args",
-))
+        category="memory",
+        display_name="Search Memory",
+        icon="\U0001f50d",
+        read_only=True,
+        parallel_safe=True,
+        governance="safe",
+        adapter="agent_args",
+    )
+)
 async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | None = None) -> str:
     from pathlib import Path
 
@@ -200,8 +201,12 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
     # --- Semantic facts search ---
     if scope in ("facts", "all"):
         facts = search_t3_facts(
-            Path(settings.AGENT_DATA_DIR), agent_id, query,
-            limit=limit, date_from=date_from, date_to=date_to,
+            Path(settings.AGENT_DATA_DIR),
+            agent_id,
+            query,
+            limit=limit,
+            date_from=date_from,
+            date_to=date_to,
         )
         if facts:
             results.append("## Semantic Memory")

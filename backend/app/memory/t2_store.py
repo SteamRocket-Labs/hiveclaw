@@ -8,6 +8,8 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.memory.write_gate import prepare_memory_write
+
 
 T2_FILE_MAP: dict[str, str] = {
     "feedback": "insights.md",
@@ -166,10 +168,7 @@ def _normalize_refs(source_refs: list[str] | tuple[str, ...] | str | None) -> li
 
 
 def _parse_meta(meta: str) -> dict[str, str]:
-    return {
-        match.group("key").strip().lower(): match.group("value").strip()
-        for match in _META_RE.finditer(meta or "")
-    }
+    return {match.group("key").strip().lower(): match.group("value").strip() for match in _META_RE.finditer(meta or "")}
 
 
 def format_t2_entry(
@@ -185,6 +184,7 @@ def format_t2_entry(
     source_refs: list[str] | tuple[str, ...] | str | None = None,
     novelty: float | str | None = None,
     reusability: float | str | None = None,
+    metadata: dict[str, str] | None = None,
 ) -> str:
     ts = timestamp or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     final_weight = compute_t2_weight(category, source) if weight is None else round(weight, 2)
@@ -195,6 +195,9 @@ def format_t2_entry(
         f"[src={normalized_source}]",
         f"[cat={normalized_category}]",
     ]
+    for key, value in (metadata or {}).items():
+        if key and value and key != "evidence_refs":
+            meta_parts.append(f"[{key}={value}]")
     normalized_evidence = (evidence or "").strip().lower()
     if normalized_evidence:
         meta_parts.append(f"[ev={normalized_evidence}]")
@@ -216,7 +219,9 @@ def format_t2_entry(
     return f"- [{ts}]{''.join(meta_parts)} {content.strip()}"
 
 
-def parse_t2_entry_line(line: str, *, fallback_category: str | None = None, fallback_source: str | None = None) -> dict | None:
+def parse_t2_entry_line(
+    line: str, *, fallback_category: str | None = None, fallback_source: str | None = None
+) -> dict | None:
     match = _ENTRY_RE.match(line.strip())
     if not match:
         return None
@@ -252,6 +257,21 @@ def parse_t2_entry_line(line: str, *, fallback_category: str | None = None, fall
         parsed["novelty"] = novelty
     if reusability is not None:
         parsed["reusability"] = reusability
+    for key in (
+        "entry_id",
+        "sensitivity",
+        "status",
+        "version",
+        "parent_id",
+        "supersedes",
+        "superseded_by",
+        "expires_at",
+        "access_count",
+        "last_accessed",
+        "retention_score",
+    ):
+        if metadata.get(key):
+            parsed[key] = metadata[key]
     return parsed
 
 
@@ -275,30 +295,42 @@ def append_t2_entries(
         content = (extraction.get("content") or "").strip()
         if not content:
             continue
+        source_refs = extraction.get("source_refs") or extraction.get("refs")
+        decision = prepare_memory_write(
+            content,
+            category=category,
+            evidence_refs=source_refs,
+            parent_id=extraction.get("parent_id"),
+            supersedes=extraction.get("supersedes"),
+            superseded_by=extraction.get("superseded_by"),
+            expires_at=extraction.get("expires_at"),
+        )
+        if decision.rejected:
+            continue
         grouped.setdefault(t2_target_file(category), []).append(
             format_t2_entry(
-                category=category,
-                content=content,
+                category=decision.category,
+                content=decision.content,
                 source=source,
                 timestamp=timestamp,
                 evidence=extraction.get("evidence") or extraction.get("ev"),
                 confidence=extraction.get("confidence") or extraction.get("conf"),
                 volatility=extraction.get("volatility") or extraction.get("vol"),
-                source_refs=extraction.get("source_refs") or extraction.get("refs"),
+                source_refs=source_refs,
                 novelty=extraction.get("novelty") or extraction.get("nov"),
                 reusability=extraction.get("reusability") or extraction.get("reuse"),
+                metadata=decision.metadata,
             )
         )
 
     for filename, lines in grouped.items():
         path = root / filename
-        existing = path.read_text(encoding="utf-8", errors="replace") if path.exists() else f"{T2_FILE_HEADERS[filename]}\n"
+        existing = (
+            path.read_text(encoding="utf-8", errors="replace") if path.exists() else f"{T2_FILE_HEADERS[filename]}\n"
+        )
         existing_contents = {
             _normalize_content(parsed["content"])
-            for parsed in (
-                parse_t2_entry_line(line, fallback_category="general")
-                for line in existing.splitlines()
-            )
+            for parsed in (parse_t2_entry_line(line, fallback_category="general") for line in existing.splitlines())
             if parsed
         }
         new_lines: list[str] = []
@@ -405,7 +437,11 @@ def render_t2_snapshot(entries: list[dict]) -> str:
         grouped[_bucket(float(entry.get("weight", 0.0)))].append(entry)
 
     lines: list[str] = []
-    for bucket_name, title in (("high", "## High Priority"), ("medium", "## Medium Priority"), ("low", "## Low Priority")):
+    for bucket_name, title in (
+        ("high", "## High Priority"),
+        ("medium", "## Medium Priority"),
+        ("low", "## Low Priority"),
+    ):
         bucket_entries = grouped[bucket_name]
         if not bucket_entries:
             continue

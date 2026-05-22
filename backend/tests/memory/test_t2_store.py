@@ -28,15 +28,15 @@ def test_append_t2_entries_writes_weighted_metadata_and_dedupes(tmp_path: Path) 
 
     assert written_first == 1
     assert written_second == 0
-    assert "- [2026-04-08][w=1.00][src=web][cat=feedback] User prefers concise output" in content
+    assert "- [2026-04-08][w=1.00][src=web][cat=feedback]" in content
+    assert "[sensitivity=PL1_public][status=active][version=1]" in content
+    assert "User prefers concise output" in content
 
 
 def test_parse_t2_entry_line_reads_metadata() -> None:
     from app.memory.t2_store import parse_t2_entry_line
 
-    entry = parse_t2_entry_line(
-        "- [2026-04-08][w=0.70][src=trigger][cat=error] tool call failed after timeout"
-    )
+    entry = parse_t2_entry_line("- [2026-04-08][w=0.70][src=trigger][cat=error] tool call failed after timeout")
 
     assert entry is not None
     assert entry["timestamp"] == "2026-04-08"
@@ -104,6 +104,50 @@ def test_append_t2_entries_defaults_evidence_envelope(tmp_path: Path) -> None:
     assert entries[0]["evidence"] == "system_observed"
     assert entries[0]["source_refs"] == ["trace:loop-1"]
     assert entries[0]["volatility"] == "stable"
+
+
+def test_append_t2_entries_applies_write_gate_before_persisting(tmp_path: Path) -> None:
+    from app.memory.t2_store import append_t2_entries, load_t2_entries
+
+    agent_id = uuid.uuid4()
+    written = append_t2_entries(
+        tmp_path,
+        agent_id,
+        extractions=[
+            {
+                "category": "user",
+                "content": "Owner Alice email is alice@example.com for vendor escalation.",
+                "evidence": "user_stated",
+                "source_refs": ["t0:behavior/chat-2.md#L8"],
+            },
+            {
+                "category": "reference",
+                "content": "Owner Alice shared api_key=sk-1234567890abcdefghijklmnop for setup.",
+                "evidence": "user_stated",
+                "source_refs": ["t0:behavior/chat-3.md#L2"],
+            },
+        ],
+        source="web",
+        timestamp="2026-05-22",
+    )
+
+    body = (tmp_path / str(agent_id) / "memory" / "learnings" / "insights.md").read_text(encoding="utf-8")
+    entries, _mtimes = load_t2_entries(tmp_path, agent_id)
+
+    assert written == 1
+    assert "alice@example.com" not in body
+    assert "sk-1234567890abcdefghijklmnop" not in body
+    assert "<Email_1>" in body
+    assert "[sensitivity=PL2_pii]" in body
+    assert "[status=active]" in body
+    assert "[version=1]" in body
+    assert "[access_count=0]" in body
+    assert "[last_accessed=never]" in body
+    assert entries[0]["sensitivity"] == "PL2_pii"
+    assert entries[0]["status"] == "active"
+    assert entries[0]["version"] == "1"
+    assert entries[0]["access_count"] == "0"
+    assert entries[0]["last_accessed"] == "never"
 
 
 def test_render_t2_snapshot_groups_by_priority_and_repetition() -> None:

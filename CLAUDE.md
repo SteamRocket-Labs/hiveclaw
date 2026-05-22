@@ -111,7 +111,7 @@ Tools follow a registry + executor + governance pattern:
 
 Markdown files with YAML frontmatter defining agent capabilities. `SkillParser` → `WorkspaceSkillLoader` → `SkillRegistry`. Skills loaded progressively: catalog in prompt, full body via `load_skill` tool.
 
-### Memory System — 4-Layer MD Pyramid
+### Memory System — 4-Layer MD Pyramid + Control Plane
 
 MD files are the source of truth; the legacy SQLite shadow store was retired.
 
@@ -163,6 +163,18 @@ logs/YYYY-MM-DD/
 | **T3** | `memory/feedback.md`, `knowledge.md`, `strategies.md`, `blocked.md`, `user.md` | Heartbeat (T2→T3) | Prompt injection via `retriever.py` |
 | **soul.md** | Root workspace | Dream consolidation | Prompt injection (frozen prefix) |
 | **focus.md** | Root workspace | Agent + heartbeat | Prompt injection (dynamic suffix) |
+
+The pyramid is the storage and distillation path. Runtime behavior is governed by the owner/company-aware Memory Control Plane:
+
+| Capability | Code paths | Rule |
+|------------|------------|------|
+| Principal + charter context | `services/agency_charter.py`, `services/principal_context.py` | Agent memory/action decisions must preserve direct owner, company, creator/current user, and delegating agent context when available. |
+| Memory write safety | `memory/write_gate.py`, `memory/t2_store.py`, `tools/handlers/memory.py` | Do not persist new durable T2/T3 memory without privacy/sensitivity classification and lifecycle/evidence metadata. PL4 credentials are rejected. |
+| Dynamic activation | `memory/activation.py`, `memory/retriever.py`, `services/memory_service.py`, `runtime/invoker.py` | Prompt memory is activated by objective, owner/company relevance, open-loop pressure, retention/confidence, and sensitivity access. |
+| Decision trace + action preflight | `services/action_preflight.py`, `services/decision_trace.py`, `tools/service.py` | External-visible, irreversible, sensitive, or company-conflicting actions must pass preflight before tool execution. |
+| Feedback learning | `services/extract_agent.py`, `memory/t2_store.py`, `services/auto_dream.py` | Owner feedback should carry reaction/polarity and link back to `decision/<id>` when possible; dream may propose calibration, not silently mutate charter. |
+| Coordination runtime | `agents/coordination.py`, `agents/orchestrator.py` | Delegation uses Lease/Signal; confirm-first actions create Checkpoint; Sentinel emits Signal or Checkpoint for trigger-like open loops. |
+| Proactive steward loop | `services/proactive_employee_loop.py`, `services/heartbeat.py`, `memory/policy_replay.py` | Heartbeat may prepare low-risk artifacts; external-visible actions require Checkpoint; activation policy changes must pass replay guard. |
 
 **Key files:**
 

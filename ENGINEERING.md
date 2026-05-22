@@ -14,7 +14,7 @@ Version 1.8.0 | FastAPI + React 19 | Apache 2.0
   - [Tool Packs](#tool-packs)
   - [Trigger Daemon](#trigger-daemon)
   - [LLM Client](#llm-client)
-  - [Memory System](#memory-system--4-layer-md-pyramid)
+  - [Memory System](#memory-system--4-layer-md-pyramid--control-plane)
   - [Hook System](#hook-system-runtimehookspy)
   - [HR Agent](#hr-agent--agent-creation-pipeline)
   - [Authentication & Authorization](#authentication--authorization)
@@ -179,7 +179,7 @@ Budget allocation scales with context window. Frozen prefix trimmed if total exc
 
 ### Tool Governance
 
-Every tool call passes through `tools/governance.py` (5s timeout, fail-closed):
+Every tool call enters through `tools/service.py`. Governance runs first, then action preflight runs before the registry/backend executor:
 
 ```
 1. Resolve agent security zone
@@ -195,6 +195,11 @@ Every tool call passes through `tools/governance.py` (5s timeout, fail-closed):
    - Create approval request
    - Return "awaiting approval" message
    - Tool NOT executed until approved
+
+4. Action preflight
+   - full_authority/low-risk → execute
+   - confirm_first/external-visible → Checkpoint + ask block
+   - never_do/PL4/company conflict → refuse or escalate
 ```
 
 **Safe tools** (no governance): `list_files`, `read_file`, `load_skill`, `web_fetch`, `web_search`, `read_document`, `list_tasks`, `get_task`
@@ -262,9 +267,9 @@ Unified client (`llm_client.py`, 2,132 LOC) supporting 14+ providers:
 
 Features: streaming with usage tracking, 429 retry (3x exponential backoff), connection error retry (3x), prompt caching (Anthropic), vision support.
 
-### Memory System — 4-Layer MD Pyramid
+### Memory System — 4-Layer MD Pyramid + Control Plane
 
-MD files are the source of truth. SQLite is demoted to FTS recall index only.
+MD files are the source of truth. SQLite is demoted to FTS recall index only. The T0/T2/T3/soul pyramid remains the storage and distillation path; the Memory Control Plane governs what is safe to store, what should activate now, and which actions require owner/company confirmation.
 
 ```
 T0 (raw logs, 30d)  →  T2 (learnings/*.md)  →  T3 (memory/*.md)  →  soul.md
@@ -280,6 +285,18 @@ SESSION_IDLE/CLOSE   RESPONSE_COMPLETE         Heartbeat (45min)    Dream (4h+3s
 | **T3** | `memory/feedback.md`, `knowledge.md`, `strategies.md`, `blocked.md`, `user.md` | Heartbeat (KAIROS persistent session) | Until dream dedup |
 | **soul.md** | Agent root | Dream consolidation | Permanent |
 | **focus.md** | Agent root | Agent + heartbeat | Volatile |
+
+**Memory Control Plane:**
+
+| Capability | Code paths | Runtime contract |
+|------------|------------|------------------|
+| Principal + charter context | `services/agency_charter.py`, `services/principal_context.py` | Preserve direct owner, company, creator/current user, and delegating agent context when available. |
+| Write safety | `memory/write_gate.py`, `memory/t2_store.py`, `tools/handlers/memory.py` | Classify and mask before new durable T2/T3 writes; reject PL4 credentials. |
+| Dynamic activation | `memory/activation.py`, `memory/retriever.py`, `services/memory_service.py`, `runtime/invoker.py` | Select prompt memory by objective/owner/company/open-loop relevance and sensitivity access, with activation reasons. |
+| Decision trace + preflight | `services/action_preflight.py`, `services/decision_trace.py`, `tools/service.py` | Run action preflight after governance and before registry/backend execution for risky tool calls. |
+| Feedback calibration | `services/extract_agent.py`, `memory/t2_store.py`, `services/auto_dream.py` | Link feedback to `decision/<id>` when available; dream proposes charter/memory calibration instead of silently mutating boundaries. |
+| Coordination primitives | `agents/coordination.py`, `agents/orchestrator.py` | Use Lease/Signal for delegation and Checkpoint/Sentinel for confirm-first and trigger-like governed work. |
+| Proactive steward loop | `services/proactive_employee_loop.py`, `services/heartbeat.py`, `memory/policy_replay.py` | Heartbeat may prepare low-risk artifacts; external-visible work requires Checkpoint; activation policy changes require replay guard. |
 
 **Key files:**
 

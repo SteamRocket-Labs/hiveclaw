@@ -4,7 +4,7 @@ Technical reference for AI coding assistants working with the Hive platform.
 
 ## Project Overview
 
-Hive is an open-source **multi-agent collaboration platform** — enterprise "digital employees" with persistent identity, long-term memory, private workspaces, and autonomous trigger-driven execution.
+Hive is an open-source **multi-agent collaboration platform** — enterprise "digital employees" with persistent identity, long-term memory, private workspaces, autonomous trigger-driven execution, and an owner/company-aware Memory Control Plane.
 
 - **Version:** 1.7.0 (tracked in root `VERSION` file)
 - **License:** Apache 2.0
@@ -84,10 +84,23 @@ Social: `PlazaPost`, `PlazaComment`, `PlazaLike`
 | Channels | `feishu_service`, `feishu_ws`, `dingtalk_stream`, `wecom_stream` |
 | Tools | `agent_tools`, `agent_tool_assignment_service`, `tool_seeder`, `tool_telemetry` |
 | Security | `capability_gate`, `approval_service`, `quota_guard`, `secrets_provider`, `audit_logger` |
-| Memory | `memory_service`, `conversation_summarizer`, `knowledge_inject` |
+| Memory | `memory_service`, `conversation_summarizer`, `knowledge_inject`, `agency_charter`, `decision_trace` |
 | Integration | `mcp_client`, `mcp_registry_service`, `email_service`, `viking_client` |
 | Multi-tenant | `enterprise_sync`, `org_sync_service`, `sync_service` |
 | Other | `pack_service`, `skill_creator_content`, `text_extractor`, `token_tracker` |
+
+### Memory Control Plane
+
+Hive keeps the T0/T2/T3/soul Markdown memory pyramid, but runtime behavior is governed by a Memory Control Plane. This layer decides what can be stored, what can be activated, and which actions require owner/company confirmation.
+
+| Capability | Primary code paths | Runtime invariant |
+|------------|--------------------|-------------------|
+| Principal + charter context | `services/agency_charter.py`, `services/principal_context.py` | Memory/action decisions must know direct owner, company, creator/current user, and delegation context when available. |
+| Write safety | `memory/write_gate.py`, `memory/t2_store.py`, `tools/handlers/memory.py` | New durable memories must pass privacy/sensitivity classification before T2/T3 persistence; PL4 credentials are rejected. |
+| Dynamic activation | `memory/activation.py`, `memory/retriever.py`, `services/memory_service.py`, `runtime/invoker.py` | Prompt memory is selected by owner/company/goal/open-loop relevance and sensitivity access, not by static file inclusion alone. |
+| Decision trace + preflight | `services/action_preflight.py`, `services/decision_trace.py`, `tools/service.py` | External-visible, sensitive, irreversible, or company-conflicting tool calls must pass preflight before execution. |
+| Coordination primitives | `agents/coordination.py`, `agents/orchestrator.py`, `tools/service.py` | Cross-agent work uses Lease/Signal; confirm-first actions create Checkpoint; Sentinel can emit Signal or Checkpoint. |
+| Proactive steward loop | `services/proactive_employee_loop.py`, `services/heartbeat.py`, `memory/policy_replay.py` | Heartbeat may prepare low-risk work, but external-visible action requires Checkpoint and policy tuning requires replay guard. |
 
 ### Kernel Engine
 
@@ -155,6 +168,11 @@ Core HTTP abstraction in `api/core/request.ts` — `get<T>()`, `post<T>()`, `put
 - **Multi-tenancy:** All entities tenant-scoped. PostgreSQL RLS. `check_agent_access()` required.
 - **Kernel invariant:** All LLM calls via `invoke_agent()` → `AgentKernel.handle()`. Never direct.
 - **Tool governance:** All tool calls via `ToolRuntimeService.execute()`. Never bypass.
+- **Memory write invariant:** Do not write T2/T3 durable memory directly from tools or extractors; use `prepare_memory_write()` or an existing wrapper that calls it.
+- **Memory read invariant:** Prompt memory retrieval must preserve `ActivationContext` and sensitivity stripping when current user/owner/company context is known.
+- **Action boundary invariant:** Do not bypass `ActionPreflightService` for external-visible, sensitive, irreversible, or company-boundary actions.
+- **Agent creation invariant:** New employee agents must render first-person accountability plus frozen Company Charter and Owner Agency Charter sections in `soul.md`.
+- **Coordination invariant:** Duplicate delegation should acquire a Lease; progress/handoff should use Signal; confirm-first work should create Checkpoint metadata.
 - **i18n:** Both `en.json` and `zh.json` must be updated for any UI text.
 - **Migrations:** `alembic heads` must show single head before creating new migration.
 - **Ruff:** `target-version = "py311"`, `line-length = 120`.

@@ -13,13 +13,13 @@
 
 <br>
 
-Hive 是一个可自部署的**数字员工**平台 —— 它构建的不是关掉浏览器就忘掉一切的无状态聊天机器人，而是有身份、能记忆、住在你工作群里、并能自主行动的 AI 同事。每个 Hive Agent 都拥有一份身份契约（`soul.md`）、一个私有工作目录、一套四层记忆体系，以及在你不在线时仍会持续"思考"和"做梦"的后台守护进程。
+Hive 是一个可自部署的**数字员工**平台 —— 它构建的不是关掉浏览器就忘掉一切的无状态聊天机器人，而是有身份、能记忆、住在你工作群里、并能自主行动的 AI 同事。每个 Hive Agent 都拥有一份身份契约（`soul.md`）、一个私有工作目录、一套四层记忆体系、在你不在线时仍会持续"思考"和"做梦"的后台守护进程，以及一层让判断始终对齐 owner 与公司边界的 Memory Control Plane。
 
 **Hive 与众不同之处：**
 
 - **持久身份** —— 每个 Agent 都有一份 `soul.md`：它的角色、语气、边界与质量标准。它跨越对话、跨越会话、甚至跨越模型切换都不会丢失。
-- **四层记忆金字塔** —— 原始日志 → 学习提取 → 语义记忆 → 身份固化。每条回复后自动抽取，每 45 分钟整理一次，约每 4 小时凝结进 Agent 的灵魂。无需手动配置 RAG。
-- **Heartbeat 与 Dream** —— 后台守护进程在你不在时替 Agent 思考：整理它学到的东西、决定哪些值得保留、更新它是谁。
+- **四层记忆金字塔 + 控制平面** —— 原始日志 → 学习提取 → 语义记忆 → 身份固化，同时由 owner/company 语境、隐私门、动态激活、决策轨迹与 replay 守卫来治理。无需手动配置 RAG。
+- **Heartbeat 与 Dream** —— 后台守护进程在你不在时替 Agent 思考：整理它学到的东西、准备低风险跟进材料、决定哪些值得保留，并提出安全的身份/策略演化建议。
 - **直接住在群聊里** —— 一等公民支持飞书/Lark、Slack、Discord、钉钉、企业微信、Microsoft Teams。同一个 Agent，同一份记忆，跨所有渠道。
 - **对话式创建** —— HR Agent 通过 2–3 轮对话面试你，自动生成新员工。无需写 Prompt。
 - **自主行动** —— 支持 cron、interval、webhook、轮询、消息事件触发。Agent 会主动起来工作，而不只是被动回答。
@@ -110,6 +110,19 @@ T0 原始日志  ← t0_logger      （游标式增量写入，会话空闲/关�
 | **focus** | `focus.md` | Agent 自身 + Heartbeat | 易变的运营优先级 |
 
 **MD 文件即真相**。它们是普通 Markdown，你可以阅读、编辑、版本化，甚至在不同部署间复制。无需重建 embedding，无需迁移向量库。
+
+记忆金字塔只是沉淀路径。真正决定 Agent 如何判断和行动的是 **Memory Control Plane**：
+
+| 层级 | 作用 |
+|-------|------|
+| Principal stack | 显式区分公司、直接 owner、创建者/当前用户、委派 Agent，而不是把每个 prompt 都当作同等授权。 |
+| 隐私与写入安全 | 记忆持久化前先分类；凭证直接拒绝，PII 可脱敏，长期条目必须带 evidence/lifecycle metadata。 |
+| 动态激活 | 按当前目标、owner/company 相关性、open loop 压力、retention 分数和敏感度访问权来选择进入上下文的记忆。 |
+| 决策轨迹与反馈 | 记录 Agent 为什么行动、询问、拒绝或升级，并把 owner feedback 反连到当时的 decision。 |
+| 协调运行时 | 用 Lease、Signal、Checkpoint、Sentinel 让多 Agent 协作和 confirm-first 动作成为显式运行时对象。 |
+| 主动员工循环 | Heartbeat 可以准备低风险有用材料，但对外可见动作必须走 Checkpoint，策略调参必须通过 replay evaluation。 |
+
+完整设计和阶段证据见 [`docs/owner-steward-agent-memory-design.md`](docs/owner-steward-agent-memory-design.md)。
 
 ## 渠道集成
 

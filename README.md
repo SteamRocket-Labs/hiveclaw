@@ -13,13 +13,13 @@
 
 <br>
 
-Hive is a self-hosted platform for building **digital employees** — AI agents that remember the conversations they have, learn from them autonomously, live inside your team's IM tools, and act on their own when something needs doing. Instead of stateless chatbots that forget everything when the tab closes, Hive agents have an identity contract, a private workspace, and a 4-layer memory that consolidates while they "sleep."
+Hive is a self-hosted platform for building **digital employees** — AI agents that remember the conversations they have, learn from them autonomously, live inside your team's IM tools, and act on their own when something needs doing. Instead of stateless chatbots that forget everything when the tab closes, Hive agents have an identity contract, a private workspace, a 4-layer memory that consolidates while they "sleep," and a Memory Control Plane that keeps their judgment aligned with their owner and company.
 
 **What makes Hive different:**
 
 - **Persistent identity** — Each agent has a `soul.md` — its role, voice, boundaries, and quality bar. It survives across conversations, sessions, and even model swaps.
-- **4-layer memory pyramid** — Raw logs → learnings → semantic memory → identity. Memory is extracted from every response, curated every 45 minutes, and consolidated into the agent's soul roughly every 4 hours. No manual RAG setup.
-- **Heartbeat & Dream** — Background daemons think for the agent while you're away — organizing what it learned, deciding what's worth keeping, updating who it is.
+- **4-layer memory pyramid + control plane** — Raw logs → learnings → semantic memory → identity, governed by owner/company context, privacy gates, dynamic activation, decision traces, and replay-guarded policy evolution. No manual RAG setup.
+- **Heartbeat & Dream** — Background daemons think for the agent while you're away — organizing what it learned, preparing low-risk follow-ups, deciding what's worth keeping, and proposing safe identity/policy evolution.
 - **Lives in your chat** — First-class connectors for Feishu/Lark, Slack, Discord, DingTalk, WeChat Work, and Microsoft Teams. Same agent, same memory, every channel.
 - **Created by conversation** — An HR Agent interviews you in 2–3 rounds and builds a new digital employee for you. No prompt engineering required.
 - **Acts on its own** — Cron, interval, webhook, polling, and message-event triggers. Agents wake up to do work, not just answer.
@@ -110,6 +110,19 @@ T0 raw logs ← t0_logger      (cursor-based, written on session idle/close)
 | **focus** | `focus.md` | agent + heartbeat | Volatile operational priorities |
 
 Files are the source of truth. They're plain Markdown — you can read them, edit them, version them, copy them between deployments. No embeddings to rebuild, no vector store to migrate.
+
+The pyramid is only the storage path. Runtime behavior is governed by the **Memory Control Plane**:
+
+| Layer | What it does |
+|-------|--------------|
+| Principal stack | Tracks company, direct owner, creator/current user, and delegating agent instead of treating every prompt as the same authority. |
+| Privacy + write safety | Classifies memory before persistence; credentials are rejected, PII can be masked, and durable entries carry evidence/lifecycle metadata. |
+| Dynamic activation | Retrieves memory by current objective, owner/company relevance, open-loop pressure, retention score, and sensitivity access. |
+| Decision trace + feedback | Records why an agent acted, asked, refused, or escalated, then links owner feedback back to the decision that caused it. |
+| Coordination runtime | Uses Lease, Signal, Checkpoint, and Sentinel primitives so multi-agent work and confirm-first actions are explicit runtime objects. |
+| Proactive steward loop | Heartbeat can prepare useful low-risk artifacts, but external-visible actions require Checkpoint approval and policy changes must pass replay evaluation. |
+
+The design rationale and phase evidence live in [`docs/owner-steward-agent-memory-design.md`](docs/owner-steward-agent-memory-design.md).
 
 ## Channels
 

@@ -271,7 +271,7 @@ async def test_runtime_metadata_lives_after_cache_boundary(monkeypatch):
 
 
 class TestFrozenPrefixMetering:
-    """build_frozen_prompt_prefix records every build and warns over 6K tokens."""
+    """build_frozen_prompt_prefix records every build and warns over 12K tokens."""
 
     def setup_method(self) -> None:
         from app.memory import metrics
@@ -289,8 +289,8 @@ class TestFrozenPrefixMetering:
         assert snap["frozen_prefix_tokens"]["count"] == 1
         assert snap["frozen_prefix_warn_total"] == 0
         assert snap["frozen_prefix_overrun_total"] == 0
-        # tiny + section bodies stays under 6K tokens
-        assert snap["frozen_prefix_tokens"]["max"] < 6000
+        # tiny + section bodies stays under the 12K-token warn threshold
+        assert snap["frozen_prefix_tokens"]["max"] < 12000
         assert "tiny" in prefix
 
     def test_warn_threshold_bumps_warn_counter_only(self, caplog) -> None:
@@ -299,9 +299,9 @@ class TestFrozenPrefixMetering:
         from app.memory import metrics
         from app.runtime.prompt_builder import _meter_frozen_prefix
 
-        # 6000 tokens × 3.5 chars/token = 21000 chars. Stay below 8000-token
-        # hard limit (28000 chars) so we get a warn but not an overrun.
-        bloated = "x" * 22000
+        # 12000 tokens × 3.5 chars/token = 42000 chars. Stay below the
+        # 16000-token hard limit (56000 chars) so this warns but does not overrun.
+        bloated = "x" * 43000
         with caplog.at_level(logging.WARNING, logger="app.runtime.prompt_builder"):
             _meter_frozen_prefix(bloated)
 
@@ -316,8 +316,8 @@ class TestFrozenPrefixMetering:
         from app.memory import metrics
         from app.runtime.prompt_builder import _meter_frozen_prefix
 
-        # 8000 tokens × 3.5 chars/token = 28000 chars; pad past the limit.
-        oversized = "x" * 35000
+        # 16000 tokens × 3.5 chars/token = 56000 chars; pad past the limit.
+        oversized = "x" * 60000
         with caplog.at_level(logging.ERROR, logger="app.runtime.prompt_builder"):
             _meter_frozen_prefix(oversized)
 
@@ -332,8 +332,8 @@ class TestFrozenPrefixMetering:
         from app.memory import metrics
         from app.runtime.prompt_builder import _meter_frozen_prefix
 
-        # Exactly 8000 tokens × 3.5 chars/token = 28000 chars.
-        at_limit = "x" * 28000
+        # Exactly 16000 tokens × 3.5 chars/token = 56000 chars.
+        at_limit = "x" * 56000
         with caplog.at_level(logging.WARNING, logger="app.runtime.prompt_builder"):
             _meter_frozen_prefix(at_limit)
 
@@ -348,9 +348,9 @@ class TestFrozenPrefixMetering:
 
         prefix = "\n\n".join(
             [
-                "## Identity & Mission\n" + ("identity " * 1500),
-                "## System\n" + ("system " * 900),
-                "## Skills\n" + ("skill " * 600),
+                "## Identity & Mission\n" + ("identity " * 3000),
+                "## System\n" + ("system " * 1600),
+                "## Skills\n" + ("skill " * 1000),
             ]
         )
 
@@ -367,9 +367,9 @@ class TestFrozenPrefixMetering:
 
         bloated = "\n\n".join(
             [
-                "## Identity & Mission\n" + ("identity " * 1500),
-                "## System\n" + ("system " * 900),
-                "## Skills\n" + ("skill " * 600),
+                "## Identity & Mission\n" + ("identity " * 3000),
+                "## System\n" + ("system " * 1600),
+                "## Skills\n" + ("skill " * 1000),
             ]
         )
         with caplog.at_level(logging.WARNING, logger="app.runtime.prompt_builder"):
@@ -450,8 +450,8 @@ class TestFrozenPrefixHardCap:
             build_frozen_prompt_prefix,
         )
 
-        # 30K-char catalog blows past the 28K char hard cap on its own.
-        bloated_catalog = "## Skills\n" + "\n".join(f"- skill_{i}: {'x' * 30}" for i in range(800))
+        # Catalog alone blows past the 56K char hard cap.
+        bloated_catalog = "## Skills\n" + "\n".join(f"- skill_{i}: {'x' * 30}" for i in range(1800))
         assert len(bloated_catalog) > _FROZEN_PREFIX_CHAR_LIMIT
 
         prefix = build_frozen_prompt_prefix(agent_context="tiny ctx", skill_catalog=bloated_catalog)
@@ -466,7 +466,7 @@ class TestFrozenPrefixHardCap:
         """Base small, modest-size catalog — re-fit a trimmed catalog."""
         from app.runtime.prompt_builder import build_frozen_prompt_prefix
 
-        # 30K catalog → fully dropped. 3K catalog → fits leftover budget.
+        # Modest catalog fits leftover budget.
         catalog = "## Skills\n" + "\n".join(f"- skill_{i}" for i in range(150))
         prefix = build_frozen_prompt_prefix(agent_context="ctx", skill_catalog=catalog)
         # Base is small; catalog fits — should appear (full or trimmed).
@@ -481,7 +481,7 @@ class TestFrozenPrefixHardCap:
         )
 
         # Pump agent_context past the hard cap to force base trimming.
-        oversize_ctx = "soul_data " * 4000  # ~40K chars
+        oversize_ctx = "soul_data " * 7000  # ~70K chars
         prefix = build_frozen_prompt_prefix(agent_context=oversize_ctx)
 
         assert len(prefix) <= _FROZEN_PREFIX_CHAR_LIMIT
@@ -501,7 +501,8 @@ class TestFrozenPrefixHardCap:
             build_frozen_prompt_prefix,
         )
 
-        bloated_catalog = "## Skills\n" + "\n".join(f"- skill_{i}" for i in range(2000))
+        bloated_catalog = "## Skills\n" + "\n".join(f"- skill_{i}: {'x' * 30}" for i in range(2000))
+        assert len(bloated_catalog) > _FROZEN_PREFIX_CHAR_LIMIT
         build_frozen_prompt_prefix(agent_context="ctx", skill_catalog=bloated_catalog)
 
         snap = metrics.snapshot()

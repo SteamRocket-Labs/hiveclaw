@@ -46,13 +46,14 @@ _DEFAULT_MEMORY_SNAPSHOT_BUDGET = 8000
 _SYSTEM_PROMPT_SUFFIX_CHAR_CAP = 5000
 
 # P1-1b/W2-1: Frozen-prefix token guard rails.
-# Hard limit follows audit recommendation (~8K tokens). Warn at 75% so
-# operators see growth before it breaches and silently kills cache hit-rate.
+# Guard rails are calibrated for long-context production agents: 16K frozen
+# tokens is still a small slice of a 256K context, while 12K gives operators
+# enough headroom to see static prefix growth before it hurts cache efficiency.
 # `_CHARS_PER_TOKEN_ESTIMATE` mirrors token_tracker.estimate_tokens_from_chars
 # (3.5 chars/token) — kept here so the inverse direction (token budget →
 # char budget) does not silently drift if either side changes.
-_FROZEN_PREFIX_TOKEN_WARN = 6000
-_FROZEN_PREFIX_TOKEN_LIMIT = 8000
+_FROZEN_PREFIX_TOKEN_WARN = 12000
+_FROZEN_PREFIX_TOKEN_LIMIT = 16000
 _CHARS_PER_TOKEN_ESTIMATE = 3.5
 _FROZEN_PREFIX_CHAR_LIMIT = int(_FROZEN_PREFIX_TOKEN_LIMIT * _CHARS_PER_TOKEN_ESTIMATE)
 _FROZEN_PREFIX_TRIM_NOTICE = (

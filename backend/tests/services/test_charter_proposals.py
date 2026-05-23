@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from app.services.charter_proposals import (
+    CharterProposal,
     CharterProposalStore,
     ProposalAlreadyDecided,
+    apply_approved_proposal_to_soul,
     ProposalKind,
     ProposalStatus,
 )
@@ -243,6 +246,85 @@ class TestExpire:
         )
         expired = await store.expire_stale(max_age_days=7)
         assert expired == [str(old_row.id)]
+
+
+class TestApplyApprovedProposal:
+    def test_apply_approved_proposal_updates_frozen_owner_charter_and_audit(
+        self, tmp_path: Path, now: datetime
+    ) -> None:
+        agent_dir = tmp_path / "agent-1"
+        memory_dir = agent_dir / "memory"
+        memory_dir.mkdir(parents=True)
+        (agent_dir / "soul.md").write_text(
+            "\n".join(
+                [
+                    "# Soul",
+                    "",
+                    "## Frozen Company Charter",
+                    "**Company Goals**",
+                    "- Protect company data.",
+                    "",
+                    "## Frozen Owner Agency Charter",
+                    "**Full Authority**",
+                    "- Prepare local drafts.",
+                    "",
+                    "**Confirm First**",
+                    "- Send external messages.",
+                    "",
+                    "**Never Do**",
+                    "- Share credentials.",
+                    "",
+                    "## What Good Looks Like",
+                    "- Useful work.",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        proposal = CharterProposal(
+            id="proposal-1",
+            agent_id="agent-1",
+            decision_id="decision/dec-1",
+            action="Send weekly investor summary after owner-approved template",
+            proposal_kind=ProposalKind.CONSIDER_FULL_AUTHORITY.value,
+            reason="Owner approved this confirm-first action repeatedly.",
+            status=ProposalStatus.APPROVED.value,
+            created_at=now,
+            decided_at=now,
+            decided_by="alice",
+            decision_reason="safe recurring action",
+        )
+
+        result = apply_approved_proposal_to_soul(agent_dir, proposal, applied_by="alice", now=now)
+
+        soul = (agent_dir / "soul.md").read_text(encoding="utf-8")
+        assert result["status"] == "applied"
+        assert result["target_section"] == "Full Authority"
+        assert "- Send weekly investor summary after owner-approved template" in soul
+        assert "proposal=proposal-1" in soul
+        assert soul.count("Send weekly investor summary after owner-approved template") == 1
+        audit = (agent_dir / "memory" / "charter_calibration.md").read_text(encoding="utf-8")
+        assert "[proposal_id=proposal-1]" in audit
+        assert "[decision_id=decision/dec-1]" in audit
+        assert "[applied_by=alice]" in audit
+
+    def test_apply_rejects_non_approved_proposal(self, tmp_path: Path, now: datetime) -> None:
+        agent_dir = tmp_path / "agent-1"
+        agent_dir.mkdir()
+        (agent_dir / "soul.md").write_text("## Frozen Owner Agency Charter\n", encoding="utf-8")
+        proposal = CharterProposal(
+            id="proposal-1",
+            agent_id="agent-1",
+            decision_id="decision/dec-1",
+            action="Send vendor reply",
+            proposal_kind=ProposalKind.TIGHTEN_TO_CONFIRM_FIRST.value,
+            reason="Owner questioned it.",
+            status=ProposalStatus.PENDING.value,
+            created_at=now,
+        )
+
+        with pytest.raises(ValueError, match="approved"):
+            apply_approved_proposal_to_soul(agent_dir, proposal, applied_by="alice", now=now)
 
 
 class TestEnums:

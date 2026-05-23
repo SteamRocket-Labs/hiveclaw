@@ -37,6 +37,7 @@ def test_save_memory_writes_t3_file_and_index(tmp_path: Path) -> None:
 
 
 def test_save_memory_persists_control_plane_metadata(tmp_path: Path) -> None:
+    from app.memory.lifecycle_store import MemoryLifecycleStore
     from app.memory.md_store import parse_entry_record
     from app.tools.handlers.memory import save_memory
 
@@ -70,6 +71,10 @@ def test_save_memory_persists_control_plane_metadata(tmp_path: Path) -> None:
     assert record.metadata["access_count"] == "0"
     assert record.metadata["last_accessed"] == "never"
     assert record.metadata["entry_id"]
+    lifecycle = MemoryLifecycleStore(tmp_path / str(agent_id) / "memory" / "lifecycle.json")
+    lifecycle_entry = lifecycle.get(record.metadata["entry_id"])
+    assert lifecycle_entry.content == "Owner Alice email is <Email_1> for vendor escalation."
+    assert lifecycle_entry.status == "active"
 
 
 def test_save_memory_maps_project_to_knowledge(tmp_path: Path) -> None:

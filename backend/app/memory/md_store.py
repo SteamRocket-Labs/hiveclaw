@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.memory.lifecycle_store import record_active_memory_lifecycle
+
 
 T3_FILE_SPECS = (
     {
@@ -256,6 +258,13 @@ def append_t3_entry(
         updated += "\n"
     updated += entry + "\n"
     path.write_text(updated, encoding="utf-8")
+    if metadata and metadata.get("entry_id"):
+        record_active_memory_lifecycle(
+            data_root,
+            agent_id,
+            content=content.strip(),
+            metadata={str(key): str(value) for key, value in metadata.items() if value is not None},
+        )
     rebuild_index(data_root, agent_id)
     return path
 

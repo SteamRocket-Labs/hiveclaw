@@ -10,6 +10,7 @@ import pytest
 from app.memory.retriever import MemoryRetriever, _score_relevance
 from app.memory.types import MemoryKind
 from app.memory.activation import ActivationContext
+from app.memory.understanding_store import UnderstandingStore
 from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
 
 
@@ -273,6 +274,41 @@ async def test_activation_context_adds_reasons_and_updates_score(
     ]
     assert item.metadata["activation_score"] == item.score
     assert item.score > 0.8
+
+
+@pytest.mark.asyncio
+async def test_retrieve_includes_relationship_understandings(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    retriever: MemoryRetriever,
+) -> None:
+    store = UnderstandingStore(data_root / str(agent_id) / "memory")
+    store.record(
+        subject="agent_a",
+        object_="agent_b",
+        relation_type="collaborator",
+        current_understanding="Agent B is reliable for research but needs an explicit output schema.",
+        evidence_refs=["decision/abc123"],
+        confidence=0.9,
+    )
+
+    items = await retriever.retrieve(
+        agent_id,
+        "agent b research schema",
+        session_id=None,
+        tenant_id=None,
+        activation_context=_activation_context(),
+    )
+
+    understanding_items = [item for item in items if item.metadata.get("source_type") == "understanding_store"]
+    assert len(understanding_items) == 1
+    item = understanding_items[0]
+    assert item.source == "memory/understandings.md"
+    assert "agent_a -[collaborator]-> agent_b" in item.content
+    assert "explicit output schema" in item.content
+    assert item.metadata["category"] == "understanding"
+    assert item.metadata["evidence_refs"] == "decision/abc123"
+    assert item.metadata["confidence"] == "0.9"
 
 
 def test_semantic_scoring_relevant_higher() -> None:

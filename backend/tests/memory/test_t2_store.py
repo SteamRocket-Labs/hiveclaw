@@ -107,6 +107,7 @@ def test_append_t2_entries_defaults_evidence_envelope(tmp_path: Path) -> None:
 
 
 def test_append_t2_entries_applies_write_gate_before_persisting(tmp_path: Path) -> None:
+    from app.memory.lifecycle_store import MemoryLifecycleStore
     from app.memory.t2_store import append_t2_entries, load_t2_entries
 
     agent_id = uuid.uuid4()
@@ -148,6 +149,10 @@ def test_append_t2_entries_applies_write_gate_before_persisting(tmp_path: Path) 
     assert entries[0]["version"] == "1"
     assert entries[0]["access_count"] == "0"
     assert entries[0]["last_accessed"] == "never"
+    lifecycle = MemoryLifecycleStore(tmp_path / str(agent_id) / "memory" / "lifecycle.json")
+    lifecycle_entry = lifecycle.get(entries[0]["entry_id"])
+    assert lifecycle_entry.content == "Owner Alice email is <Email_1> for vendor escalation."
+    assert lifecycle_entry.metadata["sensitivity"] == "PL2_pii"
 
 
 def test_render_t2_snapshot_groups_by_priority_and_repetition() -> None:

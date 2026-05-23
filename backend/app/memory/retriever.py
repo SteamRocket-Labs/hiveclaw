@@ -213,6 +213,7 @@ class MemoryRetriever:
             items.extend(self._retrieve_t3_index_first(agent_id, query=query) or [])
         else:
             items.extend(self._retrieve_t3_direct(agent_id, query=query) or [])
+        items.extend(self._retrieve_understandings(agent_id, query=query) or [])
         episodic_limit = retrieval_profile.episodic_limit if retrieval_profile else 3
         external_limit = retrieval_profile.external_limit if retrieval_profile else 5
         semantic_limit = retrieval_profile.semantic_limit if retrieval_profile else 5
@@ -237,6 +238,62 @@ class MemoryRetriever:
         items.extend(await self._retrieve_external(agent_id, query, tenant_id, limit=external_limit) or [])
         if activation_context:
             return self._apply_activation(items, activation_context, agent_id=agent_id)
+        return items
+
+    def _retrieve_understandings(self, agent_id: uuid.UUID, *, query: str = "") -> list[MemoryItem]:
+        """Read relationship-shaped understandings as semantic candidates.
+
+        `understandings.md` is not a replacement for T3. It is a first-class
+        relationship graph projection that can now compete in the same
+        activation path as semantic facts.
+        """
+        try:
+            from app.memory.understanding_store import UnderstandingStore
+        except ImportError:
+            return []
+
+        store = UnderstandingStore(self.data_root / str(agent_id) / "memory")
+        items: list[MemoryItem] = []
+        for entry in store.query():
+            rendered = (
+                f"[understanding] {entry.subject} -[{entry.relation_type}]-> {entry.object_}: "
+                f"{entry.current_understanding}"
+            )
+            relevance_text = " ".join(
+                [
+                    entry.subject,
+                    entry.object_,
+                    entry.relation_type,
+                    entry.current_understanding,
+                    " ".join(entry.evidence_refs),
+                    " ".join(entry.boundaries),
+                    " ".join(entry.open_questions),
+                ]
+            )
+            relevance = _score_relevance(relevance_text, query) if query else 1.0
+            if query and relevance <= 0:
+                continue
+            confidence = max(0.0, min(float(entry.confidence), 1.0))
+            score = round(min(1.0, 0.55 + (0.3 * relevance) + (0.15 * confidence)), 4)
+            items.append(
+                MemoryItem(
+                    kind=MemoryKind.SEMANTIC,
+                    content=rendered,
+                    score=score,
+                    source="memory/understandings.md",
+                    metadata={
+                        "entry_id": entry.entry_id,
+                        "category": "understanding",
+                        "source_type": "understanding_store",
+                        "subject": entry.subject,
+                        "object": entry.object_,
+                        "relation_type": entry.relation_type,
+                        "confidence": str(entry.confidence),
+                        "evidence_refs": ",".join(entry.evidence_refs),
+                        "sensitivity": "PL1_public",
+                    },
+                )
+            )
         return items
 
     def _apply_activation(

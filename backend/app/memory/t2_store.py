@@ -8,6 +8,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.memory.lifecycle_store import record_active_memory_lifecycle
 from app.memory.write_gate import prepare_memory_write
 
 
@@ -358,6 +359,15 @@ def append_t2_entries(
             updated += "\n"
         updated += "\n".join(new_lines) + "\n"
         path.write_text(updated, encoding="utf-8")
+        for line in new_lines:
+            parsed = parse_t2_entry_line(line)
+            if parsed and parsed.get("entry_id"):
+                record_active_memory_lifecycle(
+                    data_root,
+                    agent_id,
+                    content=parsed["content"],
+                    metadata={str(key): str(value) for key, value in parsed.items() if value is not None},
+                )
         written += len(new_lines)
 
     return written

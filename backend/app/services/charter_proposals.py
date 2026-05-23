@@ -5,9 +5,9 @@ PostgreSQL-backed durable hand-off between dream's
 company admin who approves or rejects each proposal. Replaces the
 local-sqlite shim from the first Phase 15 implementation.
 
-The store does not mutate any charter. Applying an approved proposal
-back to soul / company charter remains the sketch->active path (Phase
-6) and is out of scope here.
+Approved proposals can be explicitly applied to an agent's frozen
+owner charter with an audit line. The store still never applies
+pending/rejected proposals and never mutates company governance.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
+from pathlib import Path
 from typing import Callable
 
 from sqlalchemy import select, update
@@ -183,6 +184,63 @@ class CharterProposalStore:
             await self._session.flush()
         return expired_ids
 
+    async def apply_approved_to_agent_files(
+        self,
+        proposal_id: str,
+        *,
+        agent_dir: Path,
+        by: str,
+        now: datetime | None = None,
+    ) -> dict[str, str]:
+        proposal = await self.get(proposal_id)
+        if proposal is None:
+            raise KeyError(f"Unknown charter proposal: {proposal_id}")
+        return apply_approved_proposal_to_soul(agent_dir, proposal, applied_by=by, now=now or self._now())
+
+
+def apply_approved_proposal_to_soul(
+    agent_dir: Path,
+    proposal: CharterProposal,
+    *,
+    applied_by: str,
+    now: datetime | None = None,
+) -> dict[str, str]:
+    """Apply an approved owner-charter calibration into `soul.md`.
+
+    This is the explicit owner/admin-approved mutation path for Phase 15
+    proposals. It only appends to the frozen owner agency charter sections and
+    writes a local audit row under `memory/charter_calibration.md`.
+    """
+    if proposal.status != ProposalStatus.APPROVED.value:
+        raise ValueError("Only approved charter proposals can be applied.")
+
+    target_heading = _target_owner_charter_heading(proposal.proposal_kind)
+    soul_path = Path(agent_dir) / "soul.md"
+    text = soul_path.read_text(encoding="utf-8")
+    bullet = (
+        f"- {proposal.action} _(approved proposal={proposal.id}; decision={proposal.decision_id}; by={applied_by})_"
+    )
+    updated, changed = _insert_bullet_once(
+        text, section_heading=target_heading, bullet=bullet, unique_text=proposal.action
+    )
+    if changed:
+        soul_path.write_text(updated, encoding="utf-8")
+
+    applied_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    _append_charter_apply_audit(
+        Path(agent_dir),
+        proposal,
+        applied_by=applied_by,
+        applied_at=applied_at,
+        target_section=target_heading.strip("*"),
+        changed=changed,
+    )
+    return {
+        "status": "applied" if changed else "already_present",
+        "target_section": target_heading.strip("*"),
+        "proposal_id": proposal.id,
+    }
+
 
 def _row_to_dataclass(row: CharterProposalRow) -> CharterProposal:
     return CharterProposal(
@@ -198,3 +256,65 @@ def _row_to_dataclass(row: CharterProposalRow) -> CharterProposal:
         decided_by=row.decided_by,
         decision_reason=row.decision_reason,
     )
+
+
+def _target_owner_charter_heading(proposal_kind: str) -> str:
+    kind = ProposalKind(proposal_kind)
+    if kind == ProposalKind.CONSIDER_FULL_AUTHORITY:
+        return "**Full Authority**"
+    if kind == ProposalKind.TIGHTEN_TO_CONFIRM_FIRST:
+        return "**Confirm First**"
+    raise ValueError(f"Unsupported proposal kind: {proposal_kind}")
+
+
+def _insert_bullet_once(
+    text: str,
+    *,
+    section_heading: str,
+    bullet: str,
+    unique_text: str,
+) -> tuple[str, bool]:
+    owner_section = "## Frozen Owner Agency Charter"
+    owner_start = text.find(owner_section)
+    if owner_start < 0:
+        raise ValueError("soul.md is missing Frozen Owner Agency Charter.")
+    heading_start = text.find(section_heading, owner_start)
+    if heading_start < 0:
+        raise ValueError(f"soul.md is missing {section_heading}.")
+
+    next_subheading = text.find("\n**", heading_start + len(section_heading))
+    next_section = text.find("\n## ", heading_start + len(section_heading))
+    candidates = [idx for idx in (next_subheading, next_section) if idx >= 0]
+    insert_at = min(candidates) if candidates else len(text)
+    section_text = text[heading_start:insert_at]
+    if unique_text in section_text:
+        return text, False
+
+    prefix = text[:insert_at].rstrip()
+    suffix = text[insert_at:].lstrip("\n")
+    return f"{prefix}\n{bullet}\n\n{suffix}", True
+
+
+def _append_charter_apply_audit(
+    agent_dir: Path,
+    proposal: CharterProposal,
+    *,
+    applied_by: str,
+    applied_at: datetime,
+    target_section: str,
+    changed: bool,
+) -> None:
+    path = agent_dir / "memory" / "charter_calibration.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = (
+        path.read_text(encoding="utf-8", errors="replace") if path.exists() else "# Charter Calibration Audit\n\n"
+    )
+    line = (
+        f"- [{applied_at.date().isoformat()}][proposal_id={proposal.id}]"
+        f"[decision_id={proposal.decision_id}][kind={proposal.proposal_kind}]"
+        f"[target={target_section}][applied_by={applied_by}]"
+        f"[status={'applied' if changed else 'already_present'}] {proposal.action}"
+    )
+    if f"[proposal_id={proposal.id}]" in existing:
+        return
+    path.write_text(existing.rstrip() + "\n" + line + "\n", encoding="utf-8")

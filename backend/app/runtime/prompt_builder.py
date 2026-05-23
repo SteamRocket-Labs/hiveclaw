@@ -8,7 +8,9 @@ Three-layer prompt architecture:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import inspect
+import re
 import uuid
 from typing import Any, Awaitable, Callable
 
@@ -56,6 +58,15 @@ _FROZEN_PREFIX_CHAR_LIMIT = int(_FROZEN_PREFIX_TOKEN_LIMIT * _CHARS_PER_TOKEN_ES
 _FROZEN_PREFIX_TRIM_NOTICE = (
     "\n\n...(frozen prefix trimmed to stay under cache budget — load extra skills via the load_skill tool)"
 )
+_FROZEN_PREFIX_SECTION_RE = re.compile(r"(?m)^#{2,3}\s+(.+?)\s*$")
+_FROZEN_PREFIX_TOP_SECTION_LIMIT = 6
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenPrefixSection:
+    name: str
+    chars: int
+    tokens: int
 
 
 async def _maybe_await(value):
@@ -91,6 +102,70 @@ def _trim_block(text: str, *, budget_chars: int) -> str:
     if len(result) < len(stripped):
         result += "\n..."
     return result
+
+
+def _normalize_frozen_prefix_section_name(raw_name: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", raw_name.strip().lower()).strip("_")
+    return normalized or "unnamed"
+
+
+def _measure_frozen_prefix_sections(prefix: str) -> list[FrozenPrefixSection]:
+    """Return rendered frozen-prefix section sizes in render order.
+
+    This is intentionally derived from the final rendered prefix, after any
+    trimming. The diagnostic must explain what is actually sent to the model,
+    not what an earlier untrimmed candidate looked like.
+    """
+    if not prefix:
+        return []
+
+    matches = list(_FROZEN_PREFIX_SECTION_RE.finditer(prefix))
+    sections: list[FrozenPrefixSection] = []
+
+    if not matches:
+        chars = len(prefix)
+        return [
+            FrozenPrefixSection(
+                name="unsectioned",
+                chars=chars,
+                tokens=estimate_tokens_from_chars(chars),
+            )
+        ]
+
+    preamble = prefix[: matches[0].start()].strip()
+    if preamble:
+        chars = len(preamble)
+        sections.append(
+            FrozenPrefixSection(
+                name="preamble",
+                chars=chars,
+                tokens=estimate_tokens_from_chars(chars),
+            )
+        )
+
+    for idx, match in enumerate(matches):
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(prefix)
+        block = prefix[match.start() : end].strip()
+        if not block:
+            continue
+        chars = len(block)
+        sections.append(
+            FrozenPrefixSection(
+                name=_normalize_frozen_prefix_section_name(match.group(1)),
+                chars=chars,
+                tokens=estimate_tokens_from_chars(chars),
+            )
+        )
+
+    return sections
+
+
+def _format_frozen_prefix_top_sections(sections: list[FrozenPrefixSection], *, limit: int) -> str:
+    if not sections:
+        return "none"
+
+    top = sorted(sections, key=lambda section: section.chars, reverse=True)[:limit]
+    return ", ".join(f"{section.name}={section.tokens}t/{section.chars}c" for section in top)
 
 
 # ── Frozen Prefix (session-stable) ──────────────────────────────
@@ -203,30 +278,40 @@ def _meter_frozen_prefix(prefix: str) -> None:
         return
 
     logger = logging.getLogger(__name__)
+    sections = _measure_frozen_prefix_sections(prefix)
+    section_tokens = {section.name: section.tokens for section in sections}
+    section_chars = {section.name: section.chars for section in sections}
+    top_sections = _format_frozen_prefix_top_sections(sections, limit=_FROZEN_PREFIX_TOP_SECTION_LIMIT)
     extra = {
         "metric": "frozen_prefix_size",
         "chars": chars,
         "tokens": tokens,
         "warn_threshold": _FROZEN_PREFIX_TOKEN_WARN,
         "hard_limit": _FROZEN_PREFIX_TOKEN_LIMIT,
+        "section_tokens": section_tokens,
+        "section_chars": section_chars,
+        "top_sections": top_sections,
     }
     if overrun:
         logger.error(
             "[PromptBuilder] frozen prefix exceeds hard limit: ~%d tokens (chars=%d, limit=%d) — "
             "prompt cache hit-rate will degrade and per-call cost will rise. "
-            "Trim agent_context / system / tasks / tools sections.",
+            "Trim agent_context / system / tasks / tools sections. top_sections=%s",
             tokens,
             chars,
             _FROZEN_PREFIX_TOKEN_LIMIT,
+            top_sections,
             extra=extra,
         )
     else:
         logger.warning(
-            "[PromptBuilder] frozen prefix above warn threshold: ~%d tokens (chars=%d, warn=%d, limit=%d)",
+            "[PromptBuilder] frozen prefix above warn threshold: ~%d tokens "
+            "(chars=%d, warn=%d, limit=%d, top_sections=%s)",
             tokens,
             chars,
             _FROZEN_PREFIX_TOKEN_WARN,
             _FROZEN_PREFIX_TOKEN_LIMIT,
+            top_sections,
             extra=extra,
         )
 

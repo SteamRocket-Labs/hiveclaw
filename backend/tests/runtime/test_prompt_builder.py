@@ -343,6 +343,44 @@ class TestFrozenPrefixMetering:
         assert any("above warn threshold" in rec.message and rec.levelno == logging.WARNING for rec in caplog.records)
         assert not any("exceeds hard limit" in rec.message for rec in caplog.records)
 
+    def test_section_breakdown_attributes_frozen_prefix_growth(self) -> None:
+        from app.runtime.prompt_builder import _measure_frozen_prefix_sections
+
+        prefix = "\n\n".join(
+            [
+                "## Identity & Mission\n" + ("identity " * 1500),
+                "## System\n" + ("system " * 900),
+                "## Skills\n" + ("skill " * 600),
+            ]
+        )
+
+        sections = _measure_frozen_prefix_sections(prefix)
+
+        assert [section.name for section in sections] == ["identity_mission", "system", "skills"]
+        assert sections[0].chars > sections[1].chars > sections[2].chars
+        assert sections[0].tokens == int(sections[0].chars / 3.5)
+
+    def test_warn_log_includes_top_section_diagnostics(self, caplog) -> None:
+        import logging
+
+        from app.runtime.prompt_builder import _meter_frozen_prefix
+
+        bloated = "\n\n".join(
+            [
+                "## Identity & Mission\n" + ("identity " * 1500),
+                "## System\n" + ("system " * 900),
+                "## Skills\n" + ("skill " * 600),
+            ]
+        )
+        with caplog.at_level(logging.WARNING, logger="app.runtime.prompt_builder"):
+            _meter_frozen_prefix(bloated)
+
+        warning = next(rec for rec in caplog.records if "above warn threshold" in rec.message)
+        assert "top_sections=" in warning.message
+        assert "identity_mission=" in warning.message
+        assert warning.section_tokens["identity_mission"] > warning.section_tokens["system"]
+        assert warning.section_tokens["system"] > warning.section_tokens["skills"]
+
     def test_repeated_calls_accumulate_in_window(self) -> None:
         from app.memory import metrics
         from app.runtime.prompt_builder import build_frozen_prompt_prefix

@@ -506,6 +506,7 @@ async def test_invoke_agent_emits_response_complete_and_session_close_hooks(monk
     response_payload = next(payload for event, payload in emitted if event == HookEvent.RESPONSE_COMPLETE)
     close_payload = next(payload for event, payload in emitted if event == HookEvent.SESSION_CLOSE)
     assert response_payload["messages"][-1]["role"] == "user"
+    assert response_payload["metadata"]["skill_candidate_loop_enabled"] is False
     assert close_payload["messages"][-1]["role"] == "assistant"
     assert close_payload["messages"][-1]["content"] == "final answer"
 

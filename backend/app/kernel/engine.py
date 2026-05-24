@@ -1910,6 +1910,7 @@ class AgentKernel:
                                             if runtime_config.tenant_id
                                             else None,
                                             "agent_name": request.agent_name or "Agent",
+                                            "skill_candidate_loop_enabled": runtime_config.skill_candidate_loop_enabled,
                                         },
                                     )
                                 )

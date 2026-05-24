@@ -26,6 +26,13 @@
 
 ---
 
+### Post-P7 Governance Closure
+
+- 2026-05-24: `skill_candidate_loop_v1` now gates the P4 skill-candidate bridge from fast reflection. Kernel `RESPONSE_COMPLETE` metadata carries `runtime_config.skill_candidate_loop_enabled`; explicit `False` keeps the P1/P2 fast reflection candidate and session projection, but skips P4 skill candidate creation with `skill_candidate_loop_disabled`.
+- Evidence: red tests first failed because the bridge still created a skill candidate and hook metadata lacked the flag; after the fix, `pytest tests/services/test_fast_reflection_candidate.py::test_skill_candidate_loop_flag_disables_skill_bridge_only tests/runtime/test_invoker.py::test_invoke_agent_emits_response_complete_and_session_close_hooks -q` -> 2 passed; broader closure suite `pytest tests/services/test_fast_reflection_candidate.py tests/runtime/test_fast_reflection_hook.py tests/runtime/test_self_evolution_closed_loop.py tests/services/test_skill_flywheel.py tests/evals/test_self_evolution_bakeoff.py tests/runtime/test_invoker.py::test_invoke_agent_emits_response_complete_and_session_close_hooks -q` -> 17 passed.
+
+---
+
 ## 0. Executive Verdict
 
 Hive already has a serious self-evolution substrate:

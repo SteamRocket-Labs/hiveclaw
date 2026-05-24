@@ -83,6 +83,46 @@ def test_repeated_workflow_signal_bridges_to_skill_candidate(tmp_path) -> None:
     assert (workspace / "evolution" / "skill_candidates" / skill["candidate_id"] / "SKILL.md").exists()
 
 
+def test_skill_candidate_loop_flag_disables_skill_bridge_only(tmp_path) -> None:
+    from app.services.evolution_ledger import load_evolution_ledger
+    from app.services.fast_reflection_service import create_fast_reflection_candidate
+    from app.services.session_learning import render_active_session_learning_projection
+
+    agent_id = uuid.uuid4()
+    result = create_fast_reflection_candidate(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        session_id="session-disabled",
+        messages=[{"role": "user", "content": "deploy steps: build then migrate then restart, same as last time"}],
+        metadata={
+            "repeated_workflow_signature": "deploy -> build -> migrate -> restart",
+            "skill_candidate_loop_enabled": False,
+        },
+    )
+
+    assert result["status"] == "candidate_created"
+    assert result["signal_type"] == "repeated_task_pattern"
+    assert result["skill_candidate"] == {
+        "status": "skipped",
+        "reason": "skill_candidate_loop_disabled",
+    }
+
+    workspace = tmp_path / str(agent_id)
+    candidate_targets = [
+        entry.get("target_type")
+        for entry in load_evolution_ledger(workspace)
+        if entry.get("event") == "candidate"
+    ]
+    assert candidate_targets == ["fast_reflection"]
+    assert not (workspace / "evolution" / "skill_candidates").exists()
+    projection = render_active_session_learning_projection(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        session_id="session-disabled",
+    )
+    assert "deploy" in projection
+
+
 def test_user_preference_correction_does_not_bridge_to_skill(tmp_path) -> None:
     from app.services.fast_reflection_service import create_fast_reflection_candidate
 

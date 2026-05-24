@@ -70,6 +70,13 @@ def _classify_signal(messages: list[dict[str, Any]], metadata: dict[str, Any]) -
     return None
 
 
+def _skill_candidate_loop_enabled(metadata: dict[str, Any]) -> bool:
+    value = metadata.get("skill_candidate_loop_enabled")
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+    return value is not False
+
+
 def create_fast_reflection_candidate(
     *,
     data_root: Path,
@@ -136,6 +143,13 @@ def create_fast_reflection_candidate(
         "manifest": candidate["manifest"],
         "projection": projection,
     }
+    if not _skill_candidate_loop_enabled(metadata):
+        result["skill_candidate"] = {
+            "status": "skipped",
+            "reason": "skill_candidate_loop_disabled",
+        }
+        return result
+
     # Bridge to the skill flywheel (P4). The flywheel routes/guards internally and
     # returns "skipped" for non-skill signals, so we always offer the candidate.
     # Best-effort: a skill-side failure must never discard the already-recorded

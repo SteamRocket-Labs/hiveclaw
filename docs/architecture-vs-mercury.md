@@ -1,5 +1,7 @@
 # Hive vs Mercury：Agent 架构对比
 
+> ⚠️ **已过时更正（2026-05-23）**：本文多处把 Hive 描述为「无 loop detection / 50 轮硬上限 / 检索仅 word overlap」——这些**已不再属实**。当前代码：`kernel/loop_guard.py` 已接入（`engine.py:1870/1982/2055`）；`max_tool_rounds` 默认 **200**（`models/agent.py:63`）；检索为 MD-first + 加权 activation（`memory/activation.py:43-74`）；抽取有持久队列 + 重启 replay（`extract_queue.py`）。本文保留作历史对比快照；当前事实与路线见 `docs/self-evolution-sota-plan.md`。
+
 > 范围：仅对比"agent 架构本身"，不涉及权限控制、多租户、企业相关层。
 > 对比对象：`/Users/rocky243/Context Engineering/mercury-agent`（Mercury，TS/Vercel AI SDK）vs 本仓库（Hive，Python/FastAPI）。
 > 方法：原子化扫描两边核心源码，按维度逐项对比，标注 `file_path:line_number`。

@@ -2,6 +2,17 @@
 
 Technical reference for AI coding assistants working with the Hive platform.
 
+## North Star — Highest-Priority Goal (overrides all other guidance)
+
+Hive exists to be **two things, and every line of code must serve one of them**:
+
+1. **A self-evolving agent infrastructure with enterprise-grade access control** — digital employees that genuinely improve over time (memory, reflection, skill acquisition, soul evolution) while every capability, memory write, and external action stays permission-governed and auditable.
+2. **A control plane (控制中台)** for operating those agents at company scale — org/permission management, governance, budgeting, coordination, and observability.
+
+**Quality bar:** the per-agent intelligence and self-evolution must be **at least as good as `hermes-agent`** (internal benchmark at `/Users/rocky243/vc-saas/hermes-agent`) — not merely architecturally grander. A system that *feels* weaker than a lean benchmark agent is a failure of Goal 1, not a success.
+
+**Build order:** Goal 1 (the agent's own intelligence + self-evolution) is the **foundational cornerstone** — it is hardened and judged *first*; the control-plane and agent-to-agent layers build on top of it. Roadmap: `docs/self-evolution-sota-plan.md`.
+
 ## Project Overview
 
 Hive is an open-source **multi-agent collaboration platform** — enterprise "digital employees" with persistent identity, long-term memory, private workspaces, autonomous trigger-driven execution, and an owner/company-aware Memory Control Plane.
@@ -49,7 +60,7 @@ docker compose up -d --build       # Full stack → :3008
 | Kernel | 3 | ~1.6K | Core LLM execution engine |
 | Tools | 11 | ~700 | Handler implementations |
 | Skills | 5 | ~310 | Markdown skill system |
-| Memory | 5 | ~1K | Semantic memory with FTS |
+| Memory | 19 | — | MD-first pyramid (T0/T2/T3/soul) + control plane: write gate, activation, retention, lifecycle, understanding |
 | Migrations | 35 | — | Alembic schema versions |
 
 ### API Routers (48 files)
@@ -106,8 +117,9 @@ Hive keeps the T0/T2/T3/soul Markdown memory pyramid, but runtime behavior is go
 
 Stateless LLM loop with dependency injection. Zero DB imports — all I/O via 14 `KernelDependencies` callbacks.
 
-- Max 50 tool rounds per invocation
-- Context compaction at 85% window threshold
+- Max 200 tool rounds per invocation (`models/agent.py:63`); heartbeat overrides to 15
+- Semantic loop detection via `LoopGuard` (`kernel/loop_guard.py`, wired in `engine.py`)
+- Proactive compaction at 75% utilization (`_MIDLOOP_COMPACT_THRESHOLD`); microcompact pressure at 60%; reactive compaction on prompt-too-long
 - Tool result eviction: 50KB/result, 200KB/round
 - Parallel-safe tool execution
 - Vision support for multimodal models

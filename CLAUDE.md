@@ -2,6 +2,17 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## North Star — Highest-Priority Goal (overrides all other guidance)
+
+Hive exists to be **two things, and every line of code must serve one of them**:
+
+1. **A self-evolving agent infrastructure with enterprise-grade access control** — digital employees that genuinely improve over time (memory, reflection, skill acquisition, soul evolution) while every capability, memory write, and external action stays permission-governed and auditable.
+2. **A control plane (控制中台)** for operating those agents at company scale — org/permission management, governance, budgeting, coordination, and observability.
+
+**Quality bar:** the per-agent intelligence and self-evolution must be **at least as good as `hermes-agent`** (internal benchmark at `/Users/rocky243/vc-saas/hermes-agent`) — not merely architecturally grander. A system that *feels* weaker than a lean benchmark agent is a failure of Goal 1, not a success.
+
+**Build order:** Goal 1 (the agent's own intelligence + self-evolution) is the **foundational cornerstone** — it is hardened and judged *first*; the control-plane and agent-to-agent layers build on top of it. When a trade-off is unclear, resolve it in favor of these two goals. Roadmap: `docs/self-evolution-sota-plan.md`.
+
 ## Project Overview
 
 Hive is an open-source **multi-agent collaboration platform** — enterprise "digital employees" with persistent identity, long-term memory, private workspaces, and autonomous trigger-driven execution. Built with FastAPI (Python) backend + React 19 (TypeScript) frontend.
@@ -89,7 +100,7 @@ tools/executors/ — core.py, extended.py, integrations.py
 | `runtime/session.py` | `SessionContext` — tracks source, channel, active_packs per invocation |
 | `core/execution_context.py` | `ExecutionIdentity` ContextVar — agent_bot vs delegated_user, read by audit |
 
-**Execution flow:** Every entry point builds an `InvocationRequest` and calls `invoke_agent()`. The kernel runs a multi-round LLM loop with streaming callbacks. Round budget: `max_tool_rounds` defaults to **200** (`models/agent.py:63`, `invoker.py:160/172/189/203`); heartbeat overrides to **15** (`heartbeat.py:1454`, "OBSERVE ~3 + CURATE ~8 + LOG ~4"). Round-pressure warnings injected at 80% and `max_rounds - 2` (`engine.py:1297-1298`). Context compaction is **proactive** (≥75% utilization, checked every 3 rounds) + **reactive** (prompt-too-long retries with truncation). Individual tool results >50KB spill to `workspace/logs/.../artifacts/`; per-round aggregate budget 200K chars. Hive currently lacks Mercury-style semantic loop detection (repeated tool/args, identical-failure loops) — only the round cap protects against infinite loops.
+**Execution flow:** Every entry point builds an `InvocationRequest` and calls `invoke_agent()`. The kernel runs a multi-round LLM loop with streaming callbacks. Round budget: `max_tool_rounds` defaults to **200** (`models/agent.py:63`, `invoker.py:160/172/189/203`); heartbeat overrides to **15** (`heartbeat.py:1454`, "OBSERVE ~3 + CURATE ~8 + LOG ~4"). Round-pressure warnings injected at 80% and `max_rounds - 2` (`engine.py:1297-1298`). Context compaction is **proactive** (≥75% utilization, checked every 3 rounds) + **reactive** (prompt-too-long retries with truncation). Individual tool results >50KB spill to `workspace/logs/.../artifacts/`; per-round aggregate budget 200K chars. Semantic loop detection is wired via `LoopGuard` (`kernel/loop_guard.py`; observed in `engine.py:1870/1982/2055` over assistant text, tool calls, and tool results), aborting on repeated identical tool/args, repeated identical failures, and repeated assistant text; the round cap is the backstop.
 
 ### Tool System (`app/tools/`)
 

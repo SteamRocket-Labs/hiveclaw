@@ -9,6 +9,7 @@ Phase 2: Extractor for RESPONSE_COMPLETE, PRE_COMPACTION, SESSION_CLOSE drain.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from pathlib import Path
@@ -92,6 +93,56 @@ async def _extract_on_response(ctx: HookContext) -> None:
         source=ctx.source or "web",
         tenant_id=uuid.UUID(str(tenant_id)) if tenant_id else None,
         agent_name=agent_name,
+    )
+
+
+def _agent_data_root() -> Path:
+    from app.config import get_settings
+
+    return Path(get_settings().AGENT_DATA_DIR)
+
+
+def schedule_fast_reflection_candidate(
+    *,
+    data_root: Path,
+    agent_id: uuid.UUID,
+    session_id: str,
+    messages: list[dict],
+    metadata: dict,
+) -> dict[str, str]:
+    from app.services.fast_reflection_service import create_fast_reflection_candidate
+
+    async def _run() -> None:
+        try:
+            await asyncio.to_thread(
+                create_fast_reflection_candidate,
+                data_root=data_root,
+                agent_id=agent_id,
+                session_id=session_id,
+                messages=messages,
+                metadata=metadata,
+            )
+        except Exception as exc:
+            logger.debug("[FastReflection] skipped for %s: %s", agent_id, exc)
+
+    asyncio.create_task(_run())
+    return {"status": "scheduled"}
+
+
+async def _fast_reflection_on_response(ctx: HookContext) -> None:
+    """RESPONSE_COMPLETE → non-blocking candidate creation for strong correction signals."""
+    agent_id = _parse_agent_id(ctx)
+    if not agent_id:
+        return
+    messages = ctx.messages or []
+    if not messages:
+        return
+    schedule_fast_reflection_candidate(
+        data_root=_agent_data_root(),
+        agent_id=agent_id,
+        session_id=str(ctx.session_id or ""),
+        messages=messages,
+        metadata=ctx.metadata,
     )
 
 
@@ -397,8 +448,8 @@ def register_memory_hooks() -> None:
     registry.register_many(_MEMORY_HOOK_REGISTRATIONS)
 
     logger.info(
-        "[Hooks] Memory/objective hooks registered: %d handlers (3 log + 2 extract + 6 T0 + 1 pending_reply + 1 objective_intake)",
-        13,
+        "[Hooks] Memory/objective hooks registered: %d handlers (3 log + 2 extract + 1 fast_reflection + 6 T0 + 1 pending_reply + 1 objective_intake)",
+        len(_MEMORY_HOOK_REGISTRATIONS),
     )
 
 
@@ -416,6 +467,7 @@ _MEMORY_HOOK_HANDLERS = {
     "log_post_compaction": _log_post_compaction,
     "log_memory_extracted": _log_memory_extracted,
     "extract_on_response": _extract_on_response,
+    "fast_reflection_on_response": _fast_reflection_on_response,
     "extract_on_pre_compaction": _extract_on_pre_compaction,
     "t0_session_close": _t0_session_close,
     "objective_intake_session_close": _objective_intake_session_close,
@@ -443,6 +495,11 @@ _MEMORY_HOOK_CONFIGURATION = [
         "event": HookEvent.RESPONSE_COMPLETE.value,
         "handler": "extract_on_response",
         "key": "memory.response_complete.extract",
+    },
+    {
+        "event": HookEvent.RESPONSE_COMPLETE.value,
+        "handler": "fast_reflection_on_response",
+        "key": "memory.response_complete.fast_reflection",
     },
     {
         "event": HookEvent.PRE_COMPACTION.value,

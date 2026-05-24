@@ -16,7 +16,7 @@
 | Phase | Status | Evidence |
 |---|---|---|
 | P0: Canonical Baseline, Trace, Eval, Manifest | Completed 2026-05-23 | `backend/app/services/evolution_manifest.py`; `record_evolution_candidate()` now attaches `hive_evolution_manifest.v1`; `validate_evolution_ledger()` rejects candidates without a valid manifest; tests: `pytest tests/services/test_evolution_manifest.py tests/architecture/test_h5_evolution_ledger_contract.py tests/evals/test_bakeoff_runtime.py -q` -> 18 passed; regression: `pytest tests/services/test_evolution_ledger.py tests/services/test_evolution_validation.py tests/services/test_harness_canary.py tests/services/test_harness_validation_report.py -q` -> 15 passed; ruff passed for changed P0 files. |
-| P1: Per-turn Fast Reflection Candidate | Not started | Pending |
+| P1: Per-turn Fast Reflection Candidate | Completed 2026-05-23 | `backend/app/services/fast_reflection_service.py`; `RESPONSE_COMPLETE` now registers `memory.response_complete.fast_reflection`; strong user correction/test failure/repeated workflow signals create ledger-only `fast_reflection_candidate.v1` candidates with manifests; low-signal chatter is skipped; no T2/T3/soul/skill writes. Tests: `pytest tests/services/test_fast_reflection_candidate.py tests/runtime/test_fast_reflection_hook.py tests/test_memory_integration.py::TestHooksIntegration -q` -> 12 passed; regression: `pytest tests/runtime/test_hooks.py tests/services/test_evolution_ledger.py tests/services/test_evolution_validation.py -q` -> 44 passed; ruff passed for changed P1 files. |
 | P2: Session-visible Learning Projection | Not started | Pending |
 | P3: Verification-gated Promotion | Not started | Pending |
 | P4: Skill Flywheel v2 | Not started | Pending |

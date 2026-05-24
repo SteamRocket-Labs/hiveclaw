@@ -77,3 +77,5 @@ async def test_record_long_task_plan_updates_runtime_task_metadata(monkeypatch, 
     assert artifact["schema"] == "long_task_plan.v1"
     assert calls[0][0] == runtime_task_id.hex
     assert calls[0][1]["metadata_json"]["long_task_plan"]["path"] == artifact["path"]
+    assert calls[0][1]["metadata_json"]["workspace_manifest"]["schema"] == "workspace_manifest.v1"
+    assert calls[0][1]["metadata_json"]["artifact_refs"][0]["schema"] == "execution_artifact_ref.v1"

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import get_settings
+from app.services.harness_contract import build_manifest_resume_context, write_workspace_manifest
 from app.services.runtime_task_service import update_runtime_task_record
 
 
@@ -133,6 +134,11 @@ def build_long_task_resume_context(
     artifact_dir = _artifact_dir(agent_id, runtime_task_id, data_root=data_root)
     plan = _load_json(artifact_dir / "plan.json") or {}
     progress_items = _load_progress(artifact_dir / "progress.jsonl")
+    manifest_context = build_manifest_resume_context(
+        agent_id=agent_id,
+        runtime_task_id=runtime_task_id,
+        data_root=data_root or get_settings().AGENT_DATA_DIR,
+    )
     latest_progress = progress_items[-1] if progress_items else None
 
     prompt_lines = [
@@ -153,11 +159,16 @@ def build_long_task_resume_context(
         )
         if latest_progress.get("blocked_reason"):
             prompt_lines.append(f"- blocked_reason: {latest_progress['blocked_reason']}")
+    if manifest_context.get("artifact_refs"):
+        prompt_lines.append("Artifact refs:")
+        prompt_lines.extend(f"- {ref.get('path')}" for ref in manifest_context.get("artifact_refs") or [])
 
     return {
         "schema": "long_task_resume_context.v1",
         "runtime_task_id": runtime_task_id.hex,
         "plan": plan,
+        "workspace_manifest": manifest_context.get("manifest") or {},
+        "artifact_refs": manifest_context.get("artifact_refs") or [],
         "latest_progress": latest_progress,
         "progress_count": len(progress_items),
         "resume_prompt": "\n".join(prompt_lines),
@@ -185,9 +196,21 @@ async def record_long_task_plan(
         risk_gates=risk_gates,
         data_root=data_root,
     )
+    artifact_root = _artifact_dir(agent_id, runtime_task_id, data_root=data_root)
+    manifest = write_workspace_manifest(
+        agent_id=agent_id,
+        runtime_task_id=runtime_task_id,
+        workspace_root=_agent_root(agent_id, data_root=data_root),
+        artifact_paths=[artifact_root / "plan.json"],
+        data_root=data_root or get_settings().AGENT_DATA_DIR,
+    )
     await update_runtime_task_record(
         runtime_task_id.hex,
-        metadata_json={"long_task_plan": artifact},
+        metadata_json={
+            "long_task_plan": artifact,
+            "workspace_manifest": manifest,
+            "artifact_refs": manifest["artifact_refs"],
+        },
     )
     return artifact
 

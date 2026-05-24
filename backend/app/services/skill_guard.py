@@ -55,6 +55,11 @@ _SECRET_ASSIGNMENT_RE = re.compile(
     r"STRIPE_SECRET_KEY|SECRET_KEY|JWT_SECRET_KEY|PASSWORD|ACCESS_TOKEN)\s*=\s*['\"]?[A-Za-z0-9_./+=:-]{8,}",
     re.I,
 )
+_TENANT_IDENTIFIER_RE = re.compile(
+    r"\b(?:tenant_id|user_id|agent_id|workspace_id)\s*[:=]\s*['\"]?"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.I,
+)
 _DESTRUCTIVE_ROOT_RE = re.compile(r"\b(?:sudo\s+)?rm\s+-[^\n;&]*[rf][^\n;&]*\s+/(?:\s|$)", re.I)
 _PERSISTENCE_RE = re.compile(r"\b(?:crontab|launchctl|systemctl|schtasks|rc\.local)\b", re.I)
 _EXFIL_RE = re.compile(r"(?:~/.ssh|/etc/passwd|/etc/shadow|\bscp\b|\brsync\b|\bnc\s+-|\bnetcat\b)", re.I)
@@ -116,6 +121,16 @@ def scan_skill_files(files: Iterable[dict[str, Any]], *, source: str = "unknown"
                     category="secret_material",
                     path=path,
                     message="Skill content appears to contain embedded credentials or private key material.",
+                    evidence={"path": path},
+                )
+            )
+        if _TENANT_IDENTIFIER_RE.search(content):
+            findings.append(
+                SkillGuardFinding(
+                    severity="block",
+                    category="tenant_identifier_leak",
+                    path=path,
+                    message="Skill content appears to embed tenant/user/agent identifiers.",
                     evidence={"path": path},
                 )
             )

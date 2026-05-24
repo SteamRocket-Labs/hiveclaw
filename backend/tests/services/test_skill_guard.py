@@ -36,6 +36,23 @@ def test_skill_guard_blocks_secret_material_and_path_escape():
     assert "secret_material" in categories
 
 
+def test_skill_guard_blocks_tenant_identifier_leak():
+    from app.services.skill_guard import scan_skill_files
+
+    report = scan_skill_files(
+        [
+            {
+                "path": "SKILL.md",
+                "content": "tenant_id: 123e4567-e89b-12d3-a456-426614174000",
+            }
+        ],
+        source="unit",
+    )
+
+    assert report.allowed is False
+    assert any(finding.category == "tenant_identifier_leak" for finding in report.blocking_findings)
+
+
 def test_skill_guard_blocks_pipe_to_shell_installers():
     from app.services.skill_guard import scan_skill_files
 

@@ -104,6 +104,9 @@ def create_fast_reflection_candidate(
         "final_response": str(metadata.get("final_response") or "")[:1000],
         "promotion_state": "candidate",
     }
+    for key in ("loaded_skill_name", "umbrella_skill_name", "support_file_path", "repeated_workflow_signature"):
+        if metadata.get(key):
+            payload[key] = str(metadata[key])
     candidate = record_evolution_candidate(
         workspace,
         target_type="fast_reflection",

@@ -52,12 +52,13 @@ def test_extractor_filters_operational_autonomy_instance_state() -> None:
         )
     )
 
-    assert parsed == [
-        {
-            "category": "feedback",
-            "content": "User confirmed Objective Ledger is the source of truth for goals",
-        }
-    ]
+    # The operational-autonomy line must be filtered out; only the feedback
+    # survives. Feedback entries now carry decision-calibration metadata
+    # (reaction/polarity/source), so assert the autonomy-filtering contract this
+    # test exists to protect rather than the exact feedback dict shape.
+    assert len(parsed) == 1
+    assert parsed[0]["category"] == "feedback"
+    assert parsed[0]["content"] == "User confirmed Objective Ledger is the source of truth for goals"
 
 
 def test_conversation_summarizer_preserves_autonomy_run_state_without_distilling_it() -> None:

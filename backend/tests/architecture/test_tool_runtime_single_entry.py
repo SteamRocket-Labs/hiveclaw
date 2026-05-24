@@ -49,6 +49,9 @@ def test_application_tool_calls_enter_runtime_through_public_boundaries() -> Non
         "app/services/heartbeat.py",
         "app/services/agent_tool_domains/messaging.py",
         "app/runtime/invoker.py",
+        # deep research's _default_tool_executor delegates to the governed
+        # execute_tool with agent/user context (same boundary role as heartbeat)
+        "app/services/deep_research/orchestrator.py",
     }
     violations: list[str] = []
     for path in _python_files(APP_ROOT):

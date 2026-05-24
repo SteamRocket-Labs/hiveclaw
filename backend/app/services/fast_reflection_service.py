@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +11,8 @@ from typing import Any
 
 from app.services.evolution_ledger import record_evolution_candidate
 from app.services.session_learning import record_session_learning_projection
+
+logger = logging.getLogger(__name__)
 
 
 _CORRECTION_MARKERS = (
@@ -126,10 +129,30 @@ def create_fast_reflection_candidate(
         evidence="user_stated" if signal_type == "user_preference_correction" else "system_observed",
         ttl_minutes=60,
     )
-    return {
+    result = {
         "status": "candidate_created",
         "candidate_id": candidate["candidate_id"],
         "signal_type": signal_type,
         "manifest": candidate["manifest"],
         "projection": projection,
     }
+    # Bridge to the skill flywheel (P4). The flywheel routes/guards internally and
+    # returns "skipped" for non-skill signals, so we always offer the candidate.
+    # Best-effort: a skill-side failure must never discard the already-recorded
+    # memory-side candidate and projection.
+    try:
+        from app.services.skill_flywheel import propose_skill_candidate_from_fast_reflection
+
+        result["skill_candidate"] = propose_skill_candidate_from_fast_reflection(
+            workspace=workspace,
+            fast_candidate={"candidate_id": candidate["candidate_id"], "metadata": payload},
+        )
+    except Exception as exc:
+        logger.warning(
+            "[FastReflection] skill flywheel failed for agent=%s session=%s: %s",
+            agent_id,
+            normalized_session_id,
+            exc,
+        )
+        result["skill_candidate"] = {"status": "error", "reason": str(exc)}
+    return result

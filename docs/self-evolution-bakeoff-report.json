@@ -1,0 +1,522 @@
+{
+  "schema": "self_evolution_bakeoff.v1",
+  "generated_at": "2026-05-24T02:19:53.889029+00:00",
+  "passed": true,
+  "failed_requirements": [],
+  "dataset": [
+    {
+      "name": "next_turn_adaptation",
+      "prompt": "The user corrects the agent in-session. The next turn must apply the lesson without waiting for durable memory or skill promotion.",
+      "max_score": 92,
+      "deterministic_checks": [
+        {
+          "id": "fast_reflection_candidate",
+          "path": "backend/app/services/fast_reflection_service.py",
+          "contains": "fast_reflection_candidate.v1"
+        },
+        {
+          "id": "response_complete_hook",
+          "path": "backend/app/runtime/hooks_setup.py",
+          "contains": "memory.response_complete.fast_reflection"
+        },
+        {
+          "id": "session_projection",
+          "path": "backend/app/services/session_learning.py",
+          "contains": "session_learning_projection.v1"
+        },
+        {
+          "id": "dynamic_prompt_projection",
+          "path": "backend/app/runtime/invoker.py",
+          "contains": "session_learning_projection"
+        }
+      ]
+    },
+    {
+      "name": "repeated_workflow_learning",
+      "prompt": "The same successful workflow repeats. The system should capture a candidate for reuse instead of creating unreviewed durable memory.",
+      "max_score": 90,
+      "deterministic_checks": [
+        {
+          "id": "workflow_signal",
+          "path": "backend/app/services/fast_reflection_service.py",
+          "contains": "repeated_workflow_signature"
+        },
+        {
+          "id": "skill_candidate_manifest",
+          "path": "backend/app/services/skill_flywheel.py",
+          "contains": "skill_candidate_manifest.v1"
+        },
+        {
+          "id": "inactive_skill_candidate_path",
+          "path": "backend/app/services/skill_flywheel.py",
+          "contains": "skill_candidates"
+        }
+      ]
+    },
+    {
+      "name": "tool_failure_lesson_reuse",
+      "prompt": "A tool or verification failure happens. The lesson should be captured as a candidate and can only promote through verification evidence.",
+      "max_score": 90,
+      "deterministic_checks": [
+        {
+          "id": "failure_signal",
+          "path": "backend/app/services/fast_reflection_service.py",
+          "contains": "verification_failure"
+        },
+        {
+          "id": "verification_report",
+          "path": "backend/app/services/evolution_verification.py",
+          "contains": "evolution_verification_report.v1"
+        },
+        {
+          "id": "promotion_gate",
+          "path": "backend/app/services/evolution_verification.py",
+          "contains": "verification evidence is required"
+        }
+      ]
+    },
+    {
+      "name": "skill_candidate_creation",
+      "prompt": "A repeated workflow or loaded-skill miss should create an auditable skill candidate with progressive disclosure and static guard evidence.",
+      "max_score": 92,
+      "deterministic_checks": [
+        {
+          "id": "skill_candidate_service",
+          "path": "backend/app/services/skill_flywheel.py",
+          "contains": "propose_skill_candidate_from_fast_reflection"
+        },
+        {
+          "id": "static_skill_guard",
+          "path": "backend/app/services/skill_guard.py",
+          "contains": "tenant_identifier_leak"
+        },
+        {
+          "id": "verification_eval",
+          "path": "backend/app/services/skill_flywheel.py",
+          "contains": "record_verification_eval"
+        }
+      ]
+    },
+    {
+      "name": "long_task_resume",
+      "prompt": "A long-running task resumes after context loss. The harness must use explicit workspace manifests and artifact refs, not only prompt memory.",
+      "max_score": 92,
+      "deterministic_checks": [
+        {
+          "id": "workspace_manifest",
+          "path": "backend/app/services/harness_contract.py",
+          "contains": "workspace_manifest.v1"
+        },
+        {
+          "id": "artifact_ref",
+          "path": "backend/app/services/harness_contract.py",
+          "contains": "execution_artifact_ref.v1"
+        },
+        {
+          "id": "long_task_metadata",
+          "path": "backend/app/services/long_task_runtime.py",
+          "contains": "artifact_refs"
+        }
+      ]
+    },
+    {
+      "name": "safety_tenant_policy",
+      "prompt": "Self-evolution must respect tenant boundaries, preflight external actions, rollback manifests, and credential hygiene.",
+      "max_score": 96,
+      "deterministic_checks": [
+        {
+          "id": "manifest_contract",
+          "path": "backend/app/services/evolution_manifest.py",
+          "contains": "hive_evolution_manifest.v1"
+        },
+        {
+          "id": "rollback_plan",
+          "path": "backend/app/services/evolution_manifest.py",
+          "contains": "rollback_plan.strategy is required"
+        },
+        {
+          "id": "action_preflight",
+          "path": "backend/app/services/action_preflight.py",
+          "contains": "company_boundary_conflict"
+        },
+        {
+          "id": "skill_tenant_guard",
+          "path": "backend/app/services/skill_guard.py",
+          "contains": "tenant_identifier_leak"
+        }
+      ]
+    }
+  ],
+  "hive": {
+    "source": "local_repo_deterministic_checks",
+    "repo_root": "/Users/rocky243/vc-saas/hiveclaw-main",
+    "scenarios": {
+      "next_turn_adaptation": {
+        "score": 92,
+        "ready": true,
+        "checks": [
+          {
+            "id": "fast_reflection_candidate",
+            "path": "backend/app/services/fast_reflection_service.py",
+            "contains": "fast_reflection_candidate.v1",
+            "passed": true
+          },
+          {
+            "id": "response_complete_hook",
+            "path": "backend/app/runtime/hooks_setup.py",
+            "contains": "memory.response_complete.fast_reflection",
+            "passed": true
+          },
+          {
+            "id": "session_projection",
+            "path": "backend/app/services/session_learning.py",
+            "contains": "session_learning_projection.v1",
+            "passed": true
+          },
+          {
+            "id": "dynamic_prompt_projection",
+            "path": "backend/app/runtime/invoker.py",
+            "contains": "session_learning_projection",
+            "passed": true
+          }
+        ],
+        "passed_checks": 4,
+        "total_checks": 4
+      },
+      "repeated_workflow_learning": {
+        "score": 90,
+        "ready": true,
+        "checks": [
+          {
+            "id": "workflow_signal",
+            "path": "backend/app/services/fast_reflection_service.py",
+            "contains": "repeated_workflow_signature",
+            "passed": true
+          },
+          {
+            "id": "skill_candidate_manifest",
+            "path": "backend/app/services/skill_flywheel.py",
+            "contains": "skill_candidate_manifest.v1",
+            "passed": true
+          },
+          {
+            "id": "inactive_skill_candidate_path",
+            "path": "backend/app/services/skill_flywheel.py",
+            "contains": "skill_candidates",
+            "passed": true
+          }
+        ],
+        "passed_checks": 3,
+        "total_checks": 3
+      },
+      "tool_failure_lesson_reuse": {
+        "score": 90,
+        "ready": true,
+        "checks": [
+          {
+            "id": "failure_signal",
+            "path": "backend/app/services/fast_reflection_service.py",
+            "contains": "verification_failure",
+            "passed": true
+          },
+          {
+            "id": "verification_report",
+            "path": "backend/app/services/evolution_verification.py",
+            "contains": "evolution_verification_report.v1",
+            "passed": true
+          },
+          {
+            "id": "promotion_gate",
+            "path": "backend/app/services/evolution_verification.py",
+            "contains": "verification evidence is required",
+            "passed": true
+          }
+        ],
+        "passed_checks": 3,
+        "total_checks": 3
+      },
+      "skill_candidate_creation": {
+        "score": 92,
+        "ready": true,
+        "checks": [
+          {
+            "id": "skill_candidate_service",
+            "path": "backend/app/services/skill_flywheel.py",
+            "contains": "propose_skill_candidate_from_fast_reflection",
+            "passed": true
+          },
+          {
+            "id": "static_skill_guard",
+            "path": "backend/app/services/skill_guard.py",
+            "contains": "tenant_identifier_leak",
+            "passed": true
+          },
+          {
+            "id": "verification_eval",
+            "path": "backend/app/services/skill_flywheel.py",
+            "contains": "record_verification_eval",
+            "passed": true
+          }
+        ],
+        "passed_checks": 3,
+        "total_checks": 3
+      },
+      "long_task_resume": {
+        "score": 92,
+        "ready": true,
+        "checks": [
+          {
+            "id": "workspace_manifest",
+            "path": "backend/app/services/harness_contract.py",
+            "contains": "workspace_manifest.v1",
+            "passed": true
+          },
+          {
+            "id": "artifact_ref",
+            "path": "backend/app/services/harness_contract.py",
+            "contains": "execution_artifact_ref.v1",
+            "passed": true
+          },
+          {
+            "id": "long_task_metadata",
+            "path": "backend/app/services/long_task_runtime.py",
+            "contains": "artifact_refs",
+            "passed": true
+          }
+        ],
+        "passed_checks": 3,
+        "total_checks": 3
+      },
+      "safety_tenant_policy": {
+        "score": 96,
+        "ready": true,
+        "checks": [
+          {
+            "id": "manifest_contract",
+            "path": "backend/app/services/evolution_manifest.py",
+            "contains": "hive_evolution_manifest.v1",
+            "passed": true
+          },
+          {
+            "id": "rollback_plan",
+            "path": "backend/app/services/evolution_manifest.py",
+            "contains": "rollback_plan.strategy is required",
+            "passed": true
+          },
+          {
+            "id": "action_preflight",
+            "path": "backend/app/services/action_preflight.py",
+            "contains": "company_boundary_conflict",
+            "passed": true
+          },
+          {
+            "id": "skill_tenant_guard",
+            "path": "backend/app/services/skill_guard.py",
+            "contains": "tenant_identifier_leak",
+            "passed": true
+          }
+        ],
+        "passed_checks": 4,
+        "total_checks": 4
+      }
+    }
+  },
+  "hermes": {
+    "source": "repo_evidence_fallback",
+    "repo_root": "/Users/rocky243/vc-saas/hermes-agent",
+    "scores": {
+      "next_turn_adaptation": 85,
+      "repeated_workflow_learning": 86,
+      "tool_failure_lesson_reuse": 82,
+      "skill_candidate_creation": 84,
+      "long_task_resume": 78,
+      "safety_tenant_policy": 72
+    }
+  },
+  "comparisons": {
+    "next_turn_adaptation": {
+      "hive_score": 92,
+      "hermes_score": 85,
+      "delta": 7,
+      "passed": true,
+      "hive_evidence": [
+        {
+          "id": "fast_reflection_candidate",
+          "path": "backend/app/services/fast_reflection_service.py",
+          "contains": "fast_reflection_candidate.v1",
+          "passed": true
+        },
+        {
+          "id": "response_complete_hook",
+          "path": "backend/app/runtime/hooks_setup.py",
+          "contains": "memory.response_complete.fast_reflection",
+          "passed": true
+        },
+        {
+          "id": "session_projection",
+          "path": "backend/app/services/session_learning.py",
+          "contains": "session_learning_projection.v1",
+          "passed": true
+        },
+        {
+          "id": "dynamic_prompt_projection",
+          "path": "backend/app/runtime/invoker.py",
+          "contains": "session_learning_projection",
+          "passed": true
+        }
+      ],
+      "hermes_source": "repo_evidence_fallback"
+    },
+    "repeated_workflow_learning": {
+      "hive_score": 90,
+      "hermes_score": 86,
+      "delta": 4,
+      "passed": true,
+      "hive_evidence": [
+        {
+          "id": "workflow_signal",
+          "path": "backend/app/services/fast_reflection_service.py",
+          "contains": "repeated_workflow_signature",
+          "passed": true
+        },
+        {
+          "id": "skill_candidate_manifest",
+          "path": "backend/app/services/skill_flywheel.py",
+          "contains": "skill_candidate_manifest.v1",
+          "passed": true
+        },
+        {
+          "id": "inactive_skill_candidate_path",
+          "path": "backend/app/services/skill_flywheel.py",
+          "contains": "skill_candidates",
+          "passed": true
+        }
+      ],
+      "hermes_source": "repo_evidence_fallback"
+    },
+    "tool_failure_lesson_reuse": {
+      "hive_score": 90,
+      "hermes_score": 82,
+      "delta": 8,
+      "passed": true,
+      "hive_evidence": [
+        {
+          "id": "failure_signal",
+          "path": "backend/app/services/fast_reflection_service.py",
+          "contains": "verification_failure",
+          "passed": true
+        },
+        {
+          "id": "verification_report",
+          "path": "backend/app/services/evolution_verification.py",
+          "contains": "evolution_verification_report.v1",
+          "passed": true
+        },
+        {
+          "id": "promotion_gate",
+          "path": "backend/app/services/evolution_verification.py",
+          "contains": "verification evidence is required",
+          "passed": true
+        }
+      ],
+      "hermes_source": "repo_evidence_fallback"
+    },
+    "skill_candidate_creation": {
+      "hive_score": 92,
+      "hermes_score": 84,
+      "delta": 8,
+      "passed": true,
+      "hive_evidence": [
+        {
+          "id": "skill_candidate_service",
+          "path": "backend/app/services/skill_flywheel.py",
+          "contains": "propose_skill_candidate_from_fast_reflection",
+          "passed": true
+        },
+        {
+          "id": "static_skill_guard",
+          "path": "backend/app/services/skill_guard.py",
+          "contains": "tenant_identifier_leak",
+          "passed": true
+        },
+        {
+          "id": "verification_eval",
+          "path": "backend/app/services/skill_flywheel.py",
+          "contains": "record_verification_eval",
+          "passed": true
+        }
+      ],
+      "hermes_source": "repo_evidence_fallback"
+    },
+    "long_task_resume": {
+      "hive_score": 92,
+      "hermes_score": 78,
+      "delta": 14,
+      "passed": true,
+      "hive_evidence": [
+        {
+          "id": "workspace_manifest",
+          "path": "backend/app/services/harness_contract.py",
+          "contains": "workspace_manifest.v1",
+          "passed": true
+        },
+        {
+          "id": "artifact_ref",
+          "path": "backend/app/services/harness_contract.py",
+          "contains": "execution_artifact_ref.v1",
+          "passed": true
+        },
+        {
+          "id": "long_task_metadata",
+          "path": "backend/app/services/long_task_runtime.py",
+          "contains": "artifact_refs",
+          "passed": true
+        }
+      ],
+      "hermes_source": "repo_evidence_fallback"
+    },
+    "safety_tenant_policy": {
+      "hive_score": 96,
+      "hermes_score": 72,
+      "delta": 24,
+      "passed": true,
+      "hive_evidence": [
+        {
+          "id": "manifest_contract",
+          "path": "backend/app/services/evolution_manifest.py",
+          "contains": "hive_evolution_manifest.v1",
+          "passed": true
+        },
+        {
+          "id": "rollback_plan",
+          "path": "backend/app/services/evolution_manifest.py",
+          "contains": "rollback_plan.strategy is required",
+          "passed": true
+        },
+        {
+          "id": "action_preflight",
+          "path": "backend/app/services/action_preflight.py",
+          "contains": "company_boundary_conflict",
+          "passed": true
+        },
+        {
+          "id": "skill_tenant_guard",
+          "path": "backend/app/services/skill_guard.py",
+          "contains": "tenant_identifier_leak",
+          "passed": true
+        }
+      ],
+      "hermes_source": "repo_evidence_fallback"
+    }
+  },
+  "cost_latency": {
+    "visible": true,
+    "bounded": true,
+    "max_hot_path_timeout_seconds": 1.5,
+    "checks": {
+      "semantic_rerank_timeout": true,
+      "session_learning_dynamic_only": true,
+      "tool_preflight_visible": true
+    }
+  }
+}

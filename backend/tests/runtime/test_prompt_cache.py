@@ -99,6 +99,25 @@ def test_dynamic_suffix_includes_retrieval():
     assert "quarterly report" in suffix
 
 
+def test_session_learning_projection_changes_dynamic_suffix_not_frozen_prefix(agent_context_text):
+    from app.runtime.prompt_builder import build_dynamic_prompt_suffix, build_frozen_prompt_prefix
+
+    prefix = build_frozen_prompt_prefix(
+        agent_context=agent_context_text,
+        memory_snapshot="## Session Learning\n- Use npm.",
+        skill_catalog="",
+    )
+    suffix_without_learning = build_dynamic_prompt_suffix(memory_snapshot="T3 memory")
+    suffix_with_learning = build_dynamic_prompt_suffix(
+        memory_snapshot="T3 memory",
+        session_learning_projection="## Session Learning\n- [candidate] Use npm.",
+    )
+
+    assert "Session Learning" not in prefix
+    assert suffix_with_learning != suffix_without_learning
+    assert "Use npm" in suffix_with_learning
+
+
 def test_assemble_combines_prefix_and_suffix():
     """assemble_runtime_prompt should combine frozen prefix + dynamic suffix."""
     from app.runtime.prompt_builder import (

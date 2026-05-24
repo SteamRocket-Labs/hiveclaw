@@ -6,6 +6,7 @@ returning a unified list of MemoryItem objects for the assembler.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re as _re
@@ -88,6 +89,7 @@ async def _rerank_semantic_items(
     model_config: dict | None = None,
     *,
     max_select: int = _RERANK_MAX_SELECT,
+    timeout_seconds: float = 1.5,
 ) -> list[MemoryItem]:
     """Use a cheap LLM side-query to select the most relevant semantic memories.
 
@@ -147,15 +149,19 @@ async def _rerank_semantic_items(
         "Return only the JSON object defined in <output_contract>.\n"
         "</task>"
     )
+    client = None
     try:
         client = create_llm_client(**model_config)
-        response = await client.stream(
-            messages=[
-                LLMMessage(role="system", content=system_prompt),
-                LLMMessage(role="user", content=user_prompt),
-            ],
-            max_tokens=100,
-            temperature=0.0,
+        response = await asyncio.wait_for(
+            client.stream(
+                messages=[
+                    LLMMessage(role="system", content=system_prompt),
+                    LLMMessage(role="user", content=user_prompt),
+                ],
+                max_tokens=100,
+                temperature=0.0,
+            ),
+            timeout=timeout_seconds,
         )
         content = response.content if hasattr(response, "content") else str(response)
         start = content.find("{")
@@ -168,12 +174,15 @@ async def _rerank_semantic_items(
                 if selected:
                     logger.debug("[Retriever] Rerank selected %d/%d items", len(selected), len(items))
                     return selected
-        if hasattr(client, "close"):
-            await client.close()
     except Exception as exc:
         logger.debug("[Retriever] Rerank failed, using original order: %s", exc)
-
         return items[:max_select]
+    finally:
+        if client is not None and hasattr(client, "close"):
+            try:
+                await client.close()
+            except Exception:
+                logger.debug("[Retriever] Rerank client close failed", exc_info=True)
 
 
 class MemoryRetriever:

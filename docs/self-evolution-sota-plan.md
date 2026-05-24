@@ -11,6 +11,21 @@
 
 ---
 
+## Phase Status
+
+| Phase | Status | Evidence |
+|---|---|---|
+| P0: Canonical Baseline, Trace, Eval, Manifest | Completed 2026-05-23 | `backend/app/services/evolution_manifest.py`; `record_evolution_candidate()` now attaches `hive_evolution_manifest.v1`; `validate_evolution_ledger()` rejects candidates without a valid manifest; tests: `pytest tests/services/test_evolution_manifest.py tests/architecture/test_h5_evolution_ledger_contract.py tests/evals/test_bakeoff_runtime.py -q` -> 18 passed; regression: `pytest tests/services/test_evolution_ledger.py tests/services/test_evolution_validation.py tests/services/test_harness_canary.py tests/services/test_harness_validation_report.py -q` -> 15 passed; ruff passed for changed P0 files. |
+| P1: Per-turn Fast Reflection Candidate | Not started | Pending |
+| P2: Session-visible Learning Projection | Not started | Pending |
+| P3: Verification-gated Promotion | Not started | Pending |
+| P4: Skill Flywheel v2 | Not started | Pending |
+| P5: Prompt Cache and Hot-path Diet | Not started | Pending |
+| P6: Harness Contract and Artifact Refs | Not started | Pending |
+| P7: Hive vs Hermes Bakeoff | Not started | Pending |
+
+---
+
 ## 0. Executive Verdict
 
 Hive already has a serious self-evolution substrate:

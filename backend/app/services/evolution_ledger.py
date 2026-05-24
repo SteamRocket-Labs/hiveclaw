@@ -2,6 +2,7 @@
 
 Every automatic prompt/skill/policy change should leave candidate, eval, and
 promotion decision records before it becomes durable behavior.
+Each candidate carries the thin `hive_evolution_manifest.v1` contract.
 """
 
 from __future__ import annotations
@@ -12,6 +13,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from app.services.evolution_manifest import EVOLUTION_MANIFEST_SCHEMA, build_evolution_manifest
 
 
 def _ledger_path(workspace: Path) -> Path:
@@ -54,9 +57,23 @@ def record_evolution_candidate(
     diff: str,
     source_attempt_ids: list[str],
     baseline_version: str | None = None,
+    manifest: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     candidate_id = _candidate_id(target_type, target_id, diff, source_attempt_ids)
+    refs = [str(item).strip() for item in source_attempt_ids if str(item).strip()]
+    candidate_manifest = manifest or build_evolution_manifest(
+        change_type=target_type,
+        target_type=target_type,
+        target_id=target_id,
+        source_refs=[f"runtime_task:{ref}" for ref in refs] or [f"candidate:{candidate_id}:source-missing"],
+        trace_refs=[f"trace:{ref}" for ref in refs] or [f"candidate:{candidate_id}:trace-missing"],
+        eval_refs=[],
+        rollback_strategy=(
+            f"restore {baseline_version}" if baseline_version else "restore previous baseline before applying candidate"
+        ),
+        metadata={"candidate_id": candidate_id, "manifest_schema": EVOLUTION_MANIFEST_SCHEMA},
+    )
     return _append(
         workspace,
         {
@@ -69,6 +86,7 @@ def record_evolution_candidate(
             "source_attempt_ids": source_attempt_ids,
             "diff_hash": hashlib.sha256(diff.encode("utf-8")).hexdigest(),
             "diff_preview": diff[:1000],
+            "manifest": candidate_manifest,
             "metadata": metadata or {},
         },
     )
@@ -91,6 +109,17 @@ def record_memory_promotion_candidate(
     if not refs:
         raise ValueError("memory promotion candidate requires at least one source_ref")
     candidate_id = _candidate_id(target_type, target_id, proposed_diff, refs)
+    candidate_manifest = build_evolution_manifest(
+        change_type="memory",
+        target_type=target_type,
+        target_id=target_id,
+        source_refs=refs,
+        trace_refs=refs,
+        eval_refs=[],
+        rollback_strategy=f"restore previous {target_type} content before applying candidate",
+        risk_level="high" if target_type == "memory:soul" else "medium",
+        metadata={"candidate_id": candidate_id, "evidence": (evidence or "inferred").strip().lower()},
+    )
     return _append(
         workspace,
         {
@@ -106,6 +135,7 @@ def record_memory_promotion_candidate(
             "volatility": (volatility or "stable").strip().lower(),
             "diff_hash": hashlib.sha256(proposed_diff.encode("utf-8")).hexdigest(),
             "diff_preview": proposed_diff[:1000],
+            "manifest": candidate_manifest,
             "metadata": metadata or {},
         },
     )

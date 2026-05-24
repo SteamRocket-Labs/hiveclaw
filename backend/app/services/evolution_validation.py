@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.services.evolution_ledger import load_evolution_ledger
+from app.services.evolution_manifest import validate_evolution_manifest
 
 
 PROMOTE_DECISIONS = {"promote", "promoted"}
@@ -82,6 +83,21 @@ def _validate_candidate(
     checks: list[dict[str, Any]] = []
     source_attempts = [item for item in candidate.get("source_attempt_ids", []) if str(item).strip()]
     has_terminal_decision = bool(decisions)
+    manifest_errors = validate_evolution_manifest(candidate.get("manifest"))
+    checks.append(
+        _check(
+            "candidate_has_valid_manifest",
+            "pass" if not manifest_errors else "fail",
+            "Candidate has a valid self-evolution manifest."
+            if not manifest_errors
+            else "Candidate is missing a valid self-evolution manifest.",
+            candidate_id=candidate_id,
+            evidence={"errors": manifest_errors},
+            recommendation=(
+                "Record hive_evolution_manifest.v1 with source_refs, trace_refs, eval_refs, and rollback_plan before candidate persistence."
+            ),
+        )
+    )
     checks.append(
         _check(
             "candidate_has_source_attempts",

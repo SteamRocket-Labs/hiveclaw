@@ -114,6 +114,36 @@ def test_validate_evolution_ledger_blocks_promoted_critical_regression(tmp_path)
     assert "promotion_blocks_critical_regression" in failed_ids
 
 
+def test_validate_evolution_ledger_accepts_rejected_decision_with_reason(tmp_path):
+    from app.services.evolution_ledger import record_evolution_candidate, record_promotion_decision
+    from app.services.evolution_validation import validate_evolution_ledger
+
+    workspace = tmp_path / "agent"
+    candidate = record_evolution_candidate(
+        workspace,
+        target_type="fast_reflection",
+        target_id="session-1:verification_failure",
+        diff="+ failed candidate",
+        source_attempt_ids=["rt-1"],
+        baseline_version="candidate",
+    )
+    record_promotion_decision(
+        workspace,
+        candidate_id=candidate["candidate_id"],
+        decision="reject",
+        reason="verification failed",
+        rollback_ref=None,
+    )
+
+    report = validate_evolution_ledger(workspace)
+
+    rejected_checks = [
+        check for check in report["checks"] if check["id"] == "rejected_decision_has_reason"
+    ]
+    assert rejected_checks
+    assert rejected_checks[0]["status"] == "pass"
+
+
 def test_record_rollback_event_appends_auditable_rollback(tmp_path):
     from app.services.evolution_ledger import load_evolution_ledger, record_rollback_event
 

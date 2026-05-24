@@ -13,6 +13,7 @@ from app.services.evolution_manifest import validate_evolution_manifest
 
 PROMOTE_DECISIONS = {"promote", "promoted"}
 HOLD_DECISIONS = {"hold", "held", "defer", "deferred"}
+REJECT_DECISIONS = {"reject", "rejected"}
 
 
 def _now_iso() -> str:
@@ -179,6 +180,7 @@ def _validate_candidate(
         decision_value = str(decision.get("decision") or "").strip().lower()
         is_promoted = decision_value in PROMOTE_DECISIONS
         is_held = decision_value in HOLD_DECISIONS
+        is_rejected = decision_value in REJECT_DECISIONS
         checks.append(
             _check(
                 "candidate_has_promotion_decision",
@@ -202,6 +204,19 @@ def _validate_candidate(
                     candidate_id=candidate_id,
                     evidence={"decision": decision_value},
                     recommendation="Explain why the candidate was held.",
+                )
+            )
+        elif is_rejected:
+            checks.append(
+                _check(
+                    "rejected_decision_has_reason",
+                    "pass" if str(decision.get("reason") or "").strip() else "fail",
+                    "Rejected decision records a reason."
+                    if str(decision.get("reason") or "").strip()
+                    else "Rejected decision is missing a reason.",
+                    candidate_id=candidate_id,
+                    evidence={"decision": decision_value},
+                    recommendation="Explain which verification gate failed before rejecting the candidate.",
                 )
             )
         else:

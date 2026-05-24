@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from app.services.evolution_ledger import record_evolution_candidate
+from app.services.session_learning import record_session_learning_projection
 
 
 _CORRECTION_MARKERS = (
@@ -112,9 +113,20 @@ def create_fast_reflection_candidate(
         baseline_version="fast-reflection@candidate",
         metadata=payload,
     )
+    projection = record_session_learning_projection(
+        data_root=Path(data_root),
+        agent_id=agent_id,
+        session_id=normalized_session_id,
+        candidate_id=candidate["candidate_id"],
+        lesson=lesson,
+        source_refs=[f"runtime_task:{item}" for item in source_attempt_ids],
+        evidence="user_stated" if signal_type == "user_preference_correction" else "system_observed",
+        ttl_minutes=60,
+    )
     return {
         "status": "candidate_created",
         "candidate_id": candidate["candidate_id"],
         "signal_type": signal_type,
         "manifest": candidate["manifest"],
+        "projection": projection,
     }

@@ -358,6 +358,27 @@ async def _resolve_memory_context(
             )
         )
 
+    if request.agent_id and session_id:
+        try:
+            from app.services.session_learning import render_active_session_learning_projection
+
+            session_learning = render_active_session_learning_projection(
+                data_root=Path(get_settings().AGENT_DATA_DIR),
+                agent_id=request.agent_id,
+                session_id=str(session_id),
+            )
+            if session_learning:
+                parts.append(
+                    _context_engine().inject(
+                        request.session_context,
+                        kind="session_learning_projection",
+                        source="session_learning:projection",
+                        content=session_learning,
+                    )
+                )
+        except Exception as exc:
+            logger.debug("[SessionLearning] dynamic projection skipped for %s: %s", request.agent_id, exc)
+
     return "\n\n".join(parts)
 
 

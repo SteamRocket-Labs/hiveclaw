@@ -333,6 +333,7 @@ def build_dynamic_prompt_suffix(
     retrieval_context: str = "",
     continuity_context: str = "",
     runtime_metadata_context: str = "",
+    session_learning_projection: str = "",
     system_prompt_suffix: str = "",
     budget_profile: ContextBudget | None = None,
     latest_user_query: str = "",
@@ -364,6 +365,11 @@ def build_dynamic_prompt_suffix(
     if memory_snapshot:
         snapshot_cap = max(int(memory_budget_chars * _MEMORY_SNAPSHOT_BUDGET_RATIO), 1500)
         parts.append(build_memory_section(memory_snapshot, budget_chars=snapshot_cap))
+
+    if session_learning_projection:
+        learning_block = _trim_block(session_learning_projection, budget_chars=1200)
+        if learning_block:
+            parts.append(learning_block)
 
     continuity_budget = min(
         max((memory_budget_chars // 3) if budget_profile else _CONTINUITY_CHAR_BUDGET, 800),

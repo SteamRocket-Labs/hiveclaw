@@ -26,6 +26,9 @@ def _safe_int(value, default: int) -> int:
 
 
 _URL_HOST_RE = re.compile(r"^[A-Za-z0-9.-]+\.[A-Za-z]{2,}(/.*)?$")
+_SKIP_CRAWLER_FALLBACK = "_skip_crawler_fallback"
+_SKIP_WEB_FETCH_FALLBACK = "_skip_web_fetch_fallback"
+_SKIP_FIRECRAWL_FALLBACK = "_skip_firecrawl_fallback"
 
 
 class _HTMLTextExtractor(HTMLParser):
@@ -107,6 +110,23 @@ def _extract_text_from_html(markup: str) -> str:
     parser = _HTMLTextExtractor()
     parser.feed(markup)
     return parser.get_text()
+
+
+def _looks_like_incomplete_rendered_page(markup: str, extracted_text: str) -> bool:
+    if len((extracted_text or "").strip()) >= 120:
+        return False
+    lowered = (markup or "").lower()
+    js_shell_markers = (
+        'id="root"',
+        "id='root'",
+        'id="app"',
+        "id='app'",
+        "__next",
+        "data-reactroot",
+        "window.__",
+        "<script",
+    )
+    return any(marker in lowered for marker in js_shell_markers)
 
 
 def _provider_result_failed(result: str) -> bool:
@@ -340,6 +360,73 @@ async def _get_tavily_api_key() -> str:
     return get_settings().TAVILY_API_KEY
 
 
+async def _try_crawler_fetch_fallback(normalized_url: str, max_chars: int) -> tuple[str, str] | None:
+    if await _get_firecrawl_api_key():
+        firecrawl_result = await _firecrawl_fetch(
+            {
+                "url": normalized_url,
+                "max_chars": max_chars,
+                _SKIP_WEB_FETCH_FALLBACK: True,
+            }
+        )
+        if not _provider_result_failed(firecrawl_result):
+            return ("firecrawl_fetch", firecrawl_result)
+
+    if await _get_xcrawl_api_key():
+        xcrawl_result = await _xcrawl_scrape(
+            {
+                "url": normalized_url,
+                "max_chars": max_chars,
+                _SKIP_FIRECRAWL_FALLBACK: True,
+            }
+        )
+        if not _provider_result_failed(xcrawl_result):
+            return ("xcrawl_scrape", xcrawl_result)
+
+    return None
+
+
+async def _web_fetch_failure_result(
+    arguments: dict,
+    *,
+    normalized_url: str,
+    max_chars: int,
+    error_class: str,
+    message: str,
+    http_status: int | None = None,
+    retryable: bool = False,
+    actionable_hint: str,
+) -> str:
+    if not arguments.get(_SKIP_CRAWLER_FALLBACK):
+        fallback = await _try_crawler_fetch_fallback(normalized_url, max_chars)
+        if fallback:
+            fallback_tool, fallback_result = fallback
+            return render_tool_fallback(
+                tool_name="web_fetch",
+                error_class=error_class,
+                message=message,
+                provider="web_fetch",
+                http_status=http_status,
+                retryable=retryable,
+                actionable_hint=(
+                    "web_fetch could not read this page directly, so it escalated to a configured "
+                    "crawler-backed reader."
+                ),
+                fallback_tool=fallback_tool,
+                fallback_result=fallback_result,
+            )
+
+    return render_tool_error(
+        tool_name="web_fetch",
+        error_class=error_class,
+        message=message,
+        provider="web_fetch",
+        http_status=http_status,
+        retryable=retryable,
+        actionable_hint=actionable_hint,
+    )
+
+
 async def _web_fetch(arguments: dict) -> str:
     url = arguments.get("url", "").strip()
     if not url:
@@ -379,24 +466,41 @@ async def _web_fetch(arguments: dict) -> str:
             resp = await client.get(normalized_url, headers={"User-Agent": "Hive WebFetch/1.0"})
 
         if resp.status_code >= 300:
-            return _http_error(
-                "web_fetch",
-                provider="web_fetch",
-                status_code=resp.status_code,
-                detail=resp.text,
-                hint="Retry with another URL or fall back to search if the page is blocked.",
+            error_class, retryable = classify_http_status(resp.status_code)
+            return await _web_fetch_failure_result(
+                arguments,
+                normalized_url=normalized_url,
+                max_chars=max_chars,
+                error_class=error_class,
+                message=f"web_fetch failed with HTTP {resp.status_code}: {resp.text[:200]}",
+                http_status=resp.status_code,
+                retryable=retryable,
+                actionable_hint="Retry with another URL or fall back to search if the page is blocked.",
             )
 
         content_type = (resp.headers.get("content-type", "") or "").lower()
         text = resp.text.strip()
         if "html" in content_type or text.lstrip().startswith("<!doctype html") or text.lstrip().startswith("<html"):
-            text = _extract_text_from_html(text)
+            markup = text
+            text = _extract_text_from_html(markup)
+            if _looks_like_incomplete_rendered_page(markup, text):
+                return await _web_fetch_failure_result(
+                    arguments,
+                    normalized_url=normalized_url,
+                    max_chars=max_chars,
+                    error_class="incomplete_content",
+                    message=f"web_fetch returned incomplete rendered content for {normalized_url}",
+                    retryable=True,
+                    actionable_hint="Try a crawler-backed reader for JS-rendered pages.",
+                )
         if not text:
-            return render_tool_error(
-                tool_name="web_fetch",
+            return await _web_fetch_failure_result(
+                arguments,
+                normalized_url=normalized_url,
+                max_chars=max_chars,
                 error_class="empty_content",
                 message=f"web_fetch returned empty content for {normalized_url}",
-                provider="web_fetch",
+                http_status=None,
                 retryable=False,
                 actionable_hint="Try another URL or use search to find a cleaner source page.",
             )
@@ -404,11 +508,13 @@ async def _web_fetch(arguments: dict) -> str:
             text = text[:max_chars] + f"\n\n[... truncated at {max_chars} chars]"
         return f"📄 **Fetched content from: {normalized_url}**\n\n{text}"
     except Exception as e:
-        return render_tool_error(
-            tool_name="web_fetch",
+        return await _web_fetch_failure_result(
+            arguments,
+            normalized_url=normalized_url,
+            max_chars=max_chars,
             error_class="provider_error",
             message=f"web_fetch failed: {str(e)[:300]}",
-            provider="web_fetch",
+            http_status=None,
             retryable=True,
             actionable_hint="Retry with another URL or use search to discover an alternate page.",
         )
@@ -474,7 +580,17 @@ async def _firecrawl_fetch(arguments: dict) -> str:
 
         data = resp.json() if "json" in (resp.headers.get("content-type", "") or "").lower() or resp.text.strip().startswith("{") else {}
         if resp.status_code != 200:
-            fallback_result = await _web_fetch({"url": normalized_url, "max_chars": max_chars})
+            if arguments.get(_SKIP_WEB_FETCH_FALLBACK):
+                return _http_error(
+                    "firecrawl_fetch",
+                    provider="firecrawl",
+                    status_code=resp.status_code,
+                    detail=str(data) or resp.text,
+                    hint="Retry later or use another crawler provider.",
+                )
+            fallback_result = await _web_fetch(
+                {"url": normalized_url, "max_chars": max_chars, _SKIP_CRAWLER_FALLBACK: True}
+            )
             return render_tool_fallback(
                 tool_name="firecrawl_fetch",
                 error_class=classify_http_status(resp.status_code)[0],
@@ -490,7 +606,18 @@ async def _firecrawl_fetch(arguments: dict) -> str:
         payload = data.get("data", data)
         text = (payload.get("markdown") or payload.get("content") or payload.get("text") or "").strip()
         if not text:
-            fallback_result = await _web_fetch({"url": normalized_url, "max_chars": max_chars})
+            if arguments.get(_SKIP_WEB_FETCH_FALLBACK):
+                return render_tool_error(
+                    tool_name="firecrawl_fetch",
+                    error_class="empty_content",
+                    message=f"firecrawl_fetch returned empty content for {normalized_url}",
+                    provider="firecrawl",
+                    retryable=False,
+                    actionable_hint="Retry later or use another crawler provider.",
+                )
+            fallback_result = await _web_fetch(
+                {"url": normalized_url, "max_chars": max_chars, _SKIP_CRAWLER_FALLBACK: True}
+            )
             return render_tool_fallback(
                 tool_name="firecrawl_fetch",
                 error_class="empty_content",
@@ -505,7 +632,18 @@ async def _firecrawl_fetch(arguments: dict) -> str:
             text = text[:max_chars] + f"\n\n[... truncated at {max_chars} chars]"
         return f"📄 **Firecrawl content from: {normalized_url}**\n\n{text}"
     except Exception as e:
-        fallback_result = await _web_fetch({"url": normalized_url, "max_chars": max_chars})
+        if arguments.get(_SKIP_WEB_FETCH_FALLBACK):
+            return render_tool_error(
+                tool_name="firecrawl_fetch",
+                error_class="provider_error",
+                message=f"firecrawl_fetch failed: {str(e)[:300]}",
+                provider="firecrawl",
+                retryable=True,
+                actionable_hint="Retry later or use another crawler provider.",
+            )
+        fallback_result = await _web_fetch(
+            {"url": normalized_url, "max_chars": max_chars, _SKIP_CRAWLER_FALLBACK: True}
+        )
         return render_tool_fallback(
             tool_name="firecrawl_fetch",
             error_class="provider_error",
@@ -568,7 +706,17 @@ async def _xcrawl_scrape(arguments: dict) -> str:
 
         data = resp.json() if "json" in (resp.headers.get("content-type", "") or "").lower() or resp.text.strip().startswith("{") else {}
         if resp.status_code != 200:
-            fallback_result = await _firecrawl_fetch({"url": normalized_url, "max_chars": max_chars})
+            if arguments.get(_SKIP_FIRECRAWL_FALLBACK):
+                return _http_error(
+                    "xcrawl_scrape",
+                    provider="xcrawl",
+                    status_code=resp.status_code,
+                    detail=str(data) or resp.text,
+                    hint="Retry later or use another source URL.",
+                )
+            fallback_result = await _firecrawl_fetch(
+                {"url": normalized_url, "max_chars": max_chars, _SKIP_WEB_FETCH_FALLBACK: True}
+            )
             return render_tool_fallback(
                 tool_name="xcrawl_scrape",
                 error_class=classify_http_status(resp.status_code)[0],
@@ -590,7 +738,18 @@ async def _xcrawl_scrape(arguments: dict) -> str:
             or ""
         ).strip()
         if not text:
-            fallback_result = await _firecrawl_fetch({"url": normalized_url, "max_chars": max_chars})
+            if arguments.get(_SKIP_FIRECRAWL_FALLBACK):
+                return render_tool_error(
+                    tool_name="xcrawl_scrape",
+                    error_class="empty_content",
+                    message=f"xcrawl_scrape returned empty content for {normalized_url}",
+                    provider="xcrawl",
+                    retryable=False,
+                    actionable_hint="Retry later or use another source URL.",
+                )
+            fallback_result = await _firecrawl_fetch(
+                {"url": normalized_url, "max_chars": max_chars, _SKIP_WEB_FETCH_FALLBACK: True}
+            )
             return render_tool_fallback(
                 tool_name="xcrawl_scrape",
                 error_class="empty_content",
@@ -605,7 +764,18 @@ async def _xcrawl_scrape(arguments: dict) -> str:
             text = text[:max_chars] + f"\n\n[... truncated at {max_chars} chars]"
         return f"📄 **XCrawl content from: {normalized_url}**\n\n{text}"
     except Exception as e:
-        fallback_result = await _firecrawl_fetch({"url": normalized_url, "max_chars": max_chars})
+        if arguments.get(_SKIP_FIRECRAWL_FALLBACK):
+            return render_tool_error(
+                tool_name="xcrawl_scrape",
+                error_class="provider_error",
+                message=f"xcrawl_scrape failed: {str(e)[:300]}",
+                provider="xcrawl",
+                retryable=True,
+                actionable_hint="Retry later or use another source URL.",
+            )
+        fallback_result = await _firecrawl_fetch(
+            {"url": normalized_url, "max_chars": max_chars, _SKIP_WEB_FETCH_FALLBACK: True}
+        )
         return render_tool_fallback(
             tool_name="xcrawl_scrape",
             error_class="provider_error",

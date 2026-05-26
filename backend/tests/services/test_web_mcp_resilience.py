@@ -42,6 +42,31 @@ class _FakeAsyncClient:
         return self._response
 
 
+class _SequencedAsyncClient:
+    def __init__(self, responses: list[_FakeResponse], calls: list[tuple[str, str]]):
+        self._responses = responses
+        self._calls = calls
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    def _next_response(self) -> _FakeResponse:
+        if not self._responses:
+            raise AssertionError("No fake response left for httpx call")
+        return self._responses.pop(0)
+
+    async def get(self, url: str, *args, **kwargs):
+        self._calls.append(("get", url))
+        return self._next_response()
+
+    async def post(self, url: str, *args, **kwargs):
+        self._calls.append(("post", url))
+        return self._next_response()
+
+
 class _ScalarResult:
     def __init__(self, value):
         self._value = value
@@ -122,6 +147,88 @@ async def test_web_fetch_extracts_html_content(monkeypatch):
     assert "Hello" in result
     assert "World" in result
     assert "<tool_error>" not in result
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_escalates_to_firecrawl_on_http_error(monkeypatch):
+    from app.services.agent_tool_domains import web_mcp
+
+    async def fake_get_firecrawl_api_key() -> str:
+        return "fc-key"
+
+    async def fake_get_xcrawl_api_key() -> str:
+        return ""
+
+    calls: list[tuple[str, str]] = []
+    responses = [
+        _FakeResponse(status_code=403, text="Forbidden", headers={"content-type": "text/plain"}),
+        _FakeResponse(
+            status_code=200,
+            text='{"success": true, "data": {"markdown": "# Rendered\\n\\nBody"}}',
+            json_data={"success": True, "data": {"markdown": "# Rendered\n\nBody"}},
+            headers={"content-type": "application/json"},
+        ),
+    ]
+
+    monkeypatch.setattr(web_mcp, "_get_firecrawl_api_key", fake_get_firecrawl_api_key)
+    monkeypatch.setattr(web_mcp, "_get_xcrawl_api_key", fake_get_xcrawl_api_key)
+    monkeypatch.setattr("httpx.AsyncClient", lambda *args, **kwargs: _SequencedAsyncClient(responses, calls))
+
+    result = await web_mcp._web_fetch({"url": "https://example.com/app", "max_chars": 1000})
+
+    assert "Fallback tool used: `firecrawl_fetch`" in result
+    assert "Firecrawl content from: https://example.com/app" in result
+    assert "Rendered" in result
+    payload = _extract_tool_error_payload(result)
+    assert payload["tool_name"] == "web_fetch"
+    assert payload["fallback_tool"] == "firecrawl_fetch"
+    assert payload["http_status"] == 403
+    assert calls == [
+        ("get", "https://example.com/app"),
+        ("post", "https://api.firecrawl.dev/v1/scrape"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_escalates_to_xcrawl_when_firecrawl_fails(monkeypatch):
+    from app.services.agent_tool_domains import web_mcp
+
+    async def fake_get_firecrawl_api_key() -> str:
+        return "fc-key"
+
+    async def fake_get_xcrawl_api_key() -> str:
+        return "xcr-key"
+
+    calls: list[tuple[str, str]] = []
+    responses = [
+        _FakeResponse(status_code=403, text="Forbidden", headers={"content-type": "text/plain"}),
+        _FakeResponse(status_code=503, text="upstream down", headers={"content-type": "application/json"}),
+        _FakeResponse(
+            status_code=200,
+            text='{"data": {"markdown": "# Xcrawl Rendered\\n\\nBody"}}',
+            json_data={"data": {"markdown": "# Xcrawl Rendered\n\nBody"}},
+            headers={"content-type": "application/json"},
+        ),
+    ]
+
+    monkeypatch.setattr(web_mcp, "_get_firecrawl_api_key", fake_get_firecrawl_api_key)
+    monkeypatch.setattr(web_mcp, "_get_xcrawl_api_key", fake_get_xcrawl_api_key)
+    monkeypatch.setattr("httpx.AsyncClient", lambda *args, **kwargs: _SequencedAsyncClient(responses, calls))
+
+    result = await web_mcp._web_fetch({"url": "https://example.com/app", "max_chars": 1000})
+
+    assert "Fallback tool used: `xcrawl_scrape`" in result
+    assert "XCrawl content from: https://example.com/app" in result
+    assert "Xcrawl Rendered" in result
+    payload = _extract_tool_error_payload(result)
+    assert payload["tool_name"] == "web_fetch"
+    assert payload["fallback_tool"] == "xcrawl_scrape"
+    assert payload["http_status"] == 403
+    assert calls == [
+        ("get", "https://example.com/app"),
+        ("post", "https://api.firecrawl.dev/v1/scrape"),
+        ("post", "https://run.xcrawl.com/v1/scrape"),
+    ]
 
 
 @pytest.mark.asyncio

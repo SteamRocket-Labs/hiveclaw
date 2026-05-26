@@ -52,7 +52,7 @@ _FILE_SYSTEM = {
     "execute_code",
     "run_command",
 }
-_SKILLS = {"load_skill", "save_skill", "tool_search", "discover_resources", "import_mcp_server"}
+_SKILLS = {"load_skill", "save_skill", "pin_skill", "tool_search", "discover_resources", "import_mcp_server"}
 _SCHEDULED = {"set_trigger", "update_trigger", "cancel_trigger", "list_triggers"}
 _CHANNEL = {
     "send_feishu_message",

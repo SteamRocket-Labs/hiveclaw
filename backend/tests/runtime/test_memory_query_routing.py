@@ -156,3 +156,51 @@ async def test_resolve_retrieval_context_passes_current_user_to_memory(monkeypat
         "current_user_id": user_id,
         "current_user_name": "Bob",
     }
+
+
+@pytest.mark.asyncio
+async def test_resolve_memory_context_injects_skill_evolution_digest(monkeypatch, tmp_path):
+    """Gap3: the agent's own skill evolution is surfaced into the dynamic memory
+    context so skills are a first-class evolution axis beside memory."""
+    import json
+
+    from app.runtime import invoker
+    from app.runtime.invoker import AgentInvocationRequest
+
+    agent_id = uuid4()
+    skills_dir = tmp_path / str(agent_id) / "skills"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / ".usage.json").write_text(
+        json.dumps(
+            {
+                "deploy-checklist": {
+                    "created_by": "agent",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "last_used_at": "2026-05-01T00:00:00+00:00",
+                    "use_count": 7,
+                    "view_count": 0,
+                    "state": "active",
+                    "pinned": False,
+                    "archived_at": None,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(invoker, "get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    request = AgentInvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "hi"}],
+        agent_name="Agent",
+        role_description="desc",
+        agent_id=agent_id,
+        session_context=SessionContext(session_id="s-skill"),
+    )
+
+    # tenant_id=None → memory snapshot skipped; only the skill digest is injected.
+    result = await invoker._resolve_memory_context(request, None)
+    assert "## Your Skill Assets" in result
+    assert "deploy-checklist (7×)" in result
+    assert '<context_block kind="skill_evolution_digest" source="skill_curator:digest">' in result

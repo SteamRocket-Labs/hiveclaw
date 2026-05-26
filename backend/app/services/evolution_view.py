@@ -196,3 +196,44 @@ def build_evolution_view(workspace: Path) -> dict[str, Any]:
         "skills": skills,
         "timeline": timeline,
     }
+
+
+def render_skill_evolution_digest(workspace: Path, *, max_skills: int = 8) -> str:
+    """Render a compact digest of the agent's own skill evolution for the prompt.
+
+    Closes the self-evolution loop on the cognition side: memory already feeds
+    back into the prompt, but skill evolution (usage, curator decay) did not. The
+    digest lets the agent see its skill assets, reuse what works, and rescue idle
+    skills before the curator archives them — making skills a first-class
+    evolution axis alongside memory.
+
+    Injected into the *dynamic* suffix only (it changes as skills evolve), so it
+    never invalidates the frozen system-prompt cache. Read-only and cheap enough
+    to run every round; returns "" when the agent has no tracked skills.
+    """
+    view = build_evolution_view(workspace)
+    summary = view["skill_summary"]
+    if summary["total"] == 0:
+        return ""
+
+    skills = view["skills"]
+    lines = [
+        "## Your Skill Assets",
+        f"You have {summary['total']} tracked skills — "
+        f"{summary['active']} active, {summary['stale']} idle, {summary['archived']} archived.",
+    ]
+
+    active = [s for s in skills if s["state"] == STATE_ACTIVE][:max_skills]
+    if active:
+        names = ", ".join(f"{s['slug']} ({s['use_count']}×)" for s in active)
+        lines.append(f"Active skills you can reuse: {names}.")
+
+    stale = [s for s in skills if s["state"] == STATE_STALE and not s["pinned"]][:max_skills]
+    if stale:
+        names = ", ".join(s["slug"] for s in stale)
+        lines.append(
+            f"Idle and nearing auto-archival: {names}. "
+            "Reuse them if still useful, or call `pin_skill` to keep them."
+        )
+
+    return "\n".join(lines)

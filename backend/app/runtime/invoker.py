@@ -379,6 +379,29 @@ async def _resolve_memory_context(
         except Exception as exc:
             logger.debug("[SessionLearning] dynamic projection skipped for %s: %s", request.agent_id, exc)
 
+    # Skill evolution self-awareness (Gap3): surface the agent's own skill
+    # assets + decay state so skills become a first-class evolution axis beside
+    # memory. Dynamic suffix only — never enters the frozen prefix, so it cannot
+    # invalidate the system-prompt cache.
+    if request.agent_id:
+        try:
+            from app.services.evolution_view import render_skill_evolution_digest
+
+            skill_digest = render_skill_evolution_digest(
+                Path(get_settings().AGENT_DATA_DIR) / str(request.agent_id)
+            )
+            if skill_digest:
+                parts.append(
+                    _context_engine().inject(
+                        request.session_context,
+                        kind="skill_evolution_digest",
+                        source="skill_curator:digest",
+                        content=skill_digest,
+                    )
+                )
+        except Exception as exc:
+            logger.debug("[SkillEvolution] digest skipped for %s: %s", request.agent_id, exc)
+
     return "\n\n".join(parts)
 
 

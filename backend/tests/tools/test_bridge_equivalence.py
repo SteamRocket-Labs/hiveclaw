@@ -94,6 +94,7 @@ def test_combined_openai_tools_matches_canonical_surface():
         "office_document_query",
         "office_document_validate",
         "office_document_view",
+        "pin_skill",
         "save_skill",
         "plaza_add_comment",
         "plaza_create_post",

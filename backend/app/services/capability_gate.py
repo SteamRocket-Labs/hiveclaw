@@ -53,6 +53,7 @@ CAPABILITY_MAP: dict[str, str] = {
     "save_memory": "agent.memory.write",
     "load_skill": "agent.skill.read",
     "save_skill": "agent.skill.write",
+    "pin_skill": "agent.skill.write",
     "tool_search": "agent.tool.discover",
     "get_current_time": "system.time.read",
     "discover_resources": "agent.tool.discover",

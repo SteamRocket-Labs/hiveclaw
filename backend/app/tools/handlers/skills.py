@@ -179,3 +179,55 @@ async def save_skill(agent_id: uuid.UUID, workspace: Path, arguments: dict) -> s
 def tool_search(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
     from app.services.agent_tool_domains.workspace import _tool_search
     return _tool_search(workspace, arguments.get("query", ""))
+
+
+# -- pin_skill ----------------------------------------------------------------
+
+@tool(ToolMeta(
+    name="pin_skill",
+    description=(
+        "Pin or unpin one of your own skills to control auto-archival.\n\n"
+        "Pinned skills are never auto-archived by the skill curator, even after "
+        "long disuse; unpin to let an unused skill age out naturally.\n"
+        "Use this when the skill-evolution digest warns that a still-useful "
+        "skill is nearing auto-archival, or to retire a skill you no longer need."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "skill": {
+                "type": "string",
+                "description": "Skill slug — the folder name under skills/ (e.g. 'deploy-checklist').",
+            },
+            "pinned": {
+                "type": "boolean",
+                "description": "true to pin (protect from archival), false to unpin. Defaults to true.",
+            },
+        },
+        "required": ["skill"],
+    },
+    category="skills",
+    display_name="Pin Skill",
+    icon="\U0001f4cc",
+    read_only=False,
+    parallel_safe=False,
+    governance="sensitive",
+    adapter="workspace_args",
+))
+def pin_skill(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+    from app.services.skill_curator import set_skill_pinned
+
+    slug = str(arguments.get("skill", "")).strip()
+    if not slug:
+        return "❌ pin_skill: 'skill' (the skill slug) is required."
+
+    pinned_arg = arguments.get("pinned", True)
+    if isinstance(pinned_arg, str):
+        pinned = pinned_arg.strip().lower() not in {"0", "false", "no", "off"}
+    else:
+        pinned = bool(pinned_arg)
+
+    set_skill_pinned(workspace, slug, pinned)
+    if pinned:
+        return f"📌 Pinned skill '{slug}'. The curator will never auto-archive it while pinned."
+    return f"Unpinned skill '{slug}'. It can now age out and be auto-archived if it stays unused."

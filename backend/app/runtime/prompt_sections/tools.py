@@ -22,6 +22,8 @@ always load and read it first so you have the complete workflow.
 Do not save one-off notes, transient state, or raw transcripts as skills. Durable user corrections \
 go through `save_memory` only when the Memory Guide says they qualify; operational notes and \
 evidence belong in workspace artifacts.
+- Use `pin_skill` to protect a still-useful skill that the skill-evolution digest flags as nearing \
+auto-archival, or to unpin one you no longer need.
 - Objective Ledger is the source of truth for goal state: `list_objectives` to inspect, \
 `propose_objective` for new work, `update_objective` for blockers/status, and \
 `complete_objective` only with concrete evidence. Trigger is wake policy; focus.md is a readable projection.

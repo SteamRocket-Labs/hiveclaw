@@ -148,3 +148,33 @@ def test_corrupt_files_do_not_raise(tmp_path):
     assert view["skill_summary"]["total"] == 0
     assert view["skills"] == []
     assert view["timeline"] == []
+
+
+def test_skill_evolution_digest_blank_when_no_skills(tmp_path):
+    from app.services.evolution_view import render_skill_evolution_digest
+
+    # No tracked skills → nothing to inject (keeps the prompt lean).
+    assert render_skill_evolution_digest(tmp_path) == ""
+
+
+def test_skill_evolution_digest_summarizes_active_assets(tmp_path):
+    from app.services.evolution_view import render_skill_evolution_digest
+
+    _seed_workspace(tmp_path)
+    digest = render_skill_evolution_digest(tmp_path)
+    assert "3 tracked skills" in digest
+    assert "1 active" in digest
+    # the active skill is offered back for reuse, with its usage count
+    assert "weekly-report (12×)" in digest
+
+
+def test_skill_evolution_digest_warns_unpinned_stale_and_points_to_pin(tmp_path):
+    from app.services.evolution_view import render_skill_evolution_digest
+
+    _seed_workspace(tmp_path)
+    digest = render_skill_evolution_digest(tmp_path)
+    # invoice-parse is stale + unpinned → surfaced so the agent can reuse or pin it
+    assert "invoice-parse" in digest
+    assert "pin_skill" in digest
+    # archived skills are not offered as reusable active assets
+    assert "old-scraper (" not in digest

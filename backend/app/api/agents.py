@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.core.permissions import check_agent_access, is_agent_creator
 from app.core.security import get_current_user
 from app.core.tenant_scope import resolve_tenant_scope
@@ -483,6 +484,28 @@ async def get_agent(
     out["effective_timezone"] = effective_tz or "UTC"
 
     return out
+
+
+@router.get("/{agent_id}/evolution")
+async def get_agent_evolution(
+    agent_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read-only view of an agent's self-evolution activity.
+
+    Surfaces skill lifecycle state + the candidate→eval→promotion audit chain
+    from the agent workspace. Pure read; never mutates agent state. Missing or
+    corrupt files degrade to an empty structure.
+    """
+    await check_agent_access(db, current_user, agent_id)
+
+    from pathlib import Path
+
+    from app.services.evolution_view import build_evolution_view
+
+    workspace = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
+    return build_evolution_view(workspace)
 
 
 @router.get("/{agent_id}/capability-installs")

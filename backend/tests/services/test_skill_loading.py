@@ -146,3 +146,49 @@ def test_save_skill_updates_existing_skill_when_overwrite_enabled(tmp_path):
     content = skill_path.read_text(encoding="utf-8")
     assert 'description: "Updated workflow."' in content
     assert "Use primary sources first." in content
+
+
+def test_save_skill_marks_curator_usage_record(tmp_path):
+    """Saving a skill seeds the curator usage store with agent provenance."""
+    from app.services.agent_tool_domains.workspace import _save_skill
+    from app.services.skill_curator import load_skill_usage
+
+    workspace = tmp_path / "agent"
+    workspace.mkdir(parents=True)
+
+    _save_skill(
+        workspace,
+        name="Deployment Review",
+        description="Review deployment diffs and verify rollback paths.",
+        instructions="Check rollout status, verify logs, and confirm rollback steps.",
+    )
+
+    usage = load_skill_usage(workspace)
+    assert "deployment-review" in usage
+    rec = usage["deployment-review"]
+    assert rec["created_by"] == "agent"
+    assert rec["state"] == "active"
+    assert rec["use_count"] == 0
+
+
+def test_load_skill_bumps_curator_use_count(tmp_path):
+    """Loading a skill increments its curator use_count and refreshes last_used_at."""
+    from app.services.agent_tool_domains.workspace import _load_skill, _save_skill
+    from app.services.skill_curator import load_skill_usage
+
+    workspace = tmp_path / "agent"
+    workspace.mkdir(parents=True)
+
+    _save_skill(
+        workspace,
+        name="Deployment Review",
+        description="Review deployment diffs and verify rollback paths.",
+        instructions="Check rollout status, verify logs, and confirm rollback steps.",
+    )
+
+    _load_skill(workspace, "deployment review")
+    _load_skill(workspace, "deployment review")
+
+    rec = load_skill_usage(workspace)["deployment-review"]
+    assert rec["use_count"] == 2
+    assert rec["last_used_at"] is not None

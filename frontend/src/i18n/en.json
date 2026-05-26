@@ -221,6 +221,8 @@
       "awareTooltip": "What this employee is currently focused on, plus triggers and action history",
       "mind": "Mind",
       "mindTooltip": "Personality (Soul), accumulated memory, and self-check routine (Heartbeat)",
+      "evolution": "Evolution",
+      "evolutionTooltip": "How this employee improves over time — skill lifecycle and promotion history",
       "tools": "Tools",
       "toolsTooltip": "Actions this employee can perform — file operations, web search, messaging, and more",
       "skills": "Skills",
@@ -394,6 +396,32 @@
       "memoryDesc": "Long-term knowledge curated from conversations. Feedback, strategies, blocked patterns, and project knowledge.",
       "evolutionTitle": "Evolution",
       "evolutionDesc": "Curation history, performance scorecard, and blocked approaches."
+    },
+
+    "evolution": {
+      "title": "Evolution",
+      "description": "How this employee grows over time — which skills it has learned, kept sharp, or retired, and the milestones along the way.",
+      "empty": "No evolution activity yet. As this employee works, learns skills, and refines them, the history will appear here.",
+      "skillsHeading": "Skills",
+      "timelineHeading": "Evolution timeline",
+      "pinned": "Pinned",
+      "useCount": "{{count}} uses",
+      "state": {
+        "active": "Active",
+        "stale": "Idle",
+        "archived": "Archived"
+      },
+      "kind": {
+        "created": "Created",
+        "candidate": "Candidate",
+        "eval": "Evaluation",
+        "promote": "Promoted",
+        "promotion": "Promotion",
+        "patch": "Patched",
+        "stale": "Marked idle",
+        "archived": "Archived",
+        "rollback": "Rolled back"
+      }
     },
 
     "skills": {

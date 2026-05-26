@@ -220,6 +220,8 @@
       "awareTooltip": "当前关注的事项、自动触发器和行动记录",
       "mind": "心智",
       "mindTooltip": "人格 (Soul)、积累的记忆、以及自检例程 (Heartbeat)",
+      "evolution": "进化",
+      "evolutionTooltip": "这位员工如何随时间成长 — 技能生命周期与提升记录",
       "tools": "工具",
       "toolsTooltip": "可执行的操作 — 文件处理、网络搜索、消息发送等",
       "skills": "技能",
@@ -393,6 +395,32 @@
       "memoryDesc": "从对话中蒸馏的长期知识 — 用户反馈、策略、已阻止的方法和项目知识。",
       "evolutionTitle": "进化",
       "evolutionDesc": "蒸馏历史、绩效记分卡和已阻止的方法。"
+    },
+
+    "evolution": {
+      "title": "进化",
+      "description": "这位员工如何随时间成长 — 学会了哪些技能、保持活跃或归档了哪些，以及一路上的里程碑。",
+      "empty": "暂无进化记录。随着这位员工工作、学习技能并不断打磨，历史会显示在这里。",
+      "skillsHeading": "技能",
+      "timelineHeading": "进化时间线",
+      "pinned": "已置顶",
+      "useCount": "使用 {{count}} 次",
+      "state": {
+        "active": "活跃",
+        "stale": "闲置",
+        "archived": "已归档"
+      },
+      "kind": {
+        "created": "创建",
+        "candidate": "候选",
+        "eval": "评估",
+        "promote": "已提升",
+        "promotion": "提升",
+        "patch": "已修补",
+        "stale": "标记闲置",
+        "archived": "已归档",
+        "rollback": "已回滚"
+      }
     },
 
     "skills": {

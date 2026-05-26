@@ -154,11 +154,23 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill") -> str
         requested_path = requested_path[len("skills/"):]
     explicit_path = (skills_dir / requested_path).resolve()
     if explicit_path.is_file():
-        return _read_skill_file(explicit_path)
+        body = _read_skill_file(explicit_path)
+        try:
+            rel = explicit_path.relative_to(ws).as_posix()
+            slug = _skill_slug_from_relative_path(rel)
+            if slug:
+                from app.services.skill_curator import bump_skill_use
+
+                bump_skill_use(ws, slug, kind="use")
+        except Exception as exc:  # pragma: no cover - telemetry must never break load
+            logger.debug("[workspace] curator use bump (explicit) failed: %s", exc)
+        return body
 
     registry = _build_skill_registry(ws)
     try:
-        return sanitize_managed_credential_guidance(registry.load_body(requested))
+        body = sanitize_managed_credential_guidance(registry.load_body(requested))
+        _curator_bump_use(ws, requested)
+        return body
     except KeyError:
         # Not a workspace skill — fall through to check tool packs
         logger.debug("Skill %r not found in workspace, checking tool packs", requested)
@@ -183,6 +195,41 @@ def _build_skill_registry(ws: Path) -> SkillRegistry:
     registry = SkillRegistry()
     registry.register_many(loader.load_from_workspace(ws))
     return registry
+
+
+def _skill_slug_from_relative_path(relative_path: str) -> str | None:
+    """Map a skill ``relative_path`` to its curator slug (the dir/file name
+    directly under ``skills/``). Returns None for anything not under skills/."""
+    parts = Path(relative_path).parts
+    if len(parts) < 2 or parts[0] != "skills":
+        return None
+    second = parts[1]
+    # Flat layout: skills/<slug>.md → slug is the stem.
+    if second.endswith(".md") and len(parts) == 2:
+        return second[: -len(".md")]
+    return second
+
+
+def _curator_bump_use(ws: Path, skill_name: str) -> None:
+    """Best-effort usage telemetry for the skill curator. Never raises.
+
+    Resolves the on-disk slug for ``skill_name`` (via the registry's
+    relative_path) and bumps its use counter. Failures are swallowed so a
+    broken sidecar can never break ``load_skill``.
+    """
+    try:
+        from app.services.skill_curator import bump_skill_use
+
+        slug: str | None = None
+        try:
+            parsed = _build_skill_registry(ws).resolve(skill_name)
+            slug = _skill_slug_from_relative_path(parsed.relative_path)
+        except KeyError:
+            slug = None
+        if slug:
+            bump_skill_use(ws, slug, kind="use")
+    except Exception as exc:  # pragma: no cover - telemetry must never break load
+        logger.debug("[workspace] curator use bump failed for %s: %s", skill_name, exc)
 
 
 def _normalize_skill_folder_name(name: str) -> str:
@@ -413,6 +460,14 @@ def _save_skill(
             )
         except Exception as exc:
             logger.warning("[workspace] Failed to record skill lifecycle for %s: %s", skill_name, exc)
+        try:
+            from app.services.skill_curator import mark_skill_created
+
+            slug = _skill_slug_from_relative_path(rel_path)
+            if slug:
+                mark_skill_created(ws, slug, created_by="agent")
+        except Exception as exc:  # pragma: no cover - telemetry must never break save
+            logger.debug("[workspace] curator created mark failed for %s: %s", skill_name, exc)
         return (
             f"✅ {action} skill at {rel_path}\n"
             f"- name: {skill_name}\n"

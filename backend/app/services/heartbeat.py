@@ -1194,6 +1194,23 @@ async def _maybe_run_skill_distillation(
         return None
 
 
+def _maybe_run_skill_curator(workspace: Path) -> dict | None:
+    """Run the skill curator decay pass for this agent's workspace.
+
+    Counterpart to skill distillation: distillation only adds skills, the
+    curator marks unused agent-authored skills stale and archives long-dormant
+    ones (never deletes). Synchronous file IO; failures are logged, never
+    propagated into the heartbeat tick.
+    """
+    try:
+        from app.services.skill_curator import run_skill_curator_pass
+
+        return run_skill_curator_pass(workspace)
+    except Exception as exc:
+        logger.warning("[Heartbeat] Skill curator pass failed for {}: {}", workspace, exc)
+        return None
+
+
 async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = False):
     """Execute a single heartbeat for an agent.
 
@@ -1601,6 +1618,9 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                         model=model,
                         current_session_id=str(session_id),
                     )
+                    # Negative pressure: decay/archive unused agent-authored
+                    # skills so the catalog doesn't grow unbounded.
+                    _maybe_run_skill_curator(workspace)
             except Exception as _distill_err:
                 logger.warning("[Heartbeat] Skill distillation setup failed for {}: {}", agent_id, _distill_err)
 

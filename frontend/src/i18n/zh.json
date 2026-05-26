@@ -575,7 +575,7 @@
       "month": "本月",
       "maxToolRounds": "最大操作轮次",
       "maxToolRoundsLabel": "每条消息的最大轮次",
-      "maxToolRoundsDesc": "员工每条消息可执行的操作轮次数（搜索、写入等）。默认值：50",
+      "maxToolRoundsDesc": "员工每条消息可执行的操作轮次数（搜索、写入等）。默认值：200",
       "saveSettings": "保存设置",
       "save": "保存",
       "saving": "保存中...",

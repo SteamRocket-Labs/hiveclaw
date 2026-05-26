@@ -74,6 +74,7 @@ _HEARTBEAT_T2_INCREMENTAL_MAX_CHARS = 16_000
 _HEARTBEAT_T3_MAX_CHARS = 8_000
 _HEARTBEAT_EVOLUTION_CONTEXT_MAX_CHARS = 16_000
 _HEARTBEAT_COMPACT_SUMMARY_MAX_CHARS = 6_000
+_HEARTBEAT_MAX_TOOL_ROUNDS = 40
 
 
 def _format_heartbeat_exception(exc: BaseException) -> str:
@@ -1498,7 +1499,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                         on_tool_call=_on_tool_call,
                         tool_executor=_build_heartbeat_tool_executor(agent_id, agent.creator_id),
                         core_tools_only=False,
-                        max_tool_rounds=15,  # Pure curation: OBSERVE ~3 + CURATE ~8 + LOG ~4
+                        max_tool_rounds=_HEARTBEAT_MAX_TOOL_ROUNDS,
                     )
                 ),
                 timeout=_HEARTBEAT_TIMEOUT_SECONDS,

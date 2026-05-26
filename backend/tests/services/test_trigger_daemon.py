@@ -169,6 +169,37 @@ async def test_evaluate_trigger_respects_backoff_until():
 
 
 @pytest.mark.asyncio
+async def test_poll_trigger_respects_five_minute_configured_interval(monkeypatch):
+    import app.services.trigger_daemon as trigger_daemon
+
+    now = datetime.now(timezone.utc)
+    checked = []
+
+    async def fake_poll_check(trigger):
+        checked.append(trigger.id)
+        return True
+
+    monkeypatch.setattr(trigger_daemon, "_poll_check", fake_poll_check)
+    trigger = SimpleNamespace(
+        id=uuid4(),
+        agent_id=uuid4(),
+        name="fast_poll",
+        type="poll",
+        config={"interval_min": 5},
+        is_enabled=True,
+        expires_at=None,
+        max_fires=None,
+        fire_count=0,
+        last_fired_at=now - timedelta(minutes=6),
+        cooldown_seconds=0,
+        created_at=now - timedelta(hours=1),
+    )
+
+    assert await trigger_daemon._evaluate_trigger(trigger, now) is True
+    assert checked == [trigger.id]
+
+
+@pytest.mark.asyncio
 async def test_objective_task_trigger_requires_focus_ref_or_objective_id():
     from app.services.agent_tool_domains.triggers import _handle_set_trigger
 

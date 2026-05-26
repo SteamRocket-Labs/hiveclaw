@@ -395,7 +395,7 @@ async def test_build_heartbeat_tool_executor_enforces_plaza_limits(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_execute_heartbeat_uses_correct_settings(monkeypatch):
-    """Verify invoke_agent is called with core_tools_only=False, max_tool_rounds=15,
+    """Verify invoke_agent is called with core_tools_only=False, max_tool_rounds=40,
     and a heartbeat session is created."""
     from app.services.heartbeat import _execute_heartbeat
 
@@ -448,7 +448,7 @@ async def test_execute_heartbeat_uses_correct_settings(monkeypatch):
 
     # Core assertions — the critical fixes
     assert request.core_tools_only is False, "Heartbeat should have full tool access"
-    assert request.max_tool_rounds == 15, "Heartbeat should stay within the curated 15-round budget"
+    assert request.max_tool_rounds == 40, "Heartbeat should have enough rounds for multi-step curation"
     assert request.session_context is not None
     assert request.session_context.source == "heartbeat"
     assert request.session_context.session_id is not None, "Heartbeat must have session_id for memory"

@@ -46,12 +46,14 @@ class LoopGuard:
         *,
         total_tool_threshold: int = 100,
         failed_tool_threshold: int = 12,
-        identical_tool_threshold: int = 3,
+        identical_tool_threshold: int = 5,
+        repeated_failure_threshold: int = 4,
         repeated_text_threshold: int = 3,
     ) -> None:
         self.total_tool_threshold = total_tool_threshold
         self.failed_tool_threshold = failed_tool_threshold
         self.identical_tool_threshold = identical_tool_threshold
+        self.repeated_failure_threshold = repeated_failure_threshold
         self.repeated_text_threshold = repeated_text_threshold
         self.total_tool_calls = 0
         self.failed_tool_calls = 0
@@ -85,7 +87,7 @@ class LoopGuard:
         self._failure_counts[key] = self._failure_counts.get(key, 0) + 1
         if self.failed_tool_calls > self.failed_tool_threshold:
             return self._decision("failed_tool_calls", tool_name, args, f"failed tool calls exceeded {self.failed_tool_threshold}")
-        if self._failure_counts[key] >= 2:
+        if self._failure_counts[key] >= self.repeated_failure_threshold:
             return self._decision(
                 "repeated_tool_failure",
                 tool_name,

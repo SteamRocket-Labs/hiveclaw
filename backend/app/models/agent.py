@@ -60,7 +60,7 @@ class Agent(Base):
     last_monthly_reset: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     tokens_used_total: Mapped[int] = mapped_column(Integer, default=0)
     context_window_size: Mapped[int] = mapped_column(Integer, default=100)
-    max_tool_rounds: Mapped[int] = mapped_column(Integer, default=200)
+    max_tool_rounds: Mapped[int] = mapped_column(Integer, default=200, server_default="200")
     execution_mode: Mapped[str] = mapped_column(String(30), default="standard", nullable=False, server_default="standard")
     smart_model_routing: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 

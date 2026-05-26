@@ -134,7 +134,7 @@ class TestOperationalInvariants:
         # Operational guardrail that protects token budget.
         assert "Maximum" in template_text
         assert "tool rounds" in template_text
-        assert "15" in template_text
+        assert "40" in template_text
 
     def test_template_does_not_instruct_external_actions(self, template_text: str) -> None:
         # Heartbeat must not post to plaza or send outbound messages.

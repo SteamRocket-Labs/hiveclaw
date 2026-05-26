@@ -17,7 +17,7 @@ def test_loop_guard_detects_identical_tool_args() -> None:
 def test_loop_guard_detects_repeated_tool_failures() -> None:
     from app.kernel.loop_guard import LoopGuard
 
-    guard = LoopGuard(failed_tool_threshold=2)
+    guard = LoopGuard(repeated_failure_threshold=2)
     guard.observe_tool_result("web_search", {"q": "deploy"}, "[Tool execution error] timeout")
     decision = guard.observe_tool_result("web_search", {"q": "deploy"}, "[Tool execution error] timeout")
 
@@ -49,3 +49,35 @@ def test_loop_guard_allows_many_distinct_successful_tool_calls() -> None:
             {"url": f"https://arxiv.org/abs/2501.{index:05d}", "max_chars": 1500},
         )
         assert decision is None
+
+
+def test_loop_guard_default_allows_short_retry_burst_for_same_failure() -> None:
+    from app.kernel.loop_guard import LoopGuard
+
+    guard = LoopGuard()
+    args = {"approval_code": "FIN", "status": "PENDING"}
+    result = "[Tool execution error] RuntimeError: Feishu query_approval_instances HTTP 400"
+
+    for _ in range(3):
+        assert guard.observe_tool_call("feishu_approval_query", args) is None
+        assert guard.observe_tool_result("feishu_approval_query", args, result) is None
+
+    assert guard.observe_tool_call("feishu_approval_query", args) is None
+    decision = guard.observe_tool_result("feishu_approval_query", args, result)
+
+    assert decision is not None
+    assert decision.reason == "repeated_tool_failure"
+
+
+def test_loop_guard_default_identical_tool_args_threshold_is_lenient_but_bounded() -> None:
+    from app.kernel.loop_guard import LoopGuard
+
+    guard = LoopGuard()
+
+    for _ in range(4):
+        assert guard.observe_tool_call("feishu_approval_query", {"approval_code": "FIN"}) is None
+
+    decision = guard.observe_tool_call("feishu_approval_query", {"approval_code": "FIN"})
+
+    assert decision is not None
+    assert decision.reason == "identical_tool_args"

@@ -186,8 +186,9 @@ If nothing needs attention: reply `HEARTBEAT_OK` then the outcome line.
 </required_output>
 
 <constraints>
-- Maximum **15** tool rounds per tick. Budget: phase 1 ≈ 3, phase 2 ≈ 8,
-  phase 3 ≈ 4.
+- Maximum **40** tool rounds per tick. Budget for normal runs: phase 1 ≈ 3,
+  phase 2 ≈ 8, phase 3 ≈ 4; use the extra budget only when curation requires
+  multi-step evidence gathering or recovery.
 - Never skip the `## Required Output` tags — downstream parsers depend on
   them.
 - Do not rewrite or reorder existing T3 entries. Dream owns reorganization.

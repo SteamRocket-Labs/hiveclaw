@@ -684,7 +684,7 @@
       "webhookRateLimitDesc": "Maximum incoming events per minute from external services",
       "maxToolRounds": "Max Action Rounds",
       "maxToolRoundsLabel": "Max rounds per message",
-      "maxToolRoundsDesc": "How many action rounds the employee can perform per message (search, write, etc.). Default: 50",
+      "maxToolRoundsDesc": "How many action rounds the employee can perform per message (search, write, etc.). Default: 200",
       "welcomeMessage": "Welcome Message",
       "welcomeMessageDesc": "Greeting shown when someone starts a new conversation. Supports Markdown. Leave empty to skip.",
       "welcomeMessagePlaceholder": "e.g. Hi! I'm your digital assistant. How can I help you today?",

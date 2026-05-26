@@ -42,7 +42,7 @@ from app.services.trigger_preflight import (
 TICK_INTERVAL = 15  # seconds
 DEDUP_WINDOW = 120  # seconds — same agent won't be invoked twice within this window
 MAX_AGENT_CHAIN_DEPTH = 5  # A→B→A→B→A max depth before stopping
-MIN_POLL_INTERVAL_MINUTES = 30  # minimum poll interval to prevent token waste
+MIN_POLL_INTERVAL_MINUTES = 5  # align with tenant/agent min_poll_interval_floor defaults
 MAX_FIRES_PER_HOUR = 6   # hard cap: ~10 min minimum interval between fires
 _TRIGGER_FIRE_LEASE_TTL_SECONDS = 600
 

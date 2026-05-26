@@ -97,7 +97,7 @@ these tools, not just describe them.
 ### Wiki
 | Tool | Purpose | Key Params |
 |------|---------|------------|
-| `feishu_wiki_list` | List wiki pages | `node_token` (page URL/token or `/wiki/space/<space_id>` URL), optional `space_id`, optional `recursive` |
+| `feishu_wiki_list` | List wiki pages | `node_token` (page URL/token or `/wiki/space/<space-id>` URL), optional space ID, optional `recursive` |
 
 ### Sheets
 | Tool | Purpose | Key Params |

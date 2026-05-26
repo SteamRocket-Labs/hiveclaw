@@ -127,14 +127,14 @@ def _unregistered_system_skill_dirs(backend_root: Path | None = None) -> frozens
         return frozenset()
 
     try:
-        from app.services.skill_seeder import BUILTIN_SKILLS
+        from app.services.skill_seeder import BUILTIN_SKILLS, RETIRED_BUILTIN_SKILL_FOLDERS
     except Exception as exc:
         logger.debug("[tool-audit] cannot load BUILTIN_SKILLS: %s", exc)
         return frozenset()
 
     registered = {s["folder_name"] for s in BUILTIN_SKILLS}
     on_disk = {p.parent.name for p in sys_skills_root.glob("*/SKILL.md")}
-    return frozenset(on_disk - registered)
+    return frozenset(on_disk - registered - RETIRED_BUILTIN_SKILL_FOLDERS)
 
 
 def audit_tool_coverage(*, backend_root: Path | None = None) -> ToolAuditReport:

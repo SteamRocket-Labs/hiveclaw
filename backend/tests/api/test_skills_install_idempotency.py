@@ -44,6 +44,7 @@ class _SkillSession:
 async def test_save_skill_to_db_can_return_existing_skill(monkeypatch):
     import app.api.skills as skills_api
 
+    tenant_id = str(uuid4())
     existing = SimpleNamespace(id=uuid4(), name="Market Research", folder_name="market-research-agent")
     session = _SkillSession([existing])
     monkeypatch.setattr(skills_api, "async_session", lambda: session)
@@ -55,7 +56,7 @@ async def test_save_skill_to_db_can_return_existing_skill(monkeypatch):
         category="clawhub-tier1",
         icon="",
         files=[{"path": "SKILL.md", "content": "# Skill"}],
-        tenant_id=None,
+        tenant_id=tenant_id,
         on_conflict="return_existing",
     )
 

@@ -40,6 +40,7 @@ class ActionPreflightInput:
     sensitivity: SensitivityLevel = SensitivityLevel.PL1_PUBLIC
     runtime_permission_allowed: bool = True
     company_boundary_conflict: bool = False
+    explicit_user_authorized: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +102,13 @@ class ActionPreflightService:
                 requires_checkpoint=True,
                 requires_audit=True,
                 escalation_target="company_admin",
+            )
+
+        if request.explicit_user_authorized and request.charter_zone == CharterZone.CONFIRM_FIRST:
+            return ActionPreflightResult(
+                decision=PreflightDecision.DO,
+                reasons=["explicit_user_authorization"],
+                requires_audit=True,
             )
 
         high_axes = _axes_at_level(request, BoundaryAxisLevel.HIGH)

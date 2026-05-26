@@ -1,10 +1,19 @@
 """Tests for the @tool decorator and ToolMeta."""
 
+import importlib
+
+from app.tools.collector import HANDLER_MODULES
 from app.tools.decorator import ToolMeta, clear_registry, get_all_registered_tools, tool
 
 
 def setup_function():
     clear_registry()
+
+
+def teardown_function():
+    clear_registry()
+    for module_name in HANDLER_MODULES:
+        importlib.reload(importlib.import_module(module_name))
 
 
 def test_tool_decorator_registers_handler():

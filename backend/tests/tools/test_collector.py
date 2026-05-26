@@ -13,6 +13,12 @@ def setup_function():
     clear_registry()
 
 
+def teardown_function():
+    clear_registry()
+    for module_name in HANDLER_MODULES:
+        importlib.reload(importlib.import_module(module_name))
+
+
 def _register_sample_tools():
     """Register a few sample tools for testing."""
 

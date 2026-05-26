@@ -52,6 +52,11 @@ _EXTERNAL_VISIBLE_TOOLS = frozenset(
         "plaza_add_comment",
     }
 )
+_DELEGATED_USER_AUTHORIZED_TOOLS = frozenset(
+    {
+        "send_feishu_message",
+    }
+)
 _COMPANY_CONFLICT_PATTERNS = (
     "bypass company policy",
     "share credentials",
@@ -394,9 +399,11 @@ class ToolRuntimeService:
         if not self.preflight_enabled or self.preflight_service is None:
             return None
 
-        preflight_input = _build_tool_preflight_input(tool_name, arguments)
+        preflight_input = _build_tool_preflight_input(tool_name, arguments, runtime_context=runtime_context)
         preflight = self.preflight_service.evaluate(preflight_input)
         if preflight.decision == PreflightDecision.DO:
+            if preflight.requires_audit:
+                await self._log_preflight_decision(tool_name, runtime_context, preflight)
             return None
 
         checkpoint_id = ""
@@ -459,12 +466,22 @@ class ToolRuntimeService:
         )
 
 
-def _build_tool_preflight_input(tool_name: str, arguments: dict) -> ActionPreflightInput:
+def _build_tool_preflight_input(
+    tool_name: str,
+    arguments: dict,
+    *,
+    runtime_context: ToolExecutionContext | None = None,
+) -> ActionPreflightInput:
     args_text = _json.dumps(arguments, ensure_ascii=False, default=str)
     privacy = PrivacyLayer().classify_and_mask(args_text)
     sensitivity = privacy.sensitivity
     lower_action = f"{tool_name} {args_text}".lower()
     company_conflict = any(pattern in lower_action for pattern in _COMPANY_CONFLICT_PATTERNS)
+    execution_identity = getattr(runtime_context, "execution_identity", None) if runtime_context is not None else None
+    explicit_user_authorized = (
+        tool_name in _DELEGATED_USER_AUTHORIZED_TOOLS
+        and getattr(execution_identity, "identity_type", None) == "delegated_user"
+    )
 
     if tool_name in _EXTERNAL_VISIBLE_TOOLS:
         return ActionPreflightInput(
@@ -477,6 +494,7 @@ def _build_tool_preflight_input(tool_name: str, arguments: dict) -> ActionPrefli
             charter_zone=CharterZone.CONFIRM_FIRST,
             sensitivity=sensitivity,
             company_boundary_conflict=company_conflict,
+            explicit_user_authorized=explicit_user_authorized,
         )
 
     return ActionPreflightInput(

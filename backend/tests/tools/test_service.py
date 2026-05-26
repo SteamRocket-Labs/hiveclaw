@@ -298,6 +298,55 @@ async def test_tool_runtime_service_preflight_asks_before_external_visible_tool(
 
 
 @pytest.mark.asyncio
+async def test_tool_runtime_service_allows_delegated_user_feishu_message():
+    from app.core.execution_context import ExecutionIdentity
+    from app.services.decision_trace import DecisionTraceStore
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id="tenant-1",
+        workspace=Path("/tmp/ws"),
+        execution_identity=ExecutionIdentity(
+            identity_type="delegated_user",
+            identity_id=uuid4(),
+            label="Rocky via web",
+        ),
+    )
+    registry = _FakeRegistry("SENT")
+    traces = DecisionTraceStore()
+
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(SimpleNamespace(), SimpleNamespace()),
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+        decision_trace_store=traces,
+    )
+
+    result = await service.execute(
+        "send_feishu_message",
+        {
+            "open_id": "ou_example",
+            "message": "明天上午 9:00-9:30，常春藤办公室，讨论 Agent 新需求，有空吗？",
+        },
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+    )
+
+    assert result == "SENT"
+    assert len(registry.calls) == 1
+    assert registry.calls[0].tool_name == "send_feishu_message"
+    assert traces.decisions() == []
+
+
+@pytest.mark.asyncio
 async def test_tool_runtime_service_preflight_refuses_credential_arguments():
     from app.services.decision_trace import DecisionTraceStore
     from app.tools.runtime import ToolExecutionContext

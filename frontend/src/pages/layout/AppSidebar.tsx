@@ -2,7 +2,6 @@ import type { ReactNode, RefObject } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
-  IconHome,
   IconPlus,
   IconSettings,
   IconUser,
@@ -13,7 +12,6 @@ import {
   IconChevronsLeft,
   IconChevronsRight,
   IconBell,
-  IconBuildingMonument,
   IconSearch,
   IconX,
   IconPin,
@@ -21,10 +19,10 @@ import {
   IconArrowUpRight,
   IconBuilding,
   IconChevronUp,
+  IconUsers,
 } from '@tabler/icons-react';
 
 const sidebarIcons = {
-  home: <IconHome size={16} stroke={1.5} />,
   plus: <IconPlus size={16} stroke={1.5} />,
   user: <IconUser size={16} stroke={1.5} />,
   sun: <IconSun size={16} stroke={1.5} />,
@@ -146,13 +144,9 @@ export default function AppSidebar({
         <div className="sidebar-section">
           <NavLink to="/plaza" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
             <span className="sidebar-item-icon" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-              <IconBuildingMonument size={14} stroke={1.5} />
+              <IconUsers size={14} stroke={1.5} />
             </span>
-            <span className="sidebar-item-text">{t('nav.plaza', 'Plaza')}</span>
-          </NavLink>
-          <NavLink to="/dashboard" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
-            <span className="sidebar-item-icon" style={{ display: 'flex' }}>{sidebarIcons.home}</span>
-            <span className="sidebar-item-text">{t('nav.dashboard')}</span>
+            <span className="sidebar-item-text">{t('nav.plaza', 'Agent Circle')}</span>
           </NavLink>
         </div>
       </div>

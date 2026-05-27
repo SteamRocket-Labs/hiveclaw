@@ -50,6 +50,7 @@ TOOL_PACKS: tuple[ToolPackSpec, ...] = (
             "feishu_base_record_upsert",
             "feishu_base_record_delete",
             "feishu_approval_create",
+            "feishu_approval_definition",
             "feishu_approval_query",
             "feishu_approval_get",
             "feishu_task_comment",

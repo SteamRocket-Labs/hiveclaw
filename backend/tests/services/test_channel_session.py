@@ -13,6 +13,12 @@ class _ScalarResult:
     def scalar_one_or_none(self):
         return self._value
 
+    def scalars(self):
+        return self
+
+    def all(self):
+        return list(self._value or [])
+
 
 class _FakeDB:
     def __init__(self, responses):
@@ -62,4 +68,39 @@ async def test_find_or_create_channel_session_reuses_legacy_feishu_open_id_sessi
     assert session is legacy_session
     assert legacy_session.external_conv_id == "feishu_p2p_user_123"
     assert legacy_session.user_id == user_id
+    assert db.flush_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_start_new_channel_session_archives_active_external_conversation():
+    from app.services.channel_session import start_new_channel_session
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    old_session = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        user_id=user_id,
+        external_conv_id="feishu_p2p_user_123",
+        title="Old Session",
+        source_channel="feishu",
+        last_message_at=None,
+    )
+    delivery_target = {"channel": "feishu", "receive_id": "ou_123"}
+    db = _FakeDB([[old_session]])
+
+    new_session = await start_new_channel_session(
+        db=db,
+        agent_id=agent_id,
+        user_id=user_id,
+        external_conv_id="feishu_p2p_user_123",
+        source_channel="feishu",
+        title="New Session",
+        delivery_target=delivery_target,
+    )
+
+    assert old_session.external_conv_id.startswith("feishu_p2p_user_123#archived:")
+    assert new_session.external_conv_id == "feishu_p2p_user_123"
+    assert new_session.delivery_target_json["session_id"] == str(new_session.id)
+    assert db.added == [new_session]
     assert db.flush_calls == 1

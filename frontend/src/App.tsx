@@ -12,7 +12,7 @@ import { lazy, Suspense, useEffect, useState } from 'react';
 import { authApi } from './api/domains/auth';
 import { get } from './api/core';
 import { ProtectedRoute, WorkspaceGuard, AdminGuard } from './guards';
-import { WORKSPACE_SECTIONS } from './surfaces/workspace/sections';
+import { WORKSPACE_SETTINGS_SECTIONS } from './surfaces/workspace/sections';
 
 const Login = lazy(() => import('./pages/Login'));
 const SsoEntry = lazy(() => import('./pages/SsoEntry'));
@@ -120,7 +120,7 @@ export default function App() {
                     <Route path="/" element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
 
                         <Route index element={<Navigate to="/plaza" replace />} />
-                        <Route path="dashboard" element={<Dashboard />} />
+                        <Route path="dashboard" element={<Navigate to="/enterprise/dashboard" replace />} />
                         <Route path="plaza" element={<Plaza />} />
                         <Route path="agents/new" element={<AgentCreate />} />
                         <Route path="agents/:id" element={<AgentDetail />} />
@@ -130,8 +130,9 @@ export default function App() {
 
                     {/* ─── Workspace surface ─── */}
                     <Route path="/enterprise" element={<ProtectedRoute><WorkspaceGuard><WorkspaceLayout /></WorkspaceGuard></ProtectedRoute>}>
-                        <Route index element={<Navigate to="info" replace />} />
-                        {WORKSPACE_SECTIONS.map((section) => (
+                        <Route index element={<Navigate to="dashboard" replace />} />
+                        <Route path="dashboard" element={<Dashboard />} />
+                        {WORKSPACE_SETTINGS_SECTIONS.map((section) => (
                             <Route
                                 key={section.tab}
                                 path={section.slug}

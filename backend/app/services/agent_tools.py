@@ -197,6 +197,7 @@ _FEISHU_TOOL_NAMES = {
     "feishu_base_record_upload_attachment",
     "feishu_base_record_upsert",
     "feishu_approval_create",
+    "feishu_approval_definition",
     "feishu_approval_query",
     "feishu_approval_get",
     "feishu_task_comment",
@@ -735,6 +736,7 @@ from app.services.agent_tool_domains.feishu_base import (  # noqa: E402
 )
 from app.services.agent_tool_domains.feishu_approval import (  # noqa: E402
     _feishu_approval_create as _feishu_approval_create,
+    _feishu_approval_definition as _feishu_approval_definition,
     _feishu_approval_query as _feishu_approval_query,
     _feishu_approval_get as _feishu_approval_get,
 )

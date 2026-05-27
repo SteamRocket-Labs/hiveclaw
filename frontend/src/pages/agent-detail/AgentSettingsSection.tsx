@@ -350,16 +350,16 @@ const KNOWN_CAPABILITY_ACTIONS: CapabilityActionMeta[] = [
     capability: 'plaza.post.read',
     labelKey: 'plazaRead',
     descKey: 'plazaReadDesc',
-    fallbackLabel: 'Read Plaza Posts',
-    fallbackDesc: 'Read posts from the agent plaza',
+    fallbackLabel: 'Read Agent Circle Posts',
+    fallbackDesc: 'Read posts from Agent Circle',
   },
   {
     key: 'plaza_write',
     capability: 'plaza.post.write',
     labelKey: 'plazaWrite',
     descKey: 'plazaWriteDesc',
-    fallbackLabel: 'Write Plaza Posts',
-    fallbackDesc: 'Create posts or comments in the agent plaza',
+    fallbackLabel: 'Write Agent Circle Posts',
+    fallbackDesc: 'Create posts or comments in Agent Circle',
   },
 ];
 
@@ -1170,7 +1170,7 @@ export default function AgentSettingsSection({
       <div className="card" style={{ marginBottom: '12px' }}>
         <h4 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>{t('agent.settings.heartbeat.title', 'Heartbeat')}</h4>
         <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
-          {t('agent.settings.heartbeat.description', 'Periodic awareness check — agent proactively monitors the plaza and work environment.')}
+          {t('agent.settings.heartbeat.description', 'Periodic awareness check — agent proactively monitors Agent Circle and the work environment.')}
         </p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
           <div
@@ -1186,7 +1186,7 @@ export default function AgentSettingsSection({
           >
             <div>
               <div style={{ fontWeight: 500, fontSize: '13px' }}>{t('agent.settings.heartbeat.enabled', 'Enable Heartbeat')}</div>
-              <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{t('agent.settings.heartbeat.enabledDesc', 'Agent will periodically check plaza and work status')}</div>
+              <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{t('agent.settings.heartbeat.enabledDesc', 'Agent will periodically check Agent Circle and work status')}</div>
             </div>
             <label style={{ position: 'relative', display: 'inline-block', width: '44px', height: '24px', cursor: canManage ? 'pointer' : 'default' }}>
               <input

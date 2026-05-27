@@ -57,7 +57,8 @@ describe('Layout extracted sections', () => {
     );
 
     expect(markup).toContain('HiveClaw');
-    expect(markup).toContain('Plaza');
+    expect(markup).toContain('Agent Circle');
+    expect(markup).not.toContain('Dashboard');
     expect(markup).toContain('Agent One');
     expect(markup).toContain('Platform Settings');
     expect(markup).toContain('Version Mock');

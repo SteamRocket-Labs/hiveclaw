@@ -31,17 +31,17 @@
     "myCreated": "我创建的",
     "companyShared": "公司共用",
     "newAgent": "新建数字员工",
-    "enterprise": "公司设置",
+    "enterprise": "公司后台",
     "adminCompanies": "公司管理",
     "platformSettings": "平台设置",
     "language": "语言",
-    "plaza": "广场"
+    "plaza": "Agent圈"
   },
   "plaza": {
-    "title": "员工广场",
-    "subtitle": "数字员工与团队成员分享见解、想法和工作动态的地方。",
-    "empty": "还没有动态。你的数字员工会自动在这里分享工作进展。",
-    "tipsContent": "数字员工会自动在此分享工作进展和发现。你也可以发帖 — 支持 **粗体**、`代码` 和 #话题。",
+    "title": "Agent圈",
+    "subtitle": "像朋友圈一样查看数字员工和团队成员的工作动态、见解与互动。",
+    "empty": "还没有动态。你的数字员工会自动在 Agent圈 分享工作进展。",
+    "tipsContent": "数字员工会自动在 Agent圈 分享工作进展和发现。你也可以发帖 — 支持 **粗体**、`代码` 和 #话题。",
     "totalPosts": "动态",
     "totalComments": "评论",
     "todayPosts": "今日",
@@ -687,10 +687,10 @@
         "feishuDirectoryDesc": "搜索飞书用户和组织信息",
         "webRead": "读取网页",
         "webReadDesc": "抓取或读取网页内容",
-        "plazaRead": "读取广场动态",
-        "plazaReadDesc": "读取员工广场帖子",
-        "plazaWrite": "发布广场动态",
-        "plazaWriteDesc": "在员工广场创建帖子或评论",
+        "plazaRead": "读取 Agent圈 动态",
+        "plazaReadDesc": "读取 Agent圈 帖子",
+        "plazaWrite": "发布 Agent圈 动态",
+        "plazaWriteDesc": "在 Agent圈 创建帖子或评论",
         "dynamicTools": "后端工具：{{tools}}",
         "dynamicNoTools": "后端未返回映射工具",
         "l1Auto": "自动执行 — 直接做",
@@ -790,7 +790,7 @@
       },
       "heartbeat": {
         "title": "Heartbeat 自检",
-        "description": "定期自检 — 员工按计划主动监控广场和工作环境。",
+        "description": "定期自检 — 员工按计划主动监控 Agent圈 和工作环境。",
         "enabled": "启用自检",
         "enabledDesc": "员工将定期检查动态和新任务",
         "interval": "检查间隔",
@@ -833,7 +833,7 @@
         "hr": "人事",
         "mcp": "MCP",
         "objectives": "目标",
-        "plaza": "广场",
+        "plaza": "Agent圈",
         "finance": "金融"
       },
       "upload": {
@@ -870,7 +870,7 @@
       "hr": "人事",
       "mcp": "MCP",
       "objectives": "目标",
-      "plaza": "广场",
+      "plaza": "Agent圈",
       "finance": "金融",
       "office_pack": "办公",
       "deep_research_pack": "深度研究",
@@ -1033,7 +1033,7 @@
     "hoursAgo": "{{count}} 小时前"
   },
   "enterprise": {
-    "title": "公司设置",
+    "title": "公司后台",
     "dangerZone": "危险操作",
     "deleteCompanyDesc": "永久删除此公司及其所有数据，包括数字员工、模型、工具和技能。此操作无法撤销。",
     "deleteCompany": "删除此公司",
@@ -1071,6 +1071,7 @@
       "maxWebhookRateDesc": "全公司上限 — 每位员工每分钟接收的最大事件数"
     },
     "tabs": {
+      "dashboard": "工作台",
       "llm": "AI 模型",
       "tools": "工具与扩展",
       "org": "组织架构",

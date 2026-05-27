@@ -25,7 +25,7 @@ const getCategoryLabels = (t: any): Record<string, string> => ({
   hr: t('agent.toolCategories.hr', 'HR'),
   mcp: t('agent.toolCategories.mcp', 'MCP'),
   objectives: t('agent.toolCategories.objectives', 'Objectives'),
-  plaza: t('agent.toolCategories.plaza', 'Plaza'),
+  plaza: t('agent.toolCategories.plaza', 'Agent Circle'),
   finance: t('agent.toolCategories.finance', 'Finance'),
   office_pack: t('agent.toolCategories.office_pack', 'Office'),
   deep_research_pack: t('agent.toolCategories.deep_research_pack', 'Deep Research'),

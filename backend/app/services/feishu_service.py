@@ -429,6 +429,15 @@ class FeishuService:
             )
         return self._parse_api_response(resp, stage="create_approval_instance").get("data", {})
 
+    async def get_approval_definition(self, app_id: str, app_secret: str, approval_code: str) -> dict:
+        tenant_token = await self.get_tenant_access_token(app_id, app_secret)
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"https://open.feishu.cn/open-apis/approval/v4/approvals/{approval_code}",
+                headers={"Authorization": f"Bearer {tenant_token}"},
+            )
+        return self._parse_api_response(resp, stage="get_approval_definition").get("data", {})
+
     async def query_approval_instances(
         self,
         app_id: str,

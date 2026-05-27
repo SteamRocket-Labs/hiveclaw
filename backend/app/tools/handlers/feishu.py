@@ -899,6 +899,33 @@ async def feishu_approval_create(agent_id: uuid.UUID, arguments: dict) -> str:
     return await _feishu_approval_create(agent_id, arguments)
 
 
+# -- feishu_approval_definition ----------------------------------------------
+
+@tool(ToolMeta(
+    name="feishu_approval_definition",
+    description="Read a Feishu approval definition and list its real form widget IDs, field names, and types.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "approval_code": {"type": "string", "description": "Approval definition code."},
+        },
+        "required": ["approval_code"],
+    },
+    category="feishu",
+    display_name="Feishu Approval Definition",
+    icon="📐",
+    pack="feishu_pack",
+    adapter="agent_args",
+    read_only=True,
+    governance="safe",
+))
+async def feishu_approval_definition(agent_id: uuid.UUID, arguments: dict) -> str:
+    if not await _check_feishu_configured(agent_id):
+        return _FEISHU_NOT_CONFIGURED_MSG
+    from app.services.agent_tools import _feishu_approval_definition
+    return await _feishu_approval_definition(agent_id, arguments)
+
+
 # -- feishu_approval_query ----------------------------------------------------
 
 @tool(ToolMeta(

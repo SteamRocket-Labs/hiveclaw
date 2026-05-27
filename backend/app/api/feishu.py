@@ -36,6 +36,13 @@ _APPROVAL_ID_PATTERN = (
 )
 _APPROVE_TEXT_PATTERN = r"^\s*(放行|批准|同意|通过|approve|approved)(?:\s|[!！。,.，]|$)"
 _REJECT_TEXT_PATTERN = r"^\s*(拒绝|驳回|不通过|reject|rejected|deny|denied)(?:\s|[!！。,.，]|$)"
+_NEW_SESSION_TEXT_PATTERN = r"^\s*/(?:new|reset|restart|新会话|新建会话)(?:\s|$)"
+
+
+def _is_feishu_new_session_command(text: str) -> bool:
+    import re
+
+    return bool(re.search(_NEW_SESSION_TEXT_PATTERN, text or "", re.IGNORECASE))
 
 
 def _parse_feishu_text_approval_action(text: str) -> str | None:
@@ -1011,7 +1018,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             from app.models.audit import ChatMessage
             from app.models.agent import Agent as AgentModel
             from app.models.chat_session import ChatSession
-            from app.services.channel_session import find_or_create_channel_session
+            from app.services.channel_session import find_or_create_channel_session, start_new_channel_session
 
             agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
             agent_obj = agent_r.scalar_one_or_none()
@@ -1052,6 +1059,32 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     profile=sender_profile,
                 )
             platform_user_id = resolved_user.id if resolved_user else creator_id
+
+            if _is_feishu_new_session_command(user_text):
+                _new_sess = await start_new_channel_session(
+                    db=db,
+                    agent_id=agent_id,
+                    user_id=platform_user_id,
+                    external_conv_id=conv_id,
+                    source_channel="feishu",
+                    title="New Session",
+                    legacy_external_conv_ids=legacy_conv_ids,
+                    delivery_target=delivery_target,
+                )
+                session_conv_id = str(_new_sess.id)
+                delivery_target["session_id"] = session_conv_id
+                _new_sess.delivery_target_json = delivery_target
+                await db.commit()
+                await feishu_service.send_message(
+                    config.app_id,
+                    config.app_secret,
+                    delivery_target["receive_id"],
+                    "text",
+                    json.dumps({"text": "已开启新会话。接下来的消息会从新的上下文开始。"}, ensure_ascii=False),
+                    receive_id_type=delivery_target["receive_id_type"],
+                    stage="new_session_ack",
+                )
+                return {"code": 0, "msg": "new session created"}
 
             approval_shortcut = await _try_resolve_feishu_text_approval(
                 db=db,

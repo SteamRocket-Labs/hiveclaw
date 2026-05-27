@@ -1,9 +1,10 @@
-import { IconBrain, IconChecklist, IconFileText, IconRobot, IconSettings, IconShieldCheck, IconUserStar, IconUsers } from '@tabler/icons-react';
+import { IconBrain, IconChecklist, IconFileText, IconLayoutDashboard, IconRobot, IconSettings, IconShieldCheck, IconUserStar, IconUsers } from '@tabler/icons-react';
 
 import SurfaceLayout from '../shared/SurfaceLayout';
 import { WORKSPACE_SECTIONS } from './sections';
 
 const ICONS = {
+  dashboard: <IconLayoutDashboard size={16} stroke={1.5} />,
   info: <IconFileText size={16} stroke={1.5} />,
   llm: <IconRobot size={16} stroke={1.5} />,
   memory: <IconBrain size={16} stroke={1.5} />,
@@ -22,7 +23,7 @@ export default function WorkspaceLayout() {
   return (
     <SurfaceLayout
       headingKey="nav.enterprise"
-      headingFallback="Company Settings"
+      headingFallback="Company Admin"
       navItems={WORKSPACE_SECTIONS.map((section) => ({
         to: section.path,
         labelKey: section.labelKey,

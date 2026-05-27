@@ -88,6 +88,7 @@ CAPABILITY_MAP: dict[str, str] = {
     "feishu_task_complete": "channel.feishu.task",
     "feishu_task_comment": "channel.feishu.task",
     "feishu_approval_create": "channel.feishu.approval",
+    "feishu_approval_definition": "channel.feishu.approval",
     "feishu_approval_query": "channel.feishu.approval",
     "feishu_approval_get": "channel.feishu.approval",
     "read_emails": "channel.email.read",

@@ -72,6 +72,7 @@ def test_pack_catalog_feishu_matches_current_tool_surface():
     assert "feishu_base_record_delete" in feishu["tools"]
     assert "feishu_doc_delete" in feishu["tools"]
     assert "feishu_approval_create" in feishu["tools"]
+    assert "feishu_approval_definition" in feishu["tools"]
     assert "feishu_approval_query" in feishu["tools"]
     assert "feishu_approval_get" in feishu["tools"]
 

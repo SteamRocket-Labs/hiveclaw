@@ -21,6 +21,7 @@ tools:
   - feishu_base_record_delete
   - feishu_base_record_upload_attachment
   - feishu_approval_create
+  - feishu_approval_definition
   - feishu_approval_query
   - feishu_approval_get
   - feishu_task_list
@@ -120,7 +121,8 @@ these tools, not just describe them.
 ### Approvals
 | Tool | Purpose | Key Params |
 |------|---------|------------|
-| `feishu_approval_create` | Create an approval instance | `approval_code` (**required**), `user_id` (**required**, pass the submitter's `user_id` by default; `open_id` also works), `form` (**required**) |
+| `feishu_approval_create` | Create an approval instance | `approval_code` (**required**), `user_id` (**required**, pass the submitter's `user_id` by default; `open_id` also works), `form` (**required**; prefer a field-name object like `{"项目名称":"测试"}`; the tool maps names to widget IDs from the approval definition) |
+| `feishu_approval_definition` | Inspect an approval definition | `approval_code` (**required**); returns form widget IDs, names, and types |
 | `feishu_approval_query` | Query approval instances | `approval_code` (**required**), optional `status` filter |
 | `feishu_approval_get` | Read one approval instance | `instance_id` |
 
@@ -180,9 +182,10 @@ these tools, not just describe them.
 
 ### Work with Approvals
 1. Confirm the tenant's real `approval_code` (ask the user if unknown)
-2. `feishu_approval_create` to submit
-3. `feishu_approval_query(approval_code="...", status="APPROVED")` to filter by status
-4. `feishu_approval_get(instance_id="...")` when you already know the instance
+2. If field names are uncertain, call `feishu_approval_definition(approval_code="...")`
+3. `feishu_approval_create` to submit; prefer `form` as a plain field-name object, not guessed widget IDs
+4. `feishu_approval_query(approval_code="...", status="APPROVED")` to filter by status
+5. `feishu_approval_get(instance_id="...")` when you already know the instance
 
 ### Calendar — Scheduling Meetings
 Calendar in this platform is **agent-first**:
@@ -248,6 +251,7 @@ Output: new field name + Base URL, confirmed by tool response.
 - Use real tokens/IDs from tool responses. Feishu URLs can be passed directly to doc/sheet tools — they parse the token automatically
 - For `feishu_doc_share`, always include the `action` parameter (`add`/`remove`/`list`)
 - For approvals, ask the user for the real `approval_code` when it's unknown
+- For approvals, do not ask the user for widget/control IDs first; call `feishu_approval_definition` or pass field names to `feishu_approval_create`
 
 ### Be Proactive with Calendar
 When someone asks you to set up a meeting, act directly:

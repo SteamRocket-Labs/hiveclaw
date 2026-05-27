@@ -7,12 +7,13 @@ import {
 } from './sections';
 
 describe('workspace section routing', () => {
-  it('uses company info as the default workspace landing page', () => {
-    expect(WORKSPACE_DEFAULT_PATH).toBe('/enterprise/info');
+  it('uses the company workbench as the default workspace landing page', () => {
+    expect(WORKSPACE_DEFAULT_PATH).toBe('/enterprise/dashboard');
   });
 
   it('defines stable enterprise subroutes for the main workspace sections', () => {
     expect(WORKSPACE_SECTIONS.map((section) => section.path)).toEqual([
+      '/enterprise/dashboard',
       '/enterprise/info',
       '/enterprise/llm',
       '/enterprise/memory',
@@ -30,7 +31,7 @@ describe('workspace section routing', () => {
 
   it('keeps legacy workspace entry points redirected to the new subroutes', () => {
     expect(WORKSPACE_LEGACY_REDIRECTS).toEqual([
-      { from: '/enterprise', to: '/enterprise/info' },
+      { from: '/enterprise', to: '/enterprise/dashboard' },
       { from: '/invitations', to: '/enterprise/invitations' },
     ]);
   });

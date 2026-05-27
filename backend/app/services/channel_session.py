@@ -12,6 +12,11 @@ from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 
 
+def _archived_external_conv_id(external_conv_id: str, session_id: _uuid.UUID) -> str:
+    suffix = f"#archived:{session_id.hex[:12]}"
+    return f"{external_conv_id[: max(0, 200 - len(suffix))]}{suffix}"
+
+
 async def find_or_create_channel_session(
     db: AsyncSession,
     agent_id: _uuid.UUID,
@@ -99,4 +104,45 @@ async def find_or_create_channel_session(
         if delivery_target:
             session.delivery_target_json = delivery_target
 
+    return session
+
+
+async def start_new_channel_session(
+    db: AsyncSession,
+    agent_id: _uuid.UUID,
+    user_id: _uuid.UUID,
+    external_conv_id: str,
+    source_channel: str,
+    title: str = "New Session",
+    legacy_external_conv_ids: list[str] | None = None,
+    delivery_target: dict | None = None,
+) -> ChatSession:
+    """Start a fresh channel session by releasing the active external conv id."""
+    candidate_conv_ids = [external_conv_id, *(legacy_external_conv_ids or [])]
+    existing_result = await db.execute(
+        select(ChatSession).where(
+            ChatSession.agent_id == agent_id,
+            ChatSession.external_conv_id.in_(candidate_conv_ids),
+        )
+    )
+    existing_sessions = list(existing_result.scalars().all())
+    for existing in existing_sessions:
+        if existing.external_conv_id:
+            existing.external_conv_id = _archived_external_conv_id(existing.external_conv_id, existing.id)
+
+    now = datetime.now(timezone.utc)
+    session = ChatSession(
+        agent_id=agent_id,
+        user_id=user_id,
+        title=(title or "New Session")[:40],
+        source_channel=source_channel,
+        external_conv_id=external_conv_id,
+        delivery_target_json=delivery_target,
+        created_at=now,
+    )
+    db.add(session)
+    await db.flush()
+    if delivery_target is not None:
+        delivery_target["session_id"] = str(session.id)
+        session.delivery_target_json = delivery_target
     return session

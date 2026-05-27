@@ -34,6 +34,10 @@ class _FakeAsyncClient:
         self.calls.append(("PATCH", url, kwargs))
         return self._responses.pop(0)
 
+    async def get(self, url: str, **kwargs):
+        self.calls.append(("GET", url, kwargs))
+        return self._responses.pop(0)
+
 
 @pytest.mark.asyncio
 async def test_get_tenant_access_token_prefers_tenant_token(monkeypatch):
@@ -158,6 +162,39 @@ async def test_create_approval_instance_keeps_open_id_field_for_open_ids(monkeyp
         "open_id": "ou_submitter",
         "form": "{\"foo\":\"bar\"}",
     }
+
+
+@pytest.mark.asyncio
+async def test_get_approval_definition_fetches_form_schema(monkeypatch):
+    from app.services.feishu_service import FeishuService
+
+    fake_client = _FakeAsyncClient([
+        _FakeResponse(status_code=200, payload={"tenant_access_token": "tenant-token"}),
+        _FakeResponse(
+            status_code=200,
+            payload={
+                "code": 0,
+                "data": {
+                    "approval_code": "approval-code",
+                    "form": {
+                        "form_content": (
+                            '[{"id":"widget_project","name":"项目名称","type":"input","required":true}]'
+                        )
+                    },
+                },
+            },
+        ),
+    ])
+    monkeypatch.setattr("app.services.feishu_service.httpx.AsyncClient", lambda *args, **kwargs: fake_client)
+
+    service = FeishuService()
+    payload = await service.get_approval_definition("tenant-app", "tenant-secret", "approval-code")
+
+    assert payload["approval_code"] == "approval-code"
+    get_call = fake_client.calls[1]
+    assert get_call[0] == "GET"
+    assert get_call[1] == "https://open.feishu.cn/open-apis/approval/v4/approvals/approval-code"
+    assert get_call[2]["headers"] == {"Authorization": "Bearer tenant-token"}
 
 
 @pytest.mark.asyncio

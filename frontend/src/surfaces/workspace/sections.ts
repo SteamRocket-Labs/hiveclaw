@@ -1,4 +1,5 @@
 export type WorkspaceSectionTab =
+  | 'dashboard'
   | 'info'
   | 'llm'
   | 'memory'
@@ -12,6 +13,8 @@ export type WorkspaceSectionTab =
   | 'audit'
   | 'invites';
 
+export type WorkspaceSettingsSectionTab = Exclude<WorkspaceSectionTab, 'dashboard'>;
+
 export interface WorkspaceSection {
   tab: WorkspaceSectionTab;
   slug: string;
@@ -21,6 +24,7 @@ export interface WorkspaceSection {
 }
 
 export const WORKSPACE_SECTIONS: WorkspaceSection[] = [
+  { tab: 'dashboard', slug: 'dashboard', path: '/enterprise/dashboard', labelKey: 'enterprise.tabs.dashboard', fallbackLabel: 'Workbench' },
   { tab: 'info', slug: 'info', path: '/enterprise/info', labelKey: 'enterprise.tabs.info', fallbackLabel: 'Company Info' },
   { tab: 'llm', slug: 'llm', path: '/enterprise/llm', labelKey: 'enterprise.tabs.llm', fallbackLabel: 'Models' },
   { tab: 'memory', slug: 'memory', path: '/enterprise/memory', labelKey: 'enterprise.tabs.memory', fallbackLabel: 'Memory' },
@@ -34,6 +38,10 @@ export const WORKSPACE_SECTIONS: WorkspaceSection[] = [
   { tab: 'audit', slug: 'audit', path: '/enterprise/audit', labelKey: 'enterprise.tabs.audit', fallbackLabel: 'Audit Log' },
   { tab: 'invites', slug: 'invitations', path: '/enterprise/invitations', labelKey: 'enterprise.tabs.invites', fallbackLabel: 'Invitation Codes' },
 ];
+
+export const WORKSPACE_SETTINGS_SECTIONS = WORKSPACE_SECTIONS.filter(
+  (section): section is WorkspaceSection & { tab: WorkspaceSettingsSectionTab } => section.tab !== 'dashboard',
+);
 
 export const WORKSPACE_DEFAULT_PATH = WORKSPACE_SECTIONS[0].path;
 

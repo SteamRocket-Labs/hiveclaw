@@ -218,3 +218,88 @@ async def test_process_feishu_event_text_binds_execution_identity_and_session_co
     assert captured["execution_identity"].identity_id == platform_user_id
     assert captured["execution_identity"].label == "张三 via feishu"
     assert captured["runtime_delivery_target"]["session_id"] == str(session_id)
+
+
+@pytest.mark.asyncio
+async def test_process_feishu_event_new_command_starts_fresh_session_without_llm(monkeypatch):
+    import app.api.feishu as feishu_api
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    platform_user_id = uuid4()
+    session_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=uuid4(), tenant_id=tenant_id, name="飞书助手")
+    resolved_user = SimpleNamespace(id=platform_user_id, display_name="张三")
+    captured: dict[str, object] = {}
+    sent_messages: list[dict] = []
+
+    db = _SequenceDB([agent])
+
+    async def fake_resolve_sender_profile(*_args, **_kwargs):
+        return {"name": "张三", "open_id": "ou_123", "user_id": "u_123"}
+
+    async def fake_resolve_feishu_user(*_args, **_kwargs):
+        return resolved_user
+
+    async def fake_start_new_channel_session(*, delivery_target=None, external_conv_id=None, **_kwargs):
+        captured["external_conv_id"] = external_conv_id
+        captured["delivery_target"] = dict(delivery_target or {})
+        return SimpleNamespace(id=session_id, last_message_at=None, delivery_target_json=delivery_target, title="New Session")
+
+    async def fake_send_message(app_id, app_secret, receive_id, msg_type, content, receive_id_type="open_id", **_kwargs):
+        sent_messages.append(
+            {
+                "app_id": app_id,
+                "app_secret": app_secret,
+                "receive_id": receive_id,
+                "receive_id_type": receive_id_type,
+                "msg_type": msg_type,
+                "content": content,
+            }
+        )
+        return {"data": {"message_id": "new_session_ack"}}
+
+    async def fail_call_agent_llm(*_args, **_kwargs):
+        raise AssertionError("/new should create a fresh session without invoking the LLM")
+
+    async def fail_compute_history_limit_for_agent(*_args, **_kwargs):
+        raise AssertionError("/new should not load old session history")
+
+    monkeypatch.setattr(feishu_api, "_resolve_feishu_sender_profile", fake_resolve_sender_profile)
+    monkeypatch.setattr(
+        "app.services.channel_user_service.channel_user_service.resolve_or_create_feishu_user",
+        fake_resolve_feishu_user,
+    )
+    monkeypatch.setattr(
+        "app.services.channel_session.start_new_channel_session",
+        fake_start_new_channel_session,
+        raising=False,
+    )
+    monkeypatch.setattr("app.services.memory_service.compute_history_limit_for_agent", fail_compute_history_limit_for_agent)
+    monkeypatch.setattr(feishu_api, "_call_agent_llm", fail_call_agent_llm)
+    monkeypatch.setattr(feishu_api.feishu_service, "send_message", fake_send_message)
+
+    result = await feishu_api.process_feishu_event(
+        agent_id,
+        {
+            "header": {"event_type": "im.message.receive_v1", "event_id": "evt_new_1"},
+            "event": {
+                "sender": {"sender_id": {"open_id": "ou_123", "user_id": "u_123"}},
+                "message": {
+                    "message_type": "text",
+                    "chat_type": "p2p",
+                    "content": json.dumps({"text": "/new"}),
+                    "chat_id": "",
+                },
+            },
+        },
+        db,
+        tenant_channel_config=SimpleNamespace(app_id="app", app_secret="secret"),
+    )
+
+    assert result == {"code": 0, "msg": "new session created"}
+    assert db.commits == 1
+    assert captured["external_conv_id"] == "feishu_p2p_u_123"
+    assert captured["delivery_target"]["user_id"] == "u_123"
+    assert sent_messages
+    assert "新会话" in sent_messages[0]["content"]

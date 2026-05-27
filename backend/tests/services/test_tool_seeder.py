@@ -12,6 +12,7 @@ def test_builtin_tool_seed_list_includes_new_kernel_primitives():
         "feishu_base_record_delete",
         "feishu_doc_delete",
         "feishu_approval_create",
+        "feishu_approval_definition",
         "feishu_approval_query",
         "feishu_approval_get",
     }.issubset(names)

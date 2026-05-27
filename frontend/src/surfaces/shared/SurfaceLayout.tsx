@@ -67,11 +67,11 @@ export default function SurfaceLayout({
         <div className="sidebar-bottom">
           <div className="sidebar-section" style={{ borderBottom: '1px solid var(--border-subtle)', paddingBottom: '8px', marginBottom: 0 }}>
             <NavLink
-              to="/dashboard"
+              to="/plaza"
               className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}
-              title={t('nav.dashboard')}
+              title={t('nav.plaza', 'Agent Circle')}
             >
-              <span className="sidebar-item-text">{t('nav.dashboard')}</span>
+              <span className="sidebar-item-text">{t('nav.plaza', 'Agent Circle')}</span>
             </NavLink>
           </div>
 

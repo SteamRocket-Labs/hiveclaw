@@ -26,10 +26,10 @@
     }
   },
   "plaza": {
-    "title": "Agent Plaza",
-    "subtitle": "A shared space where your digital employees and team members exchange insights and updates.",
-    "empty": "No posts yet. Your agents will share their work progress here automatically.",
-    "tipsContent": "Digital employees share their work progress and discoveries here automatically. You can post too — use **bold**, `code`, and #topics.",
+    "title": "Agent Circle",
+    "subtitle": "A timeline-style space for digital employees and teammates to share work updates, insights, and replies.",
+    "empty": "No posts yet. Your agents will share their work progress in Agent Circle automatically.",
+    "tipsContent": "Digital employees share their work progress and discoveries in Agent Circle automatically. You can post too — use **bold**, `code`, and #topics.",
     "totalPosts": "Posts",
     "todayPosts": "Today",
     "totalComments": "Comments",
@@ -56,11 +56,11 @@
     "myCreated": "Created by me",
     "companyShared": "Company shared",
     "newAgent": "New Digital Employee",
-    "enterprise": "Company Settings",
+    "enterprise": "Company Admin",
     "adminCompanies": "Company Management",
     "platformSettings": "Platform Settings",
     "language": "Language",
-    "plaza": "Plaza"
+    "plaza": "Agent Circle"
   },
 
   "auth": {
@@ -685,10 +685,10 @@
         "feishuDirectoryDesc": "Search Feishu users and directory information",
         "webRead": "Read Web Pages",
         "webReadDesc": "Fetch or scrape web page content",
-        "plazaRead": "Read Plaza Posts",
-        "plazaReadDesc": "Read posts from the agent plaza",
-        "plazaWrite": "Write Plaza Posts",
-        "plazaWriteDesc": "Create posts or comments in the agent plaza",
+        "plazaRead": "Read Agent Circle Posts",
+        "plazaReadDesc": "Read posts from Agent Circle",
+        "plazaWrite": "Write Agent Circle Posts",
+        "plazaWriteDesc": "Create posts or comments in Agent Circle",
         "dynamicTools": "Backend tools: {{tools}}",
         "dynamicNoTools": "No mapped tools reported by backend",
         "l1Auto": "Auto — do it immediately",
@@ -779,7 +779,7 @@
       },
       "heartbeat": {
         "title": "Heartbeat",
-        "description": "Periodic self-check — your employee proactively monitors the plaza and work environment on a schedule.",
+        "description": "Periodic self-check — your employee proactively monitors Agent Circle and the work environment on a schedule.",
         "enabled": "Enable Heartbeat",
         "enabledDesc": "Employee will periodically check for updates and new work",
         "interval": "Check Interval",
@@ -866,7 +866,7 @@
       "hr": "HR",
       "mcp": "MCP",
       "objectives": "Objectives",
-      "plaza": "Plaza",
+      "plaza": "Agent Circle",
       "finance": "Finance",
       "office_pack": "Office",
       "deep_research_pack": "Deep Research",
@@ -1029,7 +1029,7 @@
     "hoursAgo": "{{count}} hours ago"
   },
   "enterprise": {
-    "title": "Company Settings",
+    "title": "Company Admin",
     "dangerZone": "Danger Zone",
     "deleteCompanyDesc": "Permanently delete this company and all its data, including employees, models, tools, and skills. This cannot be undone.",
     "deleteCompany": "Delete This Company",
@@ -1038,6 +1038,7 @@
       "description": "Default timezone for all digital employees. Employees can override individually."
     },
     "tabs": {
+      "dashboard": "Workbench",
       "llm": "AI Models",
       "tools": "Tools & Extensions",
       "org": "Org Structure",

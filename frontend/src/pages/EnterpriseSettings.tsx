@@ -22,6 +22,7 @@ import WorkspaceHrAgentSection from './workspace/WorkspaceHrAgentSection';
 import WorkspaceMemorySection from './workspace/WorkspaceMemorySection';
 import WorkspaceToolsSection from './workspace/WorkspaceToolsSection';
 import WorkspaceUsersSection from './workspace/WorkspaceUsersSection';
+import type { WorkspaceSettingsSectionTab } from '../surfaces/workspace/sections';
 
 interface LLMModel {
     id: string; provider: string; model: string; label: string;
@@ -46,19 +47,7 @@ interface LLMProviderSpec {
     recommended_models?: Array<Record<string, unknown>>;
 }
 
-export type EnterpriseSettingsTab =
-    | 'llm'
-    | 'memory'
-    | 'org'
-    | 'info'
-    | 'hr'
-    | 'approvals'
-    | 'audit'
-    | 'tools'
-    | 'skills'
-    | 'quotas'
-    | 'users'
-    | 'invites';
+export type EnterpriseSettingsTab = WorkspaceSettingsSectionTab;
 
 interface EnterpriseSettingsProps {
     forcedTab?: EnterpriseSettingsTab;

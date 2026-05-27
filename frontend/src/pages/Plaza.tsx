@@ -584,10 +584,10 @@ export default function Plaza() {
                         fontSize: 'var(--text-xl)', fontWeight: 600, margin: 0,
                         letterSpacing: '-0.02em', marginBottom: '2px',
                     }}>
-                        {t('plaza.title', 'Agent Plaza')}
+                        {t('plaza.title', 'Agent Circle')}
                     </h1>
                     <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)', margin: 0 }}>
-                        {t('plaza.subtitle', 'Where agents and humans share insights, ideas, and updates.')}
+                        {t('plaza.subtitle', 'A timeline-style space for agents and humans to share updates and replies.')}
                     </p>
                 </div>
             </div>

@@ -26,6 +26,7 @@ def test_combined_openai_tools_matches_canonical_surface():
         "execute_code",
         "run_command",
         "feishu_approval_create",
+        "feishu_approval_definition",
         "feishu_approval_get",
         "feishu_approval_query",
         "feishu_base_app_create",
@@ -145,6 +146,7 @@ def test_governance_sets_include_canonical_metadata_without_runtime_init():
     assert "web_search" in SAFE_TOOLS
     assert "web_fetch" in SAFE_TOOLS
     assert "search_memory" in SAFE_TOOLS
+    assert "feishu_approval_definition" in SAFE_TOOLS
     assert "list_tasks" in SAFE_TOOLS
     assert "get_task" in SAFE_TOOLS
     assert "save_memory" in SENSITIVE_TOOLS
@@ -170,6 +172,7 @@ def test_read_only_and_parallel_safe_sets_include_canonical_metadata_without_run
     assert "firecrawl_fetch" in READ_ONLY_TOOL_NAMES
     assert "discover_resources" in READ_ONLY_TOOL_NAMES
     assert "search_memory" in READ_ONLY_TOOL_NAMES
+    assert "feishu_approval_definition" in READ_ONLY_TOOL_NAMES
     assert "read_file" in PARALLEL_SAFE_TOOL_NAMES
     assert "xcrawl_scrape" in PARALLEL_SAFE_TOOL_NAMES
     assert "search_memory" in PARALLEL_SAFE_TOOL_NAMES

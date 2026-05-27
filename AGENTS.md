@@ -17,7 +17,7 @@ Hive exists to be **two things, and every line of code must serve one of them**:
 
 Hive is an open-source **multi-agent collaboration platform** — enterprise "digital employees" with persistent identity, long-term memory, private workspaces, autonomous trigger-driven execution, and an owner/company-aware Memory Control Plane.
 
-- **Version:** 1.7.0 (tracked in root `VERSION` file)
+- **Version:** 1.7.0 (tracked in `backend/VERSION` and `frontend/VERSION`)
 - **License:** Apache 2.0
 - **Stack:** FastAPI (Python 3.12) + React 19 (TypeScript 5) + PostgreSQL 15 + Redis 7
 - **Deployment:** Docker / Railway
@@ -53,52 +53,53 @@ docker compose up -d --build       # Full stack → :3008
 
 | Layer | Files | LOC | Purpose |
 |-------|-------|-----|---------|
-| API Routes | 48 | ~16K | FastAPI routers |
-| Models | 31 | ~1.5K | SQLAlchemy ORM (async, RLS) |
-| Services | 58 | ~17K | Business logic |
-| Tool Domains | 20 | — | Feishu office, messaging, tasks, email |
-| Kernel | 3 | ~1.6K | Core LLM execution engine |
-| Tools | 11 | ~700 | Handler implementations |
+| API Routes | 55 | ~20K | FastAPI routers |
+| Models | 36 | ~1.8K | SQLAlchemy ORM (async, RLS) |
+| Services | 130 | ~49K | Business logic |
+| Tool Domains | 21 | — | Feishu office, messaging, tasks, workspace, email |
+| Kernel | 3 | ~2.7K | Core LLM execution engine |
+| Tools | 16 handlers | — | Handler implementations |
 | Skills | 5 | ~310 | Markdown skill system |
-| Memory | 19 | — | MD-first pyramid (T0/T2/T3/soul) + control plane: write gate, activation, retention, lifecycle, understanding |
-| Migrations | 35 | — | Alembic schema versions |
+| Memory | 18 | — | MD-first pyramid (T0/T2/T3/soul) + control plane: write gate, activation, retention, lifecycle, understanding |
+| Migrations | 58 | — | Alembic schema versions |
 
-### API Routers (48 files)
+### API Routers (55 files)
 
 Core: `agents`, `auth`, `users`, `tenants`, `enterprise`, `admin`
-Agent features: `tasks`, `triggers`, `schedules`, `relationships`, `skills`, `files`, `chat_sessions`
-Channels: `feishu`, `slack`, `discord_bot`, `dingtalk`, `wecom`, `teams`
-Platform: `tools`, `packs`, `capabilities`, `plaza`, `notification`, `websocket`
-Enterprise: `organization`, `memory`, `guard_policies`, `feature_flags`, `config_history`
+Agent features: `tasks`, `triggers`, `schedules`, `relationships`, `skills`, `files`, `chat_sessions`, `objectives`, `autonomy`, `deep_research`
+Channels: `feishu`, `slack`, `discord_bot`, `dingtalk`, `wecom`, `wechat_personal`, `teams`, `telegram`, `email_channel`, `tenant_channels`
+Platform: `tools`, `packs`, `capabilities`, `plaza`, `notification`, `websocket`, `office`
+Enterprise: `organization`, `memory`, `guard_policies`, `feature_flags`, `config_history`, `role_templates`
 Desktop: `desktop_auth`, `desktop_sync`, `desktop_agents`, `desktop_audit`
-Other: `upload`, `webhooks`, `gateway`, `llm_proxy`, `oidc`, `onboarding`, `role_templates`
+Other: `upload`, `webhooks`, `gateway`, `llm_proxy`, `oidc`, `onboarding`, `advanced`, `atlassian`
 
-All routers mounted under `/api` and `/api/v1` prefixes.
+Most routers are mounted under both `/api` and `/api/v1`; public webhooks and `/ws/chat/{agent_id}` are mounted without the API prefix.
 
-### Models (31 files)
+### Models (36 files)
 
-Core entities: `User`, `Agent`, `Tenant`, `LLMModel`, `Tool`, `Skill`, `Task`
+Core entities: `User`, `Agent`, `Tenant`, `LLMModel`, `Tool`, `Skill`, `Task`, `RuntimeTask`, `Objective`
 Agent config: `AgentTrigger`, `AgentSchedule`, `ChannelConfig`, `AgentPermission`, `AgentTemplate`
-Relationships: `AgentRelationship`, `AgentAgentRelationship`, `OrgMember`, `OrgDepartment`
+Relationships: `AgentRelationship`, `AgentAgentRelationship`, `OrgMember`, `OrgDepartment`, coordination lease/signal/checkpoint models
 Audit: `AuditLog`, `SecurityAuditEvent`, `ChatMessage`, `ChatSession`, `AgentActivityLog`
 Platform: `CapabilityPolicy`, `CapabilityInstall`, `GuardPolicy`, `FeatureFlag`, `Notification`
-Auth: `RefreshToken`, `InvitationCode`, `Participant`
+Auth: `RefreshToken`, `InvitationCode`, `Participant`, identity provider models
 Social: `PlazaPost`, `PlazaComment`, `PlazaLike`
 
-### Services (58 files)
+### Services (130 files)
 
 | Category | Services |
 |----------|---------|
 | Agent lifecycle | `agent_manager`, `agent_seeder`, `auto_dream`, `auto_provision` |
 | LLM | `llm_client` (OpenAI/Anthropic/Gemini/compatible), `llm_utils` |
-| Execution | `trigger_daemon` (15s loop), `task_executor`, `scheduler`, `heartbeat` |
-| Channels | `feishu_service`, `feishu_ws`, `dingtalk_stream`, `wecom_stream` |
+| Execution | `trigger_daemon` (15s loop), `task_executor`, `scheduler`, `heartbeat`, `evolution_daemon`, `web_chat_runtime`, `long_task_runtime` |
+| Channels | `feishu_service`, `feishu_ws`, `dingtalk_stream`, `wecom_stream`, `wechat_personal_stream`, `channel_delivery_service` |
 | Tools | `agent_tools`, `agent_tool_assignment_service`, `tool_seeder`, `tool_telemetry` |
 | Security | `capability_gate`, `approval_service`, `quota_guard`, `secrets_provider`, `audit_logger` |
-| Memory | `memory_service`, `conversation_summarizer`, `knowledge_inject`, `agency_charter`, `decision_trace` |
+| Memory | `memory_service`, `conversation_summarizer`, `knowledge_inject`, `extract_agent`, `extract_queue`, `agency_charter`, `decision_trace` |
 | Integration | `mcp_client`, `mcp_registry_service`, `email_service`, `viking_client` |
 | Multi-tenant | `enterprise_sync`, `org_sync_service`, `sync_service` |
-| Other | `pack_service`, `skill_creator_content`, `text_extractor`, `token_tracker` |
+| Office / docs | `office_document_service`, `officecli_adapter`, `text_extractor` |
+| Other | `pack_service`, `skill_creator_content`, `token_tracker`, `objective_service`, `autonomy_repair_plan` |
 
 ### Memory Control Plane
 
@@ -113,11 +114,33 @@ Hive keeps the T0/T2/T3/soul Markdown memory pyramid, but runtime behavior is go
 | Coordination primitives | `agents/coordination.py`, `agents/orchestrator.py`, `tools/service.py` | Cross-agent work uses Lease/Signal; confirm-first actions create Checkpoint; Sentinel can emit Signal or Checkpoint. |
 | Proactive steward loop | `services/proactive_employee_loop.py`, `services/heartbeat.py`, `memory/policy_replay.py` | Heartbeat may prepare low-risk work, but external-visible action requires Checkpoint and policy tuning requires replay guard. |
 
+### Web Chat Runtime
+
+Web chat runs are durable background tasks:
+
+- `chat_sessions.py` exposes session history and start/active/cancel run APIs.
+- `web_chat_runtime.py` creates and executes `RuntimeTask(task_type="web_chat_turn")`.
+- `web_chat_broker.py` broadcasts session-scoped runtime events to WebSocket subscribers.
+- `websocket.py` is a subscription and compatibility start path; disconnecting the browser must not cancel the run.
+- Frontend `AgentDetail.tsx` sends a 30s keepalive ping while waiting/streaming; backend replies with `pong`.
+- `WS_IDLE_TIMEOUT_SECONDS` defaults to 3600; if an active run exists, idle close is deferred.
+
+### Office Runtime
+
+Office editing is a first-class runtime:
+
+- Backend API: `backend/app/api/office.py`
+- Workspace document service: `backend/app/services/office_document_service.py`
+- OfficeCLI adapter: `backend/app/services/officecli_adapter.py`
+- Frontend workbench: `frontend/src/pages/agent-detail/OfficeWorkbenchSection.tsx`
+- Required production env includes `ONLYOFFICE_DOCS_URL`, `ONLYOFFICE_JWT_SECRET`, and public base URL config.
+- Agent workspace remains file source of truth; ONLYOFFICE handles browser WYSIWYG editing and signed callbacks.
+
 ### Kernel Engine
 
-Stateless LLM loop with dependency injection. Zero DB imports — all I/O via 14 `KernelDependencies` callbacks.
+Stateless LLM loop with dependency injection. Zero DB imports — all I/O goes through `KernelDependencies` callbacks.
 
-- Max 200 tool rounds per invocation (`models/agent.py:63`); heartbeat overrides to 15
+- Max 200 tool rounds per invocation (`Agent.max_tool_rounds`); heartbeat overrides to 40
 - Semantic loop detection via `LoopGuard` (`kernel/loop_guard.py`, wired in `engine.py`)
 - Proactive compaction at 75% utilization (`_MIDLOOP_COMPACT_THRESHOLD`); microcompact pressure at 60%; reactive compaction on prompt-too-long
 - Tool result eviction: 50KB/result, 200KB/round
@@ -134,6 +157,10 @@ Stateless LLM loop with dependency injection. Zero DB imports — all I/O via 14
 | `communication` | send_feishu_message, send_web_message |
 | `email` | send_email, read_emails, reply_email |
 | `feishu` | feishu_wiki_list, feishu_doc_read/append/create/share |
+| `office` | office_document_create/view/query/apply/validate/dump |
+| `deep_research` | deep_research_start/check/cancel/export |
+| `memory` | save_memory and memory-control helpers |
+| `finance` | finance provider status, statements, filings, workflows |
 | `plaza` | plaza_get_new_posts, plaza_create_post, plaza_add_comment |
 | `skills` | load_skill, tool_search |
 | `triggers` | set_trigger, update_trigger, list_triggers, cancel_trigger |
@@ -142,16 +169,16 @@ Stateless LLM loop with dependency injection. Zero DB imports — all I/O via 14
 
 ## Frontend Architecture (`frontend/src/`)
 
-### Pages (17 + 20 sections)
+### Pages (16 + 25 sections)
 
 | Page | Route | Purpose |
 |------|-------|---------|
 | Login | `/login` | Authentication |
 | CompanySetup | `/setup-company` | Tenant onboarding |
-| Dashboard | `/dashboard` | Agent metrics, activity |
-| Plaza | `/plaza` | Agent social feed |
-| AgentDetail | `/agents/:id` | Agent management hub (10 tab sections) |
-| EnterpriseSettings | `/enterprise/*` | Workspace admin (12 sections) |
+| Dashboard / Workbench | `/enterprise/dashboard` | Company Admin workbench; `/dashboard` redirects here |
+| Agent Circle | `/plaza` | Agent social feed; backend route remains `plaza` |
+| AgentDetail | `/agents/:id` | Agent management hub |
+| EnterpriseSettings | `/enterprise/*` | Workspace admin settings sections |
 | PlatformDashboard | `/admin/*` | Platform admin |
 | UserManagement | `/enterprise/users` | User/team admin |
 
@@ -173,7 +200,7 @@ Stateless LLM loop with dependency injection. Zero DB imports — all I/O via 14
 
 Core HTTP abstraction in `api/core/request.ts` — `get<T>()`, `post<T>()`, `put<T>()` with JWT auth and tenant header injection.
 
-20 domain adapters in `api/domains/`: agents, enterprise, tools, chat, auth, notifications, files, tasks, skills, relationships, plaza, channels, schedules, admin, activity, users, messages, system, triggers.
+25 production domain adapters in `api/domains/` (30 files including tests and index), including agents, enterprise, tools, chat, auth, notifications, files, tasks, skills, relationships, plaza, channels, schedules, admin, activity, users, messages, system, triggers, office, deepResearch, memory, objectives, autonomy, and evolution.
 
 ## Conventions
 
@@ -201,6 +228,8 @@ Core HTTP abstraction in `api/core/request.ts` — `get<T>()`, `post<T>()`, `put
 | `SECRETS_MASTER_KEY` | Encrypt LLM keys and channel credentials |
 | `AGENT_DATA_DIR` | Agent workspace root |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | Feishu SSO |
+| `ONLYOFFICE_DOCS_URL` / `ONLYOFFICE_INTERNAL_DOCS_URL` / `ONLYOFFICE_JWT_SECRET` | Browser Office editing |
+| `WS_IDLE_TIMEOUT_SECONDS` / `WS_IDLE_DREAM_SECONDS` | Web chat WebSocket idle and idle-hook behavior |
 | `TAVILY_API_KEY` | Web search |
 | `EXA_API_KEY` | Web search |
 | `FIRECRAWL_API_KEY` | Web crawling |

@@ -1,595 +1,614 @@
 # Hive Engineering Documentation
 
-Version 1.8.0 | FastAPI + React 19 | Apache 2.0
+Current snapshot: 2026-05-27
+Product version: 1.7.0 (`backend/VERSION`, `frontend/VERSION`)
+Stack: FastAPI + React 19 + PostgreSQL + Redis + Railway
 
-## Table of Contents
+This document describes the current engineering shape of Hive. It is the main
+technical reference for architecture, runtime contracts, deployment, and the
+recent product surface changes.
 
-- [System Architecture](#system-architecture)
-- [Backend](#backend)
-  - [Startup Sequence](#startup-sequence)
-  - [Middleware Stack](#middleware-stack)
-  - [Agent Kernel Engine](#agent-kernel-engine)
-  - [Prompt Assembly](#prompt-assembly)
-  - [Tool Governance](#tool-governance)
-  - [Tool Packs](#tool-packs)
-  - [Trigger Daemon](#trigger-daemon)
-  - [LLM Client](#llm-client)
-  - [Memory System](#memory-system--4-layer-md-pyramid--control-plane)
-  - [Hook System](#hook-system-runtimehookspy)
-  - [HR Agent](#hr-agent--agent-creation-pipeline)
-  - [Authentication & Authorization](#authentication--authorization)
-  - [Database & Multi-Tenancy](#database--multi-tenancy)
-  - [Configuration Reference](#configuration-reference)
-- [Frontend](#frontend)
-  - [Route Architecture](#route-architecture)
-  - [State Management](#state-management)
-  - [API Layer](#api-layer)
-  - [Design System](#design-system)
-  - [Agent Detail Interface](#agent-detail-interface)
-  - [Enterprise Settings](#enterprise-settings)
-- [Deployment](#deployment)
-  - [Docker](#docker)
-  - [Railway](#railway)
-  - [Entrypoint Script](#entrypoint-script)
-- [Channel Integrations](#channel-integrations)
-
----
-
-## System Architecture
+## System Shape
 
 ```
-                    +-----------------------+
-                    |   Frontend (React 19) |
-                    |   Vite + TanStack Query|
-                    +----------+------------+
-                               | /api proxy (:3008 -> :8008)
-                               | /ws  WebSocket
-                    +----------v------------+
-                    |   Backend (FastAPI)    |
-                    |   Uvicorn :8008       |
-                    +---+------+------+-----+
-                        |      |      |
-              +---------+  +---+---+  +----------+
-              |PostgreSQL|  | Redis |  | Agent FS |
-              | (asyncpg)|  |       |  |(/data/)  |
-              +----------+  +-------+  +----------+
-
-Background Tasks:
-  - Trigger Daemon (15s tick loop)
-  - Feishu WebSocket Manager
-  - DingTalk Stream Manager
-  - WeChat Work Stream Manager
-  - SOCKS5 Proxy (Discord, optional)
+Frontend (React 19, Vite, React Router 7)
+  - App surface: /plaza, /agents/:id, /messages
+  - Workspace surface: /enterprise/*, including /enterprise/dashboard
+  - Admin surface: /admin/*
+        |
+        | /api, /api/v1, /ws/chat/:agent_id
+        v
+Backend (FastAPI, SQLAlchemy async)
+  - Agent kernel and runtime invoker
+  - Tool governance and capability packs
+  - Memory Control Plane
+  - Web chat durable RuntimeTask runs
+  - Channel stream managers
+        |
+        +-- PostgreSQL 15, tenant-scoped models and RLS
+        +-- Redis 7, cache/pubsub/session support
+        +-- Agent workspace filesystem under AGENT_DATA_DIR
+        +-- ONLYOFFICE document server for browser editing
 ```
 
----
+## Current Code Map
 
-## Backend
+Counts are from the current tree, not historical docs.
 
-### Startup Sequence
+| Area | Current Size | Notes |
+|------|--------------|-------|
+| API routers | 55 files | Mounted under both `/api` and `/api/v1`, except public webhooks and WebSocket. |
+| ORM models | 36 files | Tenant-scoped SQLAlchemy models, including runtime tasks, coordination, objectives, identity, pending replies, and channel config. |
+| Services | 130 files | Runtime, channel delivery, memory, extraction, evolution, office, Feishu, triggers, skills, governance. |
+| Tool handlers | 16 files | filesystem, search, communication, email, Feishu, memory, office, finance, HR, MCP, deep research, objectives, plaza, tasks, triggers. |
+| Tool domain services | 21 files | Feishu office domains, workspace, messaging, objectives, web MCP, code exec, image upload. |
+| Memory modules | 18 files | write gate, activation, retriever, T2 store, lifecycle, retention, access log, replay corpus, optional backends. |
+| Runtime modules | 13 files | invoker, prompt builder, context budget, hooks, session, recovery manifest, coordinator, eval helpers. |
+| Alembic migrations | 58 files | `alembic heads` must stay single-head before new migrations. |
+| Frontend pages | 16 page files | App, workspace, admin, login/setup, agent detail, Agent Circle. |
+| Frontend section files | 25 section files | Agent detail, workspace admin, admin companies. |
+| Frontend API domains | 25 production adapters | Typed adapters for agents, chat, office, deep research, memory, autonomy, enterprise, etc.; 30 files including tests and index. |
 
-`main.py` lifespan runs in this order:
+## Product Surfaces
 
-1. **Secrets validation** — Warns if `SECRET_KEY` or `JWT_SECRET_KEY` are defaults
-2. **Secrets provider init** — `init_secrets_provider(SECRETS_MASTER_KEY)` for API key encryption
-3. **Database tables** — `Base.metadata.create_all()` (idempotent)
-4. **Seed data** (each step isolated, non-blocking):
-   - Default tenant (slug: `"default"`)
-   - Legacy path migration (`enterprise_info/` -> `enterprise_info_{tenant_id}/`)
-   - Builtin tools registration
-   - Resume interrupted async delegations (limit 50)
-   - Reconcile orphaned runtime tasks
-   - Atlassian Rovo config + tool import
-   - Default skills seeding
-   - Default agent seeding
-5. **Memory hook registration** — `register_memory_hooks()`: 11 handlers (3 log + 2 extract + 6 T0)
-6. **Background tasks** (4 async tasks):
-   - `trigger_daemon` — evaluates cron/interval/poll/webhook/on_message triggers
-   - `feishu_ws_manager.start_all()` — Feishu WebSocket listeners
-   - `dingtalk_stream_manager.start_all()` — DingTalk stream listeners
-   - `wecom_stream_manager.start_all()` — WeChat Work stream listeners
-6. **SOCKS5 proxy** — `ss-local` for Discord API (optional, from env or `/data/ss-nodes.json`)
-7. **Shutdown** — Close Redis, close OpenViking client
+### App Surface
 
-### Middleware Stack
+The authenticated app surface lives under `/`.
 
-Applied in this order (executes in reverse for requests):
+| Route | Surface |
+|-------|---------|
+| `/` | Redirects to `/plaza`. |
+| `/plaza` | Agent Circle. Backend and tool names still use `plaza` for compatibility. |
+| `/agents/new` | Agent creation entry; redirects into HR agent flow. |
+| `/agents/:id` | Agent detail hub. |
+| `/agents/:id/chat` | Legacy chat route that redirects to the agent chat tab. |
+| `/messages` | Message center. |
+| `/dashboard` | Legacy redirect to `/enterprise/dashboard`. |
 
-| Order | Middleware | Purpose |
-|-------|-----------|---------|
-| 1 | `TraceIdMiddleware` | Generate trace IDs for request tracking |
-| 2 | `CORSMiddleware` | Origins from `CORS_ORIGINS`, credentials=True |
-| 3 | `TenantMiddleware` | Extract tenant_id from JWT, set `request.state.tenant_id` |
+### Workspace Surface
 
-### Agent Kernel Engine
+Company-scale control plane routes live under `/enterprise` and require
+`WorkspaceGuard`.
 
-All agent execution flows through a unified kernel (`kernel/engine.py`, 1,505 LOC). The kernel is **stateless** with zero DB imports — all I/O via 14 injected `KernelDependencies` callbacks.
+| Route | Section |
+|-------|---------|
+| `/enterprise` | Redirects to `/enterprise/dashboard`. |
+| `/enterprise/dashboard` | Workbench dashboard inside Company Admin. |
+| `/enterprise/info` | Company info. |
+| `/enterprise/llm` | Model configuration. |
+| `/enterprise/memory` | Workspace memory controls. |
+| `/enterprise/hr` | HR agent controls. |
+| `/enterprise/tools` | Tool registry and policies. |
+| `/enterprise/skills` | Skill library. |
+| `/enterprise/quotas` | Usage quotas. |
+| `/enterprise/users` | User management. |
+| `/enterprise/org` | Organization structure. |
+| `/enterprise/approvals` | Approval workflows. |
+| `/enterprise/audit` | Audit logs. |
+| `/enterprise/invitations` | Invite codes. |
 
-#### Invocation Flow (`runtime/invoker.py`)
+### Admin Surface
 
-```
-1. Resolve execution identity (agent_bot vs delegated_user)
-2. Resolve runtime config (max_tool_rounds, execution_mode, tenant_id)
-3. Build frozen system prompt (agent context + memory snapshot + skill catalog)
-4. Create KernelDependencies (14 callbacks for DB, tools, memory, LLM)
-5. Call AgentKernel.handle(request)
-   -> Multi-round LLM loop (max 50 rounds default)
-   -> Per-round: resolve retrieval context, execute tools, stream chunks
-   -> Context compaction at 85% window threshold
-   -> Tool result eviction: 50KB/result, 200KB/round
-6. Return AgentInvocationResult(content, tokens_used, parts)
-```
+`/admin/platform-settings` is guarded by `AdminGuard` and reserved for platform
+administrators.
 
-#### Kernel Dependencies
+## Backend Startup
 
-| Callback | Purpose |
-|----------|---------|
-| `build_system_prompt` | Assemble frozen prefix |
-| `resolve_memory_context` | Load memory snapshot |
-| `resolve_retrieval_context` | Fetch knowledge + runtime context per round |
-| `get_tools` | Get tool definitions for agent |
-| `resolve_tool_expansion` | Expand tools on skill/MCP load |
-| `create_client` | Instantiate LLM client |
-| `execute_tool` | Run a governed tool |
-| `maybe_compress_messages` | Compact old messages for token savings |
-| `persist_memory` | Save memory to store |
-| `record_token_usage` | Log token consumption |
-| `apply_vision_transform` | Handle multimodal images |
-| `apply_cache_hints` | Anthropic prefix caching |
+`backend/app/main.py` owns process startup. Startup work is intentionally
+best-effort where possible so one optional subsystem does not prevent the core
+API from booting.
 
-#### Context Management
+1. Configure logging and intercept standard logging.
+2. Validate production secrets when `DEBUG=false`.
+3. Initialize the secrets provider with `SECRETS_MASTER_KEY`.
+4. Run idempotent `Base.metadata.create_all()`.
+5. Apply compatibility enum/table patches where required.
+6. Migrate legacy workspace files and objective ledger projections.
+7. Seed built-in tools, default company, Atlassian/Rovo tools, skills, and default agents.
+8. Run tool coverage and capability mapping audits.
+9. Resume persisted async delegations and reconcile orphaned runtime tasks.
+10. Replay pending memory extraction queue entries from previous crashes or deploy restarts.
+11. Register runtime memory hooks.
+12. Backfill legacy trigger reply contexts.
+13. Start background tasks:
+    - `trigger_daemon`
+    - `evolution_daemon`
+    - `feishu_ws`
+    - `dingtalk_stream`
+    - `wecom_stream`
+    - `wechat_personal_stream`
+14. Start optional `ss-local` SOCKS5 proxy for Discord.
+15. On shutdown, stop WeChat personal streams, close Redis, close OpenViking, close memory backends.
 
-| Feature | Value |
-|---------|-------|
-| Max tool rounds | 50 (configurable per agent) |
-| Compaction threshold | 85% of context window |
-| Compaction check interval | Every 3 rounds |
-| Tool result max size | 50KB per result |
-| Round aggregate budget | 200KB per round |
-| Microcompaction | Clear tool results > 20 rounds old |
-| Prompt-Too-Long retries | 2 retries with reactive compaction |
+## API Routing
 
-### Prompt Assembly
+Most routers are mounted twice:
 
-Three-layer architecture (`runtime/prompt_builder.py`) with 14 modular prompt sections (`runtime/prompt_sections/`):
+- `/api/...` for backward compatibility
+- `/api/v1/...` for versioned clients
 
-```
-Layer 1: Frozen Prefix (session-stable, cached)
-  - Agent identity (soul contract via agent_context.py)
-  - T3 memory injection (feedback, knowledge, strategies, blocked, user — via memory_context.py)
-  - Kernel tools catalog
-  - Skill catalog
-  - Marked with __PROMPT_CACHE_BOUNDARY__
+`webhooks_router` is mounted without `/api` for public provider callbacks.
+`ws_router` is mounted without `/api` for `/ws/chat/{agent_id}`.
 
-Layer 2: Dynamic Suffix (per-round)
-  - Active capability packs
-  - Task state + verification rules (tasks.py)
-  - Output efficiency rules (output_efficiency.py)
-  - Memory save rules (executing_actions.py)
-  - Knowledge retrieval results
-  - Compaction hints
+Important routers added or promoted in the current architecture:
 
-Layer 3: Conversation Messages
-  - User/assistant/tool messages
-```
+- `chat_sessions.py`: web chat sessions and durable run endpoints.
+- `office.py`: ONLYOFFICE editor config, download/callback/force-save endpoints.
+- `deep_research.py`: deep research job control and stream proxy.
+- `tenant_channels.py`, `email_channel.py`, `telegram.py`, `wechat_personal.py`: per-channel configuration and runtime surfaces.
+- `objectives.py`, `autonomy.py`: durable objectives and autonomy overview/repair.
+- `desktop_auth.py`, `desktop_sync.py`, `desktop_agents.py`, `desktop_audit.py`: desktop sync foundation.
 
-**Prompt sections** (`runtime/prompt_sections/`): `agent_context`, `memory_context`, `tasks`, `executing_actions`, `output_efficiency` — each returns a section string assembled by the builder. Cache boundary separates frozen (soul+memory+tools) from dynamic (tasks+session).
+## Agent Kernel Runtime
 
-Budget allocation scales with context window. Frozen prefix trimmed if total exceeds budget (dynamic preserved for per-round accuracy).
-
-### Tool Governance
-
-Every tool call enters through `tools/service.py`. Governance runs first, then action preflight runs before the registry/backend executor:
+All agent execution must enter through:
 
 ```
-1. Resolve agent security zone
-   - "public"     → only safe tools allowed
-   - "restricted" → sensitive tools need approval
-   - default      → "restricted"
-
-2. Capability gate check (per tenant + agent)
-   - denied=True     → BLOCK + audit log
-   - escalate_to_l3  → proceed to approval
-
-3. Approval escalation (if required)
-   - Create approval request
-   - Return "awaiting approval" message
-   - Tool NOT executed until approved
-
-4. Action preflight
-   - full_authority/low-risk → execute
-   - confirm_first/external-visible → Checkpoint + ask block
-   - never_do/PL4/company conflict → refuse or escalate
+runtime/invoker.py::invoke_agent()
+  -> kernel/engine.py::AgentKernel.handle()
+  -> tools/service.py::ToolRuntimeService.execute()
 ```
 
-**Safe tools** (no governance): `list_files`, `read_file`, `load_skill`, `web_fetch`, `web_search`, `read_document`, `list_tasks`, `get_task`
+The kernel stays DB-free. Platform I/O is injected through `KernelDependencies`.
+Current dependency wiring includes runtime config, memory context, retrieval
+context, tools, tool expansion, compaction, LLM client creation, governed tool
+execution, memory persistence, token tracking, vision transforms, and provider
+cache hints.
 
-**Sensitive tools** (require governance): `create_digital_employee`, `send_feishu_message`, `send_email`, `delete_file`, `write_file`, `execute_code`, `run_command`, `set_trigger`, `import_mcp_server`, `send_message_to_agent`
+Runtime facts:
 
-### Tool Packs
+- Default per-agent `max_tool_rounds` is 200 (`Agent.max_tool_rounds`).
+- Heartbeat uses its own lower round budget.
+- Mid-loop compaction checks every 3 rounds and triggers at 75% context use.
+- Prompt-too-long retries use reactive compaction for provider rejections.
+- Tool result eviction threshold is 50,000 characters.
+- Evicted tool result previews keep 4,000 characters inline.
+- Per-round aggregate tool result budget is 200,000 characters.
+- Microcompaction clears old tool results after 60 minutes, or after 10 minutes once context pressure is at or above 60%.
+- Prompt prefix caching uses `SessionContext` and an explicit prompt cache version.
 
-Static packs defined in `tools/packs.py`:
+## Web Chat Runtime
 
-| Pack | Tools | Activation |
-|------|-------|-----------|
-| `web_pack` | web_search, web_fetch, firecrawl_fetch, xcrawl_scrape | Via web research skills |
-| `feishu_pack` | 24 Feishu tools (docs/wiki/sheets/base/tasks/calendar) | After Feishu channel configured |
-| `plaza_pack` | plaza_get_new_posts, plaza_create_post, plaza_add_comment | On-demand |
-| `mcp_admin_pack` | discover_resources, import_mcp_server, list/read_mcp_resources | Platform extension |
+Web chat is no longer tied to one browser WebSocket lifetime.
 
-Dynamic packs generated for each imported MCP server (`mcp_server:{name}`).
-
-### Trigger Daemon
-
-Background loop (`trigger_daemon.py`, 721 LOC):
-
-| Parameter | Value |
-|-----------|-------|
-| Tick interval | 15 seconds |
-| Dedup window | 120 seconds (persisted to JSON) |
-| Max fires/hour | 6 per agent |
-| Chain depth | Max 5 (prevents A->B->A loops) |
-| Min poll interval | 30 minutes |
-| Webhook rate limit | 5/minute/token |
-
-**Supported trigger types:**
-
-| Type | Evaluation |
-|------|-----------|
-| `cron` | croniter with agent timezone |
-| `once` | Fires at specific ISO datetime |
-| `interval` | Every N minutes (default 30) |
-| `poll` | HTTP poll with change detection (SSRF-protected) |
-| `on_message` | Agent-to-agent or human message events |
-| `webhook` | External POST with payload |
-
-Triggers grouped by agent_id, then agent invoked ONCE with all trigger context. Creates internal "Reflection Session" for trigger execution.
-
-### LLM Client
-
-Unified client (`llm_client.py`, 2,132 LOC) supporting 14+ providers:
-
-| Provider | Protocol | Key Features |
-|----------|----------|-------------|
-| `anthropic` | Native | Prefix caching, thinking blocks, tool use |
-| `openai` | OpenAI-compatible | Streaming, parallel tools |
-| `openai-response` | Responses API | Batch endpoint |
-| `gemini` | Native | 1M context, function calling |
-| `azure` | OpenAI-compatible | Azure AD auth |
-| `deepseek` | OpenAI-compatible | Think tag filtering |
-| `qwen` | OpenAI-compatible | Alibaba DashScope |
-| `minimax` | OpenAI-compatible | MiniMax M2 |
-| `openrouter` | OpenAI-compatible | Multi-provider routing |
-| `zhipu` | OpenAI-compatible | GLM models |
-| `kimi` | OpenAI-compatible | Moonshot |
-| `vllm` / `ollama` / `sglang` | OpenAI-compatible | Local inference |
-| `custom` | OpenAI-compatible | Any OpenAI-compatible endpoint |
-
-Features: streaming with usage tracking, 429 retry (3x exponential backoff), connection error retry (3x), prompt caching (Anthropic), vision support.
-
-### Memory System — 4-Layer MD Pyramid + Control Plane
-
-MD files are the source of truth. SQLite is demoted to FTS recall index only. The T0/T2/T3/soul pyramid remains the storage and distillation path; the Memory Control Plane governs what is safe to store, what should activate now, and which actions require owner/company confirmation.
+Current flow:
 
 ```
-T0 (raw logs, 30d)  →  T2 (learnings/*.md)  →  T3 (memory/*.md)  →  soul.md
-     ↑ write               ↑ extract               ↑ curate             ↑ dream
-SESSION_IDLE/CLOSE   RESPONSE_COMPLETE         Heartbeat (45min)    Dream (4h+3s gate)
-  cursor-based         cursor-based             T2→T3 curation      T3→soul consolidation
+AgentDetail chat UI
+  -> WebSocket /ws/chat/{agent_id}?session_id=...
+  -> user message
+  -> chat_sessions / web_chat_runtime creates RuntimeTask(task_type="web_chat_turn")
+  -> background execute_web_chat_run()
+  -> web_chat_broker broadcasts run_started/chunk/tool_call/done events
+  -> frontend polls active run as recovery path
 ```
 
-| Layer | Location | Written By | Retention |
-|-------|----------|-----------|-----------|
-| **T0** | `logs/YYYY-MM-DD/{type}-{HHmm}-{id}.md` | `t0_logger.py` (cursor-based) | 30 days |
-| **T2** | `memory/learnings/*.md` | `extract_agent.py` (LLM, per-response) | Until curated |
-| **T3** | `memory/feedback.md`, `knowledge.md`, `strategies.md`, `blocked.md`, `user.md` | Heartbeat (KAIROS persistent session) | Until dream dedup |
-| **soul.md** | Agent root | Dream consolidation | Permanent |
-| **focus.md** | Agent root | Agent + heartbeat | Volatile |
+Key files:
 
-**Memory Control Plane:**
+| File | Responsibility |
+|------|----------------|
+| `backend/app/api/websocket.py` | WebSocket subscription, auth, control messages, idle handling, run start compatibility path. |
+| `backend/app/api/chat_sessions.py` | HTTP session list/history plus start/active/cancel run endpoints. |
+| `backend/app/services/web_chat_runtime.py` | Creates and executes durable `RuntimeTask(task_type="web_chat_turn")`. |
+| `backend/app/services/web_chat_broker.py` | Session-scoped WebSocket broadcast and runtime session cache. |
+| `frontend/src/pages/AgentDetail.tsx` | Session state, socket reconnect, active run polling, chat UI orchestration. |
+| `frontend/src/pages/agent-detail/chatRuntime.ts` | Chat runtime helpers and transport notice normalization. |
 
-| Capability | Code paths | Runtime contract |
-|------------|------------|------------------|
-| Principal + charter context | `services/agency_charter.py`, `services/principal_context.py` | Preserve direct owner, company, creator/current user, and delegating agent context when available. |
-| Write safety | `memory/write_gate.py`, `memory/t2_store.py`, `tools/handlers/memory.py` | Classify and mask before new durable T2/T3 writes; reject PL4 credentials. |
-| Dynamic activation | `memory/activation.py`, `memory/retriever.py`, `services/memory_service.py`, `runtime/invoker.py` | Select prompt memory by objective/owner/company/open-loop relevance and sensitivity access, with activation reasons. |
-| Decision trace + preflight | `services/action_preflight.py`, `services/decision_trace.py`, `tools/service.py` | Run action preflight after governance and before registry/backend execution for risky tool calls. |
-| Feedback calibration | `services/extract_agent.py`, `memory/t2_store.py`, `services/auto_dream.py` | Link feedback to `decision/<id>` when available; dream proposes charter/memory calibration instead of silently mutating boundaries. |
-| Coordination primitives | `agents/coordination.py`, `agents/orchestrator.py` | Use Lease/Signal for delegation and Checkpoint/Sentinel for confirm-first and trigger-like governed work. |
-| Proactive steward loop | `services/proactive_employee_loop.py`, `services/heartbeat.py`, `memory/policy_replay.py` | Heartbeat may prepare low-risk artifacts; external-visible work requires Checkpoint; activation policy changes require replay guard. |
+Operational contracts:
 
-**Key files:**
+- Closing or refreshing the page does not cancel the background run.
+- Only explicit stop/cancel should kill the active run.
+- Frontend sends a keepalive ping every 30 seconds while a run is waiting or streaming.
+- Backend replies to `{"type":"ping"}` with `{"type":"pong"}` and does not treat it as a chat message.
+- Backend default `WS_IDLE_TIMEOUT_SECONDS` is 3600.
+- If a WebSocket idle timeout fires while the session still has an active web chat run, the backend defers closing and sends `pong`.
+- `WS_IDLE_DREAM_SECONDS` defaults to 180 for session idle hook work.
 
-| File | Purpose |
-|------|---------|
-| `services/t0_logger.py` | Write T0 MD logs: chat, trigger, delegation, heartbeat, dream |
-| `services/extract_agent.py` | LLM extraction T0→T2 (cursor-based, fire-and-forget on RESPONSE_COMPLETE) |
-| `services/heartbeat.py` | T2→T3 curation with persistent session across ticks (45min interval) |
-| `services/auto_dream.py` | T3→soul consolidation (gate: 4h since last + 3 sessions since last) |
-| `memory/retriever.py` | Read T3 MD files directly into prompt; sqlite for recall-only FTS |
-| `memory/assembler.py` | Build memory context string for system prompt injection |
-| `runtime/hooks_setup.py` | Hook handlers: T0 writers (cursor), extraction triggers, drain on close |
+## Memory System Closed Loop
 
-**T0 cursor dedup:** SESSION_IDLE and SESSION_CLOSE track a per-session cursor into the messages list, writing only new messages since the last T0 write. Safe across WebSocket reconnects — the cursor persists in memory.
+Hive's memory system is not a passive RAG folder. It is a closed control loop
+that turns runtime behavior into durable, permission-aware future behavior:
 
-**Extraction cursor:** `extract_agent.py` maintains a separate cursor per agent+session. RESPONSE_COMPLETE advances it. No extraction on SESSION_IDLE (aligned with Claude Code — CC has no idle-triggered extraction).
+1. Capture what happened.
+2. Extract durable learnings.
+3. Curate stable memory.
+4. Activate only the right memory for the current principal, goal, and company.
+5. Let the agent act with governed tools.
+6. Feed outcomes and owner feedback back into the next cycle.
+7. Promote only proven behavior into identity, skills, or policy.
 
-### Hook System (`runtime/hooks.py`)
+The storage shape is still Markdown-first, but the important system boundary is
+the control loop around those files.
 
-15-event lifecycle bus for memory pipeline and tool governance. Handlers registered in `hooks_setup.py` during startup.
+```mermaid
+flowchart LR
+    Run["Agent run\nweb chat / channel / trigger / delegation"]
+    Hooks["Runtime hooks\nRESPONSE_COMPLETE / PRE_COMPACTION / IDLE / CLOSE"]
+    T0["T0 raw behavior logs\nlogs/YYYY-MM-DD/behavior/*.md"]
+    Queue["durable extract queue\n.failed_extractions/*.json"]
+    T2["T2 learnings\nmemory/learnings/*.md"]
+    T3["T3 semantic memory\nmemory/*.md + understandings.md"]
+    Activate["Activation gate\nPrincipalStack + goal/company/owner scoring"]
+    Prompt["Prompt memory section\nbudgeted, sensitivity-stripped"]
+    Tools["Governed tool execution\ncapability gate + action preflight"]
+    Feedback["Outcome + owner feedback\ndecision trace / pending reply / T0"]
+    Evolve["Evolution ledger + replay guard\ncandidate -> eval -> promote/hold"]
+    Soul["soul.md / skills / policy\nstable behavior"]
 
-| Category | Events | Handler |
-|----------|--------|---------|
-| Session | `SESSION_START` | Log + reset extractor cursor |
-| | `RESPONSE_COMPLETE` | Fire-and-forget LLM extraction to T2 |
-| | `SESSION_IDLE` | Incremental T0 write (cursor-based) |
-| | `SESSION_CLOSE` | Drain extractor + incremental T0 write |
-| Tool | `PRE_TOOL_USE` | Governance preflight (can block) |
-| | `POST_TOOL_USE`, `POST_TOOL_FAILURE` | Audit logging |
-| Compression | `PRE_COMPACTION` | Synchronous extraction before context lost |
-| | `POST_COMPACTION` | Logging |
-| Delegation | `DELEGATION_START`, `DELEGATION_END` | Logging + T0 write |
-| Hive-specific | `TRIGGER_END` | T0 trigger log |
-| | `HEARTBEAT_TICK_END` | T0 heartbeat log |
-| | `DREAM_END` | T0 dream log + reset heartbeat session |
-| Notification | `MEMORY_EXTRACTED` | Debug/monitoring |
-
-**Hook mechanics:** `HookRegistry` (global singleton) dispatches events to registered async handlers. PRE_TOOL_USE can return `HookResult(block=True)` to prevent tool execution. All other events are fire-and-forget.
-
-### HR Agent — Agent Creation Pipeline
-
-HR agent (`hr_agent_template/`) creates new agents through a 2-3 round conversational flow with LLM soul refinement.
-
-**Creation flow:**
-
-```
-HR conversation → create_digital_employee tool call
-                      ↓
-                _refine_soul_inputs() — LLM refinement
-                  Input: raw name, role_description, personality, boundaries
-                  Prompt: full 4-layer architecture awareness, soul-vs-focus boundary,
-                          BAD/GOOD examples for each field
-                  Output: role_description (3-5 sentences), personality (4-6 behaviors),
-                          boundaries (3-5 risk-specific rules), quality_standards,
-                          primary_users, core_outputs, first_tasks
-                      ↓
-                _render_agent_soul_from_blueprint() — structured template
-                  soul.md: Identity / Who I Serve / Core Outputs / Operating Style /
-                           Quality Standard / Boundaries / How I Learn
-                      ↓
-                _render_focus_from_blueprint() — operational priorities
-                  focus.md: Mission / First 3 Tasks / Setup Debt / Active Triggers
-                  (NO capabilities, NO tool routing — system prompt handles those dynamically)
+    Run --> Hooks --> T0 --> Queue --> T2 --> T3 --> Activate --> Prompt --> Run
+    Prompt --> Tools --> Feedback --> Hooks
+    T3 --> Evolve --> Soul --> Run
+    Feedback --> Evolve
 ```
 
-**Soul-vs-focus boundary rule:** If it changes when a skill is installed or a trigger is added, it belongs in focus.md, not soul.md. Soul is permanent identity; focus is volatile operations.
+### Storage Layers
 
-**Tools:** `create_digital_employee` (governance: sensitive), `preview_agent_blueprint` (governance: safe). HR agent class: `internal_system`. Created lazily per tenant via `GET /agents/system/hr`.
+| Layer | Storage | Writer | Purpose |
+|-------|---------|--------|---------|
+| Working | `focus.md`, objective ledger, runtime/session memory | objective services, runtime recovery | Current intent, open loops, and recovery state. This is not long-term memory. |
+| T0 raw | `logs/YYYY-MM-DD/behavior/*.md` | `runtime/hooks_setup.py`, `services/t0_logger.py` | Cursor-based record of agent/user/channel/trigger/delegation behavior. Eligible input for extraction and replay. |
+| T0 system audit | `logs/YYYY-MM-DD/system/*.md` | heartbeat and dream hooks | Distiller self-trace for operators. Not consumed as behavioral evidence for T2. |
+| T2 learnings | `memory/learnings/{insights,errors,requests}.md` | `services/extract_agent.py`, `memory/t2_store.py` | Weighted extracted facts, corrections, strategies, requests, and failure patterns. |
+| T3 semantic | `memory/{feedback,knowledge,strategies,blocked,user}.md` | heartbeat, dream, `save_memory`, governed write paths | Prompt-eligible durable memory. Markdown is the source of truth. |
+| Understanding graph | `memory/understandings.md` | `memory/understanding_store.py` | Relationship-shaped knowledge with evidence, confidence, contradictions, boundaries, and open questions. |
+| Identity | `soul.md` | dream / charter evolution path | Stable self-model, role, boundaries, and operating style. Promotion requires evidence and rollback metadata. |
+| Evolution evidence | `workspace/evolution/evolution_ledger.jsonl` | heartbeat, dream, evolution services | Candidate, eval, promotion/hold decisions for prompt, skill, memory, and policy changes. |
 
-### Authentication & Authorization
+Optional semantic backends such as Hindsight are read-side accelerators. They do
+not replace Markdown as the canonical memory source.
 
-#### JWT Tokens (`core/security.py`)
+### Capture Loop
 
-| Parameter | Value |
-|-----------|-------|
-| Algorithm | HS256 |
-| Access token expiry | 24 hours |
-| Refresh token expiry | 30 days |
-| Password hashing | bcrypt with auto-salt |
-| Refresh token storage | SHA-256 hash only |
+Runtime lifecycle events are the intake bus:
 
-JWT payload: `{ sub: user_id, role: "member"|"org_admin"|"platform_admin", exp, tid: tenant_id }`
+| Hook | Memory role |
+|------|-------------|
+| `RESPONSE_COMPLETE` | Schedules non-blocking T0->T2 extraction and fast reflection. |
+| `PRE_COMPACTION` | Runs synchronous extraction before context is summarized away. |
+| `SESSION_IDLE` | Writes incremental T0 chat logs without duplicating already-flushed messages. |
+| `SESSION_CLOSE` | Drains pending extraction, writes final T0, and runs objective intake. |
+| `TRIGGER_END` / `DELEGATION_END` | Writes behavior T0 for autonomous work. |
+| `HEARTBEAT_TICK_END` / `DREAM_END` | Writes system audit T0 for curation/evolution decisions. |
+| `POST_TOOL_USE` | Captures outbound pending replies so later owner feedback can be tied to the action. |
 
-#### Permission Model (`core/permissions.py`)
+T0 has a privacy gate before disk persistence. `t0_logger.py` masks credentials,
+adds `t0_sensitivity`, records form warnings, spills large tool results to
+artifacts, and keeps behavior logs separate from system logs. T0 retention is
+short-lived by design; durable knowledge must be distilled upward.
 
-`check_agent_access(db, user, agent_id)` returns `(agent, "manage"|"use")`:
+### Extraction And Curation
 
-1. Platform admin -> MANAGE any agent
-2. Creator check -> MANAGE own agents
-3. Explicit `AgentPermission` rows (scope: company/user/department)
-4. RBAC policies (action: manage/execute/read, principal: user/department)
-5. Tenant boundary -> 404 for cross-tenant access
+The hot extraction path is intentionally non-blocking, but it is not best-effort
+only:
 
-### Database & Multi-Tenancy
+1. `extract_agent.schedule_extract()` is called from `RESPONSE_COMPLETE`.
+2. `extract_queue.enqueue()` persists the batch before the async work starts.
+3. Successful extraction calls `mark_done()`.
+4. Startup replay scans `.failed_extractions/*.json` so process crashes do not
+   silently drop learnings.
+5. The extractor writes T2 through `memory/t2_store.py`.
 
-#### Connection Pool (`database.py`)
+T2 is weighted by source and category. Human corrections and constraints rank
+highest; autonomous observations are useful but less authoritative. Heartbeat
+then reads T2 plus current T3 as deduplication context and curates stable facts
+into T3. Heartbeat does not directly turn its own outcome into permanent memory;
+it writes evolution files, normalizes T3, optionally syncs Hindsight, and lets
+dream decide what deserves promotion.
 
-| Parameter | Value |
-|-----------|-------|
-| Pool size | 20 |
-| Max overflow | 10 |
-| Total capacity | 30 connections |
-| Driver | asyncpg |
-| ORM | SQLAlchemy 2.0 async |
+Dream consolidates T3 and proposes soul/memory promotions through
+`evolution_ledger.jsonl`. A promotion candidate must carry `source_refs`,
+evidence type, rollback strategy, and a promotion/hold decision. Inferred,
+ephemeral, or weakly evidenced identity changes are held instead of silently
+changing the agent.
 
-#### Row-Level Security
+### Write Safety
 
-```python
-# TenantMiddleware extracts tenant_id from JWT
-# get_db() sets PostgreSQL session variable:
-await session.execute("SET LOCAL app.current_tenant_id = '{tenant_id}'")
-# PostgreSQL RLS policies enforce:
-# WHERE tenant_id = current_setting('app.current_tenant_id')::uuid
+Every durable memory write should pass through `prepare_memory_write()` or a
+wrapper that calls it.
+
+| Gate | Effect |
+|------|--------|
+| Privacy classification | Classifies PL1/PL2/PL3/PL4 and masks sensitive text. |
+| PL4 zero retention | Credentials are rejected from durable memory. |
+| Form lint | Rejects entries that are too vague, relative, or malformed to be useful later. |
+| Metadata envelope | Adds `entry_id`, `sensitivity`, `status`, `version`, `evidence_refs`, `access_count`, `last_accessed`, supersession, and expiry fields. |
+| Near-dedup | `save_memory` rejects paraphrases of an existing T3 fact unless the new fact states a clear delta. |
+
+This gate is what keeps memory from becoming a transcript dump. Durable entries
+must be concise, evidence-backed, scoped, and safe to activate later.
+
+### Activation Loop
+
+Prompt memory is selected at invocation time. The retriever does not blindly
+dump every Markdown file into context.
+
+Current retrieval sources:
+
+1. Working projection from `focus.md`.
+2. T3 entries from `memory/*.md`.
+3. Relationship-shaped understandings from `memory/understandings.md`.
+4. Episodic context for the current/previous session.
+5. Optional semantic backend and external memory paths.
+
+`runtime/invoker.py` builds an `ActivationContext` around:
+
+- the current query,
+- direct owner and company terms,
+- creator/current user/delegating-agent accountability from `PrincipalStack`,
+- current goal/objective terms.
+
+`ActivationScorer` then:
+
+- strips memories the current principal cannot access,
+- boosts goal, owner, company, open-loop, retention, and high-confidence matches,
+- writes `activation_score` and `activation_reasons` into metadata,
+- bumps `access_count` and `last_accessed` for prompt-included entries.
+
+Access writeback closes the loop: memory that repeatedly helps the agent gets a
+stronger retention signal; memory that is never activated decays into lower
+priority during later curation.
+
+### Action And Feedback Loop
+
+Memory changes behavior only through governed execution:
+
+1. Activated memory enters the prompt.
+2. The agent chooses an action or tool.
+3. `ToolRuntimeService.execute()` applies capability policy and action
+   preflight.
+4. External-visible, sensitive, irreversible, or company-boundary actions may
+   become `prepare_only`, `ask`, `refuse`, or `escalate`.
+5. Decision traces and pending replies make later feedback attributable.
+6. Owner feedback, tool outcomes, failures, and corrections re-enter T0/T2.
+
+This is the closed-loop safety model: the agent can learn from feedback, but the
+next behavioral change still has to pass memory write gates, activation gates,
+tool governance, and promotion/eval gates.
+
+### Policy And Self-Evolution Loop
+
+Memory policy itself is not allowed to drift silently.
+
+| Component | Role |
+|-----------|------|
+| `memory/replay_corpus.py` | Stores anonymized activation cases with expected memory hits. |
+| `memory/policy_replay.py` | Compares baseline vs candidate activation policies and rejects quality drops. |
+| `services/evolution_ledger.py` | Records candidates, eval runs, promotion decisions, source refs, and rollback strategy. |
+| `services/heartbeat.py` | Produces evolution file writeback and skill candidates under runtime governance. |
+| `services/auto_dream.py` | Consolidates memory and decides which memory/soul promotions are strong enough to apply. |
+
+The intended promotion path is:
+
+```
+runtime evidence -> candidate -> replay/eval -> promote or hold -> rollback-capable artifact
 ```
 
-`SET LOCAL` scopes to current transaction. UUID validation prevents injection.
+No prompt, skill, memory policy, or identity change should become durable simply
+because a single run produced a plausible idea.
 
-### Configuration Reference
+### Memory Invariants
 
-All settings from `config.py` (env-based):
+- Markdown remains the canonical source of truth for T2/T3/soul memory.
+- Runtime state, task progress, and temporary debugging evidence belong in the
+  objective ledger or workspace artifacts, not durable memory.
+- PL4 credentials must never be retained in any durable memory layer.
+- Behavior T0 and system T0 are separate; only behavior T0 feeds extraction.
+- Every T2/T3 durable write must carry evidence, sensitivity, lifecycle, and
+  access metadata.
+- Prompt memory must be selected by `ActivationContext`, not static inclusion.
+- Principal context must include owner/company/current-user/delegation posture
+  when available.
+- Activated memory must update access evidence so retention and curation can
+  learn from actual use.
+- Owner feedback should link to a decision or action whenever possible.
+- Self-evolution must leave candidate/eval/promotion records with rollback
+  information before durable promotion.
 
-| Setting | Default | Purpose |
-|---------|---------|---------|
-| `DATABASE_URL` | `postgresql+asyncpg://hive:hive@localhost:5432/hive` | PostgreSQL |
-| `REDIS_URL` | `redis://localhost:6379/0` | Redis |
-| `SECRET_KEY` | `change-me-in-production` | Session secret |
-| `JWT_SECRET_KEY` | `change-me-jwt-secret` | JWT signing |
-| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | 1440 (24h) | Token expiry |
-| `AGENT_DATA_DIR` | `/data/agents` or `~/.hive/data/agents` | Agent workspace |
-| `SECRETS_MASTER_KEY` | `""` | API key encryption |
-| `FEISHU_APP_ID` | `""` | Feishu OAuth |
-| `FEISHU_APP_SECRET` | `""` | Feishu OAuth |
-| `FEISHU_CLI_ENABLED` | `false` | lark-cli integration |
-| `CORS_ORIGINS` | `["http://localhost:3000", "http://localhost:5173"]` | Allowed origins |
-| `TAVILY_API_KEY` | `""` | Web search |
-| `EXA_API_KEY` | `""` | Web search |
-| `FIRECRAWL_API_KEY` | `""` | Web crawling |
-| `XCRAWL_API_KEY` | `""` | Web crawling |
-| `OPENVIKING_URL` | `""` | Knowledge backbone |
-| `DOCKER_NETWORK` | `hive_network` | Docker networking |
-| `OPENCLAW_IMAGE` | `openclaw:local` | Remote agent image |
-| `DEBUG` | `false` | Debug mode |
+## Tool Governance And Packs
 
----
+Every tool call must pass through `ToolRuntimeService.execute()`.
 
-## Frontend
+Core path:
 
-### Route Architecture
+1. Resolve agent security zone.
+2. Apply capability policies and managed capability guards.
+3. Create approval request when required.
+4. Run action preflight for external-visible, sensitive, irreversible, or company-boundary actions.
+5. Execute through the registry only after governance passes.
+6. Audit the outcome.
 
-```
-/login                          → Login (public)
-/setup-company                  → CompanySetup (public)
+Static tool packs currently include:
 
-/ (ProtectedRoute)              → AppLayout
-  /dashboard                    → Dashboard
-  /plaza                        → Agent Plaza
-  /agents/new                   → AgentCreate (redirects to HR agent)
-  /agents/:id                   → AgentDetail (11 tabs)
-  /agents/:id/chat              → Chat
-  /messages                     → Messages
+- `web_pack`
+- `feishu_pack`
+- `plaza_pack` (product label: Agent Circle)
+- `email_pack`
+- `mcp_admin_pack`
+- `finance_pack` (experimental, tenant-enabled)
+- `office_pack`
+- `deep_research_pack`
 
-/enterprise (WorkspaceGuard)    → WorkspaceLayout
-  /info                         → Company info
-  /llm                          → LLM model management
-  /memory                       → Memory config
-  /hr                           → HR Agent
-  /tools                        → Tools registry
-  /skills                       → Skills library
-  /quotas                       → Usage quotas
-  /users                        → User management
-  /org                          → Org structure
-  /approvals                    → Approval workflows
-  /audit                        → Audit logs
-  /invitations                  → Invite codes
+MCP server imports generate dynamic pack names such as `mcp_server:{slug}`.
 
-/admin (AdminGuard)             → AdminLayout
-  /platform-settings            → Platform admin
-```
+## Office Editing Runtime
 
-**Guards:**
-- `ProtectedRoute` — requires token + tenant_id
-- `WorkspaceGuard` — requires org_admin or platform_admin
-- `AdminGuard` — requires platform_admin
+Hive now has a browser editing runtime, not only thin document tools.
 
-All pages lazy-loaded with `React.lazy()` + `Suspense`.
+Key files:
 
-### State Management
+| File | Responsibility |
+|------|----------------|
+| `backend/app/api/office.py` | Document create, editor config, download token, callback token, force-save, ONLYOFFICE command proxy. |
+| `backend/app/services/office_document_service.py` | Workspace path safety, document templates, atomic saves, revision manifest. |
+| `backend/app/services/officecli_adapter.py` | OfficeCLI integration for agent-side processing. |
+| `frontend/src/pages/agent-detail/OfficeWorkbenchSection.tsx` | Agent detail office workbench UI. |
+| `frontend/src/api/domains/office.ts` | Typed frontend API adapter. |
 
-| Layer | Technology | Purpose |
-|-------|-----------|---------|
-| Server state | TanStack React Query 5 | API data with caching, retry: 1, no refetch on focus |
-| Client state | Zustand 5 | Auth (user/token) + UI (sidebar, selection) |
-| Persistence | localStorage | Token, tenant_id, theme, accent color |
+Runtime contracts:
 
-### API Layer
+- Agent workspace remains the source of truth for files.
+- ONLYOFFICE handles browser WYSIWYG editing.
+- Download and callback URLs are scoped JWTs.
+- Callback tokens last 12 hours.
+- `editorConfig.user` is tenant-scoped: `{tenant_id}:{user_id}` when tenant exists.
+- Saved document revisions are tracked under the document service manifest.
+- Production Railway includes `onlyoffice-documentserver` as a separate service.
 
-Core HTTP abstraction in `api/core/request.ts`:
+Required production env:
 
-- Auto-injects `Authorization: Bearer {token}` and `X-Tenant-Id` headers
-- 401 -> clears auth, redirects to `/login`
-- Error parsing with Pydantic validation detail support
-- 20 typed domain adapters in `api/domains/`
+- `ONLYOFFICE_DOCS_URL`
+- `ONLYOFFICE_INTERNAL_DOCS_URL` when the backend should call the internal document-server URL
+- `ONLYOFFICE_JWT_SECRET`
+- `ONLYOFFICE_DOWNLOAD_TOKEN_EXPIRE_SECONDS` optional, default 300
+- `BASE_URL` or `PUBLIC_BASE_URL` for signed document URLs
 
-### Design System
+## Channels
 
-CSS custom properties (`index.css`, 900+ lines):
+Channel configuration is per agent unless explicitly tenant-scoped.
 
-| Token | Dark | Light |
-|-------|------|-------|
-| `--bg-primary` | `#0a0a0f` | `#ffffff` |
-| `--bg-secondary` | `#111119` | `#f8f8fa` |
-| `--text-primary` | `#e1e1e8` | `#1a1a22` |
-| `--accent-primary` | `#e1e1e8` | `#3a3a42` |
-| `--border-default` | `#26263a` | `#e5e5ea` |
+| Channel | Key code paths | Runtime notes |
+|---------|----------------|---------------|
+| Feishu/Lark | `api/feishu.py`, `services/feishu_ws.py`, Feishu tool domains | WebSocket + webhook, SSO, approval cards, office tools. Agent-level `channel_configs` are the production truth source for bot credentials. |
+| Slack | `api/slack.py` | Bot API chat. |
+| Discord | `api/discord_bot.py` | Bot gateway, optional SOCKS5 proxy. |
+| DingTalk | `api/dingtalk.py`, `services/dingtalk_stream.py` | Stream SDK. |
+| WeChat Work | `api/wecom.py`, `services/wecom_stream.py` | WebSocket/webhook, encrypted callbacks. |
+| WeChat Personal | `api/wechat_personal.py`, `services/wechat_personal_stream.py` | Personal channel bridge. |
+| Telegram | `api/telegram.py` | Telegram channel bridge. |
+| Microsoft Teams | `api/teams.py` | Bot Framework. |
+| Email | `api/email_channel.py`, `services/email_service.py` | SMTP/IMAP style email channel. |
 
-Font: Inter (body), JetBrains Mono (code). Spacing: 4px grid. Shadows scale by elevation.
+Unified delivery uses channel/session metadata so outbound replies can return to
+the originating channel when a run was triggered outside the web UI.
 
-Components: `.btn`, `.card`, `.badge`, `.tabs`, `.status-dot` (animated), `.agent-avatar`.
+## Frontend Architecture
 
-Dark/light mode via `data-theme` attribute, stored in localStorage.
+Frontend stack:
 
-### Agent Detail Interface
+- React 19
+- TypeScript 5
+- Vite 6
+- React Router 7
+- TanStack Query 5
+- Zustand 5
+- i18next with `en.json` and `zh.json`
+- Tabler Icons
 
-11 tabs at `/agents/:id`:
+Important current files:
 
-| Tab | Features |
-|-----|----------|
-| status | 3-column metrics, capability installs, activity snippet |
-| aware | Trigger list (5s poll), focus.md viewer, reflection sessions |
-| mind | Memory browser (T3 files, editable) + Evolution browser (lineage/scorecard) |
-| tools | Tool catalog, install/remove |
-| skills | Installed skills, management |
-| relationships | Inter-agent relationship editor |
-| workspace | Shared folder config |
-| chat | Session list, WebSocket real-time messages, file browser |
-| activityLog | Audit trail (10s refresh), tool failures |
-| approvals | Pending approval cards, approve/reject |
-| settings | Model selection, quotas, heartbeat, timezone, execution mode |
+| File | Responsibility |
+|------|----------------|
+| `frontend/src/App.tsx` | Surface route tree and redirects. |
+| `frontend/src/surfaces/app/AppLayout.tsx` | App shell. |
+| `frontend/src/surfaces/workspace/WorkspaceLayout.tsx` | Company Admin shell. |
+| `frontend/src/surfaces/workspace/sections.ts` | Workspace section registry and legacy redirects. |
+| `frontend/src/pages/layout/AppSidebar.tsx` | Shared sidebar and bottom actions. |
+| `frontend/src/pages/Dashboard.tsx` | Workbench dashboard, now under Company Admin. |
+| `frontend/src/pages/Plaza.tsx` | Agent Circle feed. |
+| `frontend/src/pages/AgentDetail.tsx` | Agent management hub, chat runtime, workspace tabs. |
+| `frontend/src/pages/EnterpriseSettings.tsx` | Workspace settings section host. |
 
-### Enterprise Settings
+UI naming contracts:
 
-13 workspace admin sections at `/enterprise/*`:
-
-info, llm (14+ providers), memory, hr, tools, skills, quotas, users, org, approvals, audit, invitations, notifications
-
----
+- "Dashboard" as a top-level app item is deprecated.
+- Workbench lives inside Company Admin at `/enterprise/dashboard`.
+- Plaza remains the backend/API route name, but user-facing product copy is Agent Circle / Agent圈.
+- Workspace settings sections exclude the dashboard from `WORKSPACE_SETTINGS_SECTIONS`.
 
 ## Deployment
 
-### Docker
+Local:
 
-```yaml
-# docker-compose.yml
-services:
-  postgres:   # PostgreSQL 15, port 5432
-  redis:      # Redis 7, port 6379
-  backend:    # FastAPI, port 8000 (internal)
-  frontend:   # Nginx + React, port 3008
+```bash
+bash setup.sh --dev
+bash restart.sh
 ```
 
-Backend Dockerfile: Python 3.12-slim, multi-stage (deps + production), Node.js 20 + lark-cli, non-root user `hive`, healthcheck on `/api/health`.
+Backend:
 
-Frontend Dockerfile: Node 20 Alpine build -> nginx Alpine, SPA routing via `try_files`, API proxy to `backend:8000`, security headers (CSP, X-Frame-Options, X-Content-Type-Options).
+```bash
+cd backend
+source .venv/bin/activate
+ruff check app/ tests/
+pytest
+alembic heads
+alembic upgrade head
+uvicorn app.main:app --host 0.0.0.0 --port 8008 --reload
+```
 
-### Railway
+Frontend:
 
-`railway.json`: Dockerfile-based build, restart ON_FAILURE (max 10 retries).
+```bash
+cd frontend
+npm run test
+npm run build
+npm run dev
+```
 
-Services: backend, frontend, Postgres, Redis.
+Railway production services currently include:
 
-### Entrypoint Script
+- `backend`
+- `frontend`
+- `Postgres`
+- `Redis`
+- `onlyoffice-documentserver`
 
-`entrypoint.sh` runs before uvicorn:
+Deployment checks should include service status plus external health:
 
-1. Fix volume permissions (Railway mounts as root)
-2. Configure Git for HTTPS
-3. Create/verify DB tables (`Base.metadata.create_all`)
-4. Apply idempotent column patches (`ALTER TABLE IF NOT EXISTS`)
-5. Run `alembic upgrade head`
-6. Auto-authenticate lark-cli (if credentials available)
-7. Start uvicorn on `:8000` as non-root user
+```bash
+railway service status --all --environment production --json
+node -e "fetch('https://frontend-production-0346.up.railway.app/api/health').then(r=>r.text()).then(console.log)"
+```
 
----
+## High-Value Regression Commands
 
-## Channel Integrations
+For web chat durable run changes:
 
-| Channel | Files | Connection | Features |
-|---------|-------|-----------|----------|
-| Feishu/Lark | `api/feishu.py`, `services/feishu_service.py`, `services/feishu_ws.py`, 8 tool domain files | WebSocket / Webhook | Chat, OAuth SSO, Docs, Wiki, Sheets, Base, Tasks, Calendar, approval cards |
-| Slack | `api/slack.py` | Bot API | Chat |
-| Discord | `api/discord_bot.py` | Bot Gateway | Chat (SOCKS5 proxy support) |
-| DingTalk | `api/dingtalk.py`, `services/dingtalk_stream.py` | Stream SDK | Chat |
-| WeChat Work | `api/wecom.py`, `services/wecom_stream.py` | WebSocket / Webhook | Chat (AES-CBC encrypted) |
-| Microsoft Teams | `api/teams.py` | Bot Framework | Chat |
+```bash
+cd backend
+pytest tests/services/test_web_chat_runtime.py tests/api/test_chat_session_runs.py tests/api/test_websocket_call_llm.py -q
+```
 
-Channel configs stored per-agent in `channel_configs` table. Each channel has its own router and streaming manager. Feishu has the deepest integration with 24 office tools.
+```bash
+cd frontend
+npx vitest run src/pages/agent-detail/chatRuntime.test.ts src/pages/agent-detail/AgentDetailSections.test.tsx
+```
+
+For Office runtime changes:
+
+```bash
+cd backend
+pytest tests/services/test_office_document_service.py tests/api/test_office_editor.py tests/tools/test_office_tools.py -q
+```
+
+```bash
+cd frontend
+npx vitest run src/pages/agent-detail/OfficeWorkbenchSection.test.tsx src/api/domains/office.test.ts
+```
+
+For broad release confidence:
+
+```bash
+cd backend
+ruff check app/ tests/
+pytest
+```
+
+```bash
+cd frontend
+npm run test
+npm run build
+```
+
+## Non-Negotiable Invariants
+
+- All LLM execution goes through `invoke_agent()` and `AgentKernel.handle()`.
+- All tool execution goes through `ToolRuntimeService.execute()`.
+- All external-visible, sensitive, irreversible, or company-boundary actions go through action preflight.
+- Durable T2/T3 memory writes go through `prepare_memory_write()` or a wrapper that calls it.
+- Prompt memory activation must preserve principal and sensitivity context when known.
+- Agent creation must render first-person accountability plus frozen company/owner charter sections in `soul.md`.
+- WebSocket disconnects must not cancel durable web chat runs.
+- Office document saves must preserve path safety and revision history.
+- UI text changes must update both English and Chinese i18n files.
+- Migrations require a single Alembic head.

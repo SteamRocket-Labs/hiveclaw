@@ -20,11 +20,13 @@ Hive 是一个可自部署的**数字员工**平台 —— 它构建的不是关
 - **持久身份** —— 每个 Agent 都有一份 `soul.md`：它的角色、语气、边界与质量标准。它跨越对话、跨越会话、甚至跨越模型切换都不会丢失。
 - **四层记忆金字塔 + 控制平面** —— 原始日志 → 学习提取 → 语义记忆 → 身份固化，同时由 owner/company 语境、隐私门、动态激活、决策轨迹与 replay 守卫来治理。无需手动配置 RAG。
 - **Heartbeat 与 Dream** —— 后台守护进程在你不在时替 Agent 思考：整理它学到的东西、准备低风险跟进材料、决定哪些值得保留，并提出安全的身份/策略演化建议。
+- **可恢复 Web Chat** —— Web 聊天回合现在作为后台 `RuntimeTask` 执行。刷新页面或临时断开只会断订阅，不会中断 Agent 正在做的事。
+- **Office 工作台** —— Agent workspace 已支持通过 ONLYOFFICE 在浏览器里编辑 DOCX/XLSX/PPTX，并带签名回调与版本修订。
 - **直接住在群聊里** —— 一等公民支持飞书/Lark、Slack、Discord、钉钉、企业微信、Microsoft Teams。同一个 Agent，同一份记忆，跨所有渠道。
 - **对话式创建** —— HR Agent 通过 2–3 轮对话面试你，自动生成新员工。无需写 Prompt。
 - **自主行动** —— 支持 cron、interval、webhook、轮询、消息事件触发。Agent 会主动起来工作，而不只是被动回答。
 - **企业级治理** —— 安全分区、能力策略、人工审批流、多租户 PostgreSQL RLS 隔离、完整审计链。
-- **60+ 内置工具** —— 文件读写、网页搜索、飞书全套办公套件、邮件、外加任意 MCP Server 一键导入。
+- **60+ 内置工具** —— 文件读写、网页搜索、飞书办公套件、邮件、OfficeCLI/ONLYOFFICE 文档流、Deep Research，以及任意 MCP Server 一键导入。
 
 > [!NOTE]
 > Hive 完全可自部署。FastAPI + React + PostgreSQL + Redis，自带 Docker Compose，支持 14+ 种 LLM 提供商（Anthropic、OpenAI、Gemini、DeepSeek、通义千问、MiniMax、Azure、OpenRouter、智谱、Kimi、vLLM、Ollama……）。
@@ -68,8 +70,9 @@ docker compose up -d --build    # 全栈运行在 http://localhost:3008
    PostgreSQL      Redis              后台守护进程            Agent 文件系统
    (RLS, async)   (缓存, pubsub)     - Trigger（15s 一跳）    /data/agents/
                                      - 飞书 / 钉钉 / 企微        {agent_id}/
-                                       WebSocket 长连接管理      soul.md
+                                       / 微信长连接管理          soul.md
                                      - Heartbeat / Dream         focus.md
+                                     - Evolution daemon          workspace/
                                                                  memory/
                                                                  logs/
                                                                  skills/
@@ -84,7 +87,9 @@ docker compose up -d --build    # 全栈运行在 http://localhost:3008
       →  tools/governance.py（安全分区 → 能力闸门 → 审批流）
 ```
 
-Kernel **不导入任何数据库代码** —— 所有 I/O 都通过 14 个注入回调完成。这意味着同一个 kernel 同时跑 WebSocket 聊天、飞书 webhook、定时触发器、Agent 间委派，上下文压缩、工具预算、Prompt 缓存语义完全一致。
+Kernel **不导入任何数据库代码** —— 所有 I/O 都通过注入回调完成。这意味着同一个 kernel 同时跑 Web 聊天、飞书 webhook、定时触发器、Heartbeat、Agent 间委派，上下文压缩、工具预算、Prompt 缓存语义完全一致。
+
+Web Chat 是可恢复执行：浏览器 WebSocket 只是订阅后台 `RuntimeTask(task_type="web_chat_turn")`。页面刷新或临时断开后，后台 run 会继续，前端通过 active-run 轮询恢复状态。
 
 ## 记忆金字塔
 
@@ -124,15 +129,28 @@ T0 原始日志  ← t0_logger      （游标式增量写入，会话空闲/关�
 
 完整设计和阶段证据见 [`docs/owner-steward-agent-memory-design.md`](docs/owner-steward-agent-memory-design.md)。
 
+## 产品界面分层
+
+Hive 现在分成三层界面：
+
+| 界面 | 路由 | 用途 |
+|---------|--------|---------|
+| App | `/plaza`, `/agents/:id`, `/messages` | 日常 Agent 交互。`/plaza` 用户侧命名为 **Agent圈**。 |
+| 公司后台 | `/enterprise/*` | 公司工作台、模型配置、记忆、HR、工具、技能、配额、用户、组织、审批、审计、邀请码。`/dashboard` 会跳转到 `/enterprise/dashboard`。 |
+| 平台后台 | `/admin/*` | 平台管理员设置。 |
+
 ## 渠道集成
 
 | 渠道 | 连接方式 | 能力 |
 |---------|-----------|--------------|
-| 飞书 / Lark | WebSocket + Webhook | 聊天、OAuth SSO、文档、Wiki、电子表格、多维表格、任务、日历、审批卡片（24 个办公工具） |
+| 飞书 / Lark | WebSocket + Webhook | 聊天、OAuth SSO、文档、Wiki、电子表格、多维表格、任务、日历、审批卡片 |
 | Slack | Bot API | 聊天 |
 | Discord | Bot Gateway | 聊天（可选 SOCKS5 代理） |
 | 钉钉 | Stream SDK | 聊天 |
 | 企业微信 | WebSocket + Webhook | 聊天（AES-CBC 加密） |
+| 个人微信 | Stream bridge | 个人聊天桥接 |
+| Telegram | Bot API | 聊天 |
+| 邮件 | SMTP/IMAP 配置 | 发送、读取、回复 |
 | Microsoft Teams | Bot Framework | 聊天 |
 
 渠道配置是**按 Agent 维度**的，不同员工可以同时活在不同的工作 IM 里 —— 销售在飞书、研发在 Slack、运营在钉钉 —— 共用同一套 Hive 后端与租户。
@@ -141,14 +159,14 @@ T0 原始日志  ← t0_logger      （游标式增量写入，会话空闲/关�
 
 | 模块 | 文件数 | 说明 |
 |-------|-------|-------|
-| API 路由 | 48 | Agents、auth、chat、enterprise、channels、admin、plaza、triggers、schedules |
-| ORM 模型 | 31 | 全部按租户隔离，PostgreSQL RLS 强制 |
-| 业务服务 | 58 | LLM 客户端（14+ 提供商）、触发守护、渠道流式、配额、审批、审计 |
-| 工具处理器 | 60+ | filesystem · search · communication · email · feishu · plaza · skills · triggers · hr · mcp |
-| Kernel | 1 个无状态引擎 | 单次最多 50 轮工具 · 85% 上下文压缩阈值 · 50KB 单工具结果上限 |
-| 数据库迁移 | 35 | Alembic，单 head 不可变约束 |
-| 前端页面 | 17 + 20 子区块 | Dashboard、AgentDetail（11 个 tab）、EnterpriseSettings（13 个区块）、Plaza、Admin |
-| 前端 API | 20 个类型化领域 | TanStack Query 管服务端状态、Zustand 管 UI 状态 |
+| API 路由 | 55 | Agents、auth、chat sessions、enterprise、channels、admin、Agent圈/plaza、triggers、office、deep research |
+| ORM 模型 | 36 | 租户隔离 SQLAlchemy 模型，包含 runtime tasks、coordination、objectives、identity |
+| 业务服务 | 130 | LLM 客户端、trigger/evolution 守护、渠道流、记忆、Office、治理、技能 |
+| 工具处理器 | 60+ | filesystem · search · communication · email · feishu · office · memory · deep research · plaza · skills · triggers · hr · mcp |
+| Kernel | 1 个无状态引擎 | 默认最多 200 轮工具 · 75% 上下文压缩阈值 · 50KB 单工具结果上限 |
+| 数据库迁移 | 58 | Alembic，单 head 不可变约束 |
+| 前端页面 | 16 + 25 子区块 | AgentDetail、Agent圈、公司后台工作台/设置、平台后台 |
+| 前端 API | 25 个生产类型化领域适配器 | TanStack Query 管服务端状态、Zustand 管 UI 状态 |
 
 更深入的技术细节请见 [`ENGINEERING.md`](ENGINEERING.md)（架构、不变量、运行时契约）与 [`AGENTS.md`](AGENTS.md)（给 AI 编程助手的开发参考）。
 
@@ -163,7 +181,7 @@ T0 原始日志  ← t0_logger      （游标式增量写入，会话空闲/关�
 | 数据库迁移 | Alembic |
 | 代码检查 / 格式化 | Ruff（Python）、ESLint + Prettier（TypeScript） |
 | 测试 | pytest（后端）、Vitest（前端） |
-| 部署 | Docker Compose、Railway |
+| 部署 | Docker Compose、Railway（`backend`、`frontend`、`Postgres`、`Redis`、`onlyoffice-documentserver`） |
 
 ## 常见问题
 

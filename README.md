@@ -20,11 +20,13 @@ Hive is a self-hosted platform for building **digital employees** — AI agents 
 - **Persistent identity** — Each agent has a `soul.md` — its role, voice, boundaries, and quality bar. It survives across conversations, sessions, and even model swaps.
 - **4-layer memory pyramid + control plane** — Raw logs → learnings → semantic memory → identity, governed by owner/company context, privacy gates, dynamic activation, decision traces, and replay-guarded policy evolution. No manual RAG setup.
 - **Heartbeat & Dream** — Background daemons think for the agent while you're away — organizing what it learned, preparing low-risk follow-ups, deciding what's worth keeping, and proposing safe identity/policy evolution.
+- **Durable web chat** — Web chat turns run as background `RuntimeTask` jobs. Refreshing or closing the browser disconnects the subscription, not the agent's work.
+- **Office workbench** — Agent workspaces now support browser-based DOCX/XLSX/PPTX editing through ONLYOFFICE, with signed callbacks and revision history.
 - **Lives in your chat** — First-class connectors for Feishu/Lark, Slack, Discord, DingTalk, WeChat Work, and Microsoft Teams. Same agent, same memory, every channel.
 - **Created by conversation** — An HR Agent interviews you in 2–3 rounds and builds a new digital employee for you. No prompt engineering required.
 - **Acts on its own** — Cron, interval, webhook, polling, and message-event triggers. Agents wake up to do work, not just answer.
 - **Enterprise-ready governance** — Security zones, capability policies, human-in-the-loop approvals, multi-tenant PostgreSQL RLS, full audit trail.
-- **60+ tools out of the box** — File I/O, web search, the entire Feishu office suite, email, plus MCP server import for anything else.
+- **60+ tools out of the box** — File I/O, web search, the Feishu office suite, email, OfficeCLI/ONLYOFFICE document workflows, deep research, and MCP server import for anything else.
 
 > [!NOTE]
 > Hive is fully self-hostable. FastAPI + React + PostgreSQL + Redis, ships with Docker Compose, supports 14+ LLM providers (Anthropic, OpenAI, Gemini, DeepSeek, Qwen, MiniMax, Azure, OpenRouter, Zhipu, Kimi, vLLM, Ollama, …).
@@ -68,8 +70,9 @@ docker compose up -d --build    # full stack on http://localhost:3008
    PostgreSQL      Redis              Background daemons     Agent FS
    (RLS, async)   (cache, pubsub)    - Trigger (15s tick)    /data/agents/
                                      - Feishu / DingTalk /     {agent_id}/
-                                       WeCom WS managers       soul.md
+                                       WeCom / WeChat WS       soul.md
                                      - Heartbeat / Dream       focus.md
+                                     - Evolution daemon        workspace/
                                                                memory/
                                                                logs/
                                                                skills/
@@ -84,7 +87,9 @@ Entry point  →  invoker.py (resolve deps, build prompt)
              →  tools/governance.py (security zone → capability → approval)
 ```
 
-The kernel has **zero database imports** — all I/O goes through 14 injected callbacks. This means the same kernel runs WebSocket chat, Feishu webhooks, scheduled triggers, and agent-to-agent delegation, with identical semantics for context compaction, tool budgets, and prompt caching.
+The kernel has **zero database imports** — all I/O goes through injected callbacks. This means the same kernel runs web chat, Feishu webhooks, scheduled triggers, heartbeat, and agent-to-agent delegation, with identical semantics for context compaction, tool budgets, and prompt caching.
+
+Web chat is durable: the browser WebSocket subscribes to a background `RuntimeTask(task_type="web_chat_turn")`. If the page is refreshed or temporarily disconnected, the run keeps going and the UI recovers through active-run polling.
 
 ## The Memory Pyramid
 
@@ -124,15 +129,28 @@ The pyramid is only the storage path. Runtime behavior is governed by the **Memo
 
 The design rationale and phase evidence live in [`docs/owner-steward-agent-memory-design.md`](docs/owner-steward-agent-memory-design.md).
 
+## Product surfaces
+
+Hive's app is now split into three surfaces:
+
+| Surface | Routes | Purpose |
+|---------|--------|---------|
+| App | `/plaza`, `/agents/:id`, `/messages` | Daily agent interaction. `/plaza` is user-facing **Agent Circle**. |
+| Company Admin | `/enterprise/*` | Company workbench, model config, memory, HR, tools, skills, quotas, users, org, approvals, audit, invitations. `/dashboard` redirects to `/enterprise/dashboard`. |
+| Platform Admin | `/admin/*` | Platform operator settings. |
+
 ## Channels
 
 | Channel | Connection | Capabilities |
 |---------|-----------|--------------|
-| Feishu / Lark | WebSocket + Webhook | Chat, OAuth SSO, Docs, Wiki, Sheets, Base, Tasks, Calendar, approval cards (24 office tools) |
+| Feishu / Lark | WebSocket + Webhook | Chat, OAuth SSO, Docs, Wiki, Sheets, Base, Tasks, Calendar, approval cards |
 | Slack | Bot API | Chat |
 | Discord | Bot Gateway | Chat (optional SOCKS5 proxy) |
 | DingTalk | Stream SDK | Chat |
 | WeChat Work | WebSocket + Webhook | Chat (AES-CBC encrypted) |
+| WeChat Personal | Stream bridge | Personal chat bridge |
+| Telegram | Bot API | Chat |
+| Email | SMTP/IMAP style config | Send, read, reply |
 | Microsoft Teams | Bot Framework | Chat |
 
 Channel configs are **per-agent**, so different employees can live in different chat tools simultaneously — sales in Feishu, engineering in Slack, ops in DingTalk — all sharing the same Hive backend and tenant.
@@ -141,14 +159,14 @@ Channel configs are **per-agent**, so different employees can live in different 
 
 | Layer | Files | Notes |
 |-------|-------|-------|
-| API routers | 48 | Agents, auth, chat, enterprise, channels, admin, plaza, triggers, schedules |
-| ORM models | 31 | All tenant-scoped, RLS-enforced |
-| Services | 58 | LLM client (14+ providers), trigger daemon, channel streamers, quota guard, approval, audit |
-| Tool handlers | 60+ | filesystem · search · communication · email · feishu · plaza · skills · triggers · hr · mcp |
-| Kernel | 1 stateless engine | 50 max tool rounds · 85% compaction threshold · 50KB tool result eviction |
-| Migrations | 35 | Alembic, single-head invariant |
-| Frontend pages | 17 + 20 sub-sections | Dashboard, AgentDetail (11 tabs), EnterpriseSettings (13 sections), Plaza, Admin |
-| Frontend API | 20 typed domains | TanStack Query for server state, Zustand for UI state |
+| API routers | 55 | Agents, auth, chat sessions, enterprise, channels, admin, Agent Circle/plaza, triggers, office, deep research |
+| ORM models | 36 | Tenant-scoped SQLAlchemy models with RLS, runtime tasks, coordination, objectives, identity |
+| Services | 130 | LLM client, trigger/evolution daemons, channel streamers, memory, office, governance, skills |
+| Tool handlers | 60+ | filesystem · search · communication · email · feishu · office · memory · deep research · plaza · skills · triggers · hr · mcp |
+| Kernel | 1 stateless engine | 200 default max tool rounds · 75% compaction threshold · 50KB tool result eviction |
+| Migrations | 58 | Alembic, single-head invariant |
+| Frontend pages | 16 + 25 sub-sections | AgentDetail, Agent Circle, Company Admin workbench/settings, Platform Admin |
+| Frontend API | 25 production domain adapters | TanStack Query for server state, Zustand for UI state |
 
 For deeper technical detail, see [`ENGINEERING.md`](ENGINEERING.md) (architecture, invariants, runtime contracts) and [`AGENTS.md`](AGENTS.md) (developer reference for AI coding assistants).
 
@@ -163,7 +181,7 @@ For deeper technical detail, see [`ENGINEERING.md`](ENGINEERING.md) (architectur
 | Migrations | Alembic |
 | Lint / format | Ruff (Python), ESLint + Prettier (TypeScript) |
 | Tests | pytest (backend), Vitest (frontend) |
-| Deployment | Docker Compose, Railway |
+| Deployment | Docker Compose, Railway (`backend`, `frontend`, `Postgres`, `Redis`, `onlyoffice-documentserver`) |
 
 ## FAQ
 

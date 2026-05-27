@@ -15,9 +15,9 @@ Hive exists to be **two things, and every line of code must serve one of them**:
 
 ## Project Overview
 
-Hive is an open-source **multi-agent collaboration platform** — enterprise "digital employees" with persistent identity, long-term memory, private workspaces, and autonomous trigger-driven execution. Built with FastAPI (Python) backend + React 19 (TypeScript) frontend.
+Hive is an open-source **multi-agent collaboration platform** — enterprise "digital employees" with persistent identity, long-term memory, private workspaces, autonomous trigger-driven execution, durable web chat runs, Office workbench editing, and an owner/company-aware Memory Control Plane. Built with FastAPI (Python) backend + React 19 (TypeScript) frontend.
 
-**Version:** tracked in the root `VERSION` file (currently 1.7.0), shared by both frontend and backend.
+**Version:** tracked in `backend/VERSION` and `frontend/VERSION` (currently 1.7.0).
 
 ## Development Commands
 
@@ -76,12 +76,12 @@ PostgreSQL (asyncpg) + Redis
 All agent execution flows through a unified kernel. This is the most important architectural layer.
 
 ```
-Entry Points (WebSocket, Feishu, Slack, DingTalk, WeChat, Teams, Trigger, Heartbeat, Delegation)
+Entry Points (web chat RuntimeTask, Feishu, Slack, DingTalk, WeChat, Teams, Trigger, Heartbeat, Delegation)
     ↓
 runtime/invoker.py — invoke_agent() resolves deps, builds prompt, calls kernel
     ↓
-kernel/engine.py — AgentKernel.handle() — stateless LLM loop, zero DB deps (1,505 LOC)
-    ↓ (14 injected callbacks via KernelDependencies)
+kernel/engine.py — AgentKernel.handle() — stateless LLM loop, zero DB deps
+    ↓ (injected callbacks via KernelDependencies)
 tools/service.py — ToolRuntimeService.execute() — governed tool execution
     ↓
 tools/governance.py — security zone → capability gate → approval flow
@@ -100,7 +100,7 @@ tools/executors/ — core.py, extended.py, integrations.py
 | `runtime/session.py` | `SessionContext` — tracks source, channel, active_packs per invocation |
 | `core/execution_context.py` | `ExecutionIdentity` ContextVar — agent_bot vs delegated_user, read by audit |
 
-**Execution flow:** Every entry point builds an `InvocationRequest` and calls `invoke_agent()`. The kernel runs a multi-round LLM loop with streaming callbacks. Round budget: `max_tool_rounds` defaults to **200** (`models/agent.py:63`, `invoker.py:160/172/189/203`); heartbeat overrides to **15** (`heartbeat.py:1454`, "OBSERVE ~3 + CURATE ~8 + LOG ~4"). Round-pressure warnings injected at 80% and `max_rounds - 2` (`engine.py:1297-1298`). Context compaction is **proactive** (≥75% utilization, checked every 3 rounds) + **reactive** (prompt-too-long retries with truncation). Individual tool results >50KB spill to `workspace/logs/.../artifacts/`; per-round aggregate budget 200K chars. Semantic loop detection is wired via `LoopGuard` (`kernel/loop_guard.py`; observed in `engine.py:1870/1982/2055` over assistant text, tool calls, and tool results), aborting on repeated identical tool/args, repeated identical failures, and repeated assistant text; the round cap is the backstop.
+**Execution flow:** Every entry point builds an `InvocationRequest` and calls `invoke_agent()`. The kernel runs a multi-round LLM loop with streaming callbacks. Round budget: `max_tool_rounds` defaults to **200**; heartbeat overrides to **40**. Round-pressure warnings are injected at 80% and with 2 rounds remaining. Context compaction is **proactive** (≥75% utilization, checked every 3 rounds) + **reactive** (prompt-too-long retries with truncation). Individual tool results >50KB spill to `workspace/logs/.../artifacts/`; per-round aggregate budget is 200K chars. Semantic loop detection is wired via `LoopGuard` over assistant text, tool calls, and tool results; the round cap is the backstop.
 
 ### Tool System (`app/tools/`)
 
@@ -113,10 +113,10 @@ Tools follow a registry + executor + governance pattern:
 | `governance.py` | `run_tool_governance()` — 2-layer preflight: security zone → capability gate |
 | `governance_resolver.py` | Connects governance to real DB (security_zone, capability policies, approval) |
 | `packs.py` | `ToolPackSpec` — static capability bundles (web, feishu, email, etc.) |
-| `handlers/` | 11 handler files: filesystem, search, communication, email, feishu, plaza, skills, triggers, hr, mcp |
+| `handlers/` | 16 handler files: filesystem, search, communication, email, feishu, plaza, skills, triggers, hr, mcp, office, memory, finance, objectives, tasks |
 | `workspace.py` | `ensure_workspace()` — bootstraps agent filesystem (soul.md, memory/, skills/, workspace/) |
 
-**60+ built-in tools** across categories: file I/O, web search/fetch, Feishu office (docs/wiki/sheets/base/tasks/calendar), email, messaging, plaza, triggers, skills, MCP.
+**60+ built-in tools** across categories: file I/O, web search/fetch, Feishu office (docs/wiki/sheets/base/tasks/calendar), OfficeCLI/ONLYOFFICE document workflows, email, messaging, Agent Circle/plaza, triggers, skills, deep research, MCP.
 
 ### Skill System (`app/skills/`)
 
@@ -192,12 +192,12 @@ The pyramid is the storage and distillation path. Runtime behavior is governed b
 | File | Purpose |
 |------|---------|
 | `services/t0_logger.py` | Write T0 MD logs (chat, trigger, delegation, heartbeat, dream) |
-| `services/extract_agent.py` | LLM extraction T0→T2 (cursor-based, per-response via RESPONSE_COMPLETE hook). T2 entries carry `[w=][src=][cat=]` metadata (`t2_store.py:149`); source bucket weights at `t2_store.py:68` |
-| `services/heartbeat.py` | T2→T3 curation (KAIROS persistent session, 45min ticks). Loads `templates/HEARTBEAT.md`; per-agent `workspace/HEARTBEAT.md` overrides via `_load_heartbeat_instruction` (heartbeat.py:413) — **already SOP-driven** |
-| `services/auto_dream.py` | T3→soul consolidation (4h + 3 sessions gate). `templates/DREAM.md` covers the **procedural** file-maintenance side (dedup, cap enforcement, lineage). The **structured-decision** side (soul promotions, T3 merges, contradictions, preservation flags) still runs through `_DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE` in Python (auto_dream.py:117) — DREAM.md is **not yet** wired as the consolidator's protocol source. Anti-pattern list at auto_dream.py:229 is detailed; positive scoring (novelty/reusability) is missing |
+| `services/extract_agent.py` | LLM extraction T0→T2 (cursor-based, per-response via RESPONSE_COMPLETE hook). T2 entries carry `[w=][src=][cat=]` metadata; source bucket weights live in `memory/t2_store.py`. |
+| `services/heartbeat.py` | T2→T3 curation (KAIROS persistent session, 45min ticks). Loads `templates/HEARTBEAT.md`; per-agent `workspace/HEARTBEAT.md` overrides via `_load_heartbeat_instruction` — **already SOP-driven** |
+| `services/auto_dream.py` | T3→soul consolidation (4h + 3 sessions gate). `templates/DREAM.md` covers procedural file maintenance; structured soul-promotion decisions still run through `_DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE`. |
 | `services/evolution_ledger.py` | `evolution_ledger.jsonl` — candidate → eval (with `traces`) → promotion audit chain for automatic prompt/skill/policy changes. Distinct from per-invocation runtime trace (not yet implemented) |
-| `memory/retriever.py` | Read T3 into prompt. P0 (`feedback.md`/`blocked.md`) injected in full at `_retrieve_t3_direct` (retriever.py:267); P1/P2 (`knowledge.md`/`strategies.md`/`user.md`) scored per-entry against query |
-| `memory/md_store.py` | `rebuild_index` (md_store.py:232) maintains `memory/INDEX.md` — currently a **shadow artifact**, retriever does not route through it. `auto_dream._update_index_md` (auto_dream.py:833) regenerates it after each dream |
+| `memory/retriever.py` | Read T3 into prompt. High-priority files are injected directly where policy allows; knowledge/strategy/user entries are scored against query. |
+| `memory/md_store.py` | Maintains Markdown T3 stores and `memory/INDEX.md`; the index is still a shadow artifact and not the primary retriever route. |
 | `runtime/hooks_setup.py` | Hook handlers: T0 writers, extraction triggers, drain on close |
 
 ### Hook System (`app/runtime/hooks.py`)
@@ -256,27 +256,27 @@ Soul refinement prompt teaches the LLM the full 4-layer architecture, soul-vs-fo
 
 | Directory | Count | Purpose |
 |-----------|-------|---------|
-| `api/` | 48 files | FastAPI routers — agents, auth, chat, enterprise, triggers, channels, admin, plaza |
-| `models/` | 31 files | SQLAlchemy ORM — all async, tenant-scoped with RLS |
-| `services/` | 58 files | Business logic — LLM client, trigger daemon, channel streaming, quota, approval |
-| `services/agent_tool_domains/` | 20 files | Tool domain implementations — Feishu (8), messaging, tasks, workspace, email |
+| `api/` | 55 files | FastAPI routers — agents, auth, chat sessions, enterprise, triggers, channels, admin, plaza, office, deep research |
+| `models/` | 36 files | SQLAlchemy ORM — all async, tenant-scoped with RLS |
+| `services/` | 130 files | Business logic — LLM client, trigger/evolution daemons, channel streaming, memory, office, quota, approval |
+| `services/agent_tool_domains/` | 21 files | Tool domain implementations — Feishu, messaging, tasks, workspace, email |
 | `kernel/` | 3 files | Core engine — invocation loop, contracts, context management |
-| `runtime/` | 8+ files | Hooks, invoker, prompt builder, prompt sections, session context |
-| `tools/` | 11+ files | Tool registry, governance, handlers, workspace |
+| `runtime/` | 13 files | Hooks, invoker, prompt builder, prompt sections, session context, recovery/coordinator helpers |
+| `tools/` | 16 files | Tool registry, governance, packs, catalog, result envelopes, workspace |
 | `skills/` | 5 files | Skill parser, loader, registry |
-| `memory/` | 10 files | MD-first: retriever, assembler, md_store (T3), t2_store, legacy_migration, `MemoryBackend` Protocol, hindsight_sync, metrics, `backends/` |
+| `memory/` | 18 files | MD-first: retriever, assembler, md_store (T3), t2_store, write gate, activation, lifecycle, retention, access log, replay corpus, optional backends |
 | `memory/backends/` | `hindsight.py` | Optional read-side accelerator; opt-in per tenant via `tenants.memory_backend` column. Module docstring has the design invariants and operator runbook. |
 | `core/` | — | Security, permissions, middleware, Redis pub/sub |
-| `migrations/` | 35 versions | Alembic schema evolution |
+| `migrations/` | 58 versions | Alembic schema evolution |
 
 ### Frontend Layout (`frontend/src/`)
 
 | Directory | Purpose |
 |-----------|---------|
-| `pages/` | 17 pages + 20 section files — Dashboard, AgentDetail, Plaza, EnterpriseSettings, Admin |
+| `pages/` | 16 pages + 25 section files — AgentDetail, Agent Circle, Company Admin workbench/settings, Admin |
 | `components/` | 9 reusable components — ChannelConfig, FileBrowser, MarkdownRenderer, etc. |
 | `api/core/` | HTTP abstraction — `request<T>()` with JWT, error handling, upload progress |
-| `api/domains/` | 20 typed domain adapters — agents, enterprise, tools, chat, notifications, etc. |
+| `api/domains/` | 25 production typed adapters; 30 files including tests and index — agents, enterprise, tools, chat, office, deep research, memory, notifications, etc. |
 | `stores/` | Zustand — `useAuthStore` (user/token) + `useAppStore` (sidebar/selection) |
 | `i18n/` | i18next — `en.json` + `zh.json` (both must be updated for any UI text) |
 | `types/` | Core TypeScript interfaces — User, Agent, Task, ChatMessage |
@@ -309,10 +309,10 @@ Agents start with kernel-only tools (file I/O, skill loading, triggers). Capabil
 Both `en.json` and `zh.json` must be updated for any UI text. Use `t('key')` from `useTranslation()`.
 
 ### Channel Integrations
-Feishu/Lark, Discord, Slack, DingTalk, WeChat Work, Microsoft Teams — each has its own router in `api/` and streaming service in `services/`. Channel configs are per-agent. Feishu supports WebSocket long connections via `feishu_ws.py`.
+Feishu/Lark, Discord, Slack, DingTalk, WeChat Work, WeChat Personal, Telegram, Email, Microsoft Teams — each has its own router in `api/` and streaming service or delivery path in `services/`. Channel configs are per-agent unless explicitly tenant-scoped. Feishu supports WebSocket long connections via `feishu_ws.py`.
 
 ### Environment Variables
-Key vars (see `.env.example`): `DATABASE_URL`, `REDIS_URL`, `SECRET_KEY`, `JWT_SECRET_KEY`, `SECRETS_MASTER_KEY`, `AGENT_DATA_DIR`, `EXA_API_KEY`, `TAVILY_API_KEY`, `FIRECRAWL_API_KEY`, `XCRAWL_API_KEY`, `FEISHU_APP_ID`/`FEISHU_APP_SECRET`.
+Key vars (see `.env.example`): `DATABASE_URL`, `REDIS_URL`, `SECRET_KEY`, `JWT_SECRET_KEY`, `SECRETS_MASTER_KEY`, `AGENT_DATA_DIR`, `EXA_API_KEY`, `TAVILY_API_KEY`, `FIRECRAWL_API_KEY`, `XCRAWL_API_KEY`, `FEISHU_APP_ID`/`FEISHU_APP_SECRET`, `ONLYOFFICE_DOCS_URL`, `ONLYOFFICE_JWT_SECRET`, `WS_IDLE_TIMEOUT_SECONDS`.
 
 ### Ports
 Frontend dev: 3008, Backend dev: 8008, PostgreSQL: 5432, Redis: 6379.

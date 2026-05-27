@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  CHAT_SOCKET_KEEPALIVE_INTERVAL_MS,
+  buildChatSocketKeepaliveMessage,
   buildRuntimeSummary,
   computeComposerHeight,
   getCompactionDisplayContent,
@@ -10,6 +12,12 @@ import {
 } from './chatRuntime';
 
 describe('chatRuntime helpers', () => {
+  it('keeps websocket sessions alive while a user is waiting for output', () => {
+    expect(CHAT_SOCKET_KEEPALIVE_INTERVAL_MS).toBeGreaterThan(0);
+    expect(CHAT_SOCKET_KEEPALIVE_INTERVAL_MS).toBeLessThanOrEqual(30_000);
+    expect(buildChatSocketKeepaliveMessage()).toEqual({ type: 'ping' });
+  });
+
   it('maps compaction runtime events into event messages', () => {
     const message = getRuntimeEventMessage({
       type: 'session_compact',

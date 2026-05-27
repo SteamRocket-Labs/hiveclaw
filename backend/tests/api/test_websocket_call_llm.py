@@ -40,6 +40,60 @@ def test_history_rehydration_skips_llm_error_assistant_rows():
     ]
 
 
+def test_websocket_idle_timeout_default_allows_long_wait(monkeypatch):
+    from app.api.websocket import _get_ws_idle_timeout_seconds
+
+    monkeypatch.delenv("WS_IDLE_TIMEOUT_SECONDS", raising=False)
+
+    assert _get_ws_idle_timeout_seconds() >= 3600
+
+
+@pytest.mark.asyncio
+async def test_websocket_ping_control_message_replies_with_pong():
+    from app.api.websocket import _handle_websocket_control_message
+
+    sent = []
+
+    class FakeWebSocket:
+        async def send_json(self, payload):
+            sent.append(payload)
+
+    handled = await _handle_websocket_control_message(FakeWebSocket(), {"type": "ping"})
+
+    assert handled is True
+    assert sent == [{"type": "pong"}]
+
+
+@pytest.mark.asyncio
+async def test_websocket_idle_timeout_defers_when_session_run_is_active(monkeypatch):
+    import app.api.websocket as websocket_api
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    captured = {}
+
+    class FakeSessionContext:
+        async def __aenter__(self):
+            return "db"
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def fake_get_active_web_chat_run(**kwargs):
+        captured.update(kwargs)
+        return {"run_id": "run-1", "status": "running"}
+
+    monkeypatch.setattr(websocket_api, "async_session", lambda: FakeSessionContext())
+    monkeypatch.setattr(websocket_api, "get_active_web_chat_run", fake_get_active_web_chat_run)
+
+    assert await websocket_api._has_active_web_chat_run(agent_id, session_id) is True
+    assert captured == {
+        "db": "db",
+        "agent_id": agent_id,
+        "session_id": session_id,
+    }
+
+
 @pytest.mark.asyncio
 async def test_call_llm_delegates_to_runtime_invoker(monkeypatch):
     from app.api.websocket import call_llm

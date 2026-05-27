@@ -3,6 +3,7 @@ import type { ToolCallMeta } from './toolResultEnvelope';
 
 export const MIN_COMPOSER_HEIGHT = 44;
 export const MAX_COMPOSER_HEIGHT = 160;
+export const CHAT_SOCKET_KEEPALIVE_INTERVAL_MS = 30_000;
 
 export type RuntimeEventType = 'permission' | 'session_compact' | 'pack_activation' | 'team_memory';
 
@@ -43,6 +44,10 @@ export interface AgentChatMessage {
 }
 
 export type ChatRuntimeSummary = SessionRuntimeSummary;
+
+export function buildChatSocketKeepaliveMessage(): { type: 'ping' } {
+  return { type: 'ping' };
+}
 
 type ActiveModelSummary = {
   label?: string;

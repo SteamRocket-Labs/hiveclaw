@@ -112,6 +112,54 @@ class ConnectionManager:
 
 manager = web_chat_broker
 
+_WS_IDLE_DREAM_DEFAULT_SECONDS = 180
+_WS_IDLE_TIMEOUT_DEFAULT_SECONDS = 3600
+
+
+def _read_non_negative_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        logger.warning("[WS] Invalid {}={!r}; falling back to {}", name, raw, default)
+        return default
+
+
+def _get_ws_idle_dream_seconds() -> int:
+    return _read_non_negative_int_env("WS_IDLE_DREAM_SECONDS", _WS_IDLE_DREAM_DEFAULT_SECONDS)
+
+
+def _get_ws_idle_timeout_seconds() -> int:
+    return _read_non_negative_int_env("WS_IDLE_TIMEOUT_SECONDS", _WS_IDLE_TIMEOUT_DEFAULT_SECONDS)
+
+
+async def _handle_websocket_control_message(websocket: WebSocket, data: dict) -> bool:
+    message_type = data.get("type")
+    if message_type == "ping":
+        await websocket.send_json({"type": "pong"})
+        return True
+    if message_type == "pong":
+        return True
+    return False
+
+
+async def _has_active_web_chat_run(agent_id: uuid.UUID, session_id: str | uuid.UUID | None) -> bool:
+    if not session_id:
+        return False
+    try:
+        async with async_session() as run_db:
+            active_run = await get_active_web_chat_run(
+                db=run_db,
+                agent_id=agent_id,
+                session_id=session_id,
+            )
+            return bool(active_run)
+    except Exception as exc:
+        logger.debug("[WS] Active web chat run check failed during idle handling: {}", exc)
+        return False
+
 
 async def _claim_pending_reply_suffix_for_session(
     db: AsyncSession,
@@ -461,8 +509,8 @@ async def websocket_chat(
         # Phase 1: After IDLE seconds of no input → SESSION_IDLE hook (T0 log + session summary)
         # Phase 2: After WS_IDLE_TIMEOUT seconds total → SESSION_CLOSE + disconnect
         import asyncio as _aio_idle
-        _DREAM_IDLE_SECONDS = int(os.environ.get("WS_IDLE_DREAM_SECONDS", "180"))
-        _idle_timeout = int(os.environ.get("WS_IDLE_TIMEOUT_SECONDS", "600"))
+        _DREAM_IDLE_SECONDS = _get_ws_idle_dream_seconds()
+        _idle_timeout = _get_ws_idle_timeout_seconds()
         _idle_dreamed = False
 
         while True:
@@ -472,6 +520,9 @@ async def websocket_chat(
             try:
                 data = await _aio_idle.wait_for(websocket.receive_json(), timeout=_wait_timeout)
             except _aio_idle.TimeoutError:
+                if await _has_active_web_chat_run(agent_id, conv_id):
+                    await websocket.send_json({"type": "pong"})
+                    continue
                 if not _idle_dreamed and _DREAM_IDLE_SECONDS > 0 and len(conversation) > 1:
                     # Phase 1: SESSION_IDLE — extract memories while user is away
                     _idle_dreamed = True
@@ -530,6 +581,8 @@ async def websocket_chat(
                     await websocket.send_json({"type": "info", "content": "Connection closed due to inactivity. Reconnect to continue."})
                     await websocket.close(code=1000)
                     return
+            if await _handle_websocket_control_message(websocket, data):
+                continue
             # User sent a message — reset dream flag
             _idle_dreamed = False
             content = data.get("content", "")

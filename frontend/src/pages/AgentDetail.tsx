@@ -19,6 +19,8 @@ import AgentSkillsSection from './agent-detail/AgentSkillsSection';
 import AgentStatusSection from './agent-detail/AgentStatusSection';
 import AgentWorkspaceSection from './agent-detail/AgentWorkspaceSection';
 import {
+    CHAT_SOCKET_KEEPALIVE_INTERVAL_MS,
+    buildChatSocketKeepaliveMessage,
     buildRuntimeSummary,
     getRuntimeEventMessage,
     getTransportNotice,
@@ -167,6 +169,7 @@ function AgentDetailInner() {
     type SessionRuntimeKey = string;
     const wsMapRef = useRef<Record<SessionRuntimeKey, WebSocket>>({});
     const reconnectTimerRef = useRef<Record<SessionRuntimeKey, ReturnType<typeof setTimeout> | null>>({});
+    const keepaliveTimerRef = useRef<Record<SessionRuntimeKey, ReturnType<typeof setInterval> | null>>({});
     const reconnectDisabledRef = useRef<Record<SessionRuntimeKey, boolean>>({});
     const reconnectAttemptsRef = useRef<Record<SessionRuntimeKey, number>>({});
     const sessionUiStateRef = useRef<Record<SessionRuntimeKey, { isWaiting: boolean; isStreaming: boolean }>>({});
@@ -201,9 +204,32 @@ function AgentDetailInner() {
         }
     };
 
+    const clearKeepaliveTimer = (key: SessionRuntimeKey) => {
+        const timer = keepaliveTimerRef.current[key];
+        if (timer) {
+            clearInterval(timer);
+            keepaliveTimerRef.current[key] = null;
+        }
+    };
+
+    const startKeepaliveTimer = (key: SessionRuntimeKey, ws: WebSocket) => {
+        clearKeepaliveTimer(key);
+        keepaliveTimerRef.current[key] = setInterval(() => {
+            if (wsMapRef.current[key] !== ws || ws.readyState !== WebSocket.OPEN) {
+                clearKeepaliveTimer(key);
+                return;
+            }
+            const uiState = sessionUiStateRef.current[key];
+            const hasActiveRun = !!activeRunStateRef.current[key] || !!uiState?.isWaiting || !!uiState?.isStreaming;
+            if (!hasActiveRun) return;
+            ws.send(JSON.stringify(buildChatSocketKeepaliveMessage()));
+        }, CHAT_SOCKET_KEEPALIVE_INTERVAL_MS);
+    };
+
     const closeSessionSocket = (key: SessionRuntimeKey, disableReconnect = true) => {
         if (disableReconnect) reconnectDisabledRef.current[key] = true;
         clearReconnectTimer(key);
+        clearKeepaliveTimer(key);
         delete reconnectAttemptsRef.current[key];
         const ws = wsMapRef.current[key];
         if (ws && ws.readyState !== WebSocket.CLOSED) ws.close();
@@ -572,6 +598,7 @@ function AgentDetailInner() {
                 return;
             }
             reconnectAttemptsRef.current[key] = 0;
+            startKeepaliveTimer(key, ws);
             if (currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId) {
                 wsRef.current = ws;
                 setWsConnected(true);
@@ -579,6 +606,7 @@ function AgentDetailInner() {
         };
         ws.onclose = (e) => {
             if (wsMapRef.current[key] === ws) delete wsMapRef.current[key];
+            clearKeepaliveTimer(key);
             const runStillActive = !!activeRunStateRef.current[key];
             setSessionUiState(key, { isWaiting: runStillActive, isStreaming: false });
             const isActiveRuntime = currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId;
@@ -753,6 +781,7 @@ function AgentDetailInner() {
             sessionMsgAbortRef.current?.abort();
             Object.keys(reconnectDisabledRef.current).forEach((key) => { reconnectDisabledRef.current[key] = true; });
             Object.keys(reconnectTimerRef.current).forEach((key) => clearReconnectTimer(key));
+            Object.keys(keepaliveTimerRef.current).forEach((key) => clearKeepaliveTimer(key));
             reconnectAttemptsRef.current = {};
             Object.values(wsMapRef.current).forEach((ws) => {
                 if (ws.readyState !== WebSocket.CLOSED) ws.close();

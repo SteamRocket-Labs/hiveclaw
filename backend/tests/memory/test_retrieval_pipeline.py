@@ -216,6 +216,41 @@ async def test_t3_direct_preserves_priority_order(
 
 
 @pytest.mark.asyncio
+async def test_t3_index_first_folds_p1_p2_and_keeps_p0_full(
+    data_root: Path,
+    agent_id: uuid.UUID,
+) -> None:
+    from app.memory.md_store import rebuild_index
+
+    _setup_t3_file(data_root, agent_id, "feedback.md", "# Feedback\n- [2026-05-28] User requires Chinese replies\n")
+    _setup_t3_file(
+        data_root,
+        agent_id,
+        "knowledge.md",
+        "# Knowledge\n- [2026-05-28] Long P1 entry should be loaded by id before relying on full content\n",
+    )
+    rebuild_index(data_root, agent_id)
+
+    items = await MemoryRetriever(data_root=data_root, use_t3_index_first=True).retrieve(
+        agent_id,
+        "",
+        session_id=None,
+        tenant_id=None,
+    )
+
+    semantic_items = [item for item in items if item.kind == MemoryKind.SEMANTIC]
+    p0 = next(item for item in semantic_items if item.source == "memory/feedback.md")
+    p1 = next(item for item in semantic_items if item.source == "memory/knowledge.md")
+
+    assert p0.metadata["source_type"] == "t3_full_entry"
+    assert "User requires Chinese replies" in p0.content
+    assert p1.metadata["source_type"] == "t3_index_entry"
+    assert p1.metadata["indexed_only"] == "true"
+    assert "load_memory" in p1.content
+    assert p1.metadata["entry_id"].startswith("mem_")
+
+
+@pytest.mark.asyncio
 async def test_activation_context_suppresses_pl3_when_current_user_is_not_owner(
     data_root: Path,
     agent_id: uuid.UUID,

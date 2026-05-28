@@ -146,8 +146,8 @@ without a tool result to back it up.
 - **Pipeline boundaries**: Never write directly to `memory/learnings/`, `evolution/`, or \
 `logs/` — the automated memory pipeline manages these. Writing to them causes conflicts \
 and data corruption.
-- **Memory**: Load the **Memory Guide** skill before calling `save_memory` or \
-`search_memory` — it is the single authoritative source for routing, categories, and \
+- **Memory**: Load the **Memory Guide** skill before calling `save_memory`, \
+`search_memory`, or `load_memory` — it is the single authoritative source for routing, categories, and \
 escape-hatch conditions.
 - **Messaging**: Before reaching humans via `send_channel_message`, `send_web_message`, \
 `send_channel_file`, `upload_image`, or `get_current_time`, load the **Messaging Guide** \

@@ -75,6 +75,7 @@ _HEARTBEAT_T3_MAX_CHARS = 8_000
 _HEARTBEAT_EVOLUTION_CONTEXT_MAX_CHARS = 16_000
 _HEARTBEAT_COMPACT_SUMMARY_MAX_CHARS = 6_000
 _HEARTBEAT_MAX_TOOL_ROUNDS = 40
+_HEARTBEAT_CHECKPOINT_FILENAME = "heartbeat_checkpoint.json"
 
 
 def _format_heartbeat_exception(exc: BaseException) -> str:
@@ -243,6 +244,7 @@ def _reset_heartbeat_session(agent_id: uuid.UUID) -> None:
     _heartbeat_tick_counts.pop(agent_id, None)
     _t2_mtimes.pop(agent_id, None)
     _heartbeat_session_ctxs.pop(agent_id, None)
+    _clear_heartbeat_checkpoint(agent_id)
     logger.info("[Heartbeat] Session reset for {}", agent_id)
 
 
@@ -250,6 +252,8 @@ def _has_complete_heartbeat_session_state(agent_id: uuid.UUID) -> bool:
     has_context = agent_id in _heartbeat_contexts
     has_session_id = agent_id in _heartbeat_session_ids
     if has_context and has_session_id:
+        return True
+    if _restore_heartbeat_checkpoint(agent_id):
         return True
     if has_context or has_session_id:
         logger.warning("[Heartbeat] Incomplete persistent session state for {}; resetting cache", agent_id)
@@ -276,6 +280,78 @@ def _get_or_create_heartbeat_session_ctx(agent_id: uuid.UUID, session_id: uuid.U
     )
     _heartbeat_session_ctxs[agent_id] = ctx
     return ctx
+
+
+def _heartbeat_checkpoint_path(agent_id: uuid.UUID) -> Path:
+    from app.config import get_settings
+
+    return Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "memory" / _HEARTBEAT_CHECKPOINT_FILENAME
+
+
+def _save_heartbeat_checkpoint(
+    agent_id: uuid.UUID,
+    *,
+    session_id: uuid.UUID,
+    tick_count: int,
+    runtime_messages: list[dict],
+    t2_mtimes: dict[str, float] | None = None,
+) -> None:
+    path = _heartbeat_checkpoint_path(agent_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "session_id": str(session_id),
+        "tick_count": max(0, int(tick_count)),
+        "runtime_messages": _compact_heartbeat_runtime_messages(runtime_messages),
+        "t2_mtimes": {str(key): float(value) for key, value in (t2_mtimes or {}).items()},
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _restore_heartbeat_checkpoint(agent_id: uuid.UUID) -> bool:
+    path = _heartbeat_checkpoint_path(agent_id)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("[Heartbeat] Failed to restore checkpoint for {}: {}", agent_id, exc)
+        return False
+
+    try:
+        session_id = uuid.UUID(str(payload.get("session_id")))
+    except (TypeError, ValueError):
+        logger.warning("[Heartbeat] Invalid checkpoint session_id for {}", agent_id)
+        return False
+    messages = payload.get("runtime_messages")
+    if not isinstance(messages, list) or not messages:
+        return False
+
+    _heartbeat_session_ids[agent_id] = session_id
+    _heartbeat_contexts[agent_id] = _compact_heartbeat_runtime_messages([m for m in messages if isinstance(m, dict)])
+    if not _heartbeat_contexts[agent_id]:
+        _reset_heartbeat_session(agent_id)
+        return False
+    try:
+        _heartbeat_tick_counts[agent_id] = max(0, int(payload.get("tick_count", 0)))
+    except (TypeError, ValueError):
+        _heartbeat_tick_counts[agent_id] = 0
+    mtimes = payload.get("t2_mtimes") or {}
+    if isinstance(mtimes, dict):
+        _t2_mtimes[agent_id] = {str(key): float(value) for key, value in mtimes.items()}
+    logger.info("[Heartbeat] Restored KAIROS checkpoint for {}", agent_id)
+    return True
+
+
+def _clear_heartbeat_checkpoint(agent_id: uuid.UUID) -> None:
+    try:
+        _heartbeat_checkpoint_path(agent_id).unlink()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        logger.debug("[Heartbeat] Failed to clear checkpoint for {}: {}", agent_id, exc)
 
 
 def _read_t2_full(agent_id: uuid.UUID) -> str:
@@ -1424,6 +1500,13 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                     )
                 )
                 await db.commit()
+                _save_heartbeat_checkpoint(
+                    agent_id,
+                    session_id=session_id,
+                    tick_count=tick_count,
+                    runtime_messages=runtime_messages,
+                    t2_mtimes=_t2_mtimes.get(agent_id, {}),
+                )
                 logger.info("[Heartbeat] Tick #{} (full init) for {}", tick_count, agent.name)
             else:
                 # ═══ Subsequent tick: <tick> + incremental T2 ═══
@@ -1457,6 +1540,13 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                     )
                 )
                 await db.commit()
+                _save_heartbeat_checkpoint(
+                    agent_id,
+                    session_id=session_id,
+                    tick_count=tick_count,
+                    runtime_messages=runtime_messages,
+                    t2_mtimes=_t2_mtimes.get(agent_id, {}),
+                )
                 logger.info(
                     "[Heartbeat] Tick #{} (incremental, {} new entries) for {}",
                     tick_count,
@@ -1527,6 +1617,13 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
             runtime_messages.append({"role": "assistant", "content": reply or ""})
             if _heartbeat_session_ids.get(agent_id) == session_id:
                 _heartbeat_contexts[agent_id] = _compact_heartbeat_runtime_messages(runtime_messages)
+                _save_heartbeat_checkpoint(
+                    agent_id,
+                    session_id=session_id,
+                    tick_count=tick_count,
+                    runtime_messages=_heartbeat_contexts[agent_id],
+                    t2_mtimes=_t2_mtimes.get(agent_id, {}),
+                )
             else:
                 logger.info(
                     "[Heartbeat] Session cache for {} was reset during execution; not restoring stale context",

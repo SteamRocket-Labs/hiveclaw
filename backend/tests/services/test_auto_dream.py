@@ -14,16 +14,19 @@ from app.services.auto_dream import (
     _AUTO_DREAM_SYSTEM_PROMPT,
     _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE,
     MIN_SESSIONS_SINCE_DREAM,
+    MIN_HEARTBEAT_TICKS_SINCE_DREAM,
     _apply_dream_decisions,
     _build_dream_consolidation_user_prompt,
     _consolidate_t3_files,
     _last_dream_time,
+    _heartbeat_ticks_since_dream,
     _parse_dream_decision,
     _read_preservation_flags,
     _sessions_since_dream,
     _simple_dedup,
     _upsert_soul_section,
     record_session_end,
+    record_heartbeat_tick,
     should_dream,
 )
 
@@ -31,6 +34,7 @@ from app.services.auto_dream import (
 def _reset_state():
     _last_dream_time.clear()
     _sessions_since_dream.clear()
+    _heartbeat_ticks_since_dream.clear()
 
 
 class TestDreamGates:
@@ -91,6 +95,25 @@ class TestDreamGates:
 
         auto_dream._last_dream_time.clear()
         auto_dream._sessions_since_dream.clear()
+
+        assert should_dream(agent_id) is True
+
+    def test_heartbeat_tick_gate_persists_across_in_memory_reset(self, monkeypatch, tmp_path) -> None:
+        import app.services.auto_dream as auto_dream
+
+        _reset_state()
+        monkeypatch.setattr(
+            auto_dream,
+            "get_settings",
+            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+            raising=False,
+        )
+
+        agent_id = uuid.uuid4()
+        for _ in range(MIN_HEARTBEAT_TICKS_SINCE_DREAM):
+            record_heartbeat_tick(agent_id)
+
+        auto_dream._heartbeat_ticks_since_dream.clear()
 
         assert should_dream(agent_id) is True
 

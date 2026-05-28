@@ -47,27 +47,27 @@ _CROSS_SKILL_ALLOWLIST: set[str] = {
     # Legitimate cross-skill references that appear in multiple SKILL.md
     # bodies for workflow-pairing documentation purposes.
     "send_feishu_message",  # delegation-guide and others reference it
-    "feishu_user_search",   # referenced by feishu-integration + others
-    "read_document",        # structured reader, referenced by workspace-guide
-    "send_email",           # email-guide workflow reference
-    "read_emails",          # email-guide workflow reference
-    "reply_email",          # email-guide workflow reference
+    "feishu_user_search",  # referenced by feishu-integration + others
+    "read_document",  # structured reader, referenced by workspace-guide
+    "send_email",  # email-guide workflow reference
+    "read_emails",  # email-guide workflow reference
+    "reply_email",  # email-guide workflow reference
     "plaza_get_new_posts",  # referenced in anti-patterns
-    "plaza_create_post",    # referenced in anti-patterns
-    "plaza_add_comment",    # referenced in anti-patterns
-    "feishu_sheet_info",    # xlsx-processor cross-references
-    "feishu_sheet_read",    # xlsx-processor cross-references
-    "update_trigger",       # trigger-guide references (declared) + also in examples
-    "cancel_trigger",       # same
+    "plaza_create_post",  # referenced in anti-patterns
+    "plaza_add_comment",  # referenced in anti-patterns
+    "feishu_sheet_info",  # xlsx-processor cross-references
+    "feishu_sheet_read",  # xlsx-processor cross-references
+    "update_trigger",  # trigger-guide references (declared) + also in examples
+    "cancel_trigger",  # same
     "preview_agent_blueprint",  # hr skill tool
     "create_digital_employee",  # hr skill tool
-    "discover_resources",   # mcp skill tool
-    "search_clawhub",       # hr skill tool
-    "import_mcp_server",    # mcp skill tool
-    "list_mcp_resources",   # mcp skill tool
-    "read_mcp_resource",    # mcp skill tool
-    "feishu_doc_create",    # messaging-guide cross-reference to Feishu Integration
-    "feishu_doc_append",    # messaging-guide cross-reference to Feishu Integration
+    "discover_resources",  # mcp skill tool
+    "search_clawhub",  # hr skill tool
+    "import_mcp_server",  # mcp skill tool
+    "list_mcp_resources",  # mcp skill tool
+    "read_mcp_resource",  # mcp skill tool
+    "feishu_doc_create",  # messaging-guide cross-reference to Feishu Integration
+    "feishu_doc_append",  # messaging-guide cross-reference to Feishu Integration
 }
 
 
@@ -85,54 +85,196 @@ _TOOL_CALL_RE = re.compile(r"`([a-z][a-z0-9_]*[a-z0-9])\(")
 # from the "is it a declared tool?" check.
 _NON_TOOL_IDENTIFIERS: set[str] = {
     # Frontmatter keys
-    "name", "description", "tools", "packs", "license", "metadata",
-    "version", "category", "is_system", "compatibility",
+    "name",
+    "description",
+    "tools",
+    "packs",
+    "license",
+    "metadata",
+    "version",
+    "category",
+    "is_system",
+    "compatibility",
     # Common parameter names used in doc tables
-    "msg_type", "approval_code", "user_id", "open_id", "email", "member_names",
-    "member_open_ids", "document_token", "spreadsheet_token", "spreadsheet_url",
-    "sheet_id", "range", "value_render_option", "base_token", "table_id",
-    "view_id", "offset", "limit", "field_name", "type", "property", "record_id",
-    "fields", "field_id", "file_path", "summary", "description", "assignee_open_id",
-    "due", "tasklist_id", "idempotency_key", "task_id", "content", "action",
-    "permission", "title", "folder_token", "max_chars", "node_token", "recursive",
-    "instance_id", "status", "form", "start_time", "end_time", "timezone",
-    "location", "attendee_names", "attendee_emails", "attendee_open_ids",
-    "user_open_id", "user_email", "max_results", "event_id", "agent_name",
-    "message", "at", "reason", "trace_id", "parent_session_id", "time_zone",
-    "page_all", "page_limit", "complete", "due_start", "due_end", "created_at",
-    "query", "members", "max_select", "max_tokens", "temperature",
-    "member_name", "app_id", "app_secret",
+    "msg_type",
+    "approval_code",
+    "user_id",
+    "open_id",
+    "email",
+    "member_names",
+    "member_open_ids",
+    "document_token",
+    "spreadsheet_token",
+    "spreadsheet_url",
+    "sheet_id",
+    "range",
+    "value_render_option",
+    "base_token",
+    "table_id",
+    "view_id",
+    "offset",
+    "limit",
+    "field_name",
+    "type",
+    "property",
+    "record_id",
+    "fields",
+    "field_id",
+    "file_path",
+    "summary",
+    "description",
+    "assignee_open_id",
+    "due",
+    "tasklist_id",
+    "idempotency_key",
+    "task_id",
+    "content",
+    "action",
+    "permission",
+    "title",
+    "folder_token",
+    "max_chars",
+    "node_token",
+    "recursive",
+    "instance_id",
+    "status",
+    "form",
+    "start_time",
+    "end_time",
+    "timezone",
+    "location",
+    "attendee_names",
+    "attendee_emails",
+    "attendee_open_ids",
+    "user_open_id",
+    "user_email",
+    "max_results",
+    "event_id",
+    "agent_name",
+    "message",
+    "at",
+    "reason",
+    "trace_id",
+    "parent_session_id",
+    "time_zone",
+    "page_all",
+    "page_limit",
+    "complete",
+    "due_start",
+    "due_end",
+    "created_at",
+    "query",
+    "members",
+    "max_select",
+    "max_tokens",
+    "temperature",
+    "member_name",
+    "app_id",
+    "app_secret",
     # Enum-ish / values
-    "running", "completed", "failed", "once", "add", "remove", "list",
-    "view", "edit", "full_access", "consult", "notify", "cron",
-    "approved", "rejected", "pending",
+    "running",
+    "completed",
+    "failed",
+    "once",
+    "add",
+    "remove",
+    "list",
+    "view",
+    "edit",
+    "full_access",
+    "consult",
+    "notify",
+    "cron",
+    "approved",
+    "rejected",
+    "pending",
     # File names / paths / common dir names
-    "relationships", "focus", "soul", "heartbeat", "dream", "workspace",
-    "memory", "skills", "evolution", "logs", "tests",
+    "relationships",
+    "focus",
+    "soul",
+    "heartbeat",
+    "dream",
+    "workspace",
+    "memory",
+    "skills",
+    "evolution",
+    "logs",
+    "tests",
     # MCP vocabulary
-    "mcp_server", "rpc", "json", "yaml",
+    "mcp_server",
+    "rpc",
+    "json",
+    "yaml",
     # Generic tokens
-    "true", "false", "none", "null", "input", "output",
+    "true",
+    "false",
+    "none",
+    "null",
+    "input",
+    "output",
     # Trigger config names (not tools)
-    "from_agent_id", "from_user_identity", "on_message", "reply_to_current_sender",
-    "focus_ref", "interval_min", "fire_on",
-    "blocked_pattern", "trigger_class", "objective_task", "scheduled_job",
-    "event_wait", "system_maintenance",
+    "from_agent_id",
+    "from_user_identity",
+    "on_message",
+    "reply_to_current_sender",
+    "focus_ref",
+    "interval_min",
+    "fire_on",
+    "blocked_pattern",
+    "trigger_class",
+    "objective_task",
+    "scheduled_job",
+    "event_wait",
+    "system_maintenance",
     # Parameter/field names surfaced in tool-reference tables
-    "max_tool_rounds", "message_id", "post_id", "task_id",
-    "spreadsheet_url", "search", "attachments", "to", "subject", "body", "cc",
-    "sheet_size", "tz", "expr", "minutes",
+    "max_tool_rounds",
+    "message_id",
+    "post_id",
+    "task_id",
+    "spreadsheet_url",
+    "search",
+    "attachments",
+    "to",
+    "subject",
+    "body",
+    "cc",
+    "sheet_size",
+    "tz",
+    "expr",
+    "minutes",
     # MCP import config keys
-    "mcp_url", "server_id", "api_key", "smithery_api_key",
+    "mcp_url",
+    "server_id",
+    "api_key",
+    "smithery_api_key",
     # Blueprint schema keys (HR CREATE_EMPLOYEE skill)
-    "role_description", "primary_users", "core_outputs", "focus_content",
-    "welcome_message", "heartbeat_topics", "permission_scope",
-    "skill_names", "clawhub_slugs", "external_skill_urls", "triggers",
-    "personality", "boundaries", "first_tasks",
+    "role_description",
+    "primary_users",
+    "core_outputs",
+    "focus_content",
+    "welcome_message",
+    "heartbeat_topics",
+    "permission_scope",
+    "skill_names",
+    "clawhub_slugs",
+    "external_skill_urls",
+    "triggers",
+    "personality",
+    "boundaries",
+    "first_tasks",
     # Body section tokens that might match regex
-    "role", "when_to_use", "do_not_use_when", "tool_reference",
-    "workflows", "examples", "anti_patterns", "success_criteria",
-    "output_format", "hard_rules", "pipeline_context", "output_contract",
+    "role",
+    "when_to_use",
+    "do_not_use_when",
+    "tool_reference",
+    "workflows",
+    "examples",
+    "anti_patterns",
+    "success_criteria",
+    "output_format",
+    "hard_rules",
+    "pipeline_context",
+    "output_contract",
 }
 
 
@@ -226,9 +368,7 @@ def parser() -> SkillParser:
 class TestSkillDiscovery:
     def test_found_skill_files(self) -> None:
         # We should always find at least the 15 SKILL.md + 2 agent template.
-        assert len(_SKILL_FILES) >= 15, (
-            f"expected at least 15 skill files, found {len(_SKILL_FILES)}"
-        )
+        assert len(_SKILL_FILES) >= 15, f"expected at least 15 skill files, found {len(_SKILL_FILES)}"
 
     def test_every_file_is_parseable(self, parser: SkillParser) -> None:
         for path in _SKILL_FILES:
@@ -261,9 +401,7 @@ class TestSkillDiscovery:
                 f"Missing phrases: {missing}"
             )
 
-    def test_skill_installation_guides_do_not_instruct_blocked_shell_network_paths(
-        self, parser: SkillParser
-    ) -> None:
+    def test_skill_installation_guides_do_not_instruct_blocked_shell_network_paths(self, parser: SkillParser) -> None:
         find_skills = _BACKEND_ROOT / "app" / "templates" / "skills" / "find-skills" / "SKILL.md"
         skill_vetter = _BACKEND_ROOT / "app" / "templates" / "skills" / "skill-vetter" / "SKILL.md"
 
@@ -278,7 +416,7 @@ class TestSkillDiscovery:
         assert "subprocess.run" not in find_content
 
         assert "execute_code` with `curl" not in vetter_content
-        assert "curl -s \"https://api.github.com/repos/OWNER/REPO\"" not in vetter_content
+        assert 'curl -s "https://api.github.com/repos/OWNER/REPO"' not in vetter_content
         assert "jq '{stars:" not in vetter_content
         assert "execute_code" not in vetter.metadata.declared_tools
         assert {"web_search", "web_fetch", "firecrawl_fetch"} <= set(vetter.metadata.declared_tools)
@@ -301,9 +439,7 @@ class TestCapabilityAlignment:
             "Either reference them or remove from frontmatter."
         )
 
-    def test_body_tool_references_are_declared_or_allowed(
-        self, parser: SkillParser, skill_path: Path
-    ) -> None:
+    def test_body_tool_references_are_declared_or_allowed(self, parser: SkillParser, skill_path: Path) -> None:
         rel = str(skill_path.relative_to(_BACKEND_ROOT))
         parsed = parser.parse_file(skill_path, relative_path=rel)
         declared = set(parsed.metadata.declared_tools)
@@ -320,14 +456,9 @@ class TestCapabilityAlignment:
         # Allow one explicit escape hatch: prefix-based dynamic tools
         # (e.g. `atlassian_rovo_*` MCP tools) — those are marked by appearing
         # with a trailing "*" elsewhere in the body.
-        dynamic_prefixes = {
-            m.group(1)
-            for m in re.finditer(r"`([a-z][a-z0-9_]*)_\*`", body)
-        }
+        dynamic_prefixes = {m.group(1) for m in re.finditer(r"`([a-z][a-z0-9_]*)_\*`", body)}
         suspicious = [
-            name
-            for name in suspicious
-            if not any(name.startswith(prefix + "_") for prefix in dynamic_prefixes)
+            name for name in suspicious if not any(name.startswith(prefix + "_") for prefix in dynamic_prefixes)
         ]
         assert not suspicious, (
             f"{rel}: body references tools that are not in frontmatter tools:, "
@@ -373,13 +504,10 @@ class TestBestPracticeStructure:
         # Count distinct bullets (❌ markers OR leading dashes with meaningful content).
         bullet_count = section.count("❌") + section.count("\n- ")
         assert bullet_count >= 3, (
-            f"{rel}: anti_patterns has only {bullet_count} bullets; "
-            "need at least 3 concrete failure modes."
+            f"{rel}: anti_patterns has only {bullet_count} bullets; need at least 3 concrete failure modes."
         )
 
-    def test_has_input_output_example_or_tool_reference_table(
-        self, parser: SkillParser, skill_path: Path
-    ) -> None:
+    def test_has_input_output_example_or_tool_reference_table(self, parser: SkillParser, skill_path: Path) -> None:
         rel = str(skill_path.relative_to(_BACKEND_ROOT))
         parsed = parser.parse_file(skill_path, relative_path=rel)
         body = parsed.body
@@ -403,6 +531,7 @@ class TestCoreToolNamesInvariant:
             "write_file",
             "list_files",
             "search_memory",
+            "load_memory",
             "save_memory",
             "get_current_time",
             "load_skill",

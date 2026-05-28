@@ -42,6 +42,8 @@ _STATIC_SAFE_TOOLS = {
     "read_document",
     "list_tasks",
     "get_task",
+    "search_memory",
+    "load_memory",
 }
 
 
@@ -325,7 +327,9 @@ async def _run_governance_inner(
             )
             _approval_reason = None
             if restricted_zone_approval_reason:
-                _escalated_capability = _escalated_capability or getattr(cap_result, "capability", None) or context.tool_name
+                _escalated_capability = (
+                    _escalated_capability or getattr(cap_result, "capability", None) or context.tool_name
+                )
                 _approval_reason = _approval_reason or restricted_zone_approval_reason
 
             # P1-W3-3 — delegation token enforcement.

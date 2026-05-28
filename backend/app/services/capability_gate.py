@@ -50,6 +50,7 @@ CAPABILITY_MAP: dict[str, str] = {
     "update_objective": "agent.objective.modify",
     "complete_objective": "agent.objective.modify",
     "search_memory": "agent.memory.read",
+    "load_memory": "agent.memory.read",
     "save_memory": "agent.memory.write",
     "load_skill": "agent.skill.read",
     "save_skill": "agent.skill.write",

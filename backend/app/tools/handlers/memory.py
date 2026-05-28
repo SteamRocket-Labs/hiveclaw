@@ -129,6 +129,69 @@ def save_memory(agent_id: uuid.UUID, arguments: dict) -> str:
     )
 
 
+# -- load_memory ---------------------------------------------------------------
+
+
+@tool(
+    ToolMeta(
+        name="load_memory",
+        description=(
+            "Load full long-term memory entries by ID after search_memory or the prompt memory index returns IDs.\n\n"
+            "Use this before relying on an indexed/preview-only memory entry. Supports batch IDs."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Memory entry IDs returned by search_memory or the prompt memory index.",
+                }
+            },
+            "required": ["ids"],
+        },
+        category="memory",
+        display_name="Load Memory",
+        icon="\U0001f4d6",
+        read_only=True,
+        parallel_safe=True,
+        governance="safe",
+        adapter="agent_args",
+    )
+)
+def load_memory(agent_id: uuid.UUID, arguments: dict) -> str:
+    from pathlib import Path
+
+    from app.config import get_settings
+    from app.memory.md_store import load_t3_entries_by_ids
+
+    raw_ids = arguments.get("ids") or []
+    if isinstance(raw_ids, str):
+        ids = [part.strip() for part in raw_ids.split(",") if part.strip()]
+    else:
+        ids = [str(item).strip() for item in raw_ids if str(item).strip()]
+    ids = ids[:20]
+    if not ids:
+        return "[Error] ids is required and cannot be empty."
+
+    settings = get_settings()
+    entries = load_t3_entries_by_ids(Path(settings.AGENT_DATA_DIR), agent_id, ids)
+    if not entries:
+        return f"No memory entries found for ids: {', '.join(ids)}"
+
+    found_ids = {entry.entry_id for entry in entries}
+    lines = ["## Loaded Memory"]
+    for entry in entries:
+        ts = f" timestamp={entry.timestamp}" if entry.timestamp else ""
+        lines.append(f"- id={entry.entry_id} source={entry.source} category={entry.category}{ts}")
+        lines.append(f"  {entry.content}")
+    missing = [entry_id for entry_id in ids if entry_id not in found_ids]
+    if missing:
+        lines.append("")
+        lines.append(f"Missing ids: {', '.join(missing)}")
+    return "\n".join(lines)
+
+
 # -- search_memory -------------------------------------------------------------
 
 
@@ -142,7 +205,8 @@ def save_memory(agent_id: uuid.UUID, arguments: dict) -> str:
             "- Decisions, preferences, or constraints from past sessions\n"
             "- Strategies that worked or approaches that failed\n"
             "- Any fact you saved previously with save_memory\n\n"
-            "Returns matching facts and recalled session snippets ranked by relevance."
+            "Returns matching fact IDs/previews and recalled session snippets ranked by relevance. "
+            "Call load_memory(ids=[...]) to expand preview-only fact results."
         ),
         parameters={
             "type": "object",
@@ -208,14 +272,30 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
             date_from=date_from,
             date_to=date_to,
         )
+        backend_facts = await _search_semantic_backend_facts(
+            agent_id,
+            tenant_id=tenant_id,
+            query=query,
+            limit=limit,
+            date_from=date_from,
+            date_to=date_to,
+            md_facts=facts,
+        )
+        if backend_facts:
+            facts = _dedupe_fact_results([*backend_facts, *facts])[:limit]
         if facts:
             results.append("## Semantic Memory")
             for f in facts:
+                entry_id = f.get("id", "")
                 cat = f.get("category", "general")
-                content = f.get("content", "")
+                preview = f.get("preview") or f.get("content", "")
                 ts = f.get("timestamp", "")
                 ts_display = f" ({ts[:10]})" if ts else ""
-                results.append(f"- [{cat}]{ts_display} {content}")
+                source = f.get("source", "")
+                source_display = f" source={source}" if source else ""
+                id_display = f"id={entry_id} " if entry_id else ""
+                load_hint = f' load_memory(ids=["{entry_id}"])' if entry_id else ""
+                results.append(f"- {id_display}[{cat}]{ts_display}{source_display} {preview}{load_hint}")
 
     # --- Cross-session recall ---
     if scope in ("sessions", "all"):
@@ -265,3 +345,78 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
         return f"No memory found for query: {query}"
 
     return "\n".join(results)
+
+
+async def _search_semantic_backend_facts(
+    agent_id: uuid.UUID,
+    *,
+    tenant_id: str | None,
+    query: str,
+    limit: int,
+    date_from: str | None,
+    date_to: str | None,
+    md_facts: list[dict],
+) -> list[dict]:
+    if not tenant_id:
+        return []
+    try:
+        tenant_uuid = uuid.UUID(str(tenant_id))
+    except (TypeError, ValueError):
+        return []
+    try:
+        from app.memory.backend import MDBackend, get_memory_backend
+        from app.memory.hindsight_sync import LOOKUP_FAILED, _fetch_tenant_backend_pref
+
+        pref = await _fetch_tenant_backend_pref(tenant_uuid)
+        if pref is LOOKUP_FAILED:
+            return []
+        backend = get_memory_backend(tenant_id=tenant_uuid, tenant_backend_pref=pref)
+        if isinstance(backend, MDBackend):
+            return []
+        scored = await backend.search(
+            agent_id,
+            query,
+            limit=limit,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    except Exception:
+        return []
+
+    md_by_content = {_normalize_fact_content(fact.get("content", "")): fact for fact in md_facts}
+    facts: list[dict] = []
+    for item in scored:
+        content = (item.content or "").strip()
+        if not content:
+            continue
+        matched = md_by_content.get(_normalize_fact_content(content))
+        if matched:
+            fact = dict(matched)
+        else:
+            fact = {
+                "content": content,
+                "preview": content[:160],
+                "category": item.category or "general",
+                "timestamp": item.timestamp or "",
+                "source": "hindsight",
+            }
+        fact["semantic_backend"] = "hindsight"
+        fact["semantic_score"] = item.score
+        facts.append(fact)
+    return facts
+
+
+def _dedupe_fact_results(facts: list[dict]) -> list[dict]:
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for fact in facts:
+        key = str(fact.get("id") or _normalize_fact_content(fact.get("content", "")))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(fact)
+    return deduped
+
+
+def _normalize_fact_content(content: object) -> str:
+    return " ".join(str(content or "").lower().split())

@@ -1076,7 +1076,9 @@ def propose_charter_calibrations_from_feedback(decision_store) -> list[dict[str,
 def record_heartbeat_tick(agent_id: uuid.UUID) -> None:
     """Increment heartbeat tick counter for dream gate evaluation."""
     key = agent_id.hex
+    _load_dream_state(agent_id)
     _heartbeat_ticks_since_dream[key] = _heartbeat_ticks_since_dream.get(key, 0) + 1
+    _persist_dream_state(agent_id)
 
 
 def _build_dream_consolidation_prompt(*, facts: list[dict], summaries: list[str]) -> str:
@@ -1132,7 +1134,7 @@ _DREAM_HISTORY_MAX = 10
 
 def _load_dream_state(agent_id: uuid.UUID) -> tuple[datetime | None, int]:
     key = agent_id.hex
-    if key in _sessions_since_dream or key in _last_dream_time:
+    if (key in _sessions_since_dream or key in _last_dream_time) and key in _heartbeat_ticks_since_dream:
         return _last_dream_time.get(key), _sessions_since_dream.get(key, 0)
 
     path = _dream_state_path(agent_id)
@@ -1157,6 +1159,8 @@ def _load_dream_state(agent_id: uuid.UUID) -> tuple[datetime | None, int]:
     if last is not None:
         _last_dream_time[key] = last
     _sessions_since_dream[key] = sessions if isinstance(sessions, int) else 0
+    ticks = payload.get("heartbeat_ticks_since_dream", 0)
+    _heartbeat_ticks_since_dream[key] = ticks if isinstance(ticks, int) else 0
     _dream_version[key] = payload.get("version", 0)
     _dream_history[key] = payload.get("history", [])
     return _last_dream_time.get(key), _sessions_since_dream.get(key, 0)
@@ -1170,6 +1174,7 @@ def _persist_dream_state(agent_id: uuid.UUID) -> None:
     payload = {
         "last_dream_time": last_time.isoformat() if last_time else None,
         "sessions_since_dream": _sessions_since_dream.get(key, 0),
+        "heartbeat_ticks_since_dream": _heartbeat_ticks_since_dream.get(key, 0),
         "version": _dream_version.get(key, 0),
         "history": _dream_history.get(key, [])[-_DREAM_HISTORY_MAX:],
     }
@@ -1457,6 +1462,7 @@ def _mark_dreamed(
     # Increment version and record history entry
     prev_version = _dream_version.get(key, 0)
     _dream_version[key] = prev_version + 1
+    _heartbeat_ticks_since_dream.pop(key, None)
 
     if consolidation_result:
         history_entry = {

@@ -26,10 +26,12 @@ worker deployments share the same volume, so each worker can replay its
 own pending work. Cross-worker idempotency is left to the extractor's
 own cursor logic (cf. `extract_agent._cursors` / `learnings/.backfill_cursor.json`).
 """
+
 from __future__ import annotations
 
 import json
 import logging
+import hashlib
 import time
 import uuid
 from dataclasses import dataclass
@@ -72,6 +74,27 @@ def _serialize(payload: dict[str, Any], path: Path) -> None:
     tmp.replace(path)
 
 
+def derive_idempotency_key(messages: list[dict] | None, source: str) -> str | None:
+    """Return a stable key when messages carry durable message/tool IDs.
+
+    Falls back to ``None`` for anonymous in-memory transcripts so legacy callers
+    keep the previous one-file-per-schedule behavior.
+    """
+    parts: list[str] = []
+    for index, msg in enumerate(messages or []):
+        stable_id = msg.get("id") or msg.get("message_id") or msg.get("tool_call_id")
+        if stable_id:
+            parts.append(f"{index}:{msg.get('role', '')}:{stable_id}")
+        for tool_call in msg.get("tool_calls") or []:
+            tool_id = tool_call.get("id")
+            if tool_id:
+                parts.append(f"{index}:tool_call:{tool_id}")
+    if not parts:
+        return None
+    digest = hashlib.sha256((source + "\0" + "\0".join(parts)).encode("utf-8")).hexdigest()[:20]
+    return digest
+
+
 def enqueue(
     *,
     agent_id: uuid.UUID,
@@ -90,11 +113,16 @@ def enqueue(
     or the message batch could double-process on later replay).
     """
     epoch_ms = int(time.time() * 1000)
-    entry_id = f"{agent_id}-{epoch_ms}-{uuid.uuid4().hex[:8]}"
+    idempotency_key = derive_idempotency_key(messages, source)
+    entry_id = f"{agent_id}-{idempotency_key}" if idempotency_key else f"{agent_id}-{epoch_ms}-{uuid.uuid4().hex[:8]}"
     path = _queue_root() / f"{entry_id}.json"
+    if idempotency_key and path.exists():
+        logger.debug("[ExtractQueue] Reusing idempotent entry %s (source=%s)", entry_id, source)
+        return entry_id
 
     payload: dict[str, Any] = {
         "entry_id": entry_id,
+        "idempotency_key": idempotency_key,
         "agent_id": str(agent_id),
         "messages": list(messages or []),
         "source": source,

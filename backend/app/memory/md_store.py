@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import hashlib
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -67,6 +68,20 @@ class ParsedMemoryEntry:
     metadata: dict[str, str]
 
 
+@dataclass(frozen=True, slots=True)
+class T3MemoryEntry:
+    entry_id: str
+    content: str
+    category: str
+    timestamp: str
+    metadata: dict[str, str]
+    source: str
+    filename: str
+    load: str
+    preview: str
+    is_p0: bool
+
+
 def memory_dir(data_root: Path, agent_id: uuid.UUID) -> Path:
     return Path(data_root) / str(agent_id) / "memory"
 
@@ -123,6 +138,23 @@ def parse_entry_line(line: str) -> tuple[str, str | None]:
 
 def _normalize_entry_content(content: str) -> str:
     return re.sub(r"\s+", " ", content).strip().lower()
+
+
+def _stable_entry_id(filename: str, content: str) -> str:
+    normalized = _normalize_entry_content(content)
+    digest = hashlib.sha256(f"{filename}\0{normalized}".encode("utf-8")).hexdigest()[:16]
+    return f"mem_{digest}"
+
+
+def _entry_preview(content: str, max_chars: int = 160) -> str:
+    compact = re.sub(r"\s+", " ", content).strip()
+    if len(compact) <= max_chars:
+        return compact
+    return compact[: max(20, max_chars - 3)].rstrip() + "..."
+
+
+def _escape_table_cell(value: str) -> str:
+    return str(value).replace("|", "\\|").replace("\n", " ").strip()
 
 
 # Similarity thresholds for detecting near-duplicate T3 entries / skills.
@@ -292,30 +324,99 @@ def rebuild_index(data_root: Path, agent_id: uuid.UUID) -> Path:
             f"| {spec['filename']} | {', '.join(spec['categories'])} | {len(entries)} | {last_updated} | {spec['load']} |"
         )
 
+    manifest = build_t3_entry_manifest(data_root, agent_id)
+    lines.extend(
+        [
+            "",
+            "## Entry Manifest",
+            "",
+            "| ID | File | Category | Date | Load | Preview |",
+            "|----|------|----------|------|------|---------|",
+        ]
+    )
+    for entry in manifest:
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _escape_table_cell(entry.entry_id),
+                    _escape_table_cell(entry.filename),
+                    _escape_table_cell(entry.category),
+                    _escape_table_cell(entry.timestamp or "-"),
+                    _escape_table_cell(entry.load),
+                    _escape_table_cell(entry.preview),
+                ]
+            )
+            + " |"
+        )
+
     index_path = mem_dir / "INDEX.md"
     index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return index_path
 
 
-def parse_t3_facts(data_root: Path, agent_id: uuid.UUID) -> list[dict]:
+def build_t3_entry_manifest(data_root: Path, agent_id: uuid.UUID) -> list[T3MemoryEntry]:
     mem_dir = ensure_t3_layout(data_root, agent_id)
-    facts: list[dict] = []
+    entries: list[T3MemoryEntry] = []
     for spec in T3_FILE_SPECS:
         path = mem_dir / spec["filename"]
         if not path.exists():
             continue
         content = path.read_text(encoding="utf-8", errors="replace")
         for line in extract_entry_lines(content):
-            entry_content, timestamp = parse_entry_line(line)
-            if not entry_content:
+            record = parse_entry_record(line)
+            if not record.content:
                 continue
-            fact = {
-                "content": entry_content,
-                "category": spec["shadow_category"],
-            }
-            if timestamp:
-                fact["timestamp"] = timestamp
-            facts.append(fact)
+            entry_id = record.metadata.get("entry_id") or _stable_entry_id(spec["filename"], record.content)
+            timestamp = record.timestamp or ""
+            source = f"memory/{spec['filename']}"
+            entries.append(
+                T3MemoryEntry(
+                    entry_id=entry_id,
+                    content=record.content,
+                    category=spec["shadow_category"],
+                    timestamp=timestamp,
+                    metadata={**record.metadata, "entry_id": entry_id},
+                    source=source,
+                    filename=spec["filename"],
+                    load=spec["load"],
+                    preview=_entry_preview(record.content),
+                    is_p0=spec["load"].startswith("P0"),
+                )
+            )
+    return entries
+
+
+def load_t3_entries_by_ids(data_root: Path, agent_id: uuid.UUID, ids: list[str]) -> list[T3MemoryEntry]:
+    requested: list[str] = []
+    seen: set[str] = set()
+    for raw in ids:
+        entry_id = str(raw or "").strip()
+        if entry_id and entry_id not in seen:
+            requested.append(entry_id)
+            seen.add(entry_id)
+    if not requested:
+        return []
+
+    by_id = {entry.entry_id: entry for entry in build_t3_entry_manifest(data_root, agent_id)}
+    return [by_id[entry_id] for entry_id in requested if entry_id in by_id]
+
+
+def parse_t3_facts(data_root: Path, agent_id: uuid.UUID) -> list[dict]:
+    facts: list[dict] = []
+    for entry in build_t3_entry_manifest(data_root, agent_id):
+        fact = {
+            "id": entry.entry_id,
+            "content": entry.content,
+            "preview": entry.preview,
+            "category": entry.category,
+            "source": entry.source,
+            "load": entry.load,
+            "sensitivity": entry.metadata.get("sensitivity", "PL1_public"),
+        }
+        if entry.timestamp:
+            fact["timestamp"] = entry.timestamp
+        facts.append(fact)
     return facts
 
 

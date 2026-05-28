@@ -182,7 +182,7 @@ def _build_heartbeat_template_checks(heartbeat_template: str) -> dict[str, _Chec
             # PR-12 rewrote HEARTBEAT.md with decision-matrix wording. Patch-
             # over-duplicate guidance reads "no duplicate skill exists"; older
             # templates may use "patch the existing skill instead".
-            predicate=lambda: ("no duplicate skill exists" in normalized or "patch the existing skill" in normalized),
+            predicate=lambda: "no duplicate skill exists" in normalized or "patch the existing skill" in normalized,
             severity="medium",
             remediation="Restore guidance that stale skills should be patched or updated instead of duplicated.",
             success_detail="Prompt contracts tell the agent to patch stale skills instead of creating duplicates.",
@@ -279,6 +279,7 @@ def evaluate_runtime_prompt_contracts(inputs: PromptEvalInputs | None = None) ->
             predicate=lambda: (
                 "save_memory" in (resolved.memory_section or "")
                 and "search_memory" in (resolved.memory_section or "")
+                and "load_memory" in (resolved.memory_section or "")
                 and "NOT:" in (resolved.memory_section or "")
             ),
             severity="high",
@@ -287,7 +288,7 @@ def evaluate_runtime_prompt_contracts(inputs: PromptEvalInputs | None = None) ->
             failure_detail="Memory section no longer clearly defines memory tool usage or storage exclusions.",
         ),
         "always_on_required_tools_are_core": _CheckSpec(
-            # save_memory, search_memory, and list_triggers are always-on
+            # save_memory, search_memory/load_memory, and list_triggers are always-on
             # tools that the agent is instructed to use without loading a
             # skill first. They appear in executing_actions (rendered via
             # agent_context into frozen prefix) and must belong to the
@@ -297,10 +298,11 @@ def evaluate_runtime_prompt_contracts(inputs: PromptEvalInputs | None = None) ->
                 and "search_memory" in (resolved.executing_actions_section or "")
                 and "save_memory" in (resolved.memory_section or "")
                 and "search_memory" in (resolved.memory_section or "")
-                and {"save_memory", "search_memory"}.issubset(CORE_TOOL_NAMES)
+                and "load_memory" in (resolved.memory_section or "")
+                and {"save_memory", "search_memory", "load_memory"}.issubset(CORE_TOOL_NAMES)
             ),
             severity="high",
-            remediation="Keep save_memory / search_memory referenced in executing_actions.py and memory.py and ensure both stay in CORE_TOOL_NAMES.",
+            remediation="Keep save_memory / search_memory / load_memory referenced in prompt sections and ensure all stay in CORE_TOOL_NAMES.",
             success_detail="Always-on memory tools are both referenced in live prompt sections and present in the first-round core surface.",
             failure_detail="Always-on memory tools are either missing from the live frozen prefix/dynamic suffix OR no longer part of the first-round core surface.",
         ),

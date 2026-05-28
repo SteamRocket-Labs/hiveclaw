@@ -20,14 +20,13 @@ class TestMemorySectionProperties:
         assert "FTS5" not in out
         assert "fts5" not in out.lower()
 
-    def test_search_memory_describes_token_frequency(self) -> None:
-        """Agents need to know this is not a query language."""
+    def test_search_memory_describes_progressive_disclosure(self) -> None:
+        """Agents need to filter by ID before expanding full memories."""
         out = build_memory_section()
         assert "save_memory" in out  # tools documented
         assert "search_memory" in out
-        assert "token-frequency" in out or "token frequency" in out
-        # "not a query language" makes the limitation explicit.
-        assert "not a query language" in out
+        assert "load_memory" in out
+        assert "id=" in out
 
     def test_save_memory_warns_about_bypass(self) -> None:
         """Prompt must call save_memory an escape hatch that bypasses curation."""

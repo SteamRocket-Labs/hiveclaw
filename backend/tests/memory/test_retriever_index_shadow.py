@@ -12,11 +12,21 @@ def test_index_shadow_keeps_p0_and_reports_p1_p2_overlap(tmp_path: Path) -> None
     agent_id = uuid.uuid4()
     memory_dir = tmp_path / str(agent_id) / "memory"
     memory_dir.mkdir(parents=True)
-    (memory_dir / "feedback.md").write_text("# Feedback\n- [2026-05-02] User requires Chinese responses\n", encoding="utf-8")
-    (memory_dir / "blocked.md").write_text("# Blocked\n- [2026-05-02] Do not repeat failing web_search calls\n", encoding="utf-8")
-    (memory_dir / "knowledge.md").write_text("# Knowledge\n- [2026-05-02] Railway deploys require healthcheck verification\n", encoding="utf-8")
-    (memory_dir / "strategies.md").write_text("# Strategies\n- [2026-05-02] Use shadow reports before switching memory retrieval\n", encoding="utf-8")
-    (memory_dir / "user.md").write_text("# User\n- [2026-05-02] User works on Hive agent architecture\n", encoding="utf-8")
+    (memory_dir / "feedback.md").write_text(
+        "# Feedback\n- [2026-05-02] User requires Chinese responses\n", encoding="utf-8"
+    )
+    (memory_dir / "blocked.md").write_text(
+        "# Blocked\n- [2026-05-02] Do not repeat failing web_search calls\n", encoding="utf-8"
+    )
+    (memory_dir / "knowledge.md").write_text(
+        "# Knowledge\n- [2026-05-02] Railway deploys require healthcheck verification\n", encoding="utf-8"
+    )
+    (memory_dir / "strategies.md").write_text(
+        "# Strategies\n- [2026-05-02] Use shadow reports before switching memory retrieval\n", encoding="utf-8"
+    )
+    (memory_dir / "user.md").write_text(
+        "# User\n- [2026-05-02] User works on Hive agent architecture\n", encoding="utf-8"
+    )
     (memory_dir / "INDEX.md").write_text(
         "# Memory Index\n"
         "| File | Category | Items | Updated | Load |\n"
@@ -42,9 +52,13 @@ async def test_index_first_switch_is_opt_in(tmp_path: Path) -> None:
     agent_id = uuid.uuid4()
     memory_dir = tmp_path / str(agent_id) / "memory"
     memory_dir.mkdir(parents=True)
-    (memory_dir / "feedback.md").write_text("# Feedback\n- [2026-05-02] User requires Chinese responses\n", encoding="utf-8")
+    (memory_dir / "feedback.md").write_text(
+        "# Feedback\n- [2026-05-02] User requires Chinese responses\n", encoding="utf-8"
+    )
     (memory_dir / "blocked.md").write_text("# Blocked\n", encoding="utf-8")
-    (memory_dir / "knowledge.md").write_text("# Knowledge\n- [2026-05-02] Railway deploys require healthcheck verification\n", encoding="utf-8")
+    (memory_dir / "knowledge.md").write_text(
+        "# Knowledge\n- [2026-05-02] Railway deploys require healthcheck verification\n", encoding="utf-8"
+    )
     (memory_dir / "strategies.md").write_text("# Strategies\n", encoding="utf-8")
     (memory_dir / "user.md").write_text("# User\n", encoding="utf-8")
     (memory_dir / "INDEX.md").write_text(
@@ -55,7 +69,9 @@ async def test_index_first_switch_is_opt_in(tmp_path: Path) -> None:
     )
 
     direct = await MemoryRetriever(data_root=tmp_path).retrieve(agent_id, "Railway", None, None)
-    switched = await MemoryRetriever(data_root=tmp_path, use_t3_index_first=True).retrieve(agent_id, "Railway", None, None)
+    switched = await MemoryRetriever(data_root=tmp_path, use_t3_index_first=True).retrieve(
+        agent_id, "Railway", None, None
+    )
 
     assert any(item.metadata.get("source_type") == "t3_direct" for item in direct)
-    assert any(item.metadata.get("source_type") == "t3_index_first" for item in switched)
+    assert any(item.metadata.get("source_type") in {"t3_full_entry", "t3_index_entry"} for item in switched)

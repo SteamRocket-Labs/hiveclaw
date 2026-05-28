@@ -4,6 +4,7 @@ Covers the contract that hot-path extractions can survive process death:
 enqueue → mark_done removes the file; failures leave the file for replay
 by P0-2b. Filesystem is redirected via AGENT_DATA_DIR override per test.
 """
+
 from __future__ import annotations
 
 import json
@@ -55,6 +56,38 @@ def test_enqueue_persists_payload_with_all_fields(queue_root):
     assert payload["agent_name"] == "Researcher"
     assert payload["messages"] == messages
     assert isinstance(payload["scheduled_at_ms"], int)
+
+
+def test_enqueue_reuses_entry_for_stable_message_ids(queue_root):
+    from app.services import extract_queue
+
+    agent_id = uuid.uuid4()
+    messages = [
+        {"role": "user", "id": "msg-1", "content": "remember this"},
+        {"role": "tool", "tool_call_id": "tool-1", "content": "done"},
+    ]
+
+    first = extract_queue.enqueue(
+        agent_id=agent_id,
+        messages=messages,
+        source="web",
+        tenant_id=None,
+        agent_name="Agent",
+    )
+    second = extract_queue.enqueue(
+        agent_id=agent_id,
+        messages=messages,
+        source="web",
+        tenant_id=None,
+        agent_name="Agent",
+    )
+
+    files = list(queue_root.glob("*.json"))
+    payload = _read_json(files[0])
+
+    assert first == second
+    assert len(files) == 1
+    assert payload["idempotency_key"]
 
 
 def test_enqueue_handles_none_tenant_and_empty_messages(queue_root):
@@ -121,12 +154,8 @@ def test_list_pending_yields_all_unfinished(queue_root):
 def test_list_pending_skips_done_entries(queue_root):
     from app.services import extract_queue
 
-    keep = extract_queue.enqueue(
-        agent_id=uuid.uuid4(), messages=[], source="x", tenant_id=None, agent_name="A"
-    )
-    drop = extract_queue.enqueue(
-        agent_id=uuid.uuid4(), messages=[], source="x", tenant_id=None, agent_name="A"
-    )
+    keep = extract_queue.enqueue(agent_id=uuid.uuid4(), messages=[], source="x", tenant_id=None, agent_name="A")
+    drop = extract_queue.enqueue(agent_id=uuid.uuid4(), messages=[], source="x", tenant_id=None, agent_name="A")
     extract_queue.mark_done(drop)
 
     pending = list(extract_queue.list_pending())
@@ -136,9 +165,7 @@ def test_list_pending_skips_done_entries(queue_root):
 def test_list_pending_skips_unreadable_entries(queue_root, caplog):
     from app.services import extract_queue
 
-    good = extract_queue.enqueue(
-        agent_id=uuid.uuid4(), messages=[], source="x", tenant_id=None, agent_name="A"
-    )
+    good = extract_queue.enqueue(agent_id=uuid.uuid4(), messages=[], source="x", tenant_id=None, agent_name="A")
 
     # Plant a corrupt file alongside the good one.
     bad_path = queue_root / "broken-entry.json"
@@ -154,9 +181,7 @@ def test_list_pending_skips_unreadable_entries(queue_root, caplog):
 def test_list_pending_max_age_filters_old_entries(queue_root):
     from app.services import extract_queue
 
-    fresh = extract_queue.enqueue(
-        agent_id=uuid.uuid4(), messages=[], source="x", tenant_id=None, agent_name="A"
-    )
+    fresh = extract_queue.enqueue(agent_id=uuid.uuid4(), messages=[], source="x", tenant_id=None, agent_name="A")
     # Plant a stale entry by editing scheduled_at_ms to past.
     stale_path = queue_root / "stale-entry.json"
     stale_path.write_text(
@@ -181,9 +206,7 @@ def test_list_pending_max_age_filters_old_entries(queue_root):
 def test_purge_older_than_removes_stale(queue_root):
     from app.services import extract_queue
 
-    fresh = extract_queue.enqueue(
-        agent_id=uuid.uuid4(), messages=[], source="x", tenant_id=None, agent_name="A"
-    )
+    fresh = extract_queue.enqueue(agent_id=uuid.uuid4(), messages=[], source="x", tenant_id=None, agent_name="A")
     stale_path = queue_root / "stale-entry.json"
     stale_path.write_text(
         json.dumps(
@@ -226,7 +249,5 @@ def test_queue_root_is_created_on_first_enqueue(tmp_path, monkeypatch):
     queue_dir = tmp_path / ".failed_extractions"
     assert not queue_dir.exists()
 
-    extract_queue.enqueue(
-        agent_id=uuid.uuid4(), messages=[], source="x", tenant_id=None, agent_name="A"
-    )
+    extract_queue.enqueue(agent_id=uuid.uuid4(), messages=[], source="x", tenant_id=None, agent_name="A")
     assert queue_dir.exists()

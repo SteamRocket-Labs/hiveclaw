@@ -9,9 +9,12 @@ from unittest.mock import patch
 import pytest
 
 from app.services.heartbeat import (
+    _heartbeat_checkpoint_path,
     _heartbeat_contexts,
     _heartbeat_session_ids,
     _heartbeat_tick_counts,
+    _restore_heartbeat_checkpoint,
+    _save_heartbeat_checkpoint,
     _read_incremental_t2,
     _read_t2_full,
     _read_t3_summary,
@@ -63,6 +66,53 @@ class TestResetSession:
     def test_noop_for_unknown_agent(self) -> None:
         """Reset should not fail for agents with no state."""
         _reset_heartbeat_session(uuid.uuid4())
+
+    def test_clears_persisted_checkpoint(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
+        session_id = uuid.uuid4()
+        with patch("app.config.get_settings") as mock:
+            mock.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
+            _save_heartbeat_checkpoint(
+                agent_id,
+                session_id=session_id,
+                tick_count=2,
+                runtime_messages=[{"role": "user", "content": "checkpoint"}],
+                t2_mtimes={"insights.md": 1.0},
+            )
+            checkpoint = _heartbeat_checkpoint_path(agent_id)
+            assert checkpoint.exists()
+
+            _reset_heartbeat_session(agent_id)
+
+        assert not checkpoint.exists()
+
+
+class TestHeartbeatCheckpoint:
+    def test_restore_checkpoint_rehydrates_kairos_cache(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
+        session_id = uuid.uuid4()
+        with patch("app.config.get_settings") as mock:
+            mock.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
+            _save_heartbeat_checkpoint(
+                agent_id,
+                session_id=session_id,
+                tick_count=4,
+                runtime_messages=[
+                    {"role": "user", "content": "heartbeat init"},
+                    {"role": "assistant", "content": "heartbeat reply"},
+                ],
+                t2_mtimes={"insights.md": 123.0},
+            )
+            _heartbeat_contexts.pop(agent_id, None)
+            _heartbeat_session_ids.pop(agent_id, None)
+            _heartbeat_tick_counts.pop(agent_id, None)
+            _t2_mtimes.pop(agent_id, None)
+
+            restored = _restore_heartbeat_checkpoint(agent_id)
+
+        assert restored is True
+        assert _heartbeat_session_ids[agent_id] == session_id
+        assert _heartbeat_tick_counts[agent_id] == 4
+        assert _heartbeat_contexts[agent_id][-1]["content"] == "heartbeat reply"
+        assert _t2_mtimes[agent_id] == {"insights.md": 123.0}
 
 
 # ── _read_t2_full ──

@@ -83,6 +83,7 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
         "save_skill",
         "save_memory",
         "search_memory",
+        "load_memory",
     )
     assert request.max_tool_rounds == 7
     assert "A2A_SUFFIX" in request.system_prompt_suffix
@@ -274,6 +275,7 @@ async def test_delegate_to_agent_supports_memory_readonly_profile(monkeypatch):
     request = captured["request"]
     assert result.failed is False
     assert "search_memory" not in request.excluded_tool_names
+    assert "load_memory" not in request.excluded_tool_names
     assert "save_skill" in request.excluded_tool_names
     assert "save_memory" in request.excluded_tool_names
     assert request.session_context.metadata["delegation_tool_policy"] == "worker_memory_readonly"
@@ -317,6 +319,7 @@ async def test_delegate_to_agent_supports_review_readonly_profile(monkeypatch):
         "load_skill",
         "tool_search",
         "search_memory",
+        "load_memory",
         "get_current_time",
     )
     assert request.session_context.metadata["delegation_tool_policy"] == "worker_review_readonly"
@@ -371,6 +374,7 @@ async def test_delegate_to_agent_supports_research_readonly_profile(monkeypatch)
         "load_skill",
         "tool_search",
         "search_memory",
+        "load_memory",
         "get_current_time",
         "web_fetch",
         "web_search",

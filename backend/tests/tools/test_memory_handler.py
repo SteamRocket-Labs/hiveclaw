@@ -102,7 +102,9 @@ def test_save_memory_maps_project_to_knowledge(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_search_memory_reads_saved_t3_shadow_index(tmp_path: Path) -> None:
-    from app.tools.handlers.memory import save_memory, search_memory
+    import re
+
+    from app.tools.handlers.memory import load_memory, save_memory, search_memory
 
     agent_id = uuid.uuid4()
 
@@ -126,8 +128,17 @@ async def test_search_memory_reads_saved_t3_shadow_index(tmp_path: Path) -> None
             },
         )
 
-    assert "## Semantic Memory" in result
-    assert "snake_case" in result
+        assert "## Semantic Memory" in result
+        assert "snake_case" in result
+        assert "load_memory" in result
+        match = re.search(r"id=([a-zA-Z0-9_-]+)", result)
+        assert match
+
+        loaded = load_memory(agent_id, {"ids": [match.group(1)]})
+
+        assert "## Loaded Memory" in loaded
+        assert "Use snake_case for Python variable names" in loaded
+        assert "source=memory/feedback.md" in loaded
 
 
 @pytest.mark.asyncio
@@ -156,7 +167,24 @@ async def test_search_memory_reads_t3_markdown_without_shadow_index(tmp_path: Pa
         )
 
     assert "## Semantic Memory" in result
+    assert "id=" in result
     assert "先给结论再展开" in result
+
+
+def test_load_memory_reports_missing_ids(tmp_path: Path) -> None:
+    from app.tools.handlers.memory import load_memory
+
+    agent_id = uuid.uuid4()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "app.config.get_settings",
+            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+        )
+        result = load_memory(agent_id, {"ids": ["missing-id"]})
+
+    assert "No memory entries found" in result
+    assert "missing-id" in result
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ description: "Use when Codex needs to decide whether information should become d
 tools:
   - save_memory
   - search_memory
+  - load_memory
 is_system: true
 ---
 
@@ -20,7 +21,7 @@ perform it. Writing to memory without these rules corrupts the pipeline.
 <when_to_use>
 - The user issues a direct imperative: "记住", "remember this", "never do X again", "from now on always Y".
 - The user delivers a critical correction you must not lose even if the heartbeat later deems it low-signal.
-- You need to recall a fact, decision, or past session — call `search_memory` first before answering from compressed recollection.
+- You need to recall a fact, decision, or past session — call `search_memory` first, then `load_memory(ids=[...])` for any fact preview you will rely on.
 - You are starting a task and a past session likely contains the exact answer ("last time we did X…", "resuming yesterday's work").
 </when_to_use>
 

@@ -60,7 +60,7 @@ _DELEGATION_TOOL_PROFILES: dict[str, DelegationToolProfile] = {
         name="worker_safe",
         core_tools_only=True,
         allowed_tools=(),
-        excluded_tools=_DELEGATION_BASE_EXCLUDED_TOOLS + ("save_skill", "save_memory", "search_memory"),
+        excluded_tools=_DELEGATION_BASE_EXCLUDED_TOOLS + ("save_skill", "save_memory", "search_memory", "load_memory"),
         tool_policy="worker_safe",
         tool_rule=(
             "Your tool surface is worker-safe: do the delegated work, but do not schedule triggers, "
@@ -99,6 +99,7 @@ _DELEGATION_TOOL_PROFILES: dict[str, DelegationToolProfile] = {
             "load_skill",
             "tool_search",
             "search_memory",
+            "load_memory",
             "get_current_time",
         ),
         excluded_tools=(),
@@ -123,6 +124,7 @@ _DELEGATION_TOOL_PROFILES: dict[str, DelegationToolProfile] = {
             "load_skill",
             "tool_search",
             "search_memory",
+            "load_memory",
             "get_current_time",
             "web_fetch",
             "web_search",

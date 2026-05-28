@@ -142,6 +142,7 @@ CORE_TOOL_NAMES = {
     "load_skill",
     "save_skill",
     "search_memory",
+    "load_memory",
     "save_memory",
     "list_objectives",
     "propose_objective",

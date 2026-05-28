@@ -98,7 +98,7 @@ async def build_memory_context(
         active_pack_count=0,
     )
     try:
-        retriever = MemoryRetriever(data_root=Path(get_settings().AGENT_DATA_DIR))
+        retriever = MemoryRetriever(data_root=Path(get_settings().AGENT_DATA_DIR), use_t3_index_first=True)
         rerank_model_config = None
         if query:
             rerank_model_config = await _maybe_await(_get_rerank_model_config(tenant_id))

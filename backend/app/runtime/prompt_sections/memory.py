@@ -16,9 +16,11 @@ The heartbeat curates T2 → T3. The dream refines T3 and promotes patterns to s
 
 ### Using Memory Tools
 - `search_memory(query, scope?)` — Search your long-term memory (T3 files) and past session \
-history (ChatSession) using token-frequency + character overlap scoring. Use specific phrases; \
-this is not a query language — no boolean operators, no phrase quoting, no wildcards. Scope \
+history (ChatSession). Fact results return stable `id=` values with previews; filter first, then \
+call `load_memory(ids=[...])` for full entries before relying on old or preview-only facts. Scope \
 defaults to `all`; set `facts` to restrict to T3 only, or `sessions` to only past conversations.
+- `load_memory(ids)` — Batch-load full T3 entries by IDs from `search_memory` or the prompt \
+memory index. Prefer this over asking for broad memory dumps.
 - `save_memory(category, content)` — **Escape hatch only.** This writes DIRECTLY to T3, \
 bypassing the heartbeat curation that normally filters low-signal content. Use ONLY when:
   * The user issues a direct imperative ("记住", "remember this", "never do X again")

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from app.memory.activation import ActivationContext, ActivationScorer
-from app.memory.md_store import extract_entry_lines
+from app.memory.md_store import build_t3_entry_manifest
 from app.memory.types import MemoryItem, MemoryKind
 from app.runtime.context_budget import ContextBudget
 
@@ -376,6 +376,52 @@ class MemoryRetriever:
         ("memory/strategies.md", "strategy", 0.80, False),  # P1
         ("memory/user.md", "user", 0.70, False),  # P2
     ]
+    _T3_SCORE_BY_SOURCE = {
+        rel_path: (category, base_score, is_p0) for rel_path, category, base_score, is_p0 in _T3_FILES
+    }
+    _P0_FULL_RECENT_LIMIT = 8
+    _P1_P2_FULL_QUERY_LIMIT = 5
+
+    @staticmethod
+    def _index_entry_content(entry_id: str, category: str, timestamp: str, preview: str) -> str:
+        date = timestamp[:10] if timestamp else "undated"
+        return (
+            f"Memory index entry id={entry_id} [{category}] ({date}) {preview} "
+            f'- call load_memory(ids=["{entry_id}"]) before relying on the full fact.'
+        )
+
+    def _memory_item_from_entry(
+        self,
+        entry,
+        *,
+        score: float,
+        source_type: str,
+        indexed_only: bool,
+        category: str | None = None,
+    ) -> MemoryItem:
+        display_category = category or entry.category
+        metadata: dict[str, Any] = {
+            **entry.metadata,
+            "entry_id": entry.entry_id,
+            "category": display_category,
+            "source_type": source_type,
+        }
+        if indexed_only:
+            metadata["indexed_only"] = "true"
+        if entry.timestamp:
+            metadata["timestamp"] = entry.timestamp
+        content = (
+            self._index_entry_content(entry.entry_id, display_category, entry.timestamp, entry.preview)
+            if indexed_only
+            else f"[{display_category}] {entry.content}"
+        )
+        return MemoryItem(
+            kind=MemoryKind.SEMANTIC,
+            content=content,
+            score=round(score, 4),
+            source=entry.source,
+            metadata=metadata,
+        )
 
     def _retrieve_t3_direct(self, agent_id: uuid.UUID, *, query: str = "") -> list[MemoryItem]:
         """Read T3 memory/*.md files — per-entry granularity with query-aware scoring.
@@ -389,58 +435,27 @@ class MemoryRetriever:
         budget trimming to drop individual low-relevance entries instead of
         losing an entire file.
         """
-        from app.memory.md_store import parse_entry_record
-
-        ws = self.data_root / str(agent_id)
         items: list[MemoryItem] = []
 
-        for rel_path, category, base_score, is_p0 in self._T3_FILES:
-            fpath = ws / rel_path
-            try:
-                content = fpath.read_text(encoding="utf-8").strip()
-            except (FileNotFoundError, OSError):
+        for entry in build_t3_entry_manifest(self.data_root, agent_id):
+            score_spec = self._T3_SCORE_BY_SOURCE.get(entry.source)
+            if not score_spec:
                 continue
-
-            if not content:
-                continue
-
-            lines = extract_entry_lines(content)
-            if not lines:
-                continue
-
-            for line in lines:
-                record = parse_entry_record(line)
-                entry_content = record.content
-                if not entry_content:
-                    continue
-
-                if is_p0 or not query:
-                    # P0 entries always at full base_score; no query = load all
-                    score = base_score
-                else:
-                    # P1/P2: score by query relevance × base priority
-                    relevance = _score_relevance(entry_content, query)
-                    # Minimum floor of 0.15 so even low-relevance entries can
-                    # survive if budget allows — prevents total loss of context
-                    score = base_score * max(relevance, 0.15)
-
-                metadata: dict[str, Any] = {
-                    **record.metadata,
-                    "category": category,
-                    "source_type": "t3_direct",
-                }
-                if record.timestamp:
-                    metadata["timestamp"] = record.timestamp
-
-                items.append(
-                    MemoryItem(
-                        kind=MemoryKind.SEMANTIC,
-                        content=f"[{category}] {entry_content}",
-                        score=round(score, 4),
-                        source=rel_path,
-                        metadata=metadata,
-                    )
+            category, base_score, is_p0 = score_spec
+            if is_p0 or not query:
+                score = base_score
+            else:
+                relevance = _score_relevance(entry.content, query)
+                score = base_score * max(relevance, 0.15)
+            items.append(
+                self._memory_item_from_entry(
+                    entry,
+                    score=score,
+                    source_type="t3_direct",
+                    indexed_only=False,
+                    category=category,
                 )
+            )
 
         return items
 
@@ -450,68 +465,72 @@ class MemoryRetriever:
         This is intentionally a separate path so callers can run shadow
         comparisons before switching production retrieval.
         """
-        from app.memory.md_store import parse_entry_record
-
-        ws = self.data_root / str(agent_id)
-        index_text = ""
-        try:
-            index_text = (ws / "memory" / "INDEX.md").read_text(encoding="utf-8", errors="replace")
-        except (FileNotFoundError, OSError):
-            index_text = ""
-        index_lower = index_text.lower()
-
         items: list[MemoryItem] = []
-        for rel_path, category, base_score, is_p0 in self._T3_FILES:
-            filename = rel_path.split("/")[-1]
-            if not is_p0 and query and filename.lower() not in index_lower:
-                continue
-            fpath = ws / rel_path
-            try:
-                content = fpath.read_text(encoding="utf-8").strip()
-            except (FileNotFoundError, OSError):
-                continue
-            if not content:
-                continue
-            for line in extract_entry_lines(content):
-                record = parse_entry_record(line)
-                entry_content = record.content
-                if not entry_content:
+        entries = build_t3_entry_manifest(self.data_root, agent_id)
+        if not entries:
+            return []
+
+        p0_entries = [entry for entry in entries if entry.is_p0]
+        p0_full_ids = {entry.entry_id for entry in p0_entries[-self._P0_FULL_RECENT_LIMIT :]}
+
+        p1_p2_ranked: list[tuple[float, str]] = []
+        if query:
+            for entry in entries:
+                if entry.is_p0:
                     continue
-                if is_p0:
-                    score = base_score
-                else:
-                    relevance = _score_relevance(f"{filename} {entry_content} {index_text}", query)
-                    if query and relevance <= 0:
-                        continue
-                    score = base_score * max(relevance, 0.15)
-                metadata: dict[str, Any] = {
-                    **record.metadata,
-                    "category": category,
-                    "source_type": "t3_index_first",
-                }
-                if record.timestamp:
-                    metadata["timestamp"] = record.timestamp
-                items.append(
-                    MemoryItem(
-                        kind=MemoryKind.SEMANTIC,
-                        content=f"[{category}] {entry_content}",
-                        score=round(score, 4),
-                        source=rel_path,
-                        metadata=metadata,
-                    )
+                relevance = _score_relevance(
+                    f"{entry.filename} {entry.category} {entry.preview} {entry.content}", query
                 )
+                if relevance > 0:
+                    p1_p2_ranked.append((relevance, entry.entry_id))
+            p1_p2_ranked.sort(reverse=True)
+        p1_p2_full_ids = {entry_id for _relevance, entry_id in p1_p2_ranked[: self._P1_P2_FULL_QUERY_LIMIT]}
+
+        for entry in entries:
+            score_spec = self._T3_SCORE_BY_SOURCE.get(entry.source)
+            if not score_spec:
+                continue
+            category, base_score, is_p0 = score_spec
+            relevance = _score_relevance(f"{entry.filename} {entry.category} {entry.preview} {entry.content}", query)
+            should_expand = (is_p0 and entry.entry_id in p0_full_ids) or (
+                not is_p0 and entry.entry_id in p1_p2_full_ids
+            )
+            score = base_score if is_p0 else base_score * max(relevance, 0.15)
+            if not should_expand:
+                score *= 0.55
+            items.append(
+                self._memory_item_from_entry(
+                    entry,
+                    score=score,
+                    source_type="t3_full_entry" if should_expand else "t3_index_entry",
+                    indexed_only=not should_expand,
+                    category=category,
+                )
+            )
         return items
 
     def retrieve_t3_index_shadow(self, agent_id: uuid.UUID, *, query: str = "") -> dict[str, Any]:
         direct = self._retrieve_t3_direct(agent_id, query=query)
         index_first = self._retrieve_t3_index_first(agent_id, query=query)
-        direct_p0 = {item.content for item in direct if item.source in {"memory/feedback.md", "memory/blocked.md"}}
-        index_p0 = {item.content for item in index_first if item.source in {"memory/feedback.md", "memory/blocked.md"}}
+        direct_p0 = {
+            item.metadata.get("entry_id") or item.content
+            for item in direct
+            if item.source in {"memory/feedback.md", "memory/blocked.md"}
+        }
+        index_p0 = {
+            item.metadata.get("entry_id") or item.content
+            for item in index_first
+            if item.source in {"memory/feedback.md", "memory/blocked.md"}
+        }
         direct_p1p2 = {
-            item.content for item in direct if item.source not in {"memory/feedback.md", "memory/blocked.md"}
+            item.metadata.get("entry_id") or item.content
+            for item in direct
+            if item.source not in {"memory/feedback.md", "memory/blocked.md"}
         }
         index_p1p2 = {
-            item.content for item in index_first if item.source not in {"memory/feedback.md", "memory/blocked.md"}
+            item.metadata.get("entry_id") or item.content
+            for item in index_first
+            if item.source not in {"memory/feedback.md", "memory/blocked.md"}
         }
         overlap = len(direct_p1p2 & index_p1p2)
         miss_count = max(0, len(direct_p1p2 - index_p1p2))

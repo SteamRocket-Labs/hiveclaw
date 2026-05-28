@@ -45,7 +45,7 @@ runtime. Treat them as facts about your environment, not suggestions.
   - Every ~4 h + 3 sessions: dream consolidates T3 and may promote
     entries into `soul.md` (your permanent identity).
 - You do NOT need to manually curate — the pipeline handles it.
-- For explicit `save_memory` / `search_memory` usage rules (categories,
+- For explicit `save_memory` / `search_memory` / `load_memory` usage rules (categories,
   routing, escape-hatch conditions), load the **Memory Guide** skill.
 - Manual `save_memory` is for cases where the user explicitly asks you to remember,
   correct, or never repeat something; ordinary observations flow through the pipeline.

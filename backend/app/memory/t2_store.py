@@ -185,6 +185,8 @@ def format_t2_entry(
     source_refs: list[str] | tuple[str, ...] | str | None = None,
     novelty: float | str | None = None,
     reusability: float | str | None = None,
+    concept: str | None = None,
+    discovery_tokens: int | str | None = None,
     metadata: dict[str, str] | None = None,
 ) -> str:
     ts = timestamp or datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -197,8 +199,14 @@ def format_t2_entry(
         f"[cat={normalized_category}]",
     ]
     for key, value in (metadata or {}).items():
-        if key and value and key != "evidence_refs":
+        if key and value and key not in {"evidence_refs", "concept", "discovery_tokens"}:
             meta_parts.append(f"[{key}={value}]")
+    normalized_concept = _sanitize_meta(str(concept or (metadata or {}).get("concept") or "")).strip().lower()
+    if normalized_concept:
+        meta_parts.append(f"[concept={normalized_concept}]")
+    token_count = _positive_int(discovery_tokens or (metadata or {}).get("discovery_tokens"))
+    if token_count is not None:
+        meta_parts.append(f"[discovery_tokens={token_count}]")
     normalized_evidence = (evidence or "").strip().lower()
     if normalized_evidence:
         meta_parts.append(f"[ev={normalized_evidence}]")
@@ -238,6 +246,8 @@ def parse_t2_entry_line(
     source_refs = _normalize_refs(metadata.get("refs") or metadata.get("source_refs"))
     novelty = _clamp_score(metadata.get("nov") or metadata.get("novelty"))
     reusability = _clamp_score(metadata.get("reuse") or metadata.get("reusability"))
+    concept = (metadata.get("concept") or "").strip().lower()
+    discovery_tokens = _positive_int(metadata.get("discovery_tokens"))
 
     parsed = {
         "timestamp": match.group("timestamp").strip(),
@@ -258,6 +268,10 @@ def parse_t2_entry_line(
         parsed["novelty"] = novelty
     if reusability is not None:
         parsed["reusability"] = reusability
+    if concept:
+        parsed["concept"] = concept
+    if discovery_tokens is not None:
+        parsed["discovery_tokens"] = discovery_tokens
     for key in (
         "entry_id",
         "sensitivity",
@@ -314,6 +328,10 @@ def append_t2_entries(
         if decision.rejected:
             continue
         metadata = {**decision.metadata, **_feedback_metadata(extraction)}
+        if extraction.get("concept"):
+            metadata["concept"] = _sanitize_meta(str(extraction["concept"]))
+        if extraction.get("discovery_tokens"):
+            metadata["discovery_tokens"] = str(_positive_int(extraction.get("discovery_tokens")) or 0)
         grouped.setdefault(t2_target_file(category), []).append(
             format_t2_entry(
                 category=decision.category,
@@ -326,6 +344,8 @@ def append_t2_entries(
                 source_refs=source_refs,
                 novelty=extraction.get("novelty") or extraction.get("nov"),
                 reusability=extraction.get("reusability") or extraction.get("reuse"),
+                concept=extraction.get("concept"),
+                discovery_tokens=extraction.get("discovery_tokens"),
                 metadata=metadata,
             )
         )
@@ -382,6 +402,16 @@ def _feedback_metadata(extraction: dict[str, str]) -> dict[str, str]:
 
 def _sanitize_meta(value: str) -> str:
     return " ".join(value.replace("[", "(").replace("]", ")").split())
+
+
+def _positive_int(value: int | str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
 
 
 def _infer_category_from_file(filename: str) -> str:
@@ -483,13 +513,19 @@ def render_t2_snapshot(entries: list[dict]) -> str:
             reverse=True,
         )
         for entry in ordered:
+            extra_meta = ""
+            if entry.get("concept"):
+                extra_meta += f"[concept={entry.get('concept')}]"
+            if entry.get("discovery_tokens") is not None:
+                extra_meta += f"[discovery_tokens={int(entry.get('discovery_tokens', 0))}]"
             lines.append(
                 "- "
                 f"[{entry.get('timestamp', '?')}]"
                 f"[w={float(entry.get('weight', 0.0)):.2f}]"
                 f"[repeat={int(entry.get('repeat', 1))}]"
                 f"[src={entry.get('source', 'runtime')}]"
-                f"[cat={entry.get('category', 'general')}] "
+                f"[cat={entry.get('category', 'general')}]"
+                f"{extra_meta} "
                 f"{entry.get('content', '').strip()}"
             )
         lines.append("")

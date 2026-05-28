@@ -60,6 +60,8 @@ def test_t2_entry_supports_evidence_envelope_roundtrip() -> None:
         source_refs=["t0:behavior/chat-2026-05-02.md#L12-L18", "trace:rt-1"],
         novelty=0.72,
         reusability=0.83,
+        concept="how-it-works",
+        discovery_tokens=128,
     )
     entry = parse_t2_entry_line(line)
 
@@ -69,6 +71,8 @@ def test_t2_entry_supports_evidence_envelope_roundtrip() -> None:
     assert "[refs=t0:behavior/chat-2026-05-02.md#L12-L18,trace:rt-1]" in line
     assert "[nov=0.72]" in line
     assert "[reuse=0.83]" in line
+    assert "[concept=how-it-works]" in line
+    assert "[discovery_tokens=128]" in line
     assert entry is not None
     assert entry["evidence"] == "user_stated"
     assert entry["confidence"] == 0.91
@@ -76,6 +80,8 @@ def test_t2_entry_supports_evidence_envelope_roundtrip() -> None:
     assert entry["source_refs"] == ["t0:behavior/chat-2026-05-02.md#L12-L18", "trace:rt-1"]
     assert entry["novelty"] == 0.72
     assert entry["reusability"] == 0.83
+    assert entry["concept"] == "how-it-works"
+    assert entry["discovery_tokens"] == 128
 
 
 def test_append_t2_entries_defaults_evidence_envelope(tmp_path: Path) -> None:
@@ -92,6 +98,8 @@ def test_append_t2_entries_defaults_evidence_envelope(tmp_path: Path) -> None:
                 "evidence": "system_observed",
                 "source_refs": ["trace:loop-1"],
                 "volatility": "stable",
+                "concept": "gotcha",
+                "discovery_tokens": "64",
             }
         ],
         source="system",
@@ -104,6 +112,8 @@ def test_append_t2_entries_defaults_evidence_envelope(tmp_path: Path) -> None:
     assert entries[0]["evidence"] == "system_observed"
     assert entries[0]["source_refs"] == ["trace:loop-1"]
     assert entries[0]["volatility"] == "stable"
+    assert entries[0]["concept"] == "gotcha"
+    assert entries[0]["discovery_tokens"] == 64
 
 
 def test_append_t2_entries_applies_write_gate_before_persisting(tmp_path: Path) -> None:
@@ -194,6 +204,21 @@ def test_render_t2_snapshot_groups_by_priority_and_repetition() -> None:
     assert "## Medium Priority" in snapshot
     assert "## Low Priority" in snapshot
     assert "[w=1.00][repeat=1][src=web][cat=feedback]" in snapshot
+    assert "[concept=user-preference]" in render_t2_snapshot(
+        [
+            {
+                "timestamp": "2026-04-08",
+                "weight": 1.0,
+                "source": "web",
+                "category": "feedback",
+                "concept": "user-preference",
+                "discovery_tokens": 80,
+                "content": "User prefers concise output",
+                "repeat": 1,
+                "file": "insights.md",
+            }
+        ]
+    )
     assert "[w=0.50][repeat=2][src=trigger][cat=project]" in snapshot
     assert "[w=0.30][repeat=1][src=web][cat=request]" in snapshot
 

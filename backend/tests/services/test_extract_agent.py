@@ -119,6 +119,32 @@ class TestPatternExtract:
         results = _pattern_extract(msgs)
         assert len(results) >= 1
 
+    def test_pattern_extract_adds_concept_and_discovery_tokens(self) -> None:
+        msgs = [{"role": "user", "content": "Don't use regex for HTML parsing, use BeautifulSoup instead"}]
+        results = _pattern_extract(msgs)
+
+        assert results[0]["concept"]
+        assert int(results[0]["discovery_tokens"]) > 0
+
+
+def test_parse_extractions_reads_concept_and_discovery_tokens() -> None:
+    raw = (
+        "[reference][ev=tool_verified][concept=how-it-works][discovery_tokens=42] "
+        "Invoice reconciliation uses provider ledger IDs"
+    )
+
+    parsed = _parse_extractions(raw)
+
+    assert parsed == [
+        {
+            "category": "reference",
+            "content": "Invoice reconciliation uses provider ledger IDs",
+            "evidence": "tool_verified",
+            "concept": "how-it-works",
+            "discovery_tokens": "42",
+        }
+    ]
+
 
 # ── _is_transient_error ──
 
@@ -429,22 +455,61 @@ class TestExtractAgent:
         assert filepath.exists()
         assert "verbose output" in filepath.read_text()
 
-    async def test_cursor_advances(self, extractor: ExtractAgent, agent_id: uuid.UUID) -> None:
+    async def test_cursor_advances(
+        self,
+        extractor: ExtractAgent,
+        agent_id: uuid.UUID,
+        tmp_agent_dir: Path,
+    ) -> None:
         """Cursor should advance after extraction."""
         msgs = [{"role": "user", "content": "Don't use approach X, it fails badly"}]
-        with patch("app.services.extract_agent._append_to_learnings", return_value=1):
+        with (
+            patch("app.services.extract_agent._append_to_learnings", return_value=1),
+            patch("app.services.extract_agent.get_settings") as mock_settings,
+        ):
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
             await extractor.extract(agent_id, msgs, source="web")
         assert extractor._cursors.get(str(agent_id)) == len(msgs)
 
-    async def test_cursor_skips_already_processed(self, extractor: ExtractAgent, agent_id: uuid.UUID) -> None:
+    async def test_cursor_skips_already_processed(
+        self,
+        extractor: ExtractAgent,
+        agent_id: uuid.UUID,
+        tmp_agent_dir: Path,
+    ) -> None:
         """Second call with same messages should be skipped."""
         msgs = [{"role": "user", "content": "Don't use approach X, it fails badly"}]
-        with patch("app.services.extract_agent._append_to_learnings", return_value=1):
+        with (
+            patch("app.services.extract_agent._append_to_learnings", return_value=1),
+            patch("app.services.extract_agent.get_settings") as mock_settings,
+        ):
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
             await extractor.extract(agent_id, msgs, source="web")
             # Second call — cursor already at end
             with patch("app.services.extract_agent._pattern_extract") as mock_pat:
                 await extractor.extract(agent_id, msgs, source="web")
             mock_pat.assert_not_called()
+
+    async def test_cursor_persists_across_extractor_instances(
+        self,
+        agent_id: uuid.UUID,
+        tmp_agent_dir: Path,
+    ) -> None:
+        """A process restart should not re-extract the same transcript prefix."""
+        msgs = [{"role": "user", "content": "Don't use approach X, it fails badly"}]
+        first = ExtractAgent()
+        second = ExtractAgent()
+
+        with (
+            patch("app.services.extract_agent.get_settings") as mock_settings,
+            patch("app.services.extract_agent._append_to_learnings", return_value=1),
+        ):
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
+            await first.extract(agent_id, msgs, source="web")
+            with patch("app.services.extract_agent._pattern_extract") as mock_pat:
+                await second.extract(agent_id, msgs, source="web")
+
+        mock_pat.assert_not_called()
 
     async def test_coalescing(self, extractor: ExtractAgent, agent_id: uuid.UUID) -> None:
         """Concurrent extract should coalesce, not run in parallel."""
@@ -462,6 +527,26 @@ class TestExtractAgent:
         extractor._cursors[key] = 10
         extractor.reset_cursor(agent_id)
         assert key not in extractor._cursors
+
+    async def test_reset_cursor_removes_persisted_cursor(
+        self,
+        extractor: ExtractAgent,
+        agent_id: uuid.UUID,
+        tmp_agent_dir: Path,
+    ) -> None:
+        with patch("app.services.extract_agent.get_settings") as mock_settings:
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
+            await extractor.extract(
+                agent_id,
+                [{"role": "user", "content": "Don't use approach Y, it fails badly"}],
+                source="web",
+            )
+            cursor_path = tmp_agent_dir / str(agent_id) / "memory" / "learnings" / ".extract_cursor.json"
+            assert cursor_path.exists()
+
+            extractor.reset_cursor(agent_id)
+
+        assert not cursor_path.exists()
 
     async def test_drain_no_task(self, extractor: ExtractAgent, agent_id: uuid.UUID) -> None:
         """Drain with no in-flight task should be a no-op."""

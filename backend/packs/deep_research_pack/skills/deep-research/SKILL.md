@@ -52,9 +52,18 @@ dedicated tools are unavailable.
 2. Use `deep_research_run` for narrow requests with `depth=quick` or `depth=standard`.
 3. Use `deep_research_start` for broad requests, flagship research, or when the user expects a reusable artifact.
 4. After `deep_research_start`, report the `task_id` and use `deep_research_check` for status instead of restarting the work.
-5. Treat `sources.jsonl`, `claims.jsonl`, `steps.jsonl`, `evaluation.jsonl`, `report.md`, and `final.json` as the source of truth.
+5. Treat `sources.jsonl`, `claims.jsonl`, `source_notes.jsonl`, `lane_summaries.jsonl`, `worker_reports.jsonl`, `steps.jsonl`, `evaluation.jsonl`, `report.md`, and `final.json` as the source of truth.
 6. For user-visible delivery, show the `workspace/deep_research_reports/<task_id>/...` path returned by `deep_research_check` or `deep_research_export`; do not present `runtime_artifacts/...` as the user's report path.
 7. If quality gates fail, lead with the gaps and unsupported claims. Do not present a partial report as completed.
+
+## V2 Runtime Contract
+
+- The executable engine is an orchestrator-worker workflow, not a hand-written web-search skill.
+- The planner selects bounded worker topics; workers may use only governed read-only web tools inside the engine.
+- Workers write compact intermediate digests and fetched source records to `worker_reports.jsonl`.
+- The parent ledger assigns durable `src_*` ids in `sources.jsonl`, extracts claims, writes `source_notes.jsonl`, and aggregates `lane_summaries.jsonl`.
+- Final writing uses `synthesize_from_digests` over worker digests, source notes, lane summaries, claims, and source metadata. Raw full source text is not the final writer substrate.
+- Unknown `src_` references are a hard failure: every user-visible citation must resolve to a source id in `sources.jsonl`.
 
 ## Hard Rules
 
@@ -69,6 +78,7 @@ dedicated tools are unavailable.
 - Do not synthesize a separate report with `write_file`; use `deep_research_export` and summarize the workspace-visible Deep Research artifact paths instead.
 - Do not request or use raw web tools from this skill's normal tool surface. Web search/fetch belongs inside the Deep Research engine.
 - Use fallback web research only to recover when the dedicated Deep Research tool is unavailable or blocked, and explicitly label the output as fallback/partial.
+- Do not cite an unknown source id or preserve a writer-invented `src_*`; rerun, narrow scope, or report the synthesis gap.
 
 <examples>
 Input: "使用 deep research 做一次 RWA 项目的深度调研。"
@@ -86,8 +96,8 @@ count, and gaps.
 
 ## Bundled Resources
 
-- `references/playbooks.md`: legacy detailed research playbooks; use only as fallback guidance.
-- `templates/report.md`: report scaffold used when manually reviewing or editing artifacts.
+- `references/playbooks.md`: mode guidance for reviewing v2 artifacts and diagnosing gaps.
+- `templates/report.md`: report scaffold used when manually reviewing exported artifacts.
 
 ## Quality Bar
 

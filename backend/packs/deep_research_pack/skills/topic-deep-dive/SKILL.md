@@ -2,14 +2,10 @@
 name: Topic Deep Dive
 description: "Use when Codex needs to research a bounded topic, product, policy, company, or technical question with primary sources, contradiction checks, and a claim-level evidence ledger."
 tools:
-  - web_search
-  - web_fetch
-  - firecrawl_fetch
-  - xcrawl_scrape
-  - read_file
-  - write_file
-  - delegate_to_agent
-  - send_channel_file
+  - deep_research_run
+  - deep_research_start
+  - deep_research_check
+  - deep_research_export
 metadata:
   version: '0.1'
   category: research
@@ -18,7 +14,7 @@ metadata:
 # Topic Deep Dive
 
 <role>
-Use when Codex needs to research a bounded topic, product, policy, company, or technical question with primary sources, contradiction checks, and a claim-level evidence ledger.
+Route bounded topic, product, policy, company, or technical research to the dedicated Deep Research v2 engine with `mode=topic_deep_dive`.
 </role>
 
 <when_to_use>
@@ -30,27 +26,29 @@ Use when Codex needs to research a bounded topic, product, policy, company, or t
 ## Operating Procedure
 
 1. Restate the bounded question, scope, time window, and evidence standard.
-2. Search primary sources first, then fetch source pages and record dates.
-3. Build a claim ledger as research proceeds; do not rely on search snippets.
-4. Separate confirmed facts, inference, contradictions, stale data, and unresolved gaps.
-5. Write a concise source-attributed packet with the supplied template.
+2. Call `deep_research_run` for quick/standard bounded requests or `deep_research_start` for full/flagship reusable artifacts, always with `mode=topic_deep_dive`.
+3. Let the engine run its orchestrator-worker workflow; workers collect source-grounded digests and persist `worker_reports.jsonl`.
+4. Inspect `sources.jsonl`, `claims.jsonl`, `source_notes.jsonl`, `lane_summaries.jsonl`, `worker_reports.jsonl`, `evaluation.jsonl`, and `final.json`.
+5. Export and summarize the Deep Research artifact; do not hand-write a separate report.
 
 ## Quality Bar
 
 - Do not invent facts, owners, dates, recipients, source evidence, or external system state.
+- Do not use raw web tools or manual `write_file` reports from this subskill; source discovery belongs inside Deep Research v2.
+- Unknown source ids are blockers: every `src_*` in the report must resolve to `sources.jsonl`.
 - Prefer deterministic scripts or templates when the skill bundles them for this workflow.
 - Keep the final output focused on the artifact or decision the user requested.
 - Surface missing credentials, unavailable tools, stale data, and unsupported claims as blockers instead of silently working around them.
 
 <anti_patterns>
-- Do not treat a search result, filename, or prior memory as proof without reading the underlying source or file.
+- Do not treat a search result, filename, prior memory, or worker digest as final proof unless it resolves through the Deep Research ledger.
 - Do not load every reference file by default; use progressive disclosure and read only the relevant resource.
 - Do not call destructive or externally visible tools unless the user asked for that action and required confirmation is satisfied.
 </anti_patterns>
 
 <examples>
-- Input: "Create the requested artifact from these notes." Output: inspect the inputs, load the relevant template/reference, call the declared tools, save the artifact, and report validation notes.
-- Input: "Check whether this is safe / supported / current." Output: gather evidence first, classify unsupported or stale claims, and give a direct recommendation with source or file references.
+- Input: "Deep dive this protocol launch." Output: call `deep_research_run` with `mode=topic_deep_dive`, then report source count, synthesis gate, gaps, and artifact paths.
+- Input: "Full research this company." Output: call `deep_research_start` with `mode=topic_deep_dive` and use `deep_research_check` for progress.
 </examples>
 
 ## Bundled Resources

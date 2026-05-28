@@ -2,13 +2,10 @@
 name: Source Ledger Audit
 description: "Use when Codex needs to audit a draft, report, memo, or deck against cited sources, classify unsupported claims, stale evidence, contradictions, and replacement citation needs."
 tools:
-  - read_file
-  - web_fetch
-  - firecrawl_fetch
-  - xcrawl_scrape
-  - write_file
-  - edit_file
-  - send_channel_file
+  - deep_research_run
+  - deep_research_start
+  - deep_research_check
+  - deep_research_export
 metadata:
   version: '0.1'
   category: research
@@ -17,7 +14,7 @@ metadata:
 # Source Ledger Audit
 
 <role>
-Use when Codex needs to audit a draft, report, memo, or deck against cited sources, classify unsupported claims, stale evidence, contradictions, and replacement citation needs.
+Route source-ledger audits to Deep Research v2 with `mode=source_ledger_audit`; use the runtime ledger and citation gate as the authority.
 </role>
 
 <when_to_use>
@@ -28,28 +25,30 @@ Use when Codex needs to audit a draft, report, memo, or deck against cited sourc
 
 ## Operating Procedure
 
-1. Read the draft and existing source ledger before judging any claim.
-2. Fetch every cited source with `web_fetch`; do not trust citation labels without source text.
-3. Classify each material claim as verified, inferred, contradicted, stale, or unsupported.
-4. Lead the output with blocking unsupported claims before prose suggestions.
-5. Write patch-ready replacement wording and replacement citation targets when available.
+1. Restate the draft, source ledger, and audit scope in the Deep Research question.
+2. Call `deep_research_run` for quick/standard audits or `deep_research_start` for broad/full audits, always with `mode=source_ledger_audit`.
+3. Let the orchestrator-worker runtime fetch evidence and persist `worker_reports.jsonl`, `sources.jsonl`, `claims.jsonl`, `source_notes.jsonl`, and `evaluation.jsonl`.
+4. Lead with failed quality gates, unsupported claims, stale evidence, contradictions, and unknown source ids.
+5. Use `deep_research_export` for patch-ready wording and replacement citation targets when available.
 
 ## Quality Bar
 
 - Do not invent facts, owners, dates, recipients, source evidence, or external system state.
+- Do not manually fetch/write the audit from this subskill; the dedicated runtime owns source fetching, claims, and exports.
+- Unknown `src_*` citations are blockers and must not be presented as completed audit evidence.
 - Prefer deterministic scripts or templates when the skill bundles them for this workflow.
 - Keep the final output focused on the artifact or decision the user requested.
 - Surface missing credentials, unavailable tools, stale data, and unsupported claims as blockers instead of silently working around them.
 
 <anti_patterns>
-- Do not treat a search result, filename, or prior memory as proof without reading the underlying source or file.
+- Do not treat a search result, filename, prior memory, or worker digest as final proof unless it resolves through the Deep Research ledger.
 - Do not load every reference file by default; use progressive disclosure and read only the relevant resource.
 - Do not call destructive or externally visible tools unless the user asked for that action and required confirmation is satisfied.
 </anti_patterns>
 
 <examples>
-- Input: "Create the requested artifact from these notes." Output: inspect the inputs, load the relevant template/reference, call the declared tools, save the artifact, and report validation notes.
-- Input: "Check whether this is safe / supported / current." Output: gather evidence first, classify unsupported or stale claims, and give a direct recommendation with source or file references.
+- Input: "Audit this memo's citations." Output: call `deep_research_run` with `mode=source_ledger_audit`, then report unsupported claims, gates, gaps, and artifact paths.
+- Input: "Full citation audit for this deck." Output: call `deep_research_start` with `mode=source_ledger_audit` and use `deep_research_check` for progress.
 </examples>
 
 ## Bundled Resources

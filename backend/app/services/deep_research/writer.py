@@ -4,7 +4,15 @@ import json
 from pathlib import Path
 
 from app.services.deep_research.ledger import EvidenceLedger
-from app.services.deep_research.schemas import EvaluationResult, ResearchPlan, ResearchRequest, ResearchRun, to_jsonable, utc_now
+from app.services.deep_research.schemas import (
+    EvaluationResult,
+    ResearchPlan,
+    ResearchRequest,
+    ResearchRun,
+    WorkerResult,
+    to_jsonable,
+    utc_now,
+)
 
 
 class ResearchArtifactWriter:
@@ -20,6 +28,7 @@ class ResearchArtifactWriter:
         self.source_notes_path = self.artifact_dir / "source_notes.jsonl"
         self.lane_summaries_path = self.artifact_dir / "lane_summaries.jsonl"
         self.reflection_path = self.artifact_dir / "reflection.jsonl"
+        self.worker_reports_path = self.artifact_dir / "worker_reports.jsonl"
 
     def write_request(self, request: ResearchRequest) -> None:
         self.request_path.write_text(json.dumps(to_jsonable(request), ensure_ascii=False, indent=2), encoding="utf-8")
@@ -46,6 +55,10 @@ class ResearchArtifactWriter:
     def append_reflection(self, decision: dict) -> None:
         with self.reflection_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(to_jsonable(decision), ensure_ascii=False) + "\n")
+
+    def append_worker_report(self, result: WorkerResult) -> None:
+        with self.worker_reports_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(to_jsonable(result), ensure_ascii=False) + "\n")
 
     def finalize(
         self,
@@ -81,6 +94,7 @@ class ResearchArtifactWriter:
             "source_notes_path": self.source_notes_path.as_posix() if self.source_notes_path.exists() else None,
             "lane_summaries_path": self.lane_summaries_path.as_posix() if self.lane_summaries_path.exists() else None,
             "reflection_path": self.reflection_path.as_posix() if self.reflection_path.exists() else None,
+            "worker_reports_path": self.worker_reports_path.as_posix() if self.worker_reports_path.exists() else None,
             "created_at": utc_now(),
         }
         self.final_path.write_text(json.dumps(final_payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -149,9 +163,10 @@ def _failure_notice(
             "## Re-run guidance",
             "",
             (
-                "Inspect `sources.jsonl`, `claims.jsonl`, `source_notes.jsonl`, and "
-                "`lane_summaries.jsonl` in the artifact directory. Re-run with an adjusted "
-                "scope, depth, or model configuration once the failure cause is understood."
+                "Inspect `worker_reports.jsonl`, `sources.jsonl`, `claims.jsonl`, "
+                "`source_notes.jsonl`, and `lane_summaries.jsonl` in the artifact directory. "
+                "Re-run with an adjusted scope, depth, or model configuration once the failure "
+                "cause is understood."
             ),
             "",
         ]

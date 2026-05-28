@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 import uuid
 from collections.abc import Awaitable, Callable
@@ -17,9 +18,11 @@ from app.services.deep_research.schemas import (
     ResearchRun,
     ResearchStep,
     SourceType,
+    WorkerResult,
     new_id,
 )
 from app.services.deep_research.searcher import ResearchSearcher, ToolInvoker
+from app.services.deep_research.worker import RuntimeResearchWorker
 from app.services.deep_research.writer import ResearchArtifactWriter
 
 
@@ -33,9 +36,10 @@ class DeepResearchSynthesisFailed(Exception):
 
 
 class DeepResearchOrchestrator:
-    def __init__(self, tool_invoker: ToolInvoker, *, reasoner: Any | None = None):
+    def __init__(self, tool_invoker: ToolInvoker, *, reasoner: Any | None = None, worker_runner: Any | None = None):
         self.tool_invoker = tool_invoker
         self.reasoner = reasoner
+        self.worker_runner = worker_runner
         self.evaluator = ResearchEvaluator()
 
     async def run(self, request: ResearchRequest, *, artifact_dir: str | Path) -> ResearchRun:
@@ -45,6 +49,9 @@ class DeepResearchOrchestrator:
             return await DeepResearchController(self.tool_invoker, reasoner=self.reasoner).run(
                 request, artifact_dir=artifact_dir
             )
+
+        if _should_use_worker_path(self.reasoner, self.worker_runner):
+            return await self._run_worker_path(request, artifact_dir=artifact_dir)
 
         artifact_path = Path(artifact_dir)
         writer = ResearchArtifactWriter(artifact_path)
@@ -231,6 +238,188 @@ class DeepResearchOrchestrator:
             report_markdown=report_markdown,
         )
 
+    async def _run_worker_path(self, request: ResearchRequest, *, artifact_dir: str | Path) -> ResearchRun:
+        artifact_path = Path(artifact_dir)
+        writer = ResearchArtifactWriter(artifact_path)
+        ledger = EvidenceLedger(artifact_path)
+        writer.write_request(request)
+        plan = build_research_plan(request)
+        plan = await _maybe_refine_plan(self.reasoner, request, plan)
+        writer.write_plan(plan)
+        writer.append_step(_step("plan", "completed", f"Built {len(plan.lanes)} research lane(s) for v2 worker fan-out."))
+
+        source_notes_by_id: dict[str, dict[str, Any]] = {}
+        worker_topics = await _worker_topics(self.reasoner, request, plan)
+        writer.append_step(
+            _step(
+                "worker_plan",
+                "completed",
+                f"Selected {len(worker_topics)} orchestrator-worker topic(s).",
+                {"topics": worker_topics},
+            )
+        )
+
+        runner = self.worker_runner or _build_worker_runner_from_reasoner(self.reasoner)
+        if runner is None:
+            evaluation = self.evaluator.evaluate(request=request, ledger=ledger, round_index=0)
+            evaluation.quality_gates["worker"] = "failed"
+            evaluation.gaps.append("Deep Research v2 worker path is enabled but no worker runner could be built.")
+            writer.append_evaluation(evaluation)
+            return writer.finalize(
+                request=request,
+                plan=plan,
+                ledger=ledger,
+                evaluation=evaluation,
+                status="failed",
+                report_markdown=None,
+            )
+
+        worker_results = await _run_worker_fanout(
+            runner,
+            worker_topics,
+            request=request,
+            max_concurrency=min(max(1, request.concurrency), 3),
+            deadline_seconds=request.deadline_seconds,
+        )
+
+        accepted_sources = 0
+        seen_source_urls: set[str] = set()
+        for result in worker_results:
+            for source in result.sources:
+                if accepted_sources >= request.max_sources:
+                    break
+                if not source.url or source.url in seen_source_urls:
+                    continue
+                lane_id = source.lane_id or _lane_id_for_worker_topic(plan, result.topic)
+                ledger_source = ledger.add_source(
+                    url=source.url,
+                    title=source.title,
+                    publisher=source.publisher,
+                    source_type=source.source_type if source.source_type != SourceType.UNKNOWN else _source_type_for_lane(lane_id),
+                    content=source.content,
+                    published_at=source.published_at,
+                    lane_id=lane_id,
+                    query=source.query or result.topic,
+                    fetch_tool=source.fetch_tool,
+                )
+                source.source_id = ledger_source.source_id
+                source.source_type = ledger_source.source_type
+                source.lane_id = ledger_source.lane_id
+                source.query = ledger_source.query
+                seen_source_urls.add(source.url)
+                accepted_sources += 1
+
+                reasoned_claims = await _maybe_extract_claims(self.reasoner, request, ledger, ledger_source)
+                if not reasoned_claims:
+                    extract_claims_from_source(ledger, ledger_source)
+                note = await _maybe_summarize_source(self.reasoner, request, ledger_source)
+                if note is not None:
+                    source_notes_by_id[ledger_source.source_id] = note
+                    writer.append_source_note(note)
+
+            writer.append_worker_report(result)
+            writer.append_step(
+                _step(
+                    "worker",
+                    result.status,
+                    f"Worker completed topic: {result.topic}",
+                    {
+                        "topic": result.topic,
+                        "source_count": len(result.sources),
+                        "tokens_used": result.tokens_used,
+                        "error": result.error,
+                    },
+                )
+            )
+
+        evaluation = self.evaluator.evaluate(request=request, ledger=ledger, round_index=1)
+        if not any(result.status == "ok" for result in worker_results):
+            evaluation.quality_gates["worker"] = "failed"
+            evaluation.gaps.append("No Deep Research worker completed successfully.")
+        writer.append_evaluation(evaluation)
+        writer.append_step(
+            _step(
+                "evaluate",
+                "completed",
+                "Evaluated v2 worker evidence ledger before digest synthesis.",
+                {"quality_gates": evaluation.quality_gates, "gaps": evaluation.gaps},
+            )
+        )
+
+        latest_lane_summaries = _aggregate_lane_summaries(
+            plan=plan,
+            ledger=ledger,
+            source_notes_by_id=source_notes_by_id,
+            evaluation=evaluation,
+            round_index=1,
+        )
+        for summary in latest_lane_summaries:
+            writer.append_lane_summary(summary)
+
+        report_markdown: str | None
+        try:
+            report_markdown = await _synthesize_report(
+                self.reasoner,
+                request,
+                plan,
+                ledger,
+                evaluation,
+                source_notes=list(source_notes_by_id.values()),
+                lane_summaries=latest_lane_summaries,
+                worker_results=worker_results,
+            )
+            report_markdown = _apply_footnotes(report_markdown, ledger)
+        except DeepResearchSynthesisFailed as exc:
+            report_markdown = None
+            error_message = str(exc) or "Synthesis failed"
+            evaluation.quality_gates["synthesis"] = "failed"
+            evaluation.gaps.append(f"Synthesis failed; no user-deliverable report was produced. {error_message}")
+            writer.append_step(
+                _step(
+                    "synthesize",
+                    "failed",
+                    "V2 digest synthesis failed; preserving worker reports and ledger.",
+                    {"error": error_message},
+                )
+            )
+        else:
+            synthesis_gate, synthesis_gap = _evaluate_synthesis_quality(
+                report_markdown,
+                request=request,
+                ledger=ledger,
+            )
+            evaluation.quality_gates["synthesis"] = synthesis_gate
+            if synthesis_gap:
+                evaluation.gaps.append(synthesis_gap)
+            writer.append_step(
+                _step(
+                    "synthesize",
+                    synthesis_gate,
+                    "Synthesized final report from worker digests and checked citation integrity.",
+                    {"synthesis_gate": synthesis_gate, "gap": synthesis_gap},
+                )
+            )
+
+        failed_gates = {gate for gate, state in evaluation.quality_gates.items() if state == "failed"}
+        status = (
+            "completed"
+            if (
+                report_markdown
+                and ledger.sources
+                and evaluation.quality_gates.get("attribution") == "passed"
+                and not failed_gates
+            )
+            else "failed"
+        )
+        return writer.finalize(
+            request=request,
+            plan=plan,
+            ledger=ledger,
+            evaluation=evaluation,
+            status=status,
+            report_markdown=report_markdown,
+        )
+
 
 async def run_deep_research(
     *,
@@ -264,6 +453,100 @@ async def _default_tool_executor(tool_name: str, arguments: dict[str, Any], agen
 
 def _step(phase: str, status: str, message: str, detail: dict[str, Any] | None = None) -> ResearchStep:
     return ResearchStep(step_id=new_id("step"), phase=phase, status=status, message=message, detail=detail or {})
+
+
+def _should_use_worker_path(reasoner: Any | None, worker_runner: Any | None) -> bool:
+    return reasoner is not None and hasattr(reasoner, "synthesize_from_digests") and (
+        worker_runner is not None or hasattr(reasoner, "agent_id")
+    )
+
+
+def _build_worker_runner_from_reasoner(reasoner: Any | None):
+    agent_id = getattr(reasoner, "agent_id", None)
+    user_id = getattr(reasoner, "user_id", None)
+    if not isinstance(agent_id, uuid.UUID) or not isinstance(user_id, uuid.UUID):
+        return None
+    return RuntimeResearchWorker(agent_id=agent_id, user_id=user_id)
+
+
+async def _worker_topics(reasoner: Any | None, request: ResearchRequest, plan) -> list[str]:
+    if reasoner is not None and hasattr(reasoner, "decide_next"):
+        try:
+            decision = await reasoner.decide_next(request=request, plan=plan)
+        except Exception:
+            decision = None
+        topics = _topics_from_decision(decision)
+        if topics:
+            return topics[: _topic_budget(request, plan)]
+
+    topics: list[str] = []
+    for lane in plan.lanes:
+        queries = "; ".join(query.query for query in lane.queries[:4] if query.query)
+        topic = (
+            f"{request.question}\n"
+            f"Lane: {lane.label or lane.lane_id}\n"
+            f"Goal: {lane.goal or 'collect source-grounded evidence'}\n"
+            f"Queries: {queries or request.question}"
+        )
+        topics.append(topic)
+    return topics[: _topic_budget(request, plan)]
+
+
+def _topic_budget(request: ResearchRequest, plan) -> int:
+    lane_count = len(getattr(plan, "lanes", []) or [])
+    return max(1, min(request.max_sources, max(lane_count, 3), 6))
+
+
+def _topics_from_decision(decision: Any) -> list[str]:
+    if not isinstance(decision, dict):
+        return []
+    raw_topics = decision.get("topics") or decision.get("worker_topics") or decision.get("next_topics")
+    if not isinstance(raw_topics, list):
+        return []
+    topics = [str(topic).strip() for topic in raw_topics if str(topic or "").strip()]
+    return list(dict.fromkeys(topics))
+
+
+def _lane_id_for_worker_topic(plan, topic: str) -> str:
+    topic_lower = (topic or "").casefold()
+    for lane in getattr(plan, "lanes", []) or []:
+        if lane.lane_id.casefold() in topic_lower or lane.label.casefold() in topic_lower:
+            return lane.lane_id
+    lanes = getattr(plan, "lanes", []) or []
+    return lanes[0].lane_id if lanes else ""
+
+
+async def _run_worker_fanout(
+    runner: Any,
+    topics: list[str],
+    *,
+    request: ResearchRequest,
+    max_concurrency: int,
+    deadline_seconds: int | None,
+) -> list[WorkerResult]:
+    if not topics:
+        return []
+    semaphore = asyncio.Semaphore(max(1, max_concurrency))
+
+    async def run_one(topic: str) -> WorkerResult:
+        async with semaphore:
+            try:
+                coroutine = runner.run(topic, request=request)
+                if deadline_seconds:
+                    return await asyncio.wait_for(coroutine, timeout=deadline_seconds)
+                return await coroutine
+            except asyncio.TimeoutError:
+                return WorkerResult(topic=topic, intermediate_report="", status="failed", error="worker timed out")
+            except Exception as exc:
+                return WorkerResult(
+                    topic=topic,
+                    intermediate_report="",
+                    status="failed",
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+
+    results = await asyncio.gather(*(run_one(topic) for topic in topics), return_exceptions=False)
+    return [result for result in results if isinstance(result, WorkerResult)]
 
 
 def _source_type_for_lane(lane_id: str) -> SourceType:
@@ -425,6 +708,7 @@ async def _synthesize_report(
     *,
     source_notes: list[dict[str, Any]] | None = None,
     lane_summaries: list[dict[str, Any]] | None = None,
+    worker_results: list[WorkerResult] | None = None,
 ) -> str:
     """Produce an analyst-grade markdown report or raise DeepResearchSynthesisFailed.
 
@@ -438,6 +722,37 @@ async def _synthesize_report(
 
     min_chars = _minimum_report_chars(request)
     errors: list[str] = []
+
+    if worker_results and hasattr(reasoner, "synthesize_from_digests"):
+        for attempt in range(1, 3):
+            try:
+                try:
+                    report = await reasoner.synthesize_from_digests(
+                        request,
+                        plan,
+                        ledger,
+                        evaluation,
+                        worker_results=worker_results,
+                        source_notes=source_notes,
+                        lane_summaries=lane_summaries,
+                    )
+                except TypeError:
+                    report = await reasoner.synthesize_from_digests(
+                        request,
+                        plan,
+                        ledger,
+                        evaluation,
+                        worker_results=worker_results,
+                    )
+            except Exception as exc:
+                errors.append(f"digest-stage attempt {attempt}: {type(exc).__name__}: {exc}")
+                continue
+            if isinstance(report, str) and report.strip() and len(report.strip()) >= min_chars:
+                return report.strip() + "\n"
+            if isinstance(report, str) and report.strip():
+                errors.append(f"digest-stage attempt {attempt}: report shorter than {min_chars} chars")
+            else:
+                errors.append(f"digest-stage attempt {attempt}: empty or non-string response")
 
     if hasattr(reasoner, "draft_report") and hasattr(reasoner, "review_report"):
         try:
@@ -563,10 +878,19 @@ _ZH_ENTITY_RE = re.compile(
 
 
 def _evaluate_synthesis_quality(report: str | None, *, request: ResearchRequest, ledger: EvidenceLedger) -> tuple[str, str]:
-    if not report or len(report.strip()) < _minimum_report_chars(request):
+    if not report:
         return "failed", "Synthesis quality failed: report is too short for a deep research deliverable."
     if not ledger.sources:
         return "failed", "Synthesis quality failed: no fetched source is available for source-grounded synthesis."
+    unknown_refs = _unknown_source_refs(report, ledger)
+    if unknown_refs:
+        return (
+            "failed",
+            "Synthesis quality failed: report cites unknown source ids not in the evidence ledger: "
+            + ", ".join(unknown_refs[:8]),
+        )
+    if len(report.strip()) < _minimum_report_chars(request):
+        return "failed", "Synthesis quality failed: report is too short for a deep research deliverable."
     cited_source_ids = {source_id for source_id in ledger.sources if source_id in report}
     footnote_markers = len(re.findall(r"\[\^\d+\]", report))
     required_citations = min(max(2, len(ledger.sources) // 2), len(ledger.sources))
@@ -607,6 +931,11 @@ def _evaluate_synthesis_quality(report: str | None, *, request: ResearchRequest,
             )
 
     return "passed", ""
+
+
+def _unknown_source_refs(report: str, ledger: EvidenceLedger) -> list[str]:
+    refs = set(re.findall(r"src_[a-zA-Z0-9_]+", report or ""))
+    return sorted(ref for ref in refs if ref not in ledger.sources)
 
 
 def _minimum_report_chars(request: ResearchRequest) -> int:

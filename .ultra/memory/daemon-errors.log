@@ -52,3 +52,5 @@
 2026-05-19T02:29:16.471863+00:00 INFO parse_failed | sid=20260519-021650-080 raw=```json {"request":"","completed":"","learned":"","next_steps":""} ```
 2026-05-26T03:30:24.232836+00:00 [CLI] CLI timed out after 60s
 2026-05-26T03:30:24.243751+00:00 INFO empty_cli_response | 20260526-024743-331
+2026-05-28T03:18:11.169936+00:00 [CLI] CLI timed out after 60s
+2026-05-28T03:18:11.180554+00:00 INFO empty_cli_response | 20260528-030349-899

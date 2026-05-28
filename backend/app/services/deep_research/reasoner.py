@@ -19,6 +19,7 @@ from app.services.deep_research.schemas import (
     SearchQuery,
     SourceRecord,
     SourceType,
+    WorkerResult,
     to_jsonable,
 )
 
@@ -280,6 +281,52 @@ class RuntimeDeepResearchReasoner:
             return {"type": "reflect", "rationale": "Planner returned no action; defaulting to reflect."}
         return parsed
 
+    async def decide_next(
+        self,
+        *,
+        request: ResearchRequest,
+        plan: ResearchPlan,
+    ) -> dict[str, Any]:
+        """V2 planner: pick bounded worker topics before fan-out."""
+        payload = {
+            "request": {
+                "question": request.question,
+                "mode": request.mode,
+                "depth": request.depth,
+                "scope": request.scope,
+                "max_sources": request.max_sources,
+                "concurrency": request.concurrency,
+            },
+            "plan_lanes": [
+                {
+                    "lane_id": lane.lane_id,
+                    "label": lane.label,
+                    "goal": lane.goal,
+                    "queries": [query.query for query in lane.queries],
+                }
+                for lane in plan.lanes
+            ],
+        }
+        content = await self._invoke(
+            "Select Deep Research v2 worker topics. Return JSON only.",
+            (
+                "You are the Planner sub-agent for the Deep Research v2 orchestrator-worker runtime. "
+                "Return 3-6 independent worker topics. Each topic must be concrete enough for one worker to "
+                "search, fetch, and digest source-grounded evidence without delegation. Prefer independent lanes "
+                "such as primary issuer evidence, regulator evidence, market/data evidence, technical mechanics, "
+                "competitor/customer evidence, or claim-audit evidence.\n\n"
+                "Output JSON only: {topics: [str], rationale: str, stop: bool}. Set stop=false unless the "
+                "question is impossible or already fully answered by provided context.\n\n"
+                f"{json.dumps(payload, ensure_ascii=False)}"
+            ),
+            mode=request.mode,
+            role="planner",
+        )
+        parsed = _parse_json_object(content)
+        if not parsed:
+            return {"topics": [], "rationale": "Planner returned no worker topics.", "stop": False}
+        return parsed
+
     async def draft_report(
         self,
         request: ResearchRequest,
@@ -448,6 +495,88 @@ class RuntimeDeepResearchReasoner:
                 "- Prefer concrete numbers, named actors, product mechanics, and decision implications.\n"
                 "- Separate verified findings from inferred implications and gaps.\n"
                 "- Do not write generic educational text or ungrounded recommendations.\n\n"
+                f"{json.dumps(payload, ensure_ascii=False)}"
+            ),
+            mode=request.mode,
+            role="writer",
+        )
+
+    async def synthesize_from_digests(
+        self,
+        request: ResearchRequest,
+        plan: ResearchPlan,
+        ledger,
+        evaluation,
+        *,
+        worker_results: list[WorkerResult],
+        source_notes: list[dict[str, Any]] | None = None,
+        lane_summaries: list[dict[str, Any]] | None = None,
+    ) -> str | None:
+        """V2 final synthesis from worker digests.
+
+        The writer receives compressed worker reports, structured notes, claims,
+        and source metadata. It deliberately does not receive large raw source
+        excerpts; workers and source-note extraction own source reading.
+        """
+        payload = {
+            "question": request.question,
+            "mode": request.mode,
+            "scope": request.scope,
+            "depth": request.depth,
+            "source_policy": request.source_policy,
+            "plan": to_jsonable(plan),
+            "worker_digests": [
+                {
+                    "topic": result.topic,
+                    "status": result.status,
+                    "error": result.error,
+                    "tokens_used": result.tokens_used,
+                    "intermediate_report": result.intermediate_report[:12000],
+                    "sources": [
+                        {
+                            "source_id": source.source_id,
+                            "title": source.title,
+                            "publisher": source.publisher,
+                            "url": source.url,
+                            "source_type": source.source_type.value,
+                            "lane_id": source.lane_id,
+                            "fetch_tool": source.fetch_tool,
+                        }
+                        for source in result.sources
+                    ],
+                }
+                for result in worker_results
+            ],
+            "source_notes": source_notes or [],
+            "lane_summaries": lane_summaries or [],
+            "sources": [
+                {
+                    "source_id": source.source_id,
+                    "title": source.title,
+                    "publisher": source.publisher,
+                    "url": source.url,
+                    "source_type": source.source_type.value,
+                    "lane_id": source.lane_id,
+                    "fetch_tool": source.fetch_tool,
+                }
+                for source in ledger.sources.values()
+            ],
+            "claims": [to_jsonable(claim) for claim in ledger.claims],
+            "quality_gates": evaluation.quality_gates,
+            "gaps": evaluation.gaps,
+        }
+        return await self._invoke(
+            "Write an analyst-grade Deep Research report from worker digests.",
+            (
+                "Write the final markdown report from compressed Deep Research worker digests. Requirements:\n"
+                "- Use `worker_digests`, `source_notes`, `lane_summaries`, claims, and source metadata as the evidence substrate.\n"
+                "- Do not invent source ids. Cite only source_ids present in `sources` or worker digest source metadata.\n"
+                "- Every material claim must cite source ids inline, e.g. [src_ab12].\n"
+                "- Include `## Executive Thesis`, `## Method And Source Standard`, `## Key Findings`, "
+                "`## Contradictions And Gaps`, and `## Source Ledger`; add mode-specific sections when useful.\n"
+                "- Use concrete numbers, named entities, dates, mechanisms, and limitations from worker digests and structured notes.\n"
+                "- Separate verified findings, inferred implications, contradictions, and gaps.\n"
+                "- If evidence is insufficient, say so explicitly instead of filling with generic prose.\n\n"
                 f"{json.dumps(payload, ensure_ascii=False)}"
             ),
             mode=request.mode,

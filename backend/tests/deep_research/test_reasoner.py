@@ -246,3 +246,71 @@ async def test_reasoner_synthesize_report_payload_serializes_structured_notes(mo
     assert "lane_summaries" in content
     assert "src_aaaaaaaaaaaa" in content
     assert "evidence_strength" in content
+
+
+@pytest.mark.asyncio
+async def test_reasoner_synthesize_from_digests_uses_worker_reports_not_raw_source_text(monkeypatch, tmp_path):
+    """V2 contract: final synthesis consumes compressed worker digests and source metadata.
+    It must not pass 8K raw source excerpts back into the writer call."""
+    from app.services.deep_research.ledger import EvidenceLedger
+    from app.services.deep_research.planner import build_research_plan
+    from app.services.deep_research.reasoner import RuntimeDeepResearchReasoner
+    from app.services.deep_research.schemas import EvaluationResult, ResearchRequest, SourceRecord, SourceType, WorkerResult
+
+    captured: dict[str, str] = {}
+
+    async def fake_invoke_agent(request):
+        captured["content"] = request.messages[0]["content"]
+        captured["suffix"] = request.system_prompt_suffix
+        return type("Result", (), {"content": "# Final\n\n## Executive Thesis\n\nbody"})()
+
+    monkeypatch.setattr(RuntimeDeepResearchReasoner, "_resolve_models", _fake_resolve_models)
+    monkeypatch.setattr("app.services.deep_research.reasoner.invoke_agent", fake_invoke_agent)
+
+    request = ResearchRequest(question="q", mode="topic_deep_dive")
+    plan = build_research_plan(request)
+    ledger = EvidenceLedger(tmp_path)
+    ledger.add_source(
+        url="https://issuer.example/rwa",
+        title="Issuer Disclosure",
+        publisher="issuer.example",
+        source_type=SourceType.PRIMARY,
+        content="RAW_SOURCE_TEXT_SHOULD_NOT_BE_IN_FINAL_SYNTHESIS_PAYLOAD " * 400,
+        lane_id="official",
+    )
+    worker_source = SourceRecord(
+        source_id="src_worker",
+        url="https://worker.example/rwa",
+        title="Worker Source",
+        publisher="worker.example",
+        source_type=SourceType.SECONDARY,
+        content="WORKER_RAW_SOURCE_TEXT_SHOULD_NOT_BE_IN_FINAL_SYNTHESIS_PAYLOAD " * 400,
+        lane_id="market",
+        fetch_tool="web_fetch",
+    )
+    worker_results = [
+        WorkerResult(
+            topic="market map",
+            intermediate_report="Worker found 35% growth and 12 jurisdiction constraints with cited evidence.",
+            sources=[worker_source],
+            status="ok",
+            tokens_used=77,
+        )
+    ]
+
+    reasoner = RuntimeDeepResearchReasoner(agent_id=uuid.uuid4(), user_id=uuid.uuid4())
+    await reasoner.synthesize_from_digests(
+        request,
+        plan,
+        ledger,
+        EvaluationResult(quality_gates={"attribution": "passed"}),
+        worker_results=worker_results,
+    )
+
+    content = captured.get("content", "")
+    assert "worker_digests" in content
+    assert "intermediate_report" in content
+    assert "Worker found 35% growth" in content
+    assert "RAW_SOURCE_TEXT_SHOULD_NOT_BE_IN_FINAL_SYNTHESIS_PAYLOAD" not in content
+    assert "WORKER_RAW_SOURCE_TEXT_SHOULD_NOT_BE_IN_FINAL_SYNTHESIS_PAYLOAD" not in content
+    assert "Writer" in captured.get("suffix", "")

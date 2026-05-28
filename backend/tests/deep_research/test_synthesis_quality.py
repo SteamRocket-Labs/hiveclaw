@@ -428,3 +428,46 @@ unsupported per the source standard policy.
     state, gap = _evaluate_synthesis_quality(report, request=request, ledger=ledger)
 
     assert state == "passed", gap
+
+
+def test_synthesis_gate_rejects_unknown_source_references(tmp_path):
+    """V2 citation contract: a report cannot pass if it cites source ids that are
+    not present in the ledger. Unknown src_* refs often mean worker digest or writer
+    hallucination and must fail before user-visible completion."""
+    from app.services.deep_research.orchestrator import _evaluate_synthesis_quality
+    from app.services.deep_research.schemas import ResearchRequest
+
+    ledger = _seed_ledger(tmp_path, _SOURCE_IDS)
+    report = f"""# Audit Report
+
+## Executive Thesis
+
+Issuer A, Regulator B, Platform C, and Custodian D support 35% adoption across
+12 jurisdictions in 2026. The run checked 4 ledgers, 8 claims, 17 controls, and
+23 dated source references. Sources {_SOURCE_IDS[0]}, {_SOURCE_IDS[1]}, and
+src_not_in_ledger.
+
+## Method And Source Standard
+
+Primary disclosures and regulator filings were preferred. The unknown citation
+is deliberately present to ensure the gate fails before completion.
+
+## Findings
+
+- The growth claim is supported by {_SOURCE_IDS[0]} and {_SOURCE_IDS[1]}.
+- The control claim is supported by {_SOURCE_IDS[2]} and {_SOURCE_IDS[3]}.
+- The unsupported extra claim cites src_not_in_ledger and must not pass.
+
+## Source Ledger
+
+- `{_SOURCE_IDS[0]}` Issuer filing
+- `{_SOURCE_IDS[1]}` Regulator filing
+- `{_SOURCE_IDS[2]}` Platform filing
+- `{_SOURCE_IDS[3]}` Custody filing
+"""
+    request = ResearchRequest(question="audit", mode="source_ledger_audit", depth="standard")
+
+    state, gap = _evaluate_synthesis_quality(report, request=request, ledger=ledger)
+
+    assert state == "failed"
+    assert "unknown source" in gap.lower() or "not in the evidence ledger" in gap.lower()

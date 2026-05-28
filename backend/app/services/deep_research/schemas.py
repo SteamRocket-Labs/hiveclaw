@@ -159,6 +159,26 @@ class EvaluationResult:
 
 
 @dataclass(slots=True)
+class WorkerResult:
+    topic: str
+    intermediate_report: str
+    sources: list[SourceRecord] = field(default_factory=list)
+    citation_map: dict[str, str] = field(default_factory=dict)
+    status: Literal["ok", "failed", "cancelled"] = "ok"
+    error: str = ""
+    tokens_used: int = 0
+    created_at: str = field(default_factory=utc_now)
+
+
+@dataclass(slots=True)
+class OrchestratorDecision:
+    stop: bool
+    topics: list[str] = field(default_factory=list)
+    rationale: str = ""
+    created_at: str = field(default_factory=utc_now)
+
+
+@dataclass(slots=True)
 class ResearchArtifact:
     artifact_dir: str
     report_path: str

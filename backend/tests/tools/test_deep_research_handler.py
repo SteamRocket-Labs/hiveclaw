@@ -47,7 +47,9 @@ async def test_deep_research_run_returns_artifact_paths(tmp_path, monkeypatch: p
 
     monkeypatch.setattr("app.tools.handlers.deep_research.run_deep_research", fake_run_research)
     req = _request(tmp_path)
-    req.arguments.update({"question": "RWA adoption", "max_rounds": 1, "max_sources": 1})
+    req.arguments.update(
+        {"question": "RWA adoption", "max_rounds": 1, "max_sources": 1, "plan_confirmed": True}
+    )
 
     payload = json.loads(await deep_research_run(req))
 
@@ -104,7 +106,7 @@ async def test_deep_research_start_creates_runtime_task(tmp_path, monkeypatch: p
     monkeypatch.setattr("app.tools.handlers.deep_research._schedule_deep_research_background", lambda *_args, **_kwargs: None)
 
     req = _request(tmp_path)
-    req.arguments.update({"question": "RWA adoption", "max_rounds": 2})
+    req.arguments.update({"question": "RWA adoption", "max_rounds": 2, "plan_confirmed": True})
 
     payload = json.loads(await deep_research_start(req))
 

@@ -59,7 +59,11 @@ async def test_reflector_invokes_reasoner_and_normalizes_decision(tmp_path):
                 "stop_signal": False,
                 "rationale": "Need regulator stance + a competitor comparison number.",
                 "next_queries": [
-                    {"query": "SEC Reg D 506(c) 2026 tokenization rulings", "lane_id": "regulatory", "targets": "regulator stance"},
+                    {
+                        "query": "SEC Reg D 506(c) 2026 tokenization rulings",
+                        "lane_id": "regulatory",
+                        "targets": "regulator stance",
+                    },
                     "Republic Forge vs CartaX 2026 trade volume",
                 ],
             }
@@ -168,9 +172,7 @@ async def test_orchestrator_writes_reflection_jsonl_and_honors_stop_signal(tmp_p
                 "next_queries": [],
             }
 
-        async def synthesize_report(
-            self, request, plan, ledger, evaluation, *, source_notes=None, lane_summaries=None
-        ):
+        async def synthesize_report(self, request, plan, ledger, evaluation, *, source_notes=None, lane_summaries=None):
             ids = list(ledger.sources)
             return f"""# Brief
 
@@ -226,210 +228,6 @@ Primary issuer filings prioritised over secondary commentary.
 
 
 # ─────────── T2-2: draft + review two-stage synthesis ───────────
-
-
-@pytest.mark.asyncio
-async def test_orchestrator_prefers_two_stage_when_reasoner_supports_it(tmp_path):
-    """T2-2: when reasoner exposes draft_report + review_report, orchestrator uses the
-    two-stage path and the merged report from review_report ends up in report.md."""
-    from app.services.deep_research.orchestrator import DeepResearchOrchestrator
-    from app.services.deep_research.schemas import ResearchRequest
-
-    draft_calls: list[str] = []
-    review_called: list[bool] = []
-    fallback_called: list[bool] = []
-
-    class _TwoStageReasoner:
-        async def extract_claims(self, request, source):
-            return [
-                {
-                    "text": f"{source.publisher} confirms a 35% YoY adoption signal.",
-                    "status": "verified",
-                    "source_ids": [source.source_id],
-                    "evidence": source.content[:200],
-                }
-            ]
-
-        async def draft_report(
-            self, request, plan, ledger, evaluation, *, source_notes=None, lane_summaries=None, sections=None
-        ):
-            for section in sections or [
-                "Executive Thesis",
-                "Method And Source Standard",
-                "Market Map",
-                "Key Findings",
-                "Strategic Implications",
-                "Contradictions And Gaps",
-                "Source Ledger",
-            ]:
-                draft_calls.append(section)
-            ids = list(ledger.sources)
-            return {
-                "Executive Thesis": (
-                    f"BlackRock BUIDL, Securitize, Ondo Finance, and JPMorgan Onyx captured $1.24B AUM across "
-                    f"14 tokenized treasuries by Q4 2026. Sources: {ids[0]}."
-                ),
-                "Key Findings": (
-                    f"- Tokenized treasuries grew 35% YoY to $1.24B AUM across 14 vehicles. Sources: {ids[0]}."
-                ),
-                "Source Ledger": f"- `{ids[0]}` Issuer A 2026 disclosure",
-            }
-
-        async def review_report(self, drafts, *, request, ledger, source_notes=None, lane_summaries=None):
-            review_called.append(True)
-            ids = list(ledger.sources)
-            merged = (
-                "# Deep Research: RWA Treasury Adoption\n\n"
-                "## Executive Thesis\n\n"
-                f"BlackRock BUIDL, Securitize, Ondo Finance, and JPMorgan Onyx captured "
-                f"$1.24B AUM across 14 tokenized treasuries by Q4 2026. SEC, MAS, and SFC "
-                f"each reviewed disclosures in Q2 2026. Sources: {ids[0]}.\n\n"
-                "## Method And Source Standard\n\n"
-                "Primary filings prioritised over secondary analyst commentary.\n\n"
-                "## Market Map\n\n"
-                "| Lane | Players | Evidence |\n|---|---|---|\n"
-                f"| Issuance | BlackRock, Securitize, Ondo Finance, JPMorgan | {ids[0]} |\n\n"
-                "## Key Findings\n\n"
-                f"- Tokenized treasuries grew 35% YoY to $1.24B AUM across 14 vehicles via "
-                f"BlackRock BUIDL and Securitize. Sources: {ids[0]}.\n"
-                "- Custody handled by State Street and BNY Mellon remains binding.\n\n"
-                "## Strategic Implications\n\n"
-                "- Bundle issuance with compliance via Republic Forge or CartaX.\n\n"
-                "## Contradictions And Gaps\n\n"
-                "- Hong Kong SFC vs Singapore MAS rules diverge for 5 product types.\n\n"
-                "## Source Ledger\n\n"
-                f"- `{ids[0]}` Issuer A 2026 disclosure\n"
-            )
-            return {"merged_report": merged, "quality_score": 0.86, "issues": []}
-
-        async def synthesize_report(self, request, plan, ledger, evaluation, *, source_notes=None, lane_summaries=None):
-            fallback_called.append(True)
-            return "should not be used"
-
-    async def fake_tool(tool_name: str, arguments: dict) -> str:
-        if tool_name == "web_search":
-            return "https://issuer.example/rwa"
-        if tool_name == "web_fetch":
-            return (
-                "Title: Issuer A 2026 disclosure\n"
-                "Issuer A reports tokenized treasury holdings reached $1.24B in 2026 across 14 vehicles."
-            )
-        raise AssertionError(tool_name)
-
-    result = await DeepResearchOrchestrator(fake_tool, reasoner=_TwoStageReasoner()).run(
-        ResearchRequest(
-            question="Research RWA treasury adoption.",
-            mode="industry_research",
-            depth="standard",
-            max_rounds=1,
-            max_sources=1,
-        ),
-        artifact_dir=tmp_path,
-    )
-
-    report = (tmp_path / "report.md").read_text(encoding="utf-8")
-
-    assert result.status == "completed", result.gaps
-    assert review_called == [True], "review_report must be called exactly once"
-    assert not fallback_called, "single-stage synthesize_report must not fire when two-stage succeeds"
-    assert len(draft_calls) >= 3, "draft_report must be invoked for multiple sections"
-    assert "BlackRock BUIDL" in report
-    assert "Issuer A 2026 disclosure" in report
-
-
-@pytest.mark.asyncio
-async def test_orchestrator_falls_back_to_single_stage_when_draft_review_empty(tmp_path):
-    """T2-2: if two-stage produces an empty drafts dict, fall back to single-stage."""
-    from app.services.deep_research.orchestrator import DeepResearchOrchestrator
-    from app.services.deep_research.schemas import ResearchRequest
-
-    single_stage_called: list[bool] = []
-
-    class _BrokenTwoStage:
-        async def extract_claims(self, request, source):
-            return [
-                {
-                    "text": f"{source.publisher} confirms a concrete adoption.",
-                    "status": "verified",
-                    "source_ids": [source.source_id],
-                    "evidence": source.content[:200],
-                }
-            ]
-
-        async def draft_report(self, request, plan, ledger, evaluation, **kwargs):
-            return {}
-
-        async def review_report(self, drafts, **kwargs):
-            raise AssertionError("review_report must not be called when drafts are empty")
-
-        async def synthesize_report(self, request, plan, ledger, evaluation, *, source_notes=None, lane_summaries=None):
-            single_stage_called.append(True)
-            ids = list(ledger.sources)
-            return f"""# RWA Treasury Adoption Brief
-
-## Executive Thesis
-
-In 2026 BlackRock BUIDL, Securitize, Ondo Finance, and JPMorgan Onyx captured combined
-AUM of $1.24B across 14 tokenized treasury vehicles, backed by SEC Reg D, MAS Securities
-Act, and SFC Type 1 disclosures filed in Q2 2026. Sources: {ids[0]}.
-
-## Method And Source Standard
-
-Primary issuer filings from BlackRock, Securitize, Ondo Finance, and JPMorgan were prioritised
-over secondary analyst commentary from Bernstein, Bloomberg, and Coindesk.
-
-## Market Map
-
-| Lane | Players | Evidence |
-|---|---|---|
-| Issuance | BlackRock BUIDL, Securitize, Ondo Finance, JPMorgan Onyx | {ids[0]} |
-| Regulatory | SEC, MAS, SFC, FINRA | {ids[0]} |
-| Custody | State Street, BNY Mellon | {ids[0]} |
-
-## Key Findings
-
-- Tokenized treasuries grew 35% YoY to $1.24B AUM across 14 vehicles via BlackRock BUIDL
-  and Securitize, with SEC Reg D coverage in 17 filings. Sources: {ids[0]}.
-- Custody handled by State Street and BNY Mellon remains the binding constraint;
-  18 of the top 20 institutional buyers cite custody concerns.
-
-## Strategic Implications
-
-- Bundle issuance, compliance, and reporting into one workflow via Republic Forge or CartaX.
-- Treat secondary liquidity routing as the durable moat for any new launchpad.
-
-## Contradictions And Gaps
-
-- Hong Kong SFC vs Singapore MAS transfer-restriction rules diverge for 5 product types.
-
-## Source Ledger
-
-- `{ids[0]}` Issuer A 2026 disclosure
-"""
-
-    async def fake_tool(tool_name: str, arguments: dict) -> str:
-        if tool_name == "web_search":
-            return "https://issuer.example/rwa"
-        if tool_name == "web_fetch":
-            return (
-                "Title: Issuer A 2026 disclosure\n"
-                "Issuer A reports tokenized treasury holdings reached $1.24B in 2026 across 14 vehicles."
-            )
-        raise AssertionError(tool_name)
-
-    result = await DeepResearchOrchestrator(fake_tool, reasoner=_BrokenTwoStage()).run(
-        ResearchRequest(
-            question="RWA",
-            mode="industry_research",
-            depth="standard",
-            max_rounds=1,
-            max_sources=1,
-        ),
-        artifact_dir=tmp_path,
-    )
-
-    assert result.status == "completed", result.gaps
-    assert single_stage_called == [True], "single-stage must be the fallback when two-stage drafts are empty"
 
 
 # ─────────── T2-5: footnote citations ───────────

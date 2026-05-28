@@ -56,6 +56,16 @@ dedicated tools are unavailable.
 6. For user-visible delivery, show the `workspace/deep_research_reports/<task_id>/...` path returned by `deep_research_check` or `deep_research_export`; do not present `runtime_artifacts/...` as the user's report path.
 7. If quality gates fail, lead with the gaps and unsupported claims. Do not present a partial report as completed.
 
+## Plan Gate (mandatory — intent alignment before any run)
+
+Deep Research runs behind a plan-confirmation gate so a long, expensive run never goes off-target:
+
+1. First call `deep_research_run` / `deep_research_start` WITHOUT `plan_confirmed`. The tool does NOT execute — it returns `status: "needs_plan"` with `clarifying_questions`, a proposed `plan`, and `worker_topics`.
+2. Ask the user the `clarifying_questions` (scope, time window, depth, the decision it supports, output language) and show the proposed `worker_topics`.
+3. Only after the user answers and approves, call the same tool again with `plan_confirmed: true`, the same `question`, and the approved (optionally edited) `worker_topics`. Pass `output_language` when the user wants a specific language.
+
+Never set `plan_confirmed: true` on the first call or without genuine user confirmation.
+
 ## V2 Runtime Contract
 
 - The executable engine is an orchestrator-worker workflow, not a hand-written web-search skill.
@@ -74,6 +84,7 @@ dedicated tools are unavailable.
 - If the `synthesis` quality gate fails, do not present the report as completed; lead with the gap and ask for a narrower scope or more sources.
 - Prefer `deep_research_start` over manual delegation for large research; the tool owns progress, ledger, and artifacts.
 - Do not call `deep_research_run` for `depth=full` or `depth=flagship`; use `deep_research_start` directly.
+- Never set `plan_confirmed: true` without genuine user approval of the plan; the first call must surface the plan + clarifying questions for the user to confirm.
 - Do not use `set_trigger` or `update_trigger` to poll Deep Research tasks. Use `deep_research_check` and the RuntimeTask/artifact UI.
 - Do not synthesize a separate report with `write_file`; use `deep_research_export` and summarize the workspace-visible Deep Research artifact paths instead.
 - Do not request or use raw web tools from this skill's normal tool surface. Web search/fetch belongs inside the Deep Research engine.

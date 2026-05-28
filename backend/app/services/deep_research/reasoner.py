@@ -12,6 +12,8 @@ from app.models.agent import Agent
 from app.models.llm import LLMModel
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
+from app.services.deep_research.language import resolve_output_language_label
+from app.services.deep_research.prompt_craft import REASONING_CALIBRATION, WRITING_QUALITY
 from app.services.deep_research.schemas import (
     ResearchLane,
     ResearchPlan,
@@ -70,7 +72,9 @@ class RuntimeDeepResearchReasoner:
                 SearchQuery(
                     query=str(query.get("query") if isinstance(query, dict) else query).strip(),
                     lane_id=lane_id,
-                    rationale=str(query.get("rationale") if isinstance(query, dict) else item.get("goal") or "").strip(),
+                    rationale=str(
+                        query.get("rationale") if isinstance(query, dict) else item.get("goal") or ""
+                    ).strip(),
                 )
                 for query in item.get("queries", [])
                 if str(query.get("query") if isinstance(query, dict) else query).strip()
@@ -114,6 +118,9 @@ class RuntimeDeepResearchReasoner:
             (
                 "Return a JSON array of 1-10 material claims that matter to the research question. "
                 "Each item must include text, status, source_ids, evidence, and optional notes. "
+                "Set `status` by epistemic strength: 'verified' only when the source directly states it, "
+                "'inferred' when reasoned from the source, 'unsupported' when not actually backed. Never mark an "
+                "inferred claim as verified. "
                 "Use only claims directly supported by this source content. If the source is weak, return []. "
                 "Do not infer beyond the source.\n\n"
                 f"{json.dumps(payload, ensure_ascii=False)}"
@@ -185,10 +192,7 @@ class RuntimeDeepResearchReasoner:
             "rounds_budget": request.max_rounds,
             "source_count": len(ledger.sources),
             "claim_count": len(ledger.claims),
-            "plan_lanes": [
-                {"lane_id": lane.lane_id, "label": lane.label, "goal": lane.goal}
-                for lane in plan.lanes
-            ],
+            "plan_lanes": [{"lane_id": lane.lane_id, "label": lane.label, "goal": lane.goal} for lane in plan.lanes],
             "sources_brief": [
                 {
                     "source_id": source.source_id,
@@ -252,10 +256,7 @@ class RuntimeDeepResearchReasoner:
             "budget_used_pct": round(token_used / max(token_budget, 1), 3),
             "current_question": current_question,
             "open_gaps": open_gaps[:5],
-            "plan_lanes": [
-                {"lane_id": lane.lane_id, "label": lane.label, "goal": lane.goal}
-                for lane in plan.lanes
-            ],
+            "plan_lanes": [{"lane_id": lane.lane_id, "label": lane.label, "goal": lane.goal} for lane in plan.lanes],
             "ledger_summary": ledger_summary,
             "source_notes": source_notes[:8],
         }
@@ -327,122 +328,6 @@ class RuntimeDeepResearchReasoner:
             return {"topics": [], "rationale": "Planner returned no worker topics.", "stop": False}
         return parsed
 
-    async def draft_report(
-        self,
-        request: ResearchRequest,
-        plan: ResearchPlan,
-        ledger,
-        evaluation,
-        *,
-        source_notes: list[dict[str, Any]] | None = None,
-        lane_summaries: list[dict[str, Any]] | None = None,
-        sections: list[str] | None = None,
-    ) -> dict[str, str]:
-        """Tier 2-2 Stage A: per-section drafting. Each section gets a focused LLM call
-        with source_notes + lane_summaries + section-relevant excerpts."""
-        chosen_sections = sections or list(_sections_for_mode(request.mode))
-        common_evidence = {
-            "request": {
-                "question": request.question,
-                "mode": request.mode,
-                "scope": request.scope,
-                "depth": request.depth,
-            },
-            "source_notes": (source_notes or [])[:30],
-            "lane_summaries": (lane_summaries or [])[:20],
-            "sources": [
-                {
-                    "source_id": source.source_id,
-                    "title": source.title,
-                    "publisher": source.publisher,
-                    "url": source.url,
-                    "lane_id": source.lane_id,
-                    "excerpt": source.content[:6000],
-                }
-                for source in ledger.sources.values()
-            ][:12],
-            "claims": [to_jsonable(claim) for claim in ledger.claims][:25],
-            "quality_gates": evaluation.quality_gates,
-            "gaps": evaluation.gaps[:10],
-        }
-        drafts: dict[str, str] = {}
-        for section_name in chosen_sections:
-            content = await self._invoke(
-                f"Draft the '{section_name}' section. Markdown only.",
-                (
-                    "You are drafting a single section of an analyst-grade Deep Research report. "
-                    "Output only this section's body (no `#`/`##` heading line) in the user's language.\n\n"
-                    f"Section: {section_name}\n"
-                    f"Section guidance: {_SECTION_GUIDANCE.get(section_name, 'Weave concrete entities, numbers, and dates from the evidence.')}\n\n"
-                    "Hard rules:\n"
-                    "- Use specific entities, numbers, and dates from source_notes + lane_summaries.\n"
-                    "- Cite source ids inline e.g. [src_ab12] when claims map to a source.\n"
-                    "- No generic prose; no padding.\n"
-                    "- 2-6 paragraphs (or 3-8 table rows / bullets) typical.\n\n"
-                    f"Evidence:\n{json.dumps(common_evidence, ensure_ascii=False)}"
-                ),
-                mode=request.mode,
-                role="writer",
-            )
-            drafts[section_name] = (content or "").strip()
-        return drafts
-
-    async def review_report(
-        self,
-        drafts: dict[str, str],
-        *,
-        request: ResearchRequest,
-        ledger,
-        source_notes: list[dict[str, Any]] | None = None,
-        lane_summaries: list[dict[str, Any]] | None = None,
-    ) -> dict[str, Any]:
-        """Tier 2-2 Stage B: critic-review the section drafts. Returns dict with
-        merged_report (final markdown), quality_score (0-1), and issues list."""
-        merged_fallback = _stitch_sections(request, drafts)
-        payload = {
-            "request": {
-                "question": request.question,
-                "mode": request.mode,
-                "depth": request.depth,
-            },
-            "drafts": drafts,
-            "source_count": len(ledger.sources),
-            "claim_count": len(ledger.claims),
-            "source_ids": list(ledger.sources)[:20],
-            "source_notes": (source_notes or [])[:30],
-            "lane_summaries": (lane_summaries or [])[:20],
-        }
-        content = await self._invoke(
-            "Critic-review the section drafts. Return JSON only.",
-            (
-                "You are a senior research critic reviewing analyst section drafts. Tasks:\n"
-                "1. Check every material claim cites a source id; flag missing ones.\n"
-                "2. Check concrete numbers and named entities are present (not generic prose).\n"
-                "3. Identify internal contradictions or unjustified leaps.\n"
-                "4. Tighten language; remove padding; ensure narrative flow.\n"
-                "5. Produce a SINGLE well-formed markdown report combining the sections in this order:\n"
-                "   # <title>, ## Executive Thesis, ## Method And Source Standard, ## Market Map, "
-                "## Key Findings, ## Strategic Implications, ## Contradictions And Gaps, ## Source Ledger.\n"
-                "6. Score quality 0-1 (1 = analyst-grade, ready to ship; <0.5 = unfit).\n\n"
-                "Return JSON: {merged_report: str, quality_score: float, issues: [str]}.\n\n"
-                f"{json.dumps(payload, ensure_ascii=False)}"
-            ),
-            mode=request.mode,
-            role="critic",
-        )
-        parsed = _parse_json_object(content)
-        merged = str(parsed.get("merged_report") or "").strip() if parsed else ""
-        try:
-            score = float(parsed.get("quality_score")) if parsed and parsed.get("quality_score") is not None else 0.0
-        except (TypeError, ValueError):
-            score = 0.0
-        issues = parsed.get("issues") if parsed and isinstance(parsed.get("issues"), list) else []
-        return {
-            "merged_report": merged or merged_fallback,
-            "quality_score": score,
-            "issues": [str(item) for item in issues][:20],
-        }
-
     async def synthesize_report(
         self,
         request: ResearchRequest,
@@ -478,24 +363,31 @@ class RuntimeDeepResearchReasoner:
             "quality_gates": evaluation.quality_gates,
             "gaps": evaluation.gaps,
         }
+        language = resolve_output_language_label(request)
         return await self._invoke(
             "Write an analyst-grade Deep Research report.",
             (
-                "Write a reusable markdown research report in the user's language. Requirements:\n"
-                "- Start with `# <specific title>`.\n"
-                "- Include `## Executive Thesis`, `## Method And Source Standard`, "
-                "`## Market Map`, `## Key Findings`, `## Strategic Implications`, "
-                "`## Contradictions And Gaps`, and `## Source Ledger`.\n"
-                "- Every material claim must cite source ids inline, e.g. [src_ab12].\n"
-                "- Use the structured `source_notes` (per-source facts: entities, numbers, "
-                "dates, mechanisms, limitations) and `lane_summaries` (per-lane evidence "
-                "strength, key findings, contradictions) as your primary substrate. Weave "
-                "specific entities, numbers, and dates from these notes into every section; "
-                "do not paraphrase generically.\n"
-                "- Prefer concrete numbers, named actors, product mechanics, and decision implications.\n"
-                "- Separate verified findings from inferred implications and gaps.\n"
-                "- Do not write generic educational text or ungrounded recommendations.\n\n"
-                f"{json.dumps(payload, ensure_ascii=False)}"
+                f"Write a reusable markdown research report in {language}. Translate all evidence into {language}; "
+                "keep proper names, tickers, and identifiers in their original form. Never mix languages.\n\n"
+                "CORE PRINCIPLE — INTEGRATION, NOT SUMMARIZATION. Synthesize across `source_notes`, "
+                "`lane_summaries`, and the source excerpts; never summarize sources one after another or stitch them.\n"
+                "Forbidden patterns: sequential summarization ('Source 1 says…; Source 2 says…'); cherry-picking "
+                "(surface disconfirming evidence too); unresolved contradictions (resolve by evidence quality, "
+                "recency, and scope, or flag as irreconcilable).\n\n"
+                "Requirements:\n"
+                "- Start with `# <specific title>`; include `## Executive Thesis`, `## Method And Source Standard`, "
+                "`## Market Map`, `## Key Findings`, `## Strategic Implications`, `## Contradictions And Gaps`, and "
+                "`## Source Ledger`.\n"
+                "- Every material claim cites source ids inline, e.g. [src_ab12]; never invent ids.\n"
+                "- Weave specific entities, numbers, dates, and mechanisms from `source_notes` and `lane_summaries` "
+                "into every section; weight claims by evidence quality (primary/authoritative > strong secondary > "
+                "press > weak).\n"
+                "- Separate verified findings from inferred implications and gaps. No generic educational text.\n\n"
+                + REASONING_CALIBRATION
+                + "\n\n"
+                + WRITING_QUALITY
+                + "\n\n"
+                + json.dumps(payload, ensure_ascii=False)
             ),
             mode=request.mode,
             role="writer",
@@ -511,6 +403,7 @@ class RuntimeDeepResearchReasoner:
         worker_results: list[WorkerResult],
         source_notes: list[dict[str, Any]] | None = None,
         lane_summaries: list[dict[str, Any]] | None = None,
+        devils_advocate: dict[str, Any] | None = None,
     ) -> str | None:
         """V2 final synthesis from worker digests.
 
@@ -541,6 +434,8 @@ class RuntimeDeepResearchReasoner:
                             "source_type": source.source_type.value,
                             "lane_id": source.lane_id,
                             "fetch_tool": source.fetch_tool,
+                            "evidence_tier": source.evidence_tier,
+                            "evidence_grade": source.evidence_grade,
                         }
                         for source in result.sources
                     ],
@@ -558,30 +453,98 @@ class RuntimeDeepResearchReasoner:
                     "source_type": source.source_type.value,
                     "lane_id": source.lane_id,
                     "fetch_tool": source.fetch_tool,
+                    "evidence_tier": source.evidence_tier,
+                    "evidence_grade": source.evidence_grade,
                 }
                 for source in ledger.sources.values()
             ],
             "claims": [to_jsonable(claim) for claim in ledger.claims],
             "quality_gates": evaluation.quality_gates,
             "gaps": evaluation.gaps,
+            "devils_advocate": devils_advocate or {},
         }
+        instruction = build_digest_synthesis_instruction(request, resolve_output_language_label(request))
+        if devils_advocate:
+            instruction += (
+                "\n\nADVERSARIAL REVIEW — a Devil's Advocate critique of the evidence is in `devils_advocate`. "
+                "You MUST address it: neutralise the cherry_picking and confirmation_bias items; for every "
+                "missing_warrants item supply the warrant or downgrade the claim; for every overclaim recalibrate "
+                "the certainty language; weigh the alternative_explanations; fold the strongest_counter_argument "
+                "into `## Contradictions And Gaps`; and either close or explicitly flag every whats_missing item. "
+                "Do not silently ignore it."
+            )
         return await self._invoke(
             "Write an analyst-grade Deep Research report from worker digests.",
-            (
-                "Write the final markdown report from compressed Deep Research worker digests. Requirements:\n"
-                "- Use `worker_digests`, `source_notes`, `lane_summaries`, claims, and source metadata as the evidence substrate.\n"
-                "- Do not invent source ids. Cite only source_ids present in `sources` or worker digest source metadata.\n"
-                "- Every material claim must cite source ids inline, e.g. [src_ab12].\n"
-                "- Include `## Executive Thesis`, `## Method And Source Standard`, `## Key Findings`, "
-                "`## Contradictions And Gaps`, and `## Source Ledger`; add mode-specific sections when useful.\n"
-                "- Use concrete numbers, named entities, dates, mechanisms, and limitations from worker digests and structured notes.\n"
-                "- Separate verified findings, inferred implications, contradictions, and gaps.\n"
-                "- If evidence is insufficient, say so explicitly instead of filling with generic prose.\n\n"
-                f"{json.dumps(payload, ensure_ascii=False)}"
-            ),
+            f"{instruction}\n\n{json.dumps(payload, ensure_ascii=False)}",
             mode=request.mode,
             role="writer",
         )
+
+    async def devils_advocate_review(
+        self,
+        request: ResearchRequest,
+        plan: ResearchPlan,
+        ledger,
+        *,
+        worker_results: list[WorkerResult],
+        lane_summaries: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any] | None:
+        """P-Q2: one adversarial pass BEFORE synthesis. Domain-general, borrowed from
+        academic-research-skills `devils_advocate_agent`: steel-man then stress-test the
+        emerging findings so the writer must resolve contradictions and the strongest
+        counter-argument instead of cherry-picking a tidy story."""
+        payload = {
+            "question": request.question,
+            "mode": request.mode,
+            "scope": request.scope,
+            "worker_digests": [
+                {
+                    "topic": result.topic,
+                    "intermediate_report": result.intermediate_report[:6000],
+                }
+                for result in worker_results
+            ],
+            "lane_summaries": lane_summaries or [],
+            "sources": [
+                {
+                    "source_id": source.source_id,
+                    "publisher": source.publisher,
+                    "evidence_tier": source.evidence_tier,
+                    "evidence_grade": source.evidence_grade,
+                }
+                for source in ledger.sources.values()
+            ],
+            "claims": [to_jsonable(claim) for claim in ledger.claims][:30],
+        }
+        content = await self._invoke(
+            "Stress-test the research evidence before synthesis. Return JSON only.",
+            (
+                "You are the Devil's Advocate on a deep research run (any domain). Steel-man the emerging findings, "
+                "then stress-test them BEFORE the final report is written. Be specific, constructive, and cite "
+                "source ids where relevant; do not be gratuitously negative.\n"
+                "Apply three lenses: (a) Toulmin — for each major claim, is there a WARRANT linking the evidence to "
+                "the conclusion, or is it data without a warrant? (b) Epistemic calibration — does the certainty "
+                "language match the evidence (preliminary evidence must not be stated as established)? (c) "
+                "Inference-to-best-explanation — is the strongest ALTERNATIVE explanation addressed?\n\n"
+                "Return JSON only:\n"
+                "{\n"
+                '  "cherry_picking": [str],            // confirming-only evidence; disconfirming evidence ignored\n'
+                '  "confirmation_bias": [str],         // themes selected to fit a desired answer\n'
+                '  "missing_warrants": [str],          // claims where the leap from evidence to conclusion is unjustified\n'
+                '  "overclaims": [str],                // preliminary/contested evidence stated with established-fact language\n'
+                '  "alternative_explanations": [str],  // other credible readings of the same evidence\n'
+                '  "strongest_counter_argument": str,  // the single most compelling criticism a hostile expert raises\n'
+                '  "whats_missing": [str],             // absent evidence/perspectives that matter\n'
+                '  "overrated_claims": [{"claim": str, "why": str}], // claims leaning on tier4/single sources\n'
+                '  "so_what": str                      // is the significance justified?\n'
+                "}\n\n"
+                f"{json.dumps(payload, ensure_ascii=False)}"
+            ),
+            mode=request.mode,
+            role="critic",
+        )
+        parsed = _parse_json_object(content)
+        return parsed or None
 
     async def _invoke(
         self,
@@ -640,7 +603,9 @@ class RuntimeDeepResearchReasoner:
                 model = model_result.scalar_one_or_none()
             if agent.fallback_model_id:
                 fallback_result = await db.execute(
-                    select(LLMModel).where(LLMModel.id == agent.fallback_model_id, LLMModel.tenant_id == agent.tenant_id)
+                    select(LLMModel).where(
+                        LLMModel.id == agent.fallback_model_id, LLMModel.tenant_id == agent.tenant_id
+                    )
                 )
                 fallback_model = fallback_result.scalar_one_or_none()
             return model or fallback_model, fallback_model, agent
@@ -758,30 +723,44 @@ def _build_system_prompt_suffix(mode: str | None, role: str | None = None) -> st
     )
     return " ".join(parts)
 
-_SECTION_GUIDANCE = {
-    "Executive Thesis": "3-5 sentences. State the most defensible thesis. Name specific actors and numbers.",
-    "Method And Source Standard": "1-2 paragraphs. How sources were prioritised (primary > regulator > analyst).",
-    "Market Map": "A table or structured bullets. Players per segment, with source ids in the evidence column.",
-    "Key Findings": "5-8 findings as bullets. Each cites at least one source id. Numbers and entities required.",
-    "Strategic Implications": "3-6 bullets. Implications must follow from cited findings, not generic advice.",
-    "Contradictions And Gaps": "Disagreements between sources or unresolved questions. Specific, not vague.",
-    "Source Ledger": "Bullet list of `src_xxxx` source id — title — publisher — url for every fetched source.",
-}
 
+def build_digest_synthesis_instruction(request: ResearchRequest, language: str) -> str:
+    """Final-report synthesis instruction — the anti-stitch DNA: integration, not summarization.
 
-def _stitch_sections(request: ResearchRequest, drafts: dict[str, str]) -> str:
-    """Deterministic fallback stitcher used when the critic LLM fails to return JSON."""
-    title = (request.question or "Deep Research").strip()
-    lines = [f"# Deep Research: {title}", ""]
-    for section in _DEFAULT_REPORT_SECTIONS:
-        body = (drafts.get(section) or "").strip()
-        if not body:
-            continue
-        lines.append(f"## {section}")
-        lines.append("")
-        lines.append(body)
-        lines.append("")
-    return "\n".join(lines).rstrip() + "\n"
+    Domain-general, borrowed from academic-research-skills `synthesis_agent`: explicit
+    anti-patterns (sequential summarization / cherry-picking / unresolved contradictions),
+    a convergence -> divergence -> resolution -> gap process, and evidence-weighted writing.
+    """
+    return (
+        f"Write the FINAL Deep Research report in {language}. Translate all evidence into {language}; "
+        "keep proper names, tickers, and identifiers in their original form. Never mix languages.\n\n"
+        "CORE PRINCIPLE — INTEGRATION, NOT SUMMARIZATION. You are writing ONE coherent analyst report from "
+        "multiple worker digests. Do NOT stitch, concatenate, or list the digests one after another.\n"
+        "Forbidden patterns (reject your own draft if it does any of these):\n"
+        "- Sequential summarization: 'Worker 1 found X. Worker 2 found Y.' Instead integrate across sources: "
+        "'Converging evidence establishes X, operating through mechanism Y, though Z moderates it when ...'.\n"
+        "- Cherry-picking: do not report only confirming evidence; surface disconfirming evidence and weigh it.\n"
+        "- Unresolved contradictions: when sources disagree, resolve by comparing evidence quality, recency, and "
+        "scope — or explicitly flag the disagreement as irreconcilable.\n\n"
+        "Method before writing: (1) map themes across all digests; (2) mark convergence (3+ sources agree) vs "
+        "divergence; (3) resolve or flag every contradiction; (4) identify the real knowledge gaps; (5) write an "
+        "integrated narrative that leads with the strongest, best-supported themes and weights claims by evidence "
+        "quality (primary/authoritative > strong secondary > press > weak).\n\n"
+        "Hard requirements:\n"
+        "- Weight by the per-source `evidence_tier`/`evidence_grade`: tier1 (primary/authoritative) and tier2 "
+        "(strong secondary) carry the argument; a tier4 (blog/social) source must NOT be the sole support for any "
+        "key claim — corroborate it or mark the claim inferred.\n"
+        "- Cite ONLY source ids present in `sources` / worker digest source metadata; never invent ids. Every "
+        "material claim cites a source id inline, e.g. [src_ab12].\n"
+        "- Sections: `# <specific title>`, `## Executive Thesis`, `## Method And Source Standard`, `## Key Findings`, "
+        "`## Contradictions And Gaps`, `## Source Ledger`; add mode-specific sections when useful.\n"
+        "- Use concrete numbers, named entities, dates, and mechanisms. Separate verified findings from inferred "
+        "implications and gaps.\n"
+        "- If evidence is insufficient, say so explicitly instead of padding with generic prose.\n\n"
+        + REASONING_CALIBRATION
+        + "\n\n"
+        + WRITING_QUALITY
+    )
 
 
 def _source_types(value: Any) -> list[SourceType]:

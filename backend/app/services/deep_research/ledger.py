@@ -4,6 +4,7 @@ import json
 from collections import Counter
 from pathlib import Path
 
+from app.services.deep_research.grading import grade_source
 from app.services.deep_research.schemas import (
     ClaimRecord,
     ClaimStatus,
@@ -37,9 +38,12 @@ class EvidenceLedger:
         lane_id: str = "",
         query: str = "",
         fetch_tool: str = "",
+        source_id: str = "",
     ) -> SourceRecord:
+        # P4: preserve a stable id assigned at fetch time; only mint one if absent or colliding.
+        resolved_id = source_id.strip() if source_id and source_id.strip() not in self.sources else new_id("src")
         record = SourceRecord(
-            source_id=new_id("src"),
+            source_id=resolved_id,
             url=url.strip(),
             title=title.strip() or url.strip(),
             publisher=publisher.strip(),
@@ -50,6 +54,7 @@ class EvidenceLedger:
             query=query,
             fetch_tool=fetch_tool,
         )
+        record.evidence_tier, record.evidence_grade = grade_source(record)
         self.sources[record.source_id] = record
         self._append_jsonl(self.sources_path, record)
         return record
@@ -66,7 +71,12 @@ class EvidenceLedger:
     ) -> ClaimRecord:
         valid_source_ids = [source_id for source_id in (source_ids or []) if source_id in self.sources]
         effective_status = ClaimStatus(status)
-        if effective_status in {ClaimStatus.VERIFIED, ClaimStatus.INFERRED, ClaimStatus.CONTRADICTED, ClaimStatus.STALE}:
+        if effective_status in {
+            ClaimStatus.VERIFIED,
+            ClaimStatus.INFERRED,
+            ClaimStatus.CONTRADICTED,
+            ClaimStatus.STALE,
+        }:
             if not valid_source_ids:
                 effective_status = ClaimStatus.UNSUPPORTED
         record = ClaimRecord(

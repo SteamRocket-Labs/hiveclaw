@@ -13,7 +13,8 @@ from app.models.llm import LLMModel
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
 from app.services.deep_research.extractor import clean_fetched_text
-from app.services.deep_research.schemas import ResearchRequest, SourceRecord, SourceType, WorkerResult
+from app.services.deep_research.language import resolve_output_language_label
+from app.services.deep_research.schemas import ResearchRequest, SourceRecord, SourceType, WorkerResult, new_id
 
 
 RESEARCH_WORKER_ALLOWED_TOOLS: tuple[str, ...] = (
@@ -73,7 +74,9 @@ class RuntimeResearchWorker:
     ) -> WorkerResult:
         model, fallback_model, agent = await self._resolve_models()
         if model is None or agent is None:
-            return WorkerResult(topic=topic, intermediate_report="", status="failed", error="No model or agent available")
+            return WorkerResult(
+                topic=topic, intermediate_report="", status="failed", error="No model or agent available"
+            )
 
         captured_sources: list[SourceRecord] = []
 
@@ -155,7 +158,9 @@ class RuntimeResearchWorker:
                 model = model_result.scalar_one_or_none()
             if agent.fallback_model_id:
                 fallback_result = await db.execute(
-                    select(LLMModel).where(LLMModel.id == agent.fallback_model_id, LLMModel.tenant_id == agent.tenant_id)
+                    select(LLMModel).where(
+                        LLMModel.id == agent.fallback_model_id, LLMModel.tenant_id == agent.tenant_id
+                    )
                 )
                 fallback_model = fallback_result.scalar_one_or_none()
             return model or fallback_model, fallback_model, agent
@@ -174,7 +179,8 @@ def _source_from_tool_event(event: dict[str, Any]) -> SourceRecord | None:
     if not _has_usable_content(cleaned):
         return None
     return SourceRecord(
-        source_id="",
+        # P4: assign a stable id at fetch so the id is consistent worker -> ledger -> report.
+        source_id=new_id("src"),
         url=url,
         title=_extract_title(raw_result) or url,
         publisher=_publisher_from_url(url),
@@ -185,29 +191,44 @@ def _source_from_tool_event(event: dict[str, Any]) -> SourceRecord | None:
 
 
 def _build_worker_prompt(request: ResearchRequest, topic: str) -> str:
+    language = resolve_output_language_label(request)
     return (
         "Run one Deep Research worker lane. Use web_search only for discovery; use web_fetch, "
-        "firecrawl_fetch, or xcrawl_scrape to fetch source text before treating anything as evidence.\n\n"
-        f"User question: {request.question}\n"
+        "firecrawl_fetch, or xcrawl_scrape to fetch full source text before treating anything as evidence.\n\n"
+        f"Research question: {request.question}\n"
         f"Mode: {request.mode}\n"
         f"Scope: {request.scope or 'not specified'}\n"
         f"Time window: {request.time_window or 'not specified'}\n"
         f"Topic to investigate: {topic}\n\n"
-        "Return a compact intermediate report with:\n"
-        "- topic answer in 5-10 bullets\n"
-        "- source-grounded facts with concrete numbers, dates, named entities\n"
-        "- contradictions, weak evidence, and missing checks\n"
-        "- use source ids only when the runtime provides them; otherwise cite URLs in prose."
+        f"OUTPUT LANGUAGE: Write the entire digest in {language}. Translate every finding, quote, and "
+        "description into that language. Keep proper names, tickers, ledger ids, and code identifiers in "
+        "their original form. Never mix languages.\n\n"
+        "Produce a COMPACT, INTEGRATED digest (NOT a list of per-page summaries), under ~600 words, with these sections:\n"
+        "## Findings — 4-8 integrated bullets. Synthesize across the pages you read; do not summarize each page "
+        "separately. Each finding = a claim + the concrete number/date/named entity that grounds it + the "
+        "source URL(s) that support it.\n"
+        "## Evidence — concrete numbers, named entities, dates, and mechanisms you verified from fetched pages.\n"
+        "## Contradictions & weak spots — disagreements between sources, thin or unverified claims, anything you "
+        "could not confirm. Report disconfirming evidence too — do not cherry-pick.\n"
+        "## Coverage gaps — what this topic still needs.\n\n"
+        "Rules: fetched pages are evidence; search snippets are not. Grade source strength as you go. "
+        "Calibrate confidence — mark each finding verified (seen in a fetched page), inferred, or unverified; "
+        "never state preliminary evidence as established. Give the warrant (why the evidence supports the point), "
+        "not just the data. Avoid filler words (delve, leverage, robust, comprehensive); be concrete. "
+        "Cite source URLs in prose; the runtime assigns durable ids later."
     )
 
 
 def _build_worker_system_prompt(request: ResearchRequest, topic: str) -> str:
+    language = resolve_output_language_label(request)
     return (
         "SUB-AGENT ROLE: Deep Research orchestrator-worker. "
         "You may browse only with the provided read-only web tools. "
         "Do not delegate, do not write files, do not call Deep Research recursively. "
         "Search snippets are discovery only; fetched pages are evidence. "
-        "Produce dense intermediate findings, not final report prose. "
+        "Integrate findings across sources — never produce a per-page list. "
+        "Report disconfirming evidence; do not cherry-pick. "
+        f"Write everything in {language}; keep proper names and identifiers in their original form. "
         f"Mode={request.mode}; topic={topic}."
     )
 
@@ -236,7 +257,7 @@ def _extract_title(text: str) -> str:
             continue
         for prefix in ("title:", "#"):
             if lowered.startswith(prefix):
-                return line[len(prefix):].strip()
+                return line[len(prefix) :].strip()
         return line[:120]
     return ""
 

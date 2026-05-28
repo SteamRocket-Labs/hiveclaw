@@ -72,6 +72,9 @@ class ResearchRequest:
     token_budget: int | None = None
     deadline_seconds: int | None = None
     output_format: str = "markdown"
+    output_language: str = ""
+    plan_confirmed: bool = False
+    worker_topics: list[str] = field(default_factory=list)
     controller_mode: bool = False
 
     @classmethod
@@ -83,6 +86,20 @@ class ResearchRequest:
         max_rounds = _coerce_int(arguments.get("max_rounds"), default=4, minimum=1, maximum=12)
         if depth in {"full", "flagship", "deep"}:
             max_rounds = max(max_rounds, 6)
+        deadline_seconds = _coerce_optional_int(arguments.get("deadline_seconds"), minimum=10)
+        if deadline_seconds is None:
+            # P3: a per-worker timeout backstop so a stuck worker cannot hang the whole run.
+            deadline_seconds = {
+                "quick": 240,
+                "light": 240,
+                "standard": 360,
+                "full": 600,
+                "flagship": 720,
+                "deep": 600,
+            }.get(depth, 360)
+        worker_topics = [
+            str(topic).strip() for topic in (arguments.get("worker_topics") or []) if str(topic or "").strip()
+        ]
         return cls(
             question=question,
             mode=str(arguments.get("mode") or "topic_deep_dive").strip() or "topic_deep_dive",
@@ -94,8 +111,11 @@ class ResearchRequest:
             max_sources=_coerce_int(arguments.get("max_sources"), default=8, minimum=1, maximum=50),
             concurrency=_coerce_int(arguments.get("concurrency"), default=4, minimum=1, maximum=12),
             token_budget=_coerce_optional_int(arguments.get("token_budget"), minimum=1),
-            deadline_seconds=_coerce_optional_int(arguments.get("deadline_seconds"), minimum=10),
+            deadline_seconds=deadline_seconds,
             output_format=str(arguments.get("output_format") or "markdown").strip() or "markdown",
+            output_language=str(arguments.get("output_language") or "").strip(),
+            plan_confirmed=bool(arguments.get("plan_confirmed") or False),
+            worker_topics=worker_topics,
             controller_mode=bool(arguments.get("controller_mode") or False),
         )
 
@@ -124,6 +144,8 @@ class SourceRecord:
     lane_id: str = ""
     query: str = ""
     fetch_tool: str = ""
+    evidence_tier: str = ""
+    evidence_grade: str = ""
 
 
 @dataclass(slots=True)

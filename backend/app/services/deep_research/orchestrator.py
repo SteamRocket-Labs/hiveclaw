@@ -9,6 +9,7 @@ from typing import Any
 
 from app.services.deep_research.evaluator import ResearchEvaluator
 from app.services.deep_research.extractor import extract_claims_from_source
+from app.services.deep_research.language import paragraph_language_consistency, resolve_output_language_code
 from app.services.deep_research.ledger import EvidenceLedger
 from app.services.deep_research.planner import build_research_plan
 from app.services.deep_research.reader import ResearchReader
@@ -92,9 +93,7 @@ class DeepResearchOrchestrator:
                 if accepted_sources >= request.max_sources:
                     break
                 if candidate.url in seen_source_urls:
-                    writer.append_step(
-                        _step("read", "skipped", f"Skipped duplicate candidate URL {candidate.url}.")
-                    )
+                    writer.append_step(_step("read", "skipped", f"Skipped duplicate candidate URL {candidate.url}."))
                     continue
                 source_type = _source_type_for_lane(candidate.lane_id)
                 fetched = await reader.fetch_candidate(candidate, source_type=source_type)
@@ -189,9 +188,7 @@ class DeepResearchOrchestrator:
             report_markdown = None
             error_message = str(exc) or "Synthesis failed"
             evaluation.quality_gates["synthesis"] = "failed"
-            evaluation.gaps.append(
-                f"Synthesis failed; no user-deliverable report was produced. {error_message}"
-            )
+            evaluation.gaps.append(f"Synthesis failed; no user-deliverable report was produced. {error_message}")
             writer.append_step(
                 _step(
                     "synthesize",
@@ -246,16 +243,24 @@ class DeepResearchOrchestrator:
         plan = build_research_plan(request)
         plan = await _maybe_refine_plan(self.reasoner, request, plan)
         writer.write_plan(plan)
-        writer.append_step(_step("plan", "completed", f"Built {len(plan.lanes)} research lane(s) for v2 worker fan-out."))
+        writer.append_step(
+            _step("plan", "completed", f"Built {len(plan.lanes)} research lane(s) for v2 worker fan-out.")
+        )
 
         source_notes_by_id: dict[str, dict[str, Any]] = {}
-        worker_topics = await _worker_topics(self.reasoner, request, plan)
+        if getattr(request, "worker_topics", None):
+            # P-A: user already confirmed worker topics in the plan stage — use them as-is.
+            worker_topics = list(request.worker_topics)[: _topic_budget(request, plan)]
+            topic_source = "user_confirmed"
+        else:
+            worker_topics = await _worker_topics(self.reasoner, request, plan)
+            topic_source = "planner"
         writer.append_step(
             _step(
                 "worker_plan",
                 "completed",
                 f"Selected {len(worker_topics)} orchestrator-worker topic(s).",
-                {"topics": worker_topics},
+                {"topics": worker_topics, "topic_source": topic_source},
             )
         )
 
@@ -295,27 +300,30 @@ class DeepResearchOrchestrator:
                     url=source.url,
                     title=source.title,
                     publisher=source.publisher,
-                    source_type=source.source_type if source.source_type != SourceType.UNKNOWN else _source_type_for_lane(lane_id),
+                    source_type=source.source_type
+                    if source.source_type != SourceType.UNKNOWN
+                    else _source_type_for_lane(lane_id),
                     content=source.content,
                     published_at=source.published_at,
                     lane_id=lane_id,
                     query=source.query or result.topic,
                     fetch_tool=source.fetch_tool,
+                    source_id=source.source_id,
                 )
                 source.source_id = ledger_source.source_id
                 source.source_type = ledger_source.source_type
                 source.lane_id = ledger_source.lane_id
                 source.query = ledger_source.query
+                source.evidence_tier = ledger_source.evidence_tier
+                source.evidence_grade = ledger_source.evidence_grade
                 seen_source_urls.add(source.url)
                 accepted_sources += 1
 
-                reasoned_claims = await _maybe_extract_claims(self.reasoner, request, ledger, ledger_source)
-                if not reasoned_claims:
-                    extract_claims_from_source(ledger, ledger_source)
-                note = await _maybe_summarize_source(self.reasoner, request, ledger_source)
-                if note is not None:
-                    source_notes_by_id[ledger_source.source_id] = note
-                    writer.append_source_note(note)
+                # P2: the worker already digested this page, so we do NOT spend a per-source
+                # LLM call to re-summarize or re-extract here (that serial loop was the main
+                # latency sink). Claims are extracted deterministically; the worker digest —
+                # not re-summarized excerpts — is the synthesizer's substrate.
+                extract_claims_from_source(ledger, ledger_source)
 
             writer.append_worker_report(result)
             writer.append_step(
@@ -356,6 +364,25 @@ class DeepResearchOrchestrator:
         for summary in latest_lane_summaries:
             writer.append_lane_summary(summary)
 
+        devils_advocate = await _maybe_devils_advocate(
+            self.reasoner,
+            request,
+            plan,
+            ledger,
+            worker_results=worker_results,
+            lane_summaries=latest_lane_summaries,
+        )
+        if devils_advocate:
+            writer.append_devils_advocate(devils_advocate)
+            writer.append_step(
+                _step(
+                    "devils_advocate",
+                    "completed",
+                    "Ran adversarial pre-synthesis review (cherry-picking, counter-argument, gaps).",
+                    {"strongest_counter_argument": str(devils_advocate.get("strongest_counter_argument") or "")[:280]},
+                )
+            )
+
         report_markdown: str | None
         try:
             report_markdown = await _synthesize_report(
@@ -367,6 +394,7 @@ class DeepResearchOrchestrator:
                 source_notes=list(source_notes_by_id.values()),
                 lane_summaries=latest_lane_summaries,
                 worker_results=worker_results,
+                devils_advocate=devils_advocate,
             )
             report_markdown = _apply_footnotes(report_markdown, ledger)
         except DeepResearchSynthesisFailed as exc:
@@ -445,7 +473,9 @@ async def run_deep_research(
     return await DeepResearchOrchestrator(invoke_tool, reasoner=reasoner).run(request, artifact_dir=artifact_dir)
 
 
-async def _default_tool_executor(tool_name: str, arguments: dict[str, Any], agent_id: uuid.UUID, user_id: uuid.UUID) -> str:
+async def _default_tool_executor(
+    tool_name: str, arguments: dict[str, Any], agent_id: uuid.UUID, user_id: uuid.UUID
+) -> str:
     from app.services.agent_tools import execute_tool
 
     return await execute_tool(tool_name, arguments, agent_id=agent_id, user_id=user_id)
@@ -456,8 +486,10 @@ def _step(phase: str, status: str, message: str, detail: dict[str, Any] | None =
 
 
 def _should_use_worker_path(reasoner: Any | None, worker_runner: Any | None) -> bool:
-    return reasoner is not None and hasattr(reasoner, "synthesize_from_digests") and (
-        worker_runner is not None or hasattr(reasoner, "agent_id")
+    return (
+        reasoner is not None
+        and hasattr(reasoner, "synthesize_from_digests")
+        and (worker_runner is not None or hasattr(reasoner, "agent_id"))
     )
 
 
@@ -601,7 +633,9 @@ async def _maybe_extract_claims(reasoner: Any | None, request: ResearchRequest, 
             source_ids=[str(value) for value in source_ids],
             evidence=evidence,
             notes=str(item.get("notes") or "").strip(),
-            contradiction_group=item.get("contradiction_group") if isinstance(item.get("contradiction_group"), str) else None,
+            contradiction_group=item.get("contradiction_group")
+            if isinstance(item.get("contradiction_group"), str)
+            else None,
         )
         added += 1
     return added > 0
@@ -623,6 +657,29 @@ async def _maybe_summarize_source(
         return None
     note.setdefault("source_id", source.source_id)
     return note
+
+
+async def _maybe_devils_advocate(
+    reasoner: Any | None,
+    request: ResearchRequest,
+    plan,
+    ledger: EvidenceLedger,
+    *,
+    worker_results: list[WorkerResult],
+    lane_summaries: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Run the adversarial pre-synthesis pass if the reasoner exposes it; never block the run on failure."""
+    if reasoner is None or not hasattr(reasoner, "devils_advocate_review"):
+        return None
+    try:
+        review = await reasoner.devils_advocate_review(
+            request, plan, ledger, worker_results=worker_results, lane_summaries=lane_summaries
+        )
+    except Exception:
+        return None
+    if not isinstance(review, dict) or not review:
+        return None
+    return review
 
 
 def _aggregate_lane_summaries(
@@ -674,11 +731,7 @@ def _aggregate_lane_summaries(
             strength = "weak"
 
         covered_questions = [query.query for query in lane.queries]
-        missing_evidence = [
-            query
-            for query in evaluation.next_queries
-            if query and query not in covered_questions
-        ]
+        missing_evidence = [query for query in evaluation.next_queries if query and query not in covered_questions]
 
         summaries.append(
             {
@@ -709,13 +762,14 @@ async def _synthesize_report(
     source_notes: list[dict[str, Any]] | None = None,
     lane_summaries: list[dict[str, Any]] | None = None,
     worker_results: list[WorkerResult] | None = None,
+    devils_advocate: dict[str, Any] | None = None,
 ) -> str:
     """Produce an analyst-grade markdown report or raise DeepResearchSynthesisFailed.
 
-    Tier 1-2: no string-concat fallback. When the LLM cannot produce a deliverable,
-    the caller marks the run failed and writes a failure notice — never a pasted dump.
-    Tier 2-2: prefer the two-stage draft -> review pipeline when the reasoner exposes
-    `draft_report` and `review_report`; fall back to the single-call `synthesize_report`.
+    Honesty contract (Tier 1-2): NO string-concat / stitched fallback. The v2 worker path
+    synthesizes ONLY from compressed worker digests via `synthesize_from_digests`; if that
+    cannot produce a deliverable it fails loudly so the caller writes a failure notice rather
+    than a pasted dump. The non-worker (linear) path uses the single-call `synthesize_report`.
     """
     if reasoner is None:
         raise DeepResearchSynthesisFailed("No synthesis reasoner is configured for this run.")
@@ -735,6 +789,7 @@ async def _synthesize_report(
                         worker_results=worker_results,
                         source_notes=source_notes,
                         lane_summaries=lane_summaries,
+                        devils_advocate=devils_advocate,
                     )
                 except TypeError:
                     report = await reasoner.synthesize_from_digests(
@@ -753,40 +808,8 @@ async def _synthesize_report(
                 errors.append(f"digest-stage attempt {attempt}: report shorter than {min_chars} chars")
             else:
                 errors.append(f"digest-stage attempt {attempt}: empty or non-string response")
-
-    if hasattr(reasoner, "draft_report") and hasattr(reasoner, "review_report"):
-        try:
-            drafts = await reasoner.draft_report(
-                request,
-                plan,
-                ledger,
-                evaluation,
-                source_notes=source_notes,
-                lane_summaries=lane_summaries,
-            )
-            if not isinstance(drafts, dict) or not any((drafts or {}).values()):
-                errors.append("two-stage: empty drafts dict")
-            else:
-                review = await reasoner.review_report(
-                    drafts,
-                    request=request,
-                    ledger=ledger,
-                    source_notes=source_notes,
-                    lane_summaries=lane_summaries,
-                )
-                report = ""
-                if isinstance(review, dict):
-                    report = str(review.get("merged_report") or "").strip()
-                elif isinstance(review, str):
-                    report = review.strip()
-                if report and len(report) >= min_chars:
-                    return report + "\n"
-                if report:
-                    errors.append(f"two-stage: merged report shorter than {min_chars} chars")
-                else:
-                    errors.append("two-stage: review returned empty report")
-        except Exception as exc:
-            errors.append(f"two-stage: {type(exc).__name__}: {exc}")
+        # Worker path is digest-only — no stitched fallback. Fail loudly.
+        raise DeepResearchSynthesisFailed("; ".join(errors) or "Digest synthesis produced no deliverable")
 
     if not hasattr(reasoner, "synthesize_report"):
         raise DeepResearchSynthesisFailed("; ".join(errors) or "Reasoner exposes no synthesis path")
@@ -818,7 +841,7 @@ async def _synthesize_report(
 
 
 _INLINE_SOURCE_TOKEN_RE = re.compile(
-    r"\[(src_[a-zA-Z0-9_]{8,})\]"          # [src_ab12]
+    r"\[(src_[a-zA-Z0-9_]{8,})\]"  # [src_ab12]
     r"|(?<![`\-])(src_[a-zA-Z0-9_]{8,})\b"  # bare src_ab12 in prose
 )
 
@@ -868,8 +891,8 @@ _TABLE_DIVIDER_RE = re.compile(r"^\s*\|[\s\-:|]+\|\s*$", re.MULTILINE)
 
 _PROSE_PROPER_RE = re.compile(
     r"\b[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]*)+\b"  # Multi-word Title Case (Issuer A, Federal Reserve)
-    r"|\b[A-Z][a-z]+[A-Z][a-zA-Z]+\b"             # CamelCase (BlackRock, JPMorgan)
-    r"|\b[A-Z]{2,6}\b"                             # Acronyms (SEC, MAS, BUIDL)
+    r"|\b[A-Z][a-z]+[A-Z][a-zA-Z]+\b"  # CamelCase (BlackRock, JPMorgan)
+    r"|\b[A-Z]{2,6}\b"  # Acronyms (SEC, MAS, BUIDL)
 )
 _PROSE_INNER_TITLECASE_RE = re.compile(r"(?<=[a-z][\s,])[A-Z][a-z]{2,}\b")
 _ZH_ENTITY_RE = re.compile(
@@ -877,11 +900,23 @@ _ZH_ENTITY_RE = re.compile(
 )
 
 
-def _evaluate_synthesis_quality(report: str | None, *, request: ResearchRequest, ledger: EvidenceLedger) -> tuple[str, str]:
+def _evaluate_synthesis_quality(
+    report: str | None, *, request: ResearchRequest, ledger: EvidenceLedger
+) -> tuple[str, str]:
     if not report:
         return "failed", "Synthesis quality failed: report is too short for a deep research deliverable."
     if not ledger.sources:
         return "failed", "Synthesis quality failed: no fetched source is available for source-grounded synthesis."
+    target_language = resolve_output_language_code(request)
+    language_ok, foreign_paragraphs = paragraph_language_consistency(report, target_language)
+    if not language_ok:
+        return (
+            "failed",
+            (
+                f"Synthesis quality failed: report mixes languages — {foreign_paragraphs} paragraph(s) are not in "
+                f"the target output language ({target_language}). Rewrite the whole report in one language."
+            ),
+        )
     unknown_refs = _unknown_source_refs(report, ledger)
     if unknown_refs:
         return (
@@ -897,7 +932,10 @@ def _evaluate_synthesis_quality(report: str | None, *, request: ResearchRequest,
     # Tier 2-5: footnote markers count as citations too — the synthesis path now rewrites
     # inline [src_xxx] to [^N] and emits a Footnotes table.
     if max(len(cited_source_ids), footnote_markers) < required_citations:
-        return "failed", "Synthesis quality failed: report does not cite enough source ids or footnotes from the evidence ledger."
+        return (
+            "failed",
+            "Synthesis quality failed: report does not cite enough source ids or footnotes from the evidence ledger.",
+        )
     required_sections = ("Executive", "Findings", "Source")
     if not all(section.casefold() in report.casefold() for section in required_sections):
         return "failed", "Synthesis quality failed: report is missing executive, findings, or source-grounded sections."
@@ -1021,7 +1059,9 @@ def _append_next_queries(plan, next_queries: list[str]) -> None:
         key = _query_key(query)
         if not key or key in existing:
             continue
-        target_lane.queries.append(SearchQuery(query=query, lane_id=target_lane.lane_id, rationale="Evaluator gap follow-up."))
+        target_lane.queries.append(
+            SearchQuery(query=query, lane_id=target_lane.lane_id, rationale="Evaluator gap follow-up.")
+        )
         existing.add(key)
 
 

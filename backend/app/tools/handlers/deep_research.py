@@ -41,7 +41,69 @@ _REQUEST_PROPERTIES: dict[str, Any] = {
     "token_budget": {"type": "integer", "minimum": 1},
     "deadline_seconds": {"type": "integer", "minimum": 10},
     "output_format": {"type": "string", "enum": ["markdown", "json", "html"]},
+    "output_language": {
+        "type": "string",
+        "description": "Force the report's output language (e.g. 'zh', 'en', '中文'). Defaults to the question's language.",
+    },
+    "plan_confirmed": {
+        "type": "boolean",
+        "description": (
+            "Set true ONLY after the user has reviewed and approved the research plan. Without it, the tool "
+            "returns a plan + clarifying questions to confirm and does NOT execute the research."
+        ),
+    },
+    "worker_topics": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "User-approved worker topics from the plan stage. Pass them back together with plan_confirmed=true.",
+    },
 }
+
+
+# P3: best-effort in-process guard so the same question is not run twice concurrently
+# (e.g. a stray deep_research_run + deep_research_start for the same ask).
+_INFLIGHT_DEEP_RESEARCH: dict[tuple[str, str], str] = {}
+
+
+def _clarifying_questions(research_request: ResearchRequest) -> list[str]:
+    """Domain-general intent-alignment questions surfaced before any run."""
+    return [
+        "Scope & focus: which specific entities, products, regions, or sub-topics are in-scope, and what is explicitly out-of-scope?",
+        f"Time window: currently '{research_request.time_window or 'unspecified'}' — confirm the period the research should cover.",
+        f"Depth: currently '{research_request.depth}' — is that the right size, or do you want quick / full?",
+        "Decision: what decision or deliverable should this research support? That sets the evidence bar.",
+        "Output language: confirm the language the final report should be written in.",
+    ]
+
+
+async def _plan_preview(research_request: ResearchRequest) -> dict[str, Any]:
+    """Build a deterministic plan + worker-topic preview (no LLM, no fan-out) for the plan gate."""
+    from app.services.deep_research.orchestrator import _topic_budget, _worker_topics
+    from app.services.deep_research.planner import build_research_plan
+
+    plan = build_research_plan(research_request)
+    topics = await _worker_topics(None, research_request, plan)
+    return {
+        "plan": to_jsonable(plan),
+        "worker_topics": topics[: _topic_budget(research_request, plan)],
+        "clarifying_questions": _clarifying_questions(research_request),
+    }
+
+
+def _needs_plan_payload(preview: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "status": "needs_plan",
+        "summary": (
+            "Confirm the research plan before running. Relay the clarifying_questions and the proposed plan / "
+            "worker_topics to the user; collect their answers and approval first."
+        ),
+        **preview,
+        "next_action": (
+            "Ask the user the clarifying_questions and show the proposed worker_topics. After they approve, call "
+            "this tool again with plan_confirmed=true, the same question, and the (optionally edited) worker_topics."
+        ),
+    }
 
 
 @tool(
@@ -86,6 +148,9 @@ async def deep_research_run(request: ToolExecutionRequest) -> str:
             }
         )
 
+    if not research_request.plan_confirmed:
+        return _json(_needs_plan_payload(await _plan_preview(research_request)))
+
     run = await run_deep_research(
         request=research_request,
         agent_id=request.context.agent_id,
@@ -119,7 +184,27 @@ async def deep_research_start(request: ToolExecutionRequest) -> str:
     except ValueError as exc:
         return _json({"ok": False, "error": str(exc)})
 
+    if not research_request.plan_confirmed:
+        return _json(_needs_plan_payload(await _plan_preview(research_request)))
+
+    dedup_key = (str(request.context.agent_id), research_request.question.casefold())
+    existing_task = _INFLIGHT_DEEP_RESEARCH.get(dedup_key)
+    if existing_task:
+        return _json(
+            {
+                "ok": True,
+                "task_id": existing_task,
+                "status": "running",
+                "deduped": True,
+                "next_action": (
+                    f"A deep research run for this question is already in progress (task {existing_task}). "
+                    "Use deep_research_check instead of starting another."
+                ),
+            }
+        )
+
     task_id = uuid.uuid4()
+    _INFLIGHT_DEEP_RESEARCH[dedup_key] = task_id.hex
     await create_runtime_task_record(
         task_id=task_id.hex,
         task_type="deep_research",
@@ -166,7 +251,9 @@ async def deep_research_start(request: ToolExecutionRequest) -> str:
             "ok": True,
             "task_id": task_id.hex,
             "status": "running",
-            "artifact_dir": _relative(request.context.workspace, _deep_research_dir(request.context.workspace, task_id)),
+            "artifact_dir": _relative(
+                request.context.workspace, _deep_research_dir(request.context.workspace, task_id)
+            ),
             "workspace_artifact_dir": _relative(request.context.workspace, workspace_artifact_dir),
             "next_action": (
                 f"Use deep_research_check with task_id {task_id.hex} to inspect progress. "
@@ -331,7 +418,9 @@ def _schedule_deep_research_background(
                 blocked_reason="; ".join(run.gaps) if run.status != "completed" else None,
             )
         except Exception as exc:
-            await update_runtime_task_record(task_id.hex, status="failed", result_summary=f"Deep research failed: {type(exc).__name__}")
+            await update_runtime_task_record(
+                task_id.hex, status="failed", result_summary=f"Deep research failed: {type(exc).__name__}"
+            )
             await record_long_task_progress(
                 agent_id=request.context.agent_id,
                 runtime_task_id=task_id,
@@ -339,6 +428,8 @@ def _schedule_deep_research_background(
                 delta="Deep research failed before completion.",
                 blocked_reason=f"{type(exc).__name__}: {exc}",
             )
+        finally:
+            _INFLIGHT_DEEP_RESEARCH.pop((str(request.context.agent_id), research_request.question.casefold()), None)
 
     asyncio.create_task(runner())
 
@@ -356,11 +447,21 @@ def _run_payload(run: ResearchRun, workspace: Path) -> dict[str, Any]:
         "summary": run.summary,
         "artifact_dir": _relative(workspace, artifact_dir),
         "workspace_artifact_dir": _relative(workspace, workspace_dir) if workspace_dir.exists() else None,
-        "report_path": _relative(workspace, workspace_report_path if workspace_report_path.exists() else Path(run.report_path)),
-        "sources_path": _relative(workspace, workspace_sources_path if workspace_sources_path.exists() else Path(run.sources_path)),
-        "claims_path": _relative(workspace, workspace_claims_path if workspace_claims_path.exists() else Path(run.claims_path)),
-        "steps_path": _relative(workspace, workspace_steps_path if workspace_steps_path.exists() else Path(run.steps_path)),
-        "final_path": _relative(workspace, workspace_final_path if workspace_final_path.exists() else Path(run.final_path)),
+        "report_path": _relative(
+            workspace, workspace_report_path if workspace_report_path.exists() else Path(run.report_path)
+        ),
+        "sources_path": _relative(
+            workspace, workspace_sources_path if workspace_sources_path.exists() else Path(run.sources_path)
+        ),
+        "claims_path": _relative(
+            workspace, workspace_claims_path if workspace_claims_path.exists() else Path(run.claims_path)
+        ),
+        "steps_path": _relative(
+            workspace, workspace_steps_path if workspace_steps_path.exists() else Path(run.steps_path)
+        ),
+        "final_path": _relative(
+            workspace, workspace_final_path if workspace_final_path.exists() else Path(run.final_path)
+        ),
         "artifact_report_path": _relative(workspace, Path(run.report_path)),
         "artifact_sources_path": _relative(workspace, Path(run.sources_path)),
         "artifact_claims_path": _relative(workspace, Path(run.claims_path)),
@@ -395,10 +496,14 @@ def _read_deep_research_artifact(workspace: Path, task_id: str) -> dict[str, Any
         else (_relative(workspace, artifact_dir / "report.md") if (artifact_dir / "report.md").exists() else None),
         "sources_path": _relative(workspace, workspace_sources_path)
         if workspace_sources_path.exists()
-        else (_relative(workspace, artifact_dir / "sources.jsonl") if (artifact_dir / "sources.jsonl").exists() else None),
+        else (
+            _relative(workspace, artifact_dir / "sources.jsonl") if (artifact_dir / "sources.jsonl").exists() else None
+        ),
         "claims_path": _relative(workspace, workspace_claims_path)
         if workspace_claims_path.exists()
-        else (_relative(workspace, artifact_dir / "claims.jsonl") if (artifact_dir / "claims.jsonl").exists() else None),
+        else (
+            _relative(workspace, artifact_dir / "claims.jsonl") if (artifact_dir / "claims.jsonl").exists() else None
+        ),
         "source_notes_path": _relative(workspace, workspace_source_notes_path)
         if workspace_source_notes_path.exists()
         else (
@@ -450,6 +555,7 @@ def _publish_workspace_packet(workspace: Path, run_id: uuid.UUID | str, artifact
         "evaluation.jsonl",
         "source_notes.jsonl",
         "lane_summaries.jsonl",
+        "devils_advocate.jsonl",
         "report.md",
         "report.html",
         "final.json",
@@ -517,6 +623,7 @@ _STREAM_FILES: tuple[tuple[str, str], ...] = (
     ("source_note", "source_notes.jsonl"),
     ("lane_summary", "lane_summaries.jsonl"),
     ("reflection", "reflection.jsonl"),
+    ("devils_advocate", "devils_advocate.jsonl"),
     ("controller_trace", "controller_trace.jsonl"),
 )
 

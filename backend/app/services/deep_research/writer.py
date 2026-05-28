@@ -29,6 +29,7 @@ class ResearchArtifactWriter:
         self.lane_summaries_path = self.artifact_dir / "lane_summaries.jsonl"
         self.reflection_path = self.artifact_dir / "reflection.jsonl"
         self.worker_reports_path = self.artifact_dir / "worker_reports.jsonl"
+        self.devils_advocate_path = self.artifact_dir / "devils_advocate.jsonl"
 
     def write_request(self, request: ResearchRequest) -> None:
         self.request_path.write_text(json.dumps(to_jsonable(request), ensure_ascii=False, indent=2), encoding="utf-8")
@@ -59,6 +60,10 @@ class ResearchArtifactWriter:
     def append_worker_report(self, result: WorkerResult) -> None:
         with self.worker_reports_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(to_jsonable(result), ensure_ascii=False) + "\n")
+
+    def append_devils_advocate(self, review: dict) -> None:
+        with self.devils_advocate_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(to_jsonable(review), ensure_ascii=False) + "\n")
 
     def finalize(
         self,
@@ -95,6 +100,9 @@ class ResearchArtifactWriter:
             "lane_summaries_path": self.lane_summaries_path.as_posix() if self.lane_summaries_path.exists() else None,
             "reflection_path": self.reflection_path.as_posix() if self.reflection_path.exists() else None,
             "worker_reports_path": self.worker_reports_path.as_posix() if self.worker_reports_path.exists() else None,
+            "devils_advocate_path": self.devils_advocate_path.as_posix()
+            if self.devils_advocate_path.exists()
+            else None,
             "created_at": utc_now(),
         }
         self.final_path.write_text(json.dumps(final_payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -118,7 +126,9 @@ class ResearchArtifactWriter:
 
 def _summary(*, status: str, ledger: EvidenceLedger, gaps: list[str]) -> str:
     if status == "completed":
-        return f"Deep research completed with {len(ledger.sources)} fetched source(s) and {len(ledger.claims)} claim(s)."
+        return (
+            f"Deep research completed with {len(ledger.sources)} fetched source(s) and {len(ledger.claims)} claim(s)."
+        )
     return f"Deep research produced a partial report with {len(gaps)} gap(s)."
 
 

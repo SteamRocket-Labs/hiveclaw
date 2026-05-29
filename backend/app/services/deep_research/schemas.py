@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timezone
@@ -97,9 +98,7 @@ class ResearchRequest:
                 "flagship": 720,
                 "deep": 600,
             }.get(depth, 360)
-        worker_topics = [
-            str(topic).strip() for topic in (arguments.get("worker_topics") or []) if str(topic or "").strip()
-        ]
+        worker_topics = _coerce_topic_list(arguments.get("worker_topics"))
         # F1 (RC1): the source budget must scale with depth, otherwise a deep run collapses
         # 60+ fetched sources down to a handful and starves most research lanes.
         max_sources_default = {
@@ -253,6 +252,42 @@ def to_jsonable(value: Any) -> Any:
     if isinstance(value, (list, tuple, set)):
         return [to_jsonable(item) for item in value]
     return value
+
+
+def _coerce_topic_list(raw: Any) -> list[str]:
+    """Robustly coerce the ``worker_topics`` tool argument into a clean ``list[str]``.
+
+    Model tool calls sometimes pass a JSON-serialized string (e.g. the plan lanes
+    array) instead of a JSON array. Iterating a string yields one character per
+    item, which silently corrupts the run — every worker then receives a single
+    punctuation character ("[", "{", ...) as its topic. So: parse JSON strings,
+    lift ``topic``/``label`` out of dict items, and drop blanks.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return []
+        try:
+            raw = json.loads(text)
+        except (ValueError, TypeError):
+            return [text]
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        text = str(raw).strip()
+        return [text] if text else []
+    topics: list[str] = []
+    for item in raw:
+        if isinstance(item, dict):
+            value = item.get("topic") or item.get("label") or item.get("focus") or item.get("description") or ""
+        else:
+            value = item
+        text = str(value or "").strip()
+        if text:
+            topics.append(text)
+    return topics
 
 
 def _coerce_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:

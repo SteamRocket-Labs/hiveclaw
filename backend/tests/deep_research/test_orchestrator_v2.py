@@ -191,6 +191,39 @@ def test_max_sources_default_scales_with_depth():
     assert ResearchRequest.from_arguments({"question": "q", "depth": "full", "max_sources": 5}).max_sources == 5
 
 
+def test_from_arguments_coerces_json_string_worker_topics():
+    # RC (live task 66cf17): the model passed worker_topics as a JSON-serialized
+    # string (the plan lanes array) instead of a JSON array. The old comprehension
+    # iterated the string character-by-character, feeding workers garbage
+    # single-char topics ("[", "{", '"', "l", "a", "n") — every worker then
+    # researched a single punctuation character.
+    from app.services.deep_research.schemas import ResearchRequest
+
+    lanes_json = json.dumps(
+        [
+            {"lane_id": "official", "label": "Official/project sources"},
+            {"lane_id": "market", "label": "Market/data sources"},
+        ]
+    )
+    req = ResearchRequest.from_arguments({"question": "RWA research", "worker_topics": lanes_json})
+    assert req.worker_topics == ["Official/project sources", "Market/data sources"]
+    assert all(len(topic) > 1 for topic in req.worker_topics), "no single-character garbage topics"
+
+
+def test_from_arguments_preserves_plain_topic_list_and_lifts_dicts():
+    from app.services.deep_research.schemas import ResearchRequest
+
+    # A plain list[str] is preserved verbatim.
+    plain = ResearchRequest.from_arguments({"question": "q", "worker_topics": ["Topic A", "Topic B"]})
+    assert plain.worker_topics == ["Topic A", "Topic B"]
+
+    # list[dict] items lift their topic/label field instead of stringifying the dict.
+    dicts = ResearchRequest.from_arguments(
+        {"question": "q", "worker_topics": [{"topic": "Deep dive on Ondo"}, {"label": "Regulatory framework"}]}
+    )
+    assert dicts.worker_topics == ["Deep dive on Ondo", "Regulatory framework"]
+
+
 def test_select_sources_round_robin_is_fair_across_workers():
     from collections import Counter
 

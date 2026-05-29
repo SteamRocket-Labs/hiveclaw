@@ -36,6 +36,7 @@ async def test_runtime_reasoner_invokes_agent_with_tools_disabled(monkeypatch):
         captured["initial_tools"] = request.initial_tools
         captured["expand_tools"] = request.expand_tools
         captured["max_tool_rounds"] = request.max_tool_rounds
+        captured["disable_tools"] = request.disable_tools
         captured["source"] = request.session_context.source
         return type("Result", (), {"content": '{"lanes":[]}'})()
 
@@ -45,10 +46,16 @@ async def test_runtime_reasoner_invokes_agent_with_tools_disabled(monkeypatch):
     reasoner = RuntimeDeepResearchReasoner(agent_id=uuid.uuid4(), user_id=uuid.uuid4())
     await reasoner._invoke("plan", "return json")
 
+    # RC11: it is not enough to pass an empty initial_tools list — core_tools_only
+    # still exposed write_file, so the synthesis LLM emitted its whole report via a
+    # write_file tool call that blew the 1-round budget and returned "[Error] Too
+    # many tool call rounds". disable_tools forces a zero-tool surface so the model
+    # has no choice but to return the report as text.
     assert captured == {
         "initial_tools": [],
         "expand_tools": False,
         "max_tool_rounds": 1,
+        "disable_tools": True,
         "source": "deep_research",
     }
 

@@ -122,6 +122,10 @@ class AgentInvocationRequest:
     execution_mode: str | None = None
     smart_model_routing: dict[str, Any] | None = None
     delegation_token: Any | None = None
+    # RC11: when True the kernel exposes ZERO tools to the LLM (see get_agent_kernel).
+    # Deep Research reasoning passes set this so the synthesis LLM returns its report
+    # as text instead of routing it through a write_file call that blows the round budget.
+    disable_tools: bool = False
 
 
 @dataclass(slots=True)
@@ -748,6 +752,7 @@ async def _execute_tool_with_request(
 def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKernel:
     allowed_tool_names = frozenset(request.allowed_tool_names if request else ())
     excluded_tool_names = frozenset(request.excluded_tool_names if request else ())
+    disable_tools = bool(request.disable_tools) if request else False
 
     async def _kernel_build_system_prompt(
         request: InvocationRequest,
@@ -775,6 +780,11 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
         return await _resolve_retrieval_context(request, tenant_id)  # type: ignore[arg-type]
 
     async def _kernel_get_tools(agent_id: uuid.UUID, core_only: bool) -> list[dict]:
+        # RC11: deep-research reasoning passes disable the tool surface entirely so the
+        # synthesis LLM cannot route its report through a write_file call (which blew the
+        # 1-round budget and surfaced as "[Error] Too many tool call rounds").
+        if disable_tools:
+            return []
         # Auto-include channel-specific tools so agents don't need to
         # manually load_skill before their channel tools become available.
         _channel_tools: list[str] | None = None

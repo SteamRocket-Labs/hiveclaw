@@ -597,6 +597,7 @@ class RuntimeDeepResearchReasoner:
                 initial_tools=[],
                 expand_tools=False,
                 core_tools_only=True,
+                disable_tools=True,
                 max_tool_rounds=1,
             )
         )

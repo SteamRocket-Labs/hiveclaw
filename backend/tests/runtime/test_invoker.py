@@ -1661,3 +1661,50 @@ async def test_invoke_agent_aborts_when_tenant_resolution_fails(monkeypatch):
     assert result.content.startswith("[Error]")
     assert "tenant resolution failed" in result.content.lower()
     assert str(bad_agent_id) in result.content
+
+
+@pytest.mark.asyncio
+async def test_disable_tools_yields_empty_tool_surface(monkeypatch):
+    """RC11: a disable_tools request must expose ZERO tools to the LLM.
+
+    Deep Research reasoning passes (plan/extract/synthesize/devil's advocate) are
+    pure-text calls. Previously they set core_tools_only=True, which still leaked
+    write_file even though the prompt declared "Tools are disabled". The synthesis
+    LLM then wrote a full report and emitted it via a write_file tool call; with
+    max_tool_rounds=1 that call blew the round budget and the kernel returned
+    "[Error] Too many tool call rounds" — scored below the synthesis floor.
+    disable_tools makes the surface genuinely empty so the model must answer in
+    text.
+    """
+    from app.runtime.invoker import AgentInvocationRequest, get_agent_kernel
+
+    async def fake_tools(agent_id, core_only=False, requested_names=None):
+        return [
+            {"function": {"name": "write_file"}},
+            {"function": {"name": "read_file"}},
+        ]
+
+    monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", fake_tools)
+
+    disabled_kernel = get_agent_kernel(
+        AgentInvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None),
+            messages=[{"role": "user", "content": "hi"}],
+            agent_name="Researcher",
+            role_description="internal reasoning",
+            disable_tools=True,
+        )
+    )
+    assert await disabled_kernel._deps.get_tools(uuid4(), True) == []
+
+    # Regression guard: a normal request must still receive its full tool surface.
+    enabled_kernel = get_agent_kernel(
+        AgentInvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None),
+            messages=[{"role": "user", "content": "hi"}],
+            agent_name="Researcher",
+            role_description="internal reasoning",
+        )
+    )
+    enabled_tools = await enabled_kernel._deps.get_tools(uuid4(), True)
+    assert [t["function"]["name"] for t in enabled_tools] == ["write_file", "read_file"]

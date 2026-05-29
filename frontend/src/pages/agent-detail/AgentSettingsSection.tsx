@@ -1,11 +1,12 @@
 import React from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 
 import ChannelConfig from '../../components/ChannelConfig';
 import { agentApi } from '../../api/domains/agents';
 import { enterpriseApi, type CapabilityDefinition, type CapabilityPolicy } from '../../api/domains/enterprise';
+import { triggerApi } from '../../api/domains/triggers';
 
 type AgentSettingsForm = {
   primary_model_id: string;
@@ -371,6 +372,43 @@ const KNOWN_CAPABILITY_ACTIONS: CapabilityActionMeta[] = [
 ];
 
 const PATROL_CAPABILITY_KEYS = new Set(['read_triggers', 'manage_triggers', 'plaza_read', 'plaza_write']);
+const SETTINGS_PATROL_TRIGGER_SOURCE = 'settings_patrol';
+const DEFAULT_PATROL_INTERVAL_MINUTES = 120;
+const DEFAULT_PATROL_ACTIVE_HOURS = '09:00-18:00';
+
+type AgentTriggerSummary = {
+  id: string;
+  name?: string;
+  type?: string;
+  is_enabled?: boolean;
+  last_fired_at?: string | null;
+  config?: Record<string, any>;
+};
+
+type PatrolFormState = {
+  enabled: boolean;
+  intervalMinutes: number;
+  activeHours: string;
+};
+
+const clampPatrolInterval = (value: number) => Math.max(15, Math.min(1440, Math.round(value) || DEFAULT_PATROL_INTERVAL_MINUTES));
+
+const isSettingsPatrolTrigger = (trigger: AgentTriggerSummary) =>
+  trigger.type === 'interval' &&
+  ((trigger.config || {}).source === SETTINGS_PATROL_TRIGGER_SOURCE || trigger.name === SETTINGS_PATROL_TRIGGER_SOURCE);
+
+const derivePatrolForm = (trigger?: AgentTriggerSummary | null): PatrolFormState => {
+  const config = trigger?.config || {};
+  const minutes = Number(config.minutes ?? config.interval ?? DEFAULT_PATROL_INTERVAL_MINUTES);
+  return {
+    enabled: trigger ? trigger.is_enabled !== false : false,
+    intervalMinutes: clampPatrolInterval(minutes),
+    activeHours: String(config.active_hours || DEFAULT_PATROL_ACTIVE_HOURS),
+  };
+};
+
+const normalizeActiveHours = (value: string) => value.trim().replace(/\s+/g, '');
+const isValidActiveHours = (value: string) => /^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/.test(value);
 
 interface AgentSettingsSectionProps {
   agentId: string;
@@ -437,6 +475,22 @@ export default function AgentSettingsSection({
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const { data: triggerData = [], isLoading: patrolLoading } = useQuery({
+    queryKey: ['triggers', agentId],
+    queryFn: () => triggerApi.list(agentId),
+    enabled: !!agentId,
+  });
+  const triggers = Array.isArray(triggerData) ? (triggerData as AgentTriggerSummary[]) : [];
+  const patrolTrigger = React.useMemo(() => triggers.find(isSettingsPatrolTrigger) || null, [triggers]);
+  const persistedPatrolForm = React.useMemo(() => derivePatrolForm(patrolTrigger), [patrolTrigger]);
+  const [patrolForm, setPatrolForm] = React.useState<PatrolFormState>(() => persistedPatrolForm);
+  const [patrolSaving, setPatrolSaving] = React.useState(false);
+  const [patrolSaved, setPatrolSaved] = React.useState(false);
+  const [patrolError, setPatrolError] = React.useState('');
+
+  React.useEffect(() => {
+    setPatrolForm(persistedPatrolForm);
+  }, [persistedPatrolForm]);
 
   const hasChanges =
     settingsForm.primary_model_id !== (agent?.primary_model_id || '') ||
@@ -446,6 +500,10 @@ export default function AgentSettingsSection({
     settingsForm.webhook_rate_limit !== ((agent as any)?.webhook_rate_limit ?? 5) ||
     settingsForm.smart_model_routing_enabled !== !!((agent as any)?.smart_model_routing?.enabled) ||
     settingsForm.security_zone !== ((agent as any)?.security_zone || 'standard');
+  const patrolHasChanges =
+    patrolForm.enabled !== persistedPatrolForm.enabled ||
+    patrolForm.intervalMinutes !== persistedPatrolForm.intervalMinutes ||
+    normalizeActiveHours(patrolForm.activeHours) !== normalizeActiveHours(persistedPatrolForm.activeHours);
 
   const capabilityDefinitionSet = React.useMemo(
     () => new Set(capabilityDefinitions.map((item) => item.capability)),
@@ -582,6 +640,64 @@ export default function AgentSettingsSection({
       onSetSettingsError(e?.message || 'Failed to save');
     } finally {
       onSetSettingsSaving(false);
+    }
+  };
+
+  const handleSavePatrolSettings = async () => {
+    if (!canManage) return;
+    const activeHours = normalizeActiveHours(patrolForm.activeHours);
+    if (!isValidActiveHours(activeHours)) {
+      setPatrolError(t('agent.settings.patrol.invalidActiveHours', 'Use HH:MM-HH:MM, for example 09:00-18:00.'));
+      return;
+    }
+
+    const minutes = clampPatrolInterval(patrolForm.intervalMinutes);
+    const nextConfig: Record<string, any> = {
+      ...(patrolTrigger?.config || {}),
+      source: SETTINGS_PATROL_TRIGGER_SOURCE,
+      trigger_class: 'scheduled_job',
+      minutes,
+      active_hours: activeHours,
+    };
+    if (agent?.timezone) {
+      nextConfig.timezone = agent.timezone;
+    } else {
+      delete nextConfig.timezone;
+    }
+
+    setPatrolSaving(true);
+    setPatrolError('');
+    try {
+      const reason = t(
+        'agent.settings.patrol.triggerReason',
+        'Run scheduled patrols for objectives, messages, trigger state, and Agent Circle context.',
+      );
+      if (patrolTrigger) {
+        await triggerApi.update(agentId, patrolTrigger.id, {
+          is_enabled: patrolForm.enabled,
+          config: nextConfig,
+          reason,
+          trigger_class: 'scheduled_job',
+          cooldown_seconds: 60,
+        });
+      } else if (patrolForm.enabled) {
+        await triggerApi.create(agentId, {
+          name: SETTINGS_PATROL_TRIGGER_SOURCE,
+          type: 'interval',
+          config: nextConfig,
+          reason,
+          trigger_class: 'scheduled_job',
+          cooldown_seconds: 60,
+        });
+      }
+      await queryClient.invalidateQueries({ queryKey: ['triggers', agentId] });
+      setPatrolForm({ enabled: patrolForm.enabled, intervalMinutes: minutes, activeHours });
+      setPatrolSaved(true);
+      setTimeout(() => setPatrolSaved(false), 2000);
+    } catch (e: any) {
+      setPatrolError(e?.message || t('agent.settings.patrol.saveError', 'Failed to save patrol settings'));
+    } finally {
+      setPatrolSaving(false);
     }
   };
 
@@ -1188,25 +1304,128 @@ export default function AgentSettingsSection({
       <div className="card" style={{ marginBottom: '12px' }}>
         <h4 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>{t('agent.settings.patrol.title', 'Patrol & Agent Circle')}</h4>
         <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
-          {t('agent.settings.patrol.description', 'Configure the real user-facing autonomy surfaces: wake policies for scheduled patrols, and Agent Circle permissions for reading or posting updates.')}
+          {t('agent.settings.patrol.description', 'Configure the user-facing patrol trigger and Agent Circle permissions. Internal maintenance stays platform-managed.')}
         </p>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '10px', marginBottom: '12px' }}>
-          <div style={{ padding: '10px 14px', background: 'var(--bg-elevated)', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
-            <div style={{ fontWeight: 500, fontSize: '13px' }}>{t('agent.settings.patrol.wakeTitle', 'Scheduled patrols')}</div>
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '3px' }}>{t('agent.settings.patrol.wakeDesc', 'Create and manage patrols in Awareness & Triggers using wake policies.')}</div>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '10px 14px',
+            background: 'var(--bg-elevated)',
+            borderRadius: '8px',
+            border: '1px solid var(--border-subtle)',
+            marginBottom: '12px',
+          }}
+        >
+          <div>
+            <div style={{ fontWeight: 500, fontSize: '13px' }}>{t('agent.settings.patrol.enabled', 'Enable patrol')}</div>
+            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+              {t('agent.settings.patrol.enabledDesc', 'Creates or pauses the user-facing interval trigger. Internal maintenance is always managed by the platform.')}
+            </div>
           </div>
-          <div style={{ padding: '10px 14px', background: 'var(--bg-elevated)', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
-            <div style={{ fontWeight: 500, fontSize: '13px' }}>{t('agent.settings.patrol.circleTitle', 'Agent Circle participation')}</div>
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '3px' }}>{t('agent.settings.patrol.circleDesc', 'Reading and posting in Agent Circle are governed by capability policy below.')}</div>
+          <label style={{ position: 'relative', display: 'inline-block', width: '42px', height: '24px', flexShrink: 0, marginLeft: '12px' }}>
+            <input
+              type="checkbox"
+              checked={patrolForm.enabled}
+              disabled={!canManage || patrolLoading}
+              onChange={(e) => setPatrolForm((prev) => ({ ...prev, enabled: e.target.checked }))}
+              style={{ opacity: 0, width: 0, height: 0 }}
+            />
+            <span
+              style={{
+                position: 'absolute',
+                cursor: canManage ? 'pointer' : 'default',
+                inset: 0,
+                background: patrolForm.enabled ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
+                borderRadius: '12px',
+                transition: 'background 0.2s',
+                opacity: !canManage || patrolLoading ? 0.6 : 1,
+              }}
+            >
+              <span
+                style={{
+                  position: 'absolute',
+                  height: '18px',
+                  width: '18px',
+                  left: patrolForm.enabled ? '21px' : '3px',
+                  bottom: '3px',
+                  background: 'white',
+                  borderRadius: '50%',
+                  transition: 'left 0.2s',
+                }}
+              />
+            </span>
+          </label>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px', marginBottom: '12px' }}>
+          <div>
+            <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>
+              {t('agent.settings.patrol.interval', 'Patrol interval')}
+            </label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <input
+                className="input"
+                type="number"
+                min={15}
+                max={1440}
+                value={patrolForm.intervalMinutes}
+                disabled={!canManage || patrolLoading}
+                onChange={(e) =>
+                  setPatrolForm((prev) => ({
+                    ...prev,
+                    intervalMinutes: clampPatrolInterval(parseInt(e.target.value, 10)),
+                  }))
+                }
+                style={{ width: '120px' }}
+              />
+              <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('common.minutes', 'min')}</span>
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+              {t('agent.settings.patrol.intervalDesc', 'How often this employee wakes up for patrol work.')}
+            </div>
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>
+              {t('agent.settings.patrol.activeHours', 'Active hours')}
+            </label>
+            <input
+              className="input"
+              value={patrolForm.activeHours}
+              disabled={!canManage || patrolLoading}
+              onChange={(e) => setPatrolForm((prev) => ({ ...prev, activeHours: e.target.value }))}
+              placeholder={DEFAULT_PATROL_ACTIVE_HOURS}
+              style={{ width: '180px' }}
+            />
+            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+              {t('agent.settings.patrol.activeHoursDesc', 'Only run patrol triggers inside this local time window.')}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontWeight: 500, fontSize: '13px', marginBottom: '6px' }}>
+              {t('agent.settings.patrol.lastRun', 'Last patrol')}
+            </div>
+            <div style={{ fontSize: '12px', color: 'var(--text-secondary)', minHeight: '36px', display: 'flex', alignItems: 'center' }}>
+              {patrolTrigger?.last_fired_at
+                ? new Date(patrolTrigger.last_fired_at).toLocaleString(i18n.language || undefined)
+                : t('agent.settings.patrol.neverRun', 'Not run yet')}
+            </div>
           </div>
         </div>
-        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
-          <a className="btn btn-secondary" href={`/agents/${agentId}#aware`} style={{ fontSize: '12px', padding: '6px 10px' }}>
-            {t('agent.settings.patrol.openAware', 'Open Awareness & Triggers')}
-          </a>
-          <a className="btn btn-secondary" href="/plaza" style={{ fontSize: '12px', padding: '6px 10px' }}>
-            {t('agent.settings.patrol.openPlaza', 'Open Agent Circle')}
-          </a>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
+          <button
+            className="btn btn-secondary"
+            disabled={!canManage || patrolLoading || patrolSaving || (!patrolTrigger && !patrolForm.enabled) || !patrolHasChanges}
+            onClick={handleSavePatrolSettings}
+            style={{ fontSize: '12px', padding: '6px 12px', opacity: !canManage || !patrolHasChanges ? 0.6 : 1 }}
+          >
+            {patrolSaving ? t('agent.settings.patrol.saving', 'Saving patrol...') : t('agent.settings.patrol.save', 'Save patrol settings')}
+          </button>
+          {patrolSaved && <span style={{ fontSize: '12px', color: 'var(--success)' }}>{t('agent.settings.patrol.saved', 'Patrol settings saved')}</span>}
+          {patrolError && <span style={{ fontSize: '12px', color: 'var(--error)' }}>{patrolError}</span>}
+        </div>
+        <div style={{ fontWeight: 500, fontSize: '13px', marginBottom: '8px' }}>
+          {t('agent.settings.patrol.circlePolicyTitle', 'Agent Circle permission policy')}
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           {patrolCapabilityActions.map(renderCapabilityPolicyRow)}

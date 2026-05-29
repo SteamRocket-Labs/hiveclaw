@@ -370,6 +370,29 @@ def _is_private_url(url: str) -> bool:
         return True  # Block on any parsing error
 
 
+def _is_trigger_in_active_hours(active_hours: str, now: datetime, tz_name: str = "UTC") -> bool:
+    """Return whether a configured trigger time window is currently active."""
+    try:
+        from zoneinfo import ZoneInfo
+
+        start_str, end_str = active_hours.split("-")
+        sh, sm = map(int, start_str.strip().split(":"))
+        eh, em = map(int, end_str.strip().split(":"))
+        try:
+            tz = ZoneInfo(str(tz_name or "UTC"))
+        except (KeyError, Exception):
+            tz = ZoneInfo("UTC")
+        local_now = now.astimezone(tz) if now.tzinfo else now.replace(tzinfo=timezone.utc).astimezone(tz)
+        current_minutes = local_now.hour * 60 + local_now.minute
+        start_minutes = sh * 60 + sm
+        end_minutes = eh * 60 + em
+        if start_minutes <= end_minutes:
+            return start_minutes <= current_minutes < end_minutes
+        return current_minutes >= start_minutes or current_minutes < end_minutes
+    except Exception:
+        return True
+
+
 # ── Trigger Evaluation ──────────────────────────────────────────────
 
 async def _evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
@@ -397,6 +420,16 @@ async def _evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
     if trigger.last_fired_at:
         cooldown = timedelta(seconds=trigger.cooldown_seconds)
         if (now - trigger.last_fired_at) < cooldown:
+            return False
+
+    active_hours = str(cfg.get("active_hours") or "").strip()
+    if active_hours:
+        tz_name = str(cfg.get("timezone") or "").strip()
+        if not tz_name:
+            from app.services.timezone_utils import get_agent_timezone
+
+            tz_name = await get_agent_timezone(trigger.agent_id)
+        if not _is_trigger_in_active_hours(active_hours, now, tz_name):
             return False
 
     t = trigger.type

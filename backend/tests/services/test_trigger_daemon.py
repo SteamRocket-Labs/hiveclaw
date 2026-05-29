@@ -200,6 +200,39 @@ async def test_poll_trigger_respects_five_minute_configured_interval(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_interval_trigger_respects_configured_active_hours(monkeypatch):
+    import app.services.trigger_daemon as trigger_daemon
+
+    agent_id = uuid4()
+    now = datetime(2026, 5, 29, 1, 30, tzinfo=timezone.utc)  # 09:30 Asia/Shanghai
+    trigger = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        name="settings_patrol",
+        type="interval",
+        config={
+            "minutes": 30,
+            "active_hours": "09:00-10:00",
+            "timezone": "Asia/Shanghai",
+            "source": "settings_patrol",
+            "trigger_class": "scheduled_job",
+        },
+        is_enabled=True,
+        expires_at=None,
+        max_fires=None,
+        fire_count=0,
+        last_fired_at=now - timedelta(minutes=45),
+        cooldown_seconds=0,
+        created_at=now - timedelta(hours=2),
+    )
+
+    assert await trigger_daemon._evaluate_trigger(trigger, now) is True
+
+    outside_hours = now + timedelta(hours=2)
+    assert await trigger_daemon._evaluate_trigger(trigger, outside_hours) is False
+
+
+@pytest.mark.asyncio
 async def test_objective_task_trigger_requires_focus_ref_or_objective_id():
     from app.services.agent_tool_domains.triggers import _handle_set_trigger
 

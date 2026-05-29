@@ -100,6 +100,25 @@ vi.mock('@tanstack/react-query', () => ({
         ],
       };
     }
+    if (key === 'triggers') {
+      return {
+        data: [
+          {
+            id: 'trigger-settings-patrol',
+            name: 'settings_patrol',
+            type: 'interval',
+            is_enabled: true,
+            last_fired_at: '2026-03-27T09:00:00Z',
+            config: {
+              source: 'settings_patrol',
+              minutes: 90,
+              active_hours: '10:00-19:00',
+              trigger_class: 'scheduled_job',
+            },
+          },
+        ],
+      };
+    }
     if (key === 'agent-approvals') {
       return {
         data: [
@@ -650,8 +669,14 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Execution Mode');
     expect(markup).toContain('Coordinator');
     expect(markup).toContain('Patrol &amp; Agent Circle');
-    expect(markup).toContain('Open Awareness &amp; Triggers');
-    expect(markup).toContain('Open Agent Circle');
+    expect(markup).toContain('Enable patrol');
+    expect(markup).toContain('Patrol interval');
+    expect(markup).toContain('Active hours');
+    expect(markup).toContain('value="90"');
+    expect(markup).toContain('type="time"');
+    expect(markup).toContain('value="10:00"');
+    expect(markup).toContain('value="19:00"');
+    expect(markup).not.toContain('value="10:00-19:00"');
     expect(markup).not.toContain('Memory Distillation');
     expect(markup).not.toContain('Always on');
     expect(markup).not.toContain('Enable Heartbeat');

@@ -27,6 +27,23 @@ def test_digest_synthesis_instruction_includes_reasoning_and_writing_quality():
     assert "throat-clearing" in text.lower()
 
 
+def test_digest_synthesis_instruction_mandates_dimension_coverage():
+    """RC13: a full run fetched 6 worker lanes but synthesis wrote only 3 Key Findings
+    subsections, silently dropping half the dimensions (issuer/use-cases/risk). The instruction
+    must require one subsection per worker dimension — complete coverage over single-dimension
+    depth — while keeping integration (no per-worker stitching)."""
+    from app.services.deep_research.reasoner import build_digest_synthesis_instruction
+    from app.services.deep_research.schemas import ResearchRequest
+
+    text = build_digest_synthesis_instruction(ResearchRequest(question="q", depth="full"), "English")
+    lowered = text.lower()
+    assert "coverage is mandatory" in lowered
+    assert "every" in lowered and "dimension" in lowered
+    assert "subsection" in lowered
+    # coverage must not reintroduce stitching — integration discipline stays
+    assert "INTEGRATION, NOT SUMMARIZATION" in text
+
+
 def test_worker_prompt_has_epistemic_calibration_and_anti_slop():
     from app.services.deep_research.schemas import ResearchRequest
     from app.services.deep_research.worker import _build_worker_prompt

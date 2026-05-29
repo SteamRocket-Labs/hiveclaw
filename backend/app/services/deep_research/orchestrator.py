@@ -913,6 +913,10 @@ def _apply_footnotes(report: str | None, ledger: EvidenceLedger) -> str | None:
     if not report or not ledger.sources:
         return report
 
+    # RC12: neutralize hallucinated citations (ids not in the ledger) before footnote
+    # conversion, so a few fabricated refs do not one-vote-veto an otherwise grounded report.
+    report = _strip_unknown_source_refs(report, ledger)
+
     used: dict[str, int] = {}
 
     def _replace(match: re.Match) -> str:
@@ -1036,6 +1040,25 @@ def _evaluate_synthesis_quality(
 def _unknown_source_refs(report: str, ledger: EvidenceLedger) -> list[str]:
     refs = set(re.findall(r"src_[a-zA-Z0-9_]+", report or ""))
     return sorted(ref for ref in refs if ref not in ledger.sources)
+
+
+def _strip_unknown_source_refs(report: str, ledger: EvidenceLedger) -> str:
+    """RC12: neutralize hallucinated citations — remove [src_xxx] / `src_xxx` / bare src_xxx
+    tokens whose id is not in the evidence ledger (model-fabricated refs), keeping the prose.
+    A few invented ids then no longer fail an otherwise source-grounded report; genuine ledger
+    refs are untouched (later converted to footnotes). If too few real refs remain, the
+    citation-sufficiency gate still fails the report downstream."""
+    unknown = {ref for ref in re.findall(r"src_[a-zA-Z0-9_]+", report or "") if ref not in ledger.sources}
+    if not unknown:
+        return report
+    cleaned = report
+    for ref in unknown:
+        cleaned = re.sub(rf"\[\s*{re.escape(ref)}\s*\]", "", cleaned)  # [src_xxx]
+        cleaned = cleaned.replace(f"`{ref}`", "")  # `src_xxx`
+        cleaned = re.sub(rf"\b{re.escape(ref)}\b", "", cleaned)  # bare src_xxx
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)  # collapse doubled spaces left by removal
+    cleaned = re.sub(r"\s+([.,;)])", r"\1", cleaned)  # tidy orphaned space before punctuation
+    return cleaned
 
 
 def _minimum_report_chars(request: ResearchRequest) -> int:

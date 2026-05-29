@@ -471,3 +471,69 @@ is deliberately present to ensure the gate fails before completion.
 
     assert state == "failed"
     assert "unknown source" in gap.lower() or "not in the evidence ledger" in gap.lower()
+
+
+def test_apply_footnotes_strips_hallucinated_source_refs(tmp_path):
+    """RC12: a few fabricated src ids (not in the ledger) are model hallucinations. They must
+    be neutralized (stripped) rather than failing an otherwise grounded report. Genuine refs
+    still convert to footnotes; no unknown ref survives for the citation gate to one-vote-veto."""
+    from app.services.deep_research.orchestrator import _apply_footnotes, _unknown_source_refs
+
+    ledger = _seed_ledger(tmp_path, _SOURCE_IDS)
+    report = (
+        f"Finding A rests on {_SOURCE_IDS[0]} and is echoed by src_fabricated99 which does not "
+        f"exist. A second point cites [{_SOURCE_IDS[1]}] alongside a bogus [src_phantom88]."
+    )
+
+    result = _apply_footnotes(report, ledger)
+
+    assert result is not None
+    assert "src_fabricated99" not in result
+    assert "src_phantom88" not in result
+    assert _unknown_source_refs(result, ledger) == []  # nothing bogus survives
+    assert "[^1]" in result  # genuine ref survived as a footnote
+    assert "## Footnotes" in result
+
+
+def test_synthesis_pipeline_tolerates_hallucinated_ref_after_footnotes(tmp_path):
+    """RC12 end-to-end (real orchestrator order: footnotes BEFORE the gate): an otherwise
+    grounded report carrying one fabricated src id must PASS once _apply_footnotes strips the
+    bogus ref — a handful of hallucinated citations no longer fails the whole run."""
+    from app.services.deep_research.orchestrator import _apply_footnotes, _evaluate_synthesis_quality
+    from app.services.deep_research.schemas import ResearchRequest
+
+    ledger = _seed_ledger(tmp_path, _SOURCE_IDS)
+    report = f"""# Audit Report
+
+## Executive Thesis
+
+Issuer A, Regulator B, Platform C, and Custodian D support 35% adoption across
+12 jurisdictions in 2026. The run checked 4 ledgers, 8 claims, 17 controls, 23
+dated references, 6 disclosures, and 5 regions. Sources {_SOURCE_IDS[0]},
+{_SOURCE_IDS[1]}, and src_not_in_ledger999 back the thesis.
+
+## Method And Source Standard
+
+Primary disclosures and regulator filings were preferred. One fabricated citation
+is present to prove it is neutralized, not fatal to the whole report.
+
+## Findings
+
+- The growth claim is supported by {_SOURCE_IDS[0]} and {_SOURCE_IDS[1]}.
+- The control claim is supported by {_SOURCE_IDS[2]} and {_SOURCE_IDS[3]}.
+
+## Source Ledger
+
+- `{_SOURCE_IDS[0]}` Issuer filing
+- `{_SOURCE_IDS[1]}` Regulator filing
+- `{_SOURCE_IDS[2]}` Platform filing
+- `{_SOURCE_IDS[3]}` Custody filing
+"""
+    request = ResearchRequest(question="audit", mode="source_ledger_audit", depth="standard")
+
+    report = _apply_footnotes(report, ledger)
+    assert report is not None
+    state, gap = _evaluate_synthesis_quality(report, request=request, ledger=ledger)
+
+    assert "src_not_in_ledger999" not in report  # hallucinated ref stripped
+    assert state == "passed", gap

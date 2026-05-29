@@ -1708,3 +1708,67 @@ async def test_disable_tools_yields_empty_tool_surface(monkeypatch):
     )
     enabled_tools = await enabled_kernel._deps.get_tools(uuid4(), True)
     assert [t["function"]["name"] for t in enabled_tools] == ["write_file", "read_file"]
+
+
+@pytest.mark.asyncio
+async def test_invoke_agent_uses_request_max_output_tokens(monkeypatch):
+    """Task1: a request may raise the per-call output-token ceiling so the Deep
+    Research synthesis emits a full-length report instead of being truncated at
+    the model's chat default. The kernel must feed request.max_output_tokens into
+    get_max_tokens (which clamps to the hard limit) rather than only reading the
+    model's configured ceiling."""
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+
+    model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1",
+        api_key="test-key",
+        base_url=None,
+        max_output_tokens=None,
+    )
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            ),
+        ]
+    )
+
+    async def fake_build_agent_context(*args, **kwargs):
+        return "BASE_PROMPT"
+
+    async def fake_fetch_relevant_knowledge(*args, **kwargs):
+        return ""
+
+    async def fake_compress(messages, **kwargs):
+        return messages
+
+    monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
+    monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
+    monkeypatch.setattr("app.runtime.invoker.maybe_compress_messages", fake_compress)
+    monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", lambda *args, **kwargs: [])
+    monkeypatch.setattr("app.runtime.invoker.create_llm_client", lambda **kwargs: fake_client)
+    monkeypatch.setattr("app.runtime.invoker.record_token_usage", lambda *args, **kwargs: None)
+    # Mirror get_max_tokens' real contract: the requested ceiling (3rd arg) wins
+    # when present. A pass-through stub proves the request value reaches the call.
+    monkeypatch.setattr(
+        "app.runtime.invoker.get_max_tokens",
+        lambda provider, model, max_output_tokens=None: max_output_tokens or 2048,
+    )
+
+    await invoke_agent(
+        AgentInvocationRequest(
+            model=model,
+            messages=[{"role": "user", "content": "write a long report"}],
+            agent_name="Synthesizer",
+            role_description="writer",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            max_output_tokens=32768,
+        )
+    )
+
+    assert fake_client.calls[0]["max_tokens"] == 32768

@@ -53,6 +53,7 @@ class InvocationRequest:
     excluded_tool_names: tuple[str, ...] = ()
     expand_tools: bool = True
     max_tool_rounds: int | None = None
+    max_output_tokens: int | None = None
     eviction_dir: Path | None = None
     execution_mode: str | None = None
     delegation_token: Any | None = None

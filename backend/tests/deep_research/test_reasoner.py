@@ -37,6 +37,7 @@ async def test_runtime_reasoner_invokes_agent_with_tools_disabled(monkeypatch):
         captured["expand_tools"] = request.expand_tools
         captured["max_tool_rounds"] = request.max_tool_rounds
         captured["disable_tools"] = request.disable_tools
+        captured["max_output_tokens"] = request.max_output_tokens
         captured["source"] = request.session_context.source
         return type("Result", (), {"content": '{"lanes":[]}'})()
 
@@ -51,11 +52,14 @@ async def test_runtime_reasoner_invokes_agent_with_tools_disabled(monkeypatch):
     # write_file tool call that blew the 1-round budget and returned "[Error] Too
     # many tool call rounds". disable_tools forces a zero-tool surface so the model
     # has no choice but to return the report as text.
+    # A plain reasoning pass (plan/extract/evaluate) does NOT request a larger
+    # output budget — only the writer paths do (see synthesize_* tests).
     assert captured == {
         "initial_tools": [],
         "expand_tools": False,
         "max_tool_rounds": 1,
         "disable_tools": True,
+        "max_output_tokens": None,
         "source": "deep_research",
     }
 
@@ -186,9 +190,7 @@ def test_reasoner_synthesize_report_accepts_structured_notes_kwargs():
     from app.services.deep_research.reasoner import RuntimeDeepResearchReasoner
 
     sig = inspect.signature(RuntimeDeepResearchReasoner.synthesize_report)
-    assert "source_notes" in sig.parameters, (
-        "Tier 1-1 requires synthesize_report to accept a source_notes parameter"
-    )
+    assert "source_notes" in sig.parameters, "Tier 1-1 requires synthesize_report to accept a source_notes parameter"
     assert "lane_summaries" in sig.parameters, (
         "Tier 1-1 requires synthesize_report to accept a lane_summaries parameter"
     )
@@ -204,9 +206,7 @@ async def test_reasoner_synthesize_report_payload_serializes_structured_notes(mo
 
     sig = inspect.signature(RuntimeDeepResearchReasoner.synthesize_report)
     if "source_notes" not in sig.parameters or "lane_summaries" not in sig.parameters:
-        pytest.fail(
-            "Tier 1-1 contract: synthesize_report must accept source_notes and lane_summaries kwargs"
-        )
+        pytest.fail("Tier 1-1 contract: synthesize_report must accept source_notes and lane_summaries kwargs")
 
     captured: dict[str, str] = {}
 
@@ -262,13 +262,20 @@ async def test_reasoner_synthesize_from_digests_uses_worker_reports_not_raw_sour
     from app.services.deep_research.ledger import EvidenceLedger
     from app.services.deep_research.planner import build_research_plan
     from app.services.deep_research.reasoner import RuntimeDeepResearchReasoner
-    from app.services.deep_research.schemas import EvaluationResult, ResearchRequest, SourceRecord, SourceType, WorkerResult
+    from app.services.deep_research.schemas import (
+        EvaluationResult,
+        ResearchRequest,
+        SourceRecord,
+        SourceType,
+        WorkerResult,
+    )
 
     captured: dict[str, str] = {}
 
     async def fake_invoke_agent(request):
         captured["content"] = request.messages[0]["content"]
         captured["suffix"] = request.system_prompt_suffix
+        captured["max_output_tokens"] = request.max_output_tokens
         return type("Result", (), {"content": "# Final\n\n## Executive Thesis\n\nbody"})()
 
     monkeypatch.setattr(RuntimeDeepResearchReasoner, "_resolve_models", _fake_resolve_models)
@@ -321,3 +328,141 @@ async def test_reasoner_synthesize_from_digests_uses_worker_reports_not_raw_sour
     assert "RAW_SOURCE_TEXT_SHOULD_NOT_BE_IN_FINAL_SYNTHESIS_PAYLOAD" not in content
     assert "WORKER_RAW_SOURCE_TEXT_SHOULD_NOT_BE_IN_FINAL_SYNTHESIS_PAYLOAD" not in content
     assert "Writer" in captured.get("suffix", "")
+    # Task1: the final synthesis must request a large output budget so the full
+    # report (every dimension + cross-cutting analysis + so-what + ledger) is not
+    # truncated mid-section. f733867 capped at ~9K chars / one dimension short of
+    # the mandated Contradictions/Ledger sections because the writer used the
+    # model's chat-default ceiling instead of a report-grade one.
+    assert captured.get("max_output_tokens") == 32768
+
+
+@pytest.mark.asyncio
+async def test_synthesize_from_digests_preserves_long_worker_digest(monkeypatch, tmp_path):
+    """Task2: a worker's full digest is the load-bearing synthesis input. The old
+    [:12000] cap truncated long worker reports mid-way; with the output budget
+    restored (Task1) the whole digest must reach the writer so synthesis sees every
+    dimension's evidence end-to-end."""
+    from app.services.deep_research.ledger import EvidenceLedger
+    from app.services.deep_research.planner import build_research_plan
+    from app.services.deep_research.reasoner import RuntimeDeepResearchReasoner
+    from app.services.deep_research.schemas import EvaluationResult, ResearchRequest, WorkerResult
+
+    captured: dict[str, str] = {}
+
+    async def fake_invoke_agent(request):
+        captured["content"] = request.messages[0]["content"]
+        return type("Result", (), {"content": "# Final"})()
+
+    monkeypatch.setattr(RuntimeDeepResearchReasoner, "_resolve_models", _fake_resolve_models)
+    monkeypatch.setattr("app.services.deep_research.reasoner.invoke_agent", fake_invoke_agent)
+
+    tail = "TAIL_MARKER_BEYOND_THE_OLD_12K_CAP"
+    long_report = ("evidence sentence with cited data. " * 600) + tail  # >20K chars, tail past 12K
+
+    request = ResearchRequest(question="q", mode="topic_deep_dive")
+    plan = build_research_plan(request)
+    ledger = EvidenceLedger(tmp_path)
+    worker_results = [
+        WorkerResult(topic="market map", intermediate_report=long_report, sources=[], status="ok", tokens_used=10)
+    ]
+
+    reasoner = RuntimeDeepResearchReasoner(agent_id=uuid.uuid4(), user_id=uuid.uuid4())
+    await reasoner.synthesize_from_digests(
+        request, plan, ledger, EvaluationResult(quality_gates={}), worker_results=worker_results
+    )
+
+    assert tail in captured["content"]
+
+
+def test_compress_claims_for_synthesis_keeps_full_ledger_not_legacy_sixty():
+    """Task2: RC10 squeezed the claim ledger to 60 on the theory that a 128K claim
+    payload overflowed the writer and collapsed its output. RC11 later proved the
+    real cause was tool exposure, not size — the cap was over-fitting a misdiagnosis.
+    With output budget restored and long-context models, the writer should see the
+    whole claim set, not an arbitrary 60-claim slice."""
+    from types import SimpleNamespace
+
+    from app.services.deep_research.reasoner import _compress_claims_for_synthesis
+
+    claims = [
+        SimpleNamespace(
+            claim_id=f"c{i}",
+            text=f"claim {i}",
+            source_ids=["src_x"],
+            status="verified",
+            contradiction_group=None,
+        )
+        for i in range(100)
+    ]
+    compressed = _compress_claims_for_synthesis(claims)
+    assert len(compressed) == 100
+
+
+def test_strip_tool_call_envelope_recovers_markdown_from_filewriter():
+    """Task3: f733867's report.md was a raw `<FileWriter ... content="...">` pseudo
+    tool-call the synthesis LLM hallucinated (tools are disabled, so it leaked as
+    text and was persisted verbatim). The backstop must recover the real markdown."""
+    from app.services.deep_research.orchestrator import _strip_tool_call_envelope
+
+    raw = '<FileWriter path="workspace/x.md" content="# Title\n\n## Section\n\nbody text">'
+    assert _strip_tool_call_envelope(raw) == "# Title\n\n## Section\n\nbody text"
+
+
+def test_strip_tool_call_envelope_handles_unterminated_content():
+    """f733867 never closed the content=" attribute — the body ran to EOF."""
+    from app.services.deep_research.orchestrator import _strip_tool_call_envelope
+
+    raw = '<FileWriter path="x" content="# RWA Report\n\n## Findings\n\nbody with no closing quote'
+    out = _strip_tool_call_envelope(raw)
+    assert out is not None
+    assert out.startswith("# RWA Report")
+    assert "FileWriter" not in out
+    assert "content=" not in out
+
+
+def test_strip_tool_call_envelope_leaves_plain_markdown_untouched():
+    """A normal report opens with `#`, never `<`, so the backstop is a no-op for it —
+    even when the prose legitimately contains a `<tag>` or a quote."""
+    from app.services.deep_research.orchestrator import _strip_tool_call_envelope
+
+    md = '# Title\n\nbody mentioning a <tag> and a "quote" inline'
+    assert _strip_tool_call_envelope(md) == md
+
+
+def test_synthesis_instruction_forbids_tool_call_envelope():
+    """Task3: prevention paired with the strip backstop — tell the writer to emit raw
+    markdown and never a tool-call/XML wrapper."""
+    from app.services.deep_research.reasoner import build_digest_synthesis_instruction
+    from app.services.deep_research.schemas import ResearchRequest
+
+    instr = build_digest_synthesis_instruction(
+        ResearchRequest(question="q", mode="industry_research"), "Simplified Chinese"
+    )
+    low = instr.lower()
+    assert "filewriter" in low or "write_file" in low or "tool call" in low
+    assert "output format" in low
+
+
+def test_synthesis_instruction_is_thesis_driven_not_dimension_catalogue():
+    """RC15: the report must read as a thesis-driven analysis, not a per-dimension
+    catalogue. f733867 covered all 6 lanes but had no spine — Executive Thesis raised
+    a tension nothing downstream argued, and there was no so-what. The instruction now
+    declares an integration>coverage>depth priority, mandates a cross-cutting analytical
+    section and a strategic-implications (so-what) section, and reframes per-dimension
+    coverage as the evidence base — WITHOUT regressing RC13 coverage or no-stitching."""
+    from app.services.deep_research.reasoner import build_digest_synthesis_instruction
+    from app.services.deep_research.schemas import ResearchRequest
+
+    text = build_digest_synthesis_instruction(ResearchRequest(question="q", depth="full"), "English")
+    low = text.lower()
+    # RC15: thesis-driven structure
+    assert "priority when these collide" in low
+    assert "## cross-cutting analysis" in low
+    assert "## strategic implications" in low
+    assert "so-what" in low
+    assert "thesis" in low
+    assert "spineless" in low
+    # RC13 + integration invariants must survive the reframing
+    assert "coverage is mandatory" in low
+    assert "every" in low and "dimension" in low
+    assert "INTEGRATION, NOT SUMMARIZATION" in text

@@ -910,6 +910,9 @@ def _apply_footnotes(report: str | None, ledger: EvidenceLedger) -> str | None:
     Backtick-quoted `src_xxx` entries (used inside `## Source Ledger`) are left intact
     so the ledger keeps its native form.
     """
+    # Task3: strip a hallucinated tool-call envelope first — regardless of ledger
+    # state — so report.md is always clean markdown, not a raw `<FileWriter ...>` blob.
+    report = _strip_tool_call_envelope(report)
     if not report or not ledger.sources:
         return report
 
@@ -1059,6 +1062,35 @@ def _strip_unknown_source_refs(report: str, ledger: EvidenceLedger) -> str:
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)  # collapse doubled spaces left by removal
     cleaned = re.sub(r"\s+([.,;)])", r"\1", cleaned)  # tidy orphaned space before punctuation
     return cleaned
+
+
+def _strip_tool_call_envelope(report: str | None) -> str | None:
+    """Task3: neutralize a hallucinated tool-call envelope wrapping the report.
+
+    With tools disabled (RC11) the synthesis LLM cannot emit a real write_file call,
+    but some models still wrap the whole report in a *textual* pseudo tool-call, e.g.
+    `<FileWriter path="..." content="# Title ...">` (f733867 left it unterminated, so
+    the body ran to EOF). That raw string was persisted verbatim as report.md. A real
+    report always opens with a markdown H1 (`# <title>` per the synthesis contract) and
+    never with `<`, so this only fires on the malformed case and recovers the markdown.
+    """
+    if not report:
+        return report
+    stripped = report.lstrip()
+    if not stripped.startswith("<"):
+        return report  # normal markdown — leave untouched
+
+    # Form A (observed): a content="..." attribute holds the markdown, often unterminated.
+    attr = re.match(r'<[^>]*?\bcontent\s*=\s*"(?P<body>.*)$', stripped, re.DOTALL)
+    if attr and attr.group("body").strip():
+        return re.sub(r'"\s*/?>?\s*$', "", attr.group("body")).strip()
+
+    # Form B: markdown wrapped between tags — recover from the first H1, drop close tag.
+    h1 = re.search(r"(?m)^#\s+\S", stripped)
+    if h1:
+        return re.sub(r"</[A-Za-z_][\w.\-]*>\s*$", "", stripped[h1.start() :]).strip()
+
+    return report
 
 
 def _minimum_report_chars(request: ResearchRequest) -> int:

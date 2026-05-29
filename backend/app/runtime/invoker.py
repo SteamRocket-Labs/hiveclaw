@@ -126,6 +126,10 @@ class AgentInvocationRequest:
     # Deep Research reasoning passes set this so the synthesis LLM returns its report
     # as text instead of routing it through a write_file call that blows the round budget.
     disable_tools: bool = False
+    # Task1: per-call output-token ceiling override. Deep Research synthesis sets
+    # this so the full report is not truncated at the model's chat default; the
+    # kernel feeds it into get_max_tokens (still clamped to the hard limit).
+    max_output_tokens: int | None = None
 
 
 @dataclass(slots=True)
@@ -391,9 +395,7 @@ async def _resolve_memory_context(
         try:
             from app.services.evolution_view import render_skill_evolution_digest
 
-            skill_digest = render_skill_evolution_digest(
-                Path(get_settings().AGENT_DATA_DIR) / str(request.agent_id)
-            )
+            skill_digest = render_skill_evolution_digest(Path(get_settings().AGENT_DATA_DIR) / str(request.agent_id))
             if skill_digest:
                 parts.append(
                     _context_engine().inject(
@@ -970,6 +972,7 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
         excluded_tool_names=request.excluded_tool_names,
         expand_tools=request.expand_tools,
         max_tool_rounds=request.max_tool_rounds,
+        max_output_tokens=request.max_output_tokens,
         eviction_dir=_resolve_eviction_dir(request.agent_id),
         execution_mode=request.execution_mode,
         delegation_token=request.delegation_token,

@@ -657,7 +657,7 @@ def _split_concatenated_json(raw: str) -> list[str]:
         elif ch == "}":
             depth -= 1
             if depth == 0:
-                segment = text[start:i + 1].strip()
+                segment = text[start : i + 1].strip()
                 try:
                     json.loads(segment)
                     parts.append(segment)
@@ -1511,7 +1511,7 @@ class AgentKernel:
             max_tokens = self._deps.get_max_tokens(
                 active_model.provider,
                 active_model.model,
-                getattr(active_model, "max_output_tokens", None),
+                request.max_output_tokens or getattr(active_model, "max_output_tokens", None),
             )
             accumulated_tokens = 0
             # full_toolset tracks expanded tools after pack activation.
@@ -1785,7 +1785,7 @@ class AgentKernel:
                                 max_tokens = self._deps.get_max_tokens(
                                     active_model.provider,
                                     active_model.model,
-                                    getattr(active_model, "max_output_tokens", None),
+                                    request.max_output_tokens or getattr(active_model, "max_output_tokens", None),
                                 )
                                 fallback_model = None
                                 continue
@@ -1840,7 +1840,7 @@ class AgentKernel:
                                 max_tokens = self._deps.get_max_tokens(
                                     active_model.provider,
                                     active_model.model,
-                                    getattr(active_model, "max_output_tokens", None),
+                                    request.max_output_tokens or getattr(active_model, "max_output_tokens", None),
                                 )
                                 fallback_model = None
                                 continue
@@ -2053,7 +2053,9 @@ class AgentKernel:
                         # 3. Emit "done" events and append tool results in original order
                         for (tc, tool_name, _original_args), execution in zip(parsed_tool_calls, results):
                             result, effective_args, _executed = execution
-                            result_loop_decision = loop_guard.observe_tool_result(tool_name, effective_args, str(result))
+                            result_loop_decision = loop_guard.observe_tool_result(
+                                tool_name, effective_args, str(result)
+                            )
                             if result_loop_decision:
                                 return await _abort_for_loop_guard(result_loop_decision)
                             done_payload = {

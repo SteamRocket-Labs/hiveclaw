@@ -110,7 +110,7 @@ class RuntimeDeepResearchReasoner:
                 "title": source.title,
                 "publisher": source.publisher,
                 "source_type": source.source_type.value,
-                "content": source.content[:12000],
+                "content": source.content[:30000],
             },
         }
         content = await self._invoke(
@@ -143,7 +143,7 @@ class RuntimeDeepResearchReasoner:
                 "title": source.title,
                 "publisher": source.publisher,
                 "source_type": source.source_type.value,
-                "content": source.content[:12000],
+                "content": source.content[:30000],
             },
         }
         content = await self._invoke(
@@ -355,7 +355,7 @@ class RuntimeDeepResearchReasoner:
                     "url": source.url,
                     "source_type": source.source_type.value,
                     "lane_id": source.lane_id,
-                    "excerpt": source.content[:8000],
+                    "excerpt": source.content[:30000],
                 }
                 for source in ledger.sources.values()
             ],
@@ -393,6 +393,7 @@ class RuntimeDeepResearchReasoner:
             ),
             mode=request.mode,
             role="writer",
+            max_output_tokens=_SYNTHESIS_MAX_OUTPUT_TOKENS,
         )
 
     async def synthesize_from_digests(
@@ -426,7 +427,10 @@ class RuntimeDeepResearchReasoner:
                     "status": result.status,
                     "error": result.error,
                     "tokens_used": result.tokens_used,
-                    "intermediate_report": result.intermediate_report[:12000],
+                    # Task2: a worker's full digest is the load-bearing synthesis
+                    # input; the old 12K cap truncated long workers mid-report. 40K
+                    # fits a complete worker report under the restored output budget.
+                    "intermediate_report": result.intermediate_report[:40000],
                     "sources": [
                         {
                             "source_id": source.source_id,
@@ -480,6 +484,7 @@ class RuntimeDeepResearchReasoner:
             f"{instruction}\n\n{json.dumps(payload, ensure_ascii=False)}",
             mode=request.mode,
             role="writer",
+            max_output_tokens=_SYNTHESIS_MAX_OUTPUT_TOKENS,
         )
 
     async def devils_advocate_review(
@@ -502,7 +507,7 @@ class RuntimeDeepResearchReasoner:
             "worker_digests": [
                 {
                     "topic": result.topic,
-                    "intermediate_report": result.intermediate_report[:6000],
+                    "intermediate_report": result.intermediate_report[:20000],
                 }
                 for result in worker_results
             ],
@@ -516,7 +521,7 @@ class RuntimeDeepResearchReasoner:
                 }
                 for source in ledger.sources.values()
             ],
-            "claims": [to_jsonable(claim) for claim in ledger.claims][:30],
+            "claims": [to_jsonable(claim) for claim in ledger.claims][:80],
         }
         instruction = (
             "You are the Devil's Advocate on a deep research run (any domain). Steel-man the emerging findings, "
@@ -567,6 +572,7 @@ class RuntimeDeepResearchReasoner:
         *,
         mode: str | None = None,
         role: str | None = None,
+        max_output_tokens: int | None = None,
     ) -> str | None:
         model, fallback_model, agent = await self._resolve_models()
         if model is None or agent is None:
@@ -599,6 +605,7 @@ class RuntimeDeepResearchReasoner:
                 core_tools_only=True,
                 disable_tools=True,
                 max_tool_rounds=1,
+                max_output_tokens=max_output_tokens,
             )
         )
         return (result.content or "").strip() or None
@@ -765,6 +772,15 @@ def _depth_expectation(request: ResearchRequest) -> str:
     )
 
 
+# Task1: the final report must not truncate. A full analyst report (every worker
+# dimension + cross-cutting analysis + so-what + ledger) runs well past a model's
+# chat-default output ceiling — f733867 capped near 9K chars, one dimension short
+# of its mandated Contradictions/Ledger sections. 32768 is a report-grade budget
+# modern long-context models support; get_max_tokens still clamps it to
+# MAX_OUTPUT_TOKENS_HARD_LIMIT.
+_SYNTHESIS_MAX_OUTPUT_TOKENS = 32768
+
+
 def build_digest_synthesis_instruction(request: ResearchRequest, language: str) -> str:
     """Final-report synthesis instruction — the anti-stitch DNA: integration, not summarization.
 
@@ -776,33 +792,51 @@ def build_digest_synthesis_instruction(request: ResearchRequest, language: str) 
         f"Write the FINAL Deep Research report in {language}. Translate all evidence into {language}; "
         "keep proper names, tickers, and identifiers in their original form. Never mix languages.\n\n"
         "CORE PRINCIPLE — INTEGRATION, NOT SUMMARIZATION. You are writing ONE coherent analyst report from "
-        "multiple worker digests. Do NOT stitch, concatenate, or list the digests one after another.\n"
+        "multiple worker digests. Do NOT stitch, concatenate, or list the digests one after another. The worker "
+        "digests are your EVIDENCE; the report is your ARGUMENT — it must carry a through-line thesis across "
+        "dimensions, not place per-worker summaries side by side.\n"
+        "Priority when these collide: (1) INTEGRATION — a through-line thesis carried across dimensions plus a "
+        "clear so-what; (2) COVERAGE — every dimension represented; (3) DEPTH within any one dimension. Coverage "
+        "is the floor, not the spine: never drop a dimension, but never let 'cover every dimension' degrade into "
+        "'dimension 1 found X, dimension 2 found Y'.\n"
         "Forbidden patterns (reject your own draft if it does any of these):\n"
         "- Sequential summarization: 'Worker 1 found X. Worker 2 found Y.' Instead integrate across sources: "
         "'Converging evidence establishes X, operating through mechanism Y, though Z moderates it when ...'.\n"
         "- Cherry-picking: do not report only confirming evidence; surface disconfirming evidence and weigh it.\n"
         "- Unresolved contradictions: when sources disagree, resolve by comparing evidence quality, recency, and "
-        "scope — or explicitly flag the disagreement as irreconcilable.\n\n"
+        "scope — or explicitly flag the disagreement as irreconcilable.\n"
+        "- Covered but spineless: if a reader cannot restate your central judgment and what to DO about it, you "
+        "have catalogued the dimensions, not analyzed them.\n\n"
         "Method before writing: (1) map themes across all digests; (2) mark convergence (3+ sources agree) vs "
-        "divergence; (3) resolve or flag every contradiction; (4) identify the real knowledge gaps; (5) write an "
-        "integrated narrative that leads with the strongest, best-supported themes and weights claims by evidence "
-        "quality (primary/authoritative > strong secondary > press > weak).\n\n"
+        "divergence; (3) resolve or flag every contradiction; (4) identify the real knowledge gaps; (5) decide the "
+        "single through-line thesis and the 2-4 cross-cutting tensions that carry it; (6) write an integrated "
+        "argument that leads with the strongest, best-supported themes and weights claims by evidence quality "
+        "(primary/authoritative > strong secondary > press > weak).\n\n"
         "Hard requirements:\n"
         "- Weight by the per-source `evidence_tier`/`evidence_grade`: tier1 (primary/authoritative) and tier2 "
         "(strong secondary) carry the argument; a tier4 (blog/social) source must NOT be the sole support for any "
         "key claim — corroborate it or mark the claim inferred.\n"
         "- Cite ONLY source ids present in `sources` / worker digest source metadata; never invent ids. Every "
         "material claim cites a source id inline, e.g. [src_ab12].\n"
-        "- Sections: `# <specific title>`, `## Executive Thesis`, `## Method And Source Standard`, `## Key Findings`, "
-        "`## Contradictions And Gaps`, `## Source Ledger`; add mode-specific sections when useful.\n"
-        "- COVERAGE IS MANDATORY: `## Key Findings` must contain a distinct `###` subsection for EVERY research "
-        "dimension present in the worker digests (one per worker topic/lane). Never collapse or silently drop a "
-        "dimension — a thin dimension gets a short honest subsection, not omission. Integrate sources WITHIN each "
-        "subsection (the no-stitching rule still holds); prioritize COMPLETE dimensional coverage over exhaustive "
-        "depth in any single dimension so the report covers all lanes within budget.\n"
+        "- Sections in order: `# <specific title>`, `## Executive Thesis` (state the central judgment up front), "
+        "`## Method And Source Standard`, `## Cross-Cutting Analysis` (THE analytical core — organize by the 2-4 "
+        "tensions/through-lines from step 5, NOT by worker; each subsection pulls evidence from MULTIPLE dimensions "
+        "to advance the thesis), `## Key Findings` (the per-dimension evidence base — see coverage rule), "
+        "`## Contradictions And Gaps`, `## Strategic Implications` (the so-what — what the findings MEAN and which "
+        "decision they support, not a recap), `## Source Ledger`; add mode-specific sections when useful.\n"
+        "- COVERAGE IS MANDATORY (the floor): `## Key Findings` must contain a distinct `###` subsection for EVERY "
+        "research dimension present in the worker digests (one per worker topic/lane). Never collapse or silently "
+        "drop a dimension — a thin dimension gets a short honest subsection, not omission. But these subsections "
+        "are the EVIDENCE BASE supporting the thesis from `## Cross-Cutting Analysis`, not the report's spine. "
+        "Integrate sources WITHIN each subsection (the no-stitching rule still holds).\n"
+        "- `## Cross-Cutting Analysis` and `## Strategic Implications` must deliver JUDGMENT — what the evidence "
+        "means, the trade-offs, the so-what — not restate the per-dimension findings.\n"
         "- Use concrete numbers, named entities, dates, and mechanisms. Separate verified findings from inferred "
         "implications and gaps.\n"
-        "- If evidence is insufficient, say so explicitly instead of padding with generic prose.\n\n"
+        "- If evidence is insufficient, say so explicitly instead of padding with generic prose.\n"
+        "- OUTPUT FORMAT: return ONLY the markdown report, starting with `# `. Do NOT wrap it in a "
+        'tool call or any XML/JSON envelope (no `<FileWriter>`, `<write_file>`, `content="..."`, or '
+        "similar) — tools are disabled, so any such wrapper is persisted verbatim as garbage.\n\n"
         + _depth_expectation(request)
         + "\n\n"
         + REASONING_CALIBRATION
@@ -823,15 +857,18 @@ def _source_types(value: Any) -> list[SourceType]:
     return parsed
 
 
-def _compress_claims_for_synthesis(claims: list, *, limit: int = 60) -> list[dict[str, Any]]:
-    """Compress the claim ledger for the synthesis payload (RC10).
+def _compress_claims_for_synthesis(claims: list, *, limit: int = 200) -> list[dict[str, Any]]:
+    """Trim the claim ledger to its load-bearing fields for the synthesis payload.
 
-    The full ledger (e.g. 174 claims x ~700 chars = 128K) overflowed the writer
-    prompt and collapsed its output to a few hundred chars even with 40 sources and
-    rich worker digests. Workers already digested the evidence; the writer needs the
-    load-bearing claim text + its source ids + status, not the extraction
-    evidence/notes. Contradictions are surfaced first because the report must
-    resolve them.
+    Workers already digested the evidence; the writer needs each claim's text +
+    source ids + status, not the extraction evidence/notes. Contradictions are
+    surfaced first because the report must resolve them.
+
+    Task2: RC10 originally capped this at 60 on the theory that a 128K claim payload
+    overflowed the writer and collapsed its output. RC11 later proved the real cause
+    was tool exposure, not payload size — so the aggressive cap was over-fitting a
+    misdiagnosis. With output budget restored (Task1) and long-context models, 200
+    keeps effectively the whole ledger while still bounding a pathological run.
     """
     prioritized = sorted(claims, key=lambda c: 0 if getattr(c, "contradiction_group", None) else 1)
     compressed: list[dict[str, Any]] = []

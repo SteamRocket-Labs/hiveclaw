@@ -359,7 +359,7 @@ class RuntimeDeepResearchReasoner:
                 }
                 for source in ledger.sources.values()
             ],
-            "claims": [to_jsonable(claim) for claim in ledger.claims],
+            "claims": _compress_claims_for_synthesis(ledger.claims),
             "quality_gates": evaluation.quality_gates,
             "gaps": evaluation.gaps,
         }
@@ -460,7 +460,7 @@ class RuntimeDeepResearchReasoner:
                 }
                 for source in ledger.sources.values()
             ],
-            "claims": [to_jsonable(claim) for claim in ledger.claims],
+            "claims": _compress_claims_for_synthesis(ledger.claims),
             "quality_gates": evaluation.quality_gates,
             "gaps": evaluation.gaps,
             "devils_advocate": devils_advocate or {},
@@ -815,6 +815,32 @@ def _source_types(value: Any) -> list[SourceType]:
         except ValueError:
             continue
     return parsed
+
+
+def _compress_claims_for_synthesis(claims: list, *, limit: int = 60) -> list[dict[str, Any]]:
+    """Compress the claim ledger for the synthesis payload (RC10).
+
+    The full ledger (e.g. 174 claims x ~700 chars = 128K) overflowed the writer
+    prompt and collapsed its output to a few hundred chars even with 40 sources and
+    rich worker digests. Workers already digested the evidence; the writer needs the
+    load-bearing claim text + its source ids + status, not the extraction
+    evidence/notes. Contradictions are surfaced first because the report must
+    resolve them.
+    """
+    prioritized = sorted(claims, key=lambda c: 0 if getattr(c, "contradiction_group", None) else 1)
+    compressed: list[dict[str, Any]] = []
+    for claim in prioritized[:limit]:
+        entry: dict[str, Any] = {
+            "claim_id": getattr(claim, "claim_id", ""),
+            "text": getattr(claim, "text", ""),
+            "source_ids": list(getattr(claim, "source_ids", []) or []),
+            "status": str(getattr(claim, "status", "")),
+        }
+        group = getattr(claim, "contradiction_group", None)
+        if group:
+            entry["contradiction_group"] = group
+        compressed.append(entry)
+    return compressed
 
 
 def _parse_json_object(content: str | None) -> dict[str, Any]:

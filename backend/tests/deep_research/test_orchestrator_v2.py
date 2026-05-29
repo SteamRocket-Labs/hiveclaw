@@ -224,6 +224,42 @@ def test_from_arguments_preserves_plain_topic_list_and_lifts_dicts():
     assert dicts.worker_topics == ["Deep dive on Ondo", "Regulatory framework"]
 
 
+def test_compress_claims_for_synthesis_caps_and_strips_bulk():
+    # RC10 (live task f4a92a22): all 174 claims (~128K chars) were dumped into the
+    # synthesis payload, overflowing the writer prompt so it emitted <400 chars and
+    # synthesis FAILED despite 40 sources + rich worker digests. The writer needs the
+    # load-bearing claim text + source ids + status, not the extraction evidence/notes
+    # (workers already digested the evidence).
+    from app.services.deep_research.reasoner import _compress_claims_for_synthesis
+    from app.services.deep_research.schemas import ClaimRecord, ClaimStatus
+
+    claims = [
+        ClaimRecord(
+            claim_id=f"c{i}",
+            text="DeFi TVL grew in 2025",
+            status=ClaimStatus.VERIFIED,
+            source_ids=["s1"],
+            evidence="very long extraction evidence " * 40,
+            notes="very long extraction notes " * 40,
+        )
+        for i in range(174)
+    ]
+    out = _compress_claims_for_synthesis(claims, limit=60)
+    assert len(out) == 60, "claim count must be capped to stop payload overflow"
+    assert set(out[0]) <= {"claim_id", "text", "source_ids", "status", "contradiction_group"}
+    assert "evidence" not in out[0] and "notes" not in out[0], "bulky extraction fields stripped"
+
+
+def test_compress_claims_for_synthesis_surfaces_contradictions_first():
+    from app.services.deep_research.reasoner import _compress_claims_for_synthesis
+    from app.services.deep_research.schemas import ClaimRecord, ClaimStatus
+
+    plain = [ClaimRecord(claim_id=f"p{i}", text="t", status=ClaimStatus.VERIFIED) for i in range(70)]
+    contested = ClaimRecord(claim_id="X", text="contested", status=ClaimStatus.CONTRADICTED, contradiction_group="g1")
+    out = _compress_claims_for_synthesis(plain + [contested], limit=60)
+    assert out[0]["claim_id"] == "X", "contradictions must be surfaced first and survive the cap"
+
+
 def test_select_sources_round_robin_is_fair_across_workers():
     from collections import Counter
 

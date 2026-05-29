@@ -220,7 +220,7 @@
       "aware": "Awareness",
       "awareTooltip": "What this employee is currently focused on, plus triggers and action history",
       "mind": "Mind",
-      "mindTooltip": "Personality (Soul), accumulated memory, and self-check routine (Heartbeat)",
+      "mindTooltip": "Personality (Soul) and accumulated long-term memory",
       "evolution": "Evolution",
       "evolutionTooltip": "How this employee improves over time — skill lifecycle and promotion history",
       "tools": "Tools",
@@ -733,7 +733,7 @@
       "clampedField": {
         "minPollInterval": "Min Check Interval",
         "webhookRateLimit": "Incoming Event Limit",
-        "heartbeatInterval": "Self-Check Interval"
+        "heartbeatInterval": "Background Maintenance Interval"
       },
       "clampedMessage": "{{name}}: {{requested}} → {{applied}} (adjusted by company policy)",
       "tokenStats": "Usage Statistics",
@@ -777,16 +777,15 @@
         "standardDesc": "Works independently on tasks",
         "coordinatorDesc": "Delegates and synthesizes work from other employees"
       },
-      "heartbeat": {
-        "title": "Heartbeat",
-        "description": "Periodic self-check — your employee proactively monitors Agent Circle and the work environment on a schedule.",
-        "enabled": "Enable Heartbeat",
-        "enabledDesc": "Employee will periodically check for updates and new work",
-        "interval": "Check Interval",
-        "intervalDesc": "How often the employee checks for updates",
-        "activeHours": "Active Hours",
-        "activeHoursDesc": "Only run self-checks during these hours (e.g. 09:00-18:00)",
-        "lastRun": "Last self-check"
+      "patrol": {
+        "title": "Patrol & Agent Circle",
+        "description": "Configure the real user-facing autonomy surfaces: wake policies for scheduled patrols, and Agent Circle permissions for reading or posting updates.",
+        "wakeTitle": "Scheduled patrols",
+        "wakeDesc": "Create and manage patrols in Awareness & Triggers using wake policies.",
+        "circleTitle": "Agent Circle participation",
+        "circleDesc": "Reading and posting in Agent Circle are governed by capability policy below.",
+        "openAware": "Open Awareness & Triggers",
+        "openPlaza": "Open Agent Circle"
       },
       "channel": {
         "title": "Channel Connections",
@@ -1105,8 +1104,8 @@
       "dailyLLMCalls": "Daily AI Requests per Employee",
       "maxLLMCallsPerDay": "Maximum AI requests each employee can make per day",
       "system": "System",
-      "minHeartbeatInterval": "Min Self-Check Interval (min)",
-      "minHeartbeatDesc": "Minimum time between employee self-checks",
+      "minHeartbeatInterval": "Min Background Maintenance Interval (min)",
+      "minHeartbeatDesc": "Minimum time between platform background maintenance runs",
       "triggerLimits": "Automation Limits",
       "defaultMaxTriggers": "Default Max Triggers",
       "defaultMaxTriggersDesc": "Maximum automated triggers for new employees",
@@ -1406,8 +1405,8 @@
       "monthlyTokenDesc": "Max usage per employee per month (approx. {{amount}})",
       "monthlyTokenDescUnlimited": "Max usage per employee per month (unlimited)",
       "systemSettings": "System Settings",
-      "minHeartbeatInterval": "Min Self-Check Interval (min)",
-      "minHeartbeatDesc": "Minimum time between self-checks for all employees",
+      "minHeartbeatInterval": "Min Background Maintenance Interval (min)",
+      "minHeartbeatDesc": "Minimum time between platform background maintenance runs for all employees",
       "defaultMaxTriggers": "Default Max Triggers",
       "defaultMaxTriggersDesc": "Automation trigger limit for new employees",
       "minPollInterval": "Min Check Interval (min)",

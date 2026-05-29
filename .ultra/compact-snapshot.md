@@ -1,35 +1,42 @@
 # Compact Snapshot
-*Generated: 2026-04-28 15:51:04 UTC*
+*Generated: 2026-05-29 06:49:58 UTC*
 *Working dir: /Users/rocky243/vc-saas/hiveclaw-main/backend (pyproject.toml)*
 
 ## Git State
 Branch: `main`
 
 Recent commits:
-  a606d6e Close all 3 P0 fail-open paths and purify frozen prompt cache key
-  c52e236 Harden prompt cache neutrality and prefix invalidation
-  1b050b2 Unify autonomy prompt contracts and objective projection
-  2bce78e Ignore LLM errors in conversation and fallback handling
-  f2a9555 Clarify safety boundary labels and fill capability mappings
+  e0f6de7 fix(deep-research): cap claims in synthesis payload (live bug RC10/F7)
+  042ad79 fix(deep-research): coerce worker_topics from JSON string (live bug RC9)
+  346fd33 fix(deep-research): resolve 8 production root causes (F1-F6)
+  e56050c Harden Deep Research v2: plan gate, integration synthesis, evidence grading, devil's advocate
+  f831ce7 Refine agent memory and runtime workflows
 
 Modified files:
-  M ../.ultra/debug/subagent-log.jsonl
+  M ../.ultra/compact-snapshot.md
+   M ../.ultra/debug/subagent-log.jsonl
    M ../.ultra/memory/chroma/a6ff9575-dcd6-4ca6-a872-9a01d6acbb57/data_level0.bin
    M ../.ultra/memory/chroma/chroma.sqlite3
    M ../.ultra/memory/sessions.jsonl
-
-## Active Subagents
-These subagents were running at compact time:
-- protocol-expert (id: ad0ab4804006...)
-- domain-architect (id: afba9ea116c0...)
+   M ../.ultra/sessions/orphan-trail.md
+  ?? ../.claude/scheduled_tasks.lock
+  ?? ../docs/CHAT_UX_SOTA_PLAN.md
 
 ## Session Memory (this branch)
 Recent session summaries for context continuity:
-- [2026-04-28] 摸清代码结构（kernel 1948行、invoker 907行、core 4002行、15个prompt sections、4层记忆）| 启动6个并行深度审查agent分别审查：提示词/上下文、记忆/自我进化、工具/能力/技能、权限控制、A2A委托、系统级完整性 | 要求各agent按P0/P1/P2严重度给出file:line证据+修复方案+SOTA对比
-- [2026-04-27] Generated docs/VC_BRIEF.md (4500 words): comparison table (decision authority/cognition/failure cost), 4-layer memory engineering as core moat, product positioning (OpenClaw=individual-owned, Herme...
-- [2026-04-26] 分支差异分析：feature 52 commit(架构治理) vs main 63 commit(LLM 进化)，12 天并行 | 冲突清单：14 个代码冲突，HEARTBEAT.md/t0_logger.py/memory_service.py/agents/orchestrator.py 等关键 | 对标矩阵：11 维度对比 Claude Code/Hermes，发现 GEPA + sk...
-- [2026-04-20] Analyzed Railway logs covering 26+ hours (2026-04-16 11:08 to 2026-04-17 13:01) | Identified Zhipu GLM-5.1 account balance exhaustion affecting 10+ agents | Found MiniMax/OpenAI provider overload d...
-- [2026-04-20] fix(entrypoint): safety-net patch for sso_scan_sessions.updated_at + fix(auth): stop gate-keeping Feishu SSO init on env presence + ui(auth): always render Feishu login button, drop preflight avail...
+- [2026-05-29] ## Accomplished
+
+
+## Unfinished
+Implement F1: increase max_sources with fair worker allocation | Implement F2: PDF text extraction via pdfplumber, drop binary content | Implement F3: per-page trunc...
+- [2026-05-28] ## Accomplished
+
+
+## Decisions
+V2 commit aac7149 only half-landed - worker layer added but synthesis still eats 70K+ chars with 4-fold redundancy vs tight digest (orchestrator.py:521-567, reasoner....
+- [2026-05-28] Diagnosed root cause: backend streams all events correctly, frontend hides via tool_call default hidden + broken isWaiting + isolated deep_research SSE | Wrote `docs/CHAT_UX_SOTA_PLAN.md` implement...
+- [2026-05-28] Analyzed onyx deep research architecture (orchestrator-worker two-layer, ~1500 lines) vs hive pipeline (3407 lines) | Discovered root causes of stitching feeling: lack of digestion layer, context i...
+- [2026-05-28] 跨仓对比分析：claude-mem hooks→worker压缩→SQLite+Chroma vs Hive MD-first 4层金字塔 | docs/memory-claude-mem-borrow-plan.md | 识别4个可借鉴点：①索引+load_memory取详情②进程内语义召回③幂等持久队列④成本记账+双轴标签 | 澄清对比框架：开发态插件(SessionStart rece...
 
 ## Recovery Instructions
 After compact, read this file to restore context:

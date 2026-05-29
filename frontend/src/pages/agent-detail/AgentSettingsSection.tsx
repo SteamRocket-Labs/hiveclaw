@@ -40,6 +40,13 @@ type CapabilityActionMeta = {
   fallbackDesc: string;
 };
 
+type CapabilityAction = {
+  key: string;
+  capability: string;
+  label: string;
+  desc: string;
+};
+
 const KNOWN_CAPABILITY_ACTIONS: CapabilityActionMeta[] = [
   {
     key: 'read_files',
@@ -363,6 +370,8 @@ const KNOWN_CAPABILITY_ACTIONS: CapabilityActionMeta[] = [
   },
 ];
 
+const PATROL_CAPABILITY_KEYS = new Set(['read_triggers', 'manage_triggers', 'plaza_read', 'plaza_write']);
+
 interface AgentSettingsSectionProps {
   agentId: string;
   agent: any;
@@ -446,7 +455,7 @@ export default function AgentSettingsSection({
     () => new Map(capabilityPolicies.map((policy) => [policy.capability, policy])),
     [capabilityPolicies],
   );
-  const capabilityActions = React.useMemo(() => {
+  const capabilityActions = React.useMemo<CapabilityAction[]>(() => {
     const knownCapabilities = new Set(KNOWN_CAPABILITY_ACTIONS.map((item) => item.capability));
     const knownActions = KNOWN_CAPABILITY_ACTIONS.map((item) => ({
       key: item.key,
@@ -464,9 +473,17 @@ export default function AgentSettingsSection({
           item.tools.length > 0
             ? t('agent.settings.autonomy.dynamicTools', 'Backend tools: {{tools}}', { tools: item.tools.join(', ') })
             : t('agent.settings.autonomy.dynamicNoTools', 'No mapped tools reported by backend'),
-      }));
+    }));
     return [...knownActions, ...dynamicActions];
   }, [capabilityDefinitions, t]);
+  const patrolCapabilityActions = React.useMemo(
+    () => capabilityActions.filter((action) => PATROL_CAPABILITY_KEYS.has(action.key)),
+    [capabilityActions],
+  );
+  const generalCapabilityActions = React.useMemo(
+    () => capabilityActions.filter((action) => !PATROL_CAPABILITY_KEYS.has(action.key)),
+    [capabilityActions],
+  );
 
   const handleCapabilityPolicyChange = async (capability: string, mode: CapabilityPolicyMode) => {
     if (!canManageCapabilityPolicies) return;
@@ -482,6 +499,50 @@ export default function AgentSettingsSection({
     } catch (e: any) {
       onSetSettingsError(e?.message || 'Failed to save capability policy');
     }
+  };
+
+  const renderCapabilityPolicyRow = (action: CapabilityAction) => {
+    const currentMode = policyToMode(capabilityPolicyByCapability.get(action.capability));
+    const unsupported = capabilityDefinitionSet.size > 0 && !capabilityDefinitionSet.has(action.capability);
+    const disabled = !canManageCapabilityPolicies || capabilityPolicyLoading || !!capabilityPolicyError || unsupported;
+    return (
+      <div
+        key={action.key}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '10px 14px',
+          background: 'var(--bg-elevated)',
+          borderRadius: '8px',
+          border: '1px solid var(--border-subtle)',
+        }}
+      >
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 500, fontSize: '13px' }}>{action.label}</div>
+          <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{action.desc}</div>
+        </div>
+        <select
+          className="input"
+          value={currentMode}
+          disabled={disabled}
+          onChange={async (e) => {
+            await handleCapabilityPolicyChange(action.capability, e.target.value as CapabilityPolicyMode);
+          }}
+          style={{
+            width: '140px',
+            fontSize: '12px',
+            color: currentMode === 'auto' ? 'var(--success)' : currentMode === 'approval' ? 'var(--warning)' : 'var(--error)',
+            fontWeight: 600,
+            opacity: disabled ? 0.6 : 1,
+          }}
+        >
+          <option value="auto">{t('agent.settings.autonomy.l1Auto')}</option>
+          <option value="approval">{t('agent.settings.autonomy.l3Approve')}</option>
+          <option value="deny">{t('agent.settings.autonomy.deny')}</option>
+        </select>
+      </div>
+    );
   };
 
   const handleSaveSettings = async () => {
@@ -917,49 +978,7 @@ export default function AgentSettingsSection({
           </p>
         )}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          {capabilityActions.map((action) => {
-            const currentMode = policyToMode(capabilityPolicyByCapability.get(action.capability));
-            const unsupported = capabilityDefinitionSet.size > 0 && !capabilityDefinitionSet.has(action.capability);
-            const disabled = !canManageCapabilityPolicies || capabilityPolicyLoading || !!capabilityPolicyError || unsupported;
-            return (
-              <div
-                key={action.key}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  padding: '10px 14px',
-                  background: 'var(--bg-elevated)',
-                  borderRadius: '8px',
-                  border: '1px solid var(--border-subtle)',
-                }}
-              >
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 500, fontSize: '13px' }}>{action.label}</div>
-                  <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{action.desc}</div>
-                </div>
-                <select
-                  className="input"
-                  value={currentMode}
-                  disabled={disabled}
-                  onChange={async (e) => {
-                    await handleCapabilityPolicyChange(action.capability, e.target.value as CapabilityPolicyMode);
-                  }}
-                  style={{
-                    width: '140px',
-                    fontSize: '12px',
-                    color: currentMode === 'auto' ? 'var(--success)' : currentMode === 'approval' ? 'var(--warning)' : 'var(--error)',
-                    fontWeight: 600,
-                    opacity: disabled ? 0.6 : 1,
-                  }}
-                >
-                  <option value="auto">{t('agent.settings.autonomy.l1Auto')}</option>
-                  <option value="approval">{t('agent.settings.autonomy.l3Approve')}</option>
-                  <option value="deny">{t('agent.settings.autonomy.deny')}</option>
-                </select>
-              </div>
-            );
-          })}
+          {generalCapabilityActions.map(renderCapabilityPolicyRow)}
         </div>
       </div>
 
@@ -1168,137 +1187,30 @@ export default function AgentSettingsSection({
       </div>
 
       <div className="card" style={{ marginBottom: '12px' }}>
-        <h4 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>{t('agent.settings.heartbeat.title', 'Heartbeat')}</h4>
+        <h4 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>{t('agent.settings.patrol.title', 'Patrol & Agent Circle')}</h4>
         <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
-          {t('agent.settings.heartbeat.description', 'Periodic awareness check — agent proactively monitors Agent Circle and the work environment.')}
+          {t('agent.settings.patrol.description', 'Configure the real user-facing autonomy surfaces: wake policies for scheduled patrols, and Agent Circle permissions for reading or posting updates.')}
         </p>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              padding: '10px 14px',
-              background: 'var(--bg-elevated)',
-              borderRadius: '8px',
-              border: '1px solid var(--border-subtle)',
-            }}
-          >
-            <div>
-              <div style={{ fontWeight: 500, fontSize: '13px' }}>{t('agent.settings.heartbeat.enabled', 'Enable Heartbeat')}</div>
-              <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{t('agent.settings.heartbeat.enabledDesc', 'Agent will periodically check Agent Circle and work status')}</div>
-            </div>
-            <label style={{ position: 'relative', display: 'inline-block', width: '44px', height: '24px', cursor: canManage ? 'pointer' : 'default' }}>
-              <input
-                type="checkbox"
-                checked={agent?.heartbeat_enabled ?? true}
-                disabled={!canManage}
-                onChange={async (e) => {
-                  if (!canManage) return;
-                  await agentApi.update(agentId, { heartbeat_enabled: e.target.checked } as any);
-                  queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
-                }}
-                style={{ opacity: 0, width: 0, height: 0 }}
-              />
-              <span
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
-                  background: (agent?.heartbeat_enabled ?? true) ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
-                  borderRadius: '12px',
-                  transition: 'background 0.2s',
-                  opacity: canManage ? 1 : 0.6,
-                }}
-              >
-                <span
-                  style={{
-                    position: 'absolute',
-                    top: '3px',
-                    left: (agent?.heartbeat_enabled ?? true) ? '23px' : '3px',
-                    width: '18px',
-                    height: '18px',
-                    background: 'white',
-                    borderRadius: '50%',
-                    transition: 'left 0.2s',
-                  }}
-                />
-              </span>
-            </label>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '10px', marginBottom: '12px' }}>
+          <div style={{ padding: '10px 14px', background: 'var(--bg-elevated)', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+            <div style={{ fontWeight: 500, fontSize: '13px' }}>{t('agent.settings.patrol.wakeTitle', 'Scheduled patrols')}</div>
+            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '3px' }}>{t('agent.settings.patrol.wakeDesc', 'Create and manage patrols in Awareness & Triggers using wake policies.')}</div>
           </div>
-
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              padding: '10px 14px',
-              background: 'var(--bg-elevated)',
-              borderRadius: '8px',
-              border: '1px solid var(--border-subtle)',
-            }}
-          >
-            <div>
-              <div style={{ fontWeight: 500, fontSize: '13px' }}>{t('agent.settings.heartbeat.interval', 'Check Interval')}</div>
-              <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{t('agent.settings.heartbeat.intervalDesc', 'How often the agent checks for updates')}</div>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <input
-                type="number"
-                className="input"
-                disabled={!canManage}
-                min={1}
-                defaultValue={agent?.heartbeat_interval_minutes ?? 120}
-                key={agent?.heartbeat_interval_minutes}
-                onBlur={async (e) => {
-                  if (!canManage) return;
-                  const val = Math.max(1, Number(e.target.value) || 120);
-                  e.target.value = String(val);
-                  await agentApi.update(agentId, { heartbeat_interval_minutes: val } as any);
-                  queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
-                }}
-                style={{ width: '80px', fontSize: '12px', opacity: canManage ? 1 : 0.6 }}
-              />
-              <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('common.minutes', 'min')}</span>
-            </div>
+          <div style={{ padding: '10px 14px', background: 'var(--bg-elevated)', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+            <div style={{ fontWeight: 500, fontSize: '13px' }}>{t('agent.settings.patrol.circleTitle', 'Agent Circle participation')}</div>
+            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '3px' }}>{t('agent.settings.patrol.circleDesc', 'Reading and posting in Agent Circle are governed by capability policy below.')}</div>
           </div>
-
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              padding: '10px 14px',
-              background: 'var(--bg-elevated)',
-              borderRadius: '8px',
-              border: '1px solid var(--border-subtle)',
-            }}
-          >
-            <div>
-              <div style={{ fontWeight: 500, fontSize: '13px' }}>{t('agent.settings.heartbeat.activeHours', 'Active Hours')}</div>
-              <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{t('agent.settings.heartbeat.activeHoursDesc', 'Only trigger heartbeat during these hours (HH:MM-HH:MM)')}</div>
-            </div>
-            <input
-              className="input"
-              disabled={!canManage}
-              value={agent?.heartbeat_active_hours ?? '09:00-18:00'}
-              onChange={async (e) => {
-                if (!canManage) return;
-                await agentApi.update(agentId, { heartbeat_active_hours: e.target.value } as any);
-                queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
-              }}
-              style={{ width: '140px', fontSize: '12px', textAlign: 'center', opacity: canManage ? 1 : 0.6 }}
-              placeholder="09:00-18:00"
-            />
-          </div>
-
-          {agent?.last_heartbeat_at && (
-            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', paddingLeft: '4px' }}>
-              {t('agent.settings.heartbeat.lastRun', 'Last heartbeat')}: {new Date(agent.last_heartbeat_at).toLocaleString()}
-            </div>
-          )}
+        </div>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+          <a className="btn btn-secondary" href={`/agents/${agentId}#aware`} style={{ fontSize: '12px', padding: '6px 10px' }}>
+            {t('agent.settings.patrol.openAware', 'Open Awareness & Triggers')}
+          </a>
+          <a className="btn btn-secondary" href="/plaza" style={{ fontSize: '12px', padding: '6px 10px' }}>
+            {t('agent.settings.patrol.openPlaza', 'Open Agent Circle')}
+          </a>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          {patrolCapabilityActions.map(renderCapabilityPolicyRow)}
         </div>
       </div>
 

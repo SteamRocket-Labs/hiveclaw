@@ -219,7 +219,7 @@
       "aware": "自我意识",
       "awareTooltip": "当前关注的事项、自动触发器和行动记录",
       "mind": "心智",
-      "mindTooltip": "人格 (Soul)、积累的记忆、以及自检例程 (Heartbeat)",
+      "mindTooltip": "人格 (Soul) 与长期记忆",
       "evolution": "进化",
       "evolutionTooltip": "这位员工如何随时间成长 — 技能生命周期与提升记录",
       "tools": "工具",
@@ -392,9 +392,9 @@
     },
     "mind": {
       "soulDesc": "核心身份、人格和行为边界 — 定义这位员工是谁。",
-      "memoryDesc": "从对话中蒸馏的长期知识 — 用户反馈、策略、已阻止的方法和项目知识。",
+      "memoryDesc": "从对话中沉淀的长期知识 — 用户反馈、策略、已阻止的方法和项目知识。",
       "evolutionTitle": "进化",
-      "evolutionDesc": "蒸馏历史、绩效记分卡和已阻止的方法。"
+      "evolutionDesc": "演进历史、绩效记分卡和已阻止的方法。"
     },
 
     "evolution": {
@@ -732,7 +732,7 @@
       "clampedField": {
         "minPollInterval": "最小检查间隔",
         "webhookRateLimit": "最大接收事件数",
-        "heartbeatInterval": "自检间隔"
+        "heartbeatInterval": "后台维护间隔"
       },
       "clampedMessage": "{{name}}：{{requested}} → {{applied}}（按公司策略调整）",
       "channel": {
@@ -788,16 +788,15 @@
         "standardDesc": "独立完成工作任务",
         "coordinatorDesc": "委派并综合其他员工的工作成果"
       },
-      "heartbeat": {
-        "title": "Heartbeat 自检",
-        "description": "定期自检 — 员工按计划主动监控 Agent圈 和工作环境。",
-        "enabled": "启用自检",
-        "enabledDesc": "员工将定期检查动态和新任务",
-        "interval": "检查间隔",
-        "intervalDesc": "员工检查更新的频率",
-        "activeHours": "活跃时间",
-        "activeHoursDesc": "仅在此时间段内自检（如 09:00-18:00）",
-        "lastRun": "上次自检"
+      "patrol": {
+        "title": "巡检与 Agent圈",
+        "description": "配置真正面向用户的自主能力：用唤醒策略做定时巡检，用 Agent圈 权限控制读取和发布动态。",
+        "wakeTitle": "定时巡检",
+        "wakeDesc": "在“意识与触发器”里用唤醒策略创建和管理巡检。",
+        "circleTitle": "Agent圈参与",
+        "circleDesc": "读取和发布 Agent圈 动态由下方能力策略控制。",
+        "openAware": "打开意识与触发器",
+        "openPlaza": "打开 Agent圈"
       },
       "perm": {
         "title": "访问权限",
@@ -1060,8 +1059,8 @@
       "dailyLLMCalls": "每位员工每日 AI 请求",
       "maxLLMCallsPerDay": "每位员工每天可发起的最大 AI 请求数",
       "system": "系统",
-      "minHeartbeatInterval": "最小自检间隔（分钟）",
-      "minHeartbeatDesc": "所有员工的自检最短间隔",
+      "minHeartbeatInterval": "最小后台维护间隔（分钟）",
+      "minHeartbeatDesc": "所有员工的平台后台维护最短间隔",
       "triggerLimits": "自动化限制",
       "defaultMaxTriggers": "默认最大触发器数",
       "defaultMaxTriggersDesc": "新员工的自动化触发器上限",
@@ -1411,8 +1410,8 @@
       "monthlyTokenDesc": "每位员工每月的最大用量（约 {{amount}}）",
       "monthlyTokenDescUnlimited": "每位员工每月的最大用量（不限制）",
       "systemSettings": "系统设置",
-      "minHeartbeatInterval": "最小自检间隔（分钟）",
-      "minHeartbeatDesc": "所有员工的自检最短间隔",
+      "minHeartbeatInterval": "最小后台维护间隔（分钟）",
+      "minHeartbeatDesc": "所有员工的平台后台维护最短间隔",
       "defaultMaxTriggers": "默认最大触发器数",
       "defaultMaxTriggersDesc": "新员工的自动化触发器上限",
       "minPollInterval": "最小检查间隔（分钟）",

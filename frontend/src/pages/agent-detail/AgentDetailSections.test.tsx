@@ -649,6 +649,13 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('modelConfig');
     expect(markup).toContain('Execution Mode');
     expect(markup).toContain('Coordinator');
+    expect(markup).toContain('Patrol &amp; Agent Circle');
+    expect(markup).toContain('Open Awareness &amp; Triggers');
+    expect(markup).toContain('Open Agent Circle');
+    expect(markup).not.toContain('Memory Distillation');
+    expect(markup).not.toContain('Always on');
+    expect(markup).not.toContain('Enable Heartbeat');
+    expect(markup).not.toContain('Agent will periodically check Agent Circle and work status');
     expect(markup).toContain('Runtime Safety Boundary');
     expect(markup).toContain('Loose (Default)');
     expect(markup).toContain('Approval Guard');

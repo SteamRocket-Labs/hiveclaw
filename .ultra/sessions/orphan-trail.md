@@ -4,6 +4,13 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
+- 2026-05-29T11:42Z [sid:15e7a853]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: c940642 fix(deep-research): unblock report budget + thesis-d
+- 2026-05-29T10:06Z [sid:38099d9d]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: c77b7e8 fix(deep-research): plan gate forbids agent self-con
+- 2026-05-29T10:06Z [sid:15e7a853]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: c77b7e8 fix(deep-research): plan gate forbids agent self-con
+- 2026-05-29T10:04Z [sid:cbd48d55]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: c77b7e8 fix(deep-research): plan gate forbids agent self-con
+- 2026-05-28T15:50Z [sid:89ec882e]; branch:main; 1 files (orphan-trail.md); last commit: e56050c Harden Deep Research v2: plan gate, integration synt
+- 2026-05-28T15:50Z [sid:cbd48d55]; branch:main; 1 files (orphan-trail.md); last commit: e56050c Harden Deep Research v2: plan gate, integration synt
+- 2026-05-28T15:49Z [sid:29c1eed6]; branch:main; 1 files (orphan-trail.md); last commit: e56050c Harden Deep Research v2: plan gate, integration synt
 - 2026-05-26T11:03Z [sid:48e5faae]; branch:main; 7 files (agents.py, workspace.py, heartbeat.py, +4); last commit: a427ef3 Loosen runtime guards and align tool round defaults
 - 2026-05-25T15:50Z [sid:3f8a6834]; branch:main; 7 files (orphan-trail.md, SKILL.md, audit.py, +4); last commit: 86d6fb5 Gate skill flywheel bridge with runtime flag
 - 2026-05-24T00:37Z [sid:f00f9812]; branch:main; 3 files (orphan-trail.md, AGENTS.md, CLAUDE.md); last commit: 84c3254 Update local memory chroma state

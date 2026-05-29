@@ -15,11 +15,20 @@ def _extract_tool_error_payload(result: str) -> dict:
 
 
 class _FakeResponse:
-    def __init__(self, *, status_code: int = 200, text: str = "", json_data: dict | None = None, headers: dict | None = None):
+    def __init__(
+        self,
+        *,
+        status_code: int = 200,
+        text: str = "",
+        json_data: dict | None = None,
+        headers: dict | None = None,
+        content: bytes = b"",
+    ):
         self.status_code = status_code
         self.text = text
         self._json_data = json_data or {}
         self.headers = headers or {}
+        self.content = content
 
     def json(self) -> dict:
         return self._json_data
@@ -244,9 +253,11 @@ async def test_web_fetch_rejects_feishu_open_api_urls_before_http(monkeypatch):
 
     monkeypatch.setattr("httpx.AsyncClient", lambda *args, **kwargs: FailingClient())
 
-    result = await web_mcp._web_fetch({
-        "url": "https://open.feishu.cn/open-apis/calendar/v4/calendars?page_size=100",
-    })
+    result = await web_mcp._web_fetch(
+        {
+            "url": "https://open.feishu.cn/open-apis/calendar/v4/calendars?page_size=100",
+        }
+    )
 
     payload = _extract_tool_error_payload(result)
     assert payload["error_class"] == "wrong_tool"
@@ -257,7 +268,9 @@ async def test_web_fetch_rejects_feishu_open_api_urls_before_http(monkeypatch):
 async def test_web_search_falls_back_to_duckduckgo_when_provider_returns_error_string(monkeypatch):
     from app.services.agent_tool_domains import web_mcp
 
-    tool = SimpleNamespace(config={"search_engine": "tavily", "api_key": "tvly-key", "max_results": 5, "language": "en"})
+    tool = SimpleNamespace(
+        config={"search_engine": "tavily", "api_key": "tvly-key", "max_results": 5, "language": "en"}
+    )
     monkeypatch.setattr(web_mcp, "async_session", lambda: _FakeSession(tool))
 
     async def fake_tavily(query: str, api_key: str, max_results: int) -> str:
@@ -413,3 +426,64 @@ async def test_xcrawl_scrape_falls_back_to_firecrawl_on_provider_error(monkeypat
     payload = _extract_tool_error_payload(result)
     assert payload["provider"] == "xcrawl"
     assert payload["fallback_tool"] == "firecrawl_fetch"
+
+
+def _make_pdf_bytes(body: str) -> bytes:
+    from io import BytesIO
+
+    from reportlab.pdfgen import canvas
+
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer)
+    pdf.drawString(72, 720, body)
+    pdf.save()
+    return buffer.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_extracts_text_from_pdf(monkeypatch):
+    from app.services.agent_tool_domains import web_mcp
+
+    pdf_bytes = _make_pdf_bytes("Quarterly RWA tokenization grew 35 percent in 2026")
+    monkeypatch.setattr(
+        "httpx.AsyncClient",
+        lambda *args, **kwargs: _FakeAsyncClient(
+            _FakeResponse(
+                status_code=200,
+                # httpx would decode the PDF bytes into mojibake; web_fetch must use resp.content instead.
+                text="%PDF-1.4 �� binary mojibake",
+                content=pdf_bytes,
+                headers={"content-type": "application/pdf"},
+            ),
+        ),
+    )
+
+    result = await web_mcp._web_fetch({"url": "https://issuer.example/report.pdf", "max_chars": 5000})
+
+    assert "RWA tokenization grew 35 percent" in result
+    assert "%PDF" not in result
+    assert "<tool_error>" not in result
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_rejects_unreadable_pdf(monkeypatch):
+    from app.services.agent_tool_domains import web_mcp
+
+    monkeypatch.setattr(
+        "httpx.AsyncClient",
+        lambda *args, **kwargs: _FakeAsyncClient(
+            _FakeResponse(
+                status_code=200,
+                text="%PDF garbage",
+                content=b"%PDF-1.4\nthis is not a parseable pdf body at all",
+                headers={"content-type": "application/pdf"},
+            ),
+        ),
+    )
+
+    result = await web_mcp._web_fetch(
+        {"url": "https://issuer.example/broken.pdf", "max_chars": 5000, web_mcp._SKIP_CRAWLER_FALLBACK: True}
+    )
+
+    payload = _extract_tool_error_payload(result)
+    assert payload["error_class"] == "unreadable_pdf"

@@ -36,6 +36,11 @@ RESEARCH_WORKER_EXCLUDED_TOOLS: tuple[str, ...] = (
     "delete_file",
 )
 _FETCH_TOOLS = {"web_fetch", "firecrawl_fetch", "xcrawl_scrape"}
+# F2/F3 (RC2/RC3): cap a single captured source so one oversized page cannot blow the
+# worker token budget (the production incident: worker #3 burned 452K tokens on one giant page).
+_MAX_SOURCE_CONTENT_CHARS = 12000
+# F3 (RC3): cap how many sources one worker hoards (production: worker #3 grabbed 18 sources).
+_MAX_SOURCES_PER_WORKER = 8
 
 InvokeAgent = Callable[[AgentInvocationRequest], Awaitable[Any]]
 
@@ -81,6 +86,8 @@ class RuntimeResearchWorker:
         captured_sources: list[SourceRecord] = []
 
         async def on_tool_call(event: dict[str, Any]) -> None:
+            if len(captured_sources) >= _MAX_SOURCES_PER_WORKER:
+                return
             source = _source_from_tool_event(event)
             if source is not None:
                 captured_sources.append(source)
@@ -175,16 +182,22 @@ def _source_from_tool_event(event: dict[str, Any]) -> SourceRecord | None:
     if not url:
         return None
     raw_result = str(event.get("result") or "")
+    # RC2 backstop: web_fetch now extracts PDFs at the source, but guard the other fetch
+    # tools (and future regressions) from leaking an unparsed PDF / raw binary as a source.
+    if _looks_like_binary_or_pdf(raw_result):
+        return None
     cleaned = clean_fetched_text(raw_result)
     if not _has_usable_content(cleaned):
         return None
+    if len(cleaned) > _MAX_SOURCE_CONTENT_CHARS:
+        cleaned = cleaned[:_MAX_SOURCE_CONTENT_CHARS]
     return SourceRecord(
         # P4: assign a stable id at fetch so the id is consistent worker -> ledger -> report.
         source_id=new_id("src"),
         url=url,
         title=_extract_title(raw_result) or url,
         publisher=_publisher_from_url(url),
-        source_type=SourceType.UNKNOWN,
+        source_type=_infer_source_type(url),
         content=cleaned,
         fetch_tool=tool_name,
     )
@@ -240,6 +253,22 @@ def _worker_tool_rounds_for_model(model: Any) -> int:
     return 8
 
 
+def _looks_like_binary_or_pdf(text: str) -> bool:
+    """Reject unparsed PDF or raw binary payloads (RC2).
+
+    A fetch tool that returned bytes-as-text (e.g. a `%PDF-1.4` / `/FlateDecode` stream)
+    must never become a source: it wastes tokens and poisons synthesis.
+    """
+    if not text:
+        return False
+    head = text.lstrip()[:1024]
+    if head.startswith("%PDF") or "/FlateDecode" in head:
+        return True
+    sample = text[:2000]
+    control_chars = sum(1 for ch in sample if ord(ch) < 9 or 13 < ord(ch) < 32)
+    return control_chars / len(sample) > 0.10
+
+
 def _has_usable_content(text: str) -> bool:
     if len(text) < 80:
         return False
@@ -253,7 +282,13 @@ def _extract_title(text: str) -> str:
         if not line:
             continue
         lowered = line.lower()
-        if "fetched content from:" in lowered:
+        # RC8: skip fetch envelopes, PDF headers, extracted-PDF page markers, and pure-symbol lines
+        # so the title is a real heading, not "%PDF-1.4" or "📄 Fetched content from ...".
+        if "fetched content from:" in lowered or "content from:" in lowered:
+            continue
+        if line.startswith("%PDF") or line.startswith("📄") or line.startswith("---"):
+            continue
+        if not any(ch.isalnum() for ch in line):
             continue
         for prefix in ("title:", "#"):
             if lowered.startswith(prefix):
@@ -264,3 +299,14 @@ def _extract_title(text: str) -> str:
 
 def _publisher_from_url(url: str) -> str:
     return urlparse(url).netloc.removeprefix("www.")
+
+
+def _infer_source_type(url: str) -> SourceType:
+    """Domain-general source-type inference (RC6) so captured sources are not all UNKNOWN→tier3.
+    Uses universal authority signals (government / academic), not a domain-specific allowlist."""
+    host = urlparse(url).netloc.casefold()
+    if any(fragment in host for fragment in (".gov", ".gov.", ".mil", ".int", "europa.eu")):
+        return SourceType.REGULATORY
+    if any(fragment in host for fragment in (".edu", ".edu.", ".ac.", "arxiv.org", "doi.org", "ssrn.")):
+        return SourceType.PRIMARY
+    return SourceType.UNKNOWN

@@ -100,6 +100,16 @@ class ResearchRequest:
         worker_topics = [
             str(topic).strip() for topic in (arguments.get("worker_topics") or []) if str(topic or "").strip()
         ]
+        # F1 (RC1): the source budget must scale with depth, otherwise a deep run collapses
+        # 60+ fetched sources down to a handful and starves most research lanes.
+        max_sources_default = {
+            "quick": 6,
+            "light": 6,
+            "standard": 12,
+            "full": 30,
+            "flagship": 40,
+            "deep": 30,
+        }.get(depth, 12)
         return cls(
             question=question,
             mode=str(arguments.get("mode") or "topic_deep_dive").strip() or "topic_deep_dive",
@@ -108,7 +118,7 @@ class ResearchRequest:
             source_policy=str(arguments.get("source_policy") or "primary_preferred").strip() or "primary_preferred",
             time_window=str(arguments.get("time_window") or "").strip(),
             max_rounds=max_rounds,
-            max_sources=_coerce_int(arguments.get("max_sources"), default=8, minimum=1, maximum=50),
+            max_sources=_coerce_int(arguments.get("max_sources"), default=max_sources_default, minimum=1, maximum=60),
             concurrency=_coerce_int(arguments.get("concurrency"), default=4, minimum=1, maximum=12),
             token_budget=_coerce_optional_int(arguments.get("token_budget"), minimum=1),
             deadline_seconds=deadline_seconds,

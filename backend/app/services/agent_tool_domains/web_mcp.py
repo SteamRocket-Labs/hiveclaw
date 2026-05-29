@@ -427,6 +427,24 @@ async def _web_fetch_failure_result(
     )
 
 
+def _extract_pdf_text(data: bytes) -> str:
+    """Extract real text from PDF bytes (RC2).
+
+    Returns '' when the payload is not a parseable PDF so the caller can surface a clean
+    error instead of returning httpx-decoded mojibake (the production incident: a fetched
+    PDF arrived as a `%PDF-1.4` / `/FlateDecode` byte stream and poisoned the evidence ledger).
+    """
+    if not data:
+        return ""
+    try:
+        from app.services.text_extractor import extract_text
+
+        return (extract_text(data, "fetched.pdf") or "").strip()
+    except Exception as e:
+        logger.debug("PDF text extraction failed: %s", e)
+        return ""
+
+
 async def _web_fetch(arguments: dict) -> str:
     url = arguments.get("url", "").strip()
     if not url:
@@ -479,20 +497,40 @@ async def _web_fetch(arguments: dict) -> str:
             )
 
         content_type = (resp.headers.get("content-type", "") or "").lower()
-        text = resp.text.strip()
-        if "html" in content_type or text.lstrip().startswith("<!doctype html") or text.lstrip().startswith("<html"):
-            markup = text
-            text = _extract_text_from_html(markup)
-            if _looks_like_incomplete_rendered_page(markup, text):
+        raw_bytes = resp.content or b""
+        if "application/pdf" in content_type or raw_bytes[:5].startswith(b"%PDF"):
+            # RC2: PDFs arrive as binary; httpx resp.text would be mojibake. Extract real text
+            # from the bytes, or fail cleanly so a bad PDF never poisons a research ledger.
+            text = _extract_pdf_text(raw_bytes)
+            if not text:
                 return await _web_fetch_failure_result(
                     arguments,
                     normalized_url=normalized_url,
                     max_chars=max_chars,
-                    error_class="incomplete_content",
-                    message=f"web_fetch returned incomplete rendered content for {normalized_url}",
+                    error_class="unreadable_pdf",
+                    message=f"web_fetch could not extract text from the PDF at {normalized_url}",
                     retryable=True,
-                    actionable_hint="Try a crawler-backed reader for JS-rendered pages.",
+                    actionable_hint="The PDF may be scanned or image-only; try a crawler-backed reader or another source.",
                 )
+        else:
+            text = resp.text.strip()
+            if (
+                "html" in content_type
+                or text.lstrip().startswith("<!doctype html")
+                or text.lstrip().startswith("<html")
+            ):
+                markup = text
+                text = _extract_text_from_html(markup)
+                if _looks_like_incomplete_rendered_page(markup, text):
+                    return await _web_fetch_failure_result(
+                        arguments,
+                        normalized_url=normalized_url,
+                        max_chars=max_chars,
+                        error_class="incomplete_content",
+                        message=f"web_fetch returned incomplete rendered content for {normalized_url}",
+                        retryable=True,
+                        actionable_hint="Try a crawler-backed reader for JS-rendered pages.",
+                    )
         if not text:
             return await _web_fetch_failure_result(
                 arguments,
@@ -578,7 +616,11 @@ async def _firecrawl_fetch(arguments: dict) -> str:
                 },
             )
 
-        data = resp.json() if "json" in (resp.headers.get("content-type", "") or "").lower() or resp.text.strip().startswith("{") else {}
+        data = (
+            resp.json()
+            if "json" in (resp.headers.get("content-type", "") or "").lower() or resp.text.strip().startswith("{")
+            else {}
+        )
         if resp.status_code != 200:
             if arguments.get(_SKIP_WEB_FETCH_FALLBACK):
                 return _http_error(
@@ -704,7 +746,11 @@ async def _xcrawl_scrape(arguments: dict) -> str:
                 },
             )
 
-        data = resp.json() if "json" in (resp.headers.get("content-type", "") or "").lower() or resp.text.strip().startswith("{") else {}
+        data = (
+            resp.json()
+            if "json" in (resp.headers.get("content-type", "") or "").lower() or resp.text.strip().startswith("{")
+            else {}
+        )
         if resp.status_code != 200:
             if arguments.get(_SKIP_FIRECRAWL_FALLBACK):
                 return _http_error(
@@ -731,11 +777,7 @@ async def _xcrawl_scrape(arguments: dict) -> str:
 
         payload = data.get("data", data)
         text = (
-            payload.get("markdown")
-            or payload.get("content")
-            or payload.get("text")
-            or payload.get("html")
-            or ""
+            payload.get("markdown") or payload.get("content") or payload.get("text") or payload.get("html") or ""
         ).strip()
         if not text:
             if arguments.get(_SKIP_FIRECRAWL_FALLBACK):
@@ -1087,7 +1129,9 @@ async def _execute_via_smithery_connect(
         )
 
 
-async def _smithery_auto_recover(api_key: str, mcp_url: str, namespace: str, connection_id: str, agent_id=None) -> str | None:
+async def _smithery_auto_recover(
+    api_key: str, mcp_url: str, namespace: str, connection_id: str, agent_id=None
+) -> str | None:
     try:
         from app.models.tool import AgentTool, Tool
         from app.services.resource_discovery import _ensure_smithery_connection
@@ -1097,7 +1141,7 @@ async def _smithery_auto_recover(api_key: str, mcp_url: str, namespace: str, con
         if "error" in conn_result:
             return (
                 f"❌ MCP tool connection expired and auto-recovery failed: {conn_result['error']}\n\n"
-                "💡 Please re-authorize by telling me: `import_mcp_server(server_id=\"...\", reauthorize=true)`"
+                '💡 Please re-authorize by telling me: `import_mcp_server(server_id="...", reauthorize=true)`'
             )
 
         new_config = {

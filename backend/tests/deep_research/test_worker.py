@@ -40,7 +40,9 @@ async def test_research_worker_invokes_agent_with_governed_web_tool_surface():
         captured["max_tool_rounds"] = request.max_tool_rounds
         captured["source"] = request.session_context.source
         captured["metadata"] = request.session_context.metadata
-        return type("Result", (), {"content": "## Worker digest\n\nFinding A with citation [src_pending].", "tokens_used": 321})()
+        return type(
+            "Result", (), {"content": "## Worker digest\n\nFinding A with citation [src_pending].", "tokens_used": 321}
+        )()
 
     worker = RuntimeResearchWorker(
         agent_id=uuid.uuid4(),
@@ -123,3 +125,180 @@ async def test_research_worker_captures_only_completed_fetch_tool_events_as_sour
     assert source.publisher == "issuer.example"
     assert source.fetch_tool == "web_fetch"
     assert "35% growth" in source.content
+
+
+@pytest.mark.asyncio
+async def test_research_worker_drops_unparsed_pdf_and_binary_sources():
+    from app.services.deep_research.schemas import ResearchRequest
+    from app.services.deep_research.worker import RuntimeResearchWorker
+
+    async def fake_invoke(request):
+        await request.on_tool_call(
+            {
+                "tool_name": "web_fetch",
+                "status": "done",
+                "args": {"url": "https://issuer.example/report.pdf"},
+                # Unparsed PDF leaked through as text: %PDF magic + FlateDecode binary stream.
+                "result": "%PDF-1.4\n%\xe2\xe3\xcf\xd3\n4 0 obj<</Length 999/Filter/FlateDecode>>stream\n"
+                + ("\x00\x01\x02\x03\x04\x05\x06\x07\x08" * 40),
+            }
+        )
+        return type("Result", (), {"content": "digest", "tokens_used": 5})()
+
+    worker = RuntimeResearchWorker(
+        agent_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        model=_StubModel(),
+        fallback_model=None,
+        agent=_StubAgent(),
+        invoke=fake_invoke,
+    )
+
+    result = await worker.run("pdf lane", request=ResearchRequest(question="research pdf lane"))
+
+    assert result.sources == [], "unparsed PDF / binary payloads must not be captured as sources"
+
+
+@pytest.mark.asyncio
+async def test_research_worker_caps_source_content_length():
+    from app.services.deep_research.schemas import ResearchRequest
+    from app.services.deep_research.worker import RuntimeResearchWorker
+
+    huge_body = "Issuer A disclosed 35% growth across 12 jurisdictions in 2026. " * 2000
+
+    async def fake_invoke(request):
+        await request.on_tool_call(
+            {
+                "tool_name": "web_fetch",
+                "status": "done",
+                "args": {"url": "https://issuer.example/huge"},
+                "result": f"Title: Huge Page\n{huge_body}",
+            }
+        )
+        return type("Result", (), {"content": "digest", "tokens_used": 5})()
+
+    worker = RuntimeResearchWorker(
+        agent_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        model=_StubModel(),
+        fallback_model=None,
+        agent=_StubAgent(),
+        invoke=fake_invoke,
+    )
+
+    result = await worker.run("huge lane", request=ResearchRequest(question="research huge lane"))
+
+    assert len(result.sources) == 1
+    assert len(result.sources[0].content) <= 12000, "worker must cap captured source content to bound token spend"
+
+
+@pytest.mark.asyncio
+async def test_research_worker_caps_number_of_captured_sources():
+    from app.services.deep_research.schemas import ResearchRequest
+    from app.services.deep_research.worker import RuntimeResearchWorker
+
+    async def fake_invoke(request):
+        for i in range(20):
+            await request.on_tool_call(
+                {
+                    "tool_name": "web_fetch",
+                    "status": "done",
+                    "args": {"url": f"https://issuer.example/source-{i}"},
+                    "result": (
+                        f"Title: Source {i}\n"
+                        f"Issuer A disclosed 35% growth across 12 jurisdictions in 2026 for item {i}. "
+                        "Custody, transfer controls, and reporting obligations apply."
+                    ),
+                }
+            )
+        return type("Result", (), {"content": "digest", "tokens_used": 9})()
+
+    worker = RuntimeResearchWorker(
+        agent_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        model=_StubModel(),
+        fallback_model=None,
+        agent=_StubAgent(),
+        invoke=fake_invoke,
+    )
+
+    result = await worker.run("flood lane", request=ResearchRequest(question="research flood lane"))
+
+    assert len(result.sources) <= 8, "a single worker must not hoard sources (production: worker #3 grabbed 18)"
+
+
+@pytest.mark.asyncio
+async def test_research_worker_infers_source_type_from_authoritative_url():
+    from app.services.deep_research.schemas import ResearchRequest, SourceType
+    from app.services.deep_research.worker import RuntimeResearchWorker
+
+    async def fake_invoke(request):
+        await request.on_tool_call(
+            {
+                "tool_name": "web_fetch",
+                "status": "done",
+                "args": {"url": "https://www.sec.gov/rules/final/2026/rwa.htm"},
+                "result": (
+                    "Title: SEC RWA Disclosure Rule\n"
+                    "The Commission adopted disclosure rules for tokenized assets in 2026 covering custody, "
+                    "transfer controls, and reporting obligations across 12 jurisdictions."
+                ),
+            }
+        )
+        return type("Result", (), {"content": "digest", "tokens_used": 3})()
+
+    worker = RuntimeResearchWorker(
+        agent_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        model=_StubModel(),
+        fallback_model=None,
+        agent=_StubAgent(),
+        invoke=fake_invoke,
+    )
+
+    result = await worker.run("regulator lane", request=ResearchRequest(question="q"))
+
+    assert len(result.sources) == 1
+    assert result.sources[0].source_type in {
+        SourceType.REGULATORY,
+        SourceType.PRIMARY,
+    }, "a .gov source must not stay UNKNOWN (all-tier3 production bug)"
+
+
+@pytest.mark.asyncio
+async def test_research_worker_title_skips_envelope_and_page_noise():
+    from app.services.deep_research.schemas import ResearchRequest
+    from app.services.deep_research.worker import RuntimeResearchWorker
+
+    async def fake_invoke(request):
+        await request.on_tool_call(
+            {
+                "tool_name": "web_fetch",
+                "status": "done",
+                "args": {"url": "https://issuer.example/report.pdf"},
+                # web_fetch envelope + extracted-PDF page marker precede the real title.
+                "result": (
+                    "📄 **Fetched content from: https://issuer.example/report.pdf**\n\n"
+                    "--- 第1页 ---\n"
+                    "RWA Custody Report 2026\n"
+                    "Issuer A disclosed 35% growth across 12 jurisdictions with custody and reporting controls."
+                ),
+            }
+        )
+        return type("Result", (), {"content": "digest", "tokens_used": 3})()
+
+    worker = RuntimeResearchWorker(
+        agent_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        model=_StubModel(),
+        fallback_model=None,
+        agent=_StubAgent(),
+        invoke=fake_invoke,
+    )
+
+    result = await worker.run("issuer lane", request=ResearchRequest(question="q"))
+
+    assert len(result.sources) == 1
+    title = result.sources[0].title
+    assert "%PDF" not in title and "📄" not in title and not title.startswith("---")
+    assert "RWA Custody Report" in title

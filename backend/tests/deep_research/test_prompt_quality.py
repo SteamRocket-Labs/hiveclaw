@@ -47,3 +47,22 @@ def test_synthesize_report_instruction_path_is_integration_based():
     assert "INTEGRATION, NOT SUMMARIZATION" in src
     assert "REASONING_CALIBRATION" in src
     assert "WRITING_QUALITY" in src
+
+
+def test_digest_synthesis_instruction_sets_depth_expectation():
+    from app.services.deep_research.reasoner import build_digest_synthesis_instruction
+    from app.services.deep_research.schemas import ResearchRequest
+
+    full = build_digest_synthesis_instruction(ResearchRequest(question="q", depth="full"), "English")
+    quick = build_digest_synthesis_instruction(ResearchRequest(question="q", depth="quick"), "English")
+
+    # Full depth must explicitly ask for a thorough, multi-section report so synthesis stops
+    # under-producing (the production incident: synthesis failed twice below the 1200-char floor).
+    assert "DEPTH EXPECTATION" in full
+    assert "full" in full.lower()
+    assert "multi-section" in full.lower() or "thorough" in full.lower()
+    # …but depth is not a licence to pad — anti-filler discipline must remain explicit.
+    assert "filler" in full.lower() or "padding" in full.lower()
+    # Depth changes the expectation; a quick brief should read as concise.
+    assert full != quick
+    assert "concise" in quick.lower()

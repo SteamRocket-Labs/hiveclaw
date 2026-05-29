@@ -287,44 +287,35 @@ class DeepResearchOrchestrator:
             deadline_seconds=request.deadline_seconds,
         )
 
-        accepted_sources = 0
-        seen_source_urls: set[str] = set()
+        # F1 (RC1): select sources fairly across workers instead of letting the first worker
+        # fill the whole budget. The worker already digested each page, so we do NOT spend a
+        # per-source LLM call to re-summarize here (that serial loop was the main latency sink);
+        # claims are extracted deterministically and the worker digest is the synthesizer's substrate.
+        for result, source in _select_sources_round_robin(worker_results, request.max_sources):
+            lane_id = source.lane_id or _lane_id_for_worker_topic(plan, result.topic)
+            ledger_source = ledger.add_source(
+                url=source.url,
+                title=source.title,
+                publisher=source.publisher,
+                source_type=source.source_type
+                if source.source_type != SourceType.UNKNOWN
+                else _source_type_for_lane(lane_id),
+                content=source.content,
+                published_at=source.published_at,
+                lane_id=lane_id,
+                query=source.query or result.topic,
+                fetch_tool=source.fetch_tool,
+                source_id=source.source_id,
+            )
+            source.source_id = ledger_source.source_id
+            source.source_type = ledger_source.source_type
+            source.lane_id = ledger_source.lane_id
+            source.query = ledger_source.query
+            source.evidence_tier = ledger_source.evidence_tier
+            source.evidence_grade = ledger_source.evidence_grade
+            extract_claims_from_source(ledger, ledger_source)
+
         for result in worker_results:
-            for source in result.sources:
-                if accepted_sources >= request.max_sources:
-                    break
-                if not source.url or source.url in seen_source_urls:
-                    continue
-                lane_id = source.lane_id or _lane_id_for_worker_topic(plan, result.topic)
-                ledger_source = ledger.add_source(
-                    url=source.url,
-                    title=source.title,
-                    publisher=source.publisher,
-                    source_type=source.source_type
-                    if source.source_type != SourceType.UNKNOWN
-                    else _source_type_for_lane(lane_id),
-                    content=source.content,
-                    published_at=source.published_at,
-                    lane_id=lane_id,
-                    query=source.query or result.topic,
-                    fetch_tool=source.fetch_tool,
-                    source_id=source.source_id,
-                )
-                source.source_id = ledger_source.source_id
-                source.source_type = ledger_source.source_type
-                source.lane_id = ledger_source.lane_id
-                source.query = ledger_source.query
-                source.evidence_tier = ledger_source.evidence_tier
-                source.evidence_grade = ledger_source.evidence_grade
-                seen_source_urls.add(source.url)
-                accepted_sources += 1
-
-                # P2: the worker already digested this page, so we do NOT spend a per-source
-                # LLM call to re-summarize or re-extract here (that serial loop was the main
-                # latency sink). Claims are extracted deterministically; the worker digest —
-                # not re-summarized excerpts — is the synthesizer's substrate.
-                extract_claims_from_source(ledger, ledger_source)
-
             writer.append_worker_report(result)
             writer.append_step(
                 _step(
@@ -501,6 +492,15 @@ def _build_worker_runner_from_reasoner(reasoner: Any | None):
     return RuntimeResearchWorker(agent_id=agent_id, user_id=user_id)
 
 
+def _short_question(question: str, *, limit: int = 200) -> str:
+    """Compress a long mega-question into a short background line so worker prompts stay
+    lane-focused instead of pasting all 10 dimensions into every worker (F3/RC3)."""
+    text = " ".join((question or "").split())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "…"
+
+
 async def _worker_topics(reasoner: Any | None, request: ResearchRequest, plan) -> list[str]:
     if reasoner is not None and hasattr(reasoner, "decide_next"):
         try:
@@ -512,13 +512,16 @@ async def _worker_topics(reasoner: Any | None, request: ResearchRequest, plan) -
             return topics[: _topic_budget(request, plan)]
 
     topics: list[str] = []
+    background = _short_question(request.question)
     for lane in plan.lanes:
         queries = "; ".join(query.query for query in lane.queries[:4] if query.query)
+        # F3 (RC3): focus each worker on its own lane. Pasting the full 10-dimension question into
+        # every worker made each one chase the whole topic and blow the token budget.
         topic = (
-            f"{request.question}\n"
-            f"Lane: {lane.label or lane.lane_id}\n"
+            f"Research lane: {lane.label or lane.lane_id}\n"
             f"Goal: {lane.goal or 'collect source-grounded evidence'}\n"
-            f"Queries: {queries or request.question}"
+            f"Focus queries: {queries or lane.label or background}\n"
+            f"Background (stay on this lane, do not chase the whole question): {background}"
         )
         topics.append(topic)
     return topics[: _topic_budget(request, plan)]
@@ -581,14 +584,52 @@ async def _run_worker_fanout(
     return [result for result in results if isinstance(result, WorkerResult)]
 
 
+def _select_sources_round_robin(worker_results: list[WorkerResult], max_sources: int) -> list[tuple[WorkerResult, Any]]:
+    """Fair cross-worker source selection (F1/RC1).
+
+    Round-robin one source per worker per pass so the first worker cannot fill the whole
+    budget and squeeze later lanes out (the production incident: 64 fetched sources collapsed
+    to 8, all from the first two lanes). Deduplicates by url across workers and keeps consuming
+    until the budget is met or every worker is exhausted.
+    """
+    queues = [list(result.sources) for result in worker_results]
+    cursors = [0] * len(queues)
+    seen_urls: set[str] = set()
+    selected: list[tuple[WorkerResult, Any]] = []
+    while len(selected) < max_sources:
+        progressed = False
+        for index, queue in enumerate(queues):
+            if len(selected) >= max_sources:
+                break
+            while cursors[index] < len(queue):
+                source = queue[cursors[index]]
+                cursors[index] += 1
+                if not source.url or source.url in seen_urls:
+                    continue
+                seen_urls.add(source.url)
+                selected.append((worker_results[index], source))
+                progressed = True
+                break
+        if not progressed:
+            break
+    return selected
+
+
 def _source_type_for_lane(lane_id: str) -> SourceType:
-    return {
-        "official": SourceType.PRIMARY,
-        "regulatory": SourceType.REGULATORY,
-        "market": SourceType.DATASET,
-        "technical": SourceType.TECHNICAL,
-        "secondary": SourceType.SECONDARY,
-    }.get(lane_id, SourceType.UNKNOWN)
+    # F6/RC6: fuzzy-match planner lane ids (e.g. "market_data", "protocol") so worker sources get a
+    # real source type instead of all collapsing to UNKNOWN→tier3.
+    lane = (lane_id or "").casefold()
+    if any(key in lane for key in ("regul", "complian", "legal", "policy")):
+        return SourceType.REGULATORY
+    if any(key in lane for key in ("official", "issuer", "primary", "filing")):
+        return SourceType.PRIMARY
+    if any(key in lane for key in ("market", "data", "metric", "stat")):
+        return SourceType.DATASET
+    if any(key in lane for key in ("tech", "protocol", "mechanism", "engineer")):
+        return SourceType.TECHNICAL
+    if any(key in lane for key in ("secondary", "news", "press", "media", "competitor")):
+        return SourceType.SECONDARY
+    return SourceType.UNKNOWN
 
 
 async def _maybe_refine_plan(reasoner: Any | None, request: ResearchRequest, plan):
@@ -716,6 +757,16 @@ def _aggregate_lane_summaries(
             for limitation in note.get("limitations") or []:
                 limitations.append(str(limitation))
 
+        # F6/RC7: the worker path has no source_notes, so backfill lane findings from the captured
+        # sources themselves — otherwise lane summaries are hollow (production: key_findings = 0).
+        if not key_findings:
+            for source in lane_sources[:6]:
+                snippet = " ".join((source.content or "").split())
+                if not snippet:
+                    continue
+                lead = snippet.split(". ")[0][:200]
+                key_findings.append(f"{source.title or source.publisher}: {lead}")
+
         contradictions = [
             claim.text
             for claim in ledger.claims
@@ -778,6 +829,7 @@ async def _synthesize_report(
     errors: list[str] = []
 
     if worker_results and hasattr(reasoner, "synthesize_from_digests"):
+        best_partial = ""
         for attempt in range(1, 3):
             try:
                 try:
@@ -806,9 +858,15 @@ async def _synthesize_report(
                 return report.strip() + "\n"
             if isinstance(report, str) and report.strip():
                 errors.append(f"digest-stage attempt {attempt}: report shorter than {min_chars} chars")
+                if len(report.strip()) > len(best_partial):
+                    best_partial = report.strip()
             else:
                 errors.append(f"digest-stage attempt {attempt}: empty or non-string response")
-        # Worker path is digest-only — no stitched fallback. Fail loudly.
+        # F5: full synthesis fell short. If real evidence exists and the writer produced a usable
+        # (if short) draft, deliver a coverage-aware narrowed report rather than failing the whole
+        # run. Still the writer's own synthesis — no stitched fallback.
+        if best_partial and ledger.sources and len(best_partial) >= _narrowed_minimum_chars(request):
+            return _with_coverage_notice(best_partial, plan, ledger)
         raise DeepResearchSynthesisFailed("; ".join(errors) or "Digest synthesis produced no deliverable")
 
     if not hasattr(reasoner, "synthesize_report"):
@@ -908,6 +966,9 @@ def _evaluate_synthesis_quality(
     if not ledger.sources:
         return "failed", "Synthesis quality failed: no fetched source is available for source-grounded synthesis."
     target_language = resolve_output_language_code(request)
+    # F5: a narrowed report (limited evidence + explicit coverage notice) is held to a lower floor
+    # and skips the digit/entity density gates that assume full-coverage synthesis.
+    is_narrowed = _COVERAGE_NOTICE_MARKER in report
     language_ok, foreign_paragraphs = paragraph_language_consistency(report, target_language)
     if not language_ok:
         return (
@@ -924,7 +985,8 @@ def _evaluate_synthesis_quality(
             "Synthesis quality failed: report cites unknown source ids not in the evidence ledger: "
             + ", ".join(unknown_refs[:8]),
         )
-    if len(report.strip()) < _minimum_report_chars(request):
+    floor = _narrowed_minimum_chars(request) if is_narrowed else _minimum_report_chars(request)
+    if len(report.strip()) < floor:
         return "failed", "Synthesis quality failed: report is too short for a deep research deliverable."
     cited_source_ids = {source_id for source_id in ledger.sources if source_id in report}
     footnote_markers = len(re.findall(r"\[\^\d+\]", report))
@@ -946,7 +1008,7 @@ def _evaluate_synthesis_quality(
 
     digit_count = _prose_digit_count(report)
     required_digits = _required_digit_count(request)
-    if digit_count < required_digits:
+    if not is_narrowed and digit_count < required_digits:
         return (
             "failed",
             (
@@ -955,7 +1017,7 @@ def _evaluate_synthesis_quality(
             ),
         )
 
-    if request.mode != "source_ledger_audit":
+    if not is_narrowed and request.mode != "source_ledger_audit":
         entity_count = _named_entity_count(report)
         required_entities = _required_entity_count(request)
         if entity_count < required_entities:
@@ -983,6 +1045,29 @@ def _minimum_report_chars(request: ResearchRequest) -> int:
     if depth in {"quick", "light"}:
         return 700
     return 900
+
+
+_COVERAGE_NOTICE_MARKER = "**Coverage notice:**"
+
+
+def _narrowed_minimum_chars(request: ResearchRequest) -> int:
+    """F5: a narrowed (coverage-limited) report is held to a lower floor than a full report —
+    honestly reporting limited evidence should not be punished as an outright failure."""
+    return max(400, _minimum_report_chars(request) // 3)
+
+
+def _with_coverage_notice(report: str, plan, ledger: EvidenceLedger) -> str:
+    """Prefix a narrowed report with an explicit coverage notice naming the lanes that still have
+    no usable source (F5/RC4). Keeps the run honest: partial coverage is stated, not hidden."""
+    covered = {source.lane_id for source in ledger.sources.values() if source.lane_id}
+    uncovered = [lane.label or lane.lane_id for lane in plan.lanes if lane.lane_id not in covered]
+    lines = [
+        f"> {_COVERAGE_NOTICE_MARKER} Evidence was limited, so this is a narrowed report scoped to the "
+        f"{len(ledger.sources)} source(s) that returned usable content."
+    ]
+    if uncovered:
+        lines.append("> Research lanes still uncovered: " + ", ".join(uncovered) + ".")
+    return "\n".join(lines) + "\n\n" + report.strip() + "\n"
 
 
 def _required_digit_count(request: ResearchRequest) -> int:

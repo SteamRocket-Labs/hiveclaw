@@ -50,6 +50,23 @@ _AUTHORITATIVE_FRAGMENTS: tuple[str, ...] = (
     ".mil",
     ".ac.",
 )
+# Domain-general authoritative institutions (international bodies, standards, academic publishers).
+# Deliberately NOT a domain-specific allowlist — these are universal high-authority hosts.
+_AUTHORITATIVE_DOMAINS: tuple[str, ...] = (
+    "imf.org",
+    "worldbank.org",
+    "un.org",
+    "who.int",
+    "oecd.org",
+    "bis.org",
+    "wto.org",
+    "iea.org",
+    "arxiv.org",
+    "doi.org",
+    "ssrn.com",
+    "nature.com",
+    "science.org",
+)
 
 
 def _domain(record: Any) -> str:
@@ -71,7 +88,10 @@ def grade_source(record: Any) -> tuple[str, str]:
         return "tier3", "C"
 
     domain = _domain(record)
-    if domain and any(fragment in domain for fragment in _AUTHORITATIVE_FRAGMENTS):
+    if domain and (
+        any(fragment in domain for fragment in _AUTHORITATIVE_FRAGMENTS)
+        or any(known in domain for known in _AUTHORITATIVE_DOMAINS)
+    ):
         return "tier1", "B"
     if domain and any(weak in domain for weak in _WEAK_DOMAINS):
         return "tier4", "D"

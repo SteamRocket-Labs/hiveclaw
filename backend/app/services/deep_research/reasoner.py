@@ -383,6 +383,8 @@ class RuntimeDeepResearchReasoner:
                 "into every section; weight claims by evidence quality (primary/authoritative > strong secondary > "
                 "press > weak).\n"
                 "- Separate verified findings from inferred implications and gaps. No generic educational text.\n\n"
+                + _depth_expectation(request)
+                + "\n\n"
                 + REASONING_CALIBRATION
                 + "\n\n"
                 + WRITING_QUALITY
@@ -516,34 +518,46 @@ class RuntimeDeepResearchReasoner:
             ],
             "claims": [to_jsonable(claim) for claim in ledger.claims][:30],
         }
-        content = await self._invoke(
-            "Stress-test the research evidence before synthesis. Return JSON only.",
-            (
-                "You are the Devil's Advocate on a deep research run (any domain). Steel-man the emerging findings, "
-                "then stress-test them BEFORE the final report is written. Be specific, constructive, and cite "
-                "source ids where relevant; do not be gratuitously negative.\n"
-                "Apply three lenses: (a) Toulmin — for each major claim, is there a WARRANT linking the evidence to "
-                "the conclusion, or is it data without a warrant? (b) Epistemic calibration — does the certainty "
-                "language match the evidence (preliminary evidence must not be stated as established)? (c) "
-                "Inference-to-best-explanation — is the strongest ALTERNATIVE explanation addressed?\n\n"
-                "Return JSON only:\n"
-                "{\n"
-                '  "cherry_picking": [str],            // confirming-only evidence; disconfirming evidence ignored\n'
-                '  "confirmation_bias": [str],         // themes selected to fit a desired answer\n'
-                '  "missing_warrants": [str],          // claims where the leap from evidence to conclusion is unjustified\n'
-                '  "overclaims": [str],                // preliminary/contested evidence stated with established-fact language\n'
-                '  "alternative_explanations": [str],  // other credible readings of the same evidence\n'
-                '  "strongest_counter_argument": str,  // the single most compelling criticism a hostile expert raises\n'
-                '  "whats_missing": [str],             // absent evidence/perspectives that matter\n'
-                '  "overrated_claims": [{"claim": str, "why": str}], // claims leaning on tier4/single sources\n'
-                '  "so_what": str                      // is the significance justified?\n'
-                "}\n\n"
-                f"{json.dumps(payload, ensure_ascii=False)}"
-            ),
-            mode=request.mode,
-            role="critic",
+        instruction = (
+            "You are the Devil's Advocate on a deep research run (any domain). Steel-man the emerging findings, "
+            "then stress-test them BEFORE the final report is written. Be specific, constructive, and cite "
+            "source ids where relevant; do not be gratuitously negative.\n"
+            "Apply three lenses: (a) Toulmin — for each major claim, is there a WARRANT linking the evidence to "
+            "the conclusion, or is it data without a warrant? (b) Epistemic calibration — does the certainty "
+            "language match the evidence (preliminary evidence must not be stated as established)? (c) "
+            "Inference-to-best-explanation — is the strongest ALTERNATIVE explanation addressed?\n\n"
+            "Return JSON only:\n"
+            "{\n"
+            '  "cherry_picking": [str],            // confirming-only evidence; disconfirming evidence ignored\n'
+            '  "confirmation_bias": [str],         // themes selected to fit a desired answer\n'
+            '  "missing_warrants": [str],          // claims where the leap from evidence to conclusion is unjustified\n'
+            '  "overclaims": [str],                // preliminary/contested evidence stated with established-fact language\n'
+            '  "alternative_explanations": [str],  // other credible readings of the same evidence\n'
+            '  "strongest_counter_argument": str,  // the single most compelling criticism a hostile expert raises\n'
+            '  "whats_missing": [str],             // absent evidence/perspectives that matter\n'
+            '  "overrated_claims": [{"claim": str, "why": str}], // claims leaning on tier4/single sources\n'
+            '  "so_what": str                      // is the significance justified?\n'
+            "}\n\n"
+            f"{json.dumps(payload, ensure_ascii=False)}"
         )
-        parsed = _parse_json_object(content)
+        # RC5: a single malformed (non-JSON) critic response used to silently drop the
+        # entire adversarial pass. Retry once with an explicit reminder before giving up.
+        parsed: dict[str, Any] = {}
+        for attempt in range(2):
+            reminder = (
+                ""
+                if attempt == 0
+                else "\n\nYour previous reply was not valid JSON. Reply with the JSON object ONLY, no prose."
+            )
+            content = await self._invoke(
+                "Stress-test the research evidence before synthesis. Return JSON only.",
+                instruction + reminder,
+                mode=request.mode,
+                role="critic",
+            )
+            parsed = _parse_json_object(content)
+            if parsed:
+                break
         return parsed or None
 
     async def _invoke(
@@ -724,6 +738,32 @@ def _build_system_prompt_suffix(mode: str | None, role: str | None = None) -> st
     return " ".join(parts)
 
 
+def _depth_expectation(request: ResearchRequest) -> str:
+    """Depth-aware report-scale expectation (F4/RC4).
+
+    The production run failed synthesis twice below the 1200-char floor partly because the
+    anti-padding guidance pushed the writer too terse. This makes the depth contract explicit:
+    full depth = more substantiated content, not more filler.
+    """
+    depth = (request.depth or "standard").strip().lower()
+    if depth in {"full", "flagship", "deep"}:
+        return (
+            "DEPTH EXPECTATION — this is a FULL-depth report. Develop every major section into a thorough, "
+            "multi-section analyst report grounded in concrete evidence; go well beyond a skeleton or a short "
+            "brief. Depth means MORE substantiated content (specific numbers, named entities, mechanisms, and "
+            "resolved contradictions) — it is NOT a licence for filler or padding. Each paragraph must earn its place."
+        )
+    if depth in {"quick", "light"}:
+        return (
+            "DEPTH EXPECTATION — this is a QUICK-depth report. Be concise: lead with the most decision-relevant "
+            "findings as a tight, well-supported brief."
+        )
+    return (
+        "DEPTH EXPECTATION — this is a STANDARD-depth report. Develop each section with concrete evidence into a "
+        "complete analyst brief, not a skeleton."
+    )
+
+
 def build_digest_synthesis_instruction(request: ResearchRequest, language: str) -> str:
     """Final-report synthesis instruction — the anti-stitch DNA: integration, not summarization.
 
@@ -757,6 +797,8 @@ def build_digest_synthesis_instruction(request: ResearchRequest, language: str) 
         "- Use concrete numbers, named entities, dates, and mechanisms. Separate verified findings from inferred "
         "implications and gaps.\n"
         "- If evidence is insufficient, say so explicitly instead of padding with generic prose.\n\n"
+        + _depth_expectation(request)
+        + "\n\n"
         + REASONING_CALIBRATION
         + "\n\n"
         + WRITING_QUALITY

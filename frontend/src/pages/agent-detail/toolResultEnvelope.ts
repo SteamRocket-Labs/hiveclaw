@@ -41,7 +41,22 @@ export interface DeepResearchToolMeta {
   gaps: string[];
 }
 
-export type ToolCallMeta = HrPreviewToolResult | CreateEmployeeSuccessToolMeta | DeepResearchToolMeta;
+export interface PlanNeedsConfirmationToolMeta {
+  kind: 'plan_needs_confirmation';
+  planId: string;
+  planVersion: number;
+  planHash: string | null;
+  status: string;
+  summary: string | null;
+  nextAction: string | null;
+  planJson: Record<string, unknown>;
+}
+
+export type ToolCallMeta =
+  | HrPreviewToolResult
+  | CreateEmployeeSuccessToolMeta
+  | DeepResearchToolMeta
+  | PlanNeedsConfirmationToolMeta;
 
 export interface NormalizedToolCallResult {
   displayResult: string;
@@ -201,8 +216,45 @@ function buildDeepResearchDisplayResult(meta: DeepResearchToolMeta): string {
   return meta.summary || `Deep research ${status}`;
 }
 
+function parsePlanNeedsConfirmationResult(rawResult: unknown): PlanNeedsConfirmationToolMeta | null {
+  const parsed = parseStructuredToolPayload(rawResult);
+  if (parsed?.status !== 'needs_plan' || typeof parsed.plan_id !== 'string') {
+    return null;
+  }
+  const planJson =
+    parsed.plan_json && typeof parsed.plan_json === 'object' && !Array.isArray(parsed.plan_json)
+      ? (parsed.plan_json as Record<string, unknown>)
+      : parsed.plan_preview && typeof parsed.plan_preview === 'object' && !Array.isArray(parsed.plan_preview)
+        ? (parsed.plan_preview as Record<string, unknown>)
+        : {};
+  return {
+    kind: 'plan_needs_confirmation',
+    planId: parsed.plan_id,
+    planVersion: typeof parsed.plan_version === 'number' ? parsed.plan_version : 1,
+    planHash: typeof parsed.plan_hash === 'string' ? parsed.plan_hash : null,
+    status: 'needs_plan',
+    summary: typeof parsed.summary === 'string' ? parsed.summary : null,
+    nextAction: typeof parsed.next_action === 'string' ? parsed.next_action : null,
+    planJson,
+  };
+}
+
+function buildPlanNeedsConfirmationDisplayResult(meta: PlanNeedsConfirmationToolMeta): string {
+  return meta.summary || 'Plan created — confirm before this autonomous work can begin.';
+}
+
 export function normalizeToolCallResult(toolName: string | undefined, rawResult: unknown): NormalizedToolCallResult {
   const raw = coerceToolResultToString(rawResult);
+
+  const planNeedsConfirmation = parsePlanNeedsConfirmationResult(rawResult);
+  if (planNeedsConfirmation) {
+    return {
+      displayResult: buildPlanNeedsConfirmationDisplayResult(planNeedsConfirmation),
+      createdAgentId: null,
+      raw,
+      toolMeta: planNeedsConfirmation,
+    };
+  }
 
   const deepResearch = parseDeepResearchToolResult(toolName, rawResult);
   if (deepResearch) {

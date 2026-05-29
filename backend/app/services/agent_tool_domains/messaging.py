@@ -1118,6 +1118,9 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
             max_tool_rounds=args.get("max_tool_rounds"),
             policy=OrchestrationPolicy(timeout_seconds=120.0, tool_profile=tool_profile),
             tenant_id=getattr(source_agent, "tenant_id", None),
+            confirmed_plan_id=args.get("confirmed_plan_id"),
+            confirmed_plan_version=args.get("confirmed_plan_version"),
+            confirmed_plan_hash=args.get("confirmed_plan_hash"),
         )
         return json.dumps(
             {

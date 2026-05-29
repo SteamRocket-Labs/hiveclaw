@@ -26,8 +26,49 @@ from app.services.feishu_identity_maintenance import build_feishu_p2p_conv_id, l
 from app.services.feishu_contacts_cache import upsert_feishu_contact_cache
 from app.services.feishu_service import feishu_service
 from app.services.approval_service import approval_service
+from app.services.plan_mode_service import get_plan_mode_service
 
 router = APIRouter(tags=["feishu"])
+
+
+async def _maybe_sync_feishu_task(
+    *,
+    agent_id: uuid.UUID,
+    task_title: str,
+    tenant_id: uuid.UUID | None,
+    session_id: str | None,
+) -> str | None:
+    """Gate Feishu "create a task" auto-sync behind Plan Mode (§9.0 / §9.2).
+
+    A regex-detected task-creation intent used to immediately persist a ``Task``
+    and background-execute it (``execute_task``) — an autonomous
+    ``start_long_task`` action that must NOT run without a confirmed plan. So
+    instead of executing, we materialise an awaiting ``PlanRequest`` from the
+    detected title and return a confirm-me notice for the reply. Returns ``None``
+    (caller appends nothing, nothing executes) on a blank title or any failure —
+    fail-closed: a degraded ledger never downgrades into a silent background run.
+    """
+    task_title = (task_title or "").strip()
+    if not task_title:
+        return None
+    try:
+        plan = await get_plan_mode_service().ensure_awaiting_plan(
+            agent_id=agent_id,
+            action_kind="start_long_task",
+            tool_name="manage_tasks",
+            arguments={"action": "create", "title": task_title},
+            source="channel",
+            tenant_id=tenant_id,
+            session_id=session_id,
+            runtime_task_id=None,
+        )
+    except Exception as exc:
+        logger.error(f"[Feishu] Failed to create plan for task auto-sync: {exc}")
+        return None
+    return (
+        f"\n\n📋 “{task_title}” 需要先确认计划再执行。我已生成一份待确认计划"
+        f"（plan_id={plan.id}），请确认或修改后再启动。"
+    )
 
 _TOOL_STATUS_KEEP_LINES = 20
 _FEISHU_CARD_MARKDOWN_LIMIT = 2800
@@ -1668,36 +1709,18 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 detail={"channel": "feishu", "user_text": user_text[:200], "reply": reply_text[:500]},
             )
 
-            # If task creation detected, create a real Task record
+            # If task creation detected, Plan Mode requires a confirmed plan
+            # before any autonomous execution (§9.0): create an awaiting plan and
+            # tell the user to confirm — never background-execute off a regex.
             if task_match:
-                task_title = task_match.group(1).strip()
-                if task_title:
-                    try:
-                        from app.models.task import Task as TaskModel
-                        from app.models.agent import Agent as AgentModel
-                        from app.services.task_executor import execute_task
-                        import asyncio as _asyncio
-
-                        # Find the agent's creator to use as task creator
-                        agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
-                        agent_obj = agent_r.scalar_one_or_none()
-                        creator_id = agent_obj.creator_id if agent_obj else agent_id
-
-                        task_obj = TaskModel(
-                            agent_id=agent_id,
-                            title=task_title,
-                            created_by=creator_id,
-                            status="pending",
-                            priority="medium",
-                        )
-                        db.add(task_obj)
-                        await db.commit()
-                        await db.refresh(task_obj)
-                        _asyncio.create_task(execute_task(task_obj.id, agent_id))
-                        reply_text += f"\n\n📋 已同步创建任务到任务面板：【{task_title}】"
-                        logger.info(f"[Feishu] Created task: {task_title}")
-                    except Exception as e:
-                        logger.error(f"[Feishu] Failed to create task: {e}")
+                _plan_notice = await _maybe_sync_feishu_task(
+                    agent_id=agent_id,
+                    task_title=task_match.group(1),
+                    tenant_id=agent_tenant_id,
+                    session_id=session_conv_id,
+                )
+                if _plan_notice:
+                    reply_text += _plan_notice
 
             # Save assistant reply to history (use platform_user_id so messages stay in one session)
             db.add(

@@ -179,6 +179,10 @@ class TaskCreate(BaseModel):
     supervision_target_name: str | None = None
     supervision_channel: str | None = None
     remind_schedule: str | None = None
+    # Plan Mode (§9.3): a confirmed plan authorising an auto-executing todo task.
+    confirmed_plan_id: str | None = None
+    confirmed_plan_version: int | None = None
+    confirmed_plan_hash: str | None = None
 
 
 class TaskOut(BaseModel):
@@ -193,6 +197,10 @@ class TaskOut(BaseModel):
     created_by: uuid.UUID
     creator_username: str | None = None
     due_date: datetime | None = None
+    plan_id: uuid.UUID | None = None
+    plan_version: int | None = None
+    plan_hash: str | None = None
+    plan_exempt_reason: str | None = None
     supervision_target_name: str | None = None
     supervision_channel: str | None = None
     remind_schedule: str | None = None

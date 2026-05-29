@@ -12,7 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.llm import LLMModel
 from app.models.objective import AgentObjective
+from app.services import plan_mode_core
 from app.services.focus_state import normalize_focus_task_id
+from app.services.plan_mode_gate import get_plan_mode_gate
 
 ACTIVE_OBJECTIVE_STATUSES = {"active", "open", "running"}
 
@@ -158,6 +160,65 @@ async def _load_objective_for_trigger(db: AsyncSession, agent_id: uuid.UUID, tri
     return None
 
 
+async def _plan_gate_block_for_triggers(
+    db: AsyncSession,
+    *,
+    agent: Any,
+    triggers: list[Any],
+) -> TriggerPreflightResult | None:
+    """Plan Mode fail-closed backstop (§9.0) for autonomous triggers.
+
+    For each enabled *autonomous* trigger (cron/interval/once/poll, excluding
+    platform-internal classes and objective_task — which keep their own gates),
+    require proof it came from a confirmed plan (``config.plan_id`` -> a
+    ``confirmed`` AgentPlanRequest) or carries a cutover exemption
+    (``config.metadata.plan_exempt_reason``). The shared :class:`PlanModeGate`
+    makes the decision so this backstop and the early-intercept layer answer
+    identically.
+
+    Returns a blocking :class:`TriggerPreflightResult` for the first trigger that
+    lacks a confirmed plan, or ``None`` when every autonomous trigger is cleared.
+    Fail-closed: if the gate raises, the caller treats it as a skip.
+    """
+    gate = get_plan_mode_gate()
+    for trigger in triggers:
+        if not plan_mode_core.trigger_is_autonomous(
+            trigger_type=getattr(trigger, "type", None),
+            trigger_class=trigger_class(trigger),
+        ):
+            continue
+        cfg = _config(trigger)
+        plan_id = str(cfg.get("plan_id") or "").strip() or None
+        decision = await gate.check(
+            db,
+            agent_id=getattr(agent, "id"),
+            action_kind="create_enabled_trigger",
+            action_ref=getattr(trigger, "id", None),
+            confirmed_plan_id=plan_id,
+            plan_version=cfg.get("plan_version"),
+            plan_hash=cfg.get("plan_hash"),
+            # The trigger config carries any cutover exemption under
+            # ``config.metadata.plan_exempt_reason``; hand the whole trigger
+            # shape to the gate so it can probe it.
+            action_artifact={"config": cfg},
+        )
+        if not decision.allowed:
+            return TriggerPreflightResult(
+                False,
+                "plan_required",
+                (
+                    f"Trigger '{getattr(trigger, 'name', '')}' has no confirmed plan; "
+                    "create and confirm a plan before enabling this autonomous wake."
+                ),
+                {
+                    "trigger_id": str(getattr(trigger, "id", "")),
+                    "trigger_name": getattr(trigger, "name", None),
+                    "plan_gate_reason": decision.reason,
+                },
+            )
+    return None
+
+
 async def evaluate_trigger_preflight(
     db: AsyncSession,
     *,
@@ -218,6 +279,13 @@ async def evaluate_trigger_preflight(
                     f"Objective '{getattr(objective, 'objective_key', '')}' status is {status}.",
                     {"objective_id": str(getattr(objective, "id", "")), "objective_status": status},
                 )
+
+    # Plan Mode fail-closed backstop (§9.0): block autonomous triggers lacking a
+    # confirmed plan / cutover exemption. Runs after the objective gate above so
+    # the more specific objective_task gate wins first.
+    plan_block = await _plan_gate_block_for_triggers(db, agent=agent, triggers=triggers)
+    if plan_block is not None:
+        return plan_block
 
     return TriggerPreflightResult(True, metadata=runtime_options)
 

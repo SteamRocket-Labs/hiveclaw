@@ -84,7 +84,9 @@ async def test_reconcile_agent_objective_wake_policies_creates_missing_primary_w
         status="active",
         priority=0,
         success_criteria=None,
-        metadata_json={},
+        # Plan provenance (§9.0): this objective traces to a confirmed plan, so
+        # the reconciler is allowed to auto-create its enabled wake.
+        metadata_json={"plan_id": str(uuid4())},
     )
     session = _FakeSession(objectives=[objective], triggers=[])
 
@@ -115,7 +117,7 @@ async def test_reconcile_agent_objective_wake_policies_does_not_duplicate_existi
         status="active",
         priority=0,
         success_criteria=None,
-        metadata_json={},
+        metadata_json={"plan_id": str(uuid4())},
     )
     trigger = SimpleNamespace(
         is_enabled=True,
@@ -146,7 +148,7 @@ async def test_reconcile_agent_objective_wake_policies_reuses_existing_trigger_n
         status="active",
         priority=0,
         success_criteria=None,
-        metadata_json={},
+        metadata_json={"plan_id": str(uuid4())},
     )
     payload = build_objective_trigger_payload(objective)
     existing = SimpleNamespace(
@@ -170,6 +172,115 @@ async def test_reconcile_agent_objective_wake_policies_reuses_existing_trigger_n
     assert existing.focus_ref == "task_1"
     assert existing.config["trigger_class"] == "objective_task"
     assert existing.config["objective_id"] == str(objective_id)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_skips_conversation_intent_objective_without_plan():
+    """§9.0 backstop: an active objective born from a conversation intent (no
+    plan_id, not platform-internal) must NOT get an auto-created enabled wake.
+    This closes the "chat intent -> active objective -> auto enabled trigger" hole."""
+    from app.services.objective_wake_reconciler import reconcile_agent_objective_wake_policies
+
+    agent_id = uuid4()
+    objective = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        tenant_id=uuid4(),
+        objective_key="follow_up_client",
+        description="Keep following up with the client",
+        status="active",
+        priority=0,
+        success_criteria=None,
+        metadata_json={"autonomy_class": "explicit_user_request"},
+    )
+    session = _FakeSession(objectives=[objective], triggers=[])
+
+    report = await reconcile_agent_objective_wake_policies(session, agent_id=agent_id)
+
+    assert report["created"] == 0
+    assert report["updated"] == 0
+    assert report["skipped"] == 1
+    assert session.added == []
+    assert session.commits == 0
+
+
+@pytest.mark.asyncio
+async def test_reconcile_creates_wake_for_confirmed_plan_objective():
+    """An objective carrying plan provenance (confirmed-plan handoff) is exempt
+    and still gets its enabled wake from the reconciler."""
+    from app.services.objective_wake_reconciler import reconcile_agent_objective_wake_policies
+
+    agent_id = uuid4()
+    objective = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        tenant_id=uuid4(),
+        objective_key="planned_brief",
+        description="Daily planned brief",
+        status="active",
+        priority=0,
+        success_criteria=None,
+        metadata_json={"plan_id": str(uuid4()), "plan_version": 1},
+    )
+    session = _FakeSession(objectives=[objective], triggers=[])
+
+    report = await reconcile_agent_objective_wake_policies(session, agent_id=agent_id)
+
+    assert report["created"] == 1
+    assert len(session.added) == 1
+    assert session.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_reconcile_creates_wake_for_platform_internal_objective():
+    """The self-evolution / recovery loop (internal_self_improvement) must keep
+    auto-waking without a confirmed plan — the backstop must not break it."""
+    from app.services.objective_wake_reconciler import reconcile_agent_objective_wake_policies
+
+    agent_id = uuid4()
+    objective = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        tenant_id=uuid4(),
+        objective_key="recover_daily_report",
+        description="Recover failing trigger",
+        status="active",
+        priority=1,
+        success_criteria=None,
+        metadata_json={"autonomy_class": "internal_self_improvement"},
+    )
+    session = _FakeSession(objectives=[objective], triggers=[])
+
+    report = await reconcile_agent_objective_wake_policies(session, agent_id=agent_id)
+
+    assert report["created"] == 1
+    assert len(session.added) == 1
+    assert session.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_reconcile_creates_wake_for_cutover_exempt_objective():
+    """An objective explicitly tagged with a cutover exemption is honoured."""
+    from app.services.objective_wake_reconciler import reconcile_agent_objective_wake_policies
+
+    agent_id = uuid4()
+    objective = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        tenant_id=uuid4(),
+        objective_key="legacy_objective",
+        description="Pre-existing objective",
+        status="active",
+        priority=0,
+        success_criteria=None,
+        metadata_json={"plan_exempt_reason": "preexisting_before_cutover"},
+    )
+    session = _FakeSession(objectives=[objective], triggers=[])
+
+    report = await reconcile_agent_objective_wake_policies(session, agent_id=agent_id)
+
+    assert report["created"] == 1
+    assert len(session.added) == 1
 
 
 def test_objective_has_enabled_wake_ignores_other_agents_same_focus_ref():

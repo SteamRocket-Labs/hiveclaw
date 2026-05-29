@@ -15,6 +15,11 @@ def _stub_activity_logger(monkeypatch):
 
     monkeypatch.setattr("app.services.activity_logger.log_activity", fake_log_activity)
 
+    async def fake_delegation_plan_gate_allows(_request):
+        return True, None
+
+    monkeypatch.setattr("app.agents.orchestrator._delegation_plan_gate_allows", fake_delegation_plan_gate_allows)
+
 
 @pytest.mark.asyncio
 async def test_invoke_agent_message_runtime_delegates_to_runtime(monkeypatch):
@@ -153,12 +158,18 @@ async def test_delegate_to_agent_async_passes_tool_profile(monkeypatch):
             "agent_name": "Target Agent",
             "message": "search memory and summarize the result",
             "tool_profile": "memory_readonly",
+            "confirmed_plan_id": "plan-1",
+            "confirmed_plan_version": 2,
+            "confirmed_plan_hash": "sha256:plan",
         },
     )
 
     payload = json.loads(result)
     assert payload["task_id"] == "task-1"
     assert captured["kwargs"]["policy"].tool_profile == "memory_readonly"
+    assert captured["kwargs"]["confirmed_plan_id"] == "plan-1"
+    assert captured["kwargs"]["confirmed_plan_version"] == 2
+    assert captured["kwargs"]["confirmed_plan_hash"] == "sha256:plan"
 
 
 @pytest.mark.asyncio

@@ -3,15 +3,25 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate
 from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.task import Task, TaskLog
 from app.models.user import User
 from app.schemas.schemas import TaskCreate, TaskLogCreate, TaskLogOut, TaskOut, TaskUpdate
+
+
+class TaskTriggerIn(BaseModel):
+    # Plan Mode (§9.3): a confirmed plan authorising this auto-executing task run.
+    confirmed_plan_id: str | None = None
+    confirmed_plan_version: int | None = None
+    confirmed_plan_hash: str | None = None
+
 
 router = APIRouter(prefix="/agents/{agent_id}/tasks", tags=["tasks"])
 
@@ -68,6 +78,19 @@ async def create_task(
 ):
     """Create a new task for an agent."""
     await check_agent_access(db, current_user, agent_id)
+    # Plan Mode early intercept (§9.3): a `todo` task auto-executes in the
+    # background (execute_task), so it needs a confirmed plan. Non-todo tasks
+    # (e.g. supervision reminders) do not auto-run and keep their contract.
+    if data.type == "todo":
+        await enforce_plan_gate(
+            db,
+            agent_id=agent_id,
+            action_kind="start_long_task",
+            gate=get_plan_mode_gate(),
+            confirmed_plan_id=data.confirmed_plan_id,
+            confirmed_plan_version=data.confirmed_plan_version,
+            confirmed_plan_hash=data.confirmed_plan_hash,
+        )
     task = Task(
         agent_id=agent_id,
         title=data.title,
@@ -79,6 +102,9 @@ async def create_task(
         supervision_target_name=data.supervision_target_name,
         supervision_channel=data.supervision_channel,
         remind_schedule=data.remind_schedule,
+        plan_id=uuid.UUID(data.confirmed_plan_id) if data.confirmed_plan_id else None,
+        plan_version=data.confirmed_plan_version,
+        plan_hash=data.confirmed_plan_hash,
     )
     db.add(task)
     await db.flush()
@@ -153,6 +179,7 @@ async def add_task_log(
 async def trigger_task(
     agent_id: uuid.UUID,
     task_id: uuid.UUID,
+    data: TaskTriggerIn | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -166,6 +193,19 @@ async def trigger_task(
     task = result.scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+
+    # Plan Mode early intercept (§9.3): a manual trigger fires the background
+    # execute_task loop, so it needs a confirmed plan (or cutover exemption).
+    trigger_in = data or TaskTriggerIn()
+    await enforce_plan_gate(
+        db,
+        agent_id=agent_id,
+        action_kind="start_long_task",
+        gate=get_plan_mode_gate(),
+        confirmed_plan_id=trigger_in.confirmed_plan_id,
+        confirmed_plan_version=trigger_in.confirmed_plan_version,
+        confirmed_plan_hash=trigger_in.confirmed_plan_hash,
+    )
 
     import asyncio
     from app.services.task_executor import execute_task

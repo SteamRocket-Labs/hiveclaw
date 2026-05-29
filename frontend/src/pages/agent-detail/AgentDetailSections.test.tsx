@@ -13,8 +13,10 @@ import AgentStatusSection from './AgentStatusSection';
 import AgentWorkspaceSection from './AgentWorkspaceSection';
 import CopyMessageButton from './CopyMessageButton';
 import OpenClawSettings from '../OpenClawSettings';
+import PlanCard, { confirmAndHandoffPlan } from './PlanCard';
 import RelationshipEditor from './RelationshipEditor';
 import ToolsManager from './ToolsManager';
+import type { PlanRequest } from '../../api/domains/plans';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -1036,5 +1038,151 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Builtin tools + default skills + memory loop');
     expect(markup).toContain('mcp: github');
     expect(markup).toContain('github-research');
+  });
+
+  it('renders PlanCard with plan_json fields and confirmation actions while awaiting', () => {
+    const plan = {
+      id: 'plan-1',
+      agent_id: 'agent-1',
+      tenant_id: null,
+      session_id: null,
+      runtime_task_id: null,
+      requested_by_user_id: null,
+      source: 'web_chat',
+      intent_type: 'autonomous_wake',
+      original_request: 'Send me a daily industry brief',
+      status: 'awaiting_confirmation',
+      plan_version: 1,
+      plan_hash: 'sha256:abc123',
+      plan_markdown_path: null,
+      plan_json: {
+        title: 'Daily industry news brief',
+        objective: 'Produce a useful daily industry brief for the user.',
+        motivation: 'User asked for a recurring morning industry news summary.',
+        steps: [{ order: 1, description: 'Collect high-signal news sources.', expected_output: 'Source list.' }],
+        success_criteria: ['Brief includes 5-10 material updates with source links.'],
+        wake_policy: { type: 'cron', timezone: 'Asia/Shanghai', expr: '0 9 * * 1-5' },
+        required_capabilities: ['web_search', 'send_feishu_message'],
+        external_side_effects: [{ kind: 'message', channel: 'feishu', audience: 'requesting user', requires_confirmation: true }],
+        risk_assessment: { level: 'medium', reasons: ['recurring autonomous wake'] },
+        estimated_cost: { tokens_per_run: 'medium', expected_duration: '1-3 minutes' },
+        stop_conditions: ['User cancels the plan.'],
+      },
+      handoff_status: null,
+      handoff_payload: null,
+      confirmed_by_user_id: null,
+      confirmed_at: null,
+      rejected_by_user_id: null,
+      rejected_at: null,
+      superseded_by_plan_id: null,
+      expires_at: null,
+      created_at: null,
+      updated_at: null,
+      metadata: {},
+    } as PlanRequest;
+
+    const markup = renderToStaticMarkup(<PlanCard agentId="agent-1" plan={plan} />);
+
+    expect(markup).toContain('Daily industry news brief');
+    expect(markup).toContain('Produce a useful daily industry brief for the user.');
+    expect(markup).toContain('Collect high-signal news sources.');
+    expect(markup).toContain('Brief includes 5-10 material updates with source links.');
+    expect(markup).toContain('0 9 * * 1-5');
+    expect(markup).toContain('send_feishu_message');
+    expect(markup).toContain('1-3 minutes');
+    expect(markup).toContain('feishu');
+    // Risk level renders via its raw value fallback (i18n mock returns the fallback string).
+    expect(markup).toContain('medium');
+    expect(markup).toContain('User cancels the plan.');
+    // Actionable while awaiting confirmation; confirmation should clearly start handoff.
+    expect(markup).toContain('Confirm and start');
+    expect(markup).toContain('Request changes');
+    expect(markup).toContain('Reject');
+  });
+
+  it('confirms a plan and immediately hands it off to execution', async () => {
+    const plan = {
+      id: 'plan-1',
+      agent_id: 'agent-1',
+      tenant_id: null,
+      session_id: null,
+      runtime_task_id: null,
+      requested_by_user_id: null,
+      source: 'web_chat',
+      intent_type: 'autonomous_wake',
+      original_request: 'Send me a daily industry brief',
+      status: 'awaiting_confirmation',
+      plan_version: 3,
+      plan_hash: 'sha256:abc123',
+      plan_markdown_path: null,
+      plan_json: {},
+      handoff_status: null,
+      handoff_payload: null,
+      confirmed_by_user_id: null,
+      confirmed_at: null,
+      rejected_by_user_id: null,
+      rejected_at: null,
+      superseded_by_plan_id: null,
+      expires_at: null,
+      created_at: null,
+      updated_at: null,
+      metadata: {},
+    } as PlanRequest;
+    const calls: string[] = [];
+    const api = {
+      confirm: vi.fn(async () => {
+        calls.push('confirm');
+        return { ok: true, status: 'confirmed', plan_id: 'plan-1', handoff_status: 'not_started' };
+      }),
+      handoff: vi.fn(async () => {
+        calls.push('handoff');
+        return { ok: true, status: 'confirmed', plan_id: 'plan-1', handoff_status: 'completed', handoff_payload: {} };
+      }),
+    };
+
+    await confirmAndHandoffPlan('agent-1', plan, api);
+
+    expect(api.confirm).toHaveBeenCalledWith('agent-1', 'plan-1', {
+      plan_version: 3,
+      plan_hash: 'sha256:abc123',
+    });
+    expect(api.handoff).toHaveBeenCalledWith('agent-1', 'plan-1');
+    expect(calls).toEqual(['confirm', 'handoff']);
+  });
+
+  it('renders PlanCard without actions once a plan is confirmed', () => {
+    const plan = {
+      id: 'plan-2',
+      agent_id: 'agent-1',
+      tenant_id: null,
+      session_id: null,
+      runtime_task_id: null,
+      requested_by_user_id: null,
+      source: 'web_chat',
+      intent_type: 'autonomous_wake',
+      original_request: 'Send me a daily industry brief',
+      status: 'confirmed',
+      plan_version: 1,
+      plan_hash: 'sha256:abc123',
+      plan_markdown_path: null,
+      plan_json: { title: 'Daily industry news brief' },
+      handoff_status: 'completed',
+      handoff_payload: null,
+      confirmed_by_user_id: 'user-1',
+      confirmed_at: '2026-05-29T09:00:00Z',
+      rejected_by_user_id: null,
+      rejected_at: null,
+      superseded_by_plan_id: null,
+      expires_at: null,
+      created_at: null,
+      updated_at: null,
+      metadata: {},
+    } as PlanRequest;
+
+    const markup = renderToStaticMarkup(<PlanCard agentId="agent-1" plan={plan} />);
+
+    expect(markup).toContain('Daily industry news brief');
+    expect(markup).toContain('Handoff: completed');
+    expect(markup).not.toContain('Request changes');
   });
 });

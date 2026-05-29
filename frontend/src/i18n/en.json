@@ -379,6 +379,58 @@
       "researchClaims": "Claims",
       "researchGaps": "Gaps"
     },
+    "plan": {
+      "badge": "Plan",
+      "version": "v{{version}}",
+      "objective": "Objective",
+      "steps": "Steps",
+      "successCriteria": "Success criteria",
+      "wakePolicy": "Wake policy",
+      "capabilities": "Capabilities",
+      "estimatedCost": "Estimated cost",
+      "sideEffects": "External side effects",
+      "sideEffectGeneric": "External action",
+      "requiresConfirmation": "requires confirmation",
+      "stopConditions": "Stop conditions",
+      "confirm": "Confirm",
+      "confirmAndStart": "Confirm and start",
+      "requestChanges": "Request changes",
+      "reject": "Reject",
+      "requestChangesPrompt": "What should change about this plan?",
+      "rejectPrompt": "Reason for rejecting this plan (optional)",
+      "actionFailed": "Action failed",
+      "missingHash": "This plan has no hash yet and cannot be confirmed.",
+      "needsConfirmation": "A plan needs your confirmation.",
+      "noActions": "No actions available for this plan.",
+      "handoffState": "Handoff: {{state}}",
+      "queueTitle": "Plan Queue",
+      "queueDesc": "Plans awaiting your confirmation before autonomous work can begin.",
+      "queueEmpty": "No plans yet. Plans appear here when the agent proposes autonomous work.",
+      "groupAwaiting": "Awaiting confirmation",
+      "groupPlanning": "Planning",
+      "groupConfirmed": "Confirmed / handoff pending",
+      "groupClosed": "Rejected / expired",
+      "risk": {
+        "low": "Low risk",
+        "medium": "Medium risk",
+        "high": "High risk"
+      },
+      "status": {
+        "draft": "draft",
+        "planning": "planning",
+        "planning_failed": "planning failed",
+        "awaiting_confirmation": "awaiting confirmation",
+        "confirmed": "confirmed",
+        "rejected": "rejected",
+        "superseded": "superseded",
+        "expired": "expired"
+      },
+      "terminal": {
+        "rejected": "This plan was rejected.",
+        "superseded": "This plan was replaced by a newer version.",
+        "expired": "This plan expired before confirmation."
+      }
+    },
     "soul": {
       "title": "Soul — Personality & Instructions",
       "editButton": "Edit",

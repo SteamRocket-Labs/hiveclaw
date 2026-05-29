@@ -177,6 +177,10 @@ async def deep_research_run(request: ToolExecutionRequest) -> str:
         icon="🔎",
         is_default=False,
         governance="sensitive",
+        # Plan Mode §9.2 bridge: register as plan-governed but keep this tool's
+        # own plan_confirmed gate (below) — the service gate must NOT double-block
+        # it. Value mirrors app.tools.plan_gate_registry.BRIDGE_SELF.
+        plan_gate_action_kind="bridge:self",
         pack="deep_research_pack",
         adapter="request",
     )

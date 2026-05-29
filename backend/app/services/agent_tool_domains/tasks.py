@@ -41,6 +41,9 @@ async def _manage_tasks(
                 supervision_target_name=args.get("supervision_target_name"),
                 supervision_channel=args.get("supervision_channel", "feishu"),
                 remind_schedule=args.get("remind_schedule"),
+                plan_id=uuid.UUID(str(args["confirmed_plan_id"])) if args.get("confirmed_plan_id") else None,
+                plan_version=args.get("confirmed_plan_version"),
+                plan_hash=args.get("confirmed_plan_hash"),
             )
             db.add(task)
             await db.commit()

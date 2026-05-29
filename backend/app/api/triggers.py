@@ -7,11 +7,13 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate
 from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.trigger import AgentTrigger
 from app.models.user import User
+from app.services.plan_mode_core import stamp_confirmed_plan_provenance
 from app.services.agent_tool_domains.triggers import (
     VALID_TRIGGER_TYPES,
     _coerce_int,
@@ -62,6 +64,10 @@ class TriggerCreate(BaseModel):
     max_fires: int | None = None
     cooldown_seconds: int | None = None
     expires_at: str | None = None
+    # Plan Mode (§9.3): a confirmed plan authorising this autonomous wake.
+    confirmed_plan_id: str | None = None
+    confirmed_plan_version: int | None = None
+    confirmed_plan_hash: str | None = None
 
 
 class TriggerUpdate(BaseModel):
@@ -74,6 +80,10 @@ class TriggerUpdate(BaseModel):
     max_fires: int | None = None
     cooldown_seconds: int | None = None
     expires_at: str | None = None
+    # Plan Mode (§9.3): a confirmed plan authorising enabling this trigger.
+    confirmed_plan_id: str | None = None
+    confirmed_plan_version: int | None = None
+    confirmed_plan_hash: str | None = None
 
 
 def _trigger_response(trigger: AgentTrigger, *, diagnostics: bool = False, view: dict | None = None) -> TriggerResponse:
@@ -181,6 +191,25 @@ async def create_trigger(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid expires_at: {body.expires_at}") from exc
 
+    # Plan Mode early intercept (§9.3): this endpoint always creates an enabled
+    # autonomous trigger, so it requires a confirmed plan (or a cutover exemption).
+    await enforce_plan_gate(
+        db,
+        agent_id=agent_id,
+        action_kind="create_enabled_trigger",
+        gate=get_plan_mode_gate(),
+        confirmed_plan_id=body.confirmed_plan_id,
+        confirmed_plan_version=body.confirmed_plan_version,
+        confirmed_plan_hash=body.confirmed_plan_hash,
+        action_artifact={"config": config},
+    )
+    config = stamp_confirmed_plan_provenance(
+        config,
+        plan_id=body.confirmed_plan_id,
+        plan_version=body.confirmed_plan_version,
+        plan_hash=body.confirmed_plan_hash,
+    )
+
     trigger = AgentTrigger(
         agent_id=agent_id,
         name=name,
@@ -220,8 +249,30 @@ async def update_trigger(
     if not trigger:
         raise HTTPException(404, "Trigger not found")
 
+    # Plan Mode early intercept (§9.3): only enabling an autonomous wake is
+    # gated. Disables, config edits, and reason/lifecycle changes are low-risk
+    # and keep their existing contract.
+    if body.is_enabled is True:
+        await enforce_plan_gate(
+            db,
+            agent_id=agent_id,
+            action_kind="enable_autonomous_wake",
+            gate=get_plan_mode_gate(),
+            confirmed_plan_id=body.confirmed_plan_id,
+            confirmed_plan_version=body.confirmed_plan_version,
+            confirmed_plan_hash=body.confirmed_plan_hash,
+            action_artifact={"config": body.config if body.config is not None else trigger.config},
+        )
+
     if body.config is not None:
         trigger.config = body.config
+    if body.is_enabled is True:
+        trigger.config = stamp_confirmed_plan_provenance(
+            trigger.config,
+            plan_id=body.confirmed_plan_id,
+            plan_version=body.confirmed_plan_version,
+            plan_hash=body.confirmed_plan_hash,
+        )
     if body.reason is not None:
         trigger.reason = body.reason
     if body.is_enabled is not None:

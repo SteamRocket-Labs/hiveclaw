@@ -25,8 +25,10 @@ from app.services.action_preflight import (
     PreflightDecision,
 )
 from app.services.decision_trace import DecisionTraceStore
+from app.services.plan_mode_gate import PlanModeGate, get_plan_mode_gate
 from app.services.privacy_layer import PrivacyLayer
 from app.tools.governance import EventCallback, GovernanceDependencies, ToolGovernanceContext
+from app.tools.plan_gate_registry import hard_gated_action_kind
 from app.tools.result_envelope import render_tool_error
 from app.tools.runtime import ToolExecutionContext, ToolExecutionRegistry, ToolExecutionRequest
 from app.tools.backends import LocalToolRuntimeBackend, ToolRuntimeBackend
@@ -99,6 +101,18 @@ class ToolRuntimeService:
     coordination_runtime: CoordinationRuntime | None = None
     coordination_gateway: CoordinationGateway | None = None
     preflight_enabled: bool = True
+    # Plan Mode early-intercept gate (docs/plan-mode-design.md §9.2). The gate is
+    # read-only and stateless; the session factory opens a short-lived async
+    # session for the by-id plan lookup. Both are DI seams so tests can inject
+    # fakes (the gate is otherwise the shared singleton).
+    plan_mode_gate: PlanModeGate | None = None
+    plan_mode_session_factory: Callable[[], Any] | None = None
+    # Plan Mode intake service (§9.2 "intercept-then-create"). When a tagged tool
+    # is blocked with no confirmed plan, the gate seeds a confirmable awaiting
+    # PlanRequest from the tool's own args via ``ensure_awaiting_plan`` and embeds
+    # plan_id/json/version/hash into the needs_plan payload. DI seam for tests;
+    # otherwise the shared singleton (the one handoffs register on).
+    plan_mode_service: Any | None = None
 
     def __post_init__(self) -> None:
         if self.backend is None:
@@ -111,6 +125,16 @@ class ToolRuntimeService:
             self.coordination_runtime = coordination_runtime
         if self.coordination_gateway is None:
             self.coordination_gateway = InProcessCoordinationGateway(self.coordination_runtime)
+        if self.plan_mode_gate is None:
+            self.plan_mode_gate = get_plan_mode_gate()
+        if self.plan_mode_session_factory is None:
+            from app.database import async_session
+
+            self.plan_mode_session_factory = async_session
+        if self.plan_mode_service is None:
+            from app.services.plan_mode_service import get_plan_mode_service
+
+            self.plan_mode_service = get_plan_mode_service()
 
     async def execute(
         self,
@@ -122,6 +146,10 @@ class ToolRuntimeService:
         event_callback: EventCallback | None = None,
         delegation_token: Any | None = None,
     ) -> str:
+        plan_block = await self._plan_mode_gate_block(tool_name, arguments, agent_id=agent_id)
+        if plan_block:
+            return plan_block
+
         runtime_context = await self.runtime_resolver.resolve(agent_id=agent_id, user_id=user_id)
         governance_context = await self.governance_resolver.build_context(
             runtime_context=runtime_context,
@@ -310,6 +338,12 @@ class ToolRuntimeService:
     ) -> str:
         _logger = logging.getLogger(__name__)
 
+        # Plan Mode early-intercept (§9.2) fires here so both execute_direct and
+        # execute_approved are covered — execute_approved must NOT be a bypass.
+        plan_block = await self._plan_mode_gate_block(tool_name, arguments, agent_id=agent_id)
+        if plan_block:
+            return plan_block
+
         self.ensure_registry()
 
         resolved_user_id = user_id or agent_id
@@ -389,6 +423,123 @@ class ToolRuntimeService:
             )
 
         return await self.backend.execute(request, _execute_request)
+
+    async def _plan_mode_gate_block(
+        self,
+        tool_name: str,
+        arguments: dict,
+        *,
+        agent_id: uuid.UUID,
+    ) -> str | None:
+        """Return a ``needs_plan`` JSON block when Plan Mode forbids ``tool_name``.
+
+        This is the §9.2 early-intercept tool gate, shared by every execution
+        entrypoint (``execute`` / ``execute_direct`` / ``execute_approved``) so
+        ``execute_approved`` cannot be used to bypass it. Only tools tagged with
+        a real ``ACTION_KIND`` (``ToolMeta.plan_gate_action_kind``) are gated —
+        untagged tools and ``bridge:self`` tools (which own their confirmation)
+        short-circuit to ``None`` without touching the gate.
+
+        A caller that has already confirmed a plan may thread
+        ``confirmed_plan_id`` (and optionally ``confirmed_plan_version`` /
+        ``confirmed_plan_hash``) through the tool arguments; they are forwarded
+        to the gate so a confirmed handoff runs the tool.
+
+        When the gate blocks **and** no confirmed plan was claimed, this seeds a
+        confirmable awaiting :class:`AgentPlanRequest` from the tool's own
+        arguments (§9.2 "intercept-then-create") and embeds
+        ``plan_id`` / ``plan_json`` / ``plan_version`` / ``plan_hash`` into the
+        envelope, so the agent/UI can drive the user to confirm a concrete plan.
+
+        Returns ``None`` to proceed, or the JSON-serialised ``needs_plan``
+        envelope (mirroring the deep_research contract) to short-circuit.
+        """
+        action_kind = hard_gated_action_kind(tool_name)
+        if action_kind is None:
+            return None
+
+        confirmed_plan_id = arguments.get("confirmed_plan_id")
+        plan_version = arguments.get("confirmed_plan_version")
+        plan_hash = arguments.get("confirmed_plan_hash")
+
+        async with self.plan_mode_session_factory() as db:
+            decision = await self.plan_mode_gate.check(
+                db,
+                agent_id=agent_id,
+                action_kind=action_kind,
+                confirmed_plan_id=confirmed_plan_id,
+                plan_version=plan_version,
+                plan_hash=plan_hash,
+            )
+
+        if not decision.needs_plan:
+            return None
+
+        payload = dict(decision.needs_plan_payload or {})
+        # Only materialise a fresh plan for a genuine "no confirmed plan" block.
+        # A failed *handoff* (the caller claimed a plan that didn't validate) must
+        # not spawn a new plan — surface the gate's reason as-is.
+        if confirmed_plan_id is None:
+            payload = await self._attach_intercepted_plan(
+                payload,
+                agent_id=agent_id,
+                action_kind=action_kind,
+                tool_name=tool_name,
+                arguments=arguments,
+            )
+        return _json.dumps(payload, ensure_ascii=False, default=str)
+
+    async def _attach_intercepted_plan(
+        self,
+        payload: dict,
+        *,
+        agent_id: uuid.UUID,
+        action_kind: str,
+        tool_name: str,
+        arguments: dict,
+    ) -> dict:
+        """Seed an awaiting plan and merge its identity into ``payload`` (§9.2).
+
+        Fail-closed by construction: any error materialising the plan is logged
+        and swallowed, returning the bare ``needs_plan`` envelope unchanged. The
+        tool is *already* blocked at this point — a plan-creation failure must
+        never downgrade that block into an execution.
+        """
+        if self.plan_mode_service is None:
+            return payload
+
+        # Strip the confirmation-handshake keys before mirroring args into the
+        # plan: they are gate plumbing, not part of the planned action.
+        action_args = {
+            k: v
+            for k, v in arguments.items()
+            if k not in ("confirmed_plan_id", "confirmed_plan_version", "confirmed_plan_hash")
+        }
+        try:
+            plan = await self.plan_mode_service.ensure_awaiting_plan(
+                agent_id=agent_id,
+                action_kind=action_kind,
+                tool_name=tool_name,
+                arguments=action_args,
+                source="tool_runtime",
+            )
+        except Exception as exc:  # noqa: BLE001 — logged, then fail-closed to the bare block
+            logging.getLogger(__name__).warning(
+                "[ToolService] plan intercept failed for %s: %s", tool_name, exc
+            )
+            return payload
+
+        if plan is None:
+            return payload
+
+        merged = dict(payload)
+        merged["plan_id"] = str(plan.id)
+        merged["plan_version"] = plan.plan_version
+        if plan.plan_hash:
+            merged["plan_hash"] = plan.plan_hash
+        if plan.plan_json:
+            merged["plan_json"] = plan.plan_json
+        return merged
 
     async def _preflight_tool_execution(
         self,

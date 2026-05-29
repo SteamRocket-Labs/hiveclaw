@@ -7,6 +7,7 @@ import { autonomyApi } from '../../api/domains/autonomy';
 import { objectiveApi } from '../../api/domains/objectives';
 import { StructuredToolResultBody } from './AgentChatSection';
 import TeamMemorySummaryCard from './TeamMemorySummaryCard';
+import PlanQueueSection from './PlanQueueSection';
 import { normalizeToolCallResult } from './toolResultEnvelope';
 
 type AgentAwareSectionProps = {
@@ -504,6 +505,7 @@ export default function AgentAwareSection({
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
         <TeamMemorySummaryCard agentId={agentId} section="aware" />
+        <PlanQueueSection agentId={agentId} />
         {renderAutonomyOverview()}
       </div>
     );
@@ -703,6 +705,7 @@ export default function AgentAwareSection({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
       <TeamMemorySummaryCard agentId={agentId} section="aware" />
+      <PlanQueueSection agentId={agentId} />
 
       <div className="card" style={{ marginBottom: '16px', padding: '16px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>

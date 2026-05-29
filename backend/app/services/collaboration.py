@@ -23,7 +23,11 @@ class CollaborationService:
 
     async def delegate_task(
         self, db: AsyncSession, from_agent_id: uuid.UUID,
-        to_agent_id: uuid.UUID, task_title: str, task_description: str
+        to_agent_id: uuid.UUID, task_title: str, task_description: str,
+        *,
+        confirmed_plan_id: str | None = None,
+        confirmed_plan_version: int | None = None,
+        confirmed_plan_hash: str | None = None,
     ) -> dict:
         """Delegate work through the runtime async delegation path."""
         from app.services.agent_tool_domains.messaging import _delegate_to_agent_async
@@ -48,6 +52,9 @@ class CollaborationService:
                 "agent_name": to_agent.name,
                 "target_agent_id": str(to_agent.id),
                 "message": task_message,
+                "confirmed_plan_id": confirmed_plan_id,
+                "confirmed_plan_version": confirmed_plan_version,
+                "confirmed_plan_hash": confirmed_plan_hash,
             },
         )
         if raw_result.startswith(("❌", "⚠️")):

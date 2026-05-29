@@ -378,6 +378,58 @@
       "researchClaims": "结论",
       "researchGaps": "缺口"
     },
+    "plan": {
+      "badge": "计划",
+      "version": "v{{version}}",
+      "objective": "目标",
+      "steps": "执行步骤",
+      "successCriteria": "成功标准",
+      "wakePolicy": "唤醒策略",
+      "capabilities": "所需能力",
+      "estimatedCost": "预估成本",
+      "sideEffects": "外部副作用",
+      "sideEffectGeneric": "外部动作",
+      "requiresConfirmation": "需要确认",
+      "stopConditions": "停止条件",
+      "confirm": "确认",
+      "confirmAndStart": "确认并开始",
+      "requestChanges": "请求修改",
+      "reject": "拒绝",
+      "requestChangesPrompt": "这个计划需要修改什么?",
+      "rejectPrompt": "拒绝此计划的原因(可选)",
+      "actionFailed": "操作失败",
+      "missingHash": "该计划尚无哈希,无法确认。",
+      "needsConfirmation": "有一个计划需要你确认。",
+      "noActions": "该计划当前没有可执行的操作。",
+      "handoffState": "交接:{{state}}",
+      "queueTitle": "计划队列",
+      "queueDesc": "在自主执行开始前等待你确认的计划。",
+      "queueEmpty": "暂无计划。当 agent 提出自主工作时,计划会出现在这里。",
+      "groupAwaiting": "等待确认",
+      "groupPlanning": "规划中",
+      "groupConfirmed": "已确认 / 待交接",
+      "groupClosed": "已拒绝 / 已过期",
+      "risk": {
+        "low": "低风险",
+        "medium": "中风险",
+        "high": "高风险"
+      },
+      "status": {
+        "draft": "草稿",
+        "planning": "规划中",
+        "planning_failed": "规划失败",
+        "awaiting_confirmation": "等待确认",
+        "confirmed": "已确认",
+        "rejected": "已拒绝",
+        "superseded": "已被替代",
+        "expired": "已过期"
+      },
+      "terminal": {
+        "rejected": "该计划已被拒绝。",
+        "superseded": "该计划已被新版本替代。",
+        "expired": "该计划在确认前已过期。"
+      }
+    },
     "soul": {
       "title": "Soul — 人格与行为指令",
       "editButton": "编辑",

@@ -14,6 +14,11 @@ def _stub_activity_logger(monkeypatch):
 
     monkeypatch.setattr("app.services.activity_logger.log_activity", fake_log_activity)
 
+    async def fake_delegation_plan_gate_allows(_request):
+        return True, None
+
+    monkeypatch.setattr("app.agents.orchestrator._delegation_plan_gate_allows", fake_delegation_plan_gate_allows)
+
 
 @pytest.mark.asyncio
 async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
@@ -149,6 +154,36 @@ async def test_delegate_async_serializes_duplicate_work_with_coordination_lease(
     assert second.status == "blocked_by_lease"
     assert second.blocked_by_lease_id == first.coordination_lease_id
     assert coordination_runtime.read_signals(str(target.id), thread_id=first.signal_thread_id)
+
+
+@pytest.mark.asyncio
+async def test_delegate_async_stops_before_task_creation_when_plan_gate_blocks(monkeypatch):
+    from app.agents.orchestrator import delegate_async
+
+    async def fake_delegation_plan_gate_allows(_request):
+        return False, "no_confirmed_plan"
+
+    async def unexpected_create_runtime_task_record(**_kwargs):  # pragma: no cover - must not run
+        raise AssertionError("runtime task must not be created when Plan Mode blocks delegation")
+
+    monkeypatch.setattr("app.agents.orchestrator._delegation_plan_gate_allows", fake_delegation_plan_gate_allows)
+    monkeypatch.setattr("app.agents.orchestrator.create_runtime_task_record", unexpected_create_runtime_task_record)
+    monkeypatch.setattr("app.agents.orchestrator._spawn_async_delegation_task", lambda **_kwargs: None)
+
+    target = SimpleNamespace(id=uuid4(), name="Target Agent", role_description="Helpful")
+    target_model = SimpleNamespace(provider="openai", model="gpt-4.1")
+
+    handle = await delegate_async(
+        target=target,
+        target_model=target_model,
+        conversation_messages=[{"role": "user", "content": "Prepare the market map"}],
+        owner_id=uuid4(),
+        session_id="session-plan-block",
+        parent_agent_id=uuid4(),
+    )
+
+    assert handle.task_id == "plan_required"
+    assert handle.status == "plan_required:no_confirmed_plan"
 
 
 @pytest.mark.asyncio

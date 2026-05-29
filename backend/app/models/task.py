@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -37,6 +37,12 @@ class Task(Base):
     assignee: Mapped[str] = mapped_column(String(50), default="self")  # "self" or user_id
     created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     due_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Plan Mode provenance for autonomous task execution backstop.
+    plan_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    plan_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    plan_hash: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    plan_exempt_reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     # Supervision specific fields
     supervision_target_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))

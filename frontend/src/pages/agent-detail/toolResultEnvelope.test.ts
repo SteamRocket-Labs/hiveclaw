@@ -155,4 +155,51 @@ describe('parseCreateEmployeeToolResult', () => {
       toolMeta: null,
     });
   });
+
+  it('normalizes a needs_plan tool result into plan confirmation metadata regardless of tool name', () => {
+    const normalized = normalizeToolCallResult(
+      'set_trigger',
+      JSON.stringify({
+        ok: false,
+        status: 'needs_plan',
+        plan_id: 'plan-uuid-1',
+        plan_version: 1,
+        plan_hash: 'sha256:deadbeef',
+        summary: 'Confirm the plan before creating this autonomous wake policy.',
+        next_action: 'Show this plan to the user and wait for explicit confirmation.',
+        plan_json: { title: 'Daily brief', objective: 'Produce a daily brief.' },
+      }),
+    );
+
+    expect(normalized.displayResult).toBe('Confirm the plan before creating this autonomous wake policy.');
+    expect(normalized.toolMeta).toEqual({
+      kind: 'plan_needs_confirmation',
+      planId: 'plan-uuid-1',
+      planVersion: 1,
+      planHash: 'sha256:deadbeef',
+      status: 'needs_plan',
+      summary: 'Confirm the plan before creating this autonomous wake policy.',
+      nextAction: 'Show this plan to the user and wait for explicit confirmation.',
+      planJson: { title: 'Daily brief', objective: 'Produce a daily brief.' },
+    });
+  });
+
+  it('falls back to plan_preview when plan_json is absent on a needs_plan result', () => {
+    const normalized = normalizeToolCallResult(
+      'deep_research_start',
+      JSON.stringify({
+        status: 'needs_plan',
+        plan_id: 'plan-uuid-2',
+        plan_preview: { title: 'Industry scan' },
+      }),
+    );
+
+    expect(normalized.toolMeta).toMatchObject({
+      kind: 'plan_needs_confirmation',
+      planId: 'plan-uuid-2',
+      planVersion: 1,
+      planHash: null,
+      planJson: { title: 'Industry scan' },
+    });
+  });
 });

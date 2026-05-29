@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 from sqlalchemy import select
 
 from app.database import async_session
+from app.services.plan_mode_core import stamp_confirmed_plan_provenance
 from app.tools.result_envelope import render_tool_error
 
 logger = logging.getLogger(__name__)
@@ -341,6 +342,12 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
         # Auto-generate a unique token for the webhook URL
         token = secrets.token_urlsafe(8)  # ~11 chars, URL-safe
         config["token"] = token
+    config = stamp_confirmed_plan_provenance(
+        config,
+        plan_id=arguments.get("confirmed_plan_id"),
+        plan_version=arguments.get("confirmed_plan_version"),
+        plan_hash=arguments.get("confirmed_plan_hash"),
+    )
 
     try:
         async with async_session() as db:
@@ -529,6 +536,12 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                 final_config["objective_id"] = arguments.get("objective_id")
             if new_focus_ref is not None:
                 final_focus_ref = str(new_focus_ref).strip() or None
+            final_config = stamp_confirmed_plan_provenance(
+                final_config,
+                plan_id=arguments.get("confirmed_plan_id"),
+                plan_version=arguments.get("confirmed_plan_version"),
+                plan_hash=arguments.get("confirmed_plan_hash"),
+            )
 
             _trigger_class, binding_error = _resolve_trigger_class(
                 "update_trigger",

@@ -181,6 +181,7 @@ async def get_task(agent_id: uuid.UUID, arguments: dict) -> str:
         display_name="Manage Tasks",
         icon="\u270f\ufe0f",
         governance="sensitive",
+        plan_gate_action_kind="start_long_task",
         adapter="request",
     )
 )

@@ -190,6 +190,145 @@ async def test_start_web_chat_run_rejects_duplicate_active_run():
     assert db.commits == 0
 
 
+# ---------------------------------------------------------------------------
+# Auto-sync gate (§9.0 task auto-sync / §9.2): a regex-detected "create a task"
+# must NOT silently background-execute; without a confirmed plan it creates an
+# awaiting PlanRequest and tells the user to confirm.
+# ---------------------------------------------------------------------------
+
+
+class _AutoSyncDB:
+    """Minimal session for _maybe_sync_created_task: records adds/commits."""
+
+    def __init__(self):
+        self.added = []
+        self.commits = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_a):
+        return False
+
+    def add(self, obj):
+        if getattr(obj, "id", None) is None:
+            obj.id = uuid4()
+        self.added.append(obj)
+
+    async def commit(self):
+        self.commits += 1
+
+    async def refresh(self, _obj):
+        return None
+
+
+class _RecordingIntake:
+    def __init__(self, plan):
+        self.plan = plan
+        self.calls = []
+
+    async def ensure_awaiting_plan(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.plan
+
+
+@pytest.mark.asyncio
+async def test_maybe_sync_created_task_without_plan_creates_plan_and_skips_execution(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+    from app.models.task import Task
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    executed = {"n": 0}
+
+    async def fake_execute_task(_task_id, _agent_id):  # must NOT run
+        executed["n"] += 1
+
+    monkeypatch.setattr("app.services.task_executor.execute_task", fake_execute_task)
+
+    db = _AutoSyncDB()
+    monkeypatch.setattr(runtime, "_async_session", lambda: db)
+
+    plan = SimpleNamespace(id=uuid4(), plan_version=1, plan_hash="sha256:abc")
+    intake = _RecordingIntake(plan)
+    monkeypatch.setattr(runtime, "get_plan_mode_service", lambda: intake)
+
+    scheduled = []
+    monkeypatch.setattr(runtime.asyncio, "create_task", lambda coro: scheduled.append(coro) or coro.close())
+
+    result = await runtime._maybe_sync_created_task(
+        agent_id=agent_id,
+        user_id=user_id,
+        content="帮我创建一个任务：每天整理新闻",
+        assistant_response="好的",
+    )
+
+    # No Task persisted (the old behaviour created one and ran it).
+    assert not any(isinstance(o, Task) for o in db.added)
+    # execute_task never fired.
+    assert executed["n"] == 0
+    assert scheduled == []
+    # A plan was materialised from the detected task title.
+    assert intake.calls and intake.calls[0]["action_kind"] == "start_long_task"
+    assert "每天整理新闻" in intake.calls[0]["arguments"]["title"]
+    # User is told to confirm, with the plan id surfaced.
+    assert str(plan.id) in result
+    assert "确认" in result or "confirm" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_maybe_sync_created_task_no_match_is_untouched(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    intake = _RecordingIntake(SimpleNamespace(id=uuid4(), plan_version=1, plan_hash="x"))
+    monkeypatch.setattr(runtime, "get_plan_mode_service", lambda: intake)
+
+    original = "这是普通回复，没有任务关键词"
+    result = await runtime._maybe_sync_created_task(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        content="你好，今天天气怎么样",
+        assistant_response=original,
+    )
+
+    assert result == original
+    assert intake.calls == []  # not a task-creation intent -> gate not invoked
+
+
+@pytest.mark.asyncio
+async def test_maybe_sync_created_task_intake_failure_is_non_fatal(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+    from app.models.task import Task
+
+    executed = {"n": 0}
+
+    async def fake_execute_task(_task_id, _agent_id):
+        executed["n"] += 1
+
+    monkeypatch.setattr("app.services.task_executor.execute_task", fake_execute_task)
+    db = _AutoSyncDB()
+    monkeypatch.setattr(runtime, "_async_session", lambda: db)
+
+    class _Boom:
+        async def ensure_awaiting_plan(self, **_k):
+            raise RuntimeError("db down")
+
+    monkeypatch.setattr(runtime, "get_plan_mode_service", lambda: _Boom())
+
+    original = "好的"
+    result = await runtime._maybe_sync_created_task(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        content="创建任务：清理日志",
+        assistant_response=original,
+    )
+
+    # Fail-closed: still no execution, still no Task persisted; reply not crashed.
+    assert executed["n"] == 0
+    assert not any(isinstance(o, Task) for o in db.added)
+    assert isinstance(result, str)
+
+
 @pytest.mark.asyncio
 async def test_execute_web_chat_run_keeps_cancelled_exception_as_killed(monkeypatch):
     import app.services.web_chat_runtime as runtime

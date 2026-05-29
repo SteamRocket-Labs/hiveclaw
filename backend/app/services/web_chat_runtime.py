@@ -20,7 +20,6 @@ from app.models.chat_session import ChatSession
 from app.models.gateway_message import GatewayMessage
 from app.models.llm import LLMModel
 from app.models.runtime_task import RuntimeTask
-from app.models.task import Task
 from app.models.user import User
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.services.chat_message_parts import (
@@ -33,6 +32,7 @@ from app.services.chat_message_parts import (
     build_tool_call_event,
 )
 from app.services.llm_error_policy import is_llm_error_message
+from app.services.plan_mode_service import get_plan_mode_service
 from app.services.web_chat_broker import web_chat_broker
 
 
@@ -384,7 +384,22 @@ async def _maybe_sync_created_task(
     user_id: uuid.UUID,
     content: str,
     assistant_response: str,
+    tenant_id: uuid.UUID | None = None,
+    session_id: str | None = None,
 ) -> str:
+    """Gate the chat "create a task" auto-sync behind Plan Mode (§9.0 / §9.2).
+
+    A regex-detected task-creation intent used to immediately persist a ``Task``
+    and background-execute it (``execute_task``). That is an autonomous
+    ``start_long_task`` action: per Plan Mode it must NOT run without a confirmed
+    plan. So instead of executing, we materialise an awaiting ``PlanRequest`` from
+    the detected task title and tell the user to confirm it. The agent never
+    backgrounds a task off a bare regex match again.
+
+    Fail-closed: if the plan cannot be created the action is *still* not executed
+    (the reply is returned unchanged) — a degraded ledger must never downgrade
+    into a silent background run.
+    """
     task_match = re.search(
         r"(?:创建|新建|添加|建一个|帮我建|create|add)(?:一个|a )?(?:任务|待办|todo|task)[，,：：:\s]*(.+)",
         content,
@@ -395,26 +410,26 @@ async def _maybe_sync_created_task(
     task_title = task_match.group(1).strip()
     if not task_title:
         return assistant_response
-    try:
-        from app.services.task_executor import execute_task
 
-        async with _async_session() as db:
-            task = Task(
-                agent_id=agent_id,
-                title=task_title,
-                created_by=user_id,
-                status="pending",
-                priority="medium",
-            )
-            db.add(task)
-            await db.commit()
-            await db.refresh(task)
-            task_id = task.id
-        asyncio.create_task(execute_task(task_id, agent_id))
-        return assistant_response + f"\n\n📋 Task synced to task board: [{task_title}]"
+    try:
+        plan = await get_plan_mode_service().ensure_awaiting_plan(
+            agent_id=agent_id,
+            action_kind="start_long_task",
+            tool_name="manage_tasks",
+            arguments={"action": "create", "title": task_title, "description": content},
+            source="web_chat",
+            tenant_id=tenant_id,
+            session_id=session_id,
+            runtime_task_id=None,
+        )
     except Exception as exc:
-        logger.error("[WebChatRun] Failed to create task: {}", exc)
+        logger.error("[WebChatRun] Failed to create plan for task auto-sync: {}", exc)
         return assistant_response
+
+    return assistant_response + (
+        f"\n\n📋 “{task_title}” 需要先确认计划再执行。我已生成一份待确认计划"
+        f"（plan_id={plan.id}），请在计划卡片中确认或修改后再启动。"
+    )
 
 
 async def _update_runtime_task(
@@ -628,6 +643,8 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             user_id=user.id,
             content=prompt,
             assistant_response=result.content,
+            tenant_id=getattr(agent, "tenant_id", None),
+            session_id=session_id,
         )
         thinking = "".join(thinking_content) if thinking_content else None
         await _persist_assistant_message(

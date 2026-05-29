@@ -52,6 +52,7 @@ async def test_execute_task_delegates_to_runtime_invoker(monkeypatch):
     agent_id = uuid4()
     model_id = uuid4()
     creator_id = uuid4()
+    plan_id = uuid4()
 
     task = SimpleNamespace(
         id=task_id,
@@ -61,6 +62,18 @@ async def test_execute_task_delegates_to_runtime_invoker(monkeypatch):
         status="pending",
         completed_at=None,
         supervision_target_name="",
+        plan_id=plan_id,
+        plan_version=1,
+        plan_hash="sha256:task",
+        plan_exempt_reason=None,
+    )
+    plan = SimpleNamespace(
+        id=plan_id,
+        agent_id=agent_id,
+        intent_type="long_task",
+        status="confirmed",
+        plan_version=1,
+        plan_hash="sha256:task",
     )
     tenant_id = uuid4()
     agent = SimpleNamespace(
@@ -82,7 +95,7 @@ async def test_execute_task_delegates_to_runtime_invoker(monkeypatch):
         tenant_id=tenant_id,
     )
 
-    setup_session = _FakeSession([task])
+    setup_session = _FakeSession([task, plan])
     model_session = _FakeSession([agent, model, None])
     final_session = _FakeSession([task])
     sessions = [setup_session, model_session, final_session]
@@ -137,6 +150,40 @@ async def test_execute_task_delegates_to_runtime_invoker(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_execute_task_blocks_without_confirmed_plan(monkeypatch):
+    from app.services.task_executor import execute_task
+
+    task_id = uuid4()
+    agent_id = uuid4()
+    task = SimpleNamespace(
+        id=task_id,
+        title="未授权任务",
+        description="",
+        type="todo",
+        status="pending",
+        completed_at=None,
+        supervision_target_name="",
+        plan_id=None,
+        plan_version=None,
+        plan_hash=None,
+        plan_exempt_reason=None,
+    )
+    setup_session = _FakeSession([task])
+    monkeypatch.setattr("app.services.task_executor.async_session", lambda: setup_session)
+    monkeypatch.setattr("app.services.task_executor.TaskLog", lambda **kwargs: SimpleNamespace(**kwargs))
+
+    async def fake_invoke_agent(_request):  # pragma: no cover - must not run
+        raise AssertionError("invoke_agent should not run without a confirmed plan")
+
+    monkeypatch.setattr("app.services.task_executor.invoke_agent", fake_invoke_agent)
+
+    await execute_task(task_id, agent_id)
+
+    assert task.status == "pending"
+    assert any("Plan Mode blocked" in item.content for item in setup_session.added)
+
+
+@pytest.mark.asyncio
 async def test_execute_task_persists_reflection_session_and_tool_calls(monkeypatch):
     from app.services.task_executor import execute_task
 
@@ -145,6 +192,7 @@ async def test_execute_task_persists_reflection_session_and_tool_calls(monkeypat
     model_id = uuid4()
     creator_id = uuid4()
     participant_id = uuid4()
+    plan_id = uuid4()
 
     task = SimpleNamespace(
         id=task_id,
@@ -154,6 +202,18 @@ async def test_execute_task_persists_reflection_session_and_tool_calls(monkeypat
         status="pending",
         completed_at=None,
         supervision_target_name="",
+        plan_id=plan_id,
+        plan_version=1,
+        plan_hash="sha256:task",
+        plan_exempt_reason=None,
+    )
+    plan = SimpleNamespace(
+        id=plan_id,
+        agent_id=agent_id,
+        intent_type="long_task",
+        status="confirmed",
+        plan_version=1,
+        plan_hash="sha256:task",
     )
     tenant_id = uuid4()
     agent = SimpleNamespace(
@@ -177,7 +237,7 @@ async def test_execute_task_persists_reflection_session_and_tool_calls(monkeypat
     )
     participant = SimpleNamespace(id=participant_id)
 
-    setup_session = _FakeSession([task])
+    setup_session = _FakeSession([task, plan])
     prepare_session = _FakeSession([agent, model, participant])
     tool_call_session = _FakeSession([])
     final_session = _FakeSession([task])

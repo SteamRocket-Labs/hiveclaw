@@ -10,6 +10,17 @@ import pytest
 import app.api.triggers as triggers_api
 from app.core.security import get_current_user
 from app.database import get_db
+from app.services.plan_mode_gate import PlanGateDecision
+
+
+def _allow_plan_gate(monkeypatch):
+    """Neutralize the Plan Mode REST gate for tests not focused on it."""
+
+    class _AllowGate:
+        async def check(self, _db, **_kwargs):
+            return PlanGateDecision(allowed=True, reason="confirmed_plan_handoff")
+
+    monkeypatch.setattr(triggers_api, "get_plan_mode_gate", lambda: _AllowGate())
 
 
 class _ListResult:
@@ -180,6 +191,9 @@ def test_create_scheduled_trigger_defaults_class_and_returns_display(monkeypatch
     db = _QueuedDB()
     client, _user = _client(monkeypatch, db)
     agent_id = uuid4()
+    # Plan Mode gate is exercised by test_plan_mode_rest_gate.py; here we assert
+    # trigger-class defaulting + display, so allow the gate through.
+    _allow_plan_gate(monkeypatch)
 
     response = client.post(
         f"/agents/{agent_id}/triggers",

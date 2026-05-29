@@ -42,6 +42,7 @@ from app.api.office import router as office_router
 from app.api.objectives import router as objectives_router
 from app.api.organization import router as org_router
 from app.api.packs import router as packs_router
+from app.api.plans import router as plans_router
 from app.api.plaza import router as plaza_router
 from app.api.relationships import router as relationships_router
 from app.api.role_templates import router as role_templates_router
@@ -179,6 +180,7 @@ async def lifespan(app: FastAPI):
         import app.models.guard_policy  # noqa
         import app.models.tenant_channel_config  # noqa
         import app.models.objective  # noqa
+        import app.models.plan_request  # noqa
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             # Add enum values to channel_type_enum if they don't exist yet (idempotent)
@@ -211,6 +213,18 @@ async def lifespan(app: FastAPI):
                 logger.info("[startup] Objective ledger sync: {}", objective_report)
     except Exception as e:
         logger.warning(f"[startup] Objective ledger sync failed (non-fatal): {e}")
+
+    # Register concrete Plan Mode handoff handlers onto the REST API's shared
+    # service so a confirmed objective_trigger plan actually creates the
+    # objective + enabled trigger (instead of resolving to "skipped").
+    try:
+        from app.api.plans import get_plan_mode_service
+        from app.services.plan_mode_registry import register_plan_mode_handoffs
+
+        register_plan_mode_handoffs(get_plan_mode_service())
+        logger.info("[startup] Plan Mode handoff handlers registered")
+    except Exception as e:
+        logger.warning(f"[startup] Plan Mode handoff registration failed (non-fatal): {e}")
 
     # Startup: seed data — each step isolated so one failure doesn't block others
     logger.info("[startup] seeding...")
@@ -454,6 +468,7 @@ _api_routers = [
     chat_sessions_router, plaza_router, triggers_router, memory_router,
     oidc_router, capabilities_router, onboarding_router, packs_router,
     objectives_router,
+    plans_router,
     office_router,
     autonomy_router,
     llm_proxy_router,

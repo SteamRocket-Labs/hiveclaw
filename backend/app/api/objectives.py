@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate
 from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
@@ -46,6 +47,10 @@ class ObjectiveProposalIn(BaseModel):
     wake_policy: dict[str, Any] | None = None
     evidence: dict[str, Any] = Field(default_factory=dict)
     source: str = "api"
+    # Plan Mode (§9.3 / §9.4): a confirmed plan authorising autonomous activation.
+    confirmed_plan_id: str | None = None
+    confirmed_plan_version: int | None = None
+    confirmed_plan_hash: str | None = None
 
 
 class ObjectiveUpdateIn(BaseModel):
@@ -56,10 +61,18 @@ class ObjectiveUpdateIn(BaseModel):
     blocked_reason: str | None = None
     completion_evidence: str | None = None
     metadata: dict[str, Any] | None = None
+    # Plan Mode (§9.3 / §9.4): a confirmed plan authorising autonomous activation.
+    confirmed_plan_id: str | None = None
+    confirmed_plan_version: int | None = None
+    confirmed_plan_hash: str | None = None
 
 
 class ObjectiveDecisionIn(BaseModel):
     reason: str | None = None
+    # Plan Mode (§9.3 / §9.4): a confirmed plan authorising autonomous activation.
+    confirmed_plan_id: str | None = None
+    confirmed_plan_version: int | None = None
+    confirmed_plan_hash: str | None = None
 
 
 def _dt(value: datetime | None) -> str | None:
@@ -128,6 +141,19 @@ async def propose_agent_objective(
         priority=payload.priority,
         wake_policy=payload.wake_policy or {},
     )
+    # Plan Mode early intercept (§9.3 / §9.4): a proposal that the intake gate would
+    # activate immediately opens an autonomous wake and needs a confirmed plan. An
+    # inferred objective that stays `proposed` is a preview and is not gated.
+    if objective_intake.gate_objective_candidate(candidate).status == "active":
+        await enforce_plan_gate(
+            db,
+            agent_id=agent_id,
+            action_kind="activate_objective_wake",
+            gate=get_plan_mode_gate(),
+            confirmed_plan_id=payload.confirmed_plan_id,
+            confirmed_plan_version=payload.confirmed_plan_version,
+            confirmed_plan_hash=payload.confirmed_plan_hash,
+        )
     objective = await objective_intake.upsert_objective_candidate(db, agent, candidate)
     return _objective_out(objective)
 
@@ -143,7 +169,31 @@ async def update_agent_objective(
     await check_agent_access(db, current_user, agent_id)
     objective = await _load_agent_objective_or_404(db, agent_id=agent_id, objective_id=objective_id)
 
+    # Plan Mode early intercept (§9.3 / §9.4): activating an objective into an
+    # autonomous status opens autonomous wake and needs a confirmed plan.
+    # Editing other fields (priority, description, completion, blocking) is not gated.
+    requested_status_lc = str(payload.status or "").strip().lower()
+    activating = (
+        requested_status_lc in objective_intake.AUTONOMOUS_OBJECTIVE_STATUSES
+        and str(getattr(objective, "status", "") or "").strip().lower() != requested_status_lc
+    )
+    if activating:
+        await enforce_plan_gate(
+            db,
+            agent_id=agent_id,
+            action_kind="activate_objective_wake",
+            gate=get_plan_mode_gate(),
+            confirmed_plan_id=payload.confirmed_plan_id,
+            confirmed_plan_version=payload.confirmed_plan_version,
+            confirmed_plan_hash=payload.confirmed_plan_hash,
+            action_artifact={"metadata": dict(objective.metadata_json or {})},
+        )
+
     data = payload.model_dump(exclude_unset=True)
+    # Plan Mode handoff fields are gate inputs, not ORM columns — drop them before
+    # the generic setattr loop below.
+    for _plan_field in ("confirmed_plan_id", "confirmed_plan_version", "confirmed_plan_hash"):
+        data.pop(_plan_field, None)
     metadata = dict(objective.metadata_json or {})
     metadata_patch = data.pop("metadata", None)
     if isinstance(metadata_patch, dict):
@@ -189,6 +239,18 @@ async def approve_agent_objective(
 ):
     await check_agent_access(db, current_user, agent_id)
     objective = await _load_agent_objective_or_404(db, agent_id=agent_id, objective_id=objective_id)
+    # Plan Mode early intercept (§9.3 / §9.4): approval activates the objective and
+    # opens autonomous wake, so it needs a confirmed plan.
+    await enforce_plan_gate(
+        db,
+        agent_id=agent_id,
+        action_kind="activate_objective_wake",
+        gate=get_plan_mode_gate(),
+        confirmed_plan_id=payload.confirmed_plan_id,
+        confirmed_plan_version=payload.confirmed_plan_version,
+        confirmed_plan_hash=payload.confirmed_plan_hash,
+        action_artifact={"metadata": dict(objective.metadata_json or {})},
+    )
     from app.services.objective_approval import apply_objective_approval
 
     apply_objective_approval(

@@ -424,6 +424,10 @@ class AgentDelegationRequest:
     depth: int = 1
     policy: OrchestrationPolicy = field(default_factory=OrchestrationPolicy)
     interaction_type: str = "delegation"
+    confirmed_plan_id: str | uuid.UUID | None = None
+    confirmed_plan_version: int | None = None
+    confirmed_plan_hash: str | None = None
+    plan_exempt_reason: str | None = None
 
 
 def _delegation_coordination_key(request: AgentDelegationRequest) -> str:
@@ -530,6 +534,16 @@ def _build_runtime_task_metadata(request: AgentDelegationRequest) -> dict[str, A
         "system_prompt_suffix": request.system_prompt_suffix,
         "tool_profile": request.policy.tool_profile,
     }
+    if request.confirmed_plan_id is not None:
+        metadata.update(
+            {
+                "plan_id": str(request.confirmed_plan_id),
+                "plan_version": request.confirmed_plan_version,
+                "plan_hash": request.confirmed_plan_hash,
+            }
+        )
+    if request.plan_exempt_reason:
+        metadata["plan_exempt_reason"] = request.plan_exempt_reason
     resumable = request.tool_executor is None
     if resumable:
         try:
@@ -550,6 +564,30 @@ def _build_runtime_task_metadata(request: AgentDelegationRequest) -> dict[str, A
             }
         )
     return metadata
+
+
+async def _delegation_plan_gate_allows(request: AgentDelegationRequest) -> tuple[bool, str | None]:
+    """Final Plan Mode backstop for async delegation startup."""
+    if request.interaction_type != "delegation":
+        return True, None
+    parent_agent_id = _maybe_uuid(request.parent_agent_id)
+    if parent_agent_id is None:
+        return False, "missing_parent_agent"
+
+    from app.database import async_session
+    from app.services.plan_mode_gate import get_plan_mode_gate
+
+    async with async_session() as db:
+        decision = await get_plan_mode_gate().check(
+            db,
+            agent_id=parent_agent_id,
+            action_kind="start_delegation",
+            confirmed_plan_id=request.confirmed_plan_id,
+            plan_version=request.confirmed_plan_version,
+            plan_hash=request.confirmed_plan_hash,
+            action_artifact={"metadata": {"plan_exempt_reason": request.plan_exempt_reason}},
+        )
+    return decision.allowed, decision.reason
 
 
 async def _resolve_resumable_target_runtime(child_agent_id: uuid.UUID) -> tuple[Any, Any] | None:
@@ -880,6 +918,30 @@ def _spawn_async_delegation_task(
 ) -> None:
     async def _run() -> AgentDelegationResult:
         try:
+            plan_allowed, plan_reason = await _delegation_plan_gate_allows(request)
+            if not plan_allowed:
+                content = (
+                    "Plan Mode blocked async delegation: "
+                    f"{plan_reason or 'plan_required'}. Confirm a plan before delegating autonomous work."
+                )
+                try:
+                    await update_runtime_task_record(
+                        task_id,
+                        status="failed",
+                        result_summary=content,
+                        trace_id=trace_id,
+                        child_session_id=request.session_id,
+                        metadata_json={"plan_gate_reason": plan_reason},
+                    )
+                except Exception as exc:
+                    logger.warning("[Orchestrator] Failed to persist plan gate block %s: %s", task_id, exc)
+                return AgentDelegationResult(
+                    content=content,
+                    child_session_id=request.session_id,
+                    trace_id=trace_id,
+                    depth=request.depth,
+                    failed=True,
+                )
             delegation_result = await _delegate(request)
             try:
                 await update_runtime_task_record(
@@ -960,6 +1022,10 @@ async def delegate_async(
     interaction_type: str = "delegation",
     coordination_gateway: CoordinationGateway | None = None,
     tenant_id: uuid.UUID | str | None = None,
+    confirmed_plan_id: str | uuid.UUID | None = None,
+    confirmed_plan_version: int | None = None,
+    confirmed_plan_hash: str | None = None,
+    plan_exempt_reason: str | None = None,
 ) -> AsyncDelegationHandle:
     """Launch a child agent in the background and return immediately.
 
@@ -987,7 +1053,19 @@ async def delegate_async(
         depth=depth,
         policy=policy or OrchestrationPolicy(timeout_seconds=120.0),
         interaction_type=interaction_type,
+        confirmed_plan_id=confirmed_plan_id,
+        confirmed_plan_version=confirmed_plan_version,
+        confirmed_plan_hash=confirmed_plan_hash,
+        plan_exempt_reason=plan_exempt_reason,
     )
+    plan_allowed, plan_reason = await _delegation_plan_gate_allows(request)
+    if not plan_allowed:
+        return AsyncDelegationHandle(
+            task_id="plan_required",
+            trace_id=real_trace_id,
+            target_name=getattr(target, "name", "unknown"),
+            status=f"plan_required:{plan_reason or 'no_confirmed_plan'}",
+        )
     coordination_key = _delegation_coordination_key(request)
     lease_ttl = int((policy or request.policy).timeout_seconds) + 60
     async with gateway_scope(coordination_gateway, tenant_id=tenant_id) as gateway:
@@ -1302,6 +1380,10 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
                 timeout_seconds=float(metadata.get("timeout_seconds") or 120.0),
                 tool_profile=str(metadata.get("tool_profile") or "worker_safe"),
             ),
+            confirmed_plan_id=metadata.get("plan_id"),
+            confirmed_plan_version=metadata.get("plan_version"),
+            confirmed_plan_hash=metadata.get("plan_hash"),
+            plan_exempt_reason=metadata.get("plan_exempt_reason"),
         )
 
         _spawn_async_delegation_task(task_id=task_id, request=request, trace_id=request.trace_id or uuid.uuid4().hex)

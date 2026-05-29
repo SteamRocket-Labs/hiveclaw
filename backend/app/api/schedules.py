@@ -9,12 +9,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate
 from app.core.permissions import check_agent_access, is_agent_creator
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.activity_log import AgentActivityLog
 from app.models.trigger import AgentTrigger
 from app.models.user import User
+from app.services.plan_mode_core import stamp_confirmed_plan_provenance
 
 router = APIRouter(prefix="/agents/{agent_id}/schedules", tags=["schedules"])
 
@@ -25,6 +27,10 @@ class ScheduleCreate(BaseModel):
     cron_expr: str = Field(min_length=1, max_length=100)
     is_enabled: bool = True
     delivery_target_json: dict | None = None
+    # Plan Mode (§9.3): a confirmed plan authorising this autonomous wake.
+    confirmed_plan_id: str | None = None
+    confirmed_plan_version: int | None = None
+    confirmed_plan_hash: str | None = None
 
 
 class ScheduleUpdate(BaseModel):
@@ -33,6 +39,17 @@ class ScheduleUpdate(BaseModel):
     cron_expr: str | None = None
     is_enabled: bool | None = None
     delivery_target_json: dict | None = None
+    # Plan Mode (§9.3): a confirmed plan authorising enabling this schedule.
+    confirmed_plan_id: str | None = None
+    confirmed_plan_version: int | None = None
+    confirmed_plan_hash: str | None = None
+
+
+class ScheduleRunIn(BaseModel):
+    # Plan Mode (§9.3): a confirmed plan authorising this one-shot autonomous run.
+    confirmed_plan_id: str | None = None
+    confirmed_plan_version: int | None = None
+    confirmed_plan_hash: str | None = None
 
 
 class ScheduleOut(BaseModel):
@@ -166,15 +183,37 @@ async def create_schedule(
     if not compute_next_run(data.cron_expr):
         raise HTTPException(status_code=400, detail=f"Invalid cron expression: {data.cron_expr}")
 
+    # Plan Mode early intercept (§9.3): an enabled cron schedule is an autonomous
+    # wake and needs a confirmed plan. A disabled draft is not gated.
+    if data.is_enabled:
+        await enforce_plan_gate(
+            db,
+            agent_id=agent_id,
+            action_kind="create_enabled_trigger",
+            gate=get_plan_mode_gate(),
+            confirmed_plan_id=data.confirmed_plan_id,
+            confirmed_plan_version=data.confirmed_plan_version,
+            confirmed_plan_hash=data.confirmed_plan_hash,
+        )
+
+    config = _schedule_config(
+        data.cron_expr,
+        created_by=current_user.id,
+        delivery_target_json=data.delivery_target_json,
+    )
+    if data.is_enabled:
+        config = stamp_confirmed_plan_provenance(
+            config,
+            plan_id=data.confirmed_plan_id,
+            plan_version=data.confirmed_plan_version,
+            plan_hash=data.confirmed_plan_hash,
+        )
+
     trigger = AgentTrigger(
         agent_id=agent_id,
         name=data.name.strip(),
         type="cron",
-        config=_schedule_config(
-            data.cron_expr,
-            created_by=current_user.id,
-            delivery_target_json=data.delivery_target_json,
-        ),
+        config=config,
         reason=data.instruction,
         reply_context=data.delivery_target_json,
         is_enabled=data.is_enabled,
@@ -200,6 +239,18 @@ async def update_schedule(
 
     trigger = await _load_schedule_trigger(db, agent_id, schedule_id)
     updates = data.model_dump(exclude_unset=True)
+    # Plan Mode early intercept (§9.3): only re-enabling a schedule is gated.
+    if updates.get("is_enabled") is True:
+        await enforce_plan_gate(
+            db,
+            agent_id=agent_id,
+            action_kind="enable_autonomous_wake",
+            gate=get_plan_mode_gate(),
+            confirmed_plan_id=data.confirmed_plan_id,
+            confirmed_plan_version=data.confirmed_plan_version,
+            confirmed_plan_hash=data.confirmed_plan_hash,
+            action_artifact={"config": _trigger_config(trigger)},
+        )
     if "name" in updates and updates["name"] is not None:
         trigger.name = str(updates["name"]).strip()
     if "instruction" in updates and updates["instruction"] is not None:
@@ -218,6 +269,13 @@ async def update_schedule(
         config["delivery_target_json"] = updates["delivery_target_json"]
     config["trigger_class"] = "scheduled_job"
     config["legacy_surface"] = "schedules_api"
+    if updates.get("is_enabled") is True:
+        config = stamp_confirmed_plan_provenance(
+            config,
+            plan_id=data.confirmed_plan_id,
+            plan_version=data.confirmed_plan_version,
+            plan_hash=data.confirmed_plan_hash,
+        )
     trigger.config = config
 
     await db.flush()
@@ -245,23 +303,43 @@ async def delete_schedule(
 async def trigger_schedule(
     agent_id: uuid.UUID,
     schedule_id: uuid.UUID,
+    data: ScheduleRunIn | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Queue a one-shot trigger instead of directly invoking a scheduler runtime."""
     await check_agent_access(db, current_user, agent_id)
     trigger = await _load_schedule_trigger(db, agent_id, schedule_id)
-    now = datetime.now(timezone.utc)
-    manual = AgentTrigger(
+    # Plan Mode early intercept (§9.3): a manual run queues an enabled one-shot
+    # autonomous trigger, so it needs a confirmed plan (or cutover exemption).
+    run = data or ScheduleRunIn()
+    await enforce_plan_gate(
+        db,
         agent_id=agent_id,
-        name=f"manual_{trigger.name[:70]}_{uuid.uuid4().hex[:8]}",
-        type="once",
-        config={
+        action_kind="create_enabled_trigger",
+        gate=get_plan_mode_gate(),
+        confirmed_plan_id=run.confirmed_plan_id,
+        confirmed_plan_version=run.confirmed_plan_version,
+        confirmed_plan_hash=run.confirmed_plan_hash,
+        action_artifact={"config": _trigger_config(trigger)},
+    )
+    now = datetime.now(timezone.utc)
+    manual_config = stamp_confirmed_plan_provenance(
+        {
             "at": now.isoformat(),
             "trigger_class": "scheduled_job",
             "source_schedule_id": str(schedule_id),
             "legacy_surface": "schedules_api_manual_run",
         },
+        plan_id=run.confirmed_plan_id,
+        plan_version=run.confirmed_plan_version,
+        plan_hash=run.confirmed_plan_hash,
+    )
+    manual = AgentTrigger(
+        agent_id=agent_id,
+        name=f"manual_{trigger.name[:70]}_{uuid.uuid4().hex[:8]}",
+        type="once",
+        config=manual_config,
         reason=trigger.reason or f"Manual run for schedule {trigger.name}",
         reply_context=trigger.reply_context,
         is_enabled=True,

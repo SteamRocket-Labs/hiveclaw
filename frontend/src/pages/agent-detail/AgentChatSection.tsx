@@ -4,6 +4,8 @@ import { useTranslation } from 'react-i18next';
 import MarkdownRenderer from '../../components/MarkdownRenderer';
 import CopyMessageButton from './CopyMessageButton';
 import DeepResearchStreamPanel from './DeepResearchStreamPanel';
+import PlanCard from './PlanCard';
+import type { PlanRequest } from '../../api/domains/plans';
 import type { ToolCallMeta } from './toolResultEnvelope';
 import {
   computeComposerHeight,
@@ -136,6 +138,50 @@ export function StructuredToolResultBody({
 
   if (!toolMeta) {
     return toolResult ? <RawToolResultBlock text={toolResult} /> : null;
+  }
+
+  if (toolMeta.kind === 'plan_needs_confirmation') {
+    const synthesizedPlan = {
+      id: toolMeta.planId,
+      agent_id: agentId || '',
+      tenant_id: null,
+      session_id: null,
+      runtime_task_id: null,
+      requested_by_user_id: null,
+      source: 'tool_runtime',
+      intent_type: (toolMeta.planJson.intent_type as string) || 'autonomous_wake',
+      original_request: (toolMeta.planJson.title as string) || toolMeta.summary || '',
+      status: 'awaiting_confirmation',
+      plan_version: toolMeta.planVersion,
+      plan_hash: toolMeta.planHash,
+      plan_markdown_path: null,
+      plan_json: toolMeta.planJson,
+      handoff_status: null,
+      handoff_payload: null,
+      confirmed_by_user_id: null,
+      confirmed_at: null,
+      rejected_by_user_id: null,
+      rejected_at: null,
+      superseded_by_plan_id: null,
+      expires_at: null,
+      created_at: null,
+      updated_at: null,
+      metadata: {},
+    } as PlanRequest;
+    return (
+      <div style={{ display: 'grid', gap: '8px' }}>
+        {agentId ? (
+          <PlanCard agentId={agentId} plan={synthesizedPlan} dense />
+        ) : (
+          <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+            {toolMeta.summary || t('agent.plan.needsConfirmation', 'A plan needs your confirmation.')}
+          </div>
+        )}
+        {toolMeta.nextAction && (
+          <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{toolMeta.nextAction}</div>
+        )}
+      </div>
+    );
   }
 
   if (toolMeta.kind === 'deep_research') {

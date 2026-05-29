@@ -10,6 +10,17 @@ from fastapi.testclient import TestClient
 import app.api.objectives as objectives_api
 from app.core.security import get_current_user
 from app.database import get_db
+from app.services.plan_mode_gate import PlanGateDecision
+
+
+def _allow_plan_gate(monkeypatch):
+    """Neutralize the Plan Mode REST gate for tests not focused on it."""
+
+    class _AllowGate:
+        async def check(self, _db, **_kwargs):
+            return PlanGateDecision(allowed=True, reason="confirmed_plan_handoff")
+
+    monkeypatch.setattr(objectives_api, "get_plan_mode_gate", lambda: _AllowGate())
 
 
 class _FakeDB:
@@ -178,6 +189,9 @@ def test_approve_objective_api_activates_pending_goal(monkeypatch):
     )
     fake_db = _ObjectiveUpdateDB(objective)
     client, _user = _client(monkeypatch, db=fake_db)
+    # Plan Mode gate is exercised by test_plan_mode_rest_gate.py; here we assert
+    # the approval mechanics, so allow the gate through.
+    _allow_plan_gate(monkeypatch)
 
     response = client.post(
         f"/agents/{agent_id}/objectives/{objective.id}/approve",

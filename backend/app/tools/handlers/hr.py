@@ -1086,6 +1086,7 @@ def _build_create_employee_result(
         icon="\U0001f464",
         is_default=False,
         governance="sensitive",
+        plan_gate_action_kind="create_enabled_trigger",
         adapter="request",
     )
 )

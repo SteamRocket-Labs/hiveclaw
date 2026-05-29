@@ -208,6 +208,29 @@ def _build_task_user_prompt(
     return user_prompt + "\n\n请认真完成此任务，给出详细的执行结果。"
 
 
+async def _task_plan_gate_allows(db, *, task: Task, agent_id: uuid.UUID) -> tuple[bool, str | None]:
+    """Final Plan Mode backstop for background task execution.
+
+    REST/tool entrypoints gate before creating/running todo tasks, but
+    ``execute_task`` is the actual execution choke point. It must also verify the
+    persisted task provenance so internal callers or restart paths cannot bypass
+    Plan Mode by calling the executor directly.
+    """
+    from app.services.plan_mode_gate import get_plan_mode_gate
+
+    gate = get_plan_mode_gate()
+    decision = await gate.check(
+        db,
+        agent_id=agent_id,
+        action_kind="start_long_task",
+        confirmed_plan_id=getattr(task, "plan_id", None),
+        plan_version=getattr(task, "plan_version", None),
+        plan_hash=getattr(task, "plan_hash", None),
+        action_artifact={"metadata": {"plan_exempt_reason": getattr(task, "plan_exempt_reason", None)}},
+    )
+    return decision.allowed, decision.reason
+
+
 async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
     """Execute a task using the agent's configured LLM with full context.
 
@@ -226,6 +249,21 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
         task = result.scalar_one_or_none()
         if not task:
             logger.warning(f"[TaskExec] Task {task_id} not found")
+            return
+
+        plan_allowed, plan_reason = await _task_plan_gate_allows(db, task=task, agent_id=agent_id)
+        if not plan_allowed:
+            db.add(
+                TaskLog(
+                    task_id=task_id,
+                    content=(
+                        "Plan Mode blocked autonomous task execution: "
+                        f"{plan_reason or 'plan_required'}. Confirm a plan before running this task."
+                    ),
+                )
+            )
+            await db.commit()
+            logger.info("[TaskExec] Plan Mode blocked task {} for agent {}: {}", task_id, agent_id, plan_reason)
             return
 
         task.status = "doing"

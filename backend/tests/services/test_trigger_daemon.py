@@ -575,6 +575,83 @@ def test_objective_trigger_session_key_prefers_objective_id_then_focus_ref():
 
 
 @pytest.mark.asyncio
+async def test_preflight_group_blocks_autonomous_trigger_without_confirmed_plan(monkeypatch):
+    """Plan Mode backstop (§9.0): the daemon preflight wrapper fails closed for an
+    enabled autonomous trigger that has no confirmed plan, so the tick skips it
+    instead of launching an invocation."""
+    import app.services.trigger_daemon as trigger_daemon
+
+    agent_id = uuid4()
+    model_id = uuid4()
+    trigger = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        name="daily_brief",
+        type="cron",
+        config={"trigger_class": "scheduled_job", "expr": "0 9 * * *"},  # no plan_id
+        focus_ref=None,
+        max_fires=None,
+        expires_at=None,
+    )
+    agent = SimpleNamespace(id=agent_id, name="A", status="running", primary_model_id=model_id, tenant_id=uuid4())
+    model = SimpleNamespace(id=model_id, tenant_id=agent.tenant_id)
+    # One session, sequenced: Agent lookup -> model pin lookup -> plan lookup (none).
+    session = _SequenceSession([_ScalarResult(agent), _ScalarResult(model), _ScalarResult(None)])
+    monkeypatch.setattr(trigger_daemon, "async_session", lambda: session)
+
+    ok, skip_reason, _summary, metadata = await trigger_daemon._preflight_trigger_group(
+        agent_id, [trigger], datetime.now(timezone.utc)
+    )
+
+    assert ok is False
+    assert skip_reason == "plan_required"
+    assert metadata["trigger_id"] == str(trigger.id)
+
+
+@pytest.mark.asyncio
+async def test_preflight_group_allows_autonomous_trigger_with_confirmed_plan(monkeypatch):
+    """A scheduled trigger whose config.plan_id points at a confirmed plan clears
+    the backstop and the daemon lets it fire."""
+    import app.services.trigger_daemon as trigger_daemon
+    from app.models.plan_request import AgentPlanRequest
+
+    agent_id = uuid4()
+    model_id = uuid4()
+    plan = AgentPlanRequest(
+        id=uuid4(),
+        agent_id=agent_id,
+        source="web_chat",
+        intent_type="autonomous_wake",
+        original_request="每天 9 点帮我整理新闻",
+        status="confirmed",
+        plan_version=1,
+        plan_hash="sha256:abc",
+        plan_json={"schema": "hive_plan.v1", "title": "Daily brief"},
+    )
+    trigger = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        name="daily_brief",
+        type="cron",
+        config={"trigger_class": "scheduled_job", "expr": "0 9 * * *", "plan_id": str(plan.id)},
+        focus_ref=None,
+        max_fires=None,
+        expires_at=None,
+    )
+    agent = SimpleNamespace(id=agent_id, name="A", status="running", primary_model_id=model_id, tenant_id=uuid4())
+    model = SimpleNamespace(id=model_id, tenant_id=agent.tenant_id)
+    session = _SequenceSession([_ScalarResult(agent), _ScalarResult(model), _ScalarResult(plan)])
+    monkeypatch.setattr(trigger_daemon, "async_session", lambda: session)
+
+    ok, skip_reason, _summary, _metadata = await trigger_daemon._preflight_trigger_group(
+        agent_id, [trigger], datetime.now(timezone.utc)
+    )
+
+    assert ok is True
+    assert skip_reason is None
+
+
+@pytest.mark.asyncio
 async def test_tick_splits_distinct_objective_triggers_into_distinct_invocations(monkeypatch):
     import app.services.trigger_daemon as trigger_daemon
 

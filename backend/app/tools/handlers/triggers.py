@@ -71,6 +71,7 @@ from app.tools.decorator import ToolMeta, tool
     category="triggers",
     display_name="Set Trigger",
     icon="\u23f0",
+    plan_gate_action_kind="create_enabled_trigger",
     adapter="agent_args",
 ))
 async def set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
@@ -126,6 +127,7 @@ async def set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
     category="triggers",
     display_name="Update Trigger",
     icon="\U0001f504",
+    plan_gate_action_kind="create_enabled_trigger",
     adapter="agent_args",
 ))
 async def update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:

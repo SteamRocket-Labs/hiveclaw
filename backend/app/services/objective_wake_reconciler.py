@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import async_session
 from app.models.objective import AgentObjective
 from app.models.trigger import AgentTrigger
+from app.services import plan_mode_core
 from app.services.focus_state import normalize_focus_task_id
 
 ACTIVE_OBJECTIVE_STATUSES = {"active", "open", "running"}
@@ -86,11 +87,45 @@ def objective_has_enabled_wake(objective: Any, triggers: list[Any]) -> bool:
     return False
 
 
+def _objective_autonomy_class(objective: Any) -> str | None:
+    metadata = _objective_metadata(objective)
+    value = metadata.get("autonomy_class")
+    return str(value).strip() if value is not None else None
+
+
+def auto_wake_exempt_reason(objective: Any) -> str | None:
+    """Why this objective may have an enabled wake auto-created (§9.0), if at all.
+
+    Returns a stable reason string when the objective traces to a confirmed plan,
+    carries an explicit cutover exemption, or is platform-internal self-evolution.
+    Returns ``None`` when the objective must NOT be auto-woken — the
+    conversation-intent bypass the Plan Mode backstop closes.
+    """
+    return plan_mode_core.objective_wake_exempt_reason(
+        objective_metadata=_objective_metadata(objective),
+        autonomy_class=_objective_autonomy_class(objective),
+    )
+
+
 def _can_auto_wake(objective: Any) -> bool:
+    """Whether the reconciler may auto-create an *enabled* wake for an objective.
+
+    Two gates, both must pass:
+
+    1. **Status / approval** — objective is active and not flagged
+       ``requires_approval`` (the pre-existing P5 gate).
+    2. **Plan Mode backstop (§9.0)** — the objective must be plan-exempt
+       (confirmed-plan provenance, explicit cutover exemption, or
+       platform-internal self-evolution). A bare active objective born from a
+       conversation intent is fail-closed: no enabled trigger without a
+       confirmed plan.
+    """
     metadata = _objective_metadata(objective)
     if bool(metadata.get("requires_approval")):
         return False
-    return str(getattr(objective, "status", "") or "open") in ACTIVE_OBJECTIVE_STATUSES
+    if str(getattr(objective, "status", "") or "open") not in ACTIVE_OBJECTIVE_STATUSES:
+        return False
+    return auto_wake_exempt_reason(objective) is not None
 
 
 def _existing_trigger_for_name(triggers: list[Any], *, agent_id: uuid.UUID, name: str) -> Any | None:

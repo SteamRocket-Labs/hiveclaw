@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate
 from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
@@ -22,6 +23,10 @@ class DelegateRequest(BaseModel):
     to_agent_id: uuid.UUID
     task_title: str
     task_description: str = ""
+    # Plan Mode (§9.3): a confirmed plan authorising this async delegation.
+    confirmed_plan_id: str | None = None
+    confirmed_plan_version: int | None = None
+    confirmed_plan_hash: str | None = None
 
 
 class InterAgentMessage(BaseModel):
@@ -50,9 +55,27 @@ async def delegate_task(
 ):
     """Delegate a task from one agent to another."""
     await check_agent_access(db, current_user, agent_id)
+    # Plan Mode early intercept (§9.3): delegation hands execution to another agent
+    # to run asynchronously, so it needs a confirmed plan (or cutover exemption).
+    await enforce_plan_gate(
+        db,
+        agent_id=agent_id,
+        action_kind="start_delegation",
+        gate=get_plan_mode_gate(),
+        confirmed_plan_id=data.confirmed_plan_id,
+        confirmed_plan_version=data.confirmed_plan_version,
+        confirmed_plan_hash=data.confirmed_plan_hash,
+    )
     try:
         result = await collaboration_service.delegate_task(
-            db, agent_id, data.to_agent_id, data.task_title, data.task_description
+            db,
+            agent_id,
+            data.to_agent_id,
+            data.task_title,
+            data.task_description,
+            confirmed_plan_id=data.confirmed_plan_id,
+            confirmed_plan_version=data.confirmed_plan_version,
+            confirmed_plan_hash=data.confirmed_plan_hash,
         )
         return result
     except ValueError as e:

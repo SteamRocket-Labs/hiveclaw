@@ -256,8 +256,13 @@ async def deep_research_start(request: ToolExecutionRequest) -> str:
             ),
             "workspace_artifact_dir": _relative(request.context.workspace, workspace_artifact_dir),
             "next_action": (
-                f"Use deep_research_check with task_id {task_id.hex} to inspect progress. "
-                "Do not create triggers to poll this task; the RuntimeTask/artifact UI tracks progress."
+                "This research runs asynchronously in the background (usually several minutes). "
+                f"Call deep_research_check with task_id {task_id.hex} at most once to confirm it "
+                "started; if it is still running, stop here and tell the user the research is "
+                "running in the background and they can check back shortly. Do not repeatedly poll "
+                "the same running task in one turn: it will not speed it up and will trip the loop "
+                "guard. Do not create triggers to poll this task; the RuntimeTask/artifact UI tracks "
+                "progress."
             ),
         }
     )

@@ -114,8 +114,13 @@ async def test_deep_research_start_creates_runtime_task(tmp_path, monkeypatch: p
     assert payload["status"] == "running"
     assert created["task_type"] == "deep_research"
     assert created["parent_agent_id"] == req.context.agent_id
-    assert payload["next_action"].startswith("Use deep_research_check")
-    assert "Do not create triggers" in payload["next_action"]
+    next_action = payload["next_action"]
+    # The agent must NOT busy-loop deep_research_check on a still-running async task:
+    # 5 identical polls trip the kernel loop guard. The guidance must say so explicitly.
+    assert "deep_research_check" in next_action
+    assert "at most once" in next_action
+    assert "loop guard" in next_action.lower()
+    assert "Do not create triggers" in next_action
 
 
 @pytest.mark.asyncio

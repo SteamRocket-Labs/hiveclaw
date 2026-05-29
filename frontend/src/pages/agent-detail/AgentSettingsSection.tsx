@@ -388,10 +388,21 @@ type AgentTriggerSummary = {
 type PatrolFormState = {
   enabled: boolean;
   intervalMinutes: number;
-  activeHours: string;
+  activeStart: string;
+  activeEnd: string;
 };
 
 const clampPatrolInterval = (value: number) => Math.max(15, Math.min(1440, Math.round(value) || DEFAULT_PATROL_INTERVAL_MINUTES));
+const normalizeActiveHours = (value: string) => value.trim().replace(/\s+/g, '');
+const isValidActiveTime = (value: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+const splitActiveHours = (value: string) => {
+  const [start, end] = normalizeActiveHours(value || DEFAULT_PATROL_ACTIVE_HOURS).split('-');
+  return {
+    activeStart: isValidActiveTime(start) ? start : '09:00',
+    activeEnd: isValidActiveTime(end) ? end : '18:00',
+  };
+};
+const buildActiveHours = (form: PatrolFormState) => `${form.activeStart}-${form.activeEnd}`;
 
 const isSettingsPatrolTrigger = (trigger: AgentTriggerSummary) =>
   trigger.type === 'interval' &&
@@ -400,15 +411,13 @@ const isSettingsPatrolTrigger = (trigger: AgentTriggerSummary) =>
 const derivePatrolForm = (trigger?: AgentTriggerSummary | null): PatrolFormState => {
   const config = trigger?.config || {};
   const minutes = Number(config.minutes ?? config.interval ?? DEFAULT_PATROL_INTERVAL_MINUTES);
+  const activeHours = splitActiveHours(String(config.active_hours || DEFAULT_PATROL_ACTIVE_HOURS));
   return {
     enabled: trigger ? trigger.is_enabled !== false : false,
     intervalMinutes: clampPatrolInterval(minutes),
-    activeHours: String(config.active_hours || DEFAULT_PATROL_ACTIVE_HOURS),
+    ...activeHours,
   };
 };
-
-const normalizeActiveHours = (value: string) => value.trim().replace(/\s+/g, '');
-const isValidActiveHours = (value: string) => /^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/.test(value);
 
 interface AgentSettingsSectionProps {
   agentId: string;
@@ -503,7 +512,8 @@ export default function AgentSettingsSection({
   const patrolHasChanges =
     patrolForm.enabled !== persistedPatrolForm.enabled ||
     patrolForm.intervalMinutes !== persistedPatrolForm.intervalMinutes ||
-    normalizeActiveHours(patrolForm.activeHours) !== normalizeActiveHours(persistedPatrolForm.activeHours);
+    patrolForm.activeStart !== persistedPatrolForm.activeStart ||
+    patrolForm.activeEnd !== persistedPatrolForm.activeEnd;
 
   const capabilityDefinitionSet = React.useMemo(
     () => new Set(capabilityDefinitions.map((item) => item.capability)),
@@ -645,13 +655,13 @@ export default function AgentSettingsSection({
 
   const handleSavePatrolSettings = async () => {
     if (!canManage) return;
-    const activeHours = normalizeActiveHours(patrolForm.activeHours);
-    if (!isValidActiveHours(activeHours)) {
-      setPatrolError(t('agent.settings.patrol.invalidActiveHours', 'Use HH:MM-HH:MM, for example 09:00-18:00.'));
+    if (!isValidActiveTime(patrolForm.activeStart) || !isValidActiveTime(patrolForm.activeEnd)) {
+      setPatrolError(t('agent.settings.patrol.invalidActiveHours', 'Select valid start and end times.'));
       return;
     }
 
     const minutes = clampPatrolInterval(patrolForm.intervalMinutes);
+    const activeHours = buildActiveHours(patrolForm);
     const nextConfig: Record<string, any> = {
       ...(patrolTrigger?.config || {}),
       source: SETTINGS_PATROL_TRIGGER_SOURCE,
@@ -691,7 +701,12 @@ export default function AgentSettingsSection({
         });
       }
       await queryClient.invalidateQueries({ queryKey: ['triggers', agentId] });
-      setPatrolForm({ enabled: patrolForm.enabled, intervalMinutes: minutes, activeHours });
+      setPatrolForm({
+        enabled: patrolForm.enabled,
+        intervalMinutes: minutes,
+        activeStart: patrolForm.activeStart,
+        activeEnd: patrolForm.activeEnd,
+      });
       setPatrolSaved(true);
       setTimeout(() => setPatrolSaved(false), 2000);
     } catch (e: any) {
@@ -1389,14 +1404,30 @@ export default function AgentSettingsSection({
             <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>
               {t('agent.settings.patrol.activeHours', 'Active hours')}
             </label>
-            <input
-              className="input"
-              value={patrolForm.activeHours}
-              disabled={!canManage || patrolLoading}
-              onChange={(e) => setPatrolForm((prev) => ({ ...prev, activeHours: e.target.value }))}
-              placeholder={DEFAULT_PATROL_ACTIVE_HOURS}
-              style={{ width: '180px' }}
-            />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                <span>{t('agent.settings.patrol.activeStart', 'Start')}</span>
+                <input
+                  className="input"
+                  type="time"
+                  value={patrolForm.activeStart}
+                  disabled={!canManage || patrolLoading}
+                  onChange={(e) => setPatrolForm((prev) => ({ ...prev, activeStart: e.target.value }))}
+                  style={{ width: '118px' }}
+                />
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                <span>{t('agent.settings.patrol.activeEnd', 'End')}</span>
+                <input
+                  className="input"
+                  type="time"
+                  value={patrolForm.activeEnd}
+                  disabled={!canManage || patrolLoading}
+                  onChange={(e) => setPatrolForm((prev) => ({ ...prev, activeEnd: e.target.value }))}
+                  style={{ width: '118px' }}
+                />
+              </label>
+            </div>
             <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
               {t('agent.settings.patrol.activeHoursDesc', 'Only run patrol triggers inside this local time window.')}
             </div>

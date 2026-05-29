@@ -795,6 +795,8 @@
         "interval": "巡检间隔",
         "intervalDesc": "此员工醒来执行巡检任务的频率。",
         "activeHours": "活跃时间",
+        "activeStart": "开始",
+        "activeEnd": "结束",
         "activeHoursDesc": "巡检触发器只在这个本地时间段内运行。",
         "lastRun": "上次巡检",
         "neverRun": "尚未运行",
@@ -802,7 +804,7 @@
         "saving": "正在保存巡检...",
         "saved": "巡检设置已保存",
         "saveError": "保存巡检设置失败",
-        "invalidActiveHours": "请使用 HH:MM-HH:MM，例如 09:00-18:00。",
+        "invalidActiveHours": "请选择有效的开始和结束时间。",
         "triggerReason": "按计划巡检目标、消息、触发器状态和 Agent圈 上下文。",
         "circlePolicyTitle": "Agent圈权限策略"
       },

@@ -783,6 +783,8 @@
         "interval": "Patrol interval",
         "intervalDesc": "How often this employee wakes up for patrol work.",
         "activeHours": "Active hours",
+        "activeStart": "Start",
+        "activeEnd": "End",
         "activeHoursDesc": "Only run patrol triggers inside this local time window.",
         "lastRun": "Last patrol",
         "neverRun": "Not run yet",
@@ -790,7 +792,7 @@
         "saving": "Saving patrol...",
         "saved": "Patrol settings saved",
         "saveError": "Failed to save patrol settings",
-        "invalidActiveHours": "Use HH:MM-HH:MM, for example 09:00-18:00.",
+        "invalidActiveHours": "Select valid start and end times.",
         "triggerReason": "Run scheduled patrols for objectives, messages, trigger state, and Agent Circle context.",
         "circlePolicyTitle": "Agent Circle permission policy"
       },

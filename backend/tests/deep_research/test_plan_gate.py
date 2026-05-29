@@ -61,6 +61,30 @@ async def test_start_without_plan_confirmed_returns_needs_plan(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_needs_plan_forbids_agent_self_confirmation(tmp_path, monkeypatch):
+    """RC14: the plan gate is a USER confirmation hard-gate. An agent must not read preference
+    memory and set plan_confirmed=true on the user's behalf (observed: agent self-confirmed a full
+    RWA run from memory, skipping the user). The needs_plan guidance must forbid self-confirming and
+    require the user's explicit approval in a new message; preference memory may only prefill params."""
+    from app.tools.handlers import deep_research as handler
+
+    async def fail_create(**_kwargs):
+        raise AssertionError("no runtime task before plan confirmation")
+
+    monkeypatch.setattr(handler, "create_runtime_task_record", fail_create)
+    req = _request(tmp_path)
+    req.arguments.update({"question": "Research the RWA launchpad opportunity", "depth": "full"})
+
+    payload = json.loads(await handler.deep_research_start(req))
+    guidance = (payload["next_action"] + " " + payload["summary"]).lower()
+
+    assert "never self-confirm" in guidance
+    assert "not approval" in guidance
+    assert "wait" in guidance  # must wait for the user's reply, not self-confirm in the same turn
+    assert "preference" in guidance and "prefill" in guidance  # memory only prefills params
+
+
+@pytest.mark.asyncio
 async def test_run_with_plan_confirmed_executes(tmp_path, monkeypatch):
     from app.services.deep_research.schemas import ResearchRun
     from app.tools.handlers import deep_research as handler

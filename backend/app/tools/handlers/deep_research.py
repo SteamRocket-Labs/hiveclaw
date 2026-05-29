@@ -96,12 +96,15 @@ def _needs_plan_payload(preview: dict[str, Any]) -> dict[str, Any]:
         "status": "needs_plan",
         "summary": (
             "Confirm the research plan before running. Relay the clarifying_questions and the proposed plan / "
-            "worker_topics to the user; collect their answers and approval first."
+            "worker_topics to the user; collect their answers and explicit approval first. Preference memory may "
+            "prefill parameters but is NOT approval; never self-confirm on the user's behalf."
         ),
         **preview,
         "next_action": (
-            "Ask the user the clarifying_questions and show the proposed worker_topics. After they approve, call "
-            "this tool again with plan_confirmed=true, the same question, and the (optionally edited) worker_topics."
+            "STOP and present the clarifying_questions + proposed worker_topics to the user, then WAIT for their "
+            "reply. Only call this tool again with plan_confirmed=true AFTER the user explicitly approves THIS plan "
+            "in a new message. Preference memory may prefill depth/scope/language, but it is NOT approval; never "
+            "self-confirm or set plan_confirmed=true in the same turn the plan was returned."
         ),
     }
 

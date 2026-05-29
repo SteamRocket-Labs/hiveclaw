@@ -25,6 +25,7 @@ from app.services.autonomous_audit import build_autonomous_audit_report
 from app.services.autonomy_repair_plan import apply_autonomy_repair_plan, build_autonomy_repair_plan
 from app.services.harness_canary import run_harness_canary
 from app.services.harness_validation_report import build_harness_validation_report
+from app.services.plan_mode_cutover import mark_existing_triggers_plan_exempt
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,17 @@ class HarnessCanaryRunRequest(BaseModel):
     include_h5: bool = True
     max_agents: int = Field(default=50, ge=1, le=500)
     force: bool = False
+
+
+class PlanModeCutoverRequest(BaseModel):
+    dry_run: bool = Field(
+        default=True,
+        description="When true (default), count what would be stamped without writing the DB.",
+    )
+    agent_id: uuid.UUID | None = Field(
+        default=None,
+        description="Scope the cutover to a single agent. Omit to cover every enabled trigger.",
+    )
 
 
 # ─── Company Management ────────────────────────────────
@@ -360,6 +372,33 @@ async def post_harness_canary_run(
         max_agents=payload.max_agents,
         force=payload.force,
     )
+
+
+@router.post("/plan-mode/cutover")
+async def post_plan_mode_cutover(
+    payload: PlanModeCutoverRequest | None = None,
+    current_user: User = Depends(require_role("platform_admin")),
+):
+    """Grandfather pre-existing enabled triggers for the Plan Mode cutover (§9.0).
+
+    Stamps ``config.metadata.plan_exempt_reason="preexisting_before_cutover"`` on
+    every currently-enabled trigger that has no confirmed plan and no exemption
+    yet, so the fail-closed Plan Mode preflight does not quarantine automation
+    created before Plan Mode existed. Idempotent and surgical.
+
+    The cutover service opens its own session against the production DB, so this
+    is run from inside the container (the internal DB is not reachable off-box).
+
+    Pass ``dry_run=true`` (default) to count what would be stamped without
+    writing; ``dry_run=false`` commits. Optionally scope to a single ``agent_id``.
+    """
+    del current_user
+    payload = payload or PlanModeCutoverRequest()
+    report = await mark_existing_triggers_plan_exempt(
+        agent_id=payload.agent_id,
+        commit=not payload.dry_run,
+    )
+    return {**report, "dry_run": payload.dry_run}
 
 
 @router.put("/companies/{company_id}/toggle")

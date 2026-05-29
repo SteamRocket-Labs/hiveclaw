@@ -732,8 +732,7 @@
       "noModelWarning": "No AI model selected. This employee can't chat until you choose one.",
       "clampedField": {
         "minPollInterval": "Min Check Interval",
-        "webhookRateLimit": "Incoming Event Limit",
-        "heartbeatInterval": "Background Maintenance Interval"
+        "webhookRateLimit": "Incoming Event Limit"
       },
       "clampedMessage": "{{name}}: {{requested}} → {{applied}} (adjusted by company policy)",
       "tokenStats": "Usage Statistics",
@@ -756,8 +755,7 @@
       "noModelWarning": "No AI model selected. This employee can't chat until you choose one.",
       "clampedField": {
         "minPollInterval": "Min Check Interval",
-        "webhookRateLimit": "Incoming Event Limit",
-        "heartbeatInterval": "Self-Check Interval"
+        "webhookRateLimit": "Incoming Event Limit"
       },
       "clampedMessage": "{{name}}: {{requested}} → {{applied}} (adjusted by company policy)",
       "timezone": {
@@ -1104,8 +1102,6 @@
       "dailyLLMCalls": "Daily AI Requests per Employee",
       "maxLLMCallsPerDay": "Maximum AI requests each employee can make per day",
       "system": "System",
-      "minHeartbeatInterval": "Min Background Maintenance Interval (min)",
-      "minHeartbeatDesc": "Minimum time between platform background maintenance runs",
       "triggerLimits": "Automation Limits",
       "defaultMaxTriggers": "Default Max Triggers",
       "defaultMaxTriggersDesc": "Maximum automated triggers for new employees",
@@ -1405,8 +1401,6 @@
       "monthlyTokenDesc": "Max usage per employee per month (approx. {{amount}})",
       "monthlyTokenDescUnlimited": "Max usage per employee per month (unlimited)",
       "systemSettings": "System Settings",
-      "minHeartbeatInterval": "Min Background Maintenance Interval (min)",
-      "minHeartbeatDesc": "Minimum time between platform background maintenance runs for all employees",
       "defaultMaxTriggers": "Default Max Triggers",
       "defaultMaxTriggersDesc": "Automation trigger limit for new employees",
       "minPollInterval": "Min Check Interval (min)",

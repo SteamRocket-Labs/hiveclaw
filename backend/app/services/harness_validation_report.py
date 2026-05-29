@@ -22,6 +22,7 @@ from app.models.runtime_task import RuntimeTask
 from app.models.trigger import AgentTrigger
 from app.services.evolution_ledger import load_evolution_ledger
 from app.services.evolution_validation import validate_evolution_ledger
+from app.services.heartbeat_policy import MANAGED_HEARTBEAT_ENABLED
 from app.services.long_task_runtime import _artifact_dir
 from app.services.long_task_validation import validate_long_task_run
 
@@ -278,7 +279,7 @@ def audit_agent_harness_snapshot(
         raise ValueError("agent.id must be a UUID")
     agent_name = str(_value(agent, "name", "") or "")
     tenant_id = _coerce_uuid(_value(agent, "tenant_id"))
-    heartbeat_enabled = bool(_value(agent, "heartbeat_enabled", False))
+    heartbeat_enabled = MANAGED_HEARTBEAT_ENABLED
 
     h4, h4_findings = _audit_h4_long_tasks(
         agent_id=agent_id,

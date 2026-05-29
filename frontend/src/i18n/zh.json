@@ -731,8 +731,7 @@
       "noModelWarning": "未选择 AI 模型。此员工在选择模型前无法对话。",
       "clampedField": {
         "minPollInterval": "最小检查间隔",
-        "webhookRateLimit": "最大接收事件数",
-        "heartbeatInterval": "后台维护间隔"
+        "webhookRateLimit": "最大接收事件数"
       },
       "clampedMessage": "{{name}}：{{requested}} → {{applied}}（按公司策略调整）",
       "channel": {
@@ -1059,8 +1058,6 @@
       "dailyLLMCalls": "每位员工每日 AI 请求",
       "maxLLMCallsPerDay": "每位员工每天可发起的最大 AI 请求数",
       "system": "系统",
-      "minHeartbeatInterval": "最小后台维护间隔（分钟）",
-      "minHeartbeatDesc": "所有员工的平台后台维护最短间隔",
       "triggerLimits": "自动化限制",
       "defaultMaxTriggers": "默认最大触发器数",
       "defaultMaxTriggersDesc": "新员工的自动化触发器上限",
@@ -1410,8 +1407,6 @@
       "monthlyTokenDesc": "每位员工每月的最大用量（约 {{amount}}）",
       "monthlyTokenDescUnlimited": "每位员工每月的最大用量（不限制）",
       "systemSettings": "系统设置",
-      "minHeartbeatInterval": "最小后台维护间隔（分钟）",
-      "minHeartbeatDesc": "所有员工的平台后台维护最短间隔",
       "defaultMaxTriggers": "默认最大触发器数",
       "defaultMaxTriggersDesc": "新员工的自动化触发器上限",
       "minPollInterval": "最小检查间隔（分钟）",

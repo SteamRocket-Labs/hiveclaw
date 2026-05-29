@@ -122,8 +122,8 @@ class AgentOut(BaseModel):
     min_poll_interval_min: int = 5
     webhook_rate_limit: int = 5
     heartbeat_enabled: bool = True
-    heartbeat_interval_minutes: int = 30
-    heartbeat_active_hours: str = "09:00-18:00"
+    heartbeat_interval_minutes: int = 45
+    heartbeat_active_hours: str = "00:00-23:59"
     last_heartbeat_at: datetime | None = None
     timezone: str | None = None
     agent_type: str = "native"
@@ -149,9 +149,6 @@ class AgentUpdate(BaseModel):
     max_triggers: int | None = None
     min_poll_interval_min: int | None = None
     webhook_rate_limit: int | None = None
-    heartbeat_enabled: bool | None = None
-    heartbeat_interval_minutes: int | None = None
-    heartbeat_active_hours: str | None = None
     timezone: str | None = None
     agent_class: AgentClass | None = None
     security_zone: str | None = None

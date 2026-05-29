@@ -16,6 +16,7 @@ from app.domain.agent_lifecycle import InvalidTransitionError, TransitionContext
 from app.models.agent import Agent, AgentPermission
 from app.models.user import User
 from app.schemas.schemas import AgentCreate, AgentOut, AgentUpdate
+from app.services.heartbeat_policy import apply_managed_heartbeat_fields, normalize_agent_heartbeat_output
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,17 @@ async def _lazy_reset_token_counters(agent: Agent, db: AsyncSession) -> bool:
     return changed
 
 
+def _agent_out(agent: Agent) -> AgentOut:
+    out = AgentOut.model_validate(agent)
+    for field, value in normalize_agent_heartbeat_output({}).items():
+        setattr(out, field, value)
+    return out
+
+
+def _agent_out_dict(agent: Agent) -> dict:
+    return normalize_agent_heartbeat_output(_agent_out(agent).model_dump())
+
+
 @router.get("/", response_model=list[AgentOut])
 async def list_agents(
     tenant_id: uuid.UUID | None = None,
@@ -69,7 +81,7 @@ async def list_agents(
                 needs_flush = True
         if needs_flush:
             await db.commit()
-        return [AgentOut.model_validate(a) for a in agents]
+        return [_agent_out(a) for a in agents]
 
     # All users see their own created agents + permitted
     # All scoped to user's tenant
@@ -115,7 +127,7 @@ async def list_agents(
             needs_flush = True
     if needs_flush:
         await db.commit()
-    return [AgentOut.model_validate(a) for a in agents]
+    return [_agent_out(a) for a in agents]
 
 
 HR_AGENT_NAME = "__system_hr__"
@@ -330,6 +342,7 @@ async def create_agent(
         min_poll_interval_min=default_min_poll,
         webhook_rate_limit=default_webhook_rate,
     )
+    apply_managed_heartbeat_fields(agent)
     db.add(agent)
     await db.flush()
 
@@ -434,7 +447,7 @@ async def create_agent(
     except Exception as _audit_err:
         logger.warning("Audit write failed for agent.created: %s", _audit_err)
 
-    return AgentOut.model_validate(agent)
+    return _agent_out(agent)
 
 @router.get("/{agent_id}/channel-capabilities")
 async def get_agent_channel_capabilities(
@@ -460,7 +473,7 @@ async def get_agent(
     # Lazy reset token counters
     if await _lazy_reset_token_counters(agent, db):
         await db.commit()
-    out = AgentOut.model_validate(agent).model_dump()
+    out = _agent_out_dict(agent)
     out["access_level"] = access_level
 
     # Resolve creator + owner usernames (one extra query each, only on detail page)
@@ -612,20 +625,7 @@ async def update_agent(
 
     update_data = data.model_dump(exclude_unset=True)
 
-    # Enforce heartbeat floor from tenant
     clamped_fields = []  # track fields adjusted by tenant floor
-    if "heartbeat_interval_minutes" in update_data and current_user.tenant_id:
-        from app.models.tenant import Tenant
-        t_result = await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))
-        tenant = t_result.scalar_one_or_none()
-        if tenant and update_data["heartbeat_interval_minutes"] < tenant.min_heartbeat_interval_minutes:
-            update_data["heartbeat_interval_minutes"] = tenant.min_heartbeat_interval_minutes
-            clamped_fields.append({
-                "field": "heartbeat_interval_minutes",
-                "requested": update_data["heartbeat_interval_minutes"],
-                "applied": tenant.min_heartbeat_interval_minutes,
-                "reason": "company_floor",
-            })
 
     # Enforce trigger limit floors from tenant
     trigger_fields = {"min_poll_interval_min", "webhook_rate_limit", "max_triggers"}
@@ -681,7 +681,7 @@ async def update_agent(
     except Exception:
         logger.warning("Audit write failed for agent.updated", exc_info=True)
 
-    out = AgentOut.model_validate(agent).model_dump()
+    out = _agent_out_dict(agent)
     if clamped_fields:
         out["_clamped_fields"] = clamped_fields
     return out
@@ -807,7 +807,7 @@ async def start_agent(
     except Exception:
         logger.warning("Audit write failed for agent.started", exc_info=True)
 
-    return AgentOut.model_validate(agent)
+    return _agent_out(agent)
 
 
 @router.post("/{agent_id}/stop", response_model=AgentOut)
@@ -834,7 +834,7 @@ async def stop_agent(
     except Exception:
         logger.warning("Audit write failed for agent.stopped", exc_info=True)
 
-    return AgentOut.model_validate(agent)
+    return _agent_out(agent)
 
 
 # ─── Agent-Level Approvals ──────────────────────────────

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -25,6 +25,7 @@ class _FakeSession:
         self._execute_values = list(execute_values)
         self.added = []
         self._flush_count = 0
+        self.queries = []
 
     async def __aenter__(self):
         return self
@@ -33,6 +34,7 @@ class _FakeSession:
         return False
 
     async def execute(self, _query):
+        self.queries.append(_query)
         if not self._execute_values:
             return _FakeScalarResult(None)
         return _FakeScalarResult(self._execute_values.pop(0))
@@ -391,6 +393,57 @@ async def test_build_heartbeat_tool_executor_enforces_plaza_limits(monkeypatch):
 
 
 # ─── _execute_heartbeat integration ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_tick_uses_platform_managed_cadence(monkeypatch):
+    """Heartbeat is platform-managed: no per-agent disable, active window, or interval override."""
+    from app.services import heartbeat
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Managed Heartbeat Agent",
+        tenant_id=tenant_id,
+        status="idle",
+        heartbeat_enabled=False,
+        heartbeat_interval_minutes=9999,
+        heartbeat_active_hours="00:00-00:01",
+        last_heartbeat_at=datetime.now(timezone.utc) - timedelta(minutes=46),
+        timezone="UTC",
+    )
+    tenant = SimpleNamespace(id=tenant_id, timezone="UTC")
+    fake_session = _FakeSession([[agent], [tenant]])
+    triggered: list[uuid4] = []
+
+    async def fake_write_audit_log(*_args, **_kwargs):
+        return None
+
+    async def fake_try_acquire(_agent_id, *, now=None):
+        return True
+
+    async def fake_execute_heartbeat(_agent_id, lease_acquired=False):
+        return None
+
+    def fake_create_task(coro, *args, **kwargs):
+        triggered.append(agent_id)
+        coro.close()
+        return SimpleNamespace()
+
+    monkeypatch.setattr("app.database.async_session", lambda: fake_session)
+    monkeypatch.setattr("app.services.audit_logger.write_audit_log", fake_write_audit_log)
+    monkeypatch.setattr("app.services.timezone_utils.get_agent_timezone_sync", lambda *_args, **_kwargs: "UTC")
+    monkeypatch.setattr(heartbeat, "_is_in_active_hours", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(heartbeat, "_try_acquire_heartbeat_lease_async", fake_try_acquire)
+    monkeypatch.setattr(heartbeat, "_execute_heartbeat", fake_execute_heartbeat)
+    monkeypatch.setattr(heartbeat.asyncio, "create_task", fake_create_task)
+
+    await heartbeat._heartbeat_tick()
+
+    query_text = "\n".join(str(query) for query in fake_session.queries)
+    assert "where agents.heartbeat_enabled" not in query_text.lower()
+    assert triggered == [agent_id]
 
 
 @pytest.mark.asyncio

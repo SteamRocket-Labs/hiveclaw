@@ -1,8 +1,8 @@
-"""Heartbeat service — proactive agent awareness loop.
+"""Heartbeat service — platform-managed memory/evolution maintenance loop.
 
-Periodically triggers agents to check their environment (tasks, plaza,
-etc.) and take autonomous actions. Inspired by OpenClaw's heartbeat
-mechanism.
+Periodically curates recent learning into long-term memory and runs internal
+self-evolution maintenance. User-facing autonomous patrols belong to triggers
+and wake policies; heartbeat itself is always-on platform infrastructure.
 
 Runs as a background task inside the FastAPI process.
 """
@@ -26,6 +26,7 @@ from app.kernel.contracts import ExecutionIdentityRef
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
 from app.services.agent_tools import execute_tool
+from app.services.heartbeat_policy import managed_heartbeat_interval_minutes
 from app.services.runtime_task_service import create_runtime_task_record, update_runtime_task_record
 
 # Single source of truth: app/templates/HEARTBEAT.md
@@ -1904,8 +1905,6 @@ async def _heartbeat_tick():
     from app.database import async_session
     from app.models.agent import Agent
     from app.services.audit_logger import write_audit_log
-    from app.services.timezone_utils import get_agent_timezone_sync
-    from app.models.tenant import Tenant
 
     now = datetime.now(timezone.utc)
 
@@ -1913,7 +1912,6 @@ async def _heartbeat_tick():
         async with async_session() as db:
             result = await db.execute(
                 select(Agent).where(
-                    Agent.heartbeat_enabled.is_(True),
                     Agent.status.in_(["running", "idle"]),
                 )
             )
@@ -1922,35 +1920,15 @@ async def _heartbeat_tick():
             # Workspace sync moved to _workspace_sync_loop (600s cadence).
             # Keeping it inline blocked the 60s heartbeat tick on Volume I/O.
 
-            # Pre-load tenants for timezone resolution
-            tenant_ids = {a.tenant_id for a in agents if a.tenant_id}
-            tenants_by_id = {}
-            if tenant_ids:
-                t_result = await db.execute(select(Tenant).where(Tenant.id.in_(tenant_ids)))
-                tenants_by_id = {t.id: t for t in t_result.scalars().all()}
-
             triggered = 0
             skipped_hours = 0
             skipped_interval = 0
             for agent in agents:
-                # Resolve timezone
                 if agent.tenant_id is None:
                     skipped_interval += 1
                     continue
-                tenant = tenants_by_id.get(agent.tenant_id)
-                tz_name = get_agent_timezone_sync(agent, tenant)
 
-                # Check active hours (in agent's timezone)
-                if not _is_in_active_hours(agent.heartbeat_active_hours or "09:00-18:00", tz_name):
-                    skipped_hours += 1
-                    continue
-
-                # Check interval (P1-W2-5: fallback uses configurable default)
-                from app.config import get_settings
-
-                interval = timedelta(
-                    minutes=agent.heartbeat_interval_minutes or get_settings().HEARTBEAT_DEFAULT_INTERVAL_MINUTES
-                )
+                interval = timedelta(minutes=managed_heartbeat_interval_minutes())
                 if agent.last_heartbeat_at and (now - agent.last_heartbeat_at) < interval:
                     skipped_interval += 1
                     continue
@@ -2044,7 +2022,6 @@ async def _workspace_full_sweep() -> None:
             tenant_result = await db.execute(
                 select(Agent.tenant_id)
                 .where(
-                    Agent.heartbeat_enabled.is_(True),
                     Agent.status.in_(["running", "idle"]),
                     Agent.tenant_id.is_not(None),
                 )

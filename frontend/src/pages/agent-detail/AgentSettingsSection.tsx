@@ -568,7 +568,6 @@ export default function AgentSettingsSection({
         const fieldNames: Record<string, string> = {
           min_poll_interval_min: t('agent.settings.clampedField.minPollInterval'),
           webhook_rate_limit: t('agent.settings.clampedField.webhookRateLimit'),
-          heartbeat_interval_minutes: t('agent.settings.clampedField.heartbeatInterval'),
         };
         const msgs = clamped.map((c: any) => {
           const name = fieldNames[c.field] || c.field;

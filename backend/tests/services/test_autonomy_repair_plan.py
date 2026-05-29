@@ -241,7 +241,7 @@ def test_missing_trigger_focus_ref_creates_objective_for_existing_wake_policy() 
     assert action["proposed_change"]["update_trigger_config"]["trigger_class"] == "objective_task"
 
 
-def test_agent_without_model_and_without_default_can_disable_heartbeat_only_autonomy() -> None:
+def test_agent_without_model_and_without_default_requires_model_configuration() -> None:
     from app.services.autonomy_repair_plan import plan_autonomy_repair_actions
 
     agent = _agent(primary_model_id=None, heartbeat_enabled=True)
@@ -262,10 +262,10 @@ def test_agent_without_model_and_without_default_can_disable_heartbeat_only_auto
     )
 
     action = plan["actions"][0]
-    assert action["action_type"] == "disable_model_blocked_heartbeat"
-    assert action["auto_apply"] is True
-    assert action["risk"] == "medium"
-    assert action["proposed_change"]["set_agent"]["heartbeat_enabled"] is False
+    assert action["action_type"] == "configure_primary_model"
+    assert action["auto_apply"] is False
+    assert action["risk"] == "high"
+    assert "set_agent" not in action.get("proposed_change", {})
 
 
 def test_completed_focus_trigger_active_proposes_disabling_trigger() -> None:

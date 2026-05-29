@@ -967,7 +967,6 @@ def _build_create_employee_result(
         description=(
             "Create a new digital employee with the given configuration. "
             "Use this ONLY after confirming the full plan with the user. "
-            "Includes heartbeat schedule and custom heartbeat instructions. "
             "Returns the new employee's name and ID on success."
         ),
         parameters={
@@ -1047,18 +1046,6 @@ def _build_create_employee_result(
                     "enum": ["company", "self"],
                     "description": "'company' (everyone) or 'self' (creator only). Default: 'company'.",
                 },
-                "heartbeat_enabled": {
-                    "type": "boolean",
-                    "description": "Enable heartbeat (self-evolution cycle: observe performance, act on priorities, learn from outcomes). Default: true.",
-                },
-                "heartbeat_interval_minutes": {
-                    "type": "integer",
-                    "description": "Heartbeat interval in minutes. Default: 120.",
-                },
-                "heartbeat_active_hours": {
-                    "type": "string",
-                    "description": "Heartbeat active hours (e.g. '09:00-18:00'). Default: '09:00-18:00'.",
-                },
                 "triggers": {
                     "type": "array",
                     "items": {
@@ -1122,25 +1109,11 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
     clawhub_slugs = _dedupe_strings([s for s in _parse_list(args.get("clawhub_slugs")) if isinstance(s, str)])
     permission_scope = args.get("permission_scope", "company")
 
-    # Heartbeat config (self-awareness cycle) — LLM may pass strings for numeric fields
-    _hb_raw = args.get("heartbeat_enabled", True)
-    # Validate boolean type — LLM may pass string "false" which is truthy in Python
-    if isinstance(_hb_raw, str):
-        heartbeat_enabled = _hb_raw.lower() not in ("false", "no", "0", "off", "disabled")
-    else:
-        heartbeat_enabled = bool(_hb_raw) if _hb_raw is not None else True
-    try:
-        heartbeat_interval = int(args.get("heartbeat_interval_minutes", 120))
-    except (ValueError, TypeError):
-        heartbeat_interval = 120
-    raw_hours = str(args.get("heartbeat_active_hours", "09:00-18:00"))
-    # Normalize common LLM responses: "24/7" → "00:00-23:59", strip whitespace
-    if "24" in raw_hours and "7" in raw_hours:
-        heartbeat_active_hours = "00:00-23:59"
-    elif "-" in raw_hours and ":" in raw_hours:
-        heartbeat_active_hours = raw_hours.strip()
-    else:
-        heartbeat_active_hours = "09:00-18:00"
+    from app.services.heartbeat_policy import MANAGED_HEARTBEAT_ACTIVE_HOURS, managed_heartbeat_interval_minutes
+
+    heartbeat_enabled = True
+    heartbeat_interval = managed_heartbeat_interval_minutes()
+    heartbeat_active_hours = MANAGED_HEARTBEAT_ACTIVE_HOURS
     # Triggers (scheduled tasks) — LLM may pass string or malformed data
     raw_triggers = args.get("triggers") or []
     if isinstance(raw_triggers, str):
@@ -1886,8 +1859,6 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
 
             # Build response
             features = [f"name='{agent.name}'"]
-            if heartbeat_enabled:
-                features.append(f"heartbeat={heartbeat_active_hours} every {heartbeat_interval}min")
             if triggers:
                 trigger_names = [t.get("name", "?") for t in triggers]
                 features.append(f"triggers={trigger_names}")

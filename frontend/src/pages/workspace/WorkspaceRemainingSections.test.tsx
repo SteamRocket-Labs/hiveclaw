@@ -140,6 +140,7 @@ describe('Workspace remaining sections', () => {
     expect(orgMarkup).toContain('CardKit Dependencies');
     expect(orgMarkup).toContain('CardKit Verified');
     expect(quotasMarkup).toContain('Employee Token Quotas');
+    expect(quotasMarkup).not.toContain('minHeartbeatInterval');
     expect(quotasMarkup).toContain('defaultMaxTriggers');
     expect(toolsMarkup).toContain('Global Tools');
     expect(toolsMarkup).not.toContain('Feishu Runtime Status');

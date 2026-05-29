@@ -232,7 +232,6 @@ def plan_autonomy_repair_actions(
     agents_by_id = _index_by_id(agents)
     triggers_by_id = _index_by_id(triggers)
     objectives_by_id, objectives_by_agent_ref = _objective_indexes(objectives)
-    enabled_trigger_counts = _enabled_trigger_count_by_agent(triggers)
     actions_by_id: dict[str, dict[str, Any]] = {}
 
     for finding in findings:
@@ -335,34 +334,11 @@ def plan_autonomy_repair_actions(
                         "Default model remains enabled for the same tenant.",
                     ],
                 )
-            elif (
-                agent is not None
-                and bool(_value(agent, "heartbeat_enabled", False))
-                and enabled_trigger_counts.get(agent_id or "", 0) == 0
-            ):
-                action = _action(
-                    action_type="disable_model_blocked_heartbeat",
-                    agent=agent,
-                    summary="Disable heartbeat-only autonomy until a tenant model is configured.",
-                    auto_apply=True,
-                    risk="medium",
-                    evidence={
-                        "tenant_id": tenant_id,
-                        "heartbeat_enabled": True,
-                        "enabled_triggers": 0,
-                    },
-                    proposed_change={"set_agent": {"heartbeat_enabled": False}},
-                    preconditions=[
-                        "Agent still has no primary_model_id.",
-                        "Agent has no enabled triggers.",
-                        "Heartbeat is the only autonomous wake path.",
-                    ],
-                )
             else:
                 action = _action(
                     action_type="configure_primary_model",
                     agent=agent,
-                    summary="Configure an enabled primary model before autonomy can run.",
+                    summary="Configure an enabled primary model before autonomous or background maintenance runs can execute.",
                     auto_apply=False,
                     risk="high",
                     evidence={"tenant_id": tenant_id},
@@ -749,24 +725,6 @@ async def apply_autonomy_repair_actions(
                     "Objective created or reused for existing trigger.",
                     {"objective_id": str(_value(objective, "id"))},
                 ))
-                continue
-
-            if action_type == "disable_model_blocked_heartbeat":
-                if agent is None:
-                    results.append(_result(action, "skipped", "Agent no longer exists."))
-                    continue
-                if _value(agent, "primary_model_id") is not None:
-                    results.append(_result(action, "skipped", "Agent now has primary_model_id."))
-                    continue
-                enabled_count = _enabled_trigger_count_by_agent(triggers).get(str(_value(agent, "id")), 0)
-                if enabled_count:
-                    results.append(_result(action, "skipped", "Agent now has enabled triggers."))
-                    continue
-                if not bool(_value(agent, "heartbeat_enabled", False)):
-                    results.append(_result(action, "skipped", "Heartbeat is already disabled."))
-                    continue
-                agent.heartbeat_enabled = False
-                results.append(_result(action, "applied", "Model-blocked heartbeat disabled."))
                 continue
 
             results.append(_result(action, "skipped", "Unsupported action type."))

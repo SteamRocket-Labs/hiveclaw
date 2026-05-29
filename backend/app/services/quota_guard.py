@@ -64,39 +64,3 @@ async def check_user_token_quota(user_id: uuid.UUID) -> None:
                 f"Monthly token limit reached ({user.tokens_used_month:,}/{user.quota_tokens_per_month:,}).",
                 quota_type="tokens_monthly",
             )
-
-
-# ── Heartbeat floor enforcement (kept — pending discussion) ───────
-
-async def enforce_heartbeat_floor(tenant_id: uuid.UUID, floor: int | None = None, db=None) -> int:
-    """Enforce heartbeat floor on all agents in the tenant."""
-    from app.models.agent import Agent
-    from app.models.tenant import Tenant
-
-    async def _enforce(session, floor_val):
-        if floor_val is None:
-            result = await session.execute(select(Tenant).where(Tenant.id == tenant_id))
-            tenant = result.scalar_one_or_none()
-            if not tenant:
-                return 0
-            floor_val = tenant.min_heartbeat_interval_minutes
-
-        agents_result = await session.execute(
-            select(Agent).where(
-                Agent.tenant_id == tenant_id,
-                Agent.heartbeat_interval_minutes < floor_val,
-            )
-        )
-        agents = agents_result.scalars().all()
-        for agent in agents:
-            agent.heartbeat_interval_minutes = floor_val
-
-        if agents:
-            await session.commit()
-        return len(agents)
-
-    if db is not None:
-        return await _enforce(db, floor)
-    else:
-        async with async_session() as new_db:
-            return await _enforce(new_db, floor)

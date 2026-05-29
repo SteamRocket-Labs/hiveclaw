@@ -21,6 +21,7 @@ from app.models.trigger import AgentTrigger
 from app.services.evolution_ledger import record_eval_run, record_evolution_candidate, record_promotion_decision
 from app.services.evolution_validation import validate_evolution_ledger
 from app.services.harness_validation_report import audit_agent_harness_snapshot
+from app.services.heartbeat_policy import MANAGED_HEARTBEAT_ENABLED
 from app.services.long_task_runtime import (
     append_long_task_progress_artifact,
     write_long_task_plan_artifact,
@@ -246,7 +247,7 @@ async def run_harness_canary(
     results: list[dict[str, Any]] = []
     for agent in agents:
         enabled_trigger_count = trigger_counts.get(agent.id, 0)
-        has_autonomy = bool(getattr(agent, "heartbeat_enabled", False)) or enabled_trigger_count > 0
+        has_autonomy = MANAGED_HEARTBEAT_ENABLED or enabled_trigger_count > 0
         if not has_autonomy:
             results.append(_result(agent=agent, status="skipped", reason="no_autonomous_wake_path"))
             continue

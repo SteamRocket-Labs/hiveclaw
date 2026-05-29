@@ -693,7 +693,6 @@ async def get_enterprise_stats(
 class TenantQuotaUpdate(BaseModel):
     default_tokens_per_day: int | None = None
     default_tokens_per_month: int | None = None
-    min_heartbeat_interval_minutes: int | None = None
     default_max_triggers: int | None = None
     min_poll_interval_floor: int | None = None
     max_webhook_rate_ceiling: int | None = None
@@ -705,7 +704,7 @@ async def get_tenant_quotas(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get tenant quota defaults and heartbeat settings."""
+    """Get tenant quota defaults."""
     target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
     result = await db.execute(select(Tenant).where(Tenant.id == target_tenant_id))
     tenant = result.scalar_one_or_none()
@@ -714,7 +713,6 @@ async def get_tenant_quotas(
     return {
         "default_tokens_per_day": tenant.default_tokens_per_day,
         "default_tokens_per_month": tenant.default_tokens_per_month,
-        "min_heartbeat_interval_minutes": tenant.min_heartbeat_interval_minutes,
         "default_max_triggers": tenant.default_max_triggers,
         "min_poll_interval_floor": tenant.min_poll_interval_floor,
         "max_webhook_rate_ceiling": tenant.max_webhook_rate_ceiling,
@@ -728,7 +726,7 @@ async def update_tenant_quotas(
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """Update tenant quota defaults (admin only). Enforces heartbeat floor on existing agents."""
+    """Update tenant quota defaults (admin only)."""
     target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
     result = await db.execute(select(Tenant).where(Tenant.id == target_tenant_id))
     tenant = result.scalar_one_or_none()
@@ -739,14 +737,6 @@ async def update_tenant_quotas(
         tenant.default_tokens_per_day = data.default_tokens_per_day
     if data.default_tokens_per_month is not None:
         tenant.default_tokens_per_month = data.default_tokens_per_month
-
-    # Handle heartbeat floor — enforce on existing agents
-    adjusted_count = 0
-    if data.min_heartbeat_interval_minutes is not None:
-        tenant.min_heartbeat_interval_minutes = data.min_heartbeat_interval_minutes
-        from app.services.quota_guard import enforce_heartbeat_floor
-
-        adjusted_count = await enforce_heartbeat_floor(tenant.id, floor=data.min_heartbeat_interval_minutes, db=db)
 
     # Handle trigger limit fields
     if data.default_max_triggers is not None:
@@ -777,7 +767,7 @@ async def update_tenant_quotas(
     await db.commit()
     return {
         "message": "Tenant quotas updated",
-        "heartbeat_agents_adjusted": adjusted_count,
+        "heartbeat_agents_adjusted": 0,
     }
 
 

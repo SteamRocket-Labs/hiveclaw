@@ -5,7 +5,6 @@ import { enterpriseApi } from '../../api/domains/enterprise';
 interface QuotaForm {
   default_tokens_per_day: number | null;
   default_tokens_per_month: number | null;
-  min_heartbeat_interval_minutes: number;
   default_max_triggers: number;
   min_poll_interval_floor: number;
   max_webhook_rate_ceiling: number;
@@ -14,7 +13,6 @@ interface QuotaForm {
 const DEFAULT_FORM: QuotaForm = {
   default_tokens_per_day: null,
   default_tokens_per_month: null,
-  min_heartbeat_interval_minutes: 120,
   default_max_triggers: 20,
   min_poll_interval_floor: 5,
   max_webhook_rate_ceiling: 5,
@@ -108,19 +106,6 @@ export default function WorkspaceQuotasSection() {
           {t('workspace.quotas.systemSettings')}
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '16px' }}>
-          <div className="form-group">
-            <label className="form-label">{t('workspace.quotas.minHeartbeatInterval')}</label>
-            <input
-              className="form-input"
-              type="number"
-              min={1}
-              value={form.min_heartbeat_interval_minutes}
-              onChange={(e) => setForm({ ...form, min_heartbeat_interval_minutes: Number(e.target.value) })}
-            />
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
-              {t('workspace.quotas.minHeartbeatDesc')}
-            </div>
-          </div>
           <div className="form-group">
             <label className="form-label">{t('workspace.quotas.defaultMaxTriggers')}</label>
             <input

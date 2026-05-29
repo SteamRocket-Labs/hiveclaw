@@ -27,7 +27,7 @@ class Tenant(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    # Heartbeat frequency floor (minutes) — agents cannot heartbeat faster than this
+    # Deprecated compatibility column. Heartbeat cadence is platform-managed.
     min_heartbeat_interval_minutes: Mapped[int] = mapped_column(Integer, default=45)
 
     # Default timezone for all agents in this company (IANA format, e.g. "Asia/Shanghai")
@@ -53,4 +53,3 @@ class Tenant(Base):
     memory_backend: Mapped[str | None] = mapped_column(
         String(32), default=None, nullable=True
     )
-

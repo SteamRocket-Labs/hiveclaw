@@ -24,9 +24,6 @@ export interface AgentUpdateParams {
   max_tokens_per_day?: number;
   max_tokens_per_month?: number;
   context_window_size?: number;
-  heartbeat_enabled?: boolean;
-  heartbeat_interval_minutes?: number;
-  heartbeat_active_hours?: string;
   timezone?: string;
   security_zone?: string;
   execution_mode?: 'standard' | 'coordinator';

@@ -18,6 +18,7 @@ from app.models.runtime_task import RuntimeTask
 from app.models.trigger import AgentTrigger
 from app.services import objective_service
 from app.services.focus_state import normalize_focus_task_id, parse_focus_tasks
+from app.services.heartbeat_policy import MANAGED_HEARTBEAT_ENABLED
 
 _SCHEDULED_TRIGGER_TYPES = {"cron", "once", "interval"}
 _RUNTIME_AUDIT_SOURCES = {"trigger", "heartbeat"}
@@ -253,7 +254,7 @@ def audit_agent_autonomy_snapshot(
                 recommendation="Set max_fires or expires_at so event waits cannot run forever.",
             ))
 
-    has_autonomous_wake = bool(enabled) or bool(getattr(agent, "heartbeat_enabled", False))
+    has_autonomous_wake = bool(enabled) or MANAGED_HEARTBEAT_ENABLED
     if has_autonomous_wake and not getattr(agent, "primary_model_id", None):
         findings.append(_finding(
             severity="error",
@@ -261,10 +262,10 @@ def audit_agent_autonomy_snapshot(
             agent_id=agent_id,
             message=f"Agent '{agent_name or agent_id}' has autonomous wake paths but no primary model configured.",
             evidence={
-                "heartbeat_enabled": bool(getattr(agent, "heartbeat_enabled", False)),
+                "heartbeat_enabled": MANAGED_HEARTBEAT_ENABLED,
                 "enabled_triggers": len(enabled),
             },
-            recommendation="Assign a primary model or disable heartbeat/triggers until the agent can execute.",
+            recommendation="Assign a primary model. Disable user-configured triggers only if they should not run yet.",
         ))
 
     if trigger_session_count > 0 and trigger_runtime_count == 0:

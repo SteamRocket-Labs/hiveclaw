@@ -73,10 +73,10 @@ class Agent(Base):
     # Template
     template_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("agent_templates.id"))
 
-    # Heartbeat (proactive agent awareness)
+    # Heartbeat is platform-managed; columns remain for backward-compatible API/DB shape.
     heartbeat_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     heartbeat_interval_minutes: Mapped[int] = mapped_column(Integer, default=45)
-    heartbeat_active_hours: Mapped[str] = mapped_column(String(20), default="09:00-18:00")
+    heartbeat_active_hours: Mapped[str] = mapped_column(String(20), default="00:00-23:59")
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # Timezone (IANA format, e.g. "Asia/Shanghai"). None = inherit from tenant.

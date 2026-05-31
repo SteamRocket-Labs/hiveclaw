@@ -32,6 +32,19 @@ def test_first_batch_tools_are_tagged_with_expected_action_kinds():
     assert tagged["deep_research_start"] == BRIDGE_SELF
 
 
+def test_trigger_tool_schema_does_not_expose_plan_mode_decline_parameter():
+    """The opt-out is runtime-owned; it must not be a tool argument the LLM can fill."""
+    from app.tools.decorator import get_all_registered_tools
+    from app.tools.plan_gate_registry import plan_gated_tool_action_kinds
+
+    plan_gated_tool_action_kinds()
+    registered = get_all_registered_tools()
+    for tool_name in ("set_trigger", "update_trigger"):
+        meta, _handler = registered[tool_name]
+        properties = meta.parameters["properties"]
+        assert "plan_mode_decision" not in properties
+
+
 def test_hard_gated_tools_resolve_to_a_real_action_kind():
     from app.tools.plan_gate_registry import hard_gated_action_kind
 
@@ -61,8 +74,8 @@ def test_manage_tasks_only_hard_gates_auto_executing_todo_create():
     assert hard_gated_action_kind("manage_tasks", {"action": "delete"}) is None
 
 
-def test_set_trigger_allows_explicit_user_decline_of_recommended_plan_mode():
-    """Scheduled work should recommend Plan Mode, not force it after the user declines."""
+def test_set_trigger_ignores_untrusted_decline_argument_and_still_hard_gates():
+    """LLM-provided decline arguments are not a trust boundary."""
     from app.tools.plan_gate_registry import hard_gated_action_kind
 
     assert (
@@ -74,8 +87,32 @@ def test_set_trigger_allows_explicit_user_decline_of_recommended_plan_mode():
                 "plan_mode_decision": "declined",
             },
         )
-        is None
+        == "create_enabled_trigger"
     )
+
+
+def test_set_trigger_allows_trusted_runtime_decline_context():
+    """Only runtime-owned user-decline state can opt out of the recommendation gate."""
+    from app.services.plan_mode_runtime_context import (
+        reset_trusted_plan_mode_user_declined,
+        set_trusted_plan_mode_user_declined,
+    )
+    from app.tools.plan_gate_registry import hard_gated_action_kind
+
+    token = set_trusted_plan_mode_user_declined(True)
+    try:
+        assert (
+            hard_gated_action_kind(
+                "set_trigger",
+                {
+                    "type": "cron",
+                    "config": {"expr": "0 9 * * *"},
+                },
+            )
+            is None
+        )
+    finally:
+        reset_trusted_plan_mode_user_declined(token)
 
 
 def test_reactive_trigger_tools_are_not_hard_gated():

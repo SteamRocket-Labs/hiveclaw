@@ -18,6 +18,10 @@ from app.services.plan_mode_core import (
     stamp_confirmed_plan_provenance,
     stamp_user_declined_plan_exemption,
 )
+from app.services.plan_mode_recommendation_service import (
+    PlanRecommendationError,
+    require_declined_plan_recommendation,
+)
 from app.services.agent_tool_domains.triggers import (
     VALID_TRIGGER_TYPES,
     _coerce_int,
@@ -73,6 +77,7 @@ class TriggerCreate(BaseModel):
     confirmed_plan_version: int | None = None
     confirmed_plan_hash: str | None = None
     plan_mode_decision: str | None = None
+    plan_recommendation_id: str | None = None
 
 
 class TriggerUpdate(BaseModel):
@@ -90,6 +95,7 @@ class TriggerUpdate(BaseModel):
     confirmed_plan_version: int | None = None
     confirmed_plan_hash: str | None = None
     plan_mode_decision: str | None = None
+    plan_recommendation_id: str | None = None
 
 
 def _trigger_response(trigger: AgentTrigger, *, diagnostics: bool = False, view: dict | None = None) -> TriggerResponse:
@@ -119,6 +125,26 @@ def _trigger_response(trigger: AgentTrigger, *, diagnostics: bool = False, view:
         last_artifact=view.get("last_artifact"),
         diagnostics=view.get("diagnostics") if diagnostics else None,
     )
+
+
+def _plan_recommendation_error(exc: PlanRecommendationError) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "ok": False,
+            "status": "plan_recommendation_required",
+            "error": exc.error_code,
+            "summary": exc.message,
+        },
+    )
+
+
+def _stamp_recommendation_exemption(config: dict, recommendation_id: object) -> dict:
+    stamped = stamp_user_declined_plan_exemption(config)
+    metadata = dict(stamped.get("metadata") or {})
+    metadata["plan_recommendation_id"] = str(recommendation_id)
+    stamped["metadata"] = metadata
+    return stamped
 
 
 def _raise_trigger_validation_error(error: str | None) -> None:
@@ -199,7 +225,7 @@ async def create_trigger(
 
     # Plan Mode early intercept (§9.3): this endpoint creates an enabled
     # autonomous trigger. A confirmed plan is required unless the caller carries
-    # an explicit user opt-out from the recommendation layer.
+    # an explicit user opt-out bound to a declined recommendation row.
     user_declined_plan_mode = plan_mode_user_declined(body.plan_mode_decision)
     if not user_declined_plan_mode:
         await enforce_plan_gate(
@@ -219,7 +245,17 @@ async def create_trigger(
             plan_hash=body.confirmed_plan_hash,
         )
     else:
-        config = stamp_user_declined_plan_exemption(config)
+        try:
+            recommendation = await require_declined_plan_recommendation(
+                db,
+                recommendation_id=body.plan_recommendation_id,
+                agent_id=agent_id,
+                user_id=getattr(current_user, "id", None),
+                action_kind="create_enabled_trigger",
+            )
+        except PlanRecommendationError as exc:
+            raise _plan_recommendation_error(exc) from exc
+        config = _stamp_recommendation_exemption(config, recommendation.id)
 
     trigger = AgentTrigger(
         agent_id=agent_id,
@@ -264,23 +300,36 @@ async def update_trigger(
     # gated. Disables, config edits, and reason/lifecycle changes are low-risk
     # and keep their existing contract.
     user_declined_plan_mode = plan_mode_user_declined(body.plan_mode_decision)
-    if body.is_enabled is True and not user_declined_plan_mode:
-        await enforce_plan_gate(
-            db,
-            agent_id=agent_id,
-            action_kind="enable_autonomous_wake",
-            gate=get_plan_mode_gate(),
-            confirmed_plan_id=body.confirmed_plan_id,
-            confirmed_plan_version=body.confirmed_plan_version,
-            confirmed_plan_hash=body.confirmed_plan_hash,
-            action_artifact={"config": body.config if body.config is not None else trigger.config},
-        )
+    recommendation = None
+    if body.is_enabled is True:
+        if user_declined_plan_mode:
+            try:
+                recommendation = await require_declined_plan_recommendation(
+                    db,
+                    recommendation_id=body.plan_recommendation_id,
+                    agent_id=agent_id,
+                    user_id=getattr(current_user, "id", None),
+                    action_kind="enable_autonomous_wake",
+                )
+            except PlanRecommendationError as exc:
+                raise _plan_recommendation_error(exc) from exc
+        else:
+            await enforce_plan_gate(
+                db,
+                agent_id=agent_id,
+                action_kind="enable_autonomous_wake",
+                gate=get_plan_mode_gate(),
+                confirmed_plan_id=body.confirmed_plan_id,
+                confirmed_plan_version=body.confirmed_plan_version,
+                confirmed_plan_hash=body.confirmed_plan_hash,
+                action_artifact={"config": body.config if body.config is not None else trigger.config},
+            )
 
     if body.config is not None:
         trigger.config = body.config
     if body.is_enabled is True:
         if user_declined_plan_mode:
-            trigger.config = stamp_user_declined_plan_exemption(trigger.config)
+            trigger.config = _stamp_recommendation_exemption(trigger.config, recommendation.id)
         else:
             trigger.config = stamp_confirmed_plan_provenance(
                 trigger.config,

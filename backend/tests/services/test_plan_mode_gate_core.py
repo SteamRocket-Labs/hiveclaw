@@ -379,6 +379,17 @@ def test_classify_plan_mode_entry_auto_enters_for_long_task_intent():
     assert decision.tool_name == "manage_tasks"
 
 
+def test_classify_plan_mode_entry_recommends_when_schedule_and_long_task_overlap():
+    from app.services.plan_mode_core import classify_plan_mode_entry
+
+    decision = classify_plan_mode_entry("每天调研这个行业并输出报告")
+
+    assert decision.mode == "recommend"
+    assert decision.intent_type == "autonomous_wake"
+    assert decision.action_kind == "create_enabled_trigger"
+    assert decision.tool_name == "set_trigger"
+
+
 def test_classify_plan_mode_entry_explicit_frontend_selection_enters_plan_mode():
     from app.services.plan_mode_core import classify_plan_mode_entry
 

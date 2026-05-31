@@ -21,6 +21,10 @@ from app.services.plan_mode_core import (
     stamp_confirmed_plan_provenance,
     stamp_user_declined_plan_exemption,
 )
+from app.services.plan_mode_recommendation_service import (
+    PlanRecommendationError,
+    require_declined_plan_recommendation,
+)
 
 router = APIRouter(prefix="/agents/{agent_id}/schedules", tags=["schedules"])
 
@@ -36,6 +40,7 @@ class ScheduleCreate(BaseModel):
     confirmed_plan_version: int | None = None
     confirmed_plan_hash: str | None = None
     plan_mode_decision: str | None = None
+    plan_recommendation_id: str | None = None
 
 
 class ScheduleUpdate(BaseModel):
@@ -49,6 +54,7 @@ class ScheduleUpdate(BaseModel):
     confirmed_plan_version: int | None = None
     confirmed_plan_hash: str | None = None
     plan_mode_decision: str | None = None
+    plan_recommendation_id: str | None = None
 
 
 class ScheduleRunIn(BaseModel):
@@ -57,6 +63,7 @@ class ScheduleRunIn(BaseModel):
     confirmed_plan_version: int | None = None
     confirmed_plan_hash: str | None = None
     plan_mode_decision: str | None = None
+    plan_recommendation_id: str | None = None
 
 
 class ScheduleOut(BaseModel):
@@ -87,6 +94,26 @@ def compute_next_run(cron_expr: str, after: datetime | None = None) -> datetime 
 
 def _trigger_config(trigger: AgentTrigger) -> dict:
     return dict(trigger.config or {})
+
+
+def _plan_recommendation_error(exc: PlanRecommendationError) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "ok": False,
+            "status": "plan_recommendation_required",
+            "error": exc.error_code,
+            "summary": exc.message,
+        },
+    )
+
+
+def _stamp_recommendation_exemption(config: dict, recommendation_id: object) -> dict:
+    stamped = stamp_user_declined_plan_exemption(config)
+    metadata = dict(stamped.get("metadata") or {})
+    metadata["plan_recommendation_id"] = str(recommendation_id)
+    stamped["metadata"] = metadata
+    return stamped
 
 
 def _created_by_from_config(config: dict) -> uuid.UUID | None:
@@ -192,7 +219,7 @@ async def create_schedule(
 
     # Plan Mode early intercept (§9.3): an enabled cron schedule is an
     # autonomous wake. A confirmed plan is required unless the caller carries an
-    # explicit user opt-out from the recommendation layer. A disabled draft is
+    # explicit user opt-out bound to a declined recommendation row. A disabled draft is
     # not gated.
     user_declined_plan_mode = plan_mode_user_declined(data.plan_mode_decision)
     if data.is_enabled and not user_declined_plan_mode:
@@ -205,6 +232,18 @@ async def create_schedule(
             confirmed_plan_version=data.confirmed_plan_version,
             confirmed_plan_hash=data.confirmed_plan_hash,
         )
+    recommendation = None
+    if data.is_enabled and user_declined_plan_mode:
+        try:
+            recommendation = await require_declined_plan_recommendation(
+                db,
+                recommendation_id=data.plan_recommendation_id,
+                agent_id=agent_id,
+                user_id=getattr(current_user, "id", None),
+                action_kind="create_enabled_trigger",
+            )
+        except PlanRecommendationError as exc:
+            raise _plan_recommendation_error(exc) from exc
 
     config = _schedule_config(
         data.cron_expr,
@@ -213,7 +252,7 @@ async def create_schedule(
     )
     if data.is_enabled:
         if user_declined_plan_mode:
-            config = stamp_user_declined_plan_exemption(config)
+            config = _stamp_recommendation_exemption(config, recommendation.id)
         else:
             config = stamp_confirmed_plan_provenance(
                 config,
@@ -253,19 +292,32 @@ async def update_schedule(
     trigger = await _load_schedule_trigger(db, agent_id, schedule_id)
     updates = data.model_dump(exclude_unset=True)
     # Plan Mode early intercept (§9.3): only re-enabling a schedule is gated,
-    # unless the user explicitly declined the recommendation.
+    # unless the user explicitly declined a bound recommendation.
     user_declined_plan_mode = plan_mode_user_declined(data.plan_mode_decision)
-    if updates.get("is_enabled") is True and not user_declined_plan_mode:
-        await enforce_plan_gate(
-            db,
-            agent_id=agent_id,
-            action_kind="enable_autonomous_wake",
-            gate=get_plan_mode_gate(),
-            confirmed_plan_id=data.confirmed_plan_id,
-            confirmed_plan_version=data.confirmed_plan_version,
-            confirmed_plan_hash=data.confirmed_plan_hash,
-            action_artifact={"config": _trigger_config(trigger)},
-        )
+    recommendation = None
+    if updates.get("is_enabled") is True:
+        if user_declined_plan_mode:
+            try:
+                recommendation = await require_declined_plan_recommendation(
+                    db,
+                    recommendation_id=data.plan_recommendation_id,
+                    agent_id=agent_id,
+                    user_id=getattr(current_user, "id", None),
+                    action_kind="enable_autonomous_wake",
+                )
+            except PlanRecommendationError as exc:
+                raise _plan_recommendation_error(exc) from exc
+        else:
+            await enforce_plan_gate(
+                db,
+                agent_id=agent_id,
+                action_kind="enable_autonomous_wake",
+                gate=get_plan_mode_gate(),
+                confirmed_plan_id=data.confirmed_plan_id,
+                confirmed_plan_version=data.confirmed_plan_version,
+                confirmed_plan_hash=data.confirmed_plan_hash,
+                action_artifact={"config": _trigger_config(trigger)},
+            )
     if "name" in updates and updates["name"] is not None:
         trigger.name = str(updates["name"]).strip()
     if "instruction" in updates and updates["instruction"] is not None:
@@ -286,7 +338,7 @@ async def update_schedule(
     config["legacy_surface"] = "schedules_api"
     if updates.get("is_enabled") is True:
         if user_declined_plan_mode:
-            config = stamp_user_declined_plan_exemption(config)
+            config = _stamp_recommendation_exemption(config, recommendation.id)
         else:
             config = stamp_confirmed_plan_provenance(
                 config,
@@ -343,6 +395,18 @@ async def trigger_schedule(
             confirmed_plan_hash=run.confirmed_plan_hash,
             action_artifact={"config": _trigger_config(trigger)},
         )
+    recommendation = None
+    if user_declined_plan_mode:
+        try:
+            recommendation = await require_declined_plan_recommendation(
+                db,
+                recommendation_id=run.plan_recommendation_id,
+                agent_id=agent_id,
+                user_id=getattr(current_user, "id", None),
+                action_kind="create_enabled_trigger",
+            )
+        except PlanRecommendationError as exc:
+            raise _plan_recommendation_error(exc) from exc
     now = datetime.now(timezone.utc)
     manual_config = {
         "at": now.isoformat(),
@@ -351,7 +415,7 @@ async def trigger_schedule(
         "legacy_surface": "schedules_api_manual_run",
     }
     if user_declined_plan_mode:
-        manual_config = stamp_user_declined_plan_exemption(manual_config)
+        manual_config = _stamp_recommendation_exemption(manual_config, recommendation.id)
     else:
         manual_config = stamp_confirmed_plan_provenance(
             manual_config,

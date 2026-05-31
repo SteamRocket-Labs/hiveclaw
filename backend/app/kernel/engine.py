@@ -359,6 +359,19 @@ def _can_parallelize_batch(tool_calls: list[dict]) -> bool:
     return True
 
 
+def _session_trusted_plan_decline_metadata(request: InvocationRequest, tool_name: str) -> dict[str, Any] | None:
+    if tool_name not in {"set_trigger", "update_trigger"}:
+        return None
+    session_context = request.session_context
+    metadata = getattr(session_context, "metadata", None) if session_context is not None else None
+    if not isinstance(metadata, dict):
+        return None
+    from app.services.plan_mode_core import PLAN_MODE_TRUSTED_DECLINE_SESSION_KEY
+
+    value = metadata.get(PLAN_MODE_TRUSTED_DECLINE_SESSION_KEY)
+    return dict(value) if isinstance(value, dict) else None
+
+
 async def _execute_tool_with_hooks(
     *,
     execute_tool: ExecuteTool,
@@ -396,19 +409,31 @@ async def _execute_tool_with_hooks(
         if rejection:
             return rejection, effective_args, False
 
+    token = None
     try:
-        result = await _maybe_await(execute_tool(tool_name, effective_args, request, emit_event))
-    except Exception as exc:
-        err = f"[Tool execution error] {type(exc).__name__}: {str(exc)[:200]}"
-        await emit_hook(
-            HookEvent.POST_TOOL_FAILURE,
-            agent_id=request.agent_id,
-            session_id=request.memory_session_id,
-            tool_name=tool_name,
-            tool_args=effective_args,
-            error=err,
-        )
-        return err, effective_args, False
+        trusted_decline_metadata = _session_trusted_plan_decline_metadata(request, tool_name)
+        if trusted_decline_metadata:
+            from app.services.plan_mode_runtime_context import set_trusted_plan_mode_user_declined
+
+            token = set_trusted_plan_mode_user_declined(trusted_decline_metadata)
+        try:
+            result = await _maybe_await(execute_tool(tool_name, effective_args, request, emit_event))
+        except Exception as exc:
+            err = f"[Tool execution error] {type(exc).__name__}: {str(exc)[:200]}"
+            await emit_hook(
+                HookEvent.POST_TOOL_FAILURE,
+                agent_id=request.agent_id,
+                session_id=request.memory_session_id,
+                tool_name=tool_name,
+                tool_args=effective_args,
+                error=err,
+            )
+            return err, effective_args, False
+    finally:
+        if token is not None:
+            from app.services.plan_mode_runtime_context import reset_trusted_plan_mode_user_declined
+
+            reset_trusted_plan_mode_user_declined(token)
 
     await emit_hook(
         HookEvent.POST_TOOL_USE,

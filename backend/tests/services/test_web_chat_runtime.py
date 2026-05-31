@@ -336,6 +336,11 @@ async def test_maybe_handle_plan_mode_entry_recommends_schedule_without_creating
     intake = _RecordingIntake(SimpleNamespace(id=uuid4(), plan_version=1, plan_hash="sha256:x"))
     monkeypatch.setattr(runtime, "get_plan_mode_service", lambda: intake)
 
+    async def _noop_recommendation(**_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "_record_plan_mode_recommendation", _noop_recommendation)
+
     result = await runtime._maybe_handle_plan_mode_entry(
         agent_id=uuid4(),
         user_id=uuid4(),

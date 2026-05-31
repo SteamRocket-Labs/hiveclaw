@@ -159,6 +159,40 @@ export interface PlanDecisionInput {
   reason?: string;
 }
 
+export interface PlanRecommendation {
+  id: string;
+  agent_id: string;
+  tenant_id: string | null;
+  session_id: string;
+  runtime_task_id: string | null;
+  recommended_to_user_id: string;
+  source: string;
+  intent_type: PlanIntentType | string;
+  action_kind: string;
+  tool_name: string;
+  title: string;
+  original_request: string;
+  status: 'recommended' | 'declined' | 'accepted' | 'expired' | string;
+  declined_by_user_id: string | null;
+  declined_at: string | null;
+  accepted_by_user_id: string | null;
+  accepted_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface PlanRecommendationCreateInput {
+  original_request: string;
+  session_id: string;
+  source?: string;
+  intent_type?: PlanIntentType | string;
+  action_kind?: string;
+  tool_name?: string;
+  title?: string;
+  metadata?: Record<string, unknown>;
+}
+
 export interface PlanConfirmResult {
   ok: boolean;
   status: PlanStatus | string;
@@ -189,4 +223,8 @@ export const planApi = {
     post<PlanRequest>(`/agents/${agentId}/plans/${planId}/reject`, data),
   handoff: (agentId: string, planId: string) =>
     post<PlanHandoffResult>(`/agents/${agentId}/plans/${planId}/handoff`, {}),
+  createRecommendation: (agentId: string, data: PlanRecommendationCreateInput) =>
+    post<PlanRecommendation>(`/agents/${agentId}/plan-recommendations`, data),
+  declineRecommendation: (agentId: string, recommendationId: string) =>
+    post<PlanRecommendation>(`/agents/${agentId}/plan-recommendations/${recommendationId}/decline`, {}),
 };

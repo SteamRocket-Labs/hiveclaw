@@ -456,9 +456,41 @@ def _plan_mode_recommendation_message(decision: plan_mode_core.PlanModeEntryDeci
     subject = decision.title or "这个请求"
     return (
         f"这个请求看起来会创建未来自动执行或持续监控：{subject}\n\n"
-        "建议先进入计划模式，确认执行频率、范围、成本、停止条件和通知方式。"
+        f"{plan_mode_core.PLAN_MODE_RECOMMENDATION_MARKER}。"
         "如果你同意，请回复“进入计划模式”；如果你要跳过，请明确回复“不用计划模式，直接创建”。"
     )
+
+
+async def _record_plan_mode_recommendation(
+    *,
+    agent_id: uuid.UUID,
+    user_id: uuid.UUID | None,
+    tenant_id: uuid.UUID | None,
+    session_id: str | None,
+    runtime_task_id: uuid.UUID | None,
+    content: str,
+    decision: plan_mode_core.PlanModeEntryDecision,
+) -> None:
+    if user_id is None or not session_id:
+        return
+    from app.services.plan_mode_recommendation_service import create_plan_recommendation
+
+    async with _async_session() as db:
+        await create_plan_recommendation(
+            db,
+            agent_id=agent_id,
+            recommended_to_user_id=user_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            runtime_task_id=runtime_task_id,
+            source="web_chat",
+            original_request=content,
+            title=decision.title or content[:120],
+            intent_type=decision.intent_type or "autonomous_wake",
+            action_kind=decision.action_kind or "create_enabled_trigger",
+            tool_name=decision.tool_name or "set_trigger",
+        )
+        await db.commit()
 
 
 async def _maybe_handle_plan_mode_entry(
@@ -482,6 +514,15 @@ async def _maybe_handle_plan_mode_entry(
         return None
 
     if decision.mode == "recommend":
+        await _record_plan_mode_recommendation(
+            agent_id=agent_id,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            runtime_task_id=runtime_task_id,
+            content=content,
+            decision=decision,
+        )
         return _plan_mode_recommendation_message(decision)
 
     if not decision.action_kind or not decision.tool_name:
@@ -705,46 +746,73 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         except Exception as exc:
             logger.warning("[WebChatRun] Pending reply injection failed (non-fatal): {}", exc)
 
-        plan_entry_decision = plan_mode_core.classify_plan_mode_entry(
-            prompt,
+        trusted_decline = plan_mode_core.trusted_decline_metadata(
+            content=prompt,
+            messages=history_messages,
             explicit=bool(metadata.get("plan_mode_requested")),
         )
-        if plan_entry_decision.mode == "declined":
+        if trusted_decline:
+            try:
+                from app.services.plan_mode_recommendation_service import decline_latest_recommendation_for_user
+
+                async with _async_session() as recommendation_db:
+                    recommendation = await decline_latest_recommendation_for_user(
+                        recommendation_db,
+                        agent_id=agent.id,
+                        user_id=user.id,
+                        session_id=session_id,
+                    )
+                    if recommendation is None:
+                        trusted_decline = None
+                    else:
+                        trusted_decline["recommendation_id"] = str(recommendation.id)
+                        await recommendation_db.commit()
+            except Exception as exc:
+                logger.warning("[WebChatRun] Plan recommendation decline binding failed (non-fatal): {}", exc)
+                trusted_decline = None
+        if trusted_decline:
             plan_decline_suffix = (
-                "Plan Mode governance: the user explicitly declined the recommended Plan Mode in this turn. "
-                "If you create or update a scheduled/monitoring trigger as a direct follow-up, include "
-                '`plan_mode_decision: "declined"` in the tool arguments so the audited opt-out is recorded. '
-                "Do not use this opt-out for long tasks, delegation, or other high-risk actions."
+                "Plan Mode governance: the runtime verified that the user declined the immediately preceding "
+                "Plan Mode recommendation. If you create or update a scheduled/monitoring trigger as a direct "
+                "follow-up, call the trigger tool normally. Do not add opt-out fields to tool arguments, and do "
+                "not use this opt-out for long tasks, delegation, or other high-risk actions."
             )
             pending_reply_suffix = "\n\n".join(part for part in (pending_reply_suffix, plan_decline_suffix) if part)
 
         runtime_session_context = await web_chat_broker.get_or_create_runtime_session(str(agent.id), session_id)
-        result = await invoke_agent(
-            AgentInvocationRequest(
-                model=llm_model,
-                fallback_model=fallback_model,
-                messages=conversation,
-                agent_name=agent.name,
-                role_description=agent.role_description or "",
-                agent_id=agent.id,
-                user_id=user.id,
-                execution_identity=ExecutionIdentityRef(
-                    identity_type="delegated_user",
-                    identity_id=user.id,
-                    label=f"{user.display_name or user.username} via web",
-                ),
-                on_chunk=stream_to_ws,
-                on_tool_call=tool_call_to_ws,
-                on_thinking=thinking_to_ws,
-                on_event=runtime_event_to_ws,
-                supports_vision=getattr(llm_model, "supports_vision", False),
-                memory_session_id=session_id,
-                memory_messages=conversation,
-                cancel_event=cancel_event,
-                session_context=runtime_session_context,
-                system_prompt_suffix=pending_reply_suffix,
+        if trusted_decline:
+            runtime_session_context.metadata[plan_mode_core.PLAN_MODE_TRUSTED_DECLINE_SESSION_KEY] = trusted_decline
+        else:
+            runtime_session_context.metadata.pop(plan_mode_core.PLAN_MODE_TRUSTED_DECLINE_SESSION_KEY, None)
+        try:
+            result = await invoke_agent(
+                AgentInvocationRequest(
+                    model=llm_model,
+                    fallback_model=fallback_model,
+                    messages=conversation,
+                    agent_name=agent.name,
+                    role_description=agent.role_description or "",
+                    agent_id=agent.id,
+                    user_id=user.id,
+                    execution_identity=ExecutionIdentityRef(
+                        identity_type="delegated_user",
+                        identity_id=user.id,
+                        label=f"{user.display_name or user.username} via web",
+                    ),
+                    on_chunk=stream_to_ws,
+                    on_tool_call=tool_call_to_ws,
+                    on_thinking=thinking_to_ws,
+                    on_event=runtime_event_to_ws,
+                    supports_vision=getattr(llm_model, "supports_vision", False),
+                    memory_session_id=session_id,
+                    memory_messages=conversation,
+                    cancel_event=cancel_event,
+                    session_context=runtime_session_context,
+                    system_prompt_suffix=pending_reply_suffix,
+                )
             )
-        )
+        finally:
+            runtime_session_context.metadata.pop(plan_mode_core.PLAN_MODE_TRUSTED_DECLINE_SESSION_KEY, None)
         assistant_response = await _maybe_sync_created_task(
             agent_id=agent.id,
             user_id=user.id,

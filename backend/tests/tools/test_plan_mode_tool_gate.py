@@ -192,9 +192,9 @@ async def test_execute_runs_tagged_tool_when_gate_allows():
 
 
 @pytest.mark.asyncio
-async def test_execute_allows_set_trigger_after_user_declines_plan_recommendation():
+async def test_execute_blocks_agent_supplied_decline_without_trusted_runtime_context():
     context = _context()
-    registry = _FakeRegistry("CREATED_WITHOUT_PLAN")
+    registry = _FakeRegistry("SHOULD_NOT_RUN")
     gate = _RecordingGate(_BLOCKED)
     service = _make_service(context=context, registry=registry, gate=gate)
 
@@ -211,7 +211,42 @@ async def test_execute_allows_set_trigger_after_user_declines_plan_recommendatio
         user_id=context.user_id,
     )
 
-    assert result == "CREATED_WITHOUT_PLAN"
+    payload = json.loads(result)
+    assert payload["status"] == "needs_plan"
+    assert payload["ok"] is False
+    assert registry.calls == []
+    assert gate.calls and gate.calls[0]["action_kind"] == "create_enabled_trigger"
+
+
+@pytest.mark.asyncio
+async def test_execute_allows_set_trigger_with_trusted_runtime_decline_context():
+    from app.services.plan_mode_runtime_context import (
+        reset_trusted_plan_mode_user_declined,
+        set_trusted_plan_mode_user_declined,
+    )
+
+    context = _context()
+    registry = _FakeRegistry("CREATED_WITH_TRUSTED_OPT_OUT")
+    gate = _RecordingGate(_BLOCKED)
+    service = _make_service(context=context, registry=registry, gate=gate)
+
+    token = set_trusted_plan_mode_user_declined(True)
+    try:
+        result = await service.execute(
+            "set_trigger",
+            {
+                "name": "daily",
+                "type": "cron",
+                "config": {"expr": "0 9 * * *"},
+                "reason": "brief",
+            },
+            agent_id=context.agent_id,
+            user_id=context.user_id,
+        )
+    finally:
+        reset_trusted_plan_mode_user_declined(token)
+
+    assert result == "CREATED_WITH_TRUSTED_OPT_OUT"
     assert len(registry.calls) == 1
     assert gate.calls == []
 

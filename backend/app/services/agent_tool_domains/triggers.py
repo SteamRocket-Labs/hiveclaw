@@ -10,9 +10,12 @@ from sqlalchemy import select
 
 from app.database import async_session
 from app.services.plan_mode_core import (
-    plan_mode_user_declined,
     stamp_confirmed_plan_provenance,
     stamp_user_declined_plan_exemption,
+)
+from app.services.plan_mode_runtime_context import (
+    trusted_plan_mode_user_decline_metadata,
+    trusted_plan_mode_user_declined,
 )
 from app.tools.result_envelope import render_tool_error
 
@@ -70,14 +73,16 @@ def _trigger_error(
     )
 
 
-def _user_declined_plan_mode(arguments: dict) -> bool:
-    return plan_mode_user_declined(arguments.get("plan_mode_decision"))
-
-
-def _stamp_user_declined_plan_mode(config: dict, arguments: dict) -> dict:
-    if not _user_declined_plan_mode(arguments):
+def _stamp_user_declined_plan_mode(config: dict) -> dict:
+    if not trusted_plan_mode_user_declined():
         return config
-    return stamp_user_declined_plan_exemption(config)
+    stamped = stamp_user_declined_plan_exemption(config)
+    recommendation_id = trusted_plan_mode_user_decline_metadata().get("recommendation_id")
+    if recommendation_id:
+        metadata = dict(stamped.get("metadata") or {})
+        metadata["plan_recommendation_id"] = str(recommendation_id)
+        stamped["metadata"] = metadata
+    return stamped
 
 
 def _validate_trigger_config(tool_name: str, trigger_type: str, config: dict) -> str | None:
@@ -362,7 +367,7 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
         plan_version=arguments.get("confirmed_plan_version"),
         plan_hash=arguments.get("confirmed_plan_hash"),
     )
-    config = _stamp_user_declined_plan_mode(config, arguments)
+    config = _stamp_user_declined_plan_mode(config)
 
     try:
         async with async_session() as db:
@@ -557,7 +562,7 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                 plan_version=arguments.get("confirmed_plan_version"),
                 plan_hash=arguments.get("confirmed_plan_hash"),
             )
-            final_config = _stamp_user_declined_plan_mode(final_config, arguments)
+            final_config = _stamp_user_declined_plan_mode(final_config)
 
             _trigger_class, binding_error = _resolve_trigger_class(
                 "update_trigger",

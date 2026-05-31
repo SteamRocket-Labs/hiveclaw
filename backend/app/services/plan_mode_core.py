@@ -107,6 +107,9 @@ _LONG_TASK_RE = re.compile(
     re.IGNORECASE,
 )
 
+PLAN_MODE_RECOMMENDATION_MARKER = "建议先进入计划模式，确认执行频率、范围、成本、停止条件和通知方式"
+PLAN_MODE_TRUSTED_DECLINE_SESSION_KEY = "plan_mode_trusted_user_decline"
+
 
 def classify_plan_mode_entry(content: str, *, explicit: bool = False) -> PlanModeEntryDecision:
     """Classify a user turn into Plan Mode UX behavior.
@@ -148,16 +151,6 @@ def classify_plan_mode_entry(content: str, *, explicit: bool = False) -> PlanMod
             reason="explicit_plan_mode",
         )
 
-    if has_long_task:
-        return PlanModeEntryDecision(
-            mode="auto",
-            intent_type="long_task",
-            action_kind="start_long_task",
-            tool_name="manage_tasks",
-            title=text[:120],
-            reason="long_task_intent",
-        )
-
     if has_schedule:
         return PlanModeEntryDecision(
             mode="recommend",
@@ -168,7 +161,55 @@ def classify_plan_mode_entry(content: str, *, explicit: bool = False) -> PlanMod
             reason="schedule_or_monitor_intent",
         )
 
+    if has_long_task:
+        return PlanModeEntryDecision(
+            mode="auto",
+            intent_type="long_task",
+            action_kind="start_long_task",
+            tool_name="manage_tasks",
+            title=text[:120],
+            reason="long_task_intent",
+        )
+
     return PlanModeEntryDecision(mode="none")
+
+
+def recent_plan_mode_recommendation_was_shown(messages: list[dict] | tuple[dict, ...] | None) -> bool:
+    """Return true when the recent assistant history contains our recommendation.
+
+    This closes the opt-out loop: a user may decline a recommendation that was
+    actually shown, but a first-turn "skip plan mode" string is not a trusted
+    authorization for autonomous scheduling.
+    """
+    if not messages:
+        return False
+    for message in reversed(list(messages)[-8:]):
+        content = getattr(message, "content", None)
+        role = getattr(message, "role", None)
+        if isinstance(message, dict):
+            content = message.get("content", content)
+            role = message.get("role", role)
+        if role == "assistant" and isinstance(content, str) and PLAN_MODE_RECOMMENDATION_MARKER in content:
+            return True
+    return False
+
+
+def trusted_decline_metadata(
+    *,
+    content: str,
+    messages: list[dict] | tuple[dict, ...] | None,
+    explicit: bool = False,
+) -> dict[str, str] | None:
+    """Build runtime metadata when a real prior recommendation was declined."""
+    decision = classify_plan_mode_entry(content, explicit=explicit)
+    if decision.mode != "declined":
+        return None
+    if not recent_plan_mode_recommendation_was_shown(messages):
+        return None
+    return {
+        "reason": "user_declined_recommended_plan_mode",
+        "title": (decision.title or content)[:120],
+    }
 
 #: §9.0 — the only cutover exemption marker honoured by the backstop layer. A
 #: pre-existing enabled trigger may be grandfathered in compatibility mode by

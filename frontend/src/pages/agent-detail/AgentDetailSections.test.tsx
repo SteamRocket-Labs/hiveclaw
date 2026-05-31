@@ -7,7 +7,7 @@ import AgentActivityLogSection from './AgentActivityLogSection';
 import AgentAwareSection from './AgentAwareSection';
 import AgentChatSection, { StructuredToolResultBody } from './AgentChatSection';
 import AgentMindSection from './AgentMindSection';
-import AgentSettingsSection from './AgentSettingsSection';
+import AgentSettingsSection, { buildPatrolPlanRecommendationInput } from './AgentSettingsSection';
 import AgentSkillsSection from './AgentSkillsSection';
 import AgentStatusSection from './AgentStatusSection';
 import AgentWorkspaceSection from './AgentWorkspaceSection';
@@ -704,6 +704,24 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Access Permissions');
     expect(markup).toContain('Channel Config Mock');
     expect(markup).toContain('deleteAgent');
+  });
+
+  it('builds a bound Plan Mode opt-out recommendation for patrol saves', () => {
+    expect(
+      buildPatrolPlanRecommendationInput({
+        agentId: 'agent-1',
+        reason: 'Run scheduled patrols',
+        actionKind: 'enable_autonomous_wake',
+      }),
+    ).toMatchObject({
+      original_request: 'Run scheduled patrols',
+      session_id: 'settings_patrol:agent-1',
+      source: 'settings',
+      intent_type: 'autonomous_wake',
+      action_kind: 'enable_autonomous_wake',
+      tool_name: 'trigger_rest',
+      metadata: { surface: 'agent_settings_patrol' },
+    });
   });
 
   it('lets admins edit access permissions for non-owned agents', () => {

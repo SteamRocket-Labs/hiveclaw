@@ -36,6 +36,12 @@ describe('plan mode API adapter', () => {
     await planApi.confirm('agent-1', 'plan-1', { plan_version: 2, plan_hash: 'sha256:abc' });
     await planApi.reject('agent-1', 'plan-1', { reason: 'not now' });
     await planApi.handoff('agent-1', 'plan-1');
+    await planApi.createRecommendation('agent-1', {
+      original_request: 'Enable scheduled patrol',
+      session_id: 'settings-patrol',
+      source: 'settings',
+    });
+    await planApi.declineRecommendation('agent-1', 'rec-1');
 
     expect(get).toHaveBeenNthCalledWith(1, '/agents/agent-1/plans?limit=50');
     expect(get).toHaveBeenNthCalledWith(2, '/agents/agent-1/plans?limit=10');
@@ -55,5 +61,11 @@ describe('plan mode API adapter', () => {
     });
     expect(post).toHaveBeenNthCalledWith(4, '/agents/agent-1/plans/plan-1/reject', { reason: 'not now' });
     expect(post).toHaveBeenNthCalledWith(5, '/agents/agent-1/plans/plan-1/handoff', {});
+    expect(post).toHaveBeenNthCalledWith(6, '/agents/agent-1/plan-recommendations', {
+      original_request: 'Enable scheduled patrol',
+      session_id: 'settings-patrol',
+      source: 'settings',
+    });
+    expect(post).toHaveBeenNthCalledWith(7, '/agents/agent-1/plan-recommendations/rec-1/decline', {});
   });
 });

@@ -149,10 +149,10 @@ def _allow_decision() -> PlanGateDecision:
     return PlanGateDecision(allowed=True, reason="confirmed_plan_handoff")
 
 
-def _make_client(router_module, *, db, is_creator: bool = True):
+def _make_client(router_module, *, db, is_creator: bool = True, user=None):
     app = FastAPI()
     app.include_router(router_module.router)
-    user = SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4(), username="member")
+    user = user or SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4(), username="member")
 
     async def override_user():
         return user
@@ -166,6 +166,37 @@ def _make_client(router_module, *, db, is_creator: bool = True):
     app.dependency_overrides[get_current_user] = override_user
     app.dependency_overrides[get_db] = override_db
     return app, user, allow_access
+
+
+def _declined_recommendation(
+    *,
+    agent_id,
+    user,
+    status="declined",
+    session_id="session-1",
+    action_kind="create_enabled_trigger",
+):
+    return SimpleNamespace(
+        id=uuid4(),
+        tenant_id=getattr(user, "tenant_id", None),
+        agent_id=agent_id,
+        session_id=session_id,
+        recommended_to_user_id=user.id,
+        source="web_chat",
+        intent_type="autonomous_wake",
+        action_kind=action_kind,
+        tool_name="set_trigger",
+        title="Daily",
+        original_request="每天 9 点",
+        status=status,
+        declined_by_user_id=user.id if status == "declined" else None,
+        declined_at=None,
+        accepted_by_user_id=None,
+        accepted_at=None,
+        created_at=None,
+        updated_at=None,
+        metadata_json={},
+    )
 
 
 # ===========================================================================
@@ -247,6 +278,37 @@ def test_create_trigger_with_confirmed_plan_passes(monkeypatch):
 def test_create_trigger_after_user_declines_plan_recommendation_passes(monkeypatch):
     import app.api.triggers as mod
 
+    agent_id = uuid4()
+    user = SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4(), username="member")
+    recommendation = _declined_recommendation(agent_id=agent_id, user=user)
+    db = _QueuedDB([_ScalarResult(recommendation)])
+    app, _user, allow_access = _make_client(mod, db=db, user=user)
+    monkeypatch.setattr(mod, "check_agent_access", allow_access)
+    _trigger_view_stub(monkeypatch, mod)
+    monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: (_ for _ in ()).throw(AssertionError("not gated")))
+
+    client = TestClient(app)
+    resp = client.post(
+        f"/agents/{agent_id}/triggers",
+        json={
+            "name": "daily",
+            "type": "cron",
+            "config": {"expr": "0 9 * * *"},
+            "reason": "Send daily report",
+            "plan_mode_decision": "declined",
+            "plan_recommendation_id": str(recommendation.id),
+        },
+    )
+
+    assert resp.status_code == 201
+    assert db.committed is True
+    assert db.added[0].config["metadata"]["plan_exempt_reason"] == "user_declined_plan_mode"
+    assert db.added[0].config["metadata"]["plan_recommendation_id"] == str(recommendation.id)
+
+
+def test_create_trigger_rejects_bare_declined_without_recommendation(monkeypatch):
+    import app.api.triggers as mod
+
     db = _QueuedDB()
     app, _user, allow_access = _make_client(mod, db=db)
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
@@ -266,9 +328,10 @@ def test_create_trigger_after_user_declines_plan_recommendation_passes(monkeypat
         },
     )
 
-    assert resp.status_code == 201
-    assert db.committed is True
-    assert db.added[0].config["metadata"]["plan_exempt_reason"] == "user_declined_plan_mode"
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "plan_recommendation_required"
+    assert db.added == []
+    assert db.committed is False
 
 
 def test_update_trigger_enable_without_plan_returns_409(monkeypatch):
@@ -353,6 +416,7 @@ def test_update_trigger_disable_is_not_gated(monkeypatch):
 def test_update_trigger_enable_after_user_declines_plan_recommendation_passes(monkeypatch):
     import app.api.triggers as mod
 
+    user = SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4(), username="member")
     trigger = SimpleNamespace(
         id=uuid4(),
         agent_id=uuid4(),
@@ -369,20 +433,30 @@ def test_update_trigger_enable_after_user_declines_plan_recommendation_passes(mo
         created_at=None,
         expires_at=None,
     )
-    db = _QueuedDB([_ScalarResult(trigger)])
-    app, _user, allow_access = _make_client(mod, db=db)
+    recommendation = _declined_recommendation(
+        agent_id=trigger.agent_id,
+        user=user,
+        action_kind="enable_autonomous_wake",
+    )
+    db = _QueuedDB([_ScalarResult(trigger), _ScalarResult(recommendation)])
+    app, _user, allow_access = _make_client(mod, db=db, user=user)
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: (_ for _ in ()).throw(AssertionError("not gated")))
 
     client = TestClient(app)
     resp = client.patch(
         f"/agents/{trigger.agent_id}/triggers/{trigger.id}",
-        json={"is_enabled": True, "plan_mode_decision": "declined"},
+        json={
+            "is_enabled": True,
+            "plan_mode_decision": "declined",
+            "plan_recommendation_id": str(recommendation.id),
+        },
     )
 
     assert resp.status_code == 200
     assert trigger.is_enabled is True
     assert trigger.config["metadata"]["plan_exempt_reason"] == "user_declined_plan_mode"
+    assert trigger.config["metadata"]["plan_recommendation_id"] == str(recommendation.id)
     assert db.committed is True
 
 
@@ -507,14 +581,16 @@ def test_create_schedule_with_confirmed_plan_passes(monkeypatch):
 def test_create_schedule_after_user_declines_plan_recommendation_passes(monkeypatch):
     import app.api.schedules as mod
 
-    db = _QueuedDB()
-    app, _user, allow_access = _make_client(mod, db=db)
+    agent_id = uuid4()
+    user = SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4(), username="member")
+    recommendation = _declined_recommendation(agent_id=agent_id, user=user)
+    db = _QueuedDB([_ScalarResult(recommendation)])
+    app, _user, allow_access = _make_client(mod, db=db, user=user)
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
     monkeypatch.setattr(mod, "is_agent_creator", lambda _u, _a: True)
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: (_ for _ in ()).throw(AssertionError("not gated")))
 
     client = TestClient(app)
-    agent_id = uuid4()
     resp = client.post(
         f"/agents/{agent_id}/schedules/",
         json={
@@ -522,18 +598,21 @@ def test_create_schedule_after_user_declines_plan_recommendation_passes(monkeypa
             "instruction": "do it",
             "cron_expr": "0 9 * * *",
             "plan_mode_decision": "declined",
+            "plan_recommendation_id": str(recommendation.id),
         },
     )
 
     assert resp.status_code == 201
     assert db.added and db.added[0].is_enabled is True
     assert db.added[0].config["metadata"]["plan_exempt_reason"] == "user_declined_plan_mode"
+    assert db.added[0].config["metadata"]["plan_recommendation_id"] == str(recommendation.id)
     assert db.flushed is True
 
 
 def test_update_schedule_enable_after_user_declines_plan_recommendation_passes(monkeypatch):
     import app.api.schedules as mod
 
+    user = SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4(), username="member")
     schedule = SimpleNamespace(
         id=uuid4(),
         agent_id=uuid4(),
@@ -547,8 +626,13 @@ def test_update_schedule_enable_after_user_declines_plan_recommendation_passes(m
         fire_count=0,
         is_enabled=False,
     )
-    db = _QueuedDB([_ScalarResult(schedule)])
-    app, _user, allow_access = _make_client(mod, db=db)
+    recommendation = _declined_recommendation(
+        agent_id=schedule.agent_id,
+        user=user,
+        action_kind="enable_autonomous_wake",
+    )
+    db = _QueuedDB([_ScalarResult(schedule), _ScalarResult(recommendation)])
+    app, _user, allow_access = _make_client(mod, db=db, user=user)
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
     monkeypatch.setattr(mod, "is_agent_creator", lambda _u, _a: True)
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: (_ for _ in ()).throw(AssertionError("not gated")))
@@ -556,12 +640,17 @@ def test_update_schedule_enable_after_user_declines_plan_recommendation_passes(m
     client = TestClient(app)
     resp = client.patch(
         f"/agents/{schedule.agent_id}/schedules/{schedule.id}",
-        json={"is_enabled": True, "plan_mode_decision": "declined"},
+        json={
+            "is_enabled": True,
+            "plan_mode_decision": "declined",
+            "plan_recommendation_id": str(recommendation.id),
+        },
     )
 
     assert resp.status_code == 200
     assert schedule.is_enabled is True
     assert schedule.config["metadata"]["plan_exempt_reason"] == "user_declined_plan_mode"
+    assert schedule.config["metadata"]["plan_recommendation_id"] == str(recommendation.id)
     assert db.flushed is True
 
 
@@ -635,6 +724,7 @@ def test_schedule_run_with_confirmed_plan_passes(monkeypatch):
 def test_schedule_run_after_user_declines_plan_recommendation_passes(monkeypatch):
     import app.api.schedules as mod
 
+    user = SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4(), username="member")
     schedule = SimpleNamespace(
         id=uuid4(),
         agent_id=uuid4(),
@@ -648,21 +738,26 @@ def test_schedule_run_after_user_declines_plan_recommendation_passes(monkeypatch
         fire_count=0,
         is_enabled=True,
     )
-    db = _QueuedDB([_ScalarResult(schedule)])
-    app, _user, allow_access = _make_client(mod, db=db)
+    recommendation = _declined_recommendation(agent_id=schedule.agent_id, user=user)
+    db = _QueuedDB([_ScalarResult(schedule), _ScalarResult(recommendation)])
+    app, _user, allow_access = _make_client(mod, db=db, user=user)
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: (_ for _ in ()).throw(AssertionError("not gated")))
 
     client = TestClient(app)
     resp = client.post(
         f"/agents/{schedule.agent_id}/schedules/{schedule.id}/run",
-        json={"plan_mode_decision": "declined"},
+        json={
+            "plan_mode_decision": "declined",
+            "plan_recommendation_id": str(recommendation.id),
+        },
     )
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "queued"
     assert db.added and db.added[0].type == "once"
     assert db.added[0].config["metadata"]["plan_exempt_reason"] == "user_declined_plan_mode"
+    assert db.added[0].config["metadata"]["plan_recommendation_id"] == str(recommendation.id)
 
 
 # ===========================================================================

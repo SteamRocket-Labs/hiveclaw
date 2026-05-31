@@ -2138,10 +2138,27 @@ async def _call_agent_llm(
 
     plan_entry_decision = plan_mode_core.classify_plan_mode_entry(user_text)
     if plan_entry_decision.mode == "recommend":
+        from app.services.plan_mode_recommendation_service import create_plan_recommendation
+
+        recommendation = await create_plan_recommendation(
+            db,
+            agent_id=agent_id,
+            recommended_to_user_id=user_id,
+            tenant_id=getattr(agent, "tenant_id", None),
+            session_id=session_id,
+            source=session_source,
+            original_request=user_text,
+            title=plan_entry_decision.title or user_text[:120],
+            intent_type=plan_entry_decision.intent_type or "autonomous_wake",
+            action_kind=plan_entry_decision.action_kind or "create_enabled_trigger",
+            tool_name=plan_entry_decision.tool_name or "set_trigger",
+        )
+        if recommendation is not None and hasattr(db, "commit"):
+            await db.commit()
         subject = plan_entry_decision.title or "这个请求"
         return (
             f"这个请求看起来会创建未来自动执行或持续监控：{subject}\n\n"
-            "建议先进入计划模式，确认执行频率、范围、成本、停止条件和通知方式。"
+            f"{plan_mode_core.PLAN_MODE_RECOMMENDATION_MARKER}。"
             "如果你同意，请回复“进入计划模式”；如果你要跳过，请明确回复“不用计划模式，直接创建”。"
         )
     if plan_entry_decision.mode in {"auto", "explicit"} and plan_entry_decision.action_kind and plan_entry_decision.tool_name:
@@ -2254,12 +2271,39 @@ async def _call_agent_llm(
     except Exception as _pr_err:
         logger.warning("[PendingReply] Injection failed (non-fatal): %s", _pr_err)
 
-    if plan_entry_decision.mode == "declined":
+    from app.runtime.session import SessionContext
+
+    session_context = SessionContext(
+        session_id=session_id,
+        source=session_source,
+        channel=session_channel,
+    )
+    trusted_decline = plan_mode_core.trusted_decline_metadata(
+        content=user_text,
+        messages=history,
+    )
+    if trusted_decline:
+        from app.services.plan_mode_recommendation_service import decline_latest_recommendation_for_user
+
+        recommendation = await decline_latest_recommendation_for_user(
+            db,
+            agent_id=agent_id,
+            user_id=user_id,
+            session_id=session_id,
+        )
+        if recommendation is None:
+            trusted_decline = None
+        else:
+            trusted_decline["recommendation_id"] = str(recommendation.id)
+            if hasattr(db, "commit"):
+                await db.commit()
+    if trusted_decline:
+        session_context.metadata[plan_mode_core.PLAN_MODE_TRUSTED_DECLINE_SESSION_KEY] = trusted_decline
         plan_decline_suffix = (
-            "Plan Mode governance: the user explicitly declined the recommended Plan Mode in this turn. "
-            "If you create or update a scheduled/monitoring trigger as a direct follow-up, include "
-            '`plan_mode_decision: "declined"` in the tool arguments so the audited opt-out is recorded. '
-            "Do not use this opt-out for long tasks, delegation, or other high-risk actions."
+            "Plan Mode governance: the runtime verified that the user declined the immediately preceding "
+            "Plan Mode recommendation. If you create or update a scheduled/monitoring trigger as a direct "
+            "follow-up, call the trigger tool normally. Do not add opt-out fields to tool arguments, and do "
+            "not use this opt-out for long tasks, delegation, or other high-risk actions."
         )
         pending_reply_suffix = "\n\n".join(part for part in (pending_reply_suffix, plan_decline_suffix) if part)
 
@@ -2278,6 +2322,7 @@ async def _call_agent_llm(
             on_thinking=on_thinking,
             session_id=session_id,
             memory_messages=messages,
+            session_context=session_context,
             auto_close_session=True,
             session_source=session_source,
             session_channel=session_channel,

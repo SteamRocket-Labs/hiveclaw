@@ -27,7 +27,8 @@ Two flavours of tag exist (§9.2):
 
 from __future__ import annotations
 
-from app.services.plan_mode_core import ACTION_KINDS, plan_mode_user_declined, trigger_is_autonomous
+from app.services.plan_mode_core import ACTION_KINDS, trigger_is_autonomous
+from app.services.plan_mode_runtime_context import trusted_plan_mode_user_declined
 from app.tools.decorator import get_all_registered_tools
 
 #: Sentinel ``plan_gate_action_kind`` for tools that own their confirmation gate
@@ -77,12 +78,6 @@ def _manage_tasks_action_kind(arguments: dict | None) -> str | None:
     return "start_long_task" if task_type != "supervision" else None
 
 
-def _user_declined_plan_mode(arguments: dict | None) -> bool:
-    if not isinstance(arguments, dict):
-        return False
-    return plan_mode_user_declined(arguments.get("plan_mode_decision"))
-
-
 def _trigger_class_from_arguments(arguments: dict | None) -> str | None:
     if not isinstance(arguments, dict):
         return None
@@ -95,7 +90,7 @@ def _trigger_class_from_arguments(arguments: dict | None) -> str | None:
 
 
 def _set_trigger_action_kind(arguments: dict | None) -> str | None:
-    if _user_declined_plan_mode(arguments):
+    if trusted_plan_mode_user_declined():
         return None
     if arguments is None:
         return "create_enabled_trigger"
@@ -112,7 +107,7 @@ def _update_trigger_action_kind(arguments: dict | None) -> str | None:
     hard-blocked. If a caller explicitly submits a replacement config that marks
     an autonomous trigger, we keep the safety gate.
     """
-    if _user_declined_plan_mode(arguments):
+    if trusted_plan_mode_user_declined():
         return None
     if not isinstance(arguments, dict):
         return None

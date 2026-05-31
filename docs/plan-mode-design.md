@@ -155,7 +155,7 @@ Plan Mode 是底层能力,但入口不能一律"强制计划"。正确分层是:
 | 定时/监控类任务创建 | 推荐进入 Plan Mode,询问是否继续 | "每天 9 点帮我整理新闻"、"盯一下这个网站" |
 | 工具/REST 兜底发现即将开启未来自主行为 | hard gate,返回 `needs_plan` 或要求显式 opt-out | agent 直接调 `set_trigger`、legacy schedule API |
 
-定时/监控的默认 UX 是**推荐**,不是硬强制:agent 应先说明需要确认频率、范围、成本、停止条件和通知方式,询问用户是否进入 Plan Mode。用户明确拒绝推荐后,可以继续创建定时/监控任务,但必须写入审计豁免 `plan_exempt_reason=user_declined_plan_mode`,并在工具参数或 REST body 里带 `plan_mode_decision=declined`。
+定时/监控的默认 UX 是**推荐**,不是硬强制:agent 应先说明需要确认频率、范围、成本、停止条件和通知方式,询问用户是否进入 Plan Mode。用户明确拒绝推荐后,可以继续创建定时/监控任务,但必须写入审计豁免 `plan_exempt_reason=user_declined_plan_mode`。信任根必须来自真实用户事件:REST body 只有在已认证用户同时提交已被本人拒绝的 `plan_recommendation_id` 时才可带 `plan_mode_decision=declined`;agent 工具参数不能暴露或信任该字段,web/IM runtime 只能在"上一轮确实推荐过 + 本轮用户明确拒绝"后设置内部 trusted opt-out。
 
 ### 5.2 必须创建 PlanRequest
 
@@ -479,7 +479,7 @@ planning 期"只读取、不落地"的约束由上面的 allow/exclude 列表 + 
 第一批 tagged(真正"开启自主行为"的)工具:
 
 ```text
-set_trigger                       # 启用未来自主 wake;用户拒绝推荐后可带 plan_mode_decision=declined
+set_trigger                       # 启用未来自主 wake;用户拒绝推荐后仅可由 runtime 注入 trusted opt-out,不能信 LLM 参数
 update_trigger                    # 只有显式替换为 autonomous wake config 时 hard gate;改 reason/name 等不 gate
 delegate_to_agent                 # 交出执行权,异步推进
 manage_tasks (action=create→run)  # 会后台 execute_task
@@ -560,7 +560,7 @@ Feishu / Slack / Telegram / WeCom 这类非 web 入口也要遵守 Plan Mode。
 最小方案:
 
 - 非 web channel 共用 `_call_agent_llm()` 的入口分类:显式 Plan Mode/长任务创建 PlanRequest;定时/监控先推荐是否进入 Plan Mode。
-- 用户明确拒绝推荐后,下一轮普通 agent 执行可通过 `plan_mode_decision=declined` 创建定时/监控任务并写审计豁免。
+- 用户明确拒绝推荐后,下一轮普通 agent 执行只能通过 channel runtime 持有的 trusted opt-out 创建定时/监控任务并写审计豁免;这个 opt-out 必须绑定到已落库且状态为 `declined` 的 `agent_plan_recommendations` 记录,不能让 agent 在工具参数里自填 `plan_mode_decision=declined`。
 - 非 web channel 真正进入 Plan Mode 时,agent 回复计划摘要和确认按钮/确认文字。
 - 如果 channel 无按钮能力,要求用户明确回复确认短语。
 - 确认仍必须落到 plan API / service,不能让 agent 在普通回复里自行置 confirmed。
@@ -800,7 +800,7 @@ npm test -- planMode
 | 场景 | 期望 |
 |---|---|
 | 用户说“每天 9 点提醒我” | 推荐进入 Plan Mode,不直接创建 enabled trigger |
-| 用户回复“不用计划模式,直接创建” | 不再重新进入 Plan Mode;后续 `set_trigger` 或 REST trigger/schedule body 可带 `plan_mode_decision=declined` 创建并记录豁免 |
+| 用户在收到推荐后回复“不用计划模式,直接创建” | 不再重新进入 Plan Mode;后续 `set_trigger` 由 runtime 内部 trusted opt-out 放行,REST trigger/schedule body 必须由认证用户带已拒绝的 `plan_recommendation_id` + `plan_mode_decision=declined` 创建并记录豁免 |
 | agent 调用 `set_trigger` 但无 confirmed plan | 返回 `needs_plan`,不落库 trigger |
 | REST create trigger 无 confirmed plan | 4xx `plan_required` |
 | 用户确认 plan_version=1/hash 匹配 | status -> confirmed |

@@ -27,6 +27,40 @@ class _FakeDB:
     pass
 
 
+class _ScalarResult:
+    def __init__(self, value):
+        self.value = value
+
+    def scalar_one_or_none(self):
+        return self.value
+
+
+class _RecommendationDB:
+    def __init__(self, results=None):
+        self.results = list(results or [])
+        self.added = []
+        self.committed = False
+
+    async def execute(self, _stmt):
+        if not self.results:
+            raise AssertionError("Unexpected execute() call")
+        return _ScalarResult(self.results.pop(0))
+
+    def add(self, obj):
+        if getattr(obj, "id", None) is None:
+            obj.id = uuid4()
+        self.added.append(obj)
+
+    async def flush(self):
+        return None
+
+    async def commit(self):
+        self.committed = True
+
+    async def refresh(self, _obj):
+        return None
+
+
 def _plan_namespace(*, agent_id, status="awaiting_confirmation", version=1, requester=None):
     return SimpleNamespace(
         id=uuid4(),
@@ -57,7 +91,7 @@ def _plan_namespace(*, agent_id, status="awaiting_confirmation", version=1, requ
     )
 
 
-def _client(monkeypatch, *, service, user=None):
+def _client(monkeypatch, *, service, user=None, db=None):
     app = FastAPI()
     app.include_router(plans_api.router)
     user = user or SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4(), username="member")
@@ -66,7 +100,7 @@ def _client(monkeypatch, *, service, user=None):
         return user
 
     async def override_db():
-        yield _FakeDB()
+        yield db or _FakeDB()
 
     access = {"calls": 0}
 
@@ -136,6 +170,72 @@ def test_create_plan_rejects_unknown_intent_with_400(monkeypatch):
     )
     assert resp.status_code == 400
     assert "intent_type" in resp.json()["detail"]
+
+
+def test_create_plan_recommendation_records_authenticated_user(monkeypatch):
+    agent_id = uuid4()
+    db = _RecommendationDB()
+
+    class _Service:
+        pass
+
+    client, user, access = _client(monkeypatch, service=_Service(), db=db)
+    resp = client.post(
+        f"/agents/{agent_id}/plan-recommendations",
+        json={
+            "original_request": "每天 9 点提醒我",
+            "session_id": "sess-1",
+            "source": "web_chat",
+        },
+    )
+
+    assert resp.status_code == 201
+    assert db.committed is True
+    recommendation = db.added[0]
+    assert recommendation.agent_id == agent_id
+    assert recommendation.recommended_to_user_id == user.id
+    assert recommendation.session_id == "sess-1"
+    assert recommendation.status == "recommended"
+    assert access["calls"] == 1
+
+
+def test_decline_plan_recommendation_requires_owner_user(monkeypatch):
+    agent_id = uuid4()
+    user = SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4(), username="member")
+    recommendation = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=user.tenant_id,
+        agent_id=agent_id,
+        session_id="sess-1",
+        runtime_task_id=None,
+        recommended_to_user_id=user.id,
+        source="web_chat",
+        intent_type="autonomous_wake",
+        action_kind="create_enabled_trigger",
+        tool_name="set_trigger",
+        title="Daily",
+        original_request="每天 9 点提醒我",
+        status="recommended",
+        declined_by_user_id=None,
+        declined_at=None,
+        accepted_by_user_id=None,
+        accepted_at=None,
+        created_at=None,
+        updated_at=None,
+        metadata_json={},
+    )
+    db = _RecommendationDB([recommendation])
+
+    class _Service:
+        pass
+
+    client, _user, _access = _client(monkeypatch, service=_Service(), user=user, db=db)
+    resp = client.post(f"/agents/{agent_id}/plan-recommendations/{recommendation.id}/decline")
+
+    assert resp.status_code == 200
+    assert recommendation.status == "declined"
+    assert recommendation.declined_by_user_id == user.id
+    assert db.committed is True
 
 
 # ---------------------------------------------------------------------------

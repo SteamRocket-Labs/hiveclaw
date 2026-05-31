@@ -6,6 +6,7 @@ import { useNavigate } from 'react-router-dom';
 import ChannelConfig from '../../components/ChannelConfig';
 import { agentApi } from '../../api/domains/agents';
 import { enterpriseApi, type CapabilityDefinition, type CapabilityPolicy } from '../../api/domains/enterprise';
+import { planApi, type PlanRecommendationCreateInput } from '../../api/domains/plans';
 import { triggerApi } from '../../api/domains/triggers';
 
 type AgentSettingsForm = {
@@ -408,6 +409,25 @@ const isSettingsPatrolTrigger = (trigger: AgentTriggerSummary) =>
   trigger.type === 'interval' &&
   ((trigger.config || {}).source === SETTINGS_PATROL_TRIGGER_SOURCE || trigger.name === SETTINGS_PATROL_TRIGGER_SOURCE);
 
+export const buildPatrolPlanRecommendationInput = ({
+  agentId,
+  reason,
+  actionKind,
+}: {
+  agentId: string;
+  reason: string;
+  actionKind: 'create_enabled_trigger' | 'enable_autonomous_wake';
+}): PlanRecommendationCreateInput => ({
+  original_request: reason,
+  title: 'Settings patrol schedule',
+  session_id: `${SETTINGS_PATROL_TRIGGER_SOURCE}:${agentId}`,
+  source: 'settings',
+  intent_type: 'autonomous_wake',
+  action_kind: actionKind,
+  tool_name: 'trigger_rest',
+  metadata: { surface: 'agent_settings_patrol' },
+});
+
 const derivePatrolForm = (trigger?: AgentTriggerSummary | null): PatrolFormState => {
   const config = trigger?.config || {};
   const minutes = Number(config.minutes ?? config.interval ?? DEFAULT_PATROL_INTERVAL_MINUTES);
@@ -682,6 +702,17 @@ export default function AgentSettingsSection({
         'agent.settings.patrol.triggerReason',
         'Run scheduled patrols for objectives, messages, trigger state, and Agent Circle context.',
       );
+      let planRecommendationId: string | undefined;
+      const needsPlanModeOptOut = patrolForm.enabled;
+      if (needsPlanModeOptOut) {
+        const actionKind = patrolTrigger ? 'enable_autonomous_wake' : 'create_enabled_trigger';
+        const recommendation = await planApi.createRecommendation(
+          agentId,
+          buildPatrolPlanRecommendationInput({ agentId, reason, actionKind }),
+        );
+        const declined = await planApi.declineRecommendation(agentId, recommendation.id);
+        planRecommendationId = declined.id;
+      }
       if (patrolTrigger) {
         await triggerApi.update(agentId, patrolTrigger.id, {
           is_enabled: patrolForm.enabled,
@@ -689,7 +720,9 @@ export default function AgentSettingsSection({
           reason,
           trigger_class: 'scheduled_job',
           cooldown_seconds: 60,
-          plan_mode_decision: 'declined',
+          ...(planRecommendationId
+            ? { plan_mode_decision: 'declined', plan_recommendation_id: planRecommendationId }
+            : {}),
         });
       } else if (patrolForm.enabled) {
         await triggerApi.create(agentId, {
@@ -700,6 +733,7 @@ export default function AgentSettingsSection({
           trigger_class: 'scheduled_job',
           cooldown_seconds: 60,
           plan_mode_decision: 'declined',
+          plan_recommendation_id: planRecommendationId,
         });
       }
       await queryClient.invalidateQueries({ queryKey: ['triggers', agentId] });

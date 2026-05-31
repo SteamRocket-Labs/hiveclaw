@@ -30,13 +30,16 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
+from app.models.plan_recommendation import AgentPlanRecommendation
 from app.models.plan_request import AgentPlanRequest
 from app.models.user import User
+from app.services.plan_mode_recommendation_service import create_plan_recommendation, decline_recommendation
 from app.services.plan_mode_service import PlanConflictError, PlanModeService
 from app.services.plan_mode_service import get_plan_mode_service as _get_shared_plan_mode_service
 
@@ -83,6 +86,17 @@ class PlanDecisionIn(BaseModel):
     reason: str | None = None
 
 
+class PlanRecommendationCreateIn(BaseModel):
+    original_request: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    source: str = "web_chat"
+    title: str | None = None
+    intent_type: str = "autonomous_wake"
+    action_kind: str = "create_enabled_trigger"
+    tool_name: str = "set_trigger"
+    metadata: dict[str, Any] | None = None
+
+
 class PlanOut(BaseModel):
     id: str
     agent_id: str
@@ -124,6 +138,29 @@ class PlanHandoffOut(BaseModel):
     plan_id: str
     handoff_status: str | None = None
     handoff_payload: dict[str, Any] | None = None
+
+
+class PlanRecommendationOut(BaseModel):
+    id: str
+    agent_id: str
+    tenant_id: str | None = None
+    session_id: str
+    runtime_task_id: str | None = None
+    recommended_to_user_id: str
+    source: str
+    intent_type: str
+    action_kind: str
+    tool_name: str
+    title: str
+    original_request: str
+    status: str
+    declined_by_user_id: str | None = None
+    declined_at: str | None = None
+    accepted_by_user_id: str | None = None
+    accepted_at: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    metadata: dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +206,31 @@ def _plan_out(plan: AgentPlanRequest) -> PlanOut:
     )
 
 
+def _recommendation_out(recommendation: AgentPlanRecommendation) -> PlanRecommendationOut:
+    return PlanRecommendationOut(
+        id=str(recommendation.id),
+        agent_id=str(recommendation.agent_id),
+        tenant_id=_sid(recommendation.tenant_id),
+        session_id=recommendation.session_id,
+        runtime_task_id=_sid(recommendation.runtime_task_id),
+        recommended_to_user_id=str(recommendation.recommended_to_user_id),
+        source=recommendation.source,
+        intent_type=recommendation.intent_type,
+        action_kind=recommendation.action_kind,
+        tool_name=recommendation.tool_name,
+        title=recommendation.title,
+        original_request=recommendation.original_request,
+        status=recommendation.status,
+        declined_by_user_id=_sid(recommendation.declined_by_user_id),
+        declined_at=_dt(recommendation.declined_at),
+        accepted_by_user_id=_sid(recommendation.accepted_by_user_id),
+        accepted_at=_dt(recommendation.accepted_at),
+        created_at=_dt(recommendation.created_at),
+        updated_at=_dt(recommendation.updated_at),
+        metadata=recommendation.metadata_json or {},
+    )
+
+
 async def _load_plan_for_agent(
     service: PlanModeService, *, agent_id: uuid.UUID, plan_id: uuid.UUID
 ) -> AgentPlanRequest:
@@ -183,9 +245,83 @@ async def _load_plan_for_agent(
     return plan
 
 
+async def _load_recommendation_for_agent(
+    db: AsyncSession, *, agent_id: uuid.UUID, recommendation_id: uuid.UUID
+) -> AgentPlanRecommendation:
+    result = await db.execute(
+        select(AgentPlanRecommendation).where(
+            AgentPlanRecommendation.id == recommendation_id,
+            AgentPlanRecommendation.agent_id == agent_id,
+        )
+    )
+    recommendation = result.scalar_one_or_none()
+    if recommendation is None:
+        raise HTTPException(status_code=404, detail="Plan recommendation not found")
+    return recommendation
+
+
 # ---------------------------------------------------------------------------
 # create / list / get
 # ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{agent_id}/plan-recommendations",
+    response_model=PlanRecommendationOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_plan_recommendation_endpoint(
+    agent_id: uuid.UUID,
+    payload: PlanRecommendationCreateIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Record that Plan Mode was recommended to the authenticated user."""
+    agent, _access = await check_agent_access(db, current_user, agent_id)
+    recommendation = await create_plan_recommendation(
+        db,
+        agent_id=agent_id,
+        recommended_to_user_id=getattr(current_user, "id", None),
+        tenant_id=getattr(agent, "tenant_id", None),
+        session_id=payload.session_id,
+        source=payload.source,
+        original_request=payload.original_request,
+        title=payload.title,
+        intent_type=payload.intent_type,
+        action_kind=payload.action_kind,
+        tool_name=payload.tool_name,
+        metadata_json=payload.metadata or {},
+    )
+    if recommendation is None:
+        raise HTTPException(status_code=400, detail="session_id and authenticated user are required")
+    await db.commit()
+    if hasattr(db, "refresh"):
+        await db.refresh(recommendation)
+    return _recommendation_out(recommendation)
+
+
+@router.post(
+    "/{agent_id}/plan-recommendations/{recommendation_id}/decline",
+    response_model=PlanRecommendationOut,
+)
+async def decline_plan_recommendation_endpoint(
+    agent_id: uuid.UUID,
+    recommendation_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Mark a Plan Mode recommendation declined by the authenticated user."""
+    await check_agent_access(db, current_user, agent_id)
+    recommendation = await _load_recommendation_for_agent(db, agent_id=agent_id, recommendation_id=recommendation_id)
+    if str(recommendation.recommended_to_user_id) != str(getattr(current_user, "id", None)):
+        raise HTTPException(status_code=403, detail="Plan recommendation belongs to a different user")
+    if recommendation.status != "recommended":
+        raise HTTPException(status_code=409, detail={"error": "invalid_status", "status": recommendation.status})
+    recommendation = decline_recommendation(recommendation, user_id=current_user.id)
+    await db.commit()
+    if hasattr(db, "refresh"):
+        await db.refresh(recommendation)
+    return _recommendation_out(recommendation)
 
 
 @router.post("/{agent_id}/plans", response_model=PlanOut, status_code=status.HTTP_201_CREATED)

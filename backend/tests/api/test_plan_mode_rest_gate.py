@@ -244,6 +244,33 @@ def test_create_trigger_with_confirmed_plan_passes(monkeypatch):
     assert gate.calls[0]["plan_hash"] == "sha256:abc"
 
 
+def test_create_trigger_after_user_declines_plan_recommendation_passes(monkeypatch):
+    import app.api.triggers as mod
+
+    db = _QueuedDB()
+    app, _user, allow_access = _make_client(mod, db=db)
+    monkeypatch.setattr(mod, "check_agent_access", allow_access)
+    _trigger_view_stub(monkeypatch, mod)
+    monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: (_ for _ in ()).throw(AssertionError("not gated")))
+
+    client = TestClient(app)
+    agent_id = uuid4()
+    resp = client.post(
+        f"/agents/{agent_id}/triggers",
+        json={
+            "name": "daily",
+            "type": "cron",
+            "config": {"expr": "0 9 * * *"},
+            "reason": "Send daily report",
+            "plan_mode_decision": "declined",
+        },
+    )
+
+    assert resp.status_code == 201
+    assert db.committed is True
+    assert db.added[0].config["metadata"]["plan_exempt_reason"] == "user_declined_plan_mode"
+
+
 def test_update_trigger_enable_without_plan_returns_409(monkeypatch):
     import app.api.triggers as mod
 
@@ -320,6 +347,42 @@ def test_update_trigger_disable_is_not_gated(monkeypatch):
 
     assert resp.status_code == 200
     assert trigger.is_enabled is False
+    assert db.committed is True
+
+
+def test_update_trigger_enable_after_user_declines_plan_recommendation_passes(monkeypatch):
+    import app.api.triggers as mod
+
+    trigger = SimpleNamespace(
+        id=uuid4(),
+        agent_id=uuid4(),
+        name="daily",
+        type="cron",
+        config={"expr": "0 9 * * *"},
+        reason="r",
+        focus_ref=None,
+        is_enabled=False,
+        fire_count=0,
+        max_fires=None,
+        cooldown_seconds=60,
+        last_fired_at=None,
+        created_at=None,
+        expires_at=None,
+    )
+    db = _QueuedDB([_ScalarResult(trigger)])
+    app, _user, allow_access = _make_client(mod, db=db)
+    monkeypatch.setattr(mod, "check_agent_access", allow_access)
+    monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: (_ for _ in ()).throw(AssertionError("not gated")))
+
+    client = TestClient(app)
+    resp = client.patch(
+        f"/agents/{trigger.agent_id}/triggers/{trigger.id}",
+        json={"is_enabled": True, "plan_mode_decision": "declined"},
+    )
+
+    assert resp.status_code == 200
+    assert trigger.is_enabled is True
+    assert trigger.config["metadata"]["plan_exempt_reason"] == "user_declined_plan_mode"
     assert db.committed is True
 
 
@@ -441,6 +504,67 @@ def test_create_schedule_with_confirmed_plan_passes(monkeypatch):
     assert gate.calls[0]["plan_version"] == 2
 
 
+def test_create_schedule_after_user_declines_plan_recommendation_passes(monkeypatch):
+    import app.api.schedules as mod
+
+    db = _QueuedDB()
+    app, _user, allow_access = _make_client(mod, db=db)
+    monkeypatch.setattr(mod, "check_agent_access", allow_access)
+    monkeypatch.setattr(mod, "is_agent_creator", lambda _u, _a: True)
+    monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: (_ for _ in ()).throw(AssertionError("not gated")))
+
+    client = TestClient(app)
+    agent_id = uuid4()
+    resp = client.post(
+        f"/agents/{agent_id}/schedules/",
+        json={
+            "name": "nightly",
+            "instruction": "do it",
+            "cron_expr": "0 9 * * *",
+            "plan_mode_decision": "declined",
+        },
+    )
+
+    assert resp.status_code == 201
+    assert db.added and db.added[0].is_enabled is True
+    assert db.added[0].config["metadata"]["plan_exempt_reason"] == "user_declined_plan_mode"
+    assert db.flushed is True
+
+
+def test_update_schedule_enable_after_user_declines_plan_recommendation_passes(monkeypatch):
+    import app.api.schedules as mod
+
+    schedule = SimpleNamespace(
+        id=uuid4(),
+        agent_id=uuid4(),
+        name="nightly",
+        type="cron",
+        config={"expr": "0 9 * * *"},
+        reason="do it",
+        reply_context=None,
+        last_fired_at=None,
+        created_at=None,
+        fire_count=0,
+        is_enabled=False,
+    )
+    db = _QueuedDB([_ScalarResult(schedule)])
+    app, _user, allow_access = _make_client(mod, db=db)
+    monkeypatch.setattr(mod, "check_agent_access", allow_access)
+    monkeypatch.setattr(mod, "is_agent_creator", lambda _u, _a: True)
+    monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: (_ for _ in ()).throw(AssertionError("not gated")))
+
+    client = TestClient(app)
+    resp = client.patch(
+        f"/agents/{schedule.agent_id}/schedules/{schedule.id}",
+        json={"is_enabled": True, "plan_mode_decision": "declined"},
+    )
+
+    assert resp.status_code == 200
+    assert schedule.is_enabled is True
+    assert schedule.config["metadata"]["plan_exempt_reason"] == "user_declined_plan_mode"
+    assert db.flushed is True
+
+
 def test_schedule_run_without_plan_returns_409(monkeypatch):
     import app.api.schedules as mod
 
@@ -506,6 +630,39 @@ def test_schedule_run_with_confirmed_plan_passes(monkeypatch):
     assert resp.json()["status"] == "queued"
     assert db.added and db.added[0].type == "once"
     assert gate.calls[0]["confirmed_plan_id"] == plan_id
+
+
+def test_schedule_run_after_user_declines_plan_recommendation_passes(monkeypatch):
+    import app.api.schedules as mod
+
+    schedule = SimpleNamespace(
+        id=uuid4(),
+        agent_id=uuid4(),
+        name="nightly",
+        type="cron",
+        config={"expr": "0 9 * * *"},
+        reason="do it",
+        reply_context=None,
+        last_fired_at=None,
+        created_at=None,
+        fire_count=0,
+        is_enabled=True,
+    )
+    db = _QueuedDB([_ScalarResult(schedule)])
+    app, _user, allow_access = _make_client(mod, db=db)
+    monkeypatch.setattr(mod, "check_agent_access", allow_access)
+    monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: (_ for _ in ()).throw(AssertionError("not gated")))
+
+    client = TestClient(app)
+    resp = client.post(
+        f"/agents/{schedule.agent_id}/schedules/{schedule.id}/run",
+        json={"plan_mode_decision": "declined"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "queued"
+    assert db.added and db.added[0].type == "once"
+    assert db.added[0].config["metadata"]["plan_exempt_reason"] == "user_declined_plan_mode"
 
 
 # ===========================================================================

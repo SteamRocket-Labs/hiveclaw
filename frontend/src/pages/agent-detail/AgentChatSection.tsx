@@ -1,5 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
+import { IconChecklist } from '@tabler/icons-react';
 
 import MarkdownRenderer from '../../components/MarkdownRenderer';
 import CopyMessageButton from './CopyMessageButton';
@@ -70,6 +71,8 @@ interface AgentChatSectionProps {
   onSetChatInput: (value: string) => void;
   onHandlePaste: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void;
   onSendChatMsg: () => void;
+  planModeRequested?: boolean;
+  onTogglePlanMode?: () => void;
   isStreaming: boolean;
   onAbortGeneration: () => void;
 }
@@ -350,6 +353,8 @@ export default function AgentChatSection({
   onSetChatInput,
   onHandlePaste,
   onSendChatMsg,
+  planModeRequested = false,
+  onTogglePlanMode,
   isStreaming,
   onAbortGeneration,
 }: AgentChatSectionProps) {
@@ -1453,6 +1458,32 @@ export default function AgentChatSection({
                   </button>
                 </div>
               )}
+              <button
+                type="button"
+                onClick={onTogglePlanMode}
+                aria-pressed={planModeRequested}
+                title={
+                  planModeRequested
+                    ? t('agent.plan.composerToggleOn', 'Plan Mode enabled')
+                    : t('agent.plan.composerToggleOff', 'Start next message in Plan Mode')
+                }
+                disabled={!wsConnected || isWaiting || isStreaming}
+                style={{
+                  width: '36px',
+                  height: '36px',
+                  borderRadius: '6px',
+                  border: planModeRequested ? '1px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
+                  background: planModeRequested ? 'rgba(16,185,129,0.12)' : 'var(--bg-secondary)',
+                  color: planModeRequested ? 'var(--accent-primary)' : 'var(--text-secondary)',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: !wsConnected || isWaiting || isStreaming ? 'not-allowed' : 'pointer',
+                  flexShrink: 0,
+                }}
+              >
+                <IconChecklist size={18} stroke={1.8} />
+              </button>
               <textarea
                 ref={chatInputRef}
                 className="chat-input"

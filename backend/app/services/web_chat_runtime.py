@@ -32,6 +32,7 @@ from app.services.chat_message_parts import (
     build_tool_call_event,
 )
 from app.services.llm_error_policy import is_llm_error_message
+from app.services import plan_mode_core
 from app.services.plan_mode_service import get_plan_mode_service
 from app.services.web_chat_broker import web_chat_broker
 
@@ -163,6 +164,7 @@ async def start_web_chat_run(
     content: str,
     display_content: str = "",
     file_name: str = "",
+    plan_mode_requested: bool = False,
 ) -> dict[str, Any]:
     if is_agent_expired(agent):
         raise HTTPException(status_code=403, detail="Agent has expired")
@@ -216,6 +218,7 @@ async def start_web_chat_run(
             "file_name": file_name,
             "source": "web",
             "cancelled_by_user": False,
+            "plan_mode_requested": bool(plan_mode_requested),
         },
     )
     db.add(runtime_task)
@@ -432,6 +435,75 @@ async def _maybe_sync_created_task(
     )
 
 
+def _plan_mode_tool_arguments(decision: plan_mode_core.PlanModeEntryDecision, content: str) -> dict[str, Any]:
+    title = decision.title or content[:120] or "Plan Mode request"
+    if decision.action_kind == "create_enabled_trigger":
+        return {
+            "name": title[:80],
+            "type": "cron",
+            "config": {},
+            "reason": content,
+        }
+    return {
+        "action": "create",
+        "title": title,
+        "description": content,
+        "task_type": "todo",
+    }
+
+
+def _plan_mode_recommendation_message(decision: plan_mode_core.PlanModeEntryDecision) -> str:
+    subject = decision.title or "这个请求"
+    return (
+        f"这个请求看起来会创建未来自动执行或持续监控：{subject}\n\n"
+        "建议先进入计划模式，确认执行频率、范围、成本、停止条件和通知方式。"
+        "如果你同意，请回复“进入计划模式”；如果你要跳过，请明确回复“不用计划模式，直接创建”。"
+    )
+
+
+async def _maybe_handle_plan_mode_entry(
+    *,
+    agent_id: uuid.UUID,
+    user_id: uuid.UUID | None,
+    tenant_id: uuid.UUID | None,
+    session_id: str | None,
+    runtime_task_id: uuid.UUID | None,
+    content: str,
+    plan_mode_requested: bool = False,
+) -> str | None:
+    """Handle the UX-layer Plan Mode entry before normal agent execution.
+
+    Schedule/monitor intents recommend Plan Mode and stop. Explicit Plan Mode
+    selection or long-task intents materialise an awaiting plan. The execution
+    safety gate remains in the tool/runtime layer.
+    """
+    decision = plan_mode_core.classify_plan_mode_entry(content, explicit=plan_mode_requested)
+    if decision.mode in {"none", "declined"}:
+        return None
+
+    if decision.mode == "recommend":
+        return _plan_mode_recommendation_message(decision)
+
+    if not decision.action_kind or not decision.tool_name:
+        return None
+
+    plan = await get_plan_mode_service().ensure_awaiting_plan(
+        agent_id=agent_id,
+        action_kind=decision.action_kind,
+        tool_name=decision.tool_name,
+        arguments=_plan_mode_tool_arguments(decision, content),
+        source="web_chat",
+        tenant_id=tenant_id,
+        session_id=session_id,
+        runtime_task_id=runtime_task_id,
+        requested_by_user_id=user_id,
+    )
+    return (
+        f"已进入计划模式，并生成一份待确认计划（plan_id={plan.id}）。"
+        "请在计划卡片中确认、修改或拒绝；确认后我再开始执行。"
+    )
+
+
 async def _update_runtime_task(
     run_uuid: uuid.UUID,
     *,
@@ -536,6 +608,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         session_id = str(runtime_task.parent_session_id)
         conversation = conversation_from_history_messages(history_messages)
         prompt = runtime_task.prompt or ""
+        metadata = runtime_task.metadata_json if isinstance(runtime_task.metadata_json, dict) else {}
 
         if getattr(agent, "agent_type", None) == "openclaw":
             async with _async_session() as db:
@@ -559,6 +632,27 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             )
             await _update_runtime_task(run_uuid, status="completed", result_summary=assistant_response[:500])
             await broadcast_web_chat_event(agent.id, session_id, build_done_event(assistant_response))
+            return
+
+        plan_mode_response = await _maybe_handle_plan_mode_entry(
+            agent_id=agent.id,
+            user_id=getattr(user, "id", None),
+            tenant_id=getattr(agent, "tenant_id", None),
+            session_id=session_id,
+            runtime_task_id=run_uuid,
+            content=prompt,
+            plan_mode_requested=bool(metadata.get("plan_mode_requested")),
+        )
+        if plan_mode_response is not None:
+            await _persist_assistant_message(
+                agent_id=agent.id,
+                user_id=user.id,
+                session_id=session_id,
+                content=plan_mode_response,
+                thinking=None,
+            )
+            await _update_runtime_task(run_uuid, status="completed", result_summary=plan_mode_response[:500])
+            await broadcast_web_chat_event(agent.id, session_id, build_done_event(plan_mode_response))
             return
 
         if not llm_model:
@@ -610,6 +704,19 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 )
         except Exception as exc:
             logger.warning("[WebChatRun] Pending reply injection failed (non-fatal): {}", exc)
+
+        plan_entry_decision = plan_mode_core.classify_plan_mode_entry(
+            prompt,
+            explicit=bool(metadata.get("plan_mode_requested")),
+        )
+        if plan_entry_decision.mode == "declined":
+            plan_decline_suffix = (
+                "Plan Mode governance: the user explicitly declined the recommended Plan Mode in this turn. "
+                "If you create or update a scheduled/monitoring trigger as a direct follow-up, include "
+                '`plan_mode_decision: "declined"` in the tool arguments so the audited opt-out is recorded. '
+                "Do not use this opt-out for long tasks, delegation, or other high-risk actions."
+            )
+            pending_reply_suffix = "\n\n".join(part for part in (pending_reply_suffix, plan_decline_suffix) if part)
 
         runtime_session_context = await web_chat_broker.get_or_create_runtime_session(str(agent.id), session_id)
         result = await invoke_agent(

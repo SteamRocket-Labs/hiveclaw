@@ -144,41 +144,53 @@ Plan Mode 要解决四件事:
 
 ## 5. 触发规则
 
-### 5.1 必须进入 Plan Mode
+### 5.1 进入策略: 显式、自动、推荐、兜底
+
+Plan Mode 是底层能力,但入口不能一律"强制计划"。正确分层是:
+
+| 入口 | 行为 | 示例 |
+|---|---|---|
+| 用户显式选择/表达 Plan Mode | 立即创建 PlanRequest | 前端 Plan Mode toggle、"先做计划"、"进入计划模式" |
+| 长任务创建 | 自动进入 Plan Mode | "完整调研这个行业并出报告" |
+| 定时/监控类任务创建 | 推荐进入 Plan Mode,询问是否继续 | "每天 9 点帮我整理新闻"、"盯一下这个网站" |
+| 工具/REST 兜底发现即将开启未来自主行为 | hard gate,返回 `needs_plan` 或要求显式 opt-out | agent 直接调 `set_trigger`、legacy schedule API |
+
+定时/监控的默认 UX 是**推荐**,不是硬强制:agent 应先说明需要确认频率、范围、成本、停止条件和通知方式,询问用户是否进入 Plan Mode。用户明确拒绝推荐后,可以继续创建定时/监控任务,但必须写入审计豁免 `plan_exempt_reason=user_declined_plan_mode`,并在工具参数或 REST body 里带 `plan_mode_decision=declined`。
+
+### 5.2 必须创建 PlanRequest
 
 满足任一条件,必须创建 PlanRequest,不能直接执行:
 
 | 类型 | 示例 | 原因 |
 |---|---|---|
-| 未来自主执行 | “每天 9 点帮我整理新闻” | 会离开当前对话继续运行 |
-| 持续监控 | “盯一下这个网站,有变化通知我” | 会创建 poll/interval/on_message/webhook 等 wake policy |
 | Objective 自主推进 | “以后持续跟进这个客户” | 需要明确目标、成功标准和停止条件 |
 | long-running autonomous task | “完整调研这个行业,出报告,后面自动跟进” | 多轮、长耗时、高 token/工具成本 |
 | delegation / A2A | “让另一个 agent 去做并持续汇报” | 当前 agent 把执行权交出去 |
 | 外部可见 future action | “明天自动发给群里” | 对外沟通必须先确认 |
 | 高风险状态变更 | “定期改生产配置 / 批量删除旧文件” | 不可逆或影响面大 |
 
-### 5.2 可以不进入 Plan Mode
+### 5.3 可以不进入 Plan Mode
 
 这些可以直接执行,但仍受普通工具治理和 approval gate 约束:
 
 - 只读问题: “解释这个文件”,“查一下现在状态”。
 - 当前轮低风险同步动作: “读取日志并总结”,“跑测试并告诉我结果”。
 - 用户明确要求立即执行且动作低风险、可逆、只在当前对话内完成。
+- 用户已明确拒绝"定时/监控任务建议进入 Plan Mode"的推荐,且本次动作只是在创建/更新该定时或监控任务。
 - 已确认 PlanRequest 的 handoff 执行。
 
-### 5.3 模糊情况默认进入 Plan Mode
+### 5.4 模糊情况先推荐或先计划
 
-如果请求中出现这些语义,默认进入 Plan Mode:
+如果请求中出现这些语义,UX 层先识别并分流:
 
 ```text
 每天 / 每周 / 定时 / 以后 / 持续 / 自动 / 监控 / 盯着 / 到时候 /
 提醒我 / 等回复 / 有变化就 / 帮我长期 / 自己跟进 / 派给 / 让某个 agent 去
 ```
 
-这条规则的失败方向必须是“不执行,先计划”,而不是“先创建 trigger 再说”。
+长任务、委派、高风险 future action 的失败方向必须是“不执行,先计划”。定时/监控任务的常规方向是“先推荐 Plan Mode,等用户确认是否进入”,而不是静默创建 trigger。
 
-但**关键词匹配 / 意图识别只是 UX 层预判**(让 chat 能提前弹 plan card),不是安全边界,判错不致命。真正的 fail-closed 安全闸门锚在工具层(§9.2):无论意图识别是否命中,agent 一旦真的去调 `set_trigger` 等"开启自主行为"的工具,就必须有 confirmed plan。**意图识别负责"体验",工具层负责"安全",两者解耦。**
+但**关键词匹配 / 意图识别只是 UX 层预判**(让 chat 能提前推荐或弹 plan card),不是安全边界,判错不致命。真正的 fail-closed 安全闸门锚在工具/REST/执行兜底层(§9.2):无论意图识别是否命中,agent 一旦真的去调会开启未来自主行为的工具,必须有 confirmed plan、显式用户 opt-out,或其他受支持的审计豁免。**意图识别负责"体验",兜底层负责"安全",两者解耦。**
 
 ---
 
@@ -435,12 +447,14 @@ Plan Mode 接入方式:
 
 1. 在 web chat run 创建后,先做 intent classification。
 2. 如果请求命中 Plan Mode:
-   - 创建 `agent_plan_requests` row。
+   - 显式 Plan Mode 或长任务:创建 `agent_plan_requests` row。
+   - 定时/监控:先推荐进入 Plan Mode 并等待用户选择;不立即创建 PlanRequest。
+3. 创建 PlanRequest 后:
    - 启动受限 planning invocation,或用 deterministic builder 生成 plan draft。
    - 写 `plans/{plan_id}.md`。
    - assistant 返回 plan card / markdown preview。
    - 当前 web_chat_turn 完成,不继续执行原请求。
-3. 用户点击 Confirm / Revise / Reject,走 plan API。
+4. 用户点击 Confirm / Revise / Reject,走 plan API。
 
 Planning invocation 必须禁用高风险工具,且**复用现有工具收窄机制,不新增 `execution_mode` 字段**(与 §4 非目标一致):
 
@@ -465,7 +479,8 @@ planning 期"只读取、不落地"的约束由上面的 allow/exclude 列表 + 
 第一批 tagged(真正"开启自主行为"的)工具:
 
 ```text
-set_trigger / update_trigger      # 启用/改变未来自主 wake
+set_trigger                       # 启用未来自主 wake;用户拒绝推荐后可带 plan_mode_decision=declined
+update_trigger                    # 只有显式替换为 autonomous wake config 时 hard gate;改 reason/name 等不 gate
 delegate_to_agent                 # 交出执行权,异步推进
 manage_tasks (action=create→run)  # 会后台 execute_task
 deep_research_start               # 已有 plan_confirmed(RC11-RC15 刚修好);MVP 只桥接登记 PlanRequest,不重构
@@ -544,7 +559,9 @@ Feishu / Slack / Telegram / WeCom 这类非 web 入口也要遵守 Plan Mode。
 
 最小方案:
 
-- 非 web channel 命中 Plan Mode 时,agent 回复计划摘要和确认按钮/确认文字。
+- 非 web channel 共用 `_call_agent_llm()` 的入口分类:显式 Plan Mode/长任务创建 PlanRequest;定时/监控先推荐是否进入 Plan Mode。
+- 用户明确拒绝推荐后,下一轮普通 agent 执行可通过 `plan_mode_decision=declined` 创建定时/监控任务并写审计豁免。
+- 非 web channel 真正进入 Plan Mode 时,agent 回复计划摘要和确认按钮/确认文字。
 - 如果 channel 无按钮能力,要求用户明确回复确认短语。
 - 确认仍必须落到 plan API / service,不能让 agent 在普通回复里自行置 confirmed。
 
@@ -782,7 +799,8 @@ npm test -- planMode
 
 | 场景 | 期望 |
 |---|---|
-| 用户说“每天 9 点提醒我” | 创建 PlanRequest,不创建 enabled trigger |
+| 用户说“每天 9 点提醒我” | 推荐进入 Plan Mode,不直接创建 enabled trigger |
+| 用户回复“不用计划模式,直接创建” | 不再重新进入 Plan Mode;后续 `set_trigger` 或 REST trigger/schedule body 可带 `plan_mode_decision=declined` 创建并记录豁免 |
 | agent 调用 `set_trigger` 但无 confirmed plan | 返回 `needs_plan`,不落库 trigger |
 | REST create trigger 无 confirmed plan | 4xx `plan_required` |
 | 用户确认 plan_version=1/hash 匹配 | status -> confirmed |

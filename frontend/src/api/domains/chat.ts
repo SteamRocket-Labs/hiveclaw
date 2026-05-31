@@ -72,6 +72,7 @@ export interface StartSessionRunInput {
   content: string;
   display_content?: string;
   file_name?: string;
+  plan_mode_requested?: boolean;
 }
 
 export interface SessionRun {

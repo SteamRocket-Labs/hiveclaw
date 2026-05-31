@@ -407,6 +407,7 @@ function AgentDetailInner() {
     const [chatMessages, setChatMessages] = useState<AgentChatMessage[]>([]);
     const [chatMessagesSessionId, setChatMessagesSessionId] = useState<string | null>(null);
     const [chatInput, setChatInput] = useState('');
+    const [planModeRequested, setPlanModeRequested] = useState(false);
     const [wsConnected, setWsConnected] = useState(false);
     const [uploading, setUploading] = useState(false);
     const [isWaiting, setIsWaiting] = useState(false);
@@ -911,7 +912,9 @@ function AgentDetailInner() {
                 content: contentForLLM,
                 display_content: userMsg,
                 file_name: attachedFiles.map(f => f.name).join(', '),
+                plan_mode_requested: planModeRequested,
             });
+            setPlanModeRequested(false);
             setActiveRunState(activeRuntimeKey, { runId: run.run_id, status: run.status || 'running' });
         } catch (err: any) {
             setIsWaiting(false);
@@ -1465,6 +1468,8 @@ function AgentDetailInner() {
                             transportNotice={transportNotice}
                             isWaiting={isWaiting}
                             activeRunStatus={currentActiveRunState?.status || null}
+                            planModeRequested={planModeRequested}
+                            onTogglePlanMode={() => setPlanModeRequested((value) => !value)}
 
                             chatEndRef={chatEndRef}
                             showScrollBtn={showScrollBtn}

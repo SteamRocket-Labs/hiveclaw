@@ -27,7 +27,7 @@ Two flavours of tag exist (§9.2):
 
 from __future__ import annotations
 
-from app.services.plan_mode_core import ACTION_KINDS
+from app.services.plan_mode_core import ACTION_KINDS, plan_mode_user_declined, trigger_is_autonomous
 from app.tools.decorator import get_all_registered_tools
 
 #: Sentinel ``plan_gate_action_kind`` for tools that own their confirmation gate
@@ -77,6 +77,55 @@ def _manage_tasks_action_kind(arguments: dict | None) -> str | None:
     return "start_long_task" if task_type != "supervision" else None
 
 
+def _user_declined_plan_mode(arguments: dict | None) -> bool:
+    if not isinstance(arguments, dict):
+        return False
+    return plan_mode_user_declined(arguments.get("plan_mode_decision"))
+
+
+def _trigger_class_from_arguments(arguments: dict | None) -> str | None:
+    if not isinstance(arguments, dict):
+        return None
+    config = arguments.get("config")
+    if isinstance(config, dict) and config.get("trigger_class") is not None:
+        return str(config.get("trigger_class") or "").strip()
+    if arguments.get("trigger_class") is not None:
+        return str(arguments.get("trigger_class") or "").strip()
+    return None
+
+
+def _set_trigger_action_kind(arguments: dict | None) -> str | None:
+    if _user_declined_plan_mode(arguments):
+        return None
+    if arguments is None:
+        return "create_enabled_trigger"
+    trigger_type = str(arguments.get("type") or "").strip()
+    trigger_class = _trigger_class_from_arguments(arguments)
+    return "create_enabled_trigger" if trigger_is_autonomous(trigger_type=trigger_type, trigger_class=trigger_class) else None
+
+
+def _update_trigger_action_kind(arguments: dict | None) -> str | None:
+    """Tool-layer update is advisory; only explicit autonomous reconfiguration gates.
+
+    REST knows whether a trigger is being enabled and gates there. The tool does
+    not carry current enabled/type state, so reason/lifecycle edits should not be
+    hard-blocked. If a caller explicitly submits a replacement config that marks
+    an autonomous trigger, we keep the safety gate.
+    """
+    if _user_declined_plan_mode(arguments):
+        return None
+    if not isinstance(arguments, dict):
+        return None
+    config = arguments.get("config")
+    if not isinstance(config, dict):
+        return None
+    trigger_type = str(arguments.get("type") or config.get("type") or "").strip()
+    trigger_class = _trigger_class_from_arguments(arguments)
+    if not trigger_type:
+        return None
+    return "create_enabled_trigger" if trigger_is_autonomous(trigger_type=trigger_type, trigger_class=trigger_class) else None
+
+
 def hard_gated_action_kind(tool_name: str, arguments: dict | None = None) -> str | None:
     """Return the ``ACTION_KIND`` to hard-gate ``tool_name`` on, else ``None``.
 
@@ -86,6 +135,10 @@ def hard_gated_action_kind(tool_name: str, arguments: dict | None = None) -> str
     member yields a hard gate.
     """
     action_kind = plan_gated_tool_action_kinds().get(tool_name)
+    if tool_name == "set_trigger" and action_kind == "create_enabled_trigger":
+        return _set_trigger_action_kind(arguments)
+    if tool_name == "update_trigger" and action_kind == "create_enabled_trigger":
+        return _update_trigger_action_kind(arguments)
     if tool_name == "manage_tasks" and action_kind == "start_long_task":
         return _manage_tasks_action_kind(arguments)
     if action_kind and action_kind in ACTION_KINDS:

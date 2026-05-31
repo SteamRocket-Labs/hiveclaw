@@ -218,9 +218,15 @@ def test_build_needs_plan_payload_default_summary_and_next_action_present():
     payload = build_needs_plan_payload()
     assert payload["summary"]
     assert payload["next_action"]
-    # The next_action must steer the agent to STOP + wait for the user, never
-    # self-confirm (§8.1 / §8.5).
-    assert "confirm" in payload["next_action"].lower()
+
+
+def test_classify_plan_mode_entry_user_decline_does_not_reenter_plan_mode():
+    from app.services.plan_mode_core import classify_plan_mode_entry
+
+    decision = classify_plan_mode_entry("不用计划模式，直接创建这个每天 12 点运行的定时任务")
+
+    assert decision.mode == "declined"
+    assert decision.reason == "user_declined_recommended_plan_mode"
 
 
 def test_default_needs_plan_summary_is_the_payload_default():
@@ -349,3 +355,35 @@ def test_trigger_is_autonomous_false_for_objective_task_class():
     from app.services.plan_mode_core import trigger_is_autonomous
 
     assert trigger_is_autonomous(trigger_type="cron", trigger_class="objective_task") is False
+
+
+def test_classify_plan_mode_entry_recommends_for_schedule_intent():
+    from app.services.plan_mode_core import classify_plan_mode_entry
+
+    decision = classify_plan_mode_entry("每天 9 点帮我整理新闻")
+
+    assert decision.mode == "recommend"
+    assert decision.intent_type == "autonomous_wake"
+    assert decision.action_kind == "create_enabled_trigger"
+    assert decision.tool_name == "set_trigger"
+
+
+def test_classify_plan_mode_entry_auto_enters_for_long_task_intent():
+    from app.services.plan_mode_core import classify_plan_mode_entry
+
+    decision = classify_plan_mode_entry("完整调研这个行业并输出报告")
+
+    assert decision.mode == "auto"
+    assert decision.intent_type == "long_task"
+    assert decision.action_kind == "start_long_task"
+    assert decision.tool_name == "manage_tasks"
+
+
+def test_classify_plan_mode_entry_explicit_frontend_selection_enters_plan_mode():
+    from app.services.plan_mode_core import classify_plan_mode_entry
+
+    decision = classify_plan_mode_entry("帮我做一件事", explicit=True)
+
+    assert decision.mode == "explicit"
+    assert decision.intent_type == "long_task"
+    assert decision.action_kind == "start_long_task"

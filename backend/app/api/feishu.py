@@ -2133,6 +2133,46 @@ async def _call_agent_llm(
     if is_agent_expired(agent):
         return "This Agent has expired and is off duty. Please contact your admin to extend its service."
 
+    effective_user_id = user_id or agent_id
+    from app.services import plan_mode_core
+
+    plan_entry_decision = plan_mode_core.classify_plan_mode_entry(user_text)
+    if plan_entry_decision.mode == "recommend":
+        subject = plan_entry_decision.title or "这个请求"
+        return (
+            f"这个请求看起来会创建未来自动执行或持续监控：{subject}\n\n"
+            "建议先进入计划模式，确认执行频率、范围、成本、停止条件和通知方式。"
+            "如果你同意，请回复“进入计划模式”；如果你要跳过，请明确回复“不用计划模式，直接创建”。"
+        )
+    if plan_entry_decision.mode in {"auto", "explicit"} and plan_entry_decision.action_kind and plan_entry_decision.tool_name:
+        from app.services.plan_mode_service import get_plan_mode_service
+
+        title = plan_entry_decision.title or user_text[:120] or "Plan Mode request"
+        if plan_entry_decision.action_kind == "create_enabled_trigger":
+            plan_arguments = {"name": title[:80], "type": "cron", "config": {}, "reason": user_text}
+        else:
+            plan_arguments = {
+                "action": "create",
+                "title": title,
+                "description": user_text,
+                "task_type": "todo",
+            }
+        plan = await get_plan_mode_service().ensure_awaiting_plan(
+            agent_id=agent_id,
+            action_kind=plan_entry_decision.action_kind,
+            tool_name=plan_entry_decision.tool_name,
+            arguments=plan_arguments,
+            source=session_source,
+            tenant_id=getattr(agent, "tenant_id", None),
+            session_id=session_id,
+            runtime_task_id=None,
+            requested_by_user_id=effective_user_id,
+        )
+        return (
+            f"已进入计划模式，并生成一份待确认计划（plan_id={plan.id}）。"
+            "请确认、修改或拒绝；确认后我再开始执行。"
+        )
+
     # Load primary model (tenant-scoped)
     model = None
     if agent.primary_model_id:
@@ -2214,8 +2254,14 @@ async def _call_agent_llm(
     except Exception as _pr_err:
         logger.warning("[PendingReply] Injection failed (non-fatal): %s", _pr_err)
 
-    # Use actual user_id so the system prompt knows who it's chatting with
-    effective_user_id = user_id or agent_id
+    if plan_entry_decision.mode == "declined":
+        plan_decline_suffix = (
+            "Plan Mode governance: the user explicitly declined the recommended Plan Mode in this turn. "
+            "If you create or update a scheduled/monitoring trigger as a direct follow-up, include "
+            '`plan_mode_decision: "declined"` in the tool arguments so the audited opt-out is recorded. '
+            "Do not use this opt-out for long tasks, delegation, or other high-risk actions."
+        )
+        pending_reply_suffix = "\n\n".join(part for part in (pending_reply_suffix, plan_decline_suffix) if part)
 
     try:
         reply = await call_llm(

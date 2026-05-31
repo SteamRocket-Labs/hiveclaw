@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -60,11 +61,136 @@ _ACTION_INTENT: dict[str, str] = {
     "start_delegation": "delegation",
 }
 
+
+@dataclass(frozen=True)
+class PlanModeEntryDecision:
+    """UX-layer decision for whether a chat turn should enter or recommend Plan Mode.
+
+    ``mode`` is one of:
+    - ``none``: normal chat execution.
+    - ``recommend``: stop before execution and ask whether to enter Plan Mode.
+    - ``auto``: create an awaiting plan immediately.
+    - ``explicit``: the user/frontend explicitly selected Plan Mode.
+    - ``declined``: the user explicitly declined a Plan Mode recommendation.
+
+    This classifier is intentionally **not** the security boundary. Tool/runtime
+    backstops still protect execution. Its job is to keep the normal UX from
+    reaching a hard ``needs_plan`` block for cases where a recommendation is the
+    right first move.
+    """
+
+    mode: str
+    intent_type: str | None = None
+    action_kind: str | None = None
+    tool_name: str | None = None
+    title: str = ""
+    reason: str = ""
+
+
+_EXPLICIT_PLAN_MODE_RE = re.compile(
+    r"(计划模式|进入计划|用计划模式|先做计划|plan\s*mode|planning\s*mode)",
+    re.IGNORECASE,
+)
+_DECLINE_PLAN_MODE_RE = re.compile(
+    r"((不用|不需要|不要|跳过|先不|无需).{0,8}(计划模式|计划|plan\s*mode)|"
+    r"(skip|decline|no)\s+(the\s+)?(plan\s*mode|planning\s*mode))",
+    re.IGNORECASE,
+)
+_SCHEDULE_RE = re.compile(
+    r"(每天|每周|每月|每小时|定时|定期|到时候|提醒我|监控|盯着|盯一下|有变化|"
+    r"schedule|cron|daily|weekly|monthly|monitor|watch)",
+    re.IGNORECASE,
+)
+_LONG_TASK_RE = re.compile(
+    r"(长任务|长期任务|完整调研|深度研究|出报告|生成报告|调研.*报告|研究.*报告|"
+    r"deep\s*research|comprehensive\s+research|full\s+research)",
+    re.IGNORECASE,
+)
+
+
+def classify_plan_mode_entry(content: str, *, explicit: bool = False) -> PlanModeEntryDecision:
+    """Classify a user turn into Plan Mode UX behavior.
+
+    This is the "recommend vs auto-enter" layer:
+    - explicit frontend/user Plan Mode selection enters Plan Mode;
+    - explicit textual decline lets the normal agent continue with an auditable opt-out;
+    - long-task wording enters Plan Mode automatically;
+    - schedule/monitor wording recommends Plan Mode first;
+    - everything else stays normal.
+    """
+    text = str(content or "").strip()
+    if not text:
+        return PlanModeEntryDecision(mode="none")
+
+    if not explicit and _DECLINE_PLAN_MODE_RE.search(text):
+        return PlanModeEntryDecision(mode="declined", title=text[:120], reason="user_declined_recommended_plan_mode")
+
+    has_explicit = explicit or bool(_EXPLICIT_PLAN_MODE_RE.search(text))
+    has_schedule = bool(_SCHEDULE_RE.search(text))
+    has_long_task = bool(_LONG_TASK_RE.search(text))
+
+    if has_explicit:
+        if has_schedule:
+            return PlanModeEntryDecision(
+                mode="explicit",
+                intent_type="autonomous_wake",
+                action_kind="create_enabled_trigger",
+                tool_name="set_trigger",
+                title=text[:120],
+                reason="explicit_plan_mode_schedule",
+            )
+        return PlanModeEntryDecision(
+            mode="explicit",
+            intent_type="long_task",
+            action_kind="start_long_task",
+            tool_name="manage_tasks",
+            title=text[:120],
+            reason="explicit_plan_mode",
+        )
+
+    if has_long_task:
+        return PlanModeEntryDecision(
+            mode="auto",
+            intent_type="long_task",
+            action_kind="start_long_task",
+            tool_name="manage_tasks",
+            title=text[:120],
+            reason="long_task_intent",
+        )
+
+    if has_schedule:
+        return PlanModeEntryDecision(
+            mode="recommend",
+            intent_type="autonomous_wake",
+            action_kind="create_enabled_trigger",
+            tool_name="set_trigger",
+            title=text[:120],
+            reason="schedule_or_monitor_intent",
+        )
+
+    return PlanModeEntryDecision(mode="none")
+
 #: §9.0 — the only cutover exemption marker honoured by the backstop layer. A
 #: pre-existing enabled trigger may be grandfathered in compatibility mode by
 #: tagging its artifact with this reason; anything else still needs a plan.
 PLAN_EXEMPT_PREEXISTING: str = "preexisting_before_cutover"
 PLAN_EXEMPT_CONFIRMED_HR_BLUEPRINT: str = "confirmed_hr_blueprint"
+PLAN_EXEMPT_USER_DECLINED: str = "user_declined_plan_mode"
+PLAN_MODE_DECLINE_VALUES: tuple[str, ...] = ("declined", "skip", "skipped", "not_needed", "no_plan")
+
+
+def plan_mode_user_declined(decision: str | None) -> bool:
+    """Return true when a caller carries an explicit Plan Mode opt-out."""
+    return str(decision or "").strip().lower() in PLAN_MODE_DECLINE_VALUES
+
+
+def stamp_user_declined_plan_exemption(config: dict | None) -> dict:
+    """Stamp an autonomous artifact with the audited user opt-out exemption."""
+    stamped = dict(config or {})
+    metadata = dict(stamped.get("metadata") or {})
+    metadata["plan_exempt_reason"] = PLAN_EXEMPT_USER_DECLINED
+    stamped["metadata"] = metadata
+    return stamped
 
 #: §7 — every status a PlanRequest can hold.
 PLAN_STATUSES: tuple[str, ...] = (

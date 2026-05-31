@@ -16,7 +16,11 @@ from app.database import get_db
 from app.models.activity_log import AgentActivityLog
 from app.models.trigger import AgentTrigger
 from app.models.user import User
-from app.services.plan_mode_core import stamp_confirmed_plan_provenance
+from app.services.plan_mode_core import (
+    plan_mode_user_declined,
+    stamp_confirmed_plan_provenance,
+    stamp_user_declined_plan_exemption,
+)
 
 router = APIRouter(prefix="/agents/{agent_id}/schedules", tags=["schedules"])
 
@@ -31,6 +35,7 @@ class ScheduleCreate(BaseModel):
     confirmed_plan_id: str | None = None
     confirmed_plan_version: int | None = None
     confirmed_plan_hash: str | None = None
+    plan_mode_decision: str | None = None
 
 
 class ScheduleUpdate(BaseModel):
@@ -43,6 +48,7 @@ class ScheduleUpdate(BaseModel):
     confirmed_plan_id: str | None = None
     confirmed_plan_version: int | None = None
     confirmed_plan_hash: str | None = None
+    plan_mode_decision: str | None = None
 
 
 class ScheduleRunIn(BaseModel):
@@ -50,6 +56,7 @@ class ScheduleRunIn(BaseModel):
     confirmed_plan_id: str | None = None
     confirmed_plan_version: int | None = None
     confirmed_plan_hash: str | None = None
+    plan_mode_decision: str | None = None
 
 
 class ScheduleOut(BaseModel):
@@ -183,9 +190,12 @@ async def create_schedule(
     if not compute_next_run(data.cron_expr):
         raise HTTPException(status_code=400, detail=f"Invalid cron expression: {data.cron_expr}")
 
-    # Plan Mode early intercept (§9.3): an enabled cron schedule is an autonomous
-    # wake and needs a confirmed plan. A disabled draft is not gated.
-    if data.is_enabled:
+    # Plan Mode early intercept (§9.3): an enabled cron schedule is an
+    # autonomous wake. A confirmed plan is required unless the caller carries an
+    # explicit user opt-out from the recommendation layer. A disabled draft is
+    # not gated.
+    user_declined_plan_mode = plan_mode_user_declined(data.plan_mode_decision)
+    if data.is_enabled and not user_declined_plan_mode:
         await enforce_plan_gate(
             db,
             agent_id=agent_id,
@@ -202,12 +212,15 @@ async def create_schedule(
         delivery_target_json=data.delivery_target_json,
     )
     if data.is_enabled:
-        config = stamp_confirmed_plan_provenance(
-            config,
-            plan_id=data.confirmed_plan_id,
-            plan_version=data.confirmed_plan_version,
-            plan_hash=data.confirmed_plan_hash,
-        )
+        if user_declined_plan_mode:
+            config = stamp_user_declined_plan_exemption(config)
+        else:
+            config = stamp_confirmed_plan_provenance(
+                config,
+                plan_id=data.confirmed_plan_id,
+                plan_version=data.confirmed_plan_version,
+                plan_hash=data.confirmed_plan_hash,
+            )
 
     trigger = AgentTrigger(
         agent_id=agent_id,
@@ -239,8 +252,10 @@ async def update_schedule(
 
     trigger = await _load_schedule_trigger(db, agent_id, schedule_id)
     updates = data.model_dump(exclude_unset=True)
-    # Plan Mode early intercept (§9.3): only re-enabling a schedule is gated.
-    if updates.get("is_enabled") is True:
+    # Plan Mode early intercept (§9.3): only re-enabling a schedule is gated,
+    # unless the user explicitly declined the recommendation.
+    user_declined_plan_mode = plan_mode_user_declined(data.plan_mode_decision)
+    if updates.get("is_enabled") is True and not user_declined_plan_mode:
         await enforce_plan_gate(
             db,
             agent_id=agent_id,
@@ -270,12 +285,15 @@ async def update_schedule(
     config["trigger_class"] = "scheduled_job"
     config["legacy_surface"] = "schedules_api"
     if updates.get("is_enabled") is True:
-        config = stamp_confirmed_plan_provenance(
-            config,
-            plan_id=data.confirmed_plan_id,
-            plan_version=data.confirmed_plan_version,
-            plan_hash=data.confirmed_plan_hash,
-        )
+        if user_declined_plan_mode:
+            config = stamp_user_declined_plan_exemption(config)
+        else:
+            config = stamp_confirmed_plan_provenance(
+                config,
+                plan_id=data.confirmed_plan_id,
+                plan_version=data.confirmed_plan_version,
+                plan_hash=data.confirmed_plan_hash,
+            )
     trigger.config = config
 
     await db.flush()
@@ -313,28 +331,34 @@ async def trigger_schedule(
     # Plan Mode early intercept (§9.3): a manual run queues an enabled one-shot
     # autonomous trigger, so it needs a confirmed plan (or cutover exemption).
     run = data or ScheduleRunIn()
-    await enforce_plan_gate(
-        db,
-        agent_id=agent_id,
-        action_kind="create_enabled_trigger",
-        gate=get_plan_mode_gate(),
-        confirmed_plan_id=run.confirmed_plan_id,
-        confirmed_plan_version=run.confirmed_plan_version,
-        confirmed_plan_hash=run.confirmed_plan_hash,
-        action_artifact={"config": _trigger_config(trigger)},
-    )
+    user_declined_plan_mode = plan_mode_user_declined(run.plan_mode_decision)
+    if not user_declined_plan_mode:
+        await enforce_plan_gate(
+            db,
+            agent_id=agent_id,
+            action_kind="create_enabled_trigger",
+            gate=get_plan_mode_gate(),
+            confirmed_plan_id=run.confirmed_plan_id,
+            confirmed_plan_version=run.confirmed_plan_version,
+            confirmed_plan_hash=run.confirmed_plan_hash,
+            action_artifact={"config": _trigger_config(trigger)},
+        )
     now = datetime.now(timezone.utc)
-    manual_config = stamp_confirmed_plan_provenance(
-        {
-            "at": now.isoformat(),
-            "trigger_class": "scheduled_job",
-            "source_schedule_id": str(schedule_id),
-            "legacy_surface": "schedules_api_manual_run",
-        },
-        plan_id=run.confirmed_plan_id,
-        plan_version=run.confirmed_plan_version,
-        plan_hash=run.confirmed_plan_hash,
-    )
+    manual_config = {
+        "at": now.isoformat(),
+        "trigger_class": "scheduled_job",
+        "source_schedule_id": str(schedule_id),
+        "legacy_surface": "schedules_api_manual_run",
+    }
+    if user_declined_plan_mode:
+        manual_config = stamp_user_declined_plan_exemption(manual_config)
+    else:
+        manual_config = stamp_confirmed_plan_provenance(
+            manual_config,
+            plan_id=run.confirmed_plan_id,
+            plan_version=run.confirmed_plan_version,
+            plan_hash=run.confirmed_plan_hash,
+        )
     manual = AgentTrigger(
         agent_id=agent_id,
         name=f"manual_{trigger.name[:70]}_{uuid.uuid4().hex[:8]}",

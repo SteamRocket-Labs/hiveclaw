@@ -184,6 +184,25 @@ async def test_execute_task_blocks_without_confirmed_plan(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_execute_task_does_not_plan_gate_supervision_task(monkeypatch):
+    from app.services.task_executor import _task_plan_gate_allows
+
+    task = SimpleNamespace(
+        id=uuid4(),
+        type="supervision",
+        plan_id=None,
+        plan_version=None,
+        plan_hash=None,
+        plan_exempt_reason=None,
+    )
+
+    allowed, reason = await _task_plan_gate_allows(SimpleNamespace(), task=task, agent_id=uuid4())
+
+    assert allowed is True
+    assert reason is None
+
+
+@pytest.mark.asyncio
 async def test_execute_task_persists_reflection_session_and_tool_calls(monkeypatch):
     from app.services.task_executor import execute_task
 

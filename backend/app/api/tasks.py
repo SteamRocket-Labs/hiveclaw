@@ -194,18 +194,20 @@ async def trigger_task(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    # Plan Mode early intercept (§9.3): a manual trigger fires the background
-    # execute_task loop, so it needs a confirmed plan (or cutover exemption).
+    # Plan Mode early intercept (§9.3): a manual todo trigger fires the background
+    # execute_task loop. Supervision tasks are reminder checks and stay outside
+    # Plan Mode unless they become todo auto-execution.
     trigger_in = data or TaskTriggerIn()
-    await enforce_plan_gate(
-        db,
-        agent_id=agent_id,
-        action_kind="start_long_task",
-        gate=get_plan_mode_gate(),
-        confirmed_plan_id=trigger_in.confirmed_plan_id,
-        confirmed_plan_version=trigger_in.confirmed_plan_version,
-        confirmed_plan_hash=trigger_in.confirmed_plan_hash,
-    )
+    if str(getattr(task, "type", "todo") or "todo").strip() == "todo":
+        await enforce_plan_gate(
+            db,
+            agent_id=agent_id,
+            action_kind="start_long_task",
+            gate=get_plan_mode_gate(),
+            confirmed_plan_id=trigger_in.confirmed_plan_id,
+            confirmed_plan_version=trigger_in.confirmed_plan_version,
+            confirmed_plan_hash=trigger_in.confirmed_plan_hash,
+        )
 
     import asyncio
     from app.services.task_executor import execute_task

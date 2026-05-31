@@ -394,6 +394,8 @@
       "stopConditions": "Stop conditions",
       "confirm": "Confirm",
       "confirmAndStart": "Confirm and start",
+      "composerToggleOn": "Plan Mode enabled",
+      "composerToggleOff": "Start next message in Plan Mode",
       "requestChanges": "Request changes",
       "reject": "Reject",
       "requestChangesPrompt": "What should change about this plan?",

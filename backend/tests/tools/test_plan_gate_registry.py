@@ -36,12 +36,18 @@ def test_hard_gated_tools_resolve_to_a_real_action_kind():
     from app.tools.plan_gate_registry import hard_gated_action_kind
 
     assert hard_gated_action_kind("set_trigger") == "create_enabled_trigger"
-    assert hard_gated_action_kind("update_trigger") == "create_enabled_trigger"
+    assert hard_gated_action_kind("update_trigger") is None
+    assert hard_gated_action_kind("update_trigger", {"config": {"type": "cron"}}) == "create_enabled_trigger"
     assert hard_gated_action_kind("delegate_to_agent") == "start_delegation"
     assert hard_gated_action_kind("manage_tasks") == "start_long_task"
     # Every hard-gated action_kind must be a member of the canonical ACTION_KINDS.
-    for tool_name in ("set_trigger", "update_trigger", "delegate_to_agent", "manage_tasks"):
-        assert hard_gated_action_kind(tool_name) in ACTION_KINDS
+    for resolved_action_kind in (
+        hard_gated_action_kind("set_trigger"),
+        hard_gated_action_kind("update_trigger", {"config": {"type": "cron"}}),
+        hard_gated_action_kind("delegate_to_agent"),
+        hard_gated_action_kind("manage_tasks"),
+    ):
+        assert resolved_action_kind in ACTION_KINDS
 
 
 def test_manage_tasks_only_hard_gates_auto_executing_todo_create():
@@ -53,6 +59,39 @@ def test_manage_tasks_only_hard_gates_auto_executing_todo_create():
     assert hard_gated_action_kind("manage_tasks", {"action": "create", "task_type": "supervision"}) is None
     assert hard_gated_action_kind("manage_tasks", {"action": "update_status", "status": "done"}) is None
     assert hard_gated_action_kind("manage_tasks", {"action": "delete"}) is None
+
+
+def test_set_trigger_allows_explicit_user_decline_of_recommended_plan_mode():
+    """Scheduled work should recommend Plan Mode, not force it after the user declines."""
+    from app.tools.plan_gate_registry import hard_gated_action_kind
+
+    assert (
+        hard_gated_action_kind(
+            "set_trigger",
+            {
+                "type": "cron",
+                "config": {"expr": "0 9 * * *"},
+                "plan_mode_decision": "declined",
+            },
+        )
+        is None
+    )
+
+
+def test_reactive_trigger_tools_are_not_hard_gated():
+    from app.tools.plan_gate_registry import hard_gated_action_kind
+
+    assert (
+        hard_gated_action_kind(
+            "set_trigger",
+            {
+                "type": "on_message",
+                "config": {"reply_to_current_sender": True, "trigger_class": "event_wait"},
+            },
+        )
+        is None
+    )
+    assert hard_gated_action_kind("update_trigger", {"name": "wait-for-reply", "reason": "narrow scope"}) is None
 
 
 def test_bridge_self_tools_are_not_hard_gated():

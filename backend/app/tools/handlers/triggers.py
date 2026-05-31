@@ -65,6 +65,11 @@ from app.tools.decorator import ToolMeta, tool
                 "type": "integer",
                 "description": "Optional cooldown between fires.",
             },
+            "plan_mode_decision": {
+                "type": "string",
+                "enum": ["declined"],
+                "description": "Set to declined only after the user explicitly declines the Plan Mode recommendation.",
+            },
         },
         "required": ["name", "type", "config", "reason"],
     },
@@ -121,6 +126,11 @@ async def set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
             "max_fires": {"type": "integer"},
             "expires_at": {"type": "string"},
             "cooldown_seconds": {"type": "integer"},
+            "plan_mode_decision": {
+                "type": "string",
+                "enum": ["declined"],
+                "description": "Set to declined only after the user explicitly declines the Plan Mode recommendation.",
+            },
         },
         "required": ["name"],
     },

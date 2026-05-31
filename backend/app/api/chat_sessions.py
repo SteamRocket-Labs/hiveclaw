@@ -68,6 +68,7 @@ class StartSessionRunIn(BaseModel):
     content: str
     display_content: str = ""
     file_name: str = ""
+    plan_mode_requested: bool = False
 
 
 class SessionRunOut(BaseModel):
@@ -320,6 +321,7 @@ async def start_session_run(
             content=body.content,
             display_content=body.display_content,
             file_name=body.file_name,
+            plan_mode_requested=body.plan_mode_requested,
         )
     except ActiveWebChatRunExists as exc:
         raise HTTPException(status_code=409, detail=exc.run) from exc

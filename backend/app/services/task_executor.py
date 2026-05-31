@@ -216,6 +216,9 @@ async def _task_plan_gate_allows(db, *, task: Task, agent_id: uuid.UUID) -> tupl
     persisted task provenance so internal callers or restart paths cannot bypass
     Plan Mode by calling the executor directly.
     """
+    if str(getattr(task, "type", "todo") or "todo").strip() != "todo":
+        return True, None
+
     from app.services.plan_mode_gate import get_plan_mode_gate
 
     gate = get_plan_mode_gate()

@@ -191,6 +191,50 @@ async def test_execute_runs_tagged_tool_when_gate_allows():
     assert gate.calls and gate.calls[0]["action_kind"] == "create_enabled_trigger"
 
 
+@pytest.mark.asyncio
+async def test_execute_allows_set_trigger_after_user_declines_plan_recommendation():
+    context = _context()
+    registry = _FakeRegistry("CREATED_WITHOUT_PLAN")
+    gate = _RecordingGate(_BLOCKED)
+    service = _make_service(context=context, registry=registry, gate=gate)
+
+    result = await service.execute(
+        "set_trigger",
+        {
+            "name": "daily",
+            "type": "cron",
+            "config": {"expr": "0 9 * * *"},
+            "reason": "brief",
+            "plan_mode_decision": "declined",
+        },
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+    )
+
+    assert result == "CREATED_WITHOUT_PLAN"
+    assert len(registry.calls) == 1
+    assert gate.calls == []
+
+
+@pytest.mark.asyncio
+async def test_execute_does_not_gate_update_trigger_reason_only():
+    context = _context()
+    registry = _FakeRegistry("UPDATED")
+    gate = _RecordingGate(_BLOCKED)
+    service = _make_service(context=context, registry=registry, gate=gate)
+
+    result = await service.execute(
+        "update_trigger",
+        {"name": "daily", "reason": "tighten the summary scope"},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+    )
+
+    assert result == "UPDATED"
+    assert len(registry.calls) == 1
+    assert gate.calls == []
+
+
 # ---------------------------------------------------------------------------
 # execute(): untagged tool is never gated (gate not even consulted).
 # ---------------------------------------------------------------------------

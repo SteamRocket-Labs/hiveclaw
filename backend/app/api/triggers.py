@@ -13,7 +13,11 @@ from app.core.security import get_current_user
 from app.database import get_db
 from app.models.trigger import AgentTrigger
 from app.models.user import User
-from app.services.plan_mode_core import stamp_confirmed_plan_provenance
+from app.services.plan_mode_core import (
+    plan_mode_user_declined,
+    stamp_confirmed_plan_provenance,
+    stamp_user_declined_plan_exemption,
+)
 from app.services.agent_tool_domains.triggers import (
     VALID_TRIGGER_TYPES,
     _coerce_int,
@@ -68,6 +72,7 @@ class TriggerCreate(BaseModel):
     confirmed_plan_id: str | None = None
     confirmed_plan_version: int | None = None
     confirmed_plan_hash: str | None = None
+    plan_mode_decision: str | None = None
 
 
 class TriggerUpdate(BaseModel):
@@ -84,6 +89,7 @@ class TriggerUpdate(BaseModel):
     confirmed_plan_id: str | None = None
     confirmed_plan_version: int | None = None
     confirmed_plan_hash: str | None = None
+    plan_mode_decision: str | None = None
 
 
 def _trigger_response(trigger: AgentTrigger, *, diagnostics: bool = False, view: dict | None = None) -> TriggerResponse:
@@ -191,24 +197,29 @@ async def create_trigger(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid expires_at: {body.expires_at}") from exc
 
-    # Plan Mode early intercept (§9.3): this endpoint always creates an enabled
-    # autonomous trigger, so it requires a confirmed plan (or a cutover exemption).
-    await enforce_plan_gate(
-        db,
-        agent_id=agent_id,
-        action_kind="create_enabled_trigger",
-        gate=get_plan_mode_gate(),
-        confirmed_plan_id=body.confirmed_plan_id,
-        confirmed_plan_version=body.confirmed_plan_version,
-        confirmed_plan_hash=body.confirmed_plan_hash,
-        action_artifact={"config": config},
-    )
-    config = stamp_confirmed_plan_provenance(
-        config,
-        plan_id=body.confirmed_plan_id,
-        plan_version=body.confirmed_plan_version,
-        plan_hash=body.confirmed_plan_hash,
-    )
+    # Plan Mode early intercept (§9.3): this endpoint creates an enabled
+    # autonomous trigger. A confirmed plan is required unless the caller carries
+    # an explicit user opt-out from the recommendation layer.
+    user_declined_plan_mode = plan_mode_user_declined(body.plan_mode_decision)
+    if not user_declined_plan_mode:
+        await enforce_plan_gate(
+            db,
+            agent_id=agent_id,
+            action_kind="create_enabled_trigger",
+            gate=get_plan_mode_gate(),
+            confirmed_plan_id=body.confirmed_plan_id,
+            confirmed_plan_version=body.confirmed_plan_version,
+            confirmed_plan_hash=body.confirmed_plan_hash,
+            action_artifact={"config": config},
+        )
+        config = stamp_confirmed_plan_provenance(
+            config,
+            plan_id=body.confirmed_plan_id,
+            plan_version=body.confirmed_plan_version,
+            plan_hash=body.confirmed_plan_hash,
+        )
+    else:
+        config = stamp_user_declined_plan_exemption(config)
 
     trigger = AgentTrigger(
         agent_id=agent_id,
@@ -252,7 +263,8 @@ async def update_trigger(
     # Plan Mode early intercept (§9.3): only enabling an autonomous wake is
     # gated. Disables, config edits, and reason/lifecycle changes are low-risk
     # and keep their existing contract.
-    if body.is_enabled is True:
+    user_declined_plan_mode = plan_mode_user_declined(body.plan_mode_decision)
+    if body.is_enabled is True and not user_declined_plan_mode:
         await enforce_plan_gate(
             db,
             agent_id=agent_id,
@@ -267,12 +279,15 @@ async def update_trigger(
     if body.config is not None:
         trigger.config = body.config
     if body.is_enabled is True:
-        trigger.config = stamp_confirmed_plan_provenance(
-            trigger.config,
-            plan_id=body.confirmed_plan_id,
-            plan_version=body.confirmed_plan_version,
-            plan_hash=body.confirmed_plan_hash,
-        )
+        if user_declined_plan_mode:
+            trigger.config = stamp_user_declined_plan_exemption(trigger.config)
+        else:
+            trigger.config = stamp_confirmed_plan_provenance(
+                trigger.config,
+                plan_id=body.confirmed_plan_id,
+                plan_version=body.confirmed_plan_version,
+                plan_hash=body.confirmed_plan_hash,
+            )
     if body.reason is not None:
         trigger.reason = body.reason
     if body.is_enabled is not None:

@@ -9,7 +9,11 @@ from urllib.parse import urlparse
 from sqlalchemy import select
 
 from app.database import async_session
-from app.services.plan_mode_core import stamp_confirmed_plan_provenance
+from app.services.plan_mode_core import (
+    plan_mode_user_declined,
+    stamp_confirmed_plan_provenance,
+    stamp_user_declined_plan_exemption,
+)
 from app.tools.result_envelope import render_tool_error
 
 logger = logging.getLogger(__name__)
@@ -64,6 +68,16 @@ def _trigger_error(
         retryable=retryable,
         actionable_hint=actionable_hint,
     )
+
+
+def _user_declined_plan_mode(arguments: dict) -> bool:
+    return plan_mode_user_declined(arguments.get("plan_mode_decision"))
+
+
+def _stamp_user_declined_plan_mode(config: dict, arguments: dict) -> dict:
+    if not _user_declined_plan_mode(arguments):
+        return config
+    return stamp_user_declined_plan_exemption(config)
 
 
 def _validate_trigger_config(tool_name: str, trigger_type: str, config: dict) -> str | None:
@@ -348,6 +362,7 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
         plan_version=arguments.get("confirmed_plan_version"),
         plan_hash=arguments.get("confirmed_plan_hash"),
     )
+    config = _stamp_user_declined_plan_mode(config, arguments)
 
     try:
         async with async_session() as db:
@@ -542,6 +557,7 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                 plan_version=arguments.get("confirmed_plan_version"),
                 plan_hash=arguments.get("confirmed_plan_hash"),
             )
+            final_config = _stamp_user_declined_plan_mode(final_config, arguments)
 
             _trigger_class, binding_error = _resolve_trigger_class(
                 "update_trigger",

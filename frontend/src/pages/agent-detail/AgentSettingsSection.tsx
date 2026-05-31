@@ -689,6 +689,7 @@ export default function AgentSettingsSection({
           reason,
           trigger_class: 'scheduled_job',
           cooldown_seconds: 60,
+          plan_mode_decision: 'declined',
         });
       } else if (patrolForm.enabled) {
         await triggerApi.create(agentId, {
@@ -698,6 +699,7 @@ export default function AgentSettingsSection({
           reason,
           trigger_class: 'scheduled_job',
           cooldown_seconds: 60,
+          plan_mode_decision: 'declined',
         });
       }
       await queryClient.invalidateQueries({ queryKey: ['triggers', agentId] });

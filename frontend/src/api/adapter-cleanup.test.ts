@@ -218,6 +218,7 @@ describe('request cleanup adapters', () => {
       content: 'Plan this',
       display_content: 'Plan this',
       file_name: '',
+      plan_mode_requested: true,
     });
     await chatApi.getActiveSessionRun('agent-1', 'session-1');
     await chatApi.cancelSessionRun('agent-1', 'session-1', 'run-1');
@@ -226,6 +227,7 @@ describe('request cleanup adapters', () => {
       content: 'Plan this',
       display_content: 'Plan this',
       file_name: '',
+      plan_mode_requested: true,
     });
     expect(get).toHaveBeenCalledWith('/agents/agent-1/sessions/session-1/runs/active');
     expect(post).toHaveBeenCalledWith('/agents/agent-1/sessions/session-1/runs/run-1/cancel', {});

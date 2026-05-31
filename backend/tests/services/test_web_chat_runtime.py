@@ -330,6 +330,54 @@ async def test_maybe_sync_created_task_intake_failure_is_non_fatal(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_maybe_handle_plan_mode_entry_recommends_schedule_without_creating_plan(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    intake = _RecordingIntake(SimpleNamespace(id=uuid4(), plan_version=1, plan_hash="sha256:x"))
+    monkeypatch.setattr(runtime, "get_plan_mode_service", lambda: intake)
+
+    result = await runtime._maybe_handle_plan_mode_entry(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id=None,
+        session_id="session-1",
+        runtime_task_id=uuid4(),
+        content="每天 9 点帮我整理新闻",
+        plan_mode_requested=False,
+    )
+
+    assert result is not None
+    assert "建议" in result
+    assert "计划模式" in result
+    assert "不用计划模式" in result
+    assert intake.calls == []
+
+
+@pytest.mark.asyncio
+async def test_maybe_handle_plan_mode_entry_creates_plan_when_explicitly_requested(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    plan = SimpleNamespace(id=uuid4(), plan_version=1, plan_hash="sha256:abc")
+    intake = _RecordingIntake(plan)
+    monkeypatch.setattr(runtime, "get_plan_mode_service", lambda: intake)
+
+    result = await runtime._maybe_handle_plan_mode_entry(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id=None,
+        session_id="session-1",
+        runtime_task_id=uuid4(),
+        content="帮我完整调研这个行业",
+        plan_mode_requested=True,
+    )
+
+    assert result is not None
+    assert str(plan.id) in result
+    assert "待确认计划" in result
+    assert intake.calls and intake.calls[0]["action_kind"] == "start_long_task"
+
+
+@pytest.mark.asyncio
 async def test_execute_web_chat_run_keeps_cancelled_exception_as_killed(monkeypatch):
     import app.services.web_chat_runtime as runtime
 

@@ -235,6 +235,28 @@ async def test_execute_does_not_hard_gate_bridge_self_tool():
     assert gate.calls == []
 
 
+@pytest.mark.asyncio
+async def test_execute_does_not_plan_gate_create_digital_employee():
+    """HR creation already has its own blueprint/sensitive governance path.
+    Plan Mode must not misclassify it as trigger creation, or final creation
+    loops on needs_plan instead of creating the employee."""
+    context = _context()
+    registry = _FakeRegistry("EMPLOYEE_CREATED")
+    gate = _RecordingGate(_BLOCKED)
+    service = _make_service(context=context, registry=registry, gate=gate)
+
+    result = await service.execute(
+        "create_digital_employee",
+        {"name": "Serenity 追踪员", "role_description": "Track X posts and summarize them in Chinese."},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+    )
+
+    assert result == "EMPLOYEE_CREATED"
+    assert len(registry.calls) == 1
+    assert gate.calls == []
+
+
 # ---------------------------------------------------------------------------
 # execute_direct / execute_approved: the gate fires there too (no bypass).
 # ---------------------------------------------------------------------------
@@ -279,6 +301,46 @@ async def test_execute_approved_blocks_tagged_tool_without_confirmed_plan():
     assert payload["status"] == "needs_plan"
     assert registry.calls == []
     assert gate.calls and gate.calls[0]["action_kind"] == "start_long_task"
+
+
+@pytest.mark.asyncio
+async def test_execute_approved_does_not_gate_manage_tasks_non_auto_executing_actions():
+    context = _context()
+    registry = _FakeRegistry("UPDATED")
+    gate = _RecordingGate(_BLOCKED)
+    service = _make_service(context=context, registry=registry, gate=gate)
+
+    result = await service.execute_approved(
+        "manage_tasks",
+        {"action": "update_status", "title": "Recurring sweep", "status": "done"},
+        agent_id=context.agent_id,
+        approved_by_user_id=uuid4(),
+        approval_id=uuid4(),
+    )
+
+    assert result == "UPDATED"
+    assert len(registry.calls) == 1
+    assert gate.calls == []
+
+
+@pytest.mark.asyncio
+async def test_execute_approved_does_not_gate_manage_tasks_supervision_create():
+    context = _context()
+    registry = _FakeRegistry("SUPERVISION_CREATED")
+    gate = _RecordingGate(_BLOCKED)
+    service = _make_service(context=context, registry=registry, gate=gate)
+
+    result = await service.execute_approved(
+        "manage_tasks",
+        {"action": "create", "title": "Remind Alice", "task_type": "supervision"},
+        agent_id=context.agent_id,
+        approved_by_user_id=uuid4(),
+        approval_id=uuid4(),
+    )
+
+    assert result == "SUPERVISION_CREATED"
+    assert len(registry.calls) == 1
+    assert gate.calls == []
 
 
 @pytest.mark.asyncio

@@ -17,7 +17,7 @@ Two flavours of tag exist (§9.2):
 * A real :data:`~app.services.plan_mode_core.ACTION_KINDS` value — the tool is
   *hard-gated*: the service calls ``PlanModeGate.check`` and refuses to execute
   it without a confirmed plan (``set_trigger``, ``update_trigger``,
-  ``delegate_to_agent``, ``manage_tasks``, ``create_digital_employee``).
+  ``delegate_to_agent``, and the auto-executing ``manage_tasks`` create path).
 * :data:`BRIDGE_SELF` — the tool is *registered* as plan-governed (visible,
   auditable, future-proof) but keeps its **own** confirmation gate; the service
   must not double-block it. The sole MVP case is ``deep_research_start`` whose
@@ -67,7 +67,17 @@ def plan_gated_tool_action_kinds() -> dict[str, str]:
     }
 
 
-def hard_gated_action_kind(tool_name: str) -> str | None:
+def _manage_tasks_action_kind(arguments: dict | None) -> str | None:
+    if arguments is None:
+        return "start_long_task"
+    action = str(arguments.get("action") or "").strip()
+    if action != "create":
+        return None
+    task_type = str(arguments.get("task_type") or "todo").strip() or "todo"
+    return "start_long_task" if task_type != "supervision" else None
+
+
+def hard_gated_action_kind(tool_name: str, arguments: dict | None = None) -> str | None:
     """Return the ``ACTION_KIND`` to hard-gate ``tool_name`` on, else ``None``.
 
     ``None`` means *do not invoke the service gate*: either the tool is not
@@ -76,6 +86,8 @@ def hard_gated_action_kind(tool_name: str) -> str | None:
     member yields a hard gate.
     """
     action_kind = plan_gated_tool_action_kinds().get(tool_name)
+    if tool_name == "manage_tasks" and action_kind == "start_long_task":
+        return _manage_tasks_action_kind(arguments)
     if action_kind and action_kind in ACTION_KINDS:
         return action_kind
     return None

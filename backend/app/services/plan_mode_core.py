@@ -64,6 +64,7 @@ _ACTION_INTENT: dict[str, str] = {
 #: pre-existing enabled trigger may be grandfathered in compatibility mode by
 #: tagging its artifact with this reason; anything else still needs a plan.
 PLAN_EXEMPT_PREEXISTING: str = "preexisting_before_cutover"
+PLAN_EXEMPT_CONFIRMED_HR_BLUEPRINT: str = "confirmed_hr_blueprint"
 
 #: §7 — every status a PlanRequest can hold.
 PLAN_STATUSES: tuple[str, ...] = (
@@ -555,6 +556,7 @@ def _nested(obj: object, *keys: str) -> object:
 #: ``internal_self_improvement``; keeping that path exempt is what stops the
 #: backstop from breaking Hive's own self-improvement triggers.
 PLATFORM_INTERNAL_AUTONOMY_CLASSES: frozenset[str] = frozenset({"internal_self_improvement"})
+PLAN_EXEMPT_AUTONOMY_CLASSES: frozenset[str] = frozenset({PLAN_EXEMPT_CONFIRMED_HR_BLUEPRINT})
 
 #: §9.0 — autonomous trigger *types* that self-initiate work on a schedule/loop
 #: (cron/interval/once/poll). These are the ones that, when enabled, run agent
@@ -589,7 +591,9 @@ def objective_wake_exempt_reason(
        this objective (``plan_mode_handoff`` stamps it). -> ``"confirmed_plan"``.
     2. ``plan_exempt_reason`` present — an explicit cutover/operator exemption.
        -> that reason verbatim.
-    3. ``autonomy_class`` is platform-internal (self-evolution / recovery).
+    3. ``autonomy_class`` is a confirmed HR blueprint.
+       -> ``"confirmed_hr_blueprint"``.
+    4. ``autonomy_class`` is platform-internal (self-evolution / recovery).
        -> ``"platform_internal"``.
     """
     metadata = objective_metadata if isinstance(objective_metadata, dict) else {}
@@ -612,7 +616,11 @@ def objective_wake_exempt_reason(
     if exempt is not None:
         return exempt
 
-    if str(autonomy_class or "").strip() in PLATFORM_INTERNAL_AUTONOMY_CLASSES:
+    autonomy = str(autonomy_class or "").strip()
+    if autonomy in PLAN_EXEMPT_AUTONOMY_CLASSES:
+        return autonomy
+
+    if autonomy in PLATFORM_INTERNAL_AUTONOMY_CLASSES:
         return "platform_internal"
 
     return None

@@ -277,6 +277,16 @@ def test_objective_wake_exempt_reason_platform_internal_self_evolution():
     assert reason == "platform_internal"
 
 
+def test_objective_wake_exempt_reason_confirmed_hr_blueprint():
+    from app.services.plan_mode_core import objective_wake_exempt_reason
+
+    reason = objective_wake_exempt_reason(
+        objective_metadata={"autonomy_class": "confirmed_hr_blueprint"},
+        autonomy_class="confirmed_hr_blueprint",
+    )
+    assert reason == "confirmed_hr_blueprint"
+
+
 def test_objective_wake_exempt_reason_none_for_conversation_intent():
     """An active objective born from a conversation intent (no plan, not internal)
     is the bypass the backstop closes — it must NOT be auto-woken."""

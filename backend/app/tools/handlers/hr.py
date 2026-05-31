@@ -17,11 +17,20 @@ from app.services.archetype import apply_archetype_defaults
 from app.api.skills import _fetch_github_directory, _get_github_token, _parse_github_url
 from app.config import get_settings
 from app.services.capability_reuse_service import reuse_existing_skill_for_agent
+from app.services import plan_mode_core
 from app.services.skill_seeder import BUILTIN_SKILLS
 from app.tools.decorator import ToolMeta, tool
 from app.tools.runtime import ToolExecutionRequest
 
 logger = logging.getLogger(__name__)
+
+
+def _stamp_hr_blueprint_trigger_exemption(config: dict | None) -> dict:
+    cfg = dict(config or {})
+    metadata = dict(cfg.get("metadata") or {})
+    metadata["plan_exempt_reason"] = plan_mode_core.PLAN_EXEMPT_CONFIRMED_HR_BLUEPRINT
+    cfg["metadata"] = metadata
+    return cfg
 
 
 def _default_skill_count() -> int:
@@ -1086,7 +1095,6 @@ def _build_create_employee_result(
         icon="\U0001f464",
         is_default=False,
         governance="sensitive",
-        plan_gate_action_kind="create_enabled_trigger",
         adapter="request",
     )
 )
@@ -1395,6 +1403,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                     {
                         "intake_source": "hr_blueprint",
                         "autonomy_class": "confirmed_hr_blueprint",
+                        "plan_exempt_reason": plan_mode_core.PLAN_EXEMPT_CONFIRMED_HR_BLUEPRINT,
                         "risk_level": "low",
                         "confidence": 1.0,
                         "requires_approval": False,
@@ -1465,6 +1474,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                     raw_config = dict(raw_config)
                     raw_config["trigger_class"] = "objective_task"
                     raw_config["objective_id"] = str(_trigger_objective.id)
+                    raw_config = _stamp_hr_blueprint_trigger_exemption(raw_config)
                     db.add(
                         AgentTrigger(
                             agent_id=agent.id,
@@ -1504,6 +1514,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                         f"Start with this first task: {_boot_task}\n\n"
                         "When genuinely complete, call complete_objective with concrete evidence."
                     )
+                    _boot_payload["config"] = _stamp_hr_blueprint_trigger_exemption(_boot_payload["config"])
                     db.add(
                         AgentTrigger(
                             agent_id=agent.id,
@@ -1521,7 +1532,9 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                             agent_id=agent.id,
                             name="focus_boot",
                             type="once",
-                            config={"at": _fire_at, "trigger_class": "scheduled_job"},
+                            config=_stamp_hr_blueprint_trigger_exemption(
+                                {"at": _fire_at, "trigger_class": "scheduled_job"}
+                            ),
                             reason=(
                                 f"Inspect the Objective Ledger and focus.md projection for your mission. Start with this first task: {_boot_task}\n\n"
                                 "After completing it, update the objective ledger with evidence."

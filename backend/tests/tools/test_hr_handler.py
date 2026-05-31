@@ -104,6 +104,17 @@ def test_build_create_employee_result_is_structured_json():
     assert '"message": "Successfully created digital employee' in result
 
 
+def test_hr_blueprint_trigger_config_gets_plan_exemption_marker():
+    from app.services import plan_mode_core
+    from app.tools.handlers.hr import _stamp_hr_blueprint_trigger_exemption
+
+    config = _stamp_hr_blueprint_trigger_exemption({"expr": "0 12 * * *", "metadata": {"source": "hr"}})
+
+    assert config["expr"] == "0 12 * * *"
+    assert config["metadata"]["source"] == "hr"
+    assert config["metadata"]["plan_exempt_reason"] == plan_mode_core.PLAN_EXEMPT_CONFIRMED_HR_BLUEPRINT
+
+
 def test_build_blueprint_preview_payload_summarizes_ready_install_and_manual_steps():
     from app.tools.handlers.hr import _build_blueprint_preview_payload
 

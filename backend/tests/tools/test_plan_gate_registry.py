@@ -17,7 +17,7 @@ from app.services.plan_mode_core import ACTION_KINDS
 def test_first_batch_tools_are_tagged_with_expected_action_kinds():
     """The §9.2 first-batch autonomous-enabling tools carry the right tag.
 
-    The five hard-gated tools map onto a real ACTION_KIND; deep_research_start
+    The hard-gated tools map onto a real ACTION_KIND; deep_research_start
     is registered via the BRIDGE_SELF sentinel (it owns its plan_confirmed gate).
     """
     from app.tools.plan_gate_registry import BRIDGE_SELF, plan_gated_tool_action_kinds
@@ -28,7 +28,7 @@ def test_first_batch_tools_are_tagged_with_expected_action_kinds():
     assert tagged["update_trigger"] == "create_enabled_trigger"
     assert tagged["delegate_to_agent"] == "start_delegation"
     assert tagged["manage_tasks"] == "start_long_task"
-    assert tagged["create_digital_employee"] == "create_enabled_trigger"
+    assert "create_digital_employee" not in tagged
     assert tagged["deep_research_start"] == BRIDGE_SELF
 
 
@@ -39,10 +39,20 @@ def test_hard_gated_tools_resolve_to_a_real_action_kind():
     assert hard_gated_action_kind("update_trigger") == "create_enabled_trigger"
     assert hard_gated_action_kind("delegate_to_agent") == "start_delegation"
     assert hard_gated_action_kind("manage_tasks") == "start_long_task"
-    assert hard_gated_action_kind("create_digital_employee") == "create_enabled_trigger"
     # Every hard-gated action_kind must be a member of the canonical ACTION_KINDS.
-    for tool_name in ("set_trigger", "update_trigger", "delegate_to_agent", "manage_tasks", "create_digital_employee"):
+    for tool_name in ("set_trigger", "update_trigger", "delegate_to_agent", "manage_tasks"):
         assert hard_gated_action_kind(tool_name) in ACTION_KINDS
+
+
+def test_manage_tasks_only_hard_gates_auto_executing_todo_create():
+    from app.tools.plan_gate_registry import hard_gated_action_kind
+
+    assert hard_gated_action_kind("manage_tasks", {"action": "create", "task_type": "todo"}) == "start_long_task"
+    # Missing task_type defaults to todo in the handler, so it is also auto-executing.
+    assert hard_gated_action_kind("manage_tasks", {"action": "create"}) == "start_long_task"
+    assert hard_gated_action_kind("manage_tasks", {"action": "create", "task_type": "supervision"}) is None
+    assert hard_gated_action_kind("manage_tasks", {"action": "update_status", "status": "done"}) is None
+    assert hard_gated_action_kind("manage_tasks", {"action": "delete"}) is None
 
 
 def test_bridge_self_tools_are_not_hard_gated():

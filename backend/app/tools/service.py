@@ -454,7 +454,7 @@ class ToolRuntimeService:
         Returns ``None`` to proceed, or the JSON-serialised ``needs_plan``
         envelope (mirroring the deep_research contract) to short-circuit.
         """
-        action_kind = hard_gated_action_kind(tool_name)
+        action_kind = hard_gated_action_kind(tool_name, arguments)
         if action_kind is None:
             return None
 

@@ -232,6 +232,57 @@ class PlanModeService:
         )
         return await self.generate_plan(plan_id=plan.id, fill=fill)
 
+    async def ensure_awaiting_plan_from_fill(
+        self,
+        *,
+        agent_id: UUID,
+        intent_type: str,
+        signature: str,
+        fill: dict[str, Any],
+        original_request: str,
+        source: str = "tool_runtime",
+        tenant_id: UUID | None = None,
+        session_id: str | None = None,
+        runtime_task_id: UUID | None = None,
+        requested_by_user_id: UUID | None = None,
+        metadata_json: dict[str, Any] | None = None,
+    ) -> AgentPlanRequest:
+        """Materialise an awaiting plan from a caller-owned structured fill.
+
+        This is the same ledger-backed contract as :meth:`ensure_awaiting_plan`,
+        but for workflows whose plan shape is richer than generic tool-argument
+        mapping, such as Deep Research. The caller supplies a stable signature
+        and a complete ``plan_json`` fill; this service owns dedupe, persistence,
+        hashing, markdown rendering, and the user-confirmation state boundary.
+        """
+        if intent_type not in core.INTENT_TYPES:
+            raise ValueError(f"unknown intent_type {intent_type!r}; expected one of {core.INTENT_TYPES}")
+        normalized_signature = str(signature or "").strip()
+        if not normalized_signature:
+            raise ValueError("signature is required")
+
+        existing = await self._find_awaiting_by_signature(agent_id=agent_id, signature=normalized_signature)
+        if existing is not None:
+            return existing
+
+        metadata = {
+            "intercept_signature": normalized_signature,
+            "intercept_source": source,
+            **(metadata_json or {}),
+        }
+        plan = await self.create_plan_request(
+            agent_id=agent_id,
+            requested_by_user_id=requested_by_user_id,
+            original_request=original_request,
+            intent_type=intent_type,
+            source=source,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            runtime_task_id=runtime_task_id,
+            metadata_json=metadata,
+        )
+        return await self.generate_plan(plan_id=plan.id, fill=fill)
+
     async def _find_awaiting_by_signature(self, *, agent_id: UUID, signature: str) -> AgentPlanRequest | None:
         """Return the agent's most recent awaiting plan with this intercept signature.
 

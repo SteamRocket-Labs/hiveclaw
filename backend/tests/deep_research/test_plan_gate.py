@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,6 +23,44 @@ def _request(tmp_path: Path, *, agent_id: uuid.UUID | None = None):
     )
 
 
+def _patch_fake_plan_service(monkeypatch, handler, tmp_path: Path):
+    from app.services import plan_mode_core
+
+    plan_id = uuid.uuid4()
+    plan_json = {
+        "schema": plan_mode_core.PLAN_SCHEMA,
+        "title": "Deep Research plan",
+        "intent_type": "long_task",
+        "objective": "Run approved Deep Research.",
+        "motivation": "User requested Deep Research.",
+        "steps": [{"order": 1, "description": "Confirm plan."}],
+        "success_criteria": ["Source-grounded report."],
+        "wake_policy": {"type": "none"},
+        "required_capabilities": ["deep_research_start"],
+        "external_side_effects": [],
+        "risk_assessment": {"level": "medium", "reasons": ["Long-running research task"]},
+        "estimated_cost": {"tokens_per_run": "medium", "expected_duration": "several minutes"},
+        "stop_conditions": ["User rejects the plan."],
+        "handoff": {"target": "deep_research", "create_objective": False, "create_trigger": False, "payload": {}},
+        "deep_research": {"output_format": "markdown", "worker_topics": ["topic"]},
+    }
+    plan = SimpleNamespace(
+        id=plan_id,
+        status="awaiting_confirmation",
+        plan_version=1,
+        plan_hash=plan_mode_core.compute_plan_hash(plan_json),
+        plan_json=plan_json,
+        plan_markdown_path=str(tmp_path / "plans" / f"{plan_id}.md"),
+    )
+
+    class FakePlanService:
+        async def ensure_awaiting_plan_from_fill(self, **_kwargs):
+            return plan
+
+    monkeypatch.setattr(handler, "get_plan_mode_service", lambda: FakePlanService(), raising=False)
+    return plan
+
+
 @pytest.mark.asyncio
 async def test_run_without_plan_confirmed_returns_needs_plan(tmp_path, monkeypatch):
     from app.tools.handlers import deep_research as handler
@@ -30,6 +69,7 @@ async def test_run_without_plan_confirmed_returns_needs_plan(tmp_path, monkeypat
         raise AssertionError("run_deep_research must not execute before plan confirmation")
 
     monkeypatch.setattr(handler, "run_deep_research", fail_run)
+    _patch_fake_plan_service(monkeypatch, handler, tmp_path)
     req = _request(tmp_path)
     req.arguments.update({"question": "Research the RWA launchpad opportunity", "depth": "standard"})
 
@@ -40,6 +80,7 @@ async def test_run_without_plan_confirmed_returns_needs_plan(tmp_path, monkeypat
     assert payload["clarifying_questions"]
     assert payload["worker_topics"]
     assert "lanes" in payload["plan"]
+    assert payload["plan_id"]
 
 
 @pytest.mark.asyncio
@@ -50,6 +91,7 @@ async def test_start_without_plan_confirmed_returns_needs_plan(tmp_path, monkeyp
         raise AssertionError("no runtime task should be created before plan confirmation")
 
     monkeypatch.setattr(handler, "create_runtime_task_record", fail_create)
+    _patch_fake_plan_service(monkeypatch, handler, tmp_path)
     req = _request(tmp_path)
     req.arguments.update({"question": "Research the RWA launchpad opportunity", "depth": "full"})
 
@@ -58,6 +100,92 @@ async def test_start_without_plan_confirmed_returns_needs_plan(tmp_path, monkeyp
     assert payload["ok"] is False
     assert payload["status"] == "needs_plan"
     assert payload["clarifying_questions"]
+    assert payload["plan_id"]
+
+
+@pytest.mark.asyncio
+async def test_start_without_plan_confirmed_returns_confirmable_plan_card_payload(tmp_path, monkeypatch):
+    from app.tools.handlers import deep_research as handler
+    from app.services import plan_mode_core
+
+    async def fail_create(**_kwargs):
+        raise AssertionError("no runtime task should be created before plan confirmation")
+
+    plan_id = uuid.uuid4()
+    plan_json = {
+        "schema": plan_mode_core.PLAN_SCHEMA,
+        "title": "Deep Research: RWA launchpad opportunity",
+        "intent_type": "long_task",
+        "objective": "Research the RWA launchpad opportunity.",
+        "motivation": "User asked for source-ledger-backed Deep Research.",
+        "steps": [{"order": 1, "description": "Confirm the research plan with the user."}],
+        "success_criteria": ["Final report is source-grounded and preserves report.md as canonical output."],
+        "wake_policy": {"type": "none"},
+        "required_capabilities": ["deep_research_start", "office_document_create"],
+        "external_side_effects": [],
+        "risk_assessment": {"level": "medium", "reasons": ["Long-running research task"]},
+        "estimated_cost": {"tokens_per_run": "high", "expected_duration": "several minutes"},
+        "stop_conditions": ["User rejects the plan."],
+        "handoff": {
+            "target": "deep_research",
+            "create_objective": False,
+            "create_trigger": False,
+            "payload": {
+                "question": "Research the RWA launchpad opportunity",
+                "depth": "full",
+                "output_format": "docx",
+                "plan_confirmed": True,
+                "worker_topics": ["official evidence"],
+            },
+        },
+        "deep_research": {
+            "output_format": "docx",
+            "worker_topics": ["official evidence"],
+        },
+    }
+    plan = SimpleNamespace(
+        id=plan_id,
+        status="awaiting_confirmation",
+        plan_version=3,
+        plan_hash=plan_mode_core.compute_plan_hash(plan_json),
+        plan_json=plan_json,
+        plan_markdown_path=str(tmp_path / "plans" / f"{plan_id}.md"),
+    )
+
+    class FakePlanService:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        async def ensure_awaiting_plan_from_fill(self, **kwargs):
+            self.calls.append(kwargs)
+            return plan
+
+    fake_plan_service = FakePlanService()
+    monkeypatch.setattr(handler, "create_runtime_task_record", fail_create)
+    monkeypatch.setattr(handler, "get_plan_mode_service", lambda: fake_plan_service, raising=False)
+    req = _request(tmp_path)
+    req.arguments.update(
+        {
+            "question": "Research the RWA launchpad opportunity",
+            "depth": "full",
+            "output_format": "docx",
+        }
+    )
+
+    payload = json.loads(await handler.deep_research_start(req))
+
+    assert payload["ok"] is False
+    assert payload["status"] == "needs_plan"
+    assert payload["plan_id"] == str(plan_id)
+    assert payload["plan_version"] == 3
+    assert payload["plan_hash"] == plan.plan_hash
+    assert payload["plan_json"]["handoff"]["target"] == "deep_research"
+    assert payload["plan_json"]["deep_research"]["output_format"] == "docx"
+    assert payload["worker_topics"] == ["official evidence"]
+    assert fake_plan_service.calls, "Deep Research needs_plan must materialize a real Plan Mode ledger row"
+    assert fake_plan_service.calls[0]["intent_type"] == "long_task"
+    assert fake_plan_service.calls[0]["fill"]["handoff"]["target"] == "deep_research"
+    assert fake_plan_service.calls[0]["fill"]["handoff"]["payload"]["plan_confirmed"] is True
 
 
 @pytest.mark.asyncio
@@ -72,6 +200,7 @@ async def test_needs_plan_forbids_agent_self_confirmation(tmp_path, monkeypatch)
         raise AssertionError("no runtime task before plan confirmation")
 
     monkeypatch.setattr(handler, "create_runtime_task_record", fail_create)
+    _patch_fake_plan_service(monkeypatch, handler, tmp_path)
     req = _request(tmp_path)
     req.arguments.update({"question": "Research the RWA launchpad opportunity", "depth": "full"})
 

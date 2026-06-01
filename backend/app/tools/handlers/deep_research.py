@@ -1,16 +1,25 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import shutil
 import uuid
 from collections.abc import AsyncIterator
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+from app.services.deep_research.plan_mode import (
+    build_deep_research_plan_fill,
+    deep_research_plan_signature,
+    normalize_deep_research_output_format,
+)
 from app.services.deep_research.orchestrator import run_deep_research
 from app.services.deep_research.schemas import ResearchRequest, ResearchRun, to_jsonable
 from app.services.long_task_runtime import record_long_task_plan, record_long_task_progress
+from app.services.office_document_service import OfficeDocumentService
+from app.services.plan_mode_service import get_plan_mode_service
 from app.services.runtime_task_service import (
     create_runtime_task_record,
     get_runtime_task_record,
@@ -40,7 +49,7 @@ _REQUEST_PROPERTIES: dict[str, Any] = {
     "concurrency": {"type": "integer", "minimum": 1, "maximum": 12},
     "token_budget": {"type": "integer", "minimum": 1},
     "deadline_seconds": {"type": "integer", "minimum": 10},
-    "output_format": {"type": "string", "enum": ["markdown", "json", "html"]},
+    "output_format": {"type": "string", "enum": ["markdown", "json", "html", "docx", "pptx"]},
     "output_language": {
         "type": "string",
         "description": "Force the report's output language (e.g. 'zh', 'en', '中文'). Defaults to the question's language.",
@@ -90,8 +99,34 @@ async def _plan_preview(research_request: ResearchRequest) -> dict[str, Any]:
     }
 
 
-def _needs_plan_payload(preview: dict[str, Any]) -> dict[str, Any]:
-    return {
+async def _materialize_plan_card_payload(
+    tool_request: ToolExecutionRequest,
+    research_request: ResearchRequest,
+    preview: dict[str, Any],
+) -> dict[str, Any]:
+    fill = build_deep_research_plan_fill(research_request, preview)
+    worker_topics = list(fill.get("deep_research", {}).get("worker_topics") or [])
+    signature = deep_research_plan_signature(research_request, worker_topics=worker_topics)
+    plan = await get_plan_mode_service().ensure_awaiting_plan_from_fill(
+        agent_id=tool_request.context.agent_id,
+        intent_type="long_task",
+        signature=signature,
+        fill=fill,
+        original_request=research_request.question,
+        source="tool_runtime",
+        tenant_id=_parse_uuid_or_none(tool_request.context.tenant_id),
+        requested_by_user_id=None,
+        metadata_json={
+            "deep_research_plan": True,
+            "deep_research_tool": tool_request.tool_name,
+            "requested_output_format": fill.get("deep_research", {}).get("output_format"),
+        },
+    )
+    return _needs_plan_payload(preview, plan=plan)
+
+
+def _needs_plan_payload(preview: dict[str, Any], *, plan: Any | None = None) -> dict[str, Any]:
+    payload = {
         "ok": False,
         "status": "needs_plan",
         "summary": (
@@ -107,6 +142,28 @@ def _needs_plan_payload(preview: dict[str, Any]) -> dict[str, Any]:
             "self-confirm or set plan_confirmed=true in the same turn the plan was returned."
         ),
     }
+    if plan is not None:
+        plan_json = plan.plan_json or {}
+        deep_research_plan = plan_json.get("deep_research") if isinstance(plan_json, dict) else {}
+        if isinstance(deep_research_plan, dict):
+            payload["worker_topics"] = deep_research_plan.get("worker_topics") or payload.get("worker_topics") or []
+            payload["clarifying_questions"] = (
+                deep_research_plan.get("clarifying_questions") or payload.get("clarifying_questions") or []
+            )
+        payload.update(
+            {
+                "plan_id": str(plan.id),
+                "plan_version": plan.plan_version,
+                "plan_hash": plan.plan_hash,
+                "plan_markdown_path": plan.plan_markdown_path,
+                "plan_json": plan_json,
+                "summary": (
+                    "A Deep Research plan has been created. Show this plan card to the user and wait for explicit "
+                    "confirmation before starting the research run."
+                ),
+            }
+        )
+    return payload
 
 
 @tool(
@@ -152,7 +209,8 @@ async def deep_research_run(request: ToolExecutionRequest) -> str:
         )
 
     if not research_request.plan_confirmed:
-        return _json(_needs_plan_payload(await _plan_preview(research_request)))
+        preview = await _plan_preview(research_request)
+        return _json(await _materialize_plan_card_payload(request, research_request, preview))
 
     run = await run_deep_research(
         request=research_request,
@@ -160,8 +218,16 @@ async def deep_research_run(request: ToolExecutionRequest) -> str:
         user_id=request.context.user_id,
         workspace=request.context.workspace,
     )
+    _materialize_requested_output_format(
+        request.context.workspace, Path(run.artifact_dir), research_request.output_format
+    )
     _publish_workspace_packet(request.context.workspace, run.run_id, Path(run.artifact_dir))
-    return _json({"ok": run.status == "completed", **_run_payload(run, request.context.workspace)})
+    return _json(
+        {
+            "ok": run.status == "completed",
+            **_run_payload(run, request.context.workspace, output_format=research_request.output_format),
+        }
+    )
 
 
 @tool(
@@ -192,7 +258,8 @@ async def deep_research_start(request: ToolExecutionRequest) -> str:
         return _json({"ok": False, "error": str(exc)})
 
     if not research_request.plan_confirmed:
-        return _json(_needs_plan_payload(await _plan_preview(research_request)))
+        preview = await _plan_preview(research_request)
+        return _json(await _materialize_plan_card_payload(request, research_request, preview))
 
     dedup_key = (str(request.context.agent_id), research_request.question.casefold())
     existing_task = _INFLIGHT_DEEP_RESEARCH.get(dedup_key)
@@ -360,24 +427,17 @@ async def deep_research_cancel(request: ToolExecutionRequest) -> str:
 )
 async def deep_research_export(request: ToolExecutionRequest) -> str:
     task_id = str(request.arguments.get("task_id") or "").strip()
-    export_format = str(request.arguments.get("format") or "markdown").strip()
+    export_format = normalize_deep_research_output_format(str(request.arguments.get("format") or "markdown").strip())
     record = await get_runtime_task_record(task_id)
     if record and record.get("parent_agent_id") not in {None, str(request.context.agent_id)}:
         return _json({"ok": False, "error": "forbidden"})
     artifact_dir = _deep_research_dir(request.context.workspace, task_id)
     final_path = artifact_dir / "final.json"
     report_path = artifact_dir / "report.md"
-    if export_format == "json":
-        artifact_target = final_path
-        file_name = "final.json"
-    elif export_format == "html":
-        artifact_target = artifact_dir / "report.html"
-        markdown = report_path.read_text(encoding="utf-8") if report_path.exists() else ""
-        artifact_target.write_text(f"<html><body><pre>{_escape_html(markdown)}</pre></body></html>", encoding="utf-8")
-        file_name = "report.html"
-    else:
-        artifact_target = report_path
-        file_name = "report.md"
+    artifact_target = _materialize_requested_output_format(request.context.workspace, artifact_dir, export_format)
+    if artifact_target is None:
+        artifact_target = final_path if export_format == "json" else report_path
+    file_name = artifact_target.name
     if not artifact_target.exists():
         return _json({"ok": False, "error": "artifact_not_found", "task_id": task_id})
 
@@ -400,17 +460,108 @@ def _schedule_deep_research_background(
     research_request: ResearchRequest,
     task_id: uuid.UUID,
 ) -> None:
+    _schedule_deep_research_background_context(
+        research_request=research_request,
+        task_id=task_id,
+        agent_id=request.context.agent_id,
+        user_id=request.context.user_id,
+        workspace=request.context.workspace,
+    )
+
+
+async def start_deep_research_background_run(
+    *,
+    request: ResearchRequest,
+    agent_id: uuid.UUID,
+    user_id: uuid.UUID,
+    workspace: Path,
+    plan_id: uuid.UUID | str | None = None,
+) -> dict[str, Any]:
+    task_id = uuid.uuid4()
+    workspace_artifact_dir = _workspace_export_dir(workspace, task_id.hex)
+    await create_runtime_task_record(
+        task_id=task_id.hex,
+        task_type="deep_research",
+        status="running",
+        parent_agent_id=agent_id,
+        prompt=request.question,
+        metadata_json={
+            "deep_research": {
+                "question": request.question,
+                "mode": request.mode,
+                "scope": request.scope,
+                "output_format": normalize_deep_research_output_format(request.output_format),
+            },
+            "plan_id": str(plan_id) if plan_id else None,
+        },
+    )
+    await record_long_task_plan(
+        agent_id=agent_id,
+        runtime_task_id=task_id,
+        objective_id=None,
+        spec=request.question,
+        acceptance_criteria=[
+            "Deep research artifacts include report.md, sources.jsonl, claims.jsonl, steps.jsonl, and final.json.",
+            "Every material claim is source-bound or explicitly marked unsupported.",
+            "Terminal status and progress are recorded honestly.",
+            "If a derived output format is requested, report.md remains the canonical source artifact.",
+        ],
+        verification_commands=[
+            "deep_research_check({ task_id })",
+        ],
+        risk_gates=[
+            "Do not use search snippets as final evidence.",
+            "Do not mark unsupported claims as verified.",
+        ],
+    )
+    await record_long_task_progress(
+        agent_id=agent_id,
+        runtime_task_id=task_id,
+        status="running",
+        delta="Deep research task created from a confirmed plan and background execution scheduled.",
+        output_paths=[_relative(workspace, _deep_research_dir(workspace, task_id))],
+    )
+    _schedule_deep_research_background_context(
+        research_request=request,
+        task_id=task_id,
+        agent_id=agent_id,
+        user_id=user_id,
+        workspace=workspace,
+    )
+    return {
+        "created_runtime_task_id": task_id.hex,
+        "task_id": task_id.hex,
+        "status": "running",
+        "artifact_dir": _relative(workspace, _deep_research_dir(workspace, task_id)),
+        "workspace_artifact_dir": _relative(workspace, workspace_artifact_dir),
+        "output_format": normalize_deep_research_output_format(request.output_format),
+    }
+
+
+def _schedule_deep_research_background_context(
+    *,
+    research_request: ResearchRequest,
+    task_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    user_id: uuid.UUID,
+    workspace: Path,
+) -> None:
     async def runner() -> None:
         try:
             run = await run_deep_research(
                 request=research_request,
-                agent_id=request.context.agent_id,
-                user_id=request.context.user_id,
-                workspace=request.context.workspace,
+                agent_id=agent_id,
+                user_id=user_id,
+                workspace=workspace,
                 runtime_task_id=task_id,
             )
-            _publish_workspace_packet(request.context.workspace, task_id.hex, Path(run.artifact_dir))
-            run_payload = _run_payload(run, request.context.workspace)
+            _materialize_requested_output_format(workspace, Path(run.artifact_dir), research_request.output_format)
+            _publish_workspace_packet(workspace, task_id.hex, Path(run.artifact_dir))
+            run_payload = _run_payload(
+                run,
+                workspace,
+                output_format=research_request.output_format,
+            )
             await update_runtime_task_record(
                 task_id.hex,
                 status=run.status,
@@ -418,7 +569,7 @@ def _schedule_deep_research_background(
                 metadata_json={"deep_research_result": run_payload},
             )
             await record_long_task_progress(
-                agent_id=request.context.agent_id,
+                agent_id=agent_id,
                 runtime_task_id=task_id,
                 status=run.status,
                 delta=run.summary,
@@ -434,22 +585,25 @@ def _schedule_deep_research_background(
                 task_id.hex, status="failed", result_summary=f"Deep research failed: {type(exc).__name__}"
             )
             await record_long_task_progress(
-                agent_id=request.context.agent_id,
+                agent_id=agent_id,
                 runtime_task_id=task_id,
                 status="failed",
                 delta="Deep research failed before completion.",
                 blocked_reason=f"{type(exc).__name__}: {exc}",
             )
         finally:
-            _INFLIGHT_DEEP_RESEARCH.pop((str(request.context.agent_id), research_request.question.casefold()), None)
+            _INFLIGHT_DEEP_RESEARCH.pop((str(agent_id), research_request.question.casefold()), None)
 
     asyncio.create_task(runner())
 
 
-def _run_payload(run: ResearchRun, workspace: Path) -> dict[str, Any]:
+def _run_payload(run: ResearchRun, workspace: Path, *, output_format: str = "markdown") -> dict[str, Any]:
     artifact_dir = Path(run.artifact_dir) if run.artifact_dir else Path()
     workspace_dir = _workspace_export_dir(workspace, run.run_id)
+    output_format = normalize_deep_research_output_format(output_format)
+    output_file_name = _output_file_name(output_format)
     workspace_report_path = workspace_dir / "report.md"
+    workspace_output_path = workspace_dir / output_file_name
     workspace_sources_path = workspace_dir / "sources.jsonl"
     workspace_claims_path = workspace_dir / "claims.jsonl"
     workspace_steps_path = workspace_dir / "steps.jsonl"
@@ -479,6 +633,13 @@ def _run_payload(run: ResearchRun, workspace: Path) -> dict[str, Any]:
         "artifact_claims_path": _relative(workspace, Path(run.claims_path)),
         "artifact_steps_path": _relative(workspace, Path(run.steps_path)),
         "artifact_final_path": _relative(workspace, Path(run.final_path)),
+        "output_format": output_format,
+        "output_path": _relative(
+            workspace,
+            workspace_output_path if workspace_output_path.exists() else artifact_dir / output_file_name,
+        )
+        if output_file_name
+        else None,
         "source_count": run.source_count,
         "claim_count": run.claim_count,
         "quality_gates": run.quality_gates,
@@ -570,12 +731,164 @@ def _publish_workspace_packet(workspace: Path, run_id: uuid.UUID | str, artifact
         "devils_advocate.jsonl",
         "report.md",
         "report.html",
+        "report.docx",
+        "report.pptx",
         "final.json",
     ):
         source = artifact_dir / file_name
         if source.exists() and source.is_file():
             shutil.copyfile(source, workspace_dir / file_name)
     return workspace_dir
+
+
+def _materialize_requested_output_format(workspace: Path, artifact_dir: Path, output_format: str) -> Path | None:
+    output_format = normalize_deep_research_output_format(output_format)
+    report_path = artifact_dir / "report.md"
+    if output_format == "markdown":
+        return report_path
+    if output_format == "json":
+        return artifact_dir / "final.json"
+    if not report_path.exists():
+        return None
+
+    markdown = report_path.read_text(encoding="utf-8")
+    if output_format == "html":
+        target = artifact_dir / "report.html"
+        target.write_text(_markdown_to_html_document(markdown), encoding="utf-8")
+        return target
+    if output_format == "docx":
+        target = artifact_dir / "report.docx"
+        _save_office_bytes(
+            workspace,
+            target,
+            _markdown_to_docx_bytes(markdown),
+            reason="deep-research-docx-export",
+        )
+        return target
+    if output_format == "pptx":
+        target = artifact_dir / "report.pptx"
+        _save_office_bytes(
+            workspace,
+            target,
+            _markdown_to_pptx_bytes(markdown),
+            reason="deep-research-pptx-export",
+        )
+        return target
+    return report_path
+
+
+def _save_office_bytes(workspace: Path, target: Path, content: bytes, *, reason: str) -> None:
+    rel_path = _relative(workspace, target)
+    OfficeDocumentService(workspace).atomic_save_bytes(
+        rel_path,
+        content,
+        reason=reason,
+        require_no_active_editor=True,
+    )
+
+
+def _markdown_to_html_document(markdown: str) -> str:
+    body = "\n".join(_markdown_line_to_html(line) for line in markdown.splitlines())
+    return (
+        "<!doctype html>\n"
+        '<html><head><meta charset="utf-8"><title>Deep Research Report</title>'
+        "<style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.55;"
+        "max-width:920px;margin:40px auto;padding:0 24px;color:#111827}"
+        "code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}"
+        "blockquote{border-left:3px solid #d1d5db;margin-left:0;padding-left:14px;color:#4b5563}"
+        "</style></head><body>\n"
+        f"{body}\n"
+        "</body></html>\n"
+    )
+
+
+def _markdown_line_to_html(line: str) -> str:
+    stripped = line.strip()
+    if not stripped:
+        return ""
+    if stripped.startswith("### "):
+        return f"<h3>{html.escape(stripped[4:])}</h3>"
+    if stripped.startswith("## "):
+        return f"<h2>{html.escape(stripped[3:])}</h2>"
+    if stripped.startswith("# "):
+        return f"<h1>{html.escape(stripped[2:])}</h1>"
+    if stripped.startswith("- "):
+        return f"<ul><li>{html.escape(stripped[2:])}</li></ul>"
+    if stripped.startswith("> "):
+        return f"<blockquote>{html.escape(stripped[2:])}</blockquote>"
+    return f"<p>{html.escape(stripped)}</p>"
+
+
+def _markdown_to_docx_bytes(markdown: str) -> bytes:
+    from docx import Document
+
+    document = Document()
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("# "):
+            document.add_heading(stripped[2:].strip(), level=1)
+        elif stripped.startswith("## "):
+            document.add_heading(stripped[3:].strip(), level=2)
+        elif stripped.startswith("### "):
+            document.add_heading(stripped[4:].strip(), level=3)
+        elif stripped.startswith("- "):
+            document.add_paragraph(stripped[2:].strip(), style="List Bullet")
+        else:
+            document.add_paragraph(stripped)
+    buffer = BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+def _markdown_to_pptx_bytes(markdown: str) -> bytes:
+    from pptx import Presentation
+
+    presentation = Presentation()
+    title = "Deep Research Report"
+    sections: list[tuple[str, list[str]]] = []
+    current_title: str | None = None
+    current_body: list[str] = []
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            if current_title:
+                sections.append((current_title, current_body))
+            current_title = stripped.lstrip("#").strip()
+            current_body = []
+            if title == "Deep Research Report":
+                title = current_title or title
+        elif current_title:
+            current_body.append(stripped[2:].strip() if stripped.startswith("- ") else stripped)
+    if current_title:
+        sections.append((current_title, current_body))
+    if not sections:
+        sections = [(title, [line.strip() for line in markdown.splitlines() if line.strip()][:8])]
+
+    for index, (section_title, body_lines) in enumerate(sections[:12]):
+        layout = presentation.slide_layouts[0] if index == 0 else presentation.slide_layouts[1]
+        slide = presentation.slides.add_slide(layout)
+        slide.shapes.title.text = section_title[:120]
+        placeholders = [shape for shape in slide.placeholders if shape.placeholder_format.idx != 0]
+        if placeholders:
+            placeholders[0].text = "\n".join(body_lines[:8])
+    buffer = BytesIO()
+    presentation.save(buffer)
+    return buffer.getvalue()
+
+
+def _output_file_name(output_format: str) -> str:
+    output_format = normalize_deep_research_output_format(output_format)
+    return {
+        "markdown": "report.md",
+        "json": "final.json",
+        "html": "report.html",
+        "docx": "report.docx",
+        "pptx": "report.pptx",
+    }[output_format]
 
 
 def _relative(workspace: Path, path: Path) -> str:
@@ -606,6 +919,14 @@ def _parse_uuid(value: str) -> uuid.UUID | None:
         return uuid.UUID(str(value))
     except (TypeError, ValueError):
         return None
+
+
+def _parse_uuid_or_none(value: str | uuid.UUID | None) -> uuid.UUID | None:
+    if isinstance(value, uuid.UUID):
+        return value
+    if not value:
+        return None
+    return _parse_uuid(str(value))
 
 
 def _escape_html(value: str) -> str:

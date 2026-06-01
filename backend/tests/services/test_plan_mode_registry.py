@@ -9,6 +9,7 @@ objective + trigger instead of resolving to ``skipped``.
 
 from __future__ import annotations
 
+from app.services.deep_research.plan_mode import deep_research_handoff_handler
 from app.services.plan_mode_handoff import objective_trigger_handoff_handler
 from app.services.plan_mode_registry import register_plan_mode_handoffs
 from app.services.plan_mode_service import PlanModeService
@@ -20,6 +21,7 @@ def test_register_plan_mode_handoffs_registers_objective_trigger():
 
     # The objective_trigger target now resolves to the concrete handler.
     assert service._handoff_handlers["objective_trigger"] is objective_trigger_handoff_handler
+    assert service._handoff_handlers["deep_research"] is deep_research_handoff_handler
 
 
 def test_register_plan_mode_handoffs_is_idempotent():
@@ -27,6 +29,7 @@ def test_register_plan_mode_handoffs_is_idempotent():
     register_plan_mode_handoffs(service)
     register_plan_mode_handoffs(service)
     assert service._handoff_handlers["objective_trigger"] is objective_trigger_handoff_handler
+    assert service._handoff_handlers["deep_research"] is deep_research_handoff_handler
 
 
 def test_api_shared_service_gets_handler_registered():
@@ -36,3 +39,4 @@ def test_api_shared_service_gets_handler_registered():
 
     register_plan_mode_handoffs(plans_api.get_plan_mode_service())
     assert "objective_trigger" in plans_api.get_plan_mode_service()._handoff_handlers
+    assert "deep_research" in plans_api.get_plan_mode_service()._handoff_handlers

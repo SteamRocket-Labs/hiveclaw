@@ -537,6 +537,79 @@ async def test_ensure_awaiting_plan_distinct_signature_creates_new_plan(patched_
     assert str(second.id) != str(first.id)
 
 
+@pytest.mark.asyncio
+async def test_ensure_awaiting_plan_from_fill_creates_and_dedupes_custom_long_task_plan(patched_service):
+    service, session, _ = patched_service
+    agent_id = uuid4()
+    signature = "deep-research-signature"
+    fill = {
+        "title": "Deep Research: RWA launchpads",
+        "objective": "Run source-ledger-backed research on RWA launchpads.",
+        "motivation": "The user requested a formal Deep Research report.",
+        "steps": [
+            {
+                "order": 1,
+                "description": "Search official, regulatory, market, competitor, and technical lanes.",
+                "expected_output": "Evidence ledger and worker digests.",
+            },
+            {
+                "order": 2,
+                "description": "Synthesize the final markdown report and requested derived output.",
+                "expected_output": "report.md plus optional Office artifact.",
+            },
+        ],
+        "success_criteria": ["Every material claim is source-bound."],
+        "wake_policy": {"type": "none"},
+        "required_capabilities": ["deep_research_start", "office_document_create"],
+        "external_side_effects": [],
+        "risk_assessment": {"level": "medium", "reasons": ["Long-running research task"]},
+        "estimated_cost": {"tokens_per_run": "high", "expected_duration": "several minutes"},
+        "stop_conditions": ["User rejects the plan."],
+        "handoff": {
+            "target": "deep_research",
+            "create_objective": False,
+            "create_trigger": False,
+            "payload": {
+                "question": "Research RWA launchpads",
+                "depth": "full",
+                "output_format": "docx",
+                "plan_confirmed": True,
+                "worker_topics": ["official evidence"],
+            },
+        },
+        "deep_research": {"output_format": "docx", "worker_topics": ["official evidence"]},
+    }
+
+    first = await service.ensure_awaiting_plan_from_fill(
+        agent_id=agent_id,
+        intent_type="long_task",
+        signature=signature,
+        fill=fill,
+        original_request="Research RWA launchpads",
+        source="tool_runtime",
+        metadata_json={"deep_research_plan": True},
+    )
+    rows_after_first = len(session.rows)
+    second = await service.ensure_awaiting_plan_from_fill(
+        agent_id=agent_id,
+        intent_type="long_task",
+        signature=signature,
+        fill={**fill, "title": "Should not create duplicate"},
+        original_request="Research RWA launchpads",
+        source="tool_runtime",
+        metadata_json={"deep_research_plan": True},
+    )
+
+    assert first.status == "awaiting_confirmation"
+    assert first.intent_type == "long_task"
+    assert first.plan_json["handoff"]["target"] == "deep_research"
+    assert first.plan_json["deep_research"]["output_format"] == "docx"
+    assert first.metadata_json["intercept_signature"] == signature
+    assert first.metadata_json["deep_research_plan"] is True
+    assert str(second.id) == str(first.id)
+    assert len(session.rows) == rows_after_first
+
+
 def test_get_plan_mode_service_returns_shared_singleton():
     from app.services.plan_mode_service import get_plan_mode_service
 

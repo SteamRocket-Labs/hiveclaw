@@ -47,9 +47,7 @@ async def test_deep_research_run_returns_artifact_paths(tmp_path, monkeypatch: p
 
     monkeypatch.setattr("app.tools.handlers.deep_research.run_deep_research", fake_run_research)
     req = _request(tmp_path)
-    req.arguments.update(
-        {"question": "RWA adoption", "max_rounds": 1, "max_sources": 1, "plan_confirmed": True}
-    )
+    req.arguments.update({"question": "RWA adoption", "max_rounds": 1, "max_sources": 1, "plan_confirmed": True})
 
     payload = json.loads(await deep_research_run(req))
 
@@ -103,7 +101,9 @@ async def test_deep_research_start_creates_runtime_task(tmp_path, monkeypatch: p
     monkeypatch.setattr("app.tools.handlers.deep_research.create_runtime_task_record", fake_create_runtime_task_record)
     monkeypatch.setattr("app.tools.handlers.deep_research.record_long_task_plan", fake_record_plan)
     monkeypatch.setattr("app.tools.handlers.deep_research.record_long_task_progress", fake_record_progress)
-    monkeypatch.setattr("app.tools.handlers.deep_research._schedule_deep_research_background", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "app.tools.handlers.deep_research._schedule_deep_research_background", lambda *_args, **_kwargs: None
+    )
 
     req = _request(tmp_path)
     req.arguments.update({"question": "RWA adoption", "max_rounds": 2, "plan_confirmed": True})
@@ -221,3 +221,40 @@ async def test_deep_research_export_writes_workspace_visible_markdown(
         encoding="utf-8"
     ) == "# Exported report\n"
     assert (tmp_path / "workspace" / "deep_research_reports" / "task-export" / "sources.jsonl").is_file()
+
+
+@pytest.mark.asyncio
+async def test_deep_research_export_writes_office_docx_without_replacing_markdown(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.tools.handlers.deep_research import deep_research_export
+
+    task_id = "task-docx"
+    artifact_dir = tmp_path / "runtime_artifacts" / "long_tasks" / "taskdocx" / "deep_research"
+    artifact_dir.mkdir(parents=True)
+    markdown = "# Exported report\n\n## Findings\n\n- Source-bound finding.\n"
+    (artifact_dir / "report.md").write_text(markdown, encoding="utf-8")
+    (artifact_dir / "sources.jsonl").write_text('{"source_id":"src_1"}\n', encoding="utf-8")
+    (artifact_dir / "claims.jsonl").write_text('{"claim_id":"claim_1"}\n', encoding="utf-8")
+    (artifact_dir / "final.json").write_text('{"status":"completed"}', encoding="utf-8")
+
+    async def fake_get_runtime_task_record(_task_id: str):
+        return {"task_id": task_id, "status": "completed", "parent_agent_id": None, "metadata": {}}
+
+    monkeypatch.setattr("app.tools.handlers.deep_research.get_runtime_task_record", fake_get_runtime_task_record)
+
+    req = _request(tmp_path)
+    req.arguments.update({"task_id": task_id, "format": "docx"})
+
+    payload = json.loads(await deep_research_export(req))
+
+    assert payload["ok"] is True
+    assert payload["format"] == "docx"
+    assert payload["path"] == "workspace/deep_research_reports/task-docx/report.docx"
+    assert (tmp_path / "workspace" / "deep_research_reports" / "task-docx" / "report.md").read_text(
+        encoding="utf-8"
+    ) == markdown
+    docx_path = tmp_path / "workspace" / "deep_research_reports" / "task-docx" / "report.docx"
+    assert docx_path.is_file()
+    assert docx_path.read_bytes().startswith(b"PK")

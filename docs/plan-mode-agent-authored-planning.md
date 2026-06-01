@@ -3,6 +3,9 @@
 > 本文是 `docs/plan-mode-design.md` 的原则性修正和下一阶段落地方案。
 >
 > 核心判断: 需要分析和规划的任务,必须接入 agent 的真实规划能力。系统可以做治理、持久化、确认和审计,但不能用 deterministic skeleton + tool args 冒充 agent 计划。
+>
+> Agent-authored plan 负责用户可确认的计划内容。Agent 执行期自己的 TodoList / Work Ledger
+> 另见 `docs/plan-mode-agent-work-ledger.md`; 二者必须分离。
 
 ---
 

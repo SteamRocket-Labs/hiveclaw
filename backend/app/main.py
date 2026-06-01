@@ -181,6 +181,7 @@ async def lifespan(app: FastAPI):
         import app.models.tenant_channel_config  # noqa
         import app.models.objective  # noqa
         import app.models.plan_request  # noqa
+        import app.models.work_ledger  # noqa
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             # Add enum values to channel_type_enum if they don't exist yet (idempotent)

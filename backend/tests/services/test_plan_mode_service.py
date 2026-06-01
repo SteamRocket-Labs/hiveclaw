@@ -218,6 +218,8 @@ async def test_generate_plan_produces_awaiting_confirmation_with_hash_and_markdo
     assert updated.metadata_json["author_type"] == "agent"
     assert updated.metadata_json["planner_prompt_version"] == "agent_plan_v2"
     assert updated.metadata_json["planner_model_id"] == "test-planner"
+    assert updated.metadata_json["planner_work_ledger"]["schema"] == "agent_work_ledger.v1"
+    assert updated.metadata_json["planner_work_ledger"]["path"].endswith(f"plans/{updated.id}.work_ledger.json")
     assert planner.calls and planner.calls[0].plan_id == draft.id
     assert planner.calls[0].seed_plan["objective"] == "Produce a useful daily industry brief."
 
@@ -233,6 +235,12 @@ async def test_generate_plan_produces_awaiting_confirmation_with_hash_and_markdo
     from app.services.plan_mode_core import compute_plan_hash
 
     assert updated.plan_hash == compute_plan_hash(updated.plan_json)
+
+    ledger_path = data_dir / str(agent_id) / "plans" / f"{updated.id}.work_ledger.json"
+    assert ledger_path.exists()
+    ledger_text = ledger_path.read_text(encoding="utf-8")
+    assert "agent_work_ledger.v1" in ledger_text
+    assert "Plan Mode planner produced a valid confirmable plan." in ledger_text
 
 
 @pytest.mark.asyncio

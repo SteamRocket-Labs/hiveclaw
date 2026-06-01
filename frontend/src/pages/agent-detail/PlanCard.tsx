@@ -57,6 +57,13 @@ function humanizeWakePolicy(wake: PlanRequest['plan_json']['wake_policy']): stri
   return wake.type || null;
 }
 
+function plannerWorkLedgerPath(metadata: PlanRequest['metadata']): string | null {
+  const value = metadata?.planner_work_ledger;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const path = (value as Record<string, unknown>).path;
+  return typeof path === 'string' && path.trim() ? path : null;
+}
+
 type PlanConfirmationApi = Pick<typeof planApi, 'confirm' | 'handoff'>;
 
 export async function confirmAndHandoffPlan(
@@ -89,6 +96,7 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
   const wakeText = humanizeWakePolicy(planJson.wake_policy);
   const risk = planJson.risk_assessment;
   const cost = planJson.estimated_cost;
+  const workLedgerPath = plannerWorkLedgerPath(plan.metadata);
 
   const runAction = async (
     kind: 'confirm' | 'revise' | 'reject',
@@ -320,6 +328,22 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
               <li key={index} style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5 }}>{item}</li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {workLedgerPath && (
+        <div>
+          <div style={labelStyle}>{t('agent.plan.workLedger', 'Work ledger')}</div>
+          <div
+            style={{
+              fontSize: '11px',
+              color: 'var(--text-tertiary)',
+              fontFamily: 'var(--font-mono, monospace)',
+              overflowWrap: 'anywhere',
+            }}
+          >
+            {workLedgerPath}
+          </div>
         </div>
       )}
 

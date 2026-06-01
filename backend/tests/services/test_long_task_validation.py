@@ -6,6 +6,7 @@ import pytest
 
 
 def test_validate_long_task_run_passes_for_complete_artifacts(tmp_path):
+    from app.services.agent_work_ledger import load_agent_work_ledger
     from app.services.long_task_runtime import append_long_task_progress_artifact, write_long_task_plan_artifact
     from app.services.long_task_validation import validate_long_task_run
 
@@ -42,7 +43,13 @@ def test_validate_long_task_run_passes_for_complete_artifacts(tmp_path):
     assert report["passed"] is True
     assert report["summary"]["fail"] == 0
     assert report["resume_context"]["progress_count"] == 1
+    assert report["resume_context"]["work_ledger"]["schema"] == "agent_work_ledger_resume.v1"
+    assert report["resume_context"]["work_ledger"]["open_required_todos"] == []
     assert report["report_artifact"]["path"].endswith("/validation_report.json")
+    ledger = load_agent_work_ledger(agent_id=agent_id, runtime_task_id=runtime_task_id, data_root=tmp_path)
+    assert ledger is not None
+    assert ledger["schema"] == "agent_work_ledger.v1"
+    assert all(item["status"] == "complete" for item in ledger["todo_items"])
 
 
 def test_validate_long_task_run_flags_false_completion_without_evidence(tmp_path):
@@ -71,6 +78,54 @@ def test_validate_long_task_run_flags_false_completion_without_evidence(tmp_path
     assert "plan_artifact_present" in failed_ids
     assert "terminal_status_matches_progress" in failed_ids
     assert "completed_has_output_or_verification" in failed_ids
+
+
+def test_validate_long_task_run_fails_terminal_completion_with_pending_work_ledger(tmp_path):
+    from app.services.agent_work_ledger import initialize_agent_work_ledger_artifact
+    from app.services.long_task_runtime import append_long_task_progress_artifact, write_long_task_plan_artifact
+    from app.services.long_task_validation import validate_long_task_run
+
+    agent_id = uuid4()
+    runtime_task_id = uuid4()
+    write_long_task_plan_artifact(
+        agent_id=agent_id,
+        runtime_task_id=runtime_task_id,
+        objective_id="obj-1",
+        spec="Ship a long investigation",
+        acceptance_criteria=["report exists"],
+        verification_commands=["pytest"],
+        risk_gates=[],
+        data_root=tmp_path,
+    )
+    initialize_agent_work_ledger_artifact(
+        agent_id=agent_id,
+        runtime_task_id=runtime_task_id,
+        source="long_task_runtime",
+        current_phase="execute",
+        todo_items=[{"id": "todo-open", "title": "Write report", "status": "pending", "required": True}],
+        verification=[{"id": "verify-open", "check": "Run pytest", "status": "pending", "required": True}],
+        data_root=tmp_path,
+    )
+    append_long_task_progress_artifact(
+        agent_id=agent_id,
+        runtime_task_id=runtime_task_id,
+        status="completed",
+        delta="Terminal status was claimed without closing ledger items.",
+        output_paths=["workspace/report.md"],
+        auto_complete_ledger=False,
+        data_root=tmp_path,
+    )
+
+    report = validate_long_task_run(
+        agent_id=agent_id,
+        runtime_task_id=runtime_task_id,
+        runtime_task={"status": "completed", "metadata": {}},
+        data_root=tmp_path,
+    )
+
+    failed_ids = {check["id"] for check in report["checks"] if check["status"] == "fail"}
+    assert "ledger_required_todos_complete" in failed_ids
+    assert "ledger_verification_complete" in failed_ids
 
 
 def test_validate_long_task_run_requires_reason_for_cancel_or_missed_policy(tmp_path):
@@ -103,9 +158,7 @@ def test_validate_long_task_run_requires_reason_for_cancel_or_missed_policy(tmp_
         runtime_task={"status": "skipped", "metadata": {}},
         data_root=tmp_path,
     )
-    assert "terminal_reason_present" in {
-        check["id"] for check in missing_reason["checks"] if check["status"] == "fail"
-    }
+    assert "terminal_reason_present" in {check["id"] for check in missing_reason["checks"] if check["status"] == "fail"}
 
     with_reason = validate_long_task_run(
         agent_id=agent_id,

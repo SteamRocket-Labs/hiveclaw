@@ -15,6 +15,9 @@
 > 系统可以创建 envelope、限制 planner 权限、校验 schema、保存版本、展示确认和执行 handoff,
 > 但不能用 deterministic skeleton + tool args 冒充 agent 的计划能力。增量设计见
 > `docs/plan-mode-agent-authored-planning.md`。
+>
+> Agent 执行期自己的 TodoList / Work Ledger 不是用户确认卡片,设计边界见
+> `docs/plan-mode-agent-work-ledger.md`。
 
 ---
 

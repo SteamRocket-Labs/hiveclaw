@@ -391,6 +391,7 @@
       "sideEffectGeneric": "外部动作",
       "requiresConfirmation": "需要确认",
       "stopConditions": "停止条件",
+      "workLedger": "工作账本",
       "confirm": "确认",
       "confirmAndStart": "确认并开始",
       "composerToggleOn": "已开启计划模式",

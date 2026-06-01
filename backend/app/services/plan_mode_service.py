@@ -34,6 +34,7 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.database import async_session
 from app.models.plan_request import AgentPlanRequest
+from app.services.agent_work_ledger import append_agent_work_ledger_progress, initialize_agent_work_ledger_artifact
 from app.services import plan_mode_core as core
 
 logger = logging.getLogger(__name__)
@@ -415,7 +416,38 @@ class PlanModeService:
                 await db.rollback()
                 raise
 
+        planner_work_ledger: dict[str, Any] | None = None
         try:
+            planner_work_ledger = initialize_agent_work_ledger_artifact(
+                agent_id=plan.agent_id,
+                plan_id=plan.id,
+                runtime_task_id=plan.runtime_task_id,
+                source="plan_mode_planner",
+                current_phase="planning",
+                status="running",
+                todo_items=[
+                    {
+                        "id": "understand-request",
+                        "title": "Understand the original request and Plan Mode entry reason.",
+                        "status": "complete",
+                        "required": True,
+                    },
+                    {
+                        "id": "inspect-state",
+                        "title": "Inspect current state or explicitly record why inspection is not needed.",
+                        "status": "pending",
+                        "required": True,
+                    },
+                    {
+                        "id": "draft-confirmable-plan",
+                        "title": "Draft a user-confirmable plan with success criteria and stop conditions.",
+                        "status": "pending",
+                        "required": True,
+                    },
+                ],
+                evidence_refs=[f"plan_id:{plan.id}", f"intent_type:{plan.intent_type}"],
+                data_root=_agent_data_dir(),
+            )
             planner_result = await self._run_planner(
                 plan=plan,
                 seed_plan=seed_plan,
@@ -425,6 +457,15 @@ class PlanModeService:
             from app.services.agent_plan_planner import PLANNER_PROMPT_VERSION
 
             logger.warning("agent_plan_planner_failed", extra={"plan_id": str(plan_id), "error": str(exc)})
+            append_agent_work_ledger_progress(
+                agent_id=plan.agent_id,
+                plan_id=plan.id,
+                runtime_task_id=plan.runtime_task_id,
+                status="failed",
+                delta=f"Plan Mode planner failed: {getattr(exc, 'message', str(exc))}",
+                blocked_reason=getattr(exc, "message", str(exc)),
+                data_root=_agent_data_dir(),
+            )
             return await self._mark_generation_failed_by_id(
                 plan_id,
                 [f"planner_invocation_failed: {getattr(exc, 'message', str(exc))}"],
@@ -432,6 +473,7 @@ class PlanModeService:
                     "author_type": "agent",
                     "planner_prompt_version": PLANNER_PROMPT_VERSION,
                     "planner_error_code": getattr(exc, "error_code", "planner_invocation_failed"),
+                    "planner_work_ledger": planner_work_ledger or {},
                 },
             )
 
@@ -448,9 +490,33 @@ class PlanModeService:
                 self._apply_generation(
                     plan,
                     getattr(planner_result, "plan_json", {}) or {},
-                    planner_metadata=getattr(planner_result, "metadata", {}) or {},
+                    planner_metadata={
+                        **(getattr(planner_result, "metadata", {}) or {}),
+                        "planner_work_ledger": planner_work_ledger or {},
+                    },
                     plan_markdown=getattr(planner_result, "plan_markdown", "") or "",
                 )
+                if plan.status == "awaiting_confirmation":
+                    append_agent_work_ledger_progress(
+                        agent_id=plan.agent_id,
+                        plan_id=plan.id,
+                        runtime_task_id=plan.runtime_task_id,
+                        status="completed",
+                        delta="Plan Mode planner produced a valid confirmable plan.",
+                        completed_todo_ids=["inspect-state", "draft-confirmable-plan"],
+                        auto_complete_terminal=True,
+                        data_root=_agent_data_dir(),
+                    )
+                else:
+                    append_agent_work_ledger_progress(
+                        agent_id=plan.agent_id,
+                        plan_id=plan.id,
+                        runtime_task_id=plan.runtime_task_id,
+                        status="failed",
+                        delta="Plan Mode planner output failed schema validation.",
+                        blocked_reason="planner_output_failed_schema_validation",
+                        data_root=_agent_data_dir(),
+                    )
                 await db.commit()
             except (LookupError, PlanConflictError):
                 await db.rollback()

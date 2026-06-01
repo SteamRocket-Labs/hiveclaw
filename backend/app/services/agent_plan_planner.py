@@ -121,7 +121,7 @@ def _build_planner_user_prompt(planning_input: AgentPlanPlannerInput) -> str:
         "Return only strict JSON with this shape:\n"
         "{\n"
         '  "plan_json": { ... conforms to hive_plan.v1 and may include assumptions, open_questions, '
-        'evidence_summary, verification ... },\n'
+        "evidence_summary, verification ... },\n"
         '  "plan_markdown": "concise user-facing markdown preview"\n'
         "}"
     )
@@ -152,6 +152,11 @@ def _planner_system_prompt() -> str:
         "stop conditions, and the exact success criteria a reviewer can verify.\n"
         "6. Include verification steps appropriate to the work: tests, health checks, manual checks, rollout checks, "
         "or monitoring signals.\n\n"
+        "Agent Work Ledger discipline:\n"
+        "- Treat the Agent Work Ledger as your scoped working state, not as the user-confirmed plan.\n"
+        "- Keep the current phase, required todo items, verified findings, open questions, failures, and "
+        "verification state consistent with the plan you author.\n"
+        "- The confirmed Plan Mode plan is the governance boundary; ledger notes cannot expand that boundary.\n\n"
         "Clarification policy:\n"
         "- Make reasonable assumptions when a useful, safe plan can still be drafted; record them in assumptions.\n"
         "- Use open_questions only for decisions that materially change scope, risk, cost, recipients, credentials, "
@@ -293,7 +298,9 @@ class DefaultAgentPlanPlanner:
                 model = model_result.scalar_one_or_none()
             if agent.fallback_model_id and agent.fallback_model_id != model_id:
                 fallback_result = await db.execute(
-                    select(LLMModel).where(LLMModel.id == agent.fallback_model_id, LLMModel.tenant_id == agent.tenant_id)
+                    select(LLMModel).where(
+                        LLMModel.id == agent.fallback_model_id, LLMModel.tenant_id == agent.tenant_id
+                    )
                 )
                 fallback_model = fallback_result.scalar_one_or_none()
             return model, fallback_model, agent

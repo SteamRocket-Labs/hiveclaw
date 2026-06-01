@@ -14,6 +14,12 @@ from pathlib import Path
 from typing import Any
 
 from app.config import get_settings
+from app.services.agent_work_ledger import (
+    append_agent_work_ledger_progress,
+    build_agent_work_ledger_resume_summary,
+    initialize_agent_work_ledger_artifact,
+    load_agent_work_ledger,
+)
 from app.services.harness_contract import build_manifest_resume_context, write_workspace_manifest
 from app.services.runtime_task_service import update_runtime_task_record
 
@@ -60,10 +66,39 @@ def write_long_task_plan_artifact(
         "created_at": _now_iso(),
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    work_ledger = initialize_agent_work_ledger_artifact(
+        agent_id=agent_id,
+        runtime_task_id=runtime_task_id,
+        source="long_task_runtime",
+        current_phase="planned",
+        status="running",
+        todo_items=[
+            {
+                "id": f"acceptance-{index}",
+                "title": item,
+                "status": "pending",
+                "required": True,
+            }
+            for index, item in enumerate(payload["acceptance_criteria"], start=1)
+        ],
+        verification=[
+            {
+                "id": f"verify-{index}",
+                "check": command,
+                "status": "pending",
+                "required": True,
+                "command": command,
+            }
+            for index, command in enumerate(payload["verification_commands"], start=1)
+        ],
+        evidence_refs=[_relative_to_agent(agent_id, path, data_root=data_root)],
+        data_root=data_root,
+    )
     return {
         "schema": payload["schema"],
         "path": _relative_to_agent(agent_id, path, data_root=data_root),
         "created_at": payload["created_at"],
+        "work_ledger": work_ledger,
     }
 
 
@@ -75,6 +110,9 @@ def append_long_task_progress_artifact(
     delta: str,
     output_paths: list[str] | None = None,
     blocked_reason: str | None = None,
+    completed_todo_ids: list[str] | None = None,
+    completed_verification_ids: list[str] | None = None,
+    auto_complete_ledger: bool = True,
     data_root: str | Path | None = None,
 ) -> dict[str, Any]:
     artifact_dir = _artifact_dir(agent_id, runtime_task_id, data_root=data_root)
@@ -91,11 +129,24 @@ def append_long_task_progress_artifact(
     }
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    work_ledger = append_agent_work_ledger_progress(
+        agent_id=agent_id,
+        runtime_task_id=runtime_task_id,
+        status=status,
+        delta=delta,
+        output_paths=output_paths or [],
+        blocked_reason=blocked_reason,
+        completed_todo_ids=completed_todo_ids,
+        completed_verification_ids=completed_verification_ids,
+        auto_complete_terminal=auto_complete_ledger,
+        data_root=data_root,
+    )
     return {
         "schema": payload["schema"],
         "path": _relative_to_agent(agent_id, path, data_root=data_root),
         "created_at": payload["created_at"],
         "status": status,
+        "work_ledger": work_ledger,
     }
 
 
@@ -140,6 +191,12 @@ def build_long_task_resume_context(
         data_root=data_root or get_settings().AGENT_DATA_DIR,
     )
     latest_progress = progress_items[-1] if progress_items else None
+    work_ledger = load_agent_work_ledger(
+        agent_id=agent_id,
+        runtime_task_id=runtime_task_id,
+        data_root=data_root,
+    )
+    work_ledger_summary = build_agent_work_ledger_resume_summary(work_ledger)
 
     prompt_lines = [
         f"Resume long task {runtime_task_id.hex}.",
@@ -162,6 +219,15 @@ def build_long_task_resume_context(
     if manifest_context.get("artifact_refs"):
         prompt_lines.append("Artifact refs:")
         prompt_lines.extend(f"- {ref.get('path')}" for ref in manifest_context.get("artifact_refs") or [])
+    if work_ledger_summary.get("present"):
+        prompt_lines.extend(
+            [
+                "Agent Work Ledger:",
+                f"- current_phase: {work_ledger_summary.get('current_phase')}",
+                f"- open_required_todos: {', '.join(work_ledger_summary.get('open_required_todos') or []) or '(none)'}",
+                f"- verification_pending: {', '.join(work_ledger_summary.get('verification_pending') or []) or '(none)'}",
+            ]
+        )
 
     return {
         "schema": "long_task_resume_context.v1",
@@ -171,6 +237,7 @@ def build_long_task_resume_context(
         "artifact_refs": manifest_context.get("artifact_refs") or [],
         "latest_progress": latest_progress,
         "progress_count": len(progress_items),
+        "work_ledger": work_ledger_summary,
         "resume_prompt": "\n".join(prompt_lines),
     }
 
@@ -201,13 +268,14 @@ async def record_long_task_plan(
         agent_id=agent_id,
         runtime_task_id=runtime_task_id,
         workspace_root=_agent_root(agent_id, data_root=data_root),
-        artifact_paths=[artifact_root / "plan.json"],
+        artifact_paths=[artifact_root / "plan.json", artifact_root / "work_ledger.json"],
         data_root=data_root or get_settings().AGENT_DATA_DIR,
     )
     await update_runtime_task_record(
         runtime_task_id.hex,
         metadata_json={
             "long_task_plan": artifact,
+            "agent_work_ledger": artifact.get("work_ledger"),
             "workspace_manifest": manifest,
             "artifact_refs": manifest["artifact_refs"],
         },
@@ -223,6 +291,9 @@ async def record_long_task_progress(
     delta: str,
     output_paths: list[str] | None = None,
     blocked_reason: str | None = None,
+    completed_todo_ids: list[str] | None = None,
+    completed_verification_ids: list[str] | None = None,
+    auto_complete_ledger: bool = True,
     data_root: str | Path | None = None,
 ) -> dict[str, Any]:
     artifact = append_long_task_progress_artifact(
@@ -232,11 +303,14 @@ async def record_long_task_progress(
         delta=delta,
         output_paths=output_paths,
         blocked_reason=blocked_reason,
+        completed_todo_ids=completed_todo_ids,
+        completed_verification_ids=completed_verification_ids,
+        auto_complete_ledger=auto_complete_ledger,
         data_root=data_root,
     )
     await update_runtime_task_record(
         runtime_task_id.hex,
         status=status if status in {"pending", "running", "completed", "failed", "killed", "skipped"} else "running",
-        metadata_json={"long_task_progress": artifact},
+        metadata_json={"long_task_progress": artifact, "agent_work_ledger": artifact.get("work_ledger")},
     )
     return artifact

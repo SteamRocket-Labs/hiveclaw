@@ -12,6 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from app.services.agent_work_ledger import load_agent_work_ledger, validate_agent_work_ledger_completion
 from app.services.long_task_runtime import (
     _artifact_dir,
     _load_json,
@@ -117,6 +118,11 @@ def validate_long_task_run(
     acceptance_criteria = [item for item in plan.get("acceptance_criteria", []) if str(item).strip()]
     verification_commands = [item for item in plan.get("verification_commands", []) if str(item).strip()]
     output_paths = [item for item in (latest_progress or {}).get("output_paths", []) if str(item).strip()]
+    work_ledger = load_agent_work_ledger(
+        agent_id=agent_id,
+        runtime_task_id=runtime_task_id,
+        data_root=data_root,
+    )
 
     checks = [
         _check(
@@ -223,6 +229,7 @@ def validate_long_task_run(
             recommendation="Record skip, cancel, missed, blocked, or failure reason for interrupted long tasks.",
         )
     )
+    checks.extend(validate_agent_work_ledger_completion(work_ledger, terminal_status=runtime_status or latest_status))
 
     summary = _summarize_checks(checks)
     generated_at = _now_iso()

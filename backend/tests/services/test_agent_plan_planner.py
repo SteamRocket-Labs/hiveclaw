@@ -16,6 +16,8 @@ def test_planner_system_prompt_defines_analysis_workflow_and_quality_bar() -> No
     assert "Do not invent file paths" in prompt
     assert "Clarification policy" in prompt
     assert "Quality bar" in prompt
+    assert "Agent Work Ledger" in prompt
+    assert "current phase" in prompt
     assert "assumptions" in prompt
     assert "open_questions" in prompt
     assert "verification" in prompt

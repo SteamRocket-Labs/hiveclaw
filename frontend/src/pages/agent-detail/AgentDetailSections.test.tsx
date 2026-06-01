@@ -1299,7 +1299,13 @@ describe('AgentDetail extracted sections', () => {
       expires_at: null,
       created_at: null,
       updated_at: null,
-      metadata: {},
+      metadata: {
+        planner_work_ledger: {
+          schema: 'agent_work_ledger.v1',
+          path: 'plans/plan-1.work_ledger.json',
+          updated_at: '2026-06-01T00:00:00Z',
+        },
+      },
     } as PlanRequest;
 
     const markup = renderToStaticMarkup(<PlanCard agentId="agent-1" plan={plan} />);
@@ -1312,6 +1318,8 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('send_feishu_message');
     expect(markup).toContain('1-3 minutes');
     expect(markup).toContain('feishu');
+    expect(markup).toContain('Work ledger');
+    expect(markup).toContain('plans/plan-1.work_ledger.json');
     // Risk level renders via its raw value fallback (i18n mock returns the fallback string).
     expect(markup).toContain('medium');
     expect(markup).toContain('User cancels the plan.');

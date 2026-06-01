@@ -392,6 +392,7 @@
       "sideEffectGeneric": "External action",
       "requiresConfirmation": "requires confirmation",
       "stopConditions": "Stop conditions",
+      "workLedger": "Work ledger",
       "confirm": "Confirm",
       "confirmAndStart": "Confirm and start",
       "composerToggleOn": "Plan Mode enabled",

@@ -402,6 +402,8 @@
       "actionFailed": "操作失败",
       "missingHash": "该计划尚无哈希,无法确认。",
       "needsConfirmation": "有一个计划需要你确认。",
+      "inlineLoading": "正在加载计划卡片...",
+      "inlineLoadFailed": "计划卡片加载失败。如果该计划仍在等待确认,请打开 Aware > 计划队列。",
       "noActions": "该计划当前没有可执行的操作。",
       "handoffState": "交接:{{state}}",
       "queueTitle": "计划队列",

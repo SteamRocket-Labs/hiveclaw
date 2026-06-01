@@ -403,6 +403,8 @@
       "actionFailed": "Action failed",
       "missingHash": "This plan has no hash yet and cannot be confirmed.",
       "needsConfirmation": "A plan needs your confirmation.",
+      "inlineLoading": "Loading plan card...",
+      "inlineLoadFailed": "Plan card could not load. Open Aware > Plan Queue if it is still pending.",
       "noActions": "No actions available for this plan.",
       "handoffState": "Handoff: {{state}}",
       "queueTitle": "Plan Queue",

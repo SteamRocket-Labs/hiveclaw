@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import AgentApprovalsSection from './AgentApprovalsSection';
 import AgentActivityLogSection from './AgentActivityLogSection';
 import AgentAwareSection from './AgentAwareSection';
-import AgentChatSection, { StructuredToolResultBody } from './AgentChatSection';
+import AgentChatSection, { StructuredToolResultBody, extractPlanIdFromPlanModeMessage } from './AgentChatSection';
 import AgentMindSection from './AgentMindSection';
 import AgentSettingsSection, { buildPatrolPlanRecommendationInput } from './AgentSettingsSection';
 import AgentSkillsSection from './AgentSkillsSection';
@@ -168,6 +168,46 @@ vi.mock('@tanstack/react-query', () => ({
           path: 'shared_memory/tenant/workspace/deploy-playbook.md',
           absolute_path: '/tmp/shared_memory/tenant/workspace/deploy-playbook.md',
         },
+      };
+    }
+    if (key === 'agent-plan-inline') {
+      const planId = String(queryKey[2] || 'plan-inline-1');
+      return {
+        data: {
+          id: planId,
+          agent_id: 'agent-1',
+          tenant_id: null,
+          session_id: 'session-1',
+          runtime_task_id: null,
+          requested_by_user_id: 'user-1',
+          source: 'web_chat',
+          intent_type: 'autonomous_wake',
+          original_request: '每天自动总结 Reddit 投资观点',
+          status: 'awaiting_confirmation',
+          plan_version: 1,
+          plan_hash: 'sha256:inline-plan',
+          plan_markdown_path: null,
+          plan_json: {
+            title: 'Daily Reddit investor monitoring plan',
+            objective: 'Summarize Reddit investor opinions every afternoon.',
+            steps: [{ order: 1, description: 'Collect relevant Reddit posts.', expected_output: 'Source list.' }],
+            success_criteria: ['A concise Markdown summary is produced.'],
+            wake_policy: { type: 'cron', timezone: 'Asia/Shanghai', expr: '0 13 * * *' },
+            risk_assessment: { level: 'medium', reasons: ['recurring autonomous execution'] },
+          },
+          handoff_status: null,
+          handoff_payload: null,
+          confirmed_by_user_id: null,
+          confirmed_at: null,
+          rejected_by_user_id: null,
+          rejected_at: null,
+          superseded_by_plan_id: null,
+          expires_at: null,
+          created_at: null,
+          updated_at: null,
+          metadata: {},
+        },
+        refetch: vi.fn(),
       };
     }
     return { data: [] };
@@ -897,6 +937,169 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('notes.md');
     expect(markup).toContain('chat-input');
     expect(markup).toContain('send');
+  });
+
+  it('extracts Plan Mode plan ids from assistant replies', () => {
+    expect(
+      extractPlanIdFromPlanModeMessage(
+        '已进入计划模式，并生成一份待确认计划（plan_id=a7cdfa75-cec5-4062-8bda-b18b2d2821a3）。请在计划卡片中确认。',
+      ),
+    ).toBe('a7cdfa75-cec5-4062-8bda-b18b2d2821a3');
+    expect(extractPlanIdFromPlanModeMessage('普通回复，没有计划 ID')).toBeNull();
+  });
+
+  it('renders PlanCard inline in the chatbox when an assistant reply contains a plan_id', () => {
+    const planId = 'a7cdfa75-cec5-4062-8bda-b18b2d2821a3';
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Release Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-1',
+          user_id: 'user-1',
+          title: 'Plan Mode run',
+          created_at: '2026-06-01T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[
+          {
+            role: 'assistant',
+            content: `已进入计划模式，并生成一份待确认计划（plan_id=${planId}）。请在计划卡片中确认、修改或拒绝；确认后我再开始执行。`,
+          },
+        ]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('Daily Reddit investor monitoring plan');
+    expect(markup).toContain('Confirm and start');
+  });
+
+  it('keeps Plan Mode tool-result cards visible when internal trace is hidden', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Release Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-1',
+          user_id: 'user-1',
+          title: 'Plan Mode run',
+          created_at: '2026-06-01T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[
+          {
+            role: 'tool_call',
+            content: '',
+            toolName: 'set_trigger',
+            toolStatus: 'done',
+            toolResult: 'Plan created',
+            toolMeta: {
+              kind: 'plan_needs_confirmation',
+              planId: 'a7cdfa75-cec5-4062-8bda-b18b2d2821a3',
+              planVersion: 1,
+              planHash: 'sha256:inline-tool',
+              status: 'needs_plan',
+              summary: 'Plan created',
+              nextAction: 'Confirm before creating the trigger.',
+              planJson: {
+                title: 'Inline tool plan',
+                objective: 'Confirm a recurring trigger before execution.',
+                wake_policy: { type: 'cron', timezone: 'Asia/Shanghai', expr: '0 13 * * *' },
+              },
+            },
+          },
+        ]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('Inline tool plan');
+    expect(markup).toContain('Confirm and start');
   });
 
   it('shows the durable run continuation state while a session run is active', () => {

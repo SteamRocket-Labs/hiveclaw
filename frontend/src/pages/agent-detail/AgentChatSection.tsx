@@ -1,12 +1,13 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { IconChecklist } from '@tabler/icons-react';
+import { useQuery } from '@tanstack/react-query';
 
 import MarkdownRenderer from '../../components/MarkdownRenderer';
 import CopyMessageButton from './CopyMessageButton';
 import DeepResearchStreamPanel from './DeepResearchStreamPanel';
 import PlanCard from './PlanCard';
-import type { PlanRequest } from '../../api/domains/plans';
+import { planApi, type PlanRequest } from '../../api/domains/plans';
 import type { ToolCallMeta } from './toolResultEnvelope';
 import {
   computeComposerHeight,
@@ -86,10 +87,44 @@ interface StructuredToolResultBodyProps {
 }
 
 const _LIVE_DEEP_RESEARCH_STATUSES = new Set(['running', 'pending', 'in_progress']);
+const PLAN_ID_RE = /\bplan_id\s*[=:]\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i;
 
 function _isLiveDeepResearchStatus(status: string | null | undefined): boolean {
   if (!status) return false;
   return _LIVE_DEEP_RESEARCH_STATUSES.has(status.toLowerCase());
+}
+
+export function extractPlanIdFromPlanModeMessage(content: string | null | undefined): string | null {
+  if (!content) return null;
+  return content.match(PLAN_ID_RE)?.[1] ?? null;
+}
+
+function InlinePlanCard({ agentId, planId }: { agentId: string; planId: string }) {
+  const { t } = useTranslation();
+  const { data: plan, isLoading, error, refetch } = useQuery({
+    queryKey: ['agent-plan-inline', agentId, planId],
+    queryFn: () => planApi.get(agentId, planId),
+    enabled: !!agentId && !!planId,
+    refetchInterval: 10000,
+  });
+
+  if (isLoading) {
+    return (
+      <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+        {t('agent.plan.inlineLoading', 'Loading plan card...')}
+      </div>
+    );
+  }
+
+  if (error || !plan) {
+    return (
+      <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+        {t('agent.plan.inlineLoadFailed', 'Plan card could not load. Open Aware > Plan Queue if it is still pending.')}
+      </div>
+    );
+  }
+
+  return <PlanCard agentId={agentId} plan={plan} onChanged={() => refetch()} dense />;
 }
 
 function RawToolResultBlock({ text }: { text: string }) {
@@ -494,6 +529,7 @@ export default function AgentChatSection({
                 ? '📝'
                 : '📎';
         const isImage = !!msg.imageUrl && ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(extension);
+        const inlinePlanId = isLeft && msg.role === 'assistant' ? extractPlanIdFromPlanModeMessage(msg.content) : null;
 
         const timestampHtml = msg.timestamp
           ? (() => {
@@ -648,12 +684,17 @@ export default function AgentChatSection({
               ) : (
                 <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
               )}
+              {inlinePlanId && agent?.id && (
+                <div style={{ marginTop: '10px', minWidth: 'min(520px, 100%)' }} data-testid="chat-inline-plan-card">
+                  <InlinePlanCard agentId={String(agent.id)} planId={inlinePlanId} />
+                </div>
+              )}
               {timestampHtml}
             </div>
           </div>
         );
       }),
-    [t],
+    [agent?.id, t],
   );
 
   const renderToolCall = (msg: AgentChatMessage, index: number, running = false) => (
@@ -717,6 +758,18 @@ export default function AgentChatSection({
     </div>
   );
 
+  const renderInlinePlanToolCall = (msg: AgentChatMessage, index: number) => (
+    <div key={index} style={{ paddingLeft: '36px', marginBottom: '8px', maxWidth: '75%' }} data-testid="chat-inline-plan-tool-call">
+      <StructuredToolResultBody
+        toolName={msg.toolName}
+        toolMeta={msg.toolMeta}
+        toolResult={msg.toolResult}
+        toolRawResult={msg.toolRawResult}
+        agentId={agent?.id}
+      />
+    </div>
+  );
+
   const renderThinkingCard = (thinking: string, key: string | number) => (
     <div key={key} style={{ paddingLeft: '36px', marginBottom: '6px' }}>
       <details
@@ -764,7 +817,12 @@ export default function AgentChatSection({
       return renderEventMessage(message, index);
     }
     if (message.role === 'tool_call') {
-      if (!showInternalTrace) return null;
+      if (!showInternalTrace) {
+        if (message.toolMeta?.kind === 'plan_needs_confirmation') {
+          return renderInlinePlanToolCall(message, index);
+        }
+        return null;
+      }
       return renderToolCall(message, index, message.toolStatus === 'running');
     }
     if (message.role === 'assistant' && !message.content?.trim()) {

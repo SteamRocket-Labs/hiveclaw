@@ -89,6 +89,128 @@ async def test_channel_llm_auto_creates_plan_for_long_task(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_channel_llm_accepts_latest_recommendation_instead_of_reclassifying(monkeypatch):
+    from app.api.feishu import _call_agent_llm
+
+    class _PlanService:
+        def __init__(self):
+            self.calls = []
+
+        async def ensure_awaiting_plan(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(id=uuid4())
+
+    plan_service = _PlanService()
+    monkeypatch.setattr("app.services.plan_mode_service.get_plan_mode_service", lambda: plan_service)
+    agent = _agent()
+    user_id = uuid4()
+    recommendation = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent.id,
+        session_id="session-accept",
+        recommended_to_user_id=user_id,
+        status="recommended",
+        original_request="每天 13:00 自动检查 Reddit 帖子并总结投资观点",
+        title="每天 13:00 自动检查 Reddit 帖子",
+        intent_type="autonomous_wake",
+        action_kind="create_enabled_trigger",
+        tool_name="set_trigger",
+        accepted_by_user_id=None,
+        accepted_at=None,
+    )
+    db = _QueuedDB([agent, recommendation])
+
+    reply = await _call_agent_llm(
+        db,
+        agent.id,
+        "进入计划模式",
+        user_id=user_id,
+        session_id="session-accept",
+    )
+
+    assert "已进入计划模式" in reply
+    assert recommendation.status == "accepted"
+    assert recommendation.accepted_by_user_id == user_id
+    assert plan_service.calls[0]["action_kind"] == "create_enabled_trigger"
+    assert plan_service.calls[0]["tool_name"] == "set_trigger"
+    assert plan_service.calls[0]["arguments"]["reason"] == recommendation.original_request
+    assert "每天 13:00" in plan_service.calls[0]["arguments"]["name"]
+
+
+@pytest.mark.asyncio
+async def test_channel_llm_confirms_latest_awaiting_plan_from_text_and_handoffs(monkeypatch):
+    from app.api.feishu import _call_agent_llm
+
+    user_id = uuid4()
+    plan = SimpleNamespace(
+        id=uuid4(),
+        agent_id=uuid4(),
+        session_id="wechat-session",
+        status="awaiting_confirmation",
+        plan_version=3,
+        plan_hash="sha256:abc",
+        handoff_status=None,
+        handoff_payload=None,
+    )
+
+    class _PlanService:
+        def __init__(self):
+            self.confirm_calls = []
+            self.handoff_calls = []
+
+        async def find_latest_awaiting_plan_for_session(self, **kwargs):
+            assert kwargs["agent_id"] == plan.agent_id
+            assert kwargs["session_id"] == "wechat-session"
+            return plan
+
+        async def confirm_plan(self, **kwargs):
+            self.confirm_calls.append(kwargs)
+            plan.status = "confirmed"
+            plan.confirmed_by_user_id = kwargs["confirming_user_id"]
+            plan.handoff_status = "not_started"
+            return plan
+
+        async def handoff_confirmed_plan(self, **kwargs):
+            self.handoff_calls.append(kwargs)
+            plan.handoff_status = "completed"
+            plan.handoff_payload = {"runtime_task_id": "rt-1"}
+            return plan
+
+    async def fail_call_llm(*_args, **_kwargs):
+        raise AssertionError("LLM should not be invoked for a trusted text plan confirmation")
+
+    plan_service = _PlanService()
+    monkeypatch.setattr("app.services.plan_mode_service.get_plan_mode_service", lambda: plan_service)
+    monkeypatch.setattr("app.api.websocket.call_llm", fail_call_llm)
+    agent = _agent(id=plan.agent_id)
+    db = _QueuedDB([agent])
+
+    reply = await _call_agent_llm(
+        db,
+        agent.id,
+        "确认上一个计划",
+        user_id=user_id,
+        session_id="wechat-session",
+        session_source="wechat_personal",
+        session_channel="wechat_personal",
+    )
+
+    assert "已确认计划" in reply
+    assert "已启动执行" in reply
+    assert plan_service.confirm_calls == [
+        {
+            "plan_id": plan.id,
+            "confirming_user_id": user_id,
+            "plan_version": 3,
+            "plan_hash": "sha256:abc",
+            "reason": "confirmed via wechat_personal text",
+        }
+    ]
+    assert plan_service.handoff_calls == [{"plan_id": plan.id}]
+    assert db.execute_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_channel_llm_decline_without_prior_recommendation_does_not_set_trusted_opt_out(monkeypatch):
     from app.api.feishu import _call_agent_llm
 

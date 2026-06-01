@@ -21,6 +21,29 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
+# Fake agent-authored planner.
+# ---------------------------------------------------------------------------
+
+
+class _EchoAgentPlanner:
+    """Planner fake that records calls and returns caller seed as agent output."""
+
+    def __init__(self, *, override_plan_json=None):
+        self.calls = []
+        self.override_plan_json = override_plan_json
+
+    async def plan(self, planning_input):
+        from app.services.agent_plan_planner import AgentPlanPlannerResult
+
+        self.calls.append(planning_input)
+        return AgentPlanPlannerResult(
+            plan_json=dict(self.override_plan_json or planning_input.seed_plan or {}),
+            plan_markdown="Agent-authored test plan.",
+            metadata={"planner_model_id": "test-planner"},
+        )
+
+
+# ---------------------------------------------------------------------------
 # Fake async session mirroring the SQLAlchemy AsyncSession surface we use.
 # ---------------------------------------------------------------------------
 
@@ -111,8 +134,9 @@ def patched_service(monkeypatch, tmp_path):
     monkeypatch.setattr(mod, "async_session", lambda: session)
     monkeypatch.setattr(mod, "_agent_data_dir", lambda: tmp_path)
 
-    service = mod.PlanModeService()
-    return service, session, tmp_path
+    planner = _EchoAgentPlanner()
+    service = mod.PlanModeService(planner=planner)
+    return service, session, tmp_path, planner
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +146,7 @@ def patched_service(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_create_plan_request_persists_draft(patched_service):
-    service, session, _ = patched_service
+    service, session, _, _planner = patched_service
     agent_id = uuid4()
     user_id = uuid4()
 
@@ -147,7 +171,7 @@ async def test_create_plan_request_persists_draft(patched_service):
 
 @pytest.mark.asyncio
 async def test_create_plan_request_rejects_unknown_intent(patched_service):
-    service, session, _ = patched_service
+    service, session, _, _planner = patched_service
     with pytest.raises(ValueError, match="intent_type"):
         await service.create_plan_request(
             agent_id=uuid4(),
@@ -165,7 +189,7 @@ async def test_create_plan_request_rejects_unknown_intent(patched_service):
 
 @pytest.mark.asyncio
 async def test_generate_plan_produces_awaiting_confirmation_with_hash_and_markdown(patched_service):
-    service, session, data_dir = patched_service
+    service, session, data_dir, planner = patched_service
     agent_id = uuid4()
 
     draft = await service.create_plan_request(
@@ -191,6 +215,11 @@ async def test_generate_plan_produces_awaiting_confirmation_with_hash_and_markdo
     assert updated.plan_hash and updated.plan_hash.startswith("sha256:")
     assert updated.plan_json["objective"] == "Produce a useful daily industry brief."
     assert updated.plan_json["wake_policy"]["expr"] == "0 9 * * 1-5"
+    assert updated.metadata_json["author_type"] == "agent"
+    assert updated.metadata_json["planner_prompt_version"] == "agent_plan_v1"
+    assert updated.metadata_json["planner_model_id"] == "test-planner"
+    assert planner.calls and planner.calls[0].plan_id == draft.id
+    assert planner.calls[0].seed_plan["objective"] == "Produce a useful daily industry brief."
 
     # Markdown artifact actually written to disk at the documented path.
     md_path = data_dir / str(agent_id) / "plans" / f"{updated.id}.md"
@@ -208,7 +237,7 @@ async def test_generate_plan_produces_awaiting_confirmation_with_hash_and_markdo
 
 @pytest.mark.asyncio
 async def test_generate_plan_marks_planning_failed_on_invalid_fill(patched_service):
-    service, session, data_dir = patched_service
+    service, session, data_dir, planner = patched_service
     agent_id = uuid4()
 
     draft = await service.create_plan_request(
@@ -229,11 +258,12 @@ async def test_generate_plan_marks_planning_failed_on_invalid_fill(patched_servi
     # No markdown written for a failed plan.
     assert not (data_dir / str(agent_id) / "plans" / f"{result.id}.md").exists()
     assert result.metadata_json and result.metadata_json.get("planning_errors")
+    assert planner.calls and planner.calls[0].plan_id == draft.id
 
 
 @pytest.mark.asyncio
 async def test_generate_plan_unknown_plan_raises(patched_service):
-    service, _, _ = patched_service
+    service, _, _, _planner = patched_service
     with pytest.raises(LookupError):
         await service.generate_plan(plan_id=uuid4(), fill={})
 
@@ -245,7 +275,7 @@ async def test_generate_plan_unknown_plan_raises(patched_service):
 
 @pytest.mark.asyncio
 async def test_revise_plan_supersedes_old_and_bumps_version(patched_service):
-    service, session, _ = patched_service
+    service, session, _, _planner = patched_service
     agent_id = uuid4()
 
     draft = await service.create_plan_request(
@@ -291,7 +321,7 @@ async def test_revise_plan_supersedes_old_and_bumps_version(patched_service):
 # ---------------------------------------------------------------------------
 
 
-async def _make_awaiting(service, *, agent_id=None, requester=None):
+async def _make_awaiting(service, *, agent_id=None, requester=None, session_id=None):
     agent_id = agent_id or uuid4()
     requester = requester or uuid4()
     draft = await service.create_plan_request(
@@ -299,6 +329,7 @@ async def _make_awaiting(service, *, agent_id=None, requester=None):
         requested_by_user_id=requester,
         original_request="每天 9 点帮我整理新闻",
         intent_type="autonomous_wake",
+        session_id=session_id,
     )
     plan = await service.generate_plan(
         plan_id=draft.id,
@@ -315,7 +346,7 @@ async def _make_awaiting(service, *, agent_id=None, requester=None):
 
 @pytest.mark.asyncio
 async def test_confirm_plan_success_sets_confirmed(patched_service):
-    service, session, data_dir = patched_service
+    service, session, data_dir, _planner = patched_service
     plan, requester = await _make_awaiting(service)
     confirmer = uuid4()
 
@@ -340,7 +371,7 @@ async def test_confirm_plan_success_sets_confirmed(patched_service):
 
 @pytest.mark.asyncio
 async def test_confirm_plan_allows_requesting_user_to_confirm(patched_service):
-    service, session, _ = patched_service
+    service, session, _, _planner = patched_service
     plan, requester = await _make_awaiting(service)
 
     confirmed = await service.confirm_plan(
@@ -356,7 +387,7 @@ async def test_confirm_plan_allows_requesting_user_to_confirm(patched_service):
 
 @pytest.mark.asyncio
 async def test_confirm_plan_version_mismatch_conflicts(patched_service):
-    service, session, _ = patched_service
+    service, session, _, _planner = patched_service
     plan, _ = await _make_awaiting(service)
 
     from app.services.plan_mode_service import PlanConflictError
@@ -374,7 +405,7 @@ async def test_confirm_plan_version_mismatch_conflicts(patched_service):
 
 @pytest.mark.asyncio
 async def test_confirm_plan_hash_mismatch_conflicts(patched_service):
-    service, session, _ = patched_service
+    service, session, _, _planner = patched_service
     plan, _ = await _make_awaiting(service)
 
     from app.services.plan_mode_service import PlanConflictError
@@ -392,7 +423,7 @@ async def test_confirm_plan_hash_mismatch_conflicts(patched_service):
 
 @pytest.mark.asyncio
 async def test_confirmed_plan_cannot_be_reconfirmed(patched_service):
-    service, session, _ = patched_service
+    service, session, _, _planner = patched_service
     plan, _ = await _make_awaiting(service)
     await service.confirm_plan(
         plan_id=plan.id,
@@ -420,7 +451,7 @@ async def test_confirmed_plan_cannot_be_reconfirmed(patched_service):
 
 @pytest.mark.asyncio
 async def test_reject_plan_sets_rejected(patched_service):
-    service, session, _ = patched_service
+    service, session, _, _planner = patched_service
     plan, _ = await _make_awaiting(service)
     rejecter = uuid4()
 
@@ -437,7 +468,7 @@ async def test_reject_plan_sets_rejected(patched_service):
 
 @pytest.mark.asyncio
 async def test_reject_after_confirm_is_blocked(patched_service):
-    service, session, _ = patched_service
+    service, session, _, _planner = patched_service
     plan, _ = await _make_awaiting(service)
     await service.confirm_plan(
         plan_id=plan.id,
@@ -467,7 +498,7 @@ async def test_reject_after_confirm_is_blocked(patched_service):
 
 @pytest.mark.asyncio
 async def test_ensure_awaiting_plan_creates_awaiting_plan_from_tool_args(patched_service):
-    service, session, _ = patched_service
+    service, session, _, planner = patched_service
     agent_id = uuid4()
 
     plan = await service.ensure_awaiting_plan(
@@ -490,14 +521,58 @@ async def test_ensure_awaiting_plan_creates_awaiting_plan_from_tool_args(patched
     assert plan.plan_json["wake_policy"]["expr"] == "0 9 * * 1-5"
     # The intercept signature is stored so a repeat call can dedupe on it.
     assert plan.metadata_json.get("intercept_signature")
+    assert plan.metadata_json["author_type"] == "agent"
+    assert planner.calls and planner.calls[0].intercepted_tool["tool_name"] == "set_trigger"
+    assert planner.calls[0].intercepted_tool["arguments"]["reason"] == "Recurring morning brief."
     # requester is NOT the agent's own confirmation: created with no user, so a
     # later confirm by a real user can never be a self-confirm.
     assert plan.requested_by_user_id is None
 
 
 @pytest.mark.asyncio
+async def test_ensure_awaiting_plan_uses_agent_planner_output_not_raw_tool_args(monkeypatch, tmp_path):
+    from app.services import plan_mode_service as mod
+
+    session = _PlanSession()
+    monkeypatch.setattr(mod, "async_session", lambda: session)
+    monkeypatch.setattr(mod, "_agent_data_dir", lambda: tmp_path)
+    planner = _EchoAgentPlanner(
+        override_plan_json={
+            "title": "Planner-authored title",
+            "objective": "Planner analyzed the recurring brief scope before proposing execution.",
+            "motivation": "The user wants a durable recurring workflow.",
+            "steps": [{"order": 1, "description": "Clarify source scope and cadence."}],
+            "success_criteria": ["The user can review scope, cost, and stop conditions."],
+            "stop_conditions": ["The user rejects or cancels the plan."],
+            "wake_policy": {"type": "cron", "timezone": "Asia/Shanghai", "expr": "0 9 * * 1-5"},
+            "required_capabilities": ["web_search", "set_trigger"],
+        }
+    )
+    service = mod.PlanModeService(planner=planner)
+
+    plan = await service.ensure_awaiting_plan(
+        agent_id=uuid4(),
+        action_kind="create_enabled_trigger",
+        tool_name="set_trigger",
+        arguments={
+            "name": "Raw trigger name",
+            "type": "cron",
+            "config": {"expr": "0 8 * * *"},
+            "reason": "Raw tool reason.",
+        },
+    )
+
+    assert plan.status == "awaiting_confirmation"
+    assert plan.plan_json["title"] == "Planner-authored title"
+    assert plan.plan_json["objective"].startswith("Planner analyzed")
+    assert plan.plan_json["wake_policy"]["expr"] == "0 9 * * 1-5"
+    assert planner.calls[0].seed_plan["title"] == "Raw trigger name"
+    assert planner.calls[0].intercepted_tool["arguments"]["reason"] == "Raw tool reason."
+
+
+@pytest.mark.asyncio
 async def test_ensure_awaiting_plan_is_idempotent_for_same_signature(patched_service):
-    service, session, _ = patched_service
+    service, session, _, _planner = patched_service
     agent_id = uuid4()
     args = {"name": "Daily brief", "type": "cron", "config": {"expr": "0 9 * * *"}, "reason": "r"}
 
@@ -518,7 +593,7 @@ async def test_ensure_awaiting_plan_is_idempotent_for_same_signature(patched_ser
 
 @pytest.mark.asyncio
 async def test_ensure_awaiting_plan_distinct_signature_creates_new_plan(patched_service):
-    service, session, _ = patched_service
+    service, session, _, _planner = patched_service
     agent_id = uuid4()
 
     first = await service.ensure_awaiting_plan(
@@ -539,7 +614,7 @@ async def test_ensure_awaiting_plan_distinct_signature_creates_new_plan(patched_
 
 @pytest.mark.asyncio
 async def test_ensure_awaiting_plan_from_fill_creates_and_dedupes_custom_long_task_plan(patched_service):
-    service, session, _ = patched_service
+    service, session, _, _planner = patched_service
     agent_id = uuid4()
     signature = "deep-research-signature"
     fill = {
@@ -618,7 +693,7 @@ def test_get_plan_mode_service_returns_shared_singleton():
 
 @pytest.mark.asyncio
 async def test_handoff_requires_confirmed_status(patched_service):
-    service, session, _ = patched_service
+    service, session, _, _planner = patched_service
     plan, _ = await _make_awaiting(service)  # still awaiting_confirmation
 
     from app.services.plan_mode_service import PlanConflictError
@@ -633,7 +708,7 @@ async def test_handoff_marks_skipped_when_no_handler_registered(patched_service)
     """Phase 1 has no concrete handoff target wired; the contract is that the
     status stays ``confirmed`` and ``handoff_status`` records the outcome
     (§13) instead of raising or silently succeeding."""
-    service, session, _ = patched_service
+    service, session, _, _planner = patched_service
     plan, _ = await _make_awaiting(service)
     confirmed = await service.confirm_plan(
         plan_id=plan.id,
@@ -654,7 +729,7 @@ async def test_handoff_marks_skipped_when_no_handler_registered(patched_service)
 @pytest.mark.asyncio
 async def test_handoff_is_idempotent_after_completion(patched_service):
     """A completed handoff is not re-run (idempotency, §13)."""
-    service, session, _ = patched_service
+    service, session, _, _planner = patched_service
     plan, _ = await _make_awaiting(service)
     confirmed = await service.confirm_plan(
         plan_id=plan.id,
@@ -684,7 +759,7 @@ async def test_handoff_is_idempotent_after_completion(patched_service):
 
 @pytest.mark.asyncio
 async def test_handoff_records_failure_without_corrupting_confirmed(patched_service):
-    service, session, _ = patched_service
+    service, session, _, _planner = patched_service
     plan, _ = await _make_awaiting(service)
     confirmed = await service.confirm_plan(
         plan_id=plan.id,
@@ -713,13 +788,35 @@ async def test_handoff_records_failure_without_corrupting_confirmed(patched_serv
 
 @pytest.mark.asyncio
 async def test_get_plan_returns_none_for_unknown(patched_service):
-    service, _, _ = patched_service
+    service, _, _, _planner = patched_service
     assert await service.get_plan(uuid4()) is None
 
 
 @pytest.mark.asyncio
+async def test_find_latest_awaiting_plan_for_session_filters_status_and_session(patched_service):
+    service, session, _, _planner = patched_service
+    agent_id = uuid4()
+
+    older, _ = await _make_awaiting(service, agent_id=agent_id, session_id="wechat-session")
+    other_session, _ = await _make_awaiting(service, agent_id=agent_id, session_id="other-session")
+    latest, _ = await _make_awaiting(service, agent_id=agent_id, session_id="wechat-session")
+    older.created_at = older.created_at.replace(year=2025)
+    other_session.created_at = other_session.created_at.replace(year=2027)
+    latest.created_at = latest.created_at.replace(year=2026)
+    older.status = "confirmed"
+
+    found = await service.find_latest_awaiting_plan_for_session(agent_id=agent_id, session_id="wechat-session")
+
+    assert found is not None
+    assert found.id == latest.id
+    assert found.status == "awaiting_confirmation"
+    assert found.session_id == "wechat-session"
+    assert len(session.rows) >= 3
+
+
+@pytest.mark.asyncio
 async def test_list_plans_for_agent_filters_by_agent(patched_service):
-    service, _, _ = patched_service
+    service, _, _, _planner = patched_service
     agent_a = uuid4()
     agent_b = uuid4()
     await service.create_plan_request(

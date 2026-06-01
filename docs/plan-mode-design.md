@@ -8,6 +8,13 @@
 > 最高不变量:
 >
 > **未经真实用户确认的计划,不得产生任何可执行的自主行为。**
+>
+> 规划内容不变量:
+>
+> **需要分析和规划的任务,其 substantive plan content 必须由 agent-authored planner 生成。**
+> 系统可以创建 envelope、限制 planner 权限、校验 schema、保存版本、展示确认和执行 handoff,
+> 但不能用 deterministic skeleton + tool args 冒充 agent 的计划能力。增量设计见
+> `docs/plan-mode-agent-authored-planning.md`。
 
 ---
 
@@ -450,13 +457,13 @@ Plan Mode 接入方式:
    - 显式 Plan Mode 或长任务:创建 `agent_plan_requests` row。
    - 定时/监控:先推荐进入 Plan Mode 并等待用户选择;不立即创建 PlanRequest。
 3. 创建 PlanRequest 后:
-   - 启动受限 planning invocation,或用 deterministic builder 生成 plan draft。
+   - 启动受限 agent-authored planning invocation,生成 plan draft。
    - 写 `plans/{plan_id}.md`。
    - assistant 返回 plan card / markdown preview。
    - 当前 web_chat_turn 完成,不继续执行原请求。
 4. 用户点击 Confirm / Revise / Reject,走 plan API。
 
-Planning invocation 必须禁用高风险工具,且**复用现有工具收窄机制,不新增 `execution_mode` 字段**(与 §4 非目标一致):
+Planning invocation 必须由 agent 产出 substantive plan content;deterministic builder 只能作为 schema envelope / validation helper,不能作为最终可确认计划。Planning invocation 必须禁用高风险工具,且**复用现有工具收窄机制,不新增 `execution_mode` 字段**(与 §4 非目标一致):
 
 ```text
 # 复用 InvocationRequest 现有字段 + deep research RC11 已加的 disable_tools
@@ -582,12 +589,12 @@ PlanModeService.reject_plan()
 PlanModeService.handoff_confirmed_plan()
 ```
 
-### 10.2 初版推荐 deterministic skeleton + LLM fill
+### 10.2 Agent planner + deterministic envelope
 
-第一版不要让 LLM 自由决定 schema。流程:
+第一版也不能用 deterministic skeleton 代替 agent 规划。正确边界是:service 固定 schema envelope 和校验规则,agent planner 负责 substantive plan content。流程:
 
 1. Service 根据 intent_type 生成 plan_json skeleton。
-2. 受限 planning invocation 只填字段和解释,不执行工具。
+2. 受限 agent-authored planning invocation 根据用户诉求、会话上下文、agent identity/memory 和 intercepted tool args 产出计划字段和解释,不执行工具。
 3. Service 校验 JSON schema。
 4. Service 生成 Markdown。
 5. Service 计算 hash 并落库。

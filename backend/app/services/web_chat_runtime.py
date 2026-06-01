@@ -493,6 +493,28 @@ async def _record_plan_mode_recommendation(
         await db.commit()
 
 
+async def _accept_latest_plan_mode_recommendation(
+    *,
+    agent_id: uuid.UUID,
+    user_id: uuid.UUID | None,
+    session_id: str | None,
+):
+    if user_id is None or not session_id:
+        return None
+    from app.services.plan_mode_recommendation_service import accept_latest_recommendation_for_user
+
+    async with _async_session() as db:
+        recommendation = await accept_latest_recommendation_for_user(
+            db,
+            agent_id=agent_id,
+            user_id=user_id,
+            session_id=session_id,
+        )
+        if recommendation is not None:
+            await db.commit()
+        return recommendation
+
+
 async def _maybe_handle_plan_mode_entry(
     *,
     agent_id: uuid.UUID,
@@ -524,6 +546,28 @@ async def _maybe_handle_plan_mode_entry(
             decision=decision,
         )
         return _plan_mode_recommendation_message(decision)
+
+    accepted_recommendation = None
+    if decision.mode == "explicit" and plan_mode_core.is_plan_mode_acceptance_reply(content):
+        try:
+            accepted_recommendation = await _accept_latest_plan_mode_recommendation(
+                agent_id=agent_id,
+                user_id=user_id,
+                session_id=session_id,
+            )
+        except Exception as exc:
+            logger.warning("[WebChatRun] Plan recommendation accept binding failed (non-fatal): {}", exc)
+            accepted_recommendation = None
+    if accepted_recommendation is not None:
+        decision = plan_mode_core.PlanModeEntryDecision(
+            mode="explicit",
+            intent_type=getattr(accepted_recommendation, "intent_type", None) or "autonomous_wake",
+            action_kind=getattr(accepted_recommendation, "action_kind", None) or "create_enabled_trigger",
+            tool_name=getattr(accepted_recommendation, "tool_name", None) or "set_trigger",
+            title=getattr(accepted_recommendation, "title", None) or getattr(accepted_recommendation, "original_request", "")[:120],
+            reason="accepted_plan_mode_recommendation",
+        )
+        content = getattr(accepted_recommendation, "original_request", None) or content
 
     if not decision.action_kind or not decision.tool_name:
         return None

@@ -14,6 +14,7 @@ unit-testable and ``main.py`` only gains a single call.
 from __future__ import annotations
 
 from app.services.deep_research.plan_mode import register_deep_research_handoff
+from app.services.plan_mode_delegation_handoff import register_delegation_handoff
 from app.services.plan_mode_handoff import register_objective_trigger_handoff
 from app.services.plan_mode_service import PlanModeService
 
@@ -22,3 +23,4 @@ def register_plan_mode_handoffs(service: PlanModeService) -> None:
     """Register every concrete handoff handler onto ``service`` (idempotent)."""
     register_objective_trigger_handoff(service)
     register_deep_research_handoff(service)
+    register_delegation_handoff(service)

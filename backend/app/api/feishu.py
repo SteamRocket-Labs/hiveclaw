@@ -70,6 +70,76 @@ async def _maybe_sync_feishu_task(
         f"（plan_id={plan.id}），请确认或修改后再启动。"
     )
 
+
+async def _try_confirm_channel_plan_from_text(
+    *,
+    agent_id: uuid.UUID,
+    user_id,
+    user_text: str,
+    session_id: str | None,
+    session_source: str,
+) -> str | None:
+    """Confirm and hand off a Plan Mode plan from trusted channel text."""
+    from app.services import plan_mode_core
+    from app.services.plan_mode_service import PlanConflictError, get_plan_mode_service
+
+    confirmation = plan_mode_core.extract_plan_confirmation_request(user_text)
+    if confirmation is None:
+        return None
+    if user_id is None:
+        return "计划确认需要可审计的用户身份。请先绑定账号，或到 Web 端计划卡片确认。"
+
+    service = get_plan_mode_service()
+    plan = None
+    if confirmation.plan_id:
+        try:
+            plan = await service.get_plan(uuid.UUID(confirmation.plan_id))
+        except ValueError:
+            return "计划确认失败：plan_id 格式不正确。"
+        if plan is not None and str(getattr(plan, "agent_id", "")) != str(agent_id):
+            plan = None
+        if (
+            plan is not None
+            and session_id
+            and getattr(plan, "session_id", None)
+            and str(getattr(plan, "session_id", "")) != str(session_id)
+        ):
+            return "计划确认失败：该 plan_id 不属于当前会话。请确认当前会话中的计划。"
+    elif confirmation.latest and session_id:
+        plan = await service.find_latest_awaiting_plan_for_session(agent_id=agent_id, session_id=session_id)
+
+    if plan is None:
+        return "没有找到当前会话待确认的计划。请带上 plan_id，或到 Web 端计划卡片确认。"
+    if getattr(plan, "status", None) != "awaiting_confirmation":
+        return f"计划无需重复确认：当前状态为 {getattr(plan, 'status', 'unknown')}。"
+    if not getattr(plan, "plan_hash", None):
+        return "计划还没有生成完成，暂时不能确认。请稍后重试或到 Web 端计划卡片查看。"
+
+    try:
+        confirmed = await service.confirm_plan(
+            plan_id=plan.id,
+            confirming_user_id=user_id,
+            plan_version=plan.plan_version,
+            plan_hash=plan.plan_hash,
+            reason=f"confirmed via {session_source} text",
+        )
+        handed_off = await service.handoff_confirmed_plan(plan_id=confirmed.id)
+    except PermissionError as exc:
+        return f"计划确认失败：{exc}"
+    except PlanConflictError as exc:
+        return f"计划确认失败：{exc.message}"
+
+    handoff_status = getattr(handed_off, "handoff_status", None) or "not_started"
+    if handoff_status == "completed":
+        return f"已确认计划（plan_id={confirmed.id}），并已启动执行。"
+    if handoff_status == "skipped":
+        return f"已确认计划（plan_id={confirmed.id}），但当前计划没有可自动启动的 handoff。"
+    if handoff_status == "failed":
+        payload = getattr(handed_off, "handoff_payload", None) or {}
+        return f"已确认计划（plan_id={confirmed.id}），但启动执行失败：{payload.get('error', 'unknown error')}"
+    return f"已确认计划（plan_id={confirmed.id}），handoff 状态：{handoff_status}。"
+
+
 _TOOL_STATUS_KEEP_LINES = 20
 _FEISHU_CARD_MARKDOWN_LIMIT = 2800
 _APPROVAL_ID_PATTERN = (
@@ -2134,6 +2204,16 @@ async def _call_agent_llm(
         return "This Agent has expired and is off duty. Please contact your admin to extend its service."
 
     effective_user_id = user_id or agent_id
+    plan_confirmation_reply = await _try_confirm_channel_plan_from_text(
+        agent_id=agent_id,
+        user_id=user_id,
+        user_text=user_text,
+        session_id=session_id,
+        session_source=session_source,
+    )
+    if plan_confirmation_reply is not None:
+        return plan_confirmation_reply
+
     from app.services import plan_mode_core
 
     plan_entry_decision = plan_mode_core.classify_plan_mode_entry(user_text)
@@ -2161,6 +2241,40 @@ async def _call_agent_llm(
             f"{plan_mode_core.PLAN_MODE_RECOMMENDATION_MARKER}。"
             "如果你同意，请回复“进入计划模式”；如果你要跳过，请明确回复“不用计划模式，直接创建”。"
         )
+    accepted_recommendation = None
+    if (
+        plan_entry_decision.mode == "explicit"
+        and plan_mode_core.is_plan_mode_acceptance_reply(user_text)
+        and user_id is not None
+        and session_id
+    ):
+        from app.services.plan_mode_recommendation_service import accept_latest_recommendation_for_user
+
+        try:
+            accepted_recommendation = await accept_latest_recommendation_for_user(
+                db,
+                agent_id=agent_id,
+                user_id=user_id,
+                session_id=session_id,
+            )
+            if accepted_recommendation is not None and hasattr(db, "commit"):
+                await db.commit()
+        except Exception as exc:
+            logger.warning(f"[Feishu] Plan recommendation accept binding failed (non-fatal): {exc}")
+            accepted_recommendation = None
+
+    if accepted_recommendation is not None:
+        plan_entry_decision = plan_mode_core.PlanModeEntryDecision(
+            mode="explicit",
+            intent_type=getattr(accepted_recommendation, "intent_type", None) or "autonomous_wake",
+            action_kind=getattr(accepted_recommendation, "action_kind", None) or "create_enabled_trigger",
+            tool_name=getattr(accepted_recommendation, "tool_name", None) or "set_trigger",
+            title=getattr(accepted_recommendation, "title", None)
+            or getattr(accepted_recommendation, "original_request", "")[:120],
+            reason="accepted_plan_mode_recommendation",
+        )
+        user_text = getattr(accepted_recommendation, "original_request", None) or user_text
+
     if plan_entry_decision.mode in {"auto", "explicit"} and plan_entry_decision.action_kind and plan_entry_decision.tool_name:
         from app.services.plan_mode_service import get_plan_mode_service
 

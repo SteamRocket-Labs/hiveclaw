@@ -18,6 +18,33 @@ from uuid import uuid4
 import pytest
 
 
+def test_plan_mode_acceptance_reply_only_matches_bare_acceptance():
+    from app.services.plan_mode_core import is_plan_mode_acceptance_reply
+
+    assert is_plan_mode_acceptance_reply("进入计划模式")
+    assert is_plan_mode_acceptance_reply("同意进入计划模式。")
+    assert not is_plan_mode_acceptance_reply("先做计划：完整调研这个行业并出报告")
+    assert not is_plan_mode_acceptance_reply("进入计划模式，帮我重新规划另一个任务")
+
+
+def test_extract_plan_confirmation_request_matches_explicit_plan_id_and_latest():
+    from app.services.plan_mode_core import extract_plan_confirmation_request
+
+    plan_id = "a7cdfa75-cec5-4062-8bda-b18b2d2821a3"
+
+    explicit = extract_plan_confirmation_request(f"确认 plan_id={plan_id}")
+    assert explicit is not None
+    assert explicit.plan_id == plan_id
+    assert explicit.latest is False
+
+    latest = extract_plan_confirmation_request("确认上一个计划")
+    assert latest is not None
+    assert latest.plan_id is None
+    assert latest.latest is True
+
+    assert extract_plan_confirmation_request("确认一下收件人是谁") is None
+
+
 # ---------------------------------------------------------------------------
 # Canonical hashing
 # ---------------------------------------------------------------------------
@@ -102,6 +129,28 @@ def test_build_plan_skeleton_rejects_unknown_intent_type():
 
     with pytest.raises(ValueError, match="intent_type"):
         build_plan_skeleton(intent_type="not_a_real_intent", title="t", original_request="r")
+
+
+def test_delegate_tool_args_seed_delegation_handoff_payload():
+    from app.services.plan_mode_core import tool_args_to_plan_fill
+
+    fill = tool_args_to_plan_fill(
+        tool_name="delegate_to_agent",
+        action_kind="start_delegation",
+        arguments={
+            "agent_name": "投研助理",
+            "message": "分析最近三天 AI Infra 融资动态。",
+            "tool_profile": "research_readonly",
+            "max_tool_rounds": 16,
+        },
+    )
+
+    assert fill["title"] == "Delegate to 投研助理"
+    assert fill["handoff"]["target"] == "delegation"
+    assert fill["handoff"]["payload"]["agent_name"] == "投研助理"
+    assert fill["handoff"]["payload"]["message"] == "分析最近三天 AI Infra 融资动态。"
+    assert fill["handoff"]["payload"]["tool_profile"] == "research_readonly"
+    assert fill["handoff"]["payload"]["max_tool_rounds"] == 16
 
 
 # ---------------------------------------------------------------------------

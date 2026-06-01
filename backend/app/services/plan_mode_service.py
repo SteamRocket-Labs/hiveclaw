@@ -83,8 +83,9 @@ class PlanModeService:
     state is in the database.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, planner: Any | None = None) -> None:
         self._handoff_handlers: dict[str, HandoffHandler] = {}
+        self._planner = planner
 
     # -- handoff registry -------------------------------------------------
 
@@ -189,9 +190,9 @@ class PlanModeService:
         """Materialise an ``awaiting_confirmation`` plan for a blocked action (§9.2).
 
         Called by the tool gate and the chat/Feishu auto-sync paths when a
-        Plan-Mode-gated action is intercepted with no confirmed plan: instead of
-        returning an empty ``needs_plan`` shell, we seed a concrete, confirmable
-        plan from the action's own ``arguments`` (``tool_args_to_plan_fill``).
+        Plan-Mode-gated action is intercepted with no confirmed plan. The tool
+        arguments seed the planning context; the confirmable plan content itself
+        is authored by the agent planner.
 
         Idempotent per ``(agent_id, intent_type, signature)``: a repeat of the
         *same* logical blocked action reuses the existing awaiting plan rather
@@ -230,7 +231,16 @@ class PlanModeService:
             runtime_task_id=runtime_task_id,
             metadata_json=metadata,
         )
-        return await self.generate_plan(plan_id=plan.id, fill=fill)
+        planner_seed = {
+            **fill,
+            "_planner_intercepted_tool": {
+                "tool_name": tool_name,
+                "action_kind": action_kind,
+                "source": source,
+                "arguments": arguments,
+            },
+        }
+        return await self.generate_plan(plan_id=plan.id, fill=planner_seed)
 
     async def ensure_awaiting_plan_from_fill(
         self,
@@ -299,7 +309,72 @@ class PlanModeService:
                 return plan
         return None
 
+    async def find_latest_awaiting_plan_for_session(
+        self,
+        *,
+        agent_id: UUID,
+        session_id: str,
+    ) -> AgentPlanRequest | None:
+        """Return the latest awaiting plan in the current channel/chat session.
+
+        Used by IM text confirmations such as "确认上一个计划". The session is
+        part of the trust boundary: without it, a short channel reply could
+        accidentally confirm an unrelated plan for the same agent.
+        """
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return None
+        candidates = [
+            plan
+            for plan in await self.list_plans_for_agent(agent_id, limit=100)
+            if plan.status == "awaiting_confirmation" and str(plan.session_id or "") == normalized_session_id
+        ]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda plan: plan.created_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        return candidates[0]
+
     # -- generate ---------------------------------------------------------
+
+    def _get_planner(self) -> Any:
+        if self._planner is None:
+            from app.services.agent_plan_planner import DefaultAgentPlanPlanner
+
+            self._planner = DefaultAgentPlanPlanner()
+        return self._planner
+
+    async def _run_planner(
+        self,
+        *,
+        plan: AgentPlanRequest,
+        seed_plan: dict[str, Any],
+        intercepted_tool: dict[str, Any] | None = None,
+    ) -> Any:
+        from app.services.agent_plan_planner import AgentPlanPlannerInput
+
+        metadata = dict(plan.metadata_json or {})
+        if intercepted_tool is None and metadata.get("intercept_tool"):
+            intercepted_tool = {
+                "tool_name": metadata.get("intercept_tool"),
+                "action_kind": metadata.get("intercept_action_kind"),
+                "source": metadata.get("intercept_source"),
+                "arguments": {},
+            }
+        planner_input = AgentPlanPlannerInput(
+            plan_id=plan.id,
+            agent_id=plan.agent_id,
+            requested_by_user_id=plan.requested_by_user_id,
+            tenant_id=plan.tenant_id,
+            session_id=plan.session_id,
+            runtime_task_id=plan.runtime_task_id,
+            source=plan.source,
+            intent_type=plan.intent_type,
+            original_request=plan.original_request,
+            seed_plan=seed_plan,
+            intercepted_tool=intercepted_tool,
+            metadata_json=metadata,
+        )
+        return await self._get_planner().plan(planner_input)
 
     async def generate_plan(
         self,
@@ -309,23 +384,65 @@ class PlanModeService:
     ) -> AgentPlanRequest:
         """Generate ``plan_json`` for a draft/planning plan (§10.2).
 
-        Builds the deterministic skeleton for the plan's ``intent_type``,
-        merges in the ``fill`` produced by the restricted planning invocation,
-        validates the schema, computes the hash and writes markdown. On schema
-        failure the plan becomes ``planning_failed`` (no markdown, no hash).
+        Runs the agent-authored planner for the plan's ``intent_type``, validates
+        the planner output against the deterministic schema envelope, computes
+        the hash and writes markdown. On planner/schema failure the plan becomes
+        ``planning_failed`` (no markdown, no hash).
 
         Raises:
             LookupError: if ``plan_id`` does not exist.
             PlanConflictError: if the plan is not in a generatable status.
         """
+        seed_plan = dict(fill or {})
+        intercepted_tool = seed_plan.pop("_planner_intercepted_tool", None)
         async with async_session() as db:
             try:
                 plan = await self._load(db, plan_id)
                 if plan is None:
                     raise LookupError(f"plan {plan_id} not found")
-
                 self._move_to_planning_if_needed(plan)
-                self._apply_generation(plan, fill or {})
+                await db.commit()
+            except (LookupError, PlanConflictError):
+                await db.rollback()
+                raise
+            except Exception:
+                await db.rollback()
+                raise
+
+        try:
+            planner_result = await self._run_planner(
+                plan=plan,
+                seed_plan=seed_plan,
+                intercepted_tool=intercepted_tool,
+            )
+        except Exception as exc:  # noqa: BLE001 - planner failure becomes planning_failed, not execution.
+            logger.warning("agent_plan_planner_failed", extra={"plan_id": str(plan_id), "error": str(exc)})
+            return await self._mark_generation_failed_by_id(
+                plan_id,
+                [f"planner_invocation_failed: {getattr(exc, 'message', str(exc))}"],
+                planner_metadata={
+                    "author_type": "agent",
+                    "planner_prompt_version": "agent_plan_v1",
+                    "planner_error_code": getattr(exc, "error_code", "planner_invocation_failed"),
+                },
+            )
+
+        async with async_session() as db:
+            try:
+                plan = await self._load(db, plan_id)
+                if plan is None:
+                    raise LookupError(f"plan {plan_id} not found")
+                if plan.status != "planning":
+                    raise PlanConflictError(
+                        "illegal_transition",
+                        f"cannot apply planner output to status {plan.status!r}",
+                    )
+                self._apply_generation(
+                    plan,
+                    getattr(planner_result, "plan_json", {}) or {},
+                    planner_metadata=getattr(planner_result, "metadata", {}) or {},
+                    plan_markdown=getattr(planner_result, "plan_markdown", "") or "",
+                )
                 await db.commit()
             except (LookupError, PlanConflictError):
                 await db.rollback()
@@ -346,39 +463,84 @@ class PlanModeService:
             f"cannot generate a plan from status {plan.status!r}",
         )
 
-    def _apply_generation(self, plan: AgentPlanRequest, fill: dict[str, Any]) -> None:
+    async def _mark_generation_failed_by_id(
+        self,
+        plan_id: UUID | str,
+        errors: list[str],
+        *,
+        planner_metadata: dict[str, Any] | None = None,
+    ) -> AgentPlanRequest:
+        async with async_session() as db:
+            plan = await self._load(db, plan_id)
+            if plan is None:
+                raise LookupError(f"plan {plan_id} not found")
+            self._mark_generation_failed(plan, errors, planner_metadata=planner_metadata)
+            await db.commit()
+            return plan
+
+    def _mark_generation_failed(
+        self,
+        plan: AgentPlanRequest,
+        errors: list[str],
+        *,
+        planner_metadata: dict[str, Any] | None = None,
+    ) -> None:
+        plan.status = "planning_failed"
+        plan.plan_hash = None
+        metadata = dict(plan.metadata_json or {})
+        metadata["planning_errors"] = errors
+        metadata.update(planner_metadata or {})
+        plan.metadata_json = metadata
+        logger.info(
+            "plan_generation_failed",
+            extra={"plan_id": str(plan.id), "errors": errors},
+        )
+
+    def _apply_generation(
+        self,
+        plan: AgentPlanRequest,
+        planner_plan_json: dict[str, Any],
+        *,
+        planner_metadata: dict[str, Any] | None = None,
+        plan_markdown: str = "",
+    ) -> None:
         skeleton = core.build_plan_skeleton(
             intent_type=plan.intent_type,
-            title=str(fill.get("title") or plan.plan_json.get("title") or plan.intent_type),
+            title=str(planner_plan_json.get("title") or plan.plan_json.get("title") or plan.intent_type),
             original_request=plan.original_request,
         )
-        merged = {**skeleton, **{k: v for k, v in fill.items() if k != "schema"}}
+        merged = {**skeleton, **{k: v for k, v in planner_plan_json.items() if k != "schema"}}
         # intent_type is owned by the row, never by caller-supplied fill.
         merged["schema"] = core.PLAN_SCHEMA
         merged["intent_type"] = plan.intent_type
 
         errors = core.validate_plan_json(merged)
         if errors:
-            plan.status = "planning_failed"
-            plan.plan_hash = None
-            metadata = dict(plan.metadata_json or {})
-            metadata["planning_errors"] = errors
-            plan.metadata_json = metadata
-            logger.info(
-                "plan_generation_failed",
-                extra={"plan_id": str(plan.id), "errors": errors},
-            )
+            self._mark_generation_failed(plan, errors, planner_metadata=planner_metadata)
             return
+
+        metadata = dict(plan.metadata_json or {})
+        metadata.update(planner_metadata or {})
+        metadata["author_type"] = "agent"
+        metadata["planner_prompt_version"] = metadata.get("planner_prompt_version") or "agent_plan_v1"
+        metadata["planner_source"] = plan.source
+        metadata["quality_checks"] = {
+            "schema_valid": True,
+            "has_steps": bool(merged.get("steps")),
+            "has_stop_conditions": bool(merged.get("stop_conditions")),
+            "has_success_criteria": bool(merged.get("success_criteria")),
+        }
+        if plan_markdown:
+            metadata["planner_markdown_preview"] = plan_markdown[:4000]
 
         plan.plan_json = merged
         plan.plan_hash = core.compute_plan_hash(merged)
         plan.status = "awaiting_confirmation"
         plan.plan_markdown_path = self._render_and_write_markdown(plan)
         # Clear any stale failure metadata from a previous attempt.
-        if plan.metadata_json and "planning_errors" in plan.metadata_json:
-            metadata = dict(plan.metadata_json)
+        if "planning_errors" in metadata:
             metadata.pop("planning_errors", None)
-            plan.metadata_json = metadata
+        plan.metadata_json = metadata
 
     # -- revise -----------------------------------------------------------
 
@@ -398,6 +560,7 @@ class PlanModeService:
         Raises:
             LookupError: if ``plan_id`` does not exist.
         """
+        new_plan_id: UUID | None = None
         async with async_session() as db:
             try:
                 old = await self._load(db, plan_id)
@@ -413,7 +576,7 @@ class PlanModeService:
                     source=old.source,
                     intent_type=old.intent_type,
                     original_request=old.original_request,
-                    status="planning",
+                    status="draft",
                     plan_version=old.plan_version + 1,
                     plan_json={"title": old.plan_json.get("title")} if old.plan_json else {},
                     metadata_json={"revised_from_plan_id": str(old.id)},
@@ -421,10 +584,9 @@ class PlanModeService:
                 db.add(new_plan)
                 await db.flush()  # assign new_plan.id
 
-                self._apply_generation(new_plan, fill or {})
-
                 old.status = "superseded"
                 old.superseded_by_plan_id = new_plan.id
+                new_plan_id = new_plan.id
 
                 await db.commit()
             except LookupError:
@@ -433,7 +595,9 @@ class PlanModeService:
             except Exception:
                 await db.rollback()
                 raise
-        return new_plan
+        if new_plan_id is None:
+            raise LookupError(f"plan {plan_id} not found")
+        return await self.generate_plan(plan_id=new_plan_id, fill=fill or {})
 
     # -- confirm ----------------------------------------------------------
 

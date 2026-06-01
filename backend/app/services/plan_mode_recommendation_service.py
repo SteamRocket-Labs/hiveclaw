@@ -110,6 +110,22 @@ async def find_latest_recommendation_for_decline(
     return result.scalar_one_or_none()
 
 
+async def find_latest_recommendation_for_accept(
+    db: Any,
+    *,
+    agent_id: UUID,
+    user_id: UUID | None,
+    session_id: str | None,
+) -> AgentPlanRecommendation | None:
+    """Find the latest recommendation this user can accept in this session."""
+    return await find_latest_recommendation_for_decline(
+        db,
+        agent_id=agent_id,
+        user_id=user_id,
+        session_id=session_id,
+    )
+
+
 def decline_recommendation(
     recommendation: AgentPlanRecommendation,
     *,
@@ -119,6 +135,18 @@ def decline_recommendation(
     recommendation.status = "declined"
     recommendation.declined_by_user_id = user_id
     recommendation.declined_at = datetime.now(timezone.utc)
+    return recommendation
+
+
+def accept_recommendation(
+    recommendation: AgentPlanRecommendation,
+    *,
+    user_id: UUID,
+) -> AgentPlanRecommendation:
+    """Mark a recommendation accepted by the authenticated user."""
+    recommendation.status = "accepted"
+    recommendation.accepted_by_user_id = user_id
+    recommendation.accepted_at = datetime.now(timezone.utc)
     return recommendation
 
 
@@ -138,6 +166,24 @@ async def decline_latest_recommendation_for_user(
     if recommendation is None or user_id is None:
         return None
     return decline_recommendation(recommendation, user_id=user_id)
+
+
+async def accept_latest_recommendation_for_user(
+    db: Any,
+    *,
+    agent_id: UUID,
+    user_id: UUID | None,
+    session_id: str | None,
+) -> AgentPlanRecommendation | None:
+    recommendation = await find_latest_recommendation_for_accept(
+        db,
+        agent_id=agent_id,
+        user_id=user_id,
+        session_id=session_id,
+    )
+    if recommendation is None or user_id is None:
+        return None
+    return accept_recommendation(recommendation, user_id=user_id)
 
 
 async def require_declined_plan_recommendation(
@@ -188,9 +234,12 @@ async def require_declined_plan_recommendation(
 
 __all__ = [
     "PlanRecommendationError",
+    "accept_latest_recommendation_for_user",
+    "accept_recommendation",
     "create_plan_recommendation",
     "decline_latest_recommendation_for_user",
     "decline_recommendation",
+    "find_latest_recommendation_for_accept",
     "find_latest_recommendation_for_decline",
     "require_declined_plan_recommendation",
 ]

@@ -232,6 +232,24 @@ class _RecordingIntake:
         return self.plan
 
 
+class _RecommendationSession:
+    def __init__(self, recommendation):
+        self.recommendation = recommendation
+        self.commits = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_a):
+        return False
+
+    async def execute(self, _stmt):
+        return _ScalarResult(self.recommendation)
+
+    async def commit(self):
+        self.commits += 1
+
+
 @pytest.mark.asyncio
 async def test_maybe_sync_created_task_without_plan_creates_plan_and_skips_execution(monkeypatch):
     import app.services.web_chat_runtime as runtime
@@ -274,6 +292,54 @@ async def test_maybe_sync_created_task_without_plan_creates_plan_and_skips_execu
     # User is told to confirm, with the plan id surfaced.
     assert str(plan.id) in result
     assert "确认" in result or "confirm" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_plan_mode_accepts_latest_recommendation_instead_of_reclassifying_as_long_task(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    tenant_id = uuid4()
+    plan = SimpleNamespace(id=uuid4(), plan_version=1, plan_hash="sha256:abc")
+    intake = _RecordingIntake(plan)
+    monkeypatch.setattr(runtime, "get_plan_mode_service", lambda: intake)
+
+    recommendation = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id="sess-accept",
+        runtime_task_id=uuid4(),
+        recommended_to_user_id=user_id,
+        status="recommended",
+        original_request="每天 13:00 自动检查 Reddit 帖子并总结投资观点",
+        title="每天 13:00 自动检查 Reddit 帖子",
+        intent_type="autonomous_wake",
+        action_kind="create_enabled_trigger",
+        tool_name="set_trigger",
+        accepted_by_user_id=None,
+        accepted_at=None,
+    )
+    recommendation_db = _RecommendationSession(recommendation)
+    monkeypatch.setattr(runtime, "_async_session", lambda: recommendation_db)
+
+    response = await runtime._maybe_handle_plan_mode_entry(
+        agent_id=agent_id,
+        user_id=user_id,
+        tenant_id=tenant_id,
+        session_id="sess-accept",
+        runtime_task_id=uuid4(),
+        content="进入计划模式",
+    )
+
+    assert response and str(plan.id) in response
+    assert recommendation.status == "accepted"
+    assert recommendation.accepted_by_user_id == user_id
+    assert intake.calls and intake.calls[0]["action_kind"] == "create_enabled_trigger"
+    assert intake.calls[0]["tool_name"] == "set_trigger"
+    assert intake.calls[0]["arguments"]["reason"] == recommendation.original_request
+    assert "每天 13:00" in intake.calls[0]["arguments"]["name"]
 
 
 @pytest.mark.asyncio

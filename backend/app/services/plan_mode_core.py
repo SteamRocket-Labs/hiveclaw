@@ -96,6 +96,20 @@ _DECLINE_PLAN_MODE_RE = re.compile(
     r"(skip|decline|no)\s+(the\s+)?(plan\s*mode|planning\s*mode))",
     re.IGNORECASE,
 )
+_ACCEPT_PLAN_MODE_RE = re.compile(
+    r"^\s*((同意|好|可以|行|开始|确认).{0,8})?(进入计划模式|进入计划|用计划模式|plan\s*mode|planning\s*mode)"
+    r"([。.!！])?\s*$",
+    re.IGNORECASE,
+)
+_UUID_RE = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+_PLAN_ID_CONFIRM_RE = re.compile(
+    rf"^\s*(确认|同意|批准|开始|执行|confirm|approve|start).{{0,16}}(?:plan_id|计划)\s*[=:：]?\s*({_UUID_RE})\s*[。.!！]?\s*$",
+    re.IGNORECASE,
+)
+_LATEST_PLAN_CONFIRM_RE = re.compile(
+    r"^\s*(确认|同意|批准|开始|执行|confirm|approve|start).{0,10}(上一个|这个|该|当前|latest|current).{0,8}(计划|plan)\s*[。.!！]?\s*$",
+    re.IGNORECASE,
+)
 _SCHEDULE_RE = re.compile(
     r"(每天|每周|每月|每小时|定时|定期|到时候|提醒我|监控|盯着|盯一下|有变化|"
     r"schedule|cron|daily|weekly|monthly|monitor|watch)",
@@ -109,6 +123,38 @@ _LONG_TASK_RE = re.compile(
 
 PLAN_MODE_RECOMMENDATION_MARKER = "建议先进入计划模式，确认执行频率、范围、成本、停止条件和通知方式"
 PLAN_MODE_TRUSTED_DECLINE_SESSION_KEY = "plan_mode_trusted_user_decline"
+
+
+@dataclass(frozen=True)
+class PlanConfirmationRequest:
+    """A trusted channel text request to confirm a Plan Mode plan."""
+
+    plan_id: str | None = None
+    latest: bool = False
+
+
+def is_plan_mode_acceptance_reply(content: str) -> bool:
+    """Return true only for a bare acceptance of the latest Plan Mode recommendation."""
+    return bool(_ACCEPT_PLAN_MODE_RE.search(str(content or "")))
+
+
+def extract_plan_confirmation_request(content: str) -> PlanConfirmationRequest | None:
+    """Parse channel text that explicitly confirms an awaiting plan.
+
+    This intentionally does not treat a bare "确认" as plan confirmation: channel
+    users may be confirming recipients, facts, or other workflow details. The
+    message must either carry a plan_id or explicitly refer to the latest/current
+    plan in the conversation.
+    """
+    text = str(content or "").strip()
+    if not text:
+        return None
+    match = _PLAN_ID_CONFIRM_RE.search(text)
+    if match:
+        return PlanConfirmationRequest(plan_id=match.group(2).lower(), latest=False)
+    if _LATEST_PLAN_CONFIRM_RE.search(text):
+        return PlanConfirmationRequest(latest=True)
+    return None
 
 
 def classify_plan_mode_entry(content: str, *, explicit: bool = False) -> PlanModeEntryDecision:
@@ -467,6 +513,34 @@ def tool_args_to_plan_fill(*, tool_name: str, action_kind: str, arguments: dict)
         fill["wake_policy"] = _wake_policy_from_trigger_args(arguments)
     else:
         fill["wake_policy"] = {"type": "none"}
+
+    if intent_type == "delegation":
+        payload = {
+            key: arguments[key]
+            for key in (
+                "agent_name",
+                "target_agent_id",
+                "message",
+                "tool_profile",
+                "max_tool_rounds",
+                "parent_session_id",
+            )
+            if arguments.get(key) is not None
+        }
+        fill["handoff"] = {
+            "target": "delegation",
+            "create_objective": False,
+            "create_trigger": False,
+            "payload": payload,
+        }
+        fill["external_side_effects"] = [
+            {
+                "kind": "agent_delegation",
+                "channel": "internal",
+                "audience": _first_nonblank(arguments.get("agent_name"), arguments.get("target_agent_id")),
+                "requires_confirmation": True,
+            }
+        ]
 
     return fill
 

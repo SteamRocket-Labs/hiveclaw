@@ -137,7 +137,7 @@ describe('ChatWorkLedgerDock', () => {
     expect(markup).not.toContain('Work ledger is not available yet.');
   });
 
-  it('renders a Claude Code style task list summary with canonical task states', () => {
+  it('renders only the Claude Code style task list in the persistent dock', () => {
     queryHarness.sessionData = {
       schema: 'agent_work_ledger_view.v1',
       runtime_task_id: 'task-current',
@@ -155,7 +155,11 @@ describe('ChatWorkLedgerDock', () => {
         },
         { id: '3', title: 'Write final report', status: 'pending', required: true },
       ],
+      verification: [{ id: 'verify-1', title: 'Audit evidence links', status: 'pending' }],
+      progress: [{ id: 'progress-1', status: 'completed', delta: 'Fetched source ledger' }],
+      failures: [{ id: 'failure-1', attempt: 'fetch', error: 'Temporary source timeout' }],
       counts: { todos_total: 3, todos_complete: 1, todos_open: 2 },
+      path: 'runtime_artifacts/long_tasks/task-current/work_ledger.json',
     };
 
     const markup = renderToStaticMarkup(
@@ -168,10 +172,17 @@ describe('ChatWorkLedgerDock', () => {
     );
 
     expect(markup).toContain('data-testid="agent-task-list"');
-    expect(markup).toContain('3 tasks');
-    expect(markup).toContain('1 done');
-    expect(markup).toContain('1 in progress');
-    expect(markup).toContain('1 open');
     expect(markup).toContain('Collecting and grading sources');
+    expect(markup).not.toContain('Agent tasks');
+    expect(markup).not.toContain('3 tasks');
+    expect(markup).not.toContain('Current');
+    expect(markup).not.toContain('Next');
+    expect(markup).not.toContain('task-current');
+    expect(markup).not.toContain('Verification');
+    expect(markup).not.toContain('Progress');
+    expect(markup).not.toContain('Blockers');
+    expect(markup).not.toContain('runtime_artifacts/long_tasks');
+    expect(markup).not.toContain('Fetched source ledger');
+    expect(markup).not.toContain('Temporary source timeout');
   });
 });

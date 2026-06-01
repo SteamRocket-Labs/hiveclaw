@@ -1460,8 +1460,6 @@ export default function AgentChatSection({
                 agentId={String(agent.id)}
                 sessionId={String(activeSession.id)}
                 runtimeTaskId={fallbackWorkLedger?.runtimeTaskId}
-                title={fallbackWorkLedger?.title}
-                showDeepResearchStream={Boolean(fallbackWorkLedger?.showDeepResearchStream)}
                 live={workLedgerLive}
               />
             )}

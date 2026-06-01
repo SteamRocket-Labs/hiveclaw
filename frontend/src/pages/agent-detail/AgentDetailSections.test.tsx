@@ -1142,7 +1142,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Confirm and start');
   });
 
-  it('renders a running Deep Research work ledger dock above the chat composer', () => {
+  it('renders the running task todo dock above the chat composer', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
         agent={{ id: 'agent-1', name: 'Research Bot' }}
@@ -1222,9 +1222,9 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup).toContain('data-testid="chat-work-ledger-dock"');
-    expect(markup).toContain('Deep Research');
     expect(markup).toContain('Collect and grade sources');
     expect(markup).toContain('Write final report');
+    expect(markup).not.toContain('Deep Research');
     expect(markup.indexOf('data-testid="chat-work-ledger-dock"')).toBeLessThan(markup.indexOf('chat-input'));
   });
 

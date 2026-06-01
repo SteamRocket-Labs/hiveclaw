@@ -69,6 +69,7 @@ ITEM_TYPE_VIDEO = 5
 
 # ── AES-128-ECB helpers ─────────────────────────────────
 
+
 def _pkcs7_pad(data: bytes, block_size: int = 16) -> bytes:
     pad_len = block_size - (len(data) % block_size)
     return data + bytes([pad_len] * pad_len)
@@ -97,7 +98,20 @@ def aes_ecb_decrypt(ciphertext: bytes, key: bytes) -> bytes:
 
 def aes_ecb_padded_size(plaintext_size: int) -> int:
     """Calculate ciphertext size after AES-ECB + PKCS7 padding."""
-    return ((plaintext_size + 15) // 16) * 16
+    if plaintext_size < 0:
+        raise ValueError("plaintext_size must be non-negative")
+    return ((plaintext_size // 16) + 1) * 16
+
+
+def _summarize_upload_response(data: dict[str, Any]) -> dict[str, Any]:
+    """Keep getuploadurl observability without logging CDN bearer-like params."""
+    return {
+        "ret": data.get("ret", 0),
+        "errcode": data.get("errcode"),
+        "errmsg": data.get("errmsg"),
+        "has_upload_url": bool(data.get("upload_full_url") or data.get("upload_param")),
+        "has_thumb_upload_url": bool(data.get("thumb_upload_param")),
+    }
 
 
 def parse_aes_key(aes_key_b64: str) -> bytes:
@@ -119,9 +133,11 @@ def parse_aes_key(aes_key_b64: str) -> bytes:
 
 # ── Data classes ─────────────────────────────────────────
 
+
 @dataclass
 class QRCodeResult:
     """Result from get_bot_qrcode."""
+
     qrcode: str  # token for status polling
     qrcode_img_url: str  # URL to render in frontend
 
@@ -129,6 +145,7 @@ class QRCodeResult:
 @dataclass
 class QRStatusResult:
     """Result from get_qrcode_status."""
+
     status: str  # wait | scaned | confirmed | expired
     bot_token: str | None = None
     ilink_bot_id: str | None = None
@@ -139,6 +156,7 @@ class QRStatusResult:
 @dataclass
 class MediaRef:
     """Reference to an encrypted media file on WeChat CDN."""
+
     encrypt_query_param: str
     aes_key: str  # base64-encoded
     encrypt_type: int = 1
@@ -147,6 +165,7 @@ class MediaRef:
 @dataclass
 class UploadResult:
     """Result from CDN upload pipeline."""
+
     download_param: str  # x-encrypted-param from CDN response
     aes_key_hex: str  # hex-encoded AES key
     plaintext_size: int
@@ -156,6 +175,7 @@ class UploadResult:
 @dataclass
 class InboundMessage:
     """A single inbound message from getupdates."""
+
     seq: int
     message_id: int
     from_user_id: str
@@ -177,6 +197,7 @@ class InboundMessage:
 @dataclass
 class GetUpdatesResult:
     """Result from getupdates."""
+
     messages: list[InboundMessage]
     sync_buf: str  # base64-encoded state for next call
     poll_timeout_ms: int = 35000
@@ -185,10 +206,12 @@ class GetUpdatesResult:
 @dataclass
 class BotConfig:
     """Result from getconfig."""
+
     typing_ticket: str = ""
 
 
 # ── Client ───────────────────────────────────────────────
+
 
 class ILinkClient:
     """Async HTTP client for the iLink Bot API."""
@@ -198,8 +221,8 @@ class ILinkClient:
 
     def _auth_headers(self, bot_token: str) -> dict[str, str]:
         """Build authentication headers for authorized API calls."""
-        # X-WECHAT-UIN is a random identifier per request
-        uin = secrets.token_urlsafe(6)
+        # Match openclaw-weixin: random uint32 decimal string encoded as base64.
+        uin = base64.b64encode(str(secrets.randbits(32)).encode("utf-8")).decode("ascii")
         return {
             "Authorization": f"Bearer {bot_token}",
             "AuthorizationType": "ilink_bot_token",
@@ -344,23 +367,25 @@ class ILinkClient:
                             encrypt_type=media.get("encrypt_type", 1),
                         )
 
-            messages.append(InboundMessage(
-                seq=msg.get("seq", 0),
-                message_id=msg.get("message_id", 0),
-                from_user_id=msg.get("from_user_id", ""),
-                to_user_id=msg.get("to_user_id", ""),
-                session_id=msg.get("session_id", ""),
-                create_time_ms=msg.get("create_time_ms", 0),
-                context_token=msg.get("context_token", ""),
-                message_type=msg.get("message_type", 0),
-                text=text,
-                voice_text=voice_text,
-                image_media=image_media,
-                file_name=file_name,
-                file_media=file_media,
-                video_media=video_media,
-                raw_items=msg.get("item_list", []),
-            ))
+            messages.append(
+                InboundMessage(
+                    seq=msg.get("seq", 0),
+                    message_id=msg.get("message_id", 0),
+                    from_user_id=msg.get("from_user_id", ""),
+                    to_user_id=msg.get("to_user_id", ""),
+                    session_id=msg.get("session_id", ""),
+                    create_time_ms=msg.get("create_time_ms", 0),
+                    context_token=msg.get("context_token", ""),
+                    message_type=msg.get("message_type", 0),
+                    text=text,
+                    voice_text=voice_text,
+                    image_media=image_media,
+                    file_name=file_name,
+                    file_media=file_media,
+                    video_media=video_media,
+                    raw_items=msg.get("item_list", []),
+                )
+            )
 
         new_buf = data.get("get_updates_buf", sync_buf)
         poll_timeout = data.get("longpolling_timeout_ms", 35000)
@@ -509,7 +534,10 @@ class ILinkClient:
         # Calculate sizes
         raw_size = len(file_data)
         raw_md5 = hashlib.md5(file_data).hexdigest()
+        ciphertext = aes_ecb_encrypt(file_data, aes_key_bytes)
         cipher_size = aes_ecb_padded_size(raw_size)
+        if len(ciphertext) != cipher_size:
+            raise ILinkAPIError(f"ciphertext size mismatch: declared={cipher_size} actual={len(ciphertext)}")
 
         # Step 1: Get upload URL
         url = f"{self._base_url}/ilink/bot/getuploadurl"
@@ -530,14 +558,17 @@ class ILinkClient:
             "base_info": {"channel_version": channel_version},
         }
 
-        logger.info(f"[iLink] getuploadurl request: media_type={media_type} rawsize={raw_size} cipher_size={cipher_size} to={to_user_id[:12]}...")
+        logger.info(
+            f"[iLink] getuploadurl request: media_type={media_type} rawsize={raw_size} "
+            f"cipher_size={cipher_size} to={to_user_id[:12]}..."
+        )
 
         async with httpx.AsyncClient(timeout=SEND_TIMEOUT) as client:
             resp = await client.post(url, headers=headers, json=body)
             resp.raise_for_status()
             data = resp.json()
 
-        logger.info(f"[iLink] getuploadurl response: {data}")
+        logger.info(f"[iLink] getuploadurl response: {_summarize_upload_response(data)}")
 
         ret = data.get("ret", 0)
         if ret != 0:
@@ -556,8 +587,6 @@ class ILinkClient:
                 raise ILinkAPIError(f"getuploadurl returned no upload URL, full response: {data}")
             cdn_url = f"{cdn_base_url}/upload?encrypted_query_param={quote(upload_param)}&filekey={quote(filekey)}"
 
-        # Step 2: Encrypt file
-        ciphertext = aes_ecb_encrypt(file_data, aes_key_bytes)
         download_param = ""
 
         for attempt in range(CDN_MAX_RETRIES):
@@ -633,8 +662,8 @@ class ILinkClient:
         headers = self._auth_headers(bot_token)
         client_id = f"hiveclaw-{secrets.token_hex(8)}"
 
-        # Build aes_key as base64(hex_string) for outbound
-        aes_key_b64 = base64.b64encode(bytes.fromhex(upload.aes_key_hex)).decode()
+        # openclaw-weixin sends base64(hex_string), not base64(raw 16 bytes).
+        aes_key_b64 = base64.b64encode(upload.aes_key_hex.encode("ascii")).decode()
 
         media_ref = {
             "encrypt_query_param": upload.download_param,
@@ -687,6 +716,7 @@ class ILinkClient:
 
 
 # ── Exceptions ───────────────────────────────────────────
+
 
 class ILinkAPIError(Exception):
     """General iLink API error."""

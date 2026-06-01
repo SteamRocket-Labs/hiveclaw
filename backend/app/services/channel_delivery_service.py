@@ -7,7 +7,7 @@ import mimetypes
 import uuid
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -222,6 +222,73 @@ class ChannelDeliveryService:
     ) -> DeliveryResult:
         return DeliveryResult(
             ok=False, status=status, channel=channel, message=message, retryable=retryable, detail=detail
+        )
+
+    @staticmethod
+    def _agent_relative_file_path(agent_id: uuid.UUID, path: Path) -> str:
+        from app.config import get_settings
+
+        base = (Path(get_settings().AGENT_DATA_DIR) / str(agent_id)).resolve()
+        try:
+            return str(path.resolve().relative_to(base))
+        except ValueError:
+            return path.name
+
+    @staticmethod
+    async def _send_wechat_file_fallback_link(
+        *,
+        agent_id: uuid.UUID,
+        config: ChannelConfig | Any,
+        target: dict[str, Any],
+        path: Path,
+        message: str,
+        delivery_error: Exception,
+    ) -> DeliveryResult:
+        from app.services.file_download_tokens import build_channel_file_download_url
+        from app.services.wechat_ilink_client import ILinkClient, TEXT_MESSAGE_MAX_LEN
+        from app.services.wechat_personal_service import get_channel_credentials, get_context_token
+
+        creds = get_channel_credentials(config) or {}
+        base_url = creds.get("base_url")
+        bot_token = creds.get("bot_token")
+        to_user_id = str(target.get("to_user_id") or "").strip()
+        context_token = target.get("context_token") or await get_context_token(agent_id, to_user_id)
+        if not to_user_id:
+            raise ValueError("missing to_user_id")
+        if not context_token:
+            raise ValueError("missing context_token for WeChat fallback link")
+        if not bot_token:
+            raise ValueError("missing bot_token for WeChat fallback link")
+
+        rel_path = ChannelDeliveryService._agent_relative_file_path(agent_id, path)
+        download_url = build_channel_file_download_url(
+            agent_id=agent_id,
+            path=rel_path,
+            expires_delta=timedelta(hours=24),
+        )
+        parts = []
+        if message:
+            parts.append(message)
+        parts.extend(
+            [
+                "微信文件直传失败，已生成备用下载链接。",
+                f"文件：{path.name}",
+                f"下载链接（24小时有效）：{download_url}",
+                "直传错误：微信文件通道暂时不可用。",
+            ]
+        )
+        await ILinkClient(base_url).send_message(
+            bot_token=bot_token,
+            to_user_id=to_user_id,
+            context_token=context_token,
+            text="\n".join(parts)[:TEXT_MESSAGE_MAX_LEN],
+        )
+        return ChannelDeliveryService._success(
+            "wechat_personal",
+            "WeChat personal file fallback link delivered.",
+            file_name=path.name,
+            to_user_id=to_user_id,
+            fallback_used=True,
         )
 
     @staticmethod
@@ -566,7 +633,26 @@ class ChannelDeliveryService:
                 )
         except Exception as exc:
             logger.warning(f"[ChannelDelivery] File delivery failed via {channel}: {exc}")
-            result = ChannelDeliveryService._failed(channel, str(exc), retryable=True, file_name=path.name)
+            if channel == "wechat_personal":
+                try:
+                    result = await ChannelDeliveryService._send_wechat_file_fallback_link(
+                        agent_id=agent_id,
+                        config=config,
+                        target=target,
+                        path=path,
+                        message=message,
+                        delivery_error=exc,
+                    )
+                except Exception as fallback_exc:
+                    logger.warning(f"[ChannelDelivery] WeChat file fallback failed: {fallback_exc}")
+                    result = ChannelDeliveryService._failed(
+                        channel,
+                        f"{exc}; fallback failed: {fallback_exc}",
+                        retryable=True,
+                        file_name=path.name,
+                    )
+            else:
+                result = ChannelDeliveryService._failed(channel, str(exc), retryable=True, file_name=path.name)
 
         await ChannelDeliveryService._log_result(
             agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail

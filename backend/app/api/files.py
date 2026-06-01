@@ -14,6 +14,11 @@ from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.user import User
+from app.services.file_download_tokens import (
+    InvalidChannelFileDownloadToken,
+    NotChannelFileDownloadToken,
+    verify_channel_file_download_token,
+)
 from app.services.skill_guard import SkillGuardReport, scan_skill_files
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -85,17 +90,19 @@ async def list_files(
     items = []
     base_abs = _agent_base_dir(agent_id).resolve()
     for entry in sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name)):
-        if entry.name == '.gitkeep':
+        if entry.name == ".gitkeep":
             continue
         rel = str(entry.resolve().relative_to(base_abs))
         stat = entry.stat()
-        items.append(FileInfo(
-            name=entry.name,
-            path=rel,
-            is_dir=entry.is_dir(),
-            size=stat.st_size if entry.is_file() else 0,
-            modified_at=str(stat.st_mtime),
-        ))
+        items.append(
+            FileInfo(
+                name=entry.name,
+                path=rel,
+                is_dir=entry.is_dir(),
+                size=stat.st_size if entry.is_file() else 0,
+                modified_at=str(stat.st_mtime),
+            )
+        )
     return items
 
 
@@ -117,10 +124,36 @@ async def read_file(
             return FileContent(path=path, content="")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
 
-    _BINARY_EXTS = {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp",
-                     ".zip", ".tar", ".gz", ".7z", ".rar", ".exe", ".dll", ".so",
-                     ".woff", ".woff2", ".ttf", ".otf", ".mp3", ".mp4", ".wav",
-                     ".sqlite", ".db", ".bin", ".pyc", ".pyo"}
+    _BINARY_EXTS = {
+        ".pdf",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".bmp",
+        ".ico",
+        ".webp",
+        ".zip",
+        ".tar",
+        ".gz",
+        ".7z",
+        ".rar",
+        ".exe",
+        ".dll",
+        ".so",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".otf",
+        ".mp3",
+        ".mp4",
+        ".wav",
+        ".sqlite",
+        ".db",
+        ".bin",
+        ".pyc",
+        ".pyo",
+    }
     if target.suffix.lower() in _BINARY_EXTS:
         return FileContent(path=path, content=f"[二进制文件: {target.name}, {target.stat().st_size} bytes]")
 
@@ -141,10 +174,23 @@ async def download_file(
     db: AsyncSession = Depends(get_db),
 ):
     """Download / serve a file from the agent workspace (browser-friendly).
-    
-    Auth via Bearer header OR `token` query parameter (for <img> tags).
+
+    Auth via Bearer header, access-token query parameter, or scoped channel file token.
     """
     from app.core.security import decode_access_token
+
+    if token:
+        try:
+            verify_channel_file_download_token(token=token, agent_id=agent_id, path=path)
+        except NotChannelFileDownloadToken:
+            pass
+        except InvalidChannelFileDownloadToken as exc:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+        else:
+            target = _safe_path(agent_id, path)
+            if not target.exists() or not target.is_file():
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+            return FileResponse(path=str(target), filename=target.name)
 
     # Resolve JWT token from either Bearer header or query param
     jwt_token = None
@@ -208,6 +254,7 @@ async def delete_file(
 
     if target.is_dir():
         import shutil
+
         shutil.rmtree(target)
     else:
         target.unlink()
@@ -237,9 +284,7 @@ async def import_skill_to_agent(
     from app.models.skill import Skill
 
     # Load the global skill with its files
-    result = await db.execute(
-        select(Skill).where(Skill.id == body.skill_id).options(selectinload(Skill.files))
-    )
+    result = await db.execute(select(Skill).where(Skill.id == body.skill_id).options(selectinload(Skill.files)))
     skill = result.scalar_one_or_none()
     from app.api.skills import _skill_visible_to_user
 
@@ -308,6 +353,7 @@ async def upload_file_to_workspace(
     # Auto-extract text from non-text files
     extracted_path = None
     from app.services.text_extractor import needs_extraction, save_extracted_text
+
     if needs_extraction(filename):
         txt_file = save_extracted_text(save_path, content, filename)
         if txt_file:
@@ -332,6 +378,7 @@ enterprise_kb_router = APIRouter(prefix="/enterprise/knowledge-base", tags=["ent
 async def openviking_status(current_user: User = Depends(get_current_user)):
     """Check OpenViking connection status for the KB status indicator."""
     from app.services.viking_client import is_configured, _get_client
+
     if not is_configured():
         return {"connected": False, "reason": "not_configured"}
     client = _get_client()
@@ -377,16 +424,18 @@ async def list_enterprise_kb_files(
 
     items = []
     for entry in sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name)):
-        if entry.name == '.gitkeep':
+        if entry.name == ".gitkeep":
             continue
         rel = str(entry.resolve().relative_to(info_dir.resolve()))
         stat = entry.stat()
-        items.append({
-            "name": entry.name,
-            "path": rel,
-            "is_dir": entry.is_dir(),
-            "size": stat.st_size if entry.is_file() else 0,
-        })
+        items.append(
+            {
+                "name": entry.name,
+                "path": rel,
+                "is_dir": entry.is_dir(),
+                "size": stat.st_size if entry.is_file() else 0,
+            }
+        )
     return items
 
 
@@ -419,6 +468,7 @@ async def upload_enterprise_kb_file(
     # Auto-extract text from non-text files
     extracted_path = None
     from app.services.text_extractor import needs_extraction, save_extracted_text
+
     if needs_extraction(filename):
         txt_file = save_extracted_text(save_path, content, filename)
         if txt_file:
@@ -427,6 +477,7 @@ async def upload_enterprise_kb_file(
     # Auto-index in OpenViking (fire-and-forget, non-blocking)
     try:
         from app.services.viking_client import is_configured, add_resource
+
         if is_configured() and current_user.tenant_id:
             text_content = content.decode("utf-8", errors="ignore") if not needs_extraction(filename) else ""
             if extracted_path:
@@ -434,15 +485,23 @@ async def upload_enterprise_kb_file(
                 text_content = txt_path.read_text(errors="ignore") if txt_path.exists() else text_content
             if text_content.strip():
                 import asyncio
-                uri = f"viking://enterprise/knowledge_base/{sub_path}/{filename}" if sub_path else f"viking://enterprise/knowledge_base/{filename}"
-                asyncio.create_task(add_resource(
-                    content=text_content[:50000],
-                    to=uri,
-                    tenant_id=str(current_user.tenant_id),
-                    reason=f"Enterprise KB upload: {filename}",
-                ))
+
+                uri = (
+                    f"viking://enterprise/knowledge_base/{sub_path}/{filename}"
+                    if sub_path
+                    else f"viking://enterprise/knowledge_base/{filename}"
+                )
+                asyncio.create_task(
+                    add_resource(
+                        content=text_content[:50000],
+                        to=uri,
+                        tenant_id=str(current_user.tenant_id),
+                        reason=f"Enterprise KB upload: {filename}",
+                    )
+                )
     except Exception as e:
         import logging
+
         logging.getLogger(__name__).warning("OpenViking auto-index skipped: %s", e)
 
     return {
@@ -519,6 +578,7 @@ async def delete_enterprise_file(
 
     if target.is_dir():
         import shutil
+
         shutil.rmtree(target)
     else:
         target.unlink()
@@ -527,8 +587,10 @@ async def delete_enterprise_file(
 
 # ─── Agent-level ClawHub / URL Skill Import ─────────────────
 
+
 class ClawhubImportBody(BaseModel):
     slug: str
+
 
 class UrlImportBody(BaseModel):
     url: str
@@ -545,7 +607,9 @@ async def agent_import_from_clawhub(
     await check_agent_access(db, current_user, agent_id)
 
     from app.api.skills import (
-        CLAWHUB_BASE, _fetch_github_directory, _get_github_token,
+        CLAWHUB_BASE,
+        _fetch_github_directory,
+        _get_github_token,
     )
     import httpx
 

@@ -102,15 +102,11 @@ class TestResolveCapabilities:
 
 class TestIdentityFromDeliveryTarget:
     def test_wecom_identity_uses_user_id(self) -> None:
-        identity = ChannelDeliveryService.identity_from_delivery_target(
-            {"channel": "wecom", "user_id": "zhangsan"}
-        )
+        identity = ChannelDeliveryService.identity_from_delivery_target({"channel": "wecom", "user_id": "zhangsan"})
         assert identity == "wecom:zhangsan"
 
     def test_web_identity_uses_username(self) -> None:
-        identity = ChannelDeliveryService.identity_from_delivery_target(
-            {"channel": "web", "username": "alice"}
-        )
+        identity = ChannelDeliveryService.identity_from_delivery_target({"channel": "web", "username": "alice"})
         assert identity == "web:alice"
 
 
@@ -270,12 +266,14 @@ class TestSendText:
             title="Existing",
             source_channel="web",
         )
-        db = _SequenceDB([
-            target_user,
-            existing_session,
-            None,  # apply_web_session_contract conflict lookup
-            SimpleNamespace(id=agent_id, name="Web Agent"),
-        ])
+        db = _SequenceDB(
+            [
+                target_user,
+                existing_session,
+                None,  # apply_web_session_contract conflict lookup
+                SimpleNamespace(id=agent_id, name="Web Agent"),
+            ]
+        )
         pushed: list[dict] = []
 
         class _FakeWS:
@@ -353,3 +351,58 @@ class TestSendFile:
 
         assert result.ok is False
         assert logged == [("[ChannelDelivery] File delivery failed via telegram: telegram upload down", ())]
+
+    @pytest.mark.asyncio
+    async def test_send_file_wechat_falls_back_to_signed_download_link(self, monkeypatch, tmp_path) -> None:
+        import app.services.wechat_ilink_client as ilink_mod
+
+        agent_id = uuid4()
+        file_path = tmp_path / "Serenity_投资观点追踪.md"
+        file_path.write_text("report", encoding="utf-8")
+        sent_texts: list[str] = []
+
+        class FakeILinkClient:
+            def __init__(self, _base_url):
+                pass
+
+            async def send_message(self, *, bot_token, to_user_id, context_token, text):
+                sent_texts.append(text)
+
+            async def upload_media(self, **_kwargs):
+                raise RuntimeError("cdn upload rejected")
+
+        monkeypatch.setattr(ilink_mod, "ILinkClient", FakeILinkClient)
+        monkeypatch.setattr(
+            "app.services.wechat_personal_service.get_channel_credentials",
+            lambda _config: {"base_url": "https://ilink.example", "bot_token": "bot-token"},
+        )
+        monkeypatch.setattr(
+            "app.services.file_download_tokens.build_channel_file_download_url",
+            lambda *, agent_id, path, expires_delta=None: (
+                f"https://backend.example.com/api/agents/{agent_id}/files/download?path={path}&token=signed"
+            ),
+        )
+
+        config = SimpleNamespace(
+            channel_type="wechat_personal",
+            app_secret="secret",
+            app_id="wechat",
+            is_configured=True,
+            is_connected=True,
+            extra_config={},
+        )
+
+        result = await ChannelDeliveryService.send_file(
+            db=_FakeDB(config),
+            agent_id=agent_id,
+            reply_target={"channel": "wechat_personal", "to_user_id": "wxid_abc", "context_token": "ctx"},
+            file_path=file_path,
+            message="请查收",
+            delivery_mode="live",
+        )
+
+        assert result.ok is True
+        assert result.status == "success"
+        assert result.detail["fallback_used"] is True
+        assert "微信文件直传失败" in sent_texts[-1]
+        assert "token=signed" in sent_texts[-1]

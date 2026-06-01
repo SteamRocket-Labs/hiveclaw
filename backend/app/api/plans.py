@@ -401,6 +401,29 @@ async def revise_plan(
     return _plan_out(new_plan)
 
 
+@router.post("/{agent_id}/plans/{plan_id}/regenerate", response_model=PlanOut)
+async def regenerate_plan(
+    agent_id: uuid.UUID,
+    plan_id: uuid.UUID,
+    payload: PlanReviseIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Retry generation for the same draft/planning_failed plan.
+
+    This keeps chat inline plan cards recoverable: the card can refetch the same
+    ``plan_id`` instead of losing the user on a superseded failed version.
+    """
+    await check_agent_access(db, current_user, agent_id)
+    service = get_plan_mode_service()
+    await _load_plan_for_agent(service, agent_id=agent_id, plan_id=plan_id)
+    try:
+        plan = await service.generate_plan(plan_id=plan_id, fill=payload.fill or {})
+    except PlanConflictError as exc:
+        raise HTTPException(status_code=409, detail={"error": exc.error_code, "message": exc.message}) from exc
+    return _plan_out(plan)
+
+
 @router.post("/{agent_id}/plans/{plan_id}/confirm", response_model=PlanConfirmOut)
 async def confirm_plan(
     agent_id: uuid.UUID,

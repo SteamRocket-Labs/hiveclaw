@@ -523,3 +523,42 @@ async def test_tool_runtime_service_logs_structured_tool_errors():
 
     assert "<tool_error>" in result
     assert any(args[1] == "error" for args, _kwargs in logged)
+
+
+@pytest.mark.asyncio
+async def test_interactive_plan_mode_blocks_non_readonly_tools_before_gate():
+    from app.services.plan_mode_runtime_context import reset_interactive_plan_mode, set_interactive_plan_mode
+    from app.tools.service import ToolRuntimeService
+
+    class _Resolver:
+        async def resolve(self, **_kwargs):  # pragma: no cover - must not be reached
+            raise AssertionError("runtime context should not be resolved for blocked tools")
+
+    class _GovernanceResolver:
+        async def build_context(self, **_kwargs):  # pragma: no cover - must not be reached
+            raise AssertionError("governance should not run for blocked tools")
+
+        def build_dependencies(self):  # pragma: no cover - must not be reached
+            raise AssertionError("governance dependencies should not be built")
+
+    service = ToolRuntimeService(
+        runtime_resolver=_Resolver(),
+        governance_resolver=_GovernanceResolver(),
+        registry=_FakeRegistry("should not run"),
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "should not run",
+        direct_fallback_executor=lambda *_args, **_kwargs: "should not run",
+        plan_mode_gate=SimpleNamespace(check=lambda *_args, **_kwargs: None),
+        plan_mode_session_factory=lambda: None,
+        plan_mode_service=SimpleNamespace(),
+    )
+
+    token = set_interactive_plan_mode({"original_request": "plan first"})
+    try:
+        result = await service.execute("write_file", {"path": "x", "content": "y"}, agent_id=uuid4(), user_id=uuid4())
+    finally:
+        reset_interactive_plan_mode(token)
+
+    assert "plan_mode_readonly_violation" in result
+    assert "exit_plan_mode" in result

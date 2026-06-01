@@ -10,12 +10,25 @@ def test_planner_system_prompt_defines_analysis_workflow_and_quality_bar() -> No
 
     prompt = _planner_system_prompt()
 
-    assert PLANNER_PROMPT_VERSION == "agent_plan_v2"
+    assert PLANNER_PROMPT_VERSION == "agent_plan_v4"
+    assert "Claude Code-style" in prompt
+    assert "Plan Mode is active" in prompt
+    assert "Initial understanding" in prompt
+    assert "Explore read-only context" in prompt
+    assert "Design" in prompt
+    assert "Review" in prompt
+    assert "Final plan" in prompt
+    assert "Approval boundary" in prompt
     assert "Concrete planning workflow" in prompt
-    assert "Inspect current state" in prompt
+    assert "inspect current state" in prompt
     assert "Do not invent file paths" in prompt
+    assert "do not expose internal tool invocation scripts" in prompt
+    assert "runtime_artifacts" in prompt
     assert "Clarification policy" in prompt
     assert "Quality bar" in prompt
+    assert "required_capabilities is machine contract metadata" in prompt
+    assert "Never emit raw tool names" in prompt
+    assert "Do not emit placeholder external_side_effects" in prompt
     assert "Agent Work Ledger" in prompt
     assert "current phase" in prompt
     assert "assumptions" in prompt
@@ -53,7 +66,12 @@ def test_planner_user_prompt_marks_seed_plan_as_context_not_final_answer() -> No
     prompt = _build_planner_user_prompt(planning_input)
 
     assert "Seed plan is context, not the final answer" in prompt
+    assert "Claude Code-style Plan Mode contract" in prompt
+    assert "preserve the machine handoff" in prompt
     assert "Do not copy intercepted tool arguments as the final plan" in prompt
+    assert "load_skill" in prompt
+    assert "deep_research_start" in prompt
+    assert "runtime_artifacts/" in prompt
     assert "evidence_summary" in prompt
     assert '"original_request": "每天 9 点整理 AI 新闻并发给我"' in prompt
     assert '"tool_name": "set_trigger"' in prompt

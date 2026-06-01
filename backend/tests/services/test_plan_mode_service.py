@@ -82,6 +82,7 @@ class _PlanSession:
         self.commit_calls = 0
         self.rollback_calls = 0
         self.flush_calls = 0
+        self.refresh_calls = 0
         # The service sets these hints right before calling execute().
         self._next_lookup_id = None
         self._next_lookup_agent_id = None
@@ -109,6 +110,9 @@ class _PlanSession:
 
     async def rollback(self):
         self.rollback_calls += 1
+
+    async def refresh(self, _value):
+        self.refresh_calls += 1
 
     # The service queries by exposing the lookup criteria through attributes
     # on the statement object we hand it. We model that by storing the most
@@ -216,8 +220,9 @@ async def test_generate_plan_produces_awaiting_confirmation_with_hash_and_markdo
     assert updated.plan_json["objective"] == "Produce a useful daily industry brief."
     assert updated.plan_json["wake_policy"]["expr"] == "0 9 * * 1-5"
     assert updated.metadata_json["author_type"] == "agent"
-    assert updated.metadata_json["planner_prompt_version"] == "agent_plan_v2"
+    assert updated.metadata_json["planner_prompt_version"] == "agent_plan_v4"
     assert updated.metadata_json["planner_model_id"] == "test-planner"
+    assert updated.plan_json["required_capabilities"] == ["Web 来源核验"]
     assert updated.metadata_json["planner_work_ledger"]["schema"] == "agent_work_ledger.v1"
     assert updated.metadata_json["planner_work_ledger"]["path"].endswith(f"plans/{updated.id}.work_ledger.json")
     assert planner.calls and planner.calls[0].plan_id == draft.id
@@ -267,6 +272,47 @@ async def test_generate_plan_marks_planning_failed_on_invalid_fill(patched_servi
     assert not (data_dir / str(agent_id) / "plans" / f"{result.id}.md").exists()
     assert result.metadata_json and result.metadata_json.get("planning_errors")
     assert planner.calls and planner.calls[0].plan_id == draft.id
+
+
+@pytest.mark.asyncio
+async def test_generate_plan_repairs_common_agent_output_shape_before_validation(monkeypatch, tmp_path):
+    from app.services import plan_mode_service as mod
+
+    session = _PlanSession()
+    monkeypatch.setattr(mod, "async_session", lambda: session)
+    monkeypatch.setattr(mod, "_agent_data_dir", lambda: tmp_path)
+    planner = _EchoAgentPlanner(
+        override_plan_json={
+            "title": "Web3 panorama report",
+            "objective": "Produce a structured Web3 panorama report.",
+            "motivation": "The user asked for Deep Research before execution.",
+            "steps": [
+                {"description": "Frame scope and constraints."},
+                {"description": "Map major Web3 narratives."},
+                {"description": "Synthesize findings into a report."},
+            ],
+            "success_criteria": ["The user sees a complete plan before execution."],
+            "stop_conditions": ["The user rejects the plan."],
+            "risk_assessment": {"level": "moderate", "reasons": []},
+            "required_capabilities": ["Deep Research v2"],
+        }
+    )
+    service = mod.PlanModeService(planner=planner)
+    agent_id = uuid4()
+    draft = await service.create_plan_request(
+        agent_id=agent_id,
+        requested_by_user_id=uuid4(),
+        original_request="使用 deepresearch做一个web3的全景报告",
+        intent_type="long_task",
+    )
+
+    result = await service.generate_plan(plan_id=draft.id, fill={})
+
+    assert result.status == "awaiting_confirmation"
+    assert result.plan_hash and result.plan_hash.startswith("sha256:")
+    assert [step["order"] for step in result.plan_json["steps"]] == [1, 2, 3]
+    assert result.plan_json["risk_assessment"]["level"] == "medium"
+    assert result.metadata_json["quality_checks"]["schema_valid"] is True
 
 
 @pytest.mark.asyncio
@@ -462,6 +508,7 @@ async def test_reject_plan_sets_rejected(patched_service):
     service, session, _, _planner = patched_service
     plan, _ = await _make_awaiting(service)
     rejecter = uuid4()
+    refresh_calls_before_reject = session.refresh_calls
 
     result = await service.reject_plan(
         plan_id=plan.id,
@@ -472,6 +519,7 @@ async def test_reject_plan_sets_rejected(patched_service):
     assert result.status == "rejected"
     assert result.rejected_by_user_id == rejecter
     assert result.rejected_at is not None
+    assert session.refresh_calls == refresh_calls_before_reject + 1
 
 
 @pytest.mark.asyncio
@@ -622,7 +670,7 @@ async def test_ensure_awaiting_plan_distinct_signature_creates_new_plan(patched_
 
 @pytest.mark.asyncio
 async def test_ensure_awaiting_plan_from_fill_creates_and_dedupes_custom_long_task_plan(patched_service):
-    service, session, _, _planner = patched_service
+    service, session, _, planner = patched_service
     agent_id = uuid4()
     signature = "deep-research-signature"
     fill = {
@@ -632,18 +680,18 @@ async def test_ensure_awaiting_plan_from_fill_creates_and_dedupes_custom_long_ta
         "steps": [
             {
                 "order": 1,
-                "description": "Search official, regulatory, market, competitor, and technical lanes.",
-                "expected_output": "Evidence ledger and worker digests.",
+                "description": "Confirm scope, evidence threshold, output language, and delivery format.",
+                "expected_output": "User-approved research plan.",
             },
             {
                 "order": 2,
-                "description": "Synthesize the final markdown report and requested derived output.",
-                "expected_output": "report.md plus optional Office artifact.",
+                "description": "Collect and verify sources by lane, then synthesize the final report.",
+                "expected_output": "report.md plus optional derived delivery artifact.",
             },
         ],
         "success_criteria": ["Every material claim is source-bound."],
         "wake_policy": {"type": "none"},
-        "required_capabilities": ["deep_research_start", "office_document_create"],
+        "required_capabilities": ["Deep Research", "Office artifact generation"],
         "external_side_effects": [],
         "risk_assessment": {"level": "medium", "reasons": ["Long-running research task"]},
         "estimated_cost": {"tokens_per_run": "high", "expected_duration": "several minutes"},
@@ -689,8 +737,79 @@ async def test_ensure_awaiting_plan_from_fill_creates_and_dedupes_custom_long_ta
     assert first.plan_json["deep_research"]["output_format"] == "docx"
     assert first.metadata_json["intercept_signature"] == signature
     assert first.metadata_json["deep_research_plan"] is True
+    assert first.metadata_json["author_type"] == "workflow"
+    assert first.metadata_json["planner_prompt_version"] == "structured_fill.v1"
+    assert planner.calls == []
     assert str(second.id) == str(first.id)
     assert len(session.rows) == rows_after_first
+
+
+@pytest.mark.asyncio
+async def test_ensure_awaiting_plan_from_fill_rejects_internal_tool_script_plan(
+    monkeypatch, tmp_path
+):
+    from app.services import plan_mode_service as mod
+
+    session = _PlanSession()
+    monkeypatch.setattr(mod, "async_session", lambda: session)
+    monkeypatch.setattr(mod, "_agent_data_dir", lambda: tmp_path)
+    poison_planner = _EchoAgentPlanner()
+    service = mod.PlanModeService(planner=poison_planner)
+    fill = {
+        "title": "Bad internal script",
+        "objective": "Call load_skill and deep_research_start with plan_confirmed=false.",
+        "motivation": "The user requested Deep Research before execution.",
+        "steps": [
+            {
+                "order": 1,
+                "description": "调用 load_skill('deep-research')。",
+                "expected_output": "A user-approved Deep Research plan.",
+            },
+            {
+                "order": 2,
+                "description": "Run approved evidence lanes and synthesize the final report.",
+                "expected_output": "runtime_artifacts/long_tasks/task/work_ledger.json",
+            },
+        ],
+        "success_criteria": ["The final report is source-grounded and written in Simplified Chinese."],
+        "wake_policy": {"type": "none"},
+        "required_capabilities": ["Deep Research", "source-ledger web research"],
+        "external_side_effects": [],
+        "risk_assessment": {"level": "medium", "reasons": ["Long-running research workflow."]},
+        "estimated_cost": {"tokens_per_run": "high", "expected_duration": "about 8-15 minutes"},
+        "stop_conditions": ["The user rejects the plan."],
+        "handoff": {
+            "target": "deep_research",
+            "create_objective": False,
+            "create_trigger": False,
+            "payload": {
+                "question": "Web3 full landscape",
+                "depth": "full",
+                "output_format": "markdown",
+                "plan_confirmed": True,
+                "worker_topics": ["official evidence"],
+            },
+        },
+        "deep_research": {"output_format": "markdown", "worker_topics": ["official evidence"]},
+    }
+
+    plan = await service.ensure_awaiting_plan_from_fill(
+        agent_id=uuid4(),
+        intent_type="long_task",
+        signature="deep-research:web3",
+        fill=fill,
+        original_request="使用 deepresearch做一个web3的全景报告",
+        source="web_chat",
+        metadata_json={"deep_research_plan": True},
+    )
+
+    assert plan.status == "planning_failed"
+    assert plan.plan_hash is None
+    assert poison_planner.calls == []
+    errors = "\n".join(plan.metadata_json["planning_errors"])
+    assert "load_skill" in errors
+    assert "deep_research_* tool call" in errors
+    assert "plan_confirmed" in errors
 
 
 def test_get_plan_mode_service_returns_shared_singleton():

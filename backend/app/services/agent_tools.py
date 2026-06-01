@@ -158,6 +158,7 @@ CORE_TOOL_NAMES = {
     "cancel_async_task",
     "list_async_tasks",
     "get_current_time",
+    "exit_plan_mode",
     "send_channel_message",
     "send_channel_file",
     "tool_search",

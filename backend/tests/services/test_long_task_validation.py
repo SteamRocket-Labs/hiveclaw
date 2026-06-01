@@ -49,7 +49,7 @@ def test_validate_long_task_run_passes_for_complete_artifacts(tmp_path):
     ledger = load_agent_work_ledger(agent_id=agent_id, runtime_task_id=runtime_task_id, data_root=tmp_path)
     assert ledger is not None
     assert ledger["schema"] == "agent_work_ledger.v1"
-    assert all(item["status"] == "complete" for item in ledger["todo_items"])
+    assert all(item["status"] == "completed" for item in ledger["todo_items"])
 
 
 def test_validate_long_task_run_flags_false_completion_without_evidence(tmp_path):

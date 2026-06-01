@@ -149,6 +149,14 @@ TOOL_PACKS: tuple[ToolPackSpec, ...] = (
         ),
         infer_from_tools=False,
     ),
+    ToolPackSpec(
+        name="plan_mode_pack",
+        summary="计划模式收口能力：主 agent 完成只读探索后提交待确认计划。",
+        source="system",
+        activation_mode="由 runtime 在 interactive Plan Mode 中注入提示词并使用 exit_plan_mode 收口",
+        tools=("exit_plan_mode",),
+        infer_from_tools=False,
+    ),
 )
 
 _ADMIN_PACK_QUERY_KEYWORDS = (

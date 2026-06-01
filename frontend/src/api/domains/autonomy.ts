@@ -16,8 +16,16 @@ export interface RuntimeTaskQuery {
 export interface RuntimeWorkLedgerItem {
   id: string;
   title: string;
+  content?: string;
+  subject?: string;
+  description?: string;
+  activeForm?: string;
+  active_form?: string;
   status: string;
   required?: boolean;
+  owner?: string;
+  blocks?: string[];
+  blockedBy?: string[];
   updated_at?: string | null;
   evidence_refs?: string[];
   command?: string;

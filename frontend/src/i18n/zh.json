@@ -400,6 +400,10 @@
       "reject": "拒绝",
       "requestChangesPrompt": "这个计划需要修改什么?",
       "rejectPrompt": "拒绝此计划的原因(可选)",
+      "retryGeneration": "重新生成计划",
+      "reviseAndRetry": "修改后重试",
+      "failureTitle": "规划失败",
+      "failureUnknown": "规划器没有返回有效的可确认计划。",
       "actionFailed": "操作失败",
       "missingHash": "该计划尚无哈希,无法确认。",
       "needsConfirmation": "有一个计划需要你确认。",
@@ -599,6 +603,7 @@
     },
     "workLedger": {
       "title": "Agent 工作账本",
+      "taskTitle": "Agent 任务",
       "current": "当前",
       "next": "下一步",
       "todos": "待办",

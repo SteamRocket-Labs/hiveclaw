@@ -49,7 +49,10 @@ vi.stubGlobal('localStorage', {
 } as unknown as Storage);
 
 vi.mock('@tanstack/react-query', () => ({
-  useQuery: ({ queryKey }: { queryKey: unknown[] }) => {
+  useQuery: ({ queryKey, enabled }: { queryKey: unknown[]; enabled?: boolean }) => {
+    if (enabled === false) {
+      return { data: undefined, isLoading: false, isError: false, error: null };
+    }
     const key = String(queryKey[0]);
     if (key === 'relationships') {
       return {
@@ -211,6 +214,9 @@ vi.mock('@tanstack/react-query', () => ({
       };
     }
     if (key === 'chat-session-work-ledger' || key === 'chat-work-ledger') {
+      if (queryKey.includes('stale-session')) {
+        return { data: undefined, isLoading: false, isError: true, error: new Error('missing') };
+      }
       return {
         data: {
           schema: 'agent_work_ledger_view.v1',
@@ -1222,6 +1228,96 @@ describe('AgentDetail extracted sections', () => {
     expect(markup.indexOf('data-testid="chat-work-ledger-dock"')).toBeLessThan(markup.indexOf('chat-input'));
   });
 
+  it('does not keep polling a stale historical Deep Research start result', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-01T17:18:00Z'));
+    try {
+      const markup = renderToStaticMarkup(
+        <AgentChatSection
+          agent={{ id: 'agent-1', name: 'Research Bot' }}
+          currentUser={{ id: 'user-1' }}
+          isAdmin={false}
+          chatScope="mine"
+          onSetChatScope={vi.fn()}
+          onLoadAllSessions={vi.fn()}
+          onCreateNewSession={vi.fn()}
+          sessionsLoading={false}
+          sessions={[]}
+          activeSession={{
+            id: 'stale-session',
+            user_id: 'user-1',
+            title: 'Old Deep Research run',
+            created_at: '2026-05-29T07:18:00Z',
+          }}
+          wsConnected
+          allSessions={[]}
+          allSessionsLoading={false}
+          allUserFilter=""
+          onSetAllUserFilter={vi.fn()}
+          onSelectSession={vi.fn()}
+          onDeleteSession={vi.fn()}
+          historyContainerRef={React.createRef<HTMLDivElement>()}
+          onHistoryScroll={vi.fn()}
+          historyMsgs={[]}
+          historyMessagesSessionId={null}
+          showHistoryScrollBtn={false}
+          onScrollHistoryToBottom={vi.fn()}
+          chatContainerRef={React.createRef<HTMLDivElement>()}
+          onChatScroll={vi.fn()}
+          chatMessages={[
+            {
+              role: 'tool_call',
+              content: '',
+              toolName: 'deep_research_start',
+              toolStatus: 'done',
+              toolResult: 'Deep research running',
+              timestamp: '2026-05-29T07:18:00Z',
+              toolMeta: {
+                kind: 'deep_research',
+                taskId: 'old-deep-task',
+                status: 'running',
+                summary: 'Research has started.',
+                reportPath: null,
+                artifactDir: 'runtime_artifacts/long_tasks/old-deep-task/deep_research',
+                sourceCount: null,
+                claimCount: null,
+                qualityGates: {},
+                gaps: [],
+              },
+            },
+          ]}
+          chatMessagesSessionId="stale-session"
+          runtimeSummary={null}
+          transportNotice={null}
+          isWaiting={false}
+          chatEndRef={React.createRef<HTMLDivElement>()}
+          showScrollBtn={false}
+          onScrollToBottom={vi.fn()}
+          agentExpired={false}
+          attachedFiles={[]}
+          onRemoveAttachedFile={vi.fn()}
+          fileInputRef={React.createRef<HTMLInputElement>()}
+          onHandleChatFile={vi.fn()}
+          uploading={false}
+          uploadProgress={-1}
+          uploadAbortRef={{ current: null }}
+          chatInputRef={React.createRef<HTMLTextAreaElement>()}
+          chatInput=""
+          onSetChatInput={vi.fn()}
+          onHandlePaste={vi.fn()}
+          onSendChatMsg={vi.fn()}
+          isStreaming={false}
+          onAbortGeneration={vi.fn()}
+        />,
+      );
+
+      expect(markup).not.toContain('data-testid="chat-work-ledger-dock"');
+      expect(markup).not.toContain('old-deep-task');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('renders the persistent session work ledger dock without Deep Research tool metadata', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
@@ -1505,11 +1601,13 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Collect high-signal news sources.');
     expect(markup).toContain('Brief includes 5-10 material updates with source links.');
     expect(markup).toContain('0 9 * * 1-5');
-    expect(markup).toContain('send_feishu_message');
+    expect(markup).not.toContain('Capabilities');
+    expect(markup).not.toContain('web_search');
+    expect(markup).not.toContain('send_feishu_message');
     expect(markup).toContain('1-3 minutes');
     expect(markup).toContain('feishu');
-    expect(markup).toContain('Work ledger');
-    expect(markup).toContain('plans/plan-1.work_ledger.json');
+    expect(markup).not.toContain('Work ledger');
+    expect(markup).not.toContain('plans/plan-1.work_ledger.json');
     // Risk level renders via its raw value fallback (i18n mock returns the fallback string).
     expect(markup).toContain('medium');
     expect(markup).toContain('User cancels the plan.');
@@ -1517,6 +1615,102 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Confirm and start');
     expect(markup).toContain('Request changes');
     expect(markup).toContain('Reject');
+  });
+
+  it('does not expose internal ledger paths or empty side-effect placeholders in PlanCard', () => {
+    const plan = {
+      id: 'plan-1',
+      agent_id: 'agent-1',
+      tenant_id: null,
+      session_id: null,
+      runtime_task_id: null,
+      requested_by_user_id: null,
+      source: 'web_chat',
+      intent_type: 'long_task',
+      original_request: '使用 deepresearch做一个web3的全景报告',
+      status: 'awaiting_confirmation',
+      plan_version: 1,
+      plan_hash: 'sha256:abc123',
+      plan_markdown_path: null,
+      plan_json: {
+        title: 'Web3 全景深度研究报告',
+        objective: '生成面向投资决策的中文研究报告。',
+        external_side_effects: [{}, { kind: '', channel: '', audience: '' }],
+      },
+      handoff_status: null,
+      handoff_payload: null,
+      confirmed_by_user_id: null,
+      confirmed_at: null,
+      rejected_by_user_id: null,
+      rejected_at: null,
+      superseded_by_plan_id: null,
+      expires_at: null,
+      created_at: null,
+      updated_at: null,
+      metadata: {
+        planner_work_ledger: {
+          schema: 'agent_work_ledger.v1',
+          path: 'runtime_artifacts/long_tasks/7063ee2e/work_ledger.json',
+        },
+      },
+    } as PlanRequest;
+
+    const markup = renderToStaticMarkup(<PlanCard agentId="agent-1" plan={plan} />);
+
+    expect(markup).toContain('Web3 全景深度研究报告');
+    expect(markup).not.toContain('External side effects');
+    expect(markup).not.toContain('External action');
+    expect(markup).not.toContain('Work ledger');
+    expect(markup).not.toContain('runtime_artifacts/long_tasks/7063ee2e/work_ledger.json');
+  });
+
+  it('renders PlanCard recovery actions and failure reasons when planning failed', () => {
+    const plan = {
+      id: 'plan-failed',
+      agent_id: 'agent-1',
+      tenant_id: null,
+      session_id: null,
+      runtime_task_id: null,
+      requested_by_user_id: null,
+      source: 'web_chat',
+      intent_type: 'long_task',
+      original_request: '使用 deepresearch做一个RWA pre-ipo的全景报告',
+      status: 'planning_failed',
+      plan_version: 1,
+      plan_hash: null,
+      plan_markdown_path: null,
+      plan_json: {
+        title: '使用 deepresearch做一个RWA pre-ipo的全景报告',
+      },
+      handoff_status: null,
+      handoff_payload: null,
+      confirmed_by_user_id: null,
+      confirmed_at: null,
+      rejected_by_user_id: null,
+      rejected_at: null,
+      superseded_by_plan_id: null,
+      expires_at: null,
+      created_at: null,
+      updated_at: null,
+      metadata: {
+        planning_errors: ['missing required field: objective'],
+        planner_work_ledger: {
+          schema: 'agent_work_ledger.v1',
+          path: 'runtime_artifacts/long_tasks/735ae31e/work_ledger.json',
+        },
+      },
+    } as PlanRequest;
+
+    const markup = renderToStaticMarkup(<PlanCard agentId="agent-1" plan={plan} />);
+
+    expect(markup).toContain('使用 deepresearch做一个RWA pre-ipo的全景报告');
+    expect(markup).toContain('Planning failed');
+    expect(markup).toContain('missing required field: objective');
+    expect(markup).toContain('Retry plan generation');
+    expect(markup).toContain('Revise and retry');
+    expect(markup).toContain('Reject');
+    expect(markup).not.toContain('Confirm and start');
+    expect(markup).not.toContain('No actions available for this plan.');
   });
 
   it('confirms a plan and immediately hands it off to execution', async () => {

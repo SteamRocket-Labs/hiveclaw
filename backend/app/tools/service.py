@@ -59,6 +59,28 @@ _DELEGATED_USER_AUTHORIZED_TOOLS = frozenset(
         "send_feishu_message",
     }
 )
+_INTERACTIVE_PLAN_MODE_ALLOWED_TOOLS = frozenset(
+    {
+        "exit_plan_mode",
+        "get_current_time",
+        "list_files",
+        "read_file",
+        "glob_search",
+        "grep_search",
+        "fs_list",
+        "fs_read",
+        "web_search",
+        "web_fetch",
+        "firecrawl_fetch",
+        "xcrawl_scrape",
+        "search_memory",
+        "load_memory",
+        "list_triggers",
+        "list_objectives",
+        "tool_search",
+        "load_skill",
+    }
+)
 _COMPANY_CONFLICT_PATTERNS = (
     "bypass company policy",
     "share credentials",
@@ -166,6 +188,10 @@ class ToolRuntimeService:
         delegation_token: Any | None = None,
         session_id: str | None = None,
     ) -> str:
+        plan_mode_block = self._interactive_plan_mode_readonly_block(tool_name)
+        if plan_mode_block:
+            return plan_mode_block
+
         plan_block = await self._plan_mode_gate_block(tool_name, arguments, agent_id=agent_id)
         if plan_block:
             return plan_block
@@ -363,6 +389,10 @@ class ToolRuntimeService:
     ) -> str:
         _logger = logging.getLogger(__name__)
 
+        plan_mode_block = self._interactive_plan_mode_readonly_block(tool_name)
+        if plan_mode_block:
+            return plan_mode_block
+
         # Plan Mode early-intercept (§9.2) fires here so both execute_direct and
         # execute_approved are covered — execute_approved must NOT be a bypass.
         plan_block = await self._plan_mode_gate_block(tool_name, arguments, agent_id=agent_id)
@@ -432,6 +462,10 @@ class ToolRuntimeService:
         arguments: dict,
         context: ToolExecutionContext,
     ) -> str:
+        plan_mode_block = self._interactive_plan_mode_readonly_block(tool_name)
+        if plan_mode_block:
+            return plan_mode_block
+
         self.ensure_registry()
         request = ToolExecutionRequest(
             tool_name=tool_name,
@@ -448,6 +482,24 @@ class ToolRuntimeService:
             )
 
         return await self.backend.execute(request, _execute_request)
+
+    @staticmethod
+    def _interactive_plan_mode_readonly_block(tool_name: str) -> str | None:
+        from app.services.plan_mode_runtime_context import interactive_plan_mode_active
+
+        if not interactive_plan_mode_active() or tool_name in _INTERACTIVE_PLAN_MODE_ALLOWED_TOOLS:
+            return None
+        return render_tool_error(
+            tool_name=tool_name,
+            error_class="plan_mode_readonly_violation",
+            message=(
+                "Interactive Plan Mode is active. Use only read-only exploration tools, then call "
+                "exit_plan_mode to submit the plan for user confirmation. Do not execute or mutate state yet."
+            ),
+            provider="runtime",
+            retryable=False,
+            actionable_hint="Continue planning with read-only tools or call exit_plan_mode when the plan is ready.",
+        )
 
     async def _plan_mode_gate_block(
         self,

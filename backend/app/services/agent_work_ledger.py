@@ -26,8 +26,8 @@ LEDGER_RESUME_SCHEMA = "agent_work_ledger_resume.v1"
 LEDGER_VIEW_SCHEMA = "agent_work_ledger_view.v1"
 
 TERMINAL_STATUSES = {"completed", "failed", "killed", "skipped"}
-OPEN_ITEM_STATUSES = {"pending", "running", "in_progress", "blocked", "failed"}
-COMPLETE_ITEM_STATUSES = {"complete", "completed", "done", "skipped"}
+OPEN_ITEM_STATUSES = {"pending", "in_progress"}
+COMPLETE_ITEM_STATUSES = {"completed"}
 ACTIVE_RUNTIME_STATUSES = {"pending", "running", "in_progress", "blocked"}
 
 
@@ -54,6 +54,20 @@ def _uuid_hex(value: uuid.UUID | str | None) -> str | None:
         return safe[:120] or "unknown"
 
 
+def _uuid_filename(value: uuid.UUID | str | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    try:
+        return str(uuid.UUID(str(value)))
+    except (TypeError, ValueError, AttributeError):
+        raw = str(value)
+        safe = "".join(char if char.isascii() and (char.isalnum() or char in "._-") else "_" for char in raw)
+        safe = safe.strip("._")
+        return safe[:120] or "unknown"
+
+
 def _relative_to_agent(agent_id: uuid.UUID, path: Path, *, data_root: str | Path | None = None) -> str:
     return path.relative_to(_agent_root(agent_id, data_root=data_root)).as_posix()
 
@@ -70,7 +84,7 @@ def _ledger_path(
         runtime_key = _uuid_hex(runtime_task_id)
         return root / "runtime_artifacts" / "long_tasks" / str(runtime_key) / "work_ledger.json"
     if plan_id is not None:
-        return root / "plans" / f"{_uuid_hex(plan_id)}.work_ledger.json"
+        return root / "plans" / f"{_uuid_filename(plan_id)}.work_ledger.json"
     return root / "runtime_artifacts" / "work_ledger.json"
 
 
@@ -80,18 +94,43 @@ def _clean_text(value: Any) -> str:
 
 def _normalize_status(status: Any, *, default: str = "pending") -> str:
     text = _clean_text(status) or default
-    if text == "done":
-        return "complete"
+    if text in {"done", "complete"}:
+        return "completed"
     return text
 
 
+def _normalize_task_status(status: Any, *, default: str = "pending") -> str:
+    normalized = _normalize_status(status, default=default)
+    if normalized in {"completed", "skipped"}:
+        return "completed"
+    if normalized in {"running", "in_progress"}:
+        return "in_progress"
+    return "pending"
+
+
+def _task_active_form(item: dict[str, Any], title: str) -> str:
+    active = _clean_text(item.get("activeForm") or item.get("active_form"))
+    if active:
+        return active
+    return f"Working on {title}" if title else "Working"
+
+
 def _normalize_work_item(item: dict[str, Any], *, fallback_id: str) -> dict[str, Any]:
-    title = _clean_text(item.get("title") or item.get("check") or item.get("summary"))
+    title = _clean_text(item.get("content") or item.get("title") or item.get("subject") or item.get("check") or item.get("summary"))
+    description = _clean_text(item.get("description"))
+    active_form = _task_active_form(item, title or fallback_id)
     return {
         "id": _clean_text(item.get("id")) or fallback_id,
         "title": title or fallback_id,
-        "status": _normalize_status(item.get("status")),
+        "content": title or fallback_id,
+        "subject": title or fallback_id,
+        "description": description,
+        "active_form": active_form,
+        "activeForm": active_form,
+        "status": _normalize_task_status(item.get("status")),
         "required": bool(item.get("required", True)),
+        "blocks": [str(ref) for ref in item.get("blocks", []) if str(ref).strip()],
+        "blockedBy": [str(ref) for ref in item.get("blockedBy") or item.get("blocked_by") or [] if str(ref).strip()],
         "evidence_refs": [str(ref) for ref in item.get("evidence_refs", []) if str(ref).strip()],
         "updated_at": item.get("updated_at") or _now_iso(),
     }
@@ -237,7 +276,7 @@ def _set_items_complete(
     for item in items:
         item_id = _clean_text(item.get("id"))
         if (ids and item_id in ids) or (all_required and bool(item.get("required", True))):
-            item["status"] = "complete"
+            item["status"] = "completed"
             item["updated_at"] = now
 
 
@@ -339,7 +378,7 @@ def build_agent_work_ledger_resume_summary(ledger: dict[str, Any] | None) -> dic
     todos = [
         item
         for item in ledger.get("todo_items", [])
-        if bool(item.get("required", True)) and _normalize_status(item.get("status")) not in {"complete", "skipped"}
+        if bool(item.get("required", True)) and _normalize_task_status(item.get("status")) != "completed"
     ]
     findings = [
         item
@@ -354,7 +393,7 @@ def build_agent_work_ledger_resume_summary(ledger: dict[str, Any] | None) -> dic
     verification = [
         item
         for item in ledger.get("verification", [])
-        if bool(item.get("required", True)) and _normalize_status(item.get("status")) not in {"complete", "skipped"}
+        if bool(item.get("required", True)) and _normalize_task_status(item.get("status")) != "completed"
     ]
     return {
         "schema": LEDGER_RESUME_SCHEMA,
@@ -372,12 +411,21 @@ def build_agent_work_ledger_resume_summary(ledger: dict[str, Any] | None) -> dic
 
 
 def _display_item(item: dict[str, Any], *, title_key: str = "title") -> dict[str, Any]:
-    title = _clean_text(item.get(title_key) or item.get("title") or item.get("check") or item.get("summary"))
+    title = _clean_text(item.get("content") or item.get(title_key) or item.get("title") or item.get("subject") or item.get("check") or item.get("summary"))
+    description = _clean_text(item.get("description"))
+    active_form = _task_active_form(item, title)
     payload = {
         "id": _clean_text(item.get("id")),
         "title": title,
-        "status": _normalize_status(item.get("status")),
+        "content": title,
+        "subject": title,
+        "description": description,
+        "active_form": active_form,
+        "activeForm": active_form,
+        "status": _normalize_task_status(item.get("status")),
         "required": bool(item.get("required", True)),
+        "blocks": [str(ref) for ref in item.get("blocks", []) if str(ref).strip()],
+        "blockedBy": [str(ref) for ref in item.get("blockedBy") or item.get("blocked_by") or [] if str(ref).strip()],
         "updated_at": item.get("updated_at") or item.get("created_at"),
     }
     evidence_refs = [str(ref) for ref in item.get("evidence_refs", []) if str(ref).strip()]
@@ -421,6 +469,139 @@ def _display_finding(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _load_json_file(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _load_jsonl_file(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    items: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            items.append(payload)
+    return items
+
+
+def _build_legacy_long_task_ledger_view(
+    *,
+    agent_id: uuid.UUID,
+    runtime_task_id: uuid.UUID | str,
+    data_root: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Build a read-only display view for long-task artifacts created before work_ledger.json."""
+
+    ledger_path = _ledger_path(agent_id=agent_id, runtime_task_id=runtime_task_id, data_root=data_root)
+    artifact_dir = ledger_path.parent
+    plan_path = artifact_dir / "plan.json"
+    progress_path = artifact_dir / "progress.jsonl"
+    plan = _load_json_file(plan_path) or {}
+    progress_items = _load_jsonl_file(progress_path)
+    if not plan and not progress_items:
+        return None
+
+    latest_progress = progress_items[-1] if progress_items else {}
+    runtime_key = _uuid_hex(runtime_task_id)
+    normalized_status = _normalize_status(latest_progress.get("status") or plan.get("status"), default="running")
+    terminal_complete = normalized_status in {"completed", "skipped"}
+    acceptance_criteria = [
+        _clean_text(item)
+        for item in plan.get("acceptance_criteria", [])
+        if _clean_text(item)
+    ]
+    verification_commands = [
+        _clean_text(item)
+        for item in plan.get("verification_commands", [])
+        if _clean_text(item)
+    ]
+    created_at = plan.get("created_at") or latest_progress.get("created_at") or _now_iso()
+    updated_at = latest_progress.get("created_at") or plan.get("created_at") or created_at
+    display_path = plan_path if plan_path.exists() else progress_path
+    evidence_refs = []
+    if plan_path.exists():
+        evidence_refs.append(_relative_to_agent(agent_id, plan_path, data_root=data_root))
+    if progress_path.exists():
+        evidence_refs.append(_relative_to_agent(agent_id, progress_path, data_root=data_root))
+
+    ledger = {
+        "schema": LEDGER_SCHEMA,
+        "agent_id": str(agent_id),
+        "plan_id": None,
+        "runtime_task_id": runtime_key,
+        "source": "legacy_long_task_runtime",
+        "status": normalized_status,
+        "current_phase": normalized_status,
+        "todo_items": [
+            _normalize_work_item(
+                {
+                    "id": f"acceptance-{index}",
+                    "title": item,
+                    "status": "completed" if terminal_complete else ("in_progress" if index == 1 else "pending"),
+                    "required": True,
+                    "updated_at": updated_at,
+                },
+                fallback_id=f"acceptance-{index}",
+            )
+            for index, item in enumerate(acceptance_criteria, start=1)
+        ],
+        "findings": [],
+        "progress": [
+            _normalize_progress(item, fallback_id=f"progress-{index}")
+            for index, item in enumerate(progress_items, start=1)
+            if _clean_text(item.get("delta"))
+        ],
+        "failures": [
+            _normalize_failure(
+                {
+                    "attempt": _normalize_status(item.get("status"), default="running"),
+                    "error": item.get("blocked_reason") or item.get("delta"),
+                    "next_strategy": "Resume from the legacy long-task artifacts before retrying.",
+                    "resolved": False,
+                },
+                fallback_id=f"failure-{index}",
+            )
+            for index, item in enumerate(progress_items, start=1)
+            if _normalize_status(item.get("status"), default="running") in {"failed", "killed"}
+            or _clean_text(item.get("blocked_reason"))
+        ],
+        "verification": [
+            _normalize_verification(
+                {
+                    "id": f"verify-{index}",
+                    "check": command,
+                    "status": "completed" if terminal_complete else "pending",
+                    "required": True,
+                    "command": command,
+                    "updated_at": updated_at,
+                },
+                fallback_id=f"verify-{index}",
+            )
+            for index, command in enumerate(verification_commands, start=1)
+        ],
+        "open_questions": [],
+        "evidence_refs": evidence_refs,
+        "last_read_at": None,
+        "created_at": created_at,
+        "updated_at": updated_at,
+    }
+    return build_agent_work_ledger_display_view(
+        ledger,
+        path=_relative_to_agent(agent_id, display_path, data_root=data_root),
+    )
+
+
 def build_agent_work_ledger_display_view(
     ledger: dict[str, Any] | None,
     *,
@@ -457,16 +638,16 @@ def build_agent_work_ledger_display_view(
         if isinstance(item, dict) and _clean_text(item.get("summary"))
     ]
 
-    todo_complete = sum(1 for item in todos if _normalize_status(item.get("status")) in COMPLETE_ITEM_STATUSES)
+    todo_complete = sum(1 for item in todos if _normalize_task_status(item.get("status")) in COMPLETE_ITEM_STATUSES)
     todo_open = sum(
         1
         for item in todos
-        if bool(item.get("required", True)) and _normalize_status(item.get("status")) not in COMPLETE_ITEM_STATUSES
+        if bool(item.get("required", True)) and _normalize_task_status(item.get("status")) not in COMPLETE_ITEM_STATUSES
     )
     verification_pending = sum(
         1
         for item in verification
-        if bool(item.get("required", True)) and _normalize_status(item.get("status")) in OPEN_ITEM_STATUSES
+        if bool(item.get("required", True)) and _normalize_task_status(item.get("status")) in OPEN_ITEM_STATUSES
     )
     failures_open = sum(1 for item in failures if not bool(item.get("resolved", False)))
 
@@ -514,6 +695,12 @@ def read_agent_work_ledger_view(
         data_root=data_root,
     )
     if ledger is None:
+        if runtime_task_id is not None and plan_id is None:
+            return _build_legacy_long_task_ledger_view(
+                agent_id=agent_id,
+                runtime_task_id=runtime_task_id,
+                data_root=data_root,
+            )
         return None
     return build_agent_work_ledger_display_view(
         ledger,

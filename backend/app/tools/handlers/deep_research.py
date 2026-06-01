@@ -13,6 +13,7 @@ from typing import Any
 from app.services.deep_research.artifact_composer import compose_deep_research_artifact
 from app.services.deep_research.plan_mode import (
     build_deep_research_plan_fill,
+    build_deep_research_plan_preview,
     deep_research_plan_signature,
     normalize_deep_research_output_format,
 )
@@ -88,16 +89,7 @@ def _clarifying_questions(research_request: ResearchRequest) -> list[str]:
 
 async def _plan_preview(research_request: ResearchRequest) -> dict[str, Any]:
     """Build a deterministic plan + worker-topic preview (no LLM, no fan-out) for the plan gate."""
-    from app.services.deep_research.orchestrator import _topic_budget, _worker_topics
-    from app.services.deep_research.planner import build_research_plan
-
-    plan = build_research_plan(research_request)
-    topics = await _worker_topics(None, research_request, plan)
-    return {
-        "plan": to_jsonable(plan),
-        "worker_topics": topics[: _topic_budget(research_request, plan)],
-        "clarifying_questions": _clarifying_questions(research_request),
-    }
+    return await build_deep_research_plan_preview(research_request)
 
 
 async def _materialize_plan_card_payload(

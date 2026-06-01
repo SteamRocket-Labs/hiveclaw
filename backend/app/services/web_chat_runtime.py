@@ -381,6 +381,95 @@ def _simulation_title(content: str) -> str:
     return content[:80] if content else ""
 
 
+def _plan_mode_generated_message(plan: Any) -> str:
+    plan_id = getattr(plan, "id", "")
+    status = getattr(plan, "status", "awaiting_confirmation")
+    if status == "planning_failed":
+        metadata = getattr(plan, "metadata_json", None) or {}
+        errors = metadata.get("planning_errors") if isinstance(metadata, dict) else None
+        error_text = ""
+        if isinstance(errors, list):
+            visible_errors = [str(item).strip() for item in errors if str(item).strip()]
+            if visible_errors:
+                error_text = "失败原因：" + "；".join(visible_errors[:3]) + "。"
+        elif isinstance(errors, str) and errors.strip():
+            error_text = f"失败原因：{errors.strip()}。"
+        return (
+            f"已进入计划模式，但计划生成失败（plan_id={plan_id}）。"
+            f"{error_text}"
+            "请在计划卡片中重新生成、修改后重试或拒绝；我不会开始执行。"
+        )
+    return (
+        f"已进入计划模式，并生成一份待确认计划（plan_id={plan_id}）。"
+        "请在计划卡片中确认、修改或拒绝；确认后我再开始执行。"
+    )
+
+
+def _activate_interactive_plan_mode(
+    runtime_session_context: Any | None,
+    *,
+    original_request: str,
+    decision: plan_mode_core.PlanModeEntryDecision,
+    session_id: str | None,
+) -> dict[str, Any]:
+    handoff_target = "objective_trigger" if decision.action_kind == "create_enabled_trigger" else "long_task"
+    metadata: dict[str, Any] = {
+        "active": True,
+        "original_request": original_request,
+        "intent_type": decision.intent_type or "long_task",
+        "action_kind": decision.action_kind,
+        "tool_name": decision.tool_name,
+        "reason": decision.reason,
+        "handoff_target": handoff_target,
+    }
+    if _is_deep_research_chat_request(original_request):
+        metadata.update(
+            {
+                "handoff_target": "deep_research",
+                "deep_research": True,
+                "deep_research_args": _deep_research_chat_arguments(original_request),
+            }
+        )
+    if runtime_session_context is not None:
+        runtime_session_context.metadata["plan_mode"] = metadata
+    logger.info(
+        "[WebChatRun] Interactive Plan Mode activated session={} intent={} target={}",
+        session_id,
+        metadata.get("intent_type"),
+        metadata.get("handoff_target"),
+    )
+    return metadata
+
+
+def _interactive_plan_mode_suffix(metadata: dict[str, Any]) -> str:
+    original_request = str(metadata.get("original_request") or "").strip()
+    handoff_target = str(metadata.get("handoff_target") or "long_task")
+    return (
+        "Plan Mode is active. The user indicated that they do not want you to execute yet. "
+        "You MUST NOT execute the requested work, mutate workspace files, create triggers/tasks/objectives, "
+        "send external messages, delegate work, run commands, or call any non-read-only tools.\n\n"
+        "## Original request\n"
+        f"{original_request or '(not provided)'}\n\n"
+        "## Interactive Planning Workflow\n"
+        "You are pair-planning with the user. Follow this loop until the plan is ready:\n"
+        "1. Explore — use only read-only tools to inspect code, memory, schedules, objectives, or web facts when needed.\n"
+        "2. Capture findings in your own working context; do not expose internal ledger paths or raw tool scripts.\n"
+        "3. Ask concise clarification questions only for decisions that materially change scope, risk, cost, recipients, "
+        "credentials, or irreversible behavior.\n"
+        "4. When the plan is ready, call exit_plan_mode with a concise user-facing plan. Do not ask for approval in prose; "
+        "exit_plan_mode creates the confirmation card.\n\n"
+        "## Plan Quality Bar\n"
+        "- Include context, objective, concrete ordered steps, critical files/artifacts or research lanes when applicable, "
+        "success criteria, stop conditions, risk, cost, and verification.\n"
+        "- Prefer one recommended approach, not a list of speculative alternatives.\n"
+        "- Separate facts, assumptions, and open questions.\n"
+        "- If this is Deep Research, plan research scope, evidence lanes, source quality standards, synthesis shape, and "
+        "final artifacts; confirmation will hand off to the Deep Research runtime.\n"
+        f"- Expected handoff target after confirmation: {handoff_target}.\n\n"
+        "Your turn should end by either asking necessary clarification questions or calling exit_plan_mode."
+    )
+
+
 async def _maybe_sync_created_task(
     *,
     agent_id: uuid.UUID,
@@ -429,26 +518,28 @@ async def _maybe_sync_created_task(
         logger.error("[WebChatRun] Failed to create plan for task auto-sync: {}", exc)
         return assistant_response
 
-    return assistant_response + (
-        f"\n\n📋 “{task_title}” 需要先确认计划再执行。我已生成一份待确认计划"
-        f"（plan_id={plan.id}），请在计划卡片中确认或修改后再启动。"
-    )
+    return assistant_response + f"\n\n📋 “{task_title}” 需要先确认计划再执行。{_plan_mode_generated_message(plan)}"
 
 
-def _plan_mode_tool_arguments(decision: plan_mode_core.PlanModeEntryDecision, content: str) -> dict[str, Any]:
-    title = decision.title or content[:120] or "Plan Mode request"
-    if decision.action_kind == "create_enabled_trigger":
-        return {
-            "name": title[:80],
-            "type": "cron",
-            "config": {},
-            "reason": content,
-        }
+_DEEP_RESEARCH_CHAT_RE = re.compile(r"(deep\s*research|deepresearch|深度研究|深度调研)", re.IGNORECASE)
+
+
+def _is_deep_research_chat_request(content: str) -> bool:
+    return bool(_DEEP_RESEARCH_CHAT_RE.search(str(content or "")))
+
+
+def _deep_research_chat_arguments(content: str) -> dict[str, Any]:
+    text = str(content or "").strip()
+    is_chinese = bool(re.search(r"[\u4e00-\u9fff]", text))
+    is_industry = bool(re.search(r"(行业|全景|赛道|市场|landscape|industry|sector)", text, re.IGNORECASE))
+    is_full_depth = bool(re.search(r"(全景|深度|完整|报告|full|deep|comprehensive)", text, re.IGNORECASE))
     return {
-        "action": "create",
-        "title": title,
-        "description": content,
-        "task_type": "todo",
+        "question": text,
+        "mode": "industry_research" if is_industry else "topic_deep_dive",
+        "depth": "full" if is_full_depth else "standard",
+        "output_language": "zh-CN" if is_chinese else "",
+        "output_format": "markdown",
+        "source_policy": "primary_preferred",
     }
 
 
@@ -524,6 +615,7 @@ async def _maybe_handle_plan_mode_entry(
     runtime_task_id: uuid.UUID | None,
     content: str,
     plan_mode_requested: bool = False,
+    runtime_session_context: Any | None = None,
 ) -> str | None:
     """Handle the UX-layer Plan Mode entry before normal agent execution.
 
@@ -572,21 +664,13 @@ async def _maybe_handle_plan_mode_entry(
     if not decision.action_kind or not decision.tool_name:
         return None
 
-    plan = await get_plan_mode_service().ensure_awaiting_plan(
-        agent_id=agent_id,
-        action_kind=decision.action_kind,
-        tool_name=decision.tool_name,
-        arguments=_plan_mode_tool_arguments(decision, content),
-        source="web_chat",
-        tenant_id=tenant_id,
+    _activate_interactive_plan_mode(
+        runtime_session_context,
+        original_request=content,
+        decision=decision,
         session_id=session_id,
-        runtime_task_id=runtime_task_id,
-        requested_by_user_id=user_id,
     )
-    return (
-        f"已进入计划模式，并生成一份待确认计划（plan_id={plan.id}）。"
-        "请在计划卡片中确认、修改或拒绝；确认后我再开始执行。"
-    )
+    return None
 
 
 async def _update_runtime_task(
@@ -719,6 +803,8 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             await broadcast_web_chat_event(agent.id, session_id, build_done_event(assistant_response))
             return
 
+        runtime_session_context = await web_chat_broker.get_or_create_runtime_session(str(agent.id), session_id)
+
         plan_mode_response = await _maybe_handle_plan_mode_entry(
             agent_id=agent.id,
             user_id=getattr(user, "id", None),
@@ -727,6 +813,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             runtime_task_id=run_uuid,
             content=prompt,
             plan_mode_requested=bool(metadata.get("plan_mode_requested")),
+            runtime_session_context=runtime_session_context,
         )
         if plan_mode_response is not None:
             await _persist_assistant_message(
@@ -760,11 +847,6 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         async def thinking_to_ws(text: str) -> None:
             thinking_content.append(text)
             await broadcast_web_chat_event(agent.id, session_id, build_thinking_event(text))
-
-        async def tool_call_to_ws(data: dict[str, Any]) -> None:
-            await broadcast_web_chat_event(agent.id, session_id, build_tool_call_event(data))
-            if data.get("status") == "done":
-                await _persist_tool_call(agent_id=agent.id, user_id=user.id, session_id=session_id, data=data)
 
         async def runtime_event_to_ws(data: dict[str, Any]) -> None:
             if data.get("type") == "permission":
@@ -823,12 +905,41 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             )
             pending_reply_suffix = "\n\n".join(part for part in (pending_reply_suffix, plan_decline_suffix) if part)
 
-        runtime_session_context = await web_chat_broker.get_or_create_runtime_session(str(agent.id), session_id)
         if trusted_decline:
             runtime_session_context.metadata[plan_mode_core.PLAN_MODE_TRUSTED_DECLINE_SESSION_KEY] = trusted_decline
         else:
             runtime_session_context.metadata.pop(plan_mode_core.PLAN_MODE_TRUSTED_DECLINE_SESSION_KEY, None)
+        active_plan_mode_metadata = runtime_session_context.metadata.get("plan_mode")
+        if isinstance(active_plan_mode_metadata, dict) and active_plan_mode_metadata.get("active"):
+            pending_reply_suffix = "\n\n".join(
+                part for part in (pending_reply_suffix, _interactive_plan_mode_suffix(active_plan_mode_metadata)) if part
+            )
+
+        plan_mode_submitted = False
+
+        def _tool_result_needs_plan(data: dict[str, Any]) -> bool:
+            if data.get("name") != "exit_plan_mode" or data.get("status") != "done":
+                return False
+            try:
+                payload = json.loads(str(data.get("result") or "{}"))
+            except Exception:
+                return False
+            return payload.get("status") == "needs_plan"
+
+        async def tool_call_to_ws(data: dict[str, Any]) -> None:  # type: ignore[no-redef]
+            nonlocal plan_mode_submitted
+            await broadcast_web_chat_event(agent.id, session_id, build_tool_call_event(data))
+            if data.get("status") == "done":
+                if _tool_result_needs_plan(data):
+                    plan_mode_submitted = True
+                await _persist_tool_call(agent_id=agent.id, user_id=user.id, session_id=session_id, data=data)
+
+        plan_mode_token = None
         try:
+            if isinstance(active_plan_mode_metadata, dict) and active_plan_mode_metadata.get("active"):
+                from app.services.plan_mode_runtime_context import set_interactive_plan_mode
+
+                plan_mode_token = set_interactive_plan_mode(active_plan_mode_metadata)
             result = await invoke_agent(
                 AgentInvocationRequest(
                     model=llm_model,
@@ -856,6 +967,12 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 )
             )
         finally:
+            if plan_mode_token is not None:
+                from app.services.plan_mode_runtime_context import reset_interactive_plan_mode
+
+                reset_interactive_plan_mode(plan_mode_token)
+            if plan_mode_submitted:
+                runtime_session_context.metadata.pop("plan_mode", None)
             runtime_session_context.metadata.pop(plan_mode_core.PLAN_MODE_TRUSTED_DECLINE_SESSION_KEY, None)
         assistant_response = await _maybe_sync_created_task(
             agent_id=agent.id,

@@ -215,6 +215,33 @@ def test_validate_plan_json_rejects_risk_level_out_of_enum():
     assert any("risk" in e for e in errors)
 
 
+def test_normalize_plan_json_for_validation_repairs_common_agent_planner_shape():
+    from app.services.plan_mode_core import (
+        build_plan_skeleton,
+        normalize_plan_json_for_validation,
+        validate_plan_json,
+    )
+
+    plan = build_plan_skeleton(intent_type="long_task", title="Web3 full report", original_request="r")
+    plan["objective"] = "Produce a structured Web3 panorama report."
+    plan["steps"] = [
+        {"description": "Frame the research scope."},
+        {"title": "Map the main narratives."},
+        "Synthesize findings into a final report.",
+    ]
+    plan["success_criteria"] = ["The user can review the plan before execution."]
+    plan["stop_conditions"] = ["The user rejects the plan."]
+    plan["risk_assessment"] = {"level": "moderate", "reasons": []}
+
+    normalized = normalize_plan_json_for_validation(plan)
+
+    assert [step["order"] for step in normalized["steps"]] == [1, 2, 3]
+    assert normalized["steps"][1]["description"] == "Map the main narratives."
+    assert normalized["risk_assessment"]["level"] == "medium"
+    assert "non-standard risk level" in normalized["risk_assessment"]["reasons"][0]
+    assert validate_plan_json(normalized) == []
+
+
 # ---------------------------------------------------------------------------
 # State machine (§7)
 # ---------------------------------------------------------------------------
@@ -232,6 +259,7 @@ def test_validate_plan_json_rejects_risk_level_out_of_enum():
         ("awaiting_confirmation", "expired"),
         ("awaiting_confirmation", "superseded"),
         ("planning_failed", "planning"),  # retry
+        ("planning_failed", "rejected"),  # user can dismiss a failed draft
     ],
 )
 def test_can_transition_allows_legal_edges(src, dst):
@@ -435,6 +463,65 @@ def test_render_plan_markdown_body_lists_steps_and_success_criteria():
 
     assert "Gather sources" in md
     assert "Report cites 10+ sources." in md
+
+
+def test_normalize_plan_json_rewrites_internal_capabilities_and_drops_placeholder_effects():
+    from app.services.plan_mode_core import normalize_plan_json_for_validation
+
+    normalized = normalize_plan_json_for_validation(
+        {
+            "required_capabilities": ["web_search", "web_fetch", "file_write", "channel_message", "web_search"],
+            "external_side_effects": [
+                {},
+                {"kind": "", "channel": "", "audience": ""},
+                "外部动作",
+                "Send weekly report notification",
+                {"kind": "message", "channel": "wechat", "audience": "rocky243", "requires_confirmation": True},
+            ],
+        }
+    )
+
+    assert normalized["required_capabilities"] == [
+        "Web 来源核验",
+        "工作区文件生成",
+        "用户通知",
+    ]
+    assert normalized["external_side_effects"] == [
+        {"description": "Send weekly report notification", "requires_confirmation": True},
+        {"kind": "message", "channel": "wechat", "audience": "rocky243", "requires_confirmation": True},
+    ]
+
+
+def test_render_plan_markdown_hides_machine_contract_fields_from_user_body():
+    from app.services.plan_mode_core import build_plan_skeleton, compute_plan_hash, render_plan_markdown
+
+    plan = build_plan_skeleton(intent_type="autonomous_wake", title="RWA weekly report", original_request="r")
+    plan["objective"] = "Generate the RWA weekly report."
+    plan["steps"] = [{"order": 1, "description": "Prepare the report.", "expected_output": "report.md"}]
+    plan["success_criteria"] = ["Report is delivered."]
+    plan["required_capabilities"] = ["web_search", "file_write", "channel_message"]
+    plan["external_side_effects"] = [{}, "外部动作"]
+
+    md = render_plan_markdown(
+        plan_id=uuid4(),
+        agent_id=uuid4(),
+        tenant_id=uuid4(),
+        status="awaiting_confirmation",
+        plan_version=1,
+        plan_hash=compute_plan_hash(plan),
+        intent_type="autonomous_wake",
+        created_at="2026-05-29T09:00:00+00:00",
+        plan_json=plan,
+    )
+
+    assert "RWA weekly report" in md
+    assert "Prepare the report." in md
+    assert "Required capabilities" not in md
+    assert "External side effects" not in md
+    assert "web_search" not in md
+    assert "file_write" not in md
+    assert "channel_message" not in md
+    assert "外部动作" not in md
 
 
 def test_render_plan_markdown_is_parseable_frontmatter():

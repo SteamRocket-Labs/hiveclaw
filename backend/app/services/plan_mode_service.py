@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import inspect
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -107,6 +108,12 @@ class PlanModeService:
         stmt._plan_lookup_id = str(plan_id)  # type: ignore[attr-defined]
         result = await db.execute(stmt)
         return result.scalar_one_or_none()
+
+    @staticmethod
+    async def _refresh_if_supported(db: Any, plan: AgentPlanRequest) -> None:
+        refresh = getattr(db, "refresh", None)
+        if callable(refresh):
+            await refresh(plan)
 
     def _render_and_write_markdown(self, plan: AgentPlanRequest) -> str:
         md = core.render_plan_markdown(
@@ -292,7 +299,7 @@ class PlanModeService:
             runtime_task_id=runtime_task_id,
             metadata_json=metadata,
         )
-        return await self.generate_plan(plan_id=plan.id, fill=fill)
+        return await self.generate_plan(plan_id=plan.id, fill=fill, use_agent_planner=False)
 
     async def _find_awaiting_by_signature(self, *, agent_id: UUID, signature: str) -> AgentPlanRequest | None:
         """Return the agent's most recent awaiting plan with this intercept signature.
@@ -388,6 +395,7 @@ class PlanModeService:
         *,
         plan_id: UUID,
         fill: dict[str, Any] | None = None,
+        use_agent_planner: bool = True,
     ) -> AgentPlanRequest:
         """Generate ``plan_json`` for a draft/planning plan (§10.2).
 
@@ -418,54 +426,67 @@ class PlanModeService:
 
         planner_work_ledger: dict[str, Any] | None = None
         try:
-            planner_work_ledger = initialize_agent_work_ledger_artifact(
-                agent_id=plan.agent_id,
-                plan_id=plan.id,
-                runtime_task_id=plan.runtime_task_id,
-                source="plan_mode_planner",
-                current_phase="planning",
-                status="running",
-                todo_items=[
-                    {
-                        "id": "understand-request",
-                        "title": "Understand the original request and Plan Mode entry reason.",
-                        "status": "complete",
-                        "required": True,
+            if use_agent_planner:
+                planner_work_ledger = initialize_agent_work_ledger_artifact(
+                    agent_id=plan.agent_id,
+                    plan_id=plan.id,
+                    runtime_task_id=plan.runtime_task_id,
+                    source="plan_mode_planner",
+                    current_phase="planning",
+                    status="running",
+                    todo_items=[
+                        {
+                            "id": "understand-request",
+                            "title": "Understand the original request and Plan Mode entry reason.",
+                            "status": "complete",
+                            "required": True,
+                        },
+                        {
+                            "id": "inspect-state",
+                            "title": "Inspect current state or explicitly record why inspection is not needed.",
+                            "status": "pending",
+                            "required": True,
+                        },
+                        {
+                            "id": "draft-confirmable-plan",
+                            "title": "Draft a user-confirmable plan with success criteria and stop conditions.",
+                            "status": "pending",
+                            "required": True,
+                        },
+                    ],
+                    evidence_refs=[f"plan_id:{plan.id}", f"intent_type:{plan.intent_type}"],
+                    data_root=_agent_data_dir(),
+                )
+                planner_result = await self._run_planner(
+                    plan=plan,
+                    seed_plan=seed_plan,
+                    intercepted_tool=intercepted_tool,
+                )
+            else:
+                from app.services.agent_plan_planner import AgentPlanPlannerResult
+
+                planner_result = AgentPlanPlannerResult(
+                    plan_json=seed_plan,
+                    plan_markdown="",
+                    metadata={
+                        "author_type": "workflow",
+                        "planner_prompt_version": "structured_fill.v1",
                     },
-                    {
-                        "id": "inspect-state",
-                        "title": "Inspect current state or explicitly record why inspection is not needed.",
-                        "status": "pending",
-                        "required": True,
-                    },
-                    {
-                        "id": "draft-confirmable-plan",
-                        "title": "Draft a user-confirmable plan with success criteria and stop conditions.",
-                        "status": "pending",
-                        "required": True,
-                    },
-                ],
-                evidence_refs=[f"plan_id:{plan.id}", f"intent_type:{plan.intent_type}"],
-                data_root=_agent_data_dir(),
-            )
-            planner_result = await self._run_planner(
-                plan=plan,
-                seed_plan=seed_plan,
-                intercepted_tool=intercepted_tool,
-            )
+                )
         except Exception as exc:  # noqa: BLE001 - planner failure becomes planning_failed, not execution.
             from app.services.agent_plan_planner import PLANNER_PROMPT_VERSION
 
             logger.warning("agent_plan_planner_failed", extra={"plan_id": str(plan_id), "error": str(exc)})
-            append_agent_work_ledger_progress(
-                agent_id=plan.agent_id,
-                plan_id=plan.id,
-                runtime_task_id=plan.runtime_task_id,
-                status="failed",
-                delta=f"Plan Mode planner failed: {getattr(exc, 'message', str(exc))}",
-                blocked_reason=getattr(exc, "message", str(exc)),
-                data_root=_agent_data_dir(),
-            )
+            if planner_work_ledger:
+                append_agent_work_ledger_progress(
+                    agent_id=plan.agent_id,
+                    plan_id=plan.id,
+                    runtime_task_id=plan.runtime_task_id,
+                    status="failed",
+                    delta=f"Plan Mode planner failed: {getattr(exc, 'message', str(exc))}",
+                    blocked_reason=getattr(exc, "message", str(exc)),
+                    data_root=_agent_data_dir(),
+                )
             return await self._mark_generation_failed_by_id(
                 plan_id,
                 [f"planner_invocation_failed: {getattr(exc, 'message', str(exc))}"],
@@ -487,16 +508,16 @@ class PlanModeService:
                         "illegal_transition",
                         f"cannot apply planner output to status {plan.status!r}",
                     )
+                planner_metadata = dict(getattr(planner_result, "metadata", {}) or {})
+                if planner_work_ledger:
+                    planner_metadata["planner_work_ledger"] = planner_work_ledger
                 self._apply_generation(
                     plan,
                     getattr(planner_result, "plan_json", {}) or {},
-                    planner_metadata={
-                        **(getattr(planner_result, "metadata", {}) or {}),
-                        "planner_work_ledger": planner_work_ledger or {},
-                    },
+                    planner_metadata=planner_metadata,
                     plan_markdown=getattr(planner_result, "plan_markdown", "") or "",
                 )
-                if plan.status == "awaiting_confirmation":
+                if plan.status == "awaiting_confirmation" and planner_work_ledger:
                     append_agent_work_ledger_progress(
                         agent_id=plan.agent_id,
                         plan_id=plan.id,
@@ -507,7 +528,7 @@ class PlanModeService:
                         auto_complete_terminal=True,
                         data_root=_agent_data_dir(),
                     )
-                else:
+                elif planner_work_ledger:
                     append_agent_work_ledger_progress(
                         agent_id=plan.agent_id,
                         plan_id=plan.id,
@@ -518,6 +539,7 @@ class PlanModeService:
                         data_root=_agent_data_dir(),
                     )
                 await db.commit()
+                await self._refresh_if_supported(db, plan)
             except (LookupError, PlanConflictError):
                 await db.rollback()
                 raise
@@ -587,15 +609,16 @@ class PlanModeService:
         # intent_type is owned by the row, never by caller-supplied fill.
         merged["schema"] = core.PLAN_SCHEMA
         merged["intent_type"] = plan.intent_type
+        merged = core.normalize_plan_json_for_validation(merged)
 
-        errors = core.validate_plan_json(merged)
+        errors = [*core.validate_plan_json(merged), *self._visible_plan_leak_errors(merged)]
         if errors:
             self._mark_generation_failed(plan, errors, planner_metadata=planner_metadata)
             return
 
         metadata = dict(plan.metadata_json or {})
         metadata.update(planner_metadata or {})
-        metadata["author_type"] = "agent"
+        metadata["author_type"] = metadata.get("author_type") or "agent"
         metadata["planner_prompt_version"] = metadata.get("planner_prompt_version") or self._planner_prompt_version()
         metadata["planner_source"] = plan.source
         metadata["quality_checks"] = {
@@ -615,6 +638,49 @@ class PlanModeService:
         if "planning_errors" in metadata:
             metadata.pop("planning_errors", None)
         plan.metadata_json = metadata
+
+    @staticmethod
+    def _visible_plan_leak_errors(plan_json: dict[str, Any]) -> list[str]:
+        """Reject plan cards that expose hidden workflow/tool-script internals."""
+        visible_parts: list[str] = []
+        for key in ("title", "objective", "motivation"):
+            value = plan_json.get(key)
+            if isinstance(value, str):
+                visible_parts.append(value)
+        for step in plan_json.get("steps") or []:
+            if not isinstance(step, dict):
+                continue
+            for key in ("title", "description", "expected_output"):
+                value = step.get(key)
+                if isinstance(value, str):
+                    visible_parts.append(value)
+        for key in ("success_criteria", "stop_conditions", "required_capabilities"):
+            value = plan_json.get(key)
+            if isinstance(value, list):
+                visible_parts.extend(str(item) for item in value)
+        risk = plan_json.get("risk_assessment")
+        if isinstance(risk, dict):
+            visible_parts.append(str(risk.get("level") or ""))
+            visible_parts.extend(str(item) for item in risk.get("reasons") or [])
+
+        text = "\n".join(visible_parts)
+        if not text:
+            return []
+        blocked_patterns = [
+            (r"\bload_skill\s*\(", "load_skill"),
+            (r"\bdeep_research_(?:start|check|cancel|export)\b", "deep_research_* tool call"),
+            (r"\bplan_confirmed\s*=\s*false\b", "plan_confirmed=false"),
+            (r"\bmem_[0-9a-fA-F]{6,}\b", "mem_* memory id"),
+            (r"\bruntime_artifacts/", "runtime_artifacts path"),
+            (r"\bwork_ledger\.json\b", "work ledger path"),
+            (r"\b(?:plan|sources|claims|steps|final)\.jsonl?\b", "internal audit artifact filename"),
+        ]
+        errors = [
+            f"user-visible plan leaks internal workflow detail: {label}"
+            for pattern, label in blocked_patterns
+            if re.search(pattern, text, flags=re.IGNORECASE)
+        ]
+        return errors
 
     # -- revise -----------------------------------------------------------
 
@@ -779,6 +845,7 @@ class PlanModeService:
                     plan.metadata_json = metadata
 
                 await db.commit()
+                await self._refresh_if_supported(db, plan)
             except (LookupError, PlanConflictError):
                 await db.rollback()
                 raise

@@ -393,6 +393,36 @@ def test_revise_returns_new_version(monkeypatch):
     assert resp.json()["plan_version"] == 2
 
 
+def test_regenerate_retries_same_failed_plan(monkeypatch):
+    agent_id = uuid4()
+    plan_id = uuid4()
+    calls = {}
+
+    class _Service:
+        async def get_plan(self, _plan_id):
+            assert _plan_id == plan_id
+            return _plan_namespace(agent_id=agent_id, status="planning_failed")
+
+        async def generate_plan(self, *, plan_id, fill):
+            calls["plan_id"] = plan_id
+            calls["fill"] = fill
+            return _plan_namespace(agent_id=agent_id, status="awaiting_confirmation", version=1)
+
+    client, *_ = _client(monkeypatch, service=_Service())
+    resp = client.post(
+        f"/agents/{agent_id}/plans/{plan_id}/regenerate",
+        json={"fill": {"revision_request": "focus on RWA pre-IPO market map"}},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "awaiting_confirmation"
+    assert resp.json()["plan_version"] == 1
+    assert calls == {
+        "plan_id": plan_id,
+        "fill": {"revision_request": "focus on RWA pre-IPO market map"},
+    }
+
+
 def test_reject_returns_rejected(monkeypatch):
     agent_id = uuid4()
 

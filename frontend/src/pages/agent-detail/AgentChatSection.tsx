@@ -88,11 +88,19 @@ interface StructuredToolResultBodyProps {
 }
 
 const _LIVE_DEEP_RESEARCH_STATUSES = new Set(['running', 'pending', 'in_progress']);
+const DEEP_RESEARCH_FALLBACK_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const PLAN_ID_RE = /\bplan_id\s*[=:]\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i;
 
 function _isLiveDeepResearchStatus(status: string | null | undefined): boolean {
   if (!status) return false;
   return _LIVE_DEEP_RESEARCH_STATUSES.has(status.toLowerCase());
+}
+
+function _isRecentDeepResearchFallbackMessage(message: AgentChatMessage): boolean {
+  if (!message.timestamp) return true;
+  const timestampMs = new Date(message.timestamp).getTime();
+  if (!Number.isFinite(timestampMs)) return false;
+  return Date.now() - timestampMs <= DEEP_RESEARCH_FALLBACK_MAX_AGE_MS;
 }
 
 export function extractPlanIdFromPlanModeMessage(content: string | null | undefined): string | null {
@@ -865,13 +873,17 @@ export default function AgentChatSection({
   const visibleChatMessages = chatMessagesSessionId === activeSessionId ? chatMessages : [];
   const visibleTimeline = isReadOnlySession ? visibleHistoryMsgs : visibleChatMessages;
   const hasInternalTrace = visibleTimeline.some((message) => message.role === 'tool_call');
+  const hasActiveChatRun = Boolean(activeRunStatus || isWaiting || isStreaming);
   const fallbackWorkLedger = (() => {
     for (const message of [...visibleTimeline].reverse()) {
       const meta = message.toolMeta;
       if (meta?.kind !== 'deep_research' || !meta.taskId) {
         continue;
       }
-      const live = _isLiveDeepResearchStatus(meta.status) || message.toolStatus === 'running';
+      const live =
+        message.toolStatus === 'running' ||
+        (_isLiveDeepResearchStatus(meta.status) &&
+          (hasActiveChatRun || _isRecentDeepResearchFallbackMessage(message)));
       if (!live) {
         continue;
       }
@@ -884,7 +896,7 @@ export default function AgentChatSection({
     }
     return null;
   })();
-  const workLedgerLive = Boolean(activeRunStatus || isWaiting || isStreaming || fallbackWorkLedger?.live);
+  const workLedgerLive = Boolean(hasActiveChatRun || fallbackWorkLedger?.live);
 
   return (
     <div style={{ display: 'flex', gap: '0', flex: 1, minHeight: 0, height: 'calc(100vh - 206px)' }}>

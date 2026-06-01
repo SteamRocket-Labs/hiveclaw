@@ -57,11 +57,45 @@ function humanizeWakePolicy(wake: PlanRequest['plan_json']['wake_policy']): stri
   return wake.type || null;
 }
 
-function plannerWorkLedgerPath(metadata: PlanRequest['metadata']): string | null {
-  const value = metadata?.planner_work_ledger;
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const path = (value as Record<string, unknown>).path;
-  return typeof path === 'string' && path.trim() ? path : null;
+function planningErrorMessages(metadata: PlanRequest['metadata']): string[] {
+  const value = metadata?.planning_errors;
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean);
+  }
+  if (typeof value === 'string' && value.trim()) {
+    return [value.trim()];
+  }
+  return [];
+}
+
+interface DisplaySideEffect {
+  label: string;
+  requiresConfirmation?: boolean;
+}
+
+const GENERIC_SIDE_EFFECT_LABELS = new Set(['external action', 'external_action', 'external side effect', '外部动作', '外部副作用']);
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function displayableSideEffects(value: unknown): DisplaySideEffect[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((effect) => {
+    if (typeof effect === 'string') {
+      const label = effect.trim();
+      if (GENERIC_SIDE_EFFECT_LABELS.has(label.toLowerCase())) return [];
+      return label ? [{ label }] : [];
+    }
+    if (!effect || typeof effect !== 'object' || Array.isArray(effect)) return [];
+    const record = effect as Record<string, unknown>;
+    const primary = [record.kind, record.channel, record.audience].map(stringValue).filter(Boolean).join(' · ');
+    const fallback = [record.description, record.summary, record.action].map(stringValue).find(Boolean) || '';
+    const label = primary || fallback;
+    if (GENERIC_SIDE_EFFECT_LABELS.has(label.toLowerCase())) return [];
+    if (!label) return [];
+    return [{ label, requiresConfirmation: Boolean(record.requires_confirmation) }];
+  });
 }
 
 type PlanConfirmationApi = Pick<typeof planApi, 'confirm' | 'handoff'>;
@@ -83,23 +117,23 @@ export async function confirmAndHandoffPlan(
 
 export default function PlanCard({ agentId, plan, onChanged, dense = false }: PlanCardProps) {
   const { t } = useTranslation();
-  const [busy, setBusy] = React.useState<null | 'confirm' | 'revise' | 'reject'>(null);
+  const [busy, setBusy] = React.useState<null | 'confirm' | 'revise' | 'regenerate' | 'reject'>(null);
   const [error, setError] = React.useState<string | null>(null);
 
   const planJson = plan.plan_json || {};
   const isAwaiting = plan.status === 'awaiting_confirmation';
+  const isPlanningFailed = plan.status === 'planning_failed';
   const steps = Array.isArray(planJson.steps) ? planJson.steps : [];
   const successCriteria = Array.isArray(planJson.success_criteria) ? planJson.success_criteria : [];
-  const capabilities = Array.isArray(planJson.required_capabilities) ? planJson.required_capabilities : [];
-  const sideEffects = Array.isArray(planJson.external_side_effects) ? planJson.external_side_effects : [];
+  const sideEffects = displayableSideEffects(planJson.external_side_effects);
   const stopConditions = Array.isArray(planJson.stop_conditions) ? planJson.stop_conditions : [];
   const wakeText = humanizeWakePolicy(planJson.wake_policy);
   const risk = planJson.risk_assessment;
   const cost = planJson.estimated_cost;
-  const workLedgerPath = plannerWorkLedgerPath(plan.metadata);
+  const planningErrors = planningErrorMessages(plan.metadata);
 
   const runAction = async (
-    kind: 'confirm' | 'revise' | 'reject',
+    kind: 'confirm' | 'revise' | 'regenerate' | 'reject',
     fn: () => Promise<unknown>,
   ) => {
     if (busy) return;
@@ -132,9 +166,16 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
   const onRequestChanges = () => {
     const reason = window.prompt(t('agent.plan.requestChangesPrompt', 'What should change about this plan?'));
     if (reason == null) return;
+    const payload = { fill: reason.trim() ? { revision_request: reason.trim() } : {} };
     return runAction('revise', () =>
-      planApi.revise(agentId, plan.id, { fill: reason.trim() ? { revision_request: reason.trim() } : {} }),
+      isPlanningFailed
+        ? planApi.regenerate(agentId, plan.id, payload)
+        : planApi.revise(agentId, plan.id, payload),
     );
+  };
+
+  const onRegenerate = () => {
+    return runAction('regenerate', () => planApi.regenerate(agentId, plan.id, {}));
   };
 
   const onReject = () => {
@@ -258,35 +299,12 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
         </div>
       )}
 
-      {/* Wake policy + capabilities + cost in a meta row */}
+      {/* Wake policy + cost in a meta row */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '10px' }}>
         {wakeText && (
           <div>
             <div style={labelStyle}>{t('agent.plan.wakePolicy', 'Wake policy')}</div>
             <div style={{ fontSize: '12px', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono, monospace)' }}>{wakeText}</div>
-          </div>
-        )}
-        {capabilities.length > 0 && (
-          <div>
-            <div style={labelStyle}>{t('agent.plan.capabilities', 'Capabilities')}</div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-              {capabilities.map((cap) => (
-                <span
-                  key={cap}
-                  style={{
-                    fontSize: '11px',
-                    padding: '1px 7px',
-                    borderRadius: '6px',
-                    background: 'var(--bg-secondary)',
-                    border: '1px solid var(--border-subtle)',
-                    color: 'var(--text-secondary)',
-                    fontFamily: 'var(--font-mono, monospace)',
-                  }}
-                >
-                  {cap}
-                </span>
-              ))}
-            </div>
           </div>
         )}
         {cost && (cost.tokens_per_run || cost.expected_duration) && (
@@ -304,17 +322,14 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
         <div>
           <div style={labelStyle}>{t('agent.plan.sideEffects', 'External side effects')}</div>
           <ul style={{ margin: 0, paddingLeft: '18px', display: 'grid', gap: '4px' }}>
-            {sideEffects.map((effect, index) => {
-              const parts = [effect.kind, effect.channel, effect.audience].filter(Boolean).join(' · ');
-              return (
-                <li key={index} style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                  {parts || t('agent.plan.sideEffectGeneric', 'External action')}
-                  {effect.requires_confirmation && (
-                    <span style={{ color: 'var(--warning, #b45309)' }}> — {t('agent.plan.requiresConfirmation', 'requires confirmation')}</span>
-                  )}
-                </li>
-              );
-            })}
+            {sideEffects.map((effect, index) => (
+              <li key={index} style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                {effect.label}
+                {effect.requiresConfirmation && (
+                  <span style={{ color: 'var(--warning, #b45309)' }}> — {t('agent.plan.requiresConfirmation', 'requires confirmation')}</span>
+                )}
+              </li>
+            ))}
           </ul>
         </div>
       )}
@@ -331,19 +346,29 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
         </div>
       )}
 
-      {workLedgerPath && (
-        <div>
-          <div style={labelStyle}>{t('agent.plan.workLedger', 'Work ledger')}</div>
-          <div
-            style={{
-              fontSize: '11px',
-              color: 'var(--text-tertiary)',
-              fontFamily: 'var(--font-mono, monospace)',
-              overflowWrap: 'anywhere',
-            }}
-          >
-            {workLedgerPath}
-          </div>
+      {isPlanningFailed && (
+        <div
+          role="alert"
+          style={{
+            fontSize: '12px',
+            color: 'var(--error, #dc2626)',
+            background: 'rgba(220, 100, 100, 0.1)',
+            borderRadius: '6px',
+            padding: '8px 10px',
+            display: 'grid',
+            gap: '4px',
+          }}
+        >
+          <div style={{ fontWeight: 700 }}>{t('agent.plan.failureTitle', 'Planning failed')}</div>
+          {planningErrors.length > 0 ? (
+            <ul style={{ margin: 0, paddingLeft: '18px', display: 'grid', gap: '2px' }}>
+              {planningErrors.map((item, index) => (
+                <li key={index}>{item}</li>
+              ))}
+            </ul>
+          ) : (
+            <div>{t('agent.plan.failureUnknown', 'The planner did not return a valid confirmable plan.')}</div>
+          )}
         </div>
       )}
 
@@ -362,7 +387,7 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
         </div>
       )}
 
-      {/* Actions — only while awaiting confirmation (§8) */}
+      {/* Actions: confirmable plans can start; failed drafts can be retried or dismissed. */}
       {isAwaiting ? (
         <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
           <button
@@ -391,6 +416,36 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
             onClick={onConfirm}
           >
             {busy === 'confirm' ? t('common.loading', 'Loading...') : t('agent.plan.confirmAndStart', 'Confirm and start')}
+          </button>
+        </div>
+      ) : isPlanningFailed ? (
+        <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            style={{ fontSize: '12px', padding: '6px 12px', color: 'var(--error, #dc2626)' }}
+            disabled={busy !== null}
+            onClick={onReject}
+          >
+            {busy === 'reject' ? t('common.loading', 'Loading...') : t('agent.plan.reject', 'Reject')}
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            style={{ fontSize: '12px', padding: '6px 12px' }}
+            disabled={busy !== null}
+            onClick={onRequestChanges}
+          >
+            {busy === 'revise' ? t('common.loading', 'Loading...') : t('agent.plan.reviseAndRetry', 'Revise and retry')}
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            style={{ fontSize: '12px', padding: '6px 14px' }}
+            disabled={busy !== null}
+            onClick={onRegenerate}
+          >
+            {busy === 'regenerate' ? t('common.loading', 'Loading...') : t('agent.plan.retryGeneration', 'Retry plan generation')}
           </button>
         </div>
       ) : (

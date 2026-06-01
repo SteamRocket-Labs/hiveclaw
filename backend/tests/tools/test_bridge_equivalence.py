@@ -24,6 +24,7 @@ def test_combined_openai_tools_matches_canonical_surface():
         "delegate_to_agent",
         "edit_file",
         "execute_code",
+        "exit_plan_mode",
         "run_command",
         "feishu_approval_create",
         "feishu_approval_definition",

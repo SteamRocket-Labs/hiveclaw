@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import type React from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
+import { IconCheck, IconSquare, IconSquareFilled } from '@tabler/icons-react';
 
 import { autonomyApi, type RuntimeWorkLedgerItem, type RuntimeWorkLedgerView } from '../../api/domains/autonomy';
 import DeepResearchStreamPanel from './DeepResearchStreamPanel';
@@ -15,11 +16,19 @@ interface ChatWorkLedgerDockProps {
   live?: boolean;
 }
 
-const ACTIVE_STATUSES = new Set(['running', 'in_progress', 'pending', 'blocked']);
+type CanonicalTaskStatus = 'pending' | 'in_progress' | 'completed';
+
 const COMPLETE_STATUSES = new Set(['complete', 'completed', 'done', 'skipped']);
 
 function normalizeStatus(value: string | null | undefined): string {
   return String(value || 'pending').trim().toLowerCase();
+}
+
+function taskStatus(value: string | null | undefined): CanonicalTaskStatus {
+  const normalized = normalizeStatus(value);
+  if (COMPLETE_STATUSES.has(normalized)) return 'completed';
+  if (normalized === 'running' || normalized === 'in_progress') return 'in_progress';
+  return 'pending';
 }
 
 function statusLabel(status: string, t: ReturnType<typeof useTranslation>['t']): string {
@@ -35,20 +44,39 @@ function statusLabel(status: string, t: ReturnType<typeof useTranslation>['t']):
 function progressRatio(data: RuntimeWorkLedgerView | undefined): number {
   const total = data?.counts?.todos_total ?? data?.todo_items?.length ?? 0;
   if (!total) return 0;
-  const complete = data?.counts?.todos_complete ?? 0;
+  const complete = data?.counts?.todos_complete ?? (data?.todo_items ?? []).filter((item) => taskStatus(item.status) === 'completed').length;
   return Math.max(0, Math.min(1, complete / total));
 }
 
 function currentTodo(items: RuntimeWorkLedgerItem[] | undefined): RuntimeWorkLedgerItem | null {
   const list = items ?? [];
   return (
-    list.find((item) => {
-      const status = normalizeStatus(item.status);
-      return status === 'running' || status === 'in_progress' || status === 'blocked';
-    }) ??
-    list.find((item) => ACTIVE_STATUSES.has(normalizeStatus(item.status))) ??
+    list.find((item) => taskStatus(item.status) === 'in_progress') ??
+    list.find((item) => taskStatus(item.status) === 'pending') ??
     null
   );
+}
+
+function taskText(item: RuntimeWorkLedgerItem): string {
+  return item.content || item.subject || item.title;
+}
+
+function taskActiveText(item: RuntimeWorkLedgerItem): string {
+  return item.activeForm || item.active_form || taskText(item);
+}
+
+function byTaskIdAsc(a: RuntimeWorkLedgerItem, b: RuntimeWorkLedgerItem): number {
+  const aNum = Number.parseInt(a.id, 10);
+  const bNum = Number.parseInt(b.id, 10);
+  if (!Number.isNaN(aNum) && !Number.isNaN(bNum)) return aNum - bNum;
+  return a.id.localeCompare(b.id);
+}
+
+function taskCounts(items: RuntimeWorkLedgerItem[]) {
+  const completed = items.filter((item) => taskStatus(item.status) === 'completed').length;
+  const pending = items.filter((item) => taskStatus(item.status) === 'pending').length;
+  const inProgress = items.length - completed - pending;
+  return { completed, pending, inProgress, total: items.length };
 }
 
 export default function ChatWorkLedgerDock({
@@ -80,31 +108,36 @@ export default function ChatWorkLedgerDock({
     queryFn: () => autonomyApi.getRuntimeWorkLedger(agentId, runtimeTaskId as string),
     enabled: runtimeQueryEnabled,
     refetchInterval: live ? 3000 : false,
-    retry: live ? 3 : 1,
+    retry: false,
   });
   const data = preferRuntimeLedger ? runtimeQuery.data : (sessionData ?? runtimeQuery.data);
   const isLoading = sessionQuery.isLoading || (runtimeQueryEnabled && runtimeQuery.isLoading);
-  const error = data ? null : (sessionQuery.error ?? runtimeQuery.error);
+  const missingLiveLedger = live && Boolean(sessionId || runtimeTaskKey) && !data && !isLoading;
+  const error = data || missingLiveLedger ? null : (sessionQuery.error ?? runtimeQuery.error);
 
   const activeTodo = currentTodo(data?.todo_items);
   const nextTodo = useMemo(() => {
     const todos = data?.todo_items ?? [];
-    if (!activeTodo) return todos.find((item) => !COMPLETE_STATUSES.has(normalizeStatus(item.status))) ?? null;
+    if (!activeTodo) return todos.find((item) => taskStatus(item.status) !== 'completed') ?? null;
     const activeIndex = todos.findIndex((item) => item.id === activeTodo.id);
-    return todos.slice(activeIndex + 1).find((item) => !COMPLETE_STATUSES.has(normalizeStatus(item.status))) ?? null;
+    return todos.slice(activeIndex + 1).find((item) => taskStatus(item.status) !== 'completed') ?? null;
   }, [activeTodo, data?.todo_items]);
   const ratio = progressRatio(data);
   const percent = Math.round(ratio * 100);
-  const displayTitle = title || t('agent.chat.workLedger.title', 'Agent work ledger');
+  const displayTitle = title || t('agent.chat.workLedger.taskTitle', 'Agent tasks');
   const displayStatus = data?.status || (isLoading ? 'loading' : 'running');
-  const counts = data?.counts ?? {};
   const todoItems = data?.todo_items ?? [];
+  const counts = taskCounts(todoItems);
   const verification = data?.verification ?? [];
   const progress = data?.progress ?? [];
   const failures = data?.failures ?? [];
   const displayTaskId = data?.runtime_task_id || runtimeTaskId || sessionId || '';
+  const hasOpenTasks = todoItems.some((item) => taskStatus(item.status) !== 'completed');
+  const taskSummary = `${counts.total} tasks (${counts.completed} done, ${
+    counts.inProgress > 0 ? `${counts.inProgress} in progress, ` : ''
+  }${counts.pending} open)`;
 
-  if (!data && !isLoading) {
+  if (!data && !isLoading && !missingLiveLedger) {
     return null;
   }
 
@@ -118,7 +151,7 @@ export default function ChatWorkLedgerDock({
       }}
     >
       <details
-        open={Boolean(error)}
+        open={Boolean(error) || live || hasOpenTasks}
         style={{
           border: '1px solid var(--border-subtle)',
           borderRadius: '8px',
@@ -160,20 +193,25 @@ export default function ChatWorkLedgerDock({
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: '8px', alignItems: 'center' }}>
             <div style={{ minWidth: 0 }}>
               <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                <span style={{ fontWeight: 700, color: 'var(--text-secondary)' }}>{taskSummary}</span>
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
                 {t('agent.chat.workLedger.current', 'Current')}: {' '}
                 <span style={{ color: 'var(--text-secondary)' }}>
-                  {activeTodo?.title || data?.current_phase || t('agent.chat.workLedger.loading', 'Loading work state...')}
+                  {activeTodo
+                    ? taskActiveText(activeTodo)
+                    : data?.current_phase || t('agent.chat.workLedger.loading', 'Loading work state...')}
                 </span>
               </div>
               {nextTodo && (
                 <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
                   {t('agent.chat.workLedger.next', 'Next')}: {' '}
-                  <span style={{ color: 'var(--text-secondary)' }}>{nextTodo.title}</span>
+                  <span style={{ color: 'var(--text-secondary)' }}>{taskText(nextTodo)}</span>
                 </div>
               )}
             </div>
             <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
-              {counts.todos_complete ?? 0}/{counts.todos_total ?? todoItems.length} {t('agent.chat.workLedger.todos', 'todos')}
+              {counts.completed}/{counts.total} {t('agent.chat.workLedger.todos', 'todos')}
             </div>
           </div>
           <div style={{ height: '4px', borderRadius: '999px', background: 'var(--bg-tertiary)', overflow: 'hidden' }}>
@@ -195,7 +233,7 @@ export default function ChatWorkLedgerDock({
               {t('agent.chat.workLedger.loadFailed', 'Work ledger is not available yet.')}
             </div>
           )}
-          <WorkLedgerList title={t('agent.chat.workLedger.todoTitle', 'Todo')} items={todoItems} />
+          <TaskList items={todoItems} />
           {verification.length > 0 && (
             <WorkLedgerList title={t('agent.chat.workLedger.verificationTitle', 'Verification')} items={verification} />
           )}
@@ -246,6 +284,109 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   );
 }
 
+function TaskList({ items }: { items: RuntimeWorkLedgerItem[] }) {
+  const { t } = useTranslation();
+  if (items.length === 0) return null;
+
+  const maxDisplay = 10;
+  const sorted = [...items].sort(byTaskIdAsc);
+  const needsTruncation = sorted.length > maxDisplay;
+  const visibleItems = needsTruncation
+    ? [...items]
+        .sort((a, b) => {
+          const statusOrder: Record<CanonicalTaskStatus, number> = {
+            in_progress: 0,
+            pending: 1,
+            completed: 2,
+          };
+          const byStatus = statusOrder[taskStatus(a.status)] - statusOrder[taskStatus(b.status)];
+          return byStatus || byTaskIdAsc(a, b);
+        })
+        .slice(0, maxDisplay)
+    : sorted;
+  const hiddenItems = needsTruncation ? items.filter((item) => !visibleItems.some((visible) => visible.id === item.id)) : [];
+  const hiddenCounts = taskCounts(hiddenItems);
+  const hiddenSummary = hiddenItems.length
+    ? [
+        hiddenCounts.inProgress ? `${hiddenCounts.inProgress} in progress` : '',
+        hiddenCounts.pending ? `${hiddenCounts.pending} pending` : '',
+        hiddenCounts.completed ? `${hiddenCounts.completed} completed` : '',
+      ]
+        .filter(Boolean)
+        .join(', ')
+    : '';
+
+  return (
+    <div data-testid="agent-task-list">
+      <SectionTitle>{t('agent.chat.workLedger.todoTitle', 'Todo')}</SectionTitle>
+      <div style={{ display: 'grid', gap: '6px' }}>
+        {visibleItems.map((item) => {
+          const status = taskStatus(item.status);
+          const blockedBy = item.blockedBy ?? [];
+          const isCompleted = status === 'completed';
+          const isInProgress = status === 'in_progress';
+          const isBlocked = blockedBy.length > 0 && !isCompleted;
+          return (
+            <div
+              key={item.id}
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '18px minmax(0, 1fr)',
+                gap: '8px',
+                alignItems: 'start',
+                fontSize: '11px',
+                lineHeight: 1.45,
+              }}
+            >
+              <TaskStatusIcon status={status} />
+              <div style={{ minWidth: 0 }}>
+                <span
+                  style={{
+                    color: isCompleted || isBlocked ? 'var(--text-tertiary)' : 'var(--text-secondary)',
+                    fontWeight: isInProgress ? 700 : 500,
+                    textDecoration: isCompleted ? 'line-through' : 'none',
+                  }}
+                >
+                  {taskText(item)}
+                </span>
+                {item.owner && (
+                  <span style={{ color: 'var(--text-tertiary)' }}>
+                    {' '}
+                    (@{item.owner})
+                  </span>
+                )}
+                {isBlocked && (
+                  <span style={{ color: 'var(--text-tertiary)' }}>
+                    {' '}
+                    blocked by {blockedBy.map((id) => `#${id}`).join(', ')}
+                  </span>
+                )}
+                {isInProgress && !isBlocked && taskActiveText(item) !== taskText(item) && (
+                  <div style={{ color: 'var(--text-tertiary)', marginTop: '1px' }}>{taskActiveText(item)}...</div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        {hiddenSummary && (
+          <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>... +{hiddenSummary}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TaskStatusIcon({ status }: { status: CanonicalTaskStatus }) {
+  const shared = { size: 13, stroke: 2 } as const;
+  if (status === 'completed') {
+    return <IconCheck {...shared} color="var(--accent-primary)" style={{ marginTop: '2px' }} />;
+  }
+  if (status === 'in_progress') {
+    return <IconSquareFilled size={10} color="var(--accent-primary)" style={{ marginTop: '4px' }} />;
+  }
+  return <IconSquare {...shared} color="var(--text-tertiary)" style={{ marginTop: '2px' }} />;
+}
+
 function WorkLedgerList({ title, items }: { title: string; items: RuntimeWorkLedgerItem[] }) {
   const { t } = useTranslation();
   if (items.length === 0) return null;
@@ -254,8 +395,7 @@ function WorkLedgerList({ title, items }: { title: string; items: RuntimeWorkLed
       <SectionTitle>{title}</SectionTitle>
       <div style={{ display: 'grid', gap: '5px' }}>
         {items.map((item) => {
-          const normalized = normalizeStatus(item.status);
-          const complete = COMPLETE_STATUSES.has(normalized);
+          const complete = taskStatus(item.status) === 'completed';
           return (
             <div
               key={item.id}
@@ -271,7 +411,7 @@ function WorkLedgerList({ title, items }: { title: string; items: RuntimeWorkLed
               <span style={{ color: complete ? 'var(--accent-primary)' : 'var(--text-tertiary)', fontWeight: 600 }}>
                 {statusLabel(item.status, t)}
               </span>
-              <span style={{ color: complete ? 'var(--text-tertiary)' : 'var(--text-secondary)' }}>{item.title}</span>
+              <span style={{ color: complete ? 'var(--text-tertiary)' : 'var(--text-secondary)' }}>{taskText(item)}</span>
             </div>
           );
         })}

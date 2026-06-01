@@ -14,6 +14,7 @@ const queryHarness = vi.hoisted(() => ({
   sessionData: undefined as RuntimeWorkLedgerView | undefined,
   runtimeData: undefined as RuntimeWorkLedgerView | undefined,
   sessionError: false,
+  runtimeError: false,
 }));
 
 vi.mock('react-i18next', () => ({
@@ -40,6 +41,9 @@ vi.mock('@tanstack/react-query', () => ({
       return { data: queryHarness.sessionData, isLoading: false, isError: false, error: null };
     }
     if (key === 'chat-work-ledger') {
+      if (queryHarness.runtimeError) {
+        return { data: undefined, isLoading: false, isError: true, error: new Error('missing') };
+      }
       return { data: queryHarness.runtimeData, isLoading: false, isError: false, error: null };
     }
     return { data: undefined, isLoading: false, isError: false, error: null };
@@ -54,9 +58,9 @@ function ledger(runtimeTaskId: string, title: string): RuntimeWorkLedgerView {
   return {
     schema: 'agent_work_ledger_view.v1',
     runtime_task_id: runtimeTaskId,
-    status: 'running',
+    status: 'in_progress',
     current_phase: title,
-    todo_items: [{ id: `${runtimeTaskId}-todo`, title, status: 'running', required: true }],
+    todo_items: [{ id: `${runtimeTaskId}-todo`, title, status: 'in_progress', required: true }],
     counts: { todos_total: 1, todos_complete: 0, todos_open: 1 },
   };
 }
@@ -67,6 +71,7 @@ describe('ChatWorkLedgerDock', () => {
     queryHarness.sessionData = undefined;
     queryHarness.runtimeData = undefined;
     queryHarness.sessionError = false;
+    queryHarness.runtimeError = false;
   });
 
   it('uses the explicit runtime ledger when session data points at an older task', () => {
@@ -112,5 +117,61 @@ describe('ChatWorkLedgerDock', () => {
     const sessionCall = queryHarness.calls.find((call) => String(call.queryKey[0]) === 'chat-session-work-ledger');
     expect(sessionCall?.enabled).toBe(true);
     expect(sessionCall?.refetchInterval).toBe(false);
+  });
+
+  it('keeps a live pending dock stable when the ledger is not created yet', () => {
+    queryHarness.sessionError = true;
+    queryHarness.runtimeError = true;
+
+    const markup = renderToStaticMarkup(
+      <ChatWorkLedgerDock
+        agentId="agent-1"
+        sessionId="session-1"
+        runtimeTaskId="task-current"
+        live
+      />,
+    );
+
+    expect(markup).toContain('data-testid="chat-work-ledger-dock"');
+    expect(markup).toContain('Loading work state...');
+    expect(markup).not.toContain('Work ledger is not available yet.');
+  });
+
+  it('renders a Claude Code style task list summary with canonical task states', () => {
+    queryHarness.sessionData = {
+      schema: 'agent_work_ledger_view.v1',
+      runtime_task_id: 'task-current',
+      status: 'in_progress',
+      current_phase: 'Collect and grade sources',
+      todo_items: [
+        { id: '1', title: 'Plan research lanes', status: 'completed', required: true },
+        {
+          id: '2',
+          title: 'Collect and grade sources',
+          content: 'Collect and grade sources',
+          activeForm: 'Collecting and grading sources',
+          status: 'in_progress',
+          required: true,
+        },
+        { id: '3', title: 'Write final report', status: 'pending', required: true },
+      ],
+      counts: { todos_total: 3, todos_complete: 1, todos_open: 2 },
+    };
+
+    const markup = renderToStaticMarkup(
+      <ChatWorkLedgerDock
+        agentId="agent-1"
+        sessionId="session-1"
+        runtimeTaskId="task-current"
+        live
+      />,
+    );
+
+    expect(markup).toContain('data-testid="agent-task-list"');
+    expect(markup).toContain('3 tasks');
+    expect(markup).toContain('1 done');
+    expect(markup).toContain('1 in progress');
+    expect(markup).toContain('1 open');
+    expect(markup).toContain('Collecting and grading sources');
   });
 });

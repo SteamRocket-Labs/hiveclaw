@@ -295,7 +295,7 @@ async def test_maybe_sync_created_task_without_plan_creates_plan_and_skips_execu
 
 
 @pytest.mark.asyncio
-async def test_plan_mode_accepts_latest_recommendation_instead_of_reclassifying_as_long_task(monkeypatch):
+async def test_plan_mode_accepts_latest_recommendation_and_activates_interactive_mode(monkeypatch):
     import app.services.web_chat_runtime as runtime
 
     agent_id = uuid4()
@@ -324,6 +324,7 @@ async def test_plan_mode_accepts_latest_recommendation_instead_of_reclassifying_
     recommendation_db = _RecommendationSession(recommendation)
     monkeypatch.setattr(runtime, "_async_session", lambda: recommendation_db)
 
+    session_context = SimpleNamespace(metadata={})
     response = await runtime._maybe_handle_plan_mode_entry(
         agent_id=agent_id,
         user_id=user_id,
@@ -331,15 +332,18 @@ async def test_plan_mode_accepts_latest_recommendation_instead_of_reclassifying_
         session_id="sess-accept",
         runtime_task_id=uuid4(),
         content="进入计划模式",
+        runtime_session_context=session_context,
     )
 
-    assert response and str(plan.id) in response
+    assert response is None
     assert recommendation.status == "accepted"
     assert recommendation.accepted_by_user_id == user_id
-    assert intake.calls and intake.calls[0]["action_kind"] == "create_enabled_trigger"
-    assert intake.calls[0]["tool_name"] == "set_trigger"
-    assert intake.calls[0]["arguments"]["reason"] == recommendation.original_request
-    assert "每天 13:00" in intake.calls[0]["arguments"]["name"]
+    assert intake.calls == []
+    metadata = session_context.metadata["plan_mode"]
+    assert metadata["original_request"] == recommendation.original_request
+    assert metadata["intent_type"] == "autonomous_wake"
+    assert metadata["action_kind"] == "create_enabled_trigger"
+    assert metadata["tool_name"] == "set_trigger"
 
 
 @pytest.mark.asyncio
@@ -425,12 +429,13 @@ async def test_maybe_handle_plan_mode_entry_recommends_schedule_without_creating
 
 
 @pytest.mark.asyncio
-async def test_maybe_handle_plan_mode_entry_creates_plan_when_explicitly_requested(monkeypatch):
+async def test_maybe_handle_plan_mode_entry_activates_interactive_mode_when_explicitly_requested(monkeypatch):
     import app.services.web_chat_runtime as runtime
 
     plan = SimpleNamespace(id=uuid4(), plan_version=1, plan_hash="sha256:abc")
     intake = _RecordingIntake(plan)
     monkeypatch.setattr(runtime, "get_plan_mode_service", lambda: intake)
+    session_context = SimpleNamespace(metadata={})
 
     result = await runtime._maybe_handle_plan_mode_entry(
         agent_id=uuid4(),
@@ -440,12 +445,62 @@ async def test_maybe_handle_plan_mode_entry_creates_plan_when_explicitly_request
         runtime_task_id=uuid4(),
         content="帮我完整调研这个行业",
         plan_mode_requested=True,
+        runtime_session_context=session_context,
     )
 
-    assert result is not None
-    assert str(plan.id) in result
-    assert "待确认计划" in result
-    assert intake.calls and intake.calls[0]["action_kind"] == "start_long_task"
+    assert result is None
+    assert intake.calls == []
+    assert session_context.metadata["plan_mode"]["active"] is True
+    assert session_context.metadata["plan_mode"]["original_request"] == "帮我完整调研这个行业"
+    assert session_context.metadata["plan_mode"]["intent_type"] == "long_task"
+    assert session_context.metadata["plan_mode"]["action_kind"] == "start_long_task"
+
+
+@pytest.mark.asyncio
+async def test_interactive_plan_mode_suffix_uses_claude_style_loop_and_exit_tool():
+    import app.services.web_chat_runtime as runtime
+
+    suffix = runtime._interactive_plan_mode_suffix(
+        {
+            "original_request": "帮我设计一个 RWA 周报计划",
+            "intent_type": "autonomous_wake",
+            "handoff_target": "objective_trigger",
+        }
+    )
+
+    assert "Plan Mode is active" in suffix
+    assert "MUST NOT execute" in suffix
+    assert "Explore" in suffix
+    assert "exit_plan_mode" in suffix
+    assert "帮我设计一个 RWA 周报计划" in suffix
+
+
+@pytest.mark.asyncio
+async def test_maybe_handle_plan_mode_entry_activates_deep_research_interactive_plan(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    intake = SimpleNamespace(generic_calls=[], deep_research_calls=[])
+    monkeypatch.setattr(runtime, "get_plan_mode_service", lambda: intake)
+    session_context = SimpleNamespace(metadata={})
+
+    result = await runtime._maybe_handle_plan_mode_entry(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id=None,
+        session_id="session-1",
+        runtime_task_id=uuid4(),
+        content="使用 deepresearch做一个web3的全景报告",
+        plan_mode_requested=False,
+        runtime_session_context=session_context,
+    )
+
+    assert result is None
+    assert intake.generic_calls == []
+    assert intake.deep_research_calls == []
+    assert session_context.metadata["plan_mode"]["active"] is True
+    assert session_context.metadata["plan_mode"]["handoff_target"] == "deep_research"
+    assert session_context.metadata["plan_mode"]["deep_research"] is True
+    assert session_context.metadata["plan_mode"]["deep_research_args"]["question"] == "使用 deepresearch做一个web3的全景报告"
 
 
 @pytest.mark.asyncio

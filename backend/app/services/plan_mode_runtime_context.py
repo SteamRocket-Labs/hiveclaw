@@ -16,6 +16,10 @@ _trusted_plan_mode_user_declined: ContextVar[dict[str, Any] | None] = ContextVar
     "trusted_plan_mode_user_declined",
     default=None,
 )
+_interactive_plan_mode: ContextVar[dict[str, Any] | None] = ContextVar(
+    "interactive_plan_mode",
+    default=None,
+)
 
 
 def set_trusted_plan_mode_user_declined(value: bool | dict[str, Any] = True) -> Token[dict[str, Any] | None]:
@@ -39,9 +43,33 @@ def trusted_plan_mode_user_decline_metadata() -> dict[str, Any]:
     return dict(_trusted_plan_mode_user_declined.get() or {})
 
 
+def set_interactive_plan_mode(metadata: dict[str, Any] | None) -> Token[dict[str, Any] | None]:
+    """Mark the current async runtime as Claude-style interactive Plan Mode."""
+    return _interactive_plan_mode.set(dict(metadata or {}))
+
+
+def reset_interactive_plan_mode(token: Token[dict[str, Any] | None]) -> None:
+    """Restore the previous interactive Plan Mode runtime context."""
+    _interactive_plan_mode.reset(token)
+
+
+def interactive_plan_mode_active() -> bool:
+    """Return whether this async runtime is inside interactive Plan Mode."""
+    return bool(_interactive_plan_mode.get())
+
+
+def interactive_plan_mode_metadata() -> dict[str, Any]:
+    """Return the active interactive Plan Mode metadata."""
+    return dict(_interactive_plan_mode.get() or {})
+
+
 __all__ = [
     "reset_trusted_plan_mode_user_declined",
+    "reset_interactive_plan_mode",
+    "set_interactive_plan_mode",
     "set_trusted_plan_mode_user_declined",
+    "interactive_plan_mode_active",
+    "interactive_plan_mode_metadata",
     "trusted_plan_mode_user_decline_metadata",
     "trusted_plan_mode_user_declined",
 ]

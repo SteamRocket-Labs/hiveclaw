@@ -45,6 +45,7 @@ CAPABILITY_MAP: dict[str, str] = {
     "get_task": "agent.task.read",
     "list_tasks": "agent.task.read",
     "manage_tasks": "agent.task.modify",
+    "exit_plan_mode": "agent.plan.modify",
     "list_objectives": "agent.objective.read",
     "propose_objective": "agent.objective.modify",
     "update_objective": "agent.objective.modify",

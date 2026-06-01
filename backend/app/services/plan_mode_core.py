@@ -302,7 +302,7 @@ TERMINAL_STATUSES: frozenset[str] = frozenset({"confirmed", "rejected", "superse
 _TRANSITIONS: dict[str, frozenset[str]] = {
     "draft": frozenset({"planning"}),
     "planning": frozenset({"awaiting_confirmation", "planning_failed"}),
-    "planning_failed": frozenset({"planning"}),
+    "planning_failed": frozenset({"planning", "rejected"}),
     "awaiting_confirmation": frozenset({"confirmed", "planning", "rejected", "expired", "superseded"}),
     # Terminal states intentionally map to the empty set.
     "confirmed": frozenset(),
@@ -334,6 +334,45 @@ REQUIRED_PLAN_FIELDS: tuple[str, ...] = (
 )
 
 _RISK_LEVELS: frozenset[str] = frozenset({"low", "medium", "high"})
+
+_GENERIC_EXTERNAL_EFFECT_LABELS: frozenset[str] = frozenset(
+    {
+        "external action",
+        "external_action",
+        "external side effect",
+        "外部动作",
+        "外部副作用",
+    }
+)
+
+_CAPABILITY_LABELS: dict[str, str] = {
+    "web_search": "Web 来源核验",
+    "web_fetch": "Web 来源核验",
+    "firecrawl_fetch": "Web 来源核验",
+    "xcrawl_scrape": "Web 来源核验",
+    "list_files": "只读工作区检查",
+    "read_file": "只读工作区检查",
+    "fs_list": "只读工作区检查",
+    "fs_read": "只读工作区检查",
+    "glob_search": "只读工作区检查",
+    "grep_search": "只读工作区检查",
+    "write_file": "工作区文件生成",
+    "edit_file": "工作区文件生成",
+    "file_write": "工作区文件生成",
+    "fs_write": "工作区文件生成",
+    "send_channel_message": "用户通知",
+    "channel_message": "用户通知",
+    "send_feishu_message": "用户通知",
+    "send_channel_file": "文件交付",
+    "deep_research_start": "Deep Research",
+    "deep_research_check": "Deep Research",
+    "deep_research_export": "Deep Research",
+    "office_document_create": "Office 交付物生成",
+    "manage_tasks": "任务跟踪",
+    "set_trigger": "定时自动化",
+    "update_trigger": "定时自动化",
+    "delegate_to_agent": "Agent 协作",
+}
 
 #: Per-intent handoff target (§13) used to seed the skeleton.
 _INTENT_HANDOFF_TARGET: dict[str, str] = {
@@ -559,6 +598,187 @@ def action_kind_to_intent_signature(*, action_kind: str, tool_name: str, argumen
     payload = canonical_plan_json({"action_kind": action_kind, "tool_name": tool_name, "arguments": arguments})
     signature = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
     return intent_type, signature
+
+
+# ---------------------------------------------------------------------------
+# Planner output normalization (§10.2 pre-validation)
+# ---------------------------------------------------------------------------
+
+
+def normalize_plan_json_for_validation(plan_json: dict) -> dict:
+    """Repair common agent-planner shape drift before strict schema validation.
+
+    The agent owns the substantive plan content, but the runtime owns the stable
+    ``hive_plan.v1`` envelope. Minor LLM shape differences such as missing step
+    order or a non-standard risk label should not erase an otherwise useful plan.
+    """
+    if not isinstance(plan_json, dict):
+        return plan_json
+
+    normalized = dict(plan_json)
+    if "steps" in normalized:
+        normalized["steps"] = _normalize_plan_steps(normalized.get("steps"))
+    for field in ("success_criteria", "stop_conditions"):
+        if field in normalized:
+            normalized[field] = _normalize_string_list(normalized.get(field))
+    if "required_capabilities" in normalized:
+        normalized["required_capabilities"] = _normalize_capability_list(normalized.get("required_capabilities"))
+    if "external_side_effects" in normalized:
+        normalized["external_side_effects"] = _normalize_external_side_effects(normalized.get("external_side_effects"))
+    if "risk_assessment" in normalized:
+        normalized["risk_assessment"] = _normalize_risk_assessment(normalized.get("risk_assessment"))
+    return normalized
+
+
+def _normalize_plan_steps(value: object) -> object:
+    if not isinstance(value, list):
+        return value
+    steps: list[dict] = []
+    for index, raw_step in enumerate(value, start=1):
+        if isinstance(raw_step, dict):
+            step = dict(raw_step)
+            order = _positive_int(step.get("order"))
+            step["order"] = order if order is not None else index
+            description = _first_nonblank(
+                step.get("description"),
+                step.get("title"),
+                step.get("name"),
+                step.get("task"),
+                step.get("action"),
+            )
+            if description:
+                step["description"] = description
+            steps.append(step)
+            continue
+        description = str(raw_step or "").strip()
+        steps.append({"order": index, "description": description})
+    return steps
+
+
+def _positive_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _normalize_string_list(value: object) -> object:
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if not isinstance(value, list):
+        return value
+    items: list[str] = []
+    for item in value:
+        if isinstance(item, dict):
+            text = _first_nonblank(
+                item.get("description"),
+                item.get("criterion"),
+                item.get("condition"),
+                item.get("capability"),
+                item.get("title"),
+                item.get("name"),
+            )
+        else:
+            text = str(item or "").strip()
+        if text:
+            items.append(text)
+    return items
+
+
+def _normalize_capability_list(value: object) -> object:
+    raw_items = _normalize_string_list(value)
+    if not isinstance(raw_items, list):
+        return raw_items
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        label = _CAPABILITY_LABELS.get(str(item).strip(), str(item).strip())
+        if not label or label in seen:
+            continue
+        seen.add(label)
+        normalized.append(label)
+    return normalized
+
+
+def _normalize_external_side_effects(value: object) -> object:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return value
+
+    effects: list[dict[str, object]] = []
+    for item in value:
+        if isinstance(item, str):
+            label = item.strip()
+            if label and label.lower() not in _GENERIC_EXTERNAL_EFFECT_LABELS:
+                effects.append({"description": label, "requires_confirmation": True})
+            continue
+        if not isinstance(item, dict):
+            continue
+
+        kind = str(item.get("kind") or "").strip()
+        channel = str(item.get("channel") or "").strip()
+        audience = str(item.get("audience") or "").strip()
+        description = _first_nonblank(item.get("description"), item.get("summary"), item.get("action")) or ""
+        visible_label = " ".join(part for part in (kind, channel, audience, description) if part).strip()
+        if not visible_label or visible_label.lower() in _GENERIC_EXTERNAL_EFFECT_LABELS:
+            continue
+
+        effect: dict[str, object] = {}
+        if kind:
+            effect["kind"] = kind
+        if channel:
+            effect["channel"] = channel
+        if audience:
+            effect["audience"] = audience
+        if description:
+            effect["description"] = description
+        effect["requires_confirmation"] = bool(item.get("requires_confirmation", True))
+        effects.append(effect)
+    return effects
+
+
+def _normalize_risk_assessment(value: object) -> object:
+    if value is None:
+        return value
+    risk = dict(value) if isinstance(value, dict) else {"level": value, "reasons": []}
+    original_level = risk.get("level")
+    normalized_level = _normalize_risk_level(original_level)
+    risk["level"] = normalized_level
+
+    raw_reasons = risk.get("reasons")
+    if isinstance(raw_reasons, list):
+        reasons = [str(item).strip() for item in raw_reasons if str(item).strip()]
+    elif raw_reasons is None:
+        reasons = []
+    else:
+        reason = str(raw_reasons).strip()
+        reasons = [reason] if reason else []
+
+    original_text = str(original_level or "").strip()
+    if original_text and original_text.lower() not in _RISK_LEVELS:
+        reasons.insert(0, f"Planner supplied non-standard risk level {original_text!r}; normalized to {normalized_level}.")
+    risk["reasons"] = reasons
+    return risk
+
+
+def _normalize_risk_level(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if text in _RISK_LEVELS:
+        return text
+    if text in {"moderate", "mid", "normal", "medium risk"} or "medium" in text or "中" in text:
+        return "medium"
+    if text in {"critical", "severe", "elevated", "high risk"} or "high" in text or "高" in text:
+        return "high"
+    if text in {"minimal", "minor", "low risk"} or "low" in text or "低" in text:
+        return "low"
+    return "medium"
 
 
 # ---------------------------------------------------------------------------
@@ -1124,17 +1344,6 @@ def render_plan_markdown(
         "## Wake policy",
         "```json",
         json.dumps(plan_json.get("wake_policy") or {}, ensure_ascii=False, indent=2),
-        "```",
-    ]
-
-    body_lines += ["", "## Required capabilities"]
-    body_lines += _bullet_block(plan_json.get("required_capabilities"))
-
-    body_lines += [
-        "",
-        "## External side effects",
-        "```json",
-        json.dumps(plan_json.get("external_side_effects") or [], ensure_ascii=False, indent=2),
         "```",
     ]
 

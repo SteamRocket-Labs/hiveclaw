@@ -401,6 +401,10 @@
       "reject": "Reject",
       "requestChangesPrompt": "What should change about this plan?",
       "rejectPrompt": "Reason for rejecting this plan (optional)",
+      "retryGeneration": "Retry plan generation",
+      "reviseAndRetry": "Revise and retry",
+      "failureTitle": "Planning failed",
+      "failureUnknown": "The planner did not return a valid confirmable plan.",
       "actionFailed": "Action failed",
       "missingHash": "This plan has no hash yet and cannot be confirmed.",
       "needsConfirmation": "A plan needs your confirmation.",
@@ -600,6 +604,7 @@
     },
     "workLedger": {
       "title": "Agent work ledger",
+      "taskTitle": "Agent tasks",
       "current": "Current",
       "next": "Next",
       "todos": "todos",

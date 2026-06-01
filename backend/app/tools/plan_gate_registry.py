@@ -34,6 +34,15 @@ from app.tools.decorator import get_all_registered_tools
 #: Sentinel ``plan_gate_action_kind`` for tools that own their confirmation gate
 #: and must only be *registered* here, never hard-blocked by the service gate.
 BRIDGE_SELF: str = "bridge:self"
+_PLAN_GATED_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "set_trigger",
+        "update_trigger",
+        "delegate_to_agent",
+        "manage_tasks",
+        "deep_research_start",
+    }
+)
 
 
 def _ensure_handlers_imported() -> None:
@@ -46,7 +55,8 @@ def _ensure_handlers_imported() -> None:
     import is local to dodge an import-time cycle (collector imports handlers
     which import the decorator).
     """
-    if get_all_registered_tools():
+    registered = get_all_registered_tools()
+    if registered and _PLAN_GATED_TOOL_NAMES.issubset(registered.keys()):
         return
     from app.tools.collector import collect_tools
 

@@ -73,6 +73,25 @@ async def _maybe_await(value: Any) -> Any:
     return value
 
 
+async def _resolve_runtime_context(
+    runtime_resolver: Any,
+    *,
+    agent_id: uuid.UUID,
+    user_id: uuid.UUID,
+    session_id: str | None = None,
+) -> ToolExecutionContext:
+    kwargs: dict[str, Any] = {"agent_id": agent_id, "user_id": user_id}
+    try:
+        params = inspect.signature(runtime_resolver.resolve).parameters
+        accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values())
+    except (TypeError, ValueError):
+        params = {}
+        accepts_kwargs = False
+    if session_id is not None and (accepts_kwargs or "session_id" in params):
+        kwargs["session_id"] = session_id
+    return await _maybe_await(runtime_resolver.resolve(**kwargs))
+
+
 def _extract_tool_error_payload(result: str) -> dict[str, Any] | None:
     if not result or "<tool_error>" not in result:
         return None
@@ -145,12 +164,18 @@ class ToolRuntimeService:
         user_id: uuid.UUID,
         event_callback: EventCallback | None = None,
         delegation_token: Any | None = None,
+        session_id: str | None = None,
     ) -> str:
         plan_block = await self._plan_mode_gate_block(tool_name, arguments, agent_id=agent_id)
         if plan_block:
             return plan_block
 
-        runtime_context = await self.runtime_resolver.resolve(agent_id=agent_id, user_id=user_id)
+        runtime_context = await _resolve_runtime_context(
+            self.runtime_resolver,
+            agent_id=agent_id,
+            user_id=user_id,
+            session_id=session_id,
+        )
         governance_context = await self.governance_resolver.build_context(
             runtime_context=runtime_context,
             tool_name=tool_name,

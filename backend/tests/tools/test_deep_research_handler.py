@@ -7,7 +7,13 @@ from pathlib import Path
 import pytest
 
 
-def _request(tmp_path: Path, *, agent_id: uuid.UUID | None = None, user_id: uuid.UUID | None = None):
+def _request(
+    tmp_path: Path,
+    *,
+    agent_id: uuid.UUID | None = None,
+    user_id: uuid.UUID | None = None,
+    session_id: str | None = None,
+):
     from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
 
     aid = agent_id or uuid.uuid4()
@@ -19,6 +25,7 @@ def _request(tmp_path: Path, *, agent_id: uuid.UUID | None = None, user_id: uuid
             user_id=user_id or uuid.uuid4(),
             tenant_id=str(uuid.uuid4()),
             workspace=tmp_path,
+            session_id=session_id,
         ),
     )
 
@@ -46,7 +53,7 @@ async def test_deep_research_run_returns_artifact_paths(tmp_path, monkeypatch: p
         )
 
     monkeypatch.setattr("app.tools.handlers.deep_research.run_deep_research", fake_run_research)
-    req = _request(tmp_path)
+    req = _request(tmp_path, session_id="session-work-ledger")
     req.arguments.update({"question": "RWA adoption", "max_rounds": 1, "max_sources": 1, "plan_confirmed": True})
 
     payload = json.loads(await deep_research_run(req))
@@ -71,7 +78,7 @@ async def test_deep_research_run_routes_full_depth_to_async_start(
         raise AssertionError("full depth should not run synchronously")
 
     monkeypatch.setattr("app.tools.handlers.deep_research.run_deep_research", fail_if_called)
-    req = _request(tmp_path)
+    req = _request(tmp_path, session_id="session-work-ledger")
     req.arguments.update({"question": "RWA adoption", "depth": "full"})
 
     payload = json.loads(await deep_research_run(req))
@@ -105,7 +112,7 @@ async def test_deep_research_start_creates_runtime_task(tmp_path, monkeypatch: p
         "app.tools.handlers.deep_research._schedule_deep_research_background", lambda *_args, **_kwargs: None
     )
 
-    req = _request(tmp_path)
+    req = _request(tmp_path, session_id="session-work-ledger")
     req.arguments.update({"question": "RWA adoption", "max_rounds": 2, "plan_confirmed": True})
 
     payload = json.loads(await deep_research_start(req))
@@ -114,6 +121,9 @@ async def test_deep_research_start_creates_runtime_task(tmp_path, monkeypatch: p
     assert payload["status"] == "running"
     assert created["task_type"] == "deep_research"
     assert created["parent_agent_id"] == req.context.agent_id
+    assert created["parent_session_id"] == "session-work-ledger"
+    assert created["child_session_id"] == "session-work-ledger"
+    assert created["metadata_json"]["session_id"] == "session-work-ledger"
     next_action = payload["next_action"]
     # The agent must NOT busy-loop deep_research_check on a still-running async task:
     # 5 identical polls trip the kernel loop guard. The guidance must say so explicitly.

@@ -210,6 +210,40 @@ vi.mock('@tanstack/react-query', () => ({
         refetch: vi.fn(),
       };
     }
+    if (key === 'chat-session-work-ledger' || key === 'chat-work-ledger') {
+      return {
+        data: {
+          schema: 'agent_work_ledger_view.v1',
+          runtime_task_id: 'task-deep-1',
+          session_id: 'session-1',
+          source: 'deep_research',
+          status: 'running',
+          current_phase: 'collect_sources',
+          todo_items: [
+            { id: 'todo-1', title: 'Collect and grade sources', status: 'running', required: true },
+            { id: 'todo-2', title: 'Write final report', status: 'pending', required: true },
+          ],
+          verification: [
+            { id: 'verify-1', title: 'Verify citations', status: 'pending', required: true },
+          ],
+          progress: [
+            { id: 'progress-1', status: 'running', delta: 'Started source collection.' },
+          ],
+          failures: [],
+          findings: [],
+          evidence_refs: ['runtime_artifacts/long_tasks/task-deep-1/deep_research/report.md'],
+          counts: {
+            todos_total: 2,
+            todos_complete: 0,
+            todos_open: 2,
+            verification_pending: 1,
+            progress_count: 1,
+            failures_open: 0,
+          },
+          updated_at: '2026-06-01T10:00:00Z',
+        },
+      };
+    }
     return { data: [] };
   },
   useMutation: () => ({
@@ -1100,6 +1134,162 @@ describe('AgentDetail extracted sections', () => {
 
     expect(markup).toContain('Inline tool plan');
     expect(markup).toContain('Confirm and start');
+  });
+
+  it('renders a running Deep Research work ledger dock above the chat composer', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Research Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-1',
+          user_id: 'user-1',
+          title: 'Deep Research run',
+          created_at: '2026-06-01T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[
+          {
+            role: 'tool_call',
+            content: '',
+            toolName: 'deep_research_start',
+            toolStatus: 'done',
+            toolResult: 'Deep research running',
+            toolMeta: {
+              kind: 'deep_research',
+              taskId: 'task-deep-1',
+              status: 'running',
+              summary: 'Research has started.',
+              reportPath: null,
+              artifactDir: 'runtime_artifacts/long_tasks/task-deep-1/deep_research',
+              sourceCount: null,
+              claimCount: null,
+              qualityGates: {},
+              gaps: [],
+            },
+          },
+        ]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="chat-work-ledger-dock"');
+    expect(markup).toContain('Deep Research');
+    expect(markup).toContain('Collect and grade sources');
+    expect(markup).toContain('Write final report');
+    expect(markup.indexOf('data-testid="chat-work-ledger-dock"')).toBeLessThan(markup.indexOf('chat-input'));
+  });
+
+  it('renders the persistent session work ledger dock without Deep Research tool metadata', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Builder Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-1',
+          user_id: 'user-1',
+          title: 'Todo run',
+          created_at: '2026-06-01T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[
+          {
+            role: 'assistant',
+            content: 'I am working through the implementation todos.',
+          },
+        ]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        activeRunStatus="running"
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="chat-work-ledger-dock"');
+    expect(markup).toContain('Collect and grade sources');
+    expect(markup.indexOf('data-testid="chat-work-ledger-dock"')).toBeLessThan(markup.indexOf('chat-input'));
   });
 
   it('shows the durable run continuation state while a session run is active', () => {

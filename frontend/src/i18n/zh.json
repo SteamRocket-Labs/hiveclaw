@@ -597,6 +597,22 @@
       "reportPreview": "报告预览",
       "errorLabel": "流错误"
     },
+    "workLedger": {
+      "title": "Agent 工作账本",
+      "current": "当前",
+      "next": "下一步",
+      "todos": "待办",
+      "loading": "正在加载工作状态...",
+      "loadFailed": "工作账本暂不可用。",
+      "todoTitle": "待办",
+      "verificationTitle": "验证",
+      "progressTitle": "进展",
+      "blockersTitle": "阻塞",
+      "statusComplete": "已完成",
+      "statusRunning": "进行中",
+      "statusBlocked": "阻塞",
+      "statusPending": "待处理"
+    },
     "runtime": {
       "model": "模型",
       "remaining": "剩余上下文",

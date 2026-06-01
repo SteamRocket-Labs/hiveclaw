@@ -76,6 +76,7 @@ class ResearchRequest:
     output_language: str = ""
     plan_confirmed: bool = False
     worker_topics: list[str] = field(default_factory=list)
+    approved_plan: dict[str, Any] = field(default_factory=dict)
     controller_mode: bool = False
 
     @classmethod
@@ -99,6 +100,13 @@ class ResearchRequest:
                 "deep": 600,
             }.get(depth, 360)
         worker_topics = _coerce_topic_list(arguments.get("worker_topics"))
+        approved_plan = _coerce_mapping(arguments.get("approved_plan") or arguments.get("runtime_contract"))
+        if not worker_topics:
+            worker_topics = _topics_from_approved_plan(approved_plan)
+        output_format = (
+            str(arguments.get("output_format") or _output_format_from_approved_plan(approved_plan) or "markdown").strip()
+            or "markdown"
+        )
         # F1 (RC1): the source budget must scale with depth, otherwise a deep run collapses
         # 60+ fetched sources down to a handful and starves most research lanes.
         max_sources_default = {
@@ -121,10 +129,11 @@ class ResearchRequest:
             concurrency=_coerce_int(arguments.get("concurrency"), default=4, minimum=1, maximum=12),
             token_budget=_coerce_optional_int(arguments.get("token_budget"), minimum=1),
             deadline_seconds=deadline_seconds,
-            output_format=str(arguments.get("output_format") or "markdown").strip() or "markdown",
+            output_format=output_format,
             output_language=str(arguments.get("output_language") or "").strip(),
             plan_confirmed=bool(arguments.get("plan_confirmed") or False),
             worker_topics=worker_topics,
+            approved_plan=approved_plan,
             controller_mode=bool(arguments.get("controller_mode") or False),
         )
 
@@ -288,6 +297,44 @@ def _coerce_topic_list(raw: Any) -> list[str]:
         if text:
             topics.append(text)
     return topics
+
+
+def _coerce_mapping(raw: Any) -> dict[str, Any]:
+    if raw is None:
+        return {}
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return {}
+        try:
+            raw = json.loads(text)
+        except (ValueError, TypeError):
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _topics_from_approved_plan(approved_plan: dict[str, Any]) -> list[str]:
+    research = approved_plan.get("research") if isinstance(approved_plan.get("research"), dict) else {}
+    lanes = research.get("lanes") if isinstance(research.get("lanes"), list) else []
+    topics: list[str] = []
+    for lane in lanes:
+        if not isinstance(lane, dict):
+            continue
+        topic = str(lane.get("worker_topic") or lane.get("goal") or lane.get("label") or "").strip()
+        if topic:
+            topics.append(topic)
+    return topics
+
+
+def _output_format_from_approved_plan(approved_plan: dict[str, Any]) -> str:
+    output = approved_plan.get("output") if isinstance(approved_plan.get("output"), dict) else {}
+    primary = str(output.get("primary_format") or "").strip()
+    if primary:
+        return primary
+    requested = output.get("requested_formats")
+    if isinstance(requested, list) and requested:
+        return str(requested[0] or "").strip()
+    return ""
 
 
 def _coerce_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:

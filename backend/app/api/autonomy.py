@@ -16,6 +16,7 @@ from app.services.autonomy_overview import (
     list_agent_runtime_task_views,
     read_agent_trigger_artifact_view,
 )
+from app.services.agent_work_ledger import read_agent_work_ledger_view, read_latest_session_work_ledger_view
 
 router = APIRouter(prefix="/agents", tags=["autonomy"])
 
@@ -98,3 +99,33 @@ async def get_agent_runtime_artifact(
     if artifact is None:
         raise HTTPException(status_code=404, detail="Runtime artifact not found")
     return artifact
+
+
+@router.get("/{agent_id}/runtime-work-ledgers/{runtime_task_id}")
+async def get_agent_runtime_work_ledger(
+    agent_id: uuid.UUID,
+    runtime_task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read the chat-safe Work Ledger view for a running RuntimeTask."""
+    await check_agent_access(db, current_user, agent_id)
+    ledger = read_agent_work_ledger_view(agent_id=agent_id, runtime_task_id=runtime_task_id)
+    if ledger is None:
+        raise HTTPException(status_code=404, detail="Runtime work ledger not found")
+    return ledger
+
+
+@router.get("/{agent_id}/sessions/{session_id}/work-ledger")
+async def get_agent_session_work_ledger(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read the latest chat-safe Work Ledger for the current chat session."""
+    await check_agent_access(db, current_user, agent_id)
+    ledger = await read_latest_session_work_ledger_view(db=db, agent_id=agent_id, session_id=session_id)
+    if ledger is None:
+        raise HTTPException(status_code=404, detail="Session work ledger not found")
+    return ledger

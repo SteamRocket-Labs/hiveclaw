@@ -15,12 +15,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.config import get_settings
+from app.models.runtime_task import RuntimeTask
 
 LEDGER_SCHEMA = "agent_work_ledger.v1"
 LEDGER_RESUME_SCHEMA = "agent_work_ledger_resume.v1"
+LEDGER_VIEW_SCHEMA = "agent_work_ledger_view.v1"
 
 TERMINAL_STATUSES = {"completed", "failed", "killed", "skipped"}
+OPEN_ITEM_STATUSES = {"pending", "running", "in_progress", "blocked", "failed"}
+COMPLETE_ITEM_STATUSES = {"complete", "completed", "done", "skipped"}
 
 
 def _agent_root(agent_id: uuid.UUID, *, data_root: str | Path | None = None) -> Path:
@@ -40,7 +47,10 @@ def _uuid_hex(value: uuid.UUID | str | None) -> str | None:
     try:
         return uuid.UUID(str(value)).hex
     except (TypeError, ValueError, AttributeError):
-        return str(value)
+        raw = str(value)
+        safe = "".join(char if char.isascii() and (char.isalnum() or char in "._-") else "_" for char in raw)
+        safe = safe.strip("._")
+        return safe[:120] or "unknown"
 
 
 def _relative_to_agent(agent_id: uuid.UUID, path: Path, *, data_root: str | Path | None = None) -> str:
@@ -59,7 +69,7 @@ def _ledger_path(
         runtime_key = _uuid_hex(runtime_task_id)
         return root / "runtime_artifacts" / "long_tasks" / str(runtime_key) / "work_ledger.json"
     if plan_id is not None:
-        return root / "plans" / f"{plan_id}.work_ledger.json"
+        return root / "plans" / f"{_uuid_hex(plan_id)}.work_ledger.json"
     return root / "runtime_artifacts" / "work_ledger.json"
 
 
@@ -360,6 +370,202 @@ def build_agent_work_ledger_resume_summary(ledger: dict[str, Any] | None) -> dic
     }
 
 
+def _display_item(item: dict[str, Any], *, title_key: str = "title") -> dict[str, Any]:
+    title = _clean_text(item.get(title_key) or item.get("title") or item.get("check") or item.get("summary"))
+    payload = {
+        "id": _clean_text(item.get("id")),
+        "title": title,
+        "status": _normalize_status(item.get("status")),
+        "required": bool(item.get("required", True)),
+        "updated_at": item.get("updated_at") or item.get("created_at"),
+    }
+    evidence_refs = [str(ref) for ref in item.get("evidence_refs", []) if str(ref).strip()]
+    if evidence_refs:
+        payload["evidence_refs"] = evidence_refs
+    command = _clean_text(item.get("command"))
+    if command:
+        payload["command"] = command
+    return payload
+
+
+def _display_progress(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": _clean_text(item.get("id")),
+        "status": _normalize_status(item.get("status"), default="running"),
+        "delta": _clean_text(item.get("delta")),
+        "output_paths": [str(path) for path in item.get("output_paths", []) if str(path).strip()],
+        "blocked_reason": _clean_text(item.get("blocked_reason")) or None,
+        "created_at": item.get("created_at"),
+    }
+
+
+def _display_failure(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": _clean_text(item.get("id")),
+        "attempt": _clean_text(item.get("attempt")),
+        "error": _clean_text(item.get("error")),
+        "next_strategy": _clean_text(item.get("next_strategy")),
+        "resolved": bool(item.get("resolved", False)),
+        "created_at": item.get("created_at"),
+    }
+
+
+def _display_finding(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": _clean_text(item.get("id")),
+        "summary": _clean_text(item.get("summary")),
+        "source_refs": [str(ref) for ref in item.get("source_refs", []) if str(ref).strip()],
+        "trust": _clean_text(item.get("trust")) or "unverified",
+        "created_at": item.get("created_at"),
+    }
+
+
+def build_agent_work_ledger_display_view(
+    ledger: dict[str, Any] | None,
+    *,
+    path: str | None = None,
+) -> dict[str, Any] | None:
+    """Return a chat-safe, compact view of the ledger for progress UI."""
+
+    if not ledger:
+        return None
+
+    todos = [
+        _display_item(item)
+        for item in ledger.get("todo_items", [])
+        if isinstance(item, dict) and _clean_text(item.get("title") or item.get("check") or item.get("summary"))
+    ]
+    verification = [
+        _display_item(item)
+        for item in ledger.get("verification", [])
+        if isinstance(item, dict) and _clean_text(item.get("title") or item.get("check") or item.get("summary"))
+    ]
+    progress = [
+        _display_progress(item)
+        for item in ledger.get("progress", [])[-20:]
+        if isinstance(item, dict) and _clean_text(item.get("delta"))
+    ]
+    failures = [
+        _display_failure(item)
+        for item in ledger.get("failures", [])[-10:]
+        if isinstance(item, dict) and _clean_text(item.get("error"))
+    ]
+    findings = [
+        _display_finding(item)
+        for item in ledger.get("findings", [])[-10:]
+        if isinstance(item, dict) and _clean_text(item.get("summary"))
+    ]
+
+    todo_complete = sum(1 for item in todos if _normalize_status(item.get("status")) in COMPLETE_ITEM_STATUSES)
+    todo_open = sum(
+        1
+        for item in todos
+        if bool(item.get("required", True)) and _normalize_status(item.get("status")) not in COMPLETE_ITEM_STATUSES
+    )
+    verification_pending = sum(
+        1
+        for item in verification
+        if bool(item.get("required", True)) and _normalize_status(item.get("status")) in OPEN_ITEM_STATUSES
+    )
+    failures_open = sum(1 for item in failures if not bool(item.get("resolved", False)))
+
+    return {
+        "schema": LEDGER_VIEW_SCHEMA,
+        "path": path,
+        "agent_id": ledger.get("agent_id"),
+        "plan_id": ledger.get("plan_id"),
+        "runtime_task_id": ledger.get("runtime_task_id"),
+        "source": ledger.get("source"),
+        "status": _normalize_status(ledger.get("status"), default="running"),
+        "current_phase": _clean_text(ledger.get("current_phase")),
+        "todo_items": todos,
+        "verification": verification,
+        "progress": progress,
+        "failures": failures,
+        "findings": findings,
+        "open_questions": [str(item).strip() for item in ledger.get("open_questions", []) if str(item).strip()],
+        "evidence_refs": [str(item).strip() for item in ledger.get("evidence_refs", []) if str(item).strip()],
+        "counts": {
+            "todos_total": len(todos),
+            "todos_complete": todo_complete,
+            "todos_open": todo_open,
+            "verification_pending": verification_pending,
+            "progress_count": len(ledger.get("progress") or []),
+            "failures_open": failures_open,
+        },
+        "created_at": ledger.get("created_at"),
+        "updated_at": ledger.get("updated_at"),
+    }
+
+
+def read_agent_work_ledger_view(
+    *,
+    agent_id: uuid.UUID,
+    plan_id: uuid.UUID | str | None = None,
+    runtime_task_id: uuid.UUID | str | None = None,
+    data_root: str | Path | None = None,
+) -> dict[str, Any] | None:
+    path = _ledger_path(agent_id=agent_id, plan_id=plan_id, runtime_task_id=runtime_task_id, data_root=data_root)
+    ledger = load_agent_work_ledger(
+        agent_id=agent_id,
+        plan_id=plan_id,
+        runtime_task_id=runtime_task_id,
+        data_root=data_root,
+    )
+    if ledger is None:
+        return None
+    return build_agent_work_ledger_display_view(
+        ledger,
+        path=_relative_to_agent(agent_id, path, data_root=data_root),
+    )
+
+
+async def read_latest_session_work_ledger_view(
+    *,
+    db: AsyncSession,
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID | str,
+    limit: int = 50,
+    data_root: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Return the latest Work Ledger attached to the current chat session."""
+
+    session_key = str(session_id)
+    result = await db.execute(
+        select(RuntimeTask)
+        .where(
+            RuntimeTask.parent_agent_id == agent_id,
+            or_(
+                RuntimeTask.parent_session_id == session_key,
+                RuntimeTask.child_session_id == session_key,
+            ),
+        )
+        .order_by(RuntimeTask.created_at.desc())
+        .limit(limit)
+    )
+    tasks = list(result.scalars().all())
+    tasks.sort(
+        key=lambda task: (
+            1 if _normalize_status(getattr(task, "status", None), default="") in {"pending", "running"} else 0,
+            getattr(task, "created_at", None) or datetime.min.replace(tzinfo=timezone.utc),
+        ),
+        reverse=True,
+    )
+    for task in tasks:
+        view = read_agent_work_ledger_view(
+            agent_id=agent_id,
+            runtime_task_id=getattr(task, "id", None),
+            data_root=data_root,
+        )
+        if view is None:
+            continue
+        view["session_id"] = session_key
+        view["task_type"] = getattr(task, "task_type", None)
+        view["runtime_status"] = getattr(task, "status", None)
+        return view
+    return None
+
+
 def _check(check_id: str, status: str, message: str, *, evidence: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "id": check_id,
@@ -441,9 +647,13 @@ def validate_agent_work_ledger_completion(
 __all__ = [
     "LEDGER_RESUME_SCHEMA",
     "LEDGER_SCHEMA",
+    "LEDGER_VIEW_SCHEMA",
     "append_agent_work_ledger_progress",
+    "build_agent_work_ledger_display_view",
     "build_agent_work_ledger_resume_summary",
     "initialize_agent_work_ledger_artifact",
     "load_agent_work_ledger",
+    "read_latest_session_work_ledger_view",
+    "read_agent_work_ledger_view",
     "validate_agent_work_ledger_completion",
 ]

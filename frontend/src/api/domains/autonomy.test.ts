@@ -31,6 +31,8 @@ describe('autonomy/objective API adapters', () => {
     await autonomyApi.getDiagnostics('agent-1', { lookbackHours: 6 });
     await autonomyApi.listRuntimeTasks('agent-1', { taskType: 'trigger', status: 'failed', diagnostics: true });
     await autonomyApi.getRuntimeArtifact('agent-1', 'task-1');
+    await autonomyApi.getRuntimeWorkLedger('agent-1', 'task-1');
+    await autonomyApi.getSessionWorkLedger('agent-1', 'session-1');
     await objectiveApi.approve('agent-1', 'objective-1', { reason: 'approved' });
     await objectiveApi.update('agent-1', 'objective-1', { status: 'completed', completion_evidence: 'workspace/report.md' });
 
@@ -41,6 +43,8 @@ describe('autonomy/objective API adapters', () => {
       '/agents/agent-1/runtime-tasks?task_type=trigger&status=failed&diagnostics=true',
     );
     expect(get).toHaveBeenNthCalledWith(4, '/agents/agent-1/runtime-artifacts/task-1');
+    expect(get).toHaveBeenNthCalledWith(5, '/agents/agent-1/runtime-work-ledgers/task-1');
+    expect(get).toHaveBeenNthCalledWith(6, '/agents/agent-1/sessions/session-1/work-ledger');
     expect(post).toHaveBeenCalledWith('/agents/agent-1/objectives/objective-1/approve', { reason: 'approved' });
     expect(patch).toHaveBeenCalledWith('/agents/agent-1/objectives/objective-1', {
       status: 'completed',

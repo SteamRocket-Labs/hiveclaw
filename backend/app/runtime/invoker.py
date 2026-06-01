@@ -744,6 +744,10 @@ async def _execute_tool_with_request(
         execute_kwargs["event_callback"] = emit_event
     if "delegation_token" in inspect.signature(execute_tool).parameters:
         execute_kwargs["delegation_token"] = request.delegation_token
+    if "session_id" in inspect.signature(execute_tool).parameters:
+        execute_kwargs["session_id"] = request.memory_session_id or (
+            request.session_context.session_id if request.session_context else None
+        )
     return await execute_tool(
         tool_name,
         args,

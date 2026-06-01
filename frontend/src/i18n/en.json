@@ -598,6 +598,22 @@
       "reportPreview": "Report preview",
       "errorLabel": "Stream error"
     },
+    "workLedger": {
+      "title": "Agent work ledger",
+      "current": "Current",
+      "next": "Next",
+      "todos": "todos",
+      "loading": "Loading work state...",
+      "loadFailed": "Work ledger is not available yet.",
+      "todoTitle": "Todo",
+      "verificationTitle": "Verification",
+      "progressTitle": "Progress",
+      "blockersTitle": "Blockers",
+      "statusComplete": "Done",
+      "statusRunning": "Running",
+      "statusBlocked": "Blocked",
+      "statusPending": "Pending"
+    },
     "runtime": {
       "model": "Model",
       "remaining": "Context remaining",

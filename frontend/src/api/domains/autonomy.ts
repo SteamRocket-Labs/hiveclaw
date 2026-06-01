@@ -13,6 +13,63 @@ export interface RuntimeTaskQuery {
   diagnostics?: boolean;
 }
 
+export interface RuntimeWorkLedgerItem {
+  id: string;
+  title: string;
+  status: string;
+  required?: boolean;
+  updated_at?: string | null;
+  evidence_refs?: string[];
+  command?: string;
+}
+
+export interface RuntimeWorkLedgerProgress {
+  id: string;
+  status: string;
+  delta: string;
+  output_paths?: string[];
+  blocked_reason?: string | null;
+  created_at?: string | null;
+}
+
+export interface RuntimeWorkLedgerFailure {
+  id: string;
+  attempt: string;
+  error: string;
+  next_strategy?: string;
+  resolved?: boolean;
+  created_at?: string | null;
+}
+
+export interface RuntimeWorkLedgerView {
+  schema: 'agent_work_ledger_view.v1';
+  path?: string | null;
+  agent_id?: string | null;
+  plan_id?: string | null;
+  runtime_task_id?: string | null;
+  session_id?: string | null;
+  source?: string | null;
+  status?: string | null;
+  current_phase?: string | null;
+  todo_items: RuntimeWorkLedgerItem[];
+  verification?: RuntimeWorkLedgerItem[];
+  progress?: RuntimeWorkLedgerProgress[];
+  failures?: RuntimeWorkLedgerFailure[];
+  findings?: Array<{ id: string; summary: string; trust?: string; source_refs?: string[] }>;
+  open_questions?: string[];
+  evidence_refs?: string[];
+  counts?: {
+    todos_total?: number;
+    todos_complete?: number;
+    todos_open?: number;
+    verification_pending?: number;
+    progress_count?: number;
+    failures_open?: number;
+  };
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
 const withParams = (path: string, params: Record<string, string | number | boolean | undefined>) => {
   const qs = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
@@ -44,4 +101,8 @@ export const autonomyApi = {
     get<any>(withParams(`/agents/${agentId}/runtime-artifacts/${runtimeTaskId}`, {
       diagnostics: diagnostics || undefined,
     })),
+  getRuntimeWorkLedger: (agentId: string, runtimeTaskId: string) =>
+    get<RuntimeWorkLedgerView>(`/agents/${agentId}/runtime-work-ledgers/${runtimeTaskId}`),
+  getSessionWorkLedger: (agentId: string, sessionId: string) =>
+    get<RuntimeWorkLedgerView>(`/agents/${agentId}/sessions/${sessionId}/work-ledger`),
 };

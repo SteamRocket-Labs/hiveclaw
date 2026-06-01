@@ -83,3 +83,19 @@ def test_digest_synthesis_instruction_sets_depth_expectation():
     # Depth changes the expectation; a quick brief should read as concise.
     assert full != quick
     assert "concise" in quick.lower()
+
+
+def test_digest_synthesis_instruction_requires_research_report_structure_not_stitching():
+    from app.services.deep_research.reasoner import build_digest_synthesis_instruction
+    from app.services.deep_research.schemas import ResearchRequest
+
+    text = build_digest_synthesis_instruction(ResearchRequest(question="Research X", depth="full"), "English")
+    lowered = text.lower()
+
+    assert "central thesis" in lowered
+    assert "evidence matrix" in lowered
+    assert "warrant" in lowered
+    assert "so-what" in lowered or "so what" in lowered
+    assert "worker-by-worker" in lowered
+    assert "source-by-source" in lowered
+    assert "資料匯編" in text or "资料汇编" in text

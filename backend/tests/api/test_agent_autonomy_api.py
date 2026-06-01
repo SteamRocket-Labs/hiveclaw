@@ -155,3 +155,87 @@ def test_agent_runtime_artifact_endpoint_returns_display_payload(monkeypatch):
     assert captured["agent_id"] == agent_id
     assert captured["runtime_task_id"] == runtime_task_id
     assert captured["include_diagnostics"] is False
+
+
+def test_agent_runtime_work_ledger_endpoint_returns_chat_safe_todolist(monkeypatch):
+    agent_id = uuid4()
+    runtime_task_id = uuid4().hex
+    captured = {}
+
+    def fake_work_ledger(*, agent_id, runtime_task_id):
+        captured["agent_id"] = agent_id
+        captured["runtime_task_id"] = runtime_task_id
+        return {
+            "schema": "agent_work_ledger_view.v1",
+            "runtime_task_id": runtime_task_id,
+            "status": "running",
+            "current_phase": "collect_sources",
+            "todo_items": [
+                {"id": "todo-1", "title": "Collect and grade sources", "status": "running", "required": True},
+                {"id": "todo-2", "title": "Write final report", "status": "pending", "required": True},
+            ],
+            "counts": {"todos_total": 2, "todos_complete": 0, "todos_open": 2, "progress_count": 3},
+        }
+
+    monkeypatch.setattr(autonomy_api, "read_agent_work_ledger_view", fake_work_ledger)
+    client, _user = _client(monkeypatch)
+
+    response = client.get(f"/agents/{agent_id}/runtime-work-ledgers/{runtime_task_id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["schema"] == "agent_work_ledger_view.v1"
+    assert payload["current_phase"] == "collect_sources"
+    assert payload["todo_items"][0]["title"] == "Collect and grade sources"
+    assert captured["agent_id"] == agent_id
+    assert captured["runtime_task_id"] == runtime_task_id
+
+
+def test_agent_runtime_work_ledger_endpoint_404s_when_missing(monkeypatch):
+    agent_id = uuid4()
+    runtime_task_id = uuid4().hex
+
+    def fake_work_ledger(*, agent_id, runtime_task_id):
+        return None
+
+    monkeypatch.setattr(autonomy_api, "read_agent_work_ledger_view", fake_work_ledger)
+    client, _user = _client(monkeypatch)
+
+    response = client.get(f"/agents/{agent_id}/runtime-work-ledgers/{runtime_task_id}")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Runtime work ledger not found"
+
+
+def test_agent_session_work_ledger_endpoint_returns_latest_session_ledger(monkeypatch):
+    agent_id = uuid4()
+    session_id = uuid4()
+    captured = {}
+
+    async def fake_session_work_ledger(*, db, agent_id, session_id):
+        captured["db"] = db
+        captured["agent_id"] = agent_id
+        captured["session_id"] = session_id
+        return {
+            "schema": "agent_work_ledger_view.v1",
+            "session_id": str(session_id),
+            "runtime_task_id": uuid4().hex,
+            "status": "running",
+            "current_phase": "execute_todos",
+            "todo_items": [
+                {"id": "todo-1", "title": "Implement requested changes", "status": "running", "required": True},
+            ],
+            "counts": {"todos_total": 1, "todos_complete": 0, "todos_open": 1, "progress_count": 2},
+        }
+
+    monkeypatch.setattr(autonomy_api, "read_latest_session_work_ledger_view", fake_session_work_ledger)
+    client, _user = _client(monkeypatch)
+
+    response = client.get(f"/agents/{agent_id}/sessions/{session_id}/work-ledger")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["session_id"] == str(session_id)
+    assert payload["todo_items"][0]["title"] == "Implement requested changes"
+    assert captured["agent_id"] == agent_id
+    assert captured["session_id"] == session_id

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from uuid import uuid4
+
+import pytest
 
 
 def test_agent_work_ledger_artifact_round_trip_and_resume_summary(tmp_path):
@@ -97,3 +100,132 @@ def test_agent_work_ledger_completion_checks_pending_todos_and_failures(tmp_path
     complete_ledger = load_agent_work_ledger(agent_id=agent_id, runtime_task_id=runtime_task_id, data_root=tmp_path)
     complete_checks = validate_agent_work_ledger_completion(complete_ledger, terminal_status="completed")
     assert {check["status"] for check in complete_checks} == {"pass"}
+
+
+def test_agent_work_ledger_display_view_is_chat_safe_and_counted(tmp_path):
+    from app.services.agent_work_ledger import (
+        append_agent_work_ledger_progress,
+        initialize_agent_work_ledger_artifact,
+        read_agent_work_ledger_view,
+    )
+
+    agent_id = uuid4()
+    runtime_task_id = uuid4()
+    initialize_agent_work_ledger_artifact(
+        agent_id=agent_id,
+        runtime_task_id=runtime_task_id,
+        source="deep_research",
+        current_phase="collect_sources",
+        todo_items=[
+            {"id": "todo-1", "title": "Plan research lanes", "status": "complete"},
+            {"id": "todo-2", "title": "Collect and grade sources", "status": "running"},
+            {"id": "todo-3", "title": "Write final report", "status": "pending"},
+        ],
+        verification=[
+            {"id": "verify-1", "check": "Verify citations", "status": "pending"},
+        ],
+        findings=[{"id": "finding-1", "summary": "A verified finding", "trust": "verified"}],
+        data_root=tmp_path,
+    )
+    append_agent_work_ledger_progress(
+        agent_id=agent_id,
+        runtime_task_id=runtime_task_id,
+        status="running",
+        delta="Collected the first source batch.",
+        data_root=tmp_path,
+    )
+
+    view = read_agent_work_ledger_view(
+        agent_id=agent_id,
+        runtime_task_id=runtime_task_id,
+        data_root=tmp_path,
+    )
+
+    assert view is not None
+    assert view["schema"] == "agent_work_ledger_view.v1"
+    assert view["source"] == "deep_research"
+    assert view["current_phase"] == "running"
+    assert view["todo_items"][1]["title"] == "Collect and grade sources"
+    assert view["verification"][0]["title"] == "Verify citations"
+    assert view["counts"] == {
+        "todos_total": 3,
+        "todos_complete": 1,
+        "todos_open": 2,
+        "verification_pending": 1,
+        "progress_count": 1,
+        "failures_open": 0,
+    }
+    assert view["path"].endswith(f"runtime_artifacts/long_tasks/{runtime_task_id.hex}/work_ledger.json")
+
+
+def test_agent_work_ledger_view_rejects_path_traversal_task_ids(tmp_path):
+    from app.services.agent_work_ledger import read_agent_work_ledger_view
+
+    agent_id = uuid4()
+    escaped_dir = tmp_path / str(agent_id) / "runtime_artifacts" / "plans"
+    escaped_dir.mkdir(parents=True)
+    (escaped_dir / "secret" / "work_ledger.json").parent.mkdir(parents=True)
+    (escaped_dir / "secret" / "work_ledger.json").write_text('{"schema":"agent_work_ledger.v1"}', encoding="utf-8")
+
+    view = read_agent_work_ledger_view(
+        agent_id=agent_id,
+        runtime_task_id="../../plans/secret",
+        data_root=tmp_path,
+    )
+
+    assert view is None
+
+
+@pytest.mark.asyncio
+async def test_latest_session_work_ledger_prefers_active_session_task(monkeypatch):
+    from app.services import agent_work_ledger as module
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    older_completed = SimpleNamespace(
+        id=uuid4(),
+        task_type="web_chat_turn",
+        status="completed",
+        created_at=None,
+    )
+    active_task = SimpleNamespace(
+        id=uuid4(),
+        task_type="delegation",
+        status="running",
+        created_at=None,
+    )
+
+    class _Scalars:
+        def all(self):
+            return [older_completed, active_task]
+
+    class _Result:
+        def scalars(self):
+            return _Scalars()
+
+    class _DB:
+        async def execute(self, _stmt):
+            return _Result()
+
+    def fake_read_agent_work_ledger_view(*, agent_id, runtime_task_id, data_root=None):
+        if runtime_task_id == active_task.id:
+            return {
+                "schema": "agent_work_ledger_view.v1",
+                "runtime_task_id": active_task.id.hex,
+                "status": "running",
+                "todo_items": [{"id": "todo-1", "title": "Run active todo", "status": "running"}],
+            }
+        return None
+
+    monkeypatch.setattr(module, "read_agent_work_ledger_view", fake_read_agent_work_ledger_view)
+
+    view = await module.read_latest_session_work_ledger_view(
+        db=_DB(),
+        agent_id=agent_id,
+        session_id=session_id,
+    )
+
+    assert view is not None
+    assert view["runtime_task_id"] == active_task.id.hex
+    assert view["session_id"] == str(session_id)
+    assert view["task_type"] == "delegation"

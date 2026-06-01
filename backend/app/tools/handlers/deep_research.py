@@ -10,6 +10,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+from app.services.deep_research.artifact_composer import compose_deep_research_artifact
 from app.services.deep_research.plan_mode import (
     build_deep_research_plan_fill,
     deep_research_plan_signature,
@@ -49,7 +50,7 @@ _REQUEST_PROPERTIES: dict[str, Any] = {
     "concurrency": {"type": "integer", "minimum": 1, "maximum": 12},
     "token_budget": {"type": "integer", "minimum": 1},
     "deadline_seconds": {"type": "integer", "minimum": 10},
-    "output_format": {"type": "string", "enum": ["markdown", "json", "html", "docx", "pptx"]},
+    "output_format": {"type": "string", "enum": ["markdown", "json", "html", "docx", "xlsx", "pptx"]},
     "output_language": {
         "type": "string",
         "description": "Force the report's output language (e.g. 'zh', 'en', '中文'). Defaults to the question's language.",
@@ -285,7 +286,10 @@ async def deep_research_start(request: ToolExecutionRequest) -> str:
         status="running",
         parent_agent_id=request.context.agent_id,
         prompt=research_request.question,
+        parent_session_id=request.context.session_id,
+        child_session_id=request.context.session_id,
         metadata_json={
+            "session_id": request.context.session_id,
             "deep_research": {
                 "question": research_request.question,
                 "mode": research_request.mode,
@@ -411,9 +415,12 @@ async def deep_research_cancel(request: ToolExecutionRequest) -> str:
 @tool(
     ToolMeta(
         name="deep_research_export",
-        description="Export a completed or partial deep research artifact as markdown, json, or html.",
+        description="Export a completed or partial deep research artifact as markdown, json, html, docx, xlsx, or pptx.",
         parameters=_schema(
-            {"task_id": {"type": "string"}, "format": {"type": "string", "enum": ["markdown", "json", "html"]}},
+            {
+                "task_id": {"type": "string"},
+                "format": {"type": "string", "enum": ["markdown", "json", "html", "docx", "xlsx", "pptx"]},
+            },
             ["task_id"],
         ),
         category="deep_research_pack",
@@ -732,6 +739,7 @@ def _publish_workspace_packet(workspace: Path, run_id: uuid.UUID | str, artifact
         "report.md",
         "report.html",
         "report.docx",
+        "report.xlsx",
         "report.pptx",
         "final.json",
     ):
@@ -742,39 +750,7 @@ def _publish_workspace_packet(workspace: Path, run_id: uuid.UUID | str, artifact
 
 
 def _materialize_requested_output_format(workspace: Path, artifact_dir: Path, output_format: str) -> Path | None:
-    output_format = normalize_deep_research_output_format(output_format)
-    report_path = artifact_dir / "report.md"
-    if output_format == "markdown":
-        return report_path
-    if output_format == "json":
-        return artifact_dir / "final.json"
-    if not report_path.exists():
-        return None
-
-    markdown = report_path.read_text(encoding="utf-8")
-    if output_format == "html":
-        target = artifact_dir / "report.html"
-        target.write_text(_markdown_to_html_document(markdown), encoding="utf-8")
-        return target
-    if output_format == "docx":
-        target = artifact_dir / "report.docx"
-        _save_office_bytes(
-            workspace,
-            target,
-            _markdown_to_docx_bytes(markdown),
-            reason="deep-research-docx-export",
-        )
-        return target
-    if output_format == "pptx":
-        target = artifact_dir / "report.pptx"
-        _save_office_bytes(
-            workspace,
-            target,
-            _markdown_to_pptx_bytes(markdown),
-            reason="deep-research-pptx-export",
-        )
-        return target
-    return report_path
+    return compose_deep_research_artifact(workspace, artifact_dir, output_format)
 
 
 def _save_office_bytes(workspace: Path, target: Path, content: bytes, *, reason: str) -> None:
@@ -887,6 +863,7 @@ def _output_file_name(output_format: str) -> str:
         "json": "final.json",
         "html": "report.html",
         "docx": "report.docx",
+        "xlsx": "report.xlsx",
         "pptx": "report.pptx",
     }[output_format]
 

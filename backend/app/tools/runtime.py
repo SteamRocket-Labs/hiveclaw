@@ -22,6 +22,7 @@ class ToolExecutionContext:
     tenant_id: str | None
     workspace: Path
     execution_identity: ExecutionIdentity | None = None
+    session_id: str | None = None
 
 
 @dataclass(slots=True)

@@ -6,6 +6,12 @@ from typing import Any
 
 from app.config import get_settings
 from app.services import plan_mode_core
+from app.services.deep_research.plan_contract import (
+    build_runtime_contract,
+    default_format_brief,
+    normalize_contract_output_format,
+    request_arguments_from_contract,
+)
 from app.services.deep_research.schemas import ResearchRequest
 
 DEEP_RESEARCH_HANDOFF_TARGET = "deep_research"
@@ -49,6 +55,7 @@ def build_deep_research_plan_fill(request: ResearchRequest, preview: dict[str, A
     title = f"Deep Research: {_short_title(request.question)}"
     output_capabilities = _output_capabilities(normalized_format)
     handoff_payload = _handoff_payload(request, worker_topics=worker_topics, output_format=normalized_format)
+    runtime_contract = build_runtime_contract(request, preview, output_format=normalized_format)
     estimated_duration = _duration_for_depth(request.depth)
     token_cost = _token_cost_for_depth(request.depth)
     risk_level = "high" if request.depth in {"full", "flagship", "deep"} else "medium"
@@ -139,7 +146,9 @@ def build_deep_research_plan_fill(request: ResearchRequest, preview: dict[str, A
                 "canonical": "report.md",
                 "requested": f"report.{_output_suffix(normalized_format)}",
                 "derived_formats_preserve_markdown": True,
+                "format_brief": default_format_brief(normalized_format),
             },
+            "runtime_contract": runtime_contract,
         },
     }
 
@@ -152,6 +161,10 @@ async def deep_research_handoff_handler(_db: Any, plan: Any) -> dict[str, Any]:
         raise ValueError("Deep Research plan is missing handoff.payload")
 
     payload = dict(payload)
+    deep_research_plan = plan_json.get("deep_research") if isinstance(plan_json.get("deep_research"), dict) else {}
+    runtime_contract = deep_research_plan.get("runtime_contract") if isinstance(deep_research_plan, dict) else None
+    if isinstance(runtime_contract, dict):
+        payload.update({key: value for key, value in request_arguments_from_contract(runtime_contract).items() if value is not None})
     payload["plan_confirmed"] = True
     request = ResearchRequest.from_arguments(payload)
     workspace = Path(get_settings().AGENT_DATA_DIR) / str(plan.agent_id)
@@ -175,17 +188,7 @@ def register_deep_research_handoff(service: Any) -> None:
 
 
 def normalize_deep_research_output_format(value: str | None) -> str:
-    normalized = str(value or "markdown").strip().lower()
-    aliases = {
-        "md": "markdown",
-        "doc": "docx",
-        "slides": "pptx",
-        "ppt": "pptx",
-    }
-    normalized = aliases.get(normalized, normalized)
-    if normalized not in {"markdown", "json", "html", "docx", "pptx"}:
-        return "markdown"
-    return normalized
+    return normalize_contract_output_format(value)
 
 
 def _handoff_payload(request: ResearchRequest, *, worker_topics: list[str], output_format: str) -> dict[str, Any]:
@@ -210,7 +213,7 @@ def _handoff_payload(request: ResearchRequest, *, worker_topics: list[str], outp
 
 
 def _output_capabilities(output_format: str) -> list[str]:
-    if output_format in {"docx", "pptx"}:
+    if output_format in {"docx", "xlsx", "pptx"}:
         return ["office_document_create"]
     return []
 
@@ -221,6 +224,7 @@ def _output_suffix(output_format: str) -> str:
         "json": "json",
         "html": "html",
         "docx": "docx",
+        "xlsx": "xlsx",
         "pptx": "pptx",
     }.get(output_format, "md")
 

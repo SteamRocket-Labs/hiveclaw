@@ -4,6 +4,7 @@ import { IconChecklist } from '@tabler/icons-react';
 import { useQuery } from '@tanstack/react-query';
 
 import MarkdownRenderer from '../../components/MarkdownRenderer';
+import ChatWorkLedgerDock from './ChatWorkLedgerDock';
 import CopyMessageButton from './CopyMessageButton';
 import DeepResearchStreamPanel from './DeepResearchStreamPanel';
 import PlanCard from './PlanCard';
@@ -864,6 +865,26 @@ export default function AgentChatSection({
   const visibleChatMessages = chatMessagesSessionId === activeSessionId ? chatMessages : [];
   const visibleTimeline = isReadOnlySession ? visibleHistoryMsgs : visibleChatMessages;
   const hasInternalTrace = visibleTimeline.some((message) => message.role === 'tool_call');
+  const fallbackWorkLedger = (() => {
+    for (const message of [...visibleTimeline].reverse()) {
+      const meta = message.toolMeta;
+      if (meta?.kind !== 'deep_research' || !meta.taskId) {
+        continue;
+      }
+      const live = _isLiveDeepResearchStatus(meta.status) || message.toolStatus === 'running';
+      if (!live) {
+        continue;
+      }
+      return {
+        runtimeTaskId: meta.taskId,
+        title: t('agent.chat.toolResults.deepResearchTitle', 'Deep Research'),
+        showDeepResearchStream: true,
+        live,
+      };
+    }
+    return null;
+  })();
+  const workLedgerLive = Boolean(activeRunStatus || isWaiting || isStreaming || fallbackWorkLedger?.live);
 
   return (
     <div style={{ display: 'flex', gap: '0', flex: 1, minHeight: 0, height: 'calc(100vh - 206px)' }}>
@@ -1422,6 +1443,16 @@ export default function AgentChatSection({
                 Connecting...
               </div>
             ) : null}
+            {agent?.id && activeSession?.id && (
+              <ChatWorkLedgerDock
+                agentId={String(agent.id)}
+                sessionId={String(activeSession.id)}
+                runtimeTaskId={fallbackWorkLedger?.runtimeTaskId}
+                title={fallbackWorkLedger?.title}
+                showDeepResearchStream={Boolean(fallbackWorkLedger?.showDeepResearchStream)}
+                live={workLedgerLive}
+              />
+            )}
             {attachedFiles.length > 0 && (
               <div
                 style={{

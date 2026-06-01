@@ -24,6 +24,7 @@ class ToolRuntimeResolver:
         *,
         agent_id: uuid.UUID,
         user_id: uuid.UUID,
+        session_id: str | None = None,
     ) -> ToolExecutionContext:
         tenant_id = None
         try:
@@ -42,4 +43,5 @@ class ToolRuntimeResolver:
             tenant_id=tenant_id,
             workspace=workspace,
             execution_identity=get_execution_identity(),
+            session_id=session_id,
         )

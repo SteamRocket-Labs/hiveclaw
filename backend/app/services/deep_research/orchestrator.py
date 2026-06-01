@@ -11,6 +11,7 @@ from app.services.deep_research.evaluator import ResearchEvaluator
 from app.services.deep_research.extractor import extract_claims_from_source
 from app.services.deep_research.language import paragraph_language_consistency, resolve_output_language_code
 from app.services.deep_research.ledger import EvidenceLedger
+from app.services.deep_research.plan_contract import research_plan_from_contract, validate_runtime_contract
 from app.services.deep_research.planner import build_research_plan
 from app.services.deep_research.reader import ResearchReader
 from app.services.deep_research.reflector import ResearchReflector
@@ -58,8 +59,12 @@ class DeepResearchOrchestrator:
         writer = ResearchArtifactWriter(artifact_path)
         ledger = EvidenceLedger(artifact_path)
         writer.write_request(request)
-        plan = build_research_plan(request)
-        plan = await _maybe_refine_plan(self.reasoner, request, plan)
+        plan = _plan_from_request_contract(request)
+        if plan is None:
+            plan = build_research_plan(request)
+            plan = await _maybe_refine_plan(self.reasoner, request, plan)
+        else:
+            writer.append_step(_step("contract_load", "completed", "Loaded confirmed Deep Research runtime contract."))
         writer.write_plan(plan)
         writer.append_step(_step("plan", "completed", f"Built {len(plan.lanes)} research lane(s)."))
 
@@ -240,15 +245,22 @@ class DeepResearchOrchestrator:
         writer = ResearchArtifactWriter(artifact_path)
         ledger = EvidenceLedger(artifact_path)
         writer.write_request(request)
-        plan = build_research_plan(request)
-        plan = await _maybe_refine_plan(self.reasoner, request, plan)
+        plan = _plan_from_request_contract(request)
+        if plan is None:
+            plan = build_research_plan(request)
+            plan = await _maybe_refine_plan(self.reasoner, request, plan)
+        else:
+            writer.append_step(_step("contract_load", "completed", "Loaded confirmed Deep Research runtime contract."))
         writer.write_plan(plan)
         writer.append_step(
             _step("plan", "completed", f"Built {len(plan.lanes)} research lane(s) for v2 worker fan-out.")
         )
 
         source_notes_by_id: dict[str, dict[str, Any]] = {}
-        if getattr(request, "worker_topics", None):
+        if _worker_topics_from_request_contract(request):
+            worker_topics = _worker_topics_from_request_contract(request)[: _topic_budget(request, plan)]
+            topic_source = "confirmed_contract"
+        elif getattr(request, "worker_topics", None):
             # P-A: user already confirmed worker topics in the plan stage — use them as-is.
             worker_topics = list(request.worker_topics)[: _topic_budget(request, plan)]
             topic_source = "user_confirmed"
@@ -470,6 +482,32 @@ async def _default_tool_executor(
     from app.services.agent_tools import execute_tool
 
     return await execute_tool(tool_name, arguments, agent_id=agent_id, user_id=user_id)
+
+
+def _plan_from_request_contract(request: ResearchRequest):
+    contract = getattr(request, "approved_plan", None)
+    if not isinstance(contract, dict) or not contract:
+        return None
+    validate_runtime_contract(contract)
+    return research_plan_from_contract(contract)
+
+
+def _worker_topics_from_request_contract(request: ResearchRequest) -> list[str]:
+    contract = getattr(request, "approved_plan", None)
+    if not isinstance(contract, dict) or not contract:
+        return []
+    try:
+        validate_runtime_contract(contract)
+    except ValueError:
+        return []
+    topics: list[str] = []
+    for lane in contract.get("research", {}).get("lanes", []):
+        if not isinstance(lane, dict):
+            continue
+        topic = str(lane.get("worker_topic") or lane.get("goal") or lane.get("label") or "").strip()
+        if topic:
+            topics.append(topic)
+    return topics
 
 
 def _step(phase: str, status: str, message: str, detail: dict[str, Any] | None = None) -> ResearchStep:

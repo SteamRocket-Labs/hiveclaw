@@ -28,6 +28,7 @@ LEDGER_VIEW_SCHEMA = "agent_work_ledger_view.v1"
 TERMINAL_STATUSES = {"completed", "failed", "killed", "skipped"}
 OPEN_ITEM_STATUSES = {"pending", "running", "in_progress", "blocked", "failed"}
 COMPLETE_ITEM_STATUSES = {"complete", "completed", "done", "skipped"}
+ACTIVE_RUNTIME_STATUSES = {"pending", "running", "in_progress", "blocked"}
 
 
 def _agent_root(agent_id: uuid.UUID, *, data_root: str | Path | None = None) -> Path:
@@ -546,23 +547,42 @@ async def read_latest_session_work_ledger_view(
     tasks = list(result.scalars().all())
     tasks.sort(
         key=lambda task: (
-            1 if _normalize_status(getattr(task, "status", None), default="") in {"pending", "running"} else 0,
+            1 if _normalize_status(getattr(task, "status", None), default="") in ACTIVE_RUNTIME_STATUSES else 0,
             getattr(task, "created_at", None) or datetime.min.replace(tzinfo=timezone.utc),
         ),
         reverse=True,
     )
-    for task in tasks:
+    active_tasks = [
+        task for task in tasks if _normalize_status(getattr(task, "status", None), default="") in ACTIVE_RUNTIME_STATUSES
+    ]
+    active_task_ids = {id(task) for task in active_tasks}
+    inactive_tasks = [task for task in tasks if id(task) not in active_task_ids]
+
+    for task in active_tasks:
         view = read_agent_work_ledger_view(
             agent_id=agent_id,
             runtime_task_id=getattr(task, "id", None),
             data_root=data_root,
         )
-        if view is None:
-            continue
-        view["session_id"] = session_key
-        view["task_type"] = getattr(task, "task_type", None)
-        view["runtime_status"] = getattr(task, "status", None)
-        return view
+        if view is not None:
+            view["session_id"] = session_key
+            view["task_type"] = getattr(task, "task_type", None)
+            view["runtime_status"] = getattr(task, "status", None)
+            return view
+    if active_tasks:
+        return None
+
+    for task in inactive_tasks:
+        view = read_agent_work_ledger_view(
+            agent_id=agent_id,
+            runtime_task_id=getattr(task, "id", None),
+            data_root=data_root,
+        )
+        if view is not None:
+            view["session_id"] = session_key
+            view["task_type"] = getattr(task, "task_type", None)
+            view["runtime_status"] = getattr(task, "status", None)
+            return view
     return None
 
 

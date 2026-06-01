@@ -15,10 +15,28 @@ class _FakeDB:
     pass
 
 
-def _client(monkeypatch, db=None):
+class _ScalarOneResult:
+    def __init__(self, value):
+        self.value = value
+
+    def scalar_one_or_none(self):
+        return self.value
+
+
+class _SessionDB:
+    def __init__(self, session):
+        self.session = session
+        self.statements = []
+
+    async def execute(self, statement):
+        self.statements.append(statement)
+        return _ScalarOneResult(self.session)
+
+
+def _client(monkeypatch, db=None, *, user=None, access_level="manage", agent=None):
     app = FastAPI()
     app.include_router(autonomy_api.router)
-    user = SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4(), username="member")
+    user = user or SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4(), username="member")
 
     async def override_user():
         return user
@@ -27,7 +45,11 @@ def _client(monkeypatch, db=None):
         yield db or _FakeDB()
 
     async def allow_access(_db, _user, agent_id):
-        return SimpleNamespace(id=agent_id, tenant_id=_user.tenant_id), "manage"
+        return (
+            agent
+            or SimpleNamespace(id=agent_id, tenant_id=_user.tenant_id, creator_id=uuid4()),
+            access_level,
+        )
 
     app.dependency_overrides[get_current_user] = override_user
     app.dependency_overrides[get_db] = override_db
@@ -210,6 +232,9 @@ def test_agent_runtime_work_ledger_endpoint_404s_when_missing(monkeypatch):
 def test_agent_session_work_ledger_endpoint_returns_latest_session_ledger(monkeypatch):
     agent_id = uuid4()
     session_id = uuid4()
+    user = SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4(), username="member")
+    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user.id)
+    db = _SessionDB(session)
     captured = {}
 
     async def fake_session_work_ledger(*, db, agent_id, session_id):
@@ -229,7 +254,7 @@ def test_agent_session_work_ledger_endpoint_returns_latest_session_ledger(monkey
         }
 
     monkeypatch.setattr(autonomy_api, "read_latest_session_work_ledger_view", fake_session_work_ledger)
-    client, _user = _client(monkeypatch)
+    client, _user = _client(monkeypatch, db=db, user=user, access_level="read")
 
     response = client.get(f"/agents/{agent_id}/sessions/{session_id}/work-ledger")
 
@@ -239,3 +264,51 @@ def test_agent_session_work_ledger_endpoint_returns_latest_session_ledger(monkey
     assert payload["todo_items"][0]["title"] == "Implement requested changes"
     assert captured["agent_id"] == agent_id
     assert captured["session_id"] == session_id
+
+
+def test_agent_session_work_ledger_endpoint_rejects_cross_user_session_without_manage(monkeypatch):
+    agent_id = uuid4()
+    session_id = uuid4()
+    user = SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4(), username="member")
+    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=uuid4())
+    db = _SessionDB(session)
+    called = False
+
+    async def fake_session_work_ledger(**_kwargs):
+        nonlocal called
+        called = True
+        return {"schema": "agent_work_ledger_view.v1", "todo_items": []}
+
+    monkeypatch.setattr(autonomy_api, "read_latest_session_work_ledger_view", fake_session_work_ledger)
+    client, _user = _client(monkeypatch, db=db, user=user, access_level="read")
+
+    response = client.get(f"/agents/{agent_id}/sessions/{session_id}/work-ledger")
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Not authorized to view this session work ledger"
+    assert called is False
+
+
+def test_agent_session_work_ledger_endpoint_allows_cross_user_session_for_manager(monkeypatch):
+    agent_id = uuid4()
+    session_id = uuid4()
+    user = SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4(), username="member")
+    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=uuid4())
+    db = _SessionDB(session)
+
+    async def fake_session_work_ledger(*, db, agent_id, session_id):
+        return {
+            "schema": "agent_work_ledger_view.v1",
+            "session_id": str(session_id),
+            "runtime_task_id": uuid4().hex,
+            "status": "running",
+            "todo_items": [{"id": "todo-1", "title": "Manager visible todo", "status": "running"}],
+        }
+
+    monkeypatch.setattr(autonomy_api, "read_latest_session_work_ledger_view", fake_session_work_ledger)
+    client, _user = _client(monkeypatch, db=db, user=user, access_level="manage")
+
+    response = client.get(f"/agents/{agent_id}/sessions/{session_id}/work-ledger")
+
+    assert response.status_code == 200
+    assert response.json()["todo_items"][0]["title"] == "Manager visible todo"

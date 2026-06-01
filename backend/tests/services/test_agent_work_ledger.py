@@ -229,3 +229,55 @@ async def test_latest_session_work_ledger_prefers_active_session_task(monkeypatc
     assert view["runtime_task_id"] == active_task.id.hex
     assert view["session_id"] == str(session_id)
     assert view["task_type"] == "delegation"
+
+
+@pytest.mark.asyncio
+async def test_latest_session_work_ledger_does_not_fallback_to_old_ledger_when_active_task_has_none(monkeypatch):
+    from app.services import agent_work_ledger as module
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    older_completed = SimpleNamespace(
+        id=uuid4(),
+        task_type="deep_research",
+        status="completed",
+        created_at=None,
+    )
+    active_task = SimpleNamespace(
+        id=uuid4(),
+        task_type="web_chat_turn",
+        status="running",
+        created_at=None,
+    )
+
+    class _Scalars:
+        def all(self):
+            return [older_completed, active_task]
+
+    class _Result:
+        def scalars(self):
+            return _Scalars()
+
+    class _DB:
+        async def execute(self, _stmt):
+            return _Result()
+
+    def fake_read_agent_work_ledger_view(*, agent_id, runtime_task_id, data_root=None):
+        if runtime_task_id == older_completed.id:
+            return {
+                "schema": "agent_work_ledger_view.v1",
+                "runtime_task_id": older_completed.id.hex,
+                "status": "completed",
+                "todo_items": [{"id": "todo-old", "title": "Old completed todo", "status": "complete"}],
+            }
+        return None
+
+    monkeypatch.setattr(module, "read_agent_work_ledger_view", fake_read_agent_work_ledger_view)
+
+    view = await module.read_latest_session_work_ledger_view(
+        db=_DB(),
+        agent_id=agent_id,
+        session_id=session_id,
+    )
+
+    assert view is None

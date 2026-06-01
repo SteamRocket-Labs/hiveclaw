@@ -64,18 +64,26 @@ export default function ChatWorkLedgerDock({
     queryKey: ['chat-session-work-ledger', agentId, sessionId],
     queryFn: () => autonomyApi.getSessionWorkLedger(agentId, sessionId as string),
     enabled: Boolean(agentId && sessionId),
-    refetchInterval: live ? 3000 : 10000,
+    refetchInterval: live ? 3000 : false,
     retry: false,
   });
+  const runtimeTaskKey = runtimeTaskId ? String(runtimeTaskId) : '';
+  const sessionData = sessionQuery.data;
+  const sessionRuntimeTaskKey = sessionData?.runtime_task_id ? String(sessionData.runtime_task_id) : '';
+  const sessionMatchesRuntime = !runtimeTaskKey || sessionRuntimeTaskKey === runtimeTaskKey;
+  const preferRuntimeLedger = Boolean(runtimeTaskKey && sessionData && !sessionMatchesRuntime);
+  const runtimeQueryEnabled = Boolean(
+    agentId && runtimeTaskKey && (!sessionId || sessionQuery.isError || preferRuntimeLedger),
+  );
   const runtimeQuery = useQuery({
     queryKey: ['chat-work-ledger', agentId, runtimeTaskId],
     queryFn: () => autonomyApi.getRuntimeWorkLedger(agentId, runtimeTaskId as string),
-    enabled: Boolean(agentId && runtimeTaskId && (!sessionId || sessionQuery.isError)),
+    enabled: runtimeQueryEnabled,
     refetchInterval: live ? 3000 : false,
     retry: live ? 3 : 1,
   });
-  const data = sessionQuery.data ?? runtimeQuery.data;
-  const isLoading = sessionQuery.isLoading || runtimeQuery.isLoading;
+  const data = preferRuntimeLedger ? runtimeQuery.data : (sessionData ?? runtimeQuery.data);
+  const isLoading = sessionQuery.isLoading || (runtimeQueryEnabled && runtimeQuery.isLoading);
   const error = data ? null : (sessionQuery.error ?? runtimeQuery.error);
 
   const activeTodo = currentTodo(data?.todo_items);

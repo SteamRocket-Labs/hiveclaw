@@ -5,11 +5,13 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
+from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.services.autonomy_overview import (
     build_agent_autonomy_overview,
@@ -19,6 +21,40 @@ from app.services.autonomy_overview import (
 from app.services.agent_work_ledger import read_agent_work_ledger_view, read_latest_session_work_ledger_view
 
 router = APIRouter(prefix="/agents", tags=["autonomy"])
+
+
+def _can_manage_sessions(user: User, agent: object, access_level: str) -> bool:
+    return (
+        getattr(user, "role", None) in ("platform_admin", "org_admin")
+        or str(getattr(agent, "creator_id", "")) == str(getattr(user, "id", ""))
+        or access_level == "manage"
+    )
+
+
+async def _get_accessible_session_for_work_ledger(
+    *,
+    db: AsyncSession,
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    current_user: User,
+) -> ChatSession:
+    result = await db.execute(
+        select(ChatSession).where(
+            ChatSession.id == session_id,
+            or_(
+                ChatSession.agent_id == agent_id,
+                (ChatSession.peer_agent_id == agent_id) & (ChatSession.source_channel == "agent"),
+            ),
+        )
+    )
+    session = result.scalar_one_or_none()
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if str(session.user_id) != str(current_user.id) and not _can_manage_sessions(current_user, agent, access_level):
+        raise HTTPException(status_code=403, detail="Not authorized to view this session work ledger")
+    return session
 
 
 @router.get("/{agent_id}/autonomy/overview")
@@ -124,7 +160,12 @@ async def get_agent_session_work_ledger(
     db: AsyncSession = Depends(get_db),
 ):
     """Read the latest chat-safe Work Ledger for the current chat session."""
-    await check_agent_access(db, current_user, agent_id)
+    await _get_accessible_session_for_work_ledger(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+    )
     ledger = await read_latest_session_work_ledger_view(db=db, agent_id=agent_id, session_id=session_id)
     if ledger is None:
         raise HTTPException(status_code=404, detail="Session work ledger not found")

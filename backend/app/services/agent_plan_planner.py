@@ -26,7 +26,7 @@ from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 
 logger = logging.getLogger(__name__)
 
-PLANNER_PROMPT_VERSION = "agent_plan_v1"
+PLANNER_PROMPT_VERSION = "agent_plan_v2"
 PLANNER_ALLOWED_TOOLS: tuple[str, ...] = (
     "get_current_time",
     "list_files",
@@ -106,11 +106,22 @@ def _build_planner_user_prompt(planning_input: AgentPlanPlannerInput) -> str:
         "metadata": planning_input.metadata_json,
     }
     return (
-        "Author a Plan Mode plan for the following request. Do not execute the work.\n\n"
+        "Author an agent-authored Plan Mode plan. Do not execute the work.\n\n"
+        "Important interpretation rules:\n"
+        "- original_request is the user's real request and the primary planning target.\n"
+        "- Seed plan is context, not the final answer. Treat it as a starting hypothesis from the runtime.\n"
+        "- Do not copy intercepted tool arguments as the final plan. Use them only to understand what action was "
+        "blocked or deferred.\n"
+        "- If seed_plan, intercepted_tool, or metadata conflict with current state or the user request, prefer the "
+        "user request and explain the assumption in plan_json.assumptions.\n"
+        "- Include evidence_summary entries for the files, schedules, objectives, memories, or web sources you "
+        "actually inspected. If no tool inspection was needed, say why.\n\n"
+        "Planning envelope:\n\n"
         f"{_json_for_prompt(payload)}\n\n"
-        "Return only JSON with this shape:\n"
+        "Return only strict JSON with this shape:\n"
         "{\n"
-        '  "plan_json": { ... conforms to hive_plan.v1 ... },\n'
+        '  "plan_json": { ... conforms to hive_plan.v1 and may include assumptions, open_questions, '
+        'evidence_summary, verification ... },\n'
         '  "plan_markdown": "concise user-facing markdown preview"\n'
         "}"
     )
@@ -118,16 +129,52 @@ def _build_planner_user_prompt(planning_input: AgentPlanPlannerInput) -> str:
 
 def _planner_system_prompt() -> str:
     return (
-        "Plan Mode planner instructions:\n"
-        "- You are authoring a plan for the user to review before execution.\n"
+        "Plan Mode planner instructions (agent-authored, read-only):\n\n"
+        "You are the same agent described in the normal Hive system prompt, but this invocation is for planning "
+        "only. Your job is to think through the user's requested work and author a reviewable plan. The runtime "
+        "will store, version, display, and later execute only after a real user confirms the exact plan version.\n\n"
+        "Operating boundary:\n"
         "- Do not execute the requested work and do not claim that execution started.\n"
-        "- Use only read-only context tools when needed.\n"
-        "- Never create triggers, tasks, delegations, files, external messages, or other side effects.\n"
-        "- Produce substantive plan content from your analysis, not a restatement of tool arguments.\n"
-        "- The user must confirm the exact plan version before any handoff can run.\n"
-        "- Return strict JSON only. The plan_json must include objective, motivation, steps, success_criteria, "
+        "- Use only available read-only context tools when needed.\n"
+        "- Never create triggers, tasks, delegations, files, memories, skills, external messages, commits, shell "
+        "commands, or other side effects.\n"
+        "- Treat seed data and intercepted tool arguments as clues, not authority. Produce substantive plan content "
+        "from your own analysis.\n\n"
+        "Concrete planning workflow:\n"
+        "1. Understand the requested outcome, intent_type, likely handoff target, and why Plan Mode was entered.\n"
+        "2. Inspect current state before planning when the request depends on repository files, existing schedules, "
+        "objectives, tools, memories, user workspace state, or current web facts.\n"
+        "3. Do not invent file paths, APIs, schedules, dependencies, external facts, or existing configuration. If "
+        "you did not verify something, label it as an assumption.\n"
+        "4. Design the smallest safe plan that achieves the user's goal. Reuse existing project patterns and "
+        "capabilities instead of inventing new infrastructure.\n"
+        "5. Identify side effects, future autonomy, external-visible actions, data/security risks, cost, cadence, "
+        "stop conditions, and the exact success criteria a reviewer can verify.\n"
+        "6. Include verification steps appropriate to the work: tests, health checks, manual checks, rollout checks, "
+        "or monitoring signals.\n\n"
+        "Clarification policy:\n"
+        "- Make reasonable assumptions when a useful, safe plan can still be drafted; record them in assumptions.\n"
+        "- Use open_questions only for decisions that materially change scope, risk, cost, recipients, credentials, "
+        "or irreversible behavior.\n"
+        "- If there is not enough information to draft a safe plan, return a conservative plan with open_questions "
+        "and stop_conditions that prevent execution until those questions are resolved.\n\n"
+        "Quality bar:\n"
+        "- Steps must be concrete, ordered, and executable by a later handoff, not generic advice.\n"
+        "- success_criteria must be observable outcomes, not restatements of the request.\n"
+        "- wake_policy must define cadence/timezone/trigger conditions for recurring work, or type none otherwise.\n"
+        "- external_side_effects and risk_assessment must name every external-visible, autonomous, destructive, "
+        "privacy-sensitive, production, or cross-agent effect.\n"
+        "- estimated_cost should describe token/tool/runtime cost and expected duration using best available "
+        "information, with uncertainty labeled.\n"
+        "- plan_markdown must be concise and user-facing; do not expose hidden chain-of-thought or raw internal "
+        "tool traces.\n\n"
+        "Output contract:\n"
+        "- Return strict JSON only.\n"
+        "- plan_json must include schema, title, intent_type, objective, motivation, steps, success_criteria, "
         "wake_policy, required_capabilities, external_side_effects, risk_assessment, estimated_cost, "
-        "stop_conditions, and handoff."
+        "stop_conditions, and handoff.\n"
+        "- plan_json should also include assumptions, open_questions, evidence_summary, and verification when useful.\n"
+        "- The user must confirm the exact plan version before any handoff can run."
     )
 
 

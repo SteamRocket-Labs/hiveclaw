@@ -216,7 +216,7 @@ async def test_generate_plan_produces_awaiting_confirmation_with_hash_and_markdo
     assert updated.plan_json["objective"] == "Produce a useful daily industry brief."
     assert updated.plan_json["wake_policy"]["expr"] == "0 9 * * 1-5"
     assert updated.metadata_json["author_type"] == "agent"
-    assert updated.metadata_json["planner_prompt_version"] == "agent_plan_v1"
+    assert updated.metadata_json["planner_prompt_version"] == "agent_plan_v2"
     assert updated.metadata_json["planner_model_id"] == "test-planner"
     assert planner.calls and planner.calls[0].plan_id == draft.id
     assert planner.calls[0].seed_plan["objective"] == "Produce a useful daily industry brief."

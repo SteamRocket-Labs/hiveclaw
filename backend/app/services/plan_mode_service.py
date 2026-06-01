@@ -343,6 +343,12 @@ class PlanModeService:
             self._planner = DefaultAgentPlanPlanner()
         return self._planner
 
+    @staticmethod
+    def _planner_prompt_version() -> str:
+        from app.services.agent_plan_planner import PLANNER_PROMPT_VERSION
+
+        return PLANNER_PROMPT_VERSION
+
     async def _run_planner(
         self,
         *,
@@ -416,13 +422,15 @@ class PlanModeService:
                 intercepted_tool=intercepted_tool,
             )
         except Exception as exc:  # noqa: BLE001 - planner failure becomes planning_failed, not execution.
+            from app.services.agent_plan_planner import PLANNER_PROMPT_VERSION
+
             logger.warning("agent_plan_planner_failed", extra={"plan_id": str(plan_id), "error": str(exc)})
             return await self._mark_generation_failed_by_id(
                 plan_id,
                 [f"planner_invocation_failed: {getattr(exc, 'message', str(exc))}"],
                 planner_metadata={
                     "author_type": "agent",
-                    "planner_prompt_version": "agent_plan_v1",
+                    "planner_prompt_version": PLANNER_PROMPT_VERSION,
                     "planner_error_code": getattr(exc, "error_code", "planner_invocation_failed"),
                 },
             )
@@ -522,7 +530,7 @@ class PlanModeService:
         metadata = dict(plan.metadata_json or {})
         metadata.update(planner_metadata or {})
         metadata["author_type"] = "agent"
-        metadata["planner_prompt_version"] = metadata.get("planner_prompt_version") or "agent_plan_v1"
+        metadata["planner_prompt_version"] = metadata.get("planner_prompt_version") or self._planner_prompt_version()
         metadata["planner_source"] = plan.source
         metadata["quality_checks"] = {
             "schema_valid": True,

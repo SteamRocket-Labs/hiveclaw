@@ -879,3 +879,13 @@ Cutover, runtime layer. The legacy "pack" vocabulary is gone from runtime code; 
 - Kept for Part 4: `make_mcp_server_pack_name()` and `api/packs.py` routes untouched.
 
 Evidence: `import app.main` OK; `ContextBudget` field present; ruff clean; targeted suite (prompt_builder, recovery_manifest, engine, chat_message_parts) **78 passed**; subagent's broader run **528 passed**. Grep confirms no residual `ToolPackSpec` / `TOOL_PACKS` / `active_packs` / `pack_for_name` in `app/`. (Executed via an isolated subagent; reviewed by re-running import + targeted tests + grep here — a stale mid-edit diagnostic that flagged two symbols was disproven by the final-state grep and green tests.)
+
+### Part 4 — Backend API: server-first MCP extension API ✅ (additive)
+
+Purely additive — new server-first API on the Part 1 tables; existing pack routes untouched (removed in Part 6 after the frontend switches). No `pack`/`pack_name` in any DTO.
+
+- `app/services/mcp_server_service.py` — `list_tenant_servers`, `get_agent_mcp_servers`, `get_agent_extensions`, `set_agent_mcp_assignment`, `trigger_tenant_backfill`. Every query tenant-scoped.
+- `app/api/mcp_servers.py` (registered as `mcp_servers_router`) — `GET /agents/{id}/extensions` (Agent Detail source of truth, `{skills, mcp_servers}`); `GET /enterprise/mcp-servers/records` (server-first, stable id); `GET /agents/{id}/mcp-servers`; `PUT /agents/{id}/mcp-servers/{server_id}` (assignment); `POST /enterprise/mcp-servers/backfill` (the Part 2 backfill trigger).
+- Skills in extensions reuse `WorkspaceSkillLoader` (same source as legacy `get_agent_packs`). The `/records` route uses a distinct path to avoid colliding with the legacy `/enterprise/mcp-servers`; Part 6 reconciles them to the canonical path per §7.3.
+- Evidence: `import app.main` OK; `pytest test_mcp_server_service.py test_mcp_servers_api.py` → **14 passed**; ruff clean. Reviewed: router-set comparison confirms main.py only ADDED `mcp_servers_router` (no router dropped by the format reflow); DTOs verified free of pack fields.
+- Backfill is now wired (`POST /enterprise/mcp-servers/backfill`), closing the Part 2b orphan note.

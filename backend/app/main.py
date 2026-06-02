@@ -39,6 +39,7 @@ from app.api.notification import router as notification_router
 from app.api.oidc import router as oidc_router
 from app.api.onboarding import router as onboarding_router
 from app.api.office import router as office_router
+from app.api.mcp_servers import router as mcp_servers_router
 from app.api.objectives import router as objectives_router
 from app.api.organization import router as org_router
 from app.api.packs import router as packs_router
@@ -79,31 +80,47 @@ async def _start_ss_local() -> None:
     import os
     import shutil
     import tempfile
+
     if not shutil.which("ss-local"):
         logger.info("[Proxy] ss-local not found — Discord proxy disabled")
         return
     # Load proxy nodes from config file (gitignored, mounted as Docker volume)
     import json as _json
+
     cfg_file = os.environ.get("SS_CONFIG_FILE", "/data/ss-nodes.json")
     if os.path.exists(cfg_file):
         nodes = _json.load(open(cfg_file))
         logger.info(f"[Proxy] Loaded {len(nodes)} node(s) from {cfg_file}")
     elif os.environ.get("SS_SERVER") and os.environ.get("SS_PASSWORD"):
-        nodes = [{"server": os.environ["SS_SERVER"], "port": int(os.environ.get("SS_PORT", "1080")),
-                  "password": os.environ["SS_PASSWORD"], "method": os.environ.get("SS_METHOD", "chacha20-ietf-poly1305"), "label": "env"}]
+        nodes = [
+            {
+                "server": os.environ["SS_SERVER"],
+                "port": int(os.environ.get("SS_PORT", "1080")),
+                "password": os.environ["SS_PASSWORD"],
+                "method": os.environ.get("SS_METHOD", "chacha20-ietf-poly1305"),
+                "label": "env",
+            }
+        ]
     else:
         logger.info(f"[Proxy] {cfg_file} not found and SS_SERVER not set — skipping proxy")
         return
     for node in nodes:
-        cfg = {"server": node["server"], "server_port": node["port"], "local_address": "127.0.0.1",
-               "local_port": 1080, "password": node["password"], "method": node["method"], "timeout": 10}
+        cfg = {
+            "server": node["server"],
+            "server_port": node["port"],
+            "local_address": "127.0.0.1",
+            "local_port": 1080,
+            "password": node["password"],
+            "method": node["method"],
+            "timeout": 10,
+        }
         tf = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
         json.dump(cfg, tf)
         tf.close()
         try:
             proc = await asyncio.create_subprocess_exec(
-                "ss-local", "-c", tf.name,
-                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+                "ss-local", "-c", tf.name, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
+            )
             await asyncio.sleep(2)
             if proc.returncode is None:
                 os.environ["DISCORD_PROXY"] = "socks5h://127.0.0.1:1080"
@@ -138,41 +155,47 @@ async def lifespan(app: FastAPI):
     if not settings.DEBUG:
         if settings.SECRET_KEY == "change-me-in-production":
             import logging as _log
+
             _log.getLogger(__name__).critical("SECRET_KEY has default value — set a strong random key for production")
         if settings.JWT_SECRET_KEY == "change-me-jwt-secret":
             import logging as _log
-            _log.getLogger(__name__).critical("JWT_SECRET_KEY has default value — set a strong random key for production")
+
+            _log.getLogger(__name__).critical(
+                "JWT_SECRET_KEY has default value — set a strong random key for production"
+            )
 
     # ── Step 0b: Initialize secrets provider ──
     from app.services.secrets_provider import init_secrets_provider
+
     init_secrets_provider(settings.SECRETS_MASTER_KEY or None)
 
     # ── Step 0c: Ensure all DB tables exist (idempotent, safe to run on every startup) ──
     try:
         from app.database import Base, engine
+
         # Import all models so Base.metadata is fully populated
-        import app.models.user           # noqa
-        import app.models.agent          # noqa
-        import app.models.task           # noqa
-        import app.models.llm            # noqa
-        import app.models.tool           # noqa
-        import app.models.audit          # noqa
-        import app.models.skill          # noqa
+        import app.models.user  # noqa
+        import app.models.agent  # noqa
+        import app.models.task  # noqa
+        import app.models.llm  # noqa
+        import app.models.tool  # noqa
+        import app.models.audit  # noqa
+        import app.models.skill  # noqa
         import app.models.channel_config  # noqa
-        import app.models.schedule       # noqa
-        import app.models.plaza          # noqa
-        import app.models.activity_log   # noqa
-        import app.models.org            # noqa
+        import app.models.schedule  # noqa
+        import app.models.plaza  # noqa
+        import app.models.activity_log  # noqa
+        import app.models.org  # noqa
         import app.models.system_settings  # noqa
         import app.models.invitation_code  # noqa
-        import app.models.tenant         # noqa
+        import app.models.tenant  # noqa
         import app.models.tenant_setting  # noqa
-        import app.models.participant    # noqa
-        import app.models.chat_session   # noqa
-        import app.models.trigger        # noqa
-        import app.models.notification   # noqa
-        import app.models.gateway_message # noqa
-        import app.models.feature_flag    # noqa
+        import app.models.participant  # noqa
+        import app.models.chat_session  # noqa
+        import app.models.trigger  # noqa
+        import app.models.notification  # noqa
+        import app.models.gateway_message  # noqa
+        import app.models.feature_flag  # noqa
         import app.models.security_audit  # noqa
         import app.models.capability_policy  # noqa
         import app.models.capability_install  # noqa
@@ -183,14 +206,13 @@ async def lifespan(app: FastAPI):
         import app.models.plan_request  # noqa
         import app.models.work_ledger  # noqa
         import app.models.mcp_server  # noqa
+
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             # Add enum values to channel_type_enum if they don't exist yet (idempotent)
-            for _ch_val in ('atlassian', 'telegram'):
+            for _ch_val in ("atlassian", "telegram"):
                 await conn.execute(
-                    __import__("sqlalchemy").text(
-                        f"ALTER TYPE channel_type_enum ADD VALUE IF NOT EXISTS '{_ch_val}'"
-                    )
+                    __import__("sqlalchemy").text(f"ALTER TYPE channel_type_enum ADD VALUE IF NOT EXISTS '{_ch_val}'")
                 )
         logger.info("[startup] Database tables ready")
     except Exception as e:
@@ -199,6 +221,7 @@ async def lifespan(app: FastAPI):
     # One-time workspace migration: update HEARTBEAT.md + remove deprecated skills
     try:
         from app.tools.workspace import migrate_all_workspaces
+
         migrate_all_workspaces()
     except Exception as e:
         logger.warning(f"[startup] workspace migration failed (non-fatal): {e}")
@@ -236,6 +259,7 @@ async def lifespan(app: FastAPI):
         from app.models.tenant import Tenant
         from app.database import async_session as _session
         from sqlalchemy import select as _select
+
         async with _session() as _db:
             _existing = await _db.execute(_select(Tenant).where(Tenant.slug == "default"))
             if not _existing.scalar_one_or_none():
@@ -253,6 +277,7 @@ async def lifespan(app: FastAPI):
         from app.models.tenant import Tenant as _T
         from app.database import async_session as _ses
         from sqlalchemy import select as _sel
+
         _data_dir = _Path(_gs().AGENT_DATA_DIR)
         _old_dir = _data_dir / "enterprise_info"
         if _old_dir.exists() and any(_old_dir.iterdir()):
@@ -265,7 +290,9 @@ async def lifespan(app: FastAPI):
                         shutil.copytree(str(_old_dir), str(_new_dir))
                         print(f"[startup] ✅ Migrated enterprise_info → enterprise_info_{_tenant.id}", flush=True)
                     else:
-                        print(f"[startup] ℹ️ enterprise_info_{_tenant.id} already exists, skipping migration", flush=True)
+                        print(
+                            f"[startup] ℹ️ enterprise_info_{_tenant.id} already exists, skipping migration", flush=True
+                        )
     except Exception as e:
         print(f"[startup] ⚠️ enterprise_info migration failed: {e}", flush=True)
 
@@ -278,6 +305,7 @@ async def lifespan(app: FastAPI):
     # (no pack, no declared_tools in a system/template skill, no prompt mention).
     try:
         from app.tools.audit import run_startup_audit
+
         run_startup_audit()
     except Exception as e:
         logger.warning(f"[startup] Tool coverage audit failed: {e}")
@@ -285,6 +313,7 @@ async def lifespan(app: FastAPI):
     try:
         from app.agents.orchestrator import resume_persisted_async_delegations
         from app.services.runtime_task_service import reconcile_orphaned_runtime_tasks
+
         resumed_task_ids = await resume_persisted_async_delegations(limit=50)
         if resumed_task_ids:
             logger.info("[startup] Resumed %d persisted async runtime task(s)", len(resumed_task_ids))
@@ -296,11 +325,13 @@ async def lifespan(app: FastAPI):
 
     try:
         from app.services.tool_seeder import seed_atlassian_rovo_config, get_atlassian_api_key
+
         await seed_atlassian_rovo_config()
         # Auto-import Atlassian Rovo tools if an API key is already configured
         _rovo_key = await get_atlassian_api_key()
         if _rovo_key:
             from app.services.resource_discovery import seed_atlassian_rovo_tools
+
             await seed_atlassian_rovo_tools(_rovo_key)
     except Exception as e:
         logger.warning(f"[startup] Atlassian tools seed failed: {e}")
@@ -311,6 +342,7 @@ async def lifespan(app: FastAPI):
             push_default_skills_to_existing_agents,
             seed_skills,
         )
+
         await seed_skills()
         await cleanup_retired_builtin_skills()
         await push_default_skills_to_existing_agents()
@@ -319,6 +351,7 @@ async def lifespan(app: FastAPI):
 
     try:
         from app.services.agent_seeder import seed_default_agents
+
         await seed_default_agents()
     except Exception as e:
         logger.warning(f"[startup] Default agents seed failed: {e}")
@@ -328,6 +361,7 @@ async def lifespan(app: FastAPI):
     # boot rather than waiting for an unmapped tool to be invoked.
     try:
         from app.services.capability_gate import audit_capability_mapping
+
         audit_capability_mapping()
     except Exception as e:
         logger.warning(f"[startup] Capability mapping audit failed (non-fatal): {e}")
@@ -339,6 +373,7 @@ async def lifespan(app: FastAPI):
     try:
         from app.memory.metrics import record_extract_replay_outcome
         from app.services.extract_queue_replay import replay_pending_extractions
+
         replayed = await replay_pending_extractions()
         record_extract_replay_outcome(
             scheduled=replayed["scheduled"],
@@ -368,9 +403,12 @@ async def lifespan(app: FastAPI):
     # results back to TG/WeChat/Feishu channels.
     try:
         from app.services.trigger_daemon import backfill_null_reply_contexts
+
         result = await backfill_null_reply_contexts()
         if result["patched"]:
-            logger.info("[startup] Backfilled %d trigger reply_contexts (skipped %d)", result["patched"], result["skipped"])
+            logger.info(
+                "[startup] Backfilled %d trigger reply_contexts (skipped %d)", result["patched"], result["skipped"]
+            )
     except Exception as e:
         logger.warning(f"[startup] Trigger reply_context backfill failed: {e}")
 
@@ -378,6 +416,7 @@ async def lifespan(app: FastAPI):
     try:
         logger.info("[startup] starting background tasks...")
         from app.services.audit_logger import write_audit_log
+
         await write_audit_log("server_startup", {"pid": os.getpid()})
 
         def _bg_task_error(t):
@@ -390,6 +429,7 @@ async def lifespan(app: FastAPI):
             if exc:
                 logger.error(f"[startup] Background task {t.get_name()} CRASHED: {exc}")
                 import traceback
+
                 traceback.print_exception(type(exc), exc, exc.__traceback__)
 
         for name, coro in [
@@ -407,6 +447,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"[startup] Background tasks failed: {e}")
         import traceback
+
         traceback.print_exc()
 
     # Start ss-local SOCKS5 proxy for Discord API calls (non-fatal)
@@ -419,11 +460,13 @@ async def lifespan(app: FastAPI):
     await close_redis()
     try:
         from app.services.viking_client import close as close_viking
+
         await close_viking()
     except Exception as exc:
         logger.debug(f"OpenViking client cleanup skipped: {exc}")
     try:
         from app.memory.backend import aclose_all_backends
+
         await aclose_all_backends()
     except Exception as exc:
         logger.warning(f"Memory backend shutdown failed: {exc}")
@@ -442,6 +485,7 @@ app.add_middleware(TraceIdMiddleware)
 _cors_origins = settings.CORS_ORIGINS
 if "*" in _cors_origins and not settings.DEBUG:
     import logging as _logging
+
     _logging.getLogger(__name__).critical(
         "CORS_ORIGINS contains '*' in non-DEBUG mode. "
         "Set explicit origins (e.g. CORS_ORIGINS='[\"https://your-domain.com\"]') for production."
@@ -460,15 +504,47 @@ app.add_middleware(TenantMiddleware)
 
 # All API routers — mounted under both /api (backward compat) and /api/v1
 _api_routers = [
-    auth_router, agents_router, tasks_router, files_router, feishu_router,
-    org_router, enterprise_router, advanced_router, upload_router,
-    relationships_router, activity_router, messages_router, tenants_router,
-    schedules_router, files_upload_router, enterprise_kb_router,
-    skills_router, users_router, slack_router, discord_router, dingtalk_router,
-    wecom_router, wechat_personal_router, teams_router, telegram_router, email_channel_router, atlassian_router, notification_router,
-    gateway_router, config_history_router, feature_flags_router, admin_router,
-    chat_sessions_router, plaza_router, triggers_router, memory_router,
-    oidc_router, capabilities_router, onboarding_router, packs_router,
+    auth_router,
+    agents_router,
+    tasks_router,
+    files_router,
+    feishu_router,
+    org_router,
+    enterprise_router,
+    advanced_router,
+    upload_router,
+    relationships_router,
+    activity_router,
+    messages_router,
+    tenants_router,
+    schedules_router,
+    files_upload_router,
+    enterprise_kb_router,
+    skills_router,
+    users_router,
+    slack_router,
+    discord_router,
+    dingtalk_router,
+    wecom_router,
+    wechat_personal_router,
+    teams_router,
+    telegram_router,
+    email_channel_router,
+    atlassian_router,
+    notification_router,
+    gateway_router,
+    config_history_router,
+    feature_flags_router,
+    admin_router,
+    chat_sessions_router,
+    plaza_router,
+    triggers_router,
+    memory_router,
+    oidc_router,
+    capabilities_router,
+    onboarding_router,
+    packs_router,
+    mcp_servers_router,
     objectives_router,
     plans_router,
     office_router,
@@ -486,8 +562,8 @@ _api_routers = [
 ]
 
 for _r in _api_routers:
-    app.include_router(_r, prefix="/api")      # backward compat
-    app.include_router(_r, prefix="/api/v1")   # versioned
+    app.include_router(_r, prefix="/api")  # backward compat
+    app.include_router(_r, prefix="/api/v1")  # versioned
 
 # Routers without /api prefix (WebSocket, webhooks, etc.)
 app.include_router(webhooks_router)  # Public endpoint, no API prefix

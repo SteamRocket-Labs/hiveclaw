@@ -127,6 +127,8 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
   const successCriteria = Array.isArray(planJson.success_criteria) ? planJson.success_criteria : [];
   const sideEffects = displayableSideEffects(planJson.external_side_effects);
   const stopConditions = Array.isArray(planJson.stop_conditions) ? planJson.stop_conditions : [];
+  const assumptions = Array.isArray(planJson.assumptions) ? planJson.assumptions : [];
+  const openQuestions = Array.isArray(planJson.open_questions) ? planJson.open_questions : [];
   const wakeText = humanizeWakePolicy(planJson.wake_policy);
   const risk = planJson.risk_assessment;
   const cost = planJson.estimated_cost;
@@ -340,6 +342,30 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
           <div style={labelStyle}>{t('agent.plan.stopConditions', 'Stop conditions')}</div>
           <ul style={{ margin: 0, paddingLeft: '18px', display: 'grid', gap: '4px' }}>
             {stopConditions.map((item, index) => (
+              <li key={index} style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5 }}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Assumptions — facts vs assumptions separation (§6.2 fact discipline) */}
+      {assumptions.length > 0 && (
+        <div>
+          <div style={labelStyle}>{t('agent.plan.assumptions', 'Assumptions')}</div>
+          <ul style={{ margin: 0, paddingLeft: '18px', display: 'grid', gap: '4px' }}>
+            {assumptions.map((item, index) => (
+              <li key={index} style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5 }}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Open questions the agent flagged for the user during planning */}
+      {openQuestions.length > 0 && (
+        <div>
+          <div style={labelStyle}>{t('agent.plan.openQuestions', 'Open questions')}</div>
+          <ul style={{ margin: 0, paddingLeft: '18px', display: 'grid', gap: '4px' }}>
+            {openQuestions.map((item, index) => (
               <li key={index} style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5 }}>{item}</li>
             ))}
           </ul>

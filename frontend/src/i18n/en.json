@@ -392,6 +392,8 @@
       "sideEffectGeneric": "External action",
       "requiresConfirmation": "requires confirmation",
       "stopConditions": "Stop conditions",
+      "assumptions": "Assumptions",
+      "openQuestions": "Open questions",
       "workLedger": "Work ledger",
       "confirm": "Confirm",
       "confirmAndStart": "Confirm and start",

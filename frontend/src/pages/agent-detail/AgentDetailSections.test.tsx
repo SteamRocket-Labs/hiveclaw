@@ -1574,6 +1574,8 @@ describe('AgentDetail extracted sections', () => {
         risk_assessment: { level: 'medium', reasons: ['recurring autonomous wake'] },
         estimated_cost: { tokens_per_run: 'medium', expected_duration: '1-3 minutes' },
         stop_conditions: ['User cancels the plan.'],
+        assumptions: ['User wants Asia-market focus by default.'],
+        open_questions: ['Which sectors should the brief prioritise?'],
       },
       handoff_status: null,
       handoff_payload: null,
@@ -1611,6 +1613,8 @@ describe('AgentDetail extracted sections', () => {
     // Risk level renders via its raw value fallback (i18n mock returns the fallback string).
     expect(markup).toContain('medium');
     expect(markup).toContain('User cancels the plan.');
+    expect(markup).toContain('User wants Asia-market focus by default.');
+    expect(markup).toContain('Which sectors should the brief prioritise?');
     // Actionable while awaiting confirmation; confirmation should clearly start handoff.
     expect(markup).toContain('Confirm and start');
     expect(markup).toContain('Request changes');

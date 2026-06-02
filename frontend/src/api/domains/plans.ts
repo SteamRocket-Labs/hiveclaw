@@ -103,6 +103,8 @@ export interface PlanJson {
   risk_assessment?: PlanRiskAssessment | null;
   estimated_cost?: PlanEstimatedCost | null;
   stop_conditions?: string[];
+  assumptions?: string[];
+  open_questions?: string[];
   handoff?: PlanHandoffSpec | null;
   [key: string]: unknown;
 }

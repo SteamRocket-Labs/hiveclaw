@@ -294,8 +294,12 @@ class DefaultAgentPlanPlanner:
                 excluded_tool_names=PLANNER_EXCLUDED_TOOLS,
                 core_tools_only=False,
                 expand_tools=False,
-                max_tool_rounds=8,
-                max_output_tokens=4000,
+                # Phase 5: this RPC planner is now the unattended fallback (live-chat
+                # tool-intercepts go through interactive Plan Mode instead). Give it a
+                # real exploration budget rather than the old 8-round / 4000-token
+                # clamp that made plans read like filled-in forms. Output length is
+                # left to the model default so the plan can be as long as it needs.
+                max_tool_rounds=20,
             )
         )
         planner_result = _coerce_planner_result(result.content)

@@ -99,6 +99,21 @@ def test_plan_file_path_round_trips_through_the_mirror():
     assert PlanModeState.from_metadata(data).plan_file_path == "workspace/plans/s1.plan.md"
 
 
+def test_is_interactive_plan_eligible_unifies_the_live_chat_boundary():
+    # Phase 5 follow-up: one shared boundary for invoker + kernel. Real runtime
+    # web-chat sessions use source="web"; unattended paths stay ineligible.
+    from app.runtime.session import is_interactive_plan_eligible
+
+    assert is_interactive_plan_eligible(SessionContext(source="web", channel="web")) is True
+    assert is_interactive_plan_eligible(SessionContext(source="web_chat")) is True
+    assert is_interactive_plan_eligible(SessionContext(source="chat")) is True
+    assert is_interactive_plan_eligible(SessionContext(source="web", channel=None)) is True
+    assert is_interactive_plan_eligible(SessionContext(source="trigger")) is False
+    assert is_interactive_plan_eligible(SessionContext(source="heartbeat", channel=None)) is False
+    assert is_interactive_plan_eligible(SessionContext(source="agent")) is False
+    assert is_interactive_plan_eligible(None) is False
+
+
 def test_from_metadata_round_trips_core_fields():
     original = PlanModeState(
         active=True,

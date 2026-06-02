@@ -219,3 +219,24 @@ class SessionContext:
             self.pending_items.append(item)
         if len(self.pending_items) > 10:
             self.pending_items.pop(0)
+
+
+# Live interactive chat surfaces eligible for tool-intercept → interactive Plan
+# Mode. Real runtime web-chat sessions use source="web" (web_chat_broker.py /
+# websocket.py); "web_chat"/"chat" are accepted defensively. Unattended paths
+# (trigger/heartbeat/delegation/task) are absent here and keep the RPC fallback.
+_INTERACTIVE_PLAN_CHAT_SURFACES = frozenset({"web", "web_chat", "chat"})
+
+
+def is_interactive_plan_eligible(session_context: Any | None) -> bool:
+    """Single source of truth for the tool-intercept → interactive Plan Mode
+    boundary, shared by the invoker tool-runtime gate and kernel activation so
+    the two can never drift (Phase 5 follow-up: the prior duplicated checks
+    disagreed on ``chat``/channel — harmless while source is always ``"web"``,
+    but unified here before flag rollout).
+    """
+    if session_context is None:
+        return False
+    source = str(getattr(session_context, "source", "") or "").lower()
+    channel = str(getattr(session_context, "channel", "") or "").lower()
+    return source in _INTERACTIVE_PLAN_CHAT_SURFACES or channel in _INTERACTIVE_PLAN_CHAT_SURFACES

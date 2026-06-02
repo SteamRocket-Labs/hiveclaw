@@ -157,11 +157,10 @@ def _session_metadata(session_context: SessionContext | None) -> dict[str, Any]:
 
 
 def _plan_mode_interactive_available(session_context: SessionContext | None) -> bool:
-    if session_context is None:
-        return False
-    source = str(getattr(session_context, "source", "") or "").lower()
-    channel = str(getattr(session_context, "channel", "") or "").lower()
-    return source in {"web_chat", "chat", "web"} or channel in {"web", "web_chat", "chat"}
+    # Delegate to the shared boundary so the invoker and kernel never drift.
+    from app.runtime.session import is_interactive_plan_eligible
+
+    return is_interactive_plan_eligible(session_context)
 
 
 async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:

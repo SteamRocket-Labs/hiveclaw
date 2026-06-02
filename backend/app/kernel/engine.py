@@ -957,15 +957,13 @@ def _parse_interactive_plan_signal(result_str: str) -> dict[str, Any] | None:
 
 
 def _is_live_interactive_chat(session_context: Any | None) -> bool:
-    """True for a live web chat session — the only place a tool-intercept may
-    flip into interactive Plan Mode. The runtime session source is ``"web"``
-    (``web_chat_broker.py``), NOT ``"web_chat"`` (that's the PlanModeState tag).
+    """True for a live interactive chat session — the only place a tool-intercept
+    may flip into interactive Plan Mode. Delegates to the shared boundary in
+    ``session.py`` so the kernel and the invoker tool-runtime gate never drift.
     """
-    if session_context is None:
-        return False
-    src = getattr(session_context, "source", None)
-    ch = getattr(session_context, "channel", None)
-    return src in {"web", "web_chat"} or ch == "web"
+    from app.runtime.session import is_interactive_plan_eligible
+
+    return is_interactive_plan_eligible(session_context)
 
 
 def _latest_user_message(request: Any) -> str:

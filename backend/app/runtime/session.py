@@ -16,12 +16,96 @@ _DEFAULT_SKILL_TTL_SECONDS = 3600
 
 
 @dataclass(slots=True)
+class PlanModeState:
+    """First-class typed Plan Mode runtime state (paradigm-convergence doc §6.1).
+
+    Replaces the untyped ``SessionContext.metadata["plan_mode"]`` dict as the
+    source of truth for runtime injection. The dict is still written as a
+    backward-compatible mirror (see :meth:`to_metadata`) because the interactive
+    ContextVar, the ``exit_plan_mode`` tool, the prompt suffix, and the frontend
+    plan card all still read it.
+
+    ``entered_round`` / ``reminded_full`` are Phase 2 per-round reminder
+    bookkeeping and live ONLY here — they are deliberately excluded from
+    :meth:`to_metadata` so the legacy mirror cannot drift on values it never
+    owned (the ContextVar and ``exit_plan_mode`` consume neither).
+    """
+
+    active: bool = False
+    plan_id: str | None = None
+    intent_type: str | None = None
+    action_kind: str | None = None
+    tool_name: str | None = None
+    original_request: str | None = None
+    handoff_target: str | None = None
+    reason: str | None = None
+    deep_research: bool = False
+    deep_research_args: dict[str, Any] = field(default_factory=dict)
+    # Phase 2 per-round reminder bookkeeping (runtime-only; never mirrored).
+    entered_round: int = 0
+    reminded_full: bool = False
+    # Phase 4B plan-file writing target (reserved; unused until that phase).
+    plan_file_path: str | None = None
+    source: str = "web_chat"
+
+    def to_metadata(self) -> dict[str, Any]:
+        """Render the legacy ``metadata['plan_mode']`` dict shape.
+
+        Byte-compatible with ``_activate_interactive_plan_mode``: deep-research
+        keys are emitted only when ``deep_research`` is set, matching the
+        conditional update the legacy code performed.
+        """
+        data: dict[str, Any] = {
+            "active": self.active,
+            "original_request": self.original_request,
+            "intent_type": self.intent_type,
+            "action_kind": self.action_kind,
+            "tool_name": self.tool_name,
+            "reason": self.reason,
+            "handoff_target": self.handoff_target,
+        }
+        if self.deep_research:
+            data["deep_research"] = True
+            data["deep_research_args"] = dict(self.deep_research_args)
+        return data
+
+    @classmethod
+    def from_metadata(cls, data: Any) -> PlanModeState:
+        """Rebuild typed state from a legacy mirror dict; degrade safely.
+
+        A ``None`` or non-dict payload returns an inactive state rather than
+        raising, so callers can read ``metadata.get("plan_mode")`` blindly.
+        """
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            active=bool(data.get("active")),
+            plan_id=data.get("plan_id"),
+            intent_type=data.get("intent_type"),
+            action_kind=data.get("action_kind"),
+            tool_name=data.get("tool_name"),
+            original_request=data.get("original_request"),
+            handoff_target=data.get("handoff_target"),
+            reason=data.get("reason"),
+            deep_research=bool(data.get("deep_research")),
+            deep_research_args=dict(data.get("deep_research_args") or {}),
+            source=str(data.get("source") or "web_chat"),
+        )
+
+
+@dataclass(slots=True)
 class SessionContext:
     session_id: str | None = None
     source: str = "runtime"
     channel: str | None = None
     active_packs: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Plan Mode as a first-class runtime state. The legacy mirror still lives in
+    # ``metadata["plan_mode"]`` (written by _activate_interactive_plan_mode) for
+    # the ContextVar / exit_plan_mode / suffix / frontend; this is the typed
+    # source of truth for per-round reminder injection (Phase 2) and the
+    # unified read-only gate (Phase 3).
+    plan_mode: PlanModeState = field(default_factory=PlanModeState)
     # Prompt cache: frozen prefix reused within the same session
     prompt_prefix: str | None = None
     prompt_fingerprint: str | None = None

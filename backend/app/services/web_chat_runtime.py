@@ -412,25 +412,33 @@ def _activate_interactive_plan_mode(
     decision: plan_mode_core.PlanModeEntryDecision,
     session_id: str | None,
 ) -> dict[str, Any]:
-    handoff_target = "objective_trigger" if decision.action_kind == "create_enabled_trigger" else "long_task"
-    metadata: dict[str, Any] = {
-        "active": True,
-        "original_request": original_request,
-        "intent_type": decision.intent_type or "long_task",
-        "action_kind": decision.action_kind,
-        "tool_name": decision.tool_name,
-        "reason": decision.reason,
-        "handoff_target": handoff_target,
-    }
-    if _is_deep_research_chat_request(original_request):
-        metadata.update(
-            {
-                "handoff_target": "deep_research",
-                "deep_research": True,
-                "deep_research_args": _deep_research_chat_arguments(original_request),
-            }
-        )
+    from app.runtime.session import PlanModeState
+
+    is_deep_research = _is_deep_research_chat_request(original_request)
+    if is_deep_research:
+        handoff_target = "deep_research"
+    elif decision.action_kind == "create_enabled_trigger":
+        handoff_target = "objective_trigger"
+    else:
+        handoff_target = "long_task"
+    state = PlanModeState(
+        active=True,
+        original_request=original_request,
+        intent_type=decision.intent_type or "long_task",
+        action_kind=decision.action_kind,
+        tool_name=decision.tool_name,
+        reason=decision.reason,
+        handoff_target=handoff_target,
+        deep_research=is_deep_research,
+        deep_research_args=_deep_research_chat_arguments(original_request) if is_deep_research else {},
+        source="web_chat",
+    )
+    metadata = state.to_metadata()
     if runtime_session_context is not None:
+        # Typed source of truth on a real SessionContext; the dict mirror keeps
+        # the ContextVar / exit_plan_mode / suffix / frontend path unchanged.
+        if hasattr(runtime_session_context, "plan_mode"):
+            runtime_session_context.plan_mode = state
         runtime_session_context.metadata["plan_mode"] = metadata
     logger.info(
         "[WebChatRun] Interactive Plan Mode activated session={} intent={} target={}",
@@ -439,35 +447,6 @@ def _activate_interactive_plan_mode(
         metadata.get("handoff_target"),
     )
     return metadata
-
-
-def _interactive_plan_mode_suffix(metadata: dict[str, Any]) -> str:
-    original_request = str(metadata.get("original_request") or "").strip()
-    handoff_target = str(metadata.get("handoff_target") or "long_task")
-    return (
-        "Plan Mode is active. The user indicated that they do not want you to execute yet. "
-        "You MUST NOT execute the requested work, mutate workspace files, create triggers/tasks/objectives, "
-        "send external messages, delegate work, run commands, or call any non-read-only tools.\n\n"
-        "## Original request\n"
-        f"{original_request or '(not provided)'}\n\n"
-        "## Interactive Planning Workflow\n"
-        "You are pair-planning with the user. Follow this loop until the plan is ready:\n"
-        "1. Explore — use only read-only tools to inspect code, memory, schedules, objectives, or web facts when needed.\n"
-        "2. Capture findings in your own working context; do not expose internal ledger paths or raw tool scripts.\n"
-        "3. Ask concise clarification questions only for decisions that materially change scope, risk, cost, recipients, "
-        "credentials, or irreversible behavior.\n"
-        "4. When the plan is ready, call exit_plan_mode with a concise user-facing plan. Do not ask for approval in prose; "
-        "exit_plan_mode creates the confirmation card.\n\n"
-        "## Plan Quality Bar\n"
-        "- Include context, objective, concrete ordered steps, critical files/artifacts or research lanes when applicable, "
-        "success criteria, stop conditions, risk, cost, and verification.\n"
-        "- Prefer one recommended approach, not a list of speculative alternatives.\n"
-        "- Separate facts, assumptions, and open questions.\n"
-        "- If this is Deep Research, plan research scope, evidence lanes, source quality standards, synthesis shape, and "
-        "final artifacts; confirmation will hand off to the Deep Research runtime.\n"
-        f"- Expected handoff target after confirmation: {handoff_target}.\n\n"
-        "Your turn should end by either asking necessary clarification questions or calling exit_plan_mode."
-    )
 
 
 async def _maybe_sync_created_task(
@@ -909,11 +888,11 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             runtime_session_context.metadata[plan_mode_core.PLAN_MODE_TRUSTED_DECLINE_SESSION_KEY] = trusted_decline
         else:
             runtime_session_context.metadata.pop(plan_mode_core.PLAN_MODE_TRUSTED_DECLINE_SESSION_KEY, None)
+        # Plan Mode reminders are injected per-round by the kernel
+        # (engine._plan_mode_reminder_content), no longer via system_prompt_suffix —
+        # this keeps the frozen prefix cacheable. The metadata mirror below only
+        # arms the interactive read-only ContextVar for tool governance.
         active_plan_mode_metadata = runtime_session_context.metadata.get("plan_mode")
-        if isinstance(active_plan_mode_metadata, dict) and active_plan_mode_metadata.get("active"):
-            pending_reply_suffix = "\n\n".join(
-                part for part in (pending_reply_suffix, _interactive_plan_mode_suffix(active_plan_mode_metadata)) if part
-            )
 
         plan_mode_submitted = False
 

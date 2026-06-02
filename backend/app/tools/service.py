@@ -59,28 +59,6 @@ _DELEGATED_USER_AUTHORIZED_TOOLS = frozenset(
         "send_feishu_message",
     }
 )
-_INTERACTIVE_PLAN_MODE_ALLOWED_TOOLS = frozenset(
-    {
-        "exit_plan_mode",
-        "get_current_time",
-        "list_files",
-        "read_file",
-        "glob_search",
-        "grep_search",
-        "fs_list",
-        "fs_read",
-        "web_search",
-        "web_fetch",
-        "firecrawl_fetch",
-        "xcrawl_scrape",
-        "search_memory",
-        "load_memory",
-        "list_triggers",
-        "list_objectives",
-        "tool_search",
-        "load_skill",
-    }
-)
 _COMPANY_CONFLICT_PATTERNS = (
     "bypass company policy",
     "share credentials",
@@ -486,8 +464,9 @@ class ToolRuntimeService:
     @staticmethod
     def _interactive_plan_mode_readonly_block(tool_name: str) -> str | None:
         from app.services.plan_mode_runtime_context import interactive_plan_mode_active
+        from app.tools.plan_mode_policy import is_plan_mode_tool_allowed
 
-        if not interactive_plan_mode_active() or tool_name in _INTERACTIVE_PLAN_MODE_ALLOWED_TOOLS:
+        if not interactive_plan_mode_active() or is_plan_mode_tool_allowed(tool_name):
             return None
         return render_tool_error(
             tool_name=tool_name,

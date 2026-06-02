@@ -457,22 +457,37 @@ async def test_maybe_handle_plan_mode_entry_activates_interactive_mode_when_expl
 
 
 @pytest.mark.asyncio
-async def test_interactive_plan_mode_suffix_uses_claude_style_loop_and_exit_tool():
+async def test_activate_interactive_plan_mode_writes_typed_state_and_keeps_dict_mirror(monkeypatch):
+    """Phase 1: a real SessionContext gets the typed PlanModeState populated,
+    and the legacy metadata['plan_mode'] dict stays a byte-exact mirror."""
     import app.services.web_chat_runtime as runtime
+    from app.runtime.session import SessionContext
 
-    suffix = runtime._interactive_plan_mode_suffix(
-        {
-            "original_request": "帮我设计一个 RWA 周报计划",
-            "intent_type": "autonomous_wake",
-            "handoff_target": "objective_trigger",
-        }
+    plan = SimpleNamespace(id=uuid4(), plan_version=1, plan_hash="sha256:abc")
+    intake = _RecordingIntake(plan)
+    monkeypatch.setattr(runtime, "get_plan_mode_service", lambda: intake)
+    session_context = SessionContext()
+
+    result = await runtime._maybe_handle_plan_mode_entry(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id=None,
+        session_id="session-1",
+        runtime_task_id=uuid4(),
+        content="帮我完整调研这个行业",
+        plan_mode_requested=True,
+        runtime_session_context=session_context,
     )
 
-    assert "Plan Mode is active" in suffix
-    assert "MUST NOT execute" in suffix
-    assert "Explore" in suffix
-    assert "exit_plan_mode" in suffix
-    assert "帮我设计一个 RWA 周报计划" in suffix
+    assert result is None
+    # Typed source of truth populated.
+    assert session_context.plan_mode.active is True
+    assert session_context.plan_mode.original_request == "帮我完整调研这个行业"
+    assert session_context.plan_mode.intent_type == "long_task"
+    # Legacy dict mirror stays consistent with the typed state.
+    assert session_context.metadata["plan_mode"] == session_context.plan_mode.to_metadata()
+    # Runtime-only injection bookkeeping never leaks into the mirror.
+    assert "reminded_full" not in session_context.metadata["plan_mode"]
 
 
 @pytest.mark.asyncio

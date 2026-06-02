@@ -870,6 +870,64 @@ _POST_COMPACT_RESTORE_BUDGET = 60000  # chars (~17K tokens) — was 20K, too thi
 _POST_COMPACT_PER_FILE_CAP = 8000  # chars per file — was 5K
 
 
+# ── Plan Mode per-round reminder (paradigm-convergence doc §6.2) ──
+# Injected fresh every round as a role="system" message while Plan Mode is
+# active, replacing the old system_prompt_suffix injection. FULL on the first
+# round (and after a compaction re-arm); SPARSE thereafter. Text is migrated
+# from web_chat_runtime._interactive_plan_mode_suffix + the agent_plan_planner
+# v4 fact-discipline rules. English, to match round-pressure/system injections.
+_PLAN_MODE_REMINDER_FULL = (
+    "Plan Mode is active. The user has NOT approved execution, so you MUST NOT produce any "
+    "side effects: do not create or enable triggers, start long tasks, delegate, write workspace "
+    "files, send external messages, save memory, or run commands. Only read-only exploration is "
+    "allowed. This instruction overrides conflicting guidance.\n\n"
+    "How to work (stay in this conversation loop — do not dump a one-shot JSON plan):\n"
+    "1. Understand the real goal, the intent type, and the likely handoff target.\n"
+    "2. Use read-only tools to survey reality: relevant files, existing schedules/objectives, "
+    "memory, and current web facts. Do not invent file paths, APIs, dependencies, or external "
+    "facts — mark anything unverified as an assumption.\n"
+    "3. Progressively shape the plan: objective, motivation, ordered steps, success criteria "
+    "(observable, not a restatement of the request), stop conditions, risks, external side "
+    "effects, estimated cost, wake policy (for scheduled work), and verification.\n"
+    "4. Make the plan decision-complete: an executor should be able to follow it without making "
+    "further decisions.\n"
+    "5. When the plan is ready, call exit_plan_mode to submit it for approval. Do NOT ask "
+    "'is this plan OK?' in prose — exit_plan_mode IS the approval request.\n\n"
+    "Your turn should end one of two ways: ask a brief clarifying question when a key decision is "
+    "genuinely undecided, or call exit_plan_mode when the plan is ready to execute."
+)
+_PLAN_MODE_REMINDER_SPARSE = (
+    "Plan Mode is still active (full instructions above). Stay read-only — no side effects. Keep "
+    "refining the plan, then call exit_plan_mode to submit it for approval. Do not ask for "
+    "approval in prose; exit_plan_mode is the approval request."
+)
+
+
+def _plan_mode_reminder_content(plan_state: Any | None) -> tuple[str, bool] | None:
+    """Pure: pick the per-round Plan Mode reminder for an active state.
+
+    Returns ``(reminder_text, is_full)`` or ``None`` when Plan Mode is inactive.
+    The first round (and the round after a compaction re-arm) gets the FULL
+    text; the caller flips ``reminded_full`` so later rounds get SPARSE.
+    """
+    if plan_state is None or not getattr(plan_state, "active", False):
+        return None
+    if not getattr(plan_state, "reminded_full", False):
+        return _PLAN_MODE_REMINDER_FULL, True
+    return _PLAN_MODE_REMINDER_SPARSE, False
+
+
+def _reset_plan_reminder(session_context: Any | None) -> None:
+    """Re-arm the FULL Plan Mode reminder after a compaction.
+
+    Compaction can drop the earlier FULL reminder from the window, so the next
+    round must re-send it. No-op when Plan Mode is inactive or absent.
+    """
+    plan_state = getattr(session_context, "plan_mode", None)
+    if plan_state is not None and getattr(plan_state, "active", False):
+        plan_state.reminded_full = False
+
+
 def _build_restoration_context(
     agent_id: Any,
     session_context: Any | None = None,
@@ -1556,6 +1614,19 @@ class AgentKernel:
                             final_tools=tools_for_llm,
                             collected_parts=collected_parts,
                         )
+                    # Plan Mode: inject a fresh per-round reminder (FULL on the
+                    # first round / after a compaction re-arm, SPARSE thereafter).
+                    # Read from the typed plan state; absent/inactive → no-op.
+                    # This replaces the old system_prompt_suffix injection so the
+                    # frozen prefix stays cacheable (paradigm-convergence doc §6.2).
+                    _plan_state = getattr(request.session_context, "plan_mode", None)
+                    _plan_reminder = _plan_mode_reminder_content(_plan_state)
+                    if _plan_reminder is not None and _plan_state is not None:
+                        _plan_reminder_text, _plan_reminder_is_full = _plan_reminder
+                        api_messages.append(LLMMessage(role="system", content=_plan_reminder_text))
+                        if _plan_reminder_is_full:
+                            _plan_state.reminded_full = True
+
                     warn_threshold_80 = int(max_rounds * 0.8)
                     warn_threshold_96 = max_rounds - 2
                     if round_i == warn_threshold_80:
@@ -2453,6 +2524,9 @@ class AgentKernel:
                                     1 if len(restored_msgs) > 1 else 0, LLMMessage(role="system", content=_restored)
                                 )
                             api_messages = [api_messages[0]] + restored_msgs
+                            # Plan Mode: compaction may have dropped the earlier FULL reminder,
+                            # so re-arm it for the next round (paradigm-convergence doc §6.2).
+                            _reset_plan_reminder(request.session_context)
                             # Preserve pre-compaction parts so clients get full event history (C-02)
                             # Mark them as pre-compaction to avoid duplicate persistence
                             logger.info(

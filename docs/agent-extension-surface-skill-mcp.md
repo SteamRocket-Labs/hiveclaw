@@ -862,4 +862,8 @@ Data foundation, second half (transform). The legacy-to-records transform is a p
 - `backend/app/services/mcp_backfill.py` — `group_mcp_tools` (group by `(name, url)`, tenant-unique `server_key` with a numeric collision suffix, never the `mcp_server:*` namespace); `reachable_before` (persisted half of `get_agent_tools_for_llm`: `AgentTool.enabled` if a row exists, else `is_default`); `resolve_reachable_tools` (the gating contract Part 5 reuses at runtime); `plan_agent_assignment` (one assignment + `deny` overrides that reproduce pre-migration reachability exactly — when a server is enabled, every tool not reachable before is denied).
 - Evidence: `pytest tests/services/test_mcp_backfill.py` → **12 passed**, including registry parity (vs `build_mcp_server_registry`) and tool-availability parity across mixed / all-enabled / all-disabled / unrelated-agent cases. ruff clean.
 
-**Part 2b — async DB backfill shell** lands next: reads legacy `Tool(type="mcp")` + `AgentTool` rows, delegates to the functional core, writes the records idempotently per tenant.
+**Part 2b — async DB backfill shell ✅**
+
+- `backend/app/services/mcp_backfill_service.py` — `backfill_tenant_mcp_servers(db, tenant_id)` reads legacy `Tool(type="mcp")` + `AgentTool` rows (joined via agent association, matching `list_tenant_mcp_servers`), delegates the transform to the Part 2a functional core, and writes `MCPServer` / `MCPServerTool` / `AgentMCPServerAssignment` / `AgentMCPToolOverride`. Idempotent per tenant (skips a tenant that already has server rows) — the forward-fix path.
+- Evidence: `pytest tests/services/test_mcp_backfill_service.py` → **3 passed** (writes records + parity deny override for a pre-disabled tool; idempotent skip; empty tenant). Combined backfill suite **15 passed**. ruff clean.
+- Trigger wiring: `backfill_tenant_mcp_servers` is invoked by the admin endpoint added in Part 4; until then it is callable but not yet routed (tracked, not orphaned).

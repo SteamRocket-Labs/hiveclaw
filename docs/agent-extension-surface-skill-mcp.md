@@ -836,3 +836,19 @@ The release is incomplete unless all boxes are true:
 4. Within the single release, land the MCP server data migration and pass parity validation before the product/API/runtime cutover step.
 5. Do not keep an event compatibility window for new writes after this release. New writes use `tool_group_activation`; old writes are reader-normalized only.
 6. Treat `SKILLS_AND_PACKS_V2.md` as an older implementation checkpoint for pack catalog work, not the final user-facing product model.
+
+## 14. Implementation Progress
+
+Single-release cutover, implemented in ordered parts on `main`. Each part is committed separately with tests green before the next begins. Status flips from `Design draft` to `Implemented` when Part 7 closes.
+
+### Part 1 — MCP server data model + RLS migration ✅
+
+Data foundation, first half: the four tenant-scoped tables that give MCP servers stable first-class identity.
+
+- `backend/app/models/mcp_server.py` — `MCPServer`, `MCPServerTool`, `AgentMCPServerAssignment`, `AgentMCPToolOverride`. Every table: `tenant_id` NOT NULL, FK `tenants.id` ON DELETE CASCADE, indexed, plus a tenant-scoped `UniqueConstraint`.
+- `backend/alembic/versions/add_mcp_server_records_0602.py` — creates the four tables, enables RLS, and creates a `tenant_isolation_{table}` policy for each in a loop (verbatim from the production-verified `add_row_level_security.py`); downgrade drops policies and tables. `down_revision` = prior head `add_agent_work_ledgers_0601`.
+- Registered in `alembic/env.py` and the `app/main.py` create_all path.
+
+Evidence: `pytest tests/services/test_mcp_server_records.py` → **7 passed** (model structure: mandatory `tenant_id`, tenant-scoped uniqueness; migration DDL contract: RLS enabled + policy per table, downgrade cleanup). Existing `test_mcp_registry_service.py` still passes. `ruff check`/`format` clean.
+
+RLS verification honesty: Hive's suite is unit-first with no DB fixture, so isolation is proven structurally — (a) `tenant_id` exists and is NOT NULL on every table, (b) the policy DDL is created verbatim from the template already validated in production. A live two-tenant read test belongs in an integration environment with Postgres and is not run here.

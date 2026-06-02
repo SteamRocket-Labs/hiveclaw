@@ -39,6 +39,12 @@ from app.models.runtime_task import RuntimeTask  # noqa: F401
 from app.models.objective import AgentObjective  # noqa: F401
 from app.models.plan_request import AgentPlanRequest  # noqa: F401
 from app.models.plan_recommendation import AgentPlanRecommendation  # noqa: F401
+from app.models.mcp_server import (  # noqa: F401
+    AgentMCPServerAssignment,
+    AgentMCPToolOverride,
+    MCPServer,
+    MCPServerTool,
+)
 
 config = context.config
 settings = get_settings()

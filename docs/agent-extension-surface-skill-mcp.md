@@ -852,3 +852,14 @@ Data foundation, first half: the four tenant-scoped tables that give MCP servers
 Evidence: `pytest tests/services/test_mcp_server_records.py` → **7 passed** (model structure: mandatory `tenant_id`, tenant-scoped uniqueness; migration DDL contract: RLS enabled + policy per table, downgrade cleanup). Existing `test_mcp_registry_service.py` still passes. `ruff check`/`format` clean.
 
 RLS verification honesty: Hive's suite is unit-first with no DB fixture, so isolation is proven structurally — (a) `tenant_id` exists and is NOT NULL on every table, (b) the policy DDL is created verbatim from the template already validated in production. A live two-tenant read test belongs in an integration environment with Postgres and is not run here.
+
+### Part 2 — MCP backfill + parity (in progress)
+
+**Part 2a — backfill functional core + parity proofs ✅**
+
+Data foundation, second half (transform). The legacy-to-records transform is a pure functional core so both parity properties are proven without a DB.
+
+- `backend/app/services/mcp_backfill.py` — `group_mcp_tools` (group by `(name, url)`, tenant-unique `server_key` with a numeric collision suffix, never the `mcp_server:*` namespace); `reachable_before` (persisted half of `get_agent_tools_for_llm`: `AgentTool.enabled` if a row exists, else `is_default`); `resolve_reachable_tools` (the gating contract Part 5 reuses at runtime); `plan_agent_assignment` (one assignment + `deny` overrides that reproduce pre-migration reachability exactly — when a server is enabled, every tool not reachable before is denied).
+- Evidence: `pytest tests/services/test_mcp_backfill.py` → **12 passed**, including registry parity (vs `build_mcp_server_registry`) and tool-availability parity across mixed / all-enabled / all-disabled / unrelated-agent cases. ruff clean.
+
+**Part 2b — async DB backfill shell** lands next: reads legacy `Tool(type="mcp")` + `AgentTool` rows, delegates to the functional core, writes the records idempotently per tenant.

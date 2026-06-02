@@ -46,10 +46,10 @@ That makes pack a legacy runtime grouping concept, not a clean product module. T
 The current pack leakage is concentrated in these places:
 
 - `backend/app/tools/packs.py` defines static tool groups such as `web_pack`, `feishu_pack`, `mcp_admin_pack`, `office_pack`, `deep_research_pack`, and `plan_mode_pack`.
-- `backend/app/api/packs.py` exposes `/packs`, `/agents/{agent_id}/packs`, `/enterprise/packs/policies`, `/agents/{agent_id}/capability-summary`, and `/chat/sessions/{session_id}/runtime-summary`.
+- `backend/app/api/packs.py` exposes `/packs`, `/agents/{agent_id}/packs`, `/enterprise/packs/policies`, `/agents/{agent_id}/capability-summary`, and `/chat/sessions/{session_id}/runtime-summary`. The same file also hosts the `/enterprise/mcp-servers` route family, so the pack routes that get removed and the MCP routes that get reshaped share one module (see §7.3).
 - `backend/app/services/pack_service.py` returns fields such as `available_packs`, `channel_backed_packs`, `skill_declared_packs`, and `activated_packs`.
-- `backend/app/services/chat_message_parts.py` emits and serializes `pack_activation` events with the title "Capability Packs Activated".
-- `backend/app/services/mcp_registry_service.py` derives MCP `server_key` and `pack_name` from `make_mcp_server_pack_name()`, so MCP servers do not yet have stable first-class identity.
+- `backend/app/services/chat_message_parts.py` serializes `pack_activation` events with the title "Capability Packs Activated", but the events are actually emitted upstream in `backend/app/runtime/invoker.py` (three sites) and `backend/app/kernel/engine.py`. The rename must cover the emit sources, not just the serializer.
+- `backend/app/services/mcp_registry_service.py` derives MCP `server_key` and `pack_name` from `make_mcp_server_pack_name()`, so MCP servers do not yet have stable first-class identity. Note `make_mcp_server_pack_name()` is defined twice — in `mcp_registry_service.py` and in `backend/app/tools/packs.py` — so removing it from the product path means retiring both definitions.
 - `frontend/src/pages/agent-detail/ToolsManager.tsx` fetches `/agents/{agent_id}/packs` to organize visible tools.
 - `frontend/src/pages/agent-detail/AgentChatSection.tsx` can render activated pack names from runtime event metadata.
 
@@ -232,6 +232,7 @@ MCP server assignment should be explicit:
 
 ```text
 AgentMCPServerAssignment {
+  tenant_id: uuid
   agent_id: uuid
   mcp_server_id: uuid
   enabled: bool
@@ -243,6 +244,7 @@ Tool-level overrides are optional:
 
 ```text
 AgentMCPToolOverride {
+  tenant_id: uuid
   agent_id: uuid
   mcp_server_id: uuid
   tool_name: string
@@ -251,6 +253,10 @@ AgentMCPToolOverride {
 ```
 
 This makes "install one MCP, manage one MCP" the default, while preserving precise control.
+
+### 4.5 Self-Service Install Path
+
+Agents can install MCP servers themselves through the tool group currently named `mcp_admin_pack`. That tool group is internalized as a runtime tool group like every other pack (§7.1), but its product effect must be wired to the new model: when an agent or admin installs an MCP through these tools, the install creates one `MCPServer` record plus the relevant `AgentMCPServerAssignment`, exactly like a UI-driven install. The install path is a runtime entry point; the durable result is still a first-class MCP server record, never a `mcp_server:*` pack name. `capability_install_service` already treats `mcp_server` as the install unit, so this path must feed the same record creation, not a parallel one.
 
 ## 5. Skill Model
 
@@ -318,7 +324,7 @@ Allowed compatibility:
 
 - Old persisted chat messages may contain `pack_activation`; readers may map them to `tool_group_activation`.
 - Old persisted session context may contain `active_packs`; loaders may map it to `active_tool_groups`.
-- Old tenant settings may contain pack policy keys; a migration must either move them to internal runtime-tool-group policy keys or delete them when no longer product-relevant.
+- Old tenant settings may contain pack policy keys. They live in `SystemSetting` under `tenant:{tenant_id}:policies` (written by `set_tenant_pack_policy`), so they are real persisted governance state, not transient config. The migration classifies each key per pack: a pack that maps to a surviving runtime tool group moves to an internal runtime-tool-group policy key; a pack with no surviving governance meaning is deleted. "Move or delete" is a per-key decision, not a blanket drop.
 - Existing `Tool.mcp_server_name` and `Tool.mcp_server_url` may remain as compatibility fields until all MCP imports write server records.
 
 Disallowed compatibility after this release:
@@ -345,7 +351,7 @@ Replace the pack naming layer completely inside runtime code.
 | `TOOL_PACKS` | `RUNTIME_TOOL_GROUPS` |
 | `pack_for_name()` | `runtime_tool_group_for_name()` |
 | `infer_static_pack_names()` | `infer_static_runtime_tool_group_names()` |
-| `make_mcp_server_pack_name()` | removed from product path; server identity comes from MCP server records |
+| `make_mcp_server_pack_name()` (defined in both `packs.py` and `mcp_registry_service.py`) | removed from product path in both modules; server identity comes from MCP server records |
 | `active_packs` | `active_tool_groups` |
 | `pack_activation` | `tool_group_activation` |
 | `build_active_packs_section()` | `build_active_tool_groups_section()` |
@@ -412,6 +418,8 @@ These routes partially exist today:
 - `DELETE /enterprise/mcp-servers/{server_key}`
 
 The target is to refactor this existing route family, not create it from scratch. The DELETE identity should move from pack-derived `{server_key}` to stable `{server_id}` after the MCP server migration is in place.
+
+These routes currently live in `backend/app/api/packs.py`, the same module as the pack routes this release removes (§7.5). Extract them into a dedicated module (for example `backend/app/api/mcp_servers.py`) so the pack module can be deleted without taking the MCP routes with it. Do not delete `api/packs.py` wholesale — split first, then remove only the pack routes.
 
 ```http
 GET /enterprise/mcp-servers
@@ -529,10 +537,12 @@ Required changes:
 
 Introduce explicit MCP server records instead of treating grouped MCP tools as pseudo-packs.
 
+All four tables are tenant-scoped, and `tenant_id` is mandatory on every one of them. Hive enforces cross-tenant isolation with PostgreSQL row-level security (`backend/alembic/versions/add_row_level_security.py` enables RLS and creates a `tenant_isolation_{table}` policy per table; `backend/app/database.py` sets `SET LOCAL app.current_tenant_id` per session, with `BYPASS` for platform admin). An RLS policy can only filter on a `tenant_id` column that physically exists on the row, so a child table that reaches tenant only by foreign key (for example `AgentMCPToolOverride -> mcp_server_id -> MCPServer.tenant_id`) cannot be covered and would leak across tenants. Every table below therefore stores `tenant_id` directly, even when a join could derive it.
+
 ```text
 MCPServer
   id
-  tenant_id
+  tenant_id            FK tenants.id, NOT NULL, ON DELETE CASCADE, indexed
   name
   server_key
   transport
@@ -543,40 +553,55 @@ MCPServer
   config_json
   created_at
   updated_at
+  UNIQUE (tenant_id, server_key)
 
 MCPServerTool
   id
-  mcp_server_id
+  tenant_id            FK tenants.id, NOT NULL, ON DELETE CASCADE, indexed
+  mcp_server_id        FK mcp_servers.id, ON DELETE CASCADE
   tool_id
   mcp_tool_name
   display_name
   schema_hash
+  UNIQUE (tenant_id, mcp_server_id, mcp_tool_name)
 
 AgentMCPServerAssignment
   id
+  tenant_id            FK tenants.id, NOT NULL, ON DELETE CASCADE, indexed
   agent_id
-  mcp_server_id
+  mcp_server_id        FK mcp_servers.id, ON DELETE CASCADE
   enabled
   default_tool_mode
+  UNIQUE (tenant_id, agent_id, mcp_server_id)
 
 AgentMCPToolOverride
   id
+  tenant_id            FK tenants.id, NOT NULL, ON DELETE CASCADE, indexed
   agent_id
-  mcp_server_id
+  mcp_server_id        FK mcp_servers.id, ON DELETE CASCADE
   tool_name
   mode
+  UNIQUE (tenant_id, agent_id, mcp_server_id, tool_name)
 ```
+
+Tenant isolation (non-negotiable, mirrors the existing `CoordinationLease` table):
+
+- Every table stores `tenant_id` as `ForeignKey("tenants.id", ondelete="CASCADE")`, `nullable=False`, `index=True`.
+- Every uniqueness rule is tenant-scoped, never global.
+- The same migration adds all four tables to row-level security exactly like `add_row_level_security.py`: `ALTER TABLE {table} ENABLE ROW LEVEL SECURITY` plus a `tenant_isolation_{table}` policy of the form `current_setting('app.current_tenant_id', true) = 'BYPASS' OR tenant_id::text = current_setting('app.current_tenant_id', true)`. A new table shipped without this policy is a tenant-isolation regression and blocks the release.
 
 Migration rules:
 
 - Group existing `Tool(type="mcp")` rows by `(tenant_id, mcp_server_name, mcp_server_url)`.
-- Create one `MCPServer` per group.
-- Create stable `MCPServer.id` values and tenant-unique `server_key` values that do not use the `mcp_server:*` pack namespace.
+- Create one `MCPServer` per group, carrying the group's `tenant_id`.
+- Stamp `tenant_id` onto every `MCPServerTool`, `AgentMCPServerAssignment`, and `AgentMCPToolOverride` row at creation; never leave it null and never depend on a join to recover it.
+- Create stable `MCPServer.id` values and `(tenant_id, server_key)`-unique `server_key` values that do not use the `mcp_server:*` pack namespace.
 - Treat old `mcp_server:*` keys as legacy lookup aliases only during migration validation.
 - Create `MCPServerTool` rows linking each existing MCP tool to its server.
 - Convert existing `AgentTool` rows for MCP tools into `AgentMCPServerAssignment` rows.
 - Preserve disabled per-tool rows as `AgentMCPToolOverride(mode="deny")` only when they differ from the server default.
 - Remove `pack_name` from the tenant-visible MCP registry output.
+- Enable RLS and create the `tenant_isolation_*` policy for all four tables in the same migration, then prove isolation with a two-tenant read test before cutover.
 - Include a tested rollback or forward-fix path; code rollback alone is not sufficient once new MCP server rows have been written.
 
 ### 8.4 Frontend
@@ -605,6 +630,8 @@ Tool is type=mcp
 ```
 
 Static built-in tools still use existing runtime/governance logic.
+
+This gating runs on the runtime hot path — once per agent invocation — and it is fail-closed: a missing `AgentMCPServerAssignment` silently removes the tool. That makes backfill completeness a release-blocking precondition. If the migration misses even one agent's existing MCP assignment, that agent loses its MCP tools on cutover day, and registry parity (§10) will not catch it, because registry parity compares server grouping, not per-agent tool reachability. The release must therefore validate tool-availability parity: for every agent, every MCP tool reachable before the migration is still reachable through the new gating path after it. Because the lookups run per invocation, batch or cache the assignment/override resolution instead of issuing per-tool queries.
 
 ### 8.6 Product Copy
 
@@ -666,14 +693,18 @@ This is one release with ordered work inside it. The data foundation runs first 
    - `capability_install_service` continues to use `mcp_server` as the install unit and never introduces a pack install kind.
 
 2. Data model and migration
-   - Add MCP server tables.
+   - Add MCP server tables, each with a mandatory `tenant_id` and tenant-scoped unique constraints.
+   - Enable row-level security on all four tables and create their `tenant_isolation_*` policies in the same migration.
    - Backfill existing MCP tools into server records.
    - Backfill agent/server assignments.
    - Convert exceptional per-tool state into overrides.
+   - Migrate `SystemSetting` pack policy keys (`tenant:{tenant_id}:policies`, written by `set_tenant_pack_policy`): map each enabled/disabled pack to its surviving runtime-tool-group policy key, or delete keys whose pack has no surviving governance meaning. Record the mapping so the decision is auditable.
    - Keep old `Tool.mcp_server_name` and `Tool.mcp_server_url` fields as compatibility during validation.
 
 3. Validation
    - Compare old registry grouping with new MCP server records for representative tenants.
+   - Verify tool-availability parity: every agent's pre-migration set of reachable MCP tools is exactly reproduced through the new `AgentMCPServerAssignment` gating path. This is stronger than registry parity and is the real cutover-day risk.
+   - Verify two-tenant RLS isolation on all four new tables: with `app.current_tenant_id` set to tenant A, none of tenant B's MCP servers, tools, assignments, or overrides are visible.
    - Verify duplicate/collision handling for normalized server names.
    - Verify direct URL imports and Smithery imports both produce one server object.
    - Verify migration rollback or forward-fix path.
@@ -761,6 +792,8 @@ Acceptance criteria:
 - Company admin sees MCP servers as server-level objects, not a flat list of every MCP tool.
 - Installing one MCP creates one server-level management object.
 - Existing MCP tools are backfilled into stable MCP server records before product/API cutover.
+- Every agent's set of reachable MCP tools is identical before and after the migration (tool-availability parity, not just registry parity).
+- The four new MCP tables are tenant-scoped and covered by `tenant_isolation_*` RLS policies; a two-tenant test proves no cross-tenant read.
 - Tool-level MCP control exists only as advanced precision control.
 - No user-facing UI labels say `pack`, `package`, or `capability pack`.
 - New runtime events never emit `pack_activation`.
@@ -774,6 +807,9 @@ Acceptance criteria:
 The release is incomplete unless all boxes are true:
 
 - [ ] MCP server tables exist and existing MCP tools are backfilled.
+- [ ] All four new MCP tables store `tenant_id` and are covered by `tenant_isolation_*` RLS policies (two-tenant read test passes).
+- [ ] Every agent's reachable MCP tool set is identical before and after migration (tool-availability parity verified).
+- [ ] `SystemSetting` pack policy keys (`tenant:{tenant_id}:policies`) are migrated to runtime-tool-group keys or deleted, with the mapping recorded.
 - [ ] MCP server migration has a tested rollback or forward-fix path.
 - [ ] No user-facing route calls `/packs`.
 - [ ] No user-facing route calls `/agents/{agent_id}/packs`.

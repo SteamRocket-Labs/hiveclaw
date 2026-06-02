@@ -400,9 +400,20 @@ Deep Research 是本范式最大的受益者，但属于**独立的下一篇文�
 - 只放行 `write_file`/`edit_file`/`fs_write mode=write|edit` 命中 exact path；禁止 delete 和目录级白名单。
 - compaction 后重注入 plan 文件引用并重发 full reminder。
 
-### Phase 4C：markdown → plan_json 抽取（可选增强）
-- 系统读 plan 文件并抽取治理 `plan_json`。
-- 抽取失败必须进入 `planning_failed`，不能执行。
+### Phase 4C：markdown → plan_json 抽取（可选增强）— **决议：跳过（accepted skip, 2026-06-02）**
+
+> 原设计：系统读 plan 文件并抽取治理 `plan_json`，抽取失败进入 `planning_failed`。
+
+**决议：不实装。** 确认契约保持为 `exit_plan_mode` 的 structured fill（`handlers/plan_mode.py` 要求 title/objective/plan_markdown/steps/success_criteria/stop_conditions → 直接生成 fill → `plan_json` → `plan_hash`）。Plan 文件（4B）是 planning workspace，**不是 approval 的 source of truth**。
+
+理由：
+- 4A structured fill + 4B plan 文件 + Phase 6 PlanCard 已覆盖主要体验：agent 可渐进写 plan 文件，最终用 structured `exit_plan_mode` 出确认卡，PlanCard 已展示 assumptions/open_questions。
+- md→json LLM 抽取引入额外模型调用、不确定解析、新的 `planning_failed` 分支，收益仅「agent 少填一次 JSON 参数」，不值得。
+- 关键：LLM 抽取会把确认契约变成**二次解释产物**，削弱现有 `plan_hash` / `validate_confirmation` 的确定性边界。
+
+**Follow-up 触发条件**：仅当 telemetry 显示 agent 反复写出好 markdown 却不调用带 structured args 的 `exit_plan_mode` 时，才重新考虑。
+
+**届时的护栏（若做务实版）**：只能是**窄 fallback**——`plan_markdown` 缺失且 plan 文件存在时，把文件内容作为 **preview**；steps/success_criteria/stop_conditions **仍必须由 structured args 提供**。绝不让 plan 文件成为第二个 source of truth。
 
 ### Phase 5：主路径切换 + RPC 退化
 - web chat 默认主循环范式。

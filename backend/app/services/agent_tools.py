@@ -359,6 +359,64 @@ async def _agent_has_feishu_cli_access() -> bool:
 # ─── Dynamic Tool Loading from DB ──────────────────────────────
 
 
+async def _resolve_agent_mcp_gating(db, agent_id: uuid.UUID) -> dict[str, bool] | None:
+    """Batch-resolve MCP-tool reachability from the new assignment tables.
+
+    Returns ``{str(Tool.id): reachable}`` for every MCP tool the agent's
+    assignments cover, or ``None`` when this agent has NO rows in the new MCP
+    tables (not yet backfilled) so the caller keeps the legacy
+    ``AgentTool.enabled`` / ``is_default`` logic for MCP tools — the
+    tool-availability parity safety fallback (§8.5).
+
+    One query per table (hot path — runs every invocation). Reachability per
+    server reuses the proven ``resolve_reachable_tools`` contract:
+    ``enabled = assignment.enabled``, ``deny_tool_names = {override.tool_name
+    where mode == "deny"}``. Approval handling is intentionally left to the
+    downstream capability gate.
+    """
+    from app.models.mcp_server import AgentMCPServerAssignment, AgentMCPToolOverride, MCPServerTool
+    from app.services.mcp_backfill import resolve_reachable_tools
+
+    assignments_r = await db.execute(
+        select(AgentMCPServerAssignment).where(AgentMCPServerAssignment.agent_id == agent_id)
+    )
+    assignments = list(assignments_r.scalars().all())
+    if not assignments:
+        # Not yet backfilled for this agent → signal fallback.
+        return None
+
+    server_ids = [a.mcp_server_id for a in assignments]
+    server_tools_r = await db.execute(select(MCPServerTool).where(MCPServerTool.mcp_server_id.in_(server_ids)))
+    server_tools = list(server_tools_r.scalars().all())
+    if not server_tools:
+        # Assignment rows exist but no server-tool rows → no MCP-tool data to gate.
+        return None
+
+    overrides_r = await db.execute(select(AgentMCPToolOverride).where(AgentMCPToolOverride.agent_id == agent_id))
+    overrides = list(overrides_r.scalars().all())
+
+    # Group server-tool (tool_id, tool_name) pairs and deny names per server.
+    tools_by_server: dict[str, list[tuple[str, str]]] = {}
+    for st in server_tools:
+        if st.tool_id is None:
+            continue
+        tools_by_server.setdefault(str(st.mcp_server_id), []).append((str(st.tool_id), st.mcp_tool_name))
+    deny_by_server: dict[str, set[str]] = {}
+    for ov in overrides:
+        if ov.mode == "deny":
+            deny_by_server.setdefault(str(ov.mcp_server_id), set()).add(ov.tool_name)
+
+    gating: dict[str, bool] = {}
+    for assignment in assignments:
+        sid = str(assignment.mcp_server_id)
+        pairs = tools_by_server.get(sid, [])
+        tool_names = [name for _tid, name in pairs]
+        reachable_names = resolve_reachable_tools(tool_names, bool(assignment.enabled), deny_by_server.get(sid, set()))
+        for tool_id, tool_name in pairs:
+            gating[tool_id] = tool_name in reachable_names
+    return gating
+
+
 async def get_agent_tools_for_llm(
     agent_id: uuid.UUID,
     core_only: bool = False,
@@ -416,6 +474,10 @@ async def get_agent_tools_for_llm(
             agent_tools_r = await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id))
             assignments = {str(at.tool_id): at for at in agent_tools_r.scalars().all()}
 
+            # MCP-tool reachability from the new assignment tables (§8.5).
+            # None → agent not yet backfilled; keep legacy AgentTool/is_default logic for MCP.
+            mcp_gating = await _resolve_agent_mcp_gating(db, agent_id)
+
             result = []
             db_tool_names = set()
             for t in all_tools:
@@ -424,6 +486,11 @@ async def get_agent_tools_for_llm(
                 tid = str(t.id)
                 at = assignments.get(tid)
                 enabled = at.enabled if at else (t.is_default or t.name in explicit_requested_set)
+                # MCP tools: when the agent has new-table data, assignment+overrides
+                # decide reachability (§8.5). Un-backfilled agents (mcp_gating is None,
+                # or tool absent from gating) keep the legacy decision above.
+                if t.type == "mcp" and mcp_gating is not None and tid in mcp_gating:
+                    enabled = mcp_gating[tid]
                 if not enabled:
                     continue
 

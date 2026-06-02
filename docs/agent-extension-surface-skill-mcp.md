@@ -889,3 +889,11 @@ Purely additive — new server-first API on the Part 1 tables; existing pack rou
 - Skills in extensions reuse `WorkspaceSkillLoader` (same source as legacy `get_agent_packs`). The `/records` route uses a distinct path to avoid colliding with the legacy `/enterprise/mcp-servers`; Part 6 reconciles them to the canonical path per §7.3.
 - Evidence: `import app.main` OK; `pytest test_mcp_server_service.py test_mcp_servers_api.py` → **14 passed**; ruff clean. Reviewed: router-set comparison confirms main.py only ADDED `mcp_servers_router` (no router dropped by the format reflow); DTOs verified free of pack fields.
 - Backfill is now wired (`POST /enterprise/mcp-servers/backfill`), closing the Part 2b orphan note.
+
+### Part 5 — Tool availability gating via MCP assignment ✅
+
+`get_agent_tools_for_llm()` gates MCP tools through the new assignment tables, reusing the Part 2a `resolve_reachable_tools` contract — with a fallback that stops un-backfilled tenants from losing tools.
+
+- `_resolve_agent_mcp_gating(db, agent_id)` — 3 batch queries (assignments, server tools, overrides; no per-tool N+1 on the hot path) → `{tool_id: reachable}`, or `None` when the agent has no new-table data.
+- Wire (surgical, 2 insertions): `if t.type == "mcp" and mcp_gating is not None and tid in mcp_gating: enabled = mcp_gating[tid]`. Non-mcp tools unchanged; un-backfilled agents (`mcp_gating is None`) keep the legacy `AgentTool.enabled`/`is_default` decision — **not fail-closed**, so manually-triggered backfill can't strip tools from un-migrated tenants. The tenant pack-policy gate stays orthogonal.
+- Evidence: `import app.main` OK; `pytest test_agent_mcp_gating.py test_agent_tools.py` → **13 passed** (parity with backfilled data; fallback for un-backfilled; disabled assignment excludes; deny override excludes); broader run 25 passed. ruff clean. Reviewed the hot-path diff: fallback condition confirmed correct.

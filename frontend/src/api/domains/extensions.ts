@@ -8,7 +8,7 @@
  * §7.2–7.4, §8.4.
  */
 
-import { get, post, put } from '../core';
+import { del, get, post, put } from '../core';
 
 export type McpToolMode = 'auto' | 'approval' | 'deny';
 
@@ -59,6 +59,19 @@ export interface McpBackfillSummary {
   [key: string]: unknown;
 }
 
+/** Tenant MCP import request: a direct URL or a Smithery server id. */
+export interface McpImportRequest {
+  server_id?: string;
+  mcp_url?: string;
+  server_name?: string;
+  config?: Record<string, unknown>;
+}
+
+export interface McpImportResult {
+  message: string;
+  server: McpServerRecord | null;
+}
+
 export const extensionsApi = {
   /** Agent Detail source of truth: skills + MCP servers for one agent. */
   getAgentExtensions: (agentId: string) => get<AgentExtensions>(`/agents/${agentId}/extensions`),
@@ -74,7 +87,15 @@ export const extensionsApi = {
   ) => put<McpAssignmentResult>(`/agents/${agentId}/mcp-servers/${serverId}`, data),
 
   /** Company admin: tenant MCP server records, server-first with stable identity. */
-  listEnterpriseMcpServers: () => get<McpServerRecord[]>('/enterprise/mcp-servers/records'),
+  listEnterpriseMcpServers: () => get<McpServerRecord[]>('/enterprise/mcp-servers'),
+
+  /** Company admin: import an MCP server for the tenant (creates one server record). */
+  importEnterpriseMcpServer: (body: McpImportRequest) =>
+    post<McpImportResult>('/enterprise/mcp-servers/import', body),
+
+  /** Company admin: delete one tenant MCP server record by its stable id. */
+  deleteEnterpriseMcpServer: (serverId: string) =>
+    del<{ status: string; server_id: string }>(`/enterprise/mcp-servers/${serverId}`),
 
   /** Company admin: trigger the MCP backfill for the current tenant (idempotent). */
   backfillEnterpriseMcpServers: () => post<McpBackfillSummary>('/enterprise/mcp-servers/backfill'),

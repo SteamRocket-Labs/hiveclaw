@@ -37,6 +37,7 @@ class _SpyDB:
     def __init__(self, results):
         self._queue = list(results)
         self.added: list = []
+        self.deleted: list = []
         self.committed = False
 
     async def execute(self, _stmt):
@@ -51,6 +52,9 @@ class _SpyDB:
 
     def add(self, obj):
         self.added.append(obj)
+
+    async def delete(self, obj):
+        self.deleted.append(obj)
 
     async def commit(self):
         self.committed = True
@@ -224,3 +228,161 @@ async def test_trigger_tenant_backfill_delegates(monkeypatch):
     db = _SpyDB([])
 
     assert await mcp_server_service.trigger_tenant_backfill(db, tenant_id) == sentinel
+
+
+# ── delete_tenant_server ───────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_delete_tenant_server_cascades_records_and_orphan_tool():
+    from app.models.tool import Tool
+
+    tenant_id = uuid4()
+    server_id = uuid4()
+    tool_id = uuid4()
+    server = _server()
+    server.id = server_id
+    leftover_tool = Tool(name="mcp_gh_issue", display_name="GH issue", type="mcp")
+    leftover_tool.id = tool_id
+
+    db = _SpyDB(
+        [
+            _Result(scalar=server),  # select MCPServer by id (tenant-scoped)
+            _Result(rows=[(tool_id,)]),  # linked MCPServerTool.tool_id rows
+            _Result(),  # delete AgentMCPToolOverride
+            _Result(),  # delete AgentMCPServerAssignment
+            _Result(),  # delete MCPServerTool
+            _Result(),  # delete AgentTool (tenant agents)
+            _Result(scalar=None),  # remaining AgentTool for tool_id → none → orphan
+            _Result(scalar=leftover_tool),  # select Tool to delete
+        ]
+    )
+
+    result = await mcp_server_service.delete_tenant_server(db, tenant_id, server_id)
+
+    assert result == {"status": "deleted", "server_id": str(server_id)}
+    # The MCPServer and the now-orphaned underlying Tool are both deleted.
+    assert server in db.deleted
+    assert leftover_tool in db.deleted
+    assert db.committed is True
+
+
+@pytest.mark.asyncio
+async def test_delete_tenant_server_keeps_tool_with_remaining_agenttool():
+    from app.models.tool import Tool
+
+    tenant_id = uuid4()
+    server_id = uuid4()
+    tool_id = uuid4()
+    server = _server()
+    server.id = server_id
+
+    db = _SpyDB(
+        [
+            _Result(scalar=server),  # select MCPServer
+            _Result(rows=[(tool_id,)]),  # linked tool ids
+            _Result(),  # delete overrides
+            _Result(),  # delete assignments
+            _Result(),  # delete server tools
+            _Result(),  # delete tenant AgentTool rows
+            _Result(scalar=SimpleNamespace(id=uuid4())),  # an AgentTool still references the tool → keep it
+        ]
+    )
+
+    await mcp_server_service.delete_tenant_server(db, tenant_id, server_id)
+
+    # Only the server is deleted; the shared Tool survives (no Tool select issued).
+    assert server in db.deleted
+    assert not any(isinstance(o, Tool) for o in db.deleted)
+
+
+@pytest.mark.asyncio
+async def test_delete_tenant_server_missing_raises_value_error():
+    db = _SpyDB([_Result(scalar=None)])  # no MCPServer row
+    with pytest.raises(ValueError, match="not found"):
+        await mcp_server_service.delete_tenant_server(db, uuid4(), uuid4())
+
+
+# ── register_imported_server (per-server, incremental, idempotent) ──
+
+
+def _tool_state_row(tool_id, tool_name, agent_id, enabled, *, name="GitHub", url="https://gh", is_default=False):
+    return SimpleNamespace(
+        id=tool_id,
+        mcp_tool_name=tool_name,
+        display_name=f"GH {tool_name}",
+        mcp_server_name=name,
+        mcp_server_url=url,
+        is_default=is_default,
+        agent_id=agent_id,
+        enabled=enabled,
+    )
+
+
+@pytest.mark.asyncio
+async def test_register_imported_server_creates_records():
+    from app.models.mcp_server import AgentMCPServerAssignment, MCPServer, MCPServerTool
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    t1 = uuid4()
+    db = _SpyDB(
+        [
+            _Result(rows=[_tool_state_row(t1, "issue_search", agent_id, enabled=True)]),  # _read_tenant_mcp_tools_for_server
+            _Result(scalar=None),  # select existing MCPServer by key → none → create
+            _Result(rows=[]),  # taken server_keys
+            _Result(rows=[]),  # existing MCPServerTool names
+            _Result(rows=[]),  # existing assigned agents
+        ]
+    )
+
+    result = await mcp_server_service.register_imported_server(db, tenant_id, "GitHub", "https://gh")
+
+    servers = [o for o in db.added if isinstance(o, MCPServer)]
+    tools = [o for o in db.added if isinstance(o, MCPServerTool)]
+    assigns = [o for o in db.added if isinstance(o, AgentMCPServerAssignment)]
+    assert len(servers) == 1
+    assert servers[0].server_key == "github"
+    assert servers[0].registry_source == "direct"
+    assert len(tools) == 1
+    assert len(assigns) == 1
+    assert assigns[0].enabled is True
+    assert db.committed is True
+    assert result["server_key"] == "github"
+    assert "pack_name" not in result
+
+
+@pytest.mark.asyncio
+async def test_register_imported_server_idempotent_on_rerun():
+    from app.models.mcp_server import AgentMCPServerAssignment, MCPServer, MCPServerTool
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    t1 = uuid4()
+    existing = MCPServer(
+        tenant_id=tenant_id, name="GitHub", server_key="github", server_url="https://gh", status="connected"
+    )
+    existing.id = uuid4()
+
+    db = _SpyDB(
+        [
+            _Result(rows=[_tool_state_row(t1, "issue_search", agent_id, enabled=True)]),  # read tools
+            _Result(scalar=existing),  # select existing MCPServer by key → found, no create
+            _Result(rows=[("issue_search",)]),  # MCPServerTool already linked
+            _Result(rows=[(agent_id,)]),  # agent already assigned
+        ]
+    )
+
+    result = await mcp_server_service.register_imported_server(db, tenant_id, "GitHub", "https://gh")
+
+    # Nothing new written — tool + assignment already exist.
+    assert not any(isinstance(o, MCPServer) for o in db.added)
+    assert not any(isinstance(o, MCPServerTool) for o in db.added)
+    assert not any(isinstance(o, AgentMCPServerAssignment) for o in db.added)
+    assert result["id"] == str(existing.id)
+
+
+@pytest.mark.asyncio
+async def test_register_imported_server_no_tools_returns_none():
+    db = _SpyDB([_Result(rows=[])])  # no Tool rows for this server
+    assert await mcp_server_service.register_imported_server(db, uuid4(), "GitHub", "https://gh") is None

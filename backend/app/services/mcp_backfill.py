@@ -5,10 +5,9 @@ MCP server records (``MCPServer`` / ``MCPServerTool`` / ``AgentMCPServerAssignme
 / ``AgentMCPToolOverride``). Everything here is a pure function so the two
 parity properties can be proven without a live database:
 
-  * Registry parity — the new server grouping reproduces what
-    ``mcp_registry_service.build_mcp_server_registry`` returns today (server
-    name, url, tool set, agent set), differing only in the legacy
-    pack-derived identity.
+  * Registry parity — the new server grouping reproduces the legacy
+    Tool-grouped MCP registry (server name, url, tool set, agent set),
+    differing only in the now-removed pack-derived identity.
   * Tool-availability parity — for every agent, the set of MCP tools reachable
     *after* the migration (via assignment + overrides) equals the set reachable
     *before* it. The "before" reachability of one (agent, tool) is
@@ -25,7 +24,7 @@ from dataclasses import dataclass, field
 
 
 def slugify(value: str | None) -> str:
-    """Lowercase, dash-separated slug. Mirrors mcp_registry_service._slugify."""
+    """Lowercase, dash-separated slug for stable server keys."""
     normalized = re.sub(r"[^a-zA-Z0-9]+", "-", (value or "").strip().lower()).strip("-")
     return normalized or "server"
 
@@ -93,7 +92,7 @@ def derive_server_key(name: str, server_url: str, taken: set[str]) -> str:
 def group_mcp_tools(rows: list[McpToolRow]) -> list[ServerSpec]:
     """Group MCP tool rows into one ServerSpec per (name, url), tenant-unique key.
 
-    Grouping key matches ``build_mcp_server_registry``: ``(server_name, server_url)``.
+    Grouping key matches the legacy registry: ``(server_name, server_url)``.
     """
     grouped: dict[tuple[str, str], dict] = {}
     order: list[tuple[str, str]] = []
@@ -109,7 +108,7 @@ def group_mcp_tools(rows: list[McpToolRow]) -> list[ServerSpec]:
 
     taken: set[str] = set()
     specs: list[ServerSpec] = []
-    # Deterministic order by server name, mirroring build_mcp_server_registry's sort.
+    # Deterministic order by server name, mirroring the legacy registry's sort.
     for key in sorted(order, key=lambda k: k[0].lower()):
         entry = grouped[key]
         server_key = derive_server_key(entry["name"], entry["url"], taken)

@@ -13,7 +13,7 @@ removed in Part 6 once the frontend switches to these endpoints.
 
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,8 +22,10 @@ from app.core.security import get_current_admin, get_current_user
 from app.database import get_db
 from app.models.user import User
 from app.services.mcp_server_service import (
+    delete_tenant_server,
     get_agent_extensions,
     get_agent_mcp_servers,
+    import_and_register,
     list_tenant_servers,
     set_agent_mcp_assignment,
     trigger_tenant_backfill,
@@ -37,6 +39,13 @@ class AgentMcpAssignmentIn(BaseModel):
     default_tool_mode: str = "auto"
 
 
+class TenantMcpImportIn(BaseModel):
+    server_id: str | None = None
+    mcp_url: str | None = None
+    server_name: str | None = None
+    config: dict | None = None
+
+
 @router.get("/agents/{agent_id}/extensions")
 async def get_extensions(
     agent_id: uuid.UUID,
@@ -48,8 +57,8 @@ async def get_extensions(
     return await get_agent_extensions(db, agent_id)
 
 
-@router.get("/enterprise/mcp-servers/records")
-async def list_enterprise_mcp_server_records(
+@router.get("/enterprise/mcp-servers")
+async def list_enterprise_mcp_servers(
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -57,6 +66,43 @@ async def list_enterprise_mcp_server_records(
     if not current_user.tenant_id:
         return []
     return await list_tenant_servers(db, current_user.tenant_id)
+
+
+@router.post("/enterprise/mcp-servers/import")
+async def import_enterprise_mcp_server(
+    data: TenantMcpImportIn,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Import an MCP server for the tenant, then register one server-first record."""
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned")
+    try:
+        return await import_and_register(
+            db,
+            current_user.tenant_id,
+            server_id=data.server_id,
+            mcp_url=data.mcp_url,
+            server_name=data.server_name,
+            config=data.config,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.delete("/enterprise/mcp-servers/{server_id}")
+async def delete_enterprise_mcp_server(
+    server_id: uuid.UUID,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete one tenant MCP server record (by stable id) and its tools/assignments."""
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned")
+    try:
+        return await delete_tenant_server(db, current_user.tenant_id, server_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 @router.get("/agents/{agent_id}/mcp-servers")

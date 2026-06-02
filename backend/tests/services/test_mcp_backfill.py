@@ -2,8 +2,8 @@
 
 The two parity properties are proven here as pure-function tests (no DB),
 matching Hive's unit-first style:
-  * Registry parity — group_mcp_tools reproduces build_mcp_server_registry's
-    server name/url/tool set.
+  * Registry parity — group_mcp_tools reproduces the legacy Tool-grouped
+    registry's server name/url/tool set.
   * Tool-availability parity — for every agent, resolve_reachable_tools over the
     planned assignment equals the pre-migration reachable set. This is the
     cutover-day risk that registry parity cannot catch.
@@ -80,41 +80,24 @@ def test_resolve_reachable_tools_enabled_minus_denies():
 # ── REGISTRY PARITY ────────────────────────────────────────────
 
 
-def test_registry_parity_with_build_mcp_server_registry():
-    from app.services.mcp_registry_service import build_mcp_server_registry
-
-    legacy_rows = [
-        {
-            "tool_id": "t1",
-            "tool_name": "issue_search",
-            "display_name": "GH: issue",
-            "mcp_server_name": "GitHub",
-            "mcp_server_url": "https://gh",
-            "agent_id": "a1",
-            "agent_name": "Ops",
-        },
-        {
-            "tool_id": "t2",
-            "tool_name": "repo_read",
-            "display_name": "GH: repo",
-            "mcp_server_name": "GitHub",
-            "mcp_server_url": "https://gh",
-            "agent_id": "a2",
-            "agent_name": "Research",
-        },
+def test_registry_grouping_matches_legacy_name_url_toolset():
+    # The legacy Tool-grouped registry produced one entry per (server_name,
+    # server_url) carrying that name/url and the sorted tool-name set. The
+    # pack-derived identity is gone; group_mcp_tools must still reproduce the
+    # same grouping shape (this is the registry-parity invariant).
+    rows = [
+        Row("t1", "issue_search", "GH: issue", "GitHub", "https://gh"),
+        Row("t2", "repo_read", "GH: repo", "GitHub", "https://gh"),
     ]
-    legacy = build_mcp_server_registry(legacy_rows)
-    new = group_mcp_tools(
-        [
-            Row(r["tool_id"], r["tool_name"], r["display_name"], r["mcp_server_name"], r["mcp_server_url"])
-            for r in legacy_rows
-        ]
-    )
+    new = group_mcp_tools(rows)
 
-    assert len(new) == len(legacy) == 1
-    assert new[0].name == legacy[0]["server_name"]
-    assert new[0].server_url == legacy[0]["server_url"]
-    assert sorted(new[0].tool_names) == sorted(legacy[0]["tools"])
+    assert len(new) == 1
+    assert new[0].name == "GitHub"
+    assert new[0].server_url == "https://gh"
+    assert sorted(new[0].tool_names) == ["issue_search", "repo_read"]
+    # Stable, non-pack-derived key.
+    assert new[0].server_key == "github"
+    assert not new[0].server_key.startswith("mcp_server:")
 
 
 # ── TOOL-AVAILABILITY PARITY (the cutover-day risk) ────────────

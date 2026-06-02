@@ -87,7 +87,7 @@ def test_get_extensions_returns_skills_and_mcp_servers(monkeypatch):
     assert all("pack_name" not in s for s in body["mcp_servers"])
 
 
-def test_enterprise_records_is_admin_and_server_first(monkeypatch):
+def test_enterprise_list_is_admin_and_server_first(monkeypatch):
     client, fake_db, current_user = _build_client(role="platform_admin")
 
     async def fake_list(db_session, tenant_id):
@@ -109,13 +109,81 @@ def test_enterprise_records_is_admin_and_server_first(monkeypatch):
 
     monkeypatch.setattr(mcp_mod, "list_tenant_servers", fake_list)
 
-    resp = client.get("/enterprise/mcp-servers/records")
+    # Canonical path — no /records suffix.
+    resp = client.get("/enterprise/mcp-servers")
 
     assert resp.status_code == 200
     body = resp.json()
     assert len(body) == 1
     assert "pack_name" not in body[0]
     assert body[0]["server_key"] == "github"
+
+
+def test_import_route_delegates_to_import_and_register(monkeypatch):
+    client, fake_db, current_user = _build_client(role="platform_admin")
+    captured = {}
+
+    async def fake_import(db_session, tenant_id, *, server_id, mcp_url, server_name, config):
+        captured.update(
+            tenant_id=tenant_id, server_id=server_id, mcp_url=mcp_url, server_name=server_name, config=config
+        )
+        return {"message": "ok", "server": {"id": str(uuid4()), "server_key": "github"}}
+
+    monkeypatch.setattr(mcp_mod, "import_and_register", fake_import)
+
+    resp = client.post("/enterprise/mcp-servers/import", json={"mcp_url": "https://gh/sse", "server_name": "GitHub"})
+
+    assert resp.status_code == 200
+    assert captured["tenant_id"] == current_user.tenant_id
+    assert captured["mcp_url"] == "https://gh/sse"
+    assert captured["server_name"] == "GitHub"
+    assert "pack_name" not in resp.json()["server"]
+
+
+def test_import_route_maps_value_error_to_400(monkeypatch):
+    client, _fake_db, _current_user = _build_client(role="platform_admin")
+
+    async def fake_import(db_session, tenant_id, **kwargs):
+        raise ValueError("server_id or mcp_url is required")
+
+    monkeypatch.setattr(mcp_mod, "import_and_register", fake_import)
+
+    resp = client.post("/enterprise/mcp-servers/import", json={})
+
+    assert resp.status_code == 400
+    assert "mcp_url is required" in resp.json()["detail"]
+
+
+def test_delete_route_uses_stable_server_id(monkeypatch):
+    client, fake_db, current_user = _build_client(role="platform_admin")
+    server_id = uuid4()
+    captured = {}
+
+    async def fake_delete(db_session, tenant_id, target_server_id):
+        captured.update(tenant_id=tenant_id, server_id=target_server_id)
+        return {"status": "deleted", "server_id": str(target_server_id)}
+
+    monkeypatch.setattr(mcp_mod, "delete_tenant_server", fake_delete)
+
+    resp = client.delete(f"/enterprise/mcp-servers/{server_id}")
+
+    assert resp.status_code == 200
+    assert captured["tenant_id"] == current_user.tenant_id
+    assert captured["server_id"] == server_id
+    assert resp.json()["status"] == "deleted"
+
+
+def test_delete_route_maps_missing_to_404(monkeypatch):
+    client, _fake_db, _current_user = _build_client(role="platform_admin")
+
+    async def fake_delete(db_session, tenant_id, target_server_id):
+        raise ValueError("MCP server not found")
+
+    monkeypatch.setattr(mcp_mod, "delete_tenant_server", fake_delete)
+
+    resp = client.delete(f"/enterprise/mcp-servers/{uuid4()}")
+
+    assert resp.status_code == 404
 
 
 def test_get_agent_mcp_servers_checks_access(monkeypatch):

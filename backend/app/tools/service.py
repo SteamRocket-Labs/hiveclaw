@@ -85,18 +85,20 @@ def _redact_args(arguments: Any) -> dict[str, Any]:
     return redacted
 
 
-def _maybe_attach_interactive_signal(
-    payload: dict, *, action_kind: str, tool_name: str, arguments: dict
-) -> dict:
+def _tool_intercept_interactive_enabled() -> bool:
+    from app.config import get_settings
+
+    return bool(get_settings().PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE)
+
+
+def _maybe_attach_interactive_signal(payload: dict, *, action_kind: str, tool_name: str, arguments: dict) -> dict:
     """Phase 5: when ``PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE`` is on, tag a
     ``needs_plan`` envelope with ``activate_interactive_plan`` + an
     ``interactive_plan_seed``. The kernel (which holds the session_context)
     decides the live-chat boundary and whether to actually activate; here we only
     carry the flag + seed. Flag off → the envelope is returned unchanged.
     """
-    from app.config import get_settings
-
-    if not get_settings().PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE:
+    if not _tool_intercept_interactive_enabled():
         return payload
     enriched = dict(payload)
     enriched["activate_interactive_plan"] = True
@@ -210,12 +212,18 @@ class ToolRuntimeService:
         event_callback: EventCallback | None = None,
         delegation_token: Any | None = None,
         session_id: str | None = None,
+        plan_mode_interactive_available: bool = False,
     ) -> str:
         plan_mode_block = self._interactive_plan_mode_readonly_block(tool_name, arguments)
         if plan_mode_block:
             return plan_mode_block
 
-        plan_block = await self._plan_mode_gate_block(tool_name, arguments, agent_id=agent_id)
+        plan_block = await self._plan_mode_gate_block(
+            tool_name,
+            arguments,
+            agent_id=agent_id,
+            plan_mode_interactive_available=plan_mode_interactive_available,
+        )
         if plan_block:
             return plan_block
 
@@ -539,6 +547,7 @@ class ToolRuntimeService:
         arguments: dict,
         *,
         agent_id: uuid.UUID,
+        plan_mode_interactive_available: bool = False,
     ) -> str | None:
         """Return a ``needs_plan`` JSON block when Plan Mode forbids ``tool_name``.
 
@@ -589,13 +598,15 @@ class ToolRuntimeService:
         # A failed *handoff* (the caller claimed a plan that didn't validate) must
         # not spawn a new plan — surface the gate's reason as-is.
         if confirmed_plan_id is None:
-            payload = await self._attach_intercepted_plan(
-                payload,
-                agent_id=agent_id,
-                action_kind=action_kind,
-                tool_name=tool_name,
-                arguments=arguments,
-            )
+            defer_to_interactive = bool(plan_mode_interactive_available and _tool_intercept_interactive_enabled())
+            if not defer_to_interactive:
+                payload = await self._attach_intercepted_plan(
+                    payload,
+                    agent_id=agent_id,
+                    action_kind=action_kind,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                )
             # Phase 5: tag the envelope so the kernel can flip a live web chat
             # into interactive Plan Mode. The live-chat boundary + activation
             # decision belong to the kernel (it holds the session_context); the
@@ -640,9 +651,7 @@ class ToolRuntimeService:
                 source="tool_runtime",
             )
         except Exception as exc:  # noqa: BLE001 — logged, then fail-closed to the bare block
-            logging.getLogger(__name__).warning(
-                "[ToolService] plan intercept failed for %s: %s", tool_name, exc
-            )
+            logging.getLogger(__name__).warning("[ToolService] plan intercept failed for %s: %s", tool_name, exc)
             return payload
 
         if plan is None:

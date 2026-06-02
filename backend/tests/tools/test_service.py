@@ -580,9 +580,7 @@ async def test_interactive_plan_mode_allows_write_only_to_exact_plan_file():
         other = ToolRuntimeService._interactive_plan_mode_readonly_block("write_file", {"path": "soul.md"})
         assert other is not None and "plan_mode_readonly_violation" in other
         # Delete on the plan file → blocked (iron law ③).
-        deleted = ToolRuntimeService._interactive_plan_mode_readonly_block(
-            "fs_write", {"path": pf, "mode": "delete"}
-        )
+        deleted = ToolRuntimeService._interactive_plan_mode_readonly_block("fs_write", {"path": pf, "mode": "delete"})
         assert deleted is not None and "plan_mode_readonly_violation" in deleted
     finally:
         reset_interactive_plan_mode(token)
@@ -609,9 +607,7 @@ def test_interactive_signal_noop_when_flag_off(monkeypatch):
     import app.config
     from app.tools.service import _maybe_attach_interactive_signal
 
-    monkeypatch.setattr(
-        app.config, "get_settings", lambda: SimpleNamespace(PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE=False)
-    )
+    monkeypatch.setattr(app.config, "get_settings", lambda: SimpleNamespace(PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE=False))
     payload = {"status": "needs_plan", "plan_id": "p1"}
     out = _maybe_attach_interactive_signal(
         payload, action_kind="create_enabled_trigger", tool_name="set_trigger", arguments={}
@@ -624,9 +620,7 @@ def test_interactive_signal_tags_envelope_when_flag_on(monkeypatch):
     import app.config
     from app.tools.service import _maybe_attach_interactive_signal
 
-    monkeypatch.setattr(
-        app.config, "get_settings", lambda: SimpleNamespace(PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE=True)
-    )
+    monkeypatch.setattr(app.config, "get_settings", lambda: SimpleNamespace(PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE=True))
     payload = {"status": "needs_plan", "plan_id": "p1", "plan_version": 1, "plan_hash": "h"}
     out = _maybe_attach_interactive_signal(
         payload,
@@ -642,3 +636,92 @@ def test_interactive_signal_tags_envelope_when_flag_on(monkeypatch):
     assert seed["plan_id"] == "p1"
     # the original payload is not mutated
     assert "activate_interactive_plan" not in payload
+
+
+@pytest.mark.asyncio
+async def test_live_intercept_signal_defers_rpc_plan_materialisation_when_interactive_flag_on(monkeypatch):
+    import app.config
+    from app.tools.governance import ToolGovernanceContext
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    monkeypatch.setattr(app.config, "get_settings", lambda: SimpleNamespace(PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE=True))
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    context = ToolExecutionContext(
+        agent_id=agent_id,
+        user_id=user_id,
+        tenant_id="tenant-1",
+        workspace=Path("/tmp/ws"),
+    )
+    governance_context = ToolGovernanceContext(
+        agent_id=agent_id,
+        user_id=user_id,
+        tenant_id="tenant-1",
+        tool_name="set_trigger",
+        arguments={"name": "Daily brief"},
+    )
+
+    class _PlanGate:
+        async def check(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                needs_plan=True,
+                needs_plan_payload={
+                    "status": "needs_plan",
+                    "summary": "Scheduled autonomous work needs a plan.",
+                    "next_action": "enter_plan_mode",
+                },
+            )
+
+    class _SessionFactory:
+        def __call__(self):
+            return self
+
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class _FailingPlanService:
+        def __init__(self):
+            self.calls = 0
+
+        async def ensure_awaiting_plan(self, **_kwargs):
+            self.calls += 1
+            raise AssertionError("live interactive intercept should not materialise an RPC plan")
+
+    async def fake_run_governance(_context, _deps, *, event_callback=None):
+        return None
+
+    plan_service = _FailingPlanService()
+    registry = _FakeRegistry("SHOULD_NOT_RUN")
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(governance_context, SimpleNamespace()),
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=fake_run_governance,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+        plan_mode_gate=_PlanGate(),
+        plan_mode_session_factory=_SessionFactory(),
+        plan_mode_service=plan_service,
+    )
+
+    result = await service.execute(
+        "set_trigger",
+        {"name": "Daily brief", "type": "cron", "config": {"expr": "0 9 * * *"}},
+        agent_id=agent_id,
+        user_id=user_id,
+        plan_mode_interactive_available=True,
+    )
+    payload = json.loads(result)
+
+    assert payload["status"] == "needs_plan"
+    assert payload["activate_interactive_plan"] is True
+    assert "plan_id" not in payload
+    assert plan_service.calls == 0
+    assert registry.calls == []

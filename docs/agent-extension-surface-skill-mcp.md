@@ -4,7 +4,7 @@
 |------|-------|
 | Status | Design draft |
 | Date | 2026-06-02 |
-| Scope | Agent/user extension surface, company admin extension surface, MCP server management, one-shot pack/package removal from user surface |
+| Scope | Agent/user extension surface, company admin extension surface, MCP server management, pack/package removal from user surface, MCP server identity migration |
 | Non-goal | Implementing the migration in this document |
 
 ## 0. Decision
@@ -36,18 +36,36 @@ Internal Runtime
 
 ## 1. Why This Matters
 
-The current codebase has a useful runtime concept called packs, but the same concept leaks into several product surfaces:
+The current codebase has already chosen Skill + MCP as the install model. `backend/app/services/capability_install_service.py` builds install records for `platform_skill`, `clawhub_skill`, `mcp_server`, and external skill URLs. It does not define `pack` as an install kind.
+
+That makes pack a legacy runtime grouping concept, not a clean product module. The main problem is not that every user literally sees raw names like `web_pack` everywhere. Some frontend places translate internal names into labels such as "Office" or "Deep Research". The real problem is that the codebase still maintains two parallel product concepts:
+
+- Skill/MCP as the install surface.
+- Pack/package as an exposed API/runtime surface.
+
+The current pack leakage is concentrated in these places:
 
 - `backend/app/tools/packs.py` defines static tool groups such as `web_pack`, `feishu_pack`, `mcp_admin_pack`, `office_pack`, `deep_research_pack`, and `plan_mode_pack`.
-- `backend/app/api/packs.py` exposes `/packs`, `/agents/{agent_id}/packs`, and `/enterprise/packs/policies`.
-- `backend/app/services/mcp_registry_service.py` still returns `pack_name` for MCP servers.
+- `backend/app/api/packs.py` exposes `/packs`, `/agents/{agent_id}/packs`, `/enterprise/packs/policies`, `/agents/{agent_id}/capability-summary`, and `/chat/sessions/{session_id}/runtime-summary`.
+- `backend/app/services/pack_service.py` returns fields such as `available_packs`, `channel_backed_packs`, `skill_declared_packs`, and `activated_packs`.
+- `backend/app/services/chat_message_parts.py` emits and serializes `pack_activation` events with the title "Capability Packs Activated".
+- `backend/app/services/mcp_registry_service.py` derives MCP `server_key` and `pack_name` from `make_mcp_server_pack_name()`, so MCP servers do not yet have stable first-class identity.
 - `frontend/src/pages/agent-detail/ToolsManager.tsx` fetches `/agents/{agent_id}/packs` to organize visible tools.
+- `frontend/src/pages/agent-detail/AgentChatSection.tsx` can render activated pack names from runtime event metadata.
 
-This creates the wrong product mental model. Users should not decide whether an agent has `web_pack` or `office_pack`. They should decide:
+This creates the wrong product mental model. Users should not manage runtime tool groups. They should decide:
 
 - Which skills does this agent know how to use?
 - Which MCP servers is this agent connected to?
 - Which permissions does the company allow, deny, or require approval for?
+
+The target framing is therefore:
+
+```text
+Eliminate pack/package as a product concept.
+Give MCP servers their own stable identity.
+Keep runtime tool groups internal.
+```
 
 ## 2. Terms
 
@@ -198,6 +216,16 @@ MCPServer {
 
 The existing `mcp_server_name` and `mcp_server_url` on `Tool` can remain as compatibility fields, but UI should group by a server record, not by raw tool rows.
 
+Current implementation note:
+
+- `/enterprise/mcp-servers` already exists.
+- It currently groups `Tool(type="mcp")` rows by `mcp_server_name` and `mcp_server_url`.
+- Its delete route uses `/enterprise/mcp-servers/{server_key}`.
+- `server_key` currently comes from `make_mcp_server_pack_name()`, for example `mcp_server:github`.
+- The registry response still returns `pack_name`.
+
+So the target work is not "add MCP endpoints from nothing". The target work is to migrate from dirty pack-derived server identity to stable MCP server records, then reshape the existing endpoints around those records.
+
 ### 4.4 Agent Assignment
 
 MCP server assignment should be explicit:
@@ -245,30 +273,63 @@ Internal skill behavior:
 
 But the user-facing wording should say "this skill may use these tools" or "requires these permissions", not "this skill installs a package".
 
-## 6. One-Shot Cutover Rule
+## 6. Single-Release Cutover Rule
 
-This migration should not be staged as a long-running compatibility project. A gradual "hide first, rename later, clean up later" plan will likely become permanent debt because pack state already touches runtime, prompt context, chat events, API responses, and frontend grouping.
+This migration should not become a long-running "hide first, rename later, clean up later" compatibility project. That would likely become permanent debt because pack state already touches runtime, prompt context, chat events, API responses, and frontend grouping.
 
-The correct plan is a **single cutover release**:
+A single release does not mean a single undifferentiated change. Code rollback and database rollback are different problems. Once a migration creates new MCP server rows, backfills assignments, or new code writes to new tables, "roll back the release" is not enough unless a tested down migration or forward-fix path exists.
+
+The correct plan is **one release with two hard ordering constraints inside it**:
 
 ```text
-One release changes the product surface, backend APIs, runtime naming, frontend UI,
-tests, and data normalization together.
+One release changes product surface, APIs, runtime naming, frontend UI, chat events,
+and data migration together.
+
+Inside that release the work is ordered, not shipped as two product releases:
+  First:  MCP data foundation — add server tables, backfill, validate parity.
+  Then:   Product/runtime cutover — switch APIs, runtime naming, frontend, and chat
+          events to Skill + MCP only.
 ```
 
-Allowed compatibility is limited to **historical-read adapters**:
+These two ordering constraints are non-negotiable even in a single release:
+
+1. The MCP data migration runs first and ships with a tested down migration or forward-fix path. Code rollback alone cannot undo backfilled MCP server rows.
+2. Parity is validated — new server records reproduce the existing MCP registry result — before the same release flips product/API/runtime to MCP-only. A parity failure blocks the cutover within the release.
+
+First in the release — data foundation (must pass parity before cutover):
+
+- Add `MCPServer`, `MCPServerTool`, `AgentMCPServerAssignment`, and `AgentMCPToolOverride`.
+- Backfill existing `Tool(type="mcp")` rows into MCP server records.
+- Backfill existing `AgentTool` MCP rows into server assignments and precise overrides.
+- Add read-side parity tests proving the new server records reproduce the existing MCP registry result.
+- Ship a tested rollback or forward-fix path for the migration itself.
+
+Then in the same release — product/runtime cutover:
+
+- Make `/agents/{agent_id}/extensions` the normal Agent Detail source of truth.
+- Reshape `/enterprise/mcp-servers` around stable MCP server records.
+- Add agent MCP assignment APIs.
+- Remove normal product exposure of pack APIs and pack DTO fields.
+- Rename runtime pack naming to runtime-tool-group naming.
+- Stop new writes of `pack_activation` and `active_packs`.
+- Update frontend and i18n to Skill + MCP wording only.
+
+Allowed compatibility:
 
 - Old persisted chat messages may contain `pack_activation`; readers may map them to `tool_group_activation`.
 - Old persisted session context may contain `active_packs`; loaders may map it to `active_tool_groups`.
 - Old tenant settings may contain pack policy keys; a migration must either move them to internal runtime-tool-group policy keys or delete them when no longer product-relevant.
+- Existing `Tool.mcp_server_name` and `Tool.mcp_server_url` may remain as compatibility fields until all MCP imports write server records.
 
-Disallowed compatibility:
+Disallowed compatibility after this release:
 
 - No new runtime event may emit `pack_activation`.
 - No new prompt section may say `Active Capability Packs`.
-- No normal frontend route may call `/packs` or `/agents/{agent_id}/packs`.
+- No normal frontend route may call `/packs`, `/agents/{agent_id}/packs`, or `/enterprise/packs/policies`.
+- No normal frontend route may consume `/agents/{agent_id}/capability-summary` or `/chat/sessions/{session_id}/runtime-summary` fields named `available_packs`, `skill_declared_packs`, `channel_backed_packs`, or `activated_packs`.
 - No company admin page may expose pack/package/capability-pack management.
 - No MCP server response shown to the UI may present `pack_name` as product state.
+- No MCP server identity may depend on `make_mcp_server_pack_name()`.
 - No dual product surface where both "packs" and "MCP/Skill extensions" are visible.
 
 ## 7. Complete Target Architecture
@@ -344,6 +405,14 @@ Response contract:
 
 ### 7.3 Company MCP Servers
 
+These routes partially exist today:
+
+- `GET /enterprise/mcp-servers`
+- `POST /enterprise/mcp-servers/import`
+- `DELETE /enterprise/mcp-servers/{server_key}`
+
+The target is to refactor this existing route family, not create it from scratch. The DELETE identity should move from pack-derived `{server_key}` to stable `{server_id}` after the MCP server migration is in place.
+
 ```http
 GET /enterprise/mcp-servers
 POST /enterprise/mcp-servers/import
@@ -384,16 +453,20 @@ PUT /agents/{agent_id}/mcp-servers/{server_id}/tools/{tool_name}/policy
 
 Default UI should call only the server-level endpoints. Tool-level endpoints are for advanced controls.
 
-### 7.5 Removed Public Pack APIs
+### 7.5 Removed Or Reshaped Public Pack Surfaces
 
-These endpoints should be removed from normal product routing in the same cutover:
+These endpoints should be removed from normal product routing or reshaped so no pack fields remain:
 
 ```http
 GET /packs
 GET /agents/{agent_id}/packs
 GET /enterprise/packs/policies
 PUT /enterprise/packs/policies/{pack_name}
+GET /agents/{agent_id}/capability-summary
+GET /chat/sessions/{session_id}/runtime-summary
 ```
+
+For the two summary endpoints, removal is not mandatory if the endpoint still serves a real runtime/governance purpose. The mandatory rule is that normal frontend consumers must not receive or render pack-shaped fields such as `available_packs`, `channel_backed_packs`, `skill_declared_packs`, or `activated_packs`.
 
 If operators still need runtime-tool-group diagnostics, add an explicit internal route instead:
 
@@ -410,9 +483,9 @@ Internal route requirements:
 - no install/delete semantics
 - read-only unless a separate operator config system is explicitly designed
 
-## 8. One-Shot Implementation Scope
+## 8. Single-Release Implementation Scope
 
-The cutover is complete only if all items below land together.
+This is one release. Inside it, the MCP data foundation lands and passes parity first, then the product/runtime cutover follows in the same release. The release is complete only if all items below are handled.
 
 ### 8.1 Backend Runtime
 
@@ -445,8 +518,10 @@ Required changes:
 
 - Add `/agents/{agent_id}/extensions`.
 - Add agent MCP server assignment endpoints.
-- Change `/enterprise/mcp-servers` response to server-first shape.
+- Refactor the existing `/enterprise/mcp-servers` endpoints to use server-first records and stable server identity.
 - Remove normal product exposure of `/packs`, `/agents/{agent_id}/packs`, and `/enterprise/packs/policies`.
+- Remove or reshape pack fields from `/agents/{agent_id}/capability-summary`.
+- Remove or reshape pack fields from `/chat/sessions/{session_id}/runtime-summary`.
 - Remove `pack_name` from MCP server DTOs consumed by normal UI.
 - Keep capability policy APIs as governance APIs, not extension APIs.
 
@@ -496,10 +571,13 @@ Migration rules:
 
 - Group existing `Tool(type="mcp")` rows by `(tenant_id, mcp_server_name, mcp_server_url)`.
 - Create one `MCPServer` per group.
+- Create stable `MCPServer.id` values and tenant-unique `server_key` values that do not use the `mcp_server:*` pack namespace.
+- Treat old `mcp_server:*` keys as legacy lookup aliases only during migration validation.
 - Create `MCPServerTool` rows linking each existing MCP tool to its server.
 - Convert existing `AgentTool` rows for MCP tools into `AgentMCPServerAssignment` rows.
 - Preserve disabled per-tool rows as `AgentMCPToolOverride(mode="deny")` only when they differ from the server default.
 - Remove `pack_name` from the tenant-visible MCP registry output.
+- Include a tested rollback or forward-fix path; code rollback alone is not sufficient once new MCP server rows have been written.
 
 ### 8.4 Frontend
 
@@ -575,53 +653,76 @@ MCP-specific capability buckets should stay coarse:
 
 Precise MCP tool behavior should be server/tool policy overrides, not hundreds of top-level capability toggles.
 
-## 10. Single-Release Execution Plan
+## 10. Execution Plan
 
-This is not a staged rollout. It is one implementation package with ordered work inside the PR/release.
+This is one release with ordered work inside it. The data foundation runs first to reduce database risk; it is not shipped as a separate product release and does not keep two product models alive.
+
+### First in the release: MCP data foundation
 
 1. Backend red tests
-   - New extension API does not include packs.
-   - MCP registry groups tools by server.
-   - Runtime emits `tool_group_activation`, never `pack_activation`.
-   - Historical `pack_activation` messages render as tool-group events.
-   - `/packs` is not available to normal users.
+   - Existing MCP tools can be grouped into stable server records.
+   - Backfilled server records preserve current `/enterprise/mcp-servers` registry semantics except for the legacy pack-derived identity.
+   - Existing `AgentTool` MCP assignments can be represented as `AgentMCPServerAssignment` plus precise overrides.
+   - `capability_install_service` continues to use `mcp_server` as the install unit and never introduces a pack install kind.
 
-2. Data migration
+2. Data model and migration
    - Add MCP server tables.
    - Backfill existing MCP tools into server records.
    - Backfill agent/server assignments.
    - Convert exceptional per-tool state into overrides.
+   - Keep old `Tool.mcp_server_name` and `Tool.mcp_server_url` fields as compatibility during validation.
 
-3. Backend implementation
+3. Validation
+   - Compare old registry grouping with new MCP server records for representative tenants.
+   - Verify duplicate/collision handling for normalized server names.
+   - Verify direct URL imports and Smithery imports both produce one server object.
+   - Verify migration rollback or forward-fix path.
+
+This step does not change the normal product UI. It prepares the data foundation and proves parity before the cutover step runs.
+
+### Then in the same release: product and runtime cutover
+
+1. Backend red tests
+   - New extension API does not include packs.
+   - `/enterprise/mcp-servers` returns server-first records without `pack_name`.
+   - `/agents/{agent_id}/capability-summary` does not return pack fields to normal frontend consumers.
+   - `/chat/sessions/{session_id}/runtime-summary` does not return `activated_packs` to normal frontend consumers.
+   - Runtime emits `tool_group_activation`, never `pack_activation`, for new events.
+   - Historical `pack_activation` messages render as tool-group events.
+   - `/packs`, `/agents/{agent_id}/packs`, and `/enterprise/packs/policies` are unavailable to normal users.
+
+2. Backend implementation
    - Rename runtime pack code to runtime-tool-group code.
    - Add extension and MCP assignment APIs.
+   - Refactor existing MCP endpoints to use stable MCP server records.
    - Remove pack APIs from normal product routing.
    - Update runtime context, prompt builder, recovery manifest, and event serializers.
 
-4. Frontend red tests
+3. Frontend red tests
    - Agent extension UI renders Skills and MCP Servers only.
    - Company admin renders MCP server management, not pack policy management.
    - MCP server card hides individual tools by default.
    - Advanced tool dropdown supports precision controls.
    - Chat event UI does not render raw pack names.
 
-5. Frontend implementation
+4. Frontend implementation
    - Replace `agentApi.getPacks()` usage.
    - Add server-first MCP UI.
    - Remove user-facing pack labels and i18n keys.
    - Update chat runtime event parsing.
 
-6. Verification
+5. Verification
    - Backend targeted tests.
    - Frontend targeted tests.
    - Full backend/frontend smoke where feasible.
    - Manual browser check for Agent Detail and Company Admin.
 
-Rollback rule:
+Cutover rule:
 
 ```text
-If the cutover fails, roll back the release. Do not ship a half-state where
-frontend hides packs but backend still emits or exposes pack product APIs.
+Do not ship the release as a half-state where the frontend hides packs but the backend
+still emits or exposes pack product APIs to normal users. The data migration must run and
+pass parity before the same release flips product/API/runtime to MCP-only.
 ```
 
 ## 11. Test Plan
@@ -634,6 +735,7 @@ Backend tests to add later:
 cd backend
 source .venv/bin/activate
 pytest \
+  tests/services/test_mcp_server_migration.py \
   tests/services/test_mcp_registry_service.py \
   tests/services/test_capability_install_service.py \
   tests/runtime/test_active_tool_groups_section.py \
@@ -642,6 +744,7 @@ pytest \
   tests/services/test_chat_message_parts.py \
   tests/api/test_agent_extensions_api.py \
   tests/api/test_agent_mcp_server_assignments_api.py \
+  tests/api/test_mcp_servers_api.py \
   tests/api/test_pack_api_removed_from_user_surface.py
 ```
 
@@ -657,22 +760,30 @@ Acceptance criteria:
 - A normal user sees only Skills and MCP Servers as extension modules.
 - Company admin sees MCP servers as server-level objects, not a flat list of every MCP tool.
 - Installing one MCP creates one server-level management object.
+- Existing MCP tools are backfilled into stable MCP server records before product/API cutover.
 - Tool-level MCP control exists only as advanced precision control.
 - No user-facing UI labels say `pack`, `package`, or `capability pack`.
 - New runtime events never emit `pack_activation`.
 - New session context never writes `active_packs`.
 - Historical messages with `pack_activation` still render through the normalized `tool_group_activation` path.
 - Runtime still lazily expands tools from skills and MCP without breaking existing sessions.
+- `/agents/{agent_id}/capability-summary` and `/chat/sessions/{session_id}/runtime-summary` do not expose pack fields to normal frontend consumers.
 
 ## 12. Cutover Checklist
 
 The release is incomplete unless all boxes are true:
 
+- [ ] MCP server tables exist and existing MCP tools are backfilled.
+- [ ] MCP server migration has a tested rollback or forward-fix path.
 - [ ] No user-facing route calls `/packs`.
 - [ ] No user-facing route calls `/agents/{agent_id}/packs`.
 - [ ] No user-facing route calls `/enterprise/packs/policies`.
+- [ ] `/agents/{agent_id}/capability-summary` exposes governance state without `available_packs`, `channel_backed_packs`, or `skill_declared_packs`.
+- [ ] `/chat/sessions/{session_id}/runtime-summary` exposes runtime state without `activated_packs`.
 - [ ] `/agents/{agent_id}/extensions` is the Agent Detail source of truth.
 - [ ] `/enterprise/mcp-servers` returns server-first objects.
+- [ ] `/enterprise/mcp-servers` does not expose `pack_name` to normal UI consumers.
+- [ ] MCP server identity does not depend on `make_mcp_server_pack_name()`.
 - [ ] MCP installation creates one visible server object.
 - [ ] Individual MCP tools appear only under advanced controls.
 - [ ] Runtime emits `tool_group_activation`.
@@ -686,5 +797,6 @@ The release is incomplete unless all boxes are true:
 1. Internal runtime tool groups should be operator-only, not company-admin UI.
 2. Tenant-level MCP import may default to all agents only when imported from company admin; agent-level import should default to the current agent only.
 3. Use a dedicated MCP override table for per-tool precision; keep `CapabilityPolicy` coarse and readable.
-4. Do not keep an event compatibility window for new writes. New writes use `tool_group_activation`; old writes are reader-normalized only.
-5. Treat `SKILLS_AND_PACKS_V2.md` as an older implementation checkpoint for pack catalog work, not the final user-facing product model.
+4. Within the single release, land the MCP server data migration and pass parity validation before the product/API/runtime cutover step.
+5. Do not keep an event compatibility window for new writes after this release. New writes use `tool_group_activation`; old writes are reader-normalized only.
+6. Treat `SKILLS_AND_PACKS_V2.md` as an older implementation checkpoint for pack catalog work, not the final user-facing product model.

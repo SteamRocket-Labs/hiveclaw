@@ -122,6 +122,7 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
 
   const planJson = plan.plan_json || {};
   const isAwaiting = plan.status === 'awaiting_confirmation';
+  const isPlanning = plan.status === 'planning';
   const isPlanningFailed = plan.status === 'planning_failed';
   const steps = Array.isArray(planJson.steps) ? planJson.steps : [];
   const successCriteria = Array.isArray(planJson.success_criteria) ? planJson.success_criteria : [];
@@ -372,6 +373,32 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
         </div>
       )}
 
+      {isPlanning && (
+        <div
+          role="status"
+          style={{
+            fontSize: '12px',
+            color: 'var(--text-secondary)',
+            background: 'var(--bg-secondary)',
+            border: '1px solid var(--border-subtle)',
+            borderRadius: '6px',
+            padding: '8px 10px',
+            display: 'grid',
+            gap: '3px',
+          }}
+        >
+          <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+            {t('agent.plan.planningTitle', 'Planning in progress')}
+          </div>
+          <div>
+            {t(
+              'agent.plan.planningDescription',
+              'The agent is drafting a confirmable plan. Actions will appear when the plan is ready.',
+            )}
+          </div>
+        </div>
+      )}
+
       {isPlanningFailed && (
         <div
           role="alert"
@@ -474,7 +501,7 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
             {busy === 'regenerate' ? t('common.loading', 'Loading...') : t('agent.plan.retryGeneration', 'Retry plan generation')}
           </button>
         </div>
-      ) : (
+      ) : isPlanning ? null : (
         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
           {plan.status === 'confirmed' && plan.handoff_status
             ? t('agent.plan.handoffState', 'Handoff: {{state}}', { state: String(plan.handoff_status).replace(/_/g, ' ') })

@@ -533,6 +533,7 @@ async def execute_tool(
     event_callback: ToolEventCallback | None = None,
     delegation_token: Any | None = None,
     session_id: str | None = None,
+    plan_mode_interactive_available: bool = False,
 ) -> str:
     """Execute a tool call and return the result as a string."""
     return await _get_tool_runtime_service().execute(
@@ -543,6 +544,7 @@ async def execute_tool(
         event_callback=event_callback,
         delegation_token=delegation_token,
         session_id=session_id,
+        plan_mode_interactive_available=plan_mode_interactive_available,
     )
 
 

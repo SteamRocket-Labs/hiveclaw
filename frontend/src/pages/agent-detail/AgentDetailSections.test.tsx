@@ -1717,6 +1717,47 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('No actions available for this plan.');
   });
 
+  it('renders PlanCard planning state without terminal or confirmation actions', () => {
+    const plan = {
+      id: 'plan-planning',
+      agent_id: 'agent-1',
+      tenant_id: null,
+      session_id: null,
+      runtime_task_id: null,
+      requested_by_user_id: null,
+      source: 'web_chat',
+      intent_type: 'long_task',
+      original_request: 'Plan a market research report',
+      status: 'planning',
+      plan_version: 1,
+      plan_hash: null,
+      plan_markdown_path: null,
+      plan_json: {
+        title: 'Market research report',
+      },
+      handoff_status: null,
+      handoff_payload: null,
+      confirmed_by_user_id: null,
+      confirmed_at: null,
+      rejected_by_user_id: null,
+      rejected_at: null,
+      superseded_by_plan_id: null,
+      expires_at: null,
+      created_at: null,
+      updated_at: null,
+      metadata: {},
+    } as PlanRequest;
+
+    const markup = renderToStaticMarkup(<PlanCard agentId="agent-1" plan={plan} />);
+
+    expect(markup).toContain('Market research report');
+    expect(markup).toContain('Planning in progress');
+    expect(markup).toContain('The agent is drafting a confirmable plan.');
+    expect(markup).not.toContain('Confirm and start');
+    expect(markup).not.toContain('Retry plan generation');
+    expect(markup).not.toContain('No actions available for this plan.');
+  });
+
   it('confirms a plan and immediately hands it off to execution', async () => {
     const plan = {
       id: 'plan-1',

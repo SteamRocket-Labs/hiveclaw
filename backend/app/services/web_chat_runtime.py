@@ -450,6 +450,18 @@ def _activate_interactive_plan_mode(
     return metadata
 
 
+def _clear_interactive_plan_mode(runtime_session_context: Any | None) -> None:
+    if runtime_session_context is None:
+        return
+    from app.runtime.session import PlanModeState
+
+    if hasattr(runtime_session_context, "plan_mode"):
+        runtime_session_context.plan_mode = PlanModeState()
+    metadata = getattr(runtime_session_context, "metadata", None)
+    if isinstance(metadata, dict):
+        metadata.pop("plan_mode", None)
+
+
 async def _maybe_sync_created_task(
     *,
     agent_id: uuid.UUID,
@@ -952,7 +964,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
 
                 reset_interactive_plan_mode(plan_mode_token)
             if plan_mode_submitted:
-                runtime_session_context.metadata.pop("plan_mode", None)
+                _clear_interactive_plan_mode(runtime_session_context)
             runtime_session_context.metadata.pop(plan_mode_core.PLAN_MODE_TRUSTED_DECLINE_SESSION_KEY, None)
         assistant_response = await _maybe_sync_created_task(
             agent_id=agent.id,

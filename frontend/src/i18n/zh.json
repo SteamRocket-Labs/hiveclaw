@@ -404,6 +404,8 @@
       "rejectPrompt": "拒绝此计划的原因(可选)",
       "retryGeneration": "重新生成计划",
       "reviseAndRetry": "修改后重试",
+      "planningTitle": "正在规划",
+      "planningDescription": "Agent 正在整理可确认计划；计划就绪后会显示操作。",
       "failureTitle": "规划失败",
       "failureUnknown": "规划器没有返回有效的可确认计划。",
       "actionFailed": "操作失败",

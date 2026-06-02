@@ -156,6 +156,14 @@ def _session_metadata(session_context: SessionContext | None) -> dict[str, Any]:
     return session_context.metadata
 
 
+def _plan_mode_interactive_available(session_context: SessionContext | None) -> bool:
+    if session_context is None:
+        return False
+    source = str(getattr(session_context, "source", "") or "").lower()
+    channel = str(getattr(session_context, "channel", "") or "").lower()
+    return source in {"web_chat", "chat", "web"} or channel in {"web", "web_chat", "chat"}
+
+
 async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
     # P0-1b: instead of silently returning tenant_id=None on failure paths,
     # set the tenant_resolution_error sentinel so kernel.engine can early-exit
@@ -734,6 +742,10 @@ async def _execute_tool_with_request(
             executor_kwargs["delegation_token"] = request.delegation_token
         if accepts_kwargs or "event_callback" in executor_params:
             executor_kwargs["event_callback"] = emit_event
+        if accepts_kwargs or "plan_mode_interactive_available" in executor_params:
+            executor_kwargs["plan_mode_interactive_available"] = _plan_mode_interactive_available(
+                request.session_context
+            )
         return await _maybe_await(request.tool_executor(tool_name, args, **executor_kwargs))
 
     execute_kwargs: dict[str, Any] = {
@@ -748,6 +760,8 @@ async def _execute_tool_with_request(
         execute_kwargs["session_id"] = request.memory_session_id or (
             request.session_context.session_id if request.session_context else None
         )
+    if "plan_mode_interactive_available" in inspect.signature(execute_tool).parameters:
+        execute_kwargs["plan_mode_interactive_available"] = _plan_mode_interactive_available(request.session_context)
     return await execute_tool(
         tool_name,
         args,

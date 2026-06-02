@@ -399,6 +399,57 @@ async def test_custom_tool_executor_receives_delegation_token(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_execute_tool_receives_interactive_available_for_web_chat_session(monkeypatch):
+    from app.runtime.invoker import AgentInvocationRequest, _execute_tool_with_request
+    from app.runtime.session import SessionContext
+
+    seen: dict[str, object] = {}
+
+    async def fake_execute_tool(
+        tool_name,
+        args,
+        *,
+        agent_id,
+        user_id,
+        event_callback=None,
+        delegation_token=None,
+        session_id=None,
+        plan_mode_interactive_available=False,
+    ):
+        seen["tool_name"] = tool_name
+        seen["args"] = args
+        seen["agent_id"] = agent_id
+        seen["user_id"] = user_id
+        seen["event_callback"] = event_callback
+        seen["delegation_token"] = delegation_token
+        seen["session_id"] = session_id
+        seen["plan_mode_interactive_available"] = plan_mode_interactive_available
+        return "tool-ok"
+
+    async def emit_event(_payload):
+        return None
+
+    monkeypatch.setattr("app.runtime.invoker.execute_tool", fake_execute_tool)
+    agent_id = uuid4()
+    user_id = uuid4()
+    request = AgentInvocationRequest(
+        model=object(),
+        messages=[{"role": "user", "content": "schedule daily brief"}],
+        agent_name="Agent",
+        role_description="role",
+        agent_id=agent_id,
+        user_id=user_id,
+        session_context=SessionContext(session_id="session-1", source="web_chat", channel="web"),
+    )
+
+    result = await _execute_tool_with_request("set_trigger", {"name": "Daily brief"}, request, emit_event)
+
+    assert result == "tool-ok"
+    assert seen["session_id"] == "session-1"
+    assert seen["plan_mode_interactive_available"] is True
+
+
+@pytest.mark.asyncio
 async def test_resolve_tool_expansion_does_not_fallback_to_full_tools_when_workspace_fails(monkeypatch):
     from app.runtime.invoker import AgentInvocationRequest, _resolve_tool_expansion
 

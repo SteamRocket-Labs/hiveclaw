@@ -405,6 +405,8 @@
       "rejectPrompt": "Reason for rejecting this plan (optional)",
       "retryGeneration": "Retry plan generation",
       "reviseAndRetry": "Revise and retry",
+      "planningTitle": "Planning in progress",
+      "planningDescription": "The agent is drafting a confirmable plan. Actions will appear when the plan is ready.",
       "failureTitle": "Planning failed",
       "failureUnknown": "The planner did not return a valid confirmable plan.",
       "actionFailed": "Action failed",

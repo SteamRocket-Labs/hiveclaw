@@ -4,6 +4,9 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
+- 2026-06-02T19:14Z [sid:98e36c4c]; branch:feature/plan-mode-paradigm; 2 files (orphan-trail.md, agent-extension-surface-skill-mcp.md); last commit: d2f3e86 docs(plan-mode): record Phase 4C accepted-skip decis
+- 2026-06-02T18:09Z [sid:934f7397]; branch:feature/plan-mode-paradigm; 2 files (orphan-trail.md, agent-extension-surface-skill-mcp.md); last commit: 1256bd0 feat(plan-mode): allow exact plan-file writes in Pla
+- 2026-06-02T17:48Z [sid:98e36c4c]; branch:main; 6 files (engine.py, session.py, web_chat_runtime.py, +3); last commit: c0ea7fe Remove finance module and packs
 - 2026-05-31T15:07Z [sid:a284f808]; branch:main; 9 files (orphan-trail.md, plan_mode_core.py, hr.py, +6); last commit: 00e55cc feat(plan-mode): add admin cutover endpoint for prod
 - 2026-05-29T17:42Z [sid:a8626599]; branch:main; 1 files (orphan-trail.md); last commit: 00e55cc feat(plan-mode): add admin cutover endpoint for prod
 - 2026-05-29T11:42Z [sid:15e7a853]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: c940642 fix(deep-research): unblock report budget + thesis-d

@@ -37,6 +37,28 @@ class _FakeDB:
         return None
 
 
+def test_clear_interactive_plan_mode_clears_typed_state_and_metadata_mirror():
+    import app.services.web_chat_runtime as runtime
+    from app.runtime.session import PlanModeState, SessionContext
+
+    context = SessionContext(session_id="session-1", source="web_chat", channel="web")
+    context.plan_mode = PlanModeState(
+        active=True,
+        original_request="schedule daily brief",
+        intent_type="autonomous_wake",
+        action_kind="create_enabled_trigger",
+        tool_name="set_trigger",
+        plan_file_path="workspace/plans/session-1.plan.md",
+    )
+    context.metadata["plan_mode"] = context.plan_mode.to_metadata()
+
+    runtime._clear_interactive_plan_mode(context)
+
+    assert context.plan_mode.active is False
+    assert context.plan_mode.original_request is None
+    assert "plan_mode" not in context.metadata
+
+
 @pytest.mark.asyncio
 async def test_disconnect_does_not_cancel_registered_web_chat_run():
     from app.services.web_chat_runtime import (
@@ -518,7 +540,10 @@ async def test_maybe_handle_plan_mode_entry_activates_deep_research_interactive_
     assert session_context.metadata["plan_mode"]["active"] is True
     assert session_context.metadata["plan_mode"]["handoff_target"] == "deep_research"
     assert session_context.metadata["plan_mode"]["deep_research"] is True
-    assert session_context.metadata["plan_mode"]["deep_research_args"]["question"] == "使用 deepresearch做一个web3的全景报告"
+    assert (
+        session_context.metadata["plan_mode"]["deep_research_args"]["question"]
+        == "使用 deepresearch做一个web3的全景报告"
+    )
 
 
 @pytest.mark.asyncio

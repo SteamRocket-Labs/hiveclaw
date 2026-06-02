@@ -2,8 +2,18 @@ import { useEffect, useState } from 'react';
 
 import { useTranslation } from 'react-i18next';
 
+import { extensionsApi, type McpServerRecord } from '../../api/domains/extensions';
 import { toolsApi } from '../../api/domains/tools';
 import ToolIcon from '../../components/ToolIcon';
+
+const MCP_STATUS_COLORS: Record<string, string> = {
+  connected: '#22c55e',
+  needs_auth: '#f59e0b',
+  expired: '#f59e0b',
+  failed: '#ef4444',
+  error: '#ef4444',
+  disabled: 'var(--text-tertiary)',
+};
 
 interface WorkspaceToolsSectionProps {
   selectedTenantId: string;
@@ -58,9 +68,21 @@ export default function WorkspaceToolsSection({
   const [editingToolId, setEditingToolId] = useState<string | null>(null);
   const [editingConfig, setEditingConfig] = useState<Record<string, any>>({});
   const [configCategory, setConfigCategory] = useState<string | null>(null);
-  const [toolsView, setToolsView] = useState<'global' | 'agent-installed'>('global');
+  const [toolsView, setToolsView] = useState<'global' | 'mcp-servers' | 'agent-installed'>('global');
   const [agentInstalledTools, setAgentInstalledTools] = useState<any[]>([]);
   const [collapsedServers, setCollapsedServers] = useState<Set<string>>(new Set());
+  const [mcpServers, setMcpServers] = useState<McpServerRecord[]>([]);
+  const [mcpServersLoaded, setMcpServersLoaded] = useState(false);
+
+  const loadMcpServers = async () => {
+    try {
+      const data = await extensionsApi.listEnterpriseMcpServers();
+      setMcpServers(data);
+    } catch {
+      setMcpServers([]);
+    }
+    setMcpServersLoaded(true);
+  };
 
   const loadAllTools = async () => {
     const data = await toolsApi.listCatalog(selectedTenantId || undefined);
@@ -86,6 +108,7 @@ export default function WorkspaceToolsSection({
       <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '8px' }}>
         {([
           ['global', t('enterprise.tools.globalTools', 'Global Tools')],
+          ['mcp-servers', t('agent.extensions.mcpServers', 'MCP Servers')],
           ['agent-installed', t('enterprise.tools.agentInstalled', 'Agent Installed')],
         ] as const).map(([key, label]) => (
           <button
@@ -94,6 +117,8 @@ export default function WorkspaceToolsSection({
               setToolsView(key);
               if (key === 'agent-installed') {
                 loadAgentInstalledTools();
+              } else if (key === 'mcp-servers') {
+                loadMcpServers();
               }
             }}
             style={{
@@ -153,6 +178,71 @@ export default function WorkspaceToolsSection({
                   >
                     🗑️ {t('enterprise.tools.delete', 'Delete')}
                   </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      {toolsView === 'mcp-servers' ? (
+        <div>
+          <p style={{ fontSize: '13px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+            {t('enterprise.tools.mcpServersHint', 'External MCP integrations managed as server-level connectors. Each server may expose many tools internally.')}
+          </p>
+          {!mcpServersLoaded ? (
+            <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>{t('common.loading', 'Loading...')}</div>
+          ) : mcpServers.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>
+              {t('enterprise.tools.noMcpServers', 'No MCP servers yet. Add one from Global Tools.')}
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {mcpServers.map((server) => (
+                <div key={server.id} className="card" style={{ padding: '12px 16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+                      <span style={{ fontSize: '18px' }}>🔌</span>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{ fontWeight: 600, fontSize: '13px' }}>{server.name}</span>
+                          <span style={{ fontSize: '10px', background: 'var(--primary)', color: '#fff', borderRadius: '4px', padding: '1px 5px' }}>MCP</span>
+                          <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>{server.transport}</span>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                            <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: MCP_STATUS_COLORS[server.status] || 'var(--text-tertiary)' }} />
+                            {t(`agent.extensions.status.${server.status}`, server.status)}
+                          </span>
+                          <span>·</span>
+                          <span>{t('enterprise.tools.authStatus', { status: t(`agent.extensions.authStatus.${server.auth_status}`, server.auth_status), defaultValue: 'auth: {{status}}' })}</span>
+                          <span>·</span>
+                          <span>{t('agent.extensions.toolCount', { count: server.tool_count, defaultValue: '{{count}} tools' })}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', flexShrink: 0 }}>
+                      {t('enterprise.tools.usedByAgents', { count: server.agent_count, defaultValue: '{{count}} agents' })}
+                    </span>
+                  </div>
+                  {server.agents.length > 0 ? (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '10px', paddingTop: '10px', borderTop: '1px solid var(--border-subtle)' }}>
+                      {server.agents.map((agent) => (
+                        <span
+                          key={agent.id}
+                          style={{
+                            fontSize: '11px',
+                            padding: '2px 8px',
+                            borderRadius: '10px',
+                            background: agent.enabled ? 'rgba(34,197,94,0.12)' : 'var(--bg-tertiary)',
+                            color: agent.enabled ? 'var(--success)' : 'var(--text-tertiary)',
+                          }}
+                        >
+                          {agent.name}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </div>

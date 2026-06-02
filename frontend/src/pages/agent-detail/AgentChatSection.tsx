@@ -462,7 +462,15 @@ export default function AgentChatSection({
           }),
         );
       }
-      if (msg.activatedPacks?.length) metaParts.push(msg.activatedPacks.join(', '));
+      if (msg.activatedToolGroupCount) {
+        // Runtime status only — internal tool-group names are never surfaced (§8.4).
+        metaParts.push(
+          t('agent.chat.runtime.toolGroupsActivated', {
+            count: msg.activatedToolGroupCount,
+            defaultValue: '{{count}} runtime tool groups activated',
+          }),
+        );
+      }
       if (msg.eventToolName) metaParts.push(msg.eventToolName);
       if (msg.eventCapability) metaParts.push(msg.eventCapability);
       if (msg.eventSecurityZone) metaParts.push(`zone:${msg.eventSecurityZone}`);

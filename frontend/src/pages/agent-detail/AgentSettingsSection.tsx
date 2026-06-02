@@ -176,7 +176,7 @@ const KNOWN_CAPABILITY_ACTIONS: CapabilityActionMeta[] = [
     labelKey: 'discoverTools',
     descKey: 'discoverToolsDesc',
     fallbackLabel: 'Discover Tools',
-    fallbackDesc: 'Search available tools, skills, and capability packs',
+    fallbackDesc: 'Search available tools, skills, and MCP servers',
   },
   {
     key: 'install_mcp_server',

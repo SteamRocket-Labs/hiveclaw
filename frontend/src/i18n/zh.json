@@ -634,7 +634,8 @@
       "eventTitle": "系统事件",
       "compactedNotice": "上下文已自动压缩，当前工作状态已保留。",
       "compactionDetails": "显示压缩详情",
-      "compactionMeta": "保留 {{kept}} / {{original}} 条消息"
+      "compactionMeta": "保留 {{kept}} / {{original}} 条消息",
+      "toolGroupsActivated": "已激活 {{count}} 个运行时工具组"
     }
     },
     "office": {
@@ -734,7 +735,7 @@
         "writeSkills": "写入技能",
         "writeSkillsDesc": "创建或更新可复用技能",
         "discoverTools": "发现工具",
-        "discoverToolsDesc": "搜索可用工具、技能和能力包",
+        "discoverToolsDesc": "搜索可用工具、技能和 MCP 服务器",
         "readMcp": "读取 MCP 资源",
         "readMcpDesc": "列出或读取已连接 MCP 服务的资源",
         "readTriggers": "读取触发器",
@@ -936,11 +937,36 @@
       "platformTools": "内置操作",
       "agentInstalled": "员工自行添加的操作"
     },
-    "packs": {
-      "activeTitle": "已激活能力包",
-      "toolsLabel": "工具",
-      "skillsLabel": "技能",
-      "channelLabel": "渠道"
+    "extensions": {
+      "skills": "技能",
+      "mcpServers": "MCP 服务器",
+      "noSkills": "暂无技能",
+      "noMcpServers": "未连接 MCP 服务器",
+      "advancedToolControls": "高级工具控制",
+      "configureTool": "配置工具",
+      "perAgentConfig": "按员工配置（覆盖全局默认值）",
+      "toolCount": "{{count}} 个工具",
+      "source": {
+        "workspace": "工作区技能",
+        "preset": "预置技能",
+        "clawhub": "ClawHub 技能",
+        "url": "导入的技能"
+      },
+      "status": {
+        "available": "可用",
+        "connected": "已连接",
+        "needs_auth": "需要授权",
+        "expired": "授权已过期",
+        "failed": "失败",
+        "error": "错误",
+        "disabled": "已禁用"
+      },
+      "authStatus": {
+        "none": "无",
+        "configured": "已配置",
+        "expired": "已过期",
+        "error": "错误"
+      }
     },
     "toolCategories": {
       "file": "文件",
@@ -1289,6 +1315,10 @@
       "agentInstalled": "员工自行添加",
       "agentInstalledHint": "员工在工作中自行添加的工具。移除将断开该员工与此工具的连接。",
       "noAgentInstalledTools": "暂无员工自行添加的工具。",
+      "mcpServersHint": "作为服务器级连接器管理的外部 MCP 集成。每个服务器内部可暴露多个工具。",
+      "noMcpServers": "暂无 MCP 服务器。请从全局工具中添加。",
+      "authStatus": "授权：{{status}}",
+      "usedByAgents": "{{count}} 个员工",
       "removeFromAgent": "从此员工中移除「{{name}}」？",
       "delete": "删除",
       "addMcpServer": "添加扩展",

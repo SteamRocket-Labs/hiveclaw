@@ -5,7 +5,7 @@ export const MIN_COMPOSER_HEIGHT = 44;
 export const MAX_COMPOSER_HEIGHT = 160;
 export const CHAT_SOCKET_KEEPALIVE_INTERVAL_MS = 30_000;
 
-export type RuntimeEventType = 'permission' | 'session_compact' | 'pack_activation' | 'team_memory';
+export type RuntimeEventType = 'permission' | 'session_compact' | 'tool_group_activation' | 'pack_activation' | 'team_memory';
 
 export interface AgentChatMessage {
   role: 'user' | 'assistant' | 'tool_call' | 'event';
@@ -38,7 +38,9 @@ export interface AgentChatMessage {
   originalMessageCount?: number;
   keptMessageCount?: number;
   continuitySectionsInjected?: string[];
-  activatedPacks?: string[];
+  // Count of runtime tool groups activated in this event. Names are internal and
+  // intentionally not surfaced to users (§8.4) — only the fact/scale of activation.
+  activatedToolGroupCount?: number;
   skillName?: string;
   triggerTool?: string;
 }
@@ -84,12 +86,19 @@ type EventPart = {
   original_message_count?: number;
   kept_message_count?: number;
   continuity_sections_injected?: string[];
+  tool_groups?: Array<string | { name?: string }>;
   packs?: Array<string | { name?: string }>;
   skill_name?: string;
   trigger_tool?: string;
 };
 
-const RUNTIME_EVENT_TYPES = new Set<RuntimeEventType>(['permission', 'session_compact', 'pack_activation', 'team_memory']);
+const RUNTIME_EVENT_TYPES = new Set<RuntimeEventType>([
+  'permission',
+  'session_compact',
+  'tool_group_activation',
+  'pack_activation',
+  'team_memory',
+]);
 const RAW_COMPACTION_SECTION_LABELS = [
   'Task Ledger',
   'Decision Ledger',
@@ -126,12 +135,12 @@ function getEventPart(payload: any): EventPart | undefined {
   return undefined;
 }
 
-function normalizePackNames(packs: EventPart['packs'] | undefined): string[] | undefined {
-  if (!Array.isArray(packs)) return undefined;
-  const names = packs
-    .map((pack) => (typeof pack === 'string' ? pack : pack?.name))
-    .filter((name): name is string => Boolean(name));
-  return names.length > 0 ? names : undefined;
+function countActivatedToolGroups(
+  groups: EventPart['tool_groups'] | undefined,
+): number | undefined {
+  if (!Array.isArray(groups)) return undefined;
+  const valid = groups.filter((group) => (typeof group === 'string' ? group : group?.name));
+  return valid.length > 0 ? valid.length : undefined;
 }
 
 function parseJsonObject(value: unknown): Record<string, unknown> | null {
@@ -317,7 +326,10 @@ export function getRuntimeEventMessage(payload: any): AgentChatMessage | null {
   if (!isRuntimeEventType(eventType)) return null;
 
   const part = getEventPart(payload);
-  const activatedPacks = normalizePackNames(payload?.packs ?? part?.packs);
+  // New events carry `tool_groups`; historical persisted events carry `packs`.
+  const activatedToolGroupCount = countActivatedToolGroups(
+    payload?.tool_groups ?? part?.tool_groups ?? payload?.packs ?? part?.packs,
+  );
   const content =
     payload?.content ||
     payload?.message ||
@@ -357,7 +369,7 @@ export function getRuntimeEventMessage(payload: any): AgentChatMessage | null {
       payload?.continuitySectionsInjected ??
       payload?.continuity_sections_injected ??
       part?.continuity_sections_injected,
-    activatedPacks,
+    activatedToolGroupCount,
     skillName: payload?.skillName || payload?.skill_name || part?.skill_name,
     triggerTool: payload?.triggerTool || payload?.trigger_tool || part?.trigger_tool,
     timestamp: payload?.timestamp || payload?.created_at,

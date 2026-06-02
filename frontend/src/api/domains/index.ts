@@ -8,6 +8,7 @@ export { enterpriseApi } from './enterprise';
 export { adminApi } from './admin';
 export { systemApi } from './system';
 export { toolsApi } from './tools';
+export { extensionsApi } from './extensions';
 export { activityApi } from './activity';
 export { messageApi } from './messages';
 export { skillApi } from './skills';

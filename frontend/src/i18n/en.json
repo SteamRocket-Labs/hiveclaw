@@ -635,7 +635,8 @@
       "eventTitle": "System Event",
       "compactedNotice": "Context was compressed. The active working state was preserved.",
       "compactionDetails": "Show compression details",
-      "compactionMeta": "Kept {{kept}} of {{original}} messages"
+      "compactionMeta": "Kept {{kept}} of {{original}} messages",
+      "toolGroupsActivated": "{{count}} runtime tool groups activated"
     }
     },
     "office": {
@@ -732,7 +733,7 @@
         "writeSkills": "Write Skills",
         "writeSkillsDesc": "Create or update reusable skills",
         "discoverTools": "Discover Tools",
-        "discoverToolsDesc": "Search available tools, skills, and capability packs",
+        "discoverToolsDesc": "Search available tools, skills, and MCP servers",
         "readMcp": "Read MCP Resources",
         "readMcpDesc": "List or read resources from connected MCP servers",
         "readTriggers": "Read Triggers",
@@ -932,11 +933,36 @@
       "platformTools": "Built-in Actions",
       "agentInstalled": "Employee-Added Actions"
     },
-    "packs": {
-      "activeTitle": "Active Capability Packs",
-      "toolsLabel": "Tools",
-      "skillsLabel": "Skills",
-      "channelLabel": "Channel"
+    "extensions": {
+      "skills": "Skills",
+      "mcpServers": "MCP Servers",
+      "noSkills": "No skills yet",
+      "noMcpServers": "No MCP servers connected",
+      "advancedToolControls": "Advanced tool controls",
+      "configureTool": "Configure tool",
+      "perAgentConfig": "Per-agent configuration (overrides global defaults)",
+      "toolCount": "{{count}} tools",
+      "source": {
+        "workspace": "Workspace skill",
+        "preset": "Preset skill",
+        "clawhub": "ClawHub skill",
+        "url": "Imported skill"
+      },
+      "status": {
+        "available": "Available",
+        "connected": "Connected",
+        "needs_auth": "Needs auth",
+        "expired": "Auth expired",
+        "failed": "Failed",
+        "error": "Error",
+        "disabled": "Disabled"
+      },
+      "authStatus": {
+        "none": "none",
+        "configured": "configured",
+        "expired": "expired",
+        "error": "error"
+      }
     },
     "toolCategories": {
       "file": "Files",
@@ -1284,6 +1310,10 @@
       "agentInstalled": "Employee-Added",
       "agentInstalledHint": "Tools added by employees during work. Removing disconnects the tool from that employee.",
       "noAgentInstalledTools": "No employee-added tools yet.",
+      "mcpServersHint": "External MCP integrations managed as server-level connectors. Each server may expose many tools internally.",
+      "noMcpServers": "No MCP servers yet. Add one from Global Tools.",
+      "authStatus": "auth: {{status}}",
+      "usedByAgents": "{{count}} agents",
       "removeFromAgent": "Remove \"{{name}}\" from this employee?",
       "delete": "Delete",
       "addMcpServer": "Add Extension",

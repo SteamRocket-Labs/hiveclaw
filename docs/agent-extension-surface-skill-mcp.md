@@ -897,3 +897,15 @@ Purely additive — new server-first API on the Part 1 tables; existing pack rou
 - `_resolve_agent_mcp_gating(db, agent_id)` — 3 batch queries (assignments, server tools, overrides; no per-tool N+1 on the hot path) → `{tool_id: reachable}`, or `None` when the agent has no new-table data.
 - Wire (surgical, 2 insertions): `if t.type == "mcp" and mcp_gating is not None and tid in mcp_gating: enabled = mcp_gating[tid]`. Non-mcp tools unchanged; un-backfilled agents (`mcp_gating is None`) keep the legacy `AgentTool.enabled`/`is_default` decision — **not fail-closed**, so manually-triggered backfill can't strip tools from un-migrated tenants. The tenant pack-policy gate stays orthogonal.
 - Evidence: `import app.main` OK; `pytest test_agent_mcp_gating.py test_agent_tools.py` → **13 passed** (parity with backfilled data; fallback for un-backfilled; disabled assignment excludes; deny override excludes); broader run 25 passed. ruff clean. Reviewed the hot-path diff: fallback condition confirmed correct.
+
+### Part 6 — Frontend + i18n: Skills + MCP Servers surface ✅ (frontend)
+
+- New typed adapter `frontend/src/api/domains/extensions.ts` (`extensionsApi`: getAgentExtensions, getAgentMcpServers, setAgentMcpAssignment, listEnterpriseMcpServers, backfillEnterpriseMcpServers). DTOs free of pack/pack_name.
+- `ToolsManager.tsx` rewritten: drives off `GET /agents/{id}/extensions`; two modules — Skills + MCP Servers. Each MCP server is one card (name, status, tool_count, enabled toggle → PUT assignment); individual tools live in a collapsed "Advanced tool controls" drawer per card, hidden by default.
+- Company admin `WorkspaceToolsSection.tsx`: server-first MCP Servers view from `/enterprise/mcp-servers/records`; no pack-policy product UI. Skill Registry stays in its own tab.
+- Chat runtime: recognizes `tool_group_activation` (+ historical `pack_activation` read-normalized); shows a generic count, never raw internal names like `web_pack`.
+- i18n: `agent.packs.*` → `agent.extensions.*` in both en.json + zh.json (lockstep); user-facing pack/package/capability-pack labels removed. Internal category keys office_pack/deep_research_pack kept (they key raw backend `tool.category` and display clean "Office"/"Deep Research").
+- Removed the orphaned `getPacks` adapter (no consumers).
+- Evidence: `npx tsc --noEmit` exit 0; `npm run build` exit 0; targeted tests (chatRuntime, AgentDetailSections, WorkspaceRemainingSections, AgentDetail, AgentDetail.query-gating) **47 passed**. Reviewed: tsc re-run confirmed green; removed one unused React default import.
+
+Note: backend legacy pack routes (`/packs`, `/agents/{id}/packs`, `/enterprise/packs/policies`) are now orphaned (no frontend consumer) but still registered; their physical removal + reconciling `/enterprise/mcp-servers/records` to the canonical path is finished in Part 7.

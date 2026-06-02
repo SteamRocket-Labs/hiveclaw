@@ -1,0 +1,81 @@
+/**
+ * Agent extensions domain adapter — Skills + MCP Servers (server-first).
+ *
+ * Replaces the legacy pack surface. `/agents/{id}/extensions` is the single
+ * source of truth for Agent Detail extension state; the enterprise routes manage
+ * tenant MCP server records with stable server identity. No DTO here carries a
+ * `pack` / `pack_name` field. See docs/agent-extension-surface-skill-mcp.md
+ * §7.2–7.4, §8.4.
+ */
+
+import { get, post, put } from '../core';
+
+export type McpToolMode = 'auto' | 'approval' | 'deny';
+
+export interface ExtensionSkill {
+  id: string;
+  name: string;
+  source: string;
+  status: string;
+}
+
+/** One MCP server as seen from a single agent (server-level controls). */
+export interface AgentMcpServer {
+  id: string;
+  name: string;
+  status: string;
+  enabled: boolean;
+  tool_count: number;
+  default_tool_mode: McpToolMode | string;
+}
+
+export interface AgentExtensions {
+  skills: ExtensionSkill[];
+  mcp_servers: AgentMcpServer[];
+}
+
+/** Tenant-managed MCP server record (company admin, server-first). */
+export interface McpServerRecord {
+  id: string;
+  name: string;
+  server_key: string;
+  status: string;
+  auth_status: string;
+  transport: string;
+  tool_count: number;
+  agent_count: number;
+  agents: Array<{ id: string; name: string; enabled: boolean }>;
+}
+
+export interface McpAssignmentResult {
+  id: string;
+  agent_id: string;
+  server_id: string;
+  enabled: boolean;
+  default_tool_mode: McpToolMode | string;
+}
+
+export interface McpBackfillSummary {
+  [key: string]: unknown;
+}
+
+export const extensionsApi = {
+  /** Agent Detail source of truth: skills + MCP servers for one agent. */
+  getAgentExtensions: (agentId: string) => get<AgentExtensions>(`/agents/${agentId}/extensions`),
+
+  /** MCP servers assigned to one agent (server-level rollup). */
+  getAgentMcpServers: (agentId: string) => get<AgentMcpServer[]>(`/agents/${agentId}/mcp-servers`),
+
+  /** Assign or update one agent's connection to an MCP server. */
+  setAgentMcpAssignment: (
+    agentId: string,
+    serverId: string,
+    data: { enabled: boolean; default_tool_mode?: McpToolMode | string },
+  ) => put<McpAssignmentResult>(`/agents/${agentId}/mcp-servers/${serverId}`, data),
+
+  /** Company admin: tenant MCP server records, server-first with stable identity. */
+  listEnterpriseMcpServers: () => get<McpServerRecord[]>('/enterprise/mcp-servers/records'),
+
+  /** Company admin: trigger the MCP backfill for the current tenant (idempotent). */
+  backfillEnterpriseMcpServers: () => post<McpBackfillSummary>('/enterprise/mcp-servers/backfill'),
+};

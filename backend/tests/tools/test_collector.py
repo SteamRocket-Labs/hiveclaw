@@ -177,37 +177,6 @@ def test_collect_real_handlers_include_memory_tools():
     assert profile_enum == ["worker_safe", "memory_readonly", "review_readonly", "research_readonly"]
 
 
-def test_collect_real_handlers_include_finance_pack_tools():
-    clear_registry()
-    for module_name in HANDLER_MODULES:
-        importlib.reload(importlib.import_module(module_name))
-
-    collected = collect_tools()
-    names = {tool["function"]["name"] for tool in collected.openai_tools}
-    expected = {
-        "finance_get_provider_status",
-        "finance_resolve_entity",
-        "finance_get_source_ledger",
-        "finance_get_price_history",
-        "finance_get_financial_statements",
-        "finance_search_filings",
-        "finance_get_filing",
-        "finance_get_ipo_pipeline",
-        "finance_get_funding_rounds",
-        "finance_get_company_registry",
-        "finance_compute_dcf",
-        "finance_build_comps",
-        "finance_compile_research_packet",
-        "finance_run_workflow",
-    }
-
-    assert expected <= names
-    assert expected <= set(collected.pack_tool_groups["finance_pack"])
-
-    seed_by_name = {tool["name"]: tool for tool in collected.seed_list}
-    assert all(seed_by_name[name]["is_default"] is False for name in expected)
-
-
 def test_collect_real_handlers_include_deep_research_pack_tools():
     clear_registry()
     for module_name in HANDLER_MODULES:

@@ -920,8 +920,7 @@
         "hr": "人事",
         "mcp": "MCP",
         "objectives": "目标",
-        "plaza": "Agent圈",
-        "finance": "金融"
+        "plaza": "Agent圈"
       },
       "upload": {
         "success": "上传完成",
@@ -958,7 +957,6 @@
       "mcp": "MCP",
       "objectives": "目标",
       "plaza": "Agent圈",
-      "finance": "金融",
       "office_pack": "办公",
       "deep_research_pack": "深度研究",
       "social": "社交",

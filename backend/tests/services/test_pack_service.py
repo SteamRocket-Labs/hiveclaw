@@ -26,7 +26,6 @@ def test_pack_catalog_returns_all_packs():
     assert "mcp_admin_pack" in names
     assert "email_pack" in names
     assert "deep_research_pack" in names
-    assert "finance_pack" in names
     assert "office_pack" in names
     assert "document_pack" not in names
     assert "image_pack" not in names
@@ -42,18 +41,6 @@ def test_pack_catalog_has_required_fields():
         assert "capabilities" in pack
         assert isinstance(pack["tools"], list)
         assert isinstance(pack["capabilities"], list)
-
-
-def test_manifest_backed_packs_are_catalog_only():
-    catalog = get_pack_catalog()
-    finance = next(p for p in catalog if p["name"] == "finance_pack")
-
-    assert finance["source"] == "manifest"
-    assert finance["runtime_source_of_truth"] == "tool_decorator"
-    assert "finance_compile_research_packet" in finance["tools"]
-    assert finance["skills"] == ["skills/finance-research"]
-    assert finance["credential_requirements"]
-    assert finance["requires_channel"] is None
 
 
 def test_pack_catalog_feishu_has_channel_dependency():

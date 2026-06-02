@@ -32,7 +32,6 @@ dedicated tools are unavailable.
 <do_not_use_when>
 - The user wants a quick definition, rewrite, or brainstorming pass.
 - The user explicitly asks for no browsing and no file artifacts.
-- The task is pure finance workflow and a finance tool can answer it more directly.
 </do_not_use_when>
 
 ## Tool Routing

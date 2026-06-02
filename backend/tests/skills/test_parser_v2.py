@@ -11,91 +11,92 @@ from app.skills.registry import SkillRegistry
 def test_parser_supports_yaml_frontmatter_and_flat_hive_metadata(tmp_path):
     skill_path = tmp_path / "SKILL.md"
     content = """---
-name: Finance Deep Dive
+name: Research Deep Dive
 description: |
-  Produce a source-attributed equity research report with valuation, catalyst
-  review, financial statement quality checks, and risk assessment.
+  Produce a source-attributed research report with evidence review,
+  quality checks, risk assessment, contradiction handling, reusable artifacts,
+  and explicit notes about uncertainty.
 license: Proprietary
 compatibility: Hive >= 1.8.0
-allowed-tools: web_search web_fetch finance_compile_research_packet
+allowed-tools: web_search web_fetch firecrawl_fetch
 tools:
   - web_search
-  - finance_compile_research_packet
+  - firecrawl_fetch
 packs:
-  - finance_pack
+  - web_pack
 metadata:
   hive.version: "1.0.0"
-  hive.pack: finance_pack
-  hive.requires_skills: "industry-research,dcf-valuation"
+  hive.pack: web_pack
+  hive.requires_skills: "industry-research,source-ledger-audit"
   hive.locale: cloud
   hive.invocation: both
   hive.cost_tier: high
   hive.estimated_runtime_minutes: "30"
-  hive.output_artifacts: "reports/{ticker}.md,reports/{ticker}.xlsx"
+  hive.output_artifacts: "reports/{topic}.md,reports/{topic}.json"
   hive.security_zone: restricted
 is_system: false
 ---
-# Finance Deep Dive
+# Research Deep Dive
 
-Use filings first.
+Use primary sources first.
 """
 
     parsed = SkillParser().parse_content(
         content,
         path=skill_path,
-        relative_path="skills/finance/SKILL.md",
-        default_name="finance",
+        relative_path="skills/research/SKILL.md",
+        default_name="research",
     )
 
-    assert parsed.metadata.name == "Finance Deep Dive"
-    assert "source-attributed equity research report" in parsed.metadata.description
+    assert parsed.metadata.name == "Research Deep Dive"
+    assert "source-attributed research report" in parsed.metadata.description
     assert len(parsed.metadata.description) > 120
     assert parsed.metadata.license == "Proprietary"
     assert parsed.metadata.compatibility == "Hive >= 1.8.0"
     assert parsed.metadata.allowed_tools == (
         "web_search",
         "web_fetch",
-        "finance_compile_research_packet",
+        "firecrawl_fetch",
     )
-    assert parsed.metadata.declared_tools == ("web_search", "finance_compile_research_packet")
-    assert parsed.metadata.declared_packs == ("finance_pack",)
+    assert parsed.metadata.declared_tools == ("web_search", "firecrawl_fetch")
+    assert parsed.metadata.declared_packs == ("web_pack",)
     assert parsed.metadata.version == "1.0.0"
-    assert parsed.metadata.pack == "finance_pack"
-    assert parsed.metadata.requires_skills == ("industry-research", "dcf-valuation")
+    assert parsed.metadata.pack == "web_pack"
+    assert parsed.metadata.requires_skills == ("industry-research", "source-ledger-audit")
     assert parsed.metadata.locale == "cloud"
     assert parsed.metadata.invocation == "both"
     assert parsed.metadata.cost_tier == "high"
     assert parsed.metadata.estimated_runtime_minutes == 30
-    assert parsed.metadata.output_artifacts == ("reports/{ticker}.md", "reports/{ticker}.xlsx")
+    assert parsed.metadata.output_artifacts == ("reports/{topic}.md", "reports/{topic}.json")
     assert parsed.metadata.security_zone == "restricted"
-    assert parsed.body.startswith("# Finance Deep Dive")
+    assert parsed.body.startswith("# Research Deep Dive")
 
 
 def test_parser_supports_nested_hive_metadata_fallback(tmp_path):
     content = """---
-name: DCF Valuation
-description: Build a DCF model.
+name: Source Audit
+description: Audit source coverage.
 metadata:
   hive:
     version: "0.2.0"
-    pack: finance_pack
+    pack: web_pack
     requires_skills:
-      - financial-statement-analysis
-      - comps-valuation
+      - industry-research
+      - source-ledger-audit
     estimated_runtime_minutes: 15
 ---
-# DCF
+# Source Audit
 """
 
     parsed = SkillParser().parse_content(
         content,
         path=tmp_path / "SKILL.md",
-        relative_path="skills/dcf/SKILL.md",
+        relative_path="skills/source-audit/SKILL.md",
     )
 
     assert parsed.metadata.version == "0.2.0"
-    assert parsed.metadata.pack == "finance_pack"
-    assert parsed.metadata.requires_skills == ("financial-statement-analysis", "comps-valuation")
+    assert parsed.metadata.pack == "web_pack"
+    assert parsed.metadata.requires_skills == ("industry-research", "source-ledger-audit")
     assert parsed.metadata.estimated_runtime_minutes == 15
 
 
@@ -157,31 +158,31 @@ metadata:
 
 def test_loader_lists_and_reads_folder_skill_resources(tmp_path):
     workspace = tmp_path / "agent"
-    skill_dir = workspace / "skills" / "finance"
+    skill_dir = workspace / "skills" / "research"
     (skill_dir / "references").mkdir(parents=True)
     (skill_dir / "scripts").mkdir()
     (skill_dir / "templates").mkdir()
     (skill_dir / "evals").mkdir()
     (skill_dir / "SKILL.md").write_text(
-        "---\nname: Finance\ndescription: Finance analysis\n---\n# Finance\n",
+        "---\nname: Research\ndescription: Research analysis\n---\n# Research\n",
         encoding="utf-8",
     )
-    (skill_dir / "references" / "valuation.md").write_text("DCF notes", encoding="utf-8")
+    (skill_dir / "references" / "sources.md").write_text("Source notes", encoding="utf-8")
     (skill_dir / "scripts" / "compile.py").write_text("print('ok')\n", encoding="utf-8")
     (skill_dir / "templates" / "memo.md").write_text("# Memo\n", encoding="utf-8")
     (skill_dir / "evals" / "eval.yaml").write_text("cases: []\n", encoding="utf-8")
 
     loader = WorkspaceSkillLoader()
 
-    resources = loader.list_resources(workspace, "Finance")
+    resources = loader.list_resources(workspace, "Research")
     assert resources == (
         "evals/eval.yaml",
-        "references/valuation.md",
+        "references/sources.md",
         "scripts/compile.py",
         "templates/memo.md",
     )
-    assert loader.read_resource(workspace, "Finance", "references/valuation.md") == "DCF notes"
-    assert loader.read_resource(workspace, "Finance", "templates/memo.md") == "# Memo\n"
+    assert loader.read_resource(workspace, "Research", "references/sources.md") == "Source notes"
+    assert loader.read_resource(workspace, "Research", "templates/memo.md") == "# Memo\n"
 
 
 def test_registry_loads_required_skill_bodies_before_primary(tmp_path):

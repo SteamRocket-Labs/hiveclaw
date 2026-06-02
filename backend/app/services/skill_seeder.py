@@ -18,13 +18,6 @@ def _is_seedable_skill_template_file(path: Path) -> bool:
 
 
 _PACK_SKILL_ICONS = {
-    "comps-valuation": "📐",
-    "dcf-valuation": "🧮",
-    "ic-memo-generator": "📝",
-    "ipo-pipeline-monitor": "🚀",
-    "portfolio-risk-review": "🛡️",
-    "primary-market-due-diligence": "🔍",
-    "secondary-equity-deep-dive": "📈",
     "docx-generator": "📄",
     "xlsx-processor": "📊",
     "pptx-generator": "🎞️",
@@ -79,9 +72,6 @@ def _load_pack_skill_dicts() -> list[dict]:
         reader = PackCatalogReader(packs_dir)
         reader.discover()
         for manifest in reader.list_packs():
-            if manifest.name == "finance_pack":
-                logger.info("[SkillSeeder] Skipping finance_pack skills; finance runtime is not default-ready")
-                continue
             pack_root = packs_dir / manifest.name
             pack_category = manifest.name.replace("_pack", "")
             for skill_rel in manifest.skills:

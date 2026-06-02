@@ -8,46 +8,45 @@ from app.tools.collector import collect_tools
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PACK_ROOTS = (REPO_ROOT / "packs", REPO_ROOT / "backend" / "packs")
-REQUIRED_CLOUD_PACKS = {"deep_research_pack", "finance_pack", "office_pack"}
+REQUIRED_CLOUD_PACKS = {"deep_research_pack", "office_pack"}
 
 
 def test_pack_catalog_reader_loads_manifest_without_runtime_side_effects(tmp_path):
-    pack_dir = tmp_path / "finance_pack"
+    pack_dir = tmp_path / "sample_pack"
     pack_dir.mkdir()
     (pack_dir / "pack.yaml").write_text(
         """
-name: finance_pack
+name: sample_pack
 version: "1.0.0"
-description: Finance data and analysis pack
+description: Sample data and analysis pack
 license: Proprietary
-author: Hive Finance Team
+author: Hive Team
 tools:
-  - name: finance_resolve_entity
+  - name: sample_resolve_entity
     locale: cloud
     governance:
       security_zone: public
-  - name: finance_compile_research_packet
+  - name: sample_compile_research_packet
 skills:
-  - skills/secondary-equity-deep-dive
+  - skills/sample-deep-dive
 data_sources:
   public_default:
-    - sec_edgar
-    - hkexnews
+    - public_registry
   paid_optional:
-    - pitchbook
+    - paid_registry
 mcp_servers:
-  - name: openbb_optional
+  - name: sample_optional
     enabled_by_default: false
     credential_scope: tenant
 credential_requirements:
-  - key: edgar_identity
+  - key: registry_identity
     scope: tenant
     storage: encrypted_tool_config
 activation:
-  required_capabilities: [finance_data_access]
+  required_capabilities: [sample_data_access]
 sandbox_requirements:
   pip_packages:
-    - edgartools>=5.30
+    - samplelib>=1.0
 """.strip(),
         encoding="utf-8",
     )
@@ -58,15 +57,15 @@ sandbox_requirements:
     manifests = reader.list_packs()
     assert len(manifests) == 1
     manifest = manifests[0]
-    assert manifest.name == "finance_pack"
+    assert manifest.name == "sample_pack"
     assert manifest.version == "1.0.0"
-    assert manifest.description == "Finance data and analysis pack"
-    assert manifest.tool_names == ("finance_resolve_entity", "finance_compile_research_packet")
-    assert manifest.skills == ("skills/secondary-equity-deep-dive",)
-    assert manifest.data_sources["public_default"] == ["sec_edgar", "hkexnews"]
+    assert manifest.description == "Sample data and analysis pack"
+    assert manifest.tool_names == ("sample_resolve_entity", "sample_compile_research_packet")
+    assert manifest.skills == ("skills/sample-deep-dive",)
+    assert manifest.data_sources["public_default"] == ["public_registry"]
     assert manifest.credential_requirements[0]["scope"] == "tenant"
     assert manifest.to_dict()["runtime_source_of_truth"] == "tool_decorator"
-    assert reader.get_pack("finance_pack") is manifest
+    assert reader.get_pack("sample_pack") is manifest
 
 
 def test_pack_catalog_reader_is_tolerant_of_invalid_manifest(tmp_path):
@@ -100,11 +99,7 @@ def test_repo_pack_manifests_cover_cloud_capability_packs():
 
     manifests = {manifest.name: manifest for manifest in reader.list_packs()}
 
-    assert {"deep_research_pack", "finance_pack", "office_pack"}.issubset(manifests)
-    assert "finance_compile_research_packet" in manifests["finance_pack"].tool_names
-    assert manifests["finance_pack"].skills == ("skills/finance-research",)
-    assert manifests["finance_pack"].credential_requirements
-    assert manifests["finance_pack"].data_sources["public_default"]
+    assert {"deep_research_pack", "office_pack"}.issubset(manifests)
     assert manifests["deep_research_pack"].skills == ("skills/deep-research",)
     assert manifests["office_pack"].skills == ("skills/office-productivity",)
 
@@ -161,9 +156,9 @@ def test_find_pack_dirs_supports_repo_and_packaged_backend_layouts(tmp_path):
     backend_packs = tmp_path / "backend" / "packs"
     service_file = tmp_path / "backend" / "app" / "services" / "pack_service.py"
     (repo_packs / "office_pack").mkdir(parents=True)
-    (backend_packs / "finance_pack").mkdir(parents=True)
+    (backend_packs / "sample_pack").mkdir(parents=True)
     (repo_packs / "office_pack" / "pack.yaml").write_text("name: office_pack\n", encoding="utf-8")
-    (backend_packs / "finance_pack" / "pack.yaml").write_text("name: finance_pack\n", encoding="utf-8")
+    (backend_packs / "sample_pack" / "pack.yaml").write_text("name: sample_pack\n", encoding="utf-8")
     service_file.parent.mkdir(parents=True, exist_ok=True)
     service_file.write_text("# test anchor\n", encoding="utf-8")
 

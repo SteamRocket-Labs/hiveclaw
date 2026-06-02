@@ -87,7 +87,6 @@ def test_all_package_declared_and_eval_tools_are_registered():
 def test_package_resource_files_do_not_reference_unknown_tool_like_names():
     registered_tools = _registered_tool_names()
     tool_like_prefixes = (
-        "finance_",
         "feishu_",
         "plaza_",
         "web_",

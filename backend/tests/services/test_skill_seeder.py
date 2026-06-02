@@ -70,33 +70,6 @@ def test_pack_skill_seeder_exposes_one_office_entrypoint():
     assert "pitch-deck-generator" not in folders
 
 
-def test_finance_skills_are_retired_until_runtime_is_real():
-    from app.services.skill_seeder import BUILTIN_SKILLS, RETIRED_BUILTIN_SKILL_FOLDERS
-
-    folders = _pack_skill_folders()
-    builtin_folders = {skill["folder_name"] for skill in BUILTIN_SKILLS}
-
-    assert "finance-research" not in builtin_folders
-    assert "finance-research" not in folders
-    assert "secondary-equity-deep-dive" not in folders
-    assert "dcf-valuation" not in folders
-    assert "comps-valuation" not in folders
-    assert "ipo-pipeline-monitor" not in folders
-    assert "primary-market-due-diligence" not in folders
-    assert "portfolio-risk-review" not in folders
-    assert "ic-memo-generator" not in folders
-    assert {
-        "finance-research",
-        "secondary-equity-deep-dive",
-        "dcf-valuation",
-        "comps-valuation",
-        "ipo-pipeline-monitor",
-        "primary-market-due-diligence",
-        "portfolio-risk-review",
-        "ic-memo-generator",
-    } <= RETIRED_BUILTIN_SKILL_FOLDERS
-
-
 def test_remove_retired_builtin_skill_dirs_continues_after_permission_error(tmp_path, monkeypatch):
     from app.services import skill_seeder
 

@@ -1,7 +1,7 @@
 """Tool coverage audit — warn on tools that no pack/skill/prompt references.
 
 Every tool should be discoverable by the LLM through at least one channel:
-  (a) membership in a `TOOL_PACKS` entry (activated via load_skill side effects)
+  (a) membership in a `RUNTIME_TOOL_GROUPS` entry (activated via load_skill side effects)
   (b) `declared_tools` list of a system_skills or skills template SKILL.md
   (c) explicit mention by name inside a prompt section under
       app/runtime/prompt_sections/
@@ -47,9 +47,9 @@ class ToolAuditReport:
 
 
 def _pack_tools() -> frozenset[str]:
-    from app.tools.packs import TOOL_PACKS
+    from app.tools.runtime_tool_groups import RUNTIME_TOOL_GROUPS
 
-    tools = {tool for pack in TOOL_PACKS for tool in pack.tools}
+    tools = {tool for pack in RUNTIME_TOOL_GROUPS for tool in pack.tools}
 
     # Manifest-backed packs are catalog-side in v1, but they are still valid
     # discovery paths for tool coverage. Keep this independent from

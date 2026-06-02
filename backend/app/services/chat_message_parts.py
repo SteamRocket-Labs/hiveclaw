@@ -77,7 +77,13 @@ def serialize_chat_message(message, sender_name: str | None = None) -> dict[str,
         except Exception:
             data = {}
         event_type = data.get("event_type") or data.get("type")
-        if event_type in {"permission", "session_compact", "pack_activation"}:
+        # Historical reader shim: old persisted system messages carry the legacy
+        # "pack_activation" type. Keep accepting it and normalize to the current
+        # "tool_group_activation" naming on read. This is read-only normalization,
+        # not a dual-write path.
+        if event_type == "pack_activation":
+            event_type = "tool_group_activation"
+        if event_type in {"permission", "session_compact", "tool_group_activation"}:
             entry["role"] = "event"
             entry["content"] = data.get("message") or data.get("summary") or message.content
             entry["eventType"] = event_type
@@ -128,12 +134,18 @@ def serialize_chat_message(message, sender_name: str | None = None) -> dict[str,
                     continuity_sections_injected=data.get("continuity_sections_injected"),
                 )]
             else:
+                # Historical reader shim: normalize legacy "packs" payload to
+                # "tool_groups" on read while still surfacing the old key.
+                _tool_groups = data.get("tool_groups")
+                if _tool_groups is None:
+                    _tool_groups = data.get("packs")
                 entry["parts"] = [_build_event_part(
-                    "pack_activation",
-                    data.get("title", "Capability Packs Activated"),
+                    "tool_group_activation",
+                    data.get("title", "Runtime Tool Groups Activated"),
                     data.get("message", message.content or ""),
                     status=data.get("status", "info"),
                     packs=data.get("packs"),
+                    tool_groups=_tool_groups,
                     skill_name=data.get("skill_name"),
                     trigger_tool=data.get("trigger_tool"),
                 )]
@@ -280,14 +292,18 @@ def build_compaction_event(data: dict[str, Any]) -> dict[str, Any]:
     return event
 
 
-def build_active_packs_event(data: dict[str, Any]) -> dict[str, Any]:
-    event = {"type": "pack_activation", **data}
+def build_tool_group_activation_event(data: dict[str, Any]) -> dict[str, Any]:
+    _tool_groups = data.get("tool_groups")
+    if _tool_groups is None:
+        _tool_groups = data.get("packs")
+    event = {"type": "tool_group_activation", **data}
     event["part"] = _build_event_part(
-        "pack_activation",
-        "Capability Packs Activated",
+        "tool_group_activation",
+        "Runtime Tool Groups Activated",
         data.get("message", ""),
         status=data.get("status", "info"),
         packs=data.get("packs"),
+        tool_groups=_tool_groups,
         skill_name=data.get("skill_name"),
         trigger_tool=data.get("trigger_tool"),
     )

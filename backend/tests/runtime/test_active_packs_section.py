@@ -13,11 +13,11 @@ re-bloat the section.
 
 from __future__ import annotations
 
-from app.runtime.prompt_sections.active_packs import (
+from app.runtime.prompt_sections.active_tool_groups import (
     _DEFAULT_BUDGET_CHARS,
     _SUMMARY_MAX_CHARS,
     _TOOLS_PREVIEW_COUNT,
-    build_active_packs_section,
+    build_active_tool_groups_section,
 )
 
 
@@ -40,14 +40,14 @@ def test_tools_preview_capped_at_5() -> None:
 
 
 def test_empty_packs_returns_empty_string() -> None:
-    assert build_active_packs_section([]) == ""
+    assert build_active_tool_groups_section([]) == ""
 
 
 def test_short_pack_renders_inline_summary_and_tools() -> None:
-    section = build_active_packs_section(
+    section = build_active_tool_groups_section(
         [{"name": "web", "summary": "网页搜索", "tools": ["web_search", "firecrawl_fetch"]}]
     )
-    assert "## Active Capability Packs" in section
+    assert "## Active Runtime Tool Groups" in section
     assert "- web: 网页搜索" in section
     assert "Tools: web_search, firecrawl_fetch" in section
     assert "+0 more" not in section  # no remainder marker when nothing trimmed
@@ -55,7 +55,7 @@ def test_short_pack_renders_inline_summary_and_tools() -> None:
 
 def test_long_summary_is_trimmed_to_cap_with_ellipsis() -> None:
     long_summary = "A" * 200
-    section = build_active_packs_section(
+    section = build_active_tool_groups_section(
         [{"name": "p", "summary": long_summary, "tools": []}]
     )
     head_line = next(line for line in section.splitlines() if line.startswith("- p"))
@@ -66,7 +66,7 @@ def test_long_summary_is_trimmed_to_cap_with_ellipsis() -> None:
 
 def test_summary_collapses_whitespace() -> None:
     """Multi-line summary must not split the bullet across lines."""
-    section = build_active_packs_section(
+    section = build_active_tool_groups_section(
         [{"name": "p", "summary": "line1\nline2\n  line3", "tools": []}]
     )
     assert "- p: line1 line2 line3" in section
@@ -75,7 +75,7 @@ def test_summary_collapses_whitespace() -> None:
 def test_tools_list_truncated_with_remainder_count() -> None:
     """30-tool feishu-style pack should expose 5 + count, not the full list."""
     tools = [f"tool_{i}" for i in range(30)]
-    section = build_active_packs_section([{"name": "feishu", "tools": tools}])
+    section = build_active_tool_groups_section([{"name": "feishu", "tools": tools}])
     assert "tool_0, tool_1, tool_2, tool_3, tool_4 (+25 more)" in section
     # Verify no later tool name leaks through.
     assert "tool_15" not in section
@@ -83,7 +83,7 @@ def test_tools_list_truncated_with_remainder_count() -> None:
 
 
 def test_pack_without_summary_omits_colon() -> None:
-    section = build_active_packs_section([{"name": "p", "tools": ["a"]}])
+    section = build_active_tool_groups_section([{"name": "p", "tools": ["a"]}])
     head_line = next(line for line in section.splitlines() if line.startswith("- p"))
     assert head_line == "- p"
 
@@ -93,7 +93,7 @@ def test_section_respects_explicit_budget_with_truncation_marker() -> None:
         {"name": f"pack_{i}", "summary": "x" * 80, "tools": [f"t_{j}" for j in range(10)]}
         for i in range(20)
     ]
-    section = build_active_packs_section(packs, budget_chars=300)
+    section = build_active_tool_groups_section(packs, budget_chars=300)
     assert len(section) <= 300
     assert section.endswith("...")
 
@@ -107,5 +107,5 @@ def test_total_size_for_typical_three_packs_stays_under_500_chars() -> None:
         {"name": "feishu", "summary": "Feishu office suite", "tools": [f"feishu_op_{i}" for i in range(35)]},
         {"name": "email", "summary": "SMTP/IMAP email", "tools": ["smtp_send", "imap_fetch", "imap_search"]},
     ]
-    section = build_active_packs_section(packs)
+    section = build_active_tool_groups_section(packs)
     assert len(section) < 500

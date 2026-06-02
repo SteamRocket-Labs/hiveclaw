@@ -109,7 +109,7 @@ async def test_prompt_builder_includes_active_packs_section(monkeypatch):
         system_prompt_suffix="",
         runtime_context=RuntimeContext(
             session=SessionContext(
-                active_packs=[
+                active_tool_groups=[
                     {
                         "name": "web_pack",
                         "summary": "网页搜索与抓取能力",
@@ -120,7 +120,7 @@ async def test_prompt_builder_includes_active_packs_section(monkeypatch):
         ),
     )
 
-    assert "## Active Capability Packs" in prompt
+    assert "## Active Runtime Tool Groups" in prompt
     assert "web_pack" in prompt
     assert "web_search, firecrawl_fetch" in prompt
 
@@ -185,7 +185,7 @@ def test_dynamic_suffix_trims_large_retrieval_but_keeps_suffix():
 
     retrieval = "\n".join(f"- item {i} {'x' * 80}" for i in range(80))
     suffix = build_dynamic_prompt_suffix(
-        active_packs=[],
+        active_tool_groups=[],
         retrieval_context=retrieval,
         system_prompt_suffix="FINAL_SUFFIX",
     )

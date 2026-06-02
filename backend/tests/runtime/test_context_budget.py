@@ -68,7 +68,7 @@ def test_compute_context_budget_256k_research_is_more_aggressive():
     assert budget.system_prompt_budget_chars == 179200
     assert budget.retrieval_budget_chars >= 12000
     assert budget.knowledge_budget_chars >= 4000
-    assert budget.active_packs_budget_chars >= 4000
+    assert budget.active_tool_groups_budget_chars >= 4000
     assert budget.memory_budget_chars >= 24000
     assert budget.restore_budget_chars >= 60000
     assert budget.skill_catalog_budget_chars >= 6000

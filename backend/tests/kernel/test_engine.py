@@ -810,7 +810,7 @@ async def test_agent_kernel_prefers_declared_tool_subset_after_load_skill():
                     },
                 }
             ],
-            active_packs=[
+            active_tool_groups=[
                 {
                     "name": "web_pack",
                     "summary": "网页搜索与抓取能力",
@@ -819,8 +819,16 @@ async def test_agent_kernel_prefers_declared_tool_subset_after_load_skill():
                 }
             ],
             event_payload={
-                "type": "pack_activation",
+                "type": "tool_group_activation",
                 "packs": [
+                    {
+                        "name": "web_pack",
+                        "summary": "网页搜索与抓取能力",
+                        "tools": ["web_search"],
+                        "source": "system",
+                    }
+                ],
+                "tool_groups": [
                     {
                         "name": "web_pack",
                         "summary": "网页搜索与抓取能力",
@@ -891,8 +899,8 @@ async def test_agent_kernel_prefers_declared_tool_subset_after_load_skill():
     assert expansion_calls == [("load_skill", {"name": "web research"})]
     assert fake_client.calls[0]["tools"][0]["function"]["name"] == "core_tool"
     assert fake_client.calls[1]["tools"][0]["function"]["name"] == "web_search"
-    assert emitted_events[0]["type"] == "pack_activation"
-    assert emitted_events[0]["packs"][0]["name"] == "web_pack"
+    assert emitted_events[0]["type"] == "tool_group_activation"
+    assert emitted_events[0]["tool_groups"][0]["name"] == "web_pack"
 
 
 @pytest.mark.asyncio

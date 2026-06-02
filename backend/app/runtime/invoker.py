@@ -53,7 +53,7 @@ from app.services.token_tracker import (
     record_token_usage,
 )
 from app.tools import ensure_workspace
-from app.tools.packs import TOOL_PACKS, pack_for_name
+from app.tools.runtime_tool_groups import RUNTIME_TOOL_GROUPS, runtime_tool_group_for_name
 
 logger = logging.getLogger(__name__)
 
@@ -310,7 +310,7 @@ def _last_user_query(messages: list[dict]) -> str:
 
 def _resolve_context_budget(request: AgentInvocationRequest) -> ContextBudget:
     context_window_tokens = getattr(request.model, "max_input_tokens", None) if request.model else None
-    active_pack_count = len(request.session_context.active_packs) if request.session_context else 0
+    active_pack_count = len(request.session_context.active_tool_groups) if request.session_context else 0
     budget_profile = compute_context_budget(
         context_window_tokens=context_window_tokens,
         query=_last_user_query(request.messages),
@@ -523,7 +523,7 @@ def _tool_names_from_openai_tools(tools: list[dict]) -> list[str]:
     ]
 
 
-def _infer_active_packs(
+def _infer_active_tool_groups(
     tool_names: list[str],
     *,
     skill_name: str | None = None,
@@ -531,13 +531,15 @@ def _infer_active_packs(
 ) -> list[dict[str, Any]]:
     requested = set(tool_names)
     packs = [
-        _serialize_pack(pack) for pack in TOOL_PACKS if pack.infer_from_tools and requested.intersection(pack.tools)
+        _serialize_pack(pack)
+        for pack in RUNTIME_TOOL_GROUPS
+        if pack.infer_from_tools and requested.intersection(pack.tools)
     ]
     existing_names = {pack["name"] for pack in packs}
     for pack_name in declared_pack_names or []:
         if pack_name in existing_names:
             continue
-        pack = pack_for_name(pack_name)
+        pack = runtime_tool_group_for_name(pack_name)
         if pack:
             packs.append(_serialize_pack(pack))
             existing_names.add(pack_name)
@@ -570,7 +572,7 @@ def _declared_skill_tool_names(
             seen.add(tool_name)
 
     for pack_name in declared_packs or ():
-        pack = pack_for_name(pack_name)
+        pack = runtime_tool_group_for_name(pack_name)
         if not pack:
             continue
         for tool_name in pack.tools:
@@ -603,14 +605,15 @@ async def _resolve_tool_expansion(
         expanded_tool_names = _tool_names_from_openai_tools(tools)
         if not expanded_tool_names:
             return None
-        packs = _infer_active_packs(expanded_tool_names)
+        packs = _infer_active_tool_groups(expanded_tool_names)
         return ToolExpansionResult(
             tools=tools,
-            active_packs=packs,
+            active_tool_groups=packs,
             event_payload={
-                "type": "pack_activation",
+                "type": "tool_group_activation",
                 "packs": packs,
-                "message": "Activated MCP capability pack.",
+                "tool_groups": packs,
+                "message": "Activated MCP runtime tool group.",
                 "status": "info",
                 "trigger_tool": tool_name,
             },
@@ -653,18 +656,19 @@ async def _resolve_tool_expansion(
         expanded_tool_names = _tool_names_from_openai_tools(tools)
         if not expanded_tool_names:
             return None
-        packs = _infer_active_packs(
+        packs = _infer_active_tool_groups(
             expanded_tool_names,
             skill_name=skill.metadata.name,
             declared_pack_names=list(skill.metadata.declared_packs),
         )
         return ToolExpansionResult(
             tools=tools,
-            active_packs=packs,
+            active_tool_groups=packs,
             event_payload={
-                "type": "pack_activation",
+                "type": "tool_group_activation",
                 "packs": packs,
-                "message": f"Activated capability packs after loading skill: {skill.metadata.name}",
+                "tool_groups": packs,
+                "message": f"Activated runtime tool groups after loading skill: {skill.metadata.name}",
                 "status": "info",
                 "skill_name": skill.metadata.name,
                 "trigger_tool": tool_name,
@@ -702,18 +706,19 @@ async def _resolve_tool_expansion(
         expanded_tool_names = _tool_names_from_openai_tools(tools)
         if not expanded_tool_names:
             return None
-        packs = _infer_active_packs(
+        packs = _infer_active_tool_groups(
             expanded_tool_names,
             skill_name=parsed.metadata.name,
             declared_pack_names=list(parsed.metadata.declared_packs),
         )
         return ToolExpansionResult(
             tools=tools,
-            active_packs=packs,
+            active_tool_groups=packs,
             event_payload={
-                "type": "pack_activation",
+                "type": "tool_group_activation",
                 "packs": packs,
-                "message": f"Activated capability packs from skill file: {parsed.metadata.name}",
+                "tool_groups": packs,
+                "message": f"Activated runtime tool groups from skill file: {parsed.metadata.name}",
                 "status": "info",
                 "skill_name": parsed.metadata.name,
                 "trigger_tool": tool_name,
@@ -810,9 +815,9 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
         if core_only and request.session_context:
             _source = request.session_context.source
             if _source == "feishu":
-                from app.tools.packs import pack_for_name
+                from app.tools.runtime_tool_groups import runtime_tool_group_for_name
 
-                _pack = pack_for_name("feishu_pack")
+                _pack = runtime_tool_group_for_name("feishu_pack")
                 if _pack:
                     _channel_tools = list(_pack.tools)
         tools = await _maybe_await(

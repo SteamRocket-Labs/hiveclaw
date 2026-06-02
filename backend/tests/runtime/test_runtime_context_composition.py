@@ -53,7 +53,7 @@ def test_for_invocation_attaches_explicit_budget() -> None:
     budget = ContextBudget(
         task_profile=profile,
         system_prompt_budget_chars=60000,
-        active_packs_budget_chars=2000,
+        active_tool_groups_budget_chars=2000,
         retrieval_budget_chars=3000,
         knowledge_budget_chars=2000,
         memory_budget_chars=12000,

@@ -207,7 +207,7 @@ async def test_tool_expansion_rebuild_preserves_dynamic_memory_and_effective_suf
                 {"type": "function", "function": {"name": "delegate_to_agent", "description": "", "parameters": {}}},
                 {"type": "function", "function": {"name": "web_search", "description": "", "parameters": {}}},
             ],
-            active_packs=[{"name": "web_pack", "summary": "web research tools", "tools": ["web_search"]}],
+            active_tool_groups=[{"name": "web_pack", "summary": "web research tools", "tools": ["web_search"]}],
         )
 
     kernel = AgentKernel(

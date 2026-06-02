@@ -20,7 +20,12 @@ from app.services.pack_policy_service import get_tenant_pack_policies, is_pack_e
 from app.services.token_tracker import estimate_tokens_from_chars
 from app.skills.types import ParsedSkill
 from app.tools import ensure_workspace
-from app.tools.packs import TOOL_PACKS, ToolPackSpec, infer_static_pack_names, pack_for_name
+from app.tools.runtime_tool_groups import (
+    RUNTIME_TOOL_GROUPS,
+    RuntimeToolGroupSpec,
+    infer_static_runtime_tool_group_names,
+    runtime_tool_group_for_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +85,8 @@ _CHANNEL_PACK_MAP = {
 }
 
 
-def _pack_to_dict(pack: ToolPackSpec) -> dict:
-    """Serialize a ToolPackSpec with capability annotations."""
+def _pack_to_dict(pack: RuntimeToolGroupSpec) -> dict:
+    """Serialize a RuntimeToolGroupSpec with capability annotations."""
     capabilities = set()
     for tool in pack.tools:
         cap = CAPABILITY_MAP.get(tool)
@@ -147,7 +152,7 @@ def _load_manifest_pack_catalog() -> list[dict]:
 
 def get_pack_catalog() -> list[dict]:
     """Return full pack catalog with capability annotations."""
-    catalog_by_name = {pack.name: _pack_to_dict(pack) for pack in TOOL_PACKS}
+    catalog_by_name = {pack.name: _pack_to_dict(pack) for pack in RUNTIME_TOOL_GROUPS}
     for manifest_pack in _load_manifest_pack_catalog():
         catalog_by_name[manifest_pack["name"]] = manifest_pack
     return list(catalog_by_name.values())
@@ -218,8 +223,8 @@ def _summarize_chat_messages(messages: list) -> dict:
         event_data = _load_json_content(getattr(msg, "content", ""))
         event_type = event_data.get("event_type") or event_data.get("type")
 
-        if event_type == "pack_activation":
-            for pack in event_data.get("packs", []):
+        if event_type in ("pack_activation", "tool_group_activation"):
+            for pack in event_data.get("tool_groups") or event_data.get("packs", []):
                 name = pack.get("name") if isinstance(pack, dict) else str(pack)
                 if name and name not in activated_packs:
                     activated_packs.append(name)
@@ -308,11 +313,9 @@ def collect_skill_declared_packs(skills: list[ParsedSkill]) -> list[dict]:
 
     for skill in skills:
         explicit_packs = tuple(
-            pack_name
-            for pack_name in [*(skill.metadata.declared_packs or ()), skill.metadata.pack]
-            if pack_name
+            pack_name for pack_name in [*(skill.metadata.declared_packs or ()), skill.metadata.pack] if pack_name
         )
-        inferred_packs = infer_static_pack_names(skill.metadata.declared_tools)
+        inferred_packs = infer_static_runtime_tool_group_names(skill.metadata.declared_tools)
         pack_names: list[tuple[str, bool]] = []
         seen: set[str] = set()
         for pack_name in [*explicit_packs, *inferred_packs]:
@@ -323,7 +326,7 @@ def collect_skill_declared_packs(skills: list[ParsedSkill]) -> list[dict]:
             declared_tools = tuple(skill.metadata.declared_tools)
             pack_tools = declared_tools
             if not is_explicit:
-                base = pack_for_name(pack_name)
+                base = runtime_tool_group_for_name(pack_name)
                 if base:
                     allowed_tools = set(base.tools)
                     pack_tools = tuple(tool for tool in declared_tools if tool in allowed_tools)
@@ -389,7 +392,7 @@ async def get_agent_packs(db: AsyncSession, agent_id: uuid.UUID) -> dict:
 
     available = []
     channel_backed = []
-    for pack in TOOL_PACKS:
+    for pack in RUNTIME_TOOL_GROUPS:
         pack_dict = _pack_to_dict(pack)
         pack_dict["enabled"] = is_pack_enabled(pack_policies, pack.name)
         if not pack_dict["enabled"]:
@@ -407,7 +410,7 @@ async def get_agent_packs(db: AsyncSession, agent_id: uuid.UUID) -> dict:
     for pack in await _load_agent_skill_declared_packs(agent_id):
         if not is_pack_enabled(pack_policies, pack["name"]):
             continue
-        base = pack_for_name(pack["name"])
+        base = runtime_tool_group_for_name(pack["name"])
         skill_declared_packs.append(
             {
                 **pack,
@@ -558,9 +561,7 @@ async def get_session_runtime_summary(db: AsyncSession, session_id: uuid.UUID) -
     summary["runtime"] = {
         "estimated_input_tokens": estimated_input_tokens,
         "remaining_tokens_estimate": (
-            max(context_window_tokens - estimated_input_tokens, 0)
-            if isinstance(context_window_tokens, int)
-            else None
+            max(context_window_tokens - estimated_input_tokens, 0) if isinstance(context_window_tokens, int) else None
         ),
     }
     return summary

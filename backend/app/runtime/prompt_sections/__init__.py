@@ -15,13 +15,13 @@ FROZEN PREFIX (session-stable):
 DYNAMIC SUFFIX (per-round):
   § Memory — 4-layer pyramid + current T3 snapshot (memory.py)
   § Task Playbook — task-aware scenario addenda (scenario.py)
-  § Active Packs — capability packs in session (active_packs.py)
+  § Active Runtime Tool Groups — tool groups in session (active_tool_groups.py)
   § Knowledge — external knowledge retrieval (knowledge.py)
   § Environment — user, channel, timestamp (environment.py)
   § Triggers — active triggers (triggers.py)
 """
 
-from .active_packs import build_active_packs_section
+from .active_tool_groups import build_active_tool_groups_section
 from .environment import build_environment_section
 from .executing_actions import build_executing_actions_section
 from .identity import build_identity_section
@@ -49,7 +49,7 @@ __all__ = [
     # Dynamic suffix
     "build_memory_section",
     "build_scenario_section",
-    "build_active_packs_section",
+    "build_active_tool_groups_section",
     "build_knowledge_section",
     "build_environment_section",
     "build_triggers_section",

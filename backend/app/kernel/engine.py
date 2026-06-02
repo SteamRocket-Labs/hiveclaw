@@ -21,11 +21,11 @@ from app.kernel.contracts import InvocationRequest, InvocationResult, RuntimeCon
 from app.kernel.loop_guard import LoopGuard, LoopGuardDecision
 from app.runtime.session import SessionContext
 from app.services.chat_message_parts import (
-    build_active_packs_event,
     build_compaction_event,
     build_done_event,
     build_permission_event,
     build_tool_call_event,
+    build_tool_group_activation_event,
 )
 from app.services.llm_error_policy import classify_llm_error, should_surface_without_model_fallback
 from app.services.llm_reasoning import build_reasoning_kwargs, resolve_temperature
@@ -163,7 +163,7 @@ class KernelDependencies:
 @dataclass(slots=True)
 class ToolExpansionResult:
     tools: list[dict]
-    active_packs: list[dict[str, Any]]
+    active_tool_groups: list[dict[str, Any]]
     event_payload: dict[str, Any] | None = None
 
 
@@ -305,10 +305,10 @@ def _event_to_part(event: dict[str, Any]) -> dict[str, Any] | None:
         payload = dict(event)
         payload.pop("type", None)
         return build_compaction_event(payload)["part"]
-    if event_type == "pack_activation":
+    if event_type == "tool_group_activation":
         payload = dict(event)
         payload.pop("type", None)
-        return build_active_packs_event(payload)["part"]
+        return build_tool_group_activation_event(payload)["part"]
     if isinstance(event.get("part"), dict):
         return event["part"]
     return None
@@ -325,22 +325,22 @@ def _should_expand_tools(tool_name: str, args: dict[str, Any]) -> bool:
     return False
 
 
-def _merge_active_packs(
+def _merge_active_tool_groups(
     session_context,
-    packs: list[dict[str, Any]],
+    tool_groups: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    existing = list(getattr(session_context, "active_packs", []) or [])
+    existing = list(getattr(session_context, "active_tool_groups", []) or [])
     existing_names = {pack.get("name") for pack in existing}
-    new_packs: list[dict[str, Any]] = []
-    for pack in packs:
+    new_tool_groups: list[dict[str, Any]] = []
+    for pack in tool_groups:
         name = pack.get("name")
         if not name or name in existing_names:
             continue
         existing.append(pack)
-        new_packs.append(pack)
+        new_tool_groups.append(pack)
         existing_names.add(name)
-    session_context.active_packs = existing
-    return new_packs
+    session_context.active_tool_groups = existing
+    return new_tool_groups
 
 
 _PARALLEL_SEMAPHORE_LIMIT = 4
@@ -1160,14 +1160,14 @@ def _build_restoration_context(
             parts.append(f"### Active Skills\n{skills_line}")
             total += len(skills_line)
 
-    # ── 7: Active packs summary ──
-    if session_context and getattr(session_context, "active_packs", None):
-        pack_names = [p.get("name", "?") for p in session_context.active_packs if isinstance(p, dict)]
-        if pack_names:
-            packs_line = ", ".join(pack_names)
-            if total + len(packs_line) < _restore_budget:
-                parts.append(f"### Active Packs\n{packs_line}")
-                total += len(packs_line)
+    # ── 7: Active runtime tool groups summary ──
+    if session_context and getattr(session_context, "active_tool_groups", None):
+        tool_group_names = [p.get("name", "?") for p in session_context.active_tool_groups if isinstance(p, dict)]
+        if tool_group_names:
+            tool_groups_line = ", ".join(tool_group_names)
+            if total + len(tool_groups_line) < _restore_budget:
+                parts.append(f"### Active Runtime Tool Groups\n{tool_groups_line}")
+                total += len(tool_groups_line)
 
     # ── 8: Recent external references ── (P0.5)
     if session_context and getattr(session_context, "recent_external_refs", None):
@@ -1435,7 +1435,7 @@ class AgentKernel:
             if _cache_valid and _cached_prefix:
                 # Session has a valid frozen prefix — only rebuild dynamic suffix
                 dynamic_suffix = build_dynamic_prompt_suffix(
-                    active_packs=session_ctx.active_packs if session_ctx else [],
+                    active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                     memory_snapshot=resolved_memory_context,
                     retrieval_context=resolved_retrieval_context,
                     system_prompt_suffix=_effective_suffix,
@@ -1465,7 +1465,7 @@ class AgentKernel:
                     _store_prompt_prefix_cache(session_ctx, prompt_prefix, _prompt_cache_key)
                     session_ctx._memory_hash = hashlib.sha256(resolved_memory_context.encode("utf-8")).hexdigest()[:16]
                 dynamic_suffix = build_dynamic_prompt_suffix(
-                    active_packs=session_ctx.active_packs if session_ctx else [],
+                    active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                     memory_snapshot=resolved_memory_context,
                     retrieval_context=resolved_retrieval_context,
                     system_prompt_suffix=_effective_suffix,
@@ -1599,7 +1599,7 @@ class AgentKernel:
                                                 "recent_writes": manifest.recent_writes,
                                                 "recent_tool_outcomes": manifest.recent_tool_outcomes,
                                                 "active_skills": manifest.active_skills,
-                                                "active_packs": manifest.active_packs,
+                                                "active_tool_groups": manifest.active_tool_groups,
                                                 "recent_external_refs": manifest.recent_external_refs,
                                                 "pending_items": manifest.pending_items,
                                                 "blocked_patterns": manifest.blocked_patterns,
@@ -1821,7 +1821,7 @@ class AgentKernel:
                                         _truncated = _truncate_head_for_ptl(api_messages[1:], drop_ratio=0.2)
                                         # Rebuild system prompt
                                         _ptl_dynamic = build_dynamic_prompt_suffix(
-                                            active_packs=session_ctx.active_packs if session_ctx else [],
+                                            active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                                             memory_snapshot=resolved_memory_context,
                                             retrieval_context=resolved_retrieval_context,
                                             system_prompt_suffix=_effective_suffix,
@@ -1890,7 +1890,7 @@ class AgentKernel:
                                         _after_chars = sum(len(d.get("content", "") or "") for d in compressed)
                                         if _after_chars < _before_chars * 0.8:
                                             _ptl_dynamic = build_dynamic_prompt_suffix(
-                                                active_packs=session_ctx.active_packs if session_ctx else [],
+                                                active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                                                 memory_snapshot=resolved_memory_context,
                                                 retrieval_context=resolved_retrieval_context,
                                                 system_prompt_suffix=_effective_suffix,
@@ -2359,13 +2359,17 @@ class AgentKernel:
                                         session_context = request.session_context
                                         if session_context is None:
                                             session_context = request.session_context = SessionContext()
-                                        new_packs = _merge_active_packs(session_context, expansion_payload.active_packs)
-                                        if new_packs:
+                                        new_tool_groups = _merge_active_tool_groups(
+                                            session_context, expansion_payload.active_tool_groups
+                                        )
+                                        if new_tool_groups:
                                             # P1.10: Delayed loading metrics
                                             _new_tool_count = sum(
-                                                len(p.get("tools", [])) for p in new_packs if isinstance(p, dict)
+                                                len(p.get("tools", [])) for p in new_tool_groups if isinstance(p, dict)
                                             )
-                                            _pack_names = [p.get("name", "?") for p in new_packs if isinstance(p, dict)]
+                                            _pack_names = [
+                                                p.get("name", "?") for p in new_tool_groups if isinstance(p, dict)
+                                            ]
                                             logger.info(
                                                 "[Kernel] Tool expansion: +%d tools via %s (trigger: %s)",
                                                 _new_tool_count,
@@ -2376,13 +2380,14 @@ class AgentKernel:
                                                     "trigger_tool": tool_name,
                                                     "pack_names": _pack_names,
                                                     "new_tool_count": _new_tool_count,
-                                                    "total_packs": len(session_context.active_packs),
+                                                    "total_packs": len(session_context.active_tool_groups),
                                                 },
                                             )
                                             event_payload = expansion_payload.event_payload or {
-                                                "type": "pack_activation",
-                                                "packs": new_packs,
-                                                "message": "Activated capability packs for this task.",
+                                                "type": "tool_group_activation",
+                                                "packs": new_tool_groups,
+                                                "tool_groups": new_tool_groups,
+                                                "message": "Activated runtime tool groups for this task.",
                                                 "status": "info",
                                             }
                                             await _emit_event(event_payload)
@@ -2415,7 +2420,7 @@ class AgentKernel:
                                             system_prompt = assemble_runtime_prompt(
                                                 prompt_prefix,
                                                 build_dynamic_prompt_suffix(
-                                                    active_packs=session_context.active_packs,
+                                                    active_tool_groups=session_context.active_tool_groups,
                                                     memory_snapshot=resolved_memory_context,
                                                     retrieval_context=resolved_retrieval_context,
                                                     system_prompt_suffix=_effective_suffix,

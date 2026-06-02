@@ -34,7 +34,7 @@ from app.tools import (
     ToolRuntimeService,
     run_tool_governance,
 )
-from app.tools.packs import make_mcp_server_pack_name, static_pack_names_for_tool
+from app.tools.runtime_tool_groups import make_mcp_server_pack_name, static_runtime_tool_group_names_for_tool
 
 logger = logging.getLogger(__name__)
 
@@ -439,7 +439,7 @@ async def get_agent_tools_for_llm(
                     ):
                         continue
 
-                static_packs = set(static_pack_names_for_tool(t.name))
+                static_packs = set(static_runtime_tool_group_names_for_tool(t.name))
                 if t.type == "mcp":
                     static_packs.add(make_mcp_server_pack_name(t.mcp_server_name, t.mcp_server_url))
                 if static_packs and not any(is_pack_enabled(pack_policies, pack_name) for pack_name in static_packs):

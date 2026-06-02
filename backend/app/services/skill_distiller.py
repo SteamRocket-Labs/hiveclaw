@@ -32,7 +32,7 @@ from app.services.skill_lifecycle import (
 )
 from app.skills import SkillParser, WorkspaceSkillLoader
 from app.tools.collector import collect_tools
-from app.tools.packs import TOOL_PACKS, infer_static_pack_names
+from app.tools.runtime_tool_groups import RUNTIME_TOOL_GROUPS, infer_static_runtime_tool_group_names
 from app.services.llm_client import LLMMessage, create_llm_client
 
 logger = logging.getLogger(__name__)
@@ -191,7 +191,7 @@ def _available_tool_names() -> set[str]:
 
 
 def _available_pack_names() -> set[str]:
-    return {pack.name for pack in TOOL_PACKS}
+    return {pack.name for pack in RUNTIME_TOOL_GROUPS}
 
 
 def _existing_skills(workspace: Path):
@@ -715,7 +715,7 @@ async def run_skill_distillation_cycle(
         model=model,
         workflow_signature=record.workflow_signature,
         evidence=evidence_for_candidate,
-        declared_packs=infer_static_pack_names(
+        declared_packs=infer_static_runtime_tool_group_names(
             list(_build_workflow_signature(evidence_for_candidate[0].tool_names).normalized_tools)
         )
         if evidence_for_candidate
@@ -733,7 +733,7 @@ async def run_skill_distillation_cycle(
         description=draft.description,
         instructions=draft.instructions_markdown,
         declared_tools=draft.declared_tools,
-        declared_packs=draft.declared_packs or infer_static_pack_names(list(draft.declared_tools)),
+        declared_packs=draft.declared_packs or infer_static_runtime_tool_group_names(list(draft.declared_tools)),
     )
     validation_errors = validate_distilled_skill(workspace=workspace, draft=draft, rendered_markdown=rendered)
     if validation_errors:
@@ -799,7 +799,7 @@ async def run_skill_distillation_cycle(
         description=draft.description,
         instructions=draft.instructions_markdown,
         declared_tools=draft.declared_tools,
-        declared_packs=draft.declared_packs or infer_static_pack_names(list(draft.declared_tools)),
+        declared_packs=draft.declared_packs or infer_static_runtime_tool_group_names(list(draft.declared_tools)),
         overwrite=False,
     )
     if "✅" not in save_result:

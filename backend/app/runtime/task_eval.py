@@ -12,7 +12,7 @@ from app.runtime.prompt_eval import PromptEvalInputs, evaluate_runtime_prompt_co
 from app.runtime.prompt_builder import build_dynamic_prompt_suffix
 from app.services.agent_tools import CORE_TOOL_NAMES
 from app.skills.parser import SkillParser
-from app.tools.packs import pack_for_name
+from app.tools.runtime_tool_groups import runtime_tool_group_for_name
 
 
 @dataclass(slots=True, frozen=True)
@@ -220,7 +220,7 @@ def _runtime_skill_tool_names(inputs: TaskEvalInputs | None) -> set[str]:
                 continue
             declared_tools.update(parsed.metadata.declared_tools)
             for pack_name in parsed.metadata.declared_packs:
-                pack = pack_for_name(pack_name)
+                pack = runtime_tool_group_for_name(pack_name)
                 if pack:
                     declared_tools.update(pack.tools)
     return declared_tools
@@ -253,7 +253,7 @@ def _default_scenario_prompt(name: str, query: str) -> str:
     if name == "long_context_after_compaction":
         memory_snapshot = "T3 snapshot:\n- earlier decision survived compaction\n- use transcript evidence and continuity artifacts"
     prompt = build_dynamic_prompt_suffix(
-        active_packs=[],
+        active_tool_groups=[],
         retrieval_context=retrieval_context if name == "research" else "",
         budget_profile=budget,
         latest_user_query=query,

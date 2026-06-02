@@ -23,13 +23,13 @@ from app.models.runtime_task import RuntimeTask
 from app.models.user import User
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.services.chat_message_parts import (
-    build_active_packs_event,
     build_chunk_event,
     build_compaction_event,
     build_done_event,
     build_permission_event,
     build_thinking_event,
     build_tool_call_event,
+    build_tool_group_activation_event,
 )
 from app.services.llm_error_policy import is_llm_error_message
 from app.services import plan_mode_core
@@ -845,12 +845,14 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 event_payload = build_permission_event(data)
             elif data.get("type") == "session_compact":
                 event_payload = build_compaction_event(data)
-            elif data.get("type") == "pack_activation":
-                event_payload = build_active_packs_event(data)
+            # "pack_activation" retained as a historical reader shim alongside the
+            # current "tool_group_activation" type; both map to the same builder.
+            elif data.get("type") in {"tool_group_activation", "pack_activation"}:
+                event_payload = build_tool_group_activation_event(data)
             else:
                 event_payload = data
             await broadcast_web_chat_event(agent.id, session_id, event_payload)
-            if data.get("type") in {"permission", "session_compact", "pack_activation"}:
+            if data.get("type") in {"permission", "session_compact", "tool_group_activation", "pack_activation"}:
                 await _persist_runtime_event(agent_id=agent.id, user_id=user.id, session_id=session_id, data=data)
 
         pending_reply_suffix = ""

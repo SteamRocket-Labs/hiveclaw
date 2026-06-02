@@ -867,3 +867,15 @@ Data foundation, second half (transform). The legacy-to-records transform is a p
 - `backend/app/services/mcp_backfill_service.py` — `backfill_tenant_mcp_servers(db, tenant_id)` reads legacy `Tool(type="mcp")` + `AgentTool` rows (joined via agent association, matching `list_tenant_mcp_servers`), delegates the transform to the Part 2a functional core, and writes `MCPServer` / `MCPServerTool` / `AgentMCPServerAssignment` / `AgentMCPToolOverride`. Idempotent per tenant (skips a tenant that already has server rows) — the forward-fix path.
 - Evidence: `pytest tests/services/test_mcp_backfill_service.py` → **3 passed** (writes records + parity deny override for a pre-disabled tool; idempotent skip; empty tenant). Combined backfill suite **15 passed**. ruff clean.
 - Trigger wiring: `backfill_tenant_mcp_servers` is invoked by the admin endpoint added in Part 4; until then it is callable but not yet routed (tracked, not orphaned).
+
+### Part 3 — Runtime pack→runtime_tool_group rename ✅
+
+Cutover, runtime layer. The legacy "pack" vocabulary is gone from runtime code; "runtime tool group" is the internal name. 18 app files + 11 test files.
+
+- `app/tools/packs.py` → `app/tools/runtime_tool_groups.py`; `ToolPackSpec`→`RuntimeToolGroupSpec`, `TOOL_PACKS`→`RUNTIME_TOOL_GROUPS`, `pack_for_name`→`runtime_tool_group_for_name`, `infer_static_pack_names`→`infer_static_runtime_tool_group_names`, `iter_tool_packs`→`iter_runtime_tool_groups`, `static_pack_names_for_tool`→`static_runtime_tool_group_names_for_tool`, `build_active_packs_section`→`build_active_tool_groups_section`.
+- `app/runtime/prompt_sections/active_packs.py` → `active_tool_groups.py`; `SessionContext.active_packs` → `active_tool_groups` (+ `RecoveryManifest`, `ToolExpansionResult`, `ContextBudget.active_tool_groups_budget_chars`, prompt builder). Heading `Active Capability Packs` → `Active Runtime Tool Groups`.
+- New runtime events emit `tool_group_activation` (kernel/engine.py + invoker.py ×3), carrying both `tool_groups` and legacy `packs` keys, title `Runtime Tool Groups Activated`.
+- Historical compatibility: `chat_message_parts.py` + `web_chat_runtime.py` still read old persisted `pack_activation` and normalize to `tool_group_activation` on read (reader shim, not dual-write). `pack_service.py` summary reader accepts both event types so new activations are not lost before Part 4.
+- Kept for Part 4: `make_mcp_server_pack_name()` and `api/packs.py` routes untouched.
+
+Evidence: `import app.main` OK; `ContextBudget` field present; ruff clean; targeted suite (prompt_builder, recovery_manifest, engine, chat_message_parts) **78 passed**; subagent's broader run **528 passed**. Grep confirms no residual `ToolPackSpec` / `TOOL_PACKS` / `active_packs` / `pack_for_name` in `app/`. (Executed via an isolated subagent; reviewed by re-running import + targeted tests + grep here — a stale mid-edit diagnostic that flagged two symbols was disproven by the final-state grep and green tests.)

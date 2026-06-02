@@ -42,7 +42,7 @@ class TurnModelRoute:
 class ContextBudget:
     task_profile: TaskProfile
     system_prompt_budget_chars: int
-    active_packs_budget_chars: int
+    active_tool_groups_budget_chars: int
     retrieval_budget_chars: int
     knowledge_budget_chars: int
     memory_budget_chars: int
@@ -512,7 +512,7 @@ def compute_context_budget(
     complexity_bonus = {"low": 0, "medium": 1, "high": 2}[profile.complexity]
     large_context_bonus = 2 if system_budget >= 80000 else 0
 
-    active_packs_budget = _clamp(
+    active_tool_groups_budget = _clamp(
         int(system_budget * 0.04) + active_pack_count * 500,
         2000,
         12000,
@@ -540,7 +540,7 @@ def compute_context_budget(
     return ContextBudget(
         task_profile=profile,
         system_prompt_budget_chars=system_budget,
-        active_packs_budget_chars=active_packs_budget,
+        active_tool_groups_budget_chars=active_tool_groups_budget,
         retrieval_budget_chars=retrieval_budget,
         knowledge_budget_chars=knowledge_budget,
         memory_budget_chars=memory_budget,

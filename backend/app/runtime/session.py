@@ -104,7 +104,7 @@ class SessionContext:
     session_id: str | None = None
     source: str = "runtime"
     channel: str | None = None
-    active_packs: list[dict[str, Any]] = field(default_factory=list)
+    active_tool_groups: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     # Plan Mode as a first-class runtime state. The legacy mirror still lives in
     # ``metadata["plan_mode"]`` (written by _activate_interactive_plan_mode) for

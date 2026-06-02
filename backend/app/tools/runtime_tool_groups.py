@@ -1,4 +1,4 @@
-"""Tool pack metadata for minimal-by-default expansion."""
+"""Runtime tool group metadata for minimal-by-default expansion."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 
 @dataclass(frozen=True, slots=True)
-class ToolPackSpec:
+class RuntimeToolGroupSpec:
     name: str
     summary: str
     source: str
@@ -17,15 +17,15 @@ class ToolPackSpec:
     infer_from_tools: bool = True
 
 
-TOOL_PACKS: tuple[ToolPackSpec, ...] = (
-    ToolPackSpec(
+RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = (
+    RuntimeToolGroupSpec(
         name="web_pack",
         summary="网页搜索与抓取能力，用于公开信息检索与网页内容提取。",
         source="system",
         activation_mode="通过 web research 等 skill 间接激活",
         tools=("web_search", "web_fetch", "firecrawl_fetch", "xcrawl_scrape"),
     ),
-    ToolPackSpec(
+    RuntimeToolGroupSpec(
         name="feishu_pack",
         summary="飞书消息、文档、知识库、表格、Base、审批、任务与日历能力。",
         source="channel",
@@ -63,7 +63,7 @@ TOOL_PACKS: tuple[ToolPackSpec, ...] = (
             "feishu_calendar_delete",
         ),
     ),
-    ToolPackSpec(
+    RuntimeToolGroupSpec(
         name="plaza_pack",
         summary="共享广场动态浏览、发帖与评论能力，用于人和 agent 的公共协作 feed。",
         source="system",
@@ -74,14 +74,14 @@ TOOL_PACKS: tuple[ToolPackSpec, ...] = (
             "plaza_add_comment",
         ),
     ),
-    ToolPackSpec(
+    RuntimeToolGroupSpec(
         name="email_pack",
         summary="邮件发送、阅读与回复能力，通过 SMTP/IMAP 连接。",
         source="system",
         activation_mode="通过 email-guide skill 间接激活",
         tools=("send_email", "read_emails", "reply_email"),
     ),
-    ToolPackSpec(
+    RuntimeToolGroupSpec(
         name="mcp_admin_pack",
         summary="MCP 资源发现、导入与资源读取能力。",
         source="mcp",
@@ -94,7 +94,7 @@ TOOL_PACKS: tuple[ToolPackSpec, ...] = (
             "call_mcp_tool",
         ),
     ),
-    ToolPackSpec(
+    RuntimeToolGroupSpec(
         name="office_pack",
         summary="办公生产力能力：通过 OfficeCLI 工具链路由 DOCX、XLSX、PPTX、PDF、会议纪要、周报和 Pitch Deck。",
         source="system",
@@ -113,7 +113,7 @@ TOOL_PACKS: tuple[ToolPackSpec, ...] = (
         ),
         infer_from_tools=False,
     ),
-    ToolPackSpec(
+    RuntimeToolGroupSpec(
         name="deep_research_pack",
         summary="专属深度研究能力：通过 Deep Research 工具链执行规划、检索、抓取、证据台账、评估和报告生成。",
         source="system",
@@ -127,7 +127,7 @@ TOOL_PACKS: tuple[ToolPackSpec, ...] = (
         ),
         infer_from_tools=False,
     ),
-    ToolPackSpec(
+    RuntimeToolGroupSpec(
         name="plan_mode_pack",
         summary="计划模式收口能力：主 agent 完成只读探索后提交待确认计划。",
         source="system",
@@ -157,13 +157,13 @@ def _query_targets_admin_pack(query: str) -> bool:
     return any(keyword in normalized for keyword in _ADMIN_PACK_QUERY_KEYWORDS)
 
 
-def iter_tool_packs(query: str = "") -> tuple[ToolPackSpec, ...]:
+def iter_runtime_tool_groups(query: str = "") -> tuple[RuntimeToolGroupSpec, ...]:
     normalized = query.strip().lower()
     if not normalized:
-        return tuple(pack for pack in TOOL_PACKS if pack.source != "mcp")
+        return tuple(pack for pack in RUNTIME_TOOL_GROUPS if pack.source != "mcp")
     return tuple(
         pack
-        for pack in TOOL_PACKS
+        for pack in RUNTIME_TOOL_GROUPS
         if (pack.source != "mcp" or _query_targets_admin_pack(normalized))
         if normalized in pack.name.lower()
         or normalized in pack.summary.lower()
@@ -171,22 +171,22 @@ def iter_tool_packs(query: str = "") -> tuple[ToolPackSpec, ...]:
     )
 
 
-def pack_for_name(name: str) -> ToolPackSpec | None:
-    for pack in TOOL_PACKS:
+def runtime_tool_group_for_name(name: str) -> RuntimeToolGroupSpec | None:
+    for pack in RUNTIME_TOOL_GROUPS:
         if pack.name == name:
             return pack
     return None
 
 
-def static_pack_names_for_tool(tool_name: str) -> tuple[str, ...]:
-    return tuple(pack.name for pack in TOOL_PACKS if pack.infer_from_tools and tool_name in pack.tools)
+def static_runtime_tool_group_names_for_tool(tool_name: str) -> tuple[str, ...]:
+    return tuple(pack.name for pack in RUNTIME_TOOL_GROUPS if pack.infer_from_tools and tool_name in pack.tools)
 
 
-def infer_static_pack_names(tool_names: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+def infer_static_runtime_tool_group_names(tool_names: list[str] | tuple[str, ...]) -> tuple[str, ...]:
     names: list[str] = []
     seen: set[str] = set()
     for tool_name in tool_names:
-        for pack_name in static_pack_names_for_tool(tool_name):
+        for pack_name in static_runtime_tool_group_names_for_tool(tool_name):
             if pack_name not in seen:
                 names.append(pack_name)
                 seen.add(pack_name)

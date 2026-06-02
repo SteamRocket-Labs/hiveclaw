@@ -86,13 +86,13 @@ def test_split_inline_tools_creates_structured_parts():
 
 def test_stream_event_builders_include_structured_parts():
     from app.services.chat_message_parts import (
-        build_active_packs_event,
         build_chunk_event,
         build_compaction_event,
         build_done_event,
         build_permission_event,
         build_thinking_event,
         build_tool_call_event,
+        build_tool_group_activation_event,
     )
 
     assert build_chunk_event("hello") == {
@@ -192,7 +192,7 @@ def test_stream_event_builders_include_structured_parts():
             "kept_message_count": 8,
         },
     }
-    assert build_active_packs_event({
+    assert build_tool_group_activation_event({
         "packs": [{
             "name": "web_pack",
             "summary": "网页搜索与抓取能力",
@@ -201,7 +201,7 @@ def test_stream_event_builders_include_structured_parts():
         "message": "Activated web_pack",
         "status": "info",
     }) == {
-        "type": "pack_activation",
+        "type": "tool_group_activation",
         "packs": [{
             "name": "web_pack",
             "summary": "网页搜索与抓取能力",
@@ -211,11 +211,16 @@ def test_stream_event_builders_include_structured_parts():
         "status": "info",
         "part": {
             "type": "event",
-            "event_type": "pack_activation",
-            "title": "Capability Packs Activated",
+            "event_type": "tool_group_activation",
+            "title": "Runtime Tool Groups Activated",
             "text": "Activated web_pack",
             "status": "info",
             "packs": [{
+                "name": "web_pack",
+                "summary": "网页搜索与抓取能力",
+                "tools": ["web_search", "firecrawl_fetch"],
+            }],
+            "tool_groups": [{
                 "name": "web_pack",
                 "summary": "网页搜索与抓取能力",
                 "tools": ["web_search", "firecrawl_fetch"],
@@ -236,15 +241,22 @@ def test_serialize_pack_activation_system_message_as_event():
 
     entry = serialize_chat_message(message)
 
+    # Historical reader: a legacy "pack_activation" persisted message must still
+    # surface as an event, normalized to the current "tool_group_activation" naming.
     assert entry["role"] == "event"
-    assert entry["eventType"] == "pack_activation"
+    assert entry["eventType"] == "tool_group_activation"
     assert entry["parts"] == [{
         "type": "event",
-        "event_type": "pack_activation",
-        "title": "Capability Packs Activated",
+        "event_type": "tool_group_activation",
+        "title": "Runtime Tool Groups Activated",
         "text": "Activated web_pack",
         "status": "info",
         "packs": [{
+            "name": "web_pack",
+            "summary": "网页搜索与抓取能力",
+            "tools": ["web_search"],
+        }],
+        "tool_groups": [{
             "name": "web_pack",
             "summary": "网页搜索与抓取能力",
             "tools": ["web_search"],

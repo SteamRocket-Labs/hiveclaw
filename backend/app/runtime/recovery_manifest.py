@@ -30,9 +30,9 @@ class RecoveryManifest:
     # Tool execution outcomes worth preserving
     recent_tool_outcomes: list[dict[str, str]] = field(default_factory=list)
 
-    # Skills and packs currently active
+    # Skills and runtime tool groups currently active
     active_skills: list[str] = field(default_factory=list)
-    active_packs: list[str] = field(default_factory=list)
+    active_tool_groups: list[str] = field(default_factory=list)
 
     # External resources referenced
     recent_external_refs: list[str] = field(default_factory=list)
@@ -47,7 +47,7 @@ class RecoveryManifest:
         return not any([
             self.recent_reads, self.recent_writes,
             self.recent_tool_outcomes, self.active_skills,
-            self.active_packs, self.recent_external_refs,
+            self.active_tool_groups, self.recent_external_refs,
             self.pending_items, self.blocked_patterns,
         ])
 
@@ -72,7 +72,7 @@ class RecoveryManifest:
             for o in self.recent_tool_outcomes[-5:]
         ])
         _add("Active Skills", self.active_skills)
-        _add("Active Packs", self.active_packs)
+        _add("Active Runtime Tool Groups", self.active_tool_groups)
         _add("External References", self.recent_external_refs[-5:])
         _add("Pending Work", self.pending_items[-5:])
         _add("Blocked Patterns (DO NOT retry)", self.blocked_patterns[-5:])
@@ -87,10 +87,10 @@ def build_recovery_manifest(session_context: Any) -> RecoveryManifest:
     if session_context is None:
         return RecoveryManifest()
 
-    pack_names = []
-    for p in getattr(session_context, "active_packs", []):
+    tool_group_names = []
+    for p in getattr(session_context, "active_tool_groups", []):
         if isinstance(p, dict):
-            pack_names.append(p.get("name", "?"))
+            tool_group_names.append(p.get("name", "?"))
 
     return RecoveryManifest(
         session_id=getattr(session_context, "session_id", None),
@@ -98,7 +98,7 @@ def build_recovery_manifest(session_context: Any) -> RecoveryManifest:
         recent_writes=list(getattr(session_context, "recent_writes", [])),
         recent_tool_outcomes=list(getattr(session_context, "recent_tool_outcomes", [])),
         active_skills=list(getattr(session_context, "active_skills", [])),
-        active_packs=pack_names,
+        active_tool_groups=tool_group_names,
         recent_external_refs=list(getattr(session_context, "recent_external_refs", [])),
         pending_items=list(getattr(session_context, "pending_items", [])),
     )

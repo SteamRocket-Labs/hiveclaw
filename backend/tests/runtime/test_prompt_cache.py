@@ -72,13 +72,13 @@ def test_dynamic_suffix_changes_with_active_packs():
     from app.runtime.prompt_builder import build_dynamic_prompt_suffix
 
     suffix1 = build_dynamic_prompt_suffix(
-        active_packs=[],
+        active_tool_groups=[],
         retrieval_context="",
         system_prompt_suffix="",
     )
 
     suffix2 = build_dynamic_prompt_suffix(
-        active_packs=[{"name": "web_pack", "summary": "Web search", "tools": ["web_search"]}],
+        active_tool_groups=[{"name": "web_pack", "summary": "Web search", "tools": ["web_search"]}],
         retrieval_context="",
         system_prompt_suffix="",
     )
@@ -92,7 +92,7 @@ def test_dynamic_suffix_includes_retrieval():
     from app.runtime.prompt_builder import build_dynamic_prompt_suffix
 
     suffix = build_dynamic_prompt_suffix(
-        active_packs=[],
+        active_tool_groups=[],
         retrieval_context="Found: quarterly report Q3 2026",
         system_prompt_suffix="",
     )
@@ -133,7 +133,7 @@ def test_assemble_combines_prefix_and_suffix():
     )
     suffix = build_dynamic_prompt_suffix(
         memory_snapshot="Memory here.",
-        active_packs=[{"name": "web_pack", "summary": "Web", "tools": ["web_search"]}],
+        active_tool_groups=[{"name": "web_pack", "summary": "Web", "tools": ["web_search"]}],
         retrieval_context="",
         system_prompt_suffix="Extra instructions.",
     )

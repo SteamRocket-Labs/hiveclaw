@@ -13,7 +13,7 @@ from app.services.pack_service import (
     get_pack_catalog,
 )
 from app.skills.types import ParsedSkill, SkillMetadata
-from app.tools.packs import iter_tool_packs
+from app.tools.runtime_tool_groups import iter_runtime_tool_groups
 
 
 def test_pack_catalog_returns_all_packs():
@@ -71,16 +71,16 @@ def test_pack_catalog_system_pack_no_channel_dependency():
     assert web["requires_channel"] is None
 
 
-def test_iter_tool_packs_hides_mcp_admin_pack_from_generic_queries():
-    packs = iter_tool_packs()
+def test_iter_runtime_tool_groups_hides_mcp_admin_pack_from_generic_queries():
+    packs = iter_runtime_tool_groups()
     names = {pack.name for pack in packs}
 
     assert "web_pack" in names
     assert "mcp_admin_pack" not in names
 
 
-def test_iter_tool_packs_returns_mcp_admin_pack_for_explicit_admin_queries():
-    packs = iter_tool_packs("mcp")
+def test_iter_runtime_tool_groups_returns_mcp_admin_pack_for_explicit_admin_queries():
+    packs = iter_runtime_tool_groups("mcp")
     names = {pack.name for pack in packs}
 
     assert "mcp_admin_pack" in names
@@ -263,9 +263,9 @@ def test_collect_skill_declared_packs_uses_metadata_pack_without_tool_inference_
 
 
 def test_deep_research_runtime_pack_exposes_dedicated_tools_only():
-    from app.tools.packs import pack_for_name
+    from app.tools.runtime_tool_groups import runtime_tool_group_for_name
 
-    pack = pack_for_name("deep_research_pack")
+    pack = runtime_tool_group_for_name("deep_research_pack")
 
     assert pack is not None
     assert set(pack.tools) == {

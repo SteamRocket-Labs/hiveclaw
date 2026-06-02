@@ -31,8 +31,8 @@ KnowledgeLookupFn = Callable[[str, uuid.UUID | None], Awaitable[str] | str]
 # apply_cache_hints() splits on it per provider.
 
 # Default fallbacks when no task-aware budget profile is provided.
-# P1-W2-6: pack budget tightened from 2000 → 1200 (matches the new
-# active_packs section default; packs are referential, not full docs).
+# P1-W2-6: tool group budget tightened from 2000 → 1200 (matches the new
+# active_tool_groups section default; tool groups are referential, not full docs).
 _ACTIVE_PACKS_CHAR_BUDGET = 1200
 _RETRIEVAL_CHAR_BUDGET = 3000
 _CONTINUITY_CHAR_BUDGET = 2500
@@ -320,16 +320,18 @@ def _meter_frozen_prefix(prefix: str) -> None:
 # ── Dynamic Suffix (per-round) ──────────────────────────────────
 
 
-def _render_active_packs(active_packs: list[dict[str, Any]], *, budget_chars: int = _ACTIVE_PACKS_CHAR_BUDGET) -> str:
+def _render_active_tool_groups(
+    active_tool_groups: list[dict[str, Any]], *, budget_chars: int = _ACTIVE_PACKS_CHAR_BUDGET
+) -> str:
     """Delegate to modular section builder (kept for backward compat)."""
-    from app.runtime.prompt_sections import build_active_packs_section
+    from app.runtime.prompt_sections import build_active_tool_groups_section
 
-    return build_active_packs_section(active_packs, budget_chars=budget_chars)
+    return build_active_tool_groups_section(active_tool_groups, budget_chars=budget_chars)
 
 
 def build_dynamic_prompt_suffix(
     *,
-    active_packs: list[dict[str, Any]] | None = None,
+    active_tool_groups: list[dict[str, Any]] | None = None,
     retrieval_context: str = "",
     continuity_context: str = "",
     runtime_metadata_context: str = "",
@@ -344,7 +346,7 @@ def build_dynamic_prompt_suffix(
 ) -> str:
     """Build the per-round dynamic suffix.
 
-    Contains: § Memory, active capability packs, knowledge retrieval results,
+    Contains: § Memory, active runtime tool groups, knowledge retrieval results,
     § Environment, and request-specific suffix.
     These CAN change between rounds within the same session.
     """
@@ -386,7 +388,7 @@ def build_dynamic_prompt_suffix(
         if runtime_block:
             parts.append(runtime_block)
 
-    packs_budget = budget_profile.active_packs_budget_chars if budget_profile else _ACTIVE_PACKS_CHAR_BUDGET
+    packs_budget = budget_profile.active_tool_groups_budget_chars if budget_profile else _ACTIVE_PACKS_CHAR_BUDGET
     retrieval_budget = budget_profile.retrieval_budget_chars if budget_profile else _RETRIEVAL_CHAR_BUDGET
     scenario_section = build_scenario_section(
         budget_profile.task_profile if budget_profile else None,
@@ -395,7 +397,7 @@ def build_dynamic_prompt_suffix(
     if scenario_section:
         parts.append(scenario_section)
 
-    packs_section = _render_active_packs(active_packs or [], budget_chars=packs_budget)
+    packs_section = _render_active_tool_groups(active_tool_groups or [], budget_chars=packs_budget)
     if packs_section:
         parts.append(packs_section)
 
@@ -404,7 +406,7 @@ def build_dynamic_prompt_suffix(
         if knowledge:
             parts.append(knowledge)
 
-    if budget_profile and not active_packs and budget_profile.task_profile.suggested_pack_names:
+    if budget_profile and not active_tool_groups and budget_profile.task_profile.suggested_pack_names:
         hint_lines = [
             "## Likely Capability Packs",
             "These packs are likely useful for the current request. Activate them proactively when needed.",
@@ -555,7 +557,7 @@ async def build_runtime_prompt(
     active_pack_count = 0
     if runtime_context:
         context_window_tokens = runtime_context.metadata.get("context_window_tokens")
-        active_pack_count = len(runtime_context.session.active_packs)
+        active_pack_count = len(runtime_context.session.active_tool_groups)
     budget_profile = compute_context_budget(
         context_window_tokens=context_window_tokens,
         query=last_user_msg or "",
@@ -632,12 +634,12 @@ async def build_runtime_prompt(
         except Exception:
             runtime_metadata_context = ""
 
-    active_packs = []
-    if runtime_context and runtime_context.session.active_packs:
-        active_packs = runtime_context.session.active_packs
+    active_tool_groups = []
+    if runtime_context and runtime_context.session.active_tool_groups:
+        active_tool_groups = runtime_context.session.active_tool_groups
 
     dynamic = build_dynamic_prompt_suffix(
-        active_packs=active_packs,
+        active_tool_groups=active_tool_groups,
         memory_snapshot=memory_context,
         continuity_context=continuity_context,
         runtime_metadata_context=runtime_metadata_context,

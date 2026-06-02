@@ -11,7 +11,7 @@ from pathlib import Path
 from app.config import get_settings
 from app.services.managed_capability_guard import sanitize_managed_credential_guidance
 from app.skills import SkillRegistry, WorkspaceSkillLoader
-from app.tools.packs import iter_tool_packs, pack_for_name
+from app.tools.runtime_tool_groups import iter_runtime_tool_groups, runtime_tool_group_for_name
 from app.tools.result_envelope import render_tool_error
 
 logger = logging.getLogger(__name__)
@@ -176,8 +176,8 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill") -> str
         logger.debug("Skill %r not found in workspace, checking tool packs", requested)
 
     # Fallback: check if the name matches a tool pack (e.g. "plaza_pack", "web_pack")
-    from app.tools.packs import pack_for_name
-    pack = pack_for_name(requested)
+    from app.tools.runtime_tool_groups import runtime_tool_group_for_name
+    pack = runtime_tool_group_for_name(requested)
     if pack:
         return (
             f"## Tool Pack: {pack.name}\n\n"
@@ -331,7 +331,7 @@ async def check_declared_packs_authorized(
     try:
         async with async_session() as db:
             for pack_name in declared_packs:
-                spec = pack_for_name(pack_name)
+                spec = runtime_tool_group_for_name(pack_name)
                 if spec is None:
                     return False, f"declared_pack '{pack_name}' does not exist"
                 for tool_name in spec.tools:
@@ -792,7 +792,7 @@ def _grep_search(ws: Path, pattern: str, root: str = "", max_results: int = 50, 
 
 
 def _tool_search(ws: Path, query: str = "") -> str:
-    packs = iter_tool_packs(query)
+    packs = iter_runtime_tool_groups(query)
     registry = _build_skill_registry(ws)
     normalized = query.strip().lower()
     matching_skills = [

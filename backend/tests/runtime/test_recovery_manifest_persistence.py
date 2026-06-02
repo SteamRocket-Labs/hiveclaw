@@ -29,7 +29,7 @@ def test_manifest_inherits_recent_files_writes_skills_packs() -> None:
     sc.track_file_read("memory/feedback.md")
     sc.track_file_write("workspace/note.md")
     sc.track_skill_loaded("memory-guide")
-    sc.active_packs.append({"name": "web_pack", "summary": "search", "tools": []})
+    sc.active_tool_groups.append({"name": "web_pack", "summary": "search", "tools": []})
     sc.track_pending_item("finish report")
     sc.track_tool_outcome("web_search", "found 3 hits")
 
@@ -39,7 +39,7 @@ def test_manifest_inherits_recent_files_writes_skills_packs() -> None:
     assert "memory/feedback.md" in manifest.recent_reads
     assert "workspace/note.md" in manifest.recent_writes
     assert "memory-guide" in manifest.active_skills
-    assert "web_pack" in manifest.active_packs
+    assert "web_pack" in manifest.active_tool_groups
     assert "finish report" in manifest.pending_items
     assert any(o.get("tool") == "web_search" for o in manifest.recent_tool_outcomes)
 
@@ -60,7 +60,7 @@ def test_manifest_round_trips_through_json(tmp_path) -> None:
     sc.track_file_read("a.md")
     sc.track_file_write("b.md")
     sc.track_skill_loaded("k")
-    sc.active_packs.append({"name": "p", "summary": "", "tools": []})
+    sc.active_tool_groups.append({"name": "p", "summary": "", "tools": []})
     sc.track_pending_item("x")
     sc.track_external_ref("https://example.com")
     sc.track_tool_outcome("read_file", "ok")
@@ -73,7 +73,7 @@ def test_manifest_round_trips_through_json(tmp_path) -> None:
         "recent_writes": manifest.recent_writes,
         "recent_tool_outcomes": manifest.recent_tool_outcomes,
         "active_skills": manifest.active_skills,
-        "active_packs": manifest.active_packs,
+        "active_tool_groups": manifest.active_tool_groups,
         "recent_external_refs": manifest.recent_external_refs,
         "pending_items": manifest.pending_items,
         "blocked_patterns": manifest.blocked_patterns,
@@ -87,7 +87,7 @@ def test_manifest_round_trips_through_json(tmp_path) -> None:
     assert decoded["recent_reads"] == ["a.md"]
     assert decoded["recent_writes"] == ["b.md"]
     assert decoded["active_skills"] == ["k"]
-    assert decoded["active_packs"] == ["p"]
+    assert decoded["active_tool_groups"] == ["p"]
     assert decoded["pending_items"] == ["x"]
     assert decoded["recent_external_refs"] == ["https://example.com"]
     assert decoded["recent_tool_outcomes"][0]["tool"] == "read_file"
@@ -101,7 +101,7 @@ def test_manifest_to_restoration_text_includes_each_section() -> None:
     sc.track_file_read("a.md")
     sc.track_file_write("b.md")
     sc.track_skill_loaded("k1")
-    sc.active_packs.append({"name": "web", "summary": "", "tools": []})
+    sc.active_tool_groups.append({"name": "web", "summary": "", "tools": []})
     sc.track_pending_item("ship feature")
     sc.track_external_ref("https://x.com")
 
@@ -113,7 +113,7 @@ def test_manifest_to_restoration_text_includes_each_section() -> None:
     assert "b.md" in text
     assert "Active Skills" in text
     assert "k1" in text
-    assert "Active Packs" in text
+    assert "Active Runtime Tool Groups" in text
     assert "web" in text
     assert "Pending Work" in text
     assert "ship feature" in text

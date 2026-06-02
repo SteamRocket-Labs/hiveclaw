@@ -36,28 +36,28 @@ def _trim_summary(summary: str) -> str:
     return flat[: _SUMMARY_MAX_CHARS - 1].rstrip() + "…"
 
 
-def build_active_packs_section(
-    active_packs: list[dict[str, Any]],
+def build_active_tool_groups_section(
+    active_tool_groups: list[dict[str, Any]],
     *,
     budget_chars: int = _DEFAULT_BUDGET_CHARS,
 ) -> str:
-    """Build the active capability packs section.
+    """Build the active runtime tool groups section.
 
     Args:
-        active_packs: List of pack dicts with keys: name, summary, tools.
-        budget_chars: Max chars for the packs section. Default 1200 (was
-            2000) — packs are referential signposts, not full docs.
+        active_tool_groups: List of tool group dicts with keys: name, summary, tools.
+        budget_chars: Max chars for the section. Default 1200 (was
+            2000) — tool groups are referential signposts, not full docs.
     """
-    if not active_packs:
+    if not active_tool_groups:
         return ""
 
     lines = [
-        "## Active Capability Packs",
-        "These capability packs are already active for the current invocation. "
+        "## Active Runtime Tool Groups",
+        "These runtime tool groups are already active for the current invocation. "
         "Use them directly when relevant.",
         "",
     ]
-    for pack in active_packs:
+    for pack in active_tool_groups:
         name = pack.get("name", "unknown_pack")
         summary = _trim_summary(pack.get("summary", ""))
         tools = pack.get("tools", []) or []

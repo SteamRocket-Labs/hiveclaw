@@ -87,7 +87,7 @@ def is_pack_enabled(pack_policies: dict[str, bool], pack_name: str) -> bool:
 def policy_pack_names_for_tool(tool_name: str) -> tuple[str, ...]:
     """Return policy-relevant pack names for a tool.
 
-    Static packs infer membership from `app.tools.packs`. Dedicated tool
+    Static packs infer membership from `app.tools.runtime_tool_groups`. Dedicated tool
     handlers also declare `ToolMeta.pack`; this keeps first-class tools such as
     `deep_research_run` attached to their pack without incorrectly tagging
     shared dependencies like `web_search` as Deep Research.
@@ -95,14 +95,14 @@ def policy_pack_names_for_tool(tool_name: str) -> tuple[str, ...]:
     global _REGISTERED_TOOL_PACK_NAMES
     if _REGISTERED_TOOL_PACK_NAMES is None:
         from app.tools.collector import collect_tools
-        from app.tools.packs import static_pack_names_for_tool
+        from app.tools.runtime_tool_groups import static_runtime_tool_group_names_for_tool
 
         by_tool: dict[str, set[str]] = {}
         for pack_name, names in collect_tools().pack_tool_groups.items():
             for name in names:
                 by_tool.setdefault(name, set()).add(pack_name)
         for name in tuple(by_tool):
-            by_tool[name].update(static_pack_names_for_tool(name))
+            by_tool[name].update(static_runtime_tool_group_names_for_tool(name))
         _REGISTERED_TOOL_PACK_NAMES = {
             name: tuple(sorted(pack_names))
             for name, pack_names in by_tool.items()
@@ -111,6 +111,6 @@ def policy_pack_names_for_tool(tool_name: str) -> tuple[str, ...]:
     if tool_name in _REGISTERED_TOOL_PACK_NAMES:
         return _REGISTERED_TOOL_PACK_NAMES[tool_name]
 
-    from app.tools.packs import static_pack_names_for_tool
+    from app.tools.runtime_tool_groups import static_runtime_tool_group_names_for_tool
 
-    return static_pack_names_for_tool(tool_name)
+    return static_runtime_tool_group_names_for_tool(tool_name)

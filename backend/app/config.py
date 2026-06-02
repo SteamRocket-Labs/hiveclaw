@@ -143,9 +143,10 @@ class Settings(BaseSettings):
 
     # Plan Mode Phase 5: when on, a live web-chat tool-intercept (agent calls an
     # autonomous tool the gate blocks) activates interactive Plan Mode in the
-    # same loop instead of returning a static needs_plan result. Default off —
-    # production keeps the existing static needs_plan + RPC fallback behaviour.
-    PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE: bool = False
+    # same loop instead of returning a static needs_plan result. Default on —
+    # tool-intercepts route through the main-loop interactive planner; set this
+    # to False to fall back to the static needs_plan + RPC planner behaviour.
+    PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE: bool = True
 
     # Tavily Search API
     TAVILY_API_KEY: str = ""

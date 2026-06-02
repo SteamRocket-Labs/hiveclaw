@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.skills.parser import SkillParser
-from app.tools.packs import pack_for_name
+from app.tools.runtime_tool_groups import runtime_tool_group_for_name
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -22,7 +22,7 @@ def test_every_static_pack_has_a_matching_skill_guide():
 
     missing: list[str] = []
     for pack_name, path in PACK_GUIDE_PATHS.items():
-        pack = pack_for_name(pack_name)
+        pack = runtime_tool_group_for_name(pack_name)
         assert pack is not None
         if not path.exists():
             missing.append(pack_name)

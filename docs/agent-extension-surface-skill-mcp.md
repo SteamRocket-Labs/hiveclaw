@@ -2,7 +2,7 @@
 
 | Field | Value |
 |------|-------|
-| Status | Design draft |
+| Status | Implemented (Parts 1-7 on main) |
 | Date | 2026-06-02 |
 | Scope | Agent/user extension surface, company admin extension surface, MCP server management, pack/package removal from user surface, MCP server identity migration |
 | Non-goal | Implementing the migration in this document |
@@ -909,3 +909,15 @@ Purely additive — new server-first API on the Part 1 tables; existing pack rou
 - Evidence: `npx tsc --noEmit` exit 0; `npm run build` exit 0; targeted tests (chatRuntime, AgentDetailSections, WorkspaceRemainingSections, AgentDetail, AgentDetail.query-gating) **47 passed**. Reviewed: tsc re-run confirmed green; removed one unused React default import.
 
 Note: backend legacy pack routes (`/packs`, `/agents/{id}/packs`, `/enterprise/packs/policies`) are now orphaned (no frontend consumer) but still registered; their physical removal + reconciling `/enterprise/mcp-servers/records` to the canonical path is finished in Part 7.
+
+### Part 7 — Full verification + finalize ✅
+
+- Backend: removed the 4 orphaned pack routes from `api/packs.py` (`GET /packs`, `GET /agents/{id}/packs`, `GET /enterprise/packs/policies`, `PUT /enterprise/packs/policies/{pack_name}`) + their now-unused imports. Kept `/agents/{id}/capability-summary`, `/chat/sessions/{id}/runtime-summary`, and the legacy `/enterprise/mcp-servers*` routes (orphaned — frontend uses `/records`).
+- Rewrote `test_pack_api_surface.py` to assert pack routes are ABSENT (inverted contract). Fixed 3 `tests/` files Part 3 missed (Part 3 renamed `app/` but left `pack_for_name` / `TOOL_PACKS` / `active_packs_budget_chars` in tests/) → now use the runtime-tool-group names. Frontend: removed the unused React default import.
+- **Final verification: backend `pytest tests/` → 3278 passed, 7 skipped, 0 failed, 0 errors. Frontend `tsc --noEmit` exit 0, `npm run build` exit 0.** `import app.main` OK. `tests/` grep clean of renamed pack symbols.
+
+## Cutover status vs §12 checklist
+
+**Done (the product-surface cutover — the goal):** MCP server tables + RLS + backfill with parity (Parts 1–2); runtime emits `tool_group_activation`, historical `pack_activation` read-normalized, `Active Runtime Tool Groups` heading (Part 3); `/agents/{id}/extensions` is the Agent Detail source of truth and `/enterprise/mcp-servers/records` is server-first with no `pack_name` (Part 4); MCP gating via assignment with a safe fallback (Part 5); frontend shows Skills + MCP Servers only, advanced tool controls hidden by default, i18n free of user-facing pack labels, no frontend route calls `/packs` (Part 6); orphaned pack routes removed, full suite green (Part 7).
+
+**Deferred follow-up (orphaned, not user-facing, tracked here):** the legacy Tool-grouped `/enterprise/mcp-servers` (GET/import/DELETE-by-`server_key`) still co-exists with `/records` — reconciling `/records` to the canonical path, migrating import/delete to stable `server_id`, and dropping `make_mcp_server_pack_name()` from that path is a follow-up. The two summary endpoints still emit pack-shaped fields, but no frontend consumes them. These are orphaned, not a user-facing dual surface, so the cutover goal is met.

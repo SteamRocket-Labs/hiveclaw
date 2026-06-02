@@ -123,7 +123,7 @@ async def test_retrieve_uses_semantic_limit_for_semantic_backend(
     profile = ContextBudget(
         task_profile=TaskProfile(name="memory_recall", complexity="medium"),
         system_prompt_budget_chars=60_000,
-        active_packs_budget_chars=2_000,
+        active_tool_groups_budget_chars=2_000,
         retrieval_budget_chars=3_000,
         knowledge_budget_chars=3_000,
         memory_budget_chars=4_000,

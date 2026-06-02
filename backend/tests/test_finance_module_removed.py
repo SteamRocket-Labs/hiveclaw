@@ -26,11 +26,11 @@ def test_finance_tools_and_pack_are_not_registered() -> None:
     from app.services.capability_gate import CAPABILITY_MAP
     from app.services.pack_service import get_pack_catalog
     from app.tools.collector import HANDLER_MODULES, collect_tools
-    from app.tools.packs import TOOL_PACKS
+    from app.tools.runtime_tool_groups import RUNTIME_TOOL_GROUPS
 
     collected = collect_tools()
     registered_tool_names = {tool["function"]["name"] for tool in collected.openai_tools}
-    static_pack_names = {pack.name for pack in TOOL_PACKS}
+    static_pack_names = {pack.name for pack in RUNTIME_TOOL_GROUPS}
     catalog_names = {pack["name"] for pack in get_pack_catalog()}
 
     assert "app.tools.handlers.finance" not in HANDLER_MODULES

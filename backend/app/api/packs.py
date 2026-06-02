@@ -14,19 +14,11 @@ from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.services.mcp_registry_service import delete_tenant_mcp_server, import_tenant_mcp_server, list_tenant_mcp_servers
 from app.services.pack_service import (
-    get_agent_packs,
     get_capability_summary,
-    get_pack_catalog,
-    get_tenant_pack_catalog,
     get_session_runtime_summary,
 )
-from app.services.pack_policy_service import set_tenant_pack_policy
 
 router = APIRouter(tags=["packs"])
-
-
-class PackPolicyUpdate(BaseModel):
-    enabled: bool
 
 
 class TenantMcpImportIn(BaseModel):
@@ -34,28 +26,6 @@ class TenantMcpImportIn(BaseModel):
     mcp_url: str | None = None
     server_name: str | None = None
     config: dict | None = None
-
-
-@router.get("/packs")
-async def list_pack_catalog(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """List all available capability packs with tool and capability annotations."""
-    if not current_user.tenant_id:
-        return [{**pack, "enabled": True} for pack in get_pack_catalog()]
-    return await get_tenant_pack_catalog(db, current_user.tenant_id)
-
-
-@router.get("/agents/{agent_id}/packs")
-async def list_agent_packs(
-    agent_id: uuid.UUID,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """List packs available for a specific agent based on channel config and skills."""
-    await check_agent_access(db, current_user, agent_id)
-    return await get_agent_packs(db, agent_id)
 
 
 @router.get("/agents/{agent_id}/capability-summary")
@@ -83,31 +53,6 @@ async def get_session_runtime(
         raise HTTPException(status_code=404, detail="Session not found")
     await check_agent_access(db, current_user, session.agent_id)
     return await get_session_runtime_summary(db, session_id)
-
-
-@router.get("/enterprise/packs/policies")
-async def list_enterprise_pack_policies(
-    current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    """List tenant pack catalog with enablement policy."""
-    if not current_user.tenant_id:
-        return []
-    return await get_tenant_pack_catalog(db, current_user.tenant_id)
-
-
-@router.put("/enterprise/packs/policies/{pack_name}")
-async def update_enterprise_pack_policy(
-    pack_name: str,
-    data: PackPolicyUpdate,
-    current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    """Enable or disable a capability pack for the current tenant."""
-    if not current_user.tenant_id:
-        raise HTTPException(status_code=400, detail="No tenant assigned")
-    policies = await set_tenant_pack_policy(db, current_user.tenant_id, pack_name, enabled=data.enabled)
-    return {"pack_name": pack_name, "enabled": data.enabled, "policies": policies}
 
 
 @router.get("/enterprise/mcp-servers")

@@ -586,3 +586,59 @@ async def test_interactive_plan_mode_allows_write_only_to_exact_plan_file():
         assert deleted is not None and "plan_mode_readonly_violation" in deleted
     finally:
         reset_interactive_plan_mode(token)
+
+
+# ── Phase 5: tool-intercept interactive signal on the needs_plan envelope ──
+
+
+def test_redact_args_drops_handshake_keys_and_masks_secrets():
+    from app.tools.service import _redact_args
+
+    out = _redact_args(
+        {
+            "cron": "0 9 * * *",
+            "api_key": "sk-xxx",
+            "confirmed_plan_id": "p1",
+            "webhook_token": "t",
+        }
+    )
+    assert out == {"cron": "0 9 * * *", "api_key": "[redacted]", "webhook_token": "[redacted]"}
+
+
+def test_interactive_signal_noop_when_flag_off(monkeypatch):
+    import app.config
+    from app.tools.service import _maybe_attach_interactive_signal
+
+    monkeypatch.setattr(
+        app.config, "get_settings", lambda: SimpleNamespace(PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE=False)
+    )
+    payload = {"status": "needs_plan", "plan_id": "p1"}
+    out = _maybe_attach_interactive_signal(
+        payload, action_kind="create_enabled_trigger", tool_name="set_trigger", arguments={}
+    )
+    assert out == payload
+    assert "activate_interactive_plan" not in out
+
+
+def test_interactive_signal_tags_envelope_when_flag_on(monkeypatch):
+    import app.config
+    from app.tools.service import _maybe_attach_interactive_signal
+
+    monkeypatch.setattr(
+        app.config, "get_settings", lambda: SimpleNamespace(PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE=True)
+    )
+    payload = {"status": "needs_plan", "plan_id": "p1", "plan_version": 1, "plan_hash": "h"}
+    out = _maybe_attach_interactive_signal(
+        payload,
+        action_kind="create_enabled_trigger",
+        tool_name="set_trigger",
+        arguments={"cron": "x", "api_key": "s"},
+    )
+    assert out["activate_interactive_plan"] is True
+    seed = out["interactive_plan_seed"]
+    assert seed["action_kind"] == "create_enabled_trigger"
+    assert seed["tool_name"] == "set_trigger"
+    assert seed["tool_args"] == {"cron": "x", "api_key": "[redacted]"}
+    assert seed["plan_id"] == "p1"
+    # the original payload is not mutated
+    assert "activate_interactive_plan" not in payload

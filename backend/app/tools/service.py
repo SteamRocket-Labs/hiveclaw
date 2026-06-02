@@ -67,6 +67,51 @@ _COMPANY_CONFLICT_PATTERNS = (
 )
 
 
+def _redact_args(arguments: Any) -> dict[str, Any]:
+    """Shallow-redact obviously sensitive values before a tool's args enter a
+    plan seed (defence-in-depth; trigger/task args rarely carry secrets). Also
+    drops the confirmation-handshake keys, which are gate plumbing, not intent.
+    """
+    if not isinstance(arguments, dict):
+        return {}
+    redacted: dict[str, Any] = {}
+    for k, v in arguments.items():
+        if k in ("confirmed_plan_id", "confirmed_plan_version", "confirmed_plan_hash"):
+            continue
+        if any(s in str(k).lower() for s in ("secret", "token", "password", "credential", "api_key")):
+            redacted[k] = "[redacted]"
+        else:
+            redacted[k] = v
+    return redacted
+
+
+def _maybe_attach_interactive_signal(
+    payload: dict, *, action_kind: str, tool_name: str, arguments: dict
+) -> dict:
+    """Phase 5: when ``PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE`` is on, tag a
+    ``needs_plan`` envelope with ``activate_interactive_plan`` + an
+    ``interactive_plan_seed``. The kernel (which holds the session_context)
+    decides the live-chat boundary and whether to actually activate; here we only
+    carry the flag + seed. Flag off → the envelope is returned unchanged.
+    """
+    from app.config import get_settings
+
+    if not get_settings().PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE:
+        return payload
+    enriched = dict(payload)
+    enriched["activate_interactive_plan"] = True
+    enriched["interactive_plan_seed"] = {
+        "source": "tool_intercept",
+        "action_kind": action_kind,
+        "tool_name": tool_name,
+        "tool_args": _redact_args(arguments),
+        "plan_id": payload.get("plan_id"),
+        "plan_version": payload.get("plan_version"),
+        "plan_hash": payload.get("plan_hash"),
+    }
+    return enriched
+
+
 async def _maybe_await(value: Any) -> Any:
     if inspect.isawaitable(value):
         return await value
@@ -550,6 +595,13 @@ class ToolRuntimeService:
                 action_kind=action_kind,
                 tool_name=tool_name,
                 arguments=arguments,
+            )
+            # Phase 5: tag the envelope so the kernel can flip a live web chat
+            # into interactive Plan Mode. The live-chat boundary + activation
+            # decision belong to the kernel (it holds the session_context); the
+            # gate only carries the flag + seed. Flag off → envelope unchanged.
+            payload = _maybe_attach_interactive_signal(
+                payload, action_kind=action_kind, tool_name=tool_name, arguments=arguments
             )
         return _json.dumps(payload, ensure_ascii=False, default=str)
 

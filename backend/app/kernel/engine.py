@@ -940,6 +940,84 @@ def _reset_plan_reminder(session_context: Any | None) -> None:
         plan_state.reminded_full = False
 
 
+def _parse_interactive_plan_signal(result_str: str) -> dict[str, Any] | None:
+    """Return the ``interactive_plan_seed`` from a ``needs_plan`` tool result
+    that asks to activate interactive Plan Mode, else ``None`` (Phase 5).
+    """
+    try:
+        data = json.loads(result_str)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("status") != "needs_plan" or not data.get("activate_interactive_plan"):
+        return None
+    seed = data.get("interactive_plan_seed")
+    return seed if isinstance(seed, dict) else {}
+
+
+def _is_live_interactive_chat(session_context: Any | None) -> bool:
+    """True for a live web chat session — the only place a tool-intercept may
+    flip into interactive Plan Mode. The runtime session source is ``"web"``
+    (``web_chat_broker.py``), NOT ``"web_chat"`` (that's the PlanModeState tag).
+    """
+    if session_context is None:
+        return False
+    src = getattr(session_context, "source", None)
+    ch = getattr(session_context, "channel", None)
+    return src in {"web", "web_chat"} or ch == "web"
+
+
+def _latest_user_message(request: Any) -> str:
+    for msg in reversed(getattr(request, "messages", None) or []):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            content = msg.get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip()[:2000]
+    return ""
+
+
+def _maybe_activate_interactive_plan_from_tool_result(request: Any, result_str: str) -> Any:
+    """Phase 5: flip a live web chat into interactive Plan Mode when a blocked
+    autonomous tool returns an ``activate_interactive_plan`` signal.
+
+    Writes typed state + the metadata mirror AND arms the interactive ContextVar
+    — both state sources must move together (the reminder reads typed state at
+    ``engine:1634``; the read-only gate reads the ContextVar at ``service:465``),
+    or the agent would be reminded but not constrained to read-only. Returns the
+    ContextVar token for the caller to reset on handle exit, or ``None`` if not
+    activated. Gated behind ``PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE`` (default off).
+    """
+    from app.config import get_settings
+    from app.runtime.session import PlanModeState
+    from app.services.plan_mode_runtime_context import set_interactive_plan_mode
+
+    sc = getattr(request, "session_context", None)
+    if sc is None:
+        return None
+    if getattr(getattr(sc, "plan_mode", None), "active", False):
+        return None  # already in plan mode — do not re-activate / clobber
+    if not _is_live_interactive_chat(sc):
+        return None
+    if not get_settings().PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE:
+        return None
+    seed = _parse_interactive_plan_signal(result_str)
+    if seed is None:
+        return None
+    state = PlanModeState(
+        active=True,
+        intent_type=seed.get("intent_type"),
+        action_kind=seed.get("action_kind"),
+        tool_name=seed.get("tool_name"),
+        original_request=seed.get("original_request") or _latest_user_message(request),
+        plan_id=seed.get("plan_id"),
+        source="tool_intercept",
+    )
+    sc.plan_mode = state
+    sc.metadata["plan_mode"] = state.to_metadata()
+    return set_interactive_plan_mode(state.to_metadata())
+
+
 def _build_restoration_context(
     agent_id: Any,
     session_context: Any | None = None,
@@ -1612,6 +1690,11 @@ class AgentKernel:
             # full_toolset tracks expanded tools after pack activation.
             # Intentionally persists across rounds — packs stay active once loaded.
             full_toolset = None
+            # Phase 5: ContextVar token if a live-chat tool-intercept activates
+            # interactive Plan Mode mid-loop. Reset in the finally below so the
+            # armed read-only state never leaks into a later invocation that may
+            # share this async task.
+            _interactive_plan_token = None
 
             try:
                 for round_i in range(max_rounds):
@@ -2185,6 +2268,10 @@ class AgentKernel:
                                             _callback_failure_count,
                                         )
                             collected_parts.append(build_tool_call_event(done_payload)["part"])
+                            if _interactive_plan_token is None:
+                                _interactive_plan_token = _maybe_activate_interactive_plan_from_tool_result(
+                                    request, str(result)
+                                )
                             _content = _maybe_evict_tool_result(tool_name, tc["id"], str(result), request.eviction_dir)
                             _round_tool_chars += len(_content)
                             if (
@@ -2374,6 +2461,10 @@ class AgentKernel:
                                         )
                             collected_parts.append(build_tool_call_event(done_payload)["part"])
 
+                            if _interactive_plan_token is None:
+                                _interactive_plan_token = _maybe_activate_interactive_plan_from_tool_result(
+                                    request, str(result)
+                                )
                             _content = _maybe_evict_tool_result(tool_name, tc["id"], str(result), request.eviction_dir)
                             _round_tool_chars += len(_content)
                             if (
@@ -2593,6 +2684,10 @@ class AgentKernel:
                 )
             finally:
                 await client.close()
+                if _interactive_plan_token is not None:
+                    from app.services.plan_mode_runtime_context import reset_interactive_plan_mode
+
+                    reset_interactive_plan_mode(_interactive_plan_token)
         finally:
             if request.execution_identity:
                 if previous_identity:

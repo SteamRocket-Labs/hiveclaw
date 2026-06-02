@@ -488,6 +488,9 @@ async def test_activate_interactive_plan_mode_writes_typed_state_and_keeps_dict_
     assert session_context.metadata["plan_mode"] == session_context.plan_mode.to_metadata()
     # Runtime-only injection bookkeeping never leaks into the mirror.
     assert "reminded_full" not in session_context.metadata["plan_mode"]
+    # Phase 4B: a session-scoped plan file is provisioned and mirrored for the gate.
+    assert session_context.plan_mode.plan_file_path == "workspace/plans/session-1.plan.md"
+    assert session_context.metadata["plan_mode"]["plan_file_path"] == "workspace/plans/session-1.plan.md"
 
 
 @pytest.mark.asyncio

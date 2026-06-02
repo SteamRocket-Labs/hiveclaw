@@ -67,6 +67,11 @@ class PlanModeState:
         if self.deep_research:
             data["deep_research"] = True
             data["deep_research_args"] = dict(self.deep_research_args)
+        # Phase 4B: the read-only gate reads the plan file off the ContextVar
+        # mirror, so a provisioned plan_file_path must round-trip (unlike the
+        # per-round reminded_full / entered_round bookkeeping, which stays local).
+        if self.plan_file_path:
+            data["plan_file_path"] = self.plan_file_path
         return data
 
     @classmethod
@@ -89,6 +94,7 @@ class PlanModeState:
             reason=data.get("reason"),
             deep_research=bool(data.get("deep_research")),
             deep_research_args=dict(data.get("deep_research_args") or {}),
+            plan_file_path=data.get("plan_file_path"),
             source=str(data.get("source") or "web_chat"),
         )
 

@@ -81,14 +81,22 @@ def test_to_metadata_includes_deep_research_payload_when_set():
 
 
 def test_runtime_only_fields_never_leak_into_metadata_mirror():
-    # reminded_full / entered_round are Phase 2 injection bookkeeping; they live
-    # only on the typed state and must never reach the legacy dict (which feeds
-    # the ContextVar + exit_plan_mode, neither of which knows about them).
-    state = PlanModeState(active=True, entered_round=7, reminded_full=True, plan_file_path="x")
+    # reminded_full / entered_round are Phase 2 per-round injection bookkeeping;
+    # they live only on the typed state and must never reach the legacy dict.
+    # (plan_file_path DOES belong in the mirror — see the next test.)
+    state = PlanModeState(active=True, entered_round=7, reminded_full=True)
     data = state.to_metadata()
     assert "entered_round" not in data
     assert "reminded_full" not in data
-    assert "plan_file_path" not in data
+
+
+def test_plan_file_path_round_trips_through_the_mirror():
+    # Phase 4B: the interactive read-only gate reads plan_file_path off the
+    # ContextVar mirror, so it must survive to_metadata/from_metadata.
+    state = PlanModeState(active=True, plan_file_path="workspace/plans/s1.plan.md")
+    data = state.to_metadata()
+    assert data["plan_file_path"] == "workspace/plans/s1.plan.md"
+    assert PlanModeState.from_metadata(data).plan_file_path == "workspace/plans/s1.plan.md"
 
 
 def test_from_metadata_round_trips_core_fields():

@@ -901,6 +901,12 @@ _PLAN_MODE_REMINDER_SPARSE = (
     "refining the plan, then call exit_plan_mode to submit it for approval. Do not ask for "
     "approval in prose; exit_plan_mode is the approval request."
 )
+# Phase 4B: appended to the FULL reminder only when a plan file is provisioned.
+_PLAN_MODE_FILE_HINT = (
+    "\n\nYou may progressively write the plan to this exact file, the only path writable in Plan "
+    "Mode: {plan_file}. Writing the file does not submit it — you must still call exit_plan_mode "
+    "to request approval."
+)
 
 
 def _plan_mode_reminder_content(plan_state: Any | None) -> tuple[str, bool] | None:
@@ -908,12 +914,18 @@ def _plan_mode_reminder_content(plan_state: Any | None) -> tuple[str, bool] | No
 
     Returns ``(reminder_text, is_full)`` or ``None`` when Plan Mode is inactive.
     The first round (and the round after a compaction re-arm) gets the FULL
-    text; the caller flips ``reminded_full`` so later rounds get SPARSE.
+    text; the caller flips ``reminded_full`` so later rounds get SPARSE. When a
+    plan file is provisioned (Phase 4B), the FULL text gains a hint naming that
+    exact writable file.
     """
     if plan_state is None or not getattr(plan_state, "active", False):
         return None
     if not getattr(plan_state, "reminded_full", False):
-        return _PLAN_MODE_REMINDER_FULL, True
+        text = _PLAN_MODE_REMINDER_FULL
+        plan_file = getattr(plan_state, "plan_file_path", None)
+        if plan_file:
+            text = text + _PLAN_MODE_FILE_HINT.format(plan_file=plan_file)
+        return text, True
     return _PLAN_MODE_REMINDER_SPARSE, False
 
 

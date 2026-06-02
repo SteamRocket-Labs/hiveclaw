@@ -13,6 +13,8 @@ plan for confirmation.
 
 from __future__ import annotations
 
+import os
+
 # Read-only context + planning-aid tools permitted while Plan Mode is active.
 # Everything else (workspace writes, triggers, delegation, messaging, memory
 # writes, command execution, …) is blocked until the user approves the plan.
@@ -42,14 +44,56 @@ PLAN_MODE_READONLY_TOOLS: frozenset[str] = frozenset(
 )
 
 
-def is_plan_mode_tool_allowed(tool_name: str) -> bool:
+# Workspace-write tools that Phase 4B may allow — but ONLY when they target the
+# exact provisioned plan file. Never widened to a directory-level whitelist.
+_PLAN_FILE_WRITE_TOOLS: frozenset[str] = frozenset({"write_file", "edit_file", "fs_write"})
+# Argument names different write tools use for their target path.
+_PATH_ARG_NAMES = ("path", "file_path", "filename")
+
+
+def _extract_target_path(arguments: dict) -> str | None:
+    for key in _PATH_ARG_NAMES:
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _is_exact_plan_file_write(tool_name: str, arguments: dict, plan_file_path: str | None) -> bool:
+    """True only for a write that targets the exact provisioned plan file.
+
+    Enforces the Phase 4B iron laws: no plan file → no write; ``fs_write``
+    delete is never allowed; the target must normalise (resolving ``./`` and
+    ``..``) to exactly ``plan_file_path`` — no traversal escape, no directory
+    wildcard.
+    """
+    if not plan_file_path:
+        return False
+    if tool_name == "fs_write" and str(arguments.get("mode") or "write").lower() == "delete":
+        return False
+    target = _extract_target_path(arguments)
+    if not target:
+        return False
+    return os.path.normpath(target) == os.path.normpath(plan_file_path)
+
+
+def is_plan_mode_tool_allowed(
+    tool_name: str,
+    arguments: dict | None = None,
+    plan_file_path: str | None = None,
+) -> bool:
     """Return ``True`` if ``tool_name`` may run while Plan Mode is active.
 
-    Phase 3 allows only the read-only / planning-aid set; every side-effecting
-    tool is blocked. Phase 4B will widen this to also permit writes that target
-    the exact provisioned plan file (and will keep ``fs_write`` delete blocked).
+    Read-only / planning-aid tools are always allowed. Workspace-write tools are
+    blocked unless a ``plan_file_path`` has been provisioned (Phase 4B) AND the
+    call targets that exact normalised path — and never for ``fs_write`` delete.
+    Phase 3 callers pass no ``plan_file_path``, so every write stays blocked.
     """
-    return tool_name in PLAN_MODE_READONLY_TOOLS
+    if tool_name in PLAN_MODE_READONLY_TOOLS:
+        return True
+    if tool_name in _PLAN_FILE_WRITE_TOOLS:
+        return _is_exact_plan_file_write(tool_name, arguments or {}, plan_file_path)
+    return False
 
 
 __all__ = ["PLAN_MODE_READONLY_TOOLS", "is_plan_mode_tool_allowed"]

@@ -70,3 +70,47 @@ def test_policy_is_not_derived_from_planner_allowlist():
 
     assert "exit_plan_mode" not in PLANNER_ALLOWED_TOOLS
     assert "exit_plan_mode" in PLAN_MODE_READONLY_TOOLS
+
+
+# ── Phase 4B: exact plan-file write whitelist ──
+
+_PLAN_FILE = "workspace/plans/s1.plan.md"
+
+
+def test_write_tools_blocked_without_a_provisioned_plan_file():
+    # Phase 3 behaviour preserved: no plan_file_path → every write is blocked.
+    assert is_plan_mode_tool_allowed("write_file", {"path": _PLAN_FILE}) is False
+    assert is_plan_mode_tool_allowed("write_file", {"path": _PLAN_FILE}, None) is False
+    assert is_plan_mode_tool_allowed("fs_write", {"path": _PLAN_FILE, "mode": "write"}) is False
+
+
+def test_write_to_the_exact_plan_file_is_allowed():
+    assert is_plan_mode_tool_allowed("write_file", {"path": _PLAN_FILE}, _PLAN_FILE) is True
+    assert is_plan_mode_tool_allowed("edit_file", {"path": _PLAN_FILE}, _PLAN_FILE) is True
+    assert is_plan_mode_tool_allowed("fs_write", {"path": _PLAN_FILE, "mode": "write"}, _PLAN_FILE) is True
+    assert is_plan_mode_tool_allowed("fs_write", {"path": _PLAN_FILE, "mode": "edit"}, _PLAN_FILE) is True
+    # Accept the alternate path argument name used by some write tools.
+    assert is_plan_mode_tool_allowed("write_file", {"file_path": _PLAN_FILE}, _PLAN_FILE) is True
+
+
+def test_write_to_any_other_path_blocked_even_with_a_plan_file():
+    assert is_plan_mode_tool_allowed("write_file", {"path": "workspace/secret.md"}, _PLAN_FILE) is False
+    assert is_plan_mode_tool_allowed("write_file", {"path": "soul.md"}, _PLAN_FILE) is False
+
+
+def test_path_traversal_is_normalised_then_blocked():
+    # ".." escaping the plan file resolves elsewhere → blocked.
+    assert is_plan_mode_tool_allowed("write_file", {"path": "workspace/plans/../secret.md"}, _PLAN_FILE) is False
+    # A redundant "./" that still resolves to the exact plan file is allowed.
+    assert is_plan_mode_tool_allowed("write_file", {"path": "workspace/plans/./s1.plan.md"}, _PLAN_FILE) is True
+
+
+def test_fs_write_delete_is_always_blocked_even_on_the_plan_file():
+    # Iron law ③: delete is never permitted in Plan Mode, even on the plan file.
+    assert is_plan_mode_tool_allowed("fs_write", {"path": _PLAN_FILE, "mode": "delete"}, _PLAN_FILE) is False
+
+
+def test_directory_wildcard_is_not_a_valid_plan_file_target():
+    # Iron law: no directory-level whitelist — only the exact file matches.
+    assert is_plan_mode_tool_allowed("write_file", {"path": "workspace/plans/other.md"}, _PLAN_FILE) is False
+    assert is_plan_mode_tool_allowed("write_file", {"path": "workspace/plans"}, _PLAN_FILE) is False

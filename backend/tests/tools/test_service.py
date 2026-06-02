@@ -562,3 +562,27 @@ async def test_interactive_plan_mode_blocks_non_readonly_tools_before_gate():
 
     assert "plan_mode_readonly_violation" in result
     assert "exit_plan_mode" in result
+
+
+@pytest.mark.asyncio
+async def test_interactive_plan_mode_allows_write_only_to_exact_plan_file():
+    # Phase 4B: the gate reads plan_file_path off the ContextVar mirror and lets
+    # writes hit only that exact file — other paths and delete stay blocked.
+    from app.services.plan_mode_runtime_context import reset_interactive_plan_mode, set_interactive_plan_mode
+    from app.tools.service import ToolRuntimeService
+
+    pf = "workspace/plans/s1.plan.md"
+    token = set_interactive_plan_mode({"original_request": "plan", "plan_file_path": pf})
+    try:
+        # Exact plan-file write → allowed (gate returns None).
+        assert ToolRuntimeService._interactive_plan_mode_readonly_block("write_file", {"path": pf}) is None
+        # Any other workspace path → blocked.
+        other = ToolRuntimeService._interactive_plan_mode_readonly_block("write_file", {"path": "soul.md"})
+        assert other is not None and "plan_mode_readonly_violation" in other
+        # Delete on the plan file → blocked (iron law ③).
+        deleted = ToolRuntimeService._interactive_plan_mode_readonly_block(
+            "fs_write", {"path": pf, "mode": "delete"}
+        )
+        assert deleted is not None and "plan_mode_readonly_violation" in deleted
+    finally:
+        reset_interactive_plan_mode(token)

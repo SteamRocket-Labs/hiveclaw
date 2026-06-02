@@ -80,3 +80,23 @@ def test_reset_plan_reminder_is_noop_when_inactive_or_missing():
     # No session context / no plan_mode attribute must not raise.
     _reset_plan_reminder(None)
     _reset_plan_reminder(object())
+
+
+def test_full_reminder_names_the_plan_file_when_provisioned():
+    # Phase 4B: when a plan file is provisioned, the FULL reminder appends a hint
+    # naming that exact writable path (base text preserved as the prefix).
+    state = PlanModeState(active=True, plan_file_path="workspace/plans/s1.plan.md")
+    result = _plan_mode_reminder_content(state)
+    assert result is not None
+    content, is_full = result
+    assert is_full is True
+    assert content.startswith(_PLAN_MODE_REMINDER_FULL)
+    assert "workspace/plans/s1.plan.md" in content
+
+
+def test_full_reminder_omits_file_hint_when_no_plan_file():
+    # No plan file (Phase 3 behaviour / unattended fallback) → exact base text.
+    result = _plan_mode_reminder_content(PlanModeState(active=True))
+    assert result is not None
+    content, _ = result
+    assert content == _PLAN_MODE_REMINDER_FULL

@@ -166,7 +166,7 @@ class ToolRuntimeService:
         delegation_token: Any | None = None,
         session_id: str | None = None,
     ) -> str:
-        plan_mode_block = self._interactive_plan_mode_readonly_block(tool_name)
+        plan_mode_block = self._interactive_plan_mode_readonly_block(tool_name, arguments)
         if plan_mode_block:
             return plan_mode_block
 
@@ -367,7 +367,7 @@ class ToolRuntimeService:
     ) -> str:
         _logger = logging.getLogger(__name__)
 
-        plan_mode_block = self._interactive_plan_mode_readonly_block(tool_name)
+        plan_mode_block = self._interactive_plan_mode_readonly_block(tool_name, arguments)
         if plan_mode_block:
             return plan_mode_block
 
@@ -440,7 +440,7 @@ class ToolRuntimeService:
         arguments: dict,
         context: ToolExecutionContext,
     ) -> str:
-        plan_mode_block = self._interactive_plan_mode_readonly_block(tool_name)
+        plan_mode_block = self._interactive_plan_mode_readonly_block(tool_name, arguments)
         if plan_mode_block:
             return plan_mode_block
 
@@ -462,11 +462,19 @@ class ToolRuntimeService:
         return await self.backend.execute(request, _execute_request)
 
     @staticmethod
-    def _interactive_plan_mode_readonly_block(tool_name: str) -> str | None:
-        from app.services.plan_mode_runtime_context import interactive_plan_mode_active
+    def _interactive_plan_mode_readonly_block(tool_name: str, arguments: dict | None = None) -> str | None:
+        from app.services.plan_mode_runtime_context import (
+            interactive_plan_mode_active,
+            interactive_plan_mode_metadata,
+        )
         from app.tools.plan_mode_policy import is_plan_mode_tool_allowed
 
-        if not interactive_plan_mode_active() or is_plan_mode_tool_allowed(tool_name):
+        if not interactive_plan_mode_active():
+            return None
+        # Phase 4B: a provisioned exact plan-file path (mirrored onto the
+        # ContextVar) lets write_file/edit_file/fs_write target only that file.
+        plan_file_path = interactive_plan_mode_metadata().get("plan_file_path")
+        if is_plan_mode_tool_allowed(tool_name, arguments, plan_file_path):
             return None
         return render_tool_error(
             tool_name=tool_name,

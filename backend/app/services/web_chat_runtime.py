@@ -431,6 +431,7 @@ def _activate_interactive_plan_mode(
         handoff_target=handoff_target,
         deep_research=is_deep_research,
         deep_research_args=_deep_research_chat_arguments(original_request) if is_deep_research else {},
+        plan_file_path=f"workspace/plans/{session_id}.plan.md" if session_id else None,
         source="web_chat",
     )
     metadata = state.to_metadata()

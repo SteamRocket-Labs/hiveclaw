@@ -58,6 +58,45 @@ def get_plan_mode_service() -> PlanModeService:
     return _service
 
 
+def _system_plan_run_enabled() -> bool:
+    """Path-unification cut ③ gate. When on, the REST entries author plan_json by
+    launching a main-loop Plan Mode run (the agent fills the draft via
+    exit_plan_mode) instead of the isolated RPC planner. Default off: the legacy
+    ``generate_plan`` / ``revise_plan`` behaviour is preserved byte-for-byte."""
+    from app.config import get_settings
+
+    return bool(getattr(get_settings(), "PLAN_MODE_SYSTEM_RUN", False))
+
+
+async def _author_draft_plan(
+    service: PlanModeService,
+    plan: AgentPlanRequest,
+    *,
+    fill: dict[str, Any] | None,
+    plan_id: uuid.UUID | None = None,
+) -> AgentPlanRequest:
+    """Fill a freshly created/reset draft ``plan``'s plan_json (cut ③).
+
+    Flag-on: launch a system_plan_run so the agent authors the plan in its own
+    main loop and ``exit_plan_mode`` fills THIS draft (stable id); re-load the row
+    to return the authored result. Flag-off: keep the legacy RPC planner via
+    ``generate_plan`` (``fill`` seeds the planner). Fail-closed either way — a
+    plan that fails authoring is returned in its non-confirmable state.
+
+    ``plan_id`` defaults to ``plan.id`` but may be passed explicitly (regenerate
+    keys generation on the URL plan id, matching the legacy direct call).
+    """
+    target_id = plan_id or plan.id
+    if not _system_plan_run_enabled():
+        return await service.generate_plan(plan_id=target_id, fill=fill or {})
+
+    from app.services.plan_mode_system_run import launch_system_plan_run
+
+    await launch_system_plan_run(plan, seed_context=fill or None)
+    reloaded = await service.get_plan(target_id)
+    return reloaded or plan
+
+
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
@@ -348,7 +387,7 @@ async def create_plan(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    plan = await service.generate_plan(plan_id=plan.id, fill=payload.fill or {})
+    plan = await _author_draft_plan(service, plan, fill=payload.fill)
     return _plan_out(plan)
 
 
@@ -397,7 +436,13 @@ async def revise_plan(
     await check_agent_access(db, current_user, agent_id)
     service = get_plan_mode_service()
     await _load_plan_for_agent(service, agent_id=agent_id, plan_id=plan_id)
-    new_plan = await service.revise_plan(plan_id=plan_id, fill=payload.fill or {})
+    if _system_plan_run_enabled():
+        # Cut ③: supersede to a fresh draft, then let the agent author the new
+        # version in a main-loop Plan Mode run (fills the draft via exit_plan_mode).
+        draft = await service.supersede_to_draft(plan_id=plan_id)
+        new_plan = await _author_draft_plan(service, draft, fill=payload.fill)
+    else:
+        new_plan = await service.revise_plan(plan_id=plan_id, fill=payload.fill or {})
     return _plan_out(new_plan)
 
 
@@ -416,9 +461,9 @@ async def regenerate_plan(
     """
     await check_agent_access(db, current_user, agent_id)
     service = get_plan_mode_service()
-    await _load_plan_for_agent(service, agent_id=agent_id, plan_id=plan_id)
+    existing = await _load_plan_for_agent(service, agent_id=agent_id, plan_id=plan_id)
     try:
-        plan = await service.generate_plan(plan_id=plan_id, fill=payload.fill or {})
+        plan = await _author_draft_plan(service, existing, fill=payload.fill, plan_id=plan_id)
     except PlanConflictError as exc:
         raise HTTPException(status_code=409, detail={"error": exc.error_code, "message": exc.message}) from exc
     return _plan_out(plan)

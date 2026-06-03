@@ -370,6 +370,52 @@ async def test_revise_plan_supersedes_old_and_bumps_version(patched_service):
     assert v2.plan_json["objective"] == "obj2 revised"
 
 
+@pytest.mark.asyncio
+async def test_supersede_to_draft_creates_fresh_draft_without_generating(patched_service):
+    """Cut ③: the launcher path needs a superseded draft WITHOUT plan_json so the
+    agent can author it via exit_plan_mode. supersede_to_draft must not invoke the
+    planner (the legacy revise_plan does that separately)."""
+    service, session, _, planner = patched_service
+    agent_id = uuid4()
+
+    draft = await service.create_plan_request(
+        agent_id=agent_id,
+        requested_by_user_id=uuid4(),
+        original_request="原始请求",
+        intent_type="long_task",
+    )
+    v1 = await service.generate_plan(
+        plan_id=draft.id,
+        fill={
+            "objective": "obj1",
+            "steps": [{"order": 1, "description": "d"}],
+            "success_criteria": ["c"],
+            "stop_conditions": ["s"],
+        },
+    )
+    planner_calls_before = len(planner.calls)
+
+    new_draft = await service.supersede_to_draft(plan_id=v1.id)
+
+    # Old row superseded + pointer set; new row is a bare draft at the next version.
+    assert v1.status == "superseded"
+    assert v1.superseded_by_plan_id == new_draft.id
+    assert new_draft.id != v1.id
+    assert new_draft.status == "draft"
+    assert new_draft.plan_version == 2
+    assert new_draft.original_request == "原始请求"
+    assert new_draft.metadata_json["revised_from_plan_id"] == str(v1.id)
+    # Crucially: no planner run — authoring is the caller's job (launcher or RPC).
+    assert len(planner.calls) == planner_calls_before
+
+
+@pytest.mark.asyncio
+async def test_supersede_to_draft_unknown_plan_raises(patched_service):
+    service, _, _, _planner = patched_service
+    with pytest.raises(LookupError):
+        await service.supersede_to_draft(plan_id=uuid4())
+
+
 # ---------------------------------------------------------------------------
 # confirm_plan
 # ---------------------------------------------------------------------------
@@ -745,9 +791,7 @@ async def test_ensure_awaiting_plan_from_fill_creates_and_dedupes_custom_long_ta
 
 
 @pytest.mark.asyncio
-async def test_ensure_awaiting_plan_from_fill_rejects_internal_tool_script_plan(
-    monkeypatch, tmp_path
-):
+async def test_ensure_awaiting_plan_from_fill_rejects_internal_tool_script_plan(monkeypatch, tmp_path):
     from app.services import plan_mode_service as mod
 
     session = _PlanSession()

@@ -26,7 +26,6 @@ from app.services.feishu_identity_maintenance import build_feishu_p2p_conv_id, l
 from app.services.feishu_contacts_cache import upsert_feishu_contact_cache
 from app.services.feishu_service import feishu_service
 from app.services.approval_service import approval_service
-from app.services.plan_mode_service import get_plan_mode_service
 
 router = APIRouter(tags=["feishu"])
 
@@ -40,7 +39,7 @@ async def _try_confirm_channel_plan_from_text(
     session_source: str,
 ) -> str | None:
     """Confirm and hand off a Plan Mode plan from trusted channel text."""
-    from app.services import plan_mode_core
+    from app.services import plan_mode_core, plan_mode_service
     from app.services.plan_mode_service import PlanConflictError
 
     confirmation = plan_mode_core.extract_plan_confirmation_request(user_text)
@@ -49,7 +48,7 @@ async def _try_confirm_channel_plan_from_text(
     if user_id is None:
         return "计划确认需要可审计的用户身份。请先绑定账号，或到 Web 端计划卡片确认。"
 
-    service = get_plan_mode_service()
+    service = plan_mode_service.get_plan_mode_service()
     plan = None
     if confirmation.plan_id:
         try:
@@ -2228,6 +2227,8 @@ async def _call_agent_llm(
         and plan_entry_decision.action_kind
         and plan_entry_decision.tool_name
     ):
+        from app.config import get_settings
+        from app.services import plan_mode_core
         from app.services.plan_mode_service import get_plan_mode_service
 
         title = plan_entry_decision.title or user_text[:120] or "Plan Mode request"
@@ -2240,17 +2241,55 @@ async def _call_agent_llm(
                 "description": user_text,
                 "task_type": "todo",
             }
-        plan = await get_plan_mode_service().ensure_awaiting_plan(
-            agent_id=agent_id,
-            action_kind=plan_entry_decision.action_kind,
-            tool_name=plan_entry_decision.tool_name,
-            arguments=plan_arguments,
-            source=session_source,
-            tenant_id=getattr(agent, "tenant_id", None),
-            session_id=session_id,
-            runtime_task_id=None,
-            requested_by_user_id=effective_user_id,
-        )
+        plan_service = get_plan_mode_service()
+        if getattr(get_settings(), "PLAN_MODE_SYSTEM_RUN", False):
+            # Cut ③: the agent authors the plan_json in a main-loop Plan Mode run
+            # (fills the draft via exit_plan_mode) instead of the isolated RPC
+            # planner inside ensure_awaiting_plan. The intent matches what the RPC
+            # path would have derived from the classified action.
+            from app.services.plan_mode_system_run import launch_system_plan_run
+
+            intent_type, _signature = plan_mode_core.action_kind_to_intent_signature(
+                action_kind=plan_entry_decision.action_kind,
+                tool_name=plan_entry_decision.tool_name,
+                arguments=plan_arguments,
+            )
+            draft = await plan_service.create_plan_request(
+                agent_id=agent_id,
+                requested_by_user_id=effective_user_id,
+                original_request=user_text,
+                intent_type=intent_type,
+                source=session_source,
+                tenant_id=getattr(agent, "tenant_id", None),
+                session_id=session_id,
+                runtime_task_id=None,
+                metadata_json={
+                    "intercept_action_kind": plan_entry_decision.action_kind,
+                    "intercept_tool": plan_entry_decision.tool_name,
+                    "intercept_source": session_source,
+                },
+            )
+            await launch_system_plan_run(
+                draft,
+                seed_context={
+                    "tool_name": plan_entry_decision.tool_name,
+                    "action_kind": plan_entry_decision.action_kind,
+                    "arguments": plan_arguments,
+                },
+            )
+            plan = await plan_service.get_plan(draft.id) or draft
+        else:
+            plan = await plan_service.ensure_awaiting_plan(
+                agent_id=agent_id,
+                action_kind=plan_entry_decision.action_kind,
+                tool_name=plan_entry_decision.tool_name,
+                arguments=plan_arguments,
+                source=session_source,
+                tenant_id=getattr(agent, "tenant_id", None),
+                session_id=session_id,
+                runtime_task_id=None,
+                requested_by_user_id=effective_user_id,
+            )
         return f"已进入计划模式，并生成一份待确认计划（plan_id={plan.id}）。请确认、修改或拒绝；确认后我再开始执行。"
 
     # Load primary model (tenant-scoped)

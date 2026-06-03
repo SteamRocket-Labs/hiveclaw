@@ -101,6 +101,21 @@ def _tenant_id(value: str | None) -> uuid.UUID | None:
         return None
 
 
+def _plan_uuid(value: Any) -> uuid.UUID | None:
+    """Parse a pre-armed draft plan id from Plan Mode metadata (cut ③a).
+
+    Returns ``None`` for absent / malformed ids so the live-chat and unattended
+    tool-intercept paths (which never arm a ``plan_id``) keep creating a fresh
+    awaiting plan.
+    """
+    if not value:
+        return None
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, TypeError):
+        return None
+
+
 @tool(
     ToolMeta(
         name="exit_plan_mode",
@@ -155,7 +170,9 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
     intent_type = str(metadata.get("intent_type") or args.get("intent_type") or "long_task")
     if intent_type not in plan_mode_core.INTENT_TYPES:
         intent_type = "long_task"
-    original_request = str(metadata.get("original_request") or args.get("original_request") or args.get("objective") or "")
+    original_request = str(
+        metadata.get("original_request") or args.get("original_request") or args.get("objective") or ""
+    )
     title = str(args.get("title") or original_request[:80] or "Plan Mode plan").strip()
     objective = str(args.get("objective") or original_request or title).strip()
     fill = {
@@ -166,7 +183,9 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
         "success_criteria": _string_list(args.get("success_criteria")),
         "wake_policy": _wake_policy(args.get("wake_policy"), handoff_target=handoff["target"]),
         "required_capabilities": _string_list(args.get("required_capabilities")),
-        "external_side_effects": args.get("external_side_effects") if isinstance(args.get("external_side_effects"), list) else [],
+        "external_side_effects": args.get("external_side_effects")
+        if isinstance(args.get("external_side_effects"), list)
+        else [],
         "risk_assessment": _risk(args.get("risk_assessment")),
         "estimated_cost": _estimated_cost(args.get("estimated_cost")),
         "stop_conditions": _string_list(args.get("stop_conditions")),
@@ -180,34 +199,54 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
             "planned_from": "interactive_plan_mode",
         }
 
-    signature_payload = {
-        "agent_id": str(request.context.agent_id),
-        "session_id": request.context.session_id,
-        "intent_type": intent_type,
-        "original_request": original_request,
-        "fill": fill,
-    }
-    signature = "interactive_plan:" + hashlib.sha256(
-        json.dumps(signature_payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
-    ).hexdigest()[:32]
+    # Path-unification cut ③a — dual-state submission. A system_plan_run launcher
+    # (REST create/regenerate/revise, Feishu classification) pre-creates a draft
+    # plan and arms Plan Mode with its ``plan_id``; the agent fills THAT draft so
+    # the id the entry point already returned to the frontend stays stable. Live
+    # chat / unattended tool-intercept have no pre-created plan (plan_id absent),
+    # so they create a fresh awaiting plan as before. Both branches land the SAME
+    # agent-authored ``fill`` through the structured-fill path (use_agent_planner
+    # =False) — the only difference is whether the row already exists.
+    existing_plan_id = _plan_uuid(metadata.get("plan_id"))
+    service = get_plan_mode_service()
+    if existing_plan_id is not None:
+        plan = await service.generate_plan(
+            plan_id=existing_plan_id,
+            fill=fill,
+            use_agent_planner=False,
+        )
+    else:
+        signature_payload = {
+            "agent_id": str(request.context.agent_id),
+            "session_id": request.context.session_id,
+            "intent_type": intent_type,
+            "original_request": original_request,
+            "fill": fill,
+        }
+        signature = (
+            "interactive_plan:"
+            + hashlib.sha256(
+                json.dumps(signature_payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest()[:32]
+        )
 
-    plan = await get_plan_mode_service().ensure_awaiting_plan_from_fill(
-        agent_id=request.context.agent_id,
-        intent_type=intent_type,
-        signature=signature,
-        fill=fill,
-        original_request=original_request or objective,
-        source="interactive_plan_mode",
-        tenant_id=_tenant_id(request.context.tenant_id),
-        session_id=request.context.session_id,
-        runtime_task_id=None,
-        requested_by_user_id=request.context.user_id,
-        metadata_json={
-            "interactive_plan_mode": True,
-            "entry_reason": metadata.get("reason"),
-            "deep_research_plan": bool(metadata.get("deep_research")),
-        },
-    )
+        plan = await service.ensure_awaiting_plan_from_fill(
+            agent_id=request.context.agent_id,
+            intent_type=intent_type,
+            signature=signature,
+            fill=fill,
+            original_request=original_request or objective,
+            source="interactive_plan_mode",
+            tenant_id=_tenant_id(request.context.tenant_id),
+            session_id=request.context.session_id,
+            runtime_task_id=None,
+            requested_by_user_id=request.context.user_id,
+            metadata_json={
+                "interactive_plan_mode": True,
+                "entry_reason": metadata.get("reason"),
+                "deep_research_plan": bool(metadata.get("deep_research")),
+            },
+        )
 
     payload = {
         "status": "needs_plan",

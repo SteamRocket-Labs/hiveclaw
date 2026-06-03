@@ -159,6 +159,18 @@ class Settings(BaseSettings):
     # until this flag is switched on (path-unification §9 staged rollout).
     PLAN_MODE_UNATTENDED_RUN: bool = False
 
+    # Plan-path unification §12 / cut ③: when on, the "no agent run" external
+    # entries (REST create / regenerate / revise, Feishu classification) author
+    # their plan_json by launching a system_plan_run — a real agent main-loop
+    # Plan Mode pass (read-only policy + per-round reminder + exit_plan_mode)
+    # pre-armed with the draft plan_id — instead of the isolated RPC planner
+    # (generate_plan(use_agent_planner=True) / ensure_awaiting_plan). The agent
+    # fills the existing draft via exit_plan_mode; the plan lands
+    # awaiting_confirmation for the same confirmation boundary. Default off:
+    # these entries keep the legacy RPC-planner behaviour until this flag is
+    # switched on (path-unification §9/§12 staged rollout, mirrors cut ②).
+    PLAN_MODE_SYSTEM_RUN: bool = False
+
     # Tavily Search API
     TAVILY_API_KEY: str = ""
 

@@ -232,7 +232,7 @@ prompt(`_planner_system_prompt`)、独立工具集(`PLANNER_ALLOWED_TOOLS`)、�
 |---|---|---|
 | ① A 拆 chat/Feishu regex auto-sync 代理 | ✅ 已实装 | commit `2eee9e8`(删 405 行;web_chat 无旁路) |
 | ② B 无人值守 plan run | ✅ 已实装 | 见下 §11.1 |
-| ③ C REST/supersede + Feishu classification | ⬜ 待做 | — |
+| ③ C REST/supersede + Feishu classification | ✅ 已实装 | 见下 §11.2 |
 | ④ D 删 `DefaultAgentPlanPlanner` | ⬜ 待做 | — |
 
 ### 11.1 切口② 实装记录
@@ -271,6 +271,74 @@ live 与无人值守**共用同一套 Plan Mode runtime**(每轮 reminder + 只�
 
 **待后续**:无人值守 plan run 上线需把 `PLAN_MODE_UNATTENDED_RUN` 切 on(生产灰度);切口④ 删 RPC planner
 后该 flag 失去 fallback 含义,可随之收敛。
+
+### 11.2 切口③ 实装记录(③a + ③b)
+
+**机制定型(完全照 §12 规格)**:无 agent run 的纯外部入口(REST create/regenerate/revise + Feishu
+classification)通过**启动一个 system_plan_run**(预激活 Plan Mode + 带 draft `plan_id`)让 agent 在主循环
+只读规划 → `exit_plan_mode` 填充该 draft → 落 `awaiting_confirmation`。与切口② 的唯一差别:切口② 在
+已运行的 kernel loop **内**被拦截后激活(plan_id 空 → 新建);launcher 在 run **前**预激活且带 plan_id
+(→ 填充已有 draft)。两者复用同一套 Plan Mode runtime(每轮 reminder + 只读 policy + `exit_plan_mode`)。
+
+**flag 名 + 默认值 + off 回退**:`PLAN_MODE_SYSTEM_RUN: bool = False`(`config.py`,仿 `PLAN_MODE_UNATTENDED_RUN`
+注释风格)。**off** 时 REST 走旧 `generate_plan(use_agent_planner=True)` / `revise_plan`、Feishu 走旧
+`ensure_awaiting_plan`(逐字节不变);**on** 时走 launcher。生产默认不变,安全增量。
+
+**改动(8 文件)**:
+
+- `app/config.py`:新增 `PLAN_MODE_SYSTEM_RUN`(默认 off,灰度)。
+- `app/runtime/session.py`:`PlanModeState.to_metadata()` 仅当 `plan_id` 非空时输出 `plan_id`(否则 live chat /
+  无人值守 tool-intercept 的 mirror 逐字节不变 → `exit_plan_mode` 仍走"新建"分支)。
+- `app/tools/handlers/plan_mode.py`(③a 核心):`exit_plan_mode` 读 metadata 的 `plan_id`(`_plan_uuid` 解析,
+  malformed → None 退回新建)→ **有 plan_id** 调 `generate_plan(plan_id, fill, use_agent_planner=False)`
+  填充已有 draft(plan_id 稳定);**无 plan_id** 维持 `ensure_awaiting_plan_from_fill` 新建。
+- `app/services/plan_mode_system_run.py`(③b 核心,**新模块**):`launch_system_plan_run(plan, seed_context)` —
+  解析 agent/model(tenant-scoped,复制自 RPC planner 的 `_resolve_agent_models`,不依赖将删的
+  `DefaultAgentPlanPlanner`)→ 预激活 `SessionContext(source="system_plan_run")` +
+  `PlanModeState(active=True, plan_id=str(plan.id), …)` + arm ContextVar → `invoke_agent`(标准工具,被只读
+  policy 限制;`max_tool_rounds=20`)→ `finally` reset ContextVar。fail-closed:`invoke_agent` 抛错被吞,
+  plan 留非确认态,**绝不执行**。
+- `app/services/plan_mode_service.py`:抽出 `supersede_to_draft(plan_id)`(只 supersede 返回 draft,不 generate);
+  `revise_plan` 改为 `supersede_to_draft` + `generate_plan`(flag-off 行为逐字节不变)。
+- `app/api/plans.py`:新增 `_system_plan_run_enabled()` + `_author_draft_plan(service, plan, fill, plan_id)`
+  (flag-on→launcher+reload / flag-off→`generate_plan`);create/regenerate 经 `_author_draft_plan`,revise
+  flag-on 经 `supersede_to_draft`+launcher。
+- `app/api/feishu.py`:classification 块 flag-on→`create_plan_request`(draft)+`launch_system_plan_run`
+  (intent 用 `action_kind_to_intent_signature` 与 RPC 路径一致)+reload;flag-off→旧 `ensure_awaiting_plan`。
+
+**治理不变量(逐字节未动)**:`_apply_generation` / `compute_plan_hash` / `validate_plan_json` / `PlanModeGate` /
+`validate_confirmation` / 禁自我确认。多租户 scope + RLS 全程保持(launcher 经 `invoke_agent` 标准治理路径)。
+未动切口② 的 trigger/heartbeat 激活;未动 deep_research 的 `ensure_awaiting_plan_from_fill` 路径。
+
+**subtle**:(1)launcher run `source="system_plan_run"` 已 active,不会被
+`_maybe_activate_interactive_plan_from_tool_result` 二次激活(`engine:1006` short-circuit);其 gated 写工具被
+`execute_with_context` 首检的只读 gate(`service:513`)挡住,不会进 `_plan_mode_gate_block` 触发嵌套 RPC。
+(2)③a 的 `generate_plan(use_agent_planner=False)` 与 live chat 的 `ensure_awaiting_plan_from_fill` 共用同一
+结构化 fill 落地分支,`author_type` 一致(均 `workflow` 标签——这是结构化 fill 分支既有语义,非 ③ 引入;
+切口④ 收口 `generate_plan` 为纯 fill 落地时统一为 agent-authored)。
+
+**测试证据**:
+
+- `tests/runtime/test_plan_mode_state.py`:`plan_id` 未设时不入 mirror(byte-compat)/ armed 时 round-trip。
+- `tests/tools/test_exit_plan_mode_tool.py`:plan_id armed → `generate_plan(use_agent_planner=False)` 填充
+  (id 稳定、`ensure_awaiting_plan_from_fill` calls==0);无 plan_id → 新建(`generate_plan` calls==0);
+  malformed plan_id → 退回新建。
+- `tests/services/test_plan_mode_system_run.py`:launcher 预激活(run 内 ContextVar armed 带 plan_id、
+  source=system_plan_run、typed state.active)+ run 后 reset;seed_context 入 prompt;fail-closed
+  (`invoke_agent` 抛错 → 不传播、ContextVar 复位);agent/model 缺失 → 不 run。
+- `tests/services/test_plan_mode_service.py`:`supersede_to_draft` 产 bare draft 不调 planner / 未知 plan 抛错。
+- `tests/api/test_plan_mode_plans_api.py`:flag-on create/regenerate/revise → launcher 被调、RPC `generate_plan`
+  /`revise_plan` 不被调(`AssertionError` 守卫)、返回 authored 结果;flag-off 旧测试全保留绿。
+- `tests/api/test_channel_plan_mode_entry.py`:flag-on Feishu classification → launcher 被调、`ensure_awaiting_plan`
+  不被调、intent/original_request/seed_context 正确;flag-off 旧测试保留绿。
+- 全域回归:**plan-mode 相关 316 passed**;runtime/kernel/services/tools/api **2579 passed**;
+  agents/architecture/core **213 passed**;8 个改动文件 ruff format + check 全绿。
+
+**待后续**:切口③ 上线需把 `PLAN_MODE_SYSTEM_RUN` 切 on(生产灰度);切口④ 删 RPC planner
+(`DefaultAgentPlanPlanner` / `PLANNER_ALLOWED_TOOLS` / `_run_planner` / `_get_planner` / `use_agent_planner` 参数),
+此时 `generate_plan` 退化为纯 fill 落地,两 flag(`PLAN_MODE_UNATTENDED_RUN` / `PLAN_MODE_SYSTEM_RUN`)失去
+fallback 含义可随之收敛。**grep 现状**:flag-on 路径下 REST/Feishu 已不调 RPC;`DefaultAgentPlanPlanner` 仅
+剩 `generate_plan(use_agent_planner=True)` 的 flag-off 回退消费者(切口④ 一并删)。
 
 ---
 

@@ -89,6 +89,60 @@ async def test_channel_llm_auto_creates_plan_for_long_task(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_channel_llm_flag_on_launches_system_run_not_rpc(monkeypatch):
+    """Cut ③: with PLAN_MODE_SYSTEM_RUN on, Feishu classification authors the
+    plan via a main-loop Plan Mode run (launch_system_plan_run fills a draft)
+    instead of ensure_awaiting_plan's isolated RPC planner."""
+    from app.api.feishu import _call_agent_llm
+
+    draft = SimpleNamespace(id=uuid4())
+    authored = SimpleNamespace(id=draft.id, status="awaiting_confirmation")
+    launched: list = []
+    rpc_calls = {"n": 0}
+
+    class _PlanService:
+        async def ensure_awaiting_plan(self, **_kwargs):
+            rpc_calls["n"] += 1
+            raise AssertionError("RPC planner must not run when system_plan_run is on")
+
+        async def create_plan_request(self, **kwargs):
+            self.create_kwargs = kwargs
+            return draft
+
+        async def get_plan(self, plan_id):
+            assert plan_id == draft.id
+            return authored
+
+    plan_service = _PlanService()
+    monkeypatch.setattr("app.services.plan_mode_service.get_plan_mode_service", lambda: plan_service)
+
+    async def fake_launch(plan, *, seed_context=None):
+        launched.append({"plan_id": plan.id, "seed_context": seed_context})
+        return plan
+
+    monkeypatch.setattr("app.services.plan_mode_system_run.launch_system_plan_run", fake_launch)
+    monkeypatch.setattr(
+        "app.config.get_settings",
+        lambda: SimpleNamespace(PLAN_MODE_SYSTEM_RUN=True),
+    )
+
+    agent = _agent()
+    db = _QueuedDB([agent])
+
+    reply = await _call_agent_llm(db, agent.id, "完整调研这个行业并出报告")
+
+    assert "已进入计划模式" in reply
+    assert rpc_calls["n"] == 0
+    assert len(launched) == 1
+    assert launched[0]["plan_id"] == draft.id
+    # The classified action is carried as seed context for the agent to plan from.
+    assert launched[0]["seed_context"]["action_kind"] == "start_long_task"
+    assert launched[0]["seed_context"]["tool_name"] == "manage_tasks"
+    assert plan_service.create_kwargs["intent_type"] == "long_task"
+    assert plan_service.create_kwargs["original_request"] == "完整调研这个行业并出报告"
+
+
+@pytest.mark.asyncio
 async def test_channel_llm_accepts_latest_recommendation_instead_of_reclassifying(monkeypatch):
     from app.api.feishu import _call_agent_llm
 

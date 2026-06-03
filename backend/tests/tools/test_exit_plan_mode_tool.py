@@ -26,6 +26,7 @@ def _request(arguments: dict):
 class _PlanService:
     def __init__(self):
         self.calls = []
+        self.generate_calls = []
 
     async def ensure_awaiting_plan_from_fill(self, **kwargs):
         from app.services import plan_mode_core
@@ -43,6 +44,25 @@ class _PlanService:
             plan_hash=plan_mode_core.compute_plan_hash(plan_json),
             plan_json=plan_json,
             metadata_json=kwargs.get("metadata_json") or {},
+        )
+
+    async def generate_plan(self, *, plan_id, fill, use_agent_planner=True):
+        from app.services import plan_mode_core
+
+        self.generate_calls.append({"plan_id": plan_id, "fill": fill, "use_agent_planner": use_agent_planner})
+        plan_json = {
+            **fill,
+            "schema": plan_mode_core.PLAN_SCHEMA,
+            "intent_type": "long_task",
+        }
+        # plan_id stays stable — the draft the launcher pre-created is filled.
+        return SimpleNamespace(
+            id=plan_id,
+            status="awaiting_confirmation",
+            plan_version=1,
+            plan_hash=plan_mode_core.compute_plan_hash(plan_json),
+            plan_json=plan_json,
+            metadata_json={},
         )
 
 
@@ -120,3 +140,101 @@ async def test_exit_plan_mode_creates_needs_plan_payload_from_active_context(mon
     assert call["intent_type"] == "long_task"
     assert str(call["requested_by_user_id"]) == result["requested_by_user_id"]
     assert call["metadata_json"]["interactive_plan_mode"] is True
+    # No pre-armed plan_id → "create new" branch only; generate_plan untouched.
+    assert service.generate_calls == []
+
+
+# ── cut ③a: dual-state submission (plan_id armed → fill existing draft) ──
+
+
+@pytest.mark.asyncio
+async def test_exit_plan_mode_fills_existing_draft_when_plan_id_armed(monkeypatch):
+    """A system_plan_run launcher pre-arms Plan Mode with the draft's plan_id;
+    exit_plan_mode must fill THAT draft via generate_plan(use_agent_planner=False)
+    — keeping the id stable — instead of creating a new awaiting plan."""
+    from app.services.plan_mode_runtime_context import reset_interactive_plan_mode, set_interactive_plan_mode
+    from app.tools.handlers import plan_mode as handler
+
+    service = _PlanService()
+    monkeypatch.setattr(handler, "get_plan_mode_service", lambda: service)
+
+    armed_plan_id = str(uuid4())
+    token = set_interactive_plan_mode(
+        {
+            "active": True,
+            "plan_id": armed_plan_id,
+            "original_request": "每天 9 点给我发 RWA 日报",
+            "intent_type": "long_task",
+        }
+    )
+    try:
+        result = json.loads(
+            await handler.exit_plan_mode(
+                _request(
+                    {
+                        "title": "RWA 日报计划",
+                        "objective": "每天生成一份 RWA 日报。",
+                        "plan_markdown": "## Plan\n1. 收集来源。\n2. 汇总日报。",
+                        "steps": ["收集来源", "汇总日报"],
+                        "success_criteria": ["日报含 5-10 条带链接更新"],
+                        "stop_conditions": ["用户拒绝计划"],
+                    }
+                )
+            )
+        )
+    finally:
+        reset_interactive_plan_mode(token)
+
+    assert result["status"] == "needs_plan"
+    # The id returned is the pre-armed draft id (stable for the frontend).
+    assert result["plan_id"] == armed_plan_id
+    # Filled the existing draft, not a new awaiting plan.
+    assert service.calls == []
+    assert len(service.generate_calls) == 1
+    gen = service.generate_calls[0]
+    assert str(gen["plan_id"]) == armed_plan_id
+    assert gen["use_agent_planner"] is False
+    assert gen["fill"]["title"] == "RWA 日报计划"
+    assert gen["fill"]["steps"][0]["order"] == 1
+
+
+@pytest.mark.asyncio
+async def test_exit_plan_mode_creates_new_when_plan_id_malformed(monkeypatch):
+    """A malformed/empty plan_id degrades to the "create new" branch — it must
+    never silently route into generate_plan with a bad id."""
+    from app.services.plan_mode_runtime_context import reset_interactive_plan_mode, set_interactive_plan_mode
+    from app.tools.handlers import plan_mode as handler
+
+    service = _PlanService()
+    monkeypatch.setattr(handler, "get_plan_mode_service", lambda: service)
+
+    token = set_interactive_plan_mode(
+        {
+            "active": True,
+            "plan_id": "not-a-uuid",
+            "original_request": "帮我盯住这个仓位",
+            "intent_type": "long_task",
+        }
+    )
+    try:
+        result = json.loads(
+            await handler.exit_plan_mode(
+                _request(
+                    {
+                        "title": "盯盘计划",
+                        "objective": "盯住仓位并预警。",
+                        "plan_markdown": "## Plan\n盯盘。",
+                        "steps": ["设定阈值", "持续监控"],
+                        "success_criteria": ["触发阈值时通知用户"],
+                        "stop_conditions": ["用户取消"],
+                    }
+                )
+            )
+        )
+    finally:
+        reset_interactive_plan_mode(token)
+
+    assert result["status"] == "needs_plan"
+    # Fell back to create-new: ensure_awaiting_plan_from_fill, not generate_plan.
+    assert service.generate_calls == []
+    assert len(service.calls) == 1

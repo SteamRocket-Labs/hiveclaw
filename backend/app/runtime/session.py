@@ -64,6 +64,13 @@ class PlanModeState:
             "reason": self.reason,
             "handoff_target": self.handoff_target,
         }
+        # Path-unification cut ③: a system_plan_run launcher pre-arms Plan Mode
+        # with a draft ``plan_id`` so ``exit_plan_mode`` fills THAT draft instead
+        # of creating a new awaiting plan. Emitted only when present so live chat
+        # / unattended tool-intercept (no pre-created plan_id) keep the legacy
+        # "create new" mirror byte-for-byte.
+        if self.plan_id:
+            data["plan_id"] = self.plan_id
         if self.deep_research:
             data["deep_research"] = True
             data["deep_research_args"] = dict(self.deep_research_args)

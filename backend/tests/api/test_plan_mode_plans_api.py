@@ -156,6 +156,131 @@ def test_create_plan_runs_create_then_generate_and_returns_201(monkeypatch):
     assert access["calls"] == 1
 
 
+# ---------------------------------------------------------------------------
+# cut ③: PLAN_MODE_SYSTEM_RUN on → entries launch a main-loop Plan Mode run
+# (agent authors plan_json via exit_plan_mode) instead of the RPC planner.
+# ---------------------------------------------------------------------------
+
+
+def _enable_system_run(monkeypatch, *, launched):
+    """Patch the flag on + capture launch_system_plan_run calls (no real run)."""
+    monkeypatch.setattr(plans_api, "_system_plan_run_enabled", lambda: True)
+
+    import app.services.plan_mode_system_run as system_run
+
+    async def fake_launch(plan, *, seed_context=None):
+        launched.append({"plan_id": plan.id, "seed_context": seed_context})
+        return plan
+
+    monkeypatch.setattr(system_run, "launch_system_plan_run", fake_launch)
+
+
+def test_create_plan_flag_on_launches_system_run_not_rpc(monkeypatch):
+    agent_id = uuid4()
+    draft = _plan_namespace(agent_id=agent_id, status="draft")
+    authored = _plan_namespace(agent_id=agent_id, status="awaiting_confirmation")
+    authored.id = draft.id  # launcher fills the same draft id
+    launched: list = []
+
+    class _Service:
+        async def create_plan_request(self, **_kwargs):
+            return draft
+
+        async def generate_plan(self, **_kwargs):
+            raise AssertionError("RPC planner must not run when system_plan_run is on")
+
+        async def get_plan(self, plan_id):
+            assert plan_id == draft.id
+            return authored
+
+    _enable_system_run(monkeypatch, launched=launched)
+    client, *_ = _client(monkeypatch, service=_Service())
+
+    resp = client.post(
+        f"/agents/{agent_id}/plans",
+        json={"original_request": "每天 9 点帮我整理新闻", "intent_type": "autonomous_wake", "fill": {"x": 1}},
+    )
+
+    assert resp.status_code == 201
+    assert resp.json()["status"] == "awaiting_confirmation"
+    # The agent run authored it (stable draft id); RPC planner never called.
+    assert len(launched) == 1
+    assert launched[0]["plan_id"] == draft.id
+    assert launched[0]["seed_context"] == {"x": 1}
+
+
+def test_regenerate_flag_on_launches_system_run(monkeypatch):
+    agent_id = uuid4()
+    existing = _plan_namespace(agent_id=agent_id, status="planning_failed")
+    authored = _plan_namespace(agent_id=agent_id, status="awaiting_confirmation")
+    authored.id = existing.id  # launcher fills the same plan id (stable for UI)
+    launched: list = []
+    get_calls = {"n": 0}
+
+    class _Service:
+        async def get_plan(self, plan_id):
+            # First call: _load_plan_for_agent returns the failed plan. Second
+            # call: the post-launch reload returns the authored result (same id).
+            assert plan_id == existing.id
+            get_calls["n"] += 1
+            return existing if get_calls["n"] == 1 else authored
+
+        async def generate_plan(self, **_kwargs):
+            raise AssertionError("RPC planner must not run when system_plan_run is on")
+
+    _enable_system_run(monkeypatch, launched=launched)
+    client, *_ = _client(monkeypatch, service=_Service())
+
+    resp = client.post(
+        f"/agents/{agent_id}/plans/{existing.id}/regenerate",
+        json={"fill": {"revision_request": "focus on RWA"}},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "awaiting_confirmation"  # authored result returned
+    assert len(launched) == 1
+    assert launched[0]["plan_id"] == existing.id
+    assert launched[0]["seed_context"] == {"revision_request": "focus on RWA"}
+
+
+def test_revise_flag_on_supersedes_to_draft_then_launches(monkeypatch):
+    agent_id = uuid4()
+    old = _plan_namespace(agent_id=agent_id, status="awaiting_confirmation", version=1)
+    draft = _plan_namespace(agent_id=agent_id, status="draft", version=2)
+    authored = _plan_namespace(agent_id=agent_id, status="awaiting_confirmation", version=2)
+    authored.id = draft.id
+    launched: list = []
+    calls = {"supersede": 0, "revise": 0}
+
+    class _Service:
+        async def get_plan(self, plan_id):
+            if plan_id == old.id:
+                return old
+            return authored
+
+        async def supersede_to_draft(self, *, plan_id):
+            calls["supersede"] += 1
+            assert plan_id == old.id
+            return draft
+
+        async def revise_plan(self, **_kwargs):
+            calls["revise"] += 1
+            raise AssertionError("legacy revise_plan must not run when system_plan_run is on")
+
+    _enable_system_run(monkeypatch, launched=launched)
+    client, *_ = _client(monkeypatch, service=_Service())
+
+    resp = client.post(
+        f"/agents/{agent_id}/plans/{old.id}/revise",
+        json={"fill": {"objective": "revised"}},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["plan_version"] == 2
+    assert calls == {"supersede": 1, "revise": 0}
+    assert launched[0]["plan_id"] == draft.id
+
+
 def test_create_plan_rejects_unknown_intent_with_400(monkeypatch):
     agent_id = uuid4()
 

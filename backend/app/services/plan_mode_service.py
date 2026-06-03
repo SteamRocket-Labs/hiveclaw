@@ -684,23 +684,18 @@ class PlanModeService:
 
     # -- revise -----------------------------------------------------------
 
-    async def revise_plan(
-        self,
-        *,
-        plan_id: UUID,
-        fill: dict[str, Any] | None = None,
-    ) -> AgentPlanRequest:
-        """Supersede ``plan_id`` with a new version and regenerate (§8.3).
+    async def supersede_to_draft(self, *, plan_id: UUID) -> AgentPlanRequest:
+        """Supersede ``plan_id`` and return the fresh draft at the next version (§8.3).
 
-        A confirmed plan is immutable; revising creates a *new* PlanRequest row
-        at ``plan_version + 1``, marks the old row ``superseded`` and points
-        ``superseded_by_plan_id`` at the new row. The new row is generated and
-        ends in ``awaiting_confirmation`` (or ``planning_failed``).
+        Creates a *new* ``draft`` PlanRequest at ``plan_version + 1``, marks the
+        old row ``superseded`` and points ``superseded_by_plan_id`` at the new
+        row. No plan_json is generated — the caller chooses how to author it
+        (``generate_plan`` RPC fallback, or a system_plan_run launcher, cut ③).
 
         Raises:
             LookupError: if ``plan_id`` does not exist.
         """
-        new_plan_id: UUID | None = None
+        new_plan: AgentPlanRequest | None = None
         async with async_session() as db:
             try:
                 old = await self._load(db, plan_id)
@@ -726,7 +721,6 @@ class PlanModeService:
 
                 old.status = "superseded"
                 old.superseded_by_plan_id = new_plan.id
-                new_plan_id = new_plan.id
 
                 await db.commit()
             except LookupError:
@@ -735,9 +729,28 @@ class PlanModeService:
             except Exception:
                 await db.rollback()
                 raise
-        if new_plan_id is None:
+        if new_plan is None:
             raise LookupError(f"plan {plan_id} not found")
-        return await self.generate_plan(plan_id=new_plan_id, fill=fill or {})
+        return new_plan
+
+    async def revise_plan(
+        self,
+        *,
+        plan_id: UUID,
+        fill: dict[str, Any] | None = None,
+    ) -> AgentPlanRequest:
+        """Supersede ``plan_id`` with a new version and regenerate (§8.3).
+
+        A confirmed plan is immutable; revising creates a *new* PlanRequest row
+        at ``plan_version + 1``, marks the old row ``superseded`` and points
+        ``superseded_by_plan_id`` at the new row. The new row is generated and
+        ends in ``awaiting_confirmation`` (or ``planning_failed``).
+
+        Raises:
+            LookupError: if ``plan_id`` does not exist.
+        """
+        new_plan = await self.supersede_to_draft(plan_id=plan_id)
+        return await self.generate_plan(plan_id=new_plan.id, fill=fill or {})
 
     # -- confirm ----------------------------------------------------------
 

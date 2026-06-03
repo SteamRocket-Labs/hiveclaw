@@ -145,6 +145,7 @@ class SubagentSpec:
     has_own_memory: bool = True  # schema complete; runtime no-memory until cut ⑥
     parent_knowledge: Literal["readonly", "none"] = "readonly"
     soul: bool = False  # no digital-employee identity layer (soul/T3/dream)
+    system_prompt: str = ""  # 定义.md body → request.system_prompt_suffix (cut ⑤)
 
 
 @dataclass(slots=True)
@@ -361,6 +362,7 @@ async def _spawn_one(
         memory_messages=list(messages),
         agent_name=f"{ctx.parent_agent_name} · {spec.name}",
         role_description=ctx.role_description or f"{spec.type} subagent",
+        system_prompt_suffix=spec.system_prompt,
         agent_id=ctx.parent_agent_id,
         user_id=ctx.parent_user_id,
         session_context=SessionContext(

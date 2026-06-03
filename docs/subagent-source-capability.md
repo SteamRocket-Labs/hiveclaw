@@ -309,8 +309,8 @@ async def fanout_subagents(
 | 1 | ① runtime 契约 + fanout + explorer（无 memory） | ✅ done | `1155f46` |
 | 2 | ② spawn_subagent 入口 + 工具暴露 | ✅ done | `47fdd57` |
 | 3 | ③ worker/critic type + fork 三档（none/brief/all） | ✅ done | `0f4067b` |
-| 4 | ④ 异步完成重入（P0：Signal 完成通知+消费；调度层自动重入见后续） | ✅ done | （本提交） |
-| 5 | ⑤ 持久 定义.md | ⬜ pending | — |
+| 4 | ④ 异步完成重入（P0：Signal 完成通知+消费；调度层自动重入见后续） | ✅ done | `c1987fa` |
+| 5 | ⑤ 持久 定义.md | ✅ done | （本提交） |
 | 6 | ⑥ tenant 记忆.md + 进化 daemon（过 write gate） | ⬜ pending | — |
 | DR-A | deep research 接 fanout（保留 RC/F backstop） | ⏸ 后续 | — |
 | DR-B | deep research critic 解 RC15 | ⏸ 后续 | — |

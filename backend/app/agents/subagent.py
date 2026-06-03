@@ -31,7 +31,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
@@ -65,6 +65,38 @@ _EXPLORER_ALLOWED_TOOLS: tuple[str, ...] = (
     "xcrawl_scrape",
 )
 
+# Worker preset: limited execution — read + write files + basics (still denied the
+# base side-effect/spawn tools). Workers do the editing the explorer cannot.
+_WORKER_ALLOWED_TOOLS: tuple[str, ...] = (
+    "list_files",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "glob_search",
+    "grep_search",
+    "load_skill",
+    "tool_search",
+    "search_memory",
+    "load_memory",
+    "get_current_time",
+)
+
+# Critic preset: read-only review/verification — never mutates ("只验不改",
+# mirrors the CC verification agent). May fact-check via read-only web tools.
+_CRITIC_ALLOWED_TOOLS: tuple[str, ...] = (
+    "list_files",
+    "read_file",
+    "glob_search",
+    "grep_search",
+    "load_skill",
+    "tool_search",
+    "search_memory",
+    "load_memory",
+    "get_current_time",
+    "web_search",
+    "web_fetch",
+)
+
 # Tools every subagent is denied: no further spawning/delegation (recursion
 # guard) and no async-task / trigger / channel side-effects. Mirrors
 # ``_DELEGATION_BASE_EXCLUDED_TOOLS`` in orchestrator.py.
@@ -85,9 +117,18 @@ _SUBAGENT_BASE_EXCLUDED_TOOLS: tuple[str, ...] = (
 DEFAULT_MAX_SUBAGENT_DEPTH = 2  # mirrors OrchestrationPolicy.max_depth
 DEFAULT_SUBAGENT_TOOL_ROUNDS = 8  # mirrors the deep-research worker default
 DEFAULT_SUBAGENT_CONCURRENCY = 4  # platform fan-out default
+_BRIEF_MAX_MESSAGES = 8  # mirrors _DELEGATION_SOURCE_MAX_MESSAGES
+_BRIEF_MAX_CHARS = 4000  # mirrors _DELEGATION_BRIEF_MAX_CHARS
 
 ForkLevel = Literal["none", "brief", "all"]
 SubagentStatus = Literal["completed", "failed", "timed_out", "depth_limited"]
+
+# Built-in type → default tool preset. Unknown types get no preset (empty allow-list).
+_TYPE_PRESETS: dict[str, tuple[str, ...]] = {
+    SUBAGENT_TYPE_EXPLORER: _EXPLORER_ALLOWED_TOOLS,
+    SUBAGENT_TYPE_WORKER: _WORKER_ALLOWED_TOOLS,
+    SUBAGENT_TYPE_CRITIC: _CRITIC_ALLOWED_TOOLS,
+}
 
 
 @dataclass(slots=True)
@@ -123,6 +164,7 @@ class SubagentSpawnContext:
     delegation_token: Any | None = None
     tool_executor: Any | None = None
     parent_session_id: str | None = None
+    parent_messages: list[dict] = field(default_factory=list)  # source for fork=brief/all
 
 
 @dataclass(slots=True)
@@ -210,28 +252,61 @@ def resolve_subagent_tools(spec: SubagentSpec) -> tuple[tuple[str, ...], tuple[s
     """
 
     allowed = spec.allowed_tools
-    if not allowed and spec.type == SUBAGENT_TYPE_EXPLORER:
-        allowed = _EXPLORER_ALLOWED_TOOLS
+    if not allowed:
+        allowed = _TYPE_PRESETS.get(spec.type, ())
     excluded = tuple(dict.fromkeys((*_SUBAGENT_BASE_EXCLUDED_TOOLS, *spec.excluded_tools)))
     return allowed, excluded
+
+
+def _build_brief_from_messages(messages: list[dict]) -> str:
+    """Compress the parent's recent messages into a bounded brief.
+
+    Mirrors ``orchestrator._build_delegation_brief``: keep the last
+    ``_BRIEF_MAX_MESSAGES`` turns, char-cap to ``_BRIEF_MAX_CHARS`` from the tail.
+    """
+
+    if not messages:
+        return ""
+    lines: list[str] = []
+    for msg in messages[-_BRIEF_MAX_MESSAGES:]:
+        role = str(msg.get("role", "") or "user").strip().capitalize()
+        content = msg.get("content", "")
+        if not isinstance(content, str):
+            content = str(content)
+        lines.append(f"{role}: {content}")
+    brief = "\n".join(lines)
+    if len(brief) > _BRIEF_MAX_CHARS:
+        brief = "...\n" + brief[-_BRIEF_MAX_CHARS:]
+    return brief
 
 
 def _build_subagent_messages(
     task: str,
     *,
     fork: ForkLevel,
-    context_brief: str | None,
+    context_brief: str | None = None,
+    parent_messages: list[dict] | None = None,
 ) -> list[dict]:
     """Assemble the child's opening messages per fork level.
 
-    Cut ① ships ``fork="none"`` (task only — cleanest, the explorer default).
-    ``brief`` / ``all`` prepend the parent-supplied ``context_brief`` when
-    present; cut ③ adds automatic brief construction from the parent's history.
+    * ``none`` — task only (cleanest, the explorer default).
+    * ``brief`` — a bounded single-message brief, then the task. An explicit
+      ``context_brief`` wins; otherwise one is compressed from ``parent_messages``.
+    * ``all`` — the parent's recent messages verbatim, then the task (an explicit
+      ``context_brief`` still takes precedence when given).
     """
 
     messages: list[dict] = []
-    if fork != "none" and context_brief:
-        messages.append({"role": "user", "content": context_brief})
+    if fork != "none":
+        if context_brief:
+            messages.append({"role": "user", "content": context_brief})
+        elif parent_messages:
+            if fork == "all":
+                messages.extend(parent_messages)
+            else:
+                brief = _build_brief_from_messages(parent_messages)
+                if brief:
+                    messages.append({"role": "user", "content": brief})
     messages.append({"role": "user", "content": task})
     return messages
 
@@ -274,7 +349,9 @@ async def _spawn_one(
         )
 
     allowed, excluded = resolve_subagent_tools(spec)
-    messages = _build_subagent_messages(job.task, fork=fork, context_brief=job.context_brief)
+    messages = _build_subagent_messages(
+        job.task, fork=fork, context_brief=job.context_brief, parent_messages=ctx.parent_messages
+    )
     rounds = spec.max_tool_rounds or budget.max_tool_rounds
 
     request = AgentInvocationRequest(

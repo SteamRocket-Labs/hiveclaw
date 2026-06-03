@@ -96,11 +96,6 @@ def test_resolve_tools_explicit_allowed_overrides_preset():
     assert allowed == ("read_file",)
 
 
-def test_resolve_tools_worker_has_no_preset():
-    allowed, _ = resolve_subagent_tools(SubagentSpec(name="w", type="worker"))
-    assert allowed == ()  # only the explorer type gets a default preset in cut ①
-
-
 def test_resolve_tools_dedups_exclusions():
     _, excluded = resolve_subagent_tools(
         SubagentSpec(name="e", type="explorer", excluded_tools=("delegate_to_agent", "custom_tool"))

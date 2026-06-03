@@ -143,3 +143,95 @@ def test_finding_does_not_disturb_existing_todos(tmp_path):
     ledger = load_agent_work_ledger(agent_id=agent_id, data_root=tmp_path)
     assert [item["title"] for item in ledger["todo_items"]] == ["Existing todo"]
     assert len(ledger["findings"]) == 1
+
+
+# ── 切口② threshold + reboot renderer (pure policy/view helpers) ─────────────
+
+
+def test_should_enable_work_ledger_skips_simple_qa():
+    """Simple Q&A pays zero cost — the scaffold is not enabled."""
+    from app.services.agent_work_ledger import should_enable_work_ledger
+
+    assert (
+        should_enable_work_ledger(task_profile_name="general", complexity="low", is_simple_turn_candidate=True) is False
+    )
+
+
+def test_should_enable_work_ledger_on_medium_and_high_complexity():
+    from app.services.agent_work_ledger import should_enable_work_ledger
+
+    assert should_enable_work_ledger(task_profile_name="general", complexity="medium", is_simple_turn_candidate=False)
+    assert should_enable_work_ledger(task_profile_name="general", complexity="high", is_simple_turn_candidate=False)
+
+
+def test_should_enable_work_ledger_on_multistep_profile_even_at_low_complexity():
+    """Coding / research / operations / self_evolution are inherently multi-step."""
+    from app.services.agent_work_ledger import should_enable_work_ledger
+
+    for name in ("coding", "research", "operations", "self_evolution"):
+        assert should_enable_work_ledger(task_profile_name=name, complexity="low", is_simple_turn_candidate=False), name
+
+
+def test_should_enable_work_ledger_off_for_plain_general_low():
+    """A general low turn that isn't the simple-candidate shape still stays off."""
+    from app.services.agent_work_ledger import should_enable_work_ledger
+
+    assert (
+        should_enable_work_ledger(task_profile_name="general", complexity="low", is_simple_turn_candidate=False)
+        is False
+    )
+
+
+def test_render_reboot_block_empty_when_no_live_ledger():
+    from app.services.agent_work_ledger import (
+        build_agent_work_ledger_resume_summary,
+        render_work_ledger_resume_block,
+    )
+
+    assert render_work_ledger_resume_block(None) == ""
+    # An absent ledger summarizes to present=False → still empty.
+    assert render_work_ledger_resume_block(build_agent_work_ledger_resume_summary(None)) == ""
+
+
+def test_render_reboot_block_answers_five_reboot_questions(tmp_path):
+    """The reboot block must answer all 5 reboot questions from real ledger state."""
+    from app.services.agent_work_ledger import (
+        append_agent_work_ledger_finding,
+        build_agent_work_ledger_resume_summary,
+        initialize_agent_work_ledger_artifact,
+        load_agent_work_ledger,
+        render_work_ledger_resume_block,
+        upsert_agent_work_ledger_todo,
+    )
+
+    agent_id = uuid4()
+    initialize_agent_work_ledger_artifact(
+        agent_id=agent_id, source="agent_authored", current_phase="execution", data_root=tmp_path
+    )
+    upsert_agent_work_ledger_todo(
+        agent_id=agent_id, title="Build the export endpoint", status="in_progress", data_root=tmp_path
+    )
+    append_agent_work_ledger_finding(
+        agent_id=agent_id,
+        finding_type="finding",
+        summary="vendor caps pages at 100 rows",
+        trust="verified",
+        data_root=tmp_path,
+    )
+    append_agent_work_ledger_finding(
+        agent_id=agent_id,
+        finding_type="failure",
+        summary="bulk export timed out at 10k rows",
+        next_strategy="paginate at 100",
+        data_root=tmp_path,
+    )
+
+    summary = build_agent_work_ledger_resume_summary(load_agent_work_ledger(agent_id=agent_id, data_root=tmp_path))
+    block = render_work_ledger_resume_block(summary)
+
+    assert "Reboot After Compaction" in block
+    assert "execution" in block  # where am I
+    assert "Build the export endpoint" in block  # what's left
+    assert "vendor caps pages at 100 rows" in block  # what I verified
+    assert "bulk export timed out at 10k rows" in block  # what failed
+    assert "continue from the next open todo" in block

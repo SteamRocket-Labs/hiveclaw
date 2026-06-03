@@ -940,6 +940,44 @@ def _reset_plan_reminder(session_context: Any | None) -> None:
         plan_state.reminded_full = False
 
 
+# ── Work Ledger per-round reminder (cognitive scaffold 切口②) ──
+# docs/agent-task-cognitive-scaffold.md §5.3 Delta-2 / §9 acceptance 2-3.
+# Injected fresh every round (same role="system" mechanism as the plan-mode and
+# round-pressure reminders) ONLY when the invoker has flagged this turn complex
+# (metadata["work_ledger_enabled"]). It keeps the ledger *available* in long
+# complex runs — nudging the agent to track_todo / read_ledger — without any
+# overhead on simple Q&A. Reuses the regulation mechanism the planning loop got
+# in plan-mode-runtime-paradigm.md §6.2 rather than building a new one.
+_WORK_LEDGER_ENABLED_METADATA_KEY = "work_ledger_enabled"
+_WORK_LEDGER_REMINDER = (
+    "This is a multi-step task. Keep your work ledger current as a working memory: use "
+    "track_todo to break the work into todos and mark each in_progress before you start it and "
+    "completed when it's done; use record_finding for what you verify, open questions, and dead "
+    "ends to avoid; call read_ledger to recover your bearings before deciding the next step. "
+    "These are private notes — writing them never starts execution."
+)
+
+
+def _work_ledger_reminder_content(session_context: Any | None) -> str | None:
+    """Pure: return the per-round Work Ledger reminder when this turn is complex.
+
+    Gated on the invoker-resolved ``metadata["work_ledger_enabled"]`` flag so
+    simple Q&A pays zero cost. Suppressed while Plan Mode is active: planning is a
+    read-only, no-execution phase, so a "track your execution todos" nudge there
+    would contradict the plan-mode reminder. The two reminders therefore coexist
+    without conflict (§8 invariant) — at most one fires per round.
+    """
+    if session_context is None:
+        return None
+    plan_state = getattr(session_context, "plan_mode", None)
+    if plan_state is not None and getattr(plan_state, "active", False):
+        return None
+    metadata = getattr(session_context, "metadata", None)
+    if not isinstance(metadata, dict) or not metadata.get(_WORK_LEDGER_ENABLED_METADATA_KEY):
+        return None
+    return _WORK_LEDGER_REMINDER
+
+
 def _parse_interactive_plan_signal(result_str: str) -> dict[str, Any] | None:
     """Return the ``interactive_plan_seed`` from a ``needs_plan`` tool result
     that asks to activate interactive Plan Mode, else ``None`` (Phase 5).
@@ -1083,6 +1121,37 @@ def _build_restoration_context(
                 total += len(content)
             except Exception:
                 continue
+
+    # ── 2.1: Work Ledger reboot (cognitive scaffold 切口②) ──
+    # On complex turns the agent maintains a general Work Ledger as working
+    # memory. Compaction can drop the ledger state it had been tracking, so
+    # re-inject the 5-question reboot (where am I / what's open / what's verified
+    # / what failed / what's pending) from the persisted ledger file. Gated on the
+    # same complexity flag that enabled the per-round reminder, so simple turns
+    # never pay for the read (cognitive-scaffold doc §5.3 / §9 acceptance 3).
+    if _resolved_ws and total < _restore_budget:
+        _ledger_enabled = False
+        if session_context is not None:
+            _meta = getattr(session_context, "metadata", None)
+            _ledger_enabled = bool(isinstance(_meta, dict) and _meta.get(_WORK_LEDGER_ENABLED_METADATA_KEY))
+        if _ledger_enabled:
+            try:
+                from app.services.agent_work_ledger import (
+                    build_agent_work_ledger_resume_summary,
+                    render_work_ledger_resume_block,
+                )
+
+                _ledger_path = _resolved_ws / "runtime_artifacts" / "work_ledger.json"
+                if _ledger_path.exists():
+                    _ledger_payload = json.loads(_ledger_path.read_text(encoding="utf-8"))
+                    if isinstance(_ledger_payload, dict):
+                        _ledger_summary = build_agent_work_ledger_resume_summary(_ledger_payload)
+                        _ledger_block = render_work_ledger_resume_block(_ledger_summary)
+                        if _ledger_block and total + len(_ledger_block) <= _restore_budget:
+                            parts.append(_ledger_block)
+                            total += len(_ledger_block)
+            except Exception as _ledger_err:
+                logger.debug("[Kernel] Work Ledger reboot restoration failed: %s", _ledger_err)
 
     # ── 2.25: Structured session continuity artifacts ──
     if _resolved_ws and parts:
@@ -1733,6 +1802,14 @@ class AgentKernel:
                         api_messages.append(LLMMessage(role="system", content=_plan_reminder_text))
                         if _plan_reminder_is_full:
                             _plan_state.reminded_full = True
+
+                    # Work Ledger: on complex turns (invoker-flagged) nudge the
+                    # agent to keep its ledger current as working memory. Suppressed
+                    # in Plan Mode (helper returns None) so the two reminders never
+                    # conflict (cognitive-scaffold doc §5.3 / §8 invariant).
+                    _ledger_reminder = _work_ledger_reminder_content(request.session_context)
+                    if _ledger_reminder is not None:
+                        api_messages.append(LLMMessage(role="system", content=_ledger_reminder))
 
                     warn_threshold_80 = int(max_rounds * 0.8)
                     warn_threshold_96 = max_rounds - 2

@@ -1823,3 +1823,39 @@ async def test_invoke_agent_uses_request_max_output_tokens(monkeypatch):
     )
 
     assert fake_client.calls[0]["max_tokens"] == 32768
+
+
+# ── 切口② Work Ledger enable decision on the general path ─────────────────────
+
+
+def _route_request(query: str) -> "object":
+    from app.runtime.invoker import AgentInvocationRequest
+
+    return AgentInvocationRequest(
+        model=SimpleNamespace(model="gpt-4.1", provider="openai", max_input_tokens=128000),
+        messages=[{"role": "user", "content": query}],
+        agent_name="Agent",
+        role_description="desc",
+        session_context=SessionContext(session_id="s-1", source="web", channel="web"),
+    )
+
+
+def test_turn_route_disables_work_ledger_for_simple_qa():
+    from app.runtime.invoker import _resolve_effective_turn_route
+
+    request = _route_request("hi there")
+    _resolve_effective_turn_route(request, routing_config=None)
+
+    assert request.session_context.metadata["work_ledger_enabled"] is False
+
+
+def test_turn_route_enables_work_ledger_for_complex_multistep_turn():
+    from app.runtime.invoker import _resolve_effective_turn_route
+
+    request = _route_request(
+        "Please refactor the auth middleware in backend/app/auth/middleware.py, "
+        "fix the failing pytest, and update the migration"
+    )
+    _resolve_effective_turn_route(request, routing_config=None)
+
+    assert request.session_context.metadata["work_ledger_enabled"] is True

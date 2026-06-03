@@ -599,6 +599,88 @@ def build_agent_work_ledger_resume_summary(ledger: dict[str, Any] | None) -> dic
     }
 
 
+def should_enable_work_ledger(
+    *,
+    task_profile_name: str | None,
+    complexity: str | None,
+    is_simple_turn_candidate: bool,
+) -> bool:
+    """Decide whether the cognitive Work Ledger scaffold is warranted this turn.
+
+    切口② (docs/agent-task-cognitive-scaffold.md §5.3 Delta-2 + §9 acceptance 2,
+    threshold from docs/plan-mode-agent-work-ledger.md §8): the general invocation
+    path should make the ledger *available* (per-round reminder + compaction resume)
+    on complex multi-step turns, but stay **zero-overhead on simple Q&A**.
+
+    The §8 threshold (``expected_tool_calls >= 5`` / multi-file / external side
+    effect / future autonomy) has no single first-class signal in the runtime; the
+    closest available proxy is the turn's :class:`TaskProfile` complexity plus the
+    pre-existing "simple turn" detector. This is intentionally a *coarse enabling
+    gate*, not a hard contract — enabling only injects a nudge and a compaction
+    resume; it never forces a ledger write (the agent's ``track_todo`` /
+    ``record_finding`` calls are what actually lazy-create the file).
+
+    Pure (no IO); the invoker resolves the inputs from the turn route and stashes
+    the decision in ``session_context.metadata`` for the kernel to read.
+
+    Returns ``True`` when the turn is non-trivial:
+
+    * an explicitly simple turn (general + low + short, no code/url/file) → ``False``;
+    * ``complexity`` is ``"medium"`` or ``"high"`` → ``True``;
+    * a specialised task profile (coding / research / operations / self_evolution)
+      that is inherently multi-step → ``True`` even at low complexity;
+    * everything else (e.g. plain ``general`` low without the simple-candidate
+      shape) → ``False``.
+    """
+
+    if is_simple_turn_candidate:
+        return False
+    if (complexity or "").strip().lower() in {"medium", "high"}:
+        return True
+    name = (task_profile_name or "").strip().lower()
+    return name in {"coding", "research", "operations", "self_evolution"}
+
+
+def render_work_ledger_resume_block(summary: dict[str, Any] | None) -> str:
+    """Render the post-compaction 5-question reboot block from a resume summary.
+
+    切口② §9 acceptance 3 (the "5-question reboot test" from
+    docs/plan-mode-agent-work-ledger.md §7.4): after a context compaction the agent
+    must be able to answer, from the ledger alone, *where am I / what's done / what's
+    next / what failed / what's verified* — and not repeat a dead end. Pure renderer
+    over :func:`build_agent_work_ledger_resume_summary`; returns ``""`` when there is
+    no live ledger so callers can skip injection cheaply.
+    """
+
+    if not summary or not summary.get("present"):
+        return ""
+
+    lines: list[str] = ["### Work Ledger — Reboot After Compaction"]
+    phase = _clean_text(summary.get("current_phase"))
+    status = _clean_text(summary.get("status"))
+    where = phase or "(unset)"
+    if status:
+        where = f"{where} (status: {status})"
+    lines.append(f"- Where I am (current phase): {where}")
+
+    open_todos = [item for item in (summary.get("open_required_todos") or []) if _clean_text(item)]
+    lines.append("- What's left (open required todos): " + ("; ".join(open_todos) if open_todos else "(none open)"))
+
+    findings = [item for item in (summary.get("verified_findings") or []) if _clean_text(item)]
+    lines.append("- What I verified (verified findings): " + ("; ".join(findings) if findings else "(none yet)"))
+
+    failures = [item for item in (summary.get("recent_failures") or []) if _clean_text(item)]
+    if failures:
+        lines.append("- What failed (do NOT repeat these): " + "; ".join(failures))
+    else:
+        lines.append("- What failed: (none recorded)")
+
+    pending = [item for item in (summary.get("verification_pending") or []) if _clean_text(item)]
+    lines.append("- What still needs verification: " + ("; ".join(pending) if pending else "(none pending)"))
+    lines.append("Use read_ledger for full detail; continue from the next open todo, not from scratch.")
+    return "\n".join(lines)
+
+
 def _display_item(item: dict[str, Any], *, title_key: str = "title") -> dict[str, Any]:
     title = _clean_text(
         item.get("content")
@@ -1053,6 +1135,8 @@ __all__ = [
     "load_agent_work_ledger",
     "read_latest_session_work_ledger_view",
     "read_agent_work_ledger_view",
+    "render_work_ledger_resume_block",
+    "should_enable_work_ledger",
     "upsert_agent_work_ledger_todo",
     "validate_agent_work_ledger_completion",
 ]

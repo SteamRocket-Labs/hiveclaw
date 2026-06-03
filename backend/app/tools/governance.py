@@ -44,6 +44,10 @@ _STATIC_SAFE_TOOLS = {
     "get_task",
     "search_memory",
     "load_memory",
+    # Work Ledger cognitive-scaffold read (切口①): read-only introspection of the
+    # agent's own ledger. Kept aligned with _CAPABILITY_GATE_EXEMPT_TOOLS in
+    # app.services.capability_gate (the exemption comment requires this).
+    "read_ledger",
 }
 
 

@@ -30,13 +30,19 @@ from app.kernel import (
 from app.models.agent import Agent
 from app.models.feature_flag import FeatureFlag
 from app.models.user import User
-from app.runtime.context_budget import ContextBudget, compute_context_budget, resolve_turn_model_route
+from app.runtime.context_budget import (
+    ContextBudget,
+    _is_simple_turn_candidate,
+    compute_context_budget,
+    resolve_turn_model_route,
+)
 from app.runtime.context_engine import DefaultContextEngine
 from app.runtime.prompt_builder import build_frozen_prompt_prefix
 from app.runtime.session import SessionContext
 from app.runtime.session_key import build_session_key, ensure_session_key
 from app.skills import SkillParser, SkillRegistry, WorkspaceSkillLoader
 from app.services.agent_context import build_agent_context, build_agent_runtime_context
+from app.services.agent_work_ledger import should_enable_work_ledger
 from app.services.agent_tools import CORE_TOOL_NAMES, execute_tool, get_agent_tools_for_llm, get_combined_openai_tools
 from app.services.feature_flags import is_enabled as is_feature_enabled
 from app.services.knowledge_inject import fetch_relevant_knowledge
@@ -944,6 +950,16 @@ def _resolve_effective_turn_route(
     if request.session_context is not None:
         session_metadata = _session_metadata(request.session_context)
         session_metadata["turn_route"] = route_metadata
+        # Work Ledger 切口②: decide on the general path whether the cognitive
+        # scaffold is warranted this turn (complex → per-round reminder +
+        # compaction reboot; simple Q&A → zero overhead). The kernel reads this
+        # flag; the threshold itself lives in the ledger service so the policy is
+        # testable in isolation (cognitive-scaffold doc §5.3 Delta-2 / §9).
+        session_metadata["work_ledger_enabled"] = should_enable_work_ledger(
+            task_profile_name=route.task_profile.name,
+            complexity=route.task_profile.complexity,
+            is_simple_turn_candidate=_is_simple_turn_candidate(_last_user_query(request.messages), route.task_profile),
+        )
     return {
         "model": route.model,
         "fallback_model": route.fallback_model,

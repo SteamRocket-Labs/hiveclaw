@@ -274,8 +274,55 @@ ledger 的 `findings` 不能覆盖 confirmed plan；untrusted 内容注入仍按
      ②写 ledger 不放大/不覆盖 confirmed plan（仅改 todo/findings 列，不碰 plan 边界）；
      ③untrusted summary/title 以 JSON 字符串值落库=data 非 instruction（service 从不解释其内容）；
      ⑤多租户 scope 见上；`manage_tasks` 一行未动。
-2. **切口②**：通用 invocation 路径（invoker/engine）按阈值 lazy-create ledger + 每轮 reminder 注入 +
-   compaction 保活（复用规划期机制）。→ 验收：复杂 web chat 会话 compaction 后 agent 能从 ledger 恢复。
+2. **切口② ✅ 已实装**：通用 invocation 路径（invoker/engine）按阈值启用 ledger 认知脚手架 + 每轮
+   reminder 注入 + compaction 保活（复用规划期机制）。→ 验收：复杂 web chat 会话 compaction 后 agent
+   能从 ledger 恢复。
+
+   **实装记录（2026-06-03）**：
+   - **接线点（3 处，复用规划期机制而非重造）**：
+     - `app/runtime/invoker.py` `_resolve_effective_turn_route`：每轮路由解析后调
+       `should_enable_work_ledger(...)`，把决策落到 `session_context.metadata["work_ledger_enabled"]`
+       （kernel 读它的方式与既有 `context_budget` / `turn_route` 完全一致——invoker 算、塞 metadata、
+       kernel 读，kernel 保持 zero-DB 纯核）。
+     - `app/kernel/engine.py` 主轮循环（紧邻 plan-mode reminder 注入点，约 `:1767`）：每轮调
+       `_work_ledger_reminder_content(session_context)`，complex turn 注入一条
+       `role="system"` 的 `_WORK_LEDGER_REMINDER`（与 round-pressure / plan-mode reminder 同一
+       `api_messages.append(LLMMessage(...))` 机制，paradigm-runtime §6.2）。
+     - `app/kernel/engine.py` `_build_restoration_context`（post-compaction 恢复，约 `:1125`）：
+       complex turn 且 ledger 文件存在时，直接读 `runtime_artifacts/work_ledger.json`（与读 soul.md /
+       focus.md 同一 workspace 解析路径），经 pure `build_agent_work_ledger_resume_summary` +
+       `render_work_ledger_resume_block` 注入 **5-question reboot**，置于 soul/focus 之后高优先位。
+   - **阈值判断逻辑**（pure，住 `agent_work_ledger.py::should_enable_work_ledger`，与 §8 阈值对齐）：
+     §8 的 `expected_tool_calls >= 5 / 多文件 / 外部副作用` 在 runtime 无单一一等信号，最接近的现成
+     proxy 是 turn 的 `TaskProfile`（`context_budget.infer_task_profile`）。规则=
+     `is_simple_turn_candidate`（general+low+短、无 code/url/file，既有 `_is_simple_turn_candidate`
+     探测器）→ **不启用**（简单问答零开销，对齐 CC "skip trivial task"）；`complexity ∈ {medium, high}`
+     → 启用；专才 profile（coding / research / operations / self_evolution，天然多步）即便 low 也启用；
+     其余（纯 general low 非 simple-shape）→ 不启用。**这是粗粒度启用门，非硬契约**——启用只多注入一条
+     nudge + compaction reboot，从不强写 ledger（lazy-create 仍由切口① 的 `track_todo`/`record_finding`
+     首次写时发生，不污染空 ledger 文件）。
+   - **compaction 恢复如何验证**：`tests/kernel/test_work_ledger_scaffold.py` 用**真实 service +
+     临时 data_root**（不 mock service）写一个 in-progress ledger（已完成/in_progress/pending todo +
+     verified finding + failure），monkeypatch `AGENT_DATA_DIR` 指向 tmp，跑真实
+     `_build_restoration_context`，断言 5-question reboot 全覆盖：current phase / 开放 todo（completed
+     的不出现在"开放"）/ verified finding / failure（do-NOT-repeat）/ pending verification；
+     另两例断言简单 turn 不读 ledger（零开销）、complex 但无 ledger 文件时不注空块。
+   - **两套 reminder 并存不冲突（§8 不变量）**：`_work_ledger_reminder_content` 在 plan_mode.active 时
+     返回 None——规划期是只读/无执行相，"track 你的执行 todo" nudge 会与 plan-mode reminder 矛盾，故
+     每轮至多一条 reminder 触发；plan-mode 的 reminder/compaction 一行未动（回归
+     `tests/kernel/test_plan_mode_reminder.py` 全绿）。
+   - **切口① governance 缺口顺手补齐（commit 必须全绿的前置）**：切口①（07d8b4a）加了三工具但**漏把它们
+     登记进 `CAPABILITY_MAP`**，而 `STRICT_CAPABILITY_MAPPING` 默认 True → 三工具在有 tenant 的真实
+     invocation 里被 capability gate **拒绝**（切口①/切口② 在生产其实都跑不动）。本切口补：
+     `track_todo`/`record_finding` → 新 capability `agent.task.track`（认知记账，区别于
+     `manage_tasks` 的 `agent.task.modify` 作业执行，呼应 §5.6"认知≠治理"）；`read_ledger` →
+     `agent.task.read` + 进 `_CAPABILITY_GATE_EXEMPT_TOOLS` + `_STATIC_SAFE_TOOLS`（只读自有 ledger，
+     与其它只读 context 工具一致、public 区可读）。**未改切口① 三工具/service 写原语一行**——只补登记。
+   - **测试证据**：新增/扩展 3 文件 17 用例全绿（engine `test_work_ledger_scaffold.py` 7 +
+     service `test_agent_work_ledger_agent_writes.py` 新增 6 + invoker `test_invoker.py` 新增 2 +
+     plan-mode reminder 回归 9 复跑）；`tests/services/test_capability_gate_policy_surface.py` 8 绿。
+     全量 `pytest tests/ -q`：**3413 passed, 7 skipped**，2 个 `test_feishu_identity_resolution`
+     failures 经 stash 验证为 HEAD 既有、与本切口无关（Feishu user_id backfill，另一 WIP 分支）。
 3. **切口③**：ledger todo 增加 `owner` / `blocks` / `blockedBy` 字段契约，对接 subagent 源能力。
    → 验收：delegation 时父 ledger todo 能标 owner、子 agent 回写 status。
 4. **切口④（最后，过 write gate）**：完成后哪些 ledger 内容沉淀为长期 memory，走 Memory Control Plane。

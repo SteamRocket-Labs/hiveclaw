@@ -31,46 +31,6 @@ from app.services.plan_mode_service import get_plan_mode_service
 router = APIRouter(tags=["feishu"])
 
 
-async def _maybe_sync_feishu_task(
-    *,
-    agent_id: uuid.UUID,
-    task_title: str,
-    tenant_id: uuid.UUID | None,
-    session_id: str | None,
-) -> str | None:
-    """Gate Feishu "create a task" auto-sync behind Plan Mode (§9.0 / §9.2).
-
-    A regex-detected task-creation intent used to immediately persist a ``Task``
-    and background-execute it (``execute_task``) — an autonomous
-    ``start_long_task`` action that must NOT run without a confirmed plan. So
-    instead of executing, we materialise an awaiting ``PlanRequest`` from the
-    detected title and return a confirm-me notice for the reply. Returns ``None``
-    (caller appends nothing, nothing executes) on a blank title or any failure —
-    fail-closed: a degraded ledger never downgrades into a silent background run.
-    """
-    task_title = (task_title or "").strip()
-    if not task_title:
-        return None
-    try:
-        plan = await get_plan_mode_service().ensure_awaiting_plan(
-            agent_id=agent_id,
-            action_kind="start_long_task",
-            tool_name="manage_tasks",
-            arguments={"action": "create", "title": task_title},
-            source="channel",
-            tenant_id=tenant_id,
-            session_id=session_id,
-            runtime_task_id=None,
-        )
-    except Exception as exc:
-        logger.error(f"[Feishu] Failed to create plan for task auto-sync: {exc}")
-        return None
-    return (
-        f"\n\n📋 “{task_title}” 需要先确认计划再执行。我已生成一份待确认计划"
-        f"（plan_id={plan.id}），请确认或修改后再启动。"
-    )
-
-
 async def _try_confirm_channel_plan_from_text(
     *,
     agent_id: uuid.UUID,
@@ -81,7 +41,7 @@ async def _try_confirm_channel_plan_from_text(
 ) -> str | None:
     """Confirm and hand off a Plan Mode plan from trusted channel text."""
     from app.services import plan_mode_core
-    from app.services.plan_mode_service import PlanConflictError, get_plan_mode_service
+    from app.services.plan_mode_service import PlanConflictError
 
     confirmation = plan_mode_core.extract_plan_confirmation_request(user_text)
     if confirmation is None:
@@ -142,9 +102,7 @@ async def _try_confirm_channel_plan_from_text(
 
 _TOOL_STATUS_KEEP_LINES = 20
 _FEISHU_CARD_MARKDOWN_LIMIT = 2800
-_APPROVAL_ID_PATTERN = (
-    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-)
+_APPROVAL_ID_PATTERN = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 _APPROVE_TEXT_PATTERN = r"^\s*(放行|批准|同意|通过|approve|approved)(?:\s|[!！。,.，]|$)"
 _REJECT_TEXT_PATTERN = r"^\s*(拒绝|驳回|不通过|reject|rejected|deny|denied)(?:\s|[!！。,.，]|$)"
 _NEW_SESSION_TEXT_PATTERN = r"^\s*/(?:new|reset|restart|新会话|新建会话)(?:\s|$)"
@@ -404,9 +362,7 @@ async def _resolve_feishu_sender_profile(
                     "raw_profile": user_info,
                 }
             )
-            logger.info(
-                f"[Feishu] Resolved sender profile: {profile['name']} (user_id={profile['user_id'] or ''})"
-            )
+            logger.info(f"[Feishu] Resolved sender profile: {profile['name']} (user_id={profile['user_id'] or ''})")
             _cache_feishu_sender(
                 agent_id,
                 open_id=profile["open_id"] or "",
@@ -449,6 +405,7 @@ async def _resolve_feishu_oauth_authorize_config(db: AsyncSession, tenant_id: uu
 async def feishu_sso_available():
     """Check if Feishu SSO login is available (app configured)."""
     from app.config import get_settings
+
     _settings = get_settings()
     return {"available": bool(_settings.FEISHU_APP_ID)}
 
@@ -643,7 +600,9 @@ async def configure_channel(
     connection_mode = incoming_extra.get("connection_mode", existing_extra.get("connection_mode", "webhook"))
     app_id = resolve_secret_value(data.app_id, existing.app_id if existing else None, preserve_missing=True)
     app_secret = resolve_secret_value(data.app_secret, existing.app_secret if existing else None, preserve_missing=True)
-    encrypt_key = resolve_secret_value(data.encrypt_key, existing.encrypt_key if existing else None, preserve_missing=True)
+    encrypt_key = resolve_secret_value(
+        data.encrypt_key, existing.encrypt_key if existing else None, preserve_missing=True
+    )
     verification_token = resolve_secret_value(
         data.verification_token,
         existing.verification_token if existing else None,
@@ -771,6 +730,7 @@ def _verify_feishu_signature(encrypt_key: str, timestamp: str, nonce: str, body_
     """Verify Feishu webhook X-Lark-Signature using HMAC-SHA256."""
     import hashlib
     import hmac
+
     content = timestamp + nonce + encrypt_key + body_str
     expected = hashlib.sha256(content.encode("utf-8")).hexdigest()
     return hmac.compare_digest(expected, signature)
@@ -804,6 +764,7 @@ async def feishu_event_webhook(
     body_bytes = await request.body()
     body_str = body_bytes.decode("utf-8")
     import json as _json_wb
+
     body = _json_wb.loads(body_str)
 
     result = await db.execute(
@@ -1000,6 +961,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
     event_type = body.get("header", {}).get("event_type", "")
 
     if event_type == "card.action.trigger":
+
         class _CardActionRequest:
             def __init__(self, payload: dict):
                 self._payload = payload
@@ -1120,11 +1082,6 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             if not user_text:
                 return {"code": 0, "msg": "empty message after stripping mentions"}
 
-            # Detect task creation intent
-            task_match = re.search(
-                r"(?:创建|新建|添加|建一个|帮我建)(?:一个)?(?:任务|待办|todo)[，,：:\s]*(.+)", user_text, re.IGNORECASE
-            )
-
             # Load recent conversation history via session (session UUID may already exist)
             from app.models.audit import ChatMessage
             from app.models.agent import Agent as AgentModel
@@ -1148,7 +1105,9 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 conv_id = f"feishu_group_{chat_id}"
                 legacy_conv_ids: list[str] = []
             else:
-                conv_id = build_feishu_p2p_conv_id(sender_user_id_feishu, sender_open_id) or f"feishu_p2p_{sender_open_id}"
+                conv_id = (
+                    build_feishu_p2p_conv_id(sender_user_id_feishu, sender_open_id) or f"feishu_p2p_{sender_open_id}"
+                )
                 legacy_conv_ids = list_legacy_feishu_conv_ids(sender_open_id, conv_id)
             delivery_target = {
                 "channel": "feishu",
@@ -1210,6 +1169,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 return approval_shortcut
 
             from app.services.memory_service import compute_history_limit_for_agent
+
             _hist_limit = await compute_history_limit_for_agent(agent_id)
 
             # Pre-resolve session so history lookup uses the UUID  (session created later if new)
@@ -1779,19 +1739,6 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 detail={"channel": "feishu", "user_text": user_text[:200], "reply": reply_text[:500]},
             )
 
-            # If task creation detected, Plan Mode requires a confirmed plan
-            # before any autonomous execution (§9.0): create an awaiting plan and
-            # tell the user to confirm — never background-execute off a regex.
-            if task_match:
-                _plan_notice = await _maybe_sync_feishu_task(
-                    agent_id=agent_id,
-                    task_title=task_match.group(1),
-                    tenant_id=agent_tenant_id,
-                    session_id=session_conv_id,
-                )
-                if _plan_notice:
-                    reply_text += _plan_notice
-
             # Save assistant reply to history (use platform_user_id so messages stay in one session)
             db.add(
                 ChatMessage(
@@ -1982,6 +1929,7 @@ async def _handle_feishu_file(
 
         # Load conversation history for LLM context
         from app.services.memory_service import compute_history_limit_for_agent as _chlfa
+
         _hist_limit2 = await _chlfa(agent_id)
         _hist_r = await db.execute(
             _select(ChatMessage)
@@ -2275,7 +2223,11 @@ async def _call_agent_llm(
         )
         user_text = getattr(accepted_recommendation, "original_request", None) or user_text
 
-    if plan_entry_decision.mode in {"auto", "explicit"} and plan_entry_decision.action_kind and plan_entry_decision.tool_name:
+    if (
+        plan_entry_decision.mode in {"auto", "explicit"}
+        and plan_entry_decision.action_kind
+        and plan_entry_decision.tool_name
+    ):
         from app.services.plan_mode_service import get_plan_mode_service
 
         title = plan_entry_decision.title or user_text[:120] or "Plan Mode request"
@@ -2299,10 +2251,7 @@ async def _call_agent_llm(
             runtime_task_id=None,
             requested_by_user_id=effective_user_id,
         )
-        return (
-            f"已进入计划模式，并生成一份待确认计划（plan_id={plan.id}）。"
-            "请确认、修改或拒绝；确认后我再开始执行。"
-        )
+        return f"已进入计划模式，并生成一份待确认计划（plan_id={plan.id}）。请确认、修改或拒绝；确认后我再开始执行。"
 
     # Load primary model (tenant-scoped)
     model = None
@@ -2372,14 +2321,21 @@ async def _call_agent_llm(
                 if not _sender_identity and getattr(_sess_obj, "delivery_target_json", None):
                     from app.services.channel_delivery_service import ChannelDeliveryService
 
-                    _sender_identity = ChannelDeliveryService.identity_from_delivery_target(_sess_obj.delivery_target_json)
+                    _sender_identity = ChannelDeliveryService.identity_from_delivery_target(
+                        _sess_obj.delivery_target_json
+                    )
 
         if _sender_identity:
             # Atomic claim+fulfill: only one concurrent handler gets rows back (TOCTOU safe)
             claimed = await claim_and_fulfill_pending_replies(db, agent_id=agent_id, sender_identity=_sender_identity)
             if claimed:
                 pending_reply_suffix = format_pending_reply_context(claimed)
-                logger.info("[PendingReply] Injecting %d context(s) for agent %s, sender %s", len(claimed), agent_id, _sender_identity)
+                logger.info(
+                    "[PendingReply] Injecting %d context(s) for agent %s, sender %s",
+                    len(claimed),
+                    agent_id,
+                    _sender_identity,
+                )
                 # Commit the fulfill BEFORE invoke — prevents rollback on LLM timeout
                 await db.commit()
     except Exception as _pr_err:

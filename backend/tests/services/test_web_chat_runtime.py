@@ -219,41 +219,6 @@ async def test_start_web_chat_run_rejects_duplicate_active_run():
 # ---------------------------------------------------------------------------
 
 
-class _AutoSyncDB:
-    """Minimal session for _maybe_sync_created_task: records adds/commits."""
-
-    def __init__(self):
-        self.added = []
-        self.commits = 0
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *_a):
-        return False
-
-    def add(self, obj):
-        if getattr(obj, "id", None) is None:
-            obj.id = uuid4()
-        self.added.append(obj)
-
-    async def commit(self):
-        self.commits += 1
-
-    async def refresh(self, _obj):
-        return None
-
-
-class _RecordingIntake:
-    def __init__(self, plan):
-        self.plan = plan
-        self.calls = []
-
-    async def ensure_awaiting_plan(self, **kwargs):
-        self.calls.append(kwargs)
-        return self.plan
-
-
 class _RecommendationSession:
     def __init__(self, recommendation):
         self.recommendation = recommendation
@@ -273,60 +238,12 @@ class _RecommendationSession:
 
 
 @pytest.mark.asyncio
-async def test_maybe_sync_created_task_without_plan_creates_plan_and_skips_execution(monkeypatch):
-    import app.services.web_chat_runtime as runtime
-    from app.models.task import Task
-
-    agent_id = uuid4()
-    user_id = uuid4()
-    executed = {"n": 0}
-
-    async def fake_execute_task(_task_id, _agent_id):  # must NOT run
-        executed["n"] += 1
-
-    monkeypatch.setattr("app.services.task_executor.execute_task", fake_execute_task)
-
-    db = _AutoSyncDB()
-    monkeypatch.setattr(runtime, "_async_session", lambda: db)
-
-    plan = SimpleNamespace(id=uuid4(), plan_version=1, plan_hash="sha256:abc")
-    intake = _RecordingIntake(plan)
-    monkeypatch.setattr(runtime, "get_plan_mode_service", lambda: intake)
-
-    scheduled = []
-    monkeypatch.setattr(runtime.asyncio, "create_task", lambda coro: scheduled.append(coro) or coro.close())
-
-    result = await runtime._maybe_sync_created_task(
-        agent_id=agent_id,
-        user_id=user_id,
-        content="帮我创建一个任务：每天整理新闻",
-        assistant_response="好的",
-    )
-
-    # No Task persisted (the old behaviour created one and ran it).
-    assert not any(isinstance(o, Task) for o in db.added)
-    # execute_task never fired.
-    assert executed["n"] == 0
-    assert scheduled == []
-    # A plan was materialised from the detected task title.
-    assert intake.calls and intake.calls[0]["action_kind"] == "start_long_task"
-    assert "每天整理新闻" in intake.calls[0]["arguments"]["title"]
-    # User is told to confirm, with the plan id surfaced.
-    assert str(plan.id) in result
-    assert "确认" in result or "confirm" in result.lower()
-
-
-@pytest.mark.asyncio
 async def test_plan_mode_accepts_latest_recommendation_and_activates_interactive_mode(monkeypatch):
     import app.services.web_chat_runtime as runtime
 
     agent_id = uuid4()
     user_id = uuid4()
     tenant_id = uuid4()
-    plan = SimpleNamespace(id=uuid4(), plan_version=1, plan_hash="sha256:abc")
-    intake = _RecordingIntake(plan)
-    monkeypatch.setattr(runtime, "get_plan_mode_service", lambda: intake)
-
     recommendation = SimpleNamespace(
         id=uuid4(),
         agent_id=agent_id,
@@ -360,7 +277,6 @@ async def test_plan_mode_accepts_latest_recommendation_and_activates_interactive
     assert response is None
     assert recommendation.status == "accepted"
     assert recommendation.accepted_by_user_id == user_id
-    assert intake.calls == []
     metadata = session_context.metadata["plan_mode"]
     assert metadata["original_request"] == recommendation.original_request
     assert metadata["intent_type"] == "autonomous_wake"
@@ -369,64 +285,8 @@ async def test_plan_mode_accepts_latest_recommendation_and_activates_interactive
 
 
 @pytest.mark.asyncio
-async def test_maybe_sync_created_task_no_match_is_untouched(monkeypatch):
-    import app.services.web_chat_runtime as runtime
-
-    intake = _RecordingIntake(SimpleNamespace(id=uuid4(), plan_version=1, plan_hash="x"))
-    monkeypatch.setattr(runtime, "get_plan_mode_service", lambda: intake)
-
-    original = "这是普通回复，没有任务关键词"
-    result = await runtime._maybe_sync_created_task(
-        agent_id=uuid4(),
-        user_id=uuid4(),
-        content="你好，今天天气怎么样",
-        assistant_response=original,
-    )
-
-    assert result == original
-    assert intake.calls == []  # not a task-creation intent -> gate not invoked
-
-
-@pytest.mark.asyncio
-async def test_maybe_sync_created_task_intake_failure_is_non_fatal(monkeypatch):
-    import app.services.web_chat_runtime as runtime
-    from app.models.task import Task
-
-    executed = {"n": 0}
-
-    async def fake_execute_task(_task_id, _agent_id):
-        executed["n"] += 1
-
-    monkeypatch.setattr("app.services.task_executor.execute_task", fake_execute_task)
-    db = _AutoSyncDB()
-    monkeypatch.setattr(runtime, "_async_session", lambda: db)
-
-    class _Boom:
-        async def ensure_awaiting_plan(self, **_k):
-            raise RuntimeError("db down")
-
-    monkeypatch.setattr(runtime, "get_plan_mode_service", lambda: _Boom())
-
-    original = "好的"
-    result = await runtime._maybe_sync_created_task(
-        agent_id=uuid4(),
-        user_id=uuid4(),
-        content="创建任务：清理日志",
-        assistant_response=original,
-    )
-
-    # Fail-closed: still no execution, still no Task persisted; reply not crashed.
-    assert executed["n"] == 0
-    assert not any(isinstance(o, Task) for o in db.added)
-    assert isinstance(result, str)
-
-
-@pytest.mark.asyncio
 async def test_maybe_handle_plan_mode_entry_recommends_schedule_without_creating_plan(monkeypatch):
     import app.services.web_chat_runtime as runtime
-
-    intake = _RecordingIntake(SimpleNamespace(id=uuid4(), plan_version=1, plan_hash="sha256:x"))
-    monkeypatch.setattr(runtime, "get_plan_mode_service", lambda: intake)
 
     async def _noop_recommendation(**_kwargs):
         return None
@@ -447,16 +307,12 @@ async def test_maybe_handle_plan_mode_entry_recommends_schedule_without_creating
     assert "建议" in result
     assert "计划模式" in result
     assert "不用计划模式" in result
-    assert intake.calls == []
 
 
 @pytest.mark.asyncio
 async def test_maybe_handle_plan_mode_entry_activates_interactive_mode_when_explicitly_requested(monkeypatch):
     import app.services.web_chat_runtime as runtime
 
-    plan = SimpleNamespace(id=uuid4(), plan_version=1, plan_hash="sha256:abc")
-    intake = _RecordingIntake(plan)
-    monkeypatch.setattr(runtime, "get_plan_mode_service", lambda: intake)
     session_context = SimpleNamespace(metadata={})
 
     result = await runtime._maybe_handle_plan_mode_entry(
@@ -471,7 +327,6 @@ async def test_maybe_handle_plan_mode_entry_activates_interactive_mode_when_expl
     )
 
     assert result is None
-    assert intake.calls == []
     assert session_context.metadata["plan_mode"]["active"] is True
     assert session_context.metadata["plan_mode"]["original_request"] == "帮我完整调研这个行业"
     assert session_context.metadata["plan_mode"]["intent_type"] == "long_task"
@@ -485,9 +340,6 @@ async def test_activate_interactive_plan_mode_writes_typed_state_and_keeps_dict_
     import app.services.web_chat_runtime as runtime
     from app.runtime.session import SessionContext
 
-    plan = SimpleNamespace(id=uuid4(), plan_version=1, plan_hash="sha256:abc")
-    intake = _RecordingIntake(plan)
-    monkeypatch.setattr(runtime, "get_plan_mode_service", lambda: intake)
     session_context = SessionContext()
 
     result = await runtime._maybe_handle_plan_mode_entry(
@@ -519,8 +371,6 @@ async def test_activate_interactive_plan_mode_writes_typed_state_and_keeps_dict_
 async def test_maybe_handle_plan_mode_entry_activates_deep_research_interactive_plan(monkeypatch):
     import app.services.web_chat_runtime as runtime
 
-    intake = SimpleNamespace(generic_calls=[], deep_research_calls=[])
-    monkeypatch.setattr(runtime, "get_plan_mode_service", lambda: intake)
     session_context = SimpleNamespace(metadata={})
 
     result = await runtime._maybe_handle_plan_mode_entry(
@@ -535,8 +385,6 @@ async def test_maybe_handle_plan_mode_entry_activates_deep_research_interactive_
     )
 
     assert result is None
-    assert intake.generic_calls == []
-    assert intake.deep_research_calls == []
     assert session_context.metadata["plan_mode"]["active"] is True
     assert session_context.metadata["plan_mode"]["handoff_target"] == "deep_research"
     assert session_context.metadata["plan_mode"]["deep_research"] is True

@@ -33,7 +33,6 @@ from app.services.chat_message_parts import (
 )
 from app.services.llm_error_policy import is_llm_error_message
 from app.services import plan_mode_core
-from app.services.plan_mode_service import get_plan_mode_service
 from app.services.web_chat_broker import web_chat_broker
 
 
@@ -96,7 +95,9 @@ def conversation_from_history_messages(history_messages) -> list[dict]:
                 tool_result = str(tc_result)
                 if len(tool_result) > 50000:
                     logger.info("[WebChatRun] Tool result truncated on reload: {}→50000 chars", len(tool_result))
-                    tool_result = tool_result[:50000] + "\n\n[... truncated, full output may be in workspace/tool_results/]"
+                    tool_result = (
+                        tool_result[:50000] + "\n\n[... truncated, full output may be in workspace/tool_results/]"
+                    )
                 conversation.append({"role": "tool", "tool_call_id": tc_id, "content": tool_result})
             except Exception as exc:
                 logger.debug("[WebChatRun] Skipped malformed tool_call record: {}", exc)
@@ -126,7 +127,9 @@ async def handle_web_chat_disconnect(_run_id: str | None = None) -> None:
     return None
 
 
-async def broadcast_web_chat_event(agent_id: uuid.UUID, session_id: str | uuid.UUID | None, event: dict[str, Any]) -> None:
+async def broadcast_web_chat_event(
+    agent_id: uuid.UUID, session_id: str | uuid.UUID | None, event: dict[str, Any]
+) -> None:
     await web_chat_broker.send_session_message(str(agent_id), str(session_id) if session_id else None, event)
 
 
@@ -381,30 +384,6 @@ def _simulation_title(content: str) -> str:
     return content[:80] if content else ""
 
 
-def _plan_mode_generated_message(plan: Any) -> str:
-    plan_id = getattr(plan, "id", "")
-    status = getattr(plan, "status", "awaiting_confirmation")
-    if status == "planning_failed":
-        metadata = getattr(plan, "metadata_json", None) or {}
-        errors = metadata.get("planning_errors") if isinstance(metadata, dict) else None
-        error_text = ""
-        if isinstance(errors, list):
-            visible_errors = [str(item).strip() for item in errors if str(item).strip()]
-            if visible_errors:
-                error_text = "失败原因：" + "；".join(visible_errors[:3]) + "。"
-        elif isinstance(errors, str) and errors.strip():
-            error_text = f"失败原因：{errors.strip()}。"
-        return (
-            f"已进入计划模式，但计划生成失败（plan_id={plan_id}）。"
-            f"{error_text}"
-            "请在计划卡片中重新生成、修改后重试或拒绝；我不会开始执行。"
-        )
-    return (
-        f"已进入计划模式，并生成一份待确认计划（plan_id={plan_id}）。"
-        "请在计划卡片中确认、修改或拒绝；确认后我再开始执行。"
-    )
-
-
 def _activate_interactive_plan_mode(
     runtime_session_context: Any | None,
     *,
@@ -460,57 +439,6 @@ def _clear_interactive_plan_mode(runtime_session_context: Any | None) -> None:
     metadata = getattr(runtime_session_context, "metadata", None)
     if isinstance(metadata, dict):
         metadata.pop("plan_mode", None)
-
-
-async def _maybe_sync_created_task(
-    *,
-    agent_id: uuid.UUID,
-    user_id: uuid.UUID,
-    content: str,
-    assistant_response: str,
-    tenant_id: uuid.UUID | None = None,
-    session_id: str | None = None,
-) -> str:
-    """Gate the chat "create a task" auto-sync behind Plan Mode (§9.0 / §9.2).
-
-    A regex-detected task-creation intent used to immediately persist a ``Task``
-    and background-execute it (``execute_task``). That is an autonomous
-    ``start_long_task`` action: per Plan Mode it must NOT run without a confirmed
-    plan. So instead of executing, we materialise an awaiting ``PlanRequest`` from
-    the detected task title and tell the user to confirm it. The agent never
-    backgrounds a task off a bare regex match again.
-
-    Fail-closed: if the plan cannot be created the action is *still* not executed
-    (the reply is returned unchanged) — a degraded ledger must never downgrade
-    into a silent background run.
-    """
-    task_match = re.search(
-        r"(?:创建|新建|添加|建一个|帮我建|create|add)(?:一个|a )?(?:任务|待办|todo|task)[，,：：:\s]*(.+)",
-        content,
-        re.IGNORECASE,
-    )
-    if not task_match or is_llm_error_message(assistant_response):
-        return assistant_response
-    task_title = task_match.group(1).strip()
-    if not task_title:
-        return assistant_response
-
-    try:
-        plan = await get_plan_mode_service().ensure_awaiting_plan(
-            agent_id=agent_id,
-            action_kind="start_long_task",
-            tool_name="manage_tasks",
-            arguments={"action": "create", "title": task_title, "description": content},
-            source="web_chat",
-            tenant_id=tenant_id,
-            session_id=session_id,
-            runtime_task_id=None,
-        )
-    except Exception as exc:
-        logger.error("[WebChatRun] Failed to create plan for task auto-sync: {}", exc)
-        return assistant_response
-
-    return assistant_response + f"\n\n📋 “{task_title}” 需要先确认计划再执行。{_plan_mode_generated_message(plan)}"
 
 
 _DEEP_RESEARCH_CHAT_RE = re.compile(r"(deep\s*research|deepresearch|深度研究|深度调研)", re.IGNORECASE)
@@ -648,7 +576,8 @@ async def _maybe_handle_plan_mode_entry(
             intent_type=getattr(accepted_recommendation, "intent_type", None) or "autonomous_wake",
             action_kind=getattr(accepted_recommendation, "action_kind", None) or "create_enabled_trigger",
             tool_name=getattr(accepted_recommendation, "tool_name", None) or "set_trigger",
-            title=getattr(accepted_recommendation, "title", None) or getattr(accepted_recommendation, "original_request", "")[:120],
+            title=getattr(accepted_recommendation, "title", None)
+            or getattr(accepted_recommendation, "original_request", "")[:120],
             reason="accepted_plan_mode_recommendation",
         )
         content = getattr(accepted_recommendation, "original_request", None) or content
@@ -689,7 +618,9 @@ async def _update_runtime_task(
         await db.commit()
 
 
-async def _load_runtime_context(run_uuid: uuid.UUID) -> tuple[RuntimeTask, Agent, User, LLMModel | None, LLMModel | None, list[ChatMessage]]:
+async def _load_runtime_context(
+    run_uuid: uuid.UUID,
+) -> tuple[RuntimeTask, Agent, User, LLMModel | None, LLMModel | None, list[ChatMessage]]:
     async with _async_session() as db:
         task_result = await db.execute(select(RuntimeTask).where(RuntimeTask.id == run_uuid))
         runtime_task = task_result.scalar_one_or_none()
@@ -968,14 +899,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             if plan_mode_submitted:
                 _clear_interactive_plan_mode(runtime_session_context)
             runtime_session_context.metadata.pop(plan_mode_core.PLAN_MODE_TRUSTED_DECLINE_SESSION_KEY, None)
-        assistant_response = await _maybe_sync_created_task(
-            agent_id=agent.id,
-            user_id=user.id,
-            content=prompt,
-            assistant_response=result.content,
-            tenant_id=getattr(agent, "tenant_id", None),
-            session_id=session_id,
-        )
+        assistant_response = result.content
         thinking = "".join(thinking_content) if thinking_content else None
         await _persist_assistant_message(
             agent_id=agent.id,
@@ -984,7 +908,11 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             content=assistant_response,
             thinking=thinking,
         )
-        status = "killed" if cancel_event.is_set() else ("failed" if is_llm_error_message(assistant_response) else "completed")
+        status = (
+            "killed"
+            if cancel_event.is_set()
+            else ("failed" if is_llm_error_message(assistant_response) else "completed")
+        )
         metadata_update = {"cancelled_by_user": bool(cancel_event.is_set())}
         await _update_runtime_task(
             run_uuid,
@@ -999,7 +927,9 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         await _update_runtime_task(
             run_uuid,
             status="killed" if was_cancelled else "failed",
-            result_summary="Generation stopped by user." if was_cancelled else f"Web chat run failed: {type(exc).__name__}",
+            result_summary="Generation stopped by user."
+            if was_cancelled
+            else f"Web chat run failed: {type(exc).__name__}",
             metadata_json={"cancelled_by_user": True} if was_cancelled else {"error": str(exc)[:500]},
         )
         if was_cancelled:

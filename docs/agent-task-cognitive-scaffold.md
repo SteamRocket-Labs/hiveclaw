@@ -323,8 +323,47 @@ ledger 的 `findings` 不能覆盖 confirmed plan；untrusted 内容注入仍按
      plan-mode reminder 回归 9 复跑）；`tests/services/test_capability_gate_policy_surface.py` 8 绿。
      全量 `pytest tests/ -q`：**3413 passed, 7 skipped**，2 个 `test_feishu_identity_resolution`
      failures 经 stash 验证为 HEAD 既有、与本切口无关（Feishu user_id backfill，另一 WIP 分支）。
-3. **切口③**：ledger todo 增加 `owner` / `blocks` / `blockedBy` 字段契约，对接 subagent 源能力。
+3. **切口③ ✅ 已实装**：ledger todo 增加 `owner` / `blocks` / `blockedBy` 字段契约，对接 subagent 源能力。
    → 验收：delegation 时父 ledger todo 能标 owner、子 agent 回写 status。
+
+   **实装记录（2026-06-03）**：
+   - **字段契约（service 侧，§5.5 Delta-4）**：`agent_work_ledger.py` 的 `_normalize_work_item`
+     早已归一化 `blocks`/`blockedBy`（切口① 侦察确认），本切口补 `owner` —— 归一化器与
+     `_display_item`（读路径）均改为**仅当 owner 非空才落键**（CC parity：owner 可选、不强加）。
+     `upsert_agent_work_ledger_todo` 新增 `owner` / `blocks` / `blocked_by` 三个可选关键字参数，
+     add/update 两分支都贯穿（update 为**部分更新**：未传的字段保留原值）。**owner 是纯认知字段——
+     标 owner 永不 spawn/delegate 任何东西**（§8 不变量①认知≠治理）。
+   - **track_todo 工具**：`tools/handlers/work_ledger.py` 的 `track_todo` schema 加 `owner` 参数
+     （描述明示"设 owner 只是注记，不启动/派发任何工作"），透传到 service。**未动 record_finding /
+     read_ledger 一行**。
+   - **delegation 契约原语（ledger 侧两个新 service 函数）**：
+     - `assign_todo_owner(agent_id, item_id, owner, status="in_progress")` —— 父在 delegate 时给一条
+       todo 盖上子 agent 为 owner 并（默认）翻 in_progress；**不 spawn 子**（启动是 delegation runtime
+       的活）。
+     - `record_delegated_todo_status(agent_id, item_id, status, expected_owner=None)` —— 子完成后把
+       终态写回父 todo；给 `expected_owner` 时**fail-closed 校验**当前 owner 不符则 `PermissionError`
+       （防越权 flip 他人 todo），owner 经写回保留。
+   - **delegation 自动回写接线点（本切口未做，标注待对接）**：核实 `agents/orchestrator.py:_delegate`
+     的 `DELEGATION_END` hook metadata 仅含 `from_agent`/`to_agent`/`status`/`task`，**无 `ledger_todo_id`**
+     —— `AgentDelegationRequest` 没有"哪条父 todo 触发了本次 delegation"的概念（delegation 工具
+     `communication.py:delegate_to_agent` 由 LLM 以自由文本 task 调用，非 todo id）。要做**自动**回写
+     需把 `ledger_todo_id` 串过 `AgentDelegationRequest` → `_delegate` → `DELEGATION_END` metadata +
+     新增一个 `DELEGATION_END` 处理器读 `from_agent` 的 ledger 调 `record_delegated_todo_status`。
+     **这超出"ledger 侧字段契约"范围、要改 delegation 请求契约/coordination 邻接核**，按 §5.5
+     "spawn/回收机制以 subagent-source-capability.md 为准 / 本文只定义 ledger 侧字段契约" + 任务
+     brief 的边界裁定，**留作 subagent 源能力对接点**。本切口交付的 `assign_todo_owner` /
+     `record_delegated_todo_status` 正是那一层将调用的 ledger 侧契约原语。
+   - **测试证据**：service 6 用例（owner+依赖字段往返 / owner 可选省略 / assign_todo_owner 标
+     in_progress / assign 要求 owner / 回写 completion 保留 owner / 回写拒绝错误 owner 且不改 todo）+
+     handler 1 用例（track_todo owner 透传），**全用真实 service + 临时 data_root（不 mock）**。
+     `tests/services/test_agent_work_ledger_agent_writes.py` + `test_work_ledger_handler.py` +
+     `test_agent_work_ledger.py` 合计 33 passed；`tests/tools/` + kernel scaffold 252 passed。
+     全量 `pytest tests/ -q`：**3420 passed, 7 skipped**（较切口② 的 3413 恰 +7），2 个
+     `test_feishu_identity_resolution` failures 为 HEAD 既有 unstaged WIP（stash 验证），与本切口无关。
+   - **§8 不变量核对**：①认知≠治理（owner/依赖字段无 gate、标 owner 不触发执行）；②不放大/覆盖
+     confirmed plan（只改 todo 列）；③owner/title untrusted 文本以 JSON 字符串值落库=data；⑤多租户
+     scope 沿用切口① 的 `AGENT_DATA_DIR/<agent_id>/` 物理隔离 + `record_delegated_todo_status` 的
+     `expected_owner` fail-closed 校验。
 4. **切口④（最后，过 write gate）**：完成后哪些 ledger 内容沉淀为长期 memory，走 Memory Control Plane。
 
 每个切口都是 thin E2E（工具 → service → DB → prompt 注入 → 测试），可独立交付、独立验证。

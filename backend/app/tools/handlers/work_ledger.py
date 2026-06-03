@@ -92,6 +92,14 @@ def _scope(arguments: dict) -> tuple[str | None, str | None]:
                     "items": {"type": "string"},
                     "description": "Optional file paths or links that evidence this todo.",
                 },
+                "owner": {
+                    "type": "string",
+                    "description": (
+                        "Optional id or name of who this todo is assigned to — e.g. another agent "
+                        "you are delegating it to. Setting an owner is just a note; it does NOT start "
+                        "or delegate any work on its own."
+                    ),
+                },
             },
             "required": ["action"],
         },
@@ -116,6 +124,7 @@ async def track_todo(request: ToolExecutionRequest) -> str:
     evidence_refs = args.get("evidence_refs")
     if evidence_refs is not None and not isinstance(evidence_refs, list):
         evidence_refs = None
+    owner = args.get("owner")
 
     if action == "add":
         if not title:
@@ -135,6 +144,7 @@ async def track_todo(request: ToolExecutionRequest) -> str:
             description=str(description).strip() if description is not None else None,
             active_form=str(active_form).strip() if active_form is not None else None,
             evidence_refs=[str(ref) for ref in evidence_refs] if evidence_refs is not None else None,
+            owner=str(owner).strip() if owner is not None else None,
             plan_id=plan_id,
             runtime_task_id=runtime_task_id,
         )

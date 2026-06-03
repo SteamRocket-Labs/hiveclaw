@@ -285,3 +285,28 @@ async def test_two_agents_ledgers_are_isolated(tmp_path, monkeypatch):
     assert ledger_a is not None
     assert [item["title"] for item in ledger_a["todo_items"]] == ["A-only todo"]
     assert ledger_b is None  # agent B never wrote — no cross-agent leakage
+
+
+@pytest.mark.asyncio
+async def test_track_todo_add_with_owner_persists_owner(tmp_path, monkeypatch):
+    """切口③: track_todo passes an optional owner through to the ledger todo."""
+    from app.services.agent_work_ledger import load_agent_work_ledger
+    from app.tools.handlers.work_ledger import track_todo
+
+    agent_id = uuid.uuid4()
+    _settings_patch(monkeypatch, tmp_path)
+
+    payload = json.loads(
+        await track_todo(
+            _request(
+                tmp_path,
+                {"action": "add", "title": "Delegate research", "owner": "researcher-bot"},
+                agent_id=agent_id,
+            )
+        )
+    )
+    assert payload["ok"] is True
+    assert payload["item"]["owner"] == "researcher-bot"
+
+    ledger = load_agent_work_ledger(agent_id=agent_id, data_root=tmp_path)
+    assert ledger["todo_items"][0]["owner"] == "researcher-bot"

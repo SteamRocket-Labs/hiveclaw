@@ -235,3 +235,142 @@ def test_render_reboot_block_answers_five_reboot_questions(tmp_path):
     assert "vendor caps pages at 100 rows" in block  # what I verified
     assert "bulk export timed out at 10k rows" in block  # what failed
     assert "continue from the next open todo" in block
+
+
+# ── 切口③ owner / dependency fields + delegation contract (§5.5 Delta-4) ──────
+
+
+def test_upsert_todo_persists_owner_and_dependency_fields(tmp_path):
+    """track_todo can stamp owner + blocks/blockedBy; they round-trip through the ledger."""
+    from app.services.agent_work_ledger import (
+        load_agent_work_ledger,
+        upsert_agent_work_ledger_todo,
+    )
+
+    agent_id = uuid4()
+    added = upsert_agent_work_ledger_todo(
+        agent_id=agent_id,
+        title="Run the data pipeline",
+        owner="agent-child-7",
+        blocks=["todo-downstream"],
+        blocked_by=["todo-upstream"],
+        data_root=tmp_path,
+    )
+    assert added["item"]["owner"] == "agent-child-7"
+    assert added["item"]["blocks"] == ["todo-downstream"]
+    assert added["item"]["blockedBy"] == ["todo-upstream"]
+
+    ledger = load_agent_work_ledger(agent_id=agent_id, data_root=tmp_path)
+    stored = ledger["todo_items"][0]
+    assert stored["owner"] == "agent-child-7"
+    assert stored["blocks"] == ["todo-downstream"]
+    assert stored["blockedBy"] == ["todo-upstream"]
+
+
+def test_upsert_todo_without_owner_omits_the_field(tmp_path):
+    """Owner is optional — a plain todo carries no owner key (CC parity, not forced)."""
+    from app.services.agent_work_ledger import (
+        load_agent_work_ledger,
+        upsert_agent_work_ledger_todo,
+    )
+
+    agent_id = uuid4()
+    upsert_agent_work_ledger_todo(agent_id=agent_id, title="Solo task", data_root=tmp_path)
+    ledger = load_agent_work_ledger(agent_id=agent_id, data_root=tmp_path)
+    assert "owner" not in ledger["todo_items"][0]
+
+
+def test_assign_todo_owner_marks_parent_in_progress(tmp_path):
+    """Delegation contract: parent stamps a todo with the child as owner + in_progress."""
+    from app.services.agent_work_ledger import (
+        assign_todo_owner,
+        load_agent_work_ledger,
+        upsert_agent_work_ledger_todo,
+    )
+
+    parent_id = uuid4()
+    added = upsert_agent_work_ledger_todo(agent_id=parent_id, title="Gather sources", data_root=tmp_path)
+    item_id = added["item"]["id"]
+
+    result = assign_todo_owner(
+        agent_id=parent_id,
+        item_id=item_id,
+        owner="researcher-bot",
+        data_root=tmp_path,
+    )
+    assert result["item"]["owner"] == "researcher-bot"
+    assert result["item"]["status"] == "in_progress"
+
+    ledger = load_agent_work_ledger(agent_id=parent_id, data_root=tmp_path)
+    assert ledger["todo_items"][0]["owner"] == "researcher-bot"
+    assert ledger["todo_items"][0]["status"] == "in_progress"
+
+
+def test_assign_todo_owner_requires_owner(tmp_path):
+    from app.services.agent_work_ledger import assign_todo_owner, upsert_agent_work_ledger_todo
+
+    agent_id = uuid4()
+    added = upsert_agent_work_ledger_todo(agent_id=agent_id, title="x", data_root=tmp_path)
+    import pytest
+
+    with pytest.raises(ValueError):
+        assign_todo_owner(agent_id=agent_id, item_id=added["item"]["id"], owner="  ", data_root=tmp_path)
+
+
+def test_record_delegated_todo_status_writes_back_completion(tmp_path):
+    """Child completion writes status back onto the parent's owned todo."""
+    from app.services.agent_work_ledger import (
+        assign_todo_owner,
+        load_agent_work_ledger,
+        record_delegated_todo_status,
+        upsert_agent_work_ledger_todo,
+    )
+
+    parent_id = uuid4()
+    added = upsert_agent_work_ledger_todo(agent_id=parent_id, title="Delegated step", data_root=tmp_path)
+    item_id = added["item"]["id"]
+    assign_todo_owner(agent_id=parent_id, item_id=item_id, owner="child-9", data_root=tmp_path)
+
+    record_delegated_todo_status(
+        agent_id=parent_id,
+        item_id=item_id,
+        status="completed",
+        expected_owner="child-9",
+        data_root=tmp_path,
+    )
+
+    ledger = load_agent_work_ledger(agent_id=parent_id, data_root=tmp_path)
+    todo = ledger["todo_items"][0]
+    assert todo["status"] == "completed"
+    assert todo["owner"] == "child-9"  # owner preserved through the write-back
+
+
+def test_record_delegated_todo_status_rejects_wrong_owner(tmp_path):
+    """Fail-closed: a write-back claiming the wrong owner cannot flip someone else's todo."""
+    from app.services.agent_work_ledger import (
+        assign_todo_owner,
+        load_agent_work_ledger,
+        record_delegated_todo_status,
+        upsert_agent_work_ledger_todo,
+    )
+
+    parent_id = uuid4()
+    added = upsert_agent_work_ledger_todo(agent_id=parent_id, title="Owned step", data_root=tmp_path)
+    item_id = added["item"]["id"]
+    assign_todo_owner(agent_id=parent_id, item_id=item_id, owner="child-A", data_root=tmp_path)
+
+    import pytest
+
+    with pytest.raises(PermissionError):
+        record_delegated_todo_status(
+            agent_id=parent_id,
+            item_id=item_id,
+            status="completed",
+            expected_owner="child-B",  # not the real owner
+            data_root=tmp_path,
+        )
+
+    # The todo is untouched — still in_progress under the real owner.
+    ledger = load_agent_work_ledger(agent_id=parent_id, data_root=tmp_path)
+    assert ledger["todo_items"][0]["status"] == "in_progress"
+    assert ledger["todo_items"][0]["owner"] == "child-A"

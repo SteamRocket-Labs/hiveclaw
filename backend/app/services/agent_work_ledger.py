@@ -121,7 +121,7 @@ def _normalize_work_item(item: dict[str, Any], *, fallback_id: str) -> dict[str,
     )
     description = _clean_text(item.get("description"))
     active_form = _task_active_form(item, title or fallback_id)
-    return {
+    payload = {
         "id": _clean_text(item.get("id")) or fallback_id,
         "title": title or fallback_id,
         "content": title or fallback_id,
@@ -136,6 +136,10 @@ def _normalize_work_item(item: dict[str, Any], *, fallback_id: str) -> dict[str,
         "evidence_refs": [str(ref) for ref in item.get("evidence_refs", []) if str(ref).strip()],
         "updated_at": item.get("updated_at") or _now_iso(),
     }
+    owner = _clean_text(item.get("owner"))
+    if owner:
+        payload["owner"] = owner
+    return payload
 
 
 def _normalize_finding(item: dict[str, Any], *, fallback_id: str) -> dict[str, Any]:
@@ -407,6 +411,9 @@ def upsert_agent_work_ledger_todo(
     description: str | None = None,
     active_form: str | None = None,
     evidence_refs: list[str] | None = None,
+    owner: str | None = None,
+    blocks: list[str] | None = None,
+    blocked_by: list[str] | None = None,
     plan_id: uuid.UUID | str | None = None,
     runtime_task_id: uuid.UUID | str | None = None,
     source: str = "agent_authored",
@@ -418,6 +425,14 @@ def upsert_agent_work_ledger_todo(
     the ``todo_items`` list; it never appends progress/failure rows and never
     triggers execution. ``item_id`` selects an existing todo (else match by
     exact title); absent both, a new todo is appended.
+
+    切口③ (docs/agent-task-cognitive-scaffold.md §5.5 Delta-4): ``owner`` records
+    *who the todo is assigned to* (CC parity — e.g. a child agent's id/name when a
+    parent delegates it); ``blocks`` / ``blocked_by`` carry the dependency DAG that
+    切口① already normalizes on the item. These are still pure cognitive fields —
+    setting an ``owner`` never spawns or delegates anything; the delegation runtime
+    is responsible for actually launching the child (see ``assign_todo_owner`` /
+    ``record_delegated_todo_status`` for the ledger-side delegation contract).
     """
 
     path = _ledger_path(agent_id=agent_id, plan_id=plan_id, runtime_task_id=runtime_task_id, data_root=data_root)
@@ -453,6 +468,12 @@ def upsert_agent_work_ledger_todo(
             merged["activeForm"] = active_form
         if evidence_refs is not None:
             merged["evidence_refs"] = evidence_refs
+        if owner is not None:
+            merged["owner"] = owner
+        if blocks is not None:
+            merged["blocks"] = blocks
+        if blocked_by is not None:
+            merged["blockedBy"] = blocked_by
         normalized = _normalize_work_item(merged, fallback_id=_clean_text(existing.get("id")) or "todo-1")
         index = todos.index(existing)
         todos[index] = normalized
@@ -469,6 +490,12 @@ def upsert_agent_work_ledger_todo(
             new_item["activeForm"] = active_form
         if evidence_refs is not None:
             new_item["evidence_refs"] = evidence_refs
+        if owner is not None:
+            new_item["owner"] = owner
+        if blocks is not None:
+            new_item["blocks"] = blocks
+        if blocked_by is not None:
+            new_item["blockedBy"] = blocked_by
         normalized = _normalize_work_item(new_item, fallback_id=new_item["id"])
         todos.append(normalized)
         action = "added"
@@ -476,6 +503,82 @@ def upsert_agent_work_ledger_todo(
     ledger["todo_items"] = todos
     _write_ledger(agent_id=agent_id, payload=ledger, path=path, data_root=data_root)
     return {"action": action, "item": _display_item(normalized)}
+
+
+def assign_todo_owner(
+    *,
+    agent_id: uuid.UUID,
+    item_id: str,
+    owner: str,
+    status: str | None = "in_progress",
+    plan_id: uuid.UUID | str | None = None,
+    runtime_task_id: uuid.UUID | str | None = None,
+    data_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Mark a parent ledger todo as delegated to ``owner`` (切口③ delegation contract).
+
+    This is the *ledger-side* half of CC's owner/swarm model: when the orchestrator
+    delegates work for a todo to a child agent, it stamps the parent's todo with the
+    child's id/name as ``owner`` and (by default) flips it to ``in_progress``. It does
+    **not** spawn the child — launching is the delegation runtime's job
+    (``agents/orchestrator.py`` / ``agents/subagent.py``). Pass ``status=None`` to
+    leave the status untouched.
+    """
+
+    clean_owner = _clean_text(owner)
+    if not clean_owner:
+        raise ValueError("owner is required")
+    return upsert_agent_work_ledger_todo(
+        agent_id=agent_id,
+        item_id=item_id,
+        owner=clean_owner,
+        status=status,
+        plan_id=plan_id,
+        runtime_task_id=runtime_task_id,
+        data_root=data_root,
+    )
+
+
+def record_delegated_todo_status(
+    *,
+    agent_id: uuid.UUID,
+    item_id: str,
+    status: str,
+    expected_owner: str | None = None,
+    plan_id: uuid.UUID | str | None = None,
+    runtime_task_id: uuid.UUID | str | None = None,
+    data_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Write a delegated todo's terminal status back onto the parent ledger (切口③).
+
+    Called when a child agent finishes the work delegated for ``item_id`` (e.g. from a
+    ``DELEGATION_END`` handler). When ``expected_owner`` is given it is verified against
+    the todo's current ``owner`` so a stray write cannot flip a todo owned by someone
+    else — fail-closed with :class:`PermissionError`. Pure ledger write; never triggers
+    execution.
+    """
+
+    if expected_owner is not None:
+        ledger = load_agent_work_ledger(
+            agent_id=agent_id, plan_id=plan_id, runtime_task_id=runtime_task_id, data_root=data_root
+        )
+        todos = (ledger or {}).get("todo_items") or []
+        target = next((item for item in todos if _clean_text(item.get("id")) == _clean_text(item_id)), None)
+        if target is None:
+            raise KeyError(item_id)
+        current_owner = _clean_text(target.get("owner"))
+        if current_owner != _clean_text(expected_owner):
+            raise PermissionError(
+                f"todo {item_id!r} is owned by {current_owner or '(unassigned)'}, not {expected_owner!r}"
+            )
+    return upsert_agent_work_ledger_todo(
+        agent_id=agent_id,
+        item_id=item_id,
+        status=status,
+        plan_id=plan_id,
+        runtime_task_id=runtime_task_id,
+        data_root=data_root,
+    )
 
 
 def append_agent_work_ledger_finding(
@@ -712,6 +815,9 @@ def _display_item(item: dict[str, Any], *, title_key: str = "title") -> dict[str
     command = _clean_text(item.get("command"))
     if command:
         payload["command"] = command
+    owner = _clean_text(item.get("owner"))
+    if owner:
+        payload["owner"] = owner
     return payload
 
 
@@ -1129,12 +1235,14 @@ __all__ = [
     "LEDGER_VIEW_SCHEMA",
     "append_agent_work_ledger_finding",
     "append_agent_work_ledger_progress",
+    "assign_todo_owner",
     "build_agent_work_ledger_display_view",
     "build_agent_work_ledger_resume_summary",
     "initialize_agent_work_ledger_artifact",
     "load_agent_work_ledger",
     "read_latest_session_work_ledger_view",
     "read_agent_work_ledger_view",
+    "record_delegated_todo_status",
     "render_work_ledger_resume_block",
     "should_enable_work_ledger",
     "upsert_agent_work_ledger_todo",

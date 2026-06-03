@@ -41,7 +41,9 @@ async def _log_session_start(ctx: HookContext) -> None:
     model = ctx.metadata.get("model", "?")
     logger.info(
         "[Hooks] SESSION_START: agent=%s source=%s model=%s",
-        ctx.agent_id, ctx.source, model,
+        ctx.agent_id,
+        ctx.source,
+        model,
     )
     # Reset extractor cursor on new session
     agent_id = _parse_agent_id(ctx)
@@ -54,7 +56,9 @@ async def _log_post_compaction(ctx: HookContext) -> None:
     summary_len = len(ctx.metadata.get("summary", ""))
     logger.info(
         "[Hooks] POST_COMPACTION: agent=%s trigger=%s summary_len=%d",
-        ctx.agent_id, trigger, summary_len,
+        ctx.agent_id,
+        trigger,
+        summary_len,
     )
     agent_id = _parse_agent_id(ctx)
     if agent_id and ctx.metadata.get("summary"):
@@ -209,6 +213,18 @@ async def _t0_session_close(ctx: HookContext) -> None:
     )
     # Drain pending extractions before session ends
     await extract_agent.drain(agent_id, timeout_s=10.0)
+    # 切口④: settle the session's verified ledger findings into durable T2 memory.
+    # Runs through the same write gate as all extractions (PL4 rejected, sensitivity
+    # classified) — see extract_agent.consolidate_ledger_findings_to_t2. Best-effort:
+    # a consolidation failure must not abort SESSION_CLOSE T0 logging below.
+    try:
+        from app.services.extract_agent import consolidate_ledger_findings_to_t2
+
+        written = consolidate_ledger_findings_to_t2(agent_id, source="work_ledger")
+        if written:
+            logger.info("[Hooks] SESSION_CLOSE: agent=%s ledger→T2 settled %d entries", agent_id, written)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Hooks] SESSION_CLOSE: ledger→T2 consolidation skipped for %s: %s", agent_id, exc)
     # Write only new messages since last T0 cursor
     session_key = f"{agent_id}:{ctx.session_id}"
     cursor = _t0_cursors.get(session_key, 0)
@@ -288,8 +304,14 @@ async def _t0_session_idle(ctx: HookContext) -> None:
     if not new_messages:
         logger.debug("[Hooks] SESSION_IDLE: agent=%s no new messages since cursor=%d", ctx.agent_id, cursor)
         return
-    logger.info("[Hooks] SESSION_IDLE: agent=%s idle=%ss new_msgs=%d (cursor %d→%d)",
-                ctx.agent_id, idle_s, len(new_messages), cursor, len(messages))
+    logger.info(
+        "[Hooks] SESSION_IDLE: agent=%s idle=%ss new_msgs=%d (cursor %d→%d)",
+        ctx.agent_id,
+        idle_s,
+        len(new_messages),
+        cursor,
+        len(messages),
+    )
     write_t0_log(
         agent_id,
         behavior_type="chat",
@@ -356,6 +378,7 @@ async def _t0_dream_end(ctx: HookContext) -> None:
     # Phase 5: Reset heartbeat KAIROS session after dream completes
     # so next heartbeat tick starts fresh with updated T3 memory.
     from app.services.heartbeat import _reset_heartbeat_session
+
     _reset_heartbeat_session(agent_id)
 
 

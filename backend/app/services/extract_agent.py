@@ -603,6 +603,104 @@ def _append_to_learnings(
         return 0
 
 
+# ── 切口④: Work Ledger → durable T2 memory (through the write gate) ──
+#
+# docs/agent-task-cognitive-scaffold.md §7 切口④ + §8 invariant 4: when a task
+# completes, the ledger's *verified* findings and key failure-learnings should
+# settle into long-term memory — but only ever through the Memory Control Plane
+# write gate (PL4 credentials rejected, sensitivity classified, lifecycle/evidence
+# metadata stamped). We do NOT re-implement or bypass the gate: we shape ledger
+# findings into the same ``extractions`` list that ``_append_to_learnings`` →
+# ``append_t2_entries`` already runs through ``prepare_memory_write`` per entry.
+
+
+def ledger_findings_to_extractions(ledger: dict[str, Any] | None) -> list[dict[str, str]]:
+    """Map a Work Ledger's durable learnings to T2 extraction dicts (pure, no IO).
+
+    Only **verified** findings (``trust == "verified"``) graduate to durable memory —
+    unverified findings stay ledger scratch (§8: cognition ≠ persistence). Failures
+    that recorded a ``next_strategy`` become ``blocked_pattern`` learnings so the
+    agent does not repeat the dead end in a future session. Each dict carries the
+    finding's ``source_refs`` as ``refs`` so the gate stamps evidence metadata.
+
+    The output is the exact shape ``append_t2_entries`` consumes; the gate decides
+    acceptance/rejection per entry (this function never touches privacy/PL4).
+    """
+
+    if not ledger:
+        return []
+
+    extractions: list[dict[str, str]] = []
+
+    for finding in ledger.get("findings") or []:
+        if not isinstance(finding, dict):
+            continue
+        summary = (finding.get("summary") or "").strip()
+        if not summary:
+            continue
+        if (finding.get("trust") or "").strip().lower() != "verified":
+            continue
+        item: dict[str, str] = {
+            "category": "reference",
+            "content": summary,
+            "evidence": "tool_verified",
+            "concept": _infer_concept("reference", summary),
+        }
+        refs = finding.get("source_refs")
+        if refs:
+            item["source_refs"] = ",".join(str(ref).strip() for ref in refs if str(ref).strip())
+        extractions.append(item)
+
+    for failure in ledger.get("failures") or []:
+        if not isinstance(failure, dict):
+            continue
+        if bool(failure.get("resolved", False)):
+            continue
+        error = (failure.get("error") or "").strip()
+        next_strategy = (failure.get("next_strategy") or "").strip()
+        if not error or not next_strategy:
+            # Only failures that learned a next strategy are worth persisting as a
+            # reusable blocked-pattern; a bare error without a lesson is noise.
+            continue
+        extractions.append(
+            {
+                "category": "blocked_pattern",
+                "content": f"{error} — next time: {next_strategy}",
+                "evidence": "tool_verified",
+                "concept": _infer_concept("blocked_pattern", error),
+            }
+        )
+
+    return extractions
+
+
+def consolidate_ledger_findings_to_t2(
+    agent_id: uuid.UUID,
+    *,
+    plan_id: uuid.UUID | str | None = None,
+    runtime_task_id: uuid.UUID | str | None = None,
+    source: str = "work_ledger",
+    data_root: Path | None = None,
+) -> int:
+    """Settle a finished ledger's verified findings into durable T2 memory.
+
+    Thin orchestrator (§7 切口④): load the scoped ledger → map verified findings to
+    extractions → hand them to ``_append_to_learnings``, which runs every entry
+    through ``prepare_memory_write`` (PL4 rejection / sensitivity / lifecycle). The
+    write gate is reused untouched; nothing here bypasses it. Returns the number of
+    T2 entries actually written (gate-rejected and duplicate entries are not counted).
+    """
+
+    from app.services.agent_work_ledger import load_agent_work_ledger
+
+    root = data_root if data_root is not None else Path(get_settings().AGENT_DATA_DIR)
+    ledger = load_agent_work_ledger(agent_id=agent_id, plan_id=plan_id, runtime_task_id=runtime_task_id, data_root=root)
+    extractions = ledger_findings_to_extractions(ledger)
+    if not extractions:
+        return 0
+    return _append_to_learnings(agent_id, extractions, source=source)
+
+
 # ── ExtractAgent (per-agent state management) ──
 
 _EXTRACT_CURSOR_FILENAME = ".extract_cursor.json"

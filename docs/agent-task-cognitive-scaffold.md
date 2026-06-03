@@ -364,7 +364,50 @@ ledger 的 `findings` 不能覆盖 confirmed plan；untrusted 内容注入仍按
      confirmed plan（只改 todo 列）；③owner/title untrusted 文本以 JSON 字符串值落库=data；⑤多租户
      scope 沿用切口① 的 `AGENT_DATA_DIR/<agent_id>/` 物理隔离 + `record_delegated_todo_status` 的
      `expected_owner` fail-closed 校验。
-4. **切口④（最后，过 write gate）**：完成后哪些 ledger 内容沉淀为长期 memory，走 Memory Control Plane。
+4. **切口④ ✅ 已实装（最后，过 write gate）**：完成后哪些 ledger 内容沉淀为长期 memory，走 Memory
+   Control Plane。
+
+   **实装记录（2026-06-03）**：
+   - **侦察结论（write gate 复用点）**：`memory/t2_store.py::append_t2_entries` **早已**对每条
+     extraction 调 `memory/write_gate.py::prepare_memory_write`（→ `PrivacyLayer.classify_and_mask`），
+     `decision.rejected` 的（PL4 凭据）`continue` 跳过、PL2/PL3 分级 + lifecycle/evidence metadata
+     由 `_base_metadata` 盖戳。`extract_agent.py::_append_to_learnings(agent_id, extractions, source=)`
+     是喂进这条管道的 canonical 写入口（RESPONSE_COMPLETE / backfill 都走它）。→ **切口④ 正是 brief
+     预判的"小接线"：把 ledger findings 整形成同一个 extractions 列表喂 `_append_to_learnings`，gate
+     原样复用、零绕过、零重造。**
+   - **改了哪些（两个新 service 函数，住 `extract_agent.py`）**：
+     - `ledger_findings_to_extractions(ledger)`（**pure，无 IO**）：把 ledger 的**已验证** findings
+       （`trust=="verified"`）映射成 `category="reference"`（concept `how-it-works`，`ev=tool_verified`，
+       `source_refs`→`refs`）；**未验证 findings 留作 ledger scratch 不沉淀**（§8 认知≠持久化）；带
+       `next_strategy` 的**未 resolved** failures 映射成 `category="blocked_pattern"`（"error — next
+       time: strategy"），让下个会话不重蹈死路；裸 error 无教训=噪声跳过。输出形状即
+       `append_t2_entries` 消费的 extraction dict，**本函数从不碰隐私/PL4，由 gate 逐条裁决**。
+     - `consolidate_ledger_findings_to_t2(agent_id, ...)`（薄壳 orchestrator）：load scoped ledger →
+       map → 交给 `_append_to_learnings`（**每条过 `prepare_memory_write`**）。返回实际写入数（gate
+       拒绝 + 去重的不计）。
+   - **触发点（SESSION_CLOSE，任务完成边界）**：`runtime/hooks_setup.py::_t0_session_close` 在
+     extractor `drain` 之后调 `consolidate_ledger_findings_to_t2(agent_id, source="work_ledger")`，
+     best-effort（consolidation 失败不阻断后续 T0 写）。SESSION_CLOSE 是会话"任务做完"的自然落点，
+     且与切口② compaction reboot 读的同一个 unscoped `runtime_artifacts/work_ledger.json` 对齐。
+   - **ledger→memory 如何过 gate（PL4 拒绝实证）**：测试 `test_pl4_credential_in_finding_is_rejected_
+     by_gate` 用**真实 gate**（不 mock）—— 一条 `trust=verified` 但 summary 含 OpenAI 式 `sk-` 凭据
+     （运行时拼接、源码无字面密钥，规避 SEC 守卫）的 finding，经 `consolidate_ledger_findings_to_t2`
+     →`prepare_memory_write` 判 PL4 `rejected`→**written==0**，且断言**原始密钥串从未落进任何 T2 md
+     文件**；`test_pl3_sensitive_finding_is_classified_when_settled` 证一条含 "salary review" 的
+     verified finding 仍沉淀但被 gate 标 `sensitivity=PL3_sensitive`（敏感分级生效、非整条毙）；
+     `test_verified_finding_settles_into_t2_through_gate` 证普通 verified finding 落 T2 且被盖
+     `entry_id`/`PL1_public` lifecycle metadata。
+   - **测试证据**：新增 `tests/services/test_ledger_to_memory_gate.py` 9 用例全绿（3 pure mapper +
+     6 orchestrator/gate/SESSION_CLOSE，**全用真实 gate + 真实 ledger service + 临时 data_root，不 mock
+     gate**）；含 SESSION_CLOSE hook E2E（`test_session_close_hook_settles_ledger_findings_to_t2` 跑真实
+     `_t0_session_close` 证 verified finding 经 hook 落 T2）+ 幂等去重（二次 consolidation written==0）。
+     `tests/services/test_extract_agent.py` + `tests/runtime/` + `tests/memory/` 729 passed；全量
+     `pytest tests/ -q`：**3429 passed, 7 skipped**（较切口③ 的 3420 恰 +9），2 个
+     `test_feishu_identity_resolution` failures 为 HEAD 既有 WIP，与本切口无关。
+   - **§8 不变量核对**：④ledger→长期 memory 必过 write gate（PL4 拒绝 + 敏感分级，**复用现有 gate 零
+     绕过**，实证见上）；①认知≠治理（沉淀是系统在 SESSION_CLOSE 做的持久化动作，非 agent 认知工具）；
+     ③untrusted finding 文本作为 memory content 仍过 gate 的隐私/form 校验（PL4 凭据被中和）；⑤多租户
+     scope 沿用 `AGENT_DATA_DIR/<agent_id>/` 物理隔离。
 
 每个切口都是 thin E2E（工具 → service → DB → prompt 注入 → 测试），可独立交付、独立验证。
 

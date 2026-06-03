@@ -270,18 +270,26 @@ async def fanout_subagents(
 
 ---
 
-## 8. 增量切口（最小可落地，v2 重排）
+## 8. 增量切口（v3 重排——DR 接入抽离，subagent 先成完整源能力）
 
-不要一次重写。按风险从低到高，每步独立可验证、deep research 每步受益。**v2 关键修正：原"切口 1"吞太多（spec+fanout+持久实体+记忆.md 一锅），拆开——runtime 原语先行，持久 memory 最后**：
+不要一次重写。按风险从低到高，每步独立可验证、可回滚。**v3 关键校准（用户 2026-06-02 拍板）**：不再让 deep research 当"边做边接"的验证驱动——**subagent 是第一性源能力，先把它做完整、做对、做成平台原语；deep research 是它的第一个应用，等源能力上线后再回头一次性改造**（原 v2 切口 2/3 的"DR 改调""DR critic 应用"从主线抽离，见下「后续阶段」）。**"完整"= 做到含持久实体 + 阉割版记忆进化（切口⑥），不停在无记忆临时工**（踩中 North Star Goal 1 自我进化）。
 
-1. **切口 1（最小核心）**：**runtime-only** `SubagentSpec` + `fanout_subagents` + 只读 `explorer`（§5.2+5.4），**不写 subagent memory**（spec 字段定全，runtime 恒走无 memory 路径）。纯运行时原语，零持久化。
-2. **切口 2**：deep research `_run_worker_fanout` 改调 `fanout_subagents`——**保留现有 RC/F 配额作 backstop**（新旧并存验证，不一上来推倒；DR 刚被 RC11-15 修到生产能跑）。`per_agent_budget` 验稳后再撤旧补丁。
-3. **切口 3**：deep research synthesis 引入独立 `critic` subagent（§6），解 RC15（覆盖检查从 prompt 强制挪到独立只读 agent；critic 只读、风险低，且解当前最痛的 DR 质量问题）。
-4. **切口 4**：异步完成重入（§5.5）接 Signal，消灭 busy-poll。
-5. **切口 5**：统一 **worker spawn** 入口（§5.1）——**只收口 lightweight worker（DR worker + 并行 worker），peer delegation 不并**（见术语边界）。
-6. **切口 6**：持久定义文件 `定义.md`（实体固化，对标 CC `agents/<name>.md`）。
-7. **切口 7**：**tenant-scoped subagent memory daemon**（§5.2.2）——离线扫 T0 提炼 How 写回 `记忆.md`，**必过 governed write gate**（最后做，风险最高、撞 Memory Control Plane）。
-8. **切口 8+**：`fork_turns` 旋钮升级、更多内置 type（worker/critic）、async 白名单等。
+**纯 subagent 源能力主线（6 刀）：**
+
+1. **切口①（最小核心）**：**runtime-only** `SubagentSpec`（契约）+ `fanout_subagents` + 只读 `explorer` type（§5.2+5.4）。内部 spawn：构造 `AgentInvocationRequest`→`invoke_agent`，继承治理（`delegation_token`+`tool_executor` 透传）+ 防递归（depth），enforce budget（rounds/timeout）。**不写 subagent memory**（spec 字段定全，runtime 恒走无 memory 路径）。纯运行时，零持久化。fork 实现 `none`。
+2. **切口②**：`spawn_subagent` 单体入口 + 暴露成工具（§5.1）——主 agent 对话中临时 spawn（§5.2.1）。**只收 lightweight worker，peer delegation 不并**（见术语边界）。
+3. **切口③**：`worker`/`critic` type 补全（§5.2 内置三 type 齐）+ fork 三档旋钮 `none/brief/all`（§5.3，brief 复用 `_build_delegation_brief`，all 传父近期完整 history）。
+4. **切口④**：异步完成重入（§5.5）接 Signal，消灭父 busy-poll（LoopGuard 坑）。
+5. **切口⑤**：持久 `定义.md`（实体固化，对标 CC `agents/<name>.md`）——具名实体 tenant-scoped 加载/解析/注册。
+6. **切口⑥**：**tenant-scoped subagent `记忆.md` + 阉割版进化 daemon**（§5.2.2）——离线扫领域具名 subagent 的 T0 提炼隐性 How 写回 `记忆.md`，**必过 governed write gate**（`prepare_memory_write`，PL4 拒，rejected 即 abort 不 fallback raw；daemon 绝不直拼 Markdown）。源能力完整的最后一刀（风险最高、撞 Memory Control Plane）。
+
+**——到此 subagent 是完整的持久可进化源能力。——**
+
+**后续阶段（独立，不在本主线；等上面 6 刀全部上线后）：**
+
+- **DR-A**：deep research `_run_worker_fanout` 改调 `fanout_subagents`——保留现有 RC/F 配额作 backstop（新旧并存验证，不推倒；DR 刚被 RC11-15 修到生产能跑），`per_agent_budget` 验稳后再撤旧补丁。
+- **DR-B**：deep research synthesis 引入独立 `critic` subagent（§6），解 RC15（覆盖检查从 prompt 强制挪到独立只读 agent）。
+- **轴2**：工作流编排（§7），借鉴 CC Workflow 工具，映射 Hive 多租户+治理（独立文档）。
 
 ---
 
@@ -289,8 +297,25 @@ async def fanout_subagents(
 
 - **非目标**：本文不做轴 2 工作流编排（独立文档）；不重写 deep research reasoner（只把它的 fan-out/worker 替换为源能力）；不动数字员工/soul/记忆体系。
 - **不变量（绝不破）**：① 子 agent 必须过同一治理层（§5.6），绝不开后门；② 防递归（max_depth + 环检测 + token）保持；③ 结果回收"只回结论、不灌父 context"保持；④ 增量演进，每切口独立可回滚——deep research 刚被 RC11-15 修到生产能跑，不推倒。
-- **风险**：轻量子 agent（无灵魂；MVP 切口 1-6 阶段无 memory 写回）的产出质量是否够——靠 `critic` type 二次验证兜底；fan-out 并发资源（token/连接）需压测。
+- **风险**：轻量子 agent（无灵魂；切口①-⑤ 阶段无 memory 写回，切口⑥ 补 tenant 记忆进化）的产出质量是否够——靠 `critic` type 二次验证兜底；fan-out 并发资源（token/连接）需压测。
 
 ---
 
-> **状态**：设计稿 **v2**（2026-06-02 review 后修订：术语边界 + CC agent memory 事实纠正 + 切口拆分 + Memory Control Plane 闸 + §5.1 收窄）。取舍（§4）+ 切口顺序（§8）+ 三待决已拍板冻结。轴 2（工作流编排，借鉴 CC Workflow 工具）作为独立下一篇。
+## 10. 实装状态追踪（v3，本轮全面实装）
+
+| Phase | 切口 | 状态 | Commit |
+|---|---|---|---|
+| 0 | 固化决策（§8 v3 重排 + 本表） | ✅ done | — |
+| 1 | ① runtime 契约 + fanout + explorer（无 memory） | ⬜ pending | — |
+| 2 | ② spawn_subagent 入口 + 工具暴露 | ⬜ pending | — |
+| 3 | ③ worker/critic type + fork 三档（none/brief/all） | ⬜ pending | — |
+| 4 | ④ 异步完成重入（接 Signal） | ⬜ pending | — |
+| 5 | ⑤ 持久 定义.md | ⬜ pending | — |
+| 6 | ⑥ tenant 记忆.md + 进化 daemon（过 write gate） | ⬜ pending | — |
+| DR-A | deep research 接 fanout（保留 RC/F backstop） | ⏸ 后续 | — |
+| DR-B | deep research critic 解 RC15 | ⏸ 后续 | — |
+| 轴2 | 工作流编排（借鉴 CC Workflow） | ⏸ 后续 | — |
+
+---
+
+> **状态**：设计稿 **v3**（2026-06-02：DR 接入从主线抽离为后续阶段，subagent 先成完整源能力；"完整"= 到切口⑥含记忆进化；新增本节状态追踪）。v2 内容（术语边界 + CC agent memory 事实纠正 + 切口拆分 + Memory Control Plane 闸 + §5.1 收窄）保留。取舍（§4）+ 主线切口顺序（§8 v3）+ 三待决已拍板冻结。轴 2（工作流编排，借鉴 CC Workflow 工具）作为独立后续。

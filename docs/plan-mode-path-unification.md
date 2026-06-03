@@ -271,3 +271,65 @@ live 与无人值守**共用同一套 Plan Mode runtime**(每轮 reminder + 只�
 
 **待后续**:无人值守 plan run 上线需把 `PLAN_MODE_UNATTENDED_RUN` 切 on(生产灰度);切口④ 删 RPC planner
 后该 flag 失去 fallback 含义,可随之收敛。
+
+---
+
+## 12. 切口③/④ 实现设计(launcher 收口 RPC planner)
+
+> 切口② 已让"**有 agent run**"的无人值守拦截走主循环 plan mode。切口③/④ 收口剩下的
+> "**无 agent run** 的纯外部入口"(2026-06-03 读码 + Explore 侦察确认)。
+
+### 12.1 现状(侦察证实)
+
+| 入口 | 有 run? | 当前 plan_json 来源 |
+|---|---|---|
+| REST `create_plan`(`plans.py:351`) | ❌ 无 | `generate_plan(use_agent_planner=True)` → RPC |
+| REST `regenerate`(`plans.py:421`) | ❌ 无 | 同上 |
+| REST `revise`/supersede(`plans.py:400`→`revise_plan:687-740`) | ❌ 无 | 同上 |
+| Feishu classify auto/explicit(`feishu.py:2225+`) | ❌ 无 | `ensure_awaiting_plan:251` → `generate_plan(True)` → RPC |
+| tool-intercept(`ensure_awaiting_plan`) | ✅ 有 | 切口② 已覆盖(flag off 回退 RPC) |
+
+枢纽:`ensure_awaiting_plan`(`:251`)与 REST/supersede 都汇入 `generate_plan(use_agent_planner=True)` →
+`DefaultAgentPlanPlanner`。这就是要消除的 Path B。
+
+### 12.2 机制:system plan run launcher
+
+无 run 入口要让 agent 主循环规划,必须**启动一个 run**。新增 `launch_system_plan_run(plan)`:
+
+1. 入口先 `create_plan_request` → draft plan(稳定 `plan_id`)。
+2. `launch_system_plan_run(plan)`:**预激活** plan mode —— `SessionContext(source="system_plan_run")` +
+   `PlanModeState(active=True, plan_id=str(plan.id), intent_type=…, original_request=…)` + arm ContextVar;
+   再 `invoke_agent`(标准工具,被 plan mode 只读 policy 限制)。
+3. agent 在主循环只读探索/规划 → 调 `exit_plan_mode` 提交 fill。
+4. 入口返回该 plan(已 `awaiting_confirmation`)。
+
+与切口② 唯一差别:切口② 是 run **内**被拦截后激活(plan_id 此时为空 → 新建);launcher 是 run **前**预激活
+且**带 plan_id**(→ 填充已有 draft)。两者复用同一 plan mode runtime(reminder + 只读 + exit_plan_mode)。
+
+### 12.3 `exit_plan_mode` 双态(关键改造)
+
+`exit_plan_mode` 读 plan mode metadata 的 `plan_id`:
+- **有 `plan_id`**(launcher / system plan run):`generate_plan(plan_id, fill, use_agent_planner=False)`
+  **填充已有 draft** —— plan_id 稳定,前端已持有的 id 不变。
+- **无 `plan_id`**(live chat / 无人值守 tool-intercept,切口②):`ensure_awaiting_plan_from_fill` **新建**(保持现状)。
+
+### 12.4 generate_plan 收口 + 删 RPC(切口④)
+
+- `generate_plan` 删 `use_agent_planner` 参数,退化为**纯 fill 落地**(原 `=False` 行为):验证 → hash →
+  markdown → awaiting。`_apply_generation` 逐字节不动(RPC 与 structured-fill 本就共用)。
+- 删 `DefaultAgentPlanPlanner` / `PLANNER_ALLOWED_TOOLS` / `_run_planner` / `_get_planner`。
+- `ensure_awaiting_plan`(:251 调 True)的消费者(Feishu / tool-intercept)改 launcher 或已被切口② 覆盖。
+
+### 12.5 切口拆分(每步 thin E2E + 测试 + commit)
+
+- **③a**:`exit_plan_mode` 双态(plan_id 填充 / 新建)+ 测试。
+- **③b**:`launch_system_plan_run` + REST create/regenerate/revise + Feishu classification 改走 launcher + 测试。
+- **④**:删 `DefaultAgentPlanPlanner` + `use_agent_planner` 参数 + 测试收口。
+
+### 12.6 不变量 + 成本
+
+- 治理:`plan_hash`/`validate_confirmation`/`PlanModeGate`/fail-closed 不动;多租户 scope + RLS。
+- 成本:每次 REST/Feishu 规划启动一个完整 agent run(比 RPC 一次性更贵)——单一范式的代价(§5.6),
+  用 `max_tool_rounds` 上限 + flag 灰度(复用切口② 模式)控。
+- subtle:launcher run 的 `source="system_plan_run"` 已 active,不会被
+  `_maybe_activate_interactive_plan_from_tool_result` 二次激活(`engine:996` short-circuit)。

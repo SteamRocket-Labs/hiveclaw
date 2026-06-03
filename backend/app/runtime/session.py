@@ -236,11 +236,11 @@ class SessionContext:
 _INTERACTIVE_PLAN_CHAT_SURFACES = frozenset({"web", "web_chat", "chat"})
 
 # Unattended agent runs eligible for tool-intercept → main-loop Plan Mode
-# (path-unification §5.3 / cut ②). These are multi-round kernel loops with no
-# live user stream: a blocked gated tool flips the run into the SAME Plan Mode
-# runtime as live chat (read-only policy + per-round reminder + exit_plan_mode),
-# and the authored plan lands awaiting_confirmation for asynchronous user
-# confirmation from the plan queue. Gated behind Settings.PLAN_MODE_UNATTENDED_RUN.
+# (path-unification §5.3 / cut ②, made unconditional in cut ④). These are
+# multi-round kernel loops with no live user stream: a blocked gated tool flips
+# the run into the SAME Plan Mode runtime as live chat (read-only policy +
+# per-round reminder + exit_plan_mode), and the authored plan lands
+# awaiting_confirmation for asynchronous user confirmation from the plan queue.
 _UNATTENDED_PLAN_RUN_SOURCES = frozenset({"trigger", "heartbeat"})
 
 

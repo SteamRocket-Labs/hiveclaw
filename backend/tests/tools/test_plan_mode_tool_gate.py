@@ -477,53 +477,50 @@ async def test_execute_passes_confirmed_plan_args_to_gate():
 
 
 # ---------------------------------------------------------------------------
-# Intercept-then-create (§9.2): a blocked tagged tool with no confirmed plan
-# materialises an awaiting PlanRequest and embeds plan_id/json/version/hash.
+# Blocked tagged tool with no confirmed plan (§9.2). Path-unification cut ④: an
+# eligible source (live chat / unattended) flips into main-loop Plan Mode via the
+# activation signal; a NON-eligible source gets a static needs_plan block. There
+# is no longer an RPC intercept-then-create that embeds plan_id/json/hash.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_blocked_tool_creates_awaiting_plan_and_embeds_it_in_payload():
+async def test_blocked_tool_eligible_source_defers_to_main_loop_plan_mode():
+    """An eligible (live-chat) source whose tagged tool is blocked gets an
+    activation signal to flip into main-loop Plan Mode — no static plan
+    materialised, tool does not execute."""
     context = _context()
     registry = _FakeRegistry("SHOULD_NOT_RUN")
     gate = _RecordingGate(_BLOCKED)
-    plan = _awaiting_plan_stub()
-    intake = _RecordingIntakeService(plan)
-    service = _make_service(context=context, registry=registry, gate=gate, plan_mode_service=intake)
+    service = _make_service(context=context, registry=registry, gate=gate)
 
     result = await service.execute(
         "set_trigger",
         {"name": "Daily brief", "type": "cron", "config": {"expr": "0 9 * * *"}, "reason": "brief"},
         agent_id=context.agent_id,
         user_id=context.user_id,
+        plan_mode_interactive_available=True,
     )
 
     payload = json.loads(result)
     assert payload["status"] == "needs_plan"
-    # The unified §9.2 contract: plan_id + plan_json + plan_version + plan_hash.
-    assert payload["plan_id"] == str(plan.id)
-    assert payload["plan_version"] == 1
-    assert payload["plan_hash"] == "sha256:deadbeef"
-    assert payload["plan_json"]["title"] == "Daily brief"
-    assert payload["next_action"]
-    # The tool never executed (fail-closed) ...
+    # Eligible → activation signal carried (kernel flips the run into Plan Mode).
+    assert payload["activate_interactive_plan"] is True
+    assert payload["interactive_plan_seed"]["action_kind"] == "create_enabled_trigger"
+    # No static plan materialised, and the tool never executed (fail-closed).
+    assert "plan_id" not in payload
     assert registry.calls == []
-    # ... and the intake was asked to materialise a plan from the tool args.
-    assert intake.calls and intake.calls[0]["action_kind"] == "create_enabled_trigger"
-    assert intake.calls[0]["tool_name"] == "set_trigger"
-    assert intake.calls[0]["arguments"]["name"] == "Daily brief"
-    assert intake.calls[0]["agent_id"] == context.agent_id
 
 
 @pytest.mark.asyncio
-async def test_blocked_tool_without_intake_service_still_returns_needs_plan():
-    """If no intake service is wired (degraded), the gate still fails closed with
-    the bare needs_plan envelope — never a silent execution."""
+async def test_blocked_tool_non_eligible_source_returns_static_needs_plan():
+    """Cut ④ fail-closed edge: a NON-eligible source (no availability flags) gets a
+    STATIC needs_plan block — no activation signal (agent does not plan), no plan
+    materialised, tool stays blocked. No RPC fallback."""
     context = _context()
     registry = _FakeRegistry("SHOULD_NOT_RUN")
     gate = _RecordingGate(_BLOCKED)
-    intake = _RecordingIntakeService(None)  # ensure_awaiting_plan returns nothing
-    service = _make_service(context=context, registry=registry, gate=gate, plan_mode_service=intake)
+    service = _make_service(context=context, registry=registry, gate=gate)
 
     result = await service.execute(
         "set_trigger",
@@ -534,34 +531,9 @@ async def test_blocked_tool_without_intake_service_still_returns_needs_plan():
 
     payload = json.loads(result)
     assert payload["status"] == "needs_plan"
-    assert "plan_id" not in payload  # nothing materialised, but still blocked
-    assert registry.calls == []
-
-
-@pytest.mark.asyncio
-async def test_intake_failure_does_not_leak_or_execute_tool():
-    """An exception while materialising the plan must NOT crash the call nor let
-    the tool run — it falls back to the bare needs_plan block (fail-closed)."""
-    context = _context()
-    registry = _FakeRegistry("SHOULD_NOT_RUN")
-    gate = _RecordingGate(_BLOCKED)
-
-    class _BoomIntake:
-        async def ensure_awaiting_plan(self, **_kwargs):
-            raise RuntimeError("db down")
-
-    service = _make_service(context=context, registry=registry, gate=gate, plan_mode_service=_BoomIntake())
-
-    result = await service.execute(
-        "set_trigger",
-        {"name": "x", "type": "cron", "config": {"expr": "0 9 * * *"}, "reason": "r"},
-        agent_id=context.agent_id,
-        user_id=context.user_id,
-    )
-
-    payload = json.loads(result)
-    assert payload["status"] == "needs_plan"
-    assert registry.calls == []
+    assert "activate_interactive_plan" not in payload  # agent does NOT plan
+    assert "plan_id" not in payload  # nothing materialised
+    assert registry.calls == []  # tool did not execute
 
 
 @pytest.mark.asyncio

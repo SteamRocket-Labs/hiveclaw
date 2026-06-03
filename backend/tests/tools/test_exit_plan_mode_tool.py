@@ -46,10 +46,10 @@ class _PlanService:
             metadata_json=kwargs.get("metadata_json") or {},
         )
 
-    async def generate_plan(self, *, plan_id, fill, use_agent_planner=True):
+    async def generate_plan(self, *, plan_id, fill):
         from app.services import plan_mode_core
 
-        self.generate_calls.append({"plan_id": plan_id, "fill": fill, "use_agent_planner": use_agent_planner})
+        self.generate_calls.append({"plan_id": plan_id, "fill": fill})
         plan_json = {
             **fill,
             "schema": plan_mode_core.PLAN_SCHEMA,
@@ -150,8 +150,8 @@ async def test_exit_plan_mode_creates_needs_plan_payload_from_active_context(mon
 @pytest.mark.asyncio
 async def test_exit_plan_mode_fills_existing_draft_when_plan_id_armed(monkeypatch):
     """A system_plan_run launcher pre-arms Plan Mode with the draft's plan_id;
-    exit_plan_mode must fill THAT draft via generate_plan(use_agent_planner=False)
-    — keeping the id stable — instead of creating a new awaiting plan."""
+    exit_plan_mode must fill THAT draft via generate_plan(plan_id, fill) — keeping
+    the id stable — instead of creating a new awaiting plan."""
     from app.services.plan_mode_runtime_context import reset_interactive_plan_mode, set_interactive_plan_mode
     from app.tools.handlers import plan_mode as handler
 
@@ -193,7 +193,6 @@ async def test_exit_plan_mode_fills_existing_draft_when_plan_id_armed(monkeypatc
     assert len(service.generate_calls) == 1
     gen = service.generate_calls[0]
     assert str(gen["plan_id"]) == armed_plan_id
-    assert gen["use_agent_planner"] is False
     assert gen["fill"]["title"] == "RWA 日报计划"
     assert gen["fill"]["steps"][0]["order"] == 1
 

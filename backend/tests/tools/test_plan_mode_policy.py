@@ -4,9 +4,8 @@ Single source of truth for which tools an agent may call while Plan Mode is
 active. Replaces the drift-prone duplicated allowlist that lived inline in
 tools/service.py (paradigm-convergence doc §6.4).
 
-Iron law ①: this set MUST include exit_plan_mode (the approval exit) and MUST
-NOT be derived from PLANNER_ALLOWED_TOOLS, which omits it — reusing that set
-would silently remove the only way to submit a plan.
+Iron law ①: this set MUST include exit_plan_mode (the approval exit) — it is the
+only way to submit a plan for confirmation, so it can never be dropped.
 """
 
 from __future__ import annotations
@@ -63,12 +62,12 @@ def test_unknown_tool_is_blocked_by_default():
     assert is_plan_mode_tool_allowed("totally_unknown_tool") is False
 
 
-def test_policy_is_not_derived_from_planner_allowlist():
-    # Iron law ①: prove we did not reuse PLANNER_ALLOWED_TOOLS (which lacks the
-    # exit_plan_mode exit). If a future refactor aliases the two, this fails.
-    from app.services.agent_plan_planner import PLANNER_ALLOWED_TOOLS
-
-    assert "exit_plan_mode" not in PLANNER_ALLOWED_TOOLS
+def test_exit_plan_mode_is_always_in_the_readonly_allowlist():
+    # Iron law ①: exit_plan_mode (the approval exit) MUST stay in the read-only
+    # allowlist, otherwise the agent could never submit a plan from Plan Mode.
+    # (The old RPC PLANNER_ALLOWED_TOOLS set that this used to contrast against
+    # was removed in path-unification cut ④; the read-only policy is now the only
+    # plan-mode tool allowlist.)
     assert "exit_plan_mode" in PLAN_MODE_READONLY_TOOLS
 
 

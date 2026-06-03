@@ -58,16 +58,6 @@ def get_plan_mode_service() -> PlanModeService:
     return _service
 
 
-def _system_plan_run_enabled() -> bool:
-    """Path-unification cut ③ gate. When on, the REST entries author plan_json by
-    launching a main-loop Plan Mode run (the agent fills the draft via
-    exit_plan_mode) instead of the isolated RPC planner. Default off: the legacy
-    ``generate_plan`` / ``revise_plan`` behaviour is preserved byte-for-byte."""
-    from app.config import get_settings
-
-    return bool(getattr(get_settings(), "PLAN_MODE_SYSTEM_RUN", False))
-
-
 async def _author_draft_plan(
     service: PlanModeService,
     plan: AgentPlanRequest,
@@ -75,23 +65,21 @@ async def _author_draft_plan(
     fill: dict[str, Any] | None,
     plan_id: uuid.UUID | None = None,
 ) -> AgentPlanRequest:
-    """Fill a freshly created/reset draft ``plan``'s plan_json (cut ③).
+    """Author a freshly created/reset draft ``plan``'s plan_json (cut ③/④).
 
-    Flag-on: launch a system_plan_run so the agent authors the plan in its own
-    main loop and ``exit_plan_mode`` fills THIS draft (stable id); re-load the row
-    to return the authored result. Flag-off: keep the legacy RPC planner via
-    ``generate_plan`` (``fill`` seeds the planner). Fail-closed either way — a
-    plan that fails authoring is returned in its non-confirmable state.
+    Launches a system_plan_run so the agent authors the plan in its own main loop
+    and ``exit_plan_mode`` fills THIS draft (stable id); then re-loads the row to
+    return the authored result. This is the single plan-authoring path — the
+    isolated RPC planner was removed in cut ④. Fail-closed: a plan that fails
+    authoring is returned in its non-confirmable state (the launcher never
+    executes the planned work).
 
     ``plan_id`` defaults to ``plan.id`` but may be passed explicitly (regenerate
-    keys generation on the URL plan id, matching the legacy direct call).
+    keys the re-load on the URL plan id).
     """
-    target_id = plan_id or plan.id
-    if not _system_plan_run_enabled():
-        return await service.generate_plan(plan_id=target_id, fill=fill or {})
-
     from app.services.plan_mode_system_run import launch_system_plan_run
 
+    target_id = plan_id or plan.id
     await launch_system_plan_run(plan, seed_context=fill or None)
     reloaded = await service.get_plan(target_id)
     return reloaded or plan
@@ -432,17 +420,17 @@ async def revise_plan(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Supersede a plan with a new version and regenerate (§8.3)."""
+    """Supersede a plan with a new version and re-author it (§8.3).
+
+    Cut ④: supersede to a fresh draft, then the agent authors the new version in a
+    main-loop Plan Mode run (fills the draft via exit_plan_mode) — the single plan
+    path. The legacy ``revise_plan`` (RPC planner) was removed.
+    """
     await check_agent_access(db, current_user, agent_id)
     service = get_plan_mode_service()
     await _load_plan_for_agent(service, agent_id=agent_id, plan_id=plan_id)
-    if _system_plan_run_enabled():
-        # Cut ③: supersede to a fresh draft, then let the agent author the new
-        # version in a main-loop Plan Mode run (fills the draft via exit_plan_mode).
-        draft = await service.supersede_to_draft(plan_id=plan_id)
-        new_plan = await _author_draft_plan(service, draft, fill=payload.fill)
-    else:
-        new_plan = await service.revise_plan(plan_id=plan_id, fill=payload.fill or {})
+    draft = await service.supersede_to_draft(plan_id=plan_id)
+    new_plan = await _author_draft_plan(service, draft, fill=payload.fill)
     return _plan_out(new_plan)
 
 

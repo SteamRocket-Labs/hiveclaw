@@ -46,11 +46,10 @@ from app.runtime.session import PlanModeState, SessionContext
 logger = logging.getLogger(__name__)
 
 SYSTEM_PLAN_RUN_SOURCE = "system_plan_run"
-#: Generous-but-bounded exploration budget for a system-initiated plan run. Same
-#: order as the unattended RPC fallback (agent_plan_planner used 20); the agent
-#: needs room to inspect read-only context before authoring, but Plan Mode's
-#: read-only policy already prevents side effects, so this is purely a cost cap
-#: (path-unification §12.6).
+#: Generous-but-bounded exploration budget for a system-initiated plan run. The
+#: agent needs room to inspect read-only context before authoring, but Plan
+#: Mode's read-only policy already prevents side effects, so this is purely a
+#: cost cap (path-unification §12.6).
 SYSTEM_PLAN_RUN_MAX_ROUNDS = 20
 
 
@@ -87,9 +86,7 @@ def _build_launcher_user_prompt(plan: AgentPlanRequest, *, seed_context: dict[st
 
 
 async def _resolve_agent_models(agent_id: UUID) -> tuple[LLMModel | None, LLMModel | None, Agent | None]:
-    """Resolve (primary, fallback, agent) tenant-scoped — same shape the RPC
-    planner used, replicated here so the launcher does not depend on the
-    soon-to-be-deleted ``DefaultAgentPlanPlanner`` (cut ④)."""
+    """Resolve (primary, fallback, agent) tenant-scoped for the plan-mode run."""
     async with async_session() as db:
         agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
         agent = agent_result.scalar_one_or_none()

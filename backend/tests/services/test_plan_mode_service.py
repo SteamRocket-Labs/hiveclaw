@@ -21,30 +21,13 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Fake agent-authored planner.
-# ---------------------------------------------------------------------------
-
-
-class _EchoAgentPlanner:
-    """Planner fake that records calls and returns caller seed as agent output."""
-
-    def __init__(self, *, override_plan_json=None):
-        self.calls = []
-        self.override_plan_json = override_plan_json
-
-    async def plan(self, planning_input):
-        from app.services.agent_plan_planner import AgentPlanPlannerResult
-
-        self.calls.append(planning_input)
-        return AgentPlanPlannerResult(
-            plan_json=dict(self.override_plan_json or planning_input.seed_plan or {}),
-            plan_markdown="Agent-authored test plan.",
-            metadata={"planner_model_id": "test-planner"},
-        )
-
-
-# ---------------------------------------------------------------------------
 # Fake async session mirroring the SQLAlchemy AsyncSession surface we use.
+#
+# Path-unification cut ④: the isolated RPC planner (DefaultAgentPlanPlanner) was
+# removed. ``generate_plan`` now lands a caller-supplied structured ``fill`` as
+# the plan_json directly (the agent authors it in main-loop Plan Mode and submits
+# via exit_plan_mode), so there is no planner fake any more — tests pass the fill
+# straight into ``generate_plan``.
 # ---------------------------------------------------------------------------
 
 
@@ -131,16 +114,18 @@ class _PlanSession:
 
 @pytest.fixture()
 def patched_service(monkeypatch, tmp_path):
-    """Return (service, session) with async_session + AGENT_DATA_DIR patched."""
+    """Return (service, session, tmp_path, None) with async_session + AGENT_DATA_DIR
+    patched. The 4th tuple slot is a vestigial ``None`` (it used to be the RPC
+    planner fake, removed in cut ④); kept so existing ``_planner`` unpacks stay
+    valid without churn — no test reads it any more."""
     from app.services import plan_mode_service as mod
 
     session = _PlanSession()
     monkeypatch.setattr(mod, "async_session", lambda: session)
     monkeypatch.setattr(mod, "_agent_data_dir", lambda: tmp_path)
 
-    planner = _EchoAgentPlanner()
-    service = mod.PlanModeService(planner=planner)
-    return service, session, tmp_path, planner
+    service = mod.PlanModeService()
+    return service, session, tmp_path, None
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +178,7 @@ async def test_create_plan_request_rejects_unknown_intent(patched_service):
 
 @pytest.mark.asyncio
 async def test_generate_plan_produces_awaiting_confirmation_with_hash_and_markdown(patched_service):
-    service, session, data_dir, planner = patched_service
+    service, session, data_dir, _ = patched_service
     agent_id = uuid4()
 
     draft = await service.create_plan_request(
@@ -203,6 +188,8 @@ async def test_generate_plan_produces_awaiting_confirmation_with_hash_and_markdo
         intent_type="autonomous_wake",
     )
 
+    # Cut ④: generate_plan lands the caller-supplied fill (the agent authored it
+    # in main-loop Plan Mode) directly as plan_json — no RPC planner.
     updated = await service.generate_plan(
         plan_id=draft.id,
         fill={
@@ -219,14 +206,13 @@ async def test_generate_plan_produces_awaiting_confirmation_with_hash_and_markdo
     assert updated.plan_hash and updated.plan_hash.startswith("sha256:")
     assert updated.plan_json["objective"] == "Produce a useful daily industry brief."
     assert updated.plan_json["wake_policy"]["expr"] == "0 9 * * 1-5"
-    assert updated.metadata_json["author_type"] == "agent"
-    assert updated.metadata_json["planner_prompt_version"] == "agent_plan_v4"
-    assert updated.metadata_json["planner_model_id"] == "test-planner"
+    # Structured-fill landing provenance (single path post-cut ④).
+    assert updated.metadata_json["author_type"] == "workflow"
+    assert updated.metadata_json["planner_prompt_version"] == "structured_fill.v1"
     assert updated.plan_json["required_capabilities"] == ["Web 来源核验"]
-    assert updated.metadata_json["planner_work_ledger"]["schema"] == "agent_work_ledger.v1"
-    assert updated.metadata_json["planner_work_ledger"]["path"].endswith(f"plans/{updated.id}.work_ledger.json")
-    assert planner.calls and planner.calls[0].plan_id == draft.id
-    assert planner.calls[0].seed_plan["objective"] == "Produce a useful daily industry brief."
+    # No RPC planner ran → no planner work-ledger artifact is created.
+    assert "planner_work_ledger" not in updated.metadata_json
+    assert not (data_dir / str(agent_id) / "plans" / f"{updated.id}.work_ledger.json").exists()
 
     # Markdown artifact actually written to disk at the documented path.
     md_path = data_dir / str(agent_id) / "plans" / f"{updated.id}.md"
@@ -241,16 +227,10 @@ async def test_generate_plan_produces_awaiting_confirmation_with_hash_and_markdo
 
     assert updated.plan_hash == compute_plan_hash(updated.plan_json)
 
-    ledger_path = data_dir / str(agent_id) / "plans" / f"{updated.id}.work_ledger.json"
-    assert ledger_path.exists()
-    ledger_text = ledger_path.read_text(encoding="utf-8")
-    assert "agent_work_ledger.v1" in ledger_text
-    assert "Plan Mode planner produced a valid confirmable plan." in ledger_text
-
 
 @pytest.mark.asyncio
 async def test_generate_plan_marks_planning_failed_on_invalid_fill(patched_service):
-    service, session, data_dir, planner = patched_service
+    service, session, data_dir, _ = patched_service
     agent_id = uuid4()
 
     draft = await service.create_plan_request(
@@ -271,7 +251,6 @@ async def test_generate_plan_marks_planning_failed_on_invalid_fill(patched_servi
     # No markdown written for a failed plan.
     assert not (data_dir / str(agent_id) / "plans" / f"{result.id}.md").exists()
     assert result.metadata_json and result.metadata_json.get("planning_errors")
-    assert planner.calls and planner.calls[0].plan_id == draft.id
 
 
 @pytest.mark.asyncio
@@ -281,8 +260,20 @@ async def test_generate_plan_repairs_common_agent_output_shape_before_validation
     session = _PlanSession()
     monkeypatch.setattr(mod, "async_session", lambda: session)
     monkeypatch.setattr(mod, "_agent_data_dir", lambda: tmp_path)
-    planner = _EchoAgentPlanner(
-        override_plan_json={
+    service = mod.PlanModeService()
+    agent_id = uuid4()
+    draft = await service.create_plan_request(
+        agent_id=agent_id,
+        requested_by_user_id=uuid4(),
+        original_request="使用 deepresearch做一个web3的全景报告",
+        intent_type="long_task",
+    )
+
+    # A fill with bare steps (no order) + a non-canonical risk level still
+    # normalises through _apply_generation before validation.
+    result = await service.generate_plan(
+        plan_id=draft.id,
+        fill={
             "title": "Web3 panorama report",
             "objective": "Produce a structured Web3 panorama report.",
             "motivation": "The user asked for Deep Research before execution.",
@@ -295,18 +286,8 @@ async def test_generate_plan_repairs_common_agent_output_shape_before_validation
             "stop_conditions": ["The user rejects the plan."],
             "risk_assessment": {"level": "moderate", "reasons": []},
             "required_capabilities": ["Deep Research v2"],
-        }
+        },
     )
-    service = mod.PlanModeService(planner=planner)
-    agent_id = uuid4()
-    draft = await service.create_plan_request(
-        agent_id=agent_id,
-        requested_by_user_id=uuid4(),
-        original_request="使用 deepresearch做一个web3的全景报告",
-        intent_type="long_task",
-    )
-
-    result = await service.generate_plan(plan_id=draft.id, fill={})
 
     assert result.status == "awaiting_confirmation"
     assert result.plan_hash and result.plan_hash.startswith("sha256:")
@@ -372,10 +353,10 @@ async def test_revise_plan_supersedes_old_and_bumps_version(patched_service):
 
 @pytest.mark.asyncio
 async def test_supersede_to_draft_creates_fresh_draft_without_generating(patched_service):
-    """Cut ③: the launcher path needs a superseded draft WITHOUT plan_json so the
-    agent can author it via exit_plan_mode. supersede_to_draft must not invoke the
-    planner (the legacy revise_plan does that separately)."""
-    service, session, _, planner = patched_service
+    """Cut ③/④: the launcher path needs a superseded draft WITHOUT plan_json so the
+    agent can author it via exit_plan_mode. supersede_to_draft must NOT land any
+    plan_json itself — it only forks the ledger row."""
+    service, session, _, _ = patched_service
     agent_id = uuid4()
 
     draft = await service.create_plan_request(
@@ -393,7 +374,6 @@ async def test_supersede_to_draft_creates_fresh_draft_without_generating(patched
             "stop_conditions": ["s"],
         },
     )
-    planner_calls_before = len(planner.calls)
 
     new_draft = await service.supersede_to_draft(plan_id=v1.id)
 
@@ -405,8 +385,9 @@ async def test_supersede_to_draft_creates_fresh_draft_without_generating(patched
     assert new_draft.plan_version == 2
     assert new_draft.original_request == "原始请求"
     assert new_draft.metadata_json["revised_from_plan_id"] == str(v1.id)
-    # Crucially: no planner run — authoring is the caller's job (launcher or RPC).
-    assert len(planner.calls) == planner_calls_before
+    # No plan_json authored by supersede itself — only carries the prior title.
+    assert "objective" not in (new_draft.plan_json or {})
+    assert "steps" not in (new_draft.plan_json or {})
 
 
 @pytest.mark.asyncio
@@ -592,131 +573,15 @@ async def test_reject_after_confirm_is_blocked(patched_service):
 
 
 # ---------------------------------------------------------------------------
-# ensure_awaiting_plan — intercept-then-create (§9.2). The tool gate / auto-sync
-# paths call this to materialise a confirmable plan from the blocked action's
-# own arguments, idempotently per (agent, intent, signature).
+# ensure_awaiting_plan_from_fill — the single ledger entry for caller/agent-
+# authored structured fills (Deep Research, exit_plan_mode). The RPC intercept-
+# then-create entry (ensure_awaiting_plan) was removed in path-unification cut ④.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_ensure_awaiting_plan_creates_awaiting_plan_from_tool_args(patched_service):
-    service, session, _, planner = patched_service
-    agent_id = uuid4()
-
-    plan = await service.ensure_awaiting_plan(
-        agent_id=agent_id,
-        action_kind="create_enabled_trigger",
-        tool_name="set_trigger",
-        arguments={
-            "name": "Daily brief",
-            "type": "cron",
-            "config": {"expr": "0 9 * * 1-5"},
-            "reason": "Recurring morning brief.",
-        },
-        source="tool_runtime",
-    )
-
-    assert plan.status == "awaiting_confirmation"
-    assert plan.intent_type == "autonomous_wake"
-    assert plan.plan_hash and plan.plan_hash.startswith("sha256:")
-    assert plan.plan_json["title"] == "Daily brief"
-    assert plan.plan_json["wake_policy"]["expr"] == "0 9 * * 1-5"
-    # The intercept signature is stored so a repeat call can dedupe on it.
-    assert plan.metadata_json.get("intercept_signature")
-    assert plan.metadata_json["author_type"] == "agent"
-    assert planner.calls and planner.calls[0].intercepted_tool["tool_name"] == "set_trigger"
-    assert planner.calls[0].intercepted_tool["arguments"]["reason"] == "Recurring morning brief."
-    # requester is NOT the agent's own confirmation: created with no user, so a
-    # later confirm by a real user can never be a self-confirm.
-    assert plan.requested_by_user_id is None
-
-
-@pytest.mark.asyncio
-async def test_ensure_awaiting_plan_uses_agent_planner_output_not_raw_tool_args(monkeypatch, tmp_path):
-    from app.services import plan_mode_service as mod
-
-    session = _PlanSession()
-    monkeypatch.setattr(mod, "async_session", lambda: session)
-    monkeypatch.setattr(mod, "_agent_data_dir", lambda: tmp_path)
-    planner = _EchoAgentPlanner(
-        override_plan_json={
-            "title": "Planner-authored title",
-            "objective": "Planner analyzed the recurring brief scope before proposing execution.",
-            "motivation": "The user wants a durable recurring workflow.",
-            "steps": [{"order": 1, "description": "Clarify source scope and cadence."}],
-            "success_criteria": ["The user can review scope, cost, and stop conditions."],
-            "stop_conditions": ["The user rejects or cancels the plan."],
-            "wake_policy": {"type": "cron", "timezone": "Asia/Shanghai", "expr": "0 9 * * 1-5"},
-            "required_capabilities": ["web_search", "set_trigger"],
-        }
-    )
-    service = mod.PlanModeService(planner=planner)
-
-    plan = await service.ensure_awaiting_plan(
-        agent_id=uuid4(),
-        action_kind="create_enabled_trigger",
-        tool_name="set_trigger",
-        arguments={
-            "name": "Raw trigger name",
-            "type": "cron",
-            "config": {"expr": "0 8 * * *"},
-            "reason": "Raw tool reason.",
-        },
-    )
-
-    assert plan.status == "awaiting_confirmation"
-    assert plan.plan_json["title"] == "Planner-authored title"
-    assert plan.plan_json["objective"].startswith("Planner analyzed")
-    assert plan.plan_json["wake_policy"]["expr"] == "0 9 * * 1-5"
-    assert planner.calls[0].seed_plan["title"] == "Raw trigger name"
-    assert planner.calls[0].intercepted_tool["arguments"]["reason"] == "Raw tool reason."
-
-
-@pytest.mark.asyncio
-async def test_ensure_awaiting_plan_is_idempotent_for_same_signature(patched_service):
-    service, session, _, _planner = patched_service
-    agent_id = uuid4()
-    args = {"name": "Daily brief", "type": "cron", "config": {"expr": "0 9 * * *"}, "reason": "r"}
-
-    first = await service.ensure_awaiting_plan(
-        agent_id=agent_id, action_kind="create_enabled_trigger", tool_name="set_trigger", arguments=args
-    )
-    rows_after_first = len(session.rows)
-    second = await service.ensure_awaiting_plan(
-        agent_id=agent_id,
-        action_kind="create_enabled_trigger",
-        tool_name="set_trigger",
-        arguments={"config": {"expr": "0 9 * * *"}, "type": "cron", "name": "Daily brief", "reason": "r"},
-    )
-
-    assert str(second.id) == str(first.id)  # reused, not a new row
-    assert len(session.rows) == rows_after_first  # no duplicate persisted
-
-
-@pytest.mark.asyncio
-async def test_ensure_awaiting_plan_distinct_signature_creates_new_plan(patched_service):
-    service, session, _, _planner = patched_service
-    agent_id = uuid4()
-
-    first = await service.ensure_awaiting_plan(
-        agent_id=agent_id,
-        action_kind="create_enabled_trigger",
-        tool_name="set_trigger",
-        arguments={"name": "A", "type": "cron", "config": {"expr": "0 9 * * *"}},
-    )
-    second = await service.ensure_awaiting_plan(
-        agent_id=agent_id,
-        action_kind="create_enabled_trigger",
-        tool_name="set_trigger",
-        arguments={"name": "B", "type": "cron", "config": {"expr": "0 10 * * *"}},
-    )
-
-    assert str(second.id) != str(first.id)
-
-
-@pytest.mark.asyncio
 async def test_ensure_awaiting_plan_from_fill_creates_and_dedupes_custom_long_task_plan(patched_service):
-    service, session, _, planner = patched_service
+    service, session, _, _ = patched_service
     agent_id = uuid4()
     signature = "deep-research-signature"
     fill = {
@@ -785,7 +650,6 @@ async def test_ensure_awaiting_plan_from_fill_creates_and_dedupes_custom_long_ta
     assert first.metadata_json["deep_research_plan"] is True
     assert first.metadata_json["author_type"] == "workflow"
     assert first.metadata_json["planner_prompt_version"] == "structured_fill.v1"
-    assert planner.calls == []
     assert str(second.id) == str(first.id)
     assert len(session.rows) == rows_after_first
 
@@ -797,8 +661,7 @@ async def test_ensure_awaiting_plan_from_fill_rejects_internal_tool_script_plan(
     session = _PlanSession()
     monkeypatch.setattr(mod, "async_session", lambda: session)
     monkeypatch.setattr(mod, "_agent_data_dir", lambda: tmp_path)
-    poison_planner = _EchoAgentPlanner()
-    service = mod.PlanModeService(planner=poison_planner)
+    service = mod.PlanModeService()
     fill = {
         "title": "Bad internal script",
         "objective": "Call load_skill and deep_research_start with plan_confirmed=false.",
@@ -849,7 +712,6 @@ async def test_ensure_awaiting_plan_from_fill_rejects_internal_tool_script_plan(
 
     assert plan.status == "planning_failed"
     assert plan.plan_hash is None
-    assert poison_planner.calls == []
     errors = "\n".join(plan.metadata_json["planning_errors"])
     assert "load_skill" in errors
     assert "deep_research_* tool call" in errors

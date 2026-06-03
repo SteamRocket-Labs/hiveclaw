@@ -45,19 +45,13 @@ from app.models.plan_request import AgentPlanRequest
 from app.models.trigger import AgentTrigger
 
 
-class _EchoAgentPlanner:
-    async def plan(self, planning_input):
-        from app.services.agent_plan_planner import AgentPlanPlannerResult
-
-        return AgentPlanPlannerResult(
-            plan_json=dict(planning_input.seed_plan or {}),
-            plan_markdown="Agent-authored E2E test plan.",
-            metadata={"planner_model_id": "test-planner"},
-        )
-
-
 # ---------------------------------------------------------------------------
 # A single in-memory async session backing every real component in the loop.
+#
+# Path-unification cut ④: there is no RPC planner — ``generate_plan`` lands the
+# caller-supplied structured fill (here ``_GOOD_FILL``) directly as the plan_json
+# (the agent authors it in main-loop Plan Mode), so the loop drives create ->
+# generate(fill) -> confirm -> handoff with no planner fake.
 # ---------------------------------------------------------------------------
 
 
@@ -233,7 +227,7 @@ def e2e(monkeypatch, tmp_path):
     monkeypatch.setattr(handoff_mod, "async_session", lambda: session)
     monkeypatch.setattr(gate_mod, "async_session", lambda: session)
 
-    service = service_mod.PlanModeService(planner=_EchoAgentPlanner())
+    service = service_mod.PlanModeService()
     register_plan_mode_handoffs(service)
     return service, session, agent
 

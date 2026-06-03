@@ -603,24 +603,23 @@ def test_redact_args_drops_handshake_keys_and_masks_secrets():
     assert out == {"cron": "0 9 * * *", "api_key": "[redacted]", "webhook_token": "[redacted]"}
 
 
-def test_interactive_signal_noop_when_flag_off(monkeypatch):
-    import app.config
+def test_interactive_signal_noop_when_disabled():
+    # Cut ④: the signal is driven by the gate's defer decision (``enabled``), not
+    # a flag. A non-eligible source passes enabled=False → static needs_plan.
     from app.tools.service import _maybe_attach_interactive_signal
 
-    monkeypatch.setattr(app.config, "get_settings", lambda: SimpleNamespace(PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE=False))
     payload = {"status": "needs_plan", "plan_id": "p1"}
     out = _maybe_attach_interactive_signal(
-        payload, action_kind="create_enabled_trigger", tool_name="set_trigger", arguments={}
+        payload, action_kind="create_enabled_trigger", tool_name="set_trigger", arguments={}, enabled=False
     )
     assert out == payload
     assert "activate_interactive_plan" not in out
 
 
-def test_interactive_signal_tags_envelope_when_flag_on(monkeypatch):
-    import app.config
+def test_interactive_signal_tags_envelope_when_enabled():
+    # An eligible source defers (enabled=True, the default) → activation signal.
     from app.tools.service import _maybe_attach_interactive_signal
 
-    monkeypatch.setattr(app.config, "get_settings", lambda: SimpleNamespace(PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE=True))
     payload = {"status": "needs_plan", "plan_id": "p1", "plan_version": 1, "plan_hash": "h"}
     out = _maybe_attach_interactive_signal(
         payload,
@@ -639,13 +638,13 @@ def test_interactive_signal_tags_envelope_when_flag_on(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_live_intercept_signal_defers_rpc_plan_materialisation_when_interactive_flag_on(monkeypatch):
-    import app.config
+async def test_live_intercept_signal_defers_plan_authoring_for_eligible_live_chat():
+    """Cut ④: a live-chat (eligible) source whose gated tool is blocked defers plan
+    authoring to the agent's own main-loop Plan Mode — activation signal attached,
+    no static plan materialised, no execution. Unconditional (no flag)."""
     from app.tools.governance import ToolGovernanceContext
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
-
-    monkeypatch.setattr(app.config, "get_settings", lambda: SimpleNamespace(PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE=True))
 
     agent_id = uuid4()
     user_id = uuid4()
@@ -728,22 +727,13 @@ async def test_live_intercept_signal_defers_rpc_plan_materialisation_when_intera
 
 
 @pytest.mark.asyncio
-async def test_unattended_intercept_defers_rpc_plan_materialisation_when_unattended_flag_on(monkeypatch):
-    """Path-unification cut ②: an unattended run (trigger/heartbeat) whose gated
-    tool is blocked must NOT materialise an RPC plan when PLAN_MODE_UNATTENDED_RUN
-    is on — it defers to the agent's own main-loop Plan Mode (activation signal
-    attached, no ensure_awaiting_plan call). Interactive flag is OFF here, proving
-    the unattended flag alone drives the defer."""
-    import app.config
+async def test_unattended_intercept_defers_plan_authoring_for_eligible_unattended_run():
+    """Cut ②/④: an unattended run (trigger/heartbeat, eligible) whose gated tool is
+    blocked defers to the agent's own main-loop Plan Mode (activation signal
+    attached, no static plan materialised). Unconditional now (no flag)."""
     from app.tools.governance import ToolGovernanceContext
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
-
-    monkeypatch.setattr(
-        app.config,
-        "get_settings",
-        lambda: SimpleNamespace(PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE=False, PLAN_MODE_UNATTENDED_RUN=True),
-    )
 
     agent_id = uuid4()
     user_id = uuid4()
@@ -822,20 +812,15 @@ async def test_unattended_intercept_defers_rpc_plan_materialisation_when_unatten
 
 
 @pytest.mark.asyncio
-async def test_unattended_intercept_falls_back_to_rpc_when_unattended_flag_off(monkeypatch):
-    """Default off (staged rollout, path-unification §9): an unattended intercept
-    with the flag off keeps the legacy RPC planner — ensure_awaiting_plan IS
-    called and the materialised plan_id is embedded, with NO activation signal."""
-    import app.config
+async def test_non_eligible_source_intercept_returns_static_needs_plan_fail_closed():
+    """Cut ④ critical edge: a NON-eligible source (neither live chat nor
+    trigger/heartbeat — e.g. delegation source="agent" / runtime) whose gated
+    tool is blocked gets a STATIC needs_plan block: no activation signal (the
+    agent does not plan) and no plan materialised, while the tool stays blocked
+    (it does not execute). Fail-closed — there is no RPC fallback any more."""
     from app.tools.governance import ToolGovernanceContext
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
-
-    monkeypatch.setattr(
-        app.config,
-        "get_settings",
-        lambda: SimpleNamespace(PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE=False, PLAN_MODE_UNATTENDED_RUN=False),
-    )
 
     agent_id = uuid4()
     user_id = uuid4()
@@ -865,18 +850,9 @@ async def test_unattended_intercept_falls_back_to_rpc_when_unattended_flag_off(m
         async def __aexit__(self, *_args):
             return False
 
-    class _RpcPlanService:
-        def __init__(self):
-            self.calls = 0
-
-        async def ensure_awaiting_plan(self, **_kwargs):
-            self.calls += 1
-            return SimpleNamespace(id="plan-rpc-1", plan_version=1, plan_hash="h", plan_json={"title": "t"})
-
     async def fake_run_governance(_context, _deps, *, event_callback=None):
         return None
 
-    plan_service = _RpcPlanService()
     registry = _FakeRegistry("SHOULD_NOT_RUN")
     service = ToolRuntimeService(
         runtime_resolver=_FakeRuntimeResolver(context),
@@ -889,20 +865,20 @@ async def test_unattended_intercept_falls_back_to_rpc_when_unattended_flag_off(m
         activity_logger=None,
         plan_mode_gate=_PlanGate(),
         plan_mode_session_factory=_SessionFactory(),
-        plan_mode_service=plan_service,
     )
 
+    # Neither availability flag set → non-eligible source.
     result = await service.execute(
         "set_trigger",
         {"name": "Daily brief", "type": "cron", "config": {"expr": "0 9 * * *"}},
         agent_id=agent_id,
         user_id=user_id,
         plan_mode_interactive_available=False,
-        plan_mode_unattended_available=True,
+        plan_mode_unattended_available=False,
     )
     payload = json.loads(result)
 
-    assert payload["status"] == "needs_plan"
-    assert "activate_interactive_plan" not in payload  # no signal — RPC fallback
-    assert payload["plan_id"] == "plan-rpc-1"
-    assert plan_service.calls == 1
+    assert payload["status"] == "needs_plan"  # blocked
+    assert "activate_interactive_plan" not in payload  # agent does NOT plan
+    assert "plan_id" not in payload  # nothing materialised — no RPC fallback
+    assert registry.calls == []  # tool did NOT execute (fail-closed)

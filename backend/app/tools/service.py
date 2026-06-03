@@ -85,34 +85,22 @@ def _redact_args(arguments: Any) -> dict[str, Any]:
     return redacted
 
 
-def _tool_intercept_interactive_enabled() -> bool:
-    from app.config import get_settings
-
-    return bool(get_settings().PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE)
-
-
-def _tool_intercept_unattended_enabled() -> bool:
-    from app.config import get_settings
-
-    return bool(get_settings().PLAN_MODE_UNATTENDED_RUN)
-
-
 def _maybe_attach_interactive_signal(
-    payload: dict, *, action_kind: str, tool_name: str, arguments: dict, enabled: bool | None = None
+    payload: dict, *, action_kind: str, tool_name: str, arguments: dict, enabled: bool = True
 ) -> dict:
-    """When Plan Mode tool-intercept activation is enabled, tag a ``needs_plan``
-    envelope with ``activate_interactive_plan`` + an ``interactive_plan_seed``.
-    The kernel (which holds the session_context) decides the live-chat /
+    """Tag a ``needs_plan`` envelope with ``activate_interactive_plan`` + an
+    ``interactive_plan_seed`` so the kernel can flip the run into main-loop Plan
+    Mode. The kernel (which holds the session_context) decides the live-chat /
     unattended boundary and whether to actually activate; here we only carry the
     flag + seed (the seed ``source`` stays ``"tool_intercept"`` — the kernel sets
     the live vs unattended ``PlanModeState.source`` from the session_context).
 
-    ``enabled`` lets the caller pass the already-computed defer decision (live
-    OR unattended). When ``None`` we fall back to the live interactive flag so
-    existing callers keep their behaviour. Disabled → envelope unchanged.
+    ``enabled`` carries the gate's defer decision (the source is eligible for
+    main-loop Plan Mode). A non-eligible source passes ``enabled=False`` so the
+    envelope is left as a static ``needs_plan`` block (fail-closed — the agent
+    neither plans nor executes). Path-unification cut ④ removed the staged-rollout
+    flags, so a deferred source always activates.
     """
-    if enabled is None:
-        enabled = _tool_intercept_interactive_enabled()
     if not enabled:
         return payload
     enriched = dict(payload)
@@ -188,11 +176,11 @@ class ToolRuntimeService:
     # fakes (the gate is otherwise the shared singleton).
     plan_mode_gate: PlanModeGate | None = None
     plan_mode_session_factory: Callable[[], Any] | None = None
-    # Plan Mode intake service (§9.2 "intercept-then-create"). When a tagged tool
-    # is blocked with no confirmed plan, the gate seeds a confirmable awaiting
-    # PlanRequest from the tool's own args via ``ensure_awaiting_plan`` and embeds
-    # plan_id/json/version/hash into the needs_plan payload. DI seam for tests;
-    # otherwise the shared singleton (the one handoffs register on).
+    # Plan Mode service handle (the shared singleton handoffs register on). DI
+    # seam kept for tests + future intake needs; the RPC intercept-then-create
+    # path that consumed it was removed in path-unification cut ④ (a blocked gated
+    # tool now flips an eligible source into main-loop Plan Mode, or returns a
+    # static needs_plan block for a non-eligible source).
     plan_mode_service: Any | None = None
 
     def __post_init__(self) -> None:
@@ -612,85 +600,23 @@ class ToolRuntimeService:
             return None
 
         payload = dict(decision.needs_plan_payload or {})
-        # Only materialise a fresh plan for a genuine "no confirmed plan" block.
-        # A failed *handoff* (the caller claimed a plan that didn't validate) must
-        # not spawn a new plan — surface the gate's reason as-is.
+        # Only flip into Plan Mode for a genuine "no confirmed plan" block. A
+        # failed *handoff* (the caller claimed a plan that didn't validate) must
+        # surface the gate's reason as-is, never re-enter planning.
         if confirmed_plan_id is None:
-            # Defer plan authoring to the agent's own kernel loop (main-loop Plan
-            # Mode) when EITHER the live-chat interactive path OR the unattended
-            # trigger/heartbeat path is eligible + enabled. Otherwise fall back to
-            # the isolated RPC planner (_attach_intercepted_plan). The two paths
-            # share one Plan Mode runtime; they differ only in confirmation timing.
-            defer_to_interactive = bool(plan_mode_interactive_available and _tool_intercept_interactive_enabled())
-            defer_to_unattended = bool(plan_mode_unattended_available and _tool_intercept_unattended_enabled())
-            defer = defer_to_interactive or defer_to_unattended
-            if not defer:
-                payload = await self._attach_intercepted_plan(
-                    payload,
-                    agent_id=agent_id,
-                    action_kind=action_kind,
-                    tool_name=tool_name,
-                    arguments=arguments,
-                )
-            # Tag the envelope so the kernel can flip the run into Plan Mode. The
-            # live-chat / unattended boundary + activation decision belong to the
-            # kernel (it holds the session_context); the gate only carries the
-            # flag + seed. ``enabled`` mirrors the defer decision so the seed is
-            # attached for both paths. Not deferring → envelope unchanged.
+            # Path-unification cut ④: a blocked gated tool defers plan authoring to
+            # the agent's own kernel loop (main-loop Plan Mode) whenever the source
+            # is eligible — live chat OR unattended trigger/heartbeat. There is no
+            # longer an isolated RPC fallback: a NON-eligible source (delegation /
+            # runtime / already-active system_plan_run) leaves the envelope as a
+            # static needs_plan block, so the agent neither plans nor executes the
+            # blocked action (fail-closed). The kernel owns the live-vs-unattended
+            # boundary + activation; the gate only carries the flag + seed.
+            defer = bool(plan_mode_interactive_available or plan_mode_unattended_available)
             payload = _maybe_attach_interactive_signal(
                 payload, action_kind=action_kind, tool_name=tool_name, arguments=arguments, enabled=defer
             )
         return _json.dumps(payload, ensure_ascii=False, default=str)
-
-    async def _attach_intercepted_plan(
-        self,
-        payload: dict,
-        *,
-        agent_id: uuid.UUID,
-        action_kind: str,
-        tool_name: str,
-        arguments: dict,
-    ) -> dict:
-        """Seed an awaiting plan and merge its identity into ``payload`` (§9.2).
-
-        Fail-closed by construction: any error materialising the plan is logged
-        and swallowed, returning the bare ``needs_plan`` envelope unchanged. The
-        tool is *already* blocked at this point — a plan-creation failure must
-        never downgrade that block into an execution.
-        """
-        if self.plan_mode_service is None:
-            return payload
-
-        # Strip the confirmation-handshake keys before mirroring args into the
-        # plan: they are gate plumbing, not part of the planned action.
-        action_args = {
-            k: v
-            for k, v in arguments.items()
-            if k not in ("confirmed_plan_id", "confirmed_plan_version", "confirmed_plan_hash")
-        }
-        try:
-            plan = await self.plan_mode_service.ensure_awaiting_plan(
-                agent_id=agent_id,
-                action_kind=action_kind,
-                tool_name=tool_name,
-                arguments=action_args,
-                source="tool_runtime",
-            )
-        except Exception as exc:  # noqa: BLE001 — logged, then fail-closed to the bare block
-            logging.getLogger(__name__).warning("[ToolService] plan intercept failed for %s: %s", tool_name, exc)
-            return payload
-
-        if plan is None:
-            return payload
-
-        merged = dict(payload)
-        merged["plan_id"] = str(plan.id)
-        merged["plan_version"] = plan.plan_version
-        if plan.plan_hash:
-            merged["plan_hash"] = plan.plan_hash
-        if plan.plan_json:
-            merged["plan_json"] = plan.plan_json
-        return merged
 
     async def _preflight_tool_execution(
         self,

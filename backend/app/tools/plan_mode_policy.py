@@ -5,10 +5,9 @@ active. Referenced by the interactive read-only gate (``tools/service.py``) so
 the allowlist no longer drifts as a duplicated inline set (paradigm-convergence
 doc §6.4).
 
-Iron law ①: :data:`PLAN_MODE_READONLY_TOOLS` includes ``exit_plan_mode`` (the
-approval exit). Do NOT derive this set from ``PLANNER_ALLOWED_TOOLS`` — that set
-omits ``exit_plan_mode``, and reusing it would remove the only way to submit a
-plan for confirmation.
+Iron law ①: :data:`PLAN_MODE_READONLY_TOOLS` MUST include ``exit_plan_mode``
+(the approval exit) — it is the only way for an agent to submit a plan for
+confirmation, so it can never be dropped from the allowlist.
 """
 
 from __future__ import annotations

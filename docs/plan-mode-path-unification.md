@@ -233,7 +233,7 @@ prompt(`_planner_system_prompt`)、独立工具集(`PLANNER_ALLOWED_TOOLS`)、�
 | ① A 拆 chat/Feishu regex auto-sync 代理 | ✅ 已实装 | commit `2eee9e8`(删 405 行;web_chat 无旁路) |
 | ② B 无人值守 plan run | ✅ 已实装 | 见下 §11.1 |
 | ③ C REST/supersede + Feishu classification | ✅ 已实装 | 见下 §11.2 |
-| ④ D 删 `DefaultAgentPlanPlanner` | ⬜ 待做 | — |
+| ④ D 删 `DefaultAgentPlanPlanner` + 移除全部 flag(终态:plan mode/launcher 唯一路径) | ✅ 已实装 | 见下 §11.3 |
 
 ### 11.1 切口② 实装记录
 
@@ -340,6 +340,61 @@ classification)通过**启动一个 system_plan_run**(预激活 Plan Mode + 带 
 fallback 含义可随之收敛。**grep 现状**:flag-on 路径下 REST/Feishu 已不调 RPC;`DefaultAgentPlanPlanner` 仅
 剩 `generate_plan(use_agent_planner=True)` 的 flag-off 回退消费者(切口④ 一并删)。
 
+### 11.3 切口④ 实装记录(删 RPC + 移除全部 flag → plan mode/launcher 唯一路径)
+
+**用户拍板(方案 B,终态)**:删 RPC + 移除所有灰度 flag,plan mode/launcher 成为生产**唯一**规划路径
+(详见 §12.7)。这是彻底收口,符合硬约束"绝不能有两个 plan 路径"。
+
+**删除**:
+
+- `app/services/agent_plan_planner.py` **整个文件删除**(`DefaultAgentPlanPlanner` / `PLANNER_ALLOWED_TOOLS`
+  / `PLANNER_EXCLUDED_TOOLS` / `PLANNER_PROMPT_VERSION` / `_planner_system_prompt` / `_build_planner_user_prompt`
+  / `_coerce_planner_result` / `AgentPlanPlannerInput` / `AgentPlanPlannerResult` / `PlanPlanningError`)——grep 确认
+  零生产引用后删整文件。
+- `plan_mode_service.py`:删 `_get_planner` / `_run_planner` / `ensure_awaiting_plan`(intercept-then-create,零
+  生产消费者)/ `_mark_generation_failed_by_id`(随 RPC 失败分支死)/ 构造器 `planner=` 参数 + `_planner` 字段 /
+  `agent_work_ledger` import(随 RPC ledger 段死)。`generate_plan` **删 `use_agent_planner` 参数 + `=True` 分支**
+  (含 planner_work_ledger 初始化/进度段),退化为**纯 fill 落地**(原 `=False` 行为):validate→hash→markdown→awaiting。
+  `_planner_prompt_version()` 改返回常量 `"structured_fill.v1"`(不再 import 已删模块),保 `_apply_generation` 逐字节不动。
+- `config.py`:**移除三 flag** `PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE` / `PLAN_MODE_UNATTENDED_RUN` / `PLAN_MODE_SYSTEM_RUN`。
+- `tools/service.py`:删 `_tool_intercept_interactive_enabled` / `_tool_intercept_unattended_enabled` / `_attach_intercepted_plan`
+  (RPC 回退,无条件 defer 后死);defer 改为 `defer = bool(plan_mode_interactive_available or plan_mode_unattended_available)`
+  (去 flag 的 and);`_maybe_attach_interactive_signal` 去 flag 检查、`enabled` 参数默认 True(由 gate defer 决策驱动)。
+  `plan_mode_interactive_available` / `plan_mode_unattended_available` 参数**保留**(仍判 eligible)。`plan_mode_service` DI
+  字段保留(测试构造 + 未来 intake 用,注释更新)。
+- `kernel/engine.py` `_maybe_activate_interactive_plan_from_tool_result`:删 flag 检查 → `live = _is_live_interactive_chat(sc)`
+  / `unattended = is_unattended_plan_eligible(sc)`**无条件激活**(只看 eligible);source label 不变。
+- `api/plans.py`:删 `_system_plan_run_enabled` + flag 分支;`_author_draft_plan` / revise **无条件**走 launcher;删 flag-off
+  回退(`generate_plan True` / `revise_plan`)。`api/feishu.py`:删 flag 分支,classification **无条件**走 launcher。
+
+**保留(非 RPC,合法复用)**:`plan_mode_service.revise_plan`(`supersede_to_draft` + `generate_plan` 组合,REST 改内联
+launcher 后无业务调用但仍是合法 ledger API)、`tool_args_to_plan_fill` / `action_kind_to_intent_signature`(pure core,
+Feishu launcher 仍用 `action_kind_to_intent_signature` 派生 intent)。
+
+**`ensure_awaiting_plan` 命运**:**删除**。grep 证实切口④ 后零生产消费者(原消费者:`_attach_intercepted_plan` 已删、
+Feishu flag-off 分支已删)。其内部依赖 `generate_plan(use_agent_planner=True)` 的 RPC 路径,随参数删除而失效;`_find_awaiting_by_signature`
+**保留**(`ensure_awaiting_plan_from_fill` 仍用)。
+
+**非 eligible source 静态降级(§12.7 / 关键 fail-closed edge)**:delegation(`source="agent"`)/ runtime / 已 active 的
+system_plan_run 的 gated tool 被拦截 → `defer=False`(两 available 均假)→ 不挂 activation signal → payload **保持静态 needs_plan**
+→ agent **不规划、不执行被拦截动作**(fail-closed)。已 active 的 system_plan_run 不被 `engine:1006` short-circuit 二次激活。
+新增测试 `test_non_eligible_source_intercept_returns_static_needs_plan_fail_closed`(service)+ `test_blocked_tool_non_eligible_source_returns_static_needs_plan`(gate)逐条验证:`status==needs_plan` 且 `activate_interactive_plan` 不在 payload、
+`plan_id` 不在 payload、`registry.calls==[]`(工具未执行)。
+
+**治理不变量(逐字节未动)**:`_apply_generation` / `compute_plan_hash` / `validate_plan_json` / `PlanModeGate` /
+`validate_confirmation` / 禁自我确认;多租户 scope + RLS(launcher 经 `invoke_agent` 标准路径);切口②③ 的 launcher /
+`exit_plan_mode` 双态 / `is_interactive_plan_eligible` / `is_unattended_plan_eligible` 不动。
+
+**测试收口**:删 `tests/services/test_agent_plan_planner.py`(整文件,模块已删);删 RPC-intercept-then-create 测试
+(`test_ensure_awaiting_plan_*` 4 个,方法已删)+ flag-off 回退测试(`test_unattended_intercept_falls_back_to_rpc...`、
+`test_activation_noop_when_flag_off/_unattended_flag_off`);"flag off 回退 RPC" 语义**改写**为"无条件走 plan mode/launcher"或
+"非 eligible → 静态 needs_plan";`_EchoAgentPlanner` 删除,`generate_plan` 测试改直接传 fill;flag-patch 全清。新增非 eligible
+fail-closed 测试。**全量回归:3375 passed / 7 skipped / 0 failed**(切口③ 时为 3303 passed);改动文件 ruff format + check 全绿。
+
+**grep 验收**:`DefaultAgentPlanPlanner` / `use_agent_planner` / `PLAN_MODE_UNATTENDED_RUN` / `PLAN_MODE_SYSTEM_RUN` /
+`PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE` / `_attach_intercepted_plan` / `_run_planner` / `.ensure_awaiting_plan` 在 `app/`
+**零代码引用**(仅 `plan_mode_service.py` 一条历史注释提及 `DefaultAgentPlanPlanner` 说明其被删)。
+
 ---
 
 ## 12. 切口③/④ 实现设计(launcher 收口 RPC planner)
@@ -398,6 +453,27 @@ fallback 含义可随之收敛。**grep 现状**:flag-on 路径下 REST/Feishu �
 
 - 治理:`plan_hash`/`validate_confirmation`/`PlanModeGate`/fail-closed 不动;多租户 scope + RLS。
 - 成本:每次 REST/Feishu 规划启动一个完整 agent run(比 RPC 一次性更贵)——单一范式的代价(§5.6),
-  用 `max_tool_rounds` 上限 + flag 灰度(复用切口② 模式)控。
+  用 `max_tool_rounds` 上限控(切口④ 后无 flag 灰度;launcher 默认 `SYSTEM_PLAN_RUN_MAX_ROUNDS=20`)。
 - subtle:launcher run 的 `source="system_plan_run"` 已 active,不会被
-  `_maybe_activate_interactive_plan_from_tool_result` 二次激活(`engine:996` short-circuit)。
+  `_maybe_activate_interactive_plan_from_tool_result` 二次激活(`engine:1006` short-circuit)。
+
+### 12.7 用户拍板:方案 B(删 RPC + 移除 flag + plan mode 唯一)+ 非 eligible 静态降级
+
+> **2026-06-03 用户拍板(切口④ 终态)**:删 RPC planner + 移除所有灰度 flag(`PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE`
+> / `PLAN_MODE_UNATTENDED_RUN` / `PLAN_MODE_SYSTEM_RUN`),让 **plan mode / system_plan_run launcher 成为生产唯一规划路径**。
+> 不再保留任何"flag off 回退 RPC"的灰度后门——这是彻底收口,直接兑现硬约束"**绝不能有两个 plan 路径**"。
+
+收敛后**唯一**路径(无分叉、无 flag):
+
+| 触发场景 | 激活方式 | source |
+|---|---|---|
+| live chat(eligible) tool-intercept | run **内**被拦截 → 主循环 Plan Mode(无条件) | `tool_intercept` |
+| 无人值守 trigger/heartbeat(eligible) tool-intercept | run **内**被拦截 → 主循环 Plan Mode(无条件) | `tool_intercept_unattended` |
+| REST create/regenerate/revise · Feishu classification(无 run) | launcher run **前**预激活 + draft plan_id | `system_plan_run` |
+| **非 eligible**(delegation `agent` / runtime / 已 active run) | **不激活** → 静态 needs_plan | —(fail-closed) |
+
+**非 eligible source 静态降级(关键安全语义)**:删 `_attach_intercepted_plan`(RPC 回退)后,`_plan_mode_gate_block` 对
+`confirmed_plan_id is None` 的拦截只在 `defer`(eligible)时挂 activation signal;**非 eligible → `defer=False` → payload 原样
+是静态 `needs_plan` 块**。agent 收到 needs_plan 既不进 Plan Mode 规划、也不执行被拦截动作 → **fail-closed**。这是删 RPC 后非
+eligible source 的正确终态(而非"无路可走报错"):工具被治理硬门挡住,需要 confirmed plan 才能跑;无人为其规划时它就停在 blocked。
+已 active 的 system_plan_run 自身被 `engine:1006` short-circuit 不二次激活,不变。

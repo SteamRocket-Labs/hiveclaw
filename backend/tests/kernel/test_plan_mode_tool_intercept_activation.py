@@ -1,12 +1,17 @@
-"""Phase 5 contract: tool-intercept → interactive Plan Mode activation (kernel).
+"""Phase 5 contract: tool-intercept → main-loop Plan Mode activation (kernel).
 
-When a live web-chat tool call is blocked by the plan gate and the result
-carries an ``activate_interactive_plan`` signal, the kernel flips the session
-into interactive Plan Mode IN THE SAME LOOP: it writes typed state + the
-metadata mirror AND arms the ContextVar, so the next round gets a reminder AND
-subsequent tool calls hit the read-only gate (the two independent state sources
-must move together — Phase 1 iron law ②). Gated behind
-``PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE`` (default off).
+When a tool call is blocked by the plan gate and the result carries an
+``activate_interactive_plan`` signal, the kernel flips the session into Plan
+Mode IN THE SAME LOOP: it writes typed state + the metadata mirror AND arms the
+ContextVar, so the next round gets a reminder AND subsequent tool calls hit the
+read-only gate (the two independent state sources must move together — Phase 1
+iron law ②).
+
+Path-unification cut ④ made activation UNCONDITIONAL for eligible sources (the
+staged-rollout flags were removed): live chat → source ``"tool_intercept"``;
+unattended trigger/heartbeat → source ``"tool_intercept_unattended"``. A
+non-eligible source (delegation / runtime / already-active run) does not
+activate (its blocked gated tool returns a static needs_plan block — fail-closed).
 
 See docs/plan-mode-tool-intercept-activation.md.
 """
@@ -78,56 +83,31 @@ def _make_request(session_context, content="每天给我发 RWA 日报"):
     )
 
 
-def _patch_flag(monkeypatch, value: bool = False, *, unattended: bool = False):
-    """Patch both Plan Mode tool-intercept flags. ``value`` is the live-chat
-    interactive flag (positional for back-compat); ``unattended`` gates the
-    trigger/heartbeat main-loop Plan Mode path (path-unification cut ②)."""
-    import app.config
-
-    monkeypatch.setattr(
-        app.config,
-        "get_settings",
-        lambda: SimpleNamespace(
-            PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE=value,
-            PLAN_MODE_UNATTENDED_RUN=unattended,
-        ),
-    )
-
-
-def test_activation_noop_when_flag_off(monkeypatch):
-    _patch_flag(monkeypatch, False)
-    sc = SessionContext(source="web", channel="web")
+def test_activation_noop_for_non_eligible_source():
+    # Cut ④: activation is unconditional for ELIGIBLE sources, but a non-eligible
+    # source (delegation source="agent" / runtime) still must NOT flip into Plan
+    # Mode — its blocked gated tool returns a static needs_plan block instead.
+    sc = SessionContext(source="agent", channel=None)
     token = _maybe_activate_interactive_plan_from_tool_result(_make_request(sc), _signal())
     assert token is None
     assert sc.plan_mode.active is False
 
 
-def test_activation_noop_for_non_live_chat(monkeypatch):
-    _patch_flag(monkeypatch, True)
-    sc = SessionContext(source="trigger", channel=None)
-    token = _maybe_activate_interactive_plan_from_tool_result(_make_request(sc), _signal())
-    assert token is None
-    assert sc.plan_mode.active is False
-
-
-def test_activation_noop_without_signal(monkeypatch):
-    _patch_flag(monkeypatch, True)
+def test_activation_noop_without_signal():
     sc = SessionContext(source="web", channel="web")
     token = _maybe_activate_interactive_plan_from_tool_result(_make_request(sc), json.dumps({"status": "needs_plan"}))
     assert token is None
     assert sc.plan_mode.active is False
 
 
-def test_activation_noop_when_already_in_plan_mode(monkeypatch):
-    _patch_flag(monkeypatch, True)
+def test_activation_noop_when_already_in_plan_mode():
     sc = SessionContext(source="web", channel="web")
     sc.plan_mode = PlanModeState(active=True, source="web_chat")
     token = _maybe_activate_interactive_plan_from_tool_result(_make_request(sc), _signal())
     assert token is None  # do not re-activate / clobber
 
 
-def test_activation_writes_typed_state_mirror_and_arms_contextvar(monkeypatch):
-    _patch_flag(monkeypatch, True)
+def test_activation_writes_typed_state_mirror_and_arms_contextvar():
     from app.services.plan_mode_runtime_context import (
         interactive_plan_mode_active,
         reset_interactive_plan_mode,
@@ -153,8 +133,7 @@ def test_activation_writes_typed_state_mirror_and_arms_contextvar(monkeypatch):
             reset_interactive_plan_mode(token)
 
 
-def test_activation_falls_back_to_latest_user_message_for_original_request(monkeypatch):
-    _patch_flag(monkeypatch, True)
+def test_activation_falls_back_to_latest_user_message_for_original_request():
     from app.services.plan_mode_runtime_context import reset_interactive_plan_mode
 
     sc = SessionContext(source="web", channel="web")
@@ -174,14 +153,14 @@ def test_activation_falls_back_to_latest_user_message_for_original_request(monke
             reset_interactive_plan_mode(token)
 
 
-# ── unattended (trigger/heartbeat) activation — path-unification §5.3 / cut ② ──
+# ── unattended (trigger/heartbeat) activation — path-unification §5.3 / cut ②, ──
+# ── unconditional for eligible sources since cut ④ ──
 
 
-def test_activation_unattended_trigger_when_unattended_flag_on(monkeypatch):
-    """A trigger run (no live user) flips into the SAME Plan Mode runtime when
-    PLAN_MODE_UNATTENDED_RUN is on; source records the unattended provenance so
-    the plan lands awaiting_confirmation for asynchronous user confirmation."""
-    _patch_flag(monkeypatch, value=False, unattended=True)
+def test_activation_unattended_trigger_is_unconditional():
+    """A trigger run (no live user) flips into the SAME Plan Mode runtime; source
+    records the unattended provenance so the plan lands awaiting_confirmation for
+    asynchronous user confirmation. No flag — unconditional for the eligible source."""
     from app.services.plan_mode_runtime_context import (
         interactive_plan_mode_active,
         reset_interactive_plan_mode,
@@ -202,8 +181,7 @@ def test_activation_unattended_trigger_when_unattended_flag_on(monkeypatch):
             reset_interactive_plan_mode(token)
 
 
-def test_activation_unattended_heartbeat_when_unattended_flag_on(monkeypatch):
-    _patch_flag(monkeypatch, value=False, unattended=True)
+def test_activation_unattended_heartbeat_is_unconditional():
     from app.services.plan_mode_runtime_context import reset_interactive_plan_mode
 
     sc = SessionContext(source="heartbeat", channel=None)
@@ -217,20 +195,9 @@ def test_activation_unattended_heartbeat_when_unattended_flag_on(monkeypatch):
             reset_interactive_plan_mode(token)
 
 
-def test_activation_noop_unattended_when_unattended_flag_off(monkeypatch):
-    """Default off: a trigger intercept does NOT flip into Plan Mode even when the
-    live interactive flag is on — it keeps the legacy RPC-planner fallback."""
-    _patch_flag(monkeypatch, value=True, unattended=False)
-    sc = SessionContext(source="trigger", channel=None)
-    token = _maybe_activate_interactive_plan_from_tool_result(_make_request(sc), _signal())
-    assert token is None
-    assert sc.plan_mode.active is False
-
-
-def test_activation_live_chat_keeps_interactive_source_under_both_flags(monkeypatch):
-    """Live chat still activates via the interactive flag with source
-    'tool_intercept' (not the unattended variant) when both flags are on."""
-    _patch_flag(monkeypatch, value=True, unattended=True)
+def test_activation_live_chat_keeps_interactive_source_not_unattended():
+    """Live chat activates with source 'tool_intercept' (not the unattended
+    variant) — the live boundary wins for an eligible live-chat source."""
     from app.services.plan_mode_runtime_context import reset_interactive_plan_mode
 
     sc = SessionContext(source="web", channel="web")

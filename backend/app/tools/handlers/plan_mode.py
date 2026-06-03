@@ -204,17 +204,13 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
     # plan and arms Plan Mode with its ``plan_id``; the agent fills THAT draft so
     # the id the entry point already returned to the frontend stays stable. Live
     # chat / unattended tool-intercept have no pre-created plan (plan_id absent),
-    # so they create a fresh awaiting plan as before. Both branches land the SAME
-    # agent-authored ``fill`` through the structured-fill path (use_agent_planner
-    # =False) — the only difference is whether the row already exists.
+    # so they create a fresh awaiting plan. Both branches land the SAME
+    # agent-authored ``fill`` through the structured-fill path — the only
+    # difference is whether the row already exists.
     existing_plan_id = _plan_uuid(metadata.get("plan_id"))
     service = get_plan_mode_service()
     if existing_plan_id is not None:
-        plan = await service.generate_plan(
-            plan_id=existing_plan_id,
-            fill=fill,
-            use_agent_planner=False,
-        )
+        plan = await service.generate_plan(plan_id=existing_plan_id, fill=fill)
     else:
         signature_payload = {
             "agent_id": str(request.context.agent_id),

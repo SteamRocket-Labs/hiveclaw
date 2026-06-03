@@ -35,7 +35,6 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.database import async_session
 from app.models.plan_request import AgentPlanRequest
-from app.services.agent_work_ledger import append_agent_work_ledger_progress, initialize_agent_work_ledger_artifact
 from app.services import plan_mode_core as core
 
 logger = logging.getLogger(__name__)
@@ -85,9 +84,8 @@ class PlanModeService:
     state is in the database.
     """
 
-    def __init__(self, *, planner: Any | None = None) -> None:
+    def __init__(self) -> None:
         self._handoff_handlers: dict[str, HandoffHandler] = {}
-        self._planner = planner
 
     # -- handoff registry -------------------------------------------------
 
@@ -181,74 +179,15 @@ class PlanModeService:
         return plan
 
     # -- intercept-then-create (§9.2) -------------------------------------
-
-    async def ensure_awaiting_plan(
-        self,
-        *,
-        agent_id: UUID,
-        action_kind: str,
-        tool_name: str,
-        arguments: dict[str, Any],
-        source: str = "tool_runtime",
-        tenant_id: UUID | None = None,
-        session_id: str | None = None,
-        runtime_task_id: UUID | None = None,
-        requested_by_user_id: UUID | None = None,
-    ) -> AgentPlanRequest:
-        """Materialise an ``awaiting_confirmation`` plan for a blocked action (§9.2).
-
-        Called by the tool gate and the chat/Feishu auto-sync paths when a
-        Plan-Mode-gated action is intercepted with no confirmed plan. The tool
-        arguments seed the planning context; the confirmable plan content itself
-        is authored by the agent planner.
-
-        Idempotent per ``(agent_id, intent_type, signature)``: a repeat of the
-        *same* logical blocked action reuses the existing awaiting plan rather
-        than spawning duplicates (the agent retries a blocked tool every round).
-
-        ``requested_by_user_id`` is intentionally ``None`` by default — an
-        intercepted plan has no authenticated requester yet; confirmation still
-        must come through the plan API with a real current user (§8.1/§8.5).
-
-        Raises:
-            ValueError: if ``action_kind`` is not a known gate action.
-        """
-        intent_type, signature = core.action_kind_to_intent_signature(
-            action_kind=action_kind, tool_name=tool_name, arguments=arguments
-        )
-
-        existing = await self._find_awaiting_by_signature(agent_id=agent_id, signature=signature)
-        if existing is not None:
-            return existing
-
-        fill = core.tool_args_to_plan_fill(tool_name=tool_name, action_kind=action_kind, arguments=arguments)
-        metadata = {
-            "intercept_signature": signature,
-            "intercept_action_kind": action_kind,
-            "intercept_tool": tool_name,
-            "intercept_source": source,
-        }
-        plan = await self.create_plan_request(
-            agent_id=agent_id,
-            requested_by_user_id=requested_by_user_id,
-            original_request=str(fill.get("objective") or fill.get("title") or tool_name),
-            intent_type=intent_type,
-            source=source,
-            tenant_id=tenant_id,
-            session_id=session_id,
-            runtime_task_id=runtime_task_id,
-            metadata_json=metadata,
-        )
-        planner_seed = {
-            **fill,
-            "_planner_intercepted_tool": {
-                "tool_name": tool_name,
-                "action_kind": action_kind,
-                "source": source,
-                "arguments": arguments,
-            },
-        }
-        return await self.generate_plan(plan_id=plan.id, fill=planner_seed)
+    #
+    # The RPC-planner intercept-then-create entry (``ensure_awaiting_plan``) was
+    # removed in path-unification cut ④. A blocked gated tool now either flips the
+    # run into main-loop Plan Mode (live chat / unattended tool-intercept, where
+    # the agent authors the plan and submits via ``exit_plan_mode``) or — for a
+    # non-eligible source — returns a static ``needs_plan`` block and the agent
+    # neither plans nor executes (fail-closed). The structured-fill landing below
+    # (``ensure_awaiting_plan_from_fill``) is the single ledger entry for caller-
+    # authored fills (Deep Research, exit_plan_mode without a pre-armed plan_id).
 
     async def ensure_awaiting_plan_from_fill(
         self,
@@ -267,11 +206,13 @@ class PlanModeService:
     ) -> AgentPlanRequest:
         """Materialise an awaiting plan from a caller-owned structured fill.
 
-        This is the same ledger-backed contract as :meth:`ensure_awaiting_plan`,
-        but for workflows whose plan shape is richer than generic tool-argument
-        mapping, such as Deep Research. The caller supplies a stable signature
-        and a complete ``plan_json`` fill; this service owns dedupe, persistence,
-        hashing, markdown rendering, and the user-confirmation state boundary.
+        This is the single ledger entry for caller/agent-authored fills: the
+        agent authors the plan in main-loop Plan Mode and submits via
+        ``exit_plan_mode`` (live chat / unattended tool-intercept), and richer
+        workflows such as Deep Research supply a complete ``plan_json`` fill
+        directly. The caller supplies a stable signature and the fill; this
+        service owns dedupe, persistence, hashing, markdown rendering, and the
+        user-confirmation state boundary.
         """
         if intent_type not in core.INTENT_TYPES:
             raise ValueError(f"unknown intent_type {intent_type!r}; expected one of {core.INTENT_TYPES}")
@@ -299,7 +240,7 @@ class PlanModeService:
             runtime_task_id=runtime_task_id,
             metadata_json=metadata,
         )
-        return await self.generate_plan(plan_id=plan.id, fill=fill, use_agent_planner=False)
+        return await self.generate_plan(plan_id=plan.id, fill=fill)
 
     async def _find_awaiting_by_signature(self, *, agent_id: UUID, signature: str) -> AgentPlanRequest | None:
         """Return the agent's most recent awaiting plan with this intercept signature.
@@ -344,72 +285,41 @@ class PlanModeService:
 
     # -- generate ---------------------------------------------------------
 
-    def _get_planner(self) -> Any:
-        if self._planner is None:
-            from app.services.agent_plan_planner import DefaultAgentPlanPlanner
-
-            self._planner = DefaultAgentPlanPlanner()
-        return self._planner
-
     @staticmethod
     def _planner_prompt_version() -> str:
-        from app.services.agent_plan_planner import PLANNER_PROMPT_VERSION
-
-        return PLANNER_PROMPT_VERSION
-
-    async def _run_planner(
-        self,
-        *,
-        plan: AgentPlanRequest,
-        seed_plan: dict[str, Any],
-        intercepted_tool: dict[str, Any] | None = None,
-    ) -> Any:
-        from app.services.agent_plan_planner import AgentPlanPlannerInput
-
-        metadata = dict(plan.metadata_json or {})
-        if intercepted_tool is None and metadata.get("intercept_tool"):
-            intercepted_tool = {
-                "tool_name": metadata.get("intercept_tool"),
-                "action_kind": metadata.get("intercept_action_kind"),
-                "source": metadata.get("intercept_source"),
-                "arguments": {},
-            }
-        planner_input = AgentPlanPlannerInput(
-            plan_id=plan.id,
-            agent_id=plan.agent_id,
-            requested_by_user_id=plan.requested_by_user_id,
-            tenant_id=plan.tenant_id,
-            session_id=plan.session_id,
-            runtime_task_id=plan.runtime_task_id,
-            source=plan.source,
-            intent_type=plan.intent_type,
-            original_request=plan.original_request,
-            seed_plan=seed_plan,
-            intercepted_tool=intercepted_tool,
-            metadata_json=metadata,
-        )
-        return await self._get_planner().plan(planner_input)
+        # Path-unification cut ④: the isolated RPC planner (DefaultAgentPlanPlanner,
+        # prompt version "agent_plan_v4") is gone — all plan_json now lands as a
+        # structured fill authored by the agent in main-loop Plan Mode (exit_plan_mode).
+        # This is the metadata fallback for fills that did not stamp their own
+        # version; the structured-fill path stamps "structured_fill.v1" explicitly,
+        # so this constant only backfills older/empty metadata.
+        return "structured_fill.v1"
 
     async def generate_plan(
         self,
         *,
         plan_id: UUID,
         fill: dict[str, Any] | None = None,
-        use_agent_planner: bool = True,
     ) -> AgentPlanRequest:
-        """Generate ``plan_json`` for a draft/planning plan (§10.2).
+        """Land a caller-supplied ``fill`` as the plan's ``plan_json`` (§10.2).
 
-        Runs the agent-authored planner for the plan's ``intent_type``, validates
-        the planner output against the deterministic schema envelope, computes
-        the hash and writes markdown. On planner/schema failure the plan becomes
-        ``planning_failed`` (no markdown, no hash).
+        Cut ④ collapsed this to a pure structured-fill landing: the agent authors
+        the plan in main-loop Plan Mode (live chat / unattended tool-intercept /
+        system_plan_run launcher) and submits it via ``exit_plan_mode``; this
+        method validates that fill against the deterministic schema envelope,
+        computes the hash and writes markdown. On schema failure the plan becomes
+        ``planning_failed`` (no markdown, no hash). There is no longer an isolated
+        RPC planner — that was the second plan path the unification removed.
 
         Raises:
             LookupError: if ``plan_id`` does not exist.
             PlanConflictError: if the plan is not in a generatable status.
         """
         seed_plan = dict(fill or {})
-        intercepted_tool = seed_plan.pop("_planner_intercepted_tool", None)
+        # Legacy RPC planner seed key (intercepted tool args) — no longer consumed
+        # now that planning is agent-authored; drop it so it never leaks into the
+        # validated plan_json.
+        seed_plan.pop("_planner_intercepted_tool", None)
         async with async_session() as db:
             try:
                 plan = await self._load(db, plan_id)
@@ -424,79 +334,10 @@ class PlanModeService:
                 await db.rollback()
                 raise
 
-        planner_work_ledger: dict[str, Any] | None = None
-        try:
-            if use_agent_planner:
-                planner_work_ledger = initialize_agent_work_ledger_artifact(
-                    agent_id=plan.agent_id,
-                    plan_id=plan.id,
-                    runtime_task_id=plan.runtime_task_id,
-                    source="plan_mode_planner",
-                    current_phase="planning",
-                    status="running",
-                    todo_items=[
-                        {
-                            "id": "understand-request",
-                            "title": "Understand the original request and Plan Mode entry reason.",
-                            "status": "complete",
-                            "required": True,
-                        },
-                        {
-                            "id": "inspect-state",
-                            "title": "Inspect current state or explicitly record why inspection is not needed.",
-                            "status": "pending",
-                            "required": True,
-                        },
-                        {
-                            "id": "draft-confirmable-plan",
-                            "title": "Draft a user-confirmable plan with success criteria and stop conditions.",
-                            "status": "pending",
-                            "required": True,
-                        },
-                    ],
-                    evidence_refs=[f"plan_id:{plan.id}", f"intent_type:{plan.intent_type}"],
-                    data_root=_agent_data_dir(),
-                )
-                planner_result = await self._run_planner(
-                    plan=plan,
-                    seed_plan=seed_plan,
-                    intercepted_tool=intercepted_tool,
-                )
-            else:
-                from app.services.agent_plan_planner import AgentPlanPlannerResult
-
-                planner_result = AgentPlanPlannerResult(
-                    plan_json=seed_plan,
-                    plan_markdown="",
-                    metadata={
-                        "author_type": "workflow",
-                        "planner_prompt_version": "structured_fill.v1",
-                    },
-                )
-        except Exception as exc:  # noqa: BLE001 - planner failure becomes planning_failed, not execution.
-            from app.services.agent_plan_planner import PLANNER_PROMPT_VERSION
-
-            logger.warning("agent_plan_planner_failed", extra={"plan_id": str(plan_id), "error": str(exc)})
-            if planner_work_ledger:
-                append_agent_work_ledger_progress(
-                    agent_id=plan.agent_id,
-                    plan_id=plan.id,
-                    runtime_task_id=plan.runtime_task_id,
-                    status="failed",
-                    delta=f"Plan Mode planner failed: {getattr(exc, 'message', str(exc))}",
-                    blocked_reason=getattr(exc, "message", str(exc)),
-                    data_root=_agent_data_dir(),
-                )
-            return await self._mark_generation_failed_by_id(
-                plan_id,
-                [f"planner_invocation_failed: {getattr(exc, 'message', str(exc))}"],
-                planner_metadata={
-                    "author_type": "agent",
-                    "planner_prompt_version": PLANNER_PROMPT_VERSION,
-                    "planner_error_code": getattr(exc, "error_code", "planner_invocation_failed"),
-                    "planner_work_ledger": planner_work_ledger or {},
-                },
-            )
+        planner_metadata = {
+            "author_type": "workflow",
+            "planner_prompt_version": "structured_fill.v1",
+        }
 
         async with async_session() as db:
             try:
@@ -508,36 +349,12 @@ class PlanModeService:
                         "illegal_transition",
                         f"cannot apply planner output to status {plan.status!r}",
                     )
-                planner_metadata = dict(getattr(planner_result, "metadata", {}) or {})
-                if planner_work_ledger:
-                    planner_metadata["planner_work_ledger"] = planner_work_ledger
                 self._apply_generation(
                     plan,
-                    getattr(planner_result, "plan_json", {}) or {},
+                    seed_plan,
                     planner_metadata=planner_metadata,
-                    plan_markdown=getattr(planner_result, "plan_markdown", "") or "",
+                    plan_markdown="",
                 )
-                if plan.status == "awaiting_confirmation" and planner_work_ledger:
-                    append_agent_work_ledger_progress(
-                        agent_id=plan.agent_id,
-                        plan_id=plan.id,
-                        runtime_task_id=plan.runtime_task_id,
-                        status="completed",
-                        delta="Plan Mode planner produced a valid confirmable plan.",
-                        completed_todo_ids=["inspect-state", "draft-confirmable-plan"],
-                        auto_complete_terminal=True,
-                        data_root=_agent_data_dir(),
-                    )
-                elif planner_work_ledger:
-                    append_agent_work_ledger_progress(
-                        agent_id=plan.agent_id,
-                        plan_id=plan.id,
-                        runtime_task_id=plan.runtime_task_id,
-                        status="failed",
-                        delta="Plan Mode planner output failed schema validation.",
-                        blocked_reason="planner_output_failed_schema_validation",
-                        data_root=_agent_data_dir(),
-                    )
                 await db.commit()
                 await self._refresh_if_supported(db, plan)
             except (LookupError, PlanConflictError):
@@ -558,21 +375,6 @@ class PlanModeService:
             "illegal_transition",
             f"cannot generate a plan from status {plan.status!r}",
         )
-
-    async def _mark_generation_failed_by_id(
-        self,
-        plan_id: UUID | str,
-        errors: list[str],
-        *,
-        planner_metadata: dict[str, Any] | None = None,
-    ) -> AgentPlanRequest:
-        async with async_session() as db:
-            plan = await self._load(db, plan_id)
-            if plan is None:
-                raise LookupError(f"plan {plan_id} not found")
-            self._mark_generation_failed(plan, errors, planner_metadata=planner_metadata)
-            await db.commit()
-            return plan
 
     def _mark_generation_failed(
         self,

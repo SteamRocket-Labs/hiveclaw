@@ -873,9 +873,9 @@ _POST_COMPACT_PER_FILE_CAP = 8000  # chars per file — was 5K
 # ── Plan Mode per-round reminder (paradigm-convergence doc §6.2) ──
 # Injected fresh every round as a role="system" message while Plan Mode is
 # active, replacing the old system_prompt_suffix injection. FULL on the first
-# round (and after a compaction re-arm); SPARSE thereafter. Text is migrated
-# from web_chat_runtime._interactive_plan_mode_suffix + the agent_plan_planner
-# v4 fact-discipline rules. English, to match round-pressure/system injections.
+# round (and after a compaction re-arm); SPARSE thereafter. Text consolidates the
+# read-only operating boundary + fact-discipline rules for agent-authored Plan
+# Mode. English, to match round-pressure/system injections.
 _PLAN_MODE_REMINDER_FULL = (
     "Plan Mode is active. The user has NOT approved execution, so you MUST NOT produce any "
     "side effects: do not create or enable triggers, start long tasks, delegate, write workspace "
@@ -983,11 +983,16 @@ def _maybe_activate_interactive_plan_from_tool_result(request: Any, result_str: 
     per-round reminder + exit_plan_mode); they differ only in confirmation
     timing, recorded via ``PlanModeState.source``:
 
-    * **live chat** (``PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE``) — synchronous
-      confirmation; source ``"tool_intercept"``.
-    * **unattended** trigger/heartbeat (``PLAN_MODE_UNATTENDED_RUN``) — no live
-      user stream, so the authored plan lands awaiting_confirmation for async
-      confirmation from the plan queue; source ``"tool_intercept_unattended"``.
+    * **live chat** — synchronous confirmation; source ``"tool_intercept"``.
+    * **unattended** trigger/heartbeat — no live user stream, so the authored
+      plan lands awaiting_confirmation for async confirmation from the plan
+      queue; source ``"tool_intercept_unattended"``.
+
+    Path-unification cut ④ made this unconditional for eligible sources: the
+    staged-rollout flags are gone and main-loop Plan Mode is the only planning
+    path. A non-eligible source (delegation / runtime / an already-active
+    system_plan_run) does not activate here and its blocked gated tool returns a
+    static needs_plan block (fail-closed — it neither plans nor executes).
 
     Writes typed state + the metadata mirror AND arms the interactive ContextVar
     — both state sources must move together (the reminder reads typed state at
@@ -996,7 +1001,6 @@ def _maybe_activate_interactive_plan_from_tool_result(request: Any, result_str: 
     ContextVar token for the caller to reset on handle exit, or ``None`` if not
     activated.
     """
-    from app.config import get_settings
     from app.runtime.session import PlanModeState, is_unattended_plan_eligible
     from app.services.plan_mode_runtime_context import set_interactive_plan_mode
 
@@ -1005,9 +1009,8 @@ def _maybe_activate_interactive_plan_from_tool_result(request: Any, result_str: 
         return None
     if getattr(getattr(sc, "plan_mode", None), "active", False):
         return None  # already in plan mode — do not re-activate / clobber
-    settings = get_settings()
-    live = _is_live_interactive_chat(sc) and settings.PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE
-    unattended = is_unattended_plan_eligible(sc) and settings.PLAN_MODE_UNATTENDED_RUN
+    live = _is_live_interactive_chat(sc)
+    unattended = is_unattended_plan_eligible(sc)
     if not (live or unattended):
         return None
     seed = _parse_interactive_plan_signal(result_str)

@@ -37,6 +37,7 @@ HANDLER_MODULES: tuple[str, ...] = (
     "app.tools.handlers.hr",
     "app.tools.handlers.deep_research",
     "app.tools.handlers.office",
+    "app.tools.handlers.subagent",
 )
 
 

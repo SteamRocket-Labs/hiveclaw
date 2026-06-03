@@ -351,6 +351,33 @@ async def _spawn_one(
     )
 
 
+async def spawn_subagent(
+    ctx: SubagentSpawnContext,
+    spec: SubagentSpec,
+    task: str,
+    *,
+    fork: ForkLevel = "none",
+    budget: SubagentBudget | None = None,
+    context_brief: str | None = None,
+    invoke: InvokeAgent = invoke_agent,
+) -> SubagentHandle:
+    """Public single-worker spawn entry (cut ②).
+
+    Serves ONLY lightweight workers (术语边界 invariant) — peer delegation stays
+    in ``agents/orchestrator.py``. Synchronous: runs the worker to completion and
+    returns a resolved ``SubagentHandle``. Background/async re-entry lands in cut ④.
+    """
+
+    job = SubagentJob(spec=spec, task=task, context_brief=context_brief)
+    result = await _spawn_one(ctx, job, fork=fork, budget=budget, invoke=invoke)
+    return SubagentHandle(
+        name=spec.name,
+        trace_id=ctx.trace_id or "",
+        depth=ctx.depth + 1,
+        result=result,
+    )
+
+
 async def fanout_subagents(
     ctx: SubagentSpawnContext,
     jobs: list[SubagentJob],

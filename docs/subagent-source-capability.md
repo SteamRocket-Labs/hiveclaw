@@ -306,8 +306,8 @@ async def fanout_subagents(
 | Phase | 切口 | 状态 | Commit |
 |---|---|---|---|
 | 0 | 固化决策（§8 v3 重排 + 本表） | ✅ done | `5ad301d` |
-| 1 | ① runtime 契约 + fanout + explorer（无 memory） | ✅ done | （本提交） |
-| 2 | ② spawn_subagent 入口 + 工具暴露 | ⬜ pending | — |
+| 1 | ① runtime 契约 + fanout + explorer（无 memory） | ✅ done | `1155f46` |
+| 2 | ② spawn_subagent 入口 + 工具暴露 | ✅ done | （本提交） |
 | 3 | ③ worker/critic type + fork 三档（none/brief/all） | ⬜ pending | — |
 | 4 | ④ 异步完成重入（接 Signal） | ⬜ pending | — |
 | 5 | ⑤ 持久 定义.md | ⬜ pending | — |

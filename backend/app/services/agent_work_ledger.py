@@ -116,7 +116,9 @@ def _task_active_form(item: dict[str, Any], title: str) -> str:
 
 
 def _normalize_work_item(item: dict[str, Any], *, fallback_id: str) -> dict[str, Any]:
-    title = _clean_text(item.get("content") or item.get("title") or item.get("subject") or item.get("check") or item.get("summary"))
+    title = _clean_text(
+        item.get("content") or item.get("title") or item.get("subject") or item.get("check") or item.get("summary")
+    )
     description = _clean_text(item.get("description"))
     active_form = _task_active_form(item, title or fallback_id)
     return {
@@ -362,6 +364,193 @@ def append_agent_work_ledger_progress(
     return _write_ledger(agent_id=agent_id, payload=ledger, path=path, data_root=data_root)
 
 
+def _load_or_bootstrap_ledger(
+    *,
+    agent_id: uuid.UUID,
+    source: str,
+    plan_id: uuid.UUID | str | None,
+    runtime_task_id: uuid.UUID | str | None,
+    data_root: str | Path | None,
+) -> dict[str, Any]:
+    """Load the scoped ledger, lazily creating an empty one if it does not exist.
+
+    Used by the agent-authored cognitive write helpers (track_todo /
+    record_finding) so the agent can start writing in any session without a
+    prior runtime-driven initialize. The created ledger carries ``source`` so
+    audit can tell agent-authored scratch from runtime-driven runs.
+    """
+
+    ledger = load_agent_work_ledger(
+        agent_id=agent_id, plan_id=plan_id, runtime_task_id=runtime_task_id, data_root=data_root
+    )
+    if ledger is not None:
+        return ledger
+    initialize_agent_work_ledger_artifact(
+        agent_id=agent_id,
+        plan_id=plan_id,
+        runtime_task_id=runtime_task_id,
+        source=source,
+        data_root=data_root,
+    )
+    return (
+        load_agent_work_ledger(agent_id=agent_id, plan_id=plan_id, runtime_task_id=runtime_task_id, data_root=data_root)
+        or {}
+    )
+
+
+def upsert_agent_work_ledger_todo(
+    *,
+    agent_id: uuid.UUID,
+    item_id: str | None = None,
+    title: str | None = None,
+    status: str | None = None,
+    description: str | None = None,
+    active_form: str | None = None,
+    evidence_refs: list[str] | None = None,
+    plan_id: uuid.UUID | str | None = None,
+    runtime_task_id: uuid.UUID | str | None = None,
+    source: str = "agent_authored",
+    data_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Add a new todo or update an existing one in place — a pure cognitive write.
+
+    This is the service primitive behind the ``track_todo`` tool. It mutates only
+    the ``todo_items`` list; it never appends progress/failure rows and never
+    triggers execution. ``item_id`` selects an existing todo (else match by
+    exact title); absent both, a new todo is appended.
+    """
+
+    path = _ledger_path(agent_id=agent_id, plan_id=plan_id, runtime_task_id=runtime_task_id, data_root=data_root)
+    ledger = _load_or_bootstrap_ledger(
+        agent_id=agent_id,
+        source=source,
+        plan_id=plan_id,
+        runtime_task_id=runtime_task_id,
+        data_root=data_root,
+    )
+    todos: list[dict[str, Any]] = list(ledger.get("todo_items") or [])
+
+    target_id = _clean_text(item_id)
+    target_title = _clean_text(title)
+    existing: dict[str, Any] | None = None
+    if target_id:
+        existing = next((item for item in todos if _clean_text(item.get("id")) == target_id), None)
+        if existing is None:
+            raise KeyError(target_id)
+    elif target_title:
+        existing = next((item for item in todos if _clean_text(item.get("title")) == target_title), None)
+
+    if existing is not None:
+        merged = dict(existing)
+        if target_title:
+            merged["title"] = target_title
+            merged["content"] = target_title
+        if status is not None:
+            merged["status"] = status
+        if description is not None:
+            merged["description"] = description
+        if active_form is not None:
+            merged["activeForm"] = active_form
+        if evidence_refs is not None:
+            merged["evidence_refs"] = evidence_refs
+        normalized = _normalize_work_item(merged, fallback_id=_clean_text(existing.get("id")) or "todo-1")
+        index = todos.index(existing)
+        todos[index] = normalized
+        action = "updated"
+    else:
+        new_item: dict[str, Any] = {
+            "id": target_id or uuid.uuid4().hex,
+            "title": target_title,
+            "status": status if status is not None else "pending",
+        }
+        if description is not None:
+            new_item["description"] = description
+        if active_form is not None:
+            new_item["activeForm"] = active_form
+        if evidence_refs is not None:
+            new_item["evidence_refs"] = evidence_refs
+        normalized = _normalize_work_item(new_item, fallback_id=new_item["id"])
+        todos.append(normalized)
+        action = "added"
+
+    ledger["todo_items"] = todos
+    _write_ledger(agent_id=agent_id, payload=ledger, path=path, data_root=data_root)
+    return {"action": action, "item": _display_item(normalized)}
+
+
+def append_agent_work_ledger_finding(
+    *,
+    agent_id: uuid.UUID,
+    finding_type: str,
+    summary: str,
+    source_refs: list[str] | None = None,
+    trust: str | None = None,
+    next_strategy: str | None = None,
+    plan_id: uuid.UUID | str | None = None,
+    runtime_task_id: uuid.UUID | str | None = None,
+    source: str = "agent_authored",
+    data_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Append a finding / open_question / failure — a pure cognitive write.
+
+    Service primitive behind the ``record_finding`` tool. Routes ``summary`` to
+    the right scoped list (``findings`` / ``open_questions`` / ``failures``)
+    without disturbing the rest of the ledger and without triggering execution.
+    """
+
+    kind = _clean_text(finding_type).lower()
+    if kind not in {"finding", "open_question", "failure"}:
+        raise ValueError(finding_type)
+    clean_summary = _clean_text(summary)
+    if not clean_summary:
+        raise ValueError("summary is required")
+
+    path = _ledger_path(agent_id=agent_id, plan_id=plan_id, runtime_task_id=runtime_task_id, data_root=data_root)
+    ledger = _load_or_bootstrap_ledger(
+        agent_id=agent_id,
+        source=source,
+        plan_id=plan_id,
+        runtime_task_id=runtime_task_id,
+        data_root=data_root,
+    )
+
+    if kind == "finding":
+        findings = list(ledger.get("findings") or [])
+        entry = _normalize_finding(
+            {
+                "summary": clean_summary,
+                "source_refs": source_refs or [],
+                "trust": trust or "unverified",
+            },
+            fallback_id=f"finding-{len(findings) + 1}",
+        )
+        findings.append(entry)
+        ledger["findings"] = findings
+        recorded = _display_finding(entry)
+    elif kind == "open_question":
+        questions = [str(item).strip() for item in (ledger.get("open_questions") or []) if str(item).strip()]
+        questions.append(clean_summary)
+        ledger["open_questions"] = questions
+        recorded = {"summary": clean_summary}
+    else:  # failure
+        failures = list(ledger.get("failures") or [])
+        entry = _normalize_failure(
+            {
+                "attempt": "agent_recorded",
+                "error": clean_summary,
+                "next_strategy": next_strategy or "",
+                "resolved": False,
+            },
+            fallback_id=f"failure-{len(failures) + 1}",
+        )
+        failures.append(entry)
+        ledger["failures"] = failures
+        recorded = _display_failure(entry)
+
+    _write_ledger(agent_id=agent_id, payload=ledger, path=path, data_root=data_root)
+    return {"type": kind, "recorded": recorded}
+
+
 def build_agent_work_ledger_resume_summary(ledger: dict[str, Any] | None) -> dict[str, Any]:
     if not ledger:
         return {
@@ -411,7 +600,14 @@ def build_agent_work_ledger_resume_summary(ledger: dict[str, Any] | None) -> dic
 
 
 def _display_item(item: dict[str, Any], *, title_key: str = "title") -> dict[str, Any]:
-    title = _clean_text(item.get("content") or item.get(title_key) or item.get("title") or item.get("subject") or item.get("check") or item.get("summary"))
+    title = _clean_text(
+        item.get("content")
+        or item.get(title_key)
+        or item.get("title")
+        or item.get("subject")
+        or item.get("check")
+        or item.get("summary")
+    )
     description = _clean_text(item.get("description"))
     active_form = _task_active_form(item, title)
     payload = {
@@ -516,16 +712,8 @@ def _build_legacy_long_task_ledger_view(
     runtime_key = _uuid_hex(runtime_task_id)
     normalized_status = _normalize_status(latest_progress.get("status") or plan.get("status"), default="running")
     terminal_complete = normalized_status in {"completed", "skipped"}
-    acceptance_criteria = [
-        _clean_text(item)
-        for item in plan.get("acceptance_criteria", [])
-        if _clean_text(item)
-    ]
-    verification_commands = [
-        _clean_text(item)
-        for item in plan.get("verification_commands", [])
-        if _clean_text(item)
-    ]
+    acceptance_criteria = [_clean_text(item) for item in plan.get("acceptance_criteria", []) if _clean_text(item)]
+    verification_commands = [_clean_text(item) for item in plan.get("verification_commands", []) if _clean_text(item)]
     created_at = plan.get("created_at") or latest_progress.get("created_at") or _now_iso()
     updated_at = latest_progress.get("created_at") or plan.get("created_at") or created_at
     display_path = plan_path if plan_path.exists() else progress_path
@@ -740,7 +928,9 @@ async def read_latest_session_work_ledger_view(
         reverse=True,
     )
     active_tasks = [
-        task for task in tasks if _normalize_status(getattr(task, "status", None), default="") in ACTIVE_RUNTIME_STATUSES
+        task
+        for task in tasks
+        if _normalize_status(getattr(task, "status", None), default="") in ACTIVE_RUNTIME_STATUSES
     ]
     active_task_ids = {id(task) for task in active_tasks}
     inactive_tasks = [task for task in tasks if id(task) not in active_task_ids]
@@ -855,6 +1045,7 @@ __all__ = [
     "LEDGER_RESUME_SCHEMA",
     "LEDGER_SCHEMA",
     "LEDGER_VIEW_SCHEMA",
+    "append_agent_work_ledger_finding",
     "append_agent_work_ledger_progress",
     "build_agent_work_ledger_display_view",
     "build_agent_work_ledger_resume_summary",
@@ -862,5 +1053,6 @@ __all__ = [
     "load_agent_work_ledger",
     "read_latest_session_work_ledger_view",
     "read_agent_work_ledger_view",
+    "upsert_agent_work_ledger_todo",
     "validate_agent_work_ledger_completion",
 ]

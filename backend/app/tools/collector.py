@@ -38,6 +38,7 @@ HANDLER_MODULES: tuple[str, ...] = (
     "app.tools.handlers.deep_research",
     "app.tools.handlers.office",
     "app.tools.handlers.subagent",
+    "app.tools.handlers.work_ledger",
 )
 
 
@@ -101,7 +102,9 @@ def _import_handler_modules(*, force_reload: bool = False) -> None:
     if _failed:
         logger.error(
             "[Collector] %d/%d handler module(s) failed to import: %s — affected tools will be unavailable",
-            len(_failed), len(HANDLER_MODULES), _failed,
+            len(_failed),
+            len(HANDLER_MODULES),
+            _failed,
         )
 
 

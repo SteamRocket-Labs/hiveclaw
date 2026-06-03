@@ -725,3 +725,184 @@ async def test_live_intercept_signal_defers_rpc_plan_materialisation_when_intera
     assert "plan_id" not in payload
     assert plan_service.calls == 0
     assert registry.calls == []
+
+
+@pytest.mark.asyncio
+async def test_unattended_intercept_defers_rpc_plan_materialisation_when_unattended_flag_on(monkeypatch):
+    """Path-unification cut ②: an unattended run (trigger/heartbeat) whose gated
+    tool is blocked must NOT materialise an RPC plan when PLAN_MODE_UNATTENDED_RUN
+    is on — it defers to the agent's own main-loop Plan Mode (activation signal
+    attached, no ensure_awaiting_plan call). Interactive flag is OFF here, proving
+    the unattended flag alone drives the defer."""
+    import app.config
+    from app.tools.governance import ToolGovernanceContext
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    monkeypatch.setattr(
+        app.config,
+        "get_settings",
+        lambda: SimpleNamespace(PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE=False, PLAN_MODE_UNATTENDED_RUN=True),
+    )
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    context = ToolExecutionContext(agent_id=agent_id, user_id=user_id, tenant_id="tenant-1", workspace=Path("/tmp/ws"))
+    governance_context = ToolGovernanceContext(
+        agent_id=agent_id,
+        user_id=user_id,
+        tenant_id="tenant-1",
+        tool_name="set_trigger",
+        arguments={"name": "Daily brief"},
+    )
+
+    class _PlanGate:
+        async def check(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                needs_plan=True,
+                needs_plan_payload={
+                    "status": "needs_plan",
+                    "summary": "Scheduled autonomous work needs a plan.",
+                    "next_action": "enter_plan_mode",
+                },
+            )
+
+    class _SessionFactory:
+        def __call__(self):
+            return self
+
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class _FailingPlanService:
+        def __init__(self):
+            self.calls = 0
+
+        async def ensure_awaiting_plan(self, **_kwargs):
+            self.calls += 1
+            raise AssertionError("unattended intercept should defer to main-loop Plan Mode, not the RPC planner")
+
+    async def fake_run_governance(_context, _deps, *, event_callback=None):
+        return None
+
+    plan_service = _FailingPlanService()
+    registry = _FakeRegistry("SHOULD_NOT_RUN")
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(governance_context, SimpleNamespace()),
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=fake_run_governance,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+        plan_mode_gate=_PlanGate(),
+        plan_mode_session_factory=_SessionFactory(),
+        plan_mode_service=plan_service,
+    )
+
+    result = await service.execute(
+        "set_trigger",
+        {"name": "Daily brief", "type": "cron", "config": {"expr": "0 9 * * *"}},
+        agent_id=agent_id,
+        user_id=user_id,
+        plan_mode_interactive_available=False,
+        plan_mode_unattended_available=True,
+    )
+    payload = json.loads(result)
+
+    assert payload["status"] == "needs_plan"
+    assert payload["activate_interactive_plan"] is True
+    assert "plan_id" not in payload
+    assert plan_service.calls == 0
+    assert registry.calls == []
+
+
+@pytest.mark.asyncio
+async def test_unattended_intercept_falls_back_to_rpc_when_unattended_flag_off(monkeypatch):
+    """Default off (staged rollout, path-unification §9): an unattended intercept
+    with the flag off keeps the legacy RPC planner — ensure_awaiting_plan IS
+    called and the materialised plan_id is embedded, with NO activation signal."""
+    import app.config
+    from app.tools.governance import ToolGovernanceContext
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    monkeypatch.setattr(
+        app.config,
+        "get_settings",
+        lambda: SimpleNamespace(PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE=False, PLAN_MODE_UNATTENDED_RUN=False),
+    )
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    context = ToolExecutionContext(agent_id=agent_id, user_id=user_id, tenant_id="tenant-1", workspace=Path("/tmp/ws"))
+    governance_context = ToolGovernanceContext(
+        agent_id=agent_id,
+        user_id=user_id,
+        tenant_id="tenant-1",
+        tool_name="set_trigger",
+        arguments={"name": "Daily brief"},
+    )
+
+    class _PlanGate:
+        async def check(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                needs_plan=True,
+                needs_plan_payload={"status": "needs_plan", "summary": "needs plan", "next_action": "enter_plan_mode"},
+            )
+
+    class _SessionFactory:
+        def __call__(self):
+            return self
+
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class _RpcPlanService:
+        def __init__(self):
+            self.calls = 0
+
+        async def ensure_awaiting_plan(self, **_kwargs):
+            self.calls += 1
+            return SimpleNamespace(id="plan-rpc-1", plan_version=1, plan_hash="h", plan_json={"title": "t"})
+
+    async def fake_run_governance(_context, _deps, *, event_callback=None):
+        return None
+
+    plan_service = _RpcPlanService()
+    registry = _FakeRegistry("SHOULD_NOT_RUN")
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(governance_context, SimpleNamespace()),
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=fake_run_governance,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+        plan_mode_gate=_PlanGate(),
+        plan_mode_session_factory=_SessionFactory(),
+        plan_mode_service=plan_service,
+    )
+
+    result = await service.execute(
+        "set_trigger",
+        {"name": "Daily brief", "type": "cron", "config": {"expr": "0 9 * * *"}},
+        agent_id=agent_id,
+        user_id=user_id,
+        plan_mode_interactive_available=False,
+        plan_mode_unattended_available=True,
+    )
+    payload = json.loads(result)
+
+    assert payload["status"] == "needs_plan"
+    assert "activate_interactive_plan" not in payload  # no signal — RPC fallback
+    assert payload["plan_id"] == "plan-rpc-1"
+    assert plan_service.calls == 1

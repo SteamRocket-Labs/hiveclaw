@@ -163,6 +163,15 @@ def _plan_mode_interactive_available(session_context: SessionContext | None) -> 
     return is_interactive_plan_eligible(session_context)
 
 
+def _plan_mode_unattended_available(session_context: SessionContext | None) -> bool:
+    # Unattended (trigger/heartbeat) tool-intercept → main-loop Plan Mode
+    # eligibility (path-unification §5.3 / cut ②). Shared boundary so the invoker
+    # and kernel never drift on which sources defer to the agent's own loop.
+    from app.runtime.session import is_unattended_plan_eligible
+
+    return is_unattended_plan_eligible(session_context)
+
+
 async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
     # P0-1b: instead of silently returning tenant_id=None on failure paths,
     # set the tenant_resolution_error sentinel so kernel.engine can early-exit
@@ -750,6 +759,8 @@ async def _execute_tool_with_request(
             executor_kwargs["plan_mode_interactive_available"] = _plan_mode_interactive_available(
                 request.session_context
             )
+        if accepts_kwargs or "plan_mode_unattended_available" in executor_params:
+            executor_kwargs["plan_mode_unattended_available"] = _plan_mode_unattended_available(request.session_context)
         return await _maybe_await(request.tool_executor(tool_name, args, **executor_kwargs))
 
     execute_kwargs: dict[str, Any] = {
@@ -766,6 +777,8 @@ async def _execute_tool_with_request(
         )
     if "plan_mode_interactive_available" in inspect.signature(execute_tool).parameters:
         execute_kwargs["plan_mode_interactive_available"] = _plan_mode_interactive_available(request.session_context)
+    if "plan_mode_unattended_available" in inspect.signature(execute_tool).parameters:
+        execute_kwargs["plan_mode_unattended_available"] = _plan_mode_unattended_available(request.session_context)
     return await execute_tool(
         tool_name,
         args,

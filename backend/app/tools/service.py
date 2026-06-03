@@ -91,14 +91,29 @@ def _tool_intercept_interactive_enabled() -> bool:
     return bool(get_settings().PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE)
 
 
-def _maybe_attach_interactive_signal(payload: dict, *, action_kind: str, tool_name: str, arguments: dict) -> dict:
-    """Phase 5: when ``PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE`` is on, tag a
-    ``needs_plan`` envelope with ``activate_interactive_plan`` + an
-    ``interactive_plan_seed``. The kernel (which holds the session_context)
-    decides the live-chat boundary and whether to actually activate; here we only
-    carry the flag + seed. Flag off → the envelope is returned unchanged.
+def _tool_intercept_unattended_enabled() -> bool:
+    from app.config import get_settings
+
+    return bool(get_settings().PLAN_MODE_UNATTENDED_RUN)
+
+
+def _maybe_attach_interactive_signal(
+    payload: dict, *, action_kind: str, tool_name: str, arguments: dict, enabled: bool | None = None
+) -> dict:
+    """When Plan Mode tool-intercept activation is enabled, tag a ``needs_plan``
+    envelope with ``activate_interactive_plan`` + an ``interactive_plan_seed``.
+    The kernel (which holds the session_context) decides the live-chat /
+    unattended boundary and whether to actually activate; here we only carry the
+    flag + seed (the seed ``source`` stays ``"tool_intercept"`` — the kernel sets
+    the live vs unattended ``PlanModeState.source`` from the session_context).
+
+    ``enabled`` lets the caller pass the already-computed defer decision (live
+    OR unattended). When ``None`` we fall back to the live interactive flag so
+    existing callers keep their behaviour. Disabled → envelope unchanged.
     """
-    if not _tool_intercept_interactive_enabled():
+    if enabled is None:
+        enabled = _tool_intercept_interactive_enabled()
+    if not enabled:
         return payload
     enriched = dict(payload)
     enriched["activate_interactive_plan"] = True
@@ -213,6 +228,7 @@ class ToolRuntimeService:
         delegation_token: Any | None = None,
         session_id: str | None = None,
         plan_mode_interactive_available: bool = False,
+        plan_mode_unattended_available: bool = False,
     ) -> str:
         plan_mode_block = self._interactive_plan_mode_readonly_block(tool_name, arguments)
         if plan_mode_block:
@@ -223,6 +239,7 @@ class ToolRuntimeService:
             arguments,
             agent_id=agent_id,
             plan_mode_interactive_available=plan_mode_interactive_available,
+            plan_mode_unattended_available=plan_mode_unattended_available,
         )
         if plan_block:
             return plan_block
@@ -548,6 +565,7 @@ class ToolRuntimeService:
         *,
         agent_id: uuid.UUID,
         plan_mode_interactive_available: bool = False,
+        plan_mode_unattended_available: bool = False,
     ) -> str | None:
         """Return a ``needs_plan`` JSON block when Plan Mode forbids ``tool_name``.
 
@@ -598,8 +616,15 @@ class ToolRuntimeService:
         # A failed *handoff* (the caller claimed a plan that didn't validate) must
         # not spawn a new plan — surface the gate's reason as-is.
         if confirmed_plan_id is None:
+            # Defer plan authoring to the agent's own kernel loop (main-loop Plan
+            # Mode) when EITHER the live-chat interactive path OR the unattended
+            # trigger/heartbeat path is eligible + enabled. Otherwise fall back to
+            # the isolated RPC planner (_attach_intercepted_plan). The two paths
+            # share one Plan Mode runtime; they differ only in confirmation timing.
             defer_to_interactive = bool(plan_mode_interactive_available and _tool_intercept_interactive_enabled())
-            if not defer_to_interactive:
+            defer_to_unattended = bool(plan_mode_unattended_available and _tool_intercept_unattended_enabled())
+            defer = defer_to_interactive or defer_to_unattended
+            if not defer:
                 payload = await self._attach_intercepted_plan(
                     payload,
                     agent_id=agent_id,
@@ -607,12 +632,13 @@ class ToolRuntimeService:
                     tool_name=tool_name,
                     arguments=arguments,
                 )
-            # Phase 5: tag the envelope so the kernel can flip a live web chat
-            # into interactive Plan Mode. The live-chat boundary + activation
-            # decision belong to the kernel (it holds the session_context); the
-            # gate only carries the flag + seed. Flag off → envelope unchanged.
+            # Tag the envelope so the kernel can flip the run into Plan Mode. The
+            # live-chat / unattended boundary + activation decision belong to the
+            # kernel (it holds the session_context); the gate only carries the
+            # flag + seed. ``enabled`` mirrors the defer decision so the seed is
+            # attached for both paths. Not deferring → envelope unchanged.
             payload = _maybe_attach_interactive_signal(
-                payload, action_kind=action_kind, tool_name=tool_name, arguments=arguments
+                payload, action_kind=action_kind, tool_name=tool_name, arguments=arguments, enabled=defer
             )
         return _json.dumps(payload, ensure_ascii=False, default=str)
 

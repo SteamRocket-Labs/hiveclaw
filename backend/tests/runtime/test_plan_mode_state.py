@@ -114,6 +114,31 @@ def test_is_interactive_plan_eligible_unifies_the_live_chat_boundary():
     assert is_interactive_plan_eligible(None) is False
 
 
+def test_is_unattended_plan_eligible_matches_only_trigger_and_heartbeat():
+    """Unattended Plan Mode eligibility (path-unification §5.3 / cut ②): only
+    multi-round daemon runs (trigger/heartbeat) qualify; live chat and one-shot
+    surfaces do not (they use is_interactive_plan_eligible or the RPC fallback)."""
+    from app.runtime.session import is_unattended_plan_eligible
+
+    assert is_unattended_plan_eligible(SessionContext(source="trigger")) is True
+    assert is_unattended_plan_eligible(SessionContext(source="heartbeat", channel=None)) is True
+    # live chat is NOT unattended — it has its own synchronous-confirmation path
+    assert is_unattended_plan_eligible(SessionContext(source="web", channel="web")) is False
+    assert is_unattended_plan_eligible(SessionContext(source="web_chat")) is False
+    # delegation (source="agent") stays on the RPC fallback for now (no nesting)
+    assert is_unattended_plan_eligible(SessionContext(source="agent")) is False
+    assert is_unattended_plan_eligible(None) is False
+
+
+def test_interactive_and_unattended_eligibility_are_disjoint():
+    """A session is never both — they map to different confirmation timings."""
+    from app.runtime.session import is_interactive_plan_eligible, is_unattended_plan_eligible
+
+    for src in ("web", "web_chat", "chat", "trigger", "heartbeat", "agent", "runtime"):
+        sc = SessionContext(source=src)
+        assert not (is_interactive_plan_eligible(sc) and is_unattended_plan_eligible(sc))
+
+
 def test_from_metadata_round_trips_core_fields():
     original = PlanModeState(
         active=True,

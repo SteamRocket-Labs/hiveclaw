@@ -976,18 +976,28 @@ def _latest_user_message(request: Any) -> str:
 
 
 def _maybe_activate_interactive_plan_from_tool_result(request: Any, result_str: str) -> Any:
-    """Phase 5: flip a live web chat into interactive Plan Mode when a blocked
-    autonomous tool returns an ``activate_interactive_plan`` signal.
+    """Flip an agent run into main-loop Plan Mode when a blocked autonomous tool
+    returns an ``activate_interactive_plan`` signal (path-unification §5.3).
+
+    Two eligible run shapes share ONE Plan Mode runtime (read-only policy +
+    per-round reminder + exit_plan_mode); they differ only in confirmation
+    timing, recorded via ``PlanModeState.source``:
+
+    * **live chat** (``PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE``) — synchronous
+      confirmation; source ``"tool_intercept"``.
+    * **unattended** trigger/heartbeat (``PLAN_MODE_UNATTENDED_RUN``) — no live
+      user stream, so the authored plan lands awaiting_confirmation for async
+      confirmation from the plan queue; source ``"tool_intercept_unattended"``.
 
     Writes typed state + the metadata mirror AND arms the interactive ContextVar
     — both state sources must move together (the reminder reads typed state at
     ``engine:1634``; the read-only gate reads the ContextVar at ``service:465``),
     or the agent would be reminded but not constrained to read-only. Returns the
     ContextVar token for the caller to reset on handle exit, or ``None`` if not
-    activated. Gated behind ``PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE`` (default off).
+    activated.
     """
     from app.config import get_settings
-    from app.runtime.session import PlanModeState
+    from app.runtime.session import PlanModeState, is_unattended_plan_eligible
     from app.services.plan_mode_runtime_context import set_interactive_plan_mode
 
     sc = getattr(request, "session_context", None)
@@ -995,9 +1005,10 @@ def _maybe_activate_interactive_plan_from_tool_result(request: Any, result_str: 
         return None
     if getattr(getattr(sc, "plan_mode", None), "active", False):
         return None  # already in plan mode — do not re-activate / clobber
-    if not _is_live_interactive_chat(sc):
-        return None
-    if not get_settings().PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE:
+    settings = get_settings()
+    live = _is_live_interactive_chat(sc) and settings.PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE
+    unattended = is_unattended_plan_eligible(sc) and settings.PLAN_MODE_UNATTENDED_RUN
+    if not (live or unattended):
         return None
     seed = _parse_interactive_plan_signal(result_str)
     if seed is None:
@@ -1009,7 +1020,7 @@ def _maybe_activate_interactive_plan_from_tool_result(request: Any, result_str: 
         tool_name=seed.get("tool_name"),
         original_request=seed.get("original_request") or _latest_user_message(request),
         plan_id=seed.get("plan_id"),
-        source="tool_intercept",
+        source="tool_intercept" if live else "tool_intercept_unattended",
     )
     sc.plan_mode = state
     sc.metadata["plan_mode"] = state.to_metadata()
@@ -1890,7 +1901,9 @@ class AgentKernel:
                                         _after_chars = sum(len(d.get("content", "") or "") for d in compressed)
                                         if _after_chars < _before_chars * 0.8:
                                             _ptl_dynamic = build_dynamic_prompt_suffix(
-                                                active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
+                                                active_tool_groups=session_ctx.active_tool_groups
+                                                if session_ctx
+                                                else [],
                                                 memory_snapshot=resolved_memory_context,
                                                 retrieval_context=resolved_retrieval_context,
                                                 system_prompt_suffix=_effective_suffix,

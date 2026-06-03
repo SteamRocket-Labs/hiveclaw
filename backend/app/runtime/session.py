@@ -224,8 +224,17 @@ class SessionContext:
 # Live interactive chat surfaces eligible for tool-intercept → interactive Plan
 # Mode. Real runtime web-chat sessions use source="web" (web_chat_broker.py /
 # websocket.py); "web_chat"/"chat" are accepted defensively. Unattended paths
-# (trigger/heartbeat/delegation/task) are absent here and keep the RPC fallback.
+# (trigger/heartbeat) get their OWN eligibility below (is_unattended_plan_eligible)
+# behind a separate flag; a source in neither set keeps the RPC fallback.
 _INTERACTIVE_PLAN_CHAT_SURFACES = frozenset({"web", "web_chat", "chat"})
+
+# Unattended agent runs eligible for tool-intercept → main-loop Plan Mode
+# (path-unification §5.3 / cut ②). These are multi-round kernel loops with no
+# live user stream: a blocked gated tool flips the run into the SAME Plan Mode
+# runtime as live chat (read-only policy + per-round reminder + exit_plan_mode),
+# and the authored plan lands awaiting_confirmation for asynchronous user
+# confirmation from the plan queue. Gated behind Settings.PLAN_MODE_UNATTENDED_RUN.
+_UNATTENDED_PLAN_RUN_SOURCES = frozenset({"trigger", "heartbeat"})
 
 
 def is_interactive_plan_eligible(session_context: Any | None) -> bool:
@@ -240,3 +249,19 @@ def is_interactive_plan_eligible(session_context: Any | None) -> bool:
     source = str(getattr(session_context, "source", "") or "").lower()
     channel = str(getattr(session_context, "channel", "") or "").lower()
     return source in _INTERACTIVE_PLAN_CHAT_SURFACES or channel in _INTERACTIVE_PLAN_CHAT_SURFACES
+
+
+def is_unattended_plan_eligible(session_context: Any | None) -> bool:
+    """True for an unattended agent run (trigger/heartbeat) that is still a
+    multi-round kernel loop, so a blocked gated tool can flip into main-loop
+    Plan Mode and let the agent author the plan in its own loop — deferring
+    confirmation to the next time a user is present (path-unification §5.3).
+
+    Distinct from :func:`is_interactive_plan_eligible` (live chat, synchronous
+    confirmation). The kernel activation and the invoker tool-runtime
+    RPC-fallback decision both consult this so the two can never drift.
+    """
+    if session_context is None:
+        return False
+    source = str(getattr(session_context, "source", "") or "").lower()
+    return source in _UNATTENDED_PLAN_RUN_SOURCES

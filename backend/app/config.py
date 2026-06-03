@@ -148,6 +148,17 @@ class Settings(BaseSettings):
     # to False to fall back to the static needs_plan + RPC planner behaviour.
     PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE: bool = True
 
+    # Plan-path unification §5.3 / cut ②: when on, an UNATTENDED agent run
+    # (trigger / heartbeat — a multi-round kernel loop with no live user stream)
+    # whose gated tool is blocked activates the SAME main-loop Plan Mode runtime
+    # as live chat (read-only policy + per-round reminder + exit_plan_mode),
+    # rather than delegating to the isolated RPC planner. The agent authors the
+    # plan in its own loop; the plan lands awaiting_confirmation and a user
+    # confirms it asynchronously from the plan queue next time they are present.
+    # Default off: unattended intercepts keep the legacy RPC-planner behaviour
+    # until this flag is switched on (path-unification §9 staged rollout).
+    PLAN_MODE_UNATTENDED_RUN: bool = False
+
     # Tavily Search API
     TAVILY_API_KEY: str = ""
 

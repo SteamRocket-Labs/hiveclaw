@@ -78,11 +78,19 @@ def _make_request(session_context, content="每天给我发 RWA 日报"):
     )
 
 
-def _patch_flag(monkeypatch, value: bool):
+def _patch_flag(monkeypatch, value: bool = False, *, unattended: bool = False):
+    """Patch both Plan Mode tool-intercept flags. ``value`` is the live-chat
+    interactive flag (positional for back-compat); ``unattended`` gates the
+    trigger/heartbeat main-loop Plan Mode path (path-unification cut ②)."""
     import app.config
 
     monkeypatch.setattr(
-        app.config, "get_settings", lambda: SimpleNamespace(PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE=value)
+        app.config,
+        "get_settings",
+        lambda: SimpleNamespace(
+            PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE=value,
+            PLAN_MODE_UNATTENDED_RUN=unattended,
+        ),
     )
 
 
@@ -105,9 +113,7 @@ def test_activation_noop_for_non_live_chat(monkeypatch):
 def test_activation_noop_without_signal(monkeypatch):
     _patch_flag(monkeypatch, True)
     sc = SessionContext(source="web", channel="web")
-    token = _maybe_activate_interactive_plan_from_tool_result(
-        _make_request(sc), json.dumps({"status": "needs_plan"})
-    )
+    token = _maybe_activate_interactive_plan_from_tool_result(_make_request(sc), json.dumps({"status": "needs_plan"}))
     assert token is None
     assert sc.plan_mode.active is False
 
@@ -163,6 +169,75 @@ def test_activation_falls_back_to_latest_user_message_for_original_request(monke
     token = _maybe_activate_interactive_plan_from_tool_result(_make_request(sc, content="帮我盯住这个仓位"), sig)
     try:
         assert sc.plan_mode.original_request == "帮我盯住这个仓位"
+    finally:
+        if token is not None:
+            reset_interactive_plan_mode(token)
+
+
+# ── unattended (trigger/heartbeat) activation — path-unification §5.3 / cut ② ──
+
+
+def test_activation_unattended_trigger_when_unattended_flag_on(monkeypatch):
+    """A trigger run (no live user) flips into the SAME Plan Mode runtime when
+    PLAN_MODE_UNATTENDED_RUN is on; source records the unattended provenance so
+    the plan lands awaiting_confirmation for asynchronous user confirmation."""
+    _patch_flag(monkeypatch, value=False, unattended=True)
+    from app.services.plan_mode_runtime_context import (
+        interactive_plan_mode_active,
+        reset_interactive_plan_mode,
+    )
+
+    sc = SessionContext(source="trigger", channel=None)
+    token = _maybe_activate_interactive_plan_from_tool_result(_make_request(sc), _signal())
+    try:
+        assert token is not None
+        assert sc.plan_mode.active is True
+        assert sc.plan_mode.source == "tool_intercept_unattended"
+        assert sc.plan_mode.action_kind == "create_enabled_trigger"
+        # ContextVar armed → the read-only gate constrains the unattended run too,
+        # not just the reminder (Phase 1 iron law ②: both state sources move together).
+        assert interactive_plan_mode_active() is True
+    finally:
+        if token is not None:
+            reset_interactive_plan_mode(token)
+
+
+def test_activation_unattended_heartbeat_when_unattended_flag_on(monkeypatch):
+    _patch_flag(monkeypatch, value=False, unattended=True)
+    from app.services.plan_mode_runtime_context import reset_interactive_plan_mode
+
+    sc = SessionContext(source="heartbeat", channel=None)
+    token = _maybe_activate_interactive_plan_from_tool_result(_make_request(sc), _signal())
+    try:
+        assert token is not None
+        assert sc.plan_mode.active is True
+        assert sc.plan_mode.source == "tool_intercept_unattended"
+    finally:
+        if token is not None:
+            reset_interactive_plan_mode(token)
+
+
+def test_activation_noop_unattended_when_unattended_flag_off(monkeypatch):
+    """Default off: a trigger intercept does NOT flip into Plan Mode even when the
+    live interactive flag is on — it keeps the legacy RPC-planner fallback."""
+    _patch_flag(monkeypatch, value=True, unattended=False)
+    sc = SessionContext(source="trigger", channel=None)
+    token = _maybe_activate_interactive_plan_from_tool_result(_make_request(sc), _signal())
+    assert token is None
+    assert sc.plan_mode.active is False
+
+
+def test_activation_live_chat_keeps_interactive_source_under_both_flags(monkeypatch):
+    """Live chat still activates via the interactive flag with source
+    'tool_intercept' (not the unattended variant) when both flags are on."""
+    _patch_flag(monkeypatch, value=True, unattended=True)
+    from app.services.plan_mode_runtime_context import reset_interactive_plan_mode
+
+    sc = SessionContext(source="web", channel="web")
+    token = _maybe_activate_interactive_plan_from_tool_result(_make_request(sc), _signal())
+    try:
+        assert token is not None
+        assert sc.plan_mode.source == "tool_intercept"  # live wins, not unattended
     finally:
         if token is not None:
             reset_interactive_plan_mode(token)

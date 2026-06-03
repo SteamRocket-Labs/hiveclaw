@@ -157,7 +157,6 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
     return <div style={{ color: 'var(--text-tertiary)', padding: '20px' }}>{t('common.loading')}</div>;
   }
 
-  const skills = extensions?.skills ?? [];
   const mcpServers = extensions?.mcp_servers ?? [];
 
   const configToolForServerTool = (server: AgentMcpServer, serverTool: AgentMcpServerTool) =>
@@ -207,37 +206,7 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
   return (
     <>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-        {/* ── Skills module ── */}
-        <section>
-          {moduleTitle(t('agent.extensions.skills', 'Skills'), skills.length)}
-          {skills.length > 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              {skills.map((skill) => (
-                <div key={skill.id} className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
-                    <span style={{ fontSize: '16px' }}>📘</span>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontWeight: 500, fontSize: '13px' }}>{skill.name}</div>
-                      <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                        {t(`agent.extensions.source.${skill.source}`, skill.source)}
-                      </div>
-                    </div>
-                  </div>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                    <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: statusColor(skill.status) }} />
-                    {t(`agent.extensions.status.${skill.status}`, skill.status)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="card" style={{ textAlign: 'center', padding: '24px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
-              {t('agent.extensions.noSkills', 'No skills yet')}
-            </div>
-          )}
-        </section>
-
-        {/* ── MCP Servers module ── */}
+        {/* ── MCP Servers module (Skills 已移至独立「技能」tab，工具 tab 只管 MCP) ── */}
         <section>
           {moduleTitle(t('agent.extensions.mcpServers', 'MCP Servers'), mcpServers.length)}
           {mcpServers.length > 0 ? (

@@ -296,6 +296,37 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[startup] ⚠️ enterprise_info migration failed: {e}", flush=True)
 
+    # ── MCP backfill (idempotent): legacy Tool(type=mcp) → server-first tables ──
+    # The Skill+MCP cutover left this as a manual admin endpoint, so freshly
+    # migrated tenants showed 0 MCP servers in the new extension UI even though
+    # the agents still had them (runtime kept working via the legacy fallback).
+    # Run it per-tenant on every startup; existing server_key rows are skipped,
+    # so it is safe and cheap to re-run.
+    try:
+        import pkgutil as _pkg_mcp, importlib as _il_mcp
+        import app.models as _am_mcp
+
+        for _mod in _pkg_mcp.iter_modules(_am_mcp.__path__):
+            _il_mcp.import_module(f"app.models.{_mod.name}")
+        from app.services.mcp_backfill_service import backfill_tenant_mcp_servers as _bf_mcp
+        from app.models.tenant import Tenant as _T_mcp
+        from app.database import async_session as _ses_mcp
+        from sqlalchemy import select as _sel_mcp
+
+        _bf_servers = 0
+        async with _ses_mcp() as _db_mcp:
+            _tenants_mcp = await _db_mcp.execute(_sel_mcp(_T_mcp))
+            for _tenant_mcp in _tenants_mcp.scalars().all():
+                try:
+                    _bf_r = await _bf_mcp(_db_mcp, _tenant_mcp.id)
+                    _bf_servers += int(_bf_r.get("servers", 0))
+                except Exception as _bf_e:
+                    logger.warning(f"[startup] MCP backfill failed for tenant {_tenant_mcp.id}: {_bf_e}")
+        if _bf_servers:
+            logger.info(f"[startup] MCP backfill: created {_bf_servers} new server(s)")
+    except Exception as e:
+        logger.warning(f"[startup] MCP backfill step failed (non-fatal): {e}")
+
     try:
         await seed_builtin_tools()
     except Exception as e:

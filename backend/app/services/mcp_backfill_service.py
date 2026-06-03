@@ -92,7 +92,10 @@ async def backfill_tenant_mcp_servers(db: AsyncSession, tenant_id: uuid.UUID) ->
             server_key=server.server_key,
             server_url=server.server_url or None,
             registry_source="migration",
-            status="disabled",
+            # Legacy servers were actively used pre-cutover → reflect that, not "disabled"
+            # (which reads as admin-disabled). status is display-only; runtime gating uses
+            # assignment.enabled, not server.status (see resolve_agent_mcp_tool_mode).
+            status="connected",
             auth_status="none",
             config_json={},
         )

@@ -12,6 +12,7 @@ matching the Memory Control Plane's RLS-style invariant.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import cast
 
@@ -23,6 +24,35 @@ logger = logging.getLogger(__name__)
 
 _FRONTMATTER_DELIM = "---"
 _VALID_ISOLATION = ("none", "brief", "all")
+_SAFE_SUBAGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+
+def validate_subagent_name(name: str) -> str:
+    """Return a tenant-local filename-safe subagent name.
+
+    The stores are tenant-scoped by base directory; this guard prevents a
+    definition or memory name from escaping that base via path traversal.
+    """
+
+    value = str(name or "").strip()
+    if (
+        not value
+        or not _SAFE_SUBAGENT_NAME_RE.fullmatch(value)
+        or ".." in value
+        or "/" in value
+        or "\\" in value
+    ):
+        raise ValueError(
+            "invalid subagent name: use 1-128 ASCII letters, digits, '.', '_' or '-' without path traversal"
+        )
+    return value
+
+
+def _tenant_subagent_root(tenant_id: object, *, kind: str, agent_data_dir: Path | str | None = None) -> Path:
+    from app.config import get_settings
+
+    root = Path(agent_data_dir or get_settings().AGENT_DATA_DIR)
+    return root / "_tenants" / str(tenant_id) / "subagents" / kind
 
 
 def _coerce_isolation(value: object) -> ForkLevel:
@@ -53,9 +83,10 @@ def parse_subagent_definition(text: str) -> SubagentSpec:
             if isinstance(loaded, dict):
                 front = loaded
 
-    name = str(front.get("name") or "").strip()
-    if not name:
+    raw_name = str(front.get("name") or "").strip()
+    if not raw_name:
         raise ValueError("subagent definition missing required 'name'")
+    name = validate_subagent_name(raw_name)
 
     return SubagentSpec(
         name=name,
@@ -96,7 +127,12 @@ class SubagentDefinitionStore:
         self.base_dir = Path(base_dir)
 
     def _path(self, name: str) -> Path:
-        return self.base_dir / f"{name}.md"
+        safe_name = validate_subagent_name(name)
+        base = self.base_dir.resolve()
+        path = (base / f"{safe_name}.md").resolve()
+        if not path.is_relative_to(base):
+            raise ValueError("invalid subagent name: path escapes tenant definition store")
+        return path
 
     def save(self, spec: SubagentSpec) -> Path:
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -114,3 +150,9 @@ class SubagentDefinitionStore:
         if not self.base_dir.exists():
             return []
         return sorted(p.stem for p in self.base_dir.glob("*.md"))
+
+
+def definition_store_for_tenant(tenant_id: object, *, agent_data_dir: Path | str | None = None) -> SubagentDefinitionStore:
+    """Construct the tenant-scoped persistent subagent definition store."""
+
+    return SubagentDefinitionStore(_tenant_subagent_root(tenant_id, kind="definitions", agent_data_dir=agent_data_dir))

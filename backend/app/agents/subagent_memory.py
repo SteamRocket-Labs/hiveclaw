@@ -23,6 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.agents.subagent_definition import _tenant_subagent_root, validate_subagent_name
 from app.memory.write_gate import prepare_memory_write
 
 logger = logging.getLogger(__name__)
@@ -57,7 +58,12 @@ class SubagentMemoryStore:
         self.base_dir = Path(base_dir)
 
     def _path(self, spec_name: str) -> Path:
-        return self.base_dir / f"{spec_name}.记忆.md"
+        safe_name = validate_subagent_name(spec_name)
+        base = self.base_dir.resolve()
+        path = (base / f"{safe_name}.记忆.md").resolve()
+        if not path.is_relative_to(base):
+            raise ValueError("invalid subagent name: path escapes tenant memory store")
+        return path
 
     def record_how(self, spec_name: str, how_text: str, *, category: str) -> HowWriteResult:
         """Append one implicit-How entry — MUST pass the governed write gate.
@@ -115,3 +121,9 @@ def distill_and_record(
     """
 
     return [store.record_how(spec_name, how_text, category=category) for category, how_text in distiller(run_log)]
+
+
+def memory_store_for_tenant(tenant_id: object, *, agent_data_dir: Path | str | None = None) -> SubagentMemoryStore:
+    """Construct the tenant-scoped persistent subagent memory store."""
+
+    return SubagentMemoryStore(_tenant_subagent_root(tenant_id, kind="memory", agent_data_dir=agent_data_dir))

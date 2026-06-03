@@ -71,6 +71,7 @@ async def test_background_emits_completion_signal():
     assert len(signals) == 1
     assert signals[0].signal_type == SUBAGENT_COMPLETION_SIGNAL
     assert "bg-result" in signals[0].content
+    assert consume_subagent_signals(ctx.parent_agent_id, thread_id="thr-1") == []
 
 
 @pytest.mark.asyncio
@@ -85,3 +86,21 @@ async def test_consume_filters_foreign_signals():
         signal_type="other_kind",
     )
     assert consume_subagent_signals(parent) == []
+
+
+def test_consume_subagent_signals_is_read_once():
+    coordination_runtime.reset()
+    parent = uuid.uuid4()
+    coordination_runtime.send_signal(
+        from_agent_id="subagent:bg",
+        to_agent_id=str(parent),
+        content="done",
+        signal_type=SUBAGENT_COMPLETION_SIGNAL,
+        thread_id="thr-once",
+    )
+
+    first = consume_subagent_signals(parent, thread_id="thr-once")
+    second = consume_subagent_signals(parent, thread_id="thr-once")
+
+    assert len(first) == 1
+    assert second == []

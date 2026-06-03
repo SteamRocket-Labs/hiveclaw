@@ -303,7 +303,8 @@ async def lifespan(app: FastAPI):
     # Run it per-tenant on every startup; existing server_key rows are skipped,
     # so it is safe and cheap to re-run.
     try:
-        import pkgutil as _pkg_mcp, importlib as _il_mcp
+        import importlib as _il_mcp
+        import pkgutil as _pkg_mcp
         import app.models as _am_mcp
 
         for _mod in _pkg_mcp.iter_modules(_am_mcp.__path__):

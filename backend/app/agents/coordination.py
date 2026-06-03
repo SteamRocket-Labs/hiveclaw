@@ -125,6 +125,30 @@ class CoordinationRuntime:
             if signal.to_agent_id == agent_id and (thread_id is None or signal.thread_id == thread_id)
         ]
 
+    def consume_signals(
+        self,
+        agent_id: str,
+        *,
+        thread_id: str | None = None,
+        signal_type: str | None = None,
+    ) -> list[Signal]:
+        """Return matching signals and remove them from the in-memory queue."""
+
+        consumed: list[Signal] = []
+        remaining: list[Signal] = []
+        for signal in self._signals:
+            matches = (
+                signal.to_agent_id == agent_id
+                and (thread_id is None or signal.thread_id == thread_id)
+                and (signal_type is None or signal.signal_type == signal_type)
+            )
+            if matches:
+                consumed.append(signal)
+            else:
+                remaining.append(signal)
+        self._signals = remaining
+        return consumed
+
     def create_checkpoint(
         self,
         *,

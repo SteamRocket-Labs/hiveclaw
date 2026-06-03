@@ -107,6 +107,7 @@ CAPABILITY_MAP: dict[str, str] = {
     "import_mcp_server": "agent.tool.install",
     "delegate_to_agent": "agent.message.send",
     "send_message_to_agent": "agent.message.send",
+    "spawn_subagent": "agent.subagent.spawn",
     "check_async_task": "agent.async_task.read",
     "list_async_tasks": "agent.async_task.read",
     "cancel_async_task": "agent.async_task.modify",

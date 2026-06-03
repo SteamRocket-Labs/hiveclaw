@@ -82,6 +82,20 @@ RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = (
         tools=("send_email", "read_emails", "reply_email"),
     ),
     RuntimeToolGroupSpec(
+        name="coordination_pack",
+        summary="Agent 协作与轻量 subagent 扇出能力，用于同事协作、后台任务跟进和隔离式探索。",
+        source="system",
+        activation_mode="通过 delegation-guide / subagent source capability 显式使用",
+        tools=(
+            "send_message_to_agent",
+            "delegate_to_agent",
+            "spawn_subagent",
+            "check_async_task",
+            "cancel_async_task",
+            "list_async_tasks",
+        ),
+    ),
+    RuntimeToolGroupSpec(
         name="mcp_admin_pack",
         summary="MCP 资源发现、导入与资源读取能力。",
         source="mcp",

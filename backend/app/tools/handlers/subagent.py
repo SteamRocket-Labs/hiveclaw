@@ -20,6 +20,8 @@ from typing import Any
 from sqlalchemy import select
 
 from app.agents.subagent import SubagentSpawnContext, SubagentSpec, spawn_subagent
+from app.agents.subagent_definition import definition_store_for_tenant, validate_subagent_name
+from app.agents.subagent_memory import memory_store_for_tenant
 from app.database import async_session
 from app.models.agent import Agent
 from app.models.llm import LLMModel
@@ -63,6 +65,34 @@ async def _resolve_parent_runtime(
         return model or fallback_model, fallback_model, agent
 
 
+async def _resolve_model_override(model_name: str, tenant_id: uuid.UUID | None) -> Any | None:
+    """Resolve a persistent subagent definition's model override within the tenant model pool."""
+
+    value = str(model_name or "").strip()
+    if not value:
+        return None
+    async with async_session() as db:
+        base_filters = [LLMModel.enabled.is_(True)]
+        if tenant_id is not None:
+            base_filters.append(LLMModel.tenant_id == tenant_id)
+
+        try:
+            model_id = uuid.UUID(value)
+        except ValueError:
+            model_id = None
+        if model_id is not None:
+            return (await db.execute(select(LLMModel).where(LLMModel.id == model_id, *base_filters))).scalar_one_or_none()
+
+        return (
+            await db.execute(
+                select(LLMModel).where(
+                    *base_filters,
+                    (LLMModel.label == value) | (LLMModel.model == value),
+                )
+            )
+        ).scalar_one_or_none()
+
+
 _SPAWN_PARAMETERS: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -76,6 +106,13 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
         "name": {
             "type": "string",
             "description": "Optional short name for the explorer (e.g. 'market-scout'). Defaults to 'explorer'.",
+        },
+        "definition_name": {
+            "type": "string",
+            "description": (
+                "Optional tenant-persistent subagent definition name. When set, the stored 定义.md contract "
+                "controls type, tools, model, rounds, isolation, and system prompt."
+            ),
         },
         "max_tool_rounds": {
             "type": "integer",
@@ -100,7 +137,8 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
         category="coordination",
         display_name="Spawn Subagent",
         icon="🧬",
-        governance="safe",
+        governance="sensitive",
+        pack="coordination_pack",
         adapter="request",
     )
 )
@@ -114,10 +152,6 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
     if model is None or agent is None:
         return _json({"ok": False, "error": "No model or agent available for spawning a subagent"})
 
-    name = str(request.arguments.get("name") or "explorer").strip() or "explorer"
-    raw_rounds = request.arguments.get("max_tool_rounds")
-    max_tool_rounds = int(raw_rounds) if isinstance(raw_rounds, int) else None
-
     tenant_id: uuid.UUID | None = None
     raw_tenant = request.context.tenant_id
     if raw_tenant:
@@ -126,7 +160,28 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
         except ValueError:
             tenant_id = None
 
-    spec = SubagentSpec(name=name, type="explorer", max_tool_rounds=max_tool_rounds)
+    definition_name = str(request.arguments.get("definition_name") or "").strip()
+    raw_rounds = request.arguments.get("max_tool_rounds")
+    max_tool_rounds = int(raw_rounds) if isinstance(raw_rounds, int) else None
+
+    if definition_name:
+        if tenant_id is None:
+            return _json({"ok": False, "error": "definition_name requires a valid tenant_id"})
+        try:
+            spec = definition_store_for_tenant(tenant_id).load(definition_name)
+        except ValueError as exc:
+            return _json({"ok": False, "error": str(exc)})
+        if spec is None:
+            return _json({"ok": False, "error": f"subagent definition {definition_name!r} not found"})
+    else:
+        name = str(request.arguments.get("name") or "explorer").strip() or "explorer"
+        try:
+            name = validate_subagent_name(name)
+        except ValueError as exc:
+            return _json({"ok": False, "error": str(exc)})
+        spec = SubagentSpec(name=name, type="explorer", max_tool_rounds=max_tool_rounds)
+
+    memory_store = memory_store_for_tenant(tenant_id) if tenant_id is not None else None
     ctx = SubagentSpawnContext(
         parent_agent_id=agent_id,
         parent_user_id=request.context.user_id,
@@ -134,10 +189,12 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
         fallback_model=fallback_model,
         parent_agent_name=getattr(agent, "name", "Agent"),
         tenant_id=tenant_id,
+        model_resolver=(lambda model_name: _resolve_model_override(model_name, tenant_id)) if tenant_id else None,
+        memory_store=memory_store,
         parent_session_id=request.context.session_id,
     )
 
-    handle = await spawn_subagent(ctx, spec, task)
+    handle = await spawn_subagent(ctx, spec, task, fork=spec.isolation)
     result = handle.result
     return _json(
         {

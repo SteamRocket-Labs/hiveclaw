@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from app.agents import subagent_memory as mem_mod
 from app.agents.subagent_memory import SubagentMemoryStore, distill_and_record
 
@@ -59,6 +61,19 @@ def test_tenant_isolation(tmp_path, monkeypatch):
     t2 = SubagentMemoryStore(tmp_path / "t2")
     t1.record_how("scout", "t1 craft", category="pitfall")
     assert t2.load("scout") == ""  # no cross-tenant leakage
+
+
+def test_store_rejects_path_traversal_names(tmp_path, monkeypatch):
+    monkeypatch.setattr(mem_mod, "prepare_memory_write", _allowed_decision)
+    store = SubagentMemoryStore(tmp_path)
+
+    with pytest.raises(ValueError, match="subagent name"):
+        store.record_how("../escape", "bad", category="pitfall")
+
+    with pytest.raises(ValueError, match="subagent name"):
+        store.load("../escape")
+
+    assert not (tmp_path.parent / "escape.记忆.md").exists()
 
 
 def test_distill_and_record_one_layer(tmp_path, monkeypatch):

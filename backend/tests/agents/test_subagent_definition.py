@@ -13,6 +13,7 @@ from app.agents.subagent import (
     SubagentSpawnContext,
     SubagentSpec,
     _spawn_one,
+    spawn_subagent_from_definition,
 )
 from app.agents.subagent_definition import (
     SubagentDefinitionStore,
@@ -92,6 +93,18 @@ def test_store_tenant_isolation(tmp_path):
     assert loaded is not None and loaded.system_prompt == "t1"
 
 
+def test_store_rejects_path_traversal_names(tmp_path):
+    store = SubagentDefinitionStore(tmp_path)
+
+    with pytest.raises(ValueError, match="subagent name"):
+        store.save(SubagentSpec(name="../escape", system_prompt="bad"))
+
+    with pytest.raises(ValueError, match="subagent name"):
+        store.load("../escape")
+
+    assert not (tmp_path.parent / "escape.md").exists()
+
+
 @pytest.mark.asyncio
 async def test_system_prompt_threads_to_request():
     captured: list = []
@@ -104,3 +117,30 @@ async def test_system_prompt_threads_to_request():
     spec = SubagentSpec(name="s", type="explorer", system_prompt="CUSTOM PROMPT")
     await _spawn_one(ctx, SubagentJob(spec=spec, task="t"), invoke=invoke)
     assert captured[0].system_prompt_suffix == "CUSTOM PROMPT"
+
+
+@pytest.mark.asyncio
+async def test_spawn_from_persistent_definition_uses_stored_contract(tmp_path):
+    captured: list = []
+    store = SubagentDefinitionStore(tmp_path)
+    store.save(
+        SubagentSpec(
+            name="scout",
+            type="critic",
+            allowed_tools=("read_file",),
+            max_tool_rounds=3,
+            system_prompt="Use the stored critic contract.",
+        )
+    )
+
+    async def invoke(request):
+        captured.append(request)
+        return SimpleNamespace(content="ok", tokens_used=1)
+
+    ctx = SubagentSpawnContext(parent_agent_id=uuid.uuid4(), parent_user_id=uuid.uuid4(), model=SimpleNamespace())
+    handle = await spawn_subagent_from_definition(ctx, store, "scout", "review this", invoke=invoke)
+
+    assert handle.result is not None and handle.result.ok
+    assert captured[0].system_prompt_suffix == "Use the stored critic contract."
+    assert captured[0].allowed_tool_names == ("read_file",)
+    assert captured[0].max_tool_rounds == 3

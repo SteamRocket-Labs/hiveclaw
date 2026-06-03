@@ -17,9 +17,11 @@ from app.agents.subagent import (
     SubagentHandle,
     SubagentResult,
     SubagentSpawnContext,
+    SubagentSpec,
     explorer_spec,
     spawn_subagent,
 )
+from app.agents.subagent_definition import SubagentDefinitionStore
 from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
 
 
@@ -41,11 +43,16 @@ def _ok_invoke(content: str = "done", tokens: int = 5):
     return invoke
 
 
-def _tool_request(arguments: dict, *, session_id: str | None = "sess-1") -> ToolExecutionRequest:
+def _tool_request(
+    arguments: dict,
+    *,
+    session_id: str | None = "sess-1",
+    tenant_id: str | None = None,
+) -> ToolExecutionRequest:
     context = ToolExecutionContext(
         agent_id=uuid.uuid4(),
         user_id=uuid.uuid4(),
-        tenant_id=None,
+        tenant_id=tenant_id,
         workspace=Path("/tmp"),
         session_id=session_id,
     )
@@ -138,3 +145,52 @@ async def test_spawn_tool_resolves_model_and_spawns(monkeypatch):
     assert captured["spec"].max_tool_rounds == 5
     assert captured["ctx"].parent_session_id == "sess-1"
     assert captured["ctx"].parent_agent_name == "HR"
+
+
+@pytest.mark.asyncio
+async def test_spawn_tool_can_load_persistent_definition(monkeypatch, tmp_path):
+    import app.tools.handlers.subagent as handler_mod
+
+    tenant_id = str(uuid.uuid4())
+    store = SubagentDefinitionStore(tmp_path / "defs")
+    store.save(
+        SubagentSpec(
+            name="critic-def",
+            type="critic",
+            allowed_tools=("read_file",),
+            max_tool_rounds=3,
+            system_prompt="Persistent critic prompt.",
+        )
+    )
+    captured: dict = {}
+
+    async def fake_resolve(agent_id):
+        return SimpleNamespace(model="x"), None, SimpleNamespace(name="HR")
+
+    async def fake_spawn(ctx, spec, task, **kwargs):
+        captured["ctx"] = ctx
+        captured["spec"] = spec
+        captured["task"] = task
+        return SubagentHandle(
+            name=spec.name,
+            trace_id="",
+            depth=2,
+            result=SubagentResult(name=spec.name, type=spec.type, status="completed", content="digest", tokens_used=7),
+        )
+
+    monkeypatch.setattr(handler_mod, "_resolve_parent_runtime", fake_resolve)
+    monkeypatch.setattr(handler_mod, "definition_store_for_tenant", lambda _tenant_id: store)
+    monkeypatch.setattr(handler_mod, "spawn_subagent", fake_spawn)
+
+    out = await handler_mod.spawn_subagent_tool(
+        _tool_request({"task": "review", "definition_name": "critic-def"}, tenant_id=tenant_id)
+    )
+    data = json.loads(out)
+
+    assert data["ok"] is True
+    assert captured["task"] == "review"
+    assert captured["spec"].name == "critic-def"
+    assert captured["spec"].type == "critic"
+    assert captured["spec"].allowed_tools == ("read_file",)
+    assert captured["spec"].system_prompt == "Persistent critic prompt."
+    assert captured["ctx"].memory_store is not None

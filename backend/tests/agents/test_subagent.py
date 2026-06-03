@@ -62,7 +62,7 @@ def test_subagent_spec_defaults():
     spec = SubagentSpec(name="x")
     assert spec.type == SUBAGENT_TYPE_EXPLORER
     assert spec.isolation == "none"
-    assert spec.has_own_memory is True  # schema complete even though cut ① ignores it
+    assert spec.has_own_memory is True
     assert spec.soul is False
 
 
@@ -228,6 +228,26 @@ async def test_spawn_depth_limited_does_not_invoke():
 
 
 @pytest.mark.asyncio
+async def test_unknown_type_without_explicit_tools_fails_closed():
+    called = False
+
+    async def invoke(request):
+        nonlocal called
+        called = True
+        return SimpleNamespace(content="x", tokens_used=0)
+
+    result = await _spawn_one(
+        _ctx(),
+        SubagentJob(spec=SubagentSpec(name="mystery", type="custom-missing-tools"), task="t"),
+        invoke=invoke,
+    )
+
+    assert result.status == "failed"
+    assert "no allowed tools" in (result.error or "")
+    assert called is False
+
+
+@pytest.mark.asyncio
 async def test_spawn_truncates_output():
     result = await _spawn_one(
         _ctx(),
@@ -236,6 +256,92 @@ async def test_spawn_truncates_output():
         invoke=_ok_invoke(content="0123456789"),
     )
     assert result.content == "01234"
+
+
+@pytest.mark.asyncio
+async def test_spawn_uses_spec_model_override():
+    captured: list = []
+    parent_model = SimpleNamespace(model="parent")
+    child_model = SimpleNamespace(model="child")
+
+    async def resolve_model(model_name: str):
+        assert model_name == "child"
+        return child_model
+
+    ctx = _ctx(model=parent_model, model_resolver=resolve_model)
+    spec = SubagentSpec(name="e", type="explorer", model="child")
+
+    await _spawn_one(ctx, SubagentJob(spec=spec, task="t"), invoke=_ok_invoke(capture=captured))
+
+    assert captured[0].model is child_model
+
+
+@pytest.mark.asyncio
+async def test_spawn_captures_sources_under_budget():
+    captured_request: list = []
+
+    async def invoke(request):
+        captured_request.append(request)
+        await request.on_tool_call(
+            {
+                "tool_name": "web_fetch",
+                "args": {"url": "https://example.com/a"},
+                "result": "abcdef",
+            }
+        )
+        await request.on_tool_call(
+            {
+                "tool_name": "web_fetch",
+                "args": {"url": "https://example.com/b"},
+                "result": "ignored by max_sources",
+            }
+        )
+        return SimpleNamespace(content="digest", tokens_used=1)
+
+    result = await _spawn_one(
+        _ctx(),
+        SubagentJob(spec=explorer_spec("e"), task="t"),
+        budget=SubagentBudget(max_sources=1, max_source_chars=3),
+        invoke=invoke,
+    )
+
+    assert captured_request[0].on_tool_call is not None
+    assert result.sources == [{"url": "https://example.com/a", "tool_name": "web_fetch", "content": "abc"}]
+
+
+@pytest.mark.asyncio
+async def test_spawn_injects_memory_and_records_distilled_how(tmp_path, monkeypatch):
+    from app.agents import subagent_memory as mem_mod
+    from app.agents.subagent_memory import SubagentMemoryStore
+
+    def allowed_decision(content, **kwargs):
+        return SimpleNamespace(
+            rejected=False,
+            reason="",
+            content=content,
+            metadata={"entry_id": "e1", "sensitivity": "internal"},
+        )
+
+    monkeypatch.setattr(mem_mod, "prepare_memory_write", allowed_decision)
+    memory_store = SubagentMemoryStore(tmp_path)
+    memory_store.record_how("e", "Prefer official docs.", category="source_calibration")
+    captured: list = []
+
+    async def invoke(request):
+        captured.append(request)
+        return SimpleNamespace(content="new lesson", tokens_used=1)
+
+    ctx = _ctx(
+        memory_store=memory_store,
+        memory_distiller=lambda run_log: [("pitfall", "Avoid thin snippets.")],
+    )
+
+    result = await _spawn_one(ctx, SubagentJob(spec=explorer_spec("e"), task="t"), invoke=invoke)
+
+    assert result.ok
+    assert "Subagent Memory" in captured[0].system_prompt_suffix
+    assert "Prefer official docs." in captured[0].system_prompt_suffix
+    assert "Avoid thin snippets." in memory_store.load("e")
 
 
 # --- fanout_subagents -------------------------------------------------------

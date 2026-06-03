@@ -1,7 +1,9 @@
 """Subagent source capability (axis 1): lightweight worker spawn + parallel fan-out.
 
-Cut ① (runtime-only — docs/subagent-source-capability.md §5.1/5.2/5.4, v3 main line):
-contracts + internal spawn + ``fanout_subagents`` + the ``explorer`` type.
+Docs: ``docs/subagent-source-capability.md`` §5.1/5.2/5.4, v3 main line.
+Implements the source-capability runtime: contracts, internal spawn,
+``fanout_subagents``, built-in worker types, persistent-definition loading hooks,
+and optional tenant-scoped subagent memory injection/writeback.
 
 Design notes
 ------------
@@ -16,9 +18,9 @@ Design notes
 * **Recursion is bounded.** A depth check (mirroring
   ``OrchestrationPolicy.max_depth``) plus a base deny-list that removes every
   spawn/delegation tool stops a subagent from spawning more subagents.
-* **No memory in this cut.** ``SubagentSpec.has_own_memory`` is defined so the
-  schema is complete, but the runtime always takes the no-memory path until the
-  ``记忆.md`` + evolution daemon lands in cut ⑥.
+* **Memory is optional and governed.** When a tenant memory store is injected,
+  ``记忆.md`` is added to the child prompt and successful runs can write implicit
+  How via ``prepare_memory_write`` through ``SubagentMemoryStore``.
 
 Terminology invariant ("术语边界"): this module serves ONLY spawned lightweight
 workers (explorer / worker / critic). Peer delegation to standalone digital
@@ -28,6 +30,7 @@ employees stays in ``agents/orchestrator.py`` and is never routed here.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
@@ -41,6 +44,8 @@ logger = logging.getLogger(__name__)
 
 # Dependency-injection seam for tests (mirrors ``RuntimeResearchWorker.invoke``).
 InvokeAgent = Callable[[AgentInvocationRequest], Awaitable[Any]]
+ModelResolver = Callable[[str], Awaitable[Any] | Any]
+MemoryDistiller = Callable[[str], list[tuple[str, str]]]
 
 # --- Built-in subagent types ------------------------------------------------
 SUBAGENT_TYPE_EXPLORER = "explorer"
@@ -119,6 +124,7 @@ DEFAULT_SUBAGENT_TOOL_ROUNDS = 8  # mirrors the deep-research worker default
 DEFAULT_SUBAGENT_CONCURRENCY = 4  # platform fan-out default
 _BRIEF_MAX_MESSAGES = 8  # mirrors _DELEGATION_SOURCE_MAX_MESSAGES
 _BRIEF_MAX_CHARS = 4000  # mirrors _DELEGATION_BRIEF_MAX_CHARS
+_SOURCE_CAPTURE_TOOLS: frozenset[str] = frozenset({"web_fetch", "firecrawl_fetch", "xcrawl_scrape", "read_webpage"})
 
 ForkLevel = Literal["none", "brief", "all"]
 SubagentStatus = Literal["completed", "failed", "timed_out", "depth_limited"]
@@ -139,10 +145,10 @@ class SubagentSpec:
     type: str = SUBAGENT_TYPE_EXPLORER
     allowed_tools: tuple[str, ...] = ()
     excluded_tools: tuple[str, ...] = ()
-    model: str | None = None  # named-model override; resolved at cut ⑤
+    model: str | None = None  # named-model override; resolved through ctx.model_resolver
     max_tool_rounds: int | None = None
     isolation: ForkLevel = "none"  # default fork level for this type
-    has_own_memory: bool = True  # schema complete; runtime no-memory until cut ⑥
+    has_own_memory: bool = True
     parent_knowledge: Literal["readonly", "none"] = "readonly"
     soul: bool = False  # no digital-employee identity layer (soul/T3/dream)
     system_prompt: str = ""  # 定义.md body → request.system_prompt_suffix (cut ⑤)
@@ -164,6 +170,9 @@ class SubagentSpawnContext:
     max_depth: int = DEFAULT_MAX_SUBAGENT_DEPTH
     delegation_token: Any | None = None
     tool_executor: Any | None = None
+    model_resolver: ModelResolver | None = None
+    memory_store: Any | None = None
+    memory_distiller: MemoryDistiller | None = None
     parent_session_id: str | None = None
     parent_messages: list[dict] = field(default_factory=list)  # source for fork=brief/all
 
@@ -207,6 +216,7 @@ class SubagentResult:
     content: str = ""
     tokens_used: int = 0
     error: str | None = None
+    sources: list[dict[str, str]] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -257,6 +267,84 @@ def resolve_subagent_tools(spec: SubagentSpec) -> tuple[tuple[str, ...], tuple[s
         allowed = _TYPE_PRESETS.get(spec.type, ())
     excluded = tuple(dict.fromkeys((*_SUBAGENT_BASE_EXCLUDED_TOOLS, *spec.excluded_tools)))
     return allowed, excluded
+
+
+async def _maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+async def _resolve_child_model(ctx: SubagentSpawnContext, spec: SubagentSpec) -> Any:
+    if not spec.model:
+        return ctx.model
+    if ctx.model_resolver is None:
+        raise ValueError(f"subagent model override {spec.model!r} requires a model_resolver")
+    model = await _maybe_await(ctx.model_resolver(spec.model))
+    if model is None:
+        raise ValueError(f"subagent model override {spec.model!r} could not be resolved")
+    return model
+
+
+def _load_subagent_memory(ctx: SubagentSpawnContext, spec: SubagentSpec) -> str:
+    if not spec.has_own_memory or ctx.memory_store is None:
+        return ""
+    return str(ctx.memory_store.load(spec.name) or "").strip()
+
+
+def _build_system_prompt_suffix(ctx: SubagentSpawnContext, spec: SubagentSpec) -> str:
+    parts: list[str] = []
+    if spec.system_prompt.strip():
+        parts.append(spec.system_prompt.strip())
+    memory = _load_subagent_memory(ctx, spec)
+    if memory:
+        parts.append(f"## Subagent Memory\n{memory}")
+    return "\n\n".join(parts)
+
+
+def _source_from_tool_event(event: dict[str, Any], budget: SubagentBudget) -> dict[str, str] | None:
+    tool_name = str(event.get("name") or event.get("tool_name") or "").strip()
+    if tool_name not in _SOURCE_CAPTURE_TOOLS:
+        return None
+    status = event.get("status")
+    if status and status != "done":
+        return None
+    args = event.get("args") if isinstance(event.get("args"), dict) else {}
+    url = str(args.get("url") or "").strip()
+    if not url:
+        return None
+    content = str(event.get("result") or "")
+    if budget.max_source_chars is not None and len(content) > budget.max_source_chars:
+        content = content[: budget.max_source_chars]
+    return {"url": url, "tool_name": tool_name, "content": content}
+
+
+def _build_subagent_run_log(job: SubagentJob, result: SubagentResult) -> str:
+    source_lines = "\n".join(f"- {source.get('tool_name')}: {source.get('url')}" for source in result.sources)
+    return (
+        f"Subagent: {result.name}\n"
+        f"Type: {result.type}\n"
+        f"Task:\n{job.task}\n\n"
+        f"Result:\n{result.content}\n\n"
+        f"Sources:\n{source_lines or '(none)'}"
+    )
+
+
+def _record_memory_from_result(ctx: SubagentSpawnContext, job: SubagentJob, result: SubagentResult) -> None:
+    spec = job.spec
+    if not result.ok or not spec.has_own_memory or ctx.memory_store is None or ctx.memory_distiller is None:
+        return
+    try:
+        from app.agents.subagent_memory import distill_and_record
+
+        distill_and_record(
+            ctx.memory_store,
+            spec.name,
+            _build_subagent_run_log(job, result),
+            distiller=ctx.memory_distiller,
+        )
+    except Exception as exc:
+        logger.warning("[Subagent] memory writeback failed (non-fatal): name=%s err=%s", spec.name, exc)
 
 
 def _build_brief_from_messages(messages: list[dict]) -> str:
@@ -350,21 +438,60 @@ async def _spawn_one(
         )
 
     allowed, excluded = resolve_subagent_tools(spec)
+    if not allowed:
+        return SubagentResult(
+            name=spec.name,
+            type=spec.type,
+            status="failed",
+            error=f"no allowed tools configured for subagent type {spec.type!r}",
+        )
+
+    try:
+        model = await _resolve_child_model(ctx, spec)
+    except Exception as exc:
+        return SubagentResult(
+            name=spec.name,
+            type=spec.type,
+            status="failed",
+            error=str(exc),
+        )
+
     messages = _build_subagent_messages(
         job.task, fork=fork, context_brief=job.context_brief, parent_messages=ctx.parent_messages
     )
     rounds = spec.max_tool_rounds or budget.max_tool_rounds
+    captured_sources: list[dict[str, str]] = []
+
+    async def on_tool_call(event: dict[str, Any]) -> None:
+        if budget.max_sources is not None and len(captured_sources) >= budget.max_sources:
+            return
+        source = _source_from_tool_event(event, budget)
+        if source is not None:
+            captured_sources.append(source)
+
+    try:
+        system_prompt_suffix = _build_system_prompt_suffix(ctx, spec)
+    except Exception as exc:
+        return SubagentResult(
+            name=spec.name,
+            type=spec.type,
+            status="failed",
+            error=str(exc),
+        )
 
     request = AgentInvocationRequest(
-        model=ctx.model,
+        model=model,
         fallback_model=ctx.fallback_model,
         messages=messages,
         memory_messages=list(messages),
         agent_name=f"{ctx.parent_agent_name} · {spec.name}",
         role_description=ctx.role_description or f"{spec.type} subagent",
-        system_prompt_suffix=spec.system_prompt,
+        system_prompt_suffix=system_prompt_suffix,
         agent_id=ctx.parent_agent_id,
         user_id=ctx.parent_user_id,
+        on_tool_call=on_tool_call
+        if budget.max_sources is not None or budget.max_source_chars is not None
+        else None,
         session_context=SessionContext(
             source="subagent",
             channel="internal",
@@ -421,13 +548,16 @@ async def _spawn_one(
     if budget.max_output_chars and len(content) > budget.max_output_chars:
         content = content[: budget.max_output_chars]
     tokens_used = int(getattr(result, "tokens_used", 0) or 0)
-    return SubagentResult(
+    subagent_result = SubagentResult(
         name=spec.name,
         type=spec.type,
         status="completed",
         content=content,
         tokens_used=tokens_used,
+        sources=captured_sources,
     )
+    _record_memory_from_result(ctx, job, subagent_result)
+    return subagent_result
 
 
 # Background subagent tasks are tracked so the event loop keeps a strong reference
@@ -472,6 +602,12 @@ def consume_subagent_signals(parent_agent_id, *, thread_id: str | None = None) -
 
     from app.agents.coordination import coordination_runtime
 
+    if hasattr(coordination_runtime, "consume_signals"):
+        return coordination_runtime.consume_signals(
+            str(parent_agent_id),
+            thread_id=thread_id,
+            signal_type=SUBAGENT_COMPLETION_SIGNAL,
+        )
     signals = coordination_runtime.read_signals(str(parent_agent_id), thread_id=thread_id)
     return [s for s in signals if s.signal_type == SUBAGENT_COMPLETION_SIGNAL]
 
@@ -526,6 +662,45 @@ async def spawn_subagent(
         trace_id=ctx.trace_id or "",
         depth=ctx.depth + 1,
         result=None,
+    )
+
+
+async def spawn_subagent_from_definition(
+    ctx: SubagentSpawnContext,
+    definition_store: Any,
+    name: str,
+    task: str,
+    *,
+    fork: ForkLevel | None = None,
+    budget: SubagentBudget | None = None,
+    context_brief: str | None = None,
+    run_in_background: bool = False,
+    invoke: InvokeAgent = invoke_agent,
+) -> SubagentHandle:
+    """Load a persistent 定义.md and spawn the named lightweight worker."""
+
+    spec = definition_store.load(name)
+    if spec is None:
+        return SubagentHandle(
+            name=name,
+            trace_id=ctx.trace_id or "",
+            depth=ctx.depth + 1,
+            result=SubagentResult(
+                name=name,
+                type=SUBAGENT_TYPE_EXPLORER,
+                status="failed",
+                error=f"subagent definition {name!r} not found",
+            ),
+        )
+    return await spawn_subagent(
+        ctx,
+        spec,
+        task,
+        fork=fork or spec.isolation,
+        budget=budget,
+        context_brief=context_brief,
+        run_in_background=run_in_background,
+        invoke=invoke,
     )
 
 

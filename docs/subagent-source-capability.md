@@ -307,14 +307,51 @@ async def fanout_subagents(
 |---|---|---|---|
 | 0 | 固化决策（§8 v3 重排 + 本表） | ✅ done | `5ad301d` |
 | 1 | ① runtime 契约 + fanout + explorer（无 memory） | ✅ done | `1155f46` |
-| 2 | ② spawn_subagent 入口 + 工具暴露 | ✅ done | `47fdd57` |
+| 2 | ② spawn_subagent 入口 + 工具暴露 + capability/discovery 闭环 | ✅ done | `47fdd57` + 本轮闭环 |
 | 3 | ③ worker/critic type + fork 三档（none/brief/all） | ✅ done | `0f4067b` |
-| 4 | ④ 异步完成重入（P0：Signal 完成通知+消费；调度层自动重入见后续） | ✅ done | `c1987fa` |
-| 5 | ⑤ 持久 定义.md | ✅ done | `b825449` |
-| 6 | ⑥ tenant 记忆.md + 进化（P0：governed write+store+distill 入口；T0 扫描/周期调度见后续） | ✅ done | （本提交） |
+| 4 | ④ 异步完成重入（P0：Signal 完成通知+read-once 消费；调度层自动重入见后续） | ✅ done | `c1987fa` + 本轮闭环 |
+| 5 | ⑤ 持久 定义.md + tenant path boundary + definition-driven spawn | ✅ done | `b825449` + 本轮闭环 |
+| 6 | ⑥ tenant 记忆.md + 进化（P0：governed write+store+runtime 注入+distill writeback 入口；T0 扫描/周期调度见后续） | ✅ done | `90f325e` + 本轮闭环 |
 | DR-A | deep research 接 fanout（保留 RC/F backstop） | ⏸ 后续 | — |
 | DR-B | deep research critic 解 RC15 | ⏸ 后续 | — |
 | 轴2 | 工作流编排（借鉴 CC Workflow） | ⏸ 后续 | — |
+
+---
+
+## 11. Review 闭环记录（2026-06-03）
+
+**结论**：v3 六刀的测试与 ruff 虽然通过，但还不能直接判定为完整源能力。review 发现的核心问题不是"代码不能跑"，而是几个平台边界没有闭合：工具面 fail-closed、capability governance、tenant path boundary、Signal 真消费、持久定义/记忆参与 runtime、以及预算/model 契约真实生效。
+
+**必须闭环的修复项**：
+
+1. **工具面 fail-closed**：unknown/custom subagent type 在没有显式 `allowed_tools` 时不得因空 allow-list 退化成父 agent 全工具面。
+2. **capability mapping**：`spawn_subagent` 必须进入 `CAPABILITY_MAP`，严格能力映射开启时不能被误拒，也不能在 startup audit 里报 unmapped。
+3. **tenant path boundary**：`定义.md` 与 `记忆.md` store 必须校验 subagent name，禁止 `../`、路径分隔符或其他越界写入。
+4. **Signal 真消费**：`consume_subagent_signals()` 必须 read-once，不能重复返回同一完成通知。
+5. **持久实体接入 runtime**：`SubagentDefinitionStore` 和 `SubagentMemoryStore` 不能只是测试 primitive；spawn 路径要能加载持久定义、注入 `记忆.md`，完成后走 governed distill/writeback。
+6. **契约真实生效**：`SubagentSpec.model`、`SubagentBudget.max_source_chars/max_sources` 等字段要么实现，要么从契约/文档降级；本轮选择实现至少可验证的 model override 和 source capture budget。
+
+**本轮修复记录（未提交）**：
+
+- `resolve_subagent_tools()` 继续返回 allow/deny，但 `_spawn_one()` 对 unknown/custom type 的空 allow-list 明确 fail-closed；不会把空 allow-list 传进 kernel 形成"不过滤=父全工具面"。
+- `spawn_subagent` 进入 `CAPABILITY_MAP`，ToolMeta 从 `safe` 改为 `sensitive`，并加入 `coordination_pack` / canonical tool surface；startup audit 不再把它报成 unmapped 或 functional orphan。
+- `SubagentDefinitionStore` / `SubagentMemoryStore` 统一使用 `validate_subagent_name()`，拒绝 `../`、路径分隔符、空名和越界路径；tenant store helper 固定在 `AGENT_DATA_DIR/_tenants/{tenant_id}/subagents/{definitions|memory}`。
+- `CoordinationRuntime.consume_signals()` 新增 read-once 语义，`consume_subagent_signals()` 改走 consume；同一 completion Signal 第二次读取返回空。
+- runtime 新增 `spawn_subagent_from_definition()`；tool handler 支持 `definition_name` 从 tenant store 加载持久定义，并把 tenant `memory_store` 注入 spawn context。
+- `_spawn_one()` 实现 `SubagentSpec.model` override（通过 `model_resolver`）、`SubagentBudget.max_source_chars/max_sources` source capture、`记忆.md` prompt 注入，以及成功后由注入 distiller 触发 governed `distill_and_record()` writeback。
+
+**验证结果**：
+
+- Red：新增测试后，目标子集先因缺少 `spawn_subagent_from_definition` 收集失败；full pytest 后续暴露 `spawn_subagent` discovery orphan/canonical surface 漏洞。
+- Green：`source backend/.venv/bin/activate && pytest backend/tests/agents/test_subagent.py backend/tests/agents/test_subagent_definition.py backend/tests/agents/test_subagent_memory.py backend/tests/agents/test_subagent_async.py backend/tests/agents/test_subagent_spawn_tool.py backend/tests/services/test_capability_gate_policy_surface.py -q` → `64 passed`。
+- 全量：`cd backend && source .venv/bin/activate && pytest -q` → `3371 passed, 7 skipped`。
+- lint：`cd backend && source .venv/bin/activate && ruff check app tests` → `All checks passed!`。
+
+**仍保留的真实后续边界**：
+
+- 切口④仍是同进程/当前 coordination runtime 的 completion Signal read-once；"完成后自动唤醒父 agent 下一轮"还需要跨 worker wake-consumer loop / PostgreSQL-backed coordination 接线。
+- 切口⑥已做到 runtime 记忆注入与 governed writeback hook；离线 daemon 的 T0 日志扫描、周期调度、LLM distiller 仍按 §10 后续边界处理。
+- deep research 接入（DR-A/DR-B）仍未在本轮改造；本文主线继续只关闭 subagent 源能力。
 
 ---
 

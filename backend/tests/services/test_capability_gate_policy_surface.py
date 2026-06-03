@@ -84,6 +84,10 @@ def test_capability_map_covers_deep_research_pack_tools():
         assert CAPABILITY_MAP.get(tool_name) == capability
 
 
+def test_capability_map_covers_subagent_spawn_tool():
+    assert CAPABILITY_MAP.get("spawn_subagent") == "agent.subagent.spawn"
+
+
 def test_capability_definitions_expose_policy_capabilities_for_frontend():
     definitions = {item["capability"]: set(item["tools"]) for item in get_all_capabilities()}
 

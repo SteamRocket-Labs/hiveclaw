@@ -428,6 +428,52 @@ async def _spawn_one(
     )
 
 
+# Background subagent tasks are tracked so the event loop keeps a strong reference
+# (asyncio best practice) until they finish and fire their completion Signal.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+# Signal type a background subagent emits to its parent on completion. The parent
+# consumes it via consume_subagent_signals instead of busy-polling check_async_task.
+SUBAGENT_COMPLETION_SIGNAL = "subagent_completed"
+
+
+async def _emit_completion_signal(ctx: SubagentSpawnContext, result: SubagentResult) -> None:
+    """Push a completion Signal to the parent (cut ④ P0 — the anti-busy-poll path).
+
+    An async subagent announces completion via the coordination Signal bus, so the
+    parent reads it (``consume_subagent_signals``) instead of repeatedly invoking a
+    check tool. Best-effort: a failed emit must never crash the (already-finished)
+    subagent. Real scheduler-driven re-entry of the parent's next turn is a separate
+    follow-up (it needs a wake-consumer loop; see docs §5.5 / status table).
+    """
+
+    try:
+        from app.agents.coordination import coordination_runtime
+
+        coordination_runtime.send_signal(
+            from_agent_id=f"subagent:{result.name}",
+            to_agent_id=str(ctx.parent_agent_id),
+            content=(result.content or result.error or "")[:500],
+            signal_type=SUBAGENT_COMPLETION_SIGNAL,
+            thread_id=ctx.trace_id or None,
+        )
+    except Exception as exc:  # best-effort notification — never crash the finished worker
+        logger.warning("[Subagent] completion signal emit failed (non-fatal): %s", exc)
+
+
+def consume_subagent_signals(parent_agent_id, *, thread_id: str | None = None) -> list:
+    """Read completion Signals for a parent's background subagents (cut ④ P0).
+
+    Replaces busy-poll: the parent reads any ``subagent_completed`` Signals once,
+    O(1), instead of re-invoking a check tool every round.
+    """
+
+    from app.agents.coordination import coordination_runtime
+
+    signals = coordination_runtime.read_signals(str(parent_agent_id), thread_id=thread_id)
+    return [s for s in signals if s.signal_type == SUBAGENT_COMPLETION_SIGNAL]
+
+
 async def spawn_subagent(
     ctx: SubagentSpawnContext,
     spec: SubagentSpec,
@@ -436,22 +482,48 @@ async def spawn_subagent(
     fork: ForkLevel = "none",
     budget: SubagentBudget | None = None,
     context_brief: str | None = None,
+    run_in_background: bool = False,
     invoke: InvokeAgent = invoke_agent,
 ) -> SubagentHandle:
-    """Public single-worker spawn entry (cut ②).
+    """Public single-worker spawn entry (cut ② sync, cut ④ adds background).
 
     Serves ONLY lightweight workers (术语边界 invariant) — peer delegation stays
-    in ``agents/orchestrator.py``. Synchronous: runs the worker to completion and
-    returns a resolved ``SubagentHandle``. Background/async re-entry lands in cut ④.
+    in ``agents/orchestrator.py``.
+
+    * ``run_in_background=False`` (default) — run to completion, return a resolved
+      ``SubagentHandle`` (``result`` populated). Synchronous spawn/fan-out have no
+      busy-poll problem.
+    * ``run_in_background=True`` — fire-and-forget: schedule the worker, return an
+      unresolved handle (``result is None``) immediately, and emit a completion
+      Signal when done. The parent consumes it via ``consume_subagent_signals``
+      rather than busy-polling. Same-process via asyncio; cross-worker needs the
+      coordination postgres backend.
     """
 
     job = SubagentJob(spec=spec, task=task, context_brief=context_brief)
-    result = await _spawn_one(ctx, job, fork=fork, budget=budget, invoke=invoke)
+
+    if not run_in_background:
+        result = await _spawn_one(ctx, job, fork=fork, budget=budget, invoke=invoke)
+        return SubagentHandle(
+            name=spec.name,
+            trace_id=ctx.trace_id or "",
+            depth=ctx.depth + 1,
+            result=result,
+        )
+
+    async def _run_and_signal() -> SubagentResult:
+        result = await _spawn_one(ctx, job, fork=fork, budget=budget, invoke=invoke)
+        await _emit_completion_signal(ctx, result)
+        return result
+
+    task_obj = asyncio.create_task(_run_and_signal(), name=f"subagent-{spec.name}")
+    _BACKGROUND_TASKS.add(task_obj)
+    task_obj.add_done_callback(_BACKGROUND_TASKS.discard)
     return SubagentHandle(
         name=spec.name,
         trace_id=ctx.trace_id or "",
         depth=ctx.depth + 1,
-        result=result,
+        result=None,
     )
 
 

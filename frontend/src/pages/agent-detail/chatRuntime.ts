@@ -302,7 +302,7 @@ export function buildRuntimeSummary({
           ? Math.max(contextWindowTokens - estimatedInputTokens, 0)
           : null),
     },
-    activated_packs: persistedSummary?.activated_packs || [],
+    activated_tool_groups: persistedSummary?.activated_tool_groups || [],
     used_tools: persistedSummary?.used_tools || [],
     blocked_capabilities: persistedSummary?.blocked_capabilities || [],
     compaction_count: persistedSummary?.compaction_count || 0,

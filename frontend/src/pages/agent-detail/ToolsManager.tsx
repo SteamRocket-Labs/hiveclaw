@@ -1,8 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { extensionsApi, type AgentExtensions, type AgentMcpServer } from '../../api/domains/extensions';
-import { toolsApi } from '../../api/domains/tools';
+import {
+  extensionsApi,
+  type AgentExtensions,
+  type AgentMcpServer,
+  type AgentMcpServerTool,
+  type McpToolMode,
+} from '../../api/domains/extensions';
+import { toolsApi, type AgentTool } from '../../api/domains/tools';
 import ToolIcon from '../../components/ToolIcon';
 import { useAuthStore } from '../../stores';
 
@@ -25,7 +31,7 @@ const statusColor = (status?: string) => STATUS_COLORS[status || ''] || 'var(--t
 
 export default function ToolsManager({ agentId, canManage = false }: ToolsManagerProps) {
   const { t } = useTranslation();
-  const [tools, setTools] = useState<any[]>([]);
+  const [tools, setTools] = useState<AgentTool[]>([]);
   const [extensions, setExtensions] = useState<AgentExtensions | null>(null);
   const [loading, setLoading] = useState(true);
   const [configTool, setConfigTool] = useState<any | null>(null);
@@ -35,6 +41,9 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
   const [savingServerId, setSavingServerId] = useState<string | null>(null);
   // MCP servers whose "Advanced tool controls" drawer is expanded (hidden by default).
   const [openAdvanced, setOpenAdvanced] = useState<Set<string>>(new Set());
+  const [serverToolsById, setServerToolsById] = useState<Record<string, AgentMcpServerTool[]>>({});
+  const [loadingServerTools, setLoadingServerTools] = useState<Set<string>>(new Set());
+  const [savingToolKey, setSavingToolKey] = useState<string | null>(null);
 
   const loadTools = async () => {
     try {
@@ -56,6 +65,8 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
 
   useEffect(() => {
     setLoading(true);
+    setOpenAdvanced(new Set());
+    setServerToolsById({});
     void Promise.all([loadTools(), loadExtensions()]).finally(() => setLoading(false));
   }, [agentId]);
 
@@ -78,12 +89,45 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
     setSavingServerId(null);
   };
 
-  const toggleTool = async (toolId: string, enabled: boolean) => {
-    setTools((prev) => prev.map((tool) => (tool.id === toolId ? { ...tool, enabled } : tool)));
+  const loadServerTools = async (serverId: string) => {
+    setLoadingServerTools((prev) => new Set(prev).add(serverId));
     try {
-      await toolsApi.updateTools(agentId, { tools: [{ tool_id: toolId, enabled }] });
+      const data = await extensionsApi.getAgentMcpServerTools(agentId, serverId);
+      setServerToolsById((prev) => ({ ...prev, [serverId]: data }));
     } catch (error) {
       console.error(error);
+      setServerToolsById((prev) => ({ ...prev, [serverId]: [] }));
+    } finally {
+      setLoadingServerTools((prev) => {
+        const next = new Set(prev);
+        next.delete(serverId);
+        return next;
+      });
+    }
+  };
+
+  const setToolMode = async (server: AgentMcpServer, tool: AgentMcpServerTool, mode: McpToolMode) => {
+    const key = `${server.id}:${tool.tool_name}`;
+    setSavingToolKey(key);
+    setServerToolsById((prev) => ({
+      ...prev,
+      [server.id]: (prev[server.id] ?? []).map((item) =>
+        item.tool_name === tool.tool_name ? { ...item, mode, effective_mode: mode } : item,
+      ),
+    }));
+    try {
+      const updated = await extensionsApi.setAgentMcpToolPolicy(agentId, server.id, tool.tool_name, { mode });
+      setServerToolsById((prev) => ({
+        ...prev,
+        [server.id]: (prev[server.id] ?? []).map((item) =>
+          item.tool_name === updated.tool_name ? updated : item,
+        ),
+      }));
+    } catch (error) {
+      console.error(error);
+      await loadServerTools(server.id);
+    } finally {
+      setSavingToolKey(null);
     }
   };
 
@@ -116,18 +160,28 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
   const skills = extensions?.skills ?? [];
   const mcpServers = extensions?.mcp_servers ?? [];
 
-  // Tools belonging to a given MCP server (matched by server name) — only shown
-  // inside the per-server "Advanced tool controls" drawer.
-  const toolsForServer = (serverName: string) =>
-    tools.filter((tool) => tool.type === 'mcp' && (tool.mcp_server_name || '') === serverName);
+  const configToolForServerTool = (server: AgentMcpServer, serverTool: AgentMcpServerTool) =>
+    tools.find((tool) => {
+      if (serverTool.tool_id && (tool.id === serverTool.tool_id || tool.tool_id === serverTool.tool_id)) return true;
+      if (tool.type !== 'mcp') return false;
+      return (
+        (tool.mcp_server_name || '') === server.name &&
+        (tool.mcp_tool_name || tool.name) === serverTool.tool_name
+      );
+    });
 
-  const toggleAdvanced = (serverId: string) =>
+  const toggleAdvanced = (serverId: string) => {
+    const shouldOpen = !openAdvanced.has(serverId);
     setOpenAdvanced((prev) => {
       const next = new Set(prev);
       if (next.has(serverId)) next.delete(serverId);
       else next.add(serverId);
       return next;
     });
+    if (shouldOpen && !serverToolsById[serverId]) {
+      void loadServerTools(serverId);
+    }
+  };
 
   const Toggle = ({ checked, onChange, disabled }: { checked: boolean; onChange: (next: boolean) => void; disabled?: boolean }) => (
     <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: disabled ? 'default' : 'pointer', flexShrink: 0, opacity: disabled ? 0.6 : 1 }}>
@@ -190,7 +244,8 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               {mcpServers.map((server) => {
                 const advancedOpen = openAdvanced.has(server.id);
-                const serverTools = toolsForServer(server.name);
+                const serverTools = serverToolsById[server.id] ?? [];
+                const isLoadingServerTools = loadingServerTools.has(server.id);
                 return (
                   <div key={server.id} className="card" style={{ padding: 0, overflow: 'hidden' }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px' }}>
@@ -220,54 +275,74 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
                       )}
                     </div>
 
-                    {serverTools.length > 0 && (
+                    {server.tool_count > 0 && (
                       <div style={{ borderTop: '1px solid var(--border-subtle)' }}>
                         <button
                           onClick={() => toggleAdvanced(server.id)}
                           style={{ display: 'flex', alignItems: 'center', gap: '6px', width: '100%', background: 'none', border: 'none', padding: '8px 14px', cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: '11px', textAlign: 'left' }}
                         >
                           <span style={{ transition: 'transform 0.15s', transform: advancedOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}>▶</span>
-                          {t('agent.extensions.advancedToolControls', 'Advanced tool controls')} ({serverTools.length})
+                          {t('agent.extensions.advancedToolControls', 'Advanced tool controls')} ({server.tool_count})
                         </button>
                         {advancedOpen && (
                           <div style={{ padding: '0 14px 12px 14px', display: 'flex', flexDirection: 'column', gap: '4px', background: 'var(--bg-secondary)' }}>
-                            {serverTools.map((tool) => {
-                              const shortName = tool.mcp_server_name && tool.display_name?.startsWith(tool.mcp_server_name + ': ')
-                                ? tool.display_name.slice(tool.mcp_server_name.length + 2)
-                                : tool.display_name;
-                              const hasConfig = tool.config_schema?.fields?.length > 0 || tool.type === 'mcp';
-                              return (
-                                <div key={tool.id} className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px' }}>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
-                                    <ToolIcon tool={tool} />
-                                    <div style={{ minWidth: 0 }}>
-                                      <div style={{ fontWeight: 500, fontSize: '12px' }}>{shortName}</div>
-                                      <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                        {tool.description}
+                            {isLoadingServerTools ? (
+                              <div style={{ padding: '10px 12px', color: 'var(--text-tertiary)', fontSize: '12px' }}>
+                                {t('common.loading', 'Loading...')}
+                              </div>
+                            ) : serverTools.length > 0 ? (
+                              serverTools.map((serverTool) => {
+                                const configTool = configToolForServerTool(server, serverTool);
+                                const hasConfig = Boolean(configTool?.config_schema?.fields?.length) || Boolean(configTool);
+                                const savingKey = `${server.id}:${serverTool.tool_name}`;
+                                return (
+                                  <div key={serverTool.tool_name} className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                                      <ToolIcon tool={configTool || { name: serverTool.tool_name, category: 'mcp' }} />
+                                      <div style={{ minWidth: 0 }}>
+                                        <div style={{ fontWeight: 500, fontSize: '12px' }}>{serverTool.display_name}</div>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                          {configTool?.description || serverTool.tool_name}
+                                        </div>
                                       </div>
                                     </div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                                      {canManage && configTool && hasConfig && (
+                                        <button
+                                          onClick={() => openConfig(configTool)}
+                                          style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }}
+                                          title={t('agent.extensions.configureTool', 'Configure tool')}
+                                        >
+                                          {t('enterprise.tools.configure', 'Configure')}
+                                        </button>
+                                      )}
+                                      {canManage ? (
+                                        <select
+                                          className="form-input"
+                                          value={serverTool.mode}
+                                          disabled={!server.enabled || savingToolKey === savingKey}
+                                          onChange={(event) => void setToolMode(server, serverTool, event.target.value as McpToolMode)}
+                                          style={{ width: '128px', minHeight: '28px', padding: '3px 8px', fontSize: '11px' }}
+                                          title={t('agent.extensions.toolPolicyTitle', 'Tool policy')}
+                                        >
+                                          <option value="auto">{t('agent.extensions.toolPolicy.auto', 'Auto')}</option>
+                                          <option value="approval">{t('agent.extensions.toolPolicy.approval', 'Approval')}</option>
+                                          <option value="deny">{t('agent.extensions.toolPolicy.deny', 'Deny')}</option>
+                                        </select>
+                                      ) : (
+                                        <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontWeight: 500 }}>
+                                          {t(`agent.extensions.toolPolicy.${serverTool.effective_mode}`, serverTool.effective_mode)}
+                                        </span>
+                                      )}
+                                    </div>
                                   </div>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-                                    {canManage && hasConfig && (
-                                      <button
-                                        onClick={() => openConfig(tool)}
-                                        style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }}
-                                        title={t('agent.extensions.configureTool', 'Configure tool')}
-                                      >
-                                        {t('enterprise.tools.configure', 'Configure')}
-                                      </button>
-                                    )}
-                                    {canManage ? (
-                                      <Toggle checked={tool.enabled} onChange={(next) => void toggleTool(tool.id, next)} />
-                                    ) : (
-                                      <span style={{ fontSize: '11px', color: tool.enabled ? '#22c55e' : 'var(--text-tertiary)', fontWeight: 500 }}>
-                                        {tool.enabled ? t('common.enabled', 'On') : t('common.disabled', 'Off')}
-                                      </span>
-                                    )}
-                                  </div>
-                                </div>
-                              );
-                            })}
+                                );
+                              })
+                            ) : (
+                              <div style={{ padding: '10px 12px', color: 'var(--text-tertiary)', fontSize: '12px' }}>
+                                {t('agent.extensions.noMcpServerTools', 'No server tools found')}
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>

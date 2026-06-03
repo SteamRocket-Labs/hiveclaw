@@ -29,6 +29,14 @@ export interface AgentMcpServer {
   default_tool_mode: McpToolMode | string;
 }
 
+export interface AgentMcpServerTool {
+  tool_id: string | null;
+  tool_name: string;
+  display_name: string;
+  mode: McpToolMode;
+  effective_mode: McpToolMode;
+}
+
 export interface AgentExtensions {
   skills: ExtensionSkill[];
   mcp_servers: AgentMcpServer[];
@@ -79,12 +87,28 @@ export const extensionsApi = {
   /** MCP servers assigned to one agent (server-level rollup). */
   getAgentMcpServers: (agentId: string) => get<AgentMcpServer[]>(`/agents/${agentId}/mcp-servers`),
 
+  /** Per-tool policy modes for one assigned MCP server. */
+  getAgentMcpServerTools: (agentId: string, serverId: string) =>
+    get<AgentMcpServerTool[]>(`/agents/${agentId}/mcp-servers/${serverId}/tools`),
+
   /** Assign or update one agent's connection to an MCP server. */
   setAgentMcpAssignment: (
     agentId: string,
     serverId: string,
     data: { enabled: boolean; default_tool_mode?: McpToolMode | string },
   ) => put<McpAssignmentResult>(`/agents/${agentId}/mcp-servers/${serverId}`, data),
+
+  /** Set one advanced per-tool policy override for an assigned MCP server. */
+  setAgentMcpToolPolicy: (
+    agentId: string,
+    serverId: string,
+    toolName: string,
+    data: { mode: McpToolMode },
+  ) =>
+    put<AgentMcpServerTool>(
+      `/agents/${agentId}/mcp-servers/${serverId}/tools/${encodeURIComponent(toolName)}/policy`,
+      data,
+    ),
 
   /** Company admin: tenant MCP server records, server-first with stable identity. */
   listEnterpriseMcpServers: () => get<McpServerRecord[]>('/enterprise/mcp-servers'),

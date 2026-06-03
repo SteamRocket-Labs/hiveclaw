@@ -946,6 +946,13 @@
       "configureTool": "配置工具",
       "perAgentConfig": "按员工配置（覆盖全局默认值）",
       "toolCount": "{{count}} 个工具",
+      "toolPolicyTitle": "工具策略",
+      "noMcpServerTools": "未找到服务器工具",
+      "toolPolicy": {
+        "auto": "默认",
+        "approval": "需审批",
+        "deny": "拒绝"
+      },
       "source": {
         "workspace": "工作区技能",
         "preset": "预置技能",

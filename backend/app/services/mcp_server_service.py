@@ -16,6 +16,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import Agent
+from app.models.capability_install import AgentCapabilityInstall
 from app.models.mcp_server import (
     AgentMCPServerAssignment,
     AgentMCPToolOverride,
@@ -32,6 +33,32 @@ from app.services.mcp_backfill import (
 from app.services.mcp_backfill_service import backfill_tenant_mcp_servers
 
 logger = logging.getLogger(__name__)
+
+MCP_TOOL_MODES = {"auto", "approval", "deny"}
+SKILL_INSTALL_KINDS = {"platform_skill", "clawhub_skill", "external_skill_url"}
+
+
+def _validate_tool_mode(value: str, *, field_name: str = "mode") -> str:
+    mode = (value or "auto").strip().lower()
+    if mode not in MCP_TOOL_MODES:
+        raise ValueError(f"{field_name} must be one of: auto, approval, deny")
+    return mode
+
+
+async def _require_tenant_server(db: AsyncSession, tenant_id: uuid.UUID, server_id: uuid.UUID) -> MCPServer:
+    result = await db.execute(select(MCPServer).where(MCPServer.id == server_id, MCPServer.tenant_id == tenant_id))
+    server = result.scalar_one_or_none()
+    if server is None:
+        raise ValueError("MCP server not found")
+    return server
+
+
+def _effective_tool_mode(*, assignment: AgentMCPServerAssignment, override_mode: str | None = None) -> str:
+    if not bool(assignment.enabled):
+        return "deny"
+    if override_mode:
+        return _validate_tool_mode(override_mode)
+    return _validate_tool_mode(getattr(assignment, "default_tool_mode", "auto"), field_name="default_tool_mode")
 
 
 async def list_tenant_servers(db: AsyncSession, tenant_id: uuid.UUID) -> list[dict]:
@@ -143,10 +170,47 @@ async def _list_agent_workspace_skills(agent_id: uuid.UUID) -> list[dict]:
     ]
 
 
+async def _list_installed_skill_extensions(db: AsyncSession, agent_id: uuid.UUID) -> list[dict]:
+    """Read persisted non-workspace skill installs into the extension skill DTO."""
+    result = await db.execute(
+        select(AgentCapabilityInstall)
+        .where(AgentCapabilityInstall.agent_id == agent_id, AgentCapabilityInstall.kind.in_(SKILL_INSTALL_KINDS))
+        .order_by(AgentCapabilityInstall.created_at.asc())
+    )
+    skills = []
+    for record in result.scalars().all():
+        source = getattr(record, "kind", "")
+        normalized = getattr(record, "normalized_key", None) or getattr(record, "source_key", "")
+        display_name = getattr(record, "display_name", None) or getattr(record, "source_key", None) or normalized
+        skills.append(
+            {
+                "id": normalized,
+                "name": display_name,
+                "source": source,
+                "status": getattr(record, "status", None) or "installed",
+            }
+        )
+    return skills
+
+
+def _dedupe_skill_extensions(skills: list[dict]) -> list[dict]:
+    deduped: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for skill in skills:
+        key = (str(skill.get("source") or ""), str(skill.get("id") or skill.get("name") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(skill)
+    return deduped
+
+
 async def get_agent_extensions(db: AsyncSession, agent_id: uuid.UUID) -> dict:
     """Single source of truth for an agent's extension state: skills + MCP servers."""
     return {
-        "skills": await _list_agent_workspace_skills(agent_id),
+        "skills": _dedupe_skill_extensions(
+            [*(await _list_agent_workspace_skills(agent_id)), *(await _list_installed_skill_extensions(db, agent_id))]
+        ),
         "mcp_servers": await get_agent_mcp_servers(db, agent_id),
     }
 
@@ -161,6 +225,8 @@ async def set_agent_mcp_assignment(
     default_tool_mode: str = "auto",
 ) -> dict:
     """Upsert one agent↔MCP server assignment (unique per tenant+agent+server)."""
+    default_tool_mode = _validate_tool_mode(default_tool_mode, field_name="default_tool_mode")
+    await _require_tenant_server(db, tenant_id, server_id)
     result = await db.execute(
         select(AgentMCPServerAssignment).where(
             AgentMCPServerAssignment.tenant_id == tenant_id,
@@ -191,6 +257,162 @@ async def set_agent_mcp_assignment(
     }
 
 
+async def list_agent_mcp_server_tools(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    server_id: uuid.UUID,
+) -> list[dict]:
+    """List one agent's per-tool policy modes for an MCP server."""
+    await _require_tenant_server(db, tenant_id, server_id)
+    assignment_result = await db.execute(
+        select(AgentMCPServerAssignment).where(
+            AgentMCPServerAssignment.tenant_id == tenant_id,
+            AgentMCPServerAssignment.agent_id == agent_id,
+            AgentMCPServerAssignment.mcp_server_id == server_id,
+        )
+    )
+    assignment = assignment_result.scalar_one_or_none()
+    if assignment is None:
+        raise ValueError("MCP server assignment not found")
+
+    tools_result = await db.execute(
+        select(MCPServerTool)
+        .where(MCPServerTool.tenant_id == tenant_id, MCPServerTool.mcp_server_id == server_id)
+        .order_by(MCPServerTool.display_name.asc(), MCPServerTool.mcp_tool_name.asc())
+    )
+    server_tools = list(tools_result.scalars().all())
+
+    overrides_result = await db.execute(
+        select(AgentMCPToolOverride).where(
+            AgentMCPToolOverride.tenant_id == tenant_id,
+            AgentMCPToolOverride.agent_id == agent_id,
+            AgentMCPToolOverride.mcp_server_id == server_id,
+        )
+    )
+    overrides = {override.tool_name: override.mode for override in overrides_result.scalars().all()}
+
+    default_mode = _effective_tool_mode(assignment=assignment)
+    return [
+        {
+            "tool_id": str(tool.tool_id) if tool.tool_id else None,
+            "tool_name": tool.mcp_tool_name,
+            "display_name": tool.display_name or tool.mcp_tool_name,
+            "mode": overrides.get(tool.mcp_tool_name, default_mode),
+            "effective_mode": _effective_tool_mode(
+                assignment=assignment, override_mode=overrides.get(tool.mcp_tool_name)
+            ),
+        }
+        for tool in server_tools
+    ]
+
+
+async def set_agent_mcp_tool_policy(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    server_id: uuid.UUID,
+    tool_name: str,
+    *,
+    mode: str,
+) -> dict:
+    """Upsert one per-tool MCP policy override for an agent/server/tool."""
+    mode = _validate_tool_mode(mode)
+    await _require_tenant_server(db, tenant_id, server_id)
+    assignment_result = await db.execute(
+        select(AgentMCPServerAssignment).where(
+            AgentMCPServerAssignment.tenant_id == tenant_id,
+            AgentMCPServerAssignment.agent_id == agent_id,
+            AgentMCPServerAssignment.mcp_server_id == server_id,
+        )
+    )
+    assignment = assignment_result.scalar_one_or_none()
+    if assignment is None:
+        raise ValueError("MCP server assignment not found")
+
+    tool_result = await db.execute(
+        select(MCPServerTool).where(
+            MCPServerTool.tenant_id == tenant_id,
+            MCPServerTool.mcp_server_id == server_id,
+            MCPServerTool.mcp_tool_name == tool_name,
+        )
+    )
+    server_tool = tool_result.scalar_one_or_none()
+    if server_tool is None:
+        raise ValueError("MCP server tool not found")
+
+    override_result = await db.execute(
+        select(AgentMCPToolOverride).where(
+            AgentMCPToolOverride.tenant_id == tenant_id,
+            AgentMCPToolOverride.agent_id == agent_id,
+            AgentMCPToolOverride.mcp_server_id == server_id,
+            AgentMCPToolOverride.tool_name == tool_name,
+        )
+    )
+    override = override_result.scalar_one_or_none()
+    if override is None:
+        override = AgentMCPToolOverride(
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            mcp_server_id=server_id,
+            tool_name=tool_name,
+            mode=mode,
+        )
+        db.add(override)
+    else:
+        override.mode = mode
+    await db.commit()
+    return {
+        "tool_id": str(server_tool.tool_id) if server_tool.tool_id else None,
+        "tool_name": server_tool.mcp_tool_name,
+        "display_name": server_tool.display_name or server_tool.mcp_tool_name,
+        "mode": mode,
+        "effective_mode": _effective_tool_mode(assignment=assignment, override_mode=mode),
+    }
+
+
+async def resolve_agent_mcp_tool_mode(db: AsyncSession, agent_id: uuid.UUID, tool) -> str | None:
+    """Return the effective MCP mode for a concrete runtime Tool row.
+
+    ``None`` means no new MCP server record links this tool yet, so callers may
+    keep the legacy AgentTool fallback for un-backfilled tenants. ``deny`` means
+    the call must be blocked. ``approval`` and ``auto`` are reachable modes.
+    """
+    tool_id = getattr(tool, "id", None)
+    if tool_id is None or getattr(tool, "type", None) != "mcp":
+        return None
+
+    server_tools_result = await db.execute(select(MCPServerTool).where(MCPServerTool.tool_id == tool_id))
+    server_tools = list(server_tools_result.scalars().all())
+    if not server_tools:
+        return None
+
+    for server_tool in server_tools:
+        assignment_result = await db.execute(
+            select(AgentMCPServerAssignment).where(
+                AgentMCPServerAssignment.agent_id == agent_id,
+                AgentMCPServerAssignment.mcp_server_id == server_tool.mcp_server_id,
+            )
+        )
+        assignment = assignment_result.scalar_one_or_none()
+        if assignment is None:
+            continue
+        if not bool(assignment.enabled):
+            return "deny"
+
+        override_result = await db.execute(
+            select(AgentMCPToolOverride).where(
+                AgentMCPToolOverride.agent_id == agent_id,
+                AgentMCPToolOverride.mcp_server_id == server_tool.mcp_server_id,
+                AgentMCPToolOverride.tool_name == server_tool.mcp_tool_name,
+            )
+        )
+        override = override_result.scalar_one_or_none()
+        return _effective_tool_mode(assignment=assignment, override_mode=getattr(override, "mode", None))
+
+    return "deny"
+
+
 async def trigger_tenant_backfill(db: AsyncSession, tenant_id: uuid.UUID) -> dict:
     """Run the Part 2 backfill for one tenant and return its summary."""
     return await backfill_tenant_mcp_servers(db, tenant_id)
@@ -205,9 +427,7 @@ async def delete_tenant_server(db: AsyncSession, tenant_id: uuid.UUID, server_id
     this tenant — matching what ``mcp_registry_service.delete_tenant_mcp_server``
     did, but keyed off the stable ``MCPServer.id`` instead of a pack-derived key.
     """
-    server_row = await db.execute(
-        select(MCPServer).where(MCPServer.id == server_id, MCPServer.tenant_id == tenant_id)
-    )
+    server_row = await db.execute(select(MCPServer).where(MCPServer.id == server_id, MCPServer.tenant_id == tenant_id))
     server = server_row.scalar_one_or_none()
     if server is None:
         raise ValueError("MCP server not found")
@@ -352,7 +572,9 @@ async def register_imported_server(
         taken = {row[0] for row in taken_result.all()}
         from app.services.mcp_backfill import derive_server_key
 
-        server_key = spec.server_key if spec.server_key not in taken else derive_server_key(spec.name, spec.server_url, taken)
+        server_key = (
+            spec.server_key if spec.server_key not in taken else derive_server_key(spec.name, spec.server_url, taken)
+        )
         mcp_server = MCPServer(
             tenant_id=tenant_id,
             name=spec.name,
@@ -498,3 +720,73 @@ async def import_and_register(
             db, tenant_id, server_name_for_records, server_url_for_records or ""
         )
     return {"message": message, "server": server_record}
+
+
+async def import_mcp_for_agent_and_register(
+    agent_id: uuid.UUID,
+    *,
+    server_id: str | None = None,
+    mcp_url: str | None = None,
+    server_name: str | None = None,
+    config: dict | None = None,
+    reauthorize: bool = False,
+) -> str:
+    """Agent-scoped MCP import path used by the ``import_mcp_server`` tool.
+
+    The legacy resource discovery import creates runtime ``Tool`` rows and
+    ``AgentTool`` rows for the current agent. This wrapper then registers the
+    corresponding first-class MCPServer records for just the server(s) touched by
+    that import, preserving agent-scoped install semantics instead of assigning
+    the server to every tenant agent.
+    """
+    from app.database import async_session
+    from app.services.resource_discovery import import_mcp_direct, import_mcp_from_smithery
+
+    config = dict(config or {})
+    async with async_session() as db:
+        agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+        agent = agent_result.scalar_one_or_none()
+        if agent is None or not agent.tenant_id:
+            raise ValueError("Agent tenant not found")
+        tenant_id = agent.tenant_id
+
+    if mcp_url:
+        api_key = config.pop("api_key", None)
+        message = await import_mcp_direct(mcp_url, agent_id, server_name=server_name, api_key=api_key)
+    else:
+        if not server_id:
+            raise ValueError("server_id or mcp_url is required")
+        message = await import_mcp_from_smithery(server_id, agent_id, config or None, reauthorize=reauthorize)
+
+    async with async_session() as db:
+        query = (
+            select(Tool.mcp_server_name, Tool.mcp_server_url)
+            .join(AgentTool, AgentTool.tool_id == Tool.id)
+            .where(AgentTool.agent_id == agent_id, Tool.type == "mcp")
+        )
+        if mcp_url:
+            query = query.where(Tool.mcp_server_url == mcp_url)
+        elif server_id:
+            clean_id = server_id.replace("/", "_").replace("@", "")
+            query = query.where(Tool.name.like(f"mcp_{clean_id}%"))
+        rows = await db.execute(query)
+        seen: set[tuple[str, str]] = set()
+        registered = []
+        for name, url in rows.all():
+            server_name_for_records = name or server_name or "MCP Server"
+            server_url_for_records = url or mcp_url or ""
+            key = (server_name_for_records, server_url_for_records)
+            if key in seen:
+                continue
+            seen.add(key)
+            record = await register_imported_server(
+                db,
+                tenant_id,
+                server_name_for_records,
+                server_url_for_records,
+            )
+            if record:
+                registered.append(record["name"])
+        if registered:
+            message += "\n\nRegistered MCP server records: " + ", ".join(sorted(registered))
+        return message

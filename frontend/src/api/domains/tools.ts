@@ -16,6 +16,11 @@ export interface AgentTool {
   category: string;
   enabled: boolean;
   config: Record<string, unknown>;
+  global_config?: Record<string, unknown>;
+  agent_config?: Record<string, unknown>;
+  config_schema?: { fields?: Array<Record<string, unknown>> };
+  mcp_server_name?: string | null;
+  mcp_tool_name?: string | null;
 }
 
 export interface ToolDetail {

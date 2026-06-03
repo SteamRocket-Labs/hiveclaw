@@ -4,9 +4,12 @@ import json
 import uuid
 from types import SimpleNamespace
 
+import pytest
+
 from app.services.agent_tools import CORE_TOOL_NAMES
 from app.services.pack_service import (
     KERNEL_TOOLS,
+    get_capability_summary,
     _resolve_session_conversation_id,
     _summarize_chat_messages,
     collect_skill_declared_packs,
@@ -128,50 +131,60 @@ def test_summarize_chat_messages_extracts_runtime_events_and_tool_usage():
     messages = [
         SimpleNamespace(
             role="system",
-            content=json.dumps({
-                "event_type": "pack_activation",
-                "packs": [{"name": "web_pack"}],
-                "message": "Activated web pack",
-            }),
+            content=json.dumps(
+                {
+                    "event_type": "pack_activation",
+                    "packs": [{"name": "web_pack"}],
+                    "message": "Activated web pack",
+                }
+            ),
         ),
         SimpleNamespace(
             role="tool_call",
-            content=json.dumps({
-                "name": "read_file",
-                "args": {"path": "skills/web-research/SKILL.md"},
-                "status": "done",
-                "result": "ok",
-            }),
+            content=json.dumps(
+                {
+                    "name": "read_file",
+                    "args": {"path": "skills/web-research/SKILL.md"},
+                    "status": "done",
+                    "result": "ok",
+                }
+            ),
         ),
         SimpleNamespace(
             role="system",
-            content=json.dumps({
-                "event_type": "permission",
-                "tool_name": "send_feishu_message",
-                "status": "approval_required",
-                "capability": "channel.feishu.message",
-                "message": "This action requires approval.",
-            }),
+            content=json.dumps(
+                {
+                    "event_type": "permission",
+                    "tool_name": "send_feishu_message",
+                    "status": "approval_required",
+                    "capability": "channel.feishu.message",
+                    "message": "This action requires approval.",
+                }
+            ),
         ),
         SimpleNamespace(
             role="system",
-            content=json.dumps({
-                "event_type": "session_compact",
-                "summary": "Older context compacted.",
-            }),
+            content=json.dumps(
+                {
+                    "event_type": "session_compact",
+                    "summary": "Older context compacted.",
+                }
+            ),
         ),
     ]
 
     summary = _summarize_chat_messages(messages)
 
     assert summary == {
-        "activated_packs": ["web_pack"],
+        "activated_tool_groups": ["web_pack"],
         "used_tools": ["read_file"],
-        "blocked_capabilities": [{
-            "tool": "send_feishu_message",
-            "status": "approval_required",
-            "capability": "channel.feishu.message",
-        }],
+        "blocked_capabilities": [
+            {
+                "tool": "send_feishu_message",
+                "status": "approval_required",
+                "capability": "channel.feishu.message",
+            }
+        ],
         "compaction_count": 1,
         "permission_event_count": 1,
         "team_memory_hit_count": 0,
@@ -186,6 +199,35 @@ def test_summarize_chat_messages_extracts_runtime_events_and_tool_usage():
         "last_tool_budget_event": None,
         "last_retry_reason": None,
     }
+    assert "activated_packs" not in summary
+
+
+class _ScalarResult:
+    def __init__(self, value=None):
+        self._value = value
+
+    def scalar_one_or_none(self):
+        return self._value
+
+
+class _FakeDB:
+    def __init__(self, results):
+        self._results = list(results)
+
+    async def execute(self, _stmt):
+        if not self._results:
+            raise AssertionError("Unexpected execute() call")
+        return self._results.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_capability_summary_contract_omits_pack_fields_when_agent_missing():
+    summary = await get_capability_summary(_FakeDB([_ScalarResult(None)]), uuid.uuid4())
+
+    assert "available_packs" not in summary
+    assert "channel_backed_packs" not in summary
+    assert "skill_declared_packs" not in summary
+    assert summary["capability_policies"] == []
 
 
 def test_collect_skill_declared_packs_merges_explicit_and_inferred_packs():

@@ -198,7 +198,7 @@ def _safe_isoformat(value) -> str | None:
 
 def _summarize_chat_messages(messages: list) -> dict:
     """Summarize runtime events and tool usage from persisted ChatMessage rows."""
-    activated_packs: list[str] = []
+    activated_tool_groups: list[str] = []
     used_tools: set[str] = set()
     blocked_capabilities: list[dict] = []
     compaction_count = 0
@@ -226,8 +226,8 @@ def _summarize_chat_messages(messages: list) -> dict:
         if event_type in ("pack_activation", "tool_group_activation"):
             for pack in event_data.get("tool_groups") or event_data.get("packs", []):
                 name = pack.get("name") if isinstance(pack, dict) else str(pack)
-                if name and name not in activated_packs:
-                    activated_packs.append(name)
+                if name and name not in activated_tool_groups:
+                    activated_tool_groups.append(name)
             continue
 
         if event_type == "permission":
@@ -272,7 +272,7 @@ def _summarize_chat_messages(messages: list) -> dict:
             }
 
     return {
-        "activated_packs": activated_packs,
+        "activated_tool_groups": activated_tool_groups,
         "used_tools": sorted(used_tools),
         "blocked_capabilities": blocked_capabilities,
         "compaction_count": compaction_count,
@@ -435,7 +435,6 @@ async def get_capability_summary(db: AsyncSession, agent_id: uuid.UUID) -> dict:
     Returns:
         {
             "kernel_tools": [...],
-            "available_packs": [...],
             "capability_policies": [...],
             "pending_approvals": int,
         }
@@ -449,15 +448,9 @@ async def get_capability_summary(db: AsyncSession, agent_id: uuid.UUID) -> dict:
     if not agent:
         return {
             "kernel_tools": list(KERNEL_TOOLS),
-            "available_packs": [],
-            "channel_backed_packs": [],
-            "skill_declared_packs": [],
             "capability_policies": [],
             "pending_approvals": 0,
         }
-
-    # Get packs
-    packs_data = await get_agent_packs(db, agent_id)
 
     # Get capability policies for this agent + tenant defaults
     policies = []
@@ -494,10 +487,7 @@ async def get_capability_summary(db: AsyncSession, agent_id: uuid.UUID) -> dict:
     pending_count = pending_result.scalar() or 0
 
     return {
-        "kernel_tools": packs_data["kernel_tools"],
-        "available_packs": packs_data["available_packs"],
-        "channel_backed_packs": packs_data["channel_backed_packs"],
-        "skill_declared_packs": packs_data["skill_declared_packs"],
+        "kernel_tools": list(KERNEL_TOOLS),
         "capability_policies": policies,
         "pending_approvals": pending_count,
     }
@@ -517,7 +507,7 @@ async def get_session_runtime_summary(db: AsyncSession, session_id: uuid.UUID) -
     session = sess_result.scalar_one_or_none()
     if not session:
         return {
-            "activated_packs": [],
+            "activated_tool_groups": [],
             "used_tools": [],
             "blocked_capabilities": [],
             "compaction_count": 0,

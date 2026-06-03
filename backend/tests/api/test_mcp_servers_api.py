@@ -11,7 +11,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 from uuid import uuid4
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -286,6 +285,108 @@ def test_put_agent_mcp_server_defaults_tool_mode_auto(monkeypatch):
 
     assert resp.status_code == 200
     assert captured["default_tool_mode"] == "auto"
+
+
+def test_put_agent_mcp_server_rejects_invalid_default_mode():
+    agent_id = uuid4()
+    server_id = uuid4()
+    client, _fake_db, _current_user = _build_client()
+
+    resp = client.put(
+        f"/agents/{agent_id}/mcp-servers/{server_id}",
+        json={"enabled": True, "default_tool_mode": "bogus"},
+    )
+
+    assert resp.status_code == 422
+
+
+def test_get_agent_mcp_server_tools_checks_access(monkeypatch):
+    agent_id = uuid4()
+    server_id = uuid4()
+    client, fake_db, current_user = _build_client()
+    seen = {}
+
+    async def fake_check(db_session, user, target_agent_id):
+        seen["checked"] = target_agent_id
+        return SimpleNamespace(id=agent_id, tenant_id=current_user.tenant_id), "view"
+
+    async def fake_list(db_session, tenant_id, target_agent_id, target_server_id):
+        seen.update(tenant_id=tenant_id, server_id=target_server_id)
+        return [
+            {
+                "tool_id": str(uuid4()),
+                "tool_name": "issue_search",
+                "display_name": "Issue Search",
+                "mode": "deny",
+                "effective_mode": "deny",
+            }
+        ]
+
+    monkeypatch.setattr(mcp_mod, "check_agent_access", fake_check)
+    monkeypatch.setattr(mcp_mod, "list_agent_mcp_server_tools", fake_list)
+
+    resp = client.get(f"/agents/{agent_id}/mcp-servers/{server_id}/tools")
+
+    assert resp.status_code == 200
+    assert seen["checked"] == agent_id
+    assert seen["tenant_id"] == current_user.tenant_id
+    assert seen["server_id"] == server_id
+    assert resp.json()[0]["effective_mode"] == "deny"
+
+
+def test_put_agent_mcp_server_tool_policy_checks_access(monkeypatch):
+    agent_id = uuid4()
+    server_id = uuid4()
+    client, fake_db, current_user = _build_client()
+    seen = {}
+
+    async def fake_check(db_session, user, target_agent_id):
+        return SimpleNamespace(id=agent_id, tenant_id=current_user.tenant_id), "manage"
+
+    async def fake_set(db_session, tenant_id, target_agent_id, target_server_id, tool_name, *, mode):
+        seen.update(
+            tenant_id=tenant_id,
+            agent_id=target_agent_id,
+            server_id=target_server_id,
+            tool_name=tool_name,
+            mode=mode,
+        )
+        return {
+            "tool_name": tool_name,
+            "mode": mode,
+            "effective_mode": mode,
+        }
+
+    monkeypatch.setattr(mcp_mod, "check_agent_access", fake_check)
+    monkeypatch.setattr(mcp_mod, "set_agent_mcp_tool_policy", fake_set)
+
+    resp = client.put(
+        f"/agents/{agent_id}/mcp-servers/{server_id}/tools/issue_search/policy",
+        json={"mode": "deny"},
+    )
+
+    assert resp.status_code == 200
+    assert seen == {
+        "tenant_id": current_user.tenant_id,
+        "agent_id": agent_id,
+        "server_id": server_id,
+        "tool_name": "issue_search",
+        "mode": "deny",
+    }
+    assert resp.json()["effective_mode"] == "deny"
+
+
+def test_put_agent_mcp_server_tool_policy_rejects_invalid_mode():
+    agent_id = uuid4()
+    server_id = uuid4()
+    client, _fake_db, _current_user = _build_client()
+
+    resp = client.put(
+        f"/agents/{agent_id}/mcp-servers/{server_id}/tools/issue_search/policy",
+        json={"mode": "bogus"},
+    )
+
+    assert resp.status_code == 422
 
 
 def test_backfill_route_delegates_to_service(monkeypatch):

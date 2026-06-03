@@ -12,6 +12,7 @@ removed in Part 6 once the frontend switches to these endpoints.
 """
 
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -26,8 +27,10 @@ from app.services.mcp_server_service import (
     get_agent_extensions,
     get_agent_mcp_servers,
     import_and_register,
+    list_agent_mcp_server_tools,
     list_tenant_servers,
     set_agent_mcp_assignment,
+    set_agent_mcp_tool_policy,
     trigger_tenant_backfill,
 )
 
@@ -36,7 +39,11 @@ router = APIRouter(tags=["mcp-servers"])
 
 class AgentMcpAssignmentIn(BaseModel):
     enabled: bool
-    default_tool_mode: str = "auto"
+    default_tool_mode: Literal["auto", "approval", "deny"] = "auto"
+
+
+class AgentMcpToolPolicyIn(BaseModel):
+    mode: Literal["auto", "approval", "deny"]
 
 
 class TenantMcpImportIn(BaseModel):
@@ -126,14 +133,56 @@ async def update_agent_mcp_server(
 ):
     """Assign or update one agent's connection to an MCP server."""
     agent, _ = await check_agent_access(db, current_user, agent_id)
-    return await set_agent_mcp_assignment(
-        db,
-        agent.tenant_id,
-        agent_id,
-        server_id,
-        enabled=data.enabled,
-        default_tool_mode=data.default_tool_mode,
-    )
+    try:
+        return await set_agent_mcp_assignment(
+            db,
+            agent.tenant_id,
+            agent_id,
+            server_id,
+            enabled=data.enabled,
+            default_tool_mode=data.default_tool_mode,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.get("/agents/{agent_id}/mcp-servers/{server_id}/tools")
+async def list_agent_mcp_server_tool_policies(
+    agent_id: uuid.UUID,
+    server_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List advanced per-tool policy modes for one assigned MCP server."""
+    agent, _ = await check_agent_access(db, current_user, agent_id)
+    try:
+        return await list_agent_mcp_server_tools(db, agent.tenant_id, agent_id, server_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.put("/agents/{agent_id}/mcp-servers/{server_id}/tools/{tool_name}/policy")
+async def update_agent_mcp_server_tool_policy(
+    agent_id: uuid.UUID,
+    server_id: uuid.UUID,
+    tool_name: str,
+    data: AgentMcpToolPolicyIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set an advanced per-tool policy override for one assigned MCP server."""
+    agent, _ = await check_agent_access(db, current_user, agent_id)
+    try:
+        return await set_agent_mcp_tool_policy(
+            db,
+            agent.tenant_id,
+            agent_id,
+            server_id,
+            tool_name,
+            mode=data.mode,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 @router.post("/enterprise/mcp-servers/backfill")

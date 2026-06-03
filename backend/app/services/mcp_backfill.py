@@ -136,13 +136,19 @@ def reachable_before(state: AgentToolState | None, is_default: bool) -> bool:
     return is_default
 
 
-def resolve_reachable_tools(server_tool_names: list[str], enabled: bool, deny_tool_names: set[str]) -> set[str]:
+def resolve_reachable_tools(
+    server_tool_names: list[str],
+    enabled: bool,
+    deny_tool_names: set[str],
+    default_tool_mode: str = "auto",
+) -> set[str]:
     """Gating contract (reused by Part 5). Reachable tools for one agent+server.
 
     Server disabled → nothing. Server enabled → all server tools minus per-tool
-    deny overrides.
+    deny overrides. ``default_tool_mode=deny`` is also fail-closed; approval mode
+    remains reachable and is enforced by the downstream approval/preflight layer.
     """
-    if not enabled:
+    if not enabled or default_tool_mode == "deny":
         return set()
     return {name for name in server_tool_names if name not in deny_tool_names}
 

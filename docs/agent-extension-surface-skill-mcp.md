@@ -853,7 +853,7 @@ Evidence: `pytest tests/services/test_mcp_server_records.py` → **7 passed** (m
 
 RLS verification honesty: Hive's suite is unit-first with no DB fixture, so isolation is proven structurally — (a) `tenant_id` exists and is NOT NULL on every table, (b) the policy DDL is created verbatim from the template already validated in production. A live two-tenant read test belongs in an integration environment with Postgres and is not run here.
 
-### Part 2 — MCP backfill + parity (in progress)
+### Part 2 — MCP backfill + parity ✅
 
 **Part 2a — backfill functional core + parity proofs ✅**
 
@@ -864,9 +864,9 @@ Data foundation, second half (transform). The legacy-to-records transform is a p
 
 **Part 2b — async DB backfill shell ✅**
 
-- `backend/app/services/mcp_backfill_service.py` — `backfill_tenant_mcp_servers(db, tenant_id)` reads legacy `Tool(type="mcp")` + `AgentTool` rows (joined via agent association, matching `list_tenant_mcp_servers`), delegates the transform to the Part 2a functional core, and writes `MCPServer` / `MCPServerTool` / `AgentMCPServerAssignment` / `AgentMCPToolOverride`. Idempotent per tenant (skips a tenant that already has server rows) — the forward-fix path.
-- Evidence: `pytest tests/services/test_mcp_backfill_service.py` → **3 passed** (writes records + parity deny override for a pre-disabled tool; idempotent skip; empty tenant). Combined backfill suite **15 passed**. ruff clean.
-- Trigger wiring: `backfill_tenant_mcp_servers` is invoked by the admin endpoint added in Part 4; until then it is callable but not yet routed (tracked, not orphaned).
+- `backend/app/services/mcp_backfill_service.py` — `backfill_tenant_mcp_servers(db, tenant_id)` reads legacy `Tool(type="mcp")` + `AgentTool` rows (joined via agent association, matching `list_tenant_mcp_servers`), delegates the transform to the Part 2a functional core, and writes `MCPServer` / `MCPServerTool` / `AgentMCPServerAssignment` / `AgentMCPToolOverride`. It is incremental per `server_key`: existing server records are skipped, while missing legacy servers in the same tenant are still backfilled.
+- Evidence: `pytest tests/services/test_mcp_backfill_service.py` covers writes, parity deny override, empty tenant, and incremental same-tenant backfill. The Part 8 target suite includes this service and passes.
+- Trigger wiring: `backfill_tenant_mcp_servers` is invoked by the admin endpoint added in Part 4.
 
 ### Part 3 — Runtime pack→runtime_tool_group rename ✅
 
@@ -922,4 +922,57 @@ Note: backend legacy pack routes (`/packs`, `/agents/{id}/packs`, `/enterprise/p
 
 **Follow-up — endpoint reconciliation ✅ (done):** the legacy Tool-grouped `/enterprise/mcp-servers` is gone. `GET /enterprise/mcp-servers` is now the canonical server-first route (the `/records` alias was renamed away); `POST /enterprise/mcp-servers/import` creates Tools then incrementally registers the MCPServer record (`register_imported_server`, reusing the parity-proven functional core, idempotent per server); `DELETE /enterprise/mcp-servers/{server_id}` deletes by stable id with full cascade (MCPServer + tools + assignments + overrides + underlying Tool/AgentTool cleanup). `mcp_registry_service.py` (incl. `make_mcp_server_pack_name`, `build_mcp_server_registry`, `list_tenant_mcp_servers`, `delete_tenant_mcp_server`) was deleted entirely. Frontend adapters point at the canonical path. Evidence: backend `pytest tests/` → **3288 passed, 0 failed** (+10 new register/delete tests); frontend `tsc`/`build` exit 0; no code references the deleted module.
 
-**Still intentionally untouched (orthogonal, not user-facing):** the `make_mcp_server_pack_name` definition kept for the runtime pack-policy gate in `agent_tools.py` (Part 5's assignment gating already supersedes it at runtime; fully retiring the pack-policy layer is a separate concern), and the two summary endpoints' pack-shaped fields (no frontend consumes them).
+**Still intentionally untouched (orthogonal, not user-facing):** the `make_mcp_server_pack_name` definition kept for the runtime pack-policy gate in `agent_tools.py`. Part 5's assignment gating already supersedes it for MCP runtime reachability; fully retiring the pack-policy storage layer is a separate runtime-governance cleanup.
+
+## 15. Review-Discovered Issues And Part 8 Remediation ✅
+
+Status after review: Parts 1-7 moved the product surface in the right direction, but the cutover still had code-path gaps. The issues below were found by tracing the current code paths rather than relying on the commit summary. Part 8 records those findings and closes them with tests plus targeted fixes.
+
+### 15.1 Issues Found During Review
+
+1. **Agent MCP assignment is not server-owner validated.**
+   `PUT /agents/{agent_id}/mcp-servers/{server_id}` validates access to the agent, but `set_agent_mcp_assignment` does not first prove that `server_id` belongs to the same tenant. The service must reject missing or cross-tenant server ids before inserting or updating `AgentMCPServerAssignment`.
+
+2. **Server-level MCP disable does not guard every runtime call path.**
+   `get_agent_tools_for_llm()` filters MCP tools through assignment tables, but `call_mcp_tool`, `read_mcp_resource`, `list_mcp_resources`, and the fallback direct MCP executor still rely on legacy `AgentTool.enabled` or raw `Tool` lookup. Runtime execution must use one shared MCP access guard so a disabled server or deny override cannot be bypassed by a generic MCP handler.
+
+3. **Advanced tool controls update legacy `AgentTool` rows, not MCP overrides.**
+   The drawer in `ToolsManager.tsx` calls `/tools/agents/{agent_id}` and flips `AgentTool.enabled`. For backfilled agents the runtime decision is `AgentMCPServerAssignment` + `AgentMCPToolOverride`, so the UI can show a successful toggle that does not change runtime MCP access. The backend needs MCP-server tool policy endpoints and the frontend must use them.
+
+4. **`default_tool_mode` is accepted but not enforced.**
+   The API accepts arbitrary strings for `default_tool_mode`; runtime only checks `assignment.enabled` and deny overrides. `deny` should remove all server tools, `auto` should expose them normally, and `approval` should remain reachable while carrying an approval-required mode for later policy enforcement.
+
+5. **Agent self-service `import_mcp_server` does not create server-first records.**
+   Company-admin import goes through `import_and_register`, but the agent tool path still calls the legacy resource discovery importer directly. Agent-driven import must register one `MCPServer` record and the current-agent assignment after creating the underlying `Tool` rows.
+
+6. **Full-tenant backfill is not wired as a release migration and skips too broadly.**
+   The Alembic migration creates tables/RLS only; backfill is an admin endpoint. Also, `backfill_tenant_mcp_servers` skips the whole tenant if any `MCPServer` row already exists, which misses legacy tools when a tenant imports a new server before backfill. Backfill should be incremental per server key, not all-or-nothing per tenant.
+
+7. **Summary endpoints still expose pack-shaped fields and the frontend still consumes one.**
+   `/chat/sessions/{session_id}/runtime-summary` still returns `activated_packs`, and `AgentDetail.tsx` still consumes it. The normal frontend contract should use `activated_tool_groups` or a non-pack runtime summary field. `/agents/{agent_id}/capability-summary` should also stop returning `available_packs`, `channel_backed_packs`, and `skill_declared_packs` to normal consumers.
+
+8. **`/agents/{agent_id}/extensions` only reports workspace skills.**
+   The target surface includes workspace skills, imported platform skills, ClawHub skills, and external skill URLs. The current extension API only loads `WorkspaceSkillLoader` output and ignores `AgentCapabilityInstall` records.
+
+### 15.2 Part 8 Remediation Completed
+
+Part 8 closes the review findings above with TDD-first implementation:
+
+- Added failing backend tests for tenant ownership, mode validation, `default_tool_mode=deny`, deny override enforcement in MCP handlers/direct fallback, self-service import registration, incremental backfill, installed-skill extension records, and pack-free summary contracts.
+- Added server tool policy endpoints:
+  - `GET /agents/{agent_id}/mcp-servers/{server_id}/tools`
+  - `PUT /agents/{agent_id}/mcp-servers/{server_id}/tools/{tool_name}/policy`
+- Updated frontend advanced controls to read/write MCP tool policy modes instead of legacy `AgentTool.enabled`.
+- Renamed the normal runtime summary field to `activated_tool_groups`; `activated_packs` is not returned by the backend summary contract and is not consumed by the frontend.
+- Merged `AgentCapabilityInstall` skill records into the extension skill list so platform, ClawHub, and external skill installs appear in the Skill surface.
+- Made MCP backfill incremental per server key and no-op without a commit when there is nothing to write.
+- Routed agent self-service `import_mcp_server` through server-first registration after the legacy Tool rows are created.
+- Added shared MCP runtime policy enforcement for `list_mcp_resources`, `read_mcp_resource`, `call_mcp_tool`, and the direct fallback executor.
+
+Evidence captured during Part 8:
+
+- Backend targeted suite: `pytest tests/services/test_mcp_server_service.py tests/api/test_mcp_servers_api.py tests/services/test_agent_mcp_gating.py tests/services/test_mcp_backfill_service.py tests/tools/test_mcp_call_tool.py tests/services/test_pack_service.py tests/services/test_agent_tool_domains.py -q` → **74 passed**.
+- Frontend red/green suite: `npm test -- --run src/pages/agent-detail/chatRuntime.test.ts src/api/domains/extensions.test.ts src/pages/agent-detail/AgentDetailSections.test.tsx` → red on missing server-tool policy adapter and old `activated_packs`, then **42 passed** after the fix.
+- Frontend build: `npm run build` → `tsc && vite build` exit 0.
+- Backend touched-file lint/format: `ruff check ...` → clean; `ruff format --check ...` → clean on the touched backend files.
+- Full regression: backend `pytest tests/ -q` → **3303 passed, 7 skipped**; frontend `npm test` → **135 passed**.

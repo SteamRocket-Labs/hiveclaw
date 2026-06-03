@@ -71,8 +71,14 @@ def _make_agent_tool(*, tool_id, enabled: bool):
     return SimpleNamespace(id=uuid4(), tool_id=tool_id, enabled=enabled, source="system", config={})
 
 
-def _make_assignment(*, agent_id, server_id, enabled: bool):
-    return SimpleNamespace(id=uuid4(), agent_id=agent_id, mcp_server_id=server_id, enabled=enabled)
+def _make_assignment(*, agent_id, server_id, enabled: bool, default_tool_mode: str = "auto"):
+    return SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        mcp_server_id=server_id,
+        enabled=enabled,
+        default_tool_mode=default_tool_mode,
+    )
 
 
 def _make_server_tool(*, server_id, tool_id, tool_name):
@@ -205,6 +211,39 @@ async def test_disabled_assignment_excludes_that_servers_mcp_tools(monkeypatch):
                 _ListResult([_make_assignment(agent_id=agent_id, server_id=server_a, enabled=False)]),
                 _ListResult([_make_server_tool(server_id=server_a, tool_id=t_mcp.id, tool_name="issue_search")]),
                 _ListResult([]),  # no overrides
+            ]
+        )
+
+    _patch_environment(monkeypatch, module, session_factory)
+
+    tools = await module.get_agent_tools_for_llm(agent_id)
+    names = {tool["function"]["name"] for tool in tools}
+
+    assert "issue_search" not in names
+
+
+@pytest.mark.asyncio
+async def test_default_tool_mode_deny_excludes_that_servers_mcp_tools(monkeypatch):
+    """A server assignment with default_tool_mode=deny removes all server tools."""
+    from app.services import agent_tools as module
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    server_a = uuid4()
+    t_mcp = _make_mcp_tool(name="issue_search", tool_id=uuid4())
+
+    def session_factory():
+        return _FakeSession(
+            [
+                _ScalarResult(SimpleNamespace(id=agent_id, tenant_id=tenant_id, agent_class="standard")),
+                _ScalarResult(None),
+                _ListResult([t_mcp]),
+                _ListResult([_make_agent_tool(tool_id=t_mcp.id, enabled=True)]),
+                _ListResult(
+                    [_make_assignment(agent_id=agent_id, server_id=server_a, enabled=True, default_tool_mode="deny")]
+                ),
+                _ListResult([_make_server_tool(server_id=server_a, tool_id=t_mcp.id, tool_name="issue_search")]),
+                _ListResult([]),
             ]
         )
 

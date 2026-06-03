@@ -937,7 +937,7 @@ describe('AgentDetail extracted sections', () => {
             estimated_input_tokens: 18400,
             remaining_tokens_estimate: 109600,
           },
-          activated_packs: ['web-research'],
+          activated_tool_groups: ['web-research'],
           used_tools: ['search_query'],
           blocked_capabilities: [],
           compaction_count: 2,

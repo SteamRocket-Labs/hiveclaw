@@ -411,7 +411,12 @@ async def _resolve_agent_mcp_gating(db, agent_id: uuid.UUID) -> dict[str, bool] 
         sid = str(assignment.mcp_server_id)
         pairs = tools_by_server.get(sid, [])
         tool_names = [name for _tid, name in pairs]
-        reachable_names = resolve_reachable_tools(tool_names, bool(assignment.enabled), deny_by_server.get(sid, set()))
+        reachable_names = resolve_reachable_tools(
+            tool_names,
+            bool(assignment.enabled),
+            deny_by_server.get(sid, set()),
+            getattr(assignment, "default_tool_mode", "auto"),
+        )
         for tool_id, tool_name in pairs:
             gating[tool_id] = tool_name in reachable_names
     return gating

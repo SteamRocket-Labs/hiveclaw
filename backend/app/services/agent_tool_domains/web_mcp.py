@@ -956,6 +956,7 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
     try:
         from app.models.tool import AgentTool, Tool
         from app.services.mcp_client import MCPClient
+        from app.services.mcp_server_service import resolve_agent_mcp_tool_mode
 
         async with async_session() as db:
             result = await db.execute(select(Tool).where(Tool.name == tool_name, Tool.type == "mcp"))
@@ -967,6 +968,9 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
                 )
                 at = at_r.scalar_one_or_none()
                 agent_config = (at.config or {}) if at else {}
+                mode = await resolve_agent_mcp_tool_mode(db, agent_id, tool)
+                if mode == "deny":
+                    return f"❌ MCP tool {tool_name} denied by this agent's MCP server policy"
 
         if not tool:
             return f"Unknown tool: {tool_name}"
@@ -1192,16 +1196,43 @@ async def _import_mcp_server(agent_id: uuid.UUID, arguments: dict) -> str:
     mcp_url = config.pop("mcp_url", None) if isinstance(config, dict) else None
 
     if mcp_url:
-        from app.services.resource_discovery import import_mcp_direct
-
         server_name = arguments.get("server_id") or config.pop("server_name", None)
-        api_key = config.pop("api_key", None)
-        return await import_mcp_direct(mcp_url, agent_id, server_name, api_key)
+        return await import_mcp_for_agent_and_register(
+            agent_id,
+            mcp_url=mcp_url,
+            server_name=server_name,
+            config=config,
+            reauthorize=reauthorize,
+        )
 
     server_id = arguments.get("server_id", "")
     if not server_id:
         return "❌ Please provide a server_id (e.g. 'github'). Use discover_resources first to find available servers."
 
-    from app.services.resource_discovery import import_mcp_from_smithery
+    return await import_mcp_for_agent_and_register(
+        agent_id,
+        server_id=server_id,
+        config=config or None,
+        reauthorize=reauthorize,
+    )
 
-    return await import_mcp_from_smithery(server_id, agent_id, config or None, reauthorize=reauthorize)
+
+async def import_mcp_for_agent_and_register(
+    agent_id: uuid.UUID,
+    *,
+    server_id: str | None = None,
+    mcp_url: str | None = None,
+    server_name: str | None = None,
+    config: dict | None = None,
+    reauthorize: bool = False,
+) -> str:
+    from app.services.mcp_server_service import import_mcp_for_agent_and_register as _service_import
+
+    return await _service_import(
+        agent_id,
+        server_id=server_id,
+        mcp_url=mcp_url,
+        server_name=server_name,
+        config=config,
+        reauthorize=reauthorize,
+    )

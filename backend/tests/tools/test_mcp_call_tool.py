@@ -22,6 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.services.agent_tool_domains.web_mcp import _execute_mcp_tool
 from app.tools.handlers.mcp import call_mcp_tool, read_mcp_resource
 
 
@@ -29,21 +30,35 @@ from app.tools.handlers.mcp import call_mcp_tool, read_mcp_resource
 
 
 class _FakeQueryResult:
-    def __init__(self, row):
+    def __init__(self, row=None, *, scalars=None, rows=None):
         self._row = row
+        self._scalars = scalars
+        self._rows = rows or []
 
     def scalar_one_or_none(self):
         return self._row
 
+    def scalars(self):
+        return SimpleNamespace(all=lambda: list(self._scalars or []), first=lambda: (self._scalars or [None])[0])
+
+    def all(self):
+        return self._rows
+
 
 class _FakeSession:
-    def __init__(self, row):
-        self._row = row
+    def __init__(self, row_or_results):
+        if isinstance(row_or_results, list):
+            self._results = list(row_or_results)
+        else:
+            self._results = [_FakeQueryResult(row_or_results)]
         self.executed_statements: list = []
 
     async def execute(self, stmt):
         self.executed_statements.append(stmt)
-        return _FakeQueryResult(self._row)
+        if self._results:
+            result = self._results.pop(0)
+            return result if isinstance(result, _FakeQueryResult) else _FakeQueryResult(result)
+        return _FakeQueryResult(None, scalars=[])
 
     async def __aenter__(self):
         return self
@@ -64,6 +79,7 @@ def install_fake_session(monkeypatch):
     def _install(row):
         session = _FakeSession(row)
         monkeypatch.setattr("app.database.async_session", lambda: session)
+        monkeypatch.setattr("app.services.agent_tool_domains.web_mcp.async_session", lambda: session)
         return session
 
     return _install
@@ -153,9 +169,7 @@ async def test_missing_server_url_returns_bad_state(install_fake_session):
 
 
 @pytest.mark.asyncio
-async def test_call_mcp_tool_lookup_is_scoped_to_enabled_agent_assignment(
-    install_fake_session, patch_mcp_client
-):
+async def test_call_mcp_tool_lookup_is_scoped_to_enabled_agent_assignment(install_fake_session, patch_mcp_client):
     row = SimpleNamespace(
         name="weather",
         enabled=True,
@@ -172,6 +186,34 @@ async def test_call_mcp_tool_lookup_is_scoped_to_enabled_agent_assignment(
     assert "join agent_tools" in sql
     assert "agent_tools.agent_id" in sql
     assert "agent_tools.enabled" in sql
+
+
+@pytest.mark.asyncio
+async def test_call_mcp_tool_refuses_disabled_server_assignment(install_fake_session, patch_mcp_client):
+    agent_id = uuid.uuid4()
+    server_id = uuid.uuid4()
+    tool_id = uuid.uuid4()
+    row = SimpleNamespace(
+        id=tool_id,
+        type="mcp",
+        name="weather",
+        enabled=True,
+        mcp_server_url="https://mcp.example.com",
+        mcp_tool_name="get_weather",
+        config={},
+    )
+    install_fake_session(
+        [
+            row,
+            _FakeQueryResult(scalars=[SimpleNamespace(mcp_server_id=server_id, mcp_tool_name="get_weather")]),
+            _FakeQueryResult(SimpleNamespace(enabled=False, default_tool_mode="auto")),
+        ]
+    )
+
+    out = await call_mcp_tool(agent_id, {"tool_name": "weather"})
+
+    assert "forbidden" in out or "disabled" in out or "denied" in out
+    assert _SpyClient.instances == []
 
 
 @pytest.mark.asyncio
@@ -196,6 +238,37 @@ async def test_read_mcp_resource_lookup_is_scoped_to_enabled_agent_assignment(in
     assert "join agent_tools" in sql
     assert "agent_tools.agent_id" in sql
     assert "agent_tools.enabled" in sql
+
+
+@pytest.mark.asyncio
+async def test_execute_mcp_tool_fallback_refuses_deny_override(install_fake_session, patch_mcp_client):
+    agent_id = uuid.uuid4()
+    server_id = uuid.uuid4()
+    tool_id = uuid.uuid4()
+    row = SimpleNamespace(
+        id=tool_id,
+        type="mcp",
+        name="weather",
+        enabled=True,
+        mcp_server_url="https://mcp.example.com",
+        mcp_server_name="weather-server",
+        mcp_tool_name="get_weather",
+        config={},
+    )
+    install_fake_session(
+        [
+            row,
+            _FakeQueryResult(SimpleNamespace(config={})),  # legacy AgentTool config lookup
+            _FakeQueryResult(scalars=[SimpleNamespace(mcp_server_id=server_id, mcp_tool_name="get_weather")]),
+            _FakeQueryResult(SimpleNamespace(enabled=True, default_tool_mode="auto")),
+            _FakeQueryResult(SimpleNamespace(mode="deny")),
+        ]
+    )
+
+    out = await _execute_mcp_tool("weather", {}, agent_id=agent_id)
+
+    assert "denied" in out or "forbidden" in out
+    assert _SpyClient.instances == []
 
 
 # ── Happy path ────────────────────────────────────────────────
@@ -223,9 +296,7 @@ async def test_happy_path_forwards_to_mcp_client(install_fake_session, patch_mcp
 
 
 @pytest.mark.asyncio
-async def test_falls_back_to_hive_name_when_mcp_tool_name_unset(
-    install_fake_session, patch_mcp_client
-):
+async def test_falls_back_to_hive_name_when_mcp_tool_name_unset(install_fake_session, patch_mcp_client):
     """Some imports populate `name` but leave `mcp_tool_name` unset; the
     Hive-side name doubles as the remote name in that case."""
     row = SimpleNamespace(
@@ -243,9 +314,7 @@ async def test_falls_back_to_hive_name_when_mcp_tool_name_unset(
 
 
 @pytest.mark.asyncio
-async def test_client_failure_surfaces_as_operation_failed(
-    install_fake_session, patch_mcp_client
-):
+async def test_client_failure_surfaces_as_operation_failed(install_fake_session, patch_mcp_client):
     row = SimpleNamespace(
         name="weather",
         enabled=True,

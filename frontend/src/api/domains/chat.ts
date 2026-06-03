@@ -37,7 +37,7 @@ export interface SessionRuntimeSummary {
     estimated_input_tokens?: number | null;
     remaining_tokens_estimate?: number | null;
   };
-  activated_packs: string[];
+  activated_tool_groups: string[];
   used_tools: string[];
   blocked_capabilities: Array<{
     tool?: string | null;

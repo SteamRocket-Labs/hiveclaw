@@ -25,15 +25,19 @@ _SENTINEL = object()
 
 
 class _Result:
-    def __init__(self, scalar=_SENTINEL, rows=None):
+    def __init__(self, scalar=_SENTINEL, rows=None, scalars=None):
         self._scalar = scalar
         self._rows = rows or []
+        self._scalars = scalars
 
     def scalar_one_or_none(self):
         return None if self._scalar is _SENTINEL else self._scalar
 
     def all(self):
         return self._rows
+
+    def scalars(self):
+        return SimpleNamespace(all=lambda: list(self._scalars or []))
 
 
 class _BackfillDB:
@@ -68,6 +72,12 @@ def _row(tool_id, tool_name, agent_id, enabled, *, name="GitHub", url="https://g
         agent_id=agent_id,
         enabled=enabled,
     )
+
+
+def _existing_server(server_key, *, name="GitHub", url="https://gh"):
+    server = MCPServer(tenant_id=uuid4(), name=name, server_key=server_key, server_url=url)
+    server.id = uuid4()
+    return server
 
 
 @pytest.mark.asyncio
@@ -105,16 +115,54 @@ async def test_backfill_writes_records_with_parity_overrides():
 
 @pytest.mark.asyncio
 async def test_backfill_skips_already_backfilled_tenant():
-    db = _BackfillDB([_Result(scalar=uuid4())])  # an MCPServer row already exists
-    summary = await backfill_tenant_mcp_servers(db, uuid4())
-    assert summary["skipped"] is True
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    existing = _existing_server("github", name="GitHub", url="https://gh")
+    db = _BackfillDB(
+        [
+            _Result(scalars=[existing]),
+            _Result(rows=[_row(uuid4(), "issue_search", agent_id, enabled=True, name="GitHub", url="https://gh")]),
+        ]
+    )
+    summary = await backfill_tenant_mcp_servers(db, tenant_id)
+    assert summary["servers"] == 0
+    assert summary["tools"] == 0
     assert db.added == []
     assert db.committed is False
 
 
 @pytest.mark.asyncio
+async def test_backfill_is_incremental_when_some_servers_already_exist():
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    existing = _existing_server("github", name="GitHub", url="https://gh")
+    t_existing, t_new = uuid4(), uuid4()
+    rows = [
+        _row(t_existing, "issue_search", agent_id, enabled=True, name="GitHub", url="https://gh"),
+        _row(t_new, "ticket_search", agent_id, enabled=True, name="Linear", url="https://linear"),
+    ]
+    db = _BackfillDB(
+        [
+            _Result(scalars=[existing]),  # existing MCPServer rows for this tenant
+            _Result(rows=rows),
+        ]
+    )
+
+    summary = await backfill_tenant_mcp_servers(db, tenant_id)
+
+    servers = [o for o in db.added if isinstance(o, MCPServer)]
+    tools = [o for o in db.added if isinstance(o, MCPServerTool)]
+    assert len(servers) == 1
+    assert servers[0].server_key == "linear"
+    assert len(tools) == 1
+    assert tools[0].mcp_tool_name == "ticket_search"
+    assert summary["servers"] == 1
+    assert db.committed is True
+
+
+@pytest.mark.asyncio
 async def test_backfill_empty_tenant_writes_nothing():
-    db = _BackfillDB([_Result(scalar=None), _Result(rows=[])])
+    db = _BackfillDB([_Result(scalars=[]), _Result(rows=[])])
     summary = await backfill_tenant_mcp_servers(db, uuid4())
     assert summary["servers"] == 0
     assert db.added == []

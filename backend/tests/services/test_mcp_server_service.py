@@ -13,7 +13,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.models.mcp_server import AgentMCPServerAssignment
+from app.models.mcp_server import AgentMCPServerAssignment, AgentMCPToolOverride, MCPServer, MCPServerTool
 from app.services import mcp_server_service
 
 
@@ -158,7 +158,12 @@ async def test_get_agent_extensions_has_both_keys(monkeypatch):
         return [{"id": "market-research", "name": "market-research", "source": "workspace", "status": "available"}]
 
     monkeypatch.setattr(mcp_server_service, "_list_agent_workspace_skills", fake_skills)
-    db = _SpyDB([_Result(rows=[])])  # get_agent_mcp_servers → no assignments
+    db = _SpyDB(
+        [
+            _Result(scalars=[]),  # installed skill records
+            _Result(rows=[]),  # get_agent_mcp_servers → no assignments
+        ]
+    )
 
     result = await mcp_server_service.get_agent_extensions(db, agent_id)
 
@@ -169,11 +174,62 @@ async def test_get_agent_extensions_has_both_keys(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_agent_extensions_includes_installed_skill_records(monkeypatch):
+    agent_id = uuid4()
+
+    async def fake_skills(_agent_id):
+        return [{"id": "workspace-skill", "name": "workspace-skill", "source": "workspace", "status": "available"}]
+
+    monkeypatch.setattr(mcp_server_service, "_list_agent_workspace_skills", fake_skills)
+    db = _SpyDB(
+        [
+            _Result(
+                scalars=[
+                    SimpleNamespace(
+                        kind="platform_skill",
+                        normalized_key="feishu-integration",
+                        source_key="feishu-integration",
+                        display_name="Feishu Integration",
+                        status="installed",
+                    ),
+                    SimpleNamespace(
+                        kind="clawhub_skill",
+                        normalized_key="market-research-agent",
+                        source_key="market-research-agent",
+                        display_name="Market Research Agent",
+                        status="installed",
+                    ),
+                    SimpleNamespace(
+                        kind="external_skill_url",
+                        normalized_key="https://github.com/acme/skills/tree/main/secops",
+                        source_key="https://github.com/acme/skills/tree/main/secops",
+                        display_name="https://github.com/acme/skills/tree/main/secops",
+                        status="installed",
+                    ),
+                ]
+            ),
+            _Result(rows=[]),  # get_agent_mcp_servers → no assignments
+        ]
+    )
+
+    result = await mcp_server_service.get_agent_extensions(db, agent_id)
+
+    sources = {skill["source"] for skill in result["skills"]}
+    assert {"workspace", "platform_skill", "clawhub_skill", "external_skill_url"} <= sources
+    assert "pack_name" not in result
+
+
+@pytest.mark.asyncio
 async def test_set_agent_mcp_assignment_creates_row():
     tenant_id = uuid4()
     agent_id = uuid4()
     server_id = uuid4()
-    db = _SpyDB([_Result(scalar=None)])  # no existing assignment → create
+    db = _SpyDB(
+        [
+            _Result(scalar=SimpleNamespace(id=server_id)),  # server ownership
+            _Result(scalar=None),  # no existing assignment → create
+        ]
+    )
 
     result = await mcp_server_service.set_agent_mcp_assignment(
         db, tenant_id, agent_id, server_id, enabled=True, default_tool_mode="approval"
@@ -193,6 +249,37 @@ async def test_set_agent_mcp_assignment_creates_row():
 
 
 @pytest.mark.asyncio
+async def test_set_agent_mcp_assignment_rejects_missing_or_cross_tenant_server():
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    server_id = uuid4()
+    db = _SpyDB([_Result(scalar=None)])
+
+    with pytest.raises(ValueError, match="MCP server not found"):
+        await mcp_server_service.set_agent_mcp_assignment(
+            db, tenant_id, agent_id, server_id, enabled=True, default_tool_mode="auto"
+        )
+
+    assert db.added == []
+    assert db.committed is False
+
+
+@pytest.mark.asyncio
+async def test_set_agent_mcp_assignment_rejects_invalid_default_mode():
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    server_id = uuid4()
+    server = MCPServer(tenant_id=tenant_id, name="GitHub", server_key="github")
+    server.id = server_id
+    db = _SpyDB([_Result(scalar=server)])
+
+    with pytest.raises(ValueError, match="default_tool_mode"):
+        await mcp_server_service.set_agent_mcp_assignment(
+            db, tenant_id, agent_id, server_id, enabled=True, default_tool_mode="bogus"
+        )
+
+
+@pytest.mark.asyncio
 async def test_set_agent_mcp_assignment_updates_existing_row():
     tenant_id = uuid4()
     agent_id = uuid4()
@@ -201,7 +288,12 @@ async def test_set_agent_mcp_assignment_updates_existing_row():
         tenant_id=tenant_id, agent_id=agent_id, mcp_server_id=server_id, enabled=True, default_tool_mode="auto"
     )
     existing.id = uuid4()
-    db = _SpyDB([_Result(scalar=existing)])
+    db = _SpyDB(
+        [
+            _Result(scalar=SimpleNamespace(id=server_id)),  # server ownership
+            _Result(scalar=existing),
+        ]
+    )
 
     result = await mcp_server_service.set_agent_mcp_assignment(
         db, tenant_id, agent_id, server_id, enabled=False, default_tool_mode="deny"
@@ -213,6 +305,92 @@ async def test_set_agent_mcp_assignment_updates_existing_row():
     assert db.committed is True
     assert result["enabled"] is False
     assert result["default_tool_mode"] == "deny"
+
+
+@pytest.mark.asyncio
+async def test_list_agent_mcp_server_tools_returns_effective_modes():
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    server_id = uuid4()
+    tool_id = uuid4()
+    assignment = AgentMCPServerAssignment(
+        tenant_id=tenant_id, agent_id=agent_id, mcp_server_id=server_id, enabled=True, default_tool_mode="auto"
+    )
+    assignment.id = uuid4()
+    server_tool = MCPServerTool(
+        tenant_id=tenant_id,
+        mcp_server_id=server_id,
+        tool_id=tool_id,
+        mcp_tool_name="issue_search",
+        display_name="Issue Search",
+    )
+    server_tool.id = uuid4()
+    override = AgentMCPToolOverride(
+        tenant_id=tenant_id, agent_id=agent_id, mcp_server_id=server_id, tool_name="issue_search", mode="deny"
+    )
+    override.id = uuid4()
+    db = _SpyDB(
+        [
+            _Result(scalar=SimpleNamespace(id=server_id)),  # server ownership
+            _Result(scalar=assignment),
+            _Result(scalars=[server_tool]),
+            _Result(scalars=[override]),
+        ]
+    )
+
+    result = await mcp_server_service.list_agent_mcp_server_tools(db, tenant_id, agent_id, server_id)
+
+    assert result == [
+        {
+            "tool_id": str(tool_id),
+            "tool_name": "issue_search",
+            "display_name": "Issue Search",
+            "mode": "deny",
+            "effective_mode": "deny",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_set_agent_mcp_tool_policy_upserts_override():
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    server_id = uuid4()
+    assignment = AgentMCPServerAssignment(
+        tenant_id=tenant_id, agent_id=agent_id, mcp_server_id=server_id, enabled=True, default_tool_mode="auto"
+    )
+    assignment.id = uuid4()
+    server_tool = MCPServerTool(
+        tenant_id=tenant_id,
+        mcp_server_id=server_id,
+        tool_id=uuid4(),
+        mcp_tool_name="issue_search",
+        display_name="Issue Search",
+    )
+    server_tool.id = uuid4()
+    db = _SpyDB(
+        [
+            _Result(scalar=SimpleNamespace(id=server_id)),  # server ownership
+            _Result(scalar=assignment),
+            _Result(scalar=server_tool),
+            _Result(scalar=None),  # no existing override
+        ]
+    )
+
+    result = await mcp_server_service.set_agent_mcp_tool_policy(
+        db, tenant_id, agent_id, server_id, "issue_search", mode="deny"
+    )
+
+    created = [o for o in db.added if isinstance(o, AgentMCPToolOverride)]
+    assert len(created) == 1
+    assert created[0].tenant_id == tenant_id
+    assert created[0].agent_id == agent_id
+    assert created[0].mcp_server_id == server_id
+    assert created[0].tool_name == "issue_search"
+    assert created[0].mode == "deny"
+    assert result["mode"] == "deny"
+    assert result["effective_mode"] == "deny"
+    assert db.committed is True
 
 
 @pytest.mark.asyncio
@@ -328,7 +506,9 @@ async def test_register_imported_server_creates_records():
     t1 = uuid4()
     db = _SpyDB(
         [
-            _Result(rows=[_tool_state_row(t1, "issue_search", agent_id, enabled=True)]),  # _read_tenant_mcp_tools_for_server
+            _Result(
+                rows=[_tool_state_row(t1, "issue_search", agent_id, enabled=True)]
+            ),  # _read_tenant_mcp_tools_for_server
             _Result(scalar=None),  # select existing MCPServer by key → none → create
             _Result(rows=[]),  # taken server_keys
             _Result(rows=[]),  # existing MCPServerTool names

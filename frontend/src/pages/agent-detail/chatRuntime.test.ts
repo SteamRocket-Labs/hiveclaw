@@ -181,7 +181,7 @@ describe('chatRuntime helpers', () => {
   it('prefers backend runtime estimates and model metadata when available', () => {
     const summary = buildRuntimeSummary({
       persistedSummary: {
-        activated_packs: ['web-pack'],
+        activated_tool_groups: ['web-runtime'],
         used_tools: ['search_query'],
         blocked_capabilities: [],
         compaction_count: 1,
@@ -234,6 +234,8 @@ describe('chatRuntime helpers', () => {
       estimated_input_tokens: 4200,
       remaining_tokens_estimate: 195800,
     });
+    expect(summary.activated_tool_groups).toEqual(['web-runtime']);
+    expect('activated_packs' in summary).toBe(false);
     expect(summary.permission_event_count).toBe(2);
     expect(summary.team_memory_hit_count).toBe(3);
     expect(summary.last_tool_budget_event).toMatchObject({

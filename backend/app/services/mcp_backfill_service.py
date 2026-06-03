@@ -3,8 +3,9 @@
 Reads legacy ``Tool(type="mcp")`` + ``AgentTool`` rows and writes the new MCP
 server records. The transform is delegated to the pure functions in
 ``mcp_backfill`` so the parity properties proven there carry through. Idempotent
-per tenant: a tenant that already has ``MCPServer`` rows is skipped, so the
-backfill is safe to re-run (forward-fix path). See docs §10 (data foundation).
+per server: existing ``MCPServer.server_key`` rows are skipped while missing
+legacy servers in the same tenant are still backfilled. See docs §10 (data
+foundation).
 """
 
 from __future__ import annotations
@@ -72,9 +73,8 @@ async def _read_tenant_mcp(
 
 async def backfill_tenant_mcp_servers(db: AsyncSession, tenant_id: uuid.UUID) -> dict:
     """Backfill one tenant's MCP servers/tools/assignments/overrides. Idempotent."""
-    existing = await db.execute(select(MCPServer.id).where(MCPServer.tenant_id == tenant_id).limit(1))
-    if existing.scalar_one_or_none() is not None:
-        return {"tenant_id": str(tenant_id), "skipped": True, "reason": "already backfilled"}
+    existing_result = await db.execute(select(MCPServer).where(MCPServer.tenant_id == tenant_id))
+    existing_by_key = {server.server_key: server for server in existing_result.scalars().all()}
 
     tool_rows, is_default, states = await _read_tenant_mcp(db, tenant_id)
     if not tool_rows:
@@ -82,7 +82,10 @@ async def backfill_tenant_mcp_servers(db: AsyncSession, tenant_id: uuid.UUID) ->
 
     servers = group_mcp_tools(list(tool_rows.values()))
     n_tools = n_assign = n_override = 0
+    n_servers = 0
     for server in servers:
+        if server.server_key in existing_by_key:
+            continue
         mcp_server = MCPServer(
             tenant_id=tenant_id,
             name=server.name,
@@ -95,6 +98,7 @@ async def backfill_tenant_mcp_servers(db: AsyncSession, tenant_id: uuid.UUID) ->
         )
         db.add(mcp_server)
         await db.flush()  # assign mcp_server.id for the FK below
+        n_servers += 1
 
         server_tool_ids = set(server.tool_ids)
         for tool_id, tool_name in zip(server.tool_ids, server.tool_names):
@@ -138,10 +142,11 @@ async def backfill_tenant_mcp_servers(db: AsyncSession, tenant_id: uuid.UUID) ->
                 )
                 n_override += 1
 
-    await db.commit()
+    if n_servers or n_tools or n_assign or n_override:
+        await db.commit()
     return {
         "tenant_id": str(tenant_id),
-        "servers": len(servers),
+        "servers": n_servers,
         "tools": n_tools,
         "assignments": n_assign,
         "overrides": n_override,

@@ -942,6 +942,13 @@
       "configureTool": "Configure tool",
       "perAgentConfig": "Per-agent configuration (overrides global defaults)",
       "toolCount": "{{count}} tools",
+      "toolPolicyTitle": "Tool policy",
+      "noMcpServerTools": "No server tools found",
+      "toolPolicy": {
+        "auto": "Auto",
+        "approval": "Approval",
+        "deny": "Deny"
+      },
       "source": {
         "workspace": "Workspace skill",
         "preset": "Preset skill",

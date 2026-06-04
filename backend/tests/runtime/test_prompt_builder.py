@@ -561,3 +561,37 @@ class TestDynamicSuffixCaps:
         suffix = build_dynamic_prompt_suffix(system_prompt_suffix="FINAL_SUFFIX")
 
         assert "FINAL_SUFFIX" in suffix
+
+
+# ── B4: unified autonomous-work semantics (docs/agent-lifecycle-cc-alignment.md 主题 B) ──
+# CC injects a single "# Autonomous work" section (pacing / first wake-up /
+# bias toward action / state recording); Hive's trigger & heartbeat runs get
+# the same unified section via the dynamic suffix.
+
+
+def test_dynamic_suffix_injects_autonomous_section_for_trigger() -> None:
+    from app.runtime.prompt_builder import build_dynamic_prompt_suffix
+
+    suffix = build_dynamic_prompt_suffix(latest_user_query="wake", source="trigger")
+
+    assert "Autonomous Work" in suffix
+    assert "no live user" in suffix.lower()
+    assert "bias toward action" in suffix.lower()  # CC: prefer doing over asking
+    assert "objective ledger" in suffix.lower()  # state recording responsibility
+    assert "do not invent work" in suffix.lower()  # pacing: clean exit over busy-loop
+
+
+def test_dynamic_suffix_injects_autonomous_section_for_heartbeat() -> None:
+    from app.runtime.prompt_builder import build_dynamic_prompt_suffix
+
+    suffix = build_dynamic_prompt_suffix(latest_user_query="tick", source="heartbeat")
+
+    assert "Autonomous Work" in suffix
+
+
+def test_dynamic_suffix_omits_autonomous_section_for_live_chat() -> None:
+    from app.runtime.prompt_builder import build_dynamic_prompt_suffix
+
+    suffix = build_dynamic_prompt_suffix(latest_user_query="hello", source="web")
+
+    assert "Autonomous Work" not in suffix

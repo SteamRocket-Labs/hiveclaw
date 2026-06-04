@@ -329,6 +329,25 @@ def _render_active_tool_groups(
     return build_active_tool_groups_section(active_tool_groups, budget_chars=budget_chars)
 
 
+# B4 (docs/agent-lifecycle-cc-alignment.md 主题 B): unified autonomous-work
+# semantics for trigger/heartbeat runs — CC's "# Autonomous work" equivalent.
+# One section instead of each entry point inventing its own (or none).
+_AUTONOMOUS_SOURCES = frozenset({"trigger", "heartbeat"})
+
+_AUTONOMOUS_WORK_SECTION = """\
+## Autonomous Work
+You are running autonomously (source: {source}) — no live user is watching this run.
+- **Wake context**: treat the trigger/heartbeat message as "you're awake — what now?", not as a fresh user request.
+- **Bias toward action**: prefer doing useful work over asking questions nobody will answer. Reading, analyzing, \
+writing workspace artifacts, and updating the Objective Ledger are always safe.
+- **Authority unchanged**: external-visible or irreversible actions still require a confirmed plan or checkpoint — \
+running autonomously does not expand what you may do.
+- **Pacing**: if there is nothing useful to do, say so briefly and end the run cleanly — do not invent work and \
+do not poll in a loop.
+- **State recording**: before the run ends, leave the Objective Ledger / focus.md / artifacts in a state where \
+the next wake-up (or a human) can resume without guessing."""
+
+
 def build_dynamic_prompt_suffix(
     *,
     active_tool_groups: list[dict[str, Any]] | None = None,
@@ -343,6 +362,7 @@ def build_dynamic_prompt_suffix(
     user_name: str = "",
     channel: str = "",
     agent_name: str = "",
+    source: str = "",
 ) -> str:
     """Build the per-round dynamic suffix.
 
@@ -358,6 +378,10 @@ def build_dynamic_prompt_suffix(
     )
 
     parts: list[str] = []
+
+    # § Autonomous Work — unified semantics for unattended runs (B4)
+    if source in _AUTONOMOUS_SOURCES:
+        parts.append(_AUTONOMOUS_WORK_SECTION.format(source=source))
 
     memory_budget_chars = getattr(budget_profile, "memory_budget_chars", _DEFAULT_MEMORY_SNAPSHOT_BUDGET)
 

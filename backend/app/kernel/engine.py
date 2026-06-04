@@ -1588,6 +1588,7 @@ class AgentKernel:
                     latest_user_query=latest_user_query,
                     user_name=current_user_name or "",
                     channel=session_ctx.channel if session_ctx else "",
+                    source=(getattr(session_ctx, "source", "") or "") if session_ctx else "",
                     agent_name=request.agent_name,
                 )
                 system_prompt = assemble_runtime_prompt(
@@ -1618,6 +1619,7 @@ class AgentKernel:
                     latest_user_query=latest_user_query,
                     user_name=current_user_name or "",
                     channel=session_ctx.channel if session_ctx else "",
+                    source=(getattr(session_ctx, "source", "") or "") if session_ctx else "",
                     agent_name=request.agent_name,
                 )
                 system_prompt = assemble_runtime_prompt(
@@ -1994,6 +1996,7 @@ class AgentKernel:
                                             latest_user_query=latest_user_query,
                                             user_name=current_user_name or "",
                                             channel=session_ctx.channel if session_ctx else "",
+                                            source=(getattr(session_ctx, "source", "") or "") if session_ctx else "",
                                             agent_name=request.agent_name,
                                         )
                                         _ptl_prefix = (
@@ -2065,6 +2068,9 @@ class AgentKernel:
                                                 latest_user_query=latest_user_query,
                                                 user_name=current_user_name or "",
                                                 channel=session_ctx.channel if session_ctx else "",
+                                                source=(getattr(session_ctx, "source", "") or "")
+                                                if session_ctx
+                                                else "",
                                                 agent_name=request.agent_name,
                                             )
                                             _ptl_prefix = (
@@ -2612,6 +2618,7 @@ class AgentKernel:
                                                     latest_user_query=latest_user_query,
                                                     user_name=current_user_name or "",
                                                     channel=session_context.channel,
+                                                    source=getattr(session_context, "source", "") or "",
                                                     agent_name=request.agent_name,
                                                 ),
                                                 context_window_tokens=_ctx_window,

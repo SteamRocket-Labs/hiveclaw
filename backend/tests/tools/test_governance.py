@@ -41,16 +41,17 @@ async def test_governance_blocks_unsafe_tool_in_public_zone():
         event_callback=events.append,
     )
 
-    assert (
-        message
-        == "🔒 Tool 'write_file' is blocked — this agent is in the 'public' security zone and can only use safe read-only tools."
-    )
+    # B1 teaching denial: tool name + why (zone) + what to do next
+    assert message is not None
+    assert "write_file" in message
+    assert "public" in message and "read-only" in message
+    assert "What you can do instead" in message  # teaching element
     assert events == [
         {
             "type": "permission",
             "tool_name": "write_file",
             "status": "blocked",
-            "message": "🔒 Tool 'write_file' is blocked — this agent is in the 'public' security zone and can only use safe read-only tools.",
+            "message": message,
             "security_zone": "public",
         }
     ]
@@ -142,7 +143,12 @@ async def test_governance_emits_capability_denied_and_audit():
         event_callback=events.append,
     )
 
-    assert message == "🚫 Capability denied: Capability 'workspace.code.execute' is not allowed for this agent"
+    # B1 teaching denial: tool + capability + original reason + next steps
+    assert message is not None
+    assert "execute_code" in message
+    assert "workspace.code.execute" in message  # the capability the model should learn
+    assert "not allowed for this agent" in message  # original policy reason preserved
+    assert "What you can do instead" in message
     assert audit_calls == [
         {
             "event_type": "capability.denied",
@@ -161,7 +167,7 @@ async def test_governance_emits_capability_denied_and_audit():
             "type": "permission",
             "tool_name": "execute_code",
             "status": "capability_denied",
-            "message": "🚫 Capability denied: Capability 'workspace.code.execute' is not allowed for this agent",
+            "message": message,
             "capability": "workspace.code.execute",
         }
     ]
@@ -211,19 +217,19 @@ async def test_governance_requests_approval_when_capability_requires_it():
         event_callback=events.append,
     )
 
-    assert message == (
-        "⏳ This action requires approval. An approval request has been sent. "
-        "Please wait for approval before retrying. (Approval ID: approval-1)"
-    )
+    # B1 teaching approval message: tool + capability + approval id + what to do while waiting
+    assert message is not None
+    assert "send_feishu_message" in message
+    assert "channel.feishu.message" in message
+    assert "Approval ID: approval-1" in message
+    assert "Do not retry" in message
+    assert "Meanwhile you can" in message
     assert events == [
         {
             "type": "permission",
             "tool_name": "send_feishu_message",
             "status": "approval_required",
-            "message": (
-                "⏳ This action requires approval. An approval request has been sent. "
-                "Please wait for approval before retrying. (Approval ID: approval-1)"
-            ),
+            "message": message,
             "approval_id": "approval-1",
             "capability": "channel.feishu.message",
         }
@@ -347,7 +353,10 @@ async def test_governance_denies_feishu_doc_delete_in_standard_zone_when_policy_
         event_callback=events.append,
     )
 
-    assert message == "🚫 Capability denied: Capability 'channel.feishu.document' is not allowed for this agent"
+    assert message is not None
+    assert "feishu_doc_delete" in message
+    assert "channel.feishu.document" in message
+    assert "What you can do instead" in message
     assert audit_calls == [
         {
             "event_type": "capability.denied",
@@ -366,7 +375,7 @@ async def test_governance_denies_feishu_doc_delete_in_standard_zone_when_policy_
             "type": "permission",
             "tool_name": "feishu_doc_delete",
             "status": "capability_denied",
-            "message": "🚫 Capability denied: Capability 'channel.feishu.document' is not allowed for this agent",
+            "message": message,
             "capability": "channel.feishu.document",
         }
     ]
@@ -775,7 +784,7 @@ async def test_governance_denies_when_delegation_token_expired():
     )
 
     assert message is not None
-    assert "Delegation token rejected" in message
+    assert "delegation token does not cover it" in message
     assert "expired" in message
     assert any(c["event_type"] == "delegation.token_denied" for c in audit_calls)
     assert any(e["status"] == "delegation_token_denied" for e in events)
@@ -833,7 +842,7 @@ async def test_governance_denies_when_capability_outside_token_grant():
     )
 
     assert message is not None
-    assert "Delegation token rejected" in message
+    assert "delegation token does not cover it" in message
     assert "not in delegation grant" in message
 
 

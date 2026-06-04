@@ -46,7 +46,7 @@ CC 哲学：每次拒绝都是教学机会——告诉模型为什么 + 下一�
 
 | # | 位置 | 现状 | 证据 | 修法方向 |
 |---|---|---|---|---|
-| B1 | **工具拒绝消息** | `"🔒 Tool blocked"` / `"🚫 Capability denied: {reason}"`，无 capability 名/安全区/next step | `tools/governance.py:196-233, 289-314` | 模板化：工具名+触发的 capability+zone+建议（request_approval/load_skill/换路径） |
+| B1 | **工具拒绝消息** | ✅ **已修复（2026-06-04）**：新增 `_teaching_block_message` 模板（工具名+原因+capability+zone+next steps），改造 5 类消息——public zone block、capability denied（普通+dangerous 两处）、delegation token rejected、approval required（含 capability+approval ID+等待期间可做什么）。**证据**：`tools/governance.py` `_teaching_block_message` + 5 处替换；tests/tools/test_governance.py 断言改为教学要素式（"What you can do instead"/"Meanwhile you can"），tools+architecture 261 passed、kernel+runtime 599 passed | 模板化：工具名+触发的 capability+zone+建议 |
 | B2 | **轮次压力警告** | 硬编码"80% 轮数/剩 2 轮"里程碑，无数据 | `kernel/engine.py:1823-1847` | 注入实际数据（已调 N 工具/M 字符结果/预算余量）像 CC 的 token budget nudge |
 | B3 | **Plan Mode 激活告知** | tool-intercept 自动激活时 agent 体验是"突然只读了"，没有"你刚才要做 X，系统要求先规划"的显式消息 | `kernel/engine.py:1016-1070` | 激活时注入一条说明消息（含被拦的 action artifact） |
 | B4 | **自主模式语义框架缺失** | trigger context 只有 `Trigger: name\nReason: reason` 三行；heartbeat/trigger/proactive 各自为政，没有 CC `# Autonomous work` 那种统一段（pacing/first wake-up/bias toward action/terminal focus） | `services/trigger_daemon.py:977-1000` | source∈{trigger,heartbeat} 时统一注入自主工作语义段 |

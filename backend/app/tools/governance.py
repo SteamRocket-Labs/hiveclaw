@@ -156,6 +156,33 @@ def _detect_dangerous_command(tool_name: str, arguments: dict[str, Any]) -> tupl
 _GOVERNANCE_TIMEOUT_SECONDS = 5.0
 
 
+def _teaching_block_message(
+    tool_name: str,
+    *,
+    reason: str,
+    capability: str | None = None,
+    security_zone: str | None = None,
+    next_steps: list[str] | None = None,
+) -> str:
+    """Build a denial message that teaches the model why + what to do next.
+
+    B1 (docs/agent-lifecycle-cc-alignment.md 主题 B): every denial is a
+    teaching moment — the model should learn the boundary and the legitimate
+    path forward, not just receive a terminal "blocked" string.
+    """
+    parts = [f"🔒 Tool '{tool_name}' was not executed: {reason}."]
+    facts = []
+    if capability:
+        facts.append(f"required capability: {capability}")
+    if security_zone:
+        facts.append(f"security zone: {security_zone}")
+    if facts:
+        parts.append(f"[{'; '.join(facts)}]")
+    if next_steps:
+        parts.append("What you can do instead: " + " / ".join(next_steps) + ".")
+    return " ".join(parts)
+
+
 async def run_tool_governance(
     context: ToolGovernanceContext,
     deps: GovernanceDependencies,
@@ -193,9 +220,15 @@ async def _run_governance_inner(
         zone = await _maybe_await(deps.resolve_security_zone(context.agent_id))
         zone = zone or "restricted"
         if zone == "public" and context.tool_name not in SAFE_TOOLS:
-            message = (
-                f"🔒 Tool '{context.tool_name}' is blocked — this agent is in the 'public' "
-                "security zone and can only use safe read-only tools."
+            message = _teaching_block_message(
+                context.tool_name,
+                reason="this agent runs in the 'public' security zone, which only allows safe read-only tools",
+                security_zone="public",
+                next_steps=[
+                    "use read-only tools (read_file, list_files, search) to gather what you need",
+                    "tell the user this action needs an operator to move the agent to a restricted zone",
+                    "complete the task another way that avoids this tool",
+                ],
             )
             await _emit_event(
                 event_callback,
@@ -287,7 +320,16 @@ async def _run_governance_inner(
                 )
                 return f"🔒 Tool '{context.tool_name}' blocked — capability check returned unexpected format."
             if getattr(cap_result, "denied", False):
-                message = f"🚫 Capability denied: {cap_result.reason}"
+                message = _teaching_block_message(
+                    context.tool_name,
+                    reason=f"capability policy denied it ({cap_result.reason})",
+                    capability=getattr(cap_result, "capability", None),
+                    next_steps=[
+                        "continue with tools you already have",
+                        "ask the user to grant this capability via admin capability settings",
+                        "choose an approach that does not need this tool",
+                    ],
+                )
                 await _maybe_await(
                     deps.write_audit_event(
                         event_type="capability.denied",
@@ -351,7 +393,15 @@ async def _run_governance_inner(
                     child_agent_id=context.agent_id,
                 )
                 if not token_check.valid:
-                    message = f"🔒 Delegation token rejected: {token_check.reason}"
+                    message = _teaching_block_message(
+                        context.tool_name,
+                        reason=f"your delegation token does not cover it ({token_check.reason})",
+                        capability=_cap_name or None,
+                        next_steps=[
+                            "finish the delegated task with the capabilities you were granted",
+                            "report back to the delegating agent that this step needs a broader grant",
+                        ],
+                    )
                     await _maybe_await(
                         deps.write_audit_event(
                             event_type="delegation.token_denied",
@@ -453,7 +503,15 @@ async def _run_governance_inner(
                     )
                     return f"🔒 Tool '{context.tool_name}' blocked — capability check returned unexpected format."
                 if getattr(dangerous_result, "denied", False):
-                    message = f"🚫 Capability denied: {dangerous_result.reason}"
+                    message = _teaching_block_message(
+                        context.tool_name,
+                        reason=f"this command matched a dangerous pattern and capability policy denied it ({dangerous_result.reason})",
+                        capability=getattr(dangerous_result, "capability", None),
+                        next_steps=[
+                            "use a narrower, safer command that avoids the dangerous pattern",
+                            "ask the user to approve or run this operation themselves",
+                        ],
+                    )
                     await _maybe_await(
                         deps.write_audit_event(
                             event_type="capability.denied",
@@ -525,8 +583,12 @@ async def _run_governance_inner(
                 )
             )
             message = (
-                "⏳ This action requires approval. An approval request has been sent. "
-                f"Please wait for approval before retrying. (Approval ID: {result_check.get('approval_id', 'N/A')})"
+                f"⏳ Tool '{context.tool_name}' requires approval"
+                f" [capability: {_escalated_capability}]. An approval request has been sent"
+                f" (Approval ID: {result_check.get('approval_id', 'N/A')}). "
+                "Do not retry this tool until approval is granted. Meanwhile you can: "
+                "continue other read-only parts of the task / tell the user what is pending and why / "
+                "record current progress so the approved action can resume cleanly."
             )
             await _emit_event(
                 event_callback,

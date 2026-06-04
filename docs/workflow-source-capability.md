@@ -623,6 +623,14 @@ npm run test:e2e -- --project=chromium
 
 ### P13 Office workflows
 
+> **✅ 完成（2026-06-04）** — 证据：`pytest tests/ -q` → **3625 passed**（+8：office 真 PG 5 + promote suggestion 真 PG 3）；ruff app+tests 全 clean。
+>
+> **交付物**：
+> - `services/office_workflow_examples.py` 三个内置 example（**纯结构化数据**，与 agent 提交走完全相同的 compiler/admission——built-in 无旁路）：`office-contract-review`（解析→条款→风险表，workspace artifacts，低风险）/ `office-weekly-report`（bounded fanout per source→compose）/ `office-document-distribution`（draft→**审批 gate**→external send，外发高风险 by design）。
+> - **leaf capability binding 实证**：`OFFICE_LEAF_CATALOG` 之外的 catalog 编译/准入双层拒绝（office 工具走 worker preset+capability gate 面，无私有执行路）。
+> - **真 PG 全链红测试**：合同审阅跑完三步全 done、risk-table artifact 引用入 journal、跑完即可 `submit_promote_proposal`（draft + run provenance）；**外发 step 无 gate approval 绝不执行**（suspend→approve→resume 后恰好发送一次）。
+> - `services/workflow_promote_suggestions.py`：同 definition_hash 完成 ≥`WORKFLOW_PROMOTE_SUGGESTION_THRESHOLD`（=3，进 Settings）次 ephemeral → `PromoteSuggestion`（evidence 含 run_count+sample_run_ids）；2 次沉默；已注册同名不再建议。**只观察只建议**（§10 决策 4：promote 仍走 proposal→人工审批路径），§6.6 自我进化感知通道的接入种子。
+
 目标：把办公场景作为第一批真实调用方，验证一次性编排 → 模板 → 自动化的产品路径。
 
 改动面：

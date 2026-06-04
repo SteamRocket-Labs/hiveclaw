@@ -139,6 +139,9 @@ class Settings(BaseSettings):
     # Per-leaf token pre-reservation for the run quota envelope (§9 P5):
     # reserved before each spawn under an advisory lock, settled with actual.
     WORKFLOW_LEAF_TOKEN_ESTIMATE: int = 20_000
+    # Repeated-ephemeral evidence (§9 P13 / §4): suggest 保存为模板 once the
+    # same definition_hash completes this many ephemeral runs.
+    WORKFLOW_PROMOTE_SUGGESTION_THRESHOLD: int = 3
 
     # Coordination backend (Phase 17 wiring)
     # "memory" — in-process Lease/Signal/Checkpoint (default, fine for

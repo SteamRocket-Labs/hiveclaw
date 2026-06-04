@@ -45,9 +45,9 @@ memory_service.maybe_compress_messages (:317)   ← 唯一真实压缩入口
 **目标**：
 1. 去掉 `[-40:]`；单条截断放宽为防御性高上限（tool_result 12000、user/assistant 8000、tool args 2000 chars）——防单条异常，不再是常态剪枝。
 2. 超摘要模型窗口时才机械兜底：按 `_get_input_context_limit(provider, model)` 的 70% 预算，从头丢最老消息直到 fit（对标 CC truncateHeadForPTLRetry：机械只做兜底）。
-3. `max_tokens` 2500 → 8000（CC 用 20K；Hive 多 provider 输出上限差异大，8K 是普遍安全值，常量化便于调）。
+3. `max_tokens` 2500 → 8000（CC 用 20K；Hive 多 provider 输出上限差异大，8K 是普遍安全值，常量化便于调），并 clamp 到 ProviderSpec 输出上限。
 
-**状态**：⬜ 待做
+**状态**：✅ 完成 — 新增 `_build_summary_input`（纯函数，完整序列化+超窗头部丢弃）/`_resolve_summary_max_tokens`（输出 clamp），`_llm_summarize` 改走新路径并支持 `max_input_tokens` 透传
 
 ### P1-1 — 摘要模型默认主对话模型（`memory_service.py`）
 

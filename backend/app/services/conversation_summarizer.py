@@ -519,6 +519,122 @@ action so the next turn can resume without re-asking the user.)
 """
 
 
+# ── Summary input construction (docs/compaction-cc-alignment.md §3 P0) ──
+# CC baseline: the FULL history goes into the summary request; mechanical
+# truncation appears only as an over-window fallback (truncateHeadForPTLRetry
+# philosophy). Per-message caps below are defensive limits against single
+# anomalous entries (e.g. an un-spilled giant tool result), not routine pruning.
+_SUMMARY_INPUT_USER_ASSISTANT_CAP = 8000  # chars per user/assistant message (was 800)
+_SUMMARY_INPUT_TOOL_RESULT_CAP = 12000  # chars per tool result (was 1500)
+_SUMMARY_INPUT_TOOL_ARGS_CAP = 2000  # chars per tool-call args preview (was 300)
+_SUMMARY_INPUT_WINDOW_RATIO = 0.7  # input budget as fraction of the summary model window
+_SUMMARY_MAX_OUTPUT_TOKENS = 8000  # was 2500; CC uses 20K — 8K is the safe cross-provider value
+
+
+def _serialize_message_for_summary(msg: dict) -> list[str]:
+    """Serialize one message into summary-input lines with defensive caps."""
+    lines: list[str] = []
+    role = msg.get("role", "")
+    content = msg.get("content", "")
+
+    if msg.get("tool_calls"):
+        for tc in msg["tool_calls"]:
+            fn = tc.get("function", {})
+            name = fn.get("name", "?")
+            args_preview = fn.get("arguments", "")[:_SUMMARY_INPUT_TOOL_ARGS_CAP]
+            lines.append(f"assistant: [called {name}({args_preview})]")
+        return lines
+
+    if role == "tool":
+        if isinstance(content, str) and content.strip():
+            lines.append(f"tool_result: {content[:_SUMMARY_INPUT_TOOL_RESULT_CAP]}")
+        return lines
+
+    if not isinstance(content, str) or not content.strip():
+        return lines
+    if role == "user":
+        lines.append(f"user: {content[:_SUMMARY_INPUT_USER_ASSISTANT_CAP]}")
+    elif role == "assistant" and not is_llm_error_message(content):
+        lines.append(f"assistant: {content[:_SUMMARY_INPUT_USER_ASSISTANT_CAP]}")
+    return lines
+
+
+def _resolve_summary_input_budget_chars(provider: str, max_input_tokens: int | None) -> int:
+    """Input char budget = summary-model window × ratio, in provider chars-per-token."""
+    window_tokens = max_input_tokens
+    if not window_tokens or window_tokens <= 0:
+        try:
+            from app.services.llm_client import get_provider_spec
+
+            spec = get_provider_spec(provider)
+            window_tokens = spec.max_input_tokens if spec else None
+        except Exception as exc:
+            logger.debug("[Summarizer] Provider spec lookup failed for %s: %s", provider, exc)
+            window_tokens = None
+    if not window_tokens or window_tokens <= 0:
+        window_tokens = 128000
+    return int(window_tokens * _SUMMARY_INPUT_WINDOW_RATIO * _get_chars_per_token(provider))
+
+
+def _build_summary_input(
+    messages: list[dict],
+    *,
+    provider: str,
+    max_input_tokens: int | None = None,
+) -> tuple[str, int]:
+    """Serialize the FULL message history for the summary LLM.
+
+    Returns (text, dropped_message_count). Mechanical head-drop happens ONLY
+    when the serialized input exceeds the summary model's window budget —
+    oldest messages go first, mirroring CC's truncateHeadForPTLRetry.
+    """
+    per_message: list[str] = []
+    for msg in messages:
+        block = "\n".join(_serialize_message_for_summary(msg))
+        if block:
+            per_message.append(block)
+
+    if not per_message:
+        return "", 0
+
+    budget_chars = _resolve_summary_input_budget_chars(provider, max_input_tokens)
+
+    # Accumulate from the newest backwards; everything older than the budget is dropped.
+    kept_reversed: list[str] = []
+    used = 0
+    for block in reversed(per_message):
+        cost = len(block) + 1  # +1 for the joining newline
+        if used + cost > budget_chars and kept_reversed:
+            break
+        kept_reversed.append(block)
+        used += cost
+
+    dropped = len(per_message) - len(kept_reversed)
+    if dropped:
+        logger.warning(
+            "[Summarizer] Summary input over window budget — dropped %d oldest of %d messages",
+            dropped,
+            len(per_message),
+            extra={"metric": "summary_input_head_drop", "dropped": dropped, "total": len(per_message)},
+        )
+    return "\n".join(reversed(kept_reversed)), dropped
+
+
+def _resolve_summary_max_tokens(provider: str, model: str) -> int:
+    """Clamp the summary output budget to the provider/model output cap."""
+    try:
+        from app.services.llm_client import get_provider_spec
+
+        spec = get_provider_spec(provider)
+        if spec is not None:
+            provider_cap = spec.model_max_tokens.get(model, spec.default_max_tokens)
+            if provider_cap and provider_cap > 0:
+                return min(_SUMMARY_MAX_OUTPUT_TOKENS, provider_cap)
+    except Exception as exc:
+        logger.debug("[Summarizer] Output cap lookup failed for %s/%s: %s", provider, model, exc)
+    return _SUMMARY_MAX_OUTPUT_TOKENS
+
+
 async def _llm_summarize(messages: list[dict], model_config: dict) -> str | None:
     """Use LLM to create a detailed summary of old messages.
 
@@ -527,46 +643,24 @@ async def _llm_summarize(messages: list[dict], model_config: dict) -> str | None
     """
     from app.services.llm_client import LLMMessage, create_llm_client
 
-    # Build conversation text with higher fidelity for code context
-    conversation_text: list[str] = []
-    for msg in messages:
-        role = msg.get("role", "")
-        content = msg.get("content", "")
-
-        if msg.get("tool_calls"):
-            for tc in msg["tool_calls"]:
-                fn = tc.get("function", {})
-                name = fn.get("name", "?")
-                args_preview = fn.get("arguments", "")[:300]
-                conversation_text.append(f"assistant: [called {name}({args_preview})]")
-            continue
-
-        if role == "tool":
-            if isinstance(content, str) and content.strip():
-                conversation_text.append(f"tool_result: {content[:1500]}")
-            continue
-
-        if not isinstance(content, str) or not content.strip():
-            continue
-        if role == "user":
-            # Preserve user messages at higher fidelity — they encode intent
-            conversation_text.append(f"user: {content[:800]}")
-        elif role == "assistant" and not is_llm_error_message(content):
-            conversation_text.append(f"assistant: {content[:800]}")
-
-    if not conversation_text:
+    provider = model_config.get("provider", "")
+    model_name = model_config.get("model", "")
+    text, _ = _build_summary_input(
+        messages,
+        provider=provider,
+        max_input_tokens=model_config.get("max_input_tokens"),
+    )
+    if not text:
         return None
 
-    text = "\n".join(conversation_text[-40:])
-
-    client = create_llm_client(**model_config)
+    client = create_llm_client(**{k: v for k, v in model_config.items() if k != "max_input_tokens"})
     try:
         response = await client.stream(
             messages=[
                 LLMMessage(role="system", content=_SUMMARIZE_SYSTEM_PROMPT),
                 LLMMessage(role="user", content=text),
             ],
-            max_tokens=2500,
+            max_tokens=_resolve_summary_max_tokens(provider, model_name),
             temperature=0.3,
         )
         return _extract_summary_from_response(response.content)

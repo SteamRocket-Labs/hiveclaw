@@ -14,7 +14,7 @@
 | 一、压缩 | ✅ 已修复 | P0-P3 全对齐（compaction-cc-alignment.md） |
 | 二、系统提示词注入 | 🟢 大体对齐+部分反超 | 14 sections/防注入/cache 边界强；裁剪静默是真 gap |
 | 三、Plan Mode | 🟢 核心反超 | agent 主循环规划唯一路径+DB canonical+fail-closed 纵深 > CC；激活告知是 gap |
-| 四、DR 与多 Agent 编排 | 🔴 核心违规 | planner 纯模板、LLM 零参与维度拆解；synthesis prompt 反而 > CC |
+| 四、DR 与多 Agent 编排 | 🔴→⏸️ 冻结 | planner 纯模板、LLM 零参与维度拆解；synthesis prompt 反而 > CC。**2026-06-04 用户拍板：DR 整体重做、管道迁移 workflow，本轮不处理（见 §1 A1 标记）** |
 | 五、自主模式 | 🔴 核心违规 | proactive 决策由 preflight 规则机械做；缺统一自主语义框架 |
 | 六、Session 启动 | 🟢 对齐 | server 形态天然差异；invoker 串行构建可并行化（小项） |
 | 七、Query 主循环 | 🟡 部分 | loop guard 一刀切；流式不边流边执行；frozen prefix 缓存反超 CC |
@@ -31,7 +31,9 @@
 
 | # | 位置 | 现状 | 证据 | CC 对照 |
 |---|---|---|---|---|
-| A1 | **DR 研究规划** | depth→lane 固定模板映射，LLM 零参与维度拆解；注释自认 "LLM-assisted planning can be layered on later" | `services/deep_research/planner.py:18-55` | coordinator prompt 驱动，agent 自主拆维度（doc §4.2：四阶段是 prompt 不是状态机） |
+| A1 | **DR 研究规划** ⏸️ | depth→lane 固定模板映射，LLM 零参与维度拆解；注释自认 "LLM-assisted planning can be layered on later" | `services/deep_research/planner.py:18-55` | coordinator prompt 驱动，agent 自主拆维度（doc §4.2：四阶段是 prompt 不是状态机） |
+
+> ⏸️ **A1 冻结（2026-06-04 用户拍板）**：Deep Research 全部内容将整体重做、管道迁移到 workflow（P14 入口壳已就位，leaf 能力下沉时一并按 AI-native 法律设计——LLM 拆维度、四问全过）。本轮不修旧 planner。其余 DR 专属 gap（worker 并行特化代码、digest 600 字上限等）同此冻结；**非 DR 专属**的 subagent/workflow 通用项（D6 fan-out token 池、D7 轻量 worker、D8 异步重入）不受影响，仍走轴 1/轴 2 排期。
 | A2 | **Proactive 自主决策** | DO/PREPARE_ONLY/ASK/ESCALATE/REFUSE 由 `preflight_service.evaluate()` 规则引擎决定，agent 不参与判断 | `services/proactive_employee_loop.py:68-108` | 自主决策交给模型（Autonomous work prompt + bias toward action），代码只搭管道 |
 | A3 | **记忆激活评分** | 纯机械：keyword 重叠 + 固定权重（goal 0.25/owner 0.2/…），内容语义零参与；LLM rerank 仅候选>5 且 1.5s 超时即降级 | `memory/activation.py:39-74`、`memory/retriever.py:86-93` | （CC 此处也弱——这是超越机会而非对齐项） |
 | A4 | **Loop Guard 一刀切** | 触发即硬 abort，模型收不到"你陷入了什么模式"的诊断，没有自纠机会 | `runtime/loop_guard.py:64-116`、`kernel/engine.py:1605-1634` | 软约束哲学：stop hook blockingError 把"还没干完"拼回 messages 让模型继续 |
@@ -98,7 +100,7 @@ CC 哲学：每次拒绝都是教学机会——告诉模型为什么 + 下一�
 ## 3. 修复路线建议（待讨论，未拍板）
 
 **第一优先：主题 A（机械替代 LLM）**——与压缩同级的法律违规：
-- A1 DR planner → LLM 拆维度（轴 2 已有排期位，提示词用 CC coordinator 思路 + Hive synthesis 同级质量）
+- ~~A1 DR planner~~ → ⏸️ 冻结：随 DR 整体重做时按 AI-native 法律设计（LLM 拆维度），本轮不动
 - A2 proactive 决策 → preflight 从"决策者"降为"边界提供者"，DO/ASK/ESCALATE 判断交给 agent（喂给它 preflight 的 5 轴评估作为输入）
 - A3 记忆激活 → 权重模型保留为初筛，加语义层（embedding 或放宽 LLM rerank 触发条件+超时）；与 memory-claude-mem-borrow 计划合并考虑
 - A4 loop guard → 先软后硬：首次触发注入诊断文本让模型自纠，N 次后才 abort

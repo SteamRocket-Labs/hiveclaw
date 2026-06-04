@@ -103,12 +103,14 @@ def deep_research_workflow_args(request: ResearchRequest) -> dict[str, Any]:
     return {
         "question": request.question,
         "worker_topics": worker_topics,
-        "scope": request.scope,
-        "depth": request.depth,
-        "source_policy": request.source_policy,
-        "time_window": request.time_window,
+        # Optional fields render into step task templates — "not specified"
+        # reads correctly there, a literal "None" does not.
+        "scope": request.scope or "not specified",
+        "depth": request.depth or "standard",
+        "source_policy": request.source_policy or "not specified",
+        "time_window": request.time_window or "not specified",
         "output_format": normalize_deep_research_output_format(request.output_format),
-        "output_language": request.output_language,
+        "output_language": request.output_language or "not specified",
     }
 
 

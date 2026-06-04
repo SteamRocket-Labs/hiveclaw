@@ -263,3 +263,162 @@ async def test_runtime_start_run_accepts_injected_run_id(pg_tenant_id, owner_ses
     )
     assert handle.run_id == injected
     assert handle.outcome.status == "completed"
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_full_deep_research_workflow_chain_on_real_engine(
+    pg_tenant_id, owner_sessionmaker, tmp_path, monkeypatch
+):
+    """DR-5 前置：除真 LLM 外全真 — 真 PG journal、真引擎（fanout/retry/
+    journal）、真 presets（pre/post 全跑）、fake spawn 喂真实形状语料。
+    plan→explore(×2)→critic→synthesize 四步全链跑通且 report.md 完整落盘。"""
+    import json as _json
+    from types import SimpleNamespace
+
+    from app.agents.subagent import SubagentHandle, SubagentResult, SubagentSpawnContext
+    from app.config import get_settings
+    from app.services.deep_research.leaf_presets import (
+        register_deep_research_leaf_presets,
+        run_artifact_dir,
+    )
+    from app.services.deep_research.schemas import to_jsonable
+    from app.services.deep_research.workflow_definition import build_deep_research_workflow_definition
+    from app.services.workflow_launch import build_subagent_leaf_executor
+    from app.services.workflow_leaf_presets import reset_leaf_presets
+    from app.services.workflow_runtime_service import WorkflowRuntimeService
+
+    monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path))
+    reset_leaf_presets()
+    register_deep_research_leaf_presets()
+
+    agent_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    root = run_artifact_dir(agent_id, run_id)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "request.json").write_text(
+        _json.dumps(to_jsonable({"question": "RWA market structure", "output_language": "en", "depth": "quick"})),
+        encoding="utf-8",
+    )
+
+    page = (
+        "Title: Tokenised Treasuries 2026\n\nTokenised treasury products grew to $4.2B by May 2026 per the "
+        "official registry; issuers reached 38 across five jurisdictions and BlackRock BUIDL holds $1.7B."
+    )
+    synthesized = """# RWA Market Structure Deep Research
+
+## Executive Thesis
+
+Tokenised treasuries are the anchor of RWA adoption: cumulative volume reached $4.2B by May 2026 with 38 issuers
+across five jurisdictions, and BlackRock BUIDL alone grew from $250M to $1.7B within 2026. Evidence from SRC0 and
+SRC1 grounds the market-size view, while regulatory posture (SEC, MAS) decides scale beyond the current base.
+
+## Key Findings
+
+1. Treasury products dominate volume: $4.2B cumulative, 38 issuers, five jurisdictions. Sources: SRC0.
+2. Institutional wrappers win distribution — BUIDL's $250M→$1.7B trajectory in 2026 shows demand concentrates in
+   regulated fund shells offered by BlackRock, Securitize, and Franklin Templeton. Sources: SRC1.
+3. Regulatory clarity (SEC no-action posture, MAS sandbox graduations) is the binding constraint on the next 12
+   months of issuance growth across the 17 candidate venues. Sources: SRC0, SRC1.
+
+## Strategic Implications
+
+- Prioritise regulated fund wrappers over bespoke SPV tokens; that is where the $1.7B of demand sits.
+- Track SEC and MAS posture quarterly; venue count (17) only converts to volume under clear transfer rules.
+
+## Contradictions And Gaps
+
+- Issuer-count growth (38) outpaces audited volume disclosure; third-party attestation coverage remains thin.
+
+## Source Ledger
+
+- `SRC0` — tier1
+- `SRC1` — tier1
+"""
+
+    async def spawn(ctx: SubagentSpawnContext, spec, task, *, budget=None):
+        if spec.name == "deep_research_explorer":
+            url = "https://a.gov/treasuries" if "market size" in task else "https://b.gov/funds"
+            result = SubagentResult(
+                name=spec.name,
+                type=spec.type,
+                status="completed",
+                content=f"## Findings\n- grounded numbers from {url}",
+                tokens_used=300,
+                sources=[{"url": url, "tool_name": "web_fetch", "content": page}],
+            )
+        elif spec.name == "deep_research_critic":
+            assert spec.disable_tools is True  # RC11 on the real spawn path
+            result = SubagentResult(
+                name=spec.name,
+                type=spec.type,
+                status="completed",
+                content=_json.dumps({"strongest_counter_argument": "volume concentration in one issuer"}),
+                tokens_used=80,
+            )
+        elif spec.name == "deep_research_synthesizer":
+            assert spec.disable_tools is True
+            assert "COVERAGE IS MANDATORY" in task  # pre_process rebuilt the real instruction
+            merged = [
+                _json.loads(line)
+                for line in (root / "sources.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            ids = [row["source_id"] for row in merged]
+            result = SubagentResult(
+                name=spec.name,
+                type=spec.type,
+                status="completed",
+                content=synthesized.replace("SRC0", ids[0]).replace("SRC1", ids[-1]),
+                tokens_used=500,
+            )
+        else:  # planner
+            assert spec.disable_tools is True
+            result = SubagentResult(
+                name=spec.name,
+                type=spec.type,
+                status="completed",
+                content="Strategy: prioritise registries and regulator publications.",
+                tokens_used=40,
+            )
+        return SubagentHandle(name=spec.name, trace_id="tr", depth=1, result=result)
+
+    ctx = SubagentSpawnContext(
+        parent_agent_id=agent_id,
+        parent_user_id=uuid.uuid4(),
+        model=SimpleNamespace(provider="anthropic", model="claude-x"),
+        tenant_id=pg_tenant_id,
+    )
+    service = WorkflowRuntimeService(session_factory=owner_sessionmaker)
+    handle = await service.start_run(
+        tenant_id=pg_tenant_id,
+        definition_data=build_deep_research_workflow_definition(),
+        args=deep_research_workflow_args(
+            ResearchRequest.from_arguments(
+                {
+                    "question": "RWA market structure",
+                    "worker_topics": ["market size", "fund wrappers"],
+                    "output_language": "en",
+                    "depth": "quick",
+                }
+            )
+        ),
+        leaf_executor=build_subagent_leaf_executor(ctx, spawn=spawn),
+        run_id=run_id,
+        agent_id=agent_id,
+    )
+
+    assert handle.outcome.status == "completed", handle.outcome.reason
+    loaded = await service.load_run(handle.run_id, tenant_id=pg_tenant_id)
+    assert {s.step_id: s.status for s in loaded.steps} == {
+        "plan": "done",
+        "explore": "done",
+        "critic": "done",
+        "synthesize": "done",
+    }
+    report = (root / "report.md").read_text(encoding="utf-8")
+    assert "## Footnotes" in report and "[^1]" in report
+    assert (root / "final.json").exists()
+    assert (root / "devils_advocate.jsonl").exists()
+    merged_rows = (root / "sources.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len([line for line in merged_rows if line.strip()]) == 2  # both explorer shards merged
+    reset_leaf_presets()

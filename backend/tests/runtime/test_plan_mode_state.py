@@ -185,3 +185,16 @@ def test_from_metadata_handles_none_and_empty_safely():
     assert PlanModeState.from_metadata({}).active is False
     # A malformed/non-dict payload degrades to an inactive state, never raises.
     assert PlanModeState.from_metadata("not-a-dict").active is False  # type: ignore[arg-type]
+
+
+def test_to_metadata_carries_action_artifact_when_present():
+    """P1 deadlock fix: the artifact computed at gate-check time rides the
+    typed state into the metadata mirror (consumed by exit_plan_mode), and is
+    omitted entirely when absent — the legacy mirror stays byte-compatible."""
+    artifact = {"definition_hash": "wf-hash", "args_hash": "args-hash", "risk_reasons": ["external send"]}
+    state = PlanModeState(active=True, action_kind="start_workflow", action_artifact=artifact)
+    data = state.to_metadata()
+    assert data["action_artifact"] == artifact
+    assert "action_artifact" not in PlanModeState(active=True).to_metadata()
+    assert PlanModeState.from_metadata(data).action_artifact == artifact
+    assert PlanModeState.from_metadata({"active": True}).action_artifact is None

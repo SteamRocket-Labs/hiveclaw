@@ -229,3 +229,29 @@ def test_activation_feishu_live_channel_uses_interactive_plan_mode():
     finally:
         if token is not None:
             reset_interactive_plan_mode(token)
+
+
+def test_activation_carries_action_artifact_from_seed():
+    """The seed's action_artifact must land on the typed state AND the metadata
+    mirror — exit_plan_mode reads the mirror to bind the plan to the exact
+    blocked action (P1 high-risk workflow deadlock fix)."""
+    from app.services.plan_mode_runtime_context import reset_interactive_plan_mode
+
+    artifact = {"definition_hash": "wf-hash", "args_hash": "args-hash", "risk_reasons": ["external send"]}
+    sc = SessionContext(source="web", channel="web")
+    signal = _signal(
+        interactive_plan_seed={
+            "action_kind": "start_workflow",
+            "tool_name": "start_workflow",
+            "original_request": "发周报给客户",
+            "action_artifact": artifact,
+        }
+    )
+    token = _maybe_activate_interactive_plan_from_tool_result(_make_request(sc), signal)
+    try:
+        assert token is not None
+        assert sc.plan_mode.action_artifact == artifact
+        assert sc.metadata["plan_mode"]["action_artifact"] == artifact
+    finally:
+        if token is not None:
+            reset_interactive_plan_mode(token)

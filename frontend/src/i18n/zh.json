@@ -368,6 +368,7 @@
       "selectObjective": "选择目标",
       "noWorkflowRef": "不绑定工作流",
       "workflowArgsInvalid": "工作流参数必须是合法 JSON。",
+      "workflowRefStale": "所选工作流模板已失效，请重新选择。",
       "wakeName": "唤醒名称",
       "wakeReason": "唤醒原因",
       "evidence": "证据",

@@ -115,7 +115,13 @@ def _plan_gate_action_artifact(tool_name: str, arguments: dict, action_kind: str
 
 
 def _maybe_attach_interactive_signal(
-    payload: dict, *, action_kind: str, tool_name: str, arguments: dict, enabled: bool = True
+    payload: dict,
+    *,
+    action_kind: str,
+    tool_name: str,
+    arguments: dict,
+    enabled: bool = True,
+    action_artifact: dict | None = None,
 ) -> dict:
     """Tag a ``needs_plan`` envelope with ``activate_interactive_plan`` + an
     ``interactive_plan_seed`` so the kernel can flip the run into main-loop Plan
@@ -134,7 +140,7 @@ def _maybe_attach_interactive_signal(
         return payload
     enriched = dict(payload)
     enriched["activate_interactive_plan"] = True
-    enriched["interactive_plan_seed"] = {
+    seed: dict = {
         "source": "tool_intercept",
         "action_kind": action_kind,
         "tool_name": tool_name,
@@ -143,6 +149,13 @@ def _maybe_attach_interactive_signal(
         "plan_version": payload.get("plan_version"),
         "plan_hash": payload.get("plan_hash"),
     }
+    # The artifact is computed BEFORE redaction (hashes over the raw
+    # definition/args), so it must ride the seed — it cannot be recomputed
+    # from the redacted tool_args. exit_plan_mode lands it in the plan so the
+    # gate's confirmed-plan binding check can succeed.
+    if action_artifact is not None:
+        seed["action_artifact"] = action_artifact
+    enriched["interactive_plan_seed"] = seed
     return enriched
 
 
@@ -645,7 +658,12 @@ class ToolRuntimeService:
             # boundary + activation; the gate only carries the flag + seed.
             defer = bool(plan_mode_interactive_available or plan_mode_unattended_available)
             payload = _maybe_attach_interactive_signal(
-                payload, action_kind=action_kind, tool_name=tool_name, arguments=arguments, enabled=defer
+                payload,
+                action_kind=action_kind,
+                tool_name=tool_name,
+                arguments=arguments,
+                enabled=defer,
+                action_artifact=action_artifact,
             )
         return _json.dumps(payload, ensure_ascii=False, default=str)
 

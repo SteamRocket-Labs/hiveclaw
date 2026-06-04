@@ -19,6 +19,10 @@ from app.services.deep_research.plan_mode import (
 )
 from app.services.deep_research.orchestrator import run_deep_research
 from app.services.deep_research.schemas import ResearchRequest, ResearchRun, to_jsonable
+from app.services.deep_research.workflow_definition import (
+    deep_research_workflow_enabled,
+    start_deep_research_workflow_run,
+)
 from app.services.long_task_runtime import record_long_task_plan, record_long_task_progress
 from app.services.office_document_service import OfficeDocumentService
 from app.services.plan_mode_service import get_plan_mode_service
@@ -254,6 +258,24 @@ async def deep_research_start(request: ToolExecutionRequest) -> str:
         preview = await _plan_preview(research_request)
         return _json(await _materialize_plan_card_payload(request, research_request, preview))
 
+    if deep_research_workflow_enabled():
+        workflow_payload = await start_deep_research_workflow_run(
+            request=research_request,
+            agent_id=request.context.agent_id,
+            user_id=request.context.user_id,
+            workspace=request.context.workspace,
+        )
+        return _json(
+            {
+                "ok": workflow_payload.get("status") not in {"failed", "killed"},
+                **workflow_payload,
+                "next_action": (
+                    "Deep Research started through the registered deep_research.v1 workflow. "
+                    "Use the workflow run/journal surfaces for progress, resume, and repair."
+                ),
+            }
+        )
+
     dedup_key = (str(request.context.agent_id), research_request.question.casefold())
     existing_task = _INFLIGHT_DEEP_RESEARCH.get(dedup_key)
     if existing_task:
@@ -476,6 +498,15 @@ async def start_deep_research_background_run(
     workspace: Path,
     plan_id: uuid.UUID | str | None = None,
 ) -> dict[str, Any]:
+    if deep_research_workflow_enabled():
+        return await start_deep_research_workflow_run(
+            request=request,
+            agent_id=agent_id,
+            user_id=user_id,
+            workspace=workspace,
+            plan_id=plan_id,
+        )
+
     task_id = uuid.uuid4()
     workspace_artifact_dir = _workspace_export_dir(workspace, task_id.hex)
     await create_runtime_task_record(

@@ -607,3 +607,43 @@ async def test_confirmed_plan_handoff_does_not_create_a_new_plan():
 
     assert result == "CREATED"
     assert intake.calls == []  # allowed -> no plan materialised
+
+
+@pytest.mark.asyncio
+async def test_blocked_start_workflow_seed_carries_action_artifact():
+    """The activation seed must carry the SAME action artifact the gate was
+    checked with, so the plan authored in main-loop Plan Mode durably binds to
+    this exact definition + args. Without it a confirmed plan is later rejected
+    with ``action_artifact_missing`` and the high-risk launch deadlocks."""
+    context = _context()
+    registry = _FakeRegistry("SHOULD_NOT_RUN")
+    gate = _RecordingGate(_BLOCKED)
+    service = _make_service(context=context, registry=registry, gate=gate)
+
+    definition = {
+        "name": "send-report",
+        "steps": [
+            {"id": "approve", "type": "gate_step", "reason": "external send"},
+            {
+                "id": "send",
+                "type": "agent_step",
+                "leaf": {"name": "sender", "type": "worker"},
+                "task": "Send the report",
+                "effects": "external",
+            },
+        ],
+    }
+
+    result = await service.execute(
+        "start_workflow",
+        {"definition": definition, "args": {"doc": "q.md"}},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        plan_mode_interactive_available=True,
+    )
+
+    payload = json.loads(result)
+    assert payload["status"] == "needs_plan"
+    expected = gate.calls[0]["action_artifact"]
+    assert expected["definition_hash"] and expected["args_hash"]
+    assert payload["interactive_plan_seed"]["action_artifact"] == expected

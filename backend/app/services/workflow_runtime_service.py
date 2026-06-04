@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -30,13 +31,15 @@ from app.config import get_settings
 from app.database import tenant_scoped_session
 from app.models.runtime_task import RuntimeTask
 from app.models.workflow import WorkflowQuota, WorkflowStep
-from app.runtime.workflow_admission import AdmissionLimits, admit_workflow
+from app.runtime.workflow_admission import AdmissionLimits, WorkflowAdmissionError, admit_workflow
 from app.runtime.workflow_compiler import CompiledWorkflow, compile_workflow
 from app.runtime.workflow_definition import compute_definition_hash
 from app.runtime.workflow_engine import (
     GateDecision,
     LeafExecutor,
+    LeafOutcome,
     LeafRecord,
+    LeafRequest,
     StepRecord,
     WorkflowRunOutcome,
     execute_workflow,
@@ -88,6 +91,7 @@ class _PGWorkflowJournal:
         self._tenant_id = tenant_id
         self._agent_id = agent_id
         self._run_id = run_id
+        self._step_started_at: dict[tuple[str, str], float] = {}
 
     def _mirror_step(self, step_id: str, status: str) -> None:
         if self._agent_id is None or self._run_id is None:
@@ -162,7 +166,9 @@ class _PGWorkflowJournal:
         self, run_id: str, step_id: str, *, step_type: str, input_hash: str | None, definition_hash: str
     ) -> None:
         from sqlalchemy import func
+        from app.services.workflow_metrics import record_workflow_step
 
+        self._step_started_at[(run_id, step_id)] = time.monotonic()
         await self._upsert(
             run_id,
             step_id,
@@ -173,26 +179,41 @@ class _PGWorkflowJournal:
             started_at=func.now(),
             error=None,
         )
+        record_workflow_step("running")
         self._mirror_step(step_id, "running")
+
+    def _observe_step_finished(self, run_id: str, step_id: str, status: str) -> None:
+        from app.services.workflow_metrics import observe_workflow_step_duration, record_workflow_step
+
+        started = self._step_started_at.pop((run_id, step_id), None)
+        if started is not None:
+            observe_workflow_step_duration(status, time.monotonic() - started)
+        record_workflow_step(status)
 
     async def record_step_done(self, run_id: str, step_id: str, *, output: Any, result_ref: str | None) -> None:
         from sqlalchemy import func
 
         encoded = result_ref if result_ref is not None else json.dumps(output, ensure_ascii=False, sort_keys=True)
         await self._upsert(run_id, step_id, status="done", result_ref=encoded, finished_at=func.now())
+        self._observe_step_finished(run_id, step_id, "done")
         self._mirror_step(step_id, "done")
 
     async def record_step_failed(self, run_id: str, step_id: str, *, error: str) -> None:
         from sqlalchemy import func
 
         await self._upsert(run_id, step_id, status="failed", error=error[:4000], finished_at=func.now())
+        self._observe_step_finished(run_id, step_id, "failed")
         self._mirror_step(step_id, "failed")
 
     async def record_step_skipped(self, run_id: str, step_id: str, *, definition_hash: str) -> None:
+        from app.services.workflow_metrics import record_workflow_step
+
         await self._upsert(run_id, step_id, status="skipped", definition_hash=definition_hash)
+        record_workflow_step("skipped")
 
     async def record_step_suspended(self, run_id: str, step_id: str, *, reason: str) -> None:
         await self._upsert(run_id, step_id, status="suspended", error=reason[:4000])
+        self._observe_step_finished(run_id, step_id, "suspended")
         self._mirror_step(step_id, "suspended")
 
     # ── leaf-level journal (v1 decision 6) ───────────────────────
@@ -261,6 +282,7 @@ class _PGWorkflowJournal:
         idempotency_key: str,
     ) -> None:
         from sqlalchemy import func
+        from app.services.workflow_metrics import record_workflow_leaf_call
 
         await self._upsert_leaf(
             run_id,
@@ -273,9 +295,11 @@ class _PGWorkflowJournal:
             started_at=func.now(),
             error=None,
         )
+        record_workflow_leaf_call("running")
 
     async def record_leaf_done(self, run_id: str, step_id: str, leaf_id: str, *, output: Any, tokens_used: int) -> None:
         from sqlalchemy import func
+        from app.services.workflow_metrics import record_workflow_leaf_call
 
         await self._upsert_leaf(
             run_id,
@@ -286,11 +310,14 @@ class _PGWorkflowJournal:
             token_usage={"total": tokens_used},
             finished_at=func.now(),
         )
+        record_workflow_leaf_call("done")
 
     async def record_leaf_failed(self, run_id: str, step_id: str, leaf_id: str, *, error: str) -> None:
         from sqlalchemy import func
+        from app.services.workflow_metrics import record_workflow_leaf_call
 
         await self._upsert_leaf(run_id, step_id, leaf_id, status="failed", error=error[:4000], finished_at=func.now())
+        record_workflow_leaf_call("failed")
 
 
 class PGQuotaReserver:
@@ -326,6 +353,10 @@ class PGQuotaReserver:
                     {"est": self._estimate, "rid": uuid.UUID(str(run_id))},
                 )
             ).scalar_one_or_none()
+        if row is None:
+            from app.services.workflow_metrics import record_workflow_quota_denial
+
+            record_workflow_quota_denial()
         return row is not None
 
     async def settle(self, run_id: str, actual_tokens: int) -> None:
@@ -569,6 +600,8 @@ class WorkflowRuntimeService:
         confirmed_plan_id: uuid.UUID | str | None = None,
         allowed_leaves: set[str] | None = None,
     ) -> WorkflowRunHandle:
+        if not get_settings().WORKFLOW_RUNTIME_ENABLED:
+            raise WorkflowAdmissionError("workflow runtime disabled by feature flag WORKFLOW_RUNTIME_ENABLED")
         compiled = compile_workflow(definition_data, known_leaves=allowed_leaves)
         limits = AdmissionLimits.from_settings(get_settings())
         admission = admit_workflow(compiled, args=args, limits=limits, allowed_leaves=allowed_leaves)
@@ -604,6 +637,9 @@ class WorkflowRuntimeService:
                 )
             )
 
+        from app.services.workflow_metrics import record_workflow_run_started
+
+        record_workflow_run_started()
         if agent_id is not None:
             try:
                 from app.services.agent_work_ledger import initialize_agent_work_ledger_artifact
@@ -632,11 +668,18 @@ class WorkflowRuntimeService:
         tenant_id: uuid.UUID,
         leaf_executor: LeafExecutor,
     ) -> WorkflowRunOutcome:
+        from app.services.workflow_metrics import record_workflow_resume_attempt, record_workflow_resume_finished
+
+        record_workflow_resume_attempt()
         lease = await self._lease_manager.try_acquire(run_id)
         if lease is None:
-            return WorkflowRunOutcome(status="suspended", reason="run lease held by another worker; not resuming here")
+            outcome = WorkflowRunOutcome(status="suspended", reason="run lease held by another worker; not resuming here")
+            record_workflow_resume_finished(outcome.status)
+            return outcome
         try:
-            return await self._resume_run_locked(run_id, tenant_id=tenant_id, leaf_executor=leaf_executor)
+            outcome = await self._resume_run_locked(run_id, tenant_id=tenant_id, leaf_executor=leaf_executor)
+            record_workflow_resume_finished(outcome.status)
+            return outcome
         finally:
             await lease.release()
 
@@ -663,6 +706,9 @@ class WorkflowRuntimeService:
         if archived_hash and compiled.definition_hash != archived_hash:
             # Archive integrity check — the archived definition must hash to
             # the recorded value, else the journal cannot be trusted.
+            from app.services.workflow_metrics import record_workflow_hash_mismatch
+
+            record_workflow_hash_mismatch()
             raise WorkflowRunNotFound(
                 f"run {run_id}: archived definition hash mismatch ({compiled.definition_hash} != {archived_hash})"
             )
@@ -874,6 +920,25 @@ class WorkflowRuntimeService:
 
         signal_wait_registrar = _MetadataSignalWaitRegistrar()
 
+        async def metered_leaf_executor(request: LeafRequest) -> LeafOutcome:
+            if request.leaf_id is None:
+                from app.services.workflow_metrics import record_workflow_leaf_call
+
+                record_workflow_leaf_call("running")
+            try:
+                outcome = await leaf_executor(request)
+            except Exception:
+                if request.leaf_id is None:
+                    from app.services.workflow_metrics import record_workflow_leaf_call
+
+                    record_workflow_leaf_call("failed")
+                raise
+            if request.leaf_id is None:
+                from app.services.workflow_metrics import record_workflow_leaf_call
+
+                record_workflow_leaf_call("done" if outcome.ok else "failed")
+            return outcome
+
         async def should_continue() -> bool:
             if self._draining:
                 return False  # graceful drain: stop at the next step boundary
@@ -881,7 +946,12 @@ class WorkflowRuntimeService:
                 status = (
                     await session.execute(select(RuntimeTask.status).where(RuntimeTask.id == run_id))
                 ).scalar_one_or_none()
-            return status not in ("killed",)
+            # During execution the row is "running"; mid-run it can only become
+            # "killed" (user/admin cancel) or "suspended" (admin force-suspend).
+            # Both are stop signals at the next step boundary — a force-suspend
+            # that kept executing would let the final status overwrite the
+            # operator's persisted state.
+            return status not in ("killed", "suspended")
 
         try:
             outcome = await execute_workflow(
@@ -889,7 +959,7 @@ class WorkflowRuntimeService:
                 run_id=str(run_id),
                 args=args,
                 journal=journal,
-                leaf_executor=leaf_executor,
+                leaf_executor=metered_leaf_executor,
                 should_continue=should_continue,
                 tenant_id=str(tenant_id),
                 quota=quota,
@@ -912,12 +982,23 @@ class WorkflowRuntimeService:
             async with self._session(tenant_id) as session:
                 task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
                 task.status = "running"  # crash-equivalent: startup scan reclaims it
+            from app.services.workflow_metrics import record_workflow_run_finished
+
+            record_workflow_run_finished(outcome.status)
             return outcome
 
         agent_for_signal: uuid.UUID | None = None
         definition_hash: str | None = None
         async with self._session(tenant_id) as session:
             task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
+            if outcome.status == "killed" and task.status == "suspended":
+                # The stop flag the engine saw was an admin force-suspend, not a
+                # kill: report it truthfully and keep the operator's state.
+                outcome = WorkflowRunOutcome(
+                    status="suspended",
+                    reason="force-suspended by operator; stopped at step boundary",
+                    outputs=outcome.outputs,
+                )
             if task.status != "killed":
                 task.status = {
                     "completed": "completed",
@@ -940,6 +1021,9 @@ class WorkflowRuntimeService:
             definition_hash=definition_hash,
             extra={"reason": outcome.reason} if outcome.reason else None,
         )
+        from app.services.workflow_metrics import record_workflow_run_finished
+
+        record_workflow_run_finished(outcome.status)
         if outcome.status == "completed":
             self._emit_completion_signal(run_id, agent_for_signal, outcome.status)
         return outcome

@@ -225,3 +225,37 @@ async def test_trigger_without_ref_falls_through_to_react(agent_id, owner_sessio
         session_factory=owner_sessionmaker,
     )
     assert result is None, "no workflow_ref → the existing ReAct path must handle the trigger"
+
+
+async def test_workflow_trigger_feature_flag_fails_closed_before_launch(
+    tenant_id,
+    agent_id,
+    definition_service,
+    owner_sessionmaker,
+    monkeypatch,
+):
+    record = await _register_active(definition_service, tenant_id, "wf-disabled")
+    launch, calls = _fake_launch()
+    settings = __import__("app.config", fromlist=["get_settings"]).get_settings()
+    monkeypatch.setattr(settings, "WORKFLOW_TRIGGER_ENABLED", False)
+
+    result = await fire_workflow_for_trigger(
+        agent_id=agent_id,
+        trigger_config={
+            "workflow_ref": {
+                "definition_name": record.name,
+                "definition_version": record.definition_version,
+                "definition_hash": record.definition_hash,
+                "args": {"week": "W23"},
+            }
+        },
+        trigger_name="disabled-trigger",
+        session_factory=owner_sessionmaker,
+        definition_service=definition_service,
+        launch=launch,
+    )
+
+    assert result is not None
+    assert result.status == "disabled"
+    assert "WORKFLOW_TRIGGER_ENABLED" in (result.reason or "")
+    assert calls == []

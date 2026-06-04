@@ -57,6 +57,16 @@ export type WakeFormState = {
   workflowArgsText: string;
 };
 
+/** A previously selected workflow template no longer resolves (deprecated,
+ * revoked, or deleted) — distinct from an args JSON error so the UI can tell
+ * the user to re-pick instead of blaming their JSON. */
+export class StaleWorkflowRefError extends Error {
+  constructor() {
+    super('Selected workflow definition is no longer available.');
+    this.name = 'StaleWorkflowRefError';
+  }
+}
+
 export function workflowDefinitionOptionKey(record: WorkflowDefinitionRecord): string {
   return `${record.name}::${record.definition_version}::${record.definition_hash}`;
 }
@@ -88,7 +98,7 @@ export function buildWakePolicyPayload(
   }
   if (wakeForm.mode === 'objective_task' && wakeForm.objectiveId) config.objective_id = wakeForm.objectiveId;
   if (wakeForm.workflowDefinitionKey && !selectedWorkflow) {
-    throw new Error('Selected workflow definition is no longer available.');
+    throw new StaleWorkflowRefError();
   }
   if (selectedWorkflow) {
     const args = JSON.parse(wakeForm.workflowArgsText || '{}') as Record<string, unknown>;
@@ -362,8 +372,12 @@ export default function AgentAwareSection({
     try {
       payload = buildWakePolicyPayload(wakeForm, selectedWorkflow);
       setWakeError('');
-    } catch {
-      setWakeError(t('agent.aware.workflowArgsInvalid', 'Workflow args must be valid JSON.'));
+    } catch (error) {
+      setWakeError(
+        error instanceof StaleWorkflowRefError
+          ? t('agent.aware.workflowRefStale', 'The selected workflow template is no longer available — pick another.')
+          : t('agent.aware.workflowArgsInvalid', 'Workflow args must be valid JSON.'),
+      );
       return;
     }
     await triggerApi.create(agentId, payload);

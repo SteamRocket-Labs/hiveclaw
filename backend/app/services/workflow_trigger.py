@@ -21,6 +21,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from app.config import get_settings
 from app.runtime.workflow_admission import WorkflowAdmissionError
 from app.runtime.workflow_compiler import WorkflowCompileError
 from app.services.workflow_definitions import WorkflowDefinitionError, WorkflowDefinitionService
@@ -30,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 _REQUIRED_REF_FIELDS = ("definition_name", "definition_version", "definition_hash")
 
-FireStatus = Literal["launched", "needs_reconfirmation", "rejected_args", "invalid_ref"]
+FireStatus = Literal["launched", "needs_reconfirmation", "rejected_args", "invalid_ref", "disabled"]
 
 
 @dataclass(slots=True)
@@ -133,6 +134,11 @@ async def fire_workflow_for_trigger(
     ref = extract_workflow_ref(trigger_config)
     if ref is None:
         return None
+    if not get_settings().WORKFLOW_TRIGGER_ENABLED:
+        return WorkflowTriggerFireResult(
+            status="disabled",
+            reason="workflow trigger launch disabled by feature flag WORKFLOW_TRIGGER_ENABLED",
+        )
 
     shape_error = validate_workflow_ref_shape(ref)
     if shape_error:

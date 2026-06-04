@@ -4,7 +4,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 import AgentApprovalsSection from './AgentApprovalsSection';
 import AgentActivityLogSection from './AgentActivityLogSection';
-import AgentAwareSection, { buildWakePolicyPayload, workflowDefinitionOptionKey } from './AgentAwareSection';
+import AgentAwareSection, {
+  StaleWorkflowRefError,
+  buildWakePolicyPayload,
+  workflowDefinitionOptionKey,
+} from './AgentAwareSection';
 import AgentChatSection, { StructuredToolResultBody, extractPlanIdFromPlanModeMessage } from './AgentChatSection';
 import AgentMindSection from './AgentMindSection';
 import AgentSettingsSection, { buildPatrolPlanRecommendationInput } from './AgentSettingsSection';
@@ -766,6 +770,45 @@ describe('AgentDetail extracted sections', () => {
         undefined,
       ),
     ).toThrow();
+  });
+
+  it('distinguishes a stale workflow selection from invalid args JSON', () => {
+    const base = {
+      mode: 'scheduled_job',
+      objectiveId: '',
+      name: 'distinguish errors',
+      reason: '',
+      scheduleType: 'cron',
+      cronExpr: '0 9 * * *',
+      intervalMinutes: 60,
+      onceAt: '',
+      eventType: 'on_message',
+      maxFires: 1,
+      expiresAt: '',
+      workflowDefinitionKey: 'missing::1::hash',
+      workflowArgsText: '{}',
+    };
+    // Stale selection → typed error so the UI can say "pick another template"
+    // instead of blaming the args JSON.
+    expect(() => buildWakePolicyPayload(base, undefined)).toThrow(StaleWorkflowRefError);
+    // Broken JSON keeps throwing a NON-stale error (the JSON message path).
+    expect(() =>
+      buildWakePolicyPayload(
+        { ...base, workflowDefinitionKey: 'daily-report::3::hash-v3', workflowArgsText: '{bad json' },
+        {
+          id: 'wf-1',
+          name: 'daily-report',
+          definition_version: 3,
+          definition_hash: 'hash-v3',
+          status: 'active',
+          visibility_scope: 'tenant',
+          owner_type: 'user',
+          owner_id: null,
+          call_policy: null,
+          promoted_from_run_id: null,
+        },
+      ),
+    ).not.toThrow(StaleWorkflowRefError);
   });
 
   it('renders AgentMindSection as a standalone mind module', () => {

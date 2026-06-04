@@ -237,3 +237,49 @@ async def test_exit_plan_mode_creates_new_when_plan_id_malformed(monkeypatch):
     # Fell back to create-new: ensure_awaiting_plan_from_fill, not generate_plan.
     assert service.generate_calls == []
     assert len(service.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_exit_plan_mode_lands_action_artifact_into_plan_json(monkeypatch):
+    """When Plan Mode was entered from a blocked high-risk ``start_workflow``,
+    the armed action_artifact must land in the submitted fill so the confirmed
+    plan's ``plan_json["action_artifact"]`` satisfies the gate's binding check
+    (P1: otherwise confirmation never unlocks the launch)."""
+    from app.services.plan_mode_runtime_context import reset_interactive_plan_mode, set_interactive_plan_mode
+    from app.tools.handlers import plan_mode as handler
+
+    service = _PlanService()
+    monkeypatch.setattr(handler, "get_plan_mode_service", lambda: service)
+
+    artifact = {"definition_hash": "wf-hash", "args_hash": "args-hash", "risk_reasons": ["external send"]}
+    token = set_interactive_plan_mode(
+        {
+            "active": True,
+            "original_request": "把周报发给客户",
+            "intent_type": "long_task",
+            "action_kind": "start_workflow",
+            "tool_name": "start_workflow",
+            "action_artifact": artifact,
+        }
+    )
+    try:
+        result = json.loads(
+            await handler.exit_plan_mode(
+                _request(
+                    {
+                        "title": "外发周报",
+                        "objective": "审批后把周报发给客户。",
+                        "plan_markdown": "## Plan\n1. 起草。\n2. 审批后外发。",
+                        "steps": ["起草", "审批后外发"],
+                        "success_criteria": ["客户收到周报"],
+                        "stop_conditions": ["用户拒绝计划"],
+                    }
+                )
+            )
+        )
+    finally:
+        reset_interactive_plan_mode(token)
+
+    assert result["status"] == "needs_plan"
+    assert result["plan_json"]["action_artifact"] == artifact
+    assert service.calls[0]["fill"]["action_artifact"] == artifact

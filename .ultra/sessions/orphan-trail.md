@@ -4,7 +4,7 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
-- 2026-06-04T13:35Z [sid:27e1f4c6]; branch:main; 1 files (orphan-trail.md); last commit: 52859e36 feat(workflow): P13 office workflows — 第一批真实调用方 + p
+- 2026-06-04T18:35Z [sid:27e1f4c6]; branch:main; 25 files (compact-snapshot.md, orphan-trail.md, coordination_rls_0604.py, +22); last commit: 09f8e52e Refine plan mode and agent work ledger flows
 - 2026-06-04T04:44Z [sid:3f97d3a5]; branch:main; 1 files (orphan-trail.md); last commit: 61153d3 docs(workflow): 轴2 v0.6 — P0-P15 全量唯一权威路线 + review 缺
 - 2026-06-04T03:32Z [sid:7abb3cd3]; branch:main; 2 files (orphan-trail.md, workflow-source-capability.md); last commit: a5ae9ec fix(work-ledger): blocked_pattern evidence 改 agent_l
 - 2026-06-04T03:28Z [sid:3f97d3a5]; branch:main; 2 files (orphan-trail.md, workflow-source-capability.md); last commit: a5ae9ec fix(work-ledger): blocked_pattern evidence 改 agent_l

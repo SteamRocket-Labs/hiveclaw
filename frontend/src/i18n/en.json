@@ -368,6 +368,7 @@
       "selectObjective": "Select objective",
       "noWorkflowRef": "No workflow",
       "workflowArgsInvalid": "Workflow args must be valid JSON.",
+      "workflowRefStale": "The selected workflow template is no longer available — pick another.",
       "wakeName": "Wake name",
       "wakeReason": "Wake reason",
       "evidence": "Evidence",

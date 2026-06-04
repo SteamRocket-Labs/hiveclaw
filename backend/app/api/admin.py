@@ -26,6 +26,8 @@ from app.services.autonomy_repair_plan import apply_autonomy_repair_plan, build_
 from app.services.harness_canary import run_harness_canary
 from app.services.harness_validation_report import build_harness_validation_report
 from app.services.plan_mode_cutover import mark_existing_triggers_plan_exempt
+from app.services.workflow_ops import WorkflowOpsConflict, WorkflowOpsService
+from app.services.workflow_runtime_service import WorkflowRunNotFound
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +97,15 @@ class PlanModeCutoverRequest(BaseModel):
         default=None,
         description="Scope the cutover to a single agent. Omit to cover every enabled trigger.",
     )
+
+
+class WorkflowAdminReasonRequest(BaseModel):
+    reason: str = Field(default="operator requested", max_length=1000)
+
+
+class WorkflowReplayFromStepRequest(BaseModel):
+    step_id: str = Field(min_length=1, max_length=100)
+    reason: str = Field(default="operator requested", max_length=1000)
 
 
 # ─── Company Management ────────────────────────────────
@@ -276,6 +287,99 @@ async def get_memory_backend_metrics(
     del current_user
     from app.memory.metrics import snapshot
     return snapshot()
+
+
+@router.get("/metrics/workflows")
+async def get_workflow_metrics(
+    current_user: User = Depends(require_role("platform_admin")),
+):
+    """Return in-process workflow runtime counters for rollout checks."""
+    del current_user
+    from app.services.workflow_metrics import snapshot_workflow_metrics
+
+    return snapshot_workflow_metrics()
+
+
+@router.get("/workflows/{run_id}")
+async def inspect_workflow_run(
+    run_id: uuid.UUID,
+    tenant_id: uuid.UUID = Query(...),
+    current_user: User = Depends(require_role("platform_admin")),
+):
+    """Inspect a workflow RuntimeTask + step/quota journal."""
+    del current_user
+    try:
+        return await WorkflowOpsService().inspect_run(run_id, tenant_id=tenant_id)
+    except WorkflowRunNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/workflows/{run_id}/journal")
+async def export_workflow_journal(
+    run_id: uuid.UUID,
+    tenant_id: uuid.UUID = Query(...),
+    current_user: User = Depends(require_role("platform_admin")),
+):
+    """Export the workflow run journal including leaf calls."""
+    del current_user
+    try:
+        return await WorkflowOpsService().export_journal(run_id, tenant_id=tenant_id)
+    except WorkflowRunNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/workflows/{run_id}/cancel")
+async def cancel_workflow_run(
+    run_id: uuid.UUID,
+    payload: WorkflowAdminReasonRequest | None = None,
+    tenant_id: uuid.UUID = Query(...),
+    current_user: User = Depends(require_role("platform_admin")),
+):
+    """Persistently kill a workflow run; killed runs are not auto-resumed."""
+    del current_user
+    payload = payload or WorkflowAdminReasonRequest()
+    try:
+        return await WorkflowOpsService().cancel_run(run_id, tenant_id=tenant_id, reason=payload.reason)
+    except WorkflowRunNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/workflows/{run_id}/force-suspend")
+async def force_suspend_workflow_run(
+    run_id: uuid.UUID,
+    payload: WorkflowAdminReasonRequest | None = None,
+    tenant_id: uuid.UUID = Query(...),
+    current_user: User = Depends(require_role("platform_admin")),
+):
+    """Force a run into suspended state for manual reconciliation."""
+    del current_user
+    payload = payload or WorkflowAdminReasonRequest()
+    try:
+        return await WorkflowOpsService().force_suspend_run(run_id, tenant_id=tenant_id, reason=payload.reason)
+    except WorkflowRunNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/workflows/{run_id}/replay-from-step")
+async def replay_workflow_from_step(
+    run_id: uuid.UUID,
+    payload: WorkflowReplayFromStepRequest,
+    tenant_id: uuid.UUID = Query(...),
+    current_user: User = Depends(require_role("platform_admin")),
+):
+    """Rewind target/downstream journal rows; normal resume performs execution."""
+    del current_user
+    try:
+        return await WorkflowOpsService().replay_from_step(
+            run_id,
+            tenant_id=tenant_id,
+            step_id=payload.step_id,
+            reason=payload.reason,
+        )
+    except WorkflowOpsConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except WorkflowRunNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/autonomous-audit")

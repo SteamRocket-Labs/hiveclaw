@@ -217,3 +217,83 @@ async def test_load_run_returns_task_and_steps(service, tenant_id):
     assert loaded is not None
     assert loaded.task.id == handle.run_id
     assert {s.step_id for s in loaded.steps} == {"scan", "report"}
+
+
+async def test_runtime_feature_flag_fails_closed_before_creating_run(service, tenant_id, owner_sessionmaker, monkeypatch):
+    from app.config import get_settings
+    from app.runtime.workflow_admission import WorkflowAdmissionError
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "WORKFLOW_RUNTIME_ENABLED", False)
+
+    with pytest.raises(WorkflowAdmissionError, match="disabled"):
+        await service.start_run(
+            tenant_id=tenant_id,
+            definition_data=_definition(),
+            args={"target": "x"},
+            leaf_executor=_ok_leaf(),
+        )
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        count = (
+            (
+                await session.execute(
+                    select(RuntimeTask).where(
+                        RuntimeTask.task_type == "workflow",
+                        RuntimeTask.metadata_json["tenant_id"].as_string() == str(tenant_id),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert count == []
+
+
+async def test_workflow_metrics_record_run_step_leaf_resume_and_quota_denial(service, tenant_id):
+    from app.config import get_settings
+    from app.services.workflow_metrics import reset_workflow_metrics, snapshot_workflow_metrics
+
+    settings = get_settings()
+    reset_workflow_metrics()
+
+    handle = await service.start_run(
+        tenant_id=tenant_id,
+        definition_data=_definition(),
+        args={"target": "x"},
+        leaf_executor=_ok_leaf(),
+    )
+    await service.resume_run(handle.run_id, tenant_id=tenant_id, leaf_executor=_ok_leaf())
+
+    calls: list[LeafRequest] = []
+
+    async def leaf(request: LeafRequest) -> LeafOutcome:
+        calls.append(request)
+        return LeafOutcome(ok=True, output={}, tokens_used=settings.WORKFLOW_LEAF_TOKEN_ESTIMATE)
+
+    budget_starved = dict(_definition())
+    budget_starved["default_budget"] = {"max_total_tokens": settings.WORKFLOW_LEAF_TOKEN_ESTIMATE}
+    budget_starved["steps"] = [
+        budget_starved["steps"][0],
+        {
+            "id": "second",
+            "type": "agent_step",
+            "leaf": {"name": "second", "type": "worker"},
+            "task": "Second",
+        },
+    ]
+    await service.start_run(
+        tenant_id=tenant_id,
+        definition_data=budget_starved,
+        args={"target": "x"},
+        leaf_executor=leaf,
+    )
+
+    snapshot = snapshot_workflow_metrics()
+    assert snapshot["runs_started_total"] >= 2
+    assert snapshot["runs_finished_total"]["completed"] >= 1
+    assert snapshot["steps_total"]["done"] >= 2
+    assert snapshot["leaf_calls_total"]["done"] >= 1
+    assert snapshot["resume_attempts_total"] >= 1
+    assert snapshot["quota_denials_total"] >= 1
+    assert snapshot["step_duration_seconds"]["count"] >= 1

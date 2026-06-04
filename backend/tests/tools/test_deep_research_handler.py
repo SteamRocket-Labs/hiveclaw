@@ -134,6 +134,56 @@ async def test_deep_research_start_creates_runtime_task(tmp_path, monkeypatch: p
 
 
 @pytest.mark.asyncio
+async def test_deep_research_start_uses_workflow_when_rollout_flag_enabled(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.tools.handlers.deep_research import deep_research_start
+
+    started: dict = {}
+
+    async def fake_start_workflow(**kwargs):
+        started.update(kwargs)
+        return {
+            "created_workflow_run_id": "wf-run-1",
+            "workflow_run_id": "wf-run-1",
+            "status": "running",
+            "definition_name": "deep_research.v1",
+            "definition_version": 1,
+            "definition_hash": "hash",
+            "legacy_path_available": True,
+        }
+
+    async def fail_old_path(**_kwargs):
+        raise AssertionError("workflow flag must bypass the legacy RuntimeTask path")
+
+    monkeypatch.setattr("app.tools.handlers.deep_research.deep_research_workflow_enabled", lambda: True)
+    monkeypatch.setattr("app.tools.handlers.deep_research.start_deep_research_workflow_run", fake_start_workflow)
+    monkeypatch.setattr("app.tools.handlers.deep_research.create_runtime_task_record", fail_old_path)
+
+    req = _request(tmp_path, session_id="session-work-ledger")
+    req.arguments.update(
+        {
+            "question": "RWA adoption",
+            "worker_topics": ["market", "regulation"],
+            "max_rounds": 2,
+            "plan_confirmed": True,
+        }
+    )
+
+    payload = json.loads(await deep_research_start(req))
+
+    assert payload["ok"] is True
+    assert payload["status"] == "running"
+    assert payload["workflow_run_id"] == "wf-run-1"
+    assert payload["definition_name"] == "deep_research.v1"
+    assert payload["legacy_path_available"] is True
+    assert started["agent_id"] == req.context.agent_id
+    assert started["user_id"] == req.context.user_id
+    assert started["request"].worker_topics == ["market", "regulation"]
+
+
+@pytest.mark.asyncio
 async def test_deep_research_check_rejects_other_agent_task(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     from app.tools.handlers.deep_research import deep_research_check
 

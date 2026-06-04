@@ -198,6 +198,14 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
             "question": (metadata.get("deep_research_args") or {}).get("question") or original_request,
             "planned_from": "interactive_plan_mode",
         }
+    # P1 binding: Plan Mode entered from a blocked gated tool carries the
+    # action artifact computed at gate-check time (e.g. start_workflow's
+    # definition/args hashes). Landing it in the fill puts it in plan_json —
+    # covered by the plan hash — so the gate's confirmed-plan binding check
+    # passes when the agent re-runs the exact blocked action.
+    armed_artifact = metadata.get("action_artifact")
+    if isinstance(armed_artifact, dict):
+        fill["action_artifact"] = armed_artifact
 
     # Path-unification cut ③a — dual-state submission. A system_plan_run launcher
     # (REST create/regenerate/revise, Feishu classification) pre-creates a draft

@@ -1054,11 +1054,13 @@ def _maybe_activate_interactive_plan_from_tool_result(request: Any, result_str: 
     seed = _parse_interactive_plan_signal(result_str)
     if seed is None:
         return None
+    seed_artifact = seed.get("action_artifact")
     state = PlanModeState(
         active=True,
         intent_type=seed.get("intent_type"),
         action_kind=seed.get("action_kind"),
         tool_name=seed.get("tool_name"),
+        action_artifact=seed_artifact if isinstance(seed_artifact, dict) else None,
         original_request=seed.get("original_request") or _latest_user_message(request),
         plan_id=seed.get("plan_id"),
         source="tool_intercept" if live else "tool_intercept_unattended",

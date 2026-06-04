@@ -36,6 +36,12 @@ class PlanModeState:
     intent_type: str | None = None
     action_kind: str | None = None
     tool_name: str | None = None
+    # P1 binding: the action artifact computed at gate-check time (definition
+    # hash / args hash / risk reasons for ``start_workflow``). Rides the state
+    # into the metadata mirror so ``exit_plan_mode`` can bind the authored plan
+    # to the exact blocked action; without it the confirmed plan is rejected
+    # with ``action_artifact_missing`` and the high-risk launch deadlocks.
+    action_artifact: dict[str, Any] | None = None
     original_request: str | None = None
     handoff_target: str | None = None
     reason: str | None = None
@@ -71,6 +77,10 @@ class PlanModeState:
         # "create new" mirror byte-for-byte.
         if self.plan_id:
             data["plan_id"] = self.plan_id
+        # Emitted only when present (same rule as plan_id) so mirrors without a
+        # bound action stay byte-compatible with the legacy shape.
+        if self.action_artifact:
+            data["action_artifact"] = dict(self.action_artifact)
         if self.deep_research:
             data["deep_research"] = True
             data["deep_research_args"] = dict(self.deep_research_args)
@@ -96,6 +106,7 @@ class PlanModeState:
             intent_type=data.get("intent_type"),
             action_kind=data.get("action_kind"),
             tool_name=data.get("tool_name"),
+            action_artifact=dict(data["action_artifact"]) if isinstance(data.get("action_artifact"), dict) else None,
             original_request=data.get("original_request"),
             handoff_target=data.get("handoff_target"),
             reason=data.get("reason"),

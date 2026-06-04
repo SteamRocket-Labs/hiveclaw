@@ -958,6 +958,39 @@ _WORK_LEDGER_REMINDER = (
 )
 
 
+def _build_round_pressure_warning(
+    *,
+    round_i: int,
+    max_rounds: int,
+    total_tool_calls: int,
+    failed_tool_calls: int,
+    context_tokens: int,
+    final: bool,
+) -> str:
+    """Round-pressure warning with real data (B2, CC token-budget-nudge style).
+
+    Concrete numbers let the model budget its wind-down: how many calls it has
+    burned, how many failed, and how heavy the context already is.
+    """
+    stats = (
+        f"{round_i}/{max_rounds} tool rounds used; {total_tool_calls} tool calls so far "
+        f"({failed_tool_calls} failed); context ≈{context_tokens:,} tokens."
+    )
+    if final:
+        return (
+            f"🚨 Only {max_rounds - round_i} rounds remaining. {stats} "
+            "Objective Ledger is the source of truth: record current status/blockers with evidence, "
+            "preserve artifacts, and stop cleanly if unfinished. "
+            "Trigger is wake policy; do not create a trigger unless a real objective needs a future attempt."
+        )
+    return (
+        f"⚠️ {stats} "
+        "If the current task is not yet complete, update Objective Ledger with blockers/status "
+        "and preserve concrete evidence in workspace artifacts. Trigger is wake policy, not the goal; "
+        "only create or update a wake policy when an existing objective needs a future attempt."
+    )
+
+
 def _work_ledger_reminder_content(session_context: Any | None) -> str | None:
     """Pure: return the per-round Work Ledger reminder when this turn is complex.
 
@@ -1840,26 +1873,20 @@ class AgentKernel:
 
                     warn_threshold_80 = int(max_rounds * 0.8)
                     warn_threshold_96 = max_rounds - 2
-                    if round_i == warn_threshold_80:
+                    if round_i in (warn_threshold_80, warn_threshold_96):
+                        # B2: warnings carry real data (CC token-budget-nudge
+                        # style) so the model can plan its wind-down concretely.
+                        _ctx_chars = sum(len(m.content or "") for m in api_messages)
                         api_messages.append(
                             LLMMessage(
                                 role="system",
-                                content=(
-                                    f"⚠️ You have used {round_i}/{max_rounds} tool rounds. "
-                                    "If the current task is not yet complete, update Objective Ledger with blockers/status "
-                                    "and preserve concrete evidence in workspace artifacts. Trigger is wake policy, not the goal; "
-                                    "only create or update a wake policy when an existing objective needs a future attempt."
-                                ),
-                            )
-                        )
-                    elif round_i == warn_threshold_96:
-                        api_messages.append(
-                            LLMMessage(
-                                role="system",
-                                content=(
-                                    "🚨 Only 2 tool rounds remaining. Objective Ledger is the source of truth: "
-                                    "record current status/blockers with evidence, preserve artifacts, and stop cleanly if unfinished. "
-                                    "Trigger is wake policy; do not create a trigger unless a real objective needs a future attempt."
+                                content=_build_round_pressure_warning(
+                                    round_i=round_i,
+                                    max_rounds=max_rounds,
+                                    total_tool_calls=loop_guard.total_tool_calls,
+                                    failed_tool_calls=loop_guard.failed_tool_calls,
+                                    context_tokens=self._deps.estimate_tokens_from_chars(_ctx_chars),
+                                    final=round_i == warn_threshold_96,
                                 ),
                             )
                         )

@@ -75,12 +75,16 @@ class TestAnalysisInstructions:
         ]:
             assert area in prompt_text, f"missing analysis area: {area}"
 
+    def test_double_check_step(self, prompt_text: str) -> None:
+        # CC: "Double-check for technical accuracy and completeness"
+        assert "double-check" in prompt_text.lower()
+
 
 class TestSummaryFormat:
     def test_all_eleven_fields_present(self, prompt_text: str) -> None:
         for field in [
             "**Primary Request and Intent:**",
-            "**Key Technical Decisions:**",
+            "**Key Technical Concepts & Decisions:**",
             "**Files and Code Sections:**",
             "**Problem Solving:**",
             "**Errors and Fixes:**",
@@ -89,13 +93,33 @@ class TestSummaryFormat:
             "**Tool Outcomes:**",
             "**Pending Tasks:**",
             "**Current Work:**",
-            "**Recovery Context:**",
+            "**Next Step:**",
         ]:
             assert field in prompt_text, f"missing field: {field}"
 
     def test_empty_fields_use_none_not_omission(self, prompt_text: str) -> None:
         # (none) — explicit rule that empty fields must appear with "(none)".
         assert "(none)" in prompt_text
+
+    def test_next_step_has_drift_guards(self, prompt_text: str) -> None:
+        """P3-1 (docs/compaction-cc-alignment.md): the Next Step field carries CC's
+        anti-drift constraints — directly in line with the latest explicit request,
+        verbatim quotes, no tangential/old tasks without confirmation."""
+        lowered = prompt_text.lower()
+        assert "directly in line" in lowered
+        assert "verbatim" in lowered
+        assert "tangential" in lowered
+
+    def test_no_hallucinated_recovery_field(self, prompt_text: str) -> None:
+        """The summary LLM has no knowledge of real log paths — recovery pointers
+        are injected by the system wrapper (CC transcriptPath pattern), never
+        written by the LLM."""
+        assert "**Recovery Context:**" not in prompt_text
+
+    def test_all_user_messages_not_filtered(self, prompt_text: str) -> None:
+        """CC: 'List ALL user messages that are not tool results' — no
+        non-trivial filtering, which loses changing-intent signals."""
+        assert "non-trivial" not in prompt_text.lower()
 
 
 class TestGoodExample:

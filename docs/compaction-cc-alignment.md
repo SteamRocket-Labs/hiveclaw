@@ -96,7 +96,7 @@ memory_service.maybe_compress_messages (:317)   ← 唯一真实压缩入口
 | 🟢 缺 full snippets + why-important 鼓励 | sections 3/8 明确要求 | Files/Current Work 描述补充（P0 后输出 8K 有空间） |
 | 🟢 analysis 缺自检步 | "Double-check for technical accuracy and completeness" | analysis_instructions 末尾补一条 |
 
-**状态**：⬜ 待做
+**状态**：✅ 完成 — 11 fields 不变（-Recovery Context +Next Step）；good example 换 Next Step 行（含 verbatim 引用示范）；bad examples 新增"自派切线任务"反例；prompt 锁定测试同步
 
 ### P3-2 — 压缩后包装消息（`memory_service.maybe_compress_messages`）
 

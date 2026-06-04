@@ -351,6 +351,8 @@ Wrap detailed analysis in <analysis> tags. Cover all of:
 4. **Errors and resolutions** — the error, root cause, what fixed it.
 5. **Problem-solving trajectory** — what was tried, what worked, what failed.
    Failed approaches are as important as successful ones — prevents retrying.
+6. **Double-check** for technical accuracy and completeness before writing the
+   summary — every required field must be addressed thoroughly.
 </analysis_instructions>
 
 <summary_format>
@@ -358,16 +360,16 @@ After </analysis>, produce the summary in <summary> tags. Use EXACTLY these
 11 fields in this exact order. Do not skip any field — use "(none)" if empty.
 
 **Primary Request and Intent:** [core goal + current status — be specific]
-**Key Technical Decisions:** [architecture choices, constraints, tradeoffs decided]
-**Files and Code Sections:** [file_path:line_number + key snippets for critical changes]
+**Key Technical Concepts & Decisions:** [technologies, frameworks, and patterns in play; architecture choices, constraints, tradeoffs decided]
+**Files and Code Sections:** [file_path:line_number + full code snippets where applicable for critical changes, plus why each file matters]
 **Problem Solving:** [approaches tried, what worked, what didn't — prevent re-trying failed approaches]
 **Errors and Fixes:** [errors encountered + root causes + resolutions]
-**All User Messages:** [ALL non-trivial user messages summarized — critical for tracking changing intent]
+**All User Messages:** [list ALL user messages that are not tool results — critical for tracking changing intent]
 **User Preferences:** [corrections, stated preferences, feedback — highest priority to preserve]
 **Tool Outcomes:** [key tool calls and their results — focus on outcomes, not individual calls]
 **Pending Tasks:** [incomplete items + where work left off — include direct quotes from recent messages]
-**Current Work:** [what was actively being done when compression triggered]
-**Recovery Context:** [raw session log available at logs/ for full detail if needed]
+**Current Work:** [what was actively being done when compression triggered — include file names and code snippets where applicable]
+**Next Step:** [the next step DIRECTLY in line with the user's most recent explicit request and the task in progress when compression triggered. Include a verbatim quote from the most recent conversation showing exactly where work left off, so there is no drift in task interpretation. If the last task concluded, use "(none)" — do NOT start tangential requests or already-completed old requests without confirming with the user first]
 </summary_format>
 
 <good_summary_example>
@@ -378,10 +380,11 @@ approach once, and left mid-way through adding a regression test:
 **Primary Request and Intent:** Fix token-expiry race in auth middleware. User
 explicitly scoped to middleware.py only — do not touch refresh.py even though
 a related bug exists there. Status: fix landed, regression test in progress.
-**Key Technical Decisions:** Reorder refresh check before response-header write
-(not after). User rejected the alternative "wrap handler in try/except" as too
-broad.
-**Files and Code Sections:** backend/app/auth/middleware.py:138-148 (fix applied);
+**Key Technical Concepts & Decisions:** FastAPI middleware chain, JWT refresh
+flow. Reorder refresh check before response-header write (not after). User
+rejected the alternative "wrap handler in try/except" as too broad.
+**Files and Code Sections:** backend/app/auth/middleware.py:138-148 (fix applied
+— refresh check now precedes header write, closing the race window);
 backend/tests/auth/test_middleware.py::test_expired_token_refreshes (new, in
 progress — fixture mock_clock not yet wired up).
 **Problem Solving:** First attempt moved refresh to a decorator — user rejected
@@ -397,7 +400,9 @@ Strictly scopes fixes — does not want related-but-separate bugs touched.
 at fixture setup (mock_clock missing).
 **Pending Tasks:** Wire up mock_clock fixture, then re-run pytest.
 **Current Work:** Writing test_expired_token_refreshes; stuck at mock_clock.
-**Recovery Context:** logs/2026-04-16/behavior/chat-auth-fix.md
+**Next Step:** Wire up the mock_clock fixture so the regression test runs.
+User's last message: "Add a regression test before we call this done." —
+work stopped at the failing fixture setup.
 </summary>
 </good_summary_example>
 
@@ -442,6 +447,14 @@ long-term policy; you handle session state only.)
 ```
 (Unless the session genuinely ended, always name the specific in-flight
 action so the next turn can resume without re-asking the user.)
+
+❌ **Invents a next step the user never asked for**
+```
+**Next Step:** Refactor refresh.py to clean up the related bug found earlier.
+```
+(The user explicitly scoped to middleware.py only. A next step must trace to
+the user's most recent explicit request — tangential or already-completed
+work needs fresh confirmation, never a self-assigned restart.)
 </bad_summary_examples>
 
 <hard_rules>

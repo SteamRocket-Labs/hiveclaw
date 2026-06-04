@@ -81,6 +81,31 @@ memory_service.maybe_compress_messages (:317)   ← 唯一真实压缩入口
 
 **状态**：✅ 完成 — 盘点确认零引用（含测试），直接删除；`maybe_compress_messages` 为唯一压缩入口
 
+## 3.5 P3 — 摘要 prompt 对齐（第二轮，2026-06-04 prompt 逐段对比后追加）
+
+骨架已对齐（scratchpad/no-tools/结构化 fields/examples，且 bad examples、role 区分、autonomy_run_state、User Preferences 为合理 Hive delta）。以下为对比出的 gap：
+
+### P3-1 — prompt 本体（`conversation_summarizer.py::_SUMMARIZE_SYSTEM_PROMPT`）
+
+| Gap | CC 基线 | 修法 |
+|---|---|---|
+| 🔴 缺 Optional Next Step 节 | prompt.ts:76-77：next step 必须 DIRECTLY in line with 用户最近明确请求 + verbatim 引用最近对话 + 禁止未经确认开始切线/旧任务 | 新增 **Next Step:** field（含全部三条防漂移约束） |
+| 🟡 All User Messages 窄化 | "List ALL user messages that are not tool results" | 去掉 non-trivial/summarized 过滤 |
+| 🟡 Recovery Context 幻觉点 | transcriptPath 由系统注入，LLM 不写路径 | 从 LLM fields 移除（field 数 11 不变：-Recovery +Next Step），恢复提示移到包装层（P3-2） |
+| 🟢 Key Technical Decisions 语义窄 | Key Technical Concepts（概念/技术栈/框架） | 改为 Key Technical Concepts & Decisions |
+| 🟢 缺 full snippets + why-important 鼓励 | sections 3/8 明确要求 | Files/Current Work 描述补充（P0 后输出 8K 有空间） |
+| 🟢 analysis 缺自检步 | "Double-check for technical accuracy and completeness" | analysis_instructions 末尾补一条 |
+
+**状态**：⬜ 待做
+
+### P3-2 — 压缩后包装消息（`memory_service.maybe_compress_messages`）
+
+**现状**：`[Previous conversation summary]\n{summary}` 一行前缀。CC 的包装（prompt.ts:345-371）：续会话说明 + transcript 路径 + autocompact 时 "Resume directly — do not acknowledge the summary, do not recap, pick up as if the break never happened"。
+
+**修法**：包装文案对齐 —— 续会话说明 + resume-directly 指令（自动压缩是隐式的，用户不应感知断裂）+ 系统侧固定恢复提示（workspace logs/ 泛指，不写具体编造路径）。机械 fallback `_extract_summary` 的 Recovery Context 行同步移除。
+
+**状态**：⬜ 待做
+
 ## 4. 明确不做（本轮）
 
 - **fork/cache 共享摘要请求**：CC 用 forked agent 复用主线程 prompt cache；Hive 的 llm_client 无 fork 机制，P1-1 的模型一致性已拿到大部分收益，cache 共享留待 subagent 源能力成熟后评估。

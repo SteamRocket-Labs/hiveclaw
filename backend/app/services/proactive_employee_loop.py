@@ -64,24 +64,14 @@ def build_proactive_employee_plan(
         )
         candidates.append(candidate)
 
+        # A2 (docs/agent-lifecycle-cc-alignment.md 主题 A): preflight is a
+        # boundary PROVIDER, not the decider. A DO-cleared candidate is NOT
+        # pre-fired by the system — it reaches the agent as decision input
+        # (markdown below) and the agent judges in its own run whether and
+        # how to act. Only governance stays system-owned: checkpoint creation
+        # for approval-gated actions, and REFUSE enforcement.
         sentinel_id = f"proactive:{agent_id}:{objective_id}:{index}"
-        if preflight.decision == PreflightDecision.DO:
-            sentinel = runtime.register_sentinel(
-                sentinel_id=sentinel_id,
-                owner_agent_id=accountability.owner_charter.owner_id,
-                target_agent_id=agent_id,
-                condition="proactive_open_loop_ready",
-                runtime_path="signal",
-            )
-            emissions.append(
-                runtime.fire_sentinel(
-                    sentinel.id,
-                    content=action,
-                    thread_id=objective_id,
-                    metadata={"objective_id": objective_id},
-                )
-            )
-        elif preflight.requires_checkpoint and preflight.decision != PreflightDecision.REFUSE:
+        if preflight.requires_checkpoint and preflight.decision != PreflightDecision.REFUSE:
             escalation_chain = [
                 target for target in (posture.escalation_target, preflight.escalation_target, "company_admin") if target
             ]
@@ -162,17 +152,36 @@ def _build_preflight_input(action: str, posture) -> ActionPreflightInput:
 
 
 def _render_proactive_plan_markdown(candidates: list[ProactiveCandidate]) -> str:
+    """Render open-loop candidates as DECISION INPUT for the agent (A2).
+
+    Preflight assessments are boundaries, not verdicts: the agent judges what
+    is worth doing within them. Boundaries are enforced by the system
+    regardless of the agent's choice (checkpoint/refuse stay system-owned).
+    """
     if not candidates:
         return ""
-    lines = ["---", "## Proactive Steward Context"]
+    lines = [
+        "---",
+        "## Proactive Steward Context",
+        "Open loops detected from recent activity. Preflight gives boundary assessments "
+        "as INPUT — the judgment of whether and how to act is yours, within the stated "
+        "boundaries (which the system enforces regardless).",
+    ]
     for candidate in candidates:
         action = candidate.action[:240]
         if candidate.preflight.decision == PreflightDecision.DO:
-            label = "Prepare"
-            directive = "Prepare local draft or read-only artifact first; do not send externally."
+            label = "Cleared — your call"
+            directive = (
+                "Preflight cleared this as low-risk. Decide in this run whether it is worth "
+                "doing now: if yes, do the reversible preparation yourself (local draft / "
+                "read-only artifact, nothing externally visible); if not, record why and move on."
+            )
         elif candidate.preflight.decision in {PreflightDecision.ASK, PreflightDecision.ESCALATE}:
-            label = "Checkpoint required"
-            directive = "Prepare the artifact, then wait for checkpoint approval before visible action."
+            label = "Checkpoint pending"
+            directive = (
+                "A checkpoint was created for this action (external-visible — needs approval). "
+                "You may prepare the artifact now, but do NOT perform the visible action until approved."
+            )
         elif candidate.preflight.decision == PreflightDecision.REFUSE:
             label = "Refused by boundary"
             directive = "Do not perform this action; record the boundary and escalate only through policy."

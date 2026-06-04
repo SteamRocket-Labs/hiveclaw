@@ -18,7 +18,11 @@ def _accountability():
     )
 
 
-def test_proactive_plan_prepares_low_risk_open_loop_as_signal() -> None:
+def test_proactive_plan_low_risk_open_loop_is_agents_call() -> None:
+    """A2 (docs/agent-lifecycle-cc-alignment.md 主题 A): preflight is a boundary
+    PROVIDER, not the decider. A DO-cleared candidate must NOT be auto-fired by
+    the system — it goes to the agent as decision input; the agent judges in
+    its own run whether and how to act."""
     from app.services.proactive_employee_loop import build_proactive_employee_plan
 
     runtime = CoordinationRuntime()
@@ -37,12 +41,12 @@ def test_proactive_plan_prepares_low_risk_open_loop_as_signal() -> None:
 
     assert len(plan.candidates) == 1
     assert plan.candidates[0].preflight.decision == PreflightDecision.DO
-    assert plan.emissions[0].kind == "signal"
-    assert plan.emissions[0].signal is not None
-    assert plan.emissions[0].checkpoint is None
-    assert runtime.read_signals("agent-steward", thread_id="objective-1")
+    assert plan.emissions == []  # nothing pre-fired — the call is the agent's
+    assert not runtime.read_signals("agent-steward", thread_id="objective-1")
+    assert "your call" in plan.markdown.lower()  # decision-input framing
     assert "Prepare local draft" in plan.markdown
     assert "Evidence: task_updated" in plan.markdown
+    assert "judgment" in plan.markdown.lower()  # header says judgment belongs to the agent
 
 
 def test_proactive_plan_routes_external_action_to_checkpoint() -> None:
@@ -72,7 +76,7 @@ def test_proactive_plan_routes_external_action_to_checkpoint() -> None:
     assert plan.emissions[0].checkpoint is not None
     assert plan.emissions[0].checkpoint.current_approver_id == "owner-1"
     assert plan.emissions[0].checkpoint.metadata["objective_id"] == "objective-2"
-    assert "Checkpoint required" in plan.markdown
+    assert "Checkpoint pending" in plan.markdown
     assert "send external message" in plan.markdown
 
 

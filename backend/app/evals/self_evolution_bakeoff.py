@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -319,17 +320,19 @@ def _cost_latency_report(repo_root: Path) -> dict[str, Any]:
     retriever_text = _safe_read(repo_root / "backend/app/memory/retriever.py")
     prompt_cache_text = _safe_read(repo_root / "backend/tests/runtime/test_prompt_cache.py")
     preflight_text = _safe_read(repo_root / "backend/tests/tools/test_tool_runtime_preflight.py")
+    # A3 raised the rerank timeout default (1.5→3.0s) — assert the GUARD exists
+    # (asyncio.wait_for + a timeout_seconds default) rather than pinning a value,
+    # so tuning the budget doesn't break the evidence check.
+    rerank_timeout_match = re.search(r"timeout_seconds:\s*float\s*=\s*([0-9.]+)", retriever_text)
     checks = {
-        "semantic_rerank_timeout": (
-            "asyncio.wait_for" in retriever_text and "timeout_seconds: float = 1.5" in retriever_text
-        ),
+        "semantic_rerank_timeout": ("asyncio.wait_for" in retriever_text and rerank_timeout_match is not None),
         "session_learning_dynamic_only": "session_learning_projection" in prompt_cache_text,
         "tool_preflight_visible": "external_visible" in preflight_text or "ActionPreflight" in preflight_text,
     }
     return {
         "visible": checks["session_learning_dynamic_only"] and checks["tool_preflight_visible"],
         "bounded": checks["semantic_rerank_timeout"],
-        "max_hot_path_timeout_seconds": 1.5,
+        "max_hot_path_timeout_seconds": float(rerank_timeout_match.group(1)) if rerank_timeout_match else None,
         "checks": checks,
     }
 

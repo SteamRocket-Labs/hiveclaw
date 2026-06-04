@@ -798,6 +798,18 @@ class WorkflowRuntimeService:
 
         wait_scheduler = _MetadataWaitScheduler()
 
+        class _MetadataSignalWaitRegistrar:
+            async def register_wait(self, rid: str, *, step_id: str, signal_type: str) -> None:
+                async with service._session(tenant_id) as session:
+                    task = (
+                        await session.execute(select(RuntimeTask).where(RuntimeTask.id == uuid.UUID(rid)))
+                    ).scalar_one()
+                    metadata = dict(task.metadata_json or {})
+                    metadata["waiting_for_signal"] = {"step_id": step_id, "signal_type": signal_type}
+                    task.metadata_json = metadata
+
+        signal_wait_registrar = _MetadataSignalWaitRegistrar()
+
         async def should_continue() -> bool:
             if self._draining:
                 return False  # graceful drain: stop at the next step boundary
@@ -819,6 +831,7 @@ class WorkflowRuntimeService:
                 quota=quota,
                 gate_decider=self._gate_decider,
                 wait_scheduler=wait_scheduler,
+                signal_wait_registrar=signal_wait_registrar,
             )
         except Exception:
             # Engine/leaf raised out of contract (e.g. process-crash

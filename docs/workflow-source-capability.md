@@ -552,6 +552,15 @@ pytest tests/runtime/test_workflow_worker_lease.py tests/runtime/test_workflow_r
 
 ### P11 wait_signal v2：persistent signal-resume consumer
 
+> **✅ 完成（2026-06-04）** — 证据：`pytest tests/ -q` → **3617 passed**（+6 全真 PG：wait_signal 4 + 持久性/租户隔离 2）；ruff clean。
+>
+> **交付物**：
+> - **`wait_signal_step` v2 解锁**（schema + engine）：v1 诚实拒绝的能力随 persistent consumer 落地一起开放；步挂起时 journal `input_hash=signal_type` 锚 + `SignalWaitRegistrar` 写 run metadata `waiting_for_signal={step_id, signal_type}`。
+> - **`services/workflow_signal_consumer.drain_signal_resumes`**：扫描带注册的 suspended run → 匹配 PG `coordination_signals`（**tenant + to_agent + thread(=run_id) + signal_type 四元匹配**）→ `DELETE ... RETURNING` **行级原子 consume-once**（恰一个 drainer 赢）→ waiting step 标 done（signal payload 作 output）→ lease 内 resume → engine replay 继续。
+> - **红测试四条全过**：PG Signal 到达恢复 suspended run（后续步执行、prep replay）；**未消费 Signal 跨进程重启存活**（全新 consumer 实例收割——PG 行即持久性）；同一 Signal 只恢复一次（行已删）；thread/type/**跨租户**不匹配绝不恢复（B 租户冒名 signal 原样留存、A run 继续等待）。
+> - **前置补齐**：`CoordinationSignal/Lease/Checkpoint` models 缺 env.py/main.py import（bootstrap 库根本没建 coordination 三表——缺口 C 同款，已补；这正是"前置条件：Signal 必须走 PG 持久层"在新部署上的真实含义）。
+> - in-process Signal 仅测试/本地（consumer 只读 PG 表）。
+
 目标：补齐当前 v1 明确不承诺的外部 Signal 恢复能力。
 
 前置条件：

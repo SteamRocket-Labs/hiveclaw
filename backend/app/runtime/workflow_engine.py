@@ -36,6 +36,7 @@ from app.runtime.workflow_definition import (
     FanoutStep,
     GateStep,
     LeafRef,
+    WaitSignalStep,
     WaitUntilStep,
 )
 
@@ -182,6 +183,14 @@ class GateDecider(Protocol):
     CoordinationCheckpoint (§6 / P7); in-memory doubles drive engine tests."""
 
     async def check(self, run_id: str, step_id: str, *, reason: str) -> GateDecision: ...
+
+
+class SignalWaitRegistrar(Protocol):
+    """wait_signal seam (§9 P11): record that a suspended run waits for a
+    Signal; the persistent consumer matches arriving PG signals against these
+    registrations and resumes the run."""
+
+    async def register_wait(self, run_id: str, *, step_id: str, signal_type: str) -> None: ...
 
 
 class WaitScheduler(Protocol):
@@ -542,6 +551,7 @@ async def execute_workflow(
     quota: QuotaReserver | None = None,
     gate_decider: GateDecider | None = None,
     wait_scheduler: WaitScheduler | None = None,
+    signal_wait_registrar: SignalWaitRegistrar | None = None,
     now: Clock | None = None,
 ) -> WorkflowRunOutcome:
     """Deterministically interpret the compiled definition against the journal.
@@ -694,6 +704,24 @@ async def execute_workflow(
             if wait_scheduler is not None:
                 await wait_scheduler.schedule_resume(run_id, resume_at=resume_at)
             reason = f"waiting until {resume_at.isoformat()}"
+            await journal.record_step_suspended(run_id, step.id, reason=reason)
+            return WorkflowRunOutcome(status="suspended", reason=reason, outputs=outputs)
+
+        if isinstance(step, WaitSignalStep):
+            prior = existing.get(step.id)
+            if prior is not None and prior.status == "done" and prior.definition_hash == compiled.definition_hash:
+                outputs[step.id] = prior.output
+                continue  # the consumer marked the signal consumed → replay
+            await journal.record_step_start(
+                run_id,
+                step.id,
+                step_type=step.type,
+                input_hash=step.signal_type,
+                definition_hash=compiled.definition_hash,
+            )
+            if signal_wait_registrar is not None:
+                await signal_wait_registrar.register_wait(run_id, step_id=step.id, signal_type=step.signal_type)
+            reason = f"waiting for signal {step.signal_type!r}"
             await journal.record_step_suspended(run_id, step.id, reason=reason)
             return WorkflowRunOutcome(status="suspended", reason=reason, outputs=outputs)
 

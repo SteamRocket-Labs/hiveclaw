@@ -31,6 +31,11 @@ from app.models.schedule import AgentSchedule  # noqa: F401
 from app.models.system_settings import SystemSetting  # noqa: F401
 from app.models.tenant import Tenant  # noqa: F401
 from app.models.config_revision import ConfigRevision  # noqa: F401
+from app.models.coordination import (  # noqa: F401
+    CoordinationCheckpoint,
+    CoordinationLease,
+    CoordinationSignal,
+)
 from app.models.tool import Tool  # noqa: F401
 from app.models.workflow import (  # noqa: F401
     WorkflowDefinitionRecord,

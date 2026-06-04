@@ -152,6 +152,16 @@ class GateStep(_StepBase):
     reason: str = Field(min_length=1)
 
 
+class WaitSignalStep(_StepBase):
+    """v2 (§9 P11): suspend until a matching coordination Signal arrives.
+
+    Unlocked together with the persistent signal-resume consumer — v1
+    explicitly refused this step because the consumer did not exist (§3.3)."""
+
+    type: Literal["wait_signal_step"]
+    signal_type: str = Field(min_length=1, max_length=100)
+
+
 class WaitUntilStep(_StepBase):
     type: Literal["wait_until_step"]
     delay_seconds: int | None = Field(None, ge=1)
@@ -164,7 +174,9 @@ class WaitUntilStep(_StepBase):
         return self
 
 
-Step = Annotated[Union[AgentStep, FanoutStep, GateStep, WaitUntilStep], Field(discriminator="type")]
+Step = Annotated[
+    Union[AgentStep, FanoutStep, GateStep, WaitUntilStep, WaitSignalStep], Field(discriminator="type")
+]
 
 
 class BudgetSpec(BaseModel):

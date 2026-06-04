@@ -343,7 +343,10 @@ def _merge_active_tool_groups(
     return new_tool_groups
 
 
-_PARALLEL_SEMAPHORE_LIMIT = 4
+# D1 (docs/agent-lifecycle-cc-alignment.md 主题 D): aligned with CC's default
+# tool-use concurrency (10). Only parallel-safe (read-only) tools enter the
+# concurrent batch, so the bound is about provider/API pressure, not safety.
+_PARALLEL_SEMAPHORE_LIMIT = 10
 
 
 class _KernelCancelledError(Exception):

@@ -63,7 +63,7 @@ CC 哲学：每次拒绝都是教学机会——告诉模型为什么 + 下一�
 
 | # | 缺口 | 证据/对照 | 备注 |
 |---|---|---|---|
-| D1 | 流式不边流边执行 + 并发上限 4（CC 10） | `engine.py:1870-2400, :346` vs CC StreamingToolExecutor | 性能项 |
+| D1 | 流式不边流边执行 + 并发上限 4（CC 10） | 🟡 **部分完成（2026-06-04）**：并发上限 4→10 已对齐 CC（仅 parallel-safe 工具进并发批，上界关乎 API 压力而非安全；**证据**：`engine.py` `_PARALLEL_SEMAPHORE_LIMIT=10`，test_parallel_tool_batch.py 峰值断言随常量自适应，kernel 121 passed）。**边流边执行未做**：StreamingToolExecutor 等价物需重构 `_stream_with_cancel` 流式架构（流中解析 tool_use+即时执行+保序回灌），属架构级大项需单独设计，非本轮 patch 范围 | 性能项 |
 | ~~D2~~ | ~~hook allow 后无二次 deny 检查~~ | **✅ 验证为误判（2026-06-04）**：实际顺序 = kernel PRE_TOOL_USE hook（engine.py:388-399，可改 args/block）→ execute_tool → ToolRuntimeService.execute 内部跑完整 governance（service.py:283-298，使用 hook 修改后的 effective_args）→ 执行。hook 不 block 时 governance 必然执行，CC 的"hook 不能绕过 deny"天然成立。subagent 混淆了 engine.py hook 行号与 governance.py:388-396（capability gate fail-closed 块） | 无需修复 |
 | D3 | 权限无 mode 概念（acceptEdits/dontAsk/auto） | governance 全固定流程 | 与 L3 中台的 per-agent 策略可结合设计 |
 | D4 | approval 同步阻塞 vs CC 异步竞速 | `governance.py:515-538` | 企业审批本就该等；但可探索"先继续别的工作" |

@@ -390,6 +390,15 @@ pytest tests/runtime/test_workflow_fanout.py tests/runtime/test_workflow_quota.p
 
 ### P6 Registered definition lifecycle + promote/fork
 
+> **✅ 完成（2026-06-04）** — 证据：`pytest tests/ -q` → **3569 passed**（+21：lifecycle 真 PG 8 + promote/fork 真 PG 6 + API 薄壳 7）；ruff clean。
+>
+> **交付物**：
+> - `services/workflow_definitions.py`：create_draft（同名自动下一 version，**绝不原地改**——DB 唯一约束 + 测试双锚）/ activate（带 compile+capability 预检）/ deprecate / revoke 状态机；`resolve_for_execution` 拒 draft+revoked，**deprecated 仅 `allow_deprecated=True`（P8 pinned trigger 续跑路径）可解析**；hash pinning 校验参数就位（P8 用）。
+> - **§10 决策 5 可见≠可执行**：`visibility_scope` 管谁看见（agent scope 只 owner 可见），`call_policy.allowed_agents` 管谁能跑（tenant-scope 可见但白名单外 agent 执行被拒——红测试钉死）；platform scope 拒绝租户创建（出厂只读）；cross-tenant 隔离由 FORCE RLS 完成（用非 superuser 角色验证）。
+> - **§10 决策 4 promote**：`submit_promote_proposal` 永远落 draft（agent 不能自我 promote——红测试钉死）；`approve_promotion` 要求人类 approver（None → PermissionError）并**重跑 compile+capability check**（未授权 leaf 拒批）；`promoted_from_run_id` 留 provenance。
+> - **fork**：registered version + 浅 patch → ephemeral definition **数据**（喂回 P4 ephemeral 路径：preview→分级→确认→run）；原 record hash 不变（红测试钉死）；revoked 不可 fork。
+> - `api/workflow_definitions.py`：create/list/activate/deprecate/revoke/approve-promotion/fork 薄壳；PermissionError→403、not-found→404、lifecycle 冲突→409；tenant/approver 恒从认证用户注入。
+
 目标：完成固定 workflow 的持久管理，同时保持 ephemeral / registered 同引擎。
 
 改动面：

@@ -291,6 +291,14 @@ pytest tests/runtime/test_workflow_definition.py tests/runtime/test_workflow_com
 
 ### P3 Walking skeleton：sequence + structured condition + kill-resume
 
+> **✅ 完成（2026-06-04）** — 证据：`pytest tests/ -q` → **3513 passed**（+15：engine 控制流 9（in-mem journal 隔离）+ service 真 PG 6）；ruff clean。
+>
+> **交付物**：
+> - `runtime/workflow_engine.py`：纯解释器（kernel 风格零 DB import，journal/leaf executor 注入）。sequence + condition 求值（AST 谓词全 op）+ agent_step；**resume 契约 = done 且 `input_hash`+`definition_hash` 双匹配才复用 output（leaf 不重调），否则重跑**；`{{...}}` 占位纯 key 替换、不可解析子路径 fail-loud；gate/wait/fanout **保守 suspend**（P5/P7 实现，绝不错误执行——文档"不做假承诺"的规范行为）。
+> - `services/workflow_runtime_service.py`：`start_run`（compile→admit→建 `RuntimeTask(workflow)`+`WorkflowQuota`→执行）/ `resume_run`（从 metadata 存档恢复 definition+args，archive hash 完整性校验）/ `kill_run`（持久化状态，引擎每步前轮询 `should_continue` 读 run 行 → kill 中途生效）/ `load_run` / `resume_pending_runs`（startup 扫描 running/suspended，对标 `resume_persisted_async_delegations`）。journal = `workflow_steps` 表（FORCE RLS，全部走 `tenant_scoped_session`）。
+> - **真 PG 验证的核心红测试全绿**：两步 kill 后 resume 只跑第二步（leaf 调用计数证明）；killed run 不被 startup 自动恢复（显式 resume 可复活 = CC kill→resume 模式）；崩溃残留 running run 被 startup 扫描收割跑完；journal 行 definition_hash 篡改为旧版本 → resume 不复用重跑；condition false 记 skipped。
+> - lifespan 实际接线（startup 调 `resume_pending_runs`）留待 P4——真 leaf executor（spawn_subagent 绑定）在 P4 才存在，无 executor 的接线是死代码。
+
 目标：先立住"数据 definition + 代码控制流 + DB journal + resume"，不做 gate/wait/fanout 假承诺。
 
 改动面：

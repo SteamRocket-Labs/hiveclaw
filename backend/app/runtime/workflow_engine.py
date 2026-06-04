@@ -18,6 +18,7 @@ expression evaluation (§3.2).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -31,6 +32,7 @@ from app.runtime.workflow_definition import (
     AgentStep,
     Condition,
     ConditionPredicate,
+    FanoutStep,
     LeafRef,
 )
 
@@ -54,6 +56,8 @@ class LeafRequest:
     leaf: LeafRef
     task: str
     tenant_id: str | None = None
+    # fanout item identity (None for plain agent_steps) — v1 decision 6
+    leaf_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -67,6 +71,19 @@ class LeafOutcome:
 
 LeafExecutor = Callable[[LeafRequest], Awaitable[LeafOutcome]]
 ShouldContinue = Callable[[], Awaitable[bool]]
+
+
+@dataclass(slots=True)
+class LeafRecord:
+    """Leaf-journal view for fanout resume decisions (v1 decision 6)."""
+
+    leaf_id: str
+    status: str
+    input_hash: str | None = None
+    definition_hash: str | None = None
+    output: Any = None
+    result_ref: str | None = None
+    error: str | None = None
 
 
 @dataclass(slots=True)
@@ -99,6 +116,53 @@ class WorkflowJournal(Protocol):
 
     async def record_step_suspended(self, run_id: str, step_id: str, *, reason: str) -> None: ...
 
+    async def load_leaf_calls(self, run_id: str, step_id: str) -> dict[str, LeafRecord]: ...
+
+    async def record_leaf_start(
+        self,
+        run_id: str,
+        step_id: str,
+        leaf_id: str,
+        *,
+        input_hash: str | None,
+        definition_hash: str,
+        idempotency_key: str,
+    ) -> None: ...
+
+    async def record_leaf_done(
+        self, run_id: str, step_id: str, leaf_id: str, *, output: Any, tokens_used: int
+    ) -> None: ...
+
+    async def record_leaf_failed(self, run_id: str, step_id: str, leaf_id: str, *, error: str) -> None: ...
+
+
+class QuotaReserver(Protocol):
+    """Per-run budget envelope (§3.4-4): pre-reserve before every leaf spawn,
+    settle with actual usage after. The PG implementation holds a Postgres
+    advisory lock around the conditional deduction (P5)."""
+
+    async def reserve(self, run_id: str) -> bool: ...
+
+    async def settle(self, run_id: str, actual_tokens: int) -> None: ...
+
+
+class InMemoryQuotaReserver:
+    """Control-flow test double for the quota envelope."""
+
+    def __init__(self, *, allocated: int, leaf_estimate: int) -> None:
+        self.allocated = allocated
+        self.leaf_estimate = leaf_estimate
+        self.consumed = 0
+
+    async def reserve(self, run_id: str) -> bool:
+        if self.consumed + self.leaf_estimate > self.allocated:
+            return False
+        self.consumed += self.leaf_estimate
+        return True
+
+    async def settle(self, run_id: str, actual_tokens: int) -> None:
+        self.consumed += actual_tokens - self.leaf_estimate
+
 
 @dataclass(slots=True)
 class WorkflowRunOutcome:
@@ -112,6 +176,7 @@ class InMemoryWorkflowJournal:
 
     def __init__(self) -> None:
         self._runs: dict[str, dict[str, StepRecord]] = {}
+        self._leaf_runs: dict[tuple[str, str], dict[str, LeafRecord]] = {}
 
     def _steps(self, run_id: str) -> dict[str, StepRecord]:
         return self._runs.setdefault(run_id, {})
@@ -145,6 +210,36 @@ class InMemoryWorkflowJournal:
 
     async def record_step_suspended(self, run_id: str, step_id: str, *, reason: str) -> None:
         self._steps(run_id)[step_id] = StepRecord(step_id=step_id, status="suspended", error=reason)
+
+    def _leaves(self, run_id: str, step_id: str) -> dict[str, LeafRecord]:
+        return self._leaf_runs.setdefault((run_id, step_id), {})
+
+    async def load_leaf_calls(self, run_id: str, step_id: str) -> dict[str, LeafRecord]:
+        return dict(self._leaves(run_id, step_id))
+
+    async def record_leaf_start(
+        self,
+        run_id: str,
+        step_id: str,
+        leaf_id: str,
+        *,
+        input_hash: str | None,
+        definition_hash: str,
+        idempotency_key: str,
+    ) -> None:
+        self._leaves(run_id, step_id)[leaf_id] = LeafRecord(
+            leaf_id=leaf_id, status="running", input_hash=input_hash, definition_hash=definition_hash
+        )
+
+    async def record_leaf_done(self, run_id: str, step_id: str, leaf_id: str, *, output: Any, tokens_used: int) -> None:
+        record = self._leaves(run_id, step_id)[leaf_id]
+        record.status = "done"
+        record.output = output
+
+    async def record_leaf_failed(self, run_id: str, step_id: str, leaf_id: str, *, error: str) -> None:
+        record = self._leaves(run_id, step_id).setdefault(leaf_id, LeafRecord(leaf_id=leaf_id, status="running"))
+        record.status = "failed"
+        record.error = error
 
 
 # ── reference resolution (pure key lookup — §3.2) ─────────────────
@@ -250,6 +345,15 @@ def evaluate_condition(condition: Condition, *, args: dict, outputs: dict[str, A
 # ── the interpreter ───────────────────────────────────────────────
 
 
+def _leaf_input_hash(task_text: str, leaf: LeafRef, definition_hash: str, leaf_id: str) -> str:
+    payload = json.dumps(
+        {"task": task_text, "leaf": leaf.name, "definition_hash": definition_hash, "leaf_id": leaf_id},
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _agent_step_input_hash(task_text: str, leaf: LeafRef, definition_hash: str) -> str:
     payload = json.dumps(
         {"task": task_text, "leaf": leaf.name, "definition_hash": definition_hash},
@@ -263,6 +367,116 @@ async def _always_continue() -> bool:
     return True
 
 
+async def _execute_fanout_step(
+    step: FanoutStep,
+    *,
+    compiled_hash: str,
+    run_id: str,
+    args: dict,
+    outputs: dict[str, Any],
+    journal: WorkflowJournal,
+    leaf_executor: LeafExecutor,
+    tenant_id: str | None,
+    quota: QuotaReserver | None,
+) -> WorkflowRunOutcome | None:
+    """Bounded fanout/map with leaf-level journal (v1 decision 6).
+
+    Returns a terminal WorkflowRunOutcome on failure/suspension, or None when
+    the step completed and the outer loop should continue. Done leaves with
+    matching input/definition hashes are replayed (output reused, executor
+    NOT called, quota NOT charged); failures are isolated per leaf — every
+    leaf gets its attempt, then the step fails if any did."""
+    try:
+        items = _resolve_path(step.items_from, args=args, outputs=outputs)
+    except WorkflowTemplateError as exc:
+        await journal.record_step_failed(run_id, step.id, error=str(exc))
+        return WorkflowRunOutcome(status="failed", reason=str(exc), outputs=outputs)
+    if not isinstance(items, list):
+        error = f"fanout items reference {step.items_from!r} must resolve to an array"
+        await journal.record_step_failed(run_id, step.id, error=error)
+        return WorkflowRunOutcome(status="failed", reason=error, outputs=outputs)
+
+    existing = await journal.load_leaf_calls(run_id, step.id)
+    await journal.record_step_start(
+        run_id, step.id, step_type=step.type, input_hash=None, definition_hash=compiled_hash
+    )
+
+    semaphore = asyncio.Semaphore(step.max_concurrency)
+    results: list[Any] = [None] * len(items)
+    failures: list[str] = []
+    budget_exhausted = asyncio.Event()
+
+    async def run_leaf(index: int, item: Any) -> None:
+        leaf_id = f"item-{index}"
+        try:
+            task_text = resolve_template(step.per_item_task, args=args, outputs=outputs, item=item)
+        except WorkflowTemplateError as exc:
+            await journal.record_leaf_failed(run_id, step.id, leaf_id, error=str(exc))
+            failures.append(f"{leaf_id}: {exc}")
+            return
+        input_hash = _leaf_input_hash(task_text, step.leaf, compiled_hash, leaf_id)
+        prior = existing.get(leaf_id)
+        if (
+            prior is not None
+            and prior.status == "done"
+            and prior.input_hash == input_hash
+            and prior.definition_hash == compiled_hash
+        ):
+            results[index] = prior.output
+            return  # replay: executor not called, quota not charged
+
+        async with semaphore:
+            if budget_exhausted.is_set():
+                return
+            if quota is not None and not await quota.reserve(run_id):
+                budget_exhausted.set()
+                return
+            await journal.record_leaf_start(
+                run_id,
+                step.id,
+                leaf_id,
+                input_hash=input_hash,
+                definition_hash=compiled_hash,
+                idempotency_key=f"{step.id}:{leaf_id}:{input_hash[:16]}",
+            )
+            outcome = await leaf_executor(
+                LeafRequest(
+                    run_id=run_id,
+                    step_id=step.id,
+                    leaf=step.leaf,
+                    task=task_text,
+                    tenant_id=tenant_id,
+                    leaf_id=leaf_id,
+                )
+            )
+            if quota is not None:
+                await quota.settle(run_id, outcome.tokens_used)
+            if outcome.ok:
+                await journal.record_leaf_done(
+                    run_id, step.id, leaf_id, output=outcome.output, tokens_used=outcome.tokens_used
+                )
+                results[index] = outcome.output
+            else:
+                error = outcome.error or "leaf execution failed"
+                await journal.record_leaf_failed(run_id, step.id, leaf_id, error=error)
+                failures.append(f"{leaf_id}: {error}")
+
+    await asyncio.gather(*(run_leaf(index, item) for index, item in enumerate(items)))
+
+    if budget_exhausted.is_set():
+        reason = "budget exhausted: run quota cannot cover the next leaf"
+        await journal.record_step_suspended(run_id, step.id, reason=reason)
+        return WorkflowRunOutcome(status="suspended", reason=reason, outputs=outputs)
+    if failures:
+        error = "; ".join(failures[:5])
+        await journal.record_step_failed(run_id, step.id, error=error)
+        return WorkflowRunOutcome(status="failed", reason=error, outputs=outputs)
+
+    await journal.record_step_done(run_id, step.id, output=results, result_ref=None)
+    outputs[step.id] = results
+    return None
+
+
 async def execute_workflow(
     compiled: CompiledWorkflow,
     *,
@@ -272,6 +486,7 @@ async def execute_workflow(
     leaf_executor: LeafExecutor,
     should_continue: ShouldContinue | None = None,
     tenant_id: str | None = None,
+    quota: QuotaReserver | None = None,
 ) -> WorkflowRunOutcome:
     """Deterministically interpret the compiled definition against the journal.
 
@@ -310,12 +525,19 @@ async def execute_workflow(
                 outputs[step.id] = prior.output
                 continue  # resume: replay journaled output, never re-execute
 
+            if quota is not None and not await quota.reserve(run_id):
+                reason = "budget exhausted: run quota cannot cover the next leaf"
+                await journal.record_step_suspended(run_id, step.id, reason=reason)
+                return WorkflowRunOutcome(status="suspended", reason=reason, outputs=outputs)
+
             await journal.record_step_start(
                 run_id, step.id, step_type=step.type, input_hash=input_hash, definition_hash=compiled.definition_hash
             )
             outcome = await leaf_executor(
                 LeafRequest(run_id=run_id, step_id=step.id, leaf=step.leaf, task=task_text, tenant_id=tenant_id)
             )
+            if quota is not None:
+                await quota.settle(run_id, outcome.tokens_used)
             if not outcome.ok:
                 error = outcome.error or "leaf execution failed"
                 await journal.record_step_failed(run_id, step.id, error=error)
@@ -323,6 +545,22 @@ async def execute_workflow(
 
             await journal.record_step_done(run_id, step.id, output=outcome.output, result_ref=outcome.result_ref)
             outputs[step.id] = outcome.output
+            continue
+
+        if isinstance(step, FanoutStep):
+            result = await _execute_fanout_step(
+                step,
+                compiled_hash=compiled.definition_hash,
+                run_id=run_id,
+                args=args,
+                outputs=outputs,
+                journal=journal,
+                leaf_executor=leaf_executor,
+                tenant_id=tenant_id,
+                quota=quota,
+            )
+            if result is not None:
+                return result
             continue
 
         # P3 placeholder semantics: gate / wait / fanout suspend (P5/P7

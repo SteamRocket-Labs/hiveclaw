@@ -136,6 +136,9 @@ class Settings(BaseSettings):
     WORKFLOW_HIGH_RISK_BUDGET_TOKENS: int = 500_000
     WORKFLOW_HIGH_RISK_FANOUT_ITEMS: int = 8
     WORKFLOW_HIGH_RISK_WAIT_SECONDS: int = 3_600
+    # Per-leaf token pre-reservation for the run quota envelope (§9 P5):
+    # reserved before each spawn under an advisory lock, settled with actual.
+    WORKFLOW_LEAF_TOKEN_ESTIMATE: int = 20_000
 
     # Coordination backend (Phase 17 wiring)
     # "memory" — in-process Lease/Signal/Checkpoint (default, fine for

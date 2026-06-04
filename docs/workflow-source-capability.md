@@ -358,6 +358,14 @@ pytest tests/api/test_workflows.py tests/tools/test_workflow_tool.py tests/servi
 
 ### P5 Bounded fanout/map + leaf-level journal + run quota
 
+> **✅ 完成（2026-06-04）** — 证据：`pytest tests/ -q` → **3548 passed**（+10：engine fanout 4 + quota 3 + 真 PG leaf journal 3）；ruff clean。
+>
+> **交付物**：
+> - **engine fanout_step**（`workflow_engine._execute_fanout_step`）：bounded items（args 路径解析）+ `asyncio.Semaphore(max_concurrency)` 并发 cap（峰值断言测试钉死）+ 失败隔离（每叶都跑完，任一失败步 failed，下游不执行）+ 输出按 item 顺序聚合供下游 `{{steps.<id>.output}}` 消费。
+> - **leaf-level journal（v1 决策 6）**：`WorkflowJournal` 协议加 leaf 方法；`LeafRecord` 含 leaf_id/status/input_hash/definition_hash/output；done 叶 input_hash+definition_hash 双匹配才 replay（executor 不调、quota 不扣）。**真 PG 核心红测试：8 叶完 7 kill→resume 只跑 1**（`WorkflowLeafCall` 行字段完整：idempotency_key=`{step}:{leaf}:{hash16}`、token_usage 落 JSONB）。
+> - **run quota 硬顶池**：`QuotaReserver` 协议（reserve 预扣 estimate / settle 按实际回写）；engine 每个 leaf（agent_step 同样）spawn 前 reserve，不足→**suspended（确定状态）且后续叶绝不启动**；`PGQuotaReserver` = `pg_advisory_xact_lock(hashtext(run_id))` + 条件 UPDATE（`consumed+est<=allocated` RETURNING）保证跨任务树原子；estimate 进 Settings（`WORKFLOW_LEAF_TOKEN_ESTIMATE`）。真 PG 断言 settle 后 consumed=Σactual。
+> - SubagentBudget 双层：leaf.max_tool_rounds → SubagentBudget（P4 executor 已接），与 run quota 信封独立生效。
+
 目标：实现并发控制、leaf resume、预算硬顶池，堵住 fanout 绕配额。
 
 改动面：

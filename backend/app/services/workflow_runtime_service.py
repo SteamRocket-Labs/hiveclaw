@@ -35,6 +35,7 @@ from app.runtime.workflow_compiler import CompiledWorkflow, compile_workflow
 from app.runtime.workflow_definition import compute_definition_hash
 from app.runtime.workflow_engine import (
     LeafExecutor,
+    LeafRecord,
     StepRecord,
     WorkflowRunOutcome,
     execute_workflow,
@@ -153,6 +154,151 @@ class _PGWorkflowJournal:
 
     async def record_step_suspended(self, run_id: str, step_id: str, *, reason: str) -> None:
         await self._upsert(run_id, step_id, status="suspended", error=reason[:4000])
+
+    # ── leaf-level journal (v1 decision 6) ───────────────────────
+
+    async def load_leaf_calls(self, run_id: str, step_id: str) -> dict[str, LeafRecord]:
+        from app.models.workflow import WorkflowLeafCall
+
+        async with self._session() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(WorkflowLeafCall).where(
+                            WorkflowLeafCall.run_id == uuid.UUID(run_id),
+                            WorkflowLeafCall.step_id == step_id,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return {
+            row.leaf_id: LeafRecord(
+                leaf_id=row.leaf_id,
+                status=row.status,
+                input_hash=row.input_hash,
+                definition_hash=row.definition_hash,
+                output=self._decode_output(row.result_ref),
+                result_ref=row.result_ref,
+                error=row.error,
+            )
+            for row in rows
+        }
+
+    async def _upsert_leaf(self, run_id: str, step_id: str, leaf_id: str, **values: Any) -> None:
+        from app.models.workflow import WorkflowLeafCall
+
+        async with self._session() as session:
+            row = (
+                await session.execute(
+                    select(WorkflowLeafCall).where(
+                        WorkflowLeafCall.run_id == uuid.UUID(run_id),
+                        WorkflowLeafCall.step_id == step_id,
+                        WorkflowLeafCall.leaf_id == leaf_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                row = WorkflowLeafCall(
+                    tenant_id=uuid.UUID(str(self._tenant_id)),
+                    run_id=uuid.UUID(run_id),
+                    step_id=step_id,
+                    leaf_id=leaf_id,
+                )
+                session.add(row)
+            for key, value in values.items():
+                setattr(row, key, value)
+
+    async def record_leaf_start(
+        self,
+        run_id: str,
+        step_id: str,
+        leaf_id: str,
+        *,
+        input_hash: str | None,
+        definition_hash: str,
+        idempotency_key: str,
+    ) -> None:
+        from sqlalchemy import func
+
+        await self._upsert_leaf(
+            run_id,
+            step_id,
+            leaf_id,
+            status="running",
+            input_hash=input_hash,
+            definition_hash=definition_hash,
+            idempotency_key=idempotency_key,
+            started_at=func.now(),
+            error=None,
+        )
+
+    async def record_leaf_done(self, run_id: str, step_id: str, leaf_id: str, *, output: Any, tokens_used: int) -> None:
+        from sqlalchemy import func
+
+        await self._upsert_leaf(
+            run_id,
+            step_id,
+            leaf_id,
+            status="done",
+            result_ref=json.dumps(output, ensure_ascii=False, sort_keys=True),
+            token_usage={"total": tokens_used},
+            finished_at=func.now(),
+        )
+
+    async def record_leaf_failed(self, run_id: str, step_id: str, leaf_id: str, *, error: str) -> None:
+        from sqlalchemy import func
+
+        await self._upsert_leaf(run_id, step_id, leaf_id, status="failed", error=error[:4000], finished_at=func.now())
+
+
+class PGQuotaReserver:
+    """Run-quota envelope on real PG (§9 P5): conditional pre-deduction under
+    a Postgres advisory lock, settled with actual usage after each leaf."""
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession] | None,
+        tenant_id: uuid.UUID | str,
+        *,
+        estimate: int,
+    ) -> None:
+        self._session_factory = session_factory
+        self._tenant_id = tenant_id
+        self._estimate = estimate
+
+    def _session(self):
+        return tenant_scoped_session(str(self._tenant_id), session_factory=self._session_factory)
+
+    async def reserve(self, run_id: str) -> bool:
+        from sqlalchemy import text
+
+        async with self._session() as session:
+            await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:rid))"), {"rid": str(run_id)})
+            row = (
+                await session.execute(
+                    text(
+                        "UPDATE workflow_quotas SET consumed_tokens = consumed_tokens + :est, "
+                        "updated_at = now() WHERE run_id = :rid "
+                        "AND consumed_tokens + :est <= allocated_tokens RETURNING id"
+                    ),
+                    {"est": self._estimate, "rid": uuid.UUID(str(run_id))},
+                )
+            ).scalar_one_or_none()
+        return row is not None
+
+    async def settle(self, run_id: str, actual_tokens: int) -> None:
+        from sqlalchemy import text
+
+        async with self._session() as session:
+            await session.execute(
+                text(
+                    "UPDATE workflow_quotas SET consumed_tokens = consumed_tokens - :est + :actual, "
+                    "updated_at = now() WHERE run_id = :rid"
+                ),
+                {"est": self._estimate, "actual": actual_tokens, "rid": uuid.UUID(str(run_id))},
+            )
 
 
 class WorkflowRuntimeService:
@@ -320,6 +466,7 @@ class WorkflowRuntimeService:
         leaf_executor: LeafExecutor,
     ) -> WorkflowRunOutcome:
         journal = _PGWorkflowJournal(self._session_factory, tenant_id)
+        quota = PGQuotaReserver(self._session_factory, tenant_id, estimate=get_settings().WORKFLOW_LEAF_TOKEN_ESTIMATE)
 
         async def should_continue() -> bool:
             async with self._session(tenant_id) as session:
@@ -337,6 +484,7 @@ class WorkflowRuntimeService:
                 leaf_executor=leaf_executor,
                 should_continue=should_continue,
                 tenant_id=str(tenant_id),
+                quota=quota,
             )
         except Exception:
             # Engine/leaf raised out of contract (e.g. process-crash

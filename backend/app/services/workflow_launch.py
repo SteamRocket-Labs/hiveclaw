@@ -31,7 +31,7 @@ from app.agents.subagent import (
     spawn_subagent,
 )
 from app.config import get_settings
-from app.runtime.workflow_admission import _resolve_args_path
+from app.runtime.workflow_admission import _resolve_args_path, estimate_wait_seconds
 from app.runtime.workflow_compiler import CompiledWorkflow
 from app.runtime.workflow_definition import FanoutStep, WaitUntilStep
 from app.runtime.workflow_engine import LeafExecutor, LeafOutcome, LeafRequest
@@ -72,8 +72,8 @@ def classify_workflow_risk(compiled: CompiledWorkflow, *, args: dict) -> Workflo
                 reasons.append(
                     f"fanout step {step.id!r} spans {len(items)} items (> {settings.WORKFLOW_HIGH_RISK_FANOUT_ITEMS})"
                 )
-        elif isinstance(step, WaitUntilStep) and step.delay_seconds is not None:
-            total_wait += step.delay_seconds
+        elif isinstance(step, WaitUntilStep):
+            total_wait += estimate_wait_seconds(step, args=args)
     if total_wait > settings.WORKFLOW_HIGH_RISK_WAIT_SECONDS:
         reasons.append(
             f"total wait {total_wait}s exceeds high-risk threshold {settings.WORKFLOW_HIGH_RISK_WAIT_SECONDS}s"
@@ -120,7 +120,12 @@ def build_subagent_leaf_executor(
     return leaf
 
 
-async def resolve_agent_runtime(agent_id: uuid.UUID, *, session_factory=None) -> tuple[Any, Any]:
+async def resolve_agent_runtime(
+    agent_id: uuid.UUID,
+    *,
+    tenant_id: uuid.UUID | str | None = None,
+    session_factory=None,
+) -> tuple[Any, Any]:
     """Load the acting agent + a usable model (same resolution rules as the
     orchestrator's resumable-target lookup). Raises LookupError when the
     agent or model cannot be resolved."""
@@ -130,7 +135,7 @@ async def resolve_agent_runtime(agent_id: uuid.UUID, *, session_factory=None) ->
     from app.models.agent import Agent
     from app.models.llm import LLMModel
 
-    async with tenant_scoped_session(session_factory=session_factory) as db:
+    async with tenant_scoped_session(str(tenant_id) if tenant_id else None, session_factory=session_factory) as db:
         agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
         if agent is None:
             raise LookupError(f"agent {agent_id} not found")
@@ -213,3 +218,45 @@ async def start_ephemeral_workflow_for_agent(
             logger.warning("[Workflow] ledger todo %s mirror failed (non-fatal): %s", ledger_todo_id, exc)
 
     return handle
+
+
+def build_resumable_workflow_leaf_executor(
+    *,
+    session_factory=None,
+    spawn=spawn_subagent,
+) -> LeafExecutor:
+    """Leaf executor for startup/signal resumes.
+
+    A daemon resume receives only a ``LeafRequest``. The original run metadata
+    carries ``parent_agent_id`` + tenant, so this executor resolves that agent
+    on each leaf and then delegates to the normal real-spawn executor.
+    """
+
+    async def leaf(request: LeafRequest) -> LeafOutcome:
+        service = WorkflowRuntimeService(session_factory=session_factory)
+        tenant_value = request.tenant_id
+        run_id = uuid.UUID(str(request.run_id))
+        loaded = await service.load_run(run_id, tenant_id=tenant_value)
+        if loaded is None:
+            return LeafOutcome(ok=False, error=f"workflow run {run_id} not found for resume")
+        agent_id = loaded.task.parent_agent_id
+        if agent_id is None:
+            return LeafOutcome(ok=False, error=f"workflow run {run_id} has no parent agent for real leaf resume")
+
+        agent, model = await resolve_agent_runtime(agent_id, tenant_id=tenant_value, session_factory=session_factory)
+        tenant_id = agent.tenant_id
+        if tenant_id is None:
+            return LeafOutcome(ok=False, error=f"agent {agent_id} has no tenant for workflow resume")
+
+        ctx = SubagentSpawnContext(
+            parent_agent_id=agent.id,
+            parent_user_id=agent.id,
+            model=model,
+            parent_agent_name=getattr(agent, "name", "Agent"),
+            role_description=getattr(agent, "role_description", "") or "",
+            tenant_id=tenant_id,
+        )
+        executor = build_subagent_leaf_executor(ctx, spawn=spawn)
+        return await executor(request)
+
+    return leaf

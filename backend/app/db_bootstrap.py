@@ -46,6 +46,9 @@ RLS_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "workflow_steps",
     "workflow_leaf_calls",
     "workflow_quotas",
+    "coordination_leases",
+    "coordination_signals",
+    "coordination_checkpoints",
 )
 
 

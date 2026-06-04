@@ -12,6 +12,7 @@ Covers the launch half of P4:
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from app.agents.subagent import SubagentBudget, SubagentHandle, SubagentResult, SubagentSpawnContext
@@ -119,6 +120,34 @@ def test_long_wait_is_high_risk():
     data["steps"].append({"id": "wait", "type": "wait_until_step", "delay_seconds": 24 * 3600})
     compiled = compile_workflow(data)
     assessment = classify_workflow_risk(compiled, args={})
+    assert assessment.level == "high"
+    assert any("wait" in reason or "wall" in reason for reason in assessment.reasons)
+
+
+def test_absolute_wait_until_is_high_risk_when_far_in_future():
+    data = _definition()
+    data["steps"].append(
+        {
+            "id": "wait",
+            "type": "wait_until_step",
+            "until": (datetime.now(UTC) + timedelta(hours=12)).isoformat(),
+        }
+    )
+    compiled = compile_workflow(data)
+    assessment = classify_workflow_risk(compiled, args={})
+    assert assessment.level == "high"
+    assert any("wait" in reason or "wall" in reason for reason in assessment.reasons)
+
+
+def test_wait_until_args_reference_is_high_risk_when_far_in_future():
+    data = _definition()
+    data["args_schema"]["resume_at"] = {"type": "string", "required": True}
+    data["steps"].append({"id": "wait", "type": "wait_until_step", "until": "args.resume_at"})
+    compiled = compile_workflow(data)
+    assessment = classify_workflow_risk(
+        compiled,
+        args={"resume_at": (datetime.now(UTC) + timedelta(hours=12)).isoformat()},
+    )
     assert assessment.level == "high"
     assert any("wait" in reason or "wall" in reason for reason in assessment.reasons)
 

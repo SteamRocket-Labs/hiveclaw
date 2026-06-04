@@ -185,7 +185,9 @@ class WorkflowDefinitionService:
             )
         visible: list[WorkflowDefinitionRecord] = []
         for record in rows:
-            if record.visibility_scope == "agent" and agent_id is not None:
+            if record.visibility_scope == "agent":
+                if agent_id is None:
+                    continue
                 if record.owner_id != agent_id and record.created_by_agent_id != agent_id:
                     continue
             visible.append(record)
@@ -194,6 +196,13 @@ class WorkflowDefinitionService:
     @staticmethod
     def _may_execute(record: WorkflowDefinitionRecord, agent_id: uuid.UUID) -> bool:
         policy = record.call_policy or {}
+        unsupported_policy_keys = [key for key in ("allowed_roles", "allowed_orgs") if policy.get(key) is not None]
+        if unsupported_policy_keys:
+            raise WorkflowDefinitionError(
+                "call_policy "
+                + ", ".join(unsupported_policy_keys)
+                + " requires actor role/org context; refusing to execute without it"
+            )
         allowed_agents = policy.get("allowed_agents")
         if allowed_agents is not None:
             return str(agent_id) in {str(a) for a in allowed_agents}
@@ -333,6 +342,63 @@ class WorkflowDefinitionService:
                     "tenant_id": str(tenant_id),
                     "definition_id": str(resolved.record.id),
                     "definition_hash": resolved.record.definition_hash,
+                    "forked_by_agent_id": str(agent_id),
+                },
+                agent_id=agent_id,
+            )
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).warning("fork audit write failed (non-fatal)", exc_info=True)
+        return forked
+
+    async def fork_record_to_ephemeral(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        definition_id: uuid.UUID,
+        agent_id: uuid.UUID,
+        expected_version: int | None = None,
+        patch: dict | None = None,
+    ) -> dict:
+        """Exact registered row + patch → ephemeral definition DATA.
+
+        REST fork is keyed by ``definition_id``. Re-resolving by name would let
+        a request for v1 silently fork a newer same-name version, so this path
+        validates and forks the row identified by the URL.
+        """
+        record = await self.get_record(definition_id, tenant_id=tenant_id)
+        if expected_version is not None and record.definition_version != expected_version:
+            raise WorkflowDefinitionError(
+                f"definition version mismatch for {definition_id}: "
+                f"requested {expected_version} != stored {record.definition_version}"
+            )
+        if record.status == "revoked":
+            raise WorkflowDefinitionError(f"definition {record.name!r} v{record.definition_version} is revoked")
+        if record.status == "draft":
+            raise WorkflowDefinitionError(f"definition {record.name!r} v{record.definition_version} is a draft")
+        if record.status == "deprecated":
+            raise WorkflowDefinitionError(
+                f"definition {record.name!r} v{record.definition_version} is deprecated; fork an active version"
+            )
+        if not self._may_execute(record, agent_id):
+            raise WorkflowDefinitionError(
+                f"agent {agent_id} is not authorized to execute definition {record.name!r} (call_policy/visibility)"
+            )
+
+        forked = copy.deepcopy(record.definition_json)
+        if patch:
+            forked.update(copy.deepcopy(patch))
+        compile_workflow(forked)
+        try:
+            from app.services.audit_logger import write_audit_log
+
+            await write_audit_log(
+                "workflow_definition_forked",
+                details={
+                    "tenant_id": str(tenant_id),
+                    "definition_id": str(record.id),
+                    "definition_hash": record.definition_hash,
                     "forked_by_agent_id": str(agent_id),
                 },
                 agent_id=agent_id,

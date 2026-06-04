@@ -128,7 +128,7 @@ test('low-risk ephemeral: preview → confirm → run completes', async ({ page 
   await expect(page.getByTestId('workflow-step-scan')).toContainText('done');
 });
 
-test('high-risk ephemeral: start is blocked behind Plan Mode', async ({ page }) => {
+test('high-risk ephemeral: start requires confirmed Plan Mode handoff', async ({ page }) => {
   await bootstrapApp(page, { risk: 'high' });
 
   await page.getByTestId('workflow-definition-input').fill(LOW_RISK_DEFINITION);
@@ -138,4 +138,9 @@ test('high-risk ephemeral: start is blocked behind Plan Mode', async ({ page }) 
   await expect(page.getByTestId('workflow-plan-required')).toBeVisible();
   await expect(page.getByTestId('workflow-plan-required')).toContainText('external effects');
   await expect(page.getByTestId('workflow-start-button')).toBeDisabled();
+
+  await page.getByTestId('workflow-confirmed-plan-id').fill('plan-1');
+  await page.getByTestId('workflow-plan-version').fill('1');
+  await page.getByTestId('workflow-plan-hash').fill('plan-hash');
+  await expect(page.getByTestId('workflow-start-button')).toBeEnabled();
 });

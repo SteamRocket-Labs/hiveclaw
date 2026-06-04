@@ -18,6 +18,7 @@ from sqlalchemy import select
 from app.agents.coordination import CoordinationRuntime
 from app.database import tenant_scoped_session
 from app.models.runtime_task import RuntimeTask
+from app.models.coordination import CoordinationCheckpoint
 from app.runtime.workflow_engine import LeafOutcome, LeafRequest
 from app.services.workflow_runtime_service import CheckpointGateDecider, WorkflowRuntimeService
 
@@ -108,6 +109,38 @@ async def test_external_step_suspends_until_checkpoint_approved(service, tenant_
 
     assert outcome.status == "completed"
     assert calls2 == ["send"], "draft replays from journal; only the gated step executes"
+
+
+async def test_default_gate_decider_uses_pg_checkpoint(tenant_id, owner_sessionmaker):
+    """The production default must persist checkpoints in PostgreSQL; the
+    in-process CoordinationRuntime is only a test/local injection."""
+    service = WorkflowRuntimeService(session_factory=owner_sessionmaker)
+    leaf, calls = _leaf()
+
+    handle = await service.start_run(
+        tenant_id=tenant_id, definition_data=_gated_definition(), args={}, leaf_executor=leaf
+    )
+
+    assert handle.outcome.status == "suspended"
+    assert calls == ["draft"]
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        checkpoint = (
+            await session.execute(
+                select(CoordinationCheckpoint).where(
+                    CoordinationCheckpoint.extra_metadata["workflow_run_id"].as_string() == str(handle.run_id),
+                    CoordinationCheckpoint.extra_metadata["workflow_step_id"].as_string() == "approve",
+                )
+            )
+        ).scalar_one()
+        assert checkpoint.status == "pending"
+        checkpoint.status = "approved"
+
+    leaf2, calls2 = _leaf()
+    outcome = await service.resume_run(handle.run_id, tenant_id=tenant_id, leaf_executor=leaf2)
+
+    assert outcome.status == "completed"
+    assert calls2 == ["send"]
 
 
 async def test_rejected_checkpoint_fails_run(service, tenant_id):

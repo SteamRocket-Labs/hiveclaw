@@ -4,7 +4,10 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
-- 2026-06-04T01:25Z [sid:3f97d3a5]; branch:main; 20 files (orphan-trail.md, engine.py, hooks_setup.py, +17); last commit: 1159197 feat(work-ledger): 切口④ ledger verified findings → 长期
+- 2026-06-04T13:35Z [sid:27e1f4c6]; branch:main; 1 files (orphan-trail.md); last commit: 52859e36 feat(workflow): P13 office workflows — 第一批真实调用方 + p
+- 2026-06-04T04:44Z [sid:3f97d3a5]; branch:main; 1 files (orphan-trail.md); last commit: 61153d3 docs(workflow): 轴2 v0.6 — P0-P15 全量唯一权威路线 + review 缺
+- 2026-06-04T03:32Z [sid:7abb3cd3]; branch:main; 2 files (orphan-trail.md, workflow-source-capability.md); last commit: a5ae9ec fix(work-ledger): blocked_pattern evidence 改 agent_l
+- 2026-06-04T03:28Z [sid:3f97d3a5]; branch:main; 2 files (orphan-trail.md, workflow-source-capability.md); last commit: a5ae9ec fix(work-ledger): blocked_pattern evidence 改 agent_l
 - 2026-06-03T16:56Z [sid:70005673]; branch:main; 2 files (orphan-trail.md, test_feishu_identity_resolution.py); last commit: 1159197 feat(work-ledger): 切口④ ledger verified findings → 长期
 - 2026-06-03T13:53Z [sid:8a0e09ba]; branch:main; 1 files (orphan-trail.md); last commit: 2eee9e8 refactor(plan-mode): 切口① 拆 chat/Feishu 的 regex 任务 au
 - 2026-06-03T13:32Z [sid:3f97d3a5]; branch:main; 3 files (orphan-trail.md, feishu.py, web_chat_runtime.py); last commit: 97bac1c fix(subagent): 源能力加固 — fail-closed/path 边界/治理接线/记忆闭环

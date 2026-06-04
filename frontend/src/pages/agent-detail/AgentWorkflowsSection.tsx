@@ -15,6 +15,7 @@ import {
   startWorkflow,
   type WorkflowDefinitionRecord,
   type WorkflowPreview,
+  type StartWorkflowOptions,
   type WorkflowStartResult,
 } from '../../api/domains/workflows';
 
@@ -53,6 +54,29 @@ function definitionTone(status: WorkflowDefinitionRecord['status']): 'ok' | 'war
   return 'muted';
 }
 
+export type WorkflowPlanHandoffFields = {
+  confirmedPlanId: string;
+  planVersion: string;
+  planHash: string;
+};
+
+export function buildWorkflowStartOptions(
+  preview: WorkflowPreview | null,
+  handoff: WorkflowPlanHandoffFields,
+): StartWorkflowOptions | null {
+  if (!preview) return null;
+  if (preview.risk !== 'high') return {};
+  const planVersion = Number(handoff.planVersion);
+  if (!handoff.confirmedPlanId.trim() || !Number.isInteger(planVersion) || planVersion <= 0 || !handoff.planHash.trim()) {
+    return null;
+  }
+  return {
+    confirmedPlanId: handoff.confirmedPlanId.trim(),
+    planVersion,
+    planHash: handoff.planHash.trim(),
+  };
+}
+
 export default function AgentWorkflowsSection({ agentId, canManage = false }: AgentWorkflowsSectionProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -62,6 +86,11 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
   const [preview, setPreview] = useState<WorkflowPreview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [lastRun, setLastRun] = useState<WorkflowStartResult | null>(null);
+  const [planHandoff, setPlanHandoff] = useState<WorkflowPlanHandoffFields>({
+    confirmedPlanId: '',
+    planVersion: '',
+    planHash: '',
+  });
 
   const { data: definitions = [] } = useQuery({
     queryKey: ['workflow-definitions', agentId],
@@ -108,7 +137,11 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
     mutationFn: async () => {
       const payload = parsePayload();
       if (!payload) throw new Error('invalid json');
-      return startWorkflow(agentId, payload.definition, payload.args);
+      const options = buildWorkflowStartOptions(preview, planHandoff);
+      if (!options) {
+        throw new Error(t('workflows.missingPlanHandoff'));
+      }
+      return startWorkflow(agentId, payload.definition, payload.args, options);
     },
     onSuccess: (result) => {
       setLastRun(result);
@@ -141,6 +174,8 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
       setPreview(null);
     },
   });
+
+  const startOptions = buildWorkflowStartOptions(preview, planHandoff);
 
   return (
     <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 24 }}>
@@ -179,7 +214,7 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
             type="button"
             data-testid="workflow-start-button"
             onClick={() => startMutation.mutate()}
-            disabled={startMutation.isPending || !preview || preview.risk === 'high'}
+            disabled={startMutation.isPending || !preview || (preview.risk === 'high' && !startOptions)}
             title={preview?.risk === 'high' ? t('workflows.highRiskNeedsPlan') : undefined}
           >
             {t('workflows.confirmAndRun')}
@@ -209,6 +244,26 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
                     <li key={reason}>{reason}</li>
                   ))}
                 </ul>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8, marginTop: 8 }}>
+                  <input
+                    data-testid="workflow-confirmed-plan-id"
+                    value={planHandoff.confirmedPlanId}
+                    onChange={(event) => setPlanHandoff((current) => ({ ...current, confirmedPlanId: event.target.value }))}
+                    placeholder={t('workflows.confirmedPlanId')}
+                  />
+                  <input
+                    data-testid="workflow-plan-version"
+                    value={planHandoff.planVersion}
+                    onChange={(event) => setPlanHandoff((current) => ({ ...current, planVersion: event.target.value }))}
+                    placeholder={t('workflows.planVersion')}
+                  />
+                  <input
+                    data-testid="workflow-plan-hash"
+                    value={planHandoff.planHash}
+                    onChange={(event) => setPlanHandoff((current) => ({ ...current, planHash: event.target.value }))}
+                    placeholder={t('workflows.planHash')}
+                  />
+                </div>
               </div>
             )}
           </div>

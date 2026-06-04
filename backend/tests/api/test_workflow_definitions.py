@@ -20,7 +20,7 @@ from app.services.workflow_definitions import WorkflowDefinitionError
 
 
 def _user():
-    return SimpleNamespace(id=uuid.uuid4(), role="member", tenant_id=uuid.uuid4(), username="u")
+    return SimpleNamespace(id=uuid.uuid4(), role="org_admin", tenant_id=uuid.uuid4(), username="u")
 
 
 def _record(**overrides):
@@ -89,6 +89,11 @@ class _StubService:
         self._maybe_raise()
         return {"name": "weekly-report", "steps": []}
 
+    async def fork_record_to_ephemeral(self, **kwargs):
+        self.calls.append(("fork_record_to_ephemeral", kwargs))
+        self._maybe_raise()
+        return {"name": "weekly-report", "steps": []}
+
 
 def _client(user, stub: _StubService):
     api = FastAPI()
@@ -117,6 +122,22 @@ def test_create_draft_threads_tenant_and_user():
     assert kwargs["created_by_user_id"] == user.id
 
 
+def test_create_rejects_invalid_owner_id_before_service_call():
+    user, stub = _user(), _StubService()
+    client = _client(user, stub)
+    resp = client.post(
+        "/workflow-definitions",
+        json={
+            "definition": {"name": "x"},
+            "visibility_scope": "agent",
+            "owner_type": "agent",
+            "owner_id": "not-a-uuid",
+        },
+    )
+    assert resp.status_code == 422
+    assert stub.calls == []
+
+
 def test_lifecycle_endpoints_map_conflicts_to_409():
     user, stub = _user(), _StubService()
     stub.raises = WorkflowDefinitionError("cannot move definition from 'revoked' to 'active'")
@@ -138,7 +159,7 @@ def test_approve_promotion_threads_human_approver():
     client = _client(user, stub)
     resp = client.post(f"/workflow-definitions/{uuid.uuid4()}/approve-promotion")
     assert resp.status_code == 200
-    name, kwargs = stub.calls[0]
+    name, kwargs = next(call for call in stub.calls if call[0] == "approve_promotion")
     assert name == "approve_promotion"
     assert kwargs["approver_user_id"] == user.id
 
@@ -154,14 +175,16 @@ def test_missing_approver_maps_to_403():
 def test_fork_returns_ephemeral_definition():
     user, stub = _user(), _StubService()
     client = _client(user, stub)
+    definition_id = uuid.uuid4()
     resp = client.post(
-        f"/workflow-definitions/{uuid.uuid4()}/fork",
+        f"/workflow-definitions/{definition_id}/fork",
         json={"agent_id": str(uuid.uuid4()), "patch": {"description": "tweak"}},
     )
     assert resp.status_code == 200
     body = resp.json()
     assert body["definition"]["name"] == "weekly-report"
-    fork_call = next(c for c in stub.calls if c[0] == "fork_to_ephemeral")
+    fork_call = next(c for c in stub.calls if c[0] == "fork_record_to_ephemeral")
+    assert fork_call[1]["definition_id"] == definition_id
     assert fork_call[1]["patch"] == {"description": "tweak"}
 
 

@@ -142,6 +142,9 @@ class Settings(BaseSettings):
     # Repeated-ephemeral evidence (§9 P13 / §4): suggest 保存为模板 once the
     # same definition_hash completes this many ephemeral runs.
     WORKFLOW_PROMOTE_SUGGESTION_THRESHOLD: int = 3
+    # Production daemon polling interval for startup/time resumes and
+    # persistent signal resumes.
+    WORKFLOW_DAEMON_INTERVAL_SECONDS: int = 15
 
     # Coordination backend (Phase 17 wiring)
     # "memory" — in-process Lease/Signal/Checkpoint (default, fine for

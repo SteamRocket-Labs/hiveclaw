@@ -10,6 +10,7 @@ static preflight in front of it.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from app.runtime.workflow_compiler import CompiledWorkflow
@@ -62,6 +63,31 @@ def _resolve_args_path(path: str, args: dict) -> Any:
             raise WorkflowAdmissionError(f"args reference {path!r} cannot be resolved from provided args")
         node = node[part]
     return node
+
+
+def estimate_wait_seconds(step: WaitUntilStep, *, args: dict, now: datetime | None = None) -> int:
+    """Return the wall-clock wait implied by a wait step.
+
+    ``delay_seconds`` is already a bounded integer. ``until`` can be an ISO
+    timestamp literal or an ``args.*`` reference; both must be resolved during
+    admission so absolute waits cannot bypass wall-clock/risk caps.
+    """
+    if step.delay_seconds is not None:
+        return step.delay_seconds
+
+    target = step.until or ""
+    if target.startswith("args."):
+        target = str(_resolve_args_path(target, args))
+    try:
+        parsed = datetime.fromisoformat(target)
+    except ValueError as exc:
+        raise WorkflowAdmissionError(f"wait_until: invalid timestamp {target!r}") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    current = now or datetime.now(UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    return max(0, int((parsed - current).total_seconds()))
 
 
 def _validate_args(compiled: CompiledWorkflow, args: dict) -> None:
@@ -117,8 +143,8 @@ def admit_workflow(
                     f"concurrency: {step.max_concurrency} exceeds limit {limits.max_concurrency} (step {step.id!r})"
                 )
             planned_leaves += len(items)
-        elif isinstance(step, WaitUntilStep) and step.delay_seconds is not None:
-            total_wait_seconds += step.delay_seconds
+        elif isinstance(step, WaitUntilStep):
+            total_wait_seconds += estimate_wait_seconds(step, args=args)
 
     if planned_leaves > limits.max_leaf_calls:
         raise WorkflowAdmissionError(f"leaf: planned {planned_leaves} leaf calls exceed limit {limits.max_leaf_calls}")

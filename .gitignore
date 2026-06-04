@@ -1,6 +1,7 @@
 # ClawCrew
 node_modules/
 dist/
+frontend/test-results/
 *.zip
 build/
 __pycache__/

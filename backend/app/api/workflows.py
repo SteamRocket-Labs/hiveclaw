@@ -28,6 +28,7 @@ from app.database import get_db
 from app.models.user import User
 from app.runtime.workflow_admission import AdmissionLimits, WorkflowAdmissionError, admit_workflow
 from app.runtime.workflow_compiler import WorkflowCompileError, compile_workflow
+from app.runtime.workflow_definition import compute_definition_hash
 from app.services.workflow_launch import classify_workflow_risk, start_ephemeral_workflow_for_agent
 from app.services.workflow_runtime_service import WorkflowRuntimeService
 
@@ -103,7 +104,11 @@ async def start_workflow_endpoint(
             confirmed_plan_id=payload.confirmed_plan_id,
             plan_version=payload.plan_version,
             plan_hash=payload.plan_hash,
-            action_artifact={"definition_hash": compiled.definition_hash, "risk_reasons": risk.reasons},
+            action_artifact={
+                "definition_hash": compiled.definition_hash,
+                "args_hash": compute_definition_hash(payload.args),
+                "risk_reasons": risk.reasons,
+            },
         )
         if not decision.allowed:
             raise HTTPException(

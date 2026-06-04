@@ -152,6 +152,7 @@ async def lifespan(app: FastAPI):
     from app.services.dingtalk_stream import dingtalk_stream_manager
     from app.services.wecom_stream import wecom_stream_manager
     from app.services.wechat_personal_stream import wechat_personal_stream_manager
+    from app.services.workflow_daemon import request_default_workflow_drain, start_workflow_daemon
 
     # ── Step 0a: Validate production secrets ──
     if not settings.DEBUG:
@@ -214,6 +215,9 @@ async def lifespan(app: FastAPI):
 
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            from app.db_bootstrap import apply_rls_policies
+
+            await conn.run_sync(apply_rls_policies)
             # Add enum values to channel_type_enum if they don't exist yet (idempotent)
             for _ch_val in ("atlassian", "telegram"):
                 await conn.execute(
@@ -471,6 +475,7 @@ async def lifespan(app: FastAPI):
 
         for name, coro in [
             ("trigger_daemon", start_trigger_daemon()),
+            ("workflow_daemon", start_workflow_daemon()),
             ("evolution_daemon", start_evolution_daemon()),
             ("feishu_ws", feishu_ws_manager.start_all()),
             ("dingtalk_stream", dingtalk_stream_manager.start_all()),
@@ -493,6 +498,10 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    try:
+        request_default_workflow_drain()
+    except Exception as exc:
+        logger.warning(f"Workflow daemon drain request failed: {exc}")
     await wechat_personal_stream_manager.stop_all()
     await close_redis()
     try:

@@ -135,6 +135,7 @@ class PlanModeGate:
                 confirmed_plan_id=confirmed_plan_id,
                 plan_version=plan_version,
                 plan_hash=plan_hash,
+                action_artifact=action_artifact,
             )
             if decision is not None:
                 return decision
@@ -183,6 +184,7 @@ class PlanModeGate:
         confirmed_plan_id: UUID | str,
         plan_version: int | None,
         plan_hash: str | None,
+        action_artifact: dict | None,
     ) -> PlanGateDecision | None:
         """Resolve and validate the referenced plan.
 
@@ -255,6 +257,24 @@ class PlanModeGate:
             submitted_hash=plan_hash,
         )
         if check.ok:
+            artifact_check = self._validate_confirmed_action_artifact(plan, action_artifact)
+            if action_kind == "start_workflow" and artifact_check is not None:
+                logger.info(
+                    "plan_gate_needs_plan",
+                    extra={"action_kind": action_kind, "reason": artifact_check, "plan_id": str(plan.id)},
+                )
+                return PlanGateDecision(
+                    allowed=False,
+                    reason=artifact_check,
+                    needs_plan_payload=core.build_needs_plan_payload(
+                        plan_id=plan.id,
+                        plan_version=plan.plan_version,
+                        summary=(
+                            "The confirmed plan does not match the action payload being started. "
+                            "Regenerate and confirm a plan for this exact action."
+                        ),
+                    ),
+                )
             return PlanGateDecision(allowed=True, reason="confirmed_plan_handoff")
 
         logger.info(
@@ -278,6 +298,47 @@ class PlanModeGate:
         stmt._plan_lookup_id = str(plan_id)  # type: ignore[attr-defined]
         result = await db.execute(stmt)
         return result.scalar_one_or_none()
+
+    @staticmethod
+    def _expected_action_artifact(plan: AgentPlanRequest) -> dict | None:
+        """Return the artifact recorded at plan-confirmation time, if any.
+
+        High-risk workflow starts pass a caller-side ``action_artifact``
+        (definition hash, args hash, risk reasons). A confirmed plan must
+        carry the same artifact in a durable field; otherwise a generic
+        long-task plan could authorise an unrelated workflow definition or
+        a different argument set.
+        """
+        metadata = getattr(plan, "metadata_json", None) or {}
+        if isinstance(metadata.get("confirmed_action_artifact"), dict):
+            return metadata["confirmed_action_artifact"]
+        if isinstance(metadata.get("action_artifact"), dict):
+            return metadata["action_artifact"]
+
+        handoff = getattr(plan, "handoff_payload", None) or {}
+        if isinstance(handoff, dict) and isinstance(handoff.get("action_artifact"), dict):
+            return handoff["action_artifact"]
+
+        plan_json = getattr(plan, "plan_json", None) or {}
+        if isinstance(plan_json, dict):
+            handoff_json = plan_json.get("handoff")
+            if isinstance(handoff_json, dict) and isinstance(handoff_json.get("action_artifact"), dict):
+                return handoff_json["action_artifact"]
+            if isinstance(plan_json.get("action_artifact"), dict):
+                return plan_json["action_artifact"]
+        return None
+
+    @classmethod
+    def _validate_confirmed_action_artifact(cls, plan: AgentPlanRequest, action_artifact: dict | None) -> str | None:
+        if action_artifact is None:
+            return None
+        expected = cls._expected_action_artifact(plan)
+        if expected is None:
+            return "action_artifact_missing"
+        for key, value in action_artifact.items():
+            if expected.get(key) != value:
+                return "action_artifact_mismatch"
+        return None
 
     # -- step 2: cutover exemption ----------------------------------------
 

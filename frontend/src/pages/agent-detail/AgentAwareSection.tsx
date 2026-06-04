@@ -1,10 +1,12 @@
 import React from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import { chatApi } from '../../api/domains/chat';
 import { triggerApi } from '../../api/domains/triggers';
 import { autonomyApi } from '../../api/domains/autonomy';
 import { objectiveApi } from '../../api/domains/objectives';
+import { listWorkflowDefinitions, type WorkflowDefinitionRecord } from '../../api/domains/workflows';
 import { StructuredToolResultBody } from './AgentChatSection';
 import TeamMemorySummaryCard from './TeamMemorySummaryCard';
 import PlanQueueSection from './PlanQueueSection';
@@ -39,6 +41,75 @@ type AgentAwareSectionProps = {
 const REFLECTIONS_PAGE_SIZE = 10;
 const SECTION_PAGE_SIZE = 5;
 
+export type WakeFormState = {
+  mode: string;
+  objectiveId: string;
+  name: string;
+  reason: string;
+  scheduleType: string;
+  cronExpr: string;
+  intervalMinutes: number;
+  onceAt: string;
+  eventType: string;
+  maxFires: number;
+  expiresAt: string;
+  workflowDefinitionKey: string;
+  workflowArgsText: string;
+};
+
+export function workflowDefinitionOptionKey(record: WorkflowDefinitionRecord): string {
+  return `${record.name}::${record.definition_version}::${record.definition_hash}`;
+}
+
+export function workflowDefinitionFromKey(
+  key: string,
+  records: WorkflowDefinitionRecord[],
+): WorkflowDefinitionRecord | undefined {
+  return records.find((record) => workflowDefinitionOptionKey(record) === key);
+}
+
+export function buildWakePolicyPayload(
+  wakeForm: WakeFormState,
+  selectedWorkflow?: WorkflowDefinitionRecord,
+): Record<string, unknown> {
+  const config: Record<string, unknown> = {};
+  let type = wakeForm.scheduleType;
+  if (wakeForm.mode === 'event_wait') {
+    type = wakeForm.eventType;
+    config.trigger_class = 'event_wait';
+    if (wakeForm.eventType === 'on_message') config.reply_to_current_sender = true;
+    if (wakeForm.eventType === 'poll') config.url = '';
+    if (wakeForm.maxFires) config.max_fires = wakeForm.maxFires;
+  } else {
+    config.trigger_class = wakeForm.mode;
+    if (wakeForm.scheduleType === 'cron') config.expr = wakeForm.cronExpr;
+    if (wakeForm.scheduleType === 'interval') config.minutes = wakeForm.intervalMinutes;
+    if (wakeForm.scheduleType === 'once') config.at = wakeForm.onceAt;
+  }
+  if (wakeForm.mode === 'objective_task' && wakeForm.objectiveId) config.objective_id = wakeForm.objectiveId;
+  if (wakeForm.workflowDefinitionKey && !selectedWorkflow) {
+    throw new Error('Selected workflow definition is no longer available.');
+  }
+  if (selectedWorkflow) {
+    const args = JSON.parse(wakeForm.workflowArgsText || '{}') as Record<string, unknown>;
+    config.workflow_ref = {
+      definition_name: selectedWorkflow.name,
+      definition_version: selectedWorkflow.definition_version,
+      definition_hash: selectedWorkflow.definition_hash,
+      args,
+    };
+  }
+  return {
+    name: wakeForm.name || `wake_${Date.now()}`,
+    type,
+    config,
+    reason: wakeForm.reason || wakeForm.name || 'Autonomous wake policy',
+    objective_id: wakeForm.mode === 'objective_task' ? wakeForm.objectiveId || undefined : undefined,
+    max_fires: wakeForm.mode === 'event_wait' ? wakeForm.maxFires : undefined,
+    expires_at: wakeForm.expiresAt || undefined,
+  };
+}
+
 export default function AgentAwareSection({
   agentId,
   focusContent,
@@ -68,7 +139,7 @@ export default function AgentAwareSection({
   const [artifactView, setArtifactView] = React.useState<any | null>(null);
   const [artifactLoading, setArtifactLoading] = React.useState(false);
   const [showCreateWake, setShowCreateWake] = React.useState(false);
-  const [wakeForm, setWakeForm] = React.useState({
+  const [wakeForm, setWakeForm] = React.useState<WakeFormState>({
     mode: 'scheduled_job',
     objectiveId: '',
     name: '',
@@ -80,6 +151,15 @@ export default function AgentAwareSection({
     eventType: 'on_message',
     maxFires: 1,
     expiresAt: '',
+    workflowDefinitionKey: '',
+    workflowArgsText: '{}',
+  });
+  const [wakeError, setWakeError] = React.useState('');
+
+  const { data: workflowDefinitions = [] } = useQuery({
+    queryKey: ['workflow-definitions', agentId],
+    queryFn: () => listWorkflowDefinitions(agentId),
+    enabled: !!agentId,
   });
 
   const lines = (focusContent || '').split('\n');
@@ -277,30 +357,16 @@ export default function AgentAwareSection({
   };
 
   const createWakePolicy = async () => {
-    const config: Record<string, unknown> = {};
-    let type = wakeForm.scheduleType;
-    if (wakeForm.mode === 'event_wait') {
-      type = wakeForm.eventType;
-      config.trigger_class = 'event_wait';
-      if (wakeForm.eventType === 'on_message') config.reply_to_current_sender = true;
-      if (wakeForm.eventType === 'poll') config.url = '';
-      if (wakeForm.maxFires) config.max_fires = wakeForm.maxFires;
-    } else {
-      config.trigger_class = wakeForm.mode;
-      if (wakeForm.scheduleType === 'cron') config.expr = wakeForm.cronExpr;
-      if (wakeForm.scheduleType === 'interval') config.minutes = wakeForm.intervalMinutes;
-      if (wakeForm.scheduleType === 'once') config.at = wakeForm.onceAt;
+    const selectedWorkflow = workflowDefinitionFromKey(wakeForm.workflowDefinitionKey, workflowDefinitions);
+    let payload: Record<string, unknown>;
+    try {
+      payload = buildWakePolicyPayload(wakeForm, selectedWorkflow);
+      setWakeError('');
+    } catch {
+      setWakeError(t('agent.aware.workflowArgsInvalid', 'Workflow args must be valid JSON.'));
+      return;
     }
-    if (wakeForm.mode === 'objective_task' && wakeForm.objectiveId) config.objective_id = wakeForm.objectiveId;
-    await triggerApi.create(agentId, {
-      name: wakeForm.name || `wake_${Date.now()}`,
-      type,
-      config,
-      reason: wakeForm.reason || wakeForm.name || 'Autonomous wake policy',
-      objective_id: wakeForm.mode === 'objective_task' ? wakeForm.objectiveId || undefined : undefined,
-      max_fires: wakeForm.mode === 'event_wait' ? wakeForm.maxFires : undefined,
-      expires_at: wakeForm.expiresAt || undefined,
-    });
+    await triggerApi.create(agentId, payload);
     setShowCreateWake(false);
     await refreshAutonomy();
   };
@@ -308,6 +374,7 @@ export default function AgentAwareSection({
   const renderCreateWakeForm = () => {
     if (!showCreateWake) return null;
     const objectives = autonomyOverview?.objectives || [];
+    const activeWorkflowDefinitions = workflowDefinitions.filter((record) => record.status === 'active');
     return (
       <div style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '12px', marginTop: '10px', background: 'var(--bg-primary)' }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px' }}>
@@ -337,6 +404,28 @@ export default function AgentAwareSection({
               <option value="webhook">webhook</option>
             </select>
           )}
+          <select
+            className="form-input"
+            data-testid="wake-workflow-ref-select"
+            value={wakeForm.workflowDefinitionKey}
+            onChange={(event) => setWakeForm({ ...wakeForm, workflowDefinitionKey: event.target.value })}
+          >
+            <option value="">{t('agent.aware.noWorkflowRef', 'No workflow')}</option>
+            {activeWorkflowDefinitions.map((record) => (
+              <option key={record.id} value={workflowDefinitionOptionKey(record)}>
+                {record.name} v{record.definition_version}
+              </option>
+            ))}
+          </select>
+          {wakeForm.workflowDefinitionKey && (
+            <textarea
+              className="form-input"
+              data-testid="wake-workflow-ref-args"
+              value={wakeForm.workflowArgsText}
+              onChange={(event) => setWakeForm({ ...wakeForm, workflowArgsText: event.target.value })}
+              rows={2}
+            />
+          )}
           <input className="form-input" value={wakeForm.name} onChange={(event) => setWakeForm({ ...wakeForm, name: event.target.value })} placeholder={t('agent.aware.wakeName', 'Wake name')} />
           <input className="form-input" value={wakeForm.reason} onChange={(event) => setWakeForm({ ...wakeForm, reason: event.target.value })} placeholder={t('agent.aware.wakeReason', 'Wake reason')} />
           {wakeForm.scheduleType === 'cron' && wakeForm.mode !== 'event_wait' && (
@@ -353,6 +442,7 @@ export default function AgentAwareSection({
           )}
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '10px' }}>
+          {wakeError && <span style={{ color: 'var(--error)', fontSize: '12px', marginRight: 'auto' }}>{wakeError}</span>}
           <button className="btn btn-ghost" onClick={() => setShowCreateWake(false)}>{t('common.cancel', 'Cancel')}</button>
           <button className="btn btn-primary" onClick={createWakePolicy}>{t('common.create', 'Create')}</button>
         </div>

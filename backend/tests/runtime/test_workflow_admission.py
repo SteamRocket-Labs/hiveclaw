@@ -6,6 +6,8 @@ Pure logic against an injected config snapshot — no DB.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from app.runtime.workflow_admission import (
@@ -107,6 +109,41 @@ def test_wait_until_beyond_wall_clock_rejected():
     compiled = compile_workflow(data)
     with pytest.raises(WorkflowAdmissionError, match="wall"):
         admit_workflow(compiled, args={"targets": ["a"]}, limits=_limits(max_wall_clock_seconds=86_400))
+
+
+def test_wait_until_absolute_timestamp_beyond_wall_clock_rejected():
+    data = _definition()
+    data["steps"].append(
+        {
+            "id": "wait",
+            "type": "wait_until_step",
+            "until": (datetime.now(UTC) + timedelta(days=7)).isoformat(),
+        }
+    )
+    compiled = compile_workflow(data)
+    with pytest.raises(WorkflowAdmissionError, match="wall"):
+        admit_workflow(compiled, args={"targets": ["a"]}, limits=_limits(max_wall_clock_seconds=86_400))
+
+
+def test_wait_until_args_timestamp_beyond_wall_clock_rejected():
+    data = _definition()
+    data["args_schema"]["resume_at"] = {"type": "string", "required": True}
+    data["steps"].append({"id": "wait", "type": "wait_until_step", "until": "args.resume_at"})
+    compiled = compile_workflow(data)
+    with pytest.raises(WorkflowAdmissionError, match="wall"):
+        admit_workflow(
+            compiled,
+            args={"targets": ["a"], "resume_at": (datetime.now(UTC) + timedelta(days=7)).isoformat()},
+            limits=_limits(max_wall_clock_seconds=86_400),
+        )
+
+
+def test_wait_until_invalid_absolute_timestamp_rejected_by_admission():
+    data = _definition()
+    data["steps"].append({"id": "wait", "type": "wait_until_step", "until": "not-a-date"})
+    compiled = compile_workflow(data)
+    with pytest.raises(WorkflowAdmissionError, match="wait_until"):
+        admit_workflow(compiled, args={"targets": ["a"]}, limits=_limits())
 
 
 def test_limits_from_settings_factory():

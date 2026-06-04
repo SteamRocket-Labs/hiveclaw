@@ -95,13 +95,13 @@ registered ──本次需要微调──▶ fork ──▶ ephemeral run
 - 它**只能编排平台原语 + 受治理的叶子**——没有任意代码执行面，所以 agent 在运行时可以临时生成一份 definition（生成的是数据，执行的是引擎）。
 - 安全不来自"JSON 本身"，而来自 **compile/admission 校验**：step type allowlist、leaf capability binding、tenant/agent visibility check、预算预检、fanout cap、以及对外/不可逆步骤强制 `gate_step`。未通过校验的 definition 不能进入 run。
 - Hive delta 的本质：CC 用"任意 JS"换灵活性（单机单用户付得起）；Hive 用"结构化数据 + 引擎解释"换多租户安全与可审计，**两条路径（临时/注册）一条不少**。
-- 表达力边界：v1 = sequence + bounded fanout/map + structured condition + gate + wait_until/time suspend；不开放任意 loop / 任意代码 / 动态生成新 step；`wait_signal` 留到 persistent signal-resume consumer 建成后再进 v2（详见 §10）。
+- 表达力边界：v1 = sequence + bounded fanout/map + structured condition + gate + wait_until/time suspend；P11 后 v2 额外开放 `wait_signal_step`（前提：PG-backed Signal + persistent signal-resume consumer）；仍不开放任意 loop / 任意代码 / 动态生成新 step。
 
 ### 3.3 run / journal（融合既有执行账本，不另开账本）
 
 - **WorkflowRun = `RuntimeTask(task_type="workflow")` + WorkflowStep journal 子表**（run_id / step_id / phase / input_hash / status / result_ref / tenant_id）。不平行造第五种后台执行记账（现状已有 4 种变体：trigger 执行 / delegate_async / execute_task / DR+subagent background——见盘点）。
 - **resume** = done 且 input_hash 相同的步直接返回 result_ref（CC 前缀缓存的 DB 形）；startup 扫 journal 续跑（对标 `resume_persisted_async_delegations` 先例）。
-- run 状态机：`created → running → suspended（gate / budget 耗尽 / 等外部）→ completed | failed`；`sleep_until` / `delay_until` 这类时间挂起可用 once trigger 恢复（§6.2），gate approval / budget refill 分别由 Checkpoint 审批、quota/admission 恢复。`wait_signal` 不进 v1：现有 Signal 可 read-once，但缺少"Signal 到达 → 恢复 suspended WorkflowRun"的持久 consumer。
+- run 状态机：`created → running → suspended（gate / budget 耗尽 / 等外部）→ completed | failed`；`sleep_until` / `delay_until` 这类时间挂起可用 once trigger 或等价调度记录恢复（§6.2），gate approval / budget refill 分别由 Checkpoint 审批、quota/admission 恢复。P11 后 `wait_signal_step` 由 PostgreSQL `coordination_signals` + persistent signal-resume consumer 恢复；in-process Signal 仅保留为测试/本地通知通道。
 - **exactly-once 缺口（诚实）**：step 落盘与工具副作用不同事务——对外/不可逆步一律 gate_step，仅可逆步允许自动重试（用 action_preflight 可逆性分级判定）。
 - 完成通知：`workflow_completed` Signal（复用轴 1 通道）。
 
@@ -221,7 +221,7 @@ pytest tests/agents/test_subagent_*.py tests/agents/test_orchestrator_*.py tests
 
 ### P1 数据模型与迁移
 
-> **✅ 完成（2026-06-04）** — 证据：`pytest tests/ -q` → **3467 passed**（+12：`tests/migrations/test_workflow_migration.py` 7 + `tests/models/test_workflow_models.py` 6，含共享 fixture 复算）；`alembic heads` 单 head = `add_workflow_tables_0604`；ruff clean。
+> **✅ 完成（2026-06-04）** — 证据：`pytest tests/ -q` → **3467 passed**（+12：`tests/migrations/test_workflow_migration.py` 7 + `tests/models/test_workflow_models.py` 6，含共享 fixture 复算）；后续 P11 安全补丁后 `alembic heads` 单 head = `coordination_rls_0604`；ruff clean。
 >
 > **交付物**：
 > - `app/models/workflow.py`：`WorkflowDefinitionRecord` / `WorkflowStep` / `WorkflowLeafCall` / `WorkflowQuota` 四 model；run = `RuntimeTask(task_type="workflow")`，run metadata（definition_source/hash/args_hash/confirmed_plan_id/tenant_id 镜像）走 `metadata_json` 不加列。
@@ -327,7 +327,7 @@ pytest tests/runtime/test_workflow_engine_skeleton.py tests/services/test_workfl
 >
 > **交付物**：
 > - `services/workflow_launch.py`：`classify_workflow_risk`（§10 决策3 按风险分级——external/irreversible effects、预算 > `WORKFLOW_HIGH_RISK_BUDGET_TOKENS`、fanout > `WORKFLOW_HIGH_RISK_FANOUT_ITEMS`、等待 > `WORKFLOW_HIGH_RISK_WAIT_SECONDS` 任一即 high，阈值进 Settings）+ `build_subagent_leaf_executor`（**fake leaf 切真 `spawn_subagent` 入口**：spec/task/budget/ctx 全过轴1 真入口，governance/capability gate/tenant/SubagentBudget 继承自 spawn ctx，引擎不开第二条执行路；double 测试钉死契约含 leaf.max_tool_rounds→budget）+ `start_ephemeral_workflow_for_agent`（解析 agent runtime → ctx → executor → service.start_run，工具与 REST 共用单一入口）。
-> - `api/workflows.py`：preview（编译+admission+风险分级，绝不执行）/ start（低风险=用户确认按钮即对话内确认直接跑、**高风险无 confirmed plan 409 fail-closed**、PlanModeGate hash-bound 校验）/ get run（含 step journal）/ cancel。全端点 `check_agent_access`。
+> - `api/workflows.py`：preview（编译+admission+风险分级，绝不执行）/ start（低风险=用户确认按钮即对话内确认直接跑、**高风险无 confirmed plan 409 fail-closed**、PlanModeGate action artifact 校验，绑定 `definition_hash + args_hash + risk_reasons`）/ get run（含 step journal）/ cancel。全端点 `check_agent_access`。
 > - `tools/handlers/workflow.py`：`preview_workflow` + `start_workflow`（只提交 definition 数据）。`start_workflow` 走标准 `ToolMeta.plan_gate_action_kind` 早拦截：`plan_gate_registry._start_workflow_action_kind` 按参数实时编译分级——低风险放行（等同 agent 顺序调自己的工具）、高风险硬 gate、**编译失败/缺参数 fail-closed gate**（malformed payload 永远过不去）。
 > - Plan Mode 接线：`ACTION_KINDS` + `"start_workflow"`（intent=long_task）；`ToolMeta.plan_gate_action_kind` 只是 integration，不进 Workflow 核心定义 ✓。
 > - **治理 parity 全同步**（新工具的完整接线清单回归锚）：`capability_gate.CAPABILITY_MAP`（坑回归测试钉死）、`collector` 模块表、`runtime_tool_groups.coordination_pack`（orphan 审计过）、bridge canonical surface、ACTION_KINDS documented-set、`main.py` router 注册。
@@ -703,7 +703,7 @@ alembic heads
 **不变量**：① definition = 结构化数据，**无任意代码执行面**；② 叶子必须是轴 1 原语（治理/隔离/budget 继承）；③ ephemeral 与 registered **共享同一引擎/journal/budget/resume/gate/tenant/audit，绝不分叉两条 runtime**；④ journal ≠ ledger，单向镜像；⑤ 对外/不可逆步必过 gate_step，不自动重试；⑥ journal/quota 第一天带 tenant_id；⑦ 增量演进，每切口独立可回滚。
 
 **v1 决策（2026-06-03）**：
-1. **definition 表达力边界**：v1 支持 `sequence`、bounded `fanout/map`、structured `condition`、`gate`、`wait_until`/time suspend。允许 `retry(max_attempts=...)`，但只允许可逆步骤重试；不开放 `wait_signal`、任意 loop、任意 Python/JS 表达式、动态生成新 step。
+1. **definition 表达力边界**：v1 支持 `sequence`、bounded `fanout/map`、structured `condition`、`gate`、`wait_until`/time suspend。允许 `retry(max_attempts=...)`，但只允许可逆步骤重试；P11 后 v2 开放 `wait_signal_step`，且只能绑定 PostgreSQL-backed Signal + persistent signal-resume consumer；不开放任意 loop、任意 Python/JS 表达式、动态生成新 step。
 2. **condition 谓词形态**：谓词是结构化比较 AST，不是字符串表达式。原子形态为 `{field, op, value}`，`field` 只能指向 `args` 或 structured step output，`op ∈ {eq, ne, gt, lt, gte, lte, contains, exists, in}`；布尔组合仅 `and/or/not`，且嵌套深度有上限。禁止 `eval`、Jinja、Python/JS 表达式、模板求值或任意解释器。
 3. **ephemeral 的"确认后运行"分级**：按风险分级，不按 ephemeral/registered 分级。低风险 ephemeral 可走对话内 definition preview + 用户确认；外部可见、不可逆/敏感、创建/启用 trigger、高预算/高 fanout/长时运行、跨 agent/org/company 资源、或 promote 成 registered 时，必须走 Plan Mode 确认面。预算、fanout、时长阈值进入配置，不硬编码。
 4. **promote 权限**：agent 只能建议 promote，不能自行 promote。流程是 repeated ephemeral evidence → promote proposal → 用户/owner/admin 审批 → compile/admission/capability check → registered workflow version/hash → audit log。

@@ -7,7 +7,7 @@ bootstrap-path ``migrated_pg_url``:
 * ``migrated_pg_url``       — empty DB → db_bootstrap (create_all + RLS + stamp).
   This is what every fresh deployment runs.
 * ``chain_migrated_pg_url`` — schema at the PREVIOUS head → ``alembic upgrade
-  head`` actually EXECUTES the new workflow migration's DDL. This is what
+  head`` actually EXECUTES the new coordination-RLS migration's DDL. This is what
   every existing production deployment runs on release. Without it the
   bootstrap stamp would short-circuit new migrations and their SQL would
   never be exercised by any test.
@@ -35,8 +35,8 @@ from tests.integration.conftest import (  # noqa: F401  (re-exported fixtures)
     pg_container,
 )
 
-_PREVIOUS_HEAD = "add_mcp_server_records_0602"
-_WORKFLOW_TABLES = ("workflow_definitions", "workflow_steps", "workflow_leaf_calls", "workflow_quotas")
+_PREVIOUS_HEAD = "add_workflow_tables_0604"
+_COORDINATION_TABLES = ("coordination_leases", "coordination_signals", "coordination_checkpoints")
 
 
 def _alembic_upgrade_head(database_url: str) -> None:
@@ -59,11 +59,11 @@ def _alembic_upgrade_head(database_url: str) -> None:
 def chain_migrated_pg_url(pg_container) -> str:  # noqa: F811  (pytest fixture param, not a redefinition)
     """Simulate a production upgrade so the new migration truly executes.
 
-    Steps: (1) bootstrap a full schema in a fresh database; (2) drop the new
-    workflow tables and rewind ``alembic_version`` to the previous head —
-    that is byte-for-byte the state existing deployments are in; (3) run
-    ``alembic upgrade head`` again, which now actually executes
-    ``add_workflow_tables_0604`` (tables + indexes + ENABLE/FORCE RLS)."""
+    Steps: (1) bootstrap a full schema in a fresh database; (2) remove the new
+    coordination RLS policies/FORCE flags and rewind ``alembic_version`` to the
+    previous head — that matches existing deployments after
+    ``add_workflow_tables_0604`` but before ``coordination_rls_0604``; (3) run
+    ``alembic upgrade head`` again, which now actually executes the RLS DDL."""
     code, output = pg_container.exec(["psql", "-U", "test", "-d", "postgres", "-c", "CREATE DATABASE chaintest"])
     if code != 0:
         pytest.fail(f"failed to create chaintest database: {output}")
@@ -74,15 +74,18 @@ def chain_migrated_pg_url(pg_container) -> str:  # noqa: F811  (pytest fixture p
     # (1) full bootstrap on the empty database (create_all + RLS + stamp head)
     _alembic_upgrade_head(async_url)
 
-    # (2) rewind to the previous head: drop the new tables, repoint the stamp
+    # (2) rewind to the previous head: remove the new coordination RLS state,
+    # then repoint the stamp so the upgrade path must execute the migration.
     rewind_sql = "; ".join(
-        [f"DROP TABLE IF EXISTS {table} CASCADE" for table in _WORKFLOW_TABLES]
+        [f"DROP POLICY IF EXISTS tenant_isolation_{table} ON {table}" for table in _COORDINATION_TABLES]
+        + [f"ALTER TABLE {table} NO FORCE ROW LEVEL SECURITY" for table in _COORDINATION_TABLES]
+        + [f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY" for table in _COORDINATION_TABLES]
         + [f"UPDATE alembic_version SET version_num = '{_PREVIOUS_HEAD}'"]
     )
     code, output = pg_container.exec(["psql", "-U", "test", "-d", "chaintest", "-c", rewind_sql])
     if code != 0:
         pytest.fail(f"failed to rewind chaintest to previous head: {output}")
 
-    # (3) the real upgrade-path run — executes add_workflow_tables_0604
+    # (3) the real upgrade-path run — executes coordination_rls_0604
     _alembic_upgrade_head(async_url)
     return async_url

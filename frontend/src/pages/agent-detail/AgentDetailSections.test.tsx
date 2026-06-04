@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import AgentApprovalsSection from './AgentApprovalsSection';
 import AgentActivityLogSection from './AgentActivityLogSection';
-import AgentAwareSection from './AgentAwareSection';
+import AgentAwareSection, { buildWakePolicyPayload, workflowDefinitionOptionKey } from './AgentAwareSection';
 import AgentChatSection, { StructuredToolResultBody, extractPlanIdFromPlanModeMessage } from './AgentChatSection';
 import AgentMindSection from './AgentMindSection';
 import AgentSettingsSection, { buildPatrolPlanRecommendationInput } from './AgentSettingsSection';
@@ -120,6 +120,24 @@ vi.mock('@tanstack/react-query', () => ({
               active_hours: '10:00-19:00',
               trigger_class: 'scheduled_job',
             },
+          },
+        ],
+      };
+    }
+    if (key === 'workflow-definitions') {
+      return {
+        data: [
+          {
+            id: 'wf-1',
+            name: 'daily-report',
+            definition_version: 3,
+            definition_hash: 'hash-v3',
+            status: 'active',
+            visibility_scope: 'tenant',
+            owner_type: 'user',
+            owner_id: null,
+            call_policy: null,
+            promoted_from_run_id: null,
           },
         ],
       };
@@ -642,6 +660,112 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('objective-internal-id');
     expect(markup).not.toContain('runtime_artifacts/triggers');
     expect(markup).not.toContain('legacy: this raw projection should be secondary');
+  });
+
+  it('builds trigger workflow_ref pins from the selected registered workflow', () => {
+    const workflow = {
+      id: 'wf-1',
+      name: 'daily-report',
+      definition_version: 3,
+      definition_hash: 'hash-v3',
+      status: 'active' as const,
+      visibility_scope: 'tenant',
+      owner_type: 'user',
+      owner_id: null,
+      call_policy: null,
+      promoted_from_run_id: null,
+    };
+    const payload = buildWakePolicyPayload(
+      {
+        mode: 'scheduled_job',
+        objectiveId: '',
+        name: 'daily report trigger',
+        reason: 'Run the pinned workflow',
+        scheduleType: 'cron',
+        cronExpr: '0 9 * * *',
+        intervalMinutes: 60,
+        onceAt: '',
+        eventType: 'on_message',
+        maxFires: 1,
+        expiresAt: '',
+        workflowDefinitionKey: workflowDefinitionOptionKey(workflow),
+        workflowArgsText: '{"region":"apac"}',
+      },
+      workflow,
+    );
+
+    expect(payload).toMatchObject({
+      name: 'daily report trigger',
+      type: 'cron',
+      reason: 'Run the pinned workflow',
+      config: {
+        trigger_class: 'scheduled_job',
+        expr: '0 9 * * *',
+        workflow_ref: {
+          definition_name: 'daily-report',
+          definition_version: 3,
+          definition_hash: 'hash-v3',
+          args: { region: 'apac' },
+        },
+      },
+    });
+  });
+
+  it('rejects invalid workflow_ref args before trigger creation', () => {
+    expect(() =>
+      buildWakePolicyPayload(
+        {
+          mode: 'scheduled_job',
+          objectiveId: '',
+          name: 'bad args',
+          reason: '',
+          scheduleType: 'cron',
+          cronExpr: '0 9 * * *',
+          intervalMinutes: 60,
+          onceAt: '',
+          eventType: 'on_message',
+          maxFires: 1,
+          expiresAt: '',
+          workflowDefinitionKey: 'daily-report::3::hash-v3',
+          workflowArgsText: '{bad json',
+        },
+        {
+          id: 'wf-1',
+          name: 'daily-report',
+          definition_version: 3,
+          definition_hash: 'hash-v3',
+          status: 'active',
+          visibility_scope: 'tenant',
+          owner_type: 'user',
+          owner_id: null,
+          call_policy: null,
+          promoted_from_run_id: null,
+        },
+      ),
+    ).toThrow();
+  });
+
+  it('rejects stale workflow_ref selections before trigger creation', () => {
+    expect(() =>
+      buildWakePolicyPayload(
+        {
+          mode: 'scheduled_job',
+          objectiveId: '',
+          name: 'stale ref',
+          reason: '',
+          scheduleType: 'cron',
+          cronExpr: '0 9 * * *',
+          intervalMinutes: 60,
+          onceAt: '',
+          eventType: 'on_message',
+          maxFires: 1,
+          expiresAt: '',
+          workflowDefinitionKey: 'missing::1::hash',
+          workflowArgsText: '{}',
+        },
+        undefined,
+      ),
+    ).toThrow();
   });
 
   it('renders AgentMindSection as a standalone mind module', () => {

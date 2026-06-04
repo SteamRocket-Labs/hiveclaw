@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import path from 'path'
 import fs from 'fs'
@@ -40,5 +40,8 @@ export default defineConfig({
                 ws: true,
             },
         },
+    },
+    test: {
+        exclude: ['node_modules/**', 'dist/**', 'e2e/**', 'test-results/**'],
     },
 })

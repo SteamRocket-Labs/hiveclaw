@@ -404,15 +404,14 @@ class CheckpointGateDecider:
 
     _ACTION_PREFIX = "workflow_gate"
 
-    def __init__(self, runtime=None, *, approver_id: str = "owner") -> None:
-        if runtime is None:
-            from app.agents.coordination import coordination_runtime
-
-            runtime = coordination_runtime
+    def __init__(self, runtime=None, *, approver_id: str = "owner", session_factory=None) -> None:
         self._runtime = runtime
         self._approver_id = approver_id
+        self._session_factory = session_factory
 
     def _find(self, run_id: str, step_id: str):
+        if self._runtime is None:
+            return None
         checkpoints = getattr(self._runtime, "_checkpoints", {})
         for checkpoint in checkpoints.values():
             metadata = checkpoint.metadata or {}
@@ -420,7 +419,37 @@ class CheckpointGateDecider:
                 return checkpoint
         return None
 
+    async def _tenant_for_run(self, run_id: str) -> str | None:
+        async with tenant_scoped_session(session_factory=self._session_factory) as session:
+            row = (
+                await session.execute(select(RuntimeTask.metadata_json).where(RuntimeTask.id == uuid.UUID(str(run_id))))
+            ).scalar_one_or_none()
+        if not isinstance(row, dict):
+            return None
+        tenant_value = row.get("tenant_id")
+        return str(tenant_value) if tenant_value else None
+
+    async def _find_pg(self, run_id: str, step_id: str):
+        from app.models.coordination import CoordinationCheckpoint
+
+        tenant_value = await self._tenant_for_run(run_id)
+        if not tenant_value:
+            return None, None
+        async with tenant_scoped_session(tenant_value, session_factory=self._session_factory) as session:
+            checkpoint = (
+                await session.execute(
+                    select(CoordinationCheckpoint).where(
+                        CoordinationCheckpoint.extra_metadata["workflow_run_id"].as_string() == str(run_id),
+                        CoordinationCheckpoint.extra_metadata["workflow_step_id"].as_string() == step_id,
+                    )
+                )
+            ).scalar_one_or_none()
+        return tenant_value, checkpoint
+
     async def check(self, run_id: str, step_id: str, *, reason: str) -> GateDecision:
+        if self._runtime is None:
+            return await self._check_pg(run_id, step_id, reason=reason)
+
         checkpoint = self._find(run_id, step_id)
         if checkpoint is None:
             from datetime import UTC, datetime, timedelta
@@ -434,6 +463,37 @@ class CheckpointGateDecider:
             checkpoint.metadata["workflow_run_id"] = str(run_id)
             checkpoint.metadata["workflow_step_id"] = step_id
             return GateDecision(pending=True, reason=f"checkpoint {checkpoint.id} awaiting approval")
+        if checkpoint.status == "approved":
+            return GateDecision(approved=True)
+        if checkpoint.status in ("rejected", "expired"):
+            return GateDecision(rejected=True, reason=f"checkpoint {checkpoint.id} {checkpoint.status}")
+        return GateDecision(pending=True, reason=f"checkpoint {checkpoint.id} awaiting approval")
+
+    async def _check_pg(self, run_id: str, step_id: str, *, reason: str) -> GateDecision:
+        from datetime import UTC, datetime, timedelta
+
+        from app.models.coordination import CoordinationCheckpoint
+
+        tenant_value, checkpoint = await self._find_pg(run_id, step_id)
+        if tenant_value is None:
+            return GateDecision(pending=True, reason=f"gate step {step_id!r} has no tenant-bound run metadata")
+        if checkpoint is None:
+            async with tenant_scoped_session(tenant_value, session_factory=self._session_factory) as session:
+                checkpoint = CoordinationCheckpoint(
+                    tenant_id=uuid.UUID(str(tenant_value)),
+                    action=f"{self._ACTION_PREFIX}:{reason}"[:255],
+                    approver_id=self._approver_id,
+                    escalation_chain=[],
+                    deadline_at=datetime.now(UTC) + timedelta(hours=24),
+                    current_approver_id=self._approver_id,
+                    status="pending",
+                    extra_metadata={"workflow_run_id": str(run_id), "workflow_step_id": step_id},
+                )
+                session.add(checkpoint)
+                await session.flush()
+                checkpoint_id = checkpoint.id
+            return GateDecision(pending=True, reason=f"checkpoint {checkpoint_id} awaiting approval")
+
         if checkpoint.status == "approved":
             return GateDecision(approved=True)
         if checkpoint.status in ("rejected", "expired"):
@@ -465,7 +525,7 @@ class WorkflowRuntimeService:
         gate_decider: CheckpointGateDecider | None = None,
     ) -> None:
         self._session_factory = session_factory
-        self._gate_decider = gate_decider if gate_decider is not None else CheckpointGateDecider()
+        self._gate_decider = gate_decider if gate_decider is not None else CheckpointGateDecider(session_factory=session_factory)
         self._lease_manager = PGRunLeaseManager(session_factory)
         self._draining = False
 
@@ -473,6 +533,10 @@ class WorkflowRuntimeService:
         """Graceful drain (§9 P10): stop taking NEW leaves at the next step
         boundary; unfinished runs stay resumable instead of killed."""
         self._draining = True
+
+    def clear_drain(self) -> None:
+        """Reset a previous graceful-drain request before a fresh worker loop starts."""
+        self._draining = False
 
     @property
     def gate_decider(self) -> CheckpointGateDecider:

@@ -85,6 +85,35 @@ def _redact_args(arguments: Any) -> dict[str, Any]:
     return redacted
 
 
+def _plan_gate_action_artifact(tool_name: str, arguments: dict, action_kind: str) -> dict | None:
+    """Build the action payload that a confirmed plan must bind to.
+
+    Only high-risk ``start_workflow`` currently needs this extra binding: the
+    plan hash proves the user confirmed *a plan*, while the workflow definition
+    hash proves it was for *this exact structured definition*.
+    """
+    if tool_name != "start_workflow" or action_kind != "start_workflow":
+        return None
+    definition = arguments.get("definition")
+    if not isinstance(definition, dict):
+        return None
+    try:
+        from app.runtime.workflow_compiler import compile_workflow
+        from app.runtime.workflow_definition import compute_definition_hash
+        from app.services.workflow_launch import classify_workflow_risk
+
+        compiled = compile_workflow(definition)
+        args = arguments.get("args") if isinstance(arguments.get("args"), dict) else {}
+        risk = classify_workflow_risk(compiled, args=args)
+    except Exception:
+        return None
+    return {
+        "definition_hash": compiled.definition_hash,
+        "args_hash": compute_definition_hash(args),
+        "risk_reasons": risk.reasons,
+    }
+
+
 def _maybe_attach_interactive_signal(
     payload: dict, *, action_kind: str, tool_name: str, arguments: dict, enabled: bool = True
 ) -> dict:
@@ -585,6 +614,7 @@ class ToolRuntimeService:
         confirmed_plan_id = arguments.get("confirmed_plan_id")
         plan_version = arguments.get("confirmed_plan_version")
         plan_hash = arguments.get("confirmed_plan_hash")
+        action_artifact = _plan_gate_action_artifact(tool_name, arguments, action_kind)
 
         async with self.plan_mode_session_factory() as db:
             decision = await self.plan_mode_gate.check(
@@ -594,6 +624,7 @@ class ToolRuntimeService:
                 confirmed_plan_id=confirmed_plan_id,
                 plan_version=plan_version,
                 plan_hash=plan_hash,
+                action_artifact=action_artifact,
             )
 
         if not decision.needs_plan:

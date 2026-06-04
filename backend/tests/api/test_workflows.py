@@ -159,6 +159,7 @@ def test_high_risk_start_with_confirmed_plan_passes_gate(monkeypatch):
     assert gate_kwargs["confirmed_plan_id"] == plan_id
     assert gate_kwargs["plan_version"] == 2
     assert gate_kwargs["plan_hash"] == "abc123"
+    assert gate_kwargs["action_artifact"]["args_hash"]
     assert len(client.fake_launch.calls) == 1
 
 

@@ -476,6 +476,51 @@ async def test_execute_passes_confirmed_plan_args_to_gate():
     assert call["plan_hash"] == "sha256:abc"
 
 
+@pytest.mark.asyncio
+async def test_execute_passes_start_workflow_action_artifact_to_gate():
+    """Tool and REST high-risk workflow starts must bind the same action
+    artifact. A confirmed long-task plan cannot authorise an unrelated
+    workflow definition."""
+    context = _context()
+    registry = _FakeRegistry("OK")
+    gate = _RecordingGate(_ALLOWED)
+    service = _make_service(context=context, registry=registry, gate=gate)
+
+    plan_id = uuid4()
+    definition = {
+        "name": "send-report",
+        "steps": [
+            {"id": "approve", "type": "gate_step", "reason": "external send"},
+            {
+                "id": "send",
+                "type": "agent_step",
+                "leaf": {"name": "sender", "type": "worker"},
+                "task": "Send the report",
+                "effects": "external",
+            }
+        ],
+    }
+
+    await service.execute(
+        "start_workflow",
+        {
+            "definition": definition,
+            "args": {},
+            "confirmed_plan_id": str(plan_id),
+            "confirmed_plan_version": 1,
+            "confirmed_plan_hash": "sha256:abc",
+        },
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+    )
+
+    call = gate.calls[0]
+    assert call["action_kind"] == "start_workflow"
+    assert call["action_artifact"]["definition_hash"]
+    assert call["action_artifact"]["args_hash"]
+    assert call["action_artifact"]["risk_reasons"]
+
+
 # ---------------------------------------------------------------------------
 # Blocked tagged tool with no confirmed plan (§9.2). Path-unification cut ④: an
 # eligible source (live chat / unattended) flips into main-loop Plan Mode via the

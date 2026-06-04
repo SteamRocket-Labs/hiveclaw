@@ -152,6 +152,84 @@ async def test_tenant_scope_visible_but_call_policy_restricts(service, tenant_id
         await service.resolve_for_execution(tenant_id=tenant_id, name="shared", agent_id=other_agent)
 
 
+async def test_allowed_roles_policy_is_not_silently_ignored(service, tenant_id):
+    """Until execution context carries actor roles, allowed_roles must be a
+    fail-closed policy key rather than silently defaulting to tenant-wide
+    execution."""
+    record = await service.create_draft(
+        tenant_id=tenant_id,
+        definition_data=_definition_data("role-bound"),
+        visibility_scope="tenant",
+        call_policy={"allowed_roles": ["org_admin"]},
+    )
+    await service.activate(record.id, tenant_id=tenant_id, actor_user_id=uuid.uuid4())
+
+    with pytest.raises(DefinitionLifecycleError, match="allowed_roles"):
+        await service.resolve_for_execution(tenant_id=tenant_id, name="role-bound", agent_id=uuid.uuid4())
+
+
+async def test_allowed_orgs_policy_is_not_silently_ignored(service, tenant_id):
+    """Same rule for allowed_orgs: no org context at execution means no
+    execution, not a tenant-wide allow."""
+    record = await service.create_draft(
+        tenant_id=tenant_id,
+        definition_data=_definition_data("org-bound"),
+        visibility_scope="tenant",
+        call_policy={"allowed_orgs": [str(uuid.uuid4())]},
+    )
+    await service.activate(record.id, tenant_id=tenant_id, actor_user_id=uuid.uuid4())
+
+    with pytest.raises(DefinitionLifecycleError, match="allowed_orgs"):
+        await service.resolve_for_execution(tenant_id=tenant_id, name="org-bound", agent_id=uuid.uuid4())
+
+
+async def test_agent_scoped_definitions_are_hidden_without_agent_context(service, tenant_id):
+    owner_agent = uuid.uuid4()
+    record = await service.create_draft(
+        tenant_id=tenant_id,
+        definition_data=_definition_data("agent-private"),
+        visibility_scope="agent",
+        owner_type="agent",
+        owner_id=owner_agent,
+    )
+
+    listed = await service.list_definitions(tenant_id=tenant_id, agent_id=None)
+    assert all(r.id != record.id for r in listed)
+
+
+async def test_fork_by_definition_id_uses_exact_record_version(service, tenant_id):
+    """The REST route is keyed by definition_id, so fork must not silently
+    re-resolve by name and return a newer same-name version."""
+    agent_id = uuid.uuid4()
+    first = await service.create_draft(
+        tenant_id=tenant_id,
+        definition_data=_definition_data("fork-exact"),
+        visibility_scope="agent",
+        owner_type="agent",
+        owner_id=agent_id,
+    )
+    await service.activate(first.id, tenant_id=tenant_id, actor_user_id=uuid.uuid4())
+    second_data = _definition_data("fork-exact")
+    second_data["description"] = "newer version"
+    second = await service.create_draft(
+        tenant_id=tenant_id,
+        definition_data=second_data,
+        visibility_scope="agent",
+        owner_type="agent",
+        owner_id=agent_id,
+    )
+    await service.activate(second.id, tenant_id=tenant_id, actor_user_id=uuid.uuid4())
+
+    forked = await service.fork_record_to_ephemeral(
+        tenant_id=tenant_id,
+        definition_id=first.id,
+        agent_id=agent_id,
+    )
+
+    assert forked.get("description") is None
+    assert forked["name"] == "fork-exact"
+
+
 async def test_cross_tenant_definitions_invisible(service, tenant_id, owner_sessionmaker, app_user_sessionmaker):
     """RLS does the isolating — proven on the NON-superuser role (the owner
     fixture is a superuser and bypasses even FORCEd policies, the documented

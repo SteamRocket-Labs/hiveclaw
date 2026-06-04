@@ -67,19 +67,31 @@ class _PlanSession:
         return _ScalarOneResult(match)
 
 
-def _make_confirmed_plan(session, *, agent_id, version=1, plan_hash="sha256:abc"):
+def _make_confirmed_plan(
+    session,
+    *,
+    agent_id,
+    version=1,
+    plan_hash="sha256:abc",
+    intent_type="autonomous_wake",
+    metadata_json=None,
+    handoff_payload=None,
+    plan_json=None,
+):
     from app.models.plan_request import AgentPlanRequest
 
     plan = AgentPlanRequest(
         agent_id=agent_id,
         requested_by_user_id=uuid4(),
         source="web_chat",
-        intent_type="autonomous_wake",
+        intent_type=intent_type,
         original_request="每天 9 点帮我整理新闻",
         status="confirmed",
         plan_version=version,
         plan_hash=plan_hash,
-        plan_json={"schema": "hive_plan.v1", "title": "Daily brief"},
+        plan_json=plan_json or {"schema": "hive_plan.v1", "title": "Daily brief"},
+        handoff_payload=handoff_payload,
+        metadata_json=metadata_json,
     )
     session.add(plan)
     return plan
@@ -155,6 +167,88 @@ async def test_check_allows_when_confirmed_plan_id_version_hash_match(patched_ga
     assert decision.allowed is True
     assert decision.reason == "confirmed_plan_handoff"
     assert decision.needs_plan_payload is None
+
+
+@pytest.mark.asyncio
+async def test_check_allows_when_confirmed_plan_action_artifact_matches(patched_gate):
+    """High-risk handoff is not just plan hash bound: the exact action payload
+    being authorised must match the confirmed plan's recorded artifact."""
+    gate, session = patched_gate
+    agent_id = uuid4()
+    plan = _make_confirmed_plan(
+        session,
+        agent_id=agent_id,
+        version=1,
+        plan_hash="sha256:abc",
+        intent_type="long_task",
+        metadata_json={
+            "confirmed_action_artifact": {
+                "definition_hash": "wf-hash-1",
+                "risk_reasons": ["step 'send' has external effects"],
+            }
+        },
+    )
+
+    decision = await gate.check(
+        session,
+        agent_id=agent_id,
+        action_kind="start_workflow",
+        confirmed_plan_id=plan.id,
+        plan_version=1,
+        plan_hash="sha256:abc",
+        action_artifact={"definition_hash": "wf-hash-1", "risk_reasons": ["step 'send' has external effects"]},
+    )
+
+    assert decision.allowed is True
+    assert decision.reason == "confirmed_plan_handoff"
+
+
+@pytest.mark.asyncio
+async def test_check_needs_plan_when_action_artifact_missing_from_confirmed_plan(patched_gate):
+    gate, session = patched_gate
+    agent_id = uuid4()
+    plan = _make_confirmed_plan(session, agent_id=agent_id, version=1, plan_hash="sha256:abc")
+    plan.intent_type = "long_task"
+
+    decision = await gate.check(
+        session,
+        agent_id=agent_id,
+        action_kind="start_workflow",
+        confirmed_plan_id=plan.id,
+        plan_version=1,
+        plan_hash="sha256:abc",
+        action_artifact={"definition_hash": "wf-hash-1"},
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "action_artifact_missing"
+
+
+@pytest.mark.asyncio
+async def test_check_needs_plan_when_action_artifact_mismatches_confirmed_plan(patched_gate):
+    gate, session = patched_gate
+    agent_id = uuid4()
+    plan = _make_confirmed_plan(
+        session,
+        agent_id=agent_id,
+        version=1,
+        plan_hash="sha256:abc",
+        intent_type="long_task",
+        metadata_json={"confirmed_action_artifact": {"definition_hash": "wf-hash-1"}},
+    )
+
+    decision = await gate.check(
+        session,
+        agent_id=agent_id,
+        action_kind="start_workflow",
+        confirmed_plan_id=plan.id,
+        plan_version=1,
+        plan_hash="sha256:abc",
+        action_artifact={"definition_hash": "wf-hash-2"},
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "action_artifact_mismatch"
 
 
 @pytest.mark.asyncio

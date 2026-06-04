@@ -218,6 +218,20 @@ async def create_trigger(
             {"max_fires": body.max_fires, "expires_at": body.expires_at},
         )
     )
+
+    # §9 P8: a workflow_ref pins a registered definition at CREATION time —
+    # the pinned name/version/hash must exist, be executable by this agent,
+    # and hash-match right now, or the trigger is refused.
+    if isinstance(config.get("workflow_ref"), dict):
+        from app.services.workflow_trigger import validate_workflow_ref_for_trigger
+
+        ref_error = await validate_workflow_ref_for_trigger(
+            tenant_id=current_user.tenant_id,
+            agent_id=agent_id,
+            ref=config["workflow_ref"],
+        )
+        if ref_error:
+            raise HTTPException(status_code=400, detail=f"Invalid workflow_ref: {ref_error}")
     try:
         expires_at = _parse_expires_at(body.expires_at) if body.expires_at else None
     except ValueError as exc:

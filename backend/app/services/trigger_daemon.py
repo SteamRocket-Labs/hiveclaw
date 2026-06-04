@@ -901,6 +901,40 @@ async def _invoke_agent_for_triggers(
     from app.models.participant import Participant
     from app.services.audit_logger import write_audit_log
 
+    # §9 P8 (§6.2): triggers carrying a workflow_ref take the deterministic
+    # engine branch; the rest continue down the existing prose-ReAct path.
+    from app.services.workflow_trigger import fire_workflow_for_trigger
+
+    react_triggers: list[AgentTrigger] = []
+    for trigger in triggers:
+        try:
+            fire_result = await fire_workflow_for_trigger(
+                agent_id=agent_id,
+                trigger_config=trigger.config or {},
+                trigger_name=trigger.name,
+                webhook_payload=(trigger.config or {}).get("_webhook_payload"),
+            )
+        except Exception as exc:
+            logger.error("[TriggerDaemon] workflow_ref fire failed for {}: {}", trigger.name, exc)
+            fire_result = None
+        if fire_result is None:
+            react_triggers.append(trigger)
+        else:
+            logger.info(
+                "[TriggerDaemon] trigger {} → workflow branch: {} (run={})",
+                trigger.name,
+                fire_result.status,
+                fire_result.run_id,
+            )
+    if not react_triggers:
+        await _skip_trigger_runtime_task(
+            runtime_task_id,
+            skip_reason="workflow_ref_handled",
+            result_summary="All fired triggers were handled by the workflow engine branch.",
+        )
+        return
+    triggers = react_triggers
+
     try:
         async with async_session() as db:
             # Load agent

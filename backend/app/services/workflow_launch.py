@@ -162,6 +162,7 @@ async def start_ephemeral_workflow_for_agent(
     user_id: uuid.UUID | None = None,
     confirmed_plan_id: uuid.UUID | str | None = None,
     ledger_todo_id: str | None = None,
+    definition_source: str = "ephemeral",
     session_factory=None,
     spawn=spawn_subagent,
 ) -> WorkflowRunHandle:
@@ -191,7 +192,7 @@ async def start_ephemeral_workflow_for_agent(
         definition_data=definition,
         args=args,
         leaf_executor=executor,
-        definition_source="ephemeral",
+        definition_source=definition_source,
         agent_id=agent.id,
         confirmed_plan_id=confirmed_plan_id,
     )

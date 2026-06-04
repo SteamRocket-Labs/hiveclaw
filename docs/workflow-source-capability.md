@@ -455,6 +455,15 @@ pytest tests/runtime/test_workflow_gate_step.py tests/runtime/test_workflow_wait
 
 ### P8 Trigger integration：registered + version/hash pinning
 
+> **✅ 完成（2026-06-04）** — 证据：`pytest tests/ -q` → **3597 passed**（+14：fire 分支真 PG 10（六类 trigger 参数化）+ REST 校验 4）；ruff clean。
+>
+> **交付物**：
+> - `services/workflow_trigger.py`：`fire_workflow_for_trigger`（fire 时 payload 分支：无 `workflow_ref` 返回 None → 现有 ReAct 路径原样；有 ref → resolve pinned definition → launch `definition_source="registered"`）。六类 trigger（cron/once/interval/poll/webhook/on_message）同一 fire 路径参数化验证。
+> - **版本/hash pinning 防授权漂移**：fire 时重验 creation-time pin；**mismatch 绝不静默跑新版**——留 suspended `needs_reconfirmation` run 记录（审计锚）并停止；pinned 续跑允许 deprecated（P6 `allow_deprecated`），revoked 仍拒。
+> - **webhook payload → args**：注入 `args["webhook_payload"]`（JSON 解析，失败原文），过同一 args-schema admission——schema 未声明该 key 时被拒（`rejected_args` + suspended 记录），不猜不放行。
+> - `trigger_daemon._invoke_agent_for_triggers` 开头分流：workflow_ref triggers 走引擎分支，其余落 ReAct；全部被 workflow 处理时 runtime task 标记 `workflow_ref_handled`。
+> - **创建时 pin 校验**：REST `create_trigger` 带 workflow_ref 时调 `validate_workflow_ref_for_trigger`（shape + 定义存在 + 本 agent 可执行 + hash 匹配，失败 400）；创建已有 `create_enabled_trigger` plan gate 覆盖（P4 之前已接，带 ref 不改 gate 行为）。
+
 目标：让 trigger 成为 workflow 调用方，并堵住授权漂移。
 
 改动面：

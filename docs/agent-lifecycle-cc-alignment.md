@@ -64,7 +64,7 @@ CC 哲学：每次拒绝都是教学机会——告诉模型为什么 + 下一�
 | # | 缺口 | 证据/对照 | 备注 |
 |---|---|---|---|
 | D1 | 流式不边流边执行 + 并发上限 4（CC 10） | `engine.py:1870-2400, :346` vs CC StreamingToolExecutor | 性能项 |
-| D2 | hook allow 后无二次 deny 检查 | `governance.py:388-396` vs CC toolHooks.ts:325-326 | **安全项**——CC 明确 hook 不能绕过 deny |
+| ~~D2~~ | ~~hook allow 后无二次 deny 检查~~ | **✅ 验证为误判（2026-06-04）**：实际顺序 = kernel PRE_TOOL_USE hook（engine.py:388-399，可改 args/block）→ execute_tool → ToolRuntimeService.execute 内部跑完整 governance（service.py:283-298，使用 hook 修改后的 effective_args）→ 执行。hook 不 block 时 governance 必然执行，CC 的"hook 不能绕过 deny"天然成立。subagent 混淆了 engine.py hook 行号与 governance.py:388-396（capability gate fail-closed 块） | 无需修复 |
 | D3 | 权限无 mode 概念（acceptEdits/dontAsk/auto） | governance 全固定流程 | 与 L3 中台的 per-agent 策略可结合设计 |
 | D4 | approval 同步阻塞 vs CC 异步竞速 | `governance.py:515-538` | 企业审批本就该等；但可探索"先继续别的工作" |
 | D5 | skill 无 paths 条件激活、无 fork/inline 隔离执行 | `skills/parser.py` 无对应字段 | CC 的条件激活本身是机械常态路径（有讽刺性）——Hive 的 load_skill 显式调用反而更 AI-native，但完全没有自动提示也损失体验 |

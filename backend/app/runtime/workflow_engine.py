@@ -23,6 +23,7 @@ import hashlib
 import json
 import logging
 import re
+from datetime import UTC, datetime
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
@@ -33,7 +34,9 @@ from app.runtime.workflow_definition import (
     Condition,
     ConditionPredicate,
     FanoutStep,
+    GateStep,
     LeafRef,
+    WaitUntilStep,
 )
 
 logger = logging.getLogger(__name__)
@@ -165,6 +168,38 @@ class InMemoryQuotaReserver:
 
 
 @dataclass(slots=True)
+class GateDecision:
+    """Tri-state gate verdict: approved runs on, pending suspends, rejected fails."""
+
+    approved: bool = False
+    pending: bool = False
+    rejected: bool = False
+    reason: str | None = None
+
+
+class GateDecider(Protocol):
+    """gate_step arbitration seam — the PG implementation binds to
+    CoordinationCheckpoint (§6 / P7); in-memory doubles drive engine tests."""
+
+    async def check(self, run_id: str, step_id: str, *, reason: str) -> GateDecision: ...
+
+
+class WaitScheduler(Protocol):
+    """Time-suspend seam: record when a suspended run should be resumed.
+    P7 keeps an equivalent scheduling record (run metadata resume_at); the
+    once-trigger binding lands with P8 (§6.2 — once is ONLY a time resume)."""
+
+    async def schedule_resume(self, run_id: str, *, resume_at: datetime) -> None: ...
+
+
+Clock = Callable[[], datetime]
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+@dataclass(slots=True)
 class WorkflowRunOutcome:
     status: RunStatus
     reason: str | None = None
@@ -209,7 +244,9 @@ class InMemoryWorkflowJournal:
         self._steps(run_id)[step_id] = StepRecord(step_id=step_id, status="skipped", definition_hash=definition_hash)
 
     async def record_step_suspended(self, run_id: str, step_id: str, *, reason: str) -> None:
-        self._steps(run_id)[step_id] = StepRecord(step_id=step_id, status="suspended", error=reason)
+        record = self._steps(run_id).setdefault(step_id, StepRecord(step_id=step_id, status="suspended"))
+        record.status = "suspended"
+        record.error = reason  # field-level update mirrors the PG journal: input_hash survives
 
     def _leaves(self, run_id: str, step_id: str) -> dict[str, LeafRecord]:
         return self._leaf_runs.setdefault((run_id, step_id), {})
@@ -363,6 +400,22 @@ def _agent_step_input_hash(task_text: str, leaf: LeafRef, definition_hash: str) 
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _resolve_wait_target(step: WaitUntilStep, *, args: dict, current: datetime) -> datetime:
+    """delay_seconds → now+delay; until → ISO literal or args.* reference."""
+    from datetime import timedelta
+
+    if step.delay_seconds is not None:
+        return current + timedelta(seconds=step.delay_seconds)
+    target = step.until or ""
+    if target.startswith("args."):
+        resolved = _resolve_path(target, args=args, outputs={})
+        target = str(resolved)
+    parsed = datetime.fromisoformat(target)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
 async def _always_continue() -> bool:
     return True
 
@@ -487,6 +540,9 @@ async def execute_workflow(
     should_continue: ShouldContinue | None = None,
     tenant_id: str | None = None,
     quota: QuotaReserver | None = None,
+    gate_decider: GateDecider | None = None,
+    wait_scheduler: WaitScheduler | None = None,
+    now: Clock | None = None,
 ) -> WorkflowRunOutcome:
     """Deterministically interpret the compiled definition against the journal.
 
@@ -525,19 +581,35 @@ async def execute_workflow(
                 outputs[step.id] = prior.output
                 continue  # resume: replay journaled output, never re-execute
 
-            if quota is not None and not await quota.reserve(run_id):
-                reason = "budget exhausted: run quota cannot cover the next leaf"
-                await journal.record_step_suspended(run_id, step.id, reason=reason)
-                return WorkflowRunOutcome(status="suspended", reason=reason, outputs=outputs)
+            # v1 decision 1: retry is reversible-only (the compiler refuses
+            # retry on external/irreversible steps, so attempts>1 here is
+            # always safe to re-run).
+            attempts = 1 + (step.retry.max_attempts if step.retry is not None else 0)
+            outcome: LeafOutcome | None = None
+            for attempt in range(attempts):
+                if quota is not None and not await quota.reserve(run_id):
+                    reason = "budget exhausted: run quota cannot cover the next leaf"
+                    await journal.record_step_suspended(run_id, step.id, reason=reason)
+                    return WorkflowRunOutcome(status="suspended", reason=reason, outputs=outputs)
 
-            await journal.record_step_start(
-                run_id, step.id, step_type=step.type, input_hash=input_hash, definition_hash=compiled.definition_hash
-            )
-            outcome = await leaf_executor(
-                LeafRequest(run_id=run_id, step_id=step.id, leaf=step.leaf, task=task_text, tenant_id=tenant_id)
-            )
-            if quota is not None:
-                await quota.settle(run_id, outcome.tokens_used)
+                await journal.record_step_start(
+                    run_id,
+                    step.id,
+                    step_type=step.type,
+                    input_hash=input_hash,
+                    definition_hash=compiled.definition_hash,
+                )
+                outcome = await leaf_executor(
+                    LeafRequest(run_id=run_id, step_id=step.id, leaf=step.leaf, task=task_text, tenant_id=tenant_id)
+                )
+                if quota is not None:
+                    await quota.settle(run_id, outcome.tokens_used)
+                if outcome.ok:
+                    break
+                logger.warning(
+                    "[Workflow] step %s attempt %d/%d failed: %s", step.id, attempt + 1, attempts, outcome.error
+                )
+            assert outcome is not None
             if not outcome.ok:
                 error = outcome.error or "leaf execution failed"
                 await journal.record_step_failed(run_id, step.id, error=error)
@@ -563,9 +635,70 @@ async def execute_workflow(
                 return result
             continue
 
-        # P3 placeholder semantics: gate / wait / fanout suspend (P5/P7
-        # implement them) — conservative, never wrongly executes.
-        reason = f"step type {step.type!r} suspends in P3 (implemented in P5/P7)"
+        if isinstance(step, GateStep):
+            prior = existing.get(step.id)
+            if prior is not None and prior.status == "done" and prior.definition_hash == compiled.definition_hash:
+                outputs[step.id] = prior.output
+                continue  # gate already approved in a previous pass
+            if gate_decider is None:
+                reason = f"gate step {step.id!r} has no decider bound — suspending (fail-closed)"
+                await journal.record_step_suspended(run_id, step.id, reason=reason)
+                return WorkflowRunOutcome(status="suspended", reason=reason, outputs=outputs)
+            decision = await gate_decider.check(run_id, step.id, reason=step.reason)
+            if decision.approved:
+                await journal.record_step_start(
+                    run_id, step.id, step_type=step.type, input_hash=None, definition_hash=compiled.definition_hash
+                )
+                output = {"approved": True, "reason": step.reason}
+                await journal.record_step_done(run_id, step.id, output=output, result_ref=None)
+                outputs[step.id] = output
+                continue
+            if decision.rejected:
+                error = decision.reason or f"gate {step.id!r} rejected"
+                await journal.record_step_failed(run_id, step.id, error=error)
+                return WorkflowRunOutcome(status="failed", reason=error, outputs=outputs)
+            reason = decision.reason or f"gate {step.id!r} awaiting approval: {step.reason}"
+            await journal.record_step_suspended(run_id, step.id, reason=reason)
+            return WorkflowRunOutcome(status="suspended", reason=reason, outputs=outputs)
+
+        if isinstance(step, WaitUntilStep):
+            prior = existing.get(step.id)
+            if prior is not None and prior.status == "done" and prior.definition_hash == compiled.definition_hash:
+                outputs[step.id] = prior.output
+                continue
+            clock = now or _utc_now
+            current = clock()
+            # The wait target is FIXED on first suspension (journaled in
+            # input_hash) — recomputing delay_seconds on every resume would
+            # push the target forever forward and the run would never land.
+            resume_at: datetime | None = None
+            if prior is not None and prior.input_hash:
+                try:
+                    resume_at = datetime.fromisoformat(prior.input_hash)
+                except ValueError:
+                    resume_at = None
+            if resume_at is None:
+                resume_at = _resolve_wait_target(step, args=args, current=current)
+                await journal.record_step_start(
+                    run_id,
+                    step.id,
+                    step_type=step.type,
+                    input_hash=resume_at.isoformat(),
+                    definition_hash=compiled.definition_hash,
+                )
+            if resume_at <= current:
+                output = {"waited_until": resume_at.isoformat()}
+                await journal.record_step_done(run_id, step.id, output=output, result_ref=None)
+                outputs[step.id] = output
+                continue
+            if wait_scheduler is not None:
+                await wait_scheduler.schedule_resume(run_id, resume_at=resume_at)
+            reason = f"waiting until {resume_at.isoformat()}"
+            await journal.record_step_suspended(run_id, step.id, reason=reason)
+            return WorkflowRunOutcome(status="suspended", reason=reason, outputs=outputs)
+
+        # Unknown step type (future schema additions): suspend, never guess.
+        reason = f"step type {step.type!r} is not executable by this engine version"
         await journal.record_step_suspended(run_id, step.id, reason=reason)
         return WorkflowRunOutcome(status="suspended", reason=reason, outputs=outputs)
 

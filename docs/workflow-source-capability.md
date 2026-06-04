@@ -422,6 +422,16 @@ pytest tests/services/test_workflow_definitions.py tests/api/test_workflow_defin
 
 ### P7 gate_step + wait_until/time suspend
 
+> **✅ 完成（2026-06-04）** — 证据：`pytest tests/ -q` → **3583 passed**（+14：gate engine 5 + wait/retry engine 5 + checkpoint 真 PG 4）；ruff clean。
+>
+> **交付物**：
+> - **gate_step 一等行为**（engine `GateDecider` 协议三态）：pending→suspended（**受保护 leaf 绝不执行**）/ approved→journal done 继续 / rejected→failed；done gate resume 时 replay 不再仲裁；**无 decider 绑定 fail-closed suspend**。
+> - **CheckpointGateDecider**（service）接 `CoordinationCheckpoint`：每 (run, step) 一个 checkpoint（metadata 关联），`approve/reject` 翻转后**显式 resume** 执行被保护步——真 PG 全链路：外向步 suspend→approve→resume 只跑该步；rejected 永不执行。
+> - **wait_until/delay 时间挂起**：目标时间**首挂起即固定进 journal（input_hash 锚）**——修掉真 bug：delay_seconds 若每次 resume 重算（now+delay）目标永远后移、run 永不落地；due 直接过，undue → `WaitScheduler.schedule_resume` 写 run metadata `resume_at`（等价调度记录，once trigger 真绑定归 P8 §6.2）。
+> - **startup 扫描分流**：suspended run 只有**时间挂起且到期**（resume_at ≤ now）才自动恢复；gate/budget 挂起等各自恢复路径（approval→显式 resume；quota→admission），扫描绝不碰——真 PG 红测试钉死。
+> - **retry 只可逆**（v1 决策 1）：agent_step 可逆步按 `max_attempts` 重试（每次尝试独立 reserve/settle quota）；irreversible 步恰好一次尝试绝不自动重试（schema 禁 retry on irreversible + 引擎行为双层钉死）。
+> - 过程修复：in-mem journal `record_step_suspended` 从覆盖改字段级更新（与 PG journal 对齐，input_hash 存活）。
+
 目标：把外向/不可逆步骤和时间挂起做成一等 step 行为。
 
 改动面：

@@ -34,6 +34,7 @@ from app.runtime.workflow_admission import AdmissionLimits, admit_workflow
 from app.runtime.workflow_compiler import CompiledWorkflow, compile_workflow
 from app.runtime.workflow_definition import compute_definition_hash
 from app.runtime.workflow_engine import (
+    GateDecision,
     LeafExecutor,
     LeafRecord,
     StepRecord,
@@ -301,11 +302,92 @@ class PGQuotaReserver:
             )
 
 
+class CheckpointGateDecider:
+    """gate_step → CoordinationCheckpoint (§9 P7).
+
+    One checkpoint per (run, step), keyed through checkpoint.metadata; the
+    verdict maps onto the engine's tri-state GateDecision. Approval flips the
+    checkpoint (approve_workflow_gate) and an EXPLICIT resume re-runs the
+    step — exactly the Plan-Mode-style human-in-the-loop boundary."""
+
+    _ACTION_PREFIX = "workflow_gate"
+
+    def __init__(self, runtime=None, *, approver_id: str = "owner") -> None:
+        if runtime is None:
+            from app.agents.coordination import coordination_runtime
+
+            runtime = coordination_runtime
+        self._runtime = runtime
+        self._approver_id = approver_id
+
+    def _find(self, run_id: str, step_id: str):
+        checkpoints = getattr(self._runtime, "_checkpoints", {})
+        for checkpoint in checkpoints.values():
+            metadata = checkpoint.metadata or {}
+            if metadata.get("workflow_run_id") == str(run_id) and metadata.get("workflow_step_id") == step_id:
+                return checkpoint
+        return None
+
+    async def check(self, run_id: str, step_id: str, *, reason: str) -> GateDecision:
+        checkpoint = self._find(run_id, step_id)
+        if checkpoint is None:
+            from datetime import UTC, datetime, timedelta
+
+            checkpoint = self._runtime.create_checkpoint(
+                action=f"{self._ACTION_PREFIX}:{reason}"[:200],
+                approver_id=self._approver_id,
+                escalation_chain=[],
+                deadline_at=datetime.now(UTC) + timedelta(hours=24),
+            )
+            checkpoint.metadata["workflow_run_id"] = str(run_id)
+            checkpoint.metadata["workflow_step_id"] = step_id
+            return GateDecision(pending=True, reason=f"checkpoint {checkpoint.id} awaiting approval")
+        if checkpoint.status == "approved":
+            return GateDecision(approved=True)
+        if checkpoint.status in ("rejected", "expired"):
+            return GateDecision(rejected=True, reason=f"checkpoint {checkpoint.id} {checkpoint.status}")
+        return GateDecision(pending=True, reason=f"checkpoint {checkpoint.id} awaiting approval")
+
+    def approve(self, run_id: str, step_id: str) -> bool:
+        checkpoint = self._find(run_id, step_id)
+        if checkpoint is None:
+            return False
+        checkpoint.status = "approved"
+        return True
+
+    def reject(self, run_id: str, step_id: str) -> bool:
+        checkpoint = self._find(run_id, step_id)
+        if checkpoint is None:
+            return False
+        checkpoint.status = "rejected"
+        return True
+
+
 class WorkflowRuntimeService:
     """start / resume / kill / load — every DB touch tenant-scoped."""
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession] | None = None) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession] | None = None,
+        *,
+        gate_decider: CheckpointGateDecider | None = None,
+    ) -> None:
         self._session_factory = session_factory
+        self._gate_decider = gate_decider if gate_decider is not None else CheckpointGateDecider()
+
+    @property
+    def gate_decider(self) -> CheckpointGateDecider:
+        return self._gate_decider
+
+    async def _record_resume_at(self, run_id: uuid.UUID, tenant_id: uuid.UUID, resume_at) -> None:
+        """Equivalent scheduling record (§9 P7): the suspended run carries its
+        wake time in metadata; the startup scan resumes it once due. The once
+        trigger binding lands in P8 (§6.2)."""
+        async with self._session(tenant_id) as session:
+            task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
+            metadata = dict(task.metadata_json or {})
+            metadata["resume_at"] = resume_at.isoformat()
+            task.metadata_json = metadata
 
     def _session(self, tenant_id: uuid.UUID | str | None):
         return tenant_scoped_session(str(tenant_id) if tenant_id else None, session_factory=self._session_factory)
@@ -440,13 +522,34 @@ class WorkflowRuntimeService:
                 .scalars()
                 .all()
             )
-            pending = [(row.id, (row.metadata_json or {}).get("tenant_id")) for row in rows]
+            pending = [
+                (row.id, (row.metadata_json or {}).get("tenant_id"), row.status, row.metadata_json or {})
+                for row in rows
+            ]
+
+        from datetime import UTC, datetime
 
         resumed: list[ResumedRun] = []
-        for run_id, tenant_value in pending:
+        for run_id, tenant_value, run_status, metadata in pending:
             if not tenant_value:
                 logger.warning("[Workflow] run %s has no tenant mirror; skipping auto-resume", run_id)
                 continue
+            if run_status == "suspended":
+                # Only TIME suspensions auto-resume (and only once due);
+                # gate/budget suspensions wait for their own recovery path
+                # (approval → explicit resume; quota refill → admission).
+                resume_at_raw = metadata.get("resume_at")
+                if not resume_at_raw:
+                    continue
+                try:
+                    resume_at = datetime.fromisoformat(resume_at_raw)
+                except ValueError:
+                    logger.warning("[Workflow] run %s has malformed resume_at %r", run_id, resume_at_raw)
+                    continue
+                if resume_at.tzinfo is None:
+                    resume_at = resume_at.replace(tzinfo=UTC)
+                if resume_at > datetime.now(UTC):
+                    continue
             try:
                 outcome = await self.resume_run(run_id, tenant_id=uuid.UUID(tenant_value), leaf_executor=leaf_executor)
                 resumed.append(ResumedRun(run_id=run_id, outcome=outcome))
@@ -468,6 +571,14 @@ class WorkflowRuntimeService:
         journal = _PGWorkflowJournal(self._session_factory, tenant_id)
         quota = PGQuotaReserver(self._session_factory, tenant_id, estimate=get_settings().WORKFLOW_LEAF_TOKEN_ESTIMATE)
 
+        service = self
+
+        class _MetadataWaitScheduler:
+            async def schedule_resume(self, rid: str, *, resume_at) -> None:
+                await service._record_resume_at(uuid.UUID(rid), tenant_id, resume_at)
+
+        wait_scheduler = _MetadataWaitScheduler()
+
         async def should_continue() -> bool:
             async with self._session(tenant_id) as session:
                 status = (
@@ -485,6 +596,8 @@ class WorkflowRuntimeService:
                 should_continue=should_continue,
                 tenant_id=str(tenant_id),
                 quota=quota,
+                gate_decider=self._gate_decider,
+                wait_scheduler=wait_scheduler,
             )
         except Exception:
             # Engine/leaf raised out of contract (e.g. process-crash

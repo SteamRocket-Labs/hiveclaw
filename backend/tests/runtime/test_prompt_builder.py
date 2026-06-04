@@ -581,12 +581,18 @@ def test_dynamic_suffix_injects_autonomous_section_for_trigger() -> None:
     assert "do not invent work" in suffix.lower()  # pacing: clean exit over busy-loop
 
 
-def test_dynamic_suffix_injects_autonomous_section_for_heartbeat() -> None:
+def test_dynamic_suffix_omits_autonomous_section_for_heartbeat() -> None:
+    """Heartbeat is the distiller (librarian), not a wake-to-work run: its
+    semantics are fully owned by the identity heartbeat template + the
+    HEARTBEAT.md SOP (which explicitly forbids external-facing actions).
+    Injecting the generic Autonomous Work section would both duplicate and
+    CONTRADICT that SOP ("bias toward action" / "external actions via
+    plan/checkpoint" do not apply to curation runs)."""
     from app.runtime.prompt_builder import build_dynamic_prompt_suffix
 
     suffix = build_dynamic_prompt_suffix(latest_user_query="tick", source="heartbeat")
 
-    assert "Autonomous Work" in suffix
+    assert "Autonomous Work" not in suffix
 
 
 def test_dynamic_suffix_omits_autonomous_section_for_live_chat() -> None:

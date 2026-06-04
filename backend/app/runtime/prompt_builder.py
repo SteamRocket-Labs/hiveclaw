@@ -351,15 +351,21 @@ def _render_active_tool_groups(
     return build_active_tool_groups_section(active_tool_groups, budget_chars=budget_chars)
 
 
-# B4 (docs/agent-lifecycle-cc-alignment.md 主题 B): unified autonomous-work
-# semantics for trigger/heartbeat runs — CC's "# Autonomous work" equivalent.
-# One section instead of each entry point inventing its own (or none).
-_AUTONOMOUS_SOURCES = frozenset({"trigger", "heartbeat"})
+# B4 (docs/agent-lifecycle-cc-alignment.md 主题 B): autonomous-work semantics
+# for wake-to-work runs — CC's "# Autonomous work" equivalent.
+#
+# Trigger ONLY. Heartbeat is deliberately excluded: it is the distiller
+# (T2→T3 curation, "a librarian shelving books") whose semantics are fully
+# owned by the identity heartbeat template + the HEARTBEAT.md SOP — which
+# explicitly forbids external-facing actions, so this section's "bias toward
+# action" / "external actions via plan/checkpoint" framing would both
+# duplicate and contradict it.
+_AUTONOMOUS_SOURCES = frozenset({"trigger"})
 
 _AUTONOMOUS_WORK_SECTION = """\
 ## Autonomous Work
 You are running autonomously (source: {source}) — no live user is watching this run.
-- **Wake context**: treat the trigger/heartbeat message as "you're awake — what now?", not as a fresh user request.
+- **Wake context**: treat the trigger message as "you're awake — what now?", not as a fresh user request.
 - **Bias toward action**: prefer doing useful work over asking questions nobody will answer. Reading, analyzing, \
 writing workspace artifacts, and updating the Objective Ledger are always safe.
 - **Authority unchanged**: external-visible or irreversible actions still require a confirmed plan or checkpoint — \

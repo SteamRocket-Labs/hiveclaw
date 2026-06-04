@@ -221,6 +221,19 @@ pytest tests/agents/test_subagent_*.py tests/agents/test_orchestrator_*.py tests
 
 ### P1 数据模型与迁移
 
+> **✅ 完成（2026-06-04）** — 证据：`pytest tests/ -q` → **3467 passed**（+12：`tests/migrations/test_workflow_migration.py` 7 + `tests/models/test_workflow_models.py` 6，含共享 fixture 复算）；`alembic heads` 单 head = `add_workflow_tables_0604`；ruff clean。
+>
+> **交付物**：
+> - `app/models/workflow.py`：`WorkflowDefinitionRecord` / `WorkflowStep` / `WorkflowLeafCall` / `WorkflowQuota` 四 model；run = `RuntimeTask(task_type="workflow")`，run metadata（definition_source/hash/args_hash/confirmed_plan_id/tenant_id 镜像）走 `metadata_json` 不加列。
+> - `alembic/versions/add_workflow_tables_0604.py`：四表 + tenant/run/status 索引 + **RLS ENABLE+FORCE+policy**（workflow 表族第一天 FORCE，闭 P0 缺口 B 的新表侧）。
+> - `db_bootstrap.apply_rls_policies` 增加 `RLS_FORCED_TENANT_TABLES` 组：bootstrap（create_all+stamp）路径建出的 workflow 表同样 ENABLE+FORCE。
+> - **双部署路径合同一致并分别验证**：升级路径用 `chain_migrated_pg_url` fixture（先 bootstrap 全库→拆四表→回拨 alembic_version 至上一 head→重跑 `upgrade head`，真执行 migration DDL）；新部署路径用 bootstrap fixture。两者断言同一合同（表存在 + relrowsecurity + relforcerowsecurity + policy）。
+> - 唯一约束锚定 immutability：`(tenant_id, name, definition_version)` 重复插入 IntegrityError（改内容必须发新 version）；step/leaf/quota 唯一约束 + leaf `idempotency_key` per-run 唯一。
+>
+> **过程中发现并修复**：
+> - **schema drift 实锤**：migration 写了 `server_default` 而 model 只有 Python 端 `default` → create_all（bootstrap 路径）建的表缺 server_default，原生 INSERT 即炸。已对齐（model 补 server_default）；`tests/models` 的 ORM 写入即双路径 drift 哨兵。
+> - **缺口 B 再深一层（P15 锚定）**：容器/生产的 `POSTGRES_USER` 初始化用户是 **SUPERUSER**，superuser 完全绕过 RLS（FORCE 也无效）。`test_superuser_bypasses_even_forced_rls_documented_gap` 钉死现状 → **P15 部署必须把应用 DSN 切到非 superuser 角色**（FORCE 已就位，切角色即生效）。隔离语义已用非 superuser `rls_app_user` 角色全部验证（cross-tenant 不可见 / 空 GUC fail-closed / WITH CHECK 拒绝错租户写入）。
+
 目标：把 Workflow 作为 RuntimeTask 上的一等 run 记录，不另造第五套后台账本。
 
 改动面：

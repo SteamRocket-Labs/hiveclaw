@@ -36,9 +36,26 @@ RLS_TENANT_TABLES: tuple[str, ...] = (
     "config_revisions",
 )
 
+# Tables that additionally get FORCE ROW LEVEL SECURITY: the production
+# connection IS the table owner (P0 gap B), so ENABLE alone is inert there.
+# New table families start here; legacy tables move over only after every
+# accessor is wired through tenant_scoped_session. Mirrors
+# alembic/versions/add_workflow_tables_0604.py.
+RLS_FORCED_TENANT_TABLES: tuple[str, ...] = (
+    "workflow_definitions",
+    "workflow_steps",
+    "workflow_leaf_calls",
+    "workflow_quotas",
+)
 
-def apply_rls_policies(connection: Connection, tables: Sequence[str] = RLS_TENANT_TABLES) -> None:
-    """Enable RLS + tenant policy on every existing table in ``tables``.
+
+def apply_rls_policies(
+    connection: Connection,
+    tables: Sequence[str] = RLS_TENANT_TABLES,
+    forced_tables: Sequence[str] = RLS_FORCED_TENANT_TABLES,
+) -> None:
+    """Enable RLS + tenant policy on every existing table in ``tables`` /
+    ``forced_tables`` (the latter also get FORCE ROW LEVEL SECURITY).
 
     §9 P0 gap fix: ``bootstrap_database_to_head`` used to create the schema
     via ``metadata.create_all`` and stamp head WITHOUT ever running the
@@ -51,10 +68,12 @@ def apply_rls_policies(connection: Connection, tables: Sequence[str] = RLS_TENAN
         return
     existing = set(inspect(connection).get_table_names())
     connection.execute(text("SELECT set_config('app.current_tenant_id', '', false)"))
-    for table in tables:
+    for table, forced in [(t, False) for t in tables] + [(t, True) for t in forced_tables]:
         if table not in existing:
             continue
         connection.execute(text(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY"))
+        if forced:
+            connection.execute(text(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY"))
         connection.execute(
             text(
                 f"""

@@ -135,3 +135,13 @@ async def app_user_engine(migrated_pg_url):
 @pytest.fixture()
 def owner_sessionmaker(owner_engine):
     return async_sessionmaker(owner_engine, class_=AsyncSession, expire_on_commit=False)
+
+
+@pytest.fixture()
+def app_user_sessionmaker(app_user_engine):
+    """Sessions as the non-superuser role — the ONLY kind of connection RLS
+    (even FORCEd) actually filters. The container's default ``test`` user is
+    a superuser and bypasses every policy, exactly like production's
+    ``clawith`` (the POSTGRES_USER init user) — switching the app to a
+    non-superuser role is the P15 deployment task."""
+    return async_sessionmaker(app_user_engine, class_=AsyncSession, expire_on_commit=False)

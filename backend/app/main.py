@@ -206,6 +206,8 @@ async def lifespan(app: FastAPI):
         import app.models.plan_request  # noqa
         import app.models.work_ledger  # noqa
         import app.models.mcp_server  # noqa
+        import app.models.config_revision  # noqa  (§9 P0 gap C: was missing → fresh DBs lacked the table)
+        import app.models.workflow  # noqa  (§9 P1: workflow journal + definition tables)
 
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)

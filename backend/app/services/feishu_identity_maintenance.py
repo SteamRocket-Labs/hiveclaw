@@ -16,7 +16,7 @@ from app.models.participant import Participant
 from app.models.user import User
 from app.session_identifiers import build_feishu_p2p_conv_id, list_legacy_feishu_conv_ids
 
-__all__ = ["build_feishu_p2p_conv_id", "list_legacy_feishu_conv_ids"]
+__all__ = ["build_feishu_p2p_conv_id", "find_or_create_feishu_chat_session", "list_legacy_feishu_conv_ids"]
 
 
 def choose_canonical_feishu_user(candidates: Sequence[User]) -> User:
@@ -35,6 +35,35 @@ def choose_canonical_feishu_user(candidates: Sequence[User]) -> User:
         )
 
     return max(candidates, key=_score)
+
+
+async def find_or_create_feishu_chat_session(
+    *,
+    db: AsyncSession,
+    agent_id: uuid.UUID,
+    user_id: uuid.UUID,
+    provider_user_id: str | None,
+    provider_open_id: str | None,
+    first_message_title: str,
+    delivery_target: dict | None = None,
+) -> ChatSession:
+    """Find or create the canonical Feishu P2P session for a stable user/open id pair."""
+    from app.services.channel_session import find_or_create_channel_session
+
+    external_conv_id = build_feishu_p2p_conv_id(provider_user_id, provider_open_id)
+    if not external_conv_id:
+        raise ValueError("Feishu P2P session requires provider_user_id or provider_open_id")
+
+    return await find_or_create_channel_session(
+        db=db,
+        agent_id=agent_id,
+        user_id=user_id,
+        external_conv_id=external_conv_id,
+        source_channel="feishu",
+        first_message_title=first_message_title,
+        legacy_external_conv_ids=list_legacy_feishu_conv_ids(provider_open_id, external_conv_id),
+        delivery_target=delivery_target,
+    )
 
 
 async def _load_user_participant(db: AsyncSession, user_id: uuid.UUID) -> Participant | None:
@@ -91,19 +120,13 @@ def _copy_missing_user_fields(primary_user: User, duplicate_user: User) -> None:
 
 async def _merge_user_record(db: AsyncSession, primary_user: User, duplicate_user: User) -> None:
     await db.execute(
-        update(ChatMessage)
-        .where(ChatMessage.user_id == duplicate_user.id)
-        .values(user_id=primary_user.id)
+        update(ChatMessage).where(ChatMessage.user_id == duplicate_user.id).values(user_id=primary_user.id)
     )
     await db.execute(
-        update(ChatSession)
-        .where(ChatSession.user_id == duplicate_user.id)
-        .values(user_id=primary_user.id)
+        update(ChatSession).where(ChatSession.user_id == duplicate_user.id).values(user_id=primary_user.id)
     )
     await db.execute(
-        update(ExternalIdentity)
-        .where(ExternalIdentity.user_id == duplicate_user.id)
-        .values(user_id=primary_user.id)
+        update(ExternalIdentity).where(ExternalIdentity.user_id == duplicate_user.id).values(user_id=primary_user.id)
     )
     await _merge_participants(db, primary_user, duplicate_user)
     _copy_missing_user_fields(primary_user, duplicate_user)
@@ -122,9 +145,7 @@ async def merge_duplicate_feishu_users(db: AsyncSession) -> int:
     merged = 0
     for (feishu_user_id,) in duplicate_groups.all():
         users_result = await db.execute(
-            select(User)
-            .where(User.feishu_user_id == feishu_user_id)
-            .order_by(User.created_at.asc())
+            select(User).where(User.feishu_user_id == feishu_user_id).order_by(User.created_at.asc())
         )
         users = list(users_result.scalars().all())
         if len(users) < 2:

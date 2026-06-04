@@ -20,7 +20,13 @@ from types import SimpleNamespace
 import pytest
 
 
-def _request(tmp_path: Path, arguments: dict, *, agent_id: uuid.UUID | None = None):
+def _request(
+    tmp_path: Path,
+    arguments: dict,
+    *,
+    agent_id: uuid.UUID | None = None,
+    session_id: str | None = "sess-1",
+):
     from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
 
     return ToolExecutionRequest(
@@ -31,7 +37,7 @@ def _request(tmp_path: Path, arguments: dict, *, agent_id: uuid.UUID | None = No
             user_id=uuid.uuid4(),
             tenant_id=str(uuid.uuid4()),
             workspace=tmp_path / "workspace",
-            session_id="sess-1",
+            session_id=session_id,
         ),
     )
 
@@ -77,7 +83,7 @@ async def test_track_todo_add_writes_todo_and_has_no_execution_side_effects(tmp_
     item_id = payload["item"]["id"]
     assert item_id
 
-    ledger = load_agent_work_ledger(agent_id=agent_id, data_root=tmp_path)
+    ledger = load_agent_work_ledger(agent_id=agent_id, session_id="sess-1", data_root=tmp_path)
     assert ledger is not None
     titles = [item["title"] for item in ledger["todo_items"]]
     assert "Collect Q3 revenue figures" in titles
@@ -111,7 +117,7 @@ async def test_track_todo_update_changes_status_in_place(tmp_path, monkeypatch):
     assert updated["ok"] is True
     assert updated["action"] == "updated"
 
-    ledger = load_agent_work_ledger(agent_id=agent_id, data_root=tmp_path)
+    ledger = load_agent_work_ledger(agent_id=agent_id, session_id="sess-1", data_root=tmp_path)
     assert len(ledger["todo_items"]) == 1  # update, not a second todo
     assert ledger["todo_items"][0]["status"] == "in_progress"
 
@@ -159,6 +165,7 @@ async def test_record_finding_records_three_types(tmp_path, monkeypatch):
                 user_id=uuid.uuid4(),
                 tenant_id=str(uuid.uuid4()),
                 workspace=tmp_path / "workspace",
+                session_id="sess-1",
             ),
         )
 
@@ -188,7 +195,7 @@ async def test_record_finding_records_three_types(tmp_path, monkeypatch):
     assert failure["ok"] is True
     assert failure["type"] == "failure"
 
-    ledger = load_agent_work_ledger(agent_id=agent_id, data_root=tmp_path)
+    ledger = load_agent_work_ledger(agent_id=agent_id, session_id="sess-1", data_root=tmp_path)
     assert [f["summary"] for f in ledger["findings"]] == ["API caps at 100 rows/page"]
     assert ledger["open_questions"] == ["Is pagination cursor stable?"]
     assert [f["error"] for f in ledger["failures"]] == ["Export returned 503"]
@@ -233,6 +240,7 @@ async def test_read_ledger_returns_phase_todos_findings(tmp_path, monkeypatch):
                 user_id=uuid.uuid4(),
                 tenant_id=str(uuid.uuid4()),
                 workspace=tmp_path / "workspace",
+                session_id="sess-1",
             ),
         )
 
@@ -245,6 +253,39 @@ async def test_read_ledger_returns_phase_todos_findings(tmp_path, monkeypatch):
     assert ledger_view is not None
     assert any(item["title"] == "Step one" for item in ledger_view["todo_items"])
     assert any(f["summary"] == "Found something" for f in ledger_view["findings"])
+
+
+@pytest.mark.asyncio
+async def test_general_work_ledger_is_scoped_to_session_by_default(tmp_path, monkeypatch):
+    from app.tools.handlers.work_ledger import read_ledger, track_todo
+    from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
+
+    agent_id = uuid.uuid4()
+    _settings_patch(monkeypatch, tmp_path)
+
+    def _req(tool_name: str, args: dict, *, session_id: str):
+        return ToolExecutionRequest(
+            tool_name=tool_name,
+            arguments=args,
+            context=ToolExecutionContext(
+                agent_id=agent_id,
+                user_id=uuid.uuid4(),
+                tenant_id=str(uuid.uuid4()),
+                workspace=tmp_path / "workspace",
+                session_id=session_id,
+            ),
+        )
+
+    await track_todo(_req("track_todo", {"action": "add", "title": "Session A only"}, session_id="sess-a"))
+    await track_todo(_req("track_todo", {"action": "add", "title": "Session B only"}, session_id="sess-b"))
+
+    view_a = json.loads(await read_ledger(_req("read_ledger", {}, session_id="sess-a")))["ledger"]
+    view_b = json.loads(await read_ledger(_req("read_ledger", {}, session_id="sess-b")))["ledger"]
+
+    titles_a = {item["title"] for item in view_a["todo_items"]}
+    titles_b = {item["title"] for item in view_b["todo_items"]}
+    assert titles_a == {"Session A only"}
+    assert titles_b == {"Session B only"}
 
 
 @pytest.mark.asyncio
@@ -280,7 +321,7 @@ async def test_two_agents_ledgers_are_isolated(tmp_path, monkeypatch):
 
     await track_todo(_request(tmp_path, {"action": "add", "title": "A-only todo"}, agent_id=agent_a))
 
-    ledger_a = load_agent_work_ledger(agent_id=agent_a, data_root=tmp_path)
+    ledger_a = load_agent_work_ledger(agent_id=agent_a, session_id="sess-1", data_root=tmp_path)
     ledger_b = load_agent_work_ledger(agent_id=agent_b, data_root=tmp_path)
     assert ledger_a is not None
     assert [item["title"] for item in ledger_a["todo_items"]] == ["A-only todo"]
@@ -308,5 +349,5 @@ async def test_track_todo_add_with_owner_persists_owner(tmp_path, monkeypatch):
     assert payload["ok"] is True
     assert payload["item"]["owner"] == "researcher-bot"
 
-    ledger = load_agent_work_ledger(agent_id=agent_id, data_root=tmp_path)
+    ledger = load_agent_work_ledger(agent_id=agent_id, session_id="sess-1", data_root=tmp_path)
     assert ledger["todo_items"][0]["owner"] == "researcher-bot"

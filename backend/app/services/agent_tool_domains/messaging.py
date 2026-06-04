@@ -250,11 +250,7 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                 try:
                     from app.models.audit import ChatMessage
                     from app.models.agent import Agent as AgentModel
-                    from app.services.channel_session import find_or_create_channel_session
-                    from app.services.feishu_identity_maintenance import (
-                        build_feishu_p2p_conv_id,
-                        list_legacy_feishu_conv_ids,
-                    )
+                    from app.services.feishu_identity_maintenance import find_or_create_feishu_chat_session
                     from datetime import datetime as _dt, timezone as _tz
 
                     agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
@@ -269,18 +265,13 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                     )
                     user_id = feishu_user.id if feishu_user else creator_id
 
-                    ext_conv_id = (
-                        build_feishu_p2p_conv_id(stable_user_id, stable_open_id)
-                        or f"feishu_p2p_{stable_open_id or stable_user_id}"
-                    )
-                    sess = await find_or_create_channel_session(
+                    sess = await find_or_create_feishu_chat_session(
                         db=db,
                         agent_id=agent_id,
                         user_id=user_id,
-                        external_conv_id=ext_conv_id,
-                        source_channel="feishu",
+                        provider_user_id=stable_user_id,
+                        provider_open_id=stable_open_id,
                         first_message_title=f"[Agent → {member_name}]",
-                        legacy_external_conv_ids=list_legacy_feishu_conv_ids(stable_open_id, ext_conv_id),
                     )
                     db.add(
                         ChatMessage(
@@ -307,27 +298,48 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                 if not _agent_tenant_id:
                     return "❌ Agent has no tenant configured, cannot validate recipient. Please contact admin."
                 _recipient_ok = False
+                _validated_member = None
                 if direct_user_id:
                     _check = await db.execute(
-                        select(OrgMember.id).where(
+                        select(OrgMember).where(
                             OrgMember.feishu_user_id == direct_user_id,
                             OrgMember.tenant_id == _agent_tenant_id,
                         )
                     )
-                    _recipient_ok = _check.scalar_one_or_none() is not None
+                    _validated_member = _check.scalar_one_or_none()
+                    _recipient_ok = _validated_member is not None
                 if not _recipient_ok and direct_open_id:
                     _check = await db.execute(
-                        select(OrgMember.id).where(
+                        select(OrgMember).where(
                             OrgMember.feishu_open_id == direct_open_id,
                             OrgMember.tenant_id == _agent_tenant_id,
                         )
                     )
-                    _recipient_ok = _check.scalar_one_or_none() is not None
+                    _validated_member = _check.scalar_one_or_none()
+                    _recipient_ok = _validated_member is not None
                 if not _recipient_ok:
                     return (
                         f"❌ 无法验证收件人身份：user_id={direct_user_id or ''}, open_id={direct_open_id or ''}。"
                         f"该用户不在本组织通讯录中，已阻止发送。"
                     )
+                canonical_user_id = (
+                    direct_user_id
+                    or getattr(_validated_member, "feishu_user_id", None)
+                    or getattr(
+                        _validated_member,
+                        "external_id",
+                        None,
+                    )
+                )
+                canonical_open_id = (
+                    direct_open_id
+                    or getattr(_validated_member, "feishu_open_id", None)
+                    or getattr(
+                        _validated_member,
+                        "open_id",
+                        None,
+                    )
+                )
 
                 config_result = await db.execute(
                     select(ChannelConfig).where(
@@ -350,7 +362,9 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                     )
                     if resp.get("code") == 0:
                         args["user_id"] = direct_user_id
-                        await _save_outgoing_to_feishu_session(direct_user_id, direct_open_id or None)
+                        if canonical_open_id:
+                            args["open_id"] = canonical_open_id
+                        await _save_outgoing_to_feishu_session(direct_user_id, canonical_open_id)
                         return f"✅ 消息已发送（user_id: {direct_user_id}）"
                     # Fallback to open_id if user_id fails
                     if direct_open_id:
@@ -363,7 +377,9 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                         )
                         if resp.get("code") == 0:
                             args["open_id"] = direct_open_id
-                            await _save_outgoing_to_feishu_session(direct_user_id or None, direct_open_id)
+                            if canonical_user_id:
+                                args["user_id"] = canonical_user_id
+                            await _save_outgoing_to_feishu_session(canonical_user_id, direct_open_id)
                             return f"✅ 消息已发送（open_id: {direct_open_id}）"
                     return f"❌ 发送失败：{resp.get('msg')} (code {resp.get('code')})"
                 else:
@@ -376,7 +392,9 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                     )
                     if resp.get("code") == 0:
                         args["open_id"] = direct_open_id
-                        await _save_outgoing_to_feishu_session(None, direct_open_id)
+                        if canonical_user_id:
+                            args["user_id"] = canonical_user_id
+                        await _save_outgoing_to_feishu_session(canonical_user_id, direct_open_id)
                         return f"✅ 消息已发送（open_id: {direct_open_id}）"
                     return f"❌ 发送失败：{resp.get('msg')} (code {resp.get('code')})"
 
@@ -581,6 +599,8 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                 resp = await _try_send(config.app_id, config.app_secret, stable_open_id)
                 if resp.get("code") == 0:
                     args["open_id"] = stable_open_id
+                    if stable_user_id:
+                        args["user_id"] = stable_user_id
                     await _save_outgoing_to_feishu_session(stable_user_id, stable_open_id)
                     return f"✅ Successfully sent message to {member_name}"
                 logger.warning("[Feishu Send] Step3 open_id=%s failed: %s", stable_open_id, resp)

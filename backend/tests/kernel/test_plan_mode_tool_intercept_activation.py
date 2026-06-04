@@ -208,3 +208,24 @@ def test_activation_live_chat_keeps_interactive_source_not_unattended():
     finally:
         if token is not None:
             reset_interactive_plan_mode(token)
+
+
+def test_activation_feishu_live_channel_uses_interactive_plan_mode():
+    """Feishu is a live user channel. A gated tool intercepted during a Feishu
+    message must activate the same main-loop Plan Mode path as web chat, not fall
+    through to a static needs_plan block."""
+    from app.services.plan_mode_runtime_context import (
+        interactive_plan_mode_active,
+        reset_interactive_plan_mode,
+    )
+
+    sc = SessionContext(source="feishu", channel="feishu")
+    token = _maybe_activate_interactive_plan_from_tool_result(_make_request(sc), _signal())
+    try:
+        assert token is not None
+        assert sc.plan_mode.active is True
+        assert sc.plan_mode.source == "tool_intercept"
+        assert interactive_plan_mode_active() is True
+    finally:
+        if token is not None:
+            reset_interactive_plan_mode(token)

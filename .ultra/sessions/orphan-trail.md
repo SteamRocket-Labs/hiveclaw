@@ -4,6 +4,27 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
+- 2026-06-04T01:25Z [sid:3f97d3a5]; branch:main; 20 files (orphan-trail.md, engine.py, hooks_setup.py, +17); last commit: 1159197 feat(work-ledger): 切口④ ledger verified findings → 长期
+- 2026-06-03T16:56Z [sid:70005673]; branch:main; 2 files (orphan-trail.md, test_feishu_identity_resolution.py); last commit: 1159197 feat(work-ledger): 切口④ ledger verified findings → 长期
+- 2026-06-03T13:53Z [sid:8a0e09ba]; branch:main; 1 files (orphan-trail.md); last commit: 2eee9e8 refactor(plan-mode): 切口① 拆 chat/Feishu 的 regex 任务 au
+- 2026-06-03T13:32Z [sid:3f97d3a5]; branch:main; 3 files (orphan-trail.md, feishu.py, web_chat_runtime.py); last commit: 97bac1c fix(subagent): 源能力加固 — fail-closed/path 边界/治理接线/记忆闭环
+- 2026-06-03T13:15Z [sid:8a0e09ba]; branch:main; 17 files (orphan-trail.md, coordination.py, subagent.py, +14); last commit: 90f325e feat(subagent): 切口⑥ tenant 记忆.md + 阉割版进化（governed wr
+- 2026-06-03T12:44Z [sid:3f97d3a5]; branch:main; 1 files (orphan-trail.md); last commit: 90f325e feat(subagent): 切口⑥ tenant 记忆.md + 阉割版进化（governed wr
+- 2026-06-03T12:43Z [sid:8a0e09ba]; branch:main; 1 files (orphan-trail.md); last commit: 90f325e feat(subagent): 切口⑥ tenant 记忆.md + 阉割版进化（governed wr
+- 2026-06-03T02:38Z [sid:3f97d3a5]; branch:main; 1 files (orphan-trail.md); last commit: 40aeccd fix(mcp): 修复 Skill+MCP cutover 的扩展面遗留
+- 2026-06-03T02:24Z [sid:8b13322e]; branch:main; 1 files (orphan-trail.md); last commit: 40aeccd fix(mcp): 修复 Skill+MCP cutover 的扩展面遗留
+- 2026-06-03T01:09Z [sid:2f14fc95]; branch:main; 1 files (orphan-trail.md); last commit: 4d4fb4f docs(subagent): subagent 源能力设计 v2
+- 2026-06-03T01:08Z [sid:8b13322e]; branch:main; 1 files (orphan-trail.md); last commit: 4d4fb4f docs(subagent): subagent 源能力设计 v2
+- 2026-06-03T00:38Z [sid:2f14fc95]; branch:main; 1 files (orphan-trail.md); last commit: ee2f7cc fix(mcp): enforce MCP assignment/override policy on 
+- 2026-06-02T23:51Z [sid:8b13322e]; branch:main; 1 files (orphan-trail.md); last commit: 082262d refactor(mcp): reconcile legacy mcp-servers endpoint
+- 2026-06-02T23:45Z [sid:2f14fc95]; branch:main; 1 files (orphan-trail.md); last commit: 082262d refactor(mcp): reconcile legacy mcp-servers endpoint
+- 2026-06-02T23:42Z [sid:8b13322e]; branch:main; 12 files (orphan-trail.md, mcp_servers.py, packs.py, +9); last commit: 10dce79 chore(cutover): remove orphaned pack routes + finali
+- 2026-06-02T23:33Z [sid:98e36c4c]; branch:main; 1 files (orphan-trail.md); last commit: 10dce79 chore(cutover): remove orphaned pack routes + finali
+- 2026-06-02T23:15Z [sid:2f14fc95]; branch:main; 1 files (orphan-trail.md); last commit: 10dce79 chore(cutover): remove orphaned pack routes + finali
+- 2026-06-02T22:59Z [sid:98e36c4c]; branch:main; 9 files (orphan-trail.md, agents.ts, index.ts, +6); last commit: 829acf8 feat(runtime): MCP tool gating via assignment tables
+- 2026-06-02T22:19Z [sid:2f14fc95]; branch:main; 1 files (orphan-trail.md); last commit: 4ee13da refactor(runtime): rename pack->runtime_tool_group a
+- 2026-06-02T21:49Z [sid:98e36c4c]; branch:main; 1 files (orphan-trail.md); last commit: 48466d2 feat(mcp): backfill functional core + parity proofs 
+- 2026-06-02T21:21Z [sid:2f14fc95]; branch:main; 1 files (orphan-trail.md); last commit: 04b7d8e docs(agent-extension): close tenant-isolation, parit
 - 2026-06-02T19:14Z [sid:98e36c4c]; branch:feature/plan-mode-paradigm; 2 files (orphan-trail.md, agent-extension-surface-skill-mcp.md); last commit: d2f3e86 docs(plan-mode): record Phase 4C accepted-skip decis
 - 2026-06-02T18:09Z [sid:934f7397]; branch:feature/plan-mode-paradigm; 2 files (orphan-trail.md, agent-extension-surface-skill-mcp.md); last commit: 1256bd0 feat(plan-mode): allow exact plan-file writes in Pla
 - 2026-06-02T17:48Z [sid:98e36c4c]; branch:main; 6 files (engine.py, session.py, web_chat_runtime.py, +3); last commit: c0ea7fe Remove finance module and packs

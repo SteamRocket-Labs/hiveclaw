@@ -2,9 +2,9 @@
 
 The confirmed Plan Mode row is the governance boundary. This module stores the
 agent's execution cognition state: current phase, todos, findings, failures,
-and verification state. The file artifact is intentionally scoped to either a
-plan_id or a runtime_task_id so parallel work cannot overwrite a global
-scratchpad.
+and verification state. The file artifact is intentionally scoped to a
+runtime_task_id, plan_id, or chat session_id so parallel work cannot overwrite a
+global scratchpad.
 """
 
 from __future__ import annotations
@@ -77,6 +77,7 @@ def _ledger_path(
     agent_id: uuid.UUID,
     plan_id: uuid.UUID | str | None = None,
     runtime_task_id: uuid.UUID | str | None = None,
+    session_id: uuid.UUID | str | None = None,
     data_root: str | Path | None = None,
 ) -> Path:
     root = _agent_root(agent_id, data_root=data_root)
@@ -85,6 +86,8 @@ def _ledger_path(
         return root / "runtime_artifacts" / "long_tasks" / str(runtime_key) / "work_ledger.json"
     if plan_id is not None:
         return root / "plans" / f"{_uuid_filename(plan_id)}.work_ledger.json"
+    if session_id is not None:
+        return root / "runtime_artifacts" / "sessions" / f"{_uuid_filename(session_id)}" / "work_ledger.json"
     return root / "runtime_artifacts" / "work_ledger.json"
 
 
@@ -206,6 +209,7 @@ def initialize_agent_work_ledger_artifact(
     source: str,
     plan_id: uuid.UUID | str | None = None,
     runtime_task_id: uuid.UUID | str | None = None,
+    session_id: uuid.UUID | str | None = None,
     current_phase: str = "planning",
     status: str = "running",
     todo_items: list[dict[str, Any]] | None = None,
@@ -219,13 +223,20 @@ def initialize_agent_work_ledger_artifact(
 ) -> dict[str, Any]:
     """Create or replace a scoped Agent Work Ledger artifact."""
 
-    path = _ledger_path(agent_id=agent_id, plan_id=plan_id, runtime_task_id=runtime_task_id, data_root=data_root)
+    path = _ledger_path(
+        agent_id=agent_id,
+        plan_id=plan_id,
+        runtime_task_id=runtime_task_id,
+        session_id=session_id,
+        data_root=data_root,
+    )
     now = _now_iso()
     payload = {
         "schema": LEDGER_SCHEMA,
         "agent_id": str(agent_id),
         "plan_id": str(plan_id) if plan_id is not None else None,
         "runtime_task_id": str(runtime_task_id) if runtime_task_id is not None else None,
+        "session_id": str(session_id) if session_id is not None else None,
         "source": source,
         "status": _normalize_status(status, default="running"),
         "current_phase": _clean_text(current_phase) or "planning",
@@ -263,9 +274,16 @@ def load_agent_work_ledger(
     agent_id: uuid.UUID,
     plan_id: uuid.UUID | str | None = None,
     runtime_task_id: uuid.UUID | str | None = None,
+    session_id: uuid.UUID | str | None = None,
     data_root: str | Path | None = None,
 ) -> dict[str, Any] | None:
-    path = _ledger_path(agent_id=agent_id, plan_id=plan_id, runtime_task_id=runtime_task_id, data_root=data_root)
+    path = _ledger_path(
+        agent_id=agent_id,
+        plan_id=plan_id,
+        runtime_task_id=runtime_task_id,
+        session_id=session_id,
+        data_root=data_root,
+    )
     if not path.exists():
         return None
     try:
@@ -293,6 +311,7 @@ def append_agent_work_ledger_progress(
     delta: str,
     plan_id: uuid.UUID | str | None = None,
     runtime_task_id: uuid.UUID | str | None = None,
+    session_id: uuid.UUID | str | None = None,
     output_paths: list[str] | None = None,
     blocked_reason: str | None = None,
     completed_todo_ids: list[str] | None = None,
@@ -300,15 +319,26 @@ def append_agent_work_ledger_progress(
     auto_complete_terminal: bool = False,
     data_root: str | Path | None = None,
 ) -> dict[str, Any]:
-    path = _ledger_path(agent_id=agent_id, plan_id=plan_id, runtime_task_id=runtime_task_id, data_root=data_root)
+    path = _ledger_path(
+        agent_id=agent_id,
+        plan_id=plan_id,
+        runtime_task_id=runtime_task_id,
+        session_id=session_id,
+        data_root=data_root,
+    )
     ledger = load_agent_work_ledger(
-        agent_id=agent_id, plan_id=plan_id, runtime_task_id=runtime_task_id, data_root=data_root
+        agent_id=agent_id,
+        plan_id=plan_id,
+        runtime_task_id=runtime_task_id,
+        session_id=session_id,
+        data_root=data_root,
     )
     if ledger is None:
         initialize_agent_work_ledger_artifact(
             agent_id=agent_id,
             plan_id=plan_id,
             runtime_task_id=runtime_task_id,
+            session_id=session_id,
             source="runtime_progress",
             current_phase=status,
             status=status,
@@ -319,6 +349,7 @@ def append_agent_work_ledger_progress(
                 agent_id=agent_id,
                 plan_id=plan_id,
                 runtime_task_id=runtime_task_id,
+                session_id=session_id,
                 data_root=data_root,
             )
             or {}
@@ -374,6 +405,7 @@ def _load_or_bootstrap_ledger(
     source: str,
     plan_id: uuid.UUID | str | None,
     runtime_task_id: uuid.UUID | str | None,
+    session_id: uuid.UUID | str | None,
     data_root: str | Path | None,
 ) -> dict[str, Any]:
     """Load the scoped ledger, lazily creating an empty one if it does not exist.
@@ -385,7 +417,11 @@ def _load_or_bootstrap_ledger(
     """
 
     ledger = load_agent_work_ledger(
-        agent_id=agent_id, plan_id=plan_id, runtime_task_id=runtime_task_id, data_root=data_root
+        agent_id=agent_id,
+        plan_id=plan_id,
+        runtime_task_id=runtime_task_id,
+        session_id=session_id,
+        data_root=data_root,
     )
     if ledger is not None:
         return ledger
@@ -393,11 +429,18 @@ def _load_or_bootstrap_ledger(
         agent_id=agent_id,
         plan_id=plan_id,
         runtime_task_id=runtime_task_id,
+        session_id=session_id,
         source=source,
         data_root=data_root,
     )
     return (
-        load_agent_work_ledger(agent_id=agent_id, plan_id=plan_id, runtime_task_id=runtime_task_id, data_root=data_root)
+        load_agent_work_ledger(
+            agent_id=agent_id,
+            plan_id=plan_id,
+            runtime_task_id=runtime_task_id,
+            session_id=session_id,
+            data_root=data_root,
+        )
         or {}
     )
 
@@ -416,6 +459,7 @@ def upsert_agent_work_ledger_todo(
     blocked_by: list[str] | None = None,
     plan_id: uuid.UUID | str | None = None,
     runtime_task_id: uuid.UUID | str | None = None,
+    session_id: uuid.UUID | str | None = None,
     source: str = "agent_authored",
     data_root: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -435,12 +479,19 @@ def upsert_agent_work_ledger_todo(
     ``record_delegated_todo_status`` for the ledger-side delegation contract).
     """
 
-    path = _ledger_path(agent_id=agent_id, plan_id=plan_id, runtime_task_id=runtime_task_id, data_root=data_root)
+    path = _ledger_path(
+        agent_id=agent_id,
+        plan_id=plan_id,
+        runtime_task_id=runtime_task_id,
+        session_id=session_id,
+        data_root=data_root,
+    )
     ledger = _load_or_bootstrap_ledger(
         agent_id=agent_id,
         source=source,
         plan_id=plan_id,
         runtime_task_id=runtime_task_id,
+        session_id=session_id,
         data_root=data_root,
     )
     todos: list[dict[str, Any]] = list(ledger.get("todo_items") or [])
@@ -513,6 +564,7 @@ def assign_todo_owner(
     status: str | None = "in_progress",
     plan_id: uuid.UUID | str | None = None,
     runtime_task_id: uuid.UUID | str | None = None,
+    session_id: uuid.UUID | str | None = None,
     data_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Mark a parent ledger todo as delegated to ``owner`` (切口③ delegation contract).
@@ -535,6 +587,7 @@ def assign_todo_owner(
         status=status,
         plan_id=plan_id,
         runtime_task_id=runtime_task_id,
+        session_id=session_id,
         data_root=data_root,
     )
 
@@ -547,6 +600,7 @@ def record_delegated_todo_status(
     expected_owner: str | None = None,
     plan_id: uuid.UUID | str | None = None,
     runtime_task_id: uuid.UUID | str | None = None,
+    session_id: uuid.UUID | str | None = None,
     data_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Write a delegated todo's terminal status back onto the parent ledger (切口③).
@@ -560,7 +614,11 @@ def record_delegated_todo_status(
 
     if expected_owner is not None:
         ledger = load_agent_work_ledger(
-            agent_id=agent_id, plan_id=plan_id, runtime_task_id=runtime_task_id, data_root=data_root
+            agent_id=agent_id,
+            plan_id=plan_id,
+            runtime_task_id=runtime_task_id,
+            session_id=session_id,
+            data_root=data_root,
         )
         todos = (ledger or {}).get("todo_items") or []
         target = next((item for item in todos if _clean_text(item.get("id")) == _clean_text(item_id)), None)
@@ -577,6 +635,7 @@ def record_delegated_todo_status(
         status=status,
         plan_id=plan_id,
         runtime_task_id=runtime_task_id,
+        session_id=session_id,
         data_root=data_root,
     )
 
@@ -591,6 +650,7 @@ def append_agent_work_ledger_finding(
     next_strategy: str | None = None,
     plan_id: uuid.UUID | str | None = None,
     runtime_task_id: uuid.UUID | str | None = None,
+    session_id: uuid.UUID | str | None = None,
     source: str = "agent_authored",
     data_root: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -608,12 +668,19 @@ def append_agent_work_ledger_finding(
     if not clean_summary:
         raise ValueError("summary is required")
 
-    path = _ledger_path(agent_id=agent_id, plan_id=plan_id, runtime_task_id=runtime_task_id, data_root=data_root)
+    path = _ledger_path(
+        agent_id=agent_id,
+        plan_id=plan_id,
+        runtime_task_id=runtime_task_id,
+        session_id=session_id,
+        data_root=data_root,
+    )
     ledger = _load_or_bootstrap_ledger(
         agent_id=agent_id,
         source=source,
         plan_id=plan_id,
         runtime_task_id=runtime_task_id,
+        session_id=session_id,
         data_root=data_root,
     )
 
@@ -1061,13 +1128,21 @@ def read_agent_work_ledger_view(
     agent_id: uuid.UUID,
     plan_id: uuid.UUID | str | None = None,
     runtime_task_id: uuid.UUID | str | None = None,
+    session_id: uuid.UUID | str | None = None,
     data_root: str | Path | None = None,
 ) -> dict[str, Any] | None:
-    path = _ledger_path(agent_id=agent_id, plan_id=plan_id, runtime_task_id=runtime_task_id, data_root=data_root)
+    path = _ledger_path(
+        agent_id=agent_id,
+        plan_id=plan_id,
+        runtime_task_id=runtime_task_id,
+        session_id=session_id,
+        data_root=data_root,
+    )
     ledger = load_agent_work_ledger(
         agent_id=agent_id,
         plan_id=plan_id,
         runtime_task_id=runtime_task_id,
+        session_id=session_id,
         data_root=data_root,
     )
     if ledger is None:
@@ -1148,6 +1223,12 @@ async def read_latest_session_work_ledger_view(
             view["task_type"] = getattr(task, "task_type", None)
             view["runtime_status"] = getattr(task, "status", None)
             return view
+    view = read_agent_work_ledger_view(agent_id=agent_id, session_id=session_key, data_root=data_root)
+    if view is not None:
+        view["session_id"] = session_key
+        view["task_type"] = "session_work_ledger"
+        view["runtime_status"] = view.get("status")
+        return view
     return None
 
 

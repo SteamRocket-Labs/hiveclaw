@@ -220,7 +220,11 @@ async def _t0_session_close(ctx: HookContext) -> None:
     try:
         from app.services.extract_agent import consolidate_ledger_findings_to_t2
 
-        written = consolidate_ledger_findings_to_t2(agent_id, source="work_ledger")
+        written = consolidate_ledger_findings_to_t2(
+            agent_id,
+            session_id=ctx.session_id,
+            source="work_ledger",
+        )
         if written:
             logger.info("[Hooks] SESSION_CLOSE: agent=%s ledger→T2 settled %d entries", agent_id, written)
     except Exception as exc:  # noqa: BLE001

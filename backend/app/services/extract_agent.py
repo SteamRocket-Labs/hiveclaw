@@ -617,11 +617,11 @@ def _append_to_learnings(
 def ledger_findings_to_extractions(ledger: dict[str, Any] | None) -> list[dict[str, str]]:
     """Map a Work Ledger's durable learnings to T2 extraction dicts (pure, no IO).
 
-    Only **verified** findings (``trust == "verified"``) graduate to durable memory —
-    unverified findings stay ledger scratch (§8: cognition ≠ persistence). Failures
-    that recorded a ``next_strategy`` become ``blocked_pattern`` learnings so the
-    agent does not repeat the dead end in a future session. Each dict carries the
-    finding's ``source_refs`` as ``refs`` so the gate stamps evidence metadata.
+    Only **evidence-backed verified** findings (``trust == "verified"`` plus at
+    least one ``source_refs`` entry) graduate to durable memory. Unverified or
+    self-asserted findings stay ledger scratch (§8: cognition ≠ persistence).
+    Failures that recorded a ``next_strategy`` become ``blocked_pattern``
+    learnings so the agent does not repeat the dead end in a future session.
 
     The output is the exact shape ``append_t2_entries`` consumes; the gate decides
     acceptance/rejection per entry (this function never touches privacy/PL4).
@@ -640,15 +640,16 @@ def ledger_findings_to_extractions(ledger: dict[str, Any] | None) -> list[dict[s
             continue
         if (finding.get("trust") or "").strip().lower() != "verified":
             continue
+        refs = [str(ref).strip() for ref in (finding.get("source_refs") or []) if str(ref).strip()]
+        if not refs:
+            continue
         item: dict[str, str] = {
             "category": "reference",
             "content": summary,
-            "evidence": "tool_verified",
+            "evidence": "agent_ledger_verified",
             "concept": _infer_concept("reference", summary),
+            "source_refs": ",".join(refs),
         }
-        refs = finding.get("source_refs")
-        if refs:
-            item["source_refs"] = ",".join(str(ref).strip() for ref in refs if str(ref).strip())
         extractions.append(item)
 
     for failure in ledger.get("failures") or []:
@@ -679,6 +680,7 @@ def consolidate_ledger_findings_to_t2(
     *,
     plan_id: uuid.UUID | str | None = None,
     runtime_task_id: uuid.UUID | str | None = None,
+    session_id: uuid.UUID | str | None = None,
     source: str = "work_ledger",
     data_root: Path | None = None,
 ) -> int:
@@ -694,7 +696,13 @@ def consolidate_ledger_findings_to_t2(
     from app.services.agent_work_ledger import load_agent_work_ledger
 
     root = data_root if data_root is not None else Path(get_settings().AGENT_DATA_DIR)
-    ledger = load_agent_work_ledger(agent_id=agent_id, plan_id=plan_id, runtime_task_id=runtime_task_id, data_root=root)
+    ledger = load_agent_work_ledger(
+        agent_id=agent_id,
+        plan_id=plan_id,
+        runtime_task_id=runtime_task_id,
+        session_id=session_id,
+        data_root=root,
+    )
     extractions = ledger_findings_to_extractions(ledger)
     if not extractions:
         return 0

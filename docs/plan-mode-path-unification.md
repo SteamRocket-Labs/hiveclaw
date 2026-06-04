@@ -237,6 +237,10 @@ prompt(`_planner_system_prompt`)、独立工具集(`PLANNER_ALLOWED_TOOLS`)、�
 
 ### 11.1 切口② 实装记录
 
+> **历史中间态说明**：本节记录切口②当时的灰度实现。当前生产语义以 §11.3/§12.7 为准：
+> `PLAN_MODE_UNATTENDED_RUN`、`PLAN_MODE_SYSTEM_RUN`、`PLAN_MODE_TOOL_INTERCEPT_INTERACTIVE` 和 RPC fallback
+> 都已删除；eligible source 无条件进入主循环 Plan Mode，非 eligible source 静态 `needs_plan` fail-closed。
+
 **机制定型(比原 §5.3 设想更简洁)**:无人值守(trigger/heartbeat)本就是多轮 kernel run
 (`AgentKernel.handle()`,heartbeat 40 轮 / 其他 200 轮),不是"一次性调用"。因此**无需启动新 run**——
 只需让无人值守 run 内被拦截的 gated tool 也能像 live chat 那样**在当前 run 内激活主循环 Plan Mode**:
@@ -246,7 +250,7 @@ live 与无人值守**共用同一套 Plan Mode runtime**(每轮 reminder + 只�
 
 **改动(5 文件)**:
 
-- `app/config.py`:新增 `PLAN_MODE_UNATTENDED_RUN`(默认 **off**,灰度;§9.4)。
+- 历史中间态曾在 `app/config.py` 新增 `PLAN_MODE_UNATTENDED_RUN`(默认 **off**,灰度;§9.4)。
 - `app/runtime/session.py`:新增 `is_unattended_plan_eligible`(白名单 `{trigger, heartbeat}`)+
   `_UNATTENDED_PLAN_RUN_SOURCES`,与 `is_interactive_plan_eligible` 并列、互斥。
 - `app/kernel/engine.py`:`_maybe_activate_interactive_plan_from_tool_result` 激活条件从"仅 live chat"
@@ -269,10 +273,13 @@ live 与无人值守**共用同一套 Plan Mode runtime**(每轮 reminder + 只�
   flag off → 回退 RPC(`ensure_awaiting_plan` calls==1、embed plan_id、无 signal)。
 - 全域回归:**plan-mode 相关 301 passed**;3 个改动测试文件 ruff 全绿。
 
-**待后续**:无人值守 plan run 上线需把 `PLAN_MODE_UNATTENDED_RUN` 切 on(生产灰度);切口④ 删 RPC planner
-后该 flag 失去 fallback 含义,可随之收敛。
+**已收口**:该中间态已被切口④替换;`PLAN_MODE_UNATTENDED_RUN` 与 RPC fallback 均已删除,无人值守 eligible source
+无条件进入主循环 Plan Mode,非 eligible source 静态 `needs_plan` fail-closed。
 
 ### 11.2 切口③ 实装记录(③a + ③b)
+
+> **历史中间态说明**：本节记录 launcher 上线前的 flag-on/flag-off 灰度状态。当前运行态不再有
+> `PLAN_MODE_SYSTEM_RUN` 或 RPC 回退；REST/Feishu classification 无条件走 `system_plan_run` launcher。
 
 **机制定型(完全照 §12 规格)**:无 agent run 的纯外部入口(REST create/regenerate/revise + Feishu
 classification)通过**启动一个 system_plan_run**(预激活 Plan Mode + 带 draft `plan_id`)让 agent 在主循环
@@ -280,13 +287,12 @@ classification)通过**启动一个 system_plan_run**(预激活 Plan Mode + 带 
 已运行的 kernel loop **内**被拦截后激活(plan_id 空 → 新建);launcher 在 run **前**预激活且带 plan_id
 (→ 填充已有 draft)。两者复用同一套 Plan Mode runtime(每轮 reminder + 只读 policy + `exit_plan_mode`)。
 
-**flag 名 + 默认值 + off 回退**:`PLAN_MODE_SYSTEM_RUN: bool = False`(`config.py`,仿 `PLAN_MODE_UNATTENDED_RUN`
-注释风格)。**off** 时 REST 走旧 `generate_plan(use_agent_planner=True)` / `revise_plan`、Feishu 走旧
-`ensure_awaiting_plan`(逐字节不变);**on** 时走 launcher。生产默认不变,安全增量。
+**历史 flag 中间态（已删除）**:切口③曾引入 `PLAN_MODE_SYSTEM_RUN: bool = False` 做 launcher 灰度。
+切口④后该 flag 与 off 回退均已删除;REST/Feishu classification 无条件走 launcher。
 
 **改动(8 文件)**:
 
-- `app/config.py`:新增 `PLAN_MODE_SYSTEM_RUN`(默认 off,灰度)。
+- 历史中间态曾在 `app/config.py` 新增 `PLAN_MODE_SYSTEM_RUN`(默认 off,灰度)。
 - `app/runtime/session.py`:`PlanModeState.to_metadata()` 仅当 `plan_id` 非空时输出 `plan_id`(否则 live chat /
   无人值守 tool-intercept 的 mirror 逐字节不变 → `exit_plan_mode` 仍走"新建"分支)。
 - `app/tools/handlers/plan_mode.py`(③a 核心):`exit_plan_mode` 读 metadata 的 `plan_id`(`_plan_uuid` 解析,
@@ -334,11 +340,10 @@ classification)通过**启动一个 system_plan_run**(预激活 Plan Mode + 带 
 - 全域回归:**plan-mode 相关 316 passed**;runtime/kernel/services/tools/api **2579 passed**;
   agents/architecture/core **213 passed**;8 个改动文件 ruff format + check 全绿。
 
-**待后续**:切口③ 上线需把 `PLAN_MODE_SYSTEM_RUN` 切 on(生产灰度);切口④ 删 RPC planner
+**已收口**:切口④ 已删除 RPC planner
 (`DefaultAgentPlanPlanner` / `PLANNER_ALLOWED_TOOLS` / `_run_planner` / `_get_planner` / `use_agent_planner` 参数),
-此时 `generate_plan` 退化为纯 fill 落地,两 flag(`PLAN_MODE_UNATTENDED_RUN` / `PLAN_MODE_SYSTEM_RUN`)失去
-fallback 含义可随之收敛。**grep 现状**:flag-on 路径下 REST/Feishu 已不调 RPC;`DefaultAgentPlanPlanner` 仅
-剩 `generate_plan(use_agent_planner=True)` 的 flag-off 回退消费者(切口④ 一并删)。
+`generate_plan` 已退化为纯 fill 落地,两 flag(`PLAN_MODE_UNATTENDED_RUN` / `PLAN_MODE_SYSTEM_RUN`)和 flag-off
+回退消费者均已删除。
 
 ### 11.3 切口④ 实装记录(删 RPC + 移除全部 flag → plan mode/launcher 唯一路径)
 

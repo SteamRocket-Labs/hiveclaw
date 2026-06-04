@@ -130,11 +130,11 @@ async def test_send_feishu_message_backfills_successful_identity_into_tool_args(
     session = SimpleNamespace(id=uuid4(), last_message_at=None)
     db = _DB(
         [
-            _ScalarResult(tenant_id),   # Agent.tenant_id
-            _RowsResult([]),            # AgentRelationship list
-            _ScalarResult(owner_agent), # Agent for owner/creator fallback
-            _ScalarResult(config),      # ChannelConfig
-            _ScalarResult(agent_obj),   # AgentModel in _save_outgoing_to_feishu_session
+            _ScalarResult(tenant_id),  # Agent.tenant_id
+            _RowsResult([]),  # AgentRelationship list
+            _ScalarResult(owner_agent),  # Agent for owner/creator fallback
+            _ScalarResult(config),  # ChannelConfig
+            _ScalarResult(agent_obj),  # AgentModel in _save_outgoing_to_feishu_session
         ]
     )
     tool_args = {
@@ -191,12 +191,12 @@ async def test_send_feishu_message_continues_after_prior_session_identity_http_4
     session = SimpleNamespace(id=uuid4(), last_message_at=None)
     db = _DB(
         [
-            _ScalarResult(tenant_id),   # Agent.tenant_id
-            _RowsResult([]),            # AgentRelationship list
-            _ScalarResult(owner_agent), # Agent for owner/creator fallback
-            _ScalarResult(config),      # ChannelConfig for prior-session send
-            _ScalarResult(config),      # ChannelConfig for feishu_user_search fallback
-            _ScalarResult(agent_obj),   # AgentModel in _save_outgoing_to_feishu_session
+            _ScalarResult(tenant_id),  # Agent.tenant_id
+            _RowsResult([]),  # AgentRelationship list
+            _ScalarResult(owner_agent),  # Agent for owner/creator fallback
+            _ScalarResult(config),  # ChannelConfig for prior-session send
+            _ScalarResult(config),  # ChannelConfig for feishu_user_search fallback
+            _ScalarResult(agent_obj),  # AgentModel in _save_outgoing_to_feishu_session
         ]
     )
     tool_args = {
@@ -220,7 +220,9 @@ async def test_send_feishu_message_continues_after_prior_session_identity_http_4
 
     send_attempts: list[tuple[str, str]] = []
 
-    async def _fake_send_message(app_id, app_secret, receive_id, msg_type, content, receive_id_type="open_id", **_kwargs):
+    async def _fake_send_message(
+        app_id, app_secret, receive_id, msg_type, content, receive_id_type="open_id", **_kwargs
+    ):
         send_attempts.append((receive_id, receive_id_type))
         if receive_id == "ou_stale_session_id":
             raise RuntimeError("Feishu send_message HTTP 400")
@@ -275,11 +277,11 @@ async def test_send_feishu_message_org_sync_fallback_saves_history_without_argum
     session = SimpleNamespace(id=uuid4(), last_message_at=None)
     db = _DB(
         [
-            _ScalarResult(tenant_id),       # Agent.tenant_id
-            _RowsResult([relationship]),    # AgentRelationship list
-            _ScalarResult(config),          # ChannelConfig
-            _ScalarResult(org_setting),     # TenantSetting feishu_org_sync
-            _ScalarResult(agent_obj),       # AgentModel in _save_outgoing_to_feishu_session
+            _ScalarResult(tenant_id),  # Agent.tenant_id
+            _RowsResult([relationship]),  # AgentRelationship list
+            _ScalarResult(config),  # ChannelConfig
+            _ScalarResult(org_setting),  # TenantSetting feishu_org_sync
+            _ScalarResult(agent_obj),  # AgentModel in _save_outgoing_to_feishu_session
         ]
     )
     tool_args = {
@@ -297,7 +299,9 @@ async def test_send_feishu_message_org_sync_fallback_saves_history_without_argum
 
     send_attempts: list[tuple[str, str, str]] = []
 
-    async def _fake_send_message(app_id, app_secret, receive_id, msg_type, content, receive_id_type="open_id", **_kwargs):
+    async def _fake_send_message(
+        app_id, app_secret, receive_id, msg_type, content, receive_id_type="open_id", **_kwargs
+    ):
         send_attempts.append((app_id, receive_id, receive_id_type))
         if app_id == "cli_agent_app":
             return {"code": 999, "msg": "cross app identity mismatch"}
@@ -321,3 +325,133 @@ async def test_send_feishu_message_org_sync_fallback_saves_history_without_argum
         ("cli_agent_app", "ou_cross_app_only", "open_id"),
         ("cli_org_sync", "ou_cross_app_only", "open_id"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_send_feishu_message_open_id_success_still_backfills_stable_user_id(monkeypatch):
+    from app.services.agent_tool_domains import messaging
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    config = SimpleNamespace(app_id="cli_agent_app", app_secret="secret")
+    target_member = SimpleNamespace(
+        name="王天怡",
+        external_id="u_staff_123",
+        feishu_user_id="u_staff_123",
+        open_id="ou_app_scoped",
+        feishu_open_id="ou_app_scoped",
+        email=None,
+        phone=None,
+        tenant_id=tenant_id,
+    )
+    relationship = SimpleNamespace(member=target_member)
+    agent_obj = SimpleNamespace(id=agent_id, tenant_id=tenant_id, creator_id=uuid4())
+    resolved_user = SimpleNamespace(id=uuid4())
+    session = SimpleNamespace(id=uuid4(), last_message_at=None)
+    db = _DB(
+        [
+            _ScalarResult(tenant_id),  # Agent.tenant_id
+            _RowsResult([relationship]),  # AgentRelationship list
+            _ScalarResult(config),  # ChannelConfig
+            _ScalarResult(agent_obj),  # AgentModel in _save_outgoing_to_feishu_session
+        ]
+    )
+    tool_args = {
+        "member_name": "王天怡",
+        "message": "你好天怡，周二下午两点有空吗？",
+    }
+
+    monkeypatch.setattr(messaging, "async_session", lambda: _AsyncSessionContext(db))
+
+    async def _fake_resolve_feishu_user(*_args, **_kwargs):
+        return resolved_user
+
+    async def _fake_find_or_create_feishu_chat_session(**_kwargs):
+        return session
+
+    send_attempts: list[tuple[str, str]] = []
+
+    async def _fake_send_message(
+        app_id, app_secret, receive_id, msg_type, content, receive_id_type="open_id", **_kwargs
+    ):
+        send_attempts.append((receive_id, receive_id_type))
+        if receive_id_type == "user_id":
+            return {"code": 999, "msg": "cross app identity mismatch"}
+        return {"code": 0, "msg": "ok"}
+
+    monkeypatch.setattr(
+        "app.services.channel_user_service.channel_user_service.resolve_feishu_user",
+        _fake_resolve_feishu_user,
+    )
+    monkeypatch.setattr(
+        "app.services.feishu_identity_maintenance.find_or_create_feishu_chat_session",
+        _fake_find_or_create_feishu_chat_session,
+    )
+    monkeypatch.setattr("app.services.feishu_service.feishu_service.send_message", _fake_send_message)
+
+    result = await messaging._send_feishu_message(agent_id, tool_args)
+
+    assert result == "✅ Successfully sent message to 王天怡"
+    assert tool_args["user_id"] == "u_staff_123"
+    assert tool_args["open_id"] == "ou_app_scoped"
+    assert send_attempts == [
+        ("u_staff_123", "user_id"),
+        ("ou_app_scoped", "open_id"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_send_feishu_message_direct_open_id_success_backfills_canonical_user_id(monkeypatch):
+    from app.services.agent_tool_domains import messaging
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    config = SimpleNamespace(app_id="cli_agent_app", app_secret="secret")
+    org_member = SimpleNamespace(
+        id=uuid4(),
+        external_id="u_staff_123",
+        feishu_user_id="u_staff_123",
+        feishu_open_id="ou_app_scoped",
+    )
+    agent_obj = SimpleNamespace(id=agent_id, tenant_id=tenant_id, creator_id=uuid4())
+    resolved_user = SimpleNamespace(id=uuid4())
+    session = SimpleNamespace(id=uuid4(), last_message_at=None)
+    db = _DB(
+        [
+            _ScalarResult(tenant_id),  # Agent.tenant_id
+            _ScalarResult(org_member),  # OrgMember validation by open_id
+            _ScalarResult(config),  # ChannelConfig
+            _ScalarResult(agent_obj),  # AgentModel in _save_outgoing_to_feishu_session
+        ]
+    )
+    tool_args = {
+        "open_id": "ou_app_scoped",
+        "message": "你好天怡，周二下午两点有空吗？",
+    }
+
+    monkeypatch.setattr(messaging, "async_session", lambda: _AsyncSessionContext(db))
+
+    async def _fake_resolve_feishu_user(*_args, **_kwargs):
+        return resolved_user
+
+    async def _fake_find_or_create_feishu_chat_session(**_kwargs):
+        return session
+
+    async def _fake_send_message(*_args, **_kwargs):
+        return {"code": 0, "msg": "ok"}
+
+    monkeypatch.setattr(
+        "app.services.channel_user_service.channel_user_service.resolve_feishu_user",
+        _fake_resolve_feishu_user,
+    )
+    monkeypatch.setattr(
+        "app.services.feishu_identity_maintenance.find_or_create_feishu_chat_session",
+        _fake_find_or_create_feishu_chat_session,
+    )
+    monkeypatch.setattr("app.services.feishu_service.feishu_service.send_message", _fake_send_message)
+
+    result = await messaging._send_feishu_message(agent_id, tool_args)
+
+    assert result == "✅ 消息已发送（open_id: ou_app_scoped）"
+    assert tool_args["open_id"] == "ou_app_scoped"
+    assert tool_args["user_id"] == "u_staff_123"

@@ -17,7 +17,9 @@ def test_gateway_source_prefers_provider_backed_org_member_ids():
 
 
 def test_messaging_source_uses_canonical_feishu_conv_ids_for_outbound_history():
-    source = (_BACKEND_ROOT / "app/services/agent_tool_domains/messaging.py").read_text()
+    messaging_source = (_BACKEND_ROOT / "app/services/agent_tool_domains/messaging.py").read_text()
+    identity_source = (_BACKEND_ROOT / "app/services/feishu_identity_maintenance.py").read_text()
 
-    assert "build_feishu_p2p_conv_id" in source
-    assert "legacy_external_conv_ids" in source
+    assert "find_or_create_feishu_chat_session" in messaging_source
+    assert "build_feishu_p2p_conv_id" in identity_source
+    assert "legacy_external_conv_ids" in identity_source

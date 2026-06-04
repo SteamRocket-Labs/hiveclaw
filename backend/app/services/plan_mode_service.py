@@ -491,8 +491,8 @@ class PlanModeService:
 
         Creates a *new* ``draft`` PlanRequest at ``plan_version + 1``, marks the
         old row ``superseded`` and points ``superseded_by_plan_id`` at the new
-        row. No plan_json is generated — the caller chooses how to author it
-        (``generate_plan`` RPC fallback, or a system_plan_run launcher, cut ③).
+        row. No plan_json is generated — current callers author it through the
+        system_plan_run launcher.
 
         Raises:
             LookupError: if ``plan_id`` does not exist.

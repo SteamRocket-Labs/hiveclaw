@@ -230,8 +230,8 @@ ledger 的 `findings` 不能覆盖 confirmed plan；untrusted 内容注入仍按
 
    **实装记录（2026-06-03）**：
    - **存储模型确认**：Work Ledger 的 source of truth 是 **JSON 文件**（`agent_work_ledger.py` 的
-     `_ledger_path` → `AGENT_DATA_DIR/<agent_id>/runtime_artifacts/work_ledger.json`，通用路径无
-     plan_id/runtime_task_id）。`models/work_ledger.py` 的 `AgentWorkLedger` 表存在但**尚未接线**
+     `_ledger_path` → 优先 `runtime_task_id` / `plan_id`，普通 chat 认知脚手架走
+     `AGENT_DATA_DIR/<agent_id>/runtime_artifacts/sessions/<session_id>/work_ledger.json`）。`models/work_ledger.py` 的 `AgentWorkLedger` 表存在但**尚未接线**
      （模型 docstring 自述为 "future canonical index"，全仓仅自身模块 import，service 零 DB 写）。
      三工具走文件路径，与现有 3 个 caller（`long_task_runtime` / `long_task_validation` /
      `api/autonomy`）一致。
@@ -259,9 +259,10 @@ ledger 的 `findings` 不能覆盖 confirmed plan；untrusted 内容注入仍按
        `collected.sensitive_tools`、不在 `plan_gated_tool_action_kinds()`、
        `hard_gated_action_kind(name)` / `hard_gated_action_kind(name, {"action":"add"})` 均为
        `None`；`read_ledger` 在 `safe_tools`/`read_only_names`/`parallel_safe_names`。
-   - **tenant scope 如何保证**：service 按 `agent_id` 物理隔离文件目录
-     （`AGENT_DATA_DIR/<agent_id>/`），handler 仅从 `ToolExecutionContext` 取调用方 agent_id，
-     agent 无法读写他人 ledger（测试 `test_two_agents_ledgers_are_isolated` 实证）。tenant 层在
+   - **tenant/session scope 如何保证**：service 按 `agent_id` 物理隔离文件目录
+     （`AGENT_DATA_DIR/<agent_id>/`），普通会话默认再按 `ToolExecutionContext.session_id` 隔离，
+     agent 无法读写他人 ledger，同一 agent 的并行 chat session 也不会共享 scratchpad（测试
+     `test_two_agents_ledgers_are_isolated` / `test_general_work_ledger_is_scoped_to_session_by_default` 实证）。tenant 层在
      governance 上游兜底：`run_tool_governance` 对非 safe 工具在 `tenant_id` 缺失时 fail-closed、
      对每个工具过 capability gate，并对 `public` 安全区只放行 SAFE_TOOLS（故 `read_ledger` 在
      public 区可读、两个写工具被治理外壳挡住——符合 §5.6"治理在外面包着"）。
@@ -289,8 +290,8 @@ ledger 的 `findings` 不能覆盖 confirmed plan；untrusted 内容注入仍按
        `role="system"` 的 `_WORK_LEDGER_REMINDER`（与 round-pressure / plan-mode reminder 同一
        `api_messages.append(LLMMessage(...))` 机制，paradigm-runtime §6.2）。
      - `app/kernel/engine.py` `_build_restoration_context`（post-compaction 恢复，约 `:1125`）：
-       complex turn 且 ledger 文件存在时，直接读 `runtime_artifacts/work_ledger.json`（与读 soul.md /
-       focus.md 同一 workspace 解析路径），经 pure `build_agent_work_ledger_resume_summary` +
+       complex turn 且当前 `session_id` 的 ledger 文件存在时，读
+       `runtime_artifacts/sessions/<session_id>/work_ledger.json`，经 pure `build_agent_work_ledger_resume_summary` +
        `render_work_ledger_resume_block` 注入 **5-question reboot**，置于 soul/focus 之后高优先位。
    - **阈值判断逻辑**（pure，住 `agent_work_ledger.py::should_enable_work_ledger`，与 §8 阈值对齐）：
      §8 的 `expected_tool_calls >= 5 / 多文件 / 外部副作用` 在 runtime 无单一一等信号，最接近的现成
@@ -376,25 +377,25 @@ ledger 的 `findings` 不能覆盖 confirmed plan；untrusted 内容注入仍按
      预判的"小接线"：把 ledger findings 整形成同一个 extractions 列表喂 `_append_to_learnings`，gate
      原样复用、零绕过、零重造。**
    - **改了哪些（两个新 service 函数，住 `extract_agent.py`）**：
-     - `ledger_findings_to_extractions(ledger)`（**pure，无 IO**）：把 ledger 的**已验证** findings
-       （`trust=="verified"`）映射成 `category="reference"`（concept `how-it-works`，`ev=tool_verified`，
-       `source_refs`→`refs`）；**未验证 findings 留作 ledger scratch 不沉淀**（§8 认知≠持久化）；带
+     - `ledger_findings_to_extractions(ledger)`（**pure，无 IO**）：把 ledger 的**有证据引用的已验证** findings
+       （`trust=="verified"` 且 `source_refs` 非空）映射成 `category="reference"`（concept `how-it-works`，
+       `ev=agent_ledger_verified`，`source_refs`→`refs`）；**未验证或无 evidence refs 的 self-asserted findings 留作 ledger scratch 不沉淀**（§8 认知≠持久化）；带
        `next_strategy` 的**未 resolved** failures 映射成 `category="blocked_pattern"`（"error — next
        time: strategy"），让下个会话不重蹈死路；裸 error 无教训=噪声跳过。输出形状即
        `append_t2_entries` 消费的 extraction dict，**本函数从不碰隐私/PL4，由 gate 逐条裁决**。
-     - `consolidate_ledger_findings_to_t2(agent_id, ...)`（薄壳 orchestrator）：load scoped ledger →
+     - `consolidate_ledger_findings_to_t2(agent_id, ..., session_id=...)`（薄壳 orchestrator）：load scoped ledger →
        map → 交给 `_append_to_learnings`（**每条过 `prepare_memory_write`**）。返回实际写入数（gate
        拒绝 + 去重的不计）。
    - **触发点（SESSION_CLOSE，任务完成边界）**：`runtime/hooks_setup.py::_t0_session_close` 在
-     extractor `drain` 之后调 `consolidate_ledger_findings_to_t2(agent_id, source="work_ledger")`，
+     extractor `drain` 之后调 `consolidate_ledger_findings_to_t2(agent_id, session_id=ctx.session_id, source="work_ledger")`，
      best-effort（consolidation 失败不阻断后续 T0 写）。SESSION_CLOSE 是会话"任务做完"的自然落点，
-     且与切口② compaction reboot 读的同一个 unscoped `runtime_artifacts/work_ledger.json` 对齐。
+     且与切口② compaction reboot 读的同一个 session-scoped ledger 对齐。
    - **ledger→memory 如何过 gate（PL4 拒绝实证）**：测试 `test_pl4_credential_in_finding_is_rejected_
      by_gate` 用**真实 gate**（不 mock）—— 一条 `trust=verified` 但 summary 含 OpenAI 式 `sk-` 凭据
      （运行时拼接、源码无字面密钥，规避 SEC 守卫）的 finding，经 `consolidate_ledger_findings_to_t2`
      →`prepare_memory_write` 判 PL4 `rejected`→**written==0**，且断言**原始密钥串从未落进任何 T2 md
      文件**；`test_pl3_sensitive_finding_is_classified_when_settled` 证一条含 "salary review" 的
-     verified finding 仍沉淀但被 gate 标 `sensitivity=PL3_sensitive`（敏感分级生效、非整条毙）；
+     verified finding 仍沉淀但被 gate 标 `sensitivity=PL3_sensitive`（敏感分级生效、非整条毙，前提是有 source refs）；
      `test_verified_finding_settles_into_t2_through_gate` 证普通 verified finding 落 T2 且被盖
      `entry_id`/`PL1_public` lifecycle metadata。
    - **测试证据**：新增 `tests/services/test_ledger_to_memory_gate.py` 9 用例全绿（3 pure mapper +

@@ -40,12 +40,15 @@ def _json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
-def _scope(arguments: dict) -> tuple[str | None, str | None]:
-    """Optional plan/runtime-task scope (general path leaves both unset)."""
+def _scope(request: ToolExecutionRequest) -> tuple[str | None, str | None, str | None]:
+    """Optional plan/runtime-task scope; otherwise use the current chat session."""
 
+    arguments = request.arguments
     plan_id = str(arguments.get("plan_id") or "").strip() or None
     runtime_task_id = str(arguments.get("runtime_task_id") or "").strip() or None
-    return plan_id, runtime_task_id
+    raw_session_id = request.context.session_id
+    session_id = None if plan_id or runtime_task_id or not raw_session_id else str(raw_session_id).strip() or None
+    return plan_id, runtime_task_id, session_id
 
 
 @tool(
@@ -112,7 +115,7 @@ def _scope(arguments: dict) -> tuple[str | None, str | None]:
 async def track_todo(request: ToolExecutionRequest) -> str:
     args = request.arguments
     action = str(args.get("action") or "").strip().lower()
-    plan_id, runtime_task_id = _scope(args)
+    plan_id, runtime_task_id, session_id = _scope(request)
     agent_id: uuid.UUID = request.context.agent_id
 
     title = str(args.get("title") or "").strip()
@@ -147,6 +150,7 @@ async def track_todo(request: ToolExecutionRequest) -> str:
             owner=str(owner).strip() if owner is not None else None,
             plan_id=plan_id,
             runtime_task_id=runtime_task_id,
+            session_id=session_id,
         )
     except KeyError:
         return _json({"ok": False, "error": f"Todo '{item_id}' not found in the current ledger."})
@@ -202,7 +206,7 @@ async def record_finding(request: ToolExecutionRequest) -> str:
     args = request.arguments
     finding_type = str(args.get("type") or "").strip().lower()
     summary = str(args.get("summary") or "").strip()
-    plan_id, runtime_task_id = _scope(args)
+    plan_id, runtime_task_id, session_id = _scope(request)
 
     if finding_type not in {"finding", "open_question", "failure"}:
         return _json({"ok": False, "error": "`type` must be 'finding', 'open_question', or 'failure'."})
@@ -225,6 +229,7 @@ async def record_finding(request: ToolExecutionRequest) -> str:
             next_strategy=str(next_strategy).strip() if next_strategy is not None else None,
             plan_id=plan_id,
             runtime_task_id=runtime_task_id,
+            session_id=session_id,
         )
     except ValueError as exc:
         return _json({"ok": False, "error": f"Could not record finding: {exc}"})
@@ -258,10 +263,11 @@ async def record_finding(request: ToolExecutionRequest) -> str:
     )
 )
 async def read_ledger(request: ToolExecutionRequest) -> str:
-    plan_id, runtime_task_id = _scope(request.arguments)
+    plan_id, runtime_task_id, session_id = _scope(request)
     view = read_agent_work_ledger_view(
         agent_id=request.context.agent_id,
         plan_id=plan_id,
         runtime_task_id=runtime_task_id,
+        session_id=session_id,
     )
     return _json({"ok": True, "ledger": view})

@@ -1138,18 +1138,22 @@ def _build_restoration_context(
             try:
                 from app.services.agent_work_ledger import (
                     build_agent_work_ledger_resume_summary,
+                    load_agent_work_ledger,
                     render_work_ledger_resume_block,
                 )
 
-                _ledger_path = _resolved_ws / "runtime_artifacts" / "work_ledger.json"
-                if _ledger_path.exists():
-                    _ledger_payload = json.loads(_ledger_path.read_text(encoding="utf-8"))
-                    if isinstance(_ledger_payload, dict):
-                        _ledger_summary = build_agent_work_ledger_resume_summary(_ledger_payload)
-                        _ledger_block = render_work_ledger_resume_block(_ledger_summary)
-                        if _ledger_block and total + len(_ledger_block) <= _restore_budget:
-                            parts.append(_ledger_block)
-                            total += len(_ledger_block)
+                _session_id = getattr(session_context, "session_id", None) if session_context is not None else None
+                _ledger_payload = load_agent_work_ledger(
+                    agent_id=agent_id,
+                    session_id=_session_id,
+                    data_root=settings.AGENT_DATA_DIR,
+                )
+                if isinstance(_ledger_payload, dict):
+                    _ledger_summary = build_agent_work_ledger_resume_summary(_ledger_payload)
+                    _ledger_block = render_work_ledger_resume_block(_ledger_summary)
+                    if _ledger_block and total + len(_ledger_block) <= _restore_budget:
+                        parts.append(_ledger_block)
+                        total += len(_ledger_block)
             except Exception as _ledger_err:
                 logger.debug("[Kernel] Work Ledger reboot restoration failed: %s", _ledger_err)
 

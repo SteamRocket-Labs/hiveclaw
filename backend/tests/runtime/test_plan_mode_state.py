@@ -125,6 +125,7 @@ def test_is_interactive_plan_eligible_unifies_the_live_chat_boundary():
     assert is_interactive_plan_eligible(SessionContext(source="web", channel="web")) is True
     assert is_interactive_plan_eligible(SessionContext(source="web_chat")) is True
     assert is_interactive_plan_eligible(SessionContext(source="chat")) is True
+    assert is_interactive_plan_eligible(SessionContext(source="feishu", channel="feishu")) is True
     assert is_interactive_plan_eligible(SessionContext(source="web", channel=None)) is True
     assert is_interactive_plan_eligible(SessionContext(source="trigger")) is False
     assert is_interactive_plan_eligible(SessionContext(source="heartbeat", channel=None)) is False
@@ -135,7 +136,7 @@ def test_is_interactive_plan_eligible_unifies_the_live_chat_boundary():
 def test_is_unattended_plan_eligible_matches_only_trigger_and_heartbeat():
     """Unattended Plan Mode eligibility (path-unification §5.3 / cut ②): only
     multi-round daemon runs (trigger/heartbeat) qualify; live chat and one-shot
-    surfaces do not (they use is_interactive_plan_eligible or the RPC fallback)."""
+    surfaces do not (they use is_interactive_plan_eligible or static fail-closed)."""
     from app.runtime.session import is_unattended_plan_eligible
 
     assert is_unattended_plan_eligible(SessionContext(source="trigger")) is True
@@ -143,7 +144,7 @@ def test_is_unattended_plan_eligible_matches_only_trigger_and_heartbeat():
     # live chat is NOT unattended — it has its own synchronous-confirmation path
     assert is_unattended_plan_eligible(SessionContext(source="web", channel="web")) is False
     assert is_unattended_plan_eligible(SessionContext(source="web_chat")) is False
-    # delegation (source="agent") stays on the RPC fallback for now (no nesting)
+    # delegation (source="agent") stays static fail-closed; there is no nested planner.
     assert is_unattended_plan_eligible(SessionContext(source="agent")) is False
     assert is_unattended_plan_eligible(None) is False
 
@@ -152,7 +153,7 @@ def test_interactive_and_unattended_eligibility_are_disjoint():
     """A session is never both — they map to different confirmation timings."""
     from app.runtime.session import is_interactive_plan_eligible, is_unattended_plan_eligible
 
-    for src in ("web", "web_chat", "chat", "trigger", "heartbeat", "agent", "runtime"):
+    for src in ("web", "web_chat", "chat", "feishu", "trigger", "heartbeat", "agent", "runtime"):
         sc = SessionContext(source=src)
         assert not (is_interactive_plan_eligible(sc) and is_unattended_plan_eligible(sc))
 

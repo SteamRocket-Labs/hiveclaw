@@ -228,12 +228,11 @@ class SessionContext:
             self.pending_items.pop(0)
 
 
-# Live interactive chat surfaces eligible for tool-intercept → interactive Plan
-# Mode. Real runtime web-chat sessions use source="web" (web_chat_broker.py /
-# websocket.py); "web_chat"/"chat" are accepted defensively. Unattended paths
-# (trigger/heartbeat) get their OWN eligibility below (is_unattended_plan_eligible)
-# behind a separate flag; a source in neither set keeps the RPC fallback.
-_INTERACTIVE_PLAN_CHAT_SURFACES = frozenset({"web", "web_chat", "chat"})
+# Live interactive user channels eligible for tool-intercept → interactive Plan
+# Mode. Real runtime web-chat sessions use source="web"; Feishu channel messages
+# use source/channel="feishu". Unattended paths (trigger/heartbeat) get their own
+# eligibility below.
+_INTERACTIVE_PLAN_CHAT_SURFACES = frozenset({"web", "web_chat", "chat", "feishu"})
 
 # Unattended agent runs eligible for tool-intercept → main-loop Plan Mode
 # (path-unification §5.3 / cut ②, made unconditional in cut ④). These are

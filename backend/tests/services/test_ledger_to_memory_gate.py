@@ -52,6 +52,22 @@ def test_mapper_only_promotes_verified_findings():
     assert extractions[0]["content"] == "Vendor API caps pages at 100 rows"
     assert extractions[0]["category"] == "reference"
     assert extractions[0]["source_refs"] == "ws/notes.md"
+    assert extractions[0]["evidence"] == "agent_ledger_verified"
+
+
+def test_mapper_requires_source_refs_for_verified_findings():
+    from app.services.extract_agent import ledger_findings_to_extractions
+
+    ledger = {
+        "findings": [
+            {"summary": "Agent asserted this without evidence", "trust": "verified"},
+            {"summary": "Evidence-backed finding", "trust": "verified", "source_refs": ["workspace/evidence.md"]},
+        ],
+        "failures": [],
+    }
+
+    extractions = ledger_findings_to_extractions(ledger)
+    assert [item["content"] for item in extractions] == ["Evidence-backed finding"]
 
 
 def test_mapper_promotes_failures_with_a_next_strategy_only():
@@ -94,6 +110,7 @@ def test_verified_finding_settles_into_t2_through_gate(tmp_path, monkeypatch):
         finding_type="finding",
         summary="The export endpoint rate-limits at 60 req/min",
         trust="verified",
+        source_refs=["workspace/rate-limit-notes.md"],
         data_root=tmp_path,
     )
 
@@ -107,6 +124,30 @@ def test_verified_finding_settles_into_t2_through_gate(tmp_path, monkeypatch):
     settled = next(e for e in entries if e["content"] == "The export endpoint rate-limits at 60 req/min")
     assert settled.get("entry_id")
     assert settled.get("sensitivity") == "PL1_public"
+    assert settled.get("evidence") == "agent_ledger_verified"
+    assert settled.get("source_refs") == ["workspace/rate-limit-notes.md"]
+
+
+def test_verified_finding_without_source_refs_does_not_reach_t2(tmp_path, monkeypatch):
+    from app.services.agent_work_ledger import append_agent_work_ledger_finding
+    from app.services.extract_agent import consolidate_ledger_findings_to_t2
+    from app.memory.t2_store import load_t2_entries
+
+    agent_id = uuid4()
+    _settings_patch(monkeypatch, tmp_path)
+
+    append_agent_work_ledger_finding(
+        agent_id=agent_id,
+        finding_type="finding",
+        summary="The model can self-assert this as verified",
+        trust="verified",
+        data_root=tmp_path,
+    )
+
+    written = consolidate_ledger_findings_to_t2(agent_id, data_root=tmp_path)
+    assert written == 0
+    entries, _ = load_t2_entries(tmp_path, agent_id)
+    assert entries == []
 
 
 def test_unverified_finding_does_not_reach_t2(tmp_path, monkeypatch):
@@ -149,6 +190,7 @@ def test_pl4_credential_in_finding_is_rejected_by_gate(tmp_path, monkeypatch):
         finding_type="finding",
         summary=f"The prod API key is {fake_secret}",
         trust="verified",
+        source_refs=["workspace/unsafe.txt"],
         data_root=tmp_path,
     )
 
@@ -178,6 +220,7 @@ def test_pl3_sensitive_finding_is_classified_when_settled(tmp_path, monkeypatch)
         finding_type="finding",
         summary="The Q3 salary review is scheduled for next month",
         trust="verified",
+        source_refs=["workspace/hr-notes.md"],
         data_root=tmp_path,
     )
 
@@ -202,6 +245,7 @@ def test_consolidation_is_idempotent_on_dedup(tmp_path, monkeypatch):
         finding_type="finding",
         summary="Pagination cursor is stable across requests",
         trust="verified",
+        source_refs=["workspace/pagination.md"],
         data_root=tmp_path,
     )
 
@@ -236,6 +280,8 @@ async def test_session_close_hook_settles_ledger_findings_to_t2(tmp_path, monkey
         finding_type="finding",
         summary="Webhook retries use exponential backoff capped at 5 minutes",
         trust="verified",
+        source_refs=["workspace/webhook-notes.md"],
+        session_id="sess-close-1",
         data_root=tmp_path,
     )
 

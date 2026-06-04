@@ -161,6 +161,63 @@ def test_build_restoration_context_prefers_newest_recent_files(tmp_path, monkeyp
     assert e_idx < d_idx < c_idx
 
 
+def test_build_restoration_context_restores_five_recent_files(tmp_path, monkeypatch):
+    """P2-1 (docs/compaction-cc-alignment.md): restore the working set after compaction —
+    up to 5 recent files (CC restores ≤5), not 3."""
+    from app.kernel.engine import _build_restoration_context
+    from app.runtime.session import SessionContext
+
+    agent_id = uuid4()
+    workspace = tmp_path / str(agent_id)
+    workspace.mkdir(parents=True)
+
+    files = []
+    for name in ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"]:
+        path = tmp_path / name
+        path.write_text(f"content for {name}", encoding="utf-8")
+        files.append(str(path))
+
+    session = SessionContext()
+    session.recent_files = files
+
+    monkeypatch.setattr(
+        "app.config.get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+    )
+
+    restored = _build_restoration_context(agent_id, session_context=session)
+
+    for name in ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"]:
+        assert f"### Recent File: {name}" in restored
+
+
+def test_build_restoration_context_file_budget_uses_per_file_cap(tmp_path, monkeypatch):
+    """Per-file restore budget is the full per-file cap (8K chars), not cap//2."""
+    from app.kernel.engine import _POST_COMPACT_PER_FILE_CAP, _build_restoration_context
+    from app.runtime.session import SessionContext
+
+    agent_id = uuid4()
+    workspace = tmp_path / str(agent_id)
+    workspace.mkdir(parents=True)
+
+    big_file = tmp_path / "big.txt"
+    marker_tail = "TAIL-MARKER-AT-6000"
+    big_file.write_text("z" * 5980 + marker_tail, encoding="utf-8")  # 5999 chars < 8K cap
+
+    session = SessionContext()
+    session.recent_files = [str(big_file)]
+
+    monkeypatch.setattr(
+        "app.config.get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+    )
+
+    restored = _build_restoration_context(agent_id, session_context=session)
+
+    assert len(marker_tail) < _POST_COMPACT_PER_FILE_CAP  # sanity
+    assert marker_tail in restored  # old cap//2 (4K) would have cut this off
+
+
 def test_build_persisted_memory_messages_includes_runtime_events():
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import _build_persisted_memory_messages

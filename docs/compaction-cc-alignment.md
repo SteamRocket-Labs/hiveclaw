@@ -71,7 +71,7 @@ memory_service.maybe_compress_messages (:317)   ← 唯一真实压缩入口
 
 **目标**：`[-3:]` → `[-5:]`；per-file 预算直接用 `_per_file_cap`（8K chars）。总预算 60K chars 已够容纳，不动。
 
-**状态**：⬜ 待做
+**状态**：✅ 完成 — 5 文件 × 8K chars（≈ 总 40K chars），docstring 同步
 
 ### P2-2 — 删除孤儿入口（`conversation_summarizer.py`）
 

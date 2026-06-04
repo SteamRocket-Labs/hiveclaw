@@ -1079,7 +1079,7 @@ def _build_restoration_context(
     Restores (in priority order):
     1. Soul (agent identity)
     2. Focus (working memory)
-    3. Recently-read files (up to 3, 2K chars each)
+    3. Recently-read files (up to 5, per-file cap each)
     4. Active skills summary
     5. Active packs summary
     """
@@ -1207,9 +1207,12 @@ def _build_restoration_context(
                 continue
 
     # ── 3: Recently-read files ──
+    # Restore the working set after compaction: up to 5 files at the full
+    # per-file cap (CC restores ≤5 recently-read files post-compact).
+    # docs/compaction-cc-alignment.md §3 P2-1.
     if session_context and getattr(session_context, "recent_files", None):
-        _file_budget = min(max(_per_file_cap // 2, 2000), _per_file_cap)
-        for fpath_str in reversed(session_context.recent_files[-3:]):
+        _file_budget = _per_file_cap
+        for fpath_str in reversed(session_context.recent_files[-5:]):
             if total >= _restore_budget:
                 break
             try:

@@ -1,0 +1,220 @@
+/**
+ * Workflow frontend adapter (§9 P12 of docs/workflow-source-capability.md).
+ *
+ * One mental model for the user — 自动化流程 — backed by two definition
+ * sources on ONE engine (§3.1):
+ *
+ *   POST /agents/{agentId}/workflows/preview            compile+admission+risk, never runs
+ *   POST /agents/{agentId}/workflows/runs               start (low risk: user-confirmed click;
+ *                                                       high risk: confirmed plan required)
+ *   GET  /agents/{agentId}/workflows/runs/{runId}       run + step journal
+ *   POST /agents/{agentId}/workflows/runs/{runId}/cancel kill (resumable later)
+ *
+ *   POST /workflow-definitions                          create draft (versioned, immutable)
+ *   GET  /workflow-definitions                          list visible to the tenant/agent
+ *   POST /workflow-definitions/{id}/activate|deprecate|revoke
+ *   POST /workflow-definitions/{id}/approve-promotion   human approver only (§10 decision 4)
+ *   POST /workflow-definitions/{id}/fork                registered + patch → ephemeral data
+ */
+
+import { get, post } from '../core';
+
+// ---------------------------------------------------------------------------
+// types
+// ---------------------------------------------------------------------------
+
+export type WorkflowRiskLevel = 'low' | 'high';
+
+export type WorkflowRunStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'suspended'
+  | 'killed';
+
+export type WorkflowStepStatus =
+  | 'pending'
+  | 'running'
+  | 'done'
+  | 'failed'
+  | 'skipped'
+  | 'suspended'
+  | 'unknown_requires_reconciliation';
+
+export type WorkflowDefinitionStatus = 'draft' | 'active' | 'deprecated' | 'revoked';
+
+export interface WorkflowPreview {
+  definition_hash: string;
+  risk: WorkflowRiskLevel;
+  risk_reasons: string[];
+  planned_leaf_calls: number;
+  budget_tokens: number;
+}
+
+export interface WorkflowRunStep {
+  step_id: string;
+  step_type: string;
+  status: WorkflowStepStatus;
+  error: string | null;
+}
+
+export interface WorkflowRun {
+  run_id: string;
+  status: WorkflowRunStatus;
+  definition_hash: string | null;
+  definition_source: string | null;
+  steps: WorkflowRunStep[];
+}
+
+export interface WorkflowStartResult {
+  run_id: string;
+  status: WorkflowRunStatus;
+  reason: string | null;
+  definition_hash: string;
+  risk: WorkflowRiskLevel;
+}
+
+export interface WorkflowDefinitionRecord {
+  id: string;
+  name: string;
+  definition_version: number;
+  definition_hash: string;
+  status: WorkflowDefinitionStatus;
+  visibility_scope: string;
+  owner_type: string;
+  owner_id: string | null;
+  call_policy: Record<string, unknown> | null;
+  promoted_from_run_id: string | null;
+}
+
+/** trigger.config.workflow_ref — the creation-time pin (§6.2 / P8). */
+export interface WorkflowTriggerRef {
+  definition_name: string;
+  definition_version: number;
+  definition_hash: string;
+  args?: Record<string, unknown>;
+}
+
+export type WorkflowTriggerPinStatus = 'pinned' | 'version_mismatch' | 'hash_mismatch' | 'missing';
+
+// ---------------------------------------------------------------------------
+// ephemeral runs (agent-scoped)
+// ---------------------------------------------------------------------------
+
+export function previewWorkflow(
+  agentId: string,
+  definition: Record<string, unknown>,
+  args: Record<string, unknown> = {},
+): Promise<WorkflowPreview> {
+  return post<WorkflowPreview>(`/agents/${agentId}/workflows/preview`, { definition, args });
+}
+
+export interface StartWorkflowOptions {
+  confirmedPlanId?: string;
+  planVersion?: number;
+  planHash?: string;
+  ledgerTodoId?: string;
+}
+
+export function startWorkflow(
+  agentId: string,
+  definition: Record<string, unknown>,
+  args: Record<string, unknown> = {},
+  options: StartWorkflowOptions = {},
+): Promise<WorkflowStartResult> {
+  return post<WorkflowStartResult>(`/agents/${agentId}/workflows/runs`, {
+    definition,
+    args,
+    confirmed_plan_id: options.confirmedPlanId ?? null,
+    plan_version: options.planVersion ?? null,
+    plan_hash: options.planHash ?? null,
+    ledger_todo_id: options.ledgerTodoId ?? null,
+  });
+}
+
+export function getWorkflowRun(agentId: string, runId: string): Promise<WorkflowRun> {
+  return get<WorkflowRun>(`/agents/${agentId}/workflows/runs/${runId}`);
+}
+
+export function cancelWorkflowRun(agentId: string, runId: string): Promise<{ run_id: string; status: string }> {
+  return post<{ run_id: string; status: string }>(`/agents/${agentId}/workflows/runs/${runId}/cancel`);
+}
+
+// ---------------------------------------------------------------------------
+// registered definitions (tenant-scoped)
+// ---------------------------------------------------------------------------
+
+export interface CreateDefinitionDraftOptions {
+  visibilityScope?: string;
+  ownerType?: string;
+  ownerId?: string;
+  callPolicy?: Record<string, unknown>;
+}
+
+export function createWorkflowDefinitionDraft(
+  definition: Record<string, unknown>,
+  options: CreateDefinitionDraftOptions = {},
+): Promise<WorkflowDefinitionRecord> {
+  return post<WorkflowDefinitionRecord>('/workflow-definitions', {
+    definition,
+    visibility_scope: options.visibilityScope ?? 'agent',
+    owner_type: options.ownerType ?? 'user',
+    owner_id: options.ownerId ?? null,
+    call_policy: options.callPolicy ?? null,
+  });
+}
+
+export function listWorkflowDefinitions(agentId?: string): Promise<WorkflowDefinitionRecord[]> {
+  const query = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : '';
+  return get<WorkflowDefinitionRecord[]>(`/workflow-definitions${query}`);
+}
+
+export function activateWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord> {
+  return post<WorkflowDefinitionRecord>(`/workflow-definitions/${definitionId}/activate`);
+}
+
+export function deprecateWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord> {
+  return post<WorkflowDefinitionRecord>(`/workflow-definitions/${definitionId}/deprecate`);
+}
+
+export function revokeWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord> {
+  return post<WorkflowDefinitionRecord>(`/workflow-definitions/${definitionId}/revoke`);
+}
+
+export function approveWorkflowPromotion(definitionId: string): Promise<WorkflowDefinitionRecord> {
+  return post<WorkflowDefinitionRecord>(`/workflow-definitions/${definitionId}/approve-promotion`);
+}
+
+export function forkWorkflowDefinition(
+  definitionId: string,
+  agentId: string,
+  patch: Record<string, unknown> = {},
+  version?: number,
+): Promise<{ definition: Record<string, unknown>; source_definition_id: string }> {
+  return post<{ definition: Record<string, unknown>; source_definition_id: string }>(
+    `/workflow-definitions/${definitionId}/fork`,
+    { agent_id: agentId, patch, version: version ?? null },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// trigger pin status (§6.2: authorization binds to creation-time version+hash)
+// ---------------------------------------------------------------------------
+
+/**
+ * Classify a trigger's workflow_ref against the CURRENT registered records:
+ * 'pinned' when the exact version+hash still exists; mismatches mean the
+ * trigger needs re-confirmation before it can run the newer definition.
+ */
+export function classifyTriggerPin(
+  ref: WorkflowTriggerRef,
+  records: WorkflowDefinitionRecord[],
+): WorkflowTriggerPinStatus {
+  const sameName = records.filter((record) => record.name === ref.definition_name);
+  if (sameName.length === 0) return 'missing';
+  const sameVersion = sameName.find((record) => record.definition_version === ref.definition_version);
+  if (!sameVersion) return 'version_mismatch';
+  if (sameVersion.definition_hash !== ref.definition_hash) return 'hash_mismatch';
+  return 'pinned';
+}

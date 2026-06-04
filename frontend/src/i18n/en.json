@@ -62,7 +62,6 @@
     "language": "Language",
     "plaza": "Agent Circle"
   },
-
   "auth": {
     "login": "Sign In",
     "register": "Create Account",
@@ -241,8 +240,26 @@
       "settings": "Settings"
     },
     "detail": {
-      "accessDenied": "You do not have access to this employee.",
-      "loadFailed": "Unable to load this employee right now."
+      "loading": "Loading...",
+      "notFound": "Digital employee not found",
+      "backToDashboard": "Back to Dashboard",
+      "humanRelationships": "Team Members",
+      "agentRelationships": "Other Digital Employees",
+      "searchMembers": "Search team members...",
+      "noRelationships": "No connections yet",
+      "addRelationship": "Add Connection",
+      "supervisor": "Supervisor",
+      "colleague": "Colleague",
+      "subordinate": "Direct Report",
+      "collaborator": "Collaborator",
+      "reporter": "Reports To",
+      "stakeholder": "Stakeholder",
+      "team_member": "Team Member",
+      "mentor": "Mentor",
+      "peer": "Peer",
+      "assistant": "Assistant",
+      "direct_leader": "Direct Leader",
+      "other": "Other"
     },
     "fields": {
       "name": "Name",
@@ -274,28 +291,6 @@
       "edit": "Edit",
       "chat": "Chat",
       "talkToMe": "Talk to me"
-    },
-    "detail": {
-      "loading": "Loading...",
-      "notFound": "Digital employee not found",
-      "backToDashboard": "Back to Dashboard",
-      "humanRelationships": "Team Members",
-      "agentRelationships": "Other Digital Employees",
-      "searchMembers": "Search team members...",
-      "noRelationships": "No connections yet",
-      "addRelationship": "Add Connection",
-      "supervisor": "Supervisor",
-      "colleague": "Colleague",
-      "subordinate": "Direct Report",
-      "collaborator": "Collaborator",
-      "reporter": "Reports To",
-      "stakeholder": "Stakeholder",
-      "team_member": "Team Member",
-      "mentor": "Mentor",
-      "peer": "Peer",
-      "assistant": "Assistant",
-      "direct_leader": "Direct Leader",
-      "other": "Other"
     },
     "tasks": {
       "todo": "To Do",
@@ -462,7 +457,6 @@
       "evolutionTitle": "Evolution",
       "evolutionDesc": "Curation history, performance scorecard, and blocked approaches."
     },
-
     "evolution": {
       "title": "Evolution",
       "description": "How this employee grows over time — which skills it has learned, kept sharp, or retired, and the milestones along the way.",
@@ -488,7 +482,6 @@
         "rollback": "Rolled back"
       }
     },
-
     "skills": {
       "title": "Skill Definitions",
       "description": "Skills tell your employee how to behave in specific situations. Each file defines one skill. Use YAML frontmatter (name + description) for best results.",
@@ -544,10 +537,10 @@
       "edit": "Edit",
       "cancel": "Cancel"
     },
-  "chat": {
-    "mySessions": "My Conversations",
-    "allUsers": "All Users",
-    "newSession": "New Conversation",
+    "chat": {
+      "mySessions": "My Conversations",
+      "allUsers": "All Users",
+      "newSession": "New Conversation",
       "noSessionsYet": "No conversations yet.",
       "clickToStart": "Start a new conversation to get going.",
       "noSessionSelected": "No conversation selected",
@@ -561,83 +554,83 @@
       "attachment": "Attachment",
       "uploadFailed": "Upload failed — please try again",
       "askAboutFile": "Ask about {{name}}...",
-    "thinking": "Thinking...",
-    "continuingRun": "Agent is continuing this run...",
-    "runStartFailed": "Failed to start run",
-    "toolResults": {
-      "blueprintPreviewTitle": "Agent Blueprint Preview",
-      "createdTitle": "Digital Employee Created",
-      "agentName": "Agent",
-      "mission": "Mission",
-      "firstMission": "First Mission",
-      "readyNow": "Ready Now",
-      "willInstall": "Will Install",
-      "deferredCapabilities": "Deferred Capabilities",
-      "warnings": "Warnings",
-      "manualSteps": "Manual Steps",
-      "rawOutput": "Raw output",
-      "deepResearchTitle": "Deep Research",
-      "taskId": "Task",
-      "status": "Status",
-      "sources": "Sources",
-      "claims": "Claims",
-      "report": "Report",
-      "runState": "Run State",
-      "qualityGates": "Quality Gates",
-      "gaps": "Gaps"
-    },
-    "deepResearchStream": {
-      "status": {
-        "idle": "Idle",
-        "streaming": "Streaming",
-        "completed": "Completed",
-        "failed": "Failed",
-        "aborted": "Aborted"
+      "thinking": "Thinking...",
+      "continuingRun": "Agent is continuing this run...",
+      "runStartFailed": "Failed to start run",
+      "toolResults": {
+        "blueprintPreviewTitle": "Agent Blueprint Preview",
+        "createdTitle": "Digital Employee Created",
+        "agentName": "Agent",
+        "mission": "Mission",
+        "firstMission": "First Mission",
+        "readyNow": "Ready Now",
+        "willInstall": "Will Install",
+        "deferredCapabilities": "Deferred Capabilities",
+        "warnings": "Warnings",
+        "manualSteps": "Manual Steps",
+        "rawOutput": "Raw output",
+        "deepResearchTitle": "Deep Research",
+        "taskId": "Task",
+        "status": "Status",
+        "sources": "Sources",
+        "claims": "Claims",
+        "report": "Report",
+        "runState": "Run State",
+        "qualityGates": "Quality Gates",
+        "gaps": "Gaps"
       },
-      "taskLabel": "Task",
-      "abort": "Stop stream",
-      "sources": "Sources",
-      "claims": "Claims",
-      "lanes": "Lanes",
-      "steps": "Steps",
-      "heartbeats": "Heartbeats",
-      "latestReflection": "Latest reflection",
-      "latestControllerStep": "Controller action",
-      "reportPreview": "Report preview",
-      "errorLabel": "Stream error"
-    },
-    "workLedger": {
-      "title": "Agent work ledger",
-      "taskTitle": "Agent tasks",
-      "current": "Current",
-      "next": "Next",
-      "todos": "todos",
-      "loading": "Loading work state...",
-      "loadFailed": "Work ledger is not available yet.",
-      "todoTitle": "Todo",
-      "verificationTitle": "Verification",
-      "progressTitle": "Progress",
-      "blockersTitle": "Blockers",
-      "statusComplete": "Done",
-      "statusRunning": "Running",
-      "statusBlocked": "Blocked",
-      "statusPending": "Pending"
-    },
-    "runtime": {
-      "model": "Model",
-      "remaining": "Context remaining",
-      "compactions": "Compressions",
-      "permissions": "Permissions",
-      "teamMemory": "Team Memory",
-      "retryReason": "Retry",
-      "showTrace": "Show technical details",
-      "hideTrace": "Hide technical details",
-      "eventTitle": "System Event",
-      "compactedNotice": "Context was compressed. The active working state was preserved.",
-      "compactionDetails": "Show compression details",
-      "compactionMeta": "Kept {{kept}} of {{original}} messages",
-      "toolGroupsActivated": "{{count}} runtime tool groups activated"
-    }
+      "deepResearchStream": {
+        "status": {
+          "idle": "Idle",
+          "streaming": "Streaming",
+          "completed": "Completed",
+          "failed": "Failed",
+          "aborted": "Aborted"
+        },
+        "taskLabel": "Task",
+        "abort": "Stop stream",
+        "sources": "Sources",
+        "claims": "Claims",
+        "lanes": "Lanes",
+        "steps": "Steps",
+        "heartbeats": "Heartbeats",
+        "latestReflection": "Latest reflection",
+        "latestControllerStep": "Controller action",
+        "reportPreview": "Report preview",
+        "errorLabel": "Stream error"
+      },
+      "workLedger": {
+        "title": "Agent work ledger",
+        "taskTitle": "Agent tasks",
+        "current": "Current",
+        "next": "Next",
+        "todos": "todos",
+        "loading": "Loading work state...",
+        "loadFailed": "Work ledger is not available yet.",
+        "todoTitle": "Todo",
+        "verificationTitle": "Verification",
+        "progressTitle": "Progress",
+        "blockersTitle": "Blockers",
+        "statusComplete": "Done",
+        "statusRunning": "Running",
+        "statusBlocked": "Blocked",
+        "statusPending": "Pending"
+      },
+      "runtime": {
+        "model": "Model",
+        "remaining": "Context remaining",
+        "compactions": "Compressions",
+        "permissions": "Permissions",
+        "teamMemory": "Team Memory",
+        "retryReason": "Retry",
+        "showTrace": "Show technical details",
+        "hideTrace": "Hide technical details",
+        "eventTitle": "System Event",
+        "compactedNotice": "Context was compressed. The active working state was preserved.",
+        "compactionDetails": "Show compression details",
+        "compactionMeta": "Kept {{kept}} of {{original}} messages",
+        "toolGroupsActivated": "{{count}} runtime tool groups activated"
+      }
     },
     "office": {
       "title": "Office",
@@ -818,29 +811,6 @@
         "webhookRateLimit": "Incoming Event Limit"
       },
       "clampedMessage": "{{name}}: {{requested}} → {{applied}} (adjusted by company policy)",
-      "tokenStats": "Usage Statistics",
-      "tokenToday": "Today",
-      "tokenMonth": "This Month",
-      "tokenTotal": "All Time",
-      "tokenQuotaHint": "Usage limits are managed per employee in Company Settings → Quotas",
-      "triggerLimits": "Automation Limits",
-      "triggerLimitsDesc": "Control how many automated triggers this employee can create",
-      "maxTriggers": "Max Triggers",
-      "maxTriggersDesc": "Maximum number of active automated triggers",
-      "minPollInterval": "Min Check Interval (min)",
-      "minPollIntervalDesc": "Minimum time between checking external sources",
-      "webhookRateLimit": "Incoming Event Limit (/min)",
-      "webhookRateLimitDesc": "Maximum incoming events per minute from external services",
-      "welcomeMessage": "Welcome Message",
-      "welcomeMessageDesc": "Greeting shown when someone starts a new conversation. Supports Markdown. Leave empty to skip.",
-      "welcomeMessagePlaceholder": "e.g. Hi! I'm your digital assistant. How can I help you today?",
-      "usingFallback": "Using backup model: {{model}}",
-      "noModelWarning": "No AI model selected. This employee can't chat until you choose one.",
-      "clampedField": {
-        "minPollInterval": "Min Check Interval",
-        "webhookRateLimit": "Incoming Event Limit"
-      },
-      "clampedMessage": "{{name}}: {{requested}} → {{applied}} (adjusted by company policy)",
       "timezone": {
         "title": "🌐 Timezone",
         "description": "The timezone used for scheduling, active hours, and time awareness. Uses the company timezone if not set.",
@@ -1001,7 +971,9 @@
       "success": "Upload complete",
       "failed": "Upload failed — please try again",
       "uploading": "Uploading..."
-    }
+    },
+    "workflows": "Workflows",
+    "workflowsTooltip": "Deterministic automation pipelines — preview, run, templates and approvals"
   },
   "wizard": {
     "templates": {
@@ -1812,5 +1784,27 @@
       "fetchFailed": "Failed to fetch QR code"
     },
     "disconnect": "Disconnect"
+  },
+  "workflows": {
+    "ephemeralTitle": "Run a one-off workflow",
+    "ephemeralHint": "Paste a structured workflow definition (data, not code). Preview shows risk and planned work before anything runs.",
+    "preview": "Preview",
+    "confirmAndRun": "Confirm & run",
+    "invalidJson": "Definition or args is not valid JSON",
+    "riskLow": "Low risk",
+    "riskHigh": "High risk",
+    "plannedLeaves": "{{count}} planned worker call(s)",
+    "highRiskNeedsPlan": "High-risk workflow — confirm a plan in Plan Mode before it can start.",
+    "runTitle": "Run progress",
+    "cancel": "Cancel run",
+    "registeredTitle": "Workflow templates",
+    "noDefinitions": "No registered workflows yet. Run a one-off flow and promote it once it proves itself.",
+    "colName": "Name",
+    "colStatus": "Status",
+    "colVisibility": "Visibility",
+    "approvePromotion": "Approve & activate",
+    "fork": "Fork to one-off",
+    "deprecate": "Deprecate",
+    "revoke": "Revoke"
   }
 }

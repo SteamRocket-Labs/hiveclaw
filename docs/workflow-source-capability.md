@@ -588,6 +588,16 @@ pytest tests/runtime/test_workflow_wait_signal.py tests/agents/test_coordination
 
 ### P12 Frontend / product surface
 
+> **✅ 完成（2026-06-04）** — 证据：`npm run build` ✓（tsc+vite）；`npm test -- --run` → **145 passed**（+10 workflows domain）；`npm run test:e2e -- --project=chromium` → **2 passed**（Playwright 设施从零建立）。
+>
+> **交付物**：
+> - **Playwright E2E 设施（从零）**：`@playwright/test` 依赖 + `playwright.config.ts`（webServer=vite dev fixture, chromium project, trace retain-on-failure）+ `npm run test:e2e` script + `e2e/workflow.spec.ts`。范围=浏览器级真实 UI + `/api` 面 per-test route-mock（确定性、无后端依赖；坑：glob `**/api/**` 会拦 Vite `/src/api/...` 模块请求，handler 内 `path.startsWith('/api/')` 过滤）。**全栈 E2E（真后端+PG）归 P15 部署验收**。
+> - **两条 E2E 全绿**：低风险 ephemeral preview→confirm→run completed（步进度 done 断言）；高风险 preview→start 禁用 + Plan-Mode-required 提示（fail-closed UX）。
+> - `api/domains/workflows.ts`：ephemeral preview/start（confirmed plan 绑定透传）/getRun/cancel + registered 全生命周期（create draft/list/activate/deprecate/revoke/approve-promotion/fork）+ `classifyTriggerPin`（§6.2 pin 状态推导：pinned/version_mismatch/hash_mismatch/missing）。Vitest 10 条覆盖文档红测试四项（preview/run status/registered list/trigger mismatch）。
+> - **`AgentWorkflowsSection`（一个心智模型 §4）**：一次性编排（definition 粘贴→preview 风险卡→确认运行，高风险禁用并列 reasons）→ 运行进度（step journal 轮询+cancel）→ 模板表（version/status/visibility/hash + promote 审批/fork/deprecate/revoke）。AgentDetail 注册 `workflows` tab。
+> - i18n：`en.json`/`zh.json` 双语全量（tab + workflows.* 19 keys）。
+> - **覆盖面诚实记录**：Office workbench 工作流入口归 P13（office 场景接线时才有内容）；Trigger 创建 UI 的 workflow_ref 选择器未做（pin 状态推导函数已就位，绑定 UI 留待 trigger 表单改版时接入——P8 后端校验已兜底）。
+
 目标：给办公用户一个工作流心智模型，而不是暴露 ephemeral / registered 两套入口。
 
 改动面：

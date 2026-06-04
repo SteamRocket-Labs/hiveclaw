@@ -8,6 +8,7 @@ import type { FileBrowserApi } from '../components/FileBrowser';
 import FileBrowser from '../components/FileBrowser';
 import PromptModal from '../components/PromptModal';
 import AgentApprovalsSection from './agent-detail/AgentApprovalsSection';
+import AgentWorkflowsSection from './agent-detail/AgentWorkflowsSection';
 import AgentActivityLogSection from './agent-detail/AgentActivityLogSection';
 import AgentAwareSection from './agent-detail/AgentAwareSection';
 import AgentChatSection from './agent-detail/AgentChatSection';
@@ -43,13 +44,13 @@ import { chatApi, type SessionRun } from '../api/domains/chat';
 import { uploadFileWithProgress } from '../api/core/upload-progress';
 import { useAuthStore } from '../stores';
 
-const TABS = ['status', 'aware', 'mind', 'evolution', 'tools', 'skills', 'relationships', 'workspace', 'office', 'chat', 'activityLog', 'approvals', 'settings'] as const;
+const TABS = ['status', 'aware', 'mind', 'evolution', 'tools', 'skills', 'relationships', 'workspace', 'workflows', 'office', 'chat', 'activityLog', 'approvals', 'settings'] as const;
 
 /** Visual grouping of tabs for the tab bar — groups are separated by thin dividers */
 const TAB_GROUPS: { tabs: (typeof TABS[number])[]; }[] = [
     { tabs: ['status', 'chat'] },
     { tabs: ['aware', 'mind', 'evolution', 'tools', 'skills'] },
-    { tabs: ['workspace', 'office', 'relationships', 'activityLog', 'approvals'] },
+    { tabs: ['workspace', 'workflows', 'office', 'relationships', 'activityLog', 'approvals'] },
     { tabs: ['settings'] },
 ];
 
@@ -59,7 +60,7 @@ function AgentDetailInner() {
     const navigate = useNavigate();
     const queryClient = useQueryClient();
     const location = useLocation();
-    const validTabs = ['status', 'aware', 'mind', 'evolution', 'tools', 'skills', 'relationships', 'workspace', 'office', 'chat', 'activityLog', 'approvals', 'settings'];
+    const validTabs = ['status', 'aware', 'mind', 'evolution', 'tools', 'skills', 'relationships', 'workspace', 'workflows', 'office', 'chat', 'activityLog', 'approvals', 'settings'];
     const hashTab = location.hash?.replace('#', '');
     const [activeTab, setActiveTabRaw] = useState<string>(hashTab && validTabs.includes(hashTab) ? hashTab : 'status');
 
@@ -1399,6 +1400,9 @@ function AgentDetailInner() {
 
                 {/* ── Evolution Tab (skill lifecycle + evolution timeline) ── */}
                 {activeTab === 'evolution' && <AgentEvolutionSection agentId={id!} active={canLoadAgentScopedData} />}
+                {activeTab === 'workflows' && (
+                    <AgentWorkflowsSection agentId={id!} canManage={(agent as any)?.access_level !== 'use'} />
+                )}
 
                 {/* ── Tools Tab ── */}
                 {

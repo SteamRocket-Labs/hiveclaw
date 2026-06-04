@@ -100,9 +100,10 @@ class WorkflowStep(Base):
     step_type: Mapped[str] = mapped_column(
         String(30), nullable=False, default="agent_step", server_default="agent_step"
     )
-    # pending | running | done | failed | skipped | suspended
+    # pending | running | done | failed | skipped | suspended |
+    # unknown_requires_reconciliation (P10 drain policy)
     status: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="pending", server_default="pending", index=True
+        String(40), nullable=False, default="pending", server_default="pending", index=True
     )
 
     input_hash: Mapped[str | None] = mapped_column(String(80), nullable=True)

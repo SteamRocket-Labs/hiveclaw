@@ -518,6 +518,15 @@ pytest tests/services/test_workflow_ledger_mirror.py tests/services/test_workflo
 
 ### P10 Cross-worker persistence + drain
 
+> **✅ 完成（2026-06-04）** — 证据：`pytest tests/ -q` → **3611 passed**（+7：worker lease 真 PG 4 + restart resume 1 + graceful drain 2）；ruff clean。
+>
+> **交付物**：
+> - **Run lease（worker ownership）**：`PGRunLeaseManager` = session 级 `pg_try_advisory_lock`（crc32 namespaced key）持于**专用连接**——锁随连接死亡自动释放（worker 崩溃 = 自动让渡，红测试：硬关连接后 peer 立刻可得）；两 worker 同 run 只一个获得；`resume_run` 拿不到 lease 返回 "lease held by another worker" 不双开引擎。
+> - **跨 worker 接管**：worker A 崩溃留 running run → worker B（全新 service 实例）`resume_pending_runs` 收割跑完，done step replay 不重执行（共享 PG journal）。
+> - **graceful drain**：`request_drain()` → engine 下一步边界停（in-flight leaf 跑完，新 leaf 绝不启动）→ run 标回 `running`（崩溃等价语义，startup 扫描可接管）而非 killed；journal 完整，重启后续跑只执行剩余步。
+> - **外向 in-flight 对账规则**：resume 入口检查 journal 里 status=running 且 definition effects ∈ {external, irreversible} 的步 → 标 **`unknown_requires_reconciliation`**（status 列加宽 40 容纳）+ run suspended + metadata `needs_reconciliation` 步清单 + audit `workflow_run_needs_reconciliation`；**绝不自动重放**（红测试：leaf 零调用），人工对账后方可继续。
+> - quota/admission 跨 worker 一致性已由 P5 的 advisory-lock 条件 UPDATE 保证（同 DB 锁原语，无需新件）。
+
 目标：从"单 worker 正确"推进到"多 worker / 重启 / 部署期间不丢 run"。
 
 改动面：

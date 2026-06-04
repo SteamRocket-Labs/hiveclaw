@@ -341,6 +341,59 @@ class PGQuotaReserver:
             )
 
 
+class WorkflowRunLease:
+    """A held per-run advisory lock on its own dedicated connection.
+
+    Session-level ``pg_advisory_lock`` semantics give exactly what worker
+    ownership needs: the lock dies WITH the connection, so a crashed worker
+    releases its runs automatically and a healthy peer can take over."""
+
+    def __init__(self, connection, key: int) -> None:
+        self._connection = connection
+        self._key = key
+
+    async def release(self) -> None:
+        from sqlalchemy import text
+
+        try:
+            await self._connection.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": self._key})
+        finally:
+            await self._connection.close()
+
+
+class PGRunLeaseManager:
+    """Cross-worker run ownership (§9 P10): one worker resumes a run at a time."""
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession] | None) -> None:
+        from app.database import engine as default_engine
+
+        bind = None
+        if session_factory is not None:
+            bind = session_factory.kw.get("bind")
+        self._engine = bind if bind is not None else default_engine
+
+    @staticmethod
+    def _key(run_id: uuid.UUID | str) -> int:
+        import zlib
+
+        # Stable 32-bit key in advisory-lock space, namespaced for workflows.
+        return zlib.crc32(f"wf_run:{run_id}".encode()) & 0x7FFFFFFF
+
+    async def try_acquire(self, run_id: uuid.UUID | str) -> WorkflowRunLease | None:
+        from sqlalchemy import text
+
+        connection = await self._engine.connect()
+        try:
+            got = (await connection.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": self._key(run_id)})).scalar()
+        except Exception:
+            await connection.close()
+            raise
+        if not got:
+            await connection.close()
+            return None
+        return WorkflowRunLease(connection, self._key(run_id))
+
+
 class CheckpointGateDecider:
     """gate_step → CoordinationCheckpoint (§9 P7).
 
@@ -413,6 +466,13 @@ class WorkflowRuntimeService:
     ) -> None:
         self._session_factory = session_factory
         self._gate_decider = gate_decider if gate_decider is not None else CheckpointGateDecider()
+        self._lease_manager = PGRunLeaseManager(session_factory)
+        self._draining = False
+
+    def request_drain(self) -> None:
+        """Graceful drain (§9 P10): stop taking NEW leaves at the next step
+        boundary; unfinished runs stay resumable instead of killed."""
+        self._draining = True
 
     @property
     def gate_decider(self) -> CheckpointGateDecider:
@@ -508,6 +568,21 @@ class WorkflowRuntimeService:
         tenant_id: uuid.UUID,
         leaf_executor: LeafExecutor,
     ) -> WorkflowRunOutcome:
+        lease = await self._lease_manager.try_acquire(run_id)
+        if lease is None:
+            return WorkflowRunOutcome(status="suspended", reason="run lease held by another worker; not resuming here")
+        try:
+            return await self._resume_run_locked(run_id, tenant_id=tenant_id, leaf_executor=leaf_executor)
+        finally:
+            await lease.release()
+
+    async def _resume_run_locked(
+        self,
+        run_id: uuid.UUID,
+        *,
+        tenant_id: uuid.UUID,
+        leaf_executor: LeafExecutor,
+    ) -> WorkflowRunOutcome:
         loaded = await self.load_run(run_id, tenant_id=tenant_id)
         if loaded is None:
             raise WorkflowRunNotFound(str(run_id))
@@ -527,6 +602,44 @@ class WorkflowRuntimeService:
             raise WorkflowRunNotFound(
                 f"run {run_id}: archived definition hash mismatch ({compiled.definition_hash} != {archived_hash})"
             )
+
+        # §9 P10 drain policy: an external/irreversible step left RUNNING by a
+        # hard kill might or might not have produced its side effect — it must
+        # NEVER be replayed automatically. Mark it for human reconciliation
+        # and keep the run suspended.
+        external_step_ids = {
+            step.id for step in compiled.definition.steps if step.effects in ("external", "irreversible")
+        }
+        in_flight_external = [
+            step for step in loaded.steps if step.step_id in external_step_ids and step.status == "running"
+        ]
+        if in_flight_external:
+            async with self._session(tenant_id) as session:
+                from app.models.workflow import WorkflowStep as _WS
+
+                for row in in_flight_external:
+                    db_row = (
+                        await session.execute(select(_WS).where(_WS.run_id == run_id, _WS.step_id == row.step_id))
+                    ).scalar_one()
+                    db_row.status = "unknown_requires_reconciliation"
+                task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
+                task.status = "suspended"
+                meta = dict(task.metadata_json or {})
+                meta["needs_reconciliation"] = [row.step_id for row in in_flight_external]
+                task.metadata_json = meta
+            reason = (
+                "external step(s) were in flight during a hard stop: "
+                f"{[row.step_id for row in in_flight_external]} → unknown_requires_reconciliation; "
+                "human reconciliation required before resume"
+            )
+            await self._audit(
+                "workflow_run_needs_reconciliation",
+                tenant_id=tenant_id,
+                run_id=run_id,
+                definition_hash=archived_hash,
+                extra={"steps": [row.step_id for row in in_flight_external]},
+            )
+            return WorkflowRunOutcome(status="suspended", reason=reason)
 
         async with self._session(tenant_id) as session:
             task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
@@ -686,6 +799,8 @@ class WorkflowRuntimeService:
         wait_scheduler = _MetadataWaitScheduler()
 
         async def should_continue() -> bool:
+            if self._draining:
+                return False  # graceful drain: stop at the next step boundary
             async with self._session(tenant_id) as session:
                 status = (
                     await session.execute(select(RuntimeTask.status).where(RuntimeTask.id == run_id))
@@ -710,6 +825,17 @@ class WorkflowRuntimeService:
             # simulation in tests): leave the run 'running' so the startup
             # scan can pick it up, then surface the error.
             raise
+
+        if self._draining and outcome.status == "killed":
+            # Drain stop, not a user kill: the run stays RESUMABLE — a fresh
+            # worker's startup scan picks it up after the restart.
+            outcome = WorkflowRunOutcome(
+                status="suspended", reason="worker draining; run left resumable", outputs=outcome.outputs
+            )
+            async with self._session(tenant_id) as session:
+                task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
+                task.status = "running"  # crash-equivalent: startup scan reclaims it
+            return outcome
 
         agent_for_signal: uuid.UUID | None = None
         definition_hash: str | None = None

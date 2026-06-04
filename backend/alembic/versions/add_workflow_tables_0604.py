@@ -73,7 +73,8 @@ def upgrade() -> None:
             sa.Column("step_id", sa.String(length=100), nullable=False),
             sa.Column("phase", sa.String(length=100), nullable=True),
             sa.Column("step_type", sa.String(length=30), nullable=False, server_default="agent_step"),
-            sa.Column("status", sa.String(length=20), nullable=False, server_default="pending"),
+            # 40 chars: fits 'unknown_requires_reconciliation' (P10 drain policy)
+            sa.Column("status", sa.String(length=40), nullable=False, server_default="pending"),
             sa.Column("input_hash", sa.String(length=80), nullable=True),
             sa.Column("definition_hash", sa.String(length=80), nullable=True),
             sa.Column("result_ref", sa.Text(), nullable=True),

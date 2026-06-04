@@ -117,6 +117,8 @@ CAPABILITY_MAP: dict[str, str] = {
     "delegate_to_agent": "agent.message.send",
     "send_message_to_agent": "agent.message.send",
     "spawn_subagent": "agent.subagent.spawn",
+    "preview_workflow": "agent.workflow.preview",
+    "start_workflow": "agent.workflow.run",
     "check_async_task": "agent.async_task.read",
     "list_async_tasks": "agent.async_task.read",
     "cancel_async_task": "agent.async_task.modify",

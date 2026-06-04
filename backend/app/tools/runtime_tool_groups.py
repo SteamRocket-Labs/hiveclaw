@@ -93,6 +93,8 @@ RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = (
             "check_async_task",
             "cancel_async_task",
             "list_async_tasks",
+            "preview_workflow",
+            "start_workflow",
         ),
     ),
     RuntimeToolGroupSpec(

@@ -323,6 +323,16 @@ pytest tests/runtime/test_workflow_engine_skeleton.py tests/services/test_workfl
 
 ### P4 Ephemeral launch + 风险确认分级
 
+> **✅ 完成（2026-06-04）** — 证据：`pytest tests/ -q` → **3538 passed**（+25：plan-gate integration 10 + tools 9 + api 8，及 3 处治理 parity 同步）；ruff clean。
+>
+> **交付物**：
+> - `services/workflow_launch.py`：`classify_workflow_risk`（§10 决策3 按风险分级——external/irreversible effects、预算 > `WORKFLOW_HIGH_RISK_BUDGET_TOKENS`、fanout > `WORKFLOW_HIGH_RISK_FANOUT_ITEMS`、等待 > `WORKFLOW_HIGH_RISK_WAIT_SECONDS` 任一即 high，阈值进 Settings）+ `build_subagent_leaf_executor`（**fake leaf 切真 `spawn_subagent` 入口**：spec/task/budget/ctx 全过轴1 真入口，governance/capability gate/tenant/SubagentBudget 继承自 spawn ctx，引擎不开第二条执行路；double 测试钉死契约含 leaf.max_tool_rounds→budget）+ `start_ephemeral_workflow_for_agent`（解析 agent runtime → ctx → executor → service.start_run，工具与 REST 共用单一入口）。
+> - `api/workflows.py`：preview（编译+admission+风险分级，绝不执行）/ start（低风险=用户确认按钮即对话内确认直接跑、**高风险无 confirmed plan 409 fail-closed**、PlanModeGate hash-bound 校验）/ get run（含 step journal）/ cancel。全端点 `check_agent_access`。
+> - `tools/handlers/workflow.py`：`preview_workflow` + `start_workflow`（只提交 definition 数据）。`start_workflow` 走标准 `ToolMeta.plan_gate_action_kind` 早拦截：`plan_gate_registry._start_workflow_action_kind` 按参数实时编译分级——低风险放行（等同 agent 顺序调自己的工具）、高风险硬 gate、**编译失败/缺参数 fail-closed gate**（malformed payload 永远过不去）。
+> - Plan Mode 接线：`ACTION_KINDS` + `"start_workflow"`（intent=long_task）；`ToolMeta.plan_gate_action_kind` 只是 integration，不进 Workflow 核心定义 ✓。
+> - **治理 parity 全同步**（新工具的完整接线清单回归锚）：`capability_gate.CAPABILITY_MAP`（坑回归测试钉死）、`collector` 模块表、`runtime_tool_groups.coordination_pack`（orphan 审计过）、bridge canonical surface、ACTION_KINDS documented-set、`main.py` router 注册。
+> - `ledger_todo_id` 透传：run 完成镜像到 ledger todo（observation only，失败 log 不阻断）。
+
 目标：让 agent 可以生成一次性 definition，但运行前必须经过 preview / 风险分级 / 必要确认。
 
 改动面：

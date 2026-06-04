@@ -131,6 +131,12 @@ class Settings(BaseSettings):
     WORKFLOW_MAX_LEAF_CALLS: int = 64
     WORKFLOW_MAX_WALL_CLOCK_SECONDS: int = 86_400
 
+    # Workflow risk-grading thresholds (§9 P4, §10 decision 3) — past any of
+    # these a launch is HIGH risk and must carry a confirmed plan.
+    WORKFLOW_HIGH_RISK_BUDGET_TOKENS: int = 500_000
+    WORKFLOW_HIGH_RISK_FANOUT_ITEMS: int = 8
+    WORKFLOW_HIGH_RISK_WAIT_SECONDS: int = 3_600
+
     # Coordination backend (Phase 17 wiring)
     # "memory" — in-process Lease/Signal/Checkpoint (default, fine for
     # single-process Hive deployments).

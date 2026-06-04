@@ -41,6 +41,7 @@ _PLAN_GATED_TOOL_NAMES: frozenset[str] = frozenset(
         "delegate_to_agent",
         "manage_tasks",
         "deep_research_start",
+        "start_workflow",
     }
 )
 
@@ -131,6 +132,33 @@ def _update_trigger_action_kind(arguments: dict | None) -> str | None:
     return "create_enabled_trigger" if trigger_is_autonomous(trigger_type=trigger_type, trigger_class=trigger_class) else None
 
 
+def _start_workflow_action_kind(arguments: dict | None) -> str | None:
+    """Risk-graded gate for start_workflow (§9 P4, §10 decision 3).
+
+    LOW risk (read-only/workspace effects, small budget/fanout/waits) is the
+    same governance class as the agent calling its tools in sequence — no
+    plan gate. HIGH risk hard-gates. Anything we cannot compile or classify
+    gates too (fail-closed): a malformed definition must never slip through
+    as "unclassifiable"."""
+    if trusted_plan_mode_user_declined():
+        return None
+    if not isinstance(arguments, dict):
+        return "start_workflow"
+    definition = arguments.get("definition")
+    if not isinstance(definition, dict):
+        return "start_workflow"
+    try:
+        from app.runtime.workflow_compiler import compile_workflow
+        from app.services.workflow_launch import classify_workflow_risk
+
+        compiled = compile_workflow(definition)
+        args = arguments.get("args") if isinstance(arguments.get("args"), dict) else {}
+        assessment = classify_workflow_risk(compiled, args=args)
+    except Exception:
+        return "start_workflow"  # fail-closed
+    return "start_workflow" if assessment.level == "high" else None
+
+
 def hard_gated_action_kind(tool_name: str, arguments: dict | None = None) -> str | None:
     """Return the ``ACTION_KIND`` to hard-gate ``tool_name`` on, else ``None``.
 
@@ -146,6 +174,8 @@ def hard_gated_action_kind(tool_name: str, arguments: dict | None = None) -> str
         return _update_trigger_action_kind(arguments)
     if tool_name == "manage_tasks" and action_kind == "start_long_task":
         return _manage_tasks_action_kind(arguments)
+    if tool_name == "start_workflow" and action_kind == "start_workflow":
+        return _start_workflow_action_kind(arguments)
     if action_kind and action_kind in ACTION_KINDS:
         return action_kind
     return None

@@ -31,6 +31,7 @@ def test_action_kinds_are_the_documented_set():
         "start_long_task",
         "start_delegation",
         "activate_objective_wake",
+        "start_workflow",
     }
 
 

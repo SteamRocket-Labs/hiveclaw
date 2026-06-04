@@ -48,6 +48,7 @@ ACTION_KINDS: tuple[str, ...] = (
     "start_long_task",
     "start_delegation",
     "activate_objective_wake",
+    "start_workflow",
 )
 
 #: action_kind -> intent_type. Trigger/wake creation and objective activation
@@ -59,6 +60,9 @@ _ACTION_INTENT: dict[str, str] = {
     "activate_objective_wake": "autonomous_wake",
     "start_long_task": "long_task",
     "start_delegation": "delegation",
+    # §9 P4: high-risk ephemeral workflow launches confirm through Plan Mode
+    # (§10 decision 3 — graded by risk, not by ephemeral/registered).
+    "start_workflow": "long_task",
 }
 
 

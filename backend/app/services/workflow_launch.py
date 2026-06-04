@@ -112,7 +112,14 @@ def build_subagent_leaf_executor(
             rewritten = await preset.pre_process(request, ctx)
             if rewritten is not None:
                 task = rewritten
-        budget = SubagentBudget(max_tool_rounds=request.leaf.max_tool_rounds or SubagentBudget().max_tool_rounds)
+        options = preset.options if preset is not None else {}
+        budget = SubagentBudget(
+            max_tool_rounds=request.leaf.max_tool_rounds or SubagentBudget().max_tool_rounds,
+            # Source-capture caps (arms the spawn's on_tool_call capture) —
+            # the preset's post_process refines what the spawn captured.
+            max_sources=options.get("max_sources"),
+            max_source_chars=options.get("max_source_chars"),
+        )
         handle = await spawn(ctx, spec, task, budget=budget)
         result = handle.result
         if result is None:

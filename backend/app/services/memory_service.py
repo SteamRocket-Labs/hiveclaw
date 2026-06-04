@@ -314,6 +314,39 @@ async def compute_history_limit_for_agent(agent_id: uuid.UUID) -> int:
     return compute_history_limit("openai", "")
 
 
+# ── LLM summary circuit breaker (docs/compaction-cc-alignment.md §3 P1-2) ──
+# Operational state only, NOT business state: mirrors CC's autoCompact
+# consecutive-failure breaker (added there after unbounded retries burned
+# ~250K API calls in a day). Lost on restart by design — worst case is one
+# extra LLM attempt after a process bounce.
+_SUMMARY_BREAKER_MAX_CONSECUTIVE_FAILURES = 3
+_SUMMARY_BREAKER_RETRY_AFTER_SECONDS = 600  # half-open: allow one probe after TTL
+_summary_breaker: dict[uuid.UUID, tuple[int, float]] = {}  # tenant_id → (failures, last_failure_ts)
+
+
+def _summary_breaker_is_open(tenant_id: uuid.UUID) -> bool:
+    import time
+
+    entry = _summary_breaker.get(tenant_id)
+    if not entry:
+        return False
+    failures, last_failure_ts = entry
+    if failures < _SUMMARY_BREAKER_MAX_CONSECUTIVE_FAILURES:
+        return False
+    return (time.time() - last_failure_ts) < _SUMMARY_BREAKER_RETRY_AFTER_SECONDS
+
+
+def _summary_breaker_record_failure(tenant_id: uuid.UUID) -> None:
+    import time
+
+    failures, _ = _summary_breaker.get(tenant_id, (0, 0.0))
+    _summary_breaker[tenant_id] = (failures + 1, time.time())
+
+
+def _summary_breaker_record_success(tenant_id: uuid.UUID) -> None:
+    _summary_breaker.pop(tenant_id, None)
+
+
 async def maybe_compress_messages(
     messages: list[dict],
     model_provider: str,
@@ -368,12 +401,21 @@ async def maybe_compress_messages(
         if tenant_id
         else None
     )
+    if summary_model and tenant_id is not None and _summary_breaker_is_open(tenant_id):
+        logger.warning(
+            "[Memory] LLM summary breaker open for tenant %s — skipping LLM, using extraction",
+            tenant_id,
+            extra={"metric": "compaction_llm_breaker_open", "tenant_id": str(tenant_id)},
+        )
+        summary_model = None
     if summary_model:
         try:
-            from app.services.conversation_summarizer import _llm_summarize
+            import app.services.conversation_summarizer as _summarizer
 
-            summary = await _llm_summarize(old_messages, summary_model)
+            summary = await _summarizer._llm_summarize(old_messages, summary_model)
             if summary:
+                if tenant_id is not None:
+                    _summary_breaker_record_success(tenant_id)
                 if on_compaction:
                     maybe_result = on_compaction(
                         {
@@ -385,8 +427,21 @@ async def maybe_compress_messages(
                     if maybe_result is not None:
                         await maybe_result
                 return [{"role": "system", "content": f"[Previous conversation summary]\n{summary}"}] + recent_messages
+            # Empty LLM response counts as a failure for the breaker (CC: no-text-response = failure)
+            if tenant_id is not None:
+                _summary_breaker_record_failure(tenant_id)
+            logger.warning(
+                "LLM summarization returned empty, falling back to extraction",
+                extra={"metric": "compaction_llm_fallback", "tenant_id": str(tenant_id), "reason": "empty"},
+            )
         except Exception as e:
-            logger.warning("LLM summarization failed, falling back to extraction: %s", e)
+            if tenant_id is not None:
+                _summary_breaker_record_failure(tenant_id)
+            logger.warning(
+                "LLM summarization failed, falling back to extraction: %s",
+                e,
+                extra={"metric": "compaction_llm_fallback", "tenant_id": str(tenant_id), "reason": "error"},
+            )
 
     # Fallback: text extraction
     summary = _extract_summary(old_messages)

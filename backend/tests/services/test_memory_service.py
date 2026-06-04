@@ -124,6 +124,121 @@ async def test_get_summary_model_config_explicit_choice_beats_main_model(monkeyp
     assert config["api_key"] == "sum-key"
 
 
+# ── P1-2/P1-3: LLM summary circuit breaker + fallback metric ──
+# (docs/compaction-cc-alignment.md §3)
+
+
+def _breaker_test_messages() -> list[dict]:
+    # 15 messages × 200 chars ≈ 857 tokens > trigger (~410 tokens with override=1000)
+    return [{"role": "user", "content": f"m{i} " + "a" * 196} for i in range(15)]
+
+
+@pytest.fixture
+def _clean_breaker():
+    from app.services import memory_service
+
+    memory_service._summary_breaker.clear()
+    yield
+    memory_service._summary_breaker.clear()
+
+
+async def _compress_once(monkeypatch, tenant_id, llm_calls: list, *, fail: bool):
+    """Run maybe_compress_messages with a stubbed summary LLM.
+
+    Test Double rationale: summary model resolution (DB) and the LLM call are
+    external boundaries; breaker logic under test is pure in-process state.
+    """
+    import app.services.conversation_summarizer as summarizer_mod
+    from app.services import memory_service
+
+    async def fake_get_memory_config(_tenant_id):
+        return {}
+
+    async def fake_get_summary_model_config(_tenant_id, **_kwargs):
+        return {"provider": "openai", "model": "m", "api_key": "k"}
+
+    async def fake_llm_summarize(_messages, _model_config):
+        llm_calls.append(1)
+        if fail:
+            raise RuntimeError("llm down")
+        return "fine summary"
+
+    monkeypatch.setattr(memory_service, "_get_memory_config", fake_get_memory_config)
+    monkeypatch.setattr(memory_service, "_get_summary_model_config", fake_get_summary_model_config)
+    monkeypatch.setattr(summarizer_mod, "_llm_summarize", fake_llm_summarize)
+
+    return await memory_service.maybe_compress_messages(
+        _breaker_test_messages(),
+        "openai",
+        "m",
+        1000,  # max_input_tokens_override → tiny window, forces compression
+        tenant_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_summary_breaker_opens_after_consecutive_failures(monkeypatch, caplog, _clean_breaker):
+    """3 consecutive LLM failures open the breaker: the 4th compression skips the
+    LLM entirely (CC autoCompact breaker philosophy) and the fallback emits a metric."""
+
+    tenant_id = uuid4()
+    llm_calls: list = []
+
+    with caplog.at_level("WARNING"):
+        for _ in range(3):
+            result = await _compress_once(monkeypatch, tenant_id, llm_calls, fail=True)
+            assert result[0]["role"] == "system"  # extraction fallback still compresses
+
+        assert len(llm_calls) == 3
+
+        result = await _compress_once(monkeypatch, tenant_id, llm_calls, fail=True)
+
+    assert len(llm_calls) == 3  # breaker open — no 4th LLM attempt
+    assert result[0]["role"] == "system"
+    metrics = [getattr(r, "metric", None) for r in caplog.records]
+    assert "compaction_llm_fallback" in metrics  # P1-3 degradation metric
+    assert "compaction_llm_breaker_open" in metrics
+
+
+@pytest.mark.asyncio
+async def test_summary_breaker_resets_on_success(monkeypatch, _clean_breaker):
+    from app.services import memory_service
+
+    tenant_id = uuid4()
+    llm_calls: list = []
+
+    for _ in range(2):
+        await _compress_once(monkeypatch, tenant_id, llm_calls, fail=True)
+    await _compress_once(monkeypatch, tenant_id, llm_calls, fail=False)
+
+    assert tenant_id not in memory_service._summary_breaker  # success wipes the count
+    assert len(llm_calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_summary_breaker_half_opens_after_ttl(monkeypatch, _clean_breaker):
+    from app.services import memory_service
+
+    tenant_id = uuid4()
+    llm_calls: list = []
+
+    for _ in range(3):
+        await _compress_once(monkeypatch, tenant_id, llm_calls, fail=True)
+    assert len(llm_calls) == 3
+
+    # Advance past the retry TTL → half-open probe allowed
+    failures, last_ts = memory_service._summary_breaker[tenant_id]
+    memory_service._summary_breaker[tenant_id] = (
+        failures,
+        last_ts - memory_service._SUMMARY_BREAKER_RETRY_AFTER_SECONDS - 1,
+    )
+
+    await _compress_once(monkeypatch, tenant_id, llm_calls, fail=False)
+
+    assert len(llm_calls) == 4  # probe went through
+    assert tenant_id not in memory_service._summary_breaker
+
+
 @pytest.mark.asyncio
 async def test_get_rerank_model_config_falls_back_to_tenant_default_model(monkeypatch):
     from app.services import memory_service

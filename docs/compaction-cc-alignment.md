@@ -63,7 +63,7 @@ memory_service.maybe_compress_messages (:317)   ← 唯一真实压缩入口
 
 **目标**：per-tenant 连续 3 次 LLM 摘要失败 → 熔断跳过 LLM（TTL 10min 半开重试），成功重置；降级时 `logger.warning(..., extra={"metric": "compaction_llm_fallback"})` 对齐 engine.py metric 风格。熔断状态为运维性 in-memory（CC 同样做法）。
 
-**状态**：⬜ 待做
+**状态**：✅ 完成 — `_summary_breaker` per-tenant 计数（开/半开/重置），空响应也计失败（CC 口径）；metric：`compaction_llm_fallback`（reason=error/empty）+ `compaction_llm_breaker_open`
 
 ### P2-1 — post-compact 文件恢复对齐工作现场（`kernel/engine.py:1209`）
 

@@ -217,7 +217,6 @@ def _extract_summary(messages: list[dict]) -> str:
                 "**Pending Ledger:** (none captured)",
                 "**Primary Request and Intent:** (unknown)",
                 "**Current Work:** (none captured)",
-                "**Recovery Context:** Raw session log available at logs/ for full detail",
             ]
         )
 
@@ -271,7 +270,6 @@ def _extract_summary(messages: list[dict]) -> str:
             f"**Tool Outcomes:**\n{tool_summary}",
             f"**Pending Tasks:**\n{pending_text}",
             f"**Current Work:** {current_work}",
-            "**Recovery Context:** Raw session log available at logs/ for full detail",
         ]
     )
 

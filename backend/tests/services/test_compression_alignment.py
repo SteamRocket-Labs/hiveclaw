@@ -196,7 +196,14 @@ class TestExtractSummary:
         assert "**Primary Request and Intent:**" in result
         assert "**Problem Solving:**" in result
         assert "**Current Work:**" in result
-        assert "**Recovery Context:**" in result
+
+    def test_no_recovery_context_field(self) -> None:
+        """P3-2: recovery pointers are injected by the wrapper, not emitted as a
+        summary field (keeps mechanical fallback consistent with the LLM format)."""
+        msgs = [{"role": "user", "content": "Hello"}, {"role": "assistant", "content": "Hi"}]
+        result = _extract_summary(msgs)
+        assert "**Recovery Context:**" not in result
+        assert "**Recovery Context:**" not in _extract_summary([])
 
     def test_problem_solving_extracted(self) -> None:
         msgs = [
@@ -211,7 +218,3 @@ class TestExtractSummary:
         result = _extract_summary([])
         assert "Primary Request and Intent" in result or "Task Ledger" in result
 
-    def test_recovery_context_pointer(self) -> None:
-        msgs = [{"role": "user", "content": "Hello"}, {"role": "assistant", "content": "Hi"}]
-        result = _extract_summary(msgs)
-        assert "logs/" in result

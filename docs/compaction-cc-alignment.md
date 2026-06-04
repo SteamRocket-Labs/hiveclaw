@@ -104,7 +104,7 @@ memory_service.maybe_compress_messages (:317)   ← 唯一真实压缩入口
 
 **修法**：包装文案对齐 —— 续会话说明 + resume-directly 指令（自动压缩是隐式的，用户不应感知断裂）+ 系统侧固定恢复提示（workspace logs/ 泛指，不写具体编造路径）。机械 fallback `_extract_summary` 的 Recovery Context 行同步移除。
 
-**状态**：⬜ 待做
+**状态**：✅ 完成 — 新增 `_wrap_compressed_summary`（保留 `[Previous conversation summary]` 首行标识），LLM/fallback 两路共用；`_extract_summary` 两处 Recovery Context 行已删
 
 ## 4. 明确不做（本轮）
 

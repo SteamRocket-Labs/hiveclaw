@@ -201,6 +201,26 @@ async def test_summary_breaker_opens_after_consecutive_failures(monkeypatch, cap
 
 
 @pytest.mark.asyncio
+async def test_compressed_summary_wrapper_aligns_cc(monkeypatch, _clean_breaker):
+    """P3-2 (docs/compaction-cc-alignment.md): the post-compaction wrapper carries
+    CC's resume-directly directive (auto-compaction is implicit — the user must not
+    perceive a break) and a system-injected recovery pointer (never LLM-written)."""
+    tenant_id = uuid4()
+    llm_calls: list = []
+
+    result = await _compress_once(monkeypatch, tenant_id, llm_calls, fail=False)
+
+    wrapper = result[0]
+    assert wrapper["role"] == "system"
+    content = wrapper["content"]
+    assert content.startswith("[Previous conversation summary]")  # stable marker
+    assert "fine summary" in content  # the LLM summary body
+    assert "Resume directly" in content
+    assert "do not acknowledge the summary" in content
+    assert "logs/" in content  # system-injected recovery pointer (CC transcriptPath pattern)
+
+
+@pytest.mark.asyncio
 async def test_summary_breaker_resets_on_success(monkeypatch, _clean_breaker):
     from app.services import memory_service
 

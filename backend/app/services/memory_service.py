@@ -347,6 +347,29 @@ def _summary_breaker_record_success(tenant_id: uuid.UUID) -> None:
     _summary_breaker.pop(tenant_id, None)
 
 
+def _wrap_compressed_summary(summary: str) -> dict:
+    """Build the post-compaction summary message (CC getCompactUserSummaryMessage).
+
+    Auto-compaction is implicit — the user must not perceive a break, hence the
+    resume-directly directive. The recovery pointer is system-injected here
+    (CC transcriptPath pattern) rather than LLM-written: the summary model has
+    no knowledge of real log paths and would only hallucinate them.
+    """
+    content = (
+        "[Previous conversation summary]\n"
+        "This session is being continued from an earlier portion of the conversation "
+        "that was compacted to fit the context window. The summary below covers that "
+        "earlier portion.\n\n"
+        f"{summary}\n\n"
+        "If you need specific pre-compaction detail, raw session logs live under "
+        "logs/<date>/behavior/ in your workspace.\n"
+        "Continue the conversation from where it left off without asking the user any "
+        "further questions. Resume directly — do not acknowledge the summary, do not "
+        "recap what was happening. Pick up the last task as if the break never happened."
+    )
+    return {"role": "system", "content": content}
+
+
 async def maybe_compress_messages(
     messages: list[dict],
     model_provider: str,
@@ -426,7 +449,7 @@ async def maybe_compress_messages(
                     )
                     if maybe_result is not None:
                         await maybe_result
-                return [{"role": "system", "content": f"[Previous conversation summary]\n{summary}"}] + recent_messages
+                return [_wrap_compressed_summary(summary)] + recent_messages
             # Empty LLM response counts as a failure for the breaker (CC: no-text-response = failure)
             if tenant_id is not None:
                 _summary_breaker_record_failure(tenant_id)
@@ -460,7 +483,7 @@ async def maybe_compress_messages(
         )
         if maybe_result is not None:
             await maybe_result
-    return [{"role": "system", "content": f"[Previous conversation summary]\n{summary}"}] + recent_messages
+    return [_wrap_compressed_summary(summary)] + recent_messages
 
 
 async def on_conversation_end(

@@ -196,7 +196,7 @@ class TestCompressionIntegration:
 
         required = [
             "Primary Request and Intent",
-            "Key Technical Decisions",
+            "Key Technical Concepts & Decisions",
             "Files and Code Sections",
             "Problem Solving",
             "Errors and Fixes",
@@ -205,7 +205,7 @@ class TestCompressionIntegration:
             "Tool Outcomes",
             "Pending Tasks",
             "Current Work",
-            "Recovery Context",
+            "Next Step",
         ]
         for section in required:
             assert section in _SUMMARIZE_SYSTEM_PROMPT, f"Missing: {section}"

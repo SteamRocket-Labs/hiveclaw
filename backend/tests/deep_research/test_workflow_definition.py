@@ -16,7 +16,7 @@ from app.services.deep_research.workflow_definition import (
 )
 
 
-def test_deep_research_v1_definition_compiles_to_plan_fanout_synthesize_critic() -> None:
+def test_deep_research_v1_definition_compiles_to_plan_fanout_critic_synthesize() -> None:
     definition = build_deep_research_workflow_definition()
 
     compiled = compile_workflow(
@@ -30,7 +30,8 @@ def test_deep_research_v1_definition_compiles_to_plan_fanout_synthesize_critic()
     )
 
     assert definition["name"] == DEEP_RESEARCH_WORKFLOW_NAME
-    assert [step.id for step in compiled.definition.steps] == ["plan", "explore", "synthesize", "critic"]
+    # DR-3 (P-Q2 保真): the adversarial critic runs BEFORE synthesis.
+    assert [step.id for step in compiled.definition.steps] == ["plan", "explore", "critic", "synthesize"]
     assert compiled.leaf_names == {
         "deep_research_planner",
         "deep_research_explorer",

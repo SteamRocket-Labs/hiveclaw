@@ -68,22 +68,27 @@ def build_deep_research_workflow_definition() -> dict[str, Any]:
                 ),
                 "max_concurrency": 4,
             },
-            {
-                "id": "synthesize",
-                "type": "agent_step",
-                "leaf": {"name": "deep_research_synthesizer", "type": "worker", "max_tool_rounds": 12},
-                "task": (
-                    "Synthesize a final report for {{args.question}} from exploration outputs "
-                    "{{steps.explore.output}}. Preserve unsupported claims as explicit gaps."
-                ),
-            },
+            # I2 保真（P-Q2）：对抗评审发生在合成之前，合成必须回应批评。
+            # critic/synthesize 的 pre_process 从分片总线重建真实输入；这里的
+            # task 模板表达步间依赖（compiler 跨步引用校验用），运行时被改写。
             {
                 "id": "critic",
                 "type": "agent_step",
                 "leaf": {"name": "deep_research_critic", "type": "critic", "max_tool_rounds": 8},
                 "task": (
-                    "Critique the synthesis {{steps.synthesize.output}} against coverage, attribution, "
-                    "contradictions, freshness, and unsupported claims."
+                    "Stress-test the exploration evidence {{steps.explore.output}} for {{args.question}} "
+                    "before synthesis: cherry-picking, missing warrants, overclaims, alternatives."
+                ),
+            },
+            {
+                "id": "synthesize",
+                "type": "agent_step",
+                "leaf": {"name": "deep_research_synthesizer", "type": "worker", "max_tool_rounds": 12},
+                "retry": {"max_attempts": 2},
+                "task": (
+                    "Synthesize a final report for {{args.question}} from exploration outputs "
+                    "{{steps.explore.output}} addressing the adversarial review {{steps.critic.output}}. "
+                    "Preserve unsupported claims as explicit gaps."
                 ),
             },
         ],

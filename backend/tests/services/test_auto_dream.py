@@ -618,9 +618,28 @@ class TestDreamUserPromptBuilder:
         assert "<section_selection_matrix>" in out
         assert "<few_shot_example_1>" in out
 
-    def test_builder_truncates_long_soul(self) -> None:
-        out = _build_dream_consolidation_user_prompt("A", "X" * 5000, {"feedback.md": "Y"})
-        assert "truncated" in out
+    def test_builder_full_fidelity_under_budget(self) -> None:
+        """蒸馏器核查 (docs/agent-lifecycle-cc-alignment.md §3.6): the dream
+        consolidator decides soul promotions — it must see FULL T3/soul when
+        the total fits the input budget. Per-section caps engage only over
+        budget (same philosophy as compaction P0 / heartbeat C1)."""
+        soul = "S" * 5_000  # over the old per-section cap (3K), under total budget
+        t3 = {"feedback.md": "F" * 6_000}  # over the old per-file cap (4K)
+
+        out = _build_dream_consolidation_user_prompt("A", soul, t3)
+
+        assert "truncated" not in out
+        assert "S" * 5_000 in out  # soul intact
+        assert "F" * 6_000 in out  # T3 file intact
+
+    def test_builder_caps_only_over_total_budget(self) -> None:
+        from app.services.auto_dream import _DREAM_INPUT_TOTAL_BUDGET_CHARS
+
+        big = "X" * (_DREAM_INPUT_TOTAL_BUDGET_CHARS + 10_000)
+        out = _build_dream_consolidation_user_prompt("A", "soul", {"feedback.md": big})
+
+        assert "truncated" in out  # observable marker
+        assert len(out) < len(big)  # actually bounded
 
     def test_builder_handles_no_t3_files(self) -> None:
         out = _build_dream_consolidation_user_prompt("A", "soul", {})

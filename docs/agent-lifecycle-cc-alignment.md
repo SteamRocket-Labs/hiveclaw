@@ -111,6 +111,18 @@ CC 哲学：每次拒绝都是教学机会——告诉模型为什么 + 下一�
 
 **第四优先：主题 D 按依赖排**——D2（安全）应尽快；D6/D7/D8 已有轴 1/轴 2 排期；D3/D9/D10 需要产品决策。
 
+## 3.6 蒸馏器专项核查（2026-06-04，用户提出 heartbeat≠trigger 后的追加核查）
+
+背景：用户抓到 B4 把 Autonomous Work 段错误注入 heartbeat（修正于 ebf423aa——heartbeat 是蒸馏器非 worker，语义归 HEARTBEAT.md SOP）。随后对三个 SOP-driven 蒸馏器按四问全面核查：
+
+| 蒸馏器 | LLM 接线核实 | 四问结论 | 行动 |
+|---|---|---|---|
+| **heartbeat**（T2→T3） | ✅ KAIROS persistent session 真跑 | SOP prompt 远超 CC；C1 已修总量截断；section caps（T2 24K/16K、T3 8K）为合理分段预算且截断带标记 | 无需再动 |
+| **dream**（T3→soul） | ✅ `_dream_llm_consolidate` 主路径真接线（auto_dream.py:1286 Step 1，审计 agent 的"程序化"判定为**误判**）；降级有 `record_autonomous_llm_call` metric + audit event | 🔴 两处违规已修：①输入截断在主路径（T3 每文件 4K、soul 3K——consolidator 基于残片决定 soul promotion）→ **full-fidelity 优先**（总量 ≤48K chars 不截，超预算才 per-section cap + 带文件路径的可观测标记）②输出 `max_tokens` 3000→8000（决策 JSON 含 promotions/rewrites/dedups/reasoning，3000 饿死） | ✅ 已修 — **证据**：`services/auto_dream.py` `_DREAM_INPUT_TOTAL_BUDGET_CHARS`；tests/services/test_auto_dream.py 语义反转（5K soul+6K T3 总量内不截）+ 超预算保护测试，dream 全系 83 passed，全量 3703 passed |
+| **extract**（T0→T2） | ✅ hot path LLM + pattern fallback | 增量场景（cursor-based，单次远不到 `max_messages=120`）+ T0 backfill 兜底；单条 2500/2000 截断为防御性合理；输出 1000 tokens 对 ≤8 条单行 T2 条目够用 | 定性合理，标注即可 |
+
+附注：dream 的 Step 2（pattern-based feedback promotion）在 LLM 成功后仍 always-run（"safety net"，auto_dream.py:1304）——LLM 决策与机械 promotion 写同一 soul 的潜在重复属低风险（LLM 整理后 T3 重读 + promote 有重复阈值），观察项不修。
+
 ## 4. 附录：各方面调查详情
 
 完整的逐方面判定表、四问检验、gap 清单见 5 个调查 agent 的原始输出（本文件为校准后汇总）。各方面的关键证据锚点：

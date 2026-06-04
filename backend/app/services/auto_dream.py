@@ -311,22 +311,40 @@ Produce the JSON object for this agent's current T3 state now.
 """
 
 
+# 蒸馏器核查 (docs/agent-lifecycle-cc-alignment.md §3.6): the dream consolidator
+# decides soul promotions — full fidelity first. Per-section caps are an
+# over-budget fallback only, never routine pruning (compaction-P0 philosophy).
+_DREAM_INPUT_TOTAL_BUDGET_CHARS = 48_000  # ≈14K tokens of T3+soul substrate
+_DREAM_SOUL_CAP_CHARS = 3_000  # fallback per-section caps (over-budget only)
+_DREAM_T3_FILE_CAP_CHARS = 4_000
+
+
 def _build_dream_consolidation_user_prompt(
     agent_name: str,
     soul_excerpt: str,
     t3_files: dict[str, str],
 ) -> str:
-    """Format the dream LLM user prompt with soul.md + all T3 files."""
+    """Format the dream LLM user prompt with soul.md + all T3 files.
+
+    Full fidelity when soul + T3 fit `_DREAM_INPUT_TOTAL_BUDGET_CHARS`;
+    over budget, per-section caps engage with observable truncation markers.
+    """
+    soul = soul_excerpt.strip()
+    bodies = {fname: body.strip() for fname, body in t3_files.items()}
+    total_chars = len(soul) + sum(len(body) for body in bodies.values())
+    over_budget = total_chars > _DREAM_INPUT_TOTAL_BUDGET_CHARS
+
     t3_chunks: list[str] = []
-    for fname, body in t3_files.items():
-        excerpt = body.strip()
-        if len(excerpt) > 4000:
-            excerpt = excerpt[:4000] + "\n…(truncated)"
+    for fname, excerpt in bodies.items():
+        if over_budget and len(excerpt) > _DREAM_T3_FILE_CAP_CHARS:
+            excerpt = (
+                excerpt[:_DREAM_T3_FILE_CAP_CHARS]
+                + f"\n…(truncated to fit dream input budget — full file at memory/{fname})"
+            )
         t3_chunks.append(f"### {fname}\n{excerpt}")
     t3_block = "\n\n".join(t3_chunks) if t3_chunks else "(no T3 files)"
-    soul = soul_excerpt.strip()
-    if len(soul) > 3000:
-        soul = soul[:3000] + "\n…(truncated)"
+    if over_budget and len(soul) > _DREAM_SOUL_CAP_CHARS:
+        soul = soul[:_DREAM_SOUL_CAP_CHARS] + "\n…(truncated to fit dream input budget — full file at soul.md)"
     base_prompt = _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE.format(
         agent_name=agent_name or "Agent",
         soul_excerpt=soul or "(empty)",
@@ -428,7 +446,10 @@ async def _dream_llm_consolidate(
                 LLMMessage(role="system", content=_AUTO_DREAM_SYSTEM_PROMPT),
                 LLMMessage(role="user", content=user_prompt),
             ],
-            max_tokens=3000,
+            # 蒸馏器核查: 3000 starved the decision JSON (promotions + rewrites +
+            # dedups + reasoning over up to 5 T3 files). 8000 matches the
+            # compaction-P0 output budget philosophy.
+            max_tokens=8000,
             temperature=0.2,
         )
     except Exception as exc:  # noqa: BLE001

@@ -280,9 +280,29 @@ class WorkflowDefinitionService:
     ) -> WorkflowDefinitionRecord:
         if approver_user_id is None:
             raise PermissionError("promotion approval requires a human approver (§10 decision 4)")
-        return await self.activate(
+        record = await self.activate(
             definition_id, tenant_id=tenant_id, actor_user_id=approver_user_id, allowed_leaves=allowed_leaves
         )
+        try:
+            from app.services.audit_logger import write_audit_log
+
+            await write_audit_log(
+                "workflow_definition_promoted",
+                details={
+                    "tenant_id": str(tenant_id),
+                    "definition_id": str(record.id),
+                    "definition_hash": record.definition_hash,
+                    "definition_version": record.definition_version,
+                    "approver_user_id": str(approver_user_id),
+                    "promoted_from_run_id": str(record.promoted_from_run_id) if record.promoted_from_run_id else None,
+                },
+                user_id=approver_user_id,
+            )
+        except Exception:  # audit is observation-only — never blocks the promotion
+            import logging
+
+            logging.getLogger(__name__).warning("promotion audit write failed (non-fatal)", exc_info=True)
+        return record
 
     # ── fork ─────────────────────────────────────────────────────
 
@@ -304,4 +324,21 @@ class WorkflowDefinitionService:
         if patch:
             forked.update(copy.deepcopy(patch))
         compile_workflow(forked)  # the patched result must still be valid data
+        try:
+            from app.services.audit_logger import write_audit_log
+
+            await write_audit_log(
+                "workflow_definition_forked",
+                details={
+                    "tenant_id": str(tenant_id),
+                    "definition_id": str(resolved.record.id),
+                    "definition_hash": resolved.record.definition_hash,
+                    "forked_by_agent_id": str(agent_id),
+                },
+                agent_id=agent_id,
+            )
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).warning("fork audit write failed (non-fatal)", exc_info=True)
         return forked

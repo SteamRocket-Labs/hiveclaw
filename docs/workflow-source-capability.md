@@ -488,6 +488,13 @@ pytest tests/services/test_trigger_daemon_workflow.py tests/api/test_triggers_wo
 
 ### P9 Work Ledger mirror + audit + notifications
 
+> **✅ 完成（2026-06-04）** — 证据：`pytest tests/ -q` → **3604 passed**（+7：ledger mirror 真 PG 2 + audit 3 + completion signal 真 PG 2）；ruff clean。
+>
+> **交付物**：
+> - **ledger mirror（§10 不变量④单向）**：run 创建（带 agent_id）即 `initialize_agent_work_ledger_artifact(runtime_task_id=run_id)`；`_PGWorkflowJournal` 每次 step 状态写后镜像 ledger todo（running→in_progress、done/skipped→completed、failed/suspended→pending），fail-soft 绝不阻断。**认知≠治理红测试**：mid-run 把未执行 step 的 ledger todo 篡改成 completed → resume 引擎照跑该步（引擎只读自己的 journal）。
+> - **audit trail**：`workflow_run_started/completed/failed/suspended/killed` 全带 `tenant_id+run_id+definition_hash`（+reason）；`workflow_definition_promoted`（含 approver_user_id 决策 metadata + promoted_from_run_id provenance）；`workflow_definition_forked`（forked_by_agent_id）。全部 fail-soft。
+> - **workflow_completed Signal（只通知）**：run completed 时向 parent agent 发 `signal_type="workflow_completed"`（thread_id=run_id，复用轴1通道）；**read-once 红测试**（第二次 consume 空）；failed run 不发；**不承诺 wait_signal 恢复**（P11 的 persistent consumer 才做）。
+
 目标：让用户/agent 能观察 workflow 进度，但不让 ledger 反向驱动控制流。
 
 改动面：

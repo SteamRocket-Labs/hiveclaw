@@ -70,11 +70,46 @@ class ResumedRun:
 
 
 class _PGWorkflowJournal:
-    """Real-PG step journal bound to one (tenant, run)."""
+    """Real-PG step journal bound to one (tenant, run).
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession] | None, tenant_id: uuid.UUID | str) -> None:
+    When an ``agent_id`` is bound, every step-status write is MIRRORED onto
+    the agent's work ledger (§10 invariant ④ — one-way observation surface:
+    mirror failures log and never block; the engine never reads it back)."""
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession] | None,
+        tenant_id: uuid.UUID | str,
+        *,
+        agent_id: uuid.UUID | None = None,
+        run_id: uuid.UUID | None = None,
+    ) -> None:
         self._session_factory = session_factory
         self._tenant_id = tenant_id
+        self._agent_id = agent_id
+        self._run_id = run_id
+
+    def _mirror_step(self, step_id: str, status: str) -> None:
+        if self._agent_id is None or self._run_id is None:
+            return
+        try:
+            from app.services.agent_work_ledger import upsert_agent_work_ledger_todo
+
+            ledger_status = {
+                "running": "in_progress",
+                "done": "completed",
+                "skipped": "completed",
+                "failed": "pending",
+                "suspended": "pending",
+            }.get(status, "pending")
+            upsert_agent_work_ledger_todo(
+                agent_id=self._agent_id,
+                title=f"workflow step: {step_id}",
+                status=ledger_status,
+                runtime_task_id=self._run_id,
+            )
+        except Exception as exc:
+            logger.warning("[Workflow] ledger mirror for step %s failed (non-fatal): %s", step_id, exc)
 
     def _session(self):
         return tenant_scoped_session(str(self._tenant_id), session_factory=self._session_factory)
@@ -138,23 +173,27 @@ class _PGWorkflowJournal:
             started_at=func.now(),
             error=None,
         )
+        self._mirror_step(step_id, "running")
 
     async def record_step_done(self, run_id: str, step_id: str, *, output: Any, result_ref: str | None) -> None:
         from sqlalchemy import func
 
         encoded = result_ref if result_ref is not None else json.dumps(output, ensure_ascii=False, sort_keys=True)
         await self._upsert(run_id, step_id, status="done", result_ref=encoded, finished_at=func.now())
+        self._mirror_step(step_id, "done")
 
     async def record_step_failed(self, run_id: str, step_id: str, *, error: str) -> None:
         from sqlalchemy import func
 
         await self._upsert(run_id, step_id, status="failed", error=error[:4000], finished_at=func.now())
+        self._mirror_step(step_id, "failed")
 
     async def record_step_skipped(self, run_id: str, step_id: str, *, definition_hash: str) -> None:
         await self._upsert(run_id, step_id, status="skipped", definition_hash=definition_hash)
 
     async def record_step_suspended(self, run_id: str, step_id: str, *, reason: str) -> None:
         await self._upsert(run_id, step_id, status="suspended", error=reason[:4000])
+        self._mirror_step(step_id, "suspended")
 
     # ── leaf-level journal (v1 decision 6) ───────────────────────
 
@@ -441,6 +480,22 @@ class WorkflowRuntimeService:
                 )
             )
 
+        if agent_id is not None:
+            try:
+                from app.services.agent_work_ledger import initialize_agent_work_ledger_artifact
+
+                initialize_agent_work_ledger_artifact(agent_id=agent_id, source="workflow_run", runtime_task_id=run_id)
+            except Exception as exc:
+                logger.warning("[Workflow] ledger artifact init failed (non-fatal): %s", exc)
+        await self._audit(
+            "workflow_run_started",
+            tenant_id=tenant_id,
+            run_id=run_id,
+            agent_id=agent_id,
+            definition_hash=compiled.definition_hash,
+            extra={"definition_source": definition_source},
+        )
+
         outcome = await self._execute(
             compiled, run_id=run_id, tenant_id=tenant_id, args=args, leaf_executor=leaf_executor
         )
@@ -557,6 +612,52 @@ class WorkflowRuntimeService:
                 logger.error("[Workflow] auto-resume of run %s failed: %s", run_id, exc, exc_info=True)
         return resumed
 
+    # ── observation surfaces (audit / completion signal) ─────────
+
+    async def _audit(
+        self,
+        action: str,
+        *,
+        tenant_id: uuid.UUID,
+        run_id: uuid.UUID,
+        agent_id: uuid.UUID | None = None,
+        definition_hash: str | None = None,
+        extra: dict | None = None,
+    ) -> None:
+        """Audit trail for run lifecycle (§9 P9) — fail-soft, never blocks."""
+        try:
+            from app.services.audit_logger import write_audit_log
+
+            details = {
+                "tenant_id": str(tenant_id),
+                "run_id": str(run_id),
+                "definition_hash": definition_hash,
+            }
+            if extra:
+                details.update(extra)
+            await write_audit_log(action, details=details, agent_id=agent_id)
+        except Exception as exc:
+            logger.warning("[Workflow] audit write %s failed (non-fatal): %s", action, exc)
+
+    @staticmethod
+    def _emit_completion_signal(run_id: uuid.UUID, agent_id: uuid.UUID | None, status: str) -> None:
+        """``workflow_completed`` Signal — NOTIFICATION ONLY (§3.3): read-once
+        consumption, never a wait_signal resume promise (that is P11)."""
+        if agent_id is None:
+            return
+        try:
+            from app.agents.coordination import coordination_runtime
+
+            coordination_runtime.send_signal(
+                from_agent_id=f"workflow:{run_id}",
+                to_agent_id=str(agent_id),
+                content=f"workflow run {run_id} finished: {status}",
+                signal_type="workflow_completed",
+                thread_id=str(run_id),
+            )
+        except Exception as exc:
+            logger.warning("[Workflow] completion signal failed (non-fatal): %s", exc)
+
     # ── internals ────────────────────────────────────────────────
 
     async def _execute(
@@ -568,7 +669,12 @@ class WorkflowRuntimeService:
         args: dict,
         leaf_executor: LeafExecutor,
     ) -> WorkflowRunOutcome:
-        journal = _PGWorkflowJournal(self._session_factory, tenant_id)
+        agent_for_mirror: uuid.UUID | None = None
+        async with self._session(tenant_id) as session:
+            agent_for_mirror = (
+                await session.execute(select(RuntimeTask.parent_agent_id).where(RuntimeTask.id == run_id))
+            ).scalar_one_or_none()
+        journal = _PGWorkflowJournal(self._session_factory, tenant_id, agent_id=agent_for_mirror, run_id=run_id)
         quota = PGQuotaReserver(self._session_factory, tenant_id, estimate=get_settings().WORKFLOW_LEAF_TOKEN_ESTIMATE)
 
         service = self
@@ -605,6 +711,8 @@ class WorkflowRuntimeService:
             # scan can pick it up, then surface the error.
             raise
 
+        agent_for_signal: uuid.UUID | None = None
+        definition_hash: str | None = None
         async with self._session(tenant_id) as session:
             task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
             if task.status != "killed":
@@ -618,4 +726,17 @@ class WorkflowRuntimeService:
                 metadata = dict(task.metadata_json or {})
                 metadata["last_outcome_reason"] = outcome.reason
                 task.metadata_json = metadata
+            agent_for_signal = task.parent_agent_id
+            definition_hash = (task.metadata_json or {}).get("definition_hash")
+
+        await self._audit(
+            f"workflow_run_{outcome.status}",
+            tenant_id=tenant_id,
+            run_id=run_id,
+            agent_id=agent_for_signal,
+            definition_hash=definition_hash,
+            extra={"reason": outcome.reason} if outcome.reason else None,
+        )
+        if outcome.status == "completed":
+            self._emit_completion_signal(run_id, agent_for_signal, outcome.status)
         return outcome

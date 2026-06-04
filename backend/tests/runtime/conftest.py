@@ -59,3 +59,15 @@ def _default_runtime_config(monkeypatch, request):
     monkeypatch.setattr("app.runtime.invoker._resolve_runtime_config", _stub_runtime_config)
     monkeypatch.setattr("app.runtime.invoker._resolve_current_user_name", _stub_current_user_name)
     monkeypatch.setattr("app.runtime.invoker.build_agent_runtime_context", _stub_agent_runtime_context)
+
+
+# §9 P5+ — real-PG fixtures for workflow runtime tests that need them
+# (opt-in per test via `pytestmark = pytest.mark.usefixtures("migrated_pg_url")`).
+from tests.integration.conftest import (  # noqa: F401, E402
+    app_user_engine,
+    app_user_sessionmaker,
+    migrated_pg_url,
+    owner_engine,
+    owner_sessionmaker,
+    pg_container,
+)

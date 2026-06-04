@@ -55,7 +55,7 @@ memory_service.maybe_compress_messages (:317)   ← 唯一真实压缩入口
 
 **目标**：优先级改为 tenant 显式 `summary_model_id` > **当前主对话模型**（按 provider+model 查 enabled LLMModel 拿凭据）> default 链。`maybe_compress_messages` 已有 `model_provider/model_name` 入参可用。
 
-**状态**：⬜ 待做
+**状态**：✅ 完成 — `_get_summary_model_config` 三级解析 + `_model_config` 透传 `max_input_tokens` 给 P0 的输入预算（rerank 路径 pop 保持 `create_llm_client` 兼容）
 
 ### P1-2 — LLM 摘要熔断 + P1-3 降级 metric（`memory_service.py`）
 

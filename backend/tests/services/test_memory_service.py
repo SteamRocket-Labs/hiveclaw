@@ -60,7 +60,68 @@ async def test_get_summary_model_config_falls_back_to_tenant_default_model(monke
         "model": "gpt-5.4-mini",
         "api_key": "test-key",
         "base_url": None,
+        "max_input_tokens": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_get_summary_model_config_prefers_main_conversation_model(monkeypatch):
+    """P1-1 (docs/compaction-cc-alignment.md): without an explicit summary_model_id the
+    summary runs on the CURRENT main conversation model (CC mainLoopModel philosophy)."""
+    from app.services import memory_service
+
+    tenant_id = uuid4()
+    fake_main_model = SimpleNamespace(
+        provider="anthropic",
+        model="claude-opus-4-8",
+        api_key="main-key",
+        base_url=None,
+        enabled=True,
+        max_input_tokens=1_000_000,
+    )
+    # execute order: memory_config (empty) → main-model lookup (hit)
+    fake_session = _FakeSession([{}, fake_main_model])
+    monkeypatch.setattr(memory_service, "async_session", lambda: fake_session)
+
+    config = await memory_service._get_summary_model_config(
+        tenant_id, main_provider="anthropic", main_model="claude-opus-4-8"
+    )
+
+    assert config is not None
+    assert config["provider"] == "anthropic"
+    assert config["model"] == "claude-opus-4-8"
+    assert config["api_key"] == "main-key"
+    # window threads through so _llm_summarize budgets input correctly
+    assert config["max_input_tokens"] == 1_000_000
+
+
+@pytest.mark.asyncio
+async def test_get_summary_model_config_explicit_choice_beats_main_model(monkeypatch):
+    """An operator-configured summary_model_id still wins over the main model."""
+    from app.services import memory_service
+
+    tenant_id = uuid4()
+    summary_model_id = uuid4()
+    fake_summary_model = SimpleNamespace(
+        id=summary_model_id,
+        tenant_id=tenant_id,
+        provider="openai",
+        model="gpt-5.4-mini",
+        api_key="sum-key",
+        base_url=None,
+        enabled=True,
+    )
+    # execute order: memory_config (has summary_model_id) → model-by-id lookup (hit)
+    fake_session = _FakeSession([{"summary_model_id": str(summary_model_id)}, fake_summary_model])
+    monkeypatch.setattr(memory_service, "async_session", lambda: fake_session)
+
+    config = await memory_service._get_summary_model_config(
+        tenant_id, main_provider="anthropic", main_model="claude-opus-4-8"
+    )
+
+    assert config is not None
+    assert config["model"] == "gpt-5.4-mini"
+    assert config["api_key"] == "sum-key"
 
 
 @pytest.mark.asyncio

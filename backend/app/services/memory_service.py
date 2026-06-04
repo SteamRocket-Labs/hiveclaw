@@ -362,8 +362,12 @@ async def maybe_compress_messages(
         len(old_messages),
     )
 
-    # Try LLM-powered summarization
-    summary_model = await _get_summary_model_config(tenant_id) if tenant_id else None
+    # Try LLM-powered summarization — defaults to the main conversation model (P1-1)
+    summary_model = (
+        await _get_summary_model_config(tenant_id, main_provider=model_provider, main_model=model_name)
+        if tenant_id
+        else None
+    )
     if summary_model:
         try:
             from app.services.conversation_summarizer import _llm_summarize
@@ -553,6 +557,9 @@ def _model_config(model: LLMModel) -> dict:
         "model": model.model,
         "api_key": model.api_key,
         "base_url": model.base_url,
+        # Window threads through to _llm_summarize input budgeting; consumers
+        # that expand this dict into create_llm_client() must pop it first.
+        "max_input_tokens": getattr(model, "max_input_tokens", None),
     }
 
 
@@ -613,16 +620,65 @@ async def _get_memory_model_config(tenant_id: uuid.UUID, configured_model_id: ob
         return None
 
 
-async def _get_summary_model_config(tenant_id: uuid.UUID) -> dict | None:
-    """Resolve the LLM model to use for summarization from tenant config."""
+async def _get_main_model_config(db, tenant_id: uuid.UUID, provider: str, model_name: str) -> dict | None:
+    """Find the enabled LLMModel record matching the main conversation model."""
+    if not provider or not model_name:
+        return None
+    result = await db.execute(
+        select(LLMModel)
+        .where(
+            LLMModel.tenant_id == tenant_id,
+            LLMModel.provider == provider,
+            LLMModel.model == model_name,
+            LLMModel.enabled.is_(True),
+        )
+        .limit(1)
+    )
+    model = result.scalar_one_or_none()
+    return _model_config(model) if model else None
+
+
+async def _get_summary_model_config(
+    tenant_id: uuid.UUID,
+    *,
+    main_provider: str = "",
+    main_model: str = "",
+) -> dict | None:
+    """Resolve the LLM model to use for summarization.
+
+    Priority (docs/compaction-cc-alignment.md §3 P1-1, CC mainLoopModel philosophy):
+    1. Tenant-configured summary_model_id (explicit operator choice)
+    2. The current main conversation model (window + behavior consistency)
+    3. Default chain (default_model_id → newest enabled model)
+    """
     config = await _get_memory_config(tenant_id)
-    return await _get_memory_model_config(tenant_id, config.get("summary_model_id"), "summary")
+    configured_id = config.get("summary_model_id")
+    try:
+        async with async_session() as db:
+            if configured_id:
+                model_config = await _get_enabled_model_config_by_id(db, tenant_id, configured_id)
+                if model_config:
+                    return model_config
+                logger.warning("Configured summary model is unavailable for tenant %s", tenant_id)
+
+            main_config = await _get_main_model_config(db, tenant_id, main_provider, main_model)
+            if main_config:
+                return main_config
+
+            return await _get_default_model_config(db, tenant_id)
+    except Exception as e:
+        logger.warning("Failed to load summary model: %s", e)
+        return None
 
 
 async def _get_rerank_model_config(tenant_id: uuid.UUID) -> dict | None:
     """Resolve the optional LLM model to use for semantic memory reranking."""
     config = await _get_memory_config(tenant_id)
-    return await _get_memory_model_config(tenant_id, config.get("rerank_model_id"), "rerank")
+    model_config = await _get_memory_model_config(tenant_id, config.get("rerank_model_id"), "rerank")
+    if model_config:
+        # Rerank expands this dict straight into create_llm_client() — drop the window hint.
+        model_config.pop("max_input_tokens", None)
+    return model_config
 
 
 async def _generate_session_summary(messages: list[dict], tenant_id: uuid.UUID) -> str | None:

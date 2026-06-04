@@ -14,6 +14,62 @@ def test_loop_guard_detects_identical_tool_args() -> None:
     assert decision.trace_event["tool"] == "list_files"
 
 
+# ── A4: warn-before-abort (docs/agent-lifecycle-cc-alignment.md 主题 A) ──
+# CC philosophy (doc §12.2): soft constraints first — give the model a
+# diagnostic + self-correction chance before the hard stop.
+
+
+def test_loop_guard_warns_before_abort_on_identical_args() -> None:
+    from app.kernel.loop_guard import LoopGuard
+
+    guard = LoopGuard(identical_tool_threshold=3)  # warn at 3, abort at ceil(3*1.5)=5
+
+    assert guard.observe_tool_call("list_files", {"path": "."}) is None
+    assert guard.observe_tool_call("list_files", {"path": "."}) is None
+
+    warn = guard.observe_tool_call("list_files", {"path": "."})
+    assert warn is not None
+    assert warn.severity == "warn"
+    assert warn.trace_event["event"] == "loop_guard_warning"
+
+    # Between warn and abort thresholds: no duplicate warning for the same pattern
+    assert guard.observe_tool_call("list_files", {"path": "."}) is None
+
+    abort = guard.observe_tool_call("list_files", {"path": "."})
+    assert abort is not None
+    assert abort.severity == "abort"
+    assert abort.trace_event["event"] == "loop_guard_triggered"
+
+
+def test_loop_guard_warn_message_teaches_self_correction() -> None:
+    from app.kernel.loop_guard import LoopGuard
+
+    guard = LoopGuard(repeated_text_threshold=2)
+    guard.observe_assistant_text("same answer")
+    warn = guard.observe_assistant_text("same answer")
+
+    assert warn is not None
+    assert warn.severity == "warn"
+    lowered = warn.message.lower()
+    assert "self-correct" in lowered  # it's a chance, not a verdict
+    assert "intentional" in lowered  # legitimate repetition has an out
+    assert "change approach" in lowered  # concrete next step
+
+
+def test_loop_guard_abort_decisions_keep_severity_abort() -> None:
+    from app.kernel.loop_guard import LoopGuard
+
+    guard = LoopGuard(repeated_failure_threshold=2)  # warn 2, abort ceil(3)=3
+    args = {"q": "x"}
+    err = "[Tool execution error] timeout"
+    guard.observe_tool_result("web_search", args, err)
+    warn = guard.observe_tool_result("web_search", args, err)
+    assert warn is not None and warn.severity == "warn"
+
+    abort = guard.observe_tool_result("web_search", args, err)
+    assert abort is not None and abort.severity == "abort"
+
+
 def test_loop_guard_detects_repeated_tool_failures() -> None:
     from app.kernel.loop_guard import LoopGuard
 

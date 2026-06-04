@@ -1633,6 +1633,24 @@ class AgentKernel:
                     parts=collected_parts + [{"type": "text", "text": message}],
                 )
 
+            async def _inject_loop_guard_warning(decision: LoopGuardDecision) -> None:
+                # A4 warn-before-abort: give the model the diagnostic + one
+                # self-correction chance (CC §12.2 soft-constraints-first).
+                api_messages.append(LLMMessage(role="system", content=decision.message))
+                await _emit_event(
+                    {
+                        "type": "loop_guard",
+                        "part": {
+                            "type": "event",
+                            "event_type": "loop_guard_warning",
+                            "title": "Loop Guard Warning",
+                            "text": decision.message,
+                            "status": "warning",
+                            **decision.trace_event,
+                        },
+                    }
+                )
+
             async def _emit_compaction_event(data: dict[str, Any]) -> None:
                 await _emit_event({"type": "session_compact", **data})
                 # System-level WAL: save compaction summary WITHOUT overwriting focus.md.
@@ -2160,7 +2178,10 @@ class AgentKernel:
 
                     text_loop_decision = loop_guard.observe_assistant_text(response.content)
                     if text_loop_decision:
-                        return await _abort_for_loop_guard(text_loop_decision)
+                        if text_loop_decision.severity == "warn":
+                            await _inject_loop_guard_warning(text_loop_decision)
+                        else:
+                            return await _abort_for_loop_guard(text_loop_decision)
 
                     if not response.tool_calls:
                         final_content = response.content or "[LLM returned empty content]"
@@ -2273,7 +2294,10 @@ class AgentKernel:
                     for _tc, tool_name, args in parsed_tool_calls:
                         call_loop_decision = loop_guard.observe_tool_call(tool_name, args)
                         if call_loop_decision:
-                            return await _abort_for_loop_guard(call_loop_decision)
+                            if call_loop_decision.severity == "warn":
+                                await _inject_loop_guard_warning(call_loop_decision)
+                            else:
+                                return await _abort_for_loop_guard(call_loop_decision)
 
                     if len(parsed_tool_calls) > 1 and _can_parallelize_batch(response.tool_calls):
                         # --- Parallel execution for read-only tools ---
@@ -2348,7 +2372,10 @@ class AgentKernel:
                                 tool_name, effective_args, str(result)
                             )
                             if result_loop_decision:
-                                return await _abort_for_loop_guard(result_loop_decision)
+                                if result_loop_decision.severity == "warn":
+                                    await _inject_loop_guard_warning(result_loop_decision)
+                                else:
+                                    return await _abort_for_loop_guard(result_loop_decision)
                             done_payload = {
                                 "name": tool_name,
                                 "args": effective_args,
@@ -2447,7 +2474,10 @@ class AgentKernel:
                             )
                             result_loop_decision = loop_guard.observe_tool_result(tool_name, args, str(result))
                             if result_loop_decision:
-                                return await _abort_for_loop_guard(result_loop_decision)
+                                if result_loop_decision.severity == "warn":
+                                    await _inject_loop_guard_warning(result_loop_decision)
+                                else:
+                                    return await _abort_for_loop_guard(result_loop_decision)
 
                             if request.expand_tools and request.agent_id:
                                 if executed and _should_expand_tools(tool_name, args):

@@ -123,6 +123,14 @@ class Settings(BaseSettings):
     # compatibility windows; unmapped tools are always logged + counted.
     STRICT_CAPABILITY_MAPPING: bool = True
 
+    # Workflow admission thresholds (§9 P2) — hard caps for run preflight;
+    # admission rejects (never warns) past these. Env-overridable per deploy.
+    WORKFLOW_MAX_RUN_BUDGET_TOKENS: int = 2_000_000
+    WORKFLOW_MAX_FANOUT_ITEMS: int = 16
+    WORKFLOW_MAX_CONCURRENCY: int = 8
+    WORKFLOW_MAX_LEAF_CALLS: int = 64
+    WORKFLOW_MAX_WALL_CLOCK_SECONDS: int = 86_400
+
     # Coordination backend (Phase 17 wiring)
     # "memory" — in-process Lease/Signal/Checkpoint (default, fine for
     # single-process Hive deployments).

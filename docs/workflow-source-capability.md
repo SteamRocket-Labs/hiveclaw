@@ -258,6 +258,15 @@ pytest tests/migrations/test_workflow_migration.py tests/models/test_workflow_mo
 
 ### P2 Definition schema + compiler/admission
 
+> **✅ 完成（2026-06-04）** — 证据：`pytest tests/ -q` → **3498 passed**（+31：definition 12 + compiler 9 + admission 10）；纯 Functional Core 无 mock，0.09s；ruff clean。
+>
+> **交付物**：
+> - `runtime/workflow_definition.py`：Pydantic v2 schema（`extra="forbid"` 全模型拒未知字段）；step 判别联合 `agent_step|fanout_step|gate_step|wait_until_step`；condition = `{field,op,value}` 原子 + `all/any/not` 组合、深度≤5、field 只允许 `args.*`/`steps.<id>.*`；`compute_definition_hash` = canonical JSON（sort_keys）SHA-256，字段顺序无关、内容敏感、parse 往返稳定（`canonical_dict` 用 `exclude_unset` 保 roundtrip hash 相等）。
+> - `runtime/workflow_compiler.py`：跨步引用检查（condition/task 模板 `{{...}}` 只能引用 args 或**先前** step，向前/悬空引用拒）；leaf catalog binding（`known_leaves` 注入时未列名单拒）；`effects=external|irreversible` 步必须有前置 gate_step（§10 不变量⑤）；retry 只可逆（irreversible+retry 拒）；fanout `items_from` 必须 `args.*`。
+> - `runtime/workflow_admission.py`：args 校验（required/type/未知拒）→ budget cap → leaf 授权 → fanout items/并发 cap → planned leaf calls 总数 cap → wall-clock cap；全部 HARD-REJECT 非 WARN（§5）。
+> - 阈值进 `Settings`（`WORKFLOW_MAX_RUN_BUDGET_TOKENS/MAX_FANOUT_ITEMS/MAX_CONCURRENCY/MAX_LEAF_CALLS/MAX_WALL_CLOCK_SECONDS`），env 可覆盖，零硬编码。
+> - **字符串表达式封死**（红测试钉死）：`when: "output.risk > 3"`、`{"eval": ...}`、未知 op（如 `regex_exec`）、`__import__` 路径全部 schema 层拒绝；task 占位符 `{{args.x}}` 是纯 key 替换（P3 引擎实现），非表达式求值。
+
 目标：让 ephemeral / registered 都先经过同一个编译与准入层，确保"结构化数据"不变成隐形代码执行面。
 
 改动面：

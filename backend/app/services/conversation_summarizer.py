@@ -62,67 +62,6 @@ def estimate_tokens(messages: list[dict], *, provider: str = "") -> int:
     return int(total_chars / cpt)
 
 
-async def summarize_conversation(
-    messages: list[dict],
-    trigger_tokens: int = 4000,
-    keep_recent: int = 10,
-    model_config: dict | None = None,
-    *,
-    provider: str = "",
-) -> list[dict]:
-    """Summarize old messages if conversation exceeds token threshold.
-
-    Args:
-        messages: Full conversation message list (user/assistant/tool messages)
-        trigger_tokens: Summarize when total tokens exceed this
-        keep_recent: Always keep this many recent messages verbatim
-        model_config: LLM config for summarization call (optional, uses simple extraction if not provided)
-        provider: LLM provider name for accurate token estimation
-
-    Returns:
-        Potentially compressed message list with summary prepended
-    """
-    total_tokens = estimate_tokens(messages, provider=provider)
-
-    if total_tokens <= trigger_tokens:
-        return messages  # No summarization needed
-
-    if len(messages) <= keep_recent:
-        return messages  # Not enough messages to summarize
-
-    old_messages = messages[:-keep_recent]
-    recent_messages = messages[-keep_recent:]
-
-    logger.info(
-        "Summarizing conversation: %d messages (%d tokens) → keeping %d recent, summarizing %d old",
-        len(messages),
-        total_tokens,
-        len(recent_messages),
-        len(old_messages),
-    )
-
-    # Try LLM-powered summarization if model config provided
-    if model_config:
-        try:
-            summary = await _llm_summarize(old_messages, model_config)
-            if summary:
-                summary_msg = {
-                    "role": "system",
-                    "content": f"[Previous conversation summary]\n{summary}",
-                }
-                return [summary_msg] + recent_messages
-        except Exception as e:
-            logger.warning("LLM summarization failed, falling back to extraction: %s", e)
-
-    # Fallback: extract key points without LLM
-    summary = _extract_summary(old_messages)
-    summary_msg = {
-        "role": "system",
-        "content": f"[Previous conversation summary]\n{summary}",
-    }
-    return [summary_msg] + recent_messages
-
-
 def _extract_tool_summary(messages: list[dict]) -> str:
     """Extract a compact summary of tool calls from messages."""
     tool_entries: list[str] = []

@@ -79,7 +79,7 @@ memory_service.maybe_compress_messages (:317)   ← 唯一真实压缩入口
 
 **目标**：删除函数；同步清理引用它的测试（test_conversation_summarizer.py、test_memory_integration.py 等）。保留 `estimate_tokens`/`_llm_summarize`/`_extract_summary` 等在用函数。
 
-**状态**：⬜ 待做
+**状态**：✅ 完成 — 盘点确认零引用（含测试），直接删除；`maybe_compress_messages` 为唯一压缩入口
 
 ## 4. 明确不做（本轮）
 

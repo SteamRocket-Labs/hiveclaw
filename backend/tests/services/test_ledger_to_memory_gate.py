@@ -85,6 +85,9 @@ def test_mapper_promotes_failures_with_a_next_strategy_only():
     assert len(extractions) == 1
     assert extractions[0]["category"] == "blocked_pattern"
     assert "paginate at 100" in extractions[0]["content"]
+    # Agent-authored ledger content must never carry the runtime-only
+    # tool_verified label (same principle as findings' agent_ledger_verified).
+    assert extractions[0]["evidence"] == "agent_ledger_observed"
 
 
 def test_mapper_empty_for_no_ledger():

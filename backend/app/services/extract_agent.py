@@ -621,7 +621,10 @@ def ledger_findings_to_extractions(ledger: dict[str, Any] | None) -> list[dict[s
     least one ``source_refs`` entry) graduate to durable memory. Unverified or
     self-asserted findings stay ledger scratch (§8: cognition ≠ persistence).
     Failures that recorded a ``next_strategy`` become ``blocked_pattern``
-    learnings so the agent does not repeat the dead end in a future session.
+    learnings so the agent does not repeat the dead end in a future session —
+    stamped ``agent_ledger_observed``: like findings, the error/strategy text is
+    agent-authored ledger content, so it must never carry the runtime-only
+    ``tool_verified`` evidence label.
 
     The output is the exact shape ``append_t2_entries`` consumes; the gate decides
     acceptance/rejection per entry (this function never touches privacy/PL4).
@@ -667,7 +670,7 @@ def ledger_findings_to_extractions(ledger: dict[str, Any] | None) -> list[dict[s
             {
                 "category": "blocked_pattern",
                 "content": f"{error} — next time: {next_strategy}",
-                "evidence": "tool_verified",
+                "evidence": "agent_ledger_observed",
                 "concept": _infer_concept("blocked_pattern", error),
             }
         )

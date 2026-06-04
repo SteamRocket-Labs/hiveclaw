@@ -20,6 +20,57 @@ _CORE_APP_TABLES = {
     "llm_models",
 }
 
+# Tenant tables that must carry RLS from day one. Mirrors
+# alembic/versions/add_row_level_security.py (_TENANT_TABLES) — that historic
+# migration is immutable, so the bootstrap path keeps its own copy; keep the
+# two lists in sync when adding tenant tables.
+RLS_TENANT_TABLES: tuple[str, ...] = (
+    "agents",
+    "users",
+    "llm_models",
+    "skills",
+    "tools",
+    "plaza_posts",
+    "org_departments",
+    "org_members",
+    "config_revisions",
+)
+
+
+def apply_rls_policies(connection: Connection, tables: Sequence[str] = RLS_TENANT_TABLES) -> None:
+    """Enable RLS + tenant policy on every existing table in ``tables``.
+
+    §9 P0 gap fix: ``bootstrap_database_to_head`` used to create the schema
+    via ``metadata.create_all`` and stamp head WITHOUT ever running the
+    ``add_row_level_security`` migration — every fresh deployment shipped
+    with zero RLS policies. The policy shape below matches that migration
+    exactly. Idempotent (duplicate policies are swallowed); tables that don't
+    exist in this database are skipped.
+    """
+    if connection.dialect.name != "postgresql":  # RLS is a PostgreSQL feature
+        return
+    existing = set(inspect(connection).get_table_names())
+    connection.execute(text("SELECT set_config('app.current_tenant_id', '', false)"))
+    for table in tables:
+        if table not in existing:
+            continue
+        connection.execute(text(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY"))
+        connection.execute(
+            text(
+                f"""
+                DO $$ BEGIN
+                    CREATE POLICY tenant_isolation_{table} ON {table}
+                        USING (
+                            current_setting('app.current_tenant_id', true) = 'BYPASS'
+                            OR tenant_id::text = current_setting('app.current_tenant_id', true)
+                            OR tenant_id IS NULL
+                        );
+                EXCEPTION WHEN duplicate_object THEN NULL;
+                END $$
+                """
+            )
+        )
+
 
 class AlembicContextProtocol(Protocol):
     def configure(self, **kwargs) -> None: ...
@@ -47,6 +98,10 @@ def should_bootstrap_database(connection: Connection) -> bool:
 def bootstrap_database_to_head(connection: Connection, metadata: MetaData, heads: Sequence[str]) -> None:
     """Create the current schema and stamp Alembic heads into an unversioned DB."""
     metadata.create_all(bind=connection)
+    # Stamping head skips every migration — including add_row_level_security.
+    # Apply the RLS policies explicitly so fresh deployments are not born
+    # without tenant isolation (§9 P0 gap fix).
+    apply_rls_policies(connection)
     connection.execute(
         text(
             """

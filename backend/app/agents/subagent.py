@@ -489,9 +489,7 @@ async def _spawn_one(
         system_prompt_suffix=system_prompt_suffix,
         agent_id=ctx.parent_agent_id,
         user_id=ctx.parent_user_id,
-        on_tool_call=on_tool_call
-        if budget.max_sources is not None or budget.max_source_chars is not None
-        else None,
+        on_tool_call=on_tool_call if budget.max_sources is not None or budget.max_source_chars is not None else None,
         session_context=SessionContext(
             source="subagent",
             channel="internal",
@@ -612,6 +610,48 @@ def consume_subagent_signals(parent_agent_id, *, thread_id: str | None = None) -
     return [s for s in signals if s.signal_type == SUBAGENT_COMPLETION_SIGNAL]
 
 
+def _stamp_subagent_ledger_todo(ctx: SubagentSpawnContext, spec_name: str, ledger_todo_id: str | None) -> None:
+    """切口③ assign half for lightweight workers: owner = the worker's spec name.
+
+    Ledger is an observation surface — failures log with context, never block
+    the spawn."""
+    if not ledger_todo_id:
+        return
+    try:
+        from app.services.agent_work_ledger import assign_todo_owner
+
+        assign_todo_owner(
+            agent_id=ctx.parent_agent_id,
+            item_id=ledger_todo_id,
+            owner=spec_name,
+            session_id=ctx.parent_session_id,
+        )
+    except Exception as exc:
+        logger.warning("[Subagent] ledger todo %s owner stamp failed (non-fatal): %s", ledger_todo_id, exc)
+
+
+def _write_back_subagent_ledger_todo(
+    ctx: SubagentSpawnContext, spec_name: str, ledger_todo_id: str | None, *, ok: bool
+) -> None:
+    """切口③ write-back half: success → completed, failure → released to
+    pending. ``expected_owner`` keeps a stale worker from flipping a todo that
+    was reassigned mid-flight (fail-closed in record_delegated_todo_status)."""
+    if not ledger_todo_id:
+        return
+    try:
+        from app.services.agent_work_ledger import record_delegated_todo_status
+
+        record_delegated_todo_status(
+            agent_id=ctx.parent_agent_id,
+            item_id=ledger_todo_id,
+            status="completed" if ok else "pending",
+            expected_owner=spec_name,
+            session_id=ctx.parent_session_id,
+        )
+    except Exception as exc:
+        logger.warning("[Subagent] ledger todo %s write-back failed (non-fatal): %s", ledger_todo_id, exc)
+
+
 async def spawn_subagent(
     ctx: SubagentSpawnContext,
     spec: SubagentSpec,
@@ -621,6 +661,7 @@ async def spawn_subagent(
     budget: SubagentBudget | None = None,
     context_brief: str | None = None,
     run_in_background: bool = False,
+    ledger_todo_id: str | None = None,
     invoke: InvokeAgent = invoke_agent,
 ) -> SubagentHandle:
     """Public single-worker spawn entry (cut ② sync, cut ④ adds background).
@@ -636,12 +677,17 @@ async def spawn_subagent(
       Signal when done. The parent consumes it via ``consume_subagent_signals``
       rather than busy-polling. Same-process via asyncio; cross-worker needs the
       coordination postgres backend.
+    * ``ledger_todo_id`` (§9 P0, 切口③ 收尾) — parent work-ledger todo this
+      worker serves: spawn stamps the worker as owner, completion writes the
+      terminal status back (owner-mismatch fail-closed).
     """
 
     job = SubagentJob(spec=spec, task=task, context_brief=context_brief)
+    _stamp_subagent_ledger_todo(ctx, spec.name, ledger_todo_id)
 
     if not run_in_background:
         result = await _spawn_one(ctx, job, fork=fork, budget=budget, invoke=invoke)
+        _write_back_subagent_ledger_todo(ctx, spec.name, ledger_todo_id, ok=result.ok)
         return SubagentHandle(
             name=spec.name,
             trace_id=ctx.trace_id or "",
@@ -650,7 +696,15 @@ async def spawn_subagent(
         )
 
     async def _run_and_signal() -> SubagentResult:
+        # §9 P0: pin the initiating tenant inside THIS task's context copy.
+        # Request-spawned tasks inherit it via the ContextVar snapshot, but
+        # daemon-spawned ones have no request context — ctx carries it.
+        if ctx.tenant_id:
+            from app.database import set_current_tenant
+
+            set_current_tenant(str(ctx.tenant_id))
         result = await _spawn_one(ctx, job, fork=fork, budget=budget, invoke=invoke)
+        _write_back_subagent_ledger_todo(ctx, spec.name, ledger_todo_id, ok=result.ok)
         await _emit_completion_signal(ctx, result)
         return result
 
@@ -675,6 +729,7 @@ async def spawn_subagent_from_definition(
     budget: SubagentBudget | None = None,
     context_brief: str | None = None,
     run_in_background: bool = False,
+    ledger_todo_id: str | None = None,
     invoke: InvokeAgent = invoke_agent,
 ) -> SubagentHandle:
     """Load a persistent 定义.md and spawn the named lightweight worker."""
@@ -700,6 +755,7 @@ async def spawn_subagent_from_definition(
         budget=budget,
         context_brief=context_brief,
         run_in_background=run_in_background,
+        ledger_todo_id=ledger_todo_id,
         invoke=invoke,
     )
 

@@ -55,6 +55,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             # so we validate the tenant_id as UUID before interpolation to prevent injection.
             if tenant_id:
                 import uuid as _uuid
+
                 _uuid.UUID(str(tenant_id))  # Raises ValueError if not a valid UUID
                 await session.execute(text(f"SET LOCAL app.current_tenant_id = '{tenant_id}'"))
             else:
@@ -72,6 +73,49 @@ def get_current_tenant_id() -> str | None:
     return _current_tenant_id.get()
 
 
+import contextlib  # noqa: E402  (placed near usage to keep ordering local)
+from collections.abc import AsyncIterator  # noqa: E402
+
+
+@contextlib.asynccontextmanager
+async def tenant_scoped_session(
+    tenant_id: str | None = None,
+    *,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+) -> AsyncIterator[AsyncSession]:
+    """Open a session whose RLS GUC is pinned to ``tenant_id`` (§9 P0).
+
+    Background tasks (async delegation ``_run``, ``run_in_background``
+    subagents, daemons) must use this instead of bare ``async_session()`` —
+    a bare session never runs ``SET LOCAL app.current_tenant_id``, so under
+    enforced RLS it sees nothing (fail-closed) and under the current
+    owner-bypass it sees *everything*. Falls back to the request ContextVar
+    when ``tenant_id`` is omitted; empty/None pins ``''`` (matches no tenant
+    rows — same safe default as ``get_db()``).
+
+    ``session_factory`` exists for callers that hold their own engine
+    (integration tests against a Testcontainers PG, future workflow engine).
+    """
+    factory = session_factory or async_session
+    effective = tenant_id if tenant_id is not None else _current_tenant_id.get()
+
+    async with factory() as session:
+        try:
+            if effective:
+                import uuid as _uuid
+
+                _uuid.UUID(str(effective))  # Raises ValueError if not a valid UUID
+                await session.execute(text(f"SET LOCAL app.current_tenant_id = '{effective}'"))
+            else:
+                await session.execute(text("SET LOCAL app.current_tenant_id = ''"))
+
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+
 # ── P1-W3-7 — RLS BYPASS auditing ─────────────────────────────
 # The RLS policy on tenant tables allows two escape hatches: a session
 # GUC value of 'BYPASS' and tenant_id IS NULL. Both are intentional but
@@ -82,9 +126,6 @@ def get_current_tenant_id() -> str | None:
 # reason, logs to the audit pipeline, and yields a session that already
 # has the GUC set. Direct interpolation of 'BYPASS' anywhere else in the
 # codebase is forbidden (enforced by tests/api/test_rls_bypass_audit.py).
-
-import contextlib  # noqa: E402  (placed near usage to keep ordering local)
-from collections.abc import AsyncIterator  # noqa: E402
 
 
 @contextlib.asynccontextmanager
@@ -110,8 +151,7 @@ async def enter_rls_bypass(
         raise ValueError("enter_rls_bypass requires a non-empty `reason` for audit purposes")
 
     logger.warning(
-        "[RLS] Entering BYPASS scope — reason=%r actor=%r. "
-        "Cross-tenant data is now visible on this session.",
+        "[RLS] Entering BYPASS scope — reason=%r actor=%r. Cross-tenant data is now visible on this session.",
         reason,
         actor_id,
     )

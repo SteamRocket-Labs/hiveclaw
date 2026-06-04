@@ -428,6 +428,12 @@ class AgentDelegationRequest:
     confirmed_plan_version: int | None = None
     confirmed_plan_hash: str | None = None
     plan_exempt_reason: str | None = None
+    # §9 P0: initiating tenant travels WITH the request so background tasks
+    # (which outlive the request ContextVar) can pin their DB sessions to it.
+    tenant_id: uuid.UUID | str | None = None
+    # §9 P0 (切口③ 收尾): parent work-ledger todo this delegation serves.
+    # Spawn stamps the child as owner; completion writes the status back.
+    ledger_todo_id: str | None = None
 
 
 def _delegation_coordination_key(request: AgentDelegationRequest) -> str:
@@ -574,10 +580,11 @@ async def _delegation_plan_gate_allows(request: AgentDelegationRequest) -> tuple
     if parent_agent_id is None:
         return False, "missing_parent_agent"
 
-    from app.database import async_session
+    from app.database import tenant_scoped_session
     from app.services.plan_mode_gate import get_plan_mode_gate
 
-    async with async_session() as db:
+    tenant = str(request.tenant_id) if request.tenant_id else None
+    async with tenant_scoped_session(tenant) as db:
         decision = await get_plan_mode_gate().check(
             db,
             agent_id=parent_agent_id,
@@ -594,11 +601,14 @@ async def _resolve_resumable_target_runtime(child_agent_id: uuid.UUID) -> tuple[
     """Resolve a resumable native target agent and its model from persisted state."""
     from sqlalchemy import select
 
-    from app.database import async_session
+    from app.database import tenant_scoped_session
     from app.models.agent import Agent
     from app.models.llm import LLMModel
 
-    async with async_session() as db:
+    # No explicit tenant here: resume runs inside a context where the tenant
+    # ContextVar was pinned by the caller (daemon resume sets it from the
+    # persisted RuntimeTask record).
+    async with tenant_scoped_session() as db:
         result = await db.execute(select(Agent).where(Agent.id == child_agent_id))
         target = result.scalar_one_or_none()
         if not target:
@@ -643,6 +653,8 @@ async def delegate_to_agent(
     depth: int = 1,
     policy: OrchestrationPolicy | None = None,
     interaction_type: str = "delegation",
+    tenant_id: uuid.UUID | str | None = None,
+    ledger_todo_id: str | None = None,
 ) -> str:
     """Delegate one conversational turn to another agent through the runtime."""
     request = AgentDelegationRequest(
@@ -660,9 +672,71 @@ async def delegate_to_agent(
         depth=depth,
         policy=policy or OrchestrationPolicy(),
         interaction_type=interaction_type,
+        tenant_id=tenant_id,
+        ledger_todo_id=ledger_todo_id,
     )
     result = await _delegate(request)
     return result.content
+
+
+def _delegation_ledger_owner(request: AgentDelegationRequest) -> str:
+    """Stable owner identity for the parent's ledger todo: the child agent id."""
+    return str(getattr(request.target, "id", "") or getattr(request.target, "name", ""))
+
+
+def _stamp_ledger_todo_owner(request: AgentDelegationRequest) -> None:
+    """切口③ assign half: mark the parent's todo as delegated to the child.
+
+    Ledger is an observation surface, never a control surface — failures are
+    logged with context and never block the delegation itself.
+    """
+    if not request.ledger_todo_id:
+        return
+    parent_agent_id = _maybe_uuid(request.parent_agent_id)
+    if parent_agent_id is None:
+        return
+    try:
+        from app.services.agent_work_ledger import assign_todo_owner
+
+        assign_todo_owner(
+            agent_id=parent_agent_id,
+            item_id=request.ledger_todo_id,
+            owner=_delegation_ledger_owner(request),
+            session_id=request.parent_session_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[Orchestrator] ledger todo %s owner stamp failed (non-fatal): %s",
+            request.ledger_todo_id,
+            exc,
+        )
+
+
+def _write_back_ledger_todo(request: AgentDelegationRequest, *, failed: bool) -> None:
+    """切口③ write-back half: completion → completed, failure → released to
+    pending. ``expected_owner`` makes a stale child unable to flip a todo that
+    was reassigned mid-flight (fail-closed inside record_delegated_todo_status)."""
+    if not request.ledger_todo_id:
+        return
+    parent_agent_id = _maybe_uuid(request.parent_agent_id)
+    if parent_agent_id is None:
+        return
+    try:
+        from app.services.agent_work_ledger import record_delegated_todo_status
+
+        record_delegated_todo_status(
+            agent_id=parent_agent_id,
+            item_id=request.ledger_todo_id,
+            status="pending" if failed else "completed",
+            expected_owner=_delegation_ledger_owner(request),
+            session_id=request.parent_session_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[Orchestrator] ledger todo %s write-back failed (non-fatal): %s",
+            request.ledger_todo_id,
+            exc,
+        )
 
 
 async def _delegate(request: AgentDelegationRequest) -> AgentDelegationResult:
@@ -705,14 +779,18 @@ async def _delegate(request: AgentDelegationRequest) -> AgentDelegationResult:
     if target_agent_key:
         visited.add(target_agent_key)
 
+    _stamp_ledger_todo_owner(request)
+
     try:
-        return await _delegate_after_cycle_check(
+        result = await _delegate_after_cycle_check(
             request,
             trace_id=trace_id,
             child_session_id=child_session_id,
             tool_profile=tool_profile,
             is_delegation=is_delegation,
         )
+        _write_back_ledger_todo(request, failed=result.failed)
+        return result
     finally:
         # Drop this hop from the visited set; clean the dict entry once empty
         # so long-lived processes don't leak memory across many short traces.
@@ -917,6 +995,14 @@ def _spawn_async_delegation_task(
     trace_id: str,
 ) -> None:
     async def _run() -> AgentDelegationResult:
+        # §9 P0: pin the initiating tenant inside THIS task's context copy.
+        # The spawn-time ContextVar snapshot covers request-spawned tasks, but
+        # daemon resume paths have no request context — the request carries
+        # the tenant explicitly so every session below scopes correctly.
+        if request.tenant_id:
+            from app.database import set_current_tenant
+
+            set_current_tenant(str(request.tenant_id))
         try:
             plan_allowed, plan_reason = await _delegation_plan_gate_allows(request)
             if not plan_allowed:
@@ -1026,6 +1112,7 @@ async def delegate_async(
     confirmed_plan_version: int | None = None,
     confirmed_plan_hash: str | None = None,
     plan_exempt_reason: str | None = None,
+    ledger_todo_id: str | None = None,
 ) -> AsyncDelegationHandle:
     """Launch a child agent in the background and return immediately.
 
@@ -1057,6 +1144,8 @@ async def delegate_async(
         confirmed_plan_version=confirmed_plan_version,
         confirmed_plan_hash=confirmed_plan_hash,
         plan_exempt_reason=plan_exempt_reason,
+        tenant_id=tenant_id,
+        ledger_todo_id=ledger_todo_id,
     )
     plan_allowed, plan_reason = await _delegation_plan_gate_allows(request)
     if not plan_allowed:

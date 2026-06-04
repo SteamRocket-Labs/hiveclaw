@@ -187,6 +187,19 @@ registered ──本次需要微调──▶ fork ──▶ ephemeral run
 
 ### P0 前置安全债：RLS + ledger_todo_id
 
+> **✅ 完成（2026-06-04）** — 证据：`pytest tests/ -q` → **3455 passed, 7 skipped**（基线 3436 → +19：10 ledger 串线 + 9 真 PG integration）；`ruff check` clean。
+>
+> **交付物**：
+> - **Testcontainers 真 PG fixture**（`tests/integration/conftest.py`）：PostgreSQL 16 容器 + `alembic upgrade head` 全链 + 非 owner `rls_app_user` 角色（NOBYPASSRLS）+ macOS Docker Desktop socket 自动发现。P1/P3/P5/P10 复用。
+> - **`tenant_scoped_session()`**（`app/database.py`）：background 任务的 RLS GUC 固定原语；orchestrator `_delegation_plan_gate_allows` / `_resolve_resumable_target_runtime` / async `_run`、subagent `_run_and_signal` 已接线。
+> - **`ledger_todo_id` 串线**（`AgentDelegationRequest.ledger_todo_id` + `delegate_to_agent`/`delegate_async`/`spawn_subagent`/`spawn_subagent_from_definition`）：spawn 时 `assign_todo_owner` 盖章（delegation owner=child agent id；subagent owner=spec name），完成回写 `record_delegated_todo_status`（成功→completed，失败→释放回 pending），owner 不匹配 fail-closed（`PermissionError`，ledger 是观察面绝不阻断执行）。测试 `tests/agents/test_{orchestrator,subagent}_ledger_todo.py` 10 绿。
+>
+> **验证中发现并修复的缺口（真 PG 才暴露，monkeypatch 永远测不出）**：
+> - **缺口 A（已修）**：空库 `alembic upgrade head` 走 `db_bootstrap` 捷径（`create_all` + stamp head，跳过所有迁移）→ **每个全新部署都没有任何 RLS policy**。修复 = `db_bootstrap.apply_rls_policies()`（policy 形状与 `add_row_level_security` migration 完全一致，幂等，非 PG 方言 no-op）。
+> - **缺口 B（锚定，P1 修）**：9 张租户表全部 ENABLE-only、无 `FORCE ROW LEVEL SECURITY`，而生产 `DATABASE_URL` 用户就是建表 owner → **现网所有连接实际绕过 RLS**。`test_table_owner_bypasses_enable_only_rls_documented_gap` 把现状钉死；P1 的 workflow 新表第一天 FORCE，存量表 FORCE 需先全面接线 `tenant_scoped_session`（直接 FORCE 会让所有无 GUC 的 background session 失明）。
+> - **缺口 C（已修）**：`alembic/env.py` 漏 import `ConfigRevision` → bootstrap 库缺 `config_revisions` 表，新部署的 config_versioning 服务必炸。
+> - **缺口 D（已修）**：`delegate_async` 收 `tenant_id` 参数但从不传入 `AgentDelegationRequest` → background `_run` 全程拿不到发起租户。
+
 目标：先消除会放大到 Workflow 的现有底座风险。
 
 改动面：

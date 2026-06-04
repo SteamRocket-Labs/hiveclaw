@@ -103,6 +103,8 @@ def test_no_other_code_path_writes_bypass_literal() -> None:
 
     The only legitimate hits are:
       - app/database.py (the sanctioned helper itself + this docstring)
+      - app/db_bootstrap.py (the bootstrap-path policy DEFINITION — §9 P0;
+        defines the policy, never sets the GUC to BYPASS)
       - alembic/versions/add_row_level_security.py (the policy definition)
 
     Anything else is a regression: someone bypassed the helper and we
@@ -118,9 +120,9 @@ def test_no_other_code_path_writes_bypass_literal() -> None:
         text = py_file.read_text(encoding="utf-8", errors="replace")
         for line_no, line in enumerate(text.splitlines(), start=1):
             if bypass_re.search(line):
-                # Allow the sanctioned helper itself.
+                # Allow the sanctioned helper + the bootstrap policy definition.
                 rel = py_file.relative_to(backend_root)
-                if str(rel) == "app/database.py":
+                if str(rel) in ("app/database.py", "app/db_bootstrap.py"):
                     continue
                 offenders.append((rel, line_no, line.strip()))
 

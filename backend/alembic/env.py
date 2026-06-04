@@ -30,6 +30,7 @@ from app.models.plaza import PlazaPost, PlazaComment, PlazaLike  # noqa: F401
 from app.models.schedule import AgentSchedule  # noqa: F401
 from app.models.system_settings import SystemSetting  # noqa: F401
 from app.models.tenant import Tenant  # noqa: F401
+from app.models.config_revision import ConfigRevision  # noqa: F401
 from app.models.tool import Tool  # noqa: F401
 from app.models.trigger import AgentTrigger  # noqa: F401
 from app.models.refresh_token import RefreshToken  # noqa: F401

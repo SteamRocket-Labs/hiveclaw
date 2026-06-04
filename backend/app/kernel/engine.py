@@ -1103,6 +1103,26 @@ def _maybe_activate_interactive_plan_from_tool_result(request: Any, result_str: 
     return set_interactive_plan_mode(state.to_metadata())
 
 
+def _plan_mode_activation_notice(request: Any) -> str:
+    """Explicit notice injected right after tool-intercept Plan Mode activation.
+
+    B3 (docs/agent-lifecycle-cc-alignment.md 主题 B): without this the agent's
+    experience is "tools suddenly went read-only" — it must instead learn which
+    action was gated, why the mode flipped, and what the legitimate path is.
+    """
+    state = getattr(getattr(request, "session_context", None), "plan_mode", None)
+    tool = getattr(state, "tool_name", None) or "a gated tool"
+    intent = getattr(state, "intent_type", None)
+    intent_part = f" (intent: {intent})" if intent else ""
+    return (
+        f"[Plan Mode Activated] Your call to '{tool}'{intent_part} requires a confirmed plan "
+        "before it can execute, so the system switched this run into Plan Mode: tools are now "
+        "read-only while you design the approach. What to do now: explore/read what you need, "
+        "draft the plan, then submit it via exit_plan_mode. The blocked action is preserved as "
+        "the plan's action artifact — do NOT retry the gated tool directly."
+    )
+
+
 def _build_restoration_context(
     agent_id: Any,
     session_context: Any | None = None,
@@ -2426,6 +2446,11 @@ class AgentKernel:
                                 _interactive_plan_token = _maybe_activate_interactive_plan_from_tool_result(
                                     request, str(result)
                                 )
+                                if _interactive_plan_token is not None:
+                                    # B3: tell the model WHY it just entered Plan Mode
+                                    api_messages.append(
+                                        LLMMessage(role="system", content=_plan_mode_activation_notice(request))
+                                    )
                             _content = _maybe_evict_tool_result(tool_name, tc["id"], str(result), request.eviction_dir)
                             _round_tool_chars += len(_content)
                             if (
@@ -2627,6 +2652,11 @@ class AgentKernel:
                                 _interactive_plan_token = _maybe_activate_interactive_plan_from_tool_result(
                                     request, str(result)
                                 )
+                                if _interactive_plan_token is not None:
+                                    # B3: tell the model WHY it just entered Plan Mode
+                                    api_messages.append(
+                                        LLMMessage(role="system", content=_plan_mode_activation_notice(request))
+                                    )
                             _content = _maybe_evict_tool_result(tool_name, tc["id"], str(result), request.eviction_dir)
                             _round_tool_chars += len(_content)
                             if (

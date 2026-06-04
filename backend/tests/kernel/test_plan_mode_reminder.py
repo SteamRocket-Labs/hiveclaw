@@ -100,3 +100,46 @@ def test_full_reminder_omits_file_hint_when_no_plan_file():
     assert result is not None
     content, _ = result
     assert content == _PLAN_MODE_REMINDER_FULL
+
+
+# ── B3: explicit activation notice (docs/agent-lifecycle-cc-alignment.md 主题 B) ──
+
+
+def test_plan_mode_activation_notice_names_blocked_action() -> None:
+    """When tool-intercept flips the run into Plan Mode, the model must be told
+    WHY (which action was gated) and WHAT to do now — not just 'suddenly read-only'."""
+    from types import SimpleNamespace
+
+    from app.kernel.engine import _plan_mode_activation_notice
+
+    request = SimpleNamespace(
+        session_context=SimpleNamespace(
+            plan_mode=SimpleNamespace(
+                active=True,
+                tool_name="set_trigger",
+                intent_type="autonomous_wake",
+            )
+        )
+    )
+
+    notice = _plan_mode_activation_notice(request)
+
+    assert "set_trigger" in notice  # names the gated action
+    assert "autonomous_wake" in notice  # carries the classified intent
+    assert "Plan Mode" in notice
+    assert "read-only" in notice  # explains the sudden constraint
+    assert "exit_plan_mode" in notice  # the concrete next step
+    assert "do NOT retry" in notice  # anti-drift: don't hammer the gated tool
+
+
+def test_plan_mode_activation_notice_defaults_when_state_sparse() -> None:
+    from types import SimpleNamespace
+
+    from app.kernel.engine import _plan_mode_activation_notice
+
+    request = SimpleNamespace(session_context=SimpleNamespace(plan_mode=None))
+
+    notice = _plan_mode_activation_notice(request)
+
+    assert "Plan Mode" in notice
+    assert "exit_plan_mode" in notice

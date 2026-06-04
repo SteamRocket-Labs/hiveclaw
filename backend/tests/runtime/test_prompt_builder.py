@@ -595,3 +595,38 @@ def test_dynamic_suffix_omits_autonomous_section_for_live_chat() -> None:
     suffix = build_dynamic_prompt_suffix(latest_user_query="hello", source="web")
 
     assert "Autonomous Work" not in suffix
+
+
+# ── C2: catalog over-budget degradation keeps minimum visibility ──
+# (docs/agent-lifecycle-cc-alignment.md 主题 C)
+
+
+def test_frozen_prefix_omitted_catalog_keeps_minimum_visibility() -> None:
+    """When the leftover budget is too small for even a trimmed catalog, the
+    model must still learn that skills exist and how to reach them — never
+    silently blind."""
+    from app.runtime.prompt_builder import _FROZEN_PREFIX_CHAR_LIMIT, _enforce_frozen_prefix_budget
+
+    # Base fills the budget to within <200 chars of the limit
+    base = ["x" * (_FROZEN_PREFIX_CHAR_LIMIT - 150)]
+    catalog = "| skill-a | does a | a.md |\n" * 50
+
+    result = _enforce_frozen_prefix_budget(base, catalog)
+
+    assert "load_skill" in result  # the path back to the skills
+    assert len(result) <= _FROZEN_PREFIX_CHAR_LIMIT + 200  # notice itself stays bounded
+
+
+def test_frozen_prefix_trimmed_catalog_signposts_remaining_skills() -> None:
+    """A trimmed catalog must say MORE skills exist and how to discover them."""
+    from app.runtime.prompt_builder import _FROZEN_PREFIX_CHAR_LIMIT, _enforce_frozen_prefix_budget
+
+    base = ["x" * (_FROZEN_PREFIX_CHAR_LIMIT - 2_000)]  # leftover ≈2K — enough to trim into
+    catalog = "\n".join(f"| skill-{i} | description {i} | s{i}.md |" for i in range(400))
+    assert len(catalog) > 4_000  # sanity: catalog genuinely overflows the leftover
+
+    result = _enforce_frozen_prefix_budget(base, catalog)
+
+    assert "skill-0" in result  # head of the catalog survives
+    assert "more skills" in result.lower()  # signpost
+    assert "load_skill" in result

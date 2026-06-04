@@ -221,14 +221,29 @@ def build_frozen_prompt_prefix(
     return prefix
 
 
+# C2 (docs/agent-lifecycle-cc-alignment.md 主题 C): an over-budget catalog must
+# never leave the model blind — degraded states keep a signpost back to skills.
+_CATALOG_OMITTED_NOTICE = (
+    "## Skills\n"
+    "[Skill catalog omitted to fit the context budget — skills are still available: "
+    "call load_skill(name) to load one, or list the skills/ directory to discover them.]"
+)
+_CATALOG_TRIMMED_SUFFIX = (
+    "\n[... catalog truncated to fit the context budget — more skills exist: "
+    "list the skills/ directory or call load_skill(name) directly.]"
+)
+
+
 def _enforce_frozen_prefix_budget(base_parts: list[str], skill_catalog: str) -> str:
     """Hard-cap the assembled prefix to `_FROZEN_PREFIX_CHAR_LIMIT`.
 
     Strategy (in order of preference):
-      1. Drop the skill catalog entirely. It's the most replaceable section
-         because `load_skill` can hydrate any skill body on demand.
+      1. Drop the skill catalog body. It's the most replaceable section
+         because `load_skill` can hydrate any skill body on demand —
+         but ALWAYS leave a signpost so the model knows skills exist (C2).
       2. If base sections alone fit, optionally re-add a trimmed catalog
-         in the leftover budget so frequently-used skills stay visible.
+         in the leftover budget so frequently-used skills stay visible,
+         with a trailing signpost for the skills that were cut.
       3. If base sections alone overflow, tail-trim with a notice. This is
          a last resort — base sections drive agent behavior and trimming
          them risks behavior regression.
@@ -241,16 +256,19 @@ def _enforce_frozen_prefix_budget(base_parts: list[str], skill_catalog: str) -> 
         # Reserve room for the "\n\n" join and the "\n..." marker that
         # `_trim_block` may append (up to 4 extra chars over its budget).
         leftover = _FROZEN_PREFIX_CHAR_LIMIT - len(base_only) - 6
-        # Below 200 chars, a trimmed catalog is just noise; drop it instead.
+        # Below 200 chars a trimmed catalog is just noise — but never go
+        # silently blind: leave the minimum-visibility signpost instead.
         if leftover < 200:
-            return base_only
-        trimmed = _trim_block(skill_catalog, budget_chars=leftover)
+            return f"{base_only}\n\n{_CATALOG_OMITTED_NOTICE}"
+        trimmed = _trim_block(skill_catalog, budget_chars=max(200, leftover - len(_CATALOG_TRIMMED_SUFFIX)))
         if not trimmed:
-            return base_only
+            return f"{base_only}\n\n{_CATALOG_OMITTED_NOTICE}"
+        if len(trimmed) < len(skill_catalog):
+            trimmed += _CATALOG_TRIMMED_SUFFIX
         result = f"{base_only}\n\n{trimmed}"
         # Defensive hard cap — `_trim_block` is best-effort.
-        if len(result) > _FROZEN_PREFIX_CHAR_LIMIT:
-            result = result[:_FROZEN_PREFIX_CHAR_LIMIT]
+        if len(result) > _FROZEN_PREFIX_CHAR_LIMIT + len(_CATALOG_TRIMMED_SUFFIX):
+            result = result[: _FROZEN_PREFIX_CHAR_LIMIT + len(_CATALOG_TRIMMED_SUFFIX)]
         return result
 
     # Base sections themselves overflow — tail-trim with a notice. We trim

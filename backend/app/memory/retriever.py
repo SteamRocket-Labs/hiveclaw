@@ -89,7 +89,7 @@ async def _rerank_semantic_items(
     model_config: dict | None = None,
     *,
     max_select: int = _RERANK_MAX_SELECT,
-    timeout_seconds: float = 1.5,
+    timeout_seconds: float = 3.0,
 ) -> list[MemoryItem]:
     """Use a cheap LLM side-query to select the most relevant semantic memories.
 
@@ -108,7 +108,8 @@ async def _rerank_semantic_items(
     except ImportError:
         return items[:max_select]
 
-    manifest_lines = [str(i) + ": " + item.content[:150] for i, item in enumerate(items)]
+    # A3: 400-char previews — the reranker judges meaning, not headlines.
+    manifest_lines = [str(i) + ": " + item.content[:400] for i, item in enumerate(items)]
     manifest = "\n".join(manifest_lines)
     system_prompt = (
         "<role>\n"
@@ -175,7 +176,12 @@ async def _rerank_semantic_items(
                     logger.debug("[Retriever] Rerank selected %d/%d items", len(selected), len(items))
                     return selected
     except Exception as exc:
-        logger.debug("[Retriever] Rerank failed, using original order: %s", exc)
+        # A3: degradation to mechanical order must be observable, not silent.
+        logger.warning(
+            "[Retriever] Rerank failed, using mechanical order: %s",
+            exc,
+            extra={"metric": "memory_rerank_fallback", "candidates": len(items)},
+        )
         return items[:max_select]
     finally:
         if client is not None and hasattr(client, "close"):
@@ -245,6 +251,18 @@ class MemoryRetriever:
             or []
         )
         items.extend(await self._retrieve_external(agent_id, query, tenant_id, limit=external_limit) or [])
+
+        # A3 (docs/agent-lifecycle-cc-alignment.md 主题 A): semantic activation
+        # gets an LLM pass. Keyword + fixed-weight scoring never reads content
+        # meaning — when the semantic pool is contested (> threshold) and a
+        # rerank model is available, the LLM picks; mechanical order remains
+        # the observable fallback inside _rerank_semantic_items.
+        if rerank_model_config and query:
+            semantic_pool = [item for item in items if item.kind == MemoryKind.SEMANTIC]
+            if len(semantic_pool) > _RERANK_THRESHOLD:
+                reranked = await _rerank_semantic_items(semantic_pool, query, rerank_model_config)
+                items = [item for item in items if item.kind != MemoryKind.SEMANTIC] + list(reranked)
+
         if activation_context:
             return self._apply_activation(items, activation_context, agent_id=agent_id)
         return items

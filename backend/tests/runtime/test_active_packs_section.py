@@ -95,7 +95,7 @@ def test_section_respects_explicit_budget_with_truncation_marker() -> None:
     ]
     section = build_active_tool_groups_section(packs, budget_chars=300)
     assert len(section) <= 300
-    assert section.endswith("...")
+    assert section.rstrip().endswith("...(trimmed)")
 
 
 def test_total_size_for_typical_three_packs_stays_under_500_chars() -> None:

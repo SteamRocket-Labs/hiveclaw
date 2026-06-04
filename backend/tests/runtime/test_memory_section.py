@@ -68,3 +68,20 @@ class TestMemorySectionRegressionAgainstOldWording:
     @pytest.mark.parametrize("phrase", OLD_PHRASES)
     def test_old_phrase_absent(self, phrase: str) -> None:
         assert phrase not in build_memory_section()
+
+
+# ── C3: trims must signpost the retrieval path (docs/agent-lifecycle-cc-alignment.md 主题 C) ──
+
+
+def test_memory_snapshot_trim_signposts_retrieval() -> None:
+    """A trimmed memory snapshot must tell the model HOW to get the rest
+    (search_memory), not just that something was cut."""
+    from app.runtime.prompt_sections.memory import build_memory_section
+
+    section = build_memory_section("fact line\n" * 500, budget_chars=300)
+
+    assert "trimmed" in section
+    # the marker LINE itself must carry the retrieval path (template prose
+    # mentioning search_memory elsewhere doesn't count)
+    marker_line = next(line for line in section.splitlines() if "trimmed" in line)
+    assert "search_memory" in marker_line

@@ -53,8 +53,7 @@ def build_active_tool_groups_section(
 
     lines = [
         "## Active Runtime Tool Groups",
-        "These runtime tool groups are already active for the current invocation. "
-        "Use them directly when relevant.",
+        "These runtime tool groups are already active for the current invocation. Use them directly when relevant.",
         "",
     ]
     for pack in active_tool_groups:
@@ -72,5 +71,7 @@ def build_active_tool_groups_section(
 
     text = "\n".join(lines)
     if len(text) > budget_chars:
-        text = text[: budget_chars - 4].rstrip() + "\n..."
+        # C3: observable trim marker (kept short — this section runs on tight budgets)
+        marker = "\n...(trimmed)"
+        text = text[: budget_chars - len(marker)].rstrip() + marker
     return text

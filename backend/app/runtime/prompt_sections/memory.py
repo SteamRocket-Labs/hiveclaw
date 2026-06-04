@@ -52,5 +52,7 @@ def build_memory_section(memory_snapshot: str = "", *, budget_chars: int | None 
     """
     snapshot = memory_snapshot.strip() if memory_snapshot else "(no memory loaded)"
     if budget_chars is not None and budget_chars > 0 and len(snapshot) > budget_chars:
-        snapshot = snapshot[:budget_chars].rstrip() + "\n...(memory snapshot trimmed)"
+        snapshot = snapshot[:budget_chars].rstrip() + (
+            "\n...(memory snapshot trimmed to fit budget — use search_memory to retrieve more)"
+        )
     return _MEMORY_SECTION_TEMPLATE.format(memory_snapshot=snapshot)

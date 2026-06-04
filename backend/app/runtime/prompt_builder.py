@@ -76,6 +76,10 @@ async def _maybe_await(value):
     return value
 
 
+# C3: cuts must stay observable — say a block was budget-trimmed, not a bare ellipsis.
+_TRIM_MARKER = "\n...(trimmed to fit context budget)"
+
+
 def _trim_block(text: str, *, budget_chars: int) -> str:
     if not text or budget_chars <= 0:
         return ""
@@ -83,6 +87,8 @@ def _trim_block(text: str, *, budget_chars: int) -> str:
     if len(stripped) <= budget_chars:
         return stripped
 
+    # Marker counts against the budget so callers' size contracts hold.
+    line_budget = max(0, budget_chars - len(_TRIM_MARKER))
     lines = stripped.splitlines()
     kept: list[str] = []
     used = 0
@@ -91,18 +97,16 @@ def _trim_block(text: str, *, budget_chars: int) -> str:
         if not normalized:
             continue
         line_cost = len(normalized) + 1
-        if used + line_cost > budget_chars:
+        if used + line_cost > line_budget:
             break
         kept.append(normalized)
         used += line_cost
 
     if not kept:
-        return stripped[: max(budget_chars - 3, 0)].rstrip() + "..."
+        head = stripped[:line_budget].rstrip()
+        return (head + _TRIM_MARKER) if head else stripped[:budget_chars]
 
-    result = "\n".join(kept).rstrip()
-    if len(result) < len(stripped):
-        result += "\n..."
-    return result
+    return "\n".join(kept).rstrip() + _TRIM_MARKER
 
 
 def _normalize_frozen_prefix_section_name(raw_name: str) -> str:
@@ -266,9 +270,9 @@ def _enforce_frozen_prefix_budget(base_parts: list[str], skill_catalog: str) -> 
         if len(trimmed) < len(skill_catalog):
             trimmed += _CATALOG_TRIMMED_SUFFIX
         result = f"{base_only}\n\n{trimmed}"
-        # Defensive hard cap — `_trim_block` is best-effort.
-        if len(result) > _FROZEN_PREFIX_CHAR_LIMIT + len(_CATALOG_TRIMMED_SUFFIX):
-            result = result[: _FROZEN_PREFIX_CHAR_LIMIT + len(_CATALOG_TRIMMED_SUFFIX)]
+        # Defensive hard cap — the metering contract is strict.
+        if len(result) > _FROZEN_PREFIX_CHAR_LIMIT:
+            result = result[:_FROZEN_PREFIX_CHAR_LIMIT]
         return result
 
     # Base sections themselves overflow — tail-trim with a notice. We trim

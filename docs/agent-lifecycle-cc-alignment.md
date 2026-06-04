@@ -57,7 +57,7 @@ CC 哲学：每次拒绝都是教学机会——告诉模型为什么 + 下一�
 |---|---|---|---|
 | C1 | **heartbeat 输入截断** | ✅ **已修复（2026-06-04）**：核实后违规点是"无条件 per-message 24K 截断"（总量未超 80K 预算也剪；截断标记本身已可观测）。修复=full-fidelity 快速路径：总量 ≤ 预算时零截断原样返回，超预算才进入 per-message cap → compact → defensive pass（同压缩 P0 哲学）。**证据**：`services/heartbeat.py` `_compact_heartbeat_runtime_messages`；tests/services/test_heartbeat.py 语义反转 1 测试（单条 72K<80K 总预算→不截）+ 超预算保护测试，29 passed | `services/heartbeat.py` |
 | C2 | **skill catalog 超预算整体丢弃** | ✅ **已修复（2026-06-04）**：核实后 `registry.render_catalog` 本身已有三级降级（full→truncated→names-only，对齐 CC）；真 gap 在 `_enforce_frozen_prefix_budget` 层——修复=永不失明：leftover<200 时放最低可见性路标（"skills are still available: call load_skill…"）而非静默丢弃；trimmed catalog 尾部加路标（"more skills exist: list skills/ or load_skill…"）。**证据**：`runtime/prompt_builder.py` `_CATALOG_OMITTED_NOTICE`/`_CATALOG_TRIMMED_SUFFIX`；tests/runtime/test_prompt_builder.py +2，runtime 487 passed | `runtime/prompt_builder.py` |
-| C3 | **裁剪静默** | memory 60% 预算裁剪、frozen prefix 删 section 都无"(truncated — 用 X 工具取全量)"标记 | `prompt_builder.py:265-277` 一带 |
+| C3 | **裁剪静默** | ✅ **已修复（2026-06-04）**：核实 frozen prefix tail-trim 已有 notice；补齐三处——①memory snapshot 裁剪标记带取回路径（"use search_memory to retrieve more"）②`_trim_block` 通用 marker 从裸 `...` 改为 "(trimmed to fit context budget)" 且 **marker 计入预算**（调用方尺寸契约严格成立）③active tool groups 截断加短 marker。**证据**：`prompt_sections/memory.py`、`prompt_builder.py` `_TRIM_MARKER`、`prompt_sections/active_tool_groups.py`；tests +2（marker 路标/预算契约），runtime+kernel 610 passed | — |
 
 ### 主题 D：能力缺口（真 gap，但非法律违规）🟡
 

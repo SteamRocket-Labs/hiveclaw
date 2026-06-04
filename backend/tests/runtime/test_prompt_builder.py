@@ -630,3 +630,13 @@ def test_frozen_prefix_trimmed_catalog_signposts_remaining_skills() -> None:
     assert "skill-0" in result  # head of the catalog survives
     assert "more skills" in result.lower()  # signpost
     assert "load_skill" in result
+
+
+def test_trim_block_marker_is_observable() -> None:
+    """C3: _trim_block's cut marker says it was budget-trimmed, not a bare ellipsis."""
+    from app.runtime.prompt_builder import _trim_block
+
+    result = _trim_block("line one\nline two\nline three\n" + "x" * 500, budget_chars=60)
+
+    assert "(trimmed" in result
+    assert len(result) <= 60  # marker counts against the budget

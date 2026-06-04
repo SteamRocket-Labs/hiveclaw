@@ -195,6 +195,7 @@ async def start_ephemeral_workflow_for_agent(
     definition_source: str = "ephemeral",
     session_factory=None,
     spawn=spawn_subagent,
+    run_id: uuid.UUID | None = None,
 ) -> WorkflowRunHandle:
     """Resolve agent runtime → build governed leaf executor → start the run.
 
@@ -225,6 +226,7 @@ async def start_ephemeral_workflow_for_agent(
         definition_source=definition_source,
         agent_id=agent.id,
         confirmed_plan_id=confirmed_plan_id,
+        run_id=run_id,
     )
 
     if ledger_todo_id:

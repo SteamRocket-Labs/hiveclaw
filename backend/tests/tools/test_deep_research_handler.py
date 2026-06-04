@@ -318,3 +318,43 @@ async def test_deep_research_export_writes_office_docx_without_replacing_markdow
     docx_path = tmp_path / "workspace" / "deep_research_reports" / "task-docx" / "report.docx"
     assert docx_path.is_file()
     assert docx_path.read_bytes().startswith(b"PK")
+
+
+@pytest.mark.asyncio
+async def test_deep_research_check_reads_workflow_run_artifacts(tmp_path, monkeypatch):
+    """DR-4 parity: a workflow-shaped Deep Research run is checkable through
+    the SAME tool — progress comes from the workflow run's artifact root, not
+    the legacy long_tasks directory."""
+    import json as _json
+    import uuid as _uuid
+
+    from app.config import get_settings
+    from app.tools.handlers import deep_research as handler
+
+    monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path / "agents"))
+    req = _request(tmp_path, session_id="session-check-wf")
+    agent_id = req.context.agent_id
+    run_id = str(_uuid.uuid4())
+
+    from app.services.deep_research.leaf_presets import run_artifact_dir
+
+    root = run_artifact_dir(agent_id, run_id)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "report.md").write_text("# RWA Report\n\nGrounded findings.", encoding="utf-8")
+    (root / "final.json").write_text(
+        _json.dumps({"status": "completed", "source_count": 3, "summary": {"claim_count": 5}}), encoding="utf-8"
+    )
+    (root / "sources.jsonl").write_text('{"source_id": "src_x"}\n', encoding="utf-8")
+
+    async def fake_record(task_id):
+        return {"id": task_id, "task_type": "workflow", "status": "completed", "parent_agent_id": str(agent_id)}
+
+    monkeypatch.setattr(handler, "get_runtime_task_record", fake_record)
+
+    req.arguments = {"task_id": run_id}
+    payload = _json.loads(await handler.deep_research_check(req))
+
+    assert payload["ok"] is True
+    assert payload["status"] == "completed"
+    assert payload["source_count"] == 3
+    assert "RWA Report" in payload["partial_report"]

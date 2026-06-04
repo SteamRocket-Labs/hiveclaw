@@ -599,6 +599,7 @@ class WorkflowRuntimeService:
         agent_id: uuid.UUID | None = None,
         confirmed_plan_id: uuid.UUID | str | None = None,
         allowed_leaves: set[str] | None = None,
+        run_id: uuid.UUID | None = None,
     ) -> WorkflowRunHandle:
         if not get_settings().WORKFLOW_RUNTIME_ENABLED:
             raise WorkflowAdmissionError("workflow runtime disabled by feature flag WORKFLOW_RUNTIME_ENABLED")
@@ -607,7 +608,9 @@ class WorkflowRuntimeService:
         admission = admit_workflow(compiled, args=args, limits=limits, allowed_leaves=allowed_leaves)
 
         args_hash = compute_definition_hash(args)
-        run_id = uuid.uuid4()
+        # A caller may pre-generate the id so run-scoped artifacts (e.g. the
+        # Deep Research request.json) can land BEFORE execution starts.
+        run_id = run_id or uuid.uuid4()
         async with self._session(tenant_id) as session:
             task = RuntimeTask(
                 id=run_id,

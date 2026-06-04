@@ -473,6 +473,16 @@ async def lifespan(app: FastAPI):
 
                 traceback.print_exception(type(exc), exc, exc.__traceback__)
 
+        # DR-4: register the Deep Research leaf presets BEFORE the workflow
+        # daemon starts — a resumed deep_research.v1 run resolves its presets
+        # from the global registry by leaf name.
+        try:
+            from app.services.deep_research.leaf_presets import register_deep_research_leaf_presets
+
+            register_deep_research_leaf_presets()
+        except Exception as exc:
+            logger.warning(f"Deep Research leaf preset registration failed: {exc}")
+
         for name, coro in [
             ("trigger_daemon", start_trigger_daemon()),
             ("workflow_daemon", start_workflow_daemon()),

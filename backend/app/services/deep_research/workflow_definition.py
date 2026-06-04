@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 import zlib
 from pathlib import Path
@@ -11,9 +12,9 @@ from app.database import tenant_scoped_session
 from app.models.workflow import WorkflowDefinitionRecord
 from app.runtime.workflow_definition import compute_definition_hash
 from app.services.deep_research.plan_mode import normalize_deep_research_output_format
-from app.services.deep_research.schemas import ResearchRequest
+from app.services.deep_research.schemas import ResearchRequest, to_jsonable
 from app.services.workflow_definitions import WorkflowDefinitionService
-from app.services.workflow_launch import start_ephemeral_workflow_for_agent
+from app.services.workflow_launch import resolve_agent_runtime, start_ephemeral_workflow_for_agent
 
 DEEP_RESEARCH_WORKFLOW_NAME = "deep_research.v1"
 DEEP_RESEARCH_WORKFLOW_LEAVES = {
@@ -205,8 +206,16 @@ async def start_deep_research_workflow_run(
     workspace: Path,
     plan_id: uuid.UUID | str | None = None,
     session_factory=None,
+    spawn=None,
 ) -> dict[str, Any]:
-    from app.services.workflow_launch import resolve_agent_runtime
+    import json
+
+    from app.services.deep_research.leaf_presets import (
+        register_deep_research_leaf_presets,
+        run_artifact_dir,
+    )
+
+    register_deep_research_leaf_presets()
 
     agent, _model = await resolve_agent_runtime(agent_id, session_factory=session_factory)
     if agent.tenant_id is None:
@@ -217,15 +226,48 @@ async def start_deep_research_workflow_run(
         created_by_user_id=user_id,
         session_factory=session_factory,
     )
-    handle = await start_ephemeral_workflow_for_agent(
-        agent_id=agent_id,
-        user_id=user_id,
-        confirmed_plan_id=plan_id,
-        definition=record.definition_json,
-        args=deep_research_workflow_args(request),
-        definition_source=f"registered:{record.name}:v{record.definition_version}:{record.definition_hash}",
-        session_factory=session_factory,
+
+    # Pre-generate the run id so request.json — the domain context every
+    # non-explorer leaf rebuilds from — is on disk BEFORE the first leaf runs.
+    run_id = uuid.uuid4()
+    artifact_root = run_artifact_dir(agent_id, run_id)
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    (artifact_root / "request.json").write_text(
+        json.dumps(to_jsonable(request), ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
+    launch_kwargs: dict[str, Any] = {
+        "agent_id": agent_id,
+        "user_id": user_id,
+        "confirmed_plan_id": plan_id,
+        "definition": record.definition_json,
+        "args": deep_research_workflow_args(request),
+        "definition_source": f"registered:{record.name}:v{record.definition_version}:{record.definition_hash}",
+        "session_factory": session_factory,
+        "run_id": run_id,
+    }
+    if spawn is not None:
+        launch_kwargs["spawn"] = spawn
+    handle = await start_ephemeral_workflow_for_agent(**launch_kwargs)
+
+    output_format = normalize_deep_research_output_format(request.output_format)
+    report_path = artifact_root / "report.md"
+    output_path: Path | None = None
+    if handle.outcome.status == "completed" and report_path.exists():
+        # Product-surface parity (I4): requested-format export + workspace
+        # packet mirror, exactly where the legacy path landed them. Lazy import
+        # breaks the handler→workflow_definition→handler cycle.
+        from app.tools.handlers.deep_research import (
+            _materialize_requested_output_format,
+            _publish_workspace_packet,
+        )
+
+        try:
+            output_path = _materialize_requested_output_format(workspace, artifact_root, output_format)
+        except Exception:  # export is best-effort; report.md is the deliverable
+            logging.getLogger(__name__).warning("[DR-workflow] output-format export failed", exc_info=True)
+        _publish_workspace_packet(workspace, run_id, artifact_root)
+
     return {
         "created_workflow_run_id": str(handle.run_id),
         "workflow_run_id": str(handle.run_id),
@@ -235,6 +277,8 @@ async def start_deep_research_workflow_run(
         "definition_version": record.definition_version,
         "definition_hash": record.definition_hash,
         "legacy_path_available": True,
-        "workspace_artifact_dir": None,
-        "output_format": normalize_deep_research_output_format(request.output_format),
+        "workspace_artifact_dir": str(artifact_root),
+        "report_path": str(report_path) if report_path.exists() else None,
+        "output_path": str(output_path) if output_path else None,
+        "output_format": output_format,
     }

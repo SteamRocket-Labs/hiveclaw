@@ -168,3 +168,98 @@ async def test_ensure_definition_never_reuses_other_tenant_record_under_owner_ds
             .all()
         )
     assert {row.tenant_id for row in rows} >= {pg_tenant_id, other_tenant}
+
+
+# ── DR-4: launch wiring + product-surface parity ───────────────────
+
+
+async def test_start_workflow_run_writes_request_json_and_returns_real_dirs(tmp_path, monkeypatch):
+    """The launch must (1) pre-generate the run id, (2) write request.json to
+    the run artifact root BEFORE any leaf executes, (3) register the DR leaf
+    presets, and (4) return real artifact/workspace paths — not null."""
+    from types import SimpleNamespace
+
+    from app.config import get_settings
+    from app.services.deep_research import workflow_definition as wf_def
+    from app.services.deep_research.leaf_presets import run_artifact_dir
+    from app.services.deep_research.schemas import ResearchRequest
+    from app.services.workflow_leaf_presets import reset_leaf_presets, resolve_leaf_preset
+
+    monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path / "agents"))
+    reset_leaf_presets()
+
+    agent_id = uuid.uuid4()
+    tenant = uuid.uuid4()
+    captured: dict = {}
+
+    async def fake_resolve(aid, **kwargs):
+        return SimpleNamespace(id=aid, tenant_id=tenant, name="A", role_description=""), SimpleNamespace()
+
+    async def fake_ensure(**kwargs):
+        return SimpleNamespace(
+            name="deep_research.v1",
+            definition_version=1,
+            definition_hash="hash-1",
+            definition_json={"name": "deep_research.v1"},
+        )
+
+    async def fake_launch(**kwargs):
+        captured.update(kwargs)
+        run_id = kwargs["run_id"]
+        # request.json must already be on disk when the first leaf would run.
+        root = run_artifact_dir(agent_id, run_id)
+        captured["request_json_existed_at_launch"] = (root / "request.json").exists()
+        (root / "report.md").parent.mkdir(parents=True, exist_ok=True)
+        (root / "report.md").write_text("# Report\n", encoding="utf-8")
+        (root / "final.json").write_text("{}", encoding="utf-8")
+        return SimpleNamespace(run_id=run_id, outcome=SimpleNamespace(status="completed", reason=None))
+
+    monkeypatch.setattr(wf_def, "resolve_agent_runtime", fake_resolve)
+    monkeypatch.setattr(wf_def, "ensure_deep_research_workflow_definition", fake_ensure)
+    monkeypatch.setattr(wf_def, "start_ephemeral_workflow_for_agent", fake_launch)
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    payload = await wf_def.start_deep_research_workflow_run(
+        request=ResearchRequest.from_arguments({"question": "RWA market", "output_language": "en"}),
+        agent_id=agent_id,
+        user_id=uuid.uuid4(),
+        workspace=workspace,
+    )
+
+    assert captured["request_json_existed_at_launch"] is True
+    assert resolve_leaf_preset("deep_research_explorer") is not None, "presets must be registered at launch"
+    root = run_artifact_dir(agent_id, captured["run_id"])
+    assert payload["workspace_artifact_dir"] == str(root)
+    assert payload["report_path"] == str(root / "report.md")
+    # Completed run → workspace packet mirrored next to the agent's files.
+    assert (workspace / "workspace" / "deep_research_reports" / str(captured["run_id"]) / "report.md").exists()
+    reset_leaf_presets()
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_runtime_start_run_accepts_injected_run_id(pg_tenant_id, owner_sessionmaker):
+    """DR-4 plumbing: the caller may pre-generate the run id so artifacts can
+    land under it before execution starts."""
+    from app.runtime.workflow_engine import LeafOutcome
+    from app.services.workflow_runtime_service import WorkflowRuntimeService
+
+    service = WorkflowRuntimeService(session_factory=owner_sessionmaker)
+    injected = uuid.uuid4()
+
+    async def leaf(request):
+        return LeafOutcome(ok=True, output={"ok": True}, tokens_used=1)
+
+    handle = await service.start_run(
+        tenant_id=pg_tenant_id,
+        definition_data={
+            "name": "runid-probe",
+            "args_schema": {},
+            "steps": [{"id": "one", "type": "agent_step", "leaf": {"name": "w", "type": "worker"}, "task": "Do"}],
+        },
+        args={},
+        leaf_executor=leaf,
+        run_id=injected,
+    )
+    assert handle.run_id == injected
+    assert handle.outcome.status == "completed"

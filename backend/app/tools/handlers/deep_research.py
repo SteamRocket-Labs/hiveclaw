@@ -308,7 +308,7 @@ async def deep_research_start(request: ToolExecutionRequest) -> str:
                 "question": research_request.question,
                 "mode": research_request.mode,
                 "scope": research_request.scope,
-            }
+            },
         },
     )
     await record_long_task_plan(
@@ -383,6 +383,16 @@ async def deep_research_check(request: ToolExecutionRequest) -> str:
     record = await get_runtime_task_record(task_id)
     if record and record.get("parent_agent_id") not in {None, str(request.context.agent_id)}:
         return _json({"ok": False, "error": "forbidden"})
+    if record and record.get("task_type") == "workflow":
+        # DR-4: workflow-shaped Deep Research run — artifacts live under the
+        # run-scoped workflow root, progress mirrors the run status.
+        from app.services.deep_research.leaf_presets import run_artifact_dir
+
+        artifact_dir = run_artifact_dir(request.context.agent_id, task_id)
+        payload = _read_artifact_dir_payload(request.context.workspace, task_id, artifact_dir)
+        if not payload.get("status"):
+            payload["status"] = record.get("status")
+        return _json({"ok": True, "task": record, **payload})
     payload = _read_deep_research_artifact(request.context.workspace, task_id)
     return _json({"ok": True, "task": record, **payload})
 
@@ -678,7 +688,12 @@ def _run_payload(run: ResearchRun, workspace: Path, *, output_format: str = "mar
 
 
 def _read_deep_research_artifact(workspace: Path, task_id: str) -> dict[str, Any]:
-    artifact_dir = _deep_research_dir(workspace, task_id)
+    return _read_artifact_dir_payload(workspace, task_id, _deep_research_dir(workspace, task_id))
+
+
+def _read_artifact_dir_payload(workspace: Path, task_id: str, artifact_dir: Path) -> dict[str, Any]:
+    """Artifact-dir-injected progress payload — shared by the legacy
+    long_tasks layout and the workflow run-scoped layout (DR-4)."""
     if (artifact_dir / "report.md").exists() or (artifact_dir / "final.json").exists():
         _publish_workspace_packet(workspace, task_id, artifact_dir)
     workspace_dir = _workspace_export_dir(workspace, task_id)

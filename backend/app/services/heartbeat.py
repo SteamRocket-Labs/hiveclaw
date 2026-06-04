@@ -146,9 +146,19 @@ def _compact_heartbeat_runtime_messages(messages: list[dict]) -> list[dict]:
     Kernel compaction handles multi-message LLM loops, but heartbeat can create
     a single very large initialization message from T2/T3 files. This guard caps
     both single-message payloads and accumulated KAIROS history deterministically.
+
+    C1 (docs/agent-lifecycle-cc-alignment.md 主题 C): full fidelity first —
+    when the whole context fits the total budget, NOTHING is trimmed (the
+    curator decides on complete input). Per-message caps and compaction engage
+    only once the total exceeds the budget (mechanical only as observable
+    fallback, same philosophy as compaction P0).
     """
     if not messages:
         return []
+
+    raw = [dict(message) for message in messages]
+    if _heartbeat_context_chars(raw) <= _HEARTBEAT_CONTEXT_MAX_CHARS:
+        return raw
 
     capped = [_cap_heartbeat_message(message) for message in messages]
     if _heartbeat_context_chars(capped) <= _HEARTBEAT_CONTEXT_MAX_CHARS:

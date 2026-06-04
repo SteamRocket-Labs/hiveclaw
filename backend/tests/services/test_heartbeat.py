@@ -83,19 +83,42 @@ def test_compose_heartbeat_instruction_adds_strategy_boundary() -> None:
     assert "Do NOT turn lineage into a raw task transcript" in text
 
 
-def test_compact_heartbeat_runtime_messages_trims_single_oversized_message() -> None:
+def test_compact_heartbeat_runtime_messages_full_fidelity_under_budget() -> None:
+    """C1 (docs/agent-lifecycle-cc-alignment.md 主题 C): full fidelity first —
+    a single large message that still fits the TOTAL budget must NOT be trimmed
+    (the curator decides on complete input; mechanical trimming is a fallback)."""
     from app.services.heartbeat import (
+        _HEARTBEAT_CONTEXT_MAX_CHARS,
         _HEARTBEAT_MESSAGE_MAX_CHARS,
         _compact_heartbeat_runtime_messages,
     )
 
-    huge_payload = "BEGIN-" + ("x" * (_HEARTBEAT_MESSAGE_MAX_CHARS * 3)) + "-END"
+    payload_size = _HEARTBEAT_MESSAGE_MAX_CHARS * 3  # 72K — over per-message, under total
+    assert payload_size < _HEARTBEAT_CONTEXT_MAX_CHARS  # sanity: scenario is under total budget
+    huge_payload = "BEGIN-" + ("x" * payload_size) + "-END"
+
+    compacted = _compact_heartbeat_runtime_messages([{"role": "user", "content": huge_payload}])
+
+    assert len(compacted) == 1
+    assert compacted[0]["content"] == huge_payload  # untouched
+    assert "truncated" not in compacted[0]["content"]
+
+
+def test_compact_heartbeat_runtime_messages_trims_single_oversized_message_over_budget() -> None:
+    """Mechanical trimming engages only once the TOTAL exceeds the budget,
+    and stays observable (truncation marker, head+tail preserved)."""
+    from app.services.heartbeat import (
+        _HEARTBEAT_CONTEXT_MAX_CHARS,
+        _compact_heartbeat_runtime_messages,
+    )
+
+    huge_payload = "BEGIN-" + ("x" * (_HEARTBEAT_CONTEXT_MAX_CHARS * 2)) + "-END"
 
     compacted = _compact_heartbeat_runtime_messages([{"role": "user", "content": huge_payload}])
 
     assert len(compacted) == 1
     content = compacted[0]["content"]
-    assert len(content) <= _HEARTBEAT_MESSAGE_MAX_CHARS
+    assert len(content) <= _HEARTBEAT_CONTEXT_MAX_CHARS
     assert "truncated to fit heartbeat context budget" in content
     assert content.startswith("BEGIN-")
     assert content.endswith("-END")

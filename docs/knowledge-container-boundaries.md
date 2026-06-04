@@ -49,7 +49,7 @@ T0 logs ──extract──▶ T2 learnings ──heartbeat──▶ T3 memory/*
                             dream promote     skill_distiller
                                   ▼                 ▼
                               soul.md            SKILL.md
-                          （人格化，cap 20）  （方法论，curator 防熵增）
+                          （人格化，严格预算 + 少量高置信晋升）  （方法论，curator 防熵增）
                                                     │
                                           步骤稳定 + 需要刚性保证
                                                     │
@@ -84,7 +84,7 @@ T0 logs ──extract──▶ T2 learnings ──heartbeat──▶ T3 memory/*
 
 ## 5. 现状审计：已对齐 vs 待拍板的优化项
 
-**已对齐（无需动）**：四容器披露梯度（§3）、三条 promote 通道、soul cap、write gate、skill curator 防熵增、C1/C2/A3/dream full-fidelity（本轮已修）。
+**已对齐（方向无需推翻）**：四容器披露梯度（§3）、三条 promote 通道、soul 预算纪律、write gate、skill curator 防熵增、C1/C2/A3/dream full-fidelity（本轮已修）。但 memory 组装协议化、文案/工具描述对齐仍属于待做，不应被归为“无需动”。
 
 **待拍板的优化项**（按价值排序，均为纪律/提示词级，非新机制）：
 
@@ -173,9 +173,9 @@ T0 logs ──extract──▶ T2 learnings ──heartbeat──▶ T3 memory/*
 |---|---|---|---|---|
 | 四容器职责分离 | ✅ SOUL/MEMORY+USER/SKILL 三层完整验证（workflow 缺失） | ⚠️ 无 soul（身份模式绑定）、SOP-as-memory | ✅ 认可全部四条边界 | **采纳**；workflow 是 Hive 对两个参照系的真 delta |
 | 披露梯度=稳定性梯度 | ✅ 完全一致（冻结快照+按需加载） | ✅ L1 常驻→L2 全局→L3 按模式/按需 | ✅ 方向认可、memory 组装需协议化 | **采纳**+P2 协议化 |
-| skill vs workflow（"走偏后果"判据） | （无 workflow，刚性 SOP 只能写成 skill = 我们点名的反模式实证） | Checklist+Verify = **轻量刚性中间态**（prompt 纪律+状态文件+监察，无引擎保证） | ✅ "SOP 不是 skill 的终态；稳定 SOP 终态是 workflow" | **采纳**，并吸收 GA 的**按需硬化**哲学：SOP 初期可以是 skill+checklist（低成本），刚性需求出现才升 workflow——硬化是按需的，不是强制的 |
+| skill vs workflow（"走偏后果"判据） | 有 cron/webhook/API trigger + skill chaining，但没有 Hive 目标里的可恢复、版本化、可审计 workflow engine；不能把 routines 等同于 workflow | Checklist+Verify = **轻量刚性中间态**（prompt 纪律+状态文件+监察，无引擎保证） | ✅ "SOP 不是 skill 的终态；稳定 SOP 终态是 workflow" | **采纳**，并吸收 GA 的**按需硬化**哲学：SOP 初期可以是 skill+checklist（低成本），刚性需求出现才升 workflow——硬化是按需的，不是强制的 |
 | 混合 SOP = workflow 骨架 + skill 关节 | — | plan_sop 的 [D]/[P]/[?] 标注本质就是"骨架+关节"的 prompt 版 | ✅ 明确认可 | **采纳为正式裁决** |
-| soul 必须小 | SOUL ~20k chars 上限、职责边界清单（✓ tone/✗ 路径命令） | 干脆无 soul（token 经济学极端解） | "只放 6 个月后仍成立的身份级内容" | **采纳 codex 表述**（GA 的无 soul 不采纳——企业数字员工需要跨任务身份一致性，但它警示 soul 膨胀的代价） |
+| soul 必须小 | SOUL 作为 context source 有 20k chars 截断上限、职责边界清单（✓ tone/✗ 路径命令） | 干脆无 soul（token 经济学极端解） | "只放 6 个月后仍成立的身份级内容" | **采纳 codex 表述**（GA 的无 soul 不采纳——企业数字员工需要跨任务身份一致性，但它警示 soul 膨胀的代价） |
 
 ### 8.2 三方贡献的新输入（设计稿此前没有的）
 
@@ -206,3 +206,57 @@ T0 logs ──extract──▶ T2 learnings ──heartbeat──▶ T3 memory/*
 ### 8.4 正式 North Star（codex 裁决句，三方验证后采纳）
 
 > `soul.md` 定义"我是谁"，`memory/*.md` 保存"我知道什么"，`SKILL.md` 教"我如何判断和操作"，`workflow` 执行"我按什么确定流程运行"。越接近身份越常驻，越接近事实越检索，越接近 SOP 越下沉到引擎。**硬化是按需的：刚性需求出现时才升级，不为硬化而硬化。**
+
+### 8.5 Codex 源码复核后的追加意见
+
+1. **Hermes routines 只能证明 trigger/automation 层，不应作为 workflow 等价物。** 源码与文档显示 Hermes 有 cron/webhook/API trigger、script pre-processing、multi-skill chaining；这很强，但它更像“触发器 + agent run + skill 组合”。Hive 的 workflow 边界要更硬：必须有 durable run state、step journal、gate contract、resume/replay、version/hash/provenance。结论：trigger 只负责唤醒，workflow 才负责确定性闭环。
+
+2. **GenericAgent 的 SOP-as-memory 是反面教材，也是迁移素材库。** `memory/plan_sop.md`、`verify_sop.md`、`goal_hive_sop.md`、`checklist_sop.md` 都放在 memory 下，但实际内容分别是 planning protocol、verification gate、multi-worker orchestration、stateful checklist helper。它们不是同一种“记忆”。Hive 不应复制“SOP 全塞 memory”的容器形态，而应把其有效部分分流：`plan_sop` → workflow skeleton + agent_step；`verify_sop` → workflow gate / verifier skill；`goal_hive` → WorkflowRun + Work Ledger + Signal/Checkpoint；L1 ROI 索引纪律 → skill catalog / memory manifest 的描述规范。
+
+3. **verification contract 应成为 workflow/skill 的附属资产，而不是第五个知识容器。** GenericAgent 的 `verify_sop` 强调“必须运行、必须有工具证据、无证据 PASS 作废、VERDICT 三态”。这类东西不是普通 memory，也不只是 skill 方法论；它是可审计 gate 的证据协议。落在 Hive 里时，建议作为 workflow step 的 `verify_contract`，或作为 verify 类 skill 的 `references/scripts` 支撑文件；核心字段至少包含 `required_checks`、`evidence_shape`、`adversarial_probe`、`verdict_schema`。
+
+4. **workflow 不允许降级模型智能，只约束顺序和副作用。** 按 AI-Native Design Law，workflow engine 应保证步骤、预算、审批、恢复、审计；但 agent leaf 内部仍要给模型完整任务可见性、足够输出预算、匹配 skill 的高质量 prompt。否则 workflow 会把“可控”误做成“削弱智能”，这会违反 Hive 的 North Star。
+
+5. **artifact/run journal 边界也要写清。** 交付物、报告、测试输出、worker 中间产物、RuntimeTask journal、Work Ledger 都不是 soul/memory/skill/workflow 本身。它们是 run/workspace artifacts；只有经过蒸馏、验证和分流后，才可能进入 memory、skill 或 workflow promote suggestion。这个边界可以避免把“过程日志”误沉淀成长期知识。
+
+## 9. 记忆生命周期的环节明确化（2026-06-04，用户提出"孤儿文件/判定模糊/烂泥"问题后）
+
+**用户洞察的系统化**：分类本身没错——烂泥的根因是**环节之间缺判定契约**。一条记忆从产生到退役经过 8 个环节，任何一环判定模糊，下游全部模糊化：放错地方（③）→ 索引没人看（④）→ 召回不到/不知何时查（⑤⑥）→ 清理无数据（⑦⑧）→ 烂泥。解法不是砍分类，是给每个环节一张**判定卡**（判定主体/判据/证据），并让"是否被用过"成为可观测数据。
+
+### 9.1 八环节判定卡（现状审计，2026-06-04 核实）
+
+| 环节 | 判定主体 | 判据现状 | 评级 |
+|---|---|---|---|
+| ①写入 T0→T2 | extract LLM | EXTRACT_PROMPT：9 类标签 + ev/conf 元数据 + autonomy boundary + 反例 | ✅ 明确 |
+| ②蒸馏 T2→T3 | heartbeat LLM | decision matrix（w≥0.85 / repeat≥2）+ good/bad examples | ✅ 明确（§8.3 P1 加四分类抬头后更强） |
+| ③归档（选 T3 文件） | heartbeat LLM | 5 路文件选择；**核实：knowledge/strategies 在 retriever 零运行时差异**（同 0.80 权重、同检索路径、过滤只区分 feedback/blocked），边界纯分类学 | 🔴 模糊 |
+| ④索引 | md_store（机械） | INDEX.md 为 shadow artifact，**无消费方** | 🔴 孤儿索引 |
+| ⑤系统检索（被动注入） | retriever 机械初筛 + LLM rerank（A3 已接线） | 权重表+keyword+激活上下文；**注入的记忆不带选择理由**——AI 不知道"为什么是这几条"，无法校准信任 | ⚠️ 半明确 |
+| ⑥AI 主动调用 | agent LLM | 工具说明完整（search→filter→load_memory 协议、save_memory 仅逃生舱、memory-guide skill 路由）；**缺"何时该主动查"的触发判据**（现状仅 scenario 一句"重建过去决策时先查"） | ⚠️ 半明确 |
+| ⑦维护（dedup/降级） | dream LLM + soft dream 机械 | promote/dedup/cap 有，降级通道规划中（§8.3 P1）；**清理决策无 usage 数据**——靠内容判断，不知道"这条到底有没有被用过" | ⚠️ 半明确 |
+| ⑧退役 | 仅 T0（auto_dream 调 cleanup_old_logs，30 天） | **T3 条目级退役无判据无数据**——孤儿条目永生 | 🔴 缺失（烂泥最终形成地） |
+
+### 9.2 解法三件套（轻量，对应用户的 Wiki/图谱直觉但不上重型图谱）
+
+**S1 — 判定契约显式化**（§8.3 P1 的扩展）：
+- ③：合并 knowledge.md + strategies.md（零运行时差异+边界最模糊）；并立**防增殖原则**："T3 文件边界只在两种情况下成立——注入档位不同（直注 vs 检索）或治理轴不同（owner/PL）；纯分类学差异用 `[cat=]` 条目标签表达，不开新文件"（T2 早已是此模式：10 类压 3 文件）
+- ⑥：memory prompt 补**主动查询触发判据**——任务涉及"过去的决策/用户偏好/曾失败过的事/具体的人或项目"时，先 search_memory 再行动（对照 CC 的 relevant_memories attachment 是系统推送，Hive 双轨：系统注入 + 教模型主动查）
+- ⑤：注入的记忆条目带最小选择理由（哪个轴召回的：goal/owner/keyword/rerank）——AI 可校准信任
+
+**S2 — usage 遥测防孤儿**（hermes `.usage.json` 哲学落到条目级）：
+- `access_log.py` 已存在且 retriever 已引用——升级为条目级 `recall_count`/`last_recalled_at`，喂给 dream：⑦清理从"凭内容感觉"变"有数据"；⑧退役判据 = 长期零召回 + 低置信 + 过期，进 dream 的退役候选清单（dream 决策，不是机械自动删——AI-native）
+- 孤儿**文件**检测同理：某 T3 文件长期零召回 = 文件级孤儿信号
+
+**S3 — INDEX.md 转正为导航层**（§8.3 P2 的具体化，Wiki 直觉的轻量落地）：
+- 从 shadow 变为 AI 可见的**主题地图**：每条目 `id / category / preview / load hint`，常驻注入取代部分全文 bullets——AI 按图索骥（即 claude-mem 的 index+get_observations 模式 / CC 的 MEMORY.md 索引+topic 文件模式）
+- `understandings.md`（subject-relation-object 三元组）保留为关系轴雏形，先让现有检索路径消费好；**完整知识图谱/embedding 召回为重型方案，与 memory-claude-mem-borrow 计划合并评估，不在本轮**
+
+### 9.3 与 codex §8.5 的合流
+
+§8.5-5（artifact ≠ 长期知识）正是环节⓪（什么有资格进入管线）的判定卡；§8.5-3（verify_contract 为附属资产）防止验证协议被误归为第六容器；§8.5-4（workflow 不降级智能）约束 S1-S3 的所有实现不得用机械规则替代蒸馏器/dream 的 LLM 判定。
+
+### 9.4 拍板项（汇总 §6 + §8 + §9）
+
+1. North Star 裁决句（§8.4）+ 防增殖原则（§9.2 S1）定为正式边界？
+2. T3 布局：knowledge+strategies 合并（5→4，含迁移）？
+3. 落地序提议：**P0 文案对齐 → P1 分流判据+触发判据（S1）→ S2 usage 遥测 → P2/S3 索引转正+组装协议化**；P3 借鉴项排期另议？

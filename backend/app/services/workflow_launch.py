@@ -95,27 +95,45 @@ def build_subagent_leaf_executor(
     """
 
     async def leaf(request: LeafRequest) -> LeafOutcome:
+        from app.services.workflow_leaf_presets import resolve_leaf_preset
+
+        preset = resolve_leaf_preset(request.leaf.name)
         spec = SubagentSpec(
             name=request.leaf.name,
             type=request.leaf.type,
             max_tool_rounds=request.leaf.max_tool_rounds,
+            allowed_tools=preset.allowed_tools if preset else (),
+            excluded_tools=preset.excluded_tools if preset else (),
+            system_prompt=preset.system_prompt if preset else "",
+            disable_tools=preset.disable_tools if preset else False,
         )
+        task = request.task
+        if preset is not None and preset.pre_process is not None:
+            rewritten = await preset.pre_process(request, ctx)
+            if rewritten is not None:
+                task = rewritten
         budget = SubagentBudget(max_tool_rounds=request.leaf.max_tool_rounds or SubagentBudget().max_tool_rounds)
-        handle = await spawn(ctx, spec, request.task, budget=budget)
+        handle = await spawn(ctx, spec, task, budget=budget)
         result = handle.result
         if result is None:
-            return LeafOutcome(ok=False, error="spawn returned no result (background spawn not valid for leaves)")
-        if not result.ok:
-            return LeafOutcome(
+            outcome = LeafOutcome(ok=False, error="spawn returned no result (background spawn not valid for leaves)")
+        elif not result.ok:
+            outcome = LeafOutcome(
                 ok=False,
                 error=result.error or f"leaf {request.leaf.name!r} finished with status {result.status}",
                 tokens_used=result.tokens_used,
             )
-        return LeafOutcome(
-            ok=True,
-            output={"text": result.content, "sources": result.sources},
-            tokens_used=result.tokens_used,
-        )
+        else:
+            outcome = LeafOutcome(
+                ok=True,
+                output={"text": result.content, "sources": result.sources},
+                tokens_used=result.tokens_used,
+            )
+        if preset is not None and preset.post_process is not None:
+            # Deterministic domain logic (ledger bookkeeping, citation gates,
+            # artifact writes) — system side, never delegated to the LLM.
+            outcome = await preset.post_process(request, ctx, result, outcome)
+        return outcome
 
     return leaf
 

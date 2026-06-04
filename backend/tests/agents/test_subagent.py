@@ -420,3 +420,22 @@ async def test_fanout_abort_stops_remaining():
     aborted = [r for r in results[1:] if r.error and "aborted" in r.error]
     assert len(aborted) >= 1  # later lanes short-circuit once a sibling fails
     assert len(ran) < 6  # not every follower actually invoked the kernel
+
+
+@pytest.mark.asyncio
+async def test_spawn_disable_tools_reaches_invocation_request():
+    """RC11 semantics for leaf presets: a synthesis-style subagent must run
+    with ZERO tools exposed — ``allowed_tools=()`` is not enough (it falls
+    back to the type preset), so the spec carries an explicit switch that
+    threads to ``AgentInvocationRequest.disable_tools``."""
+    captured: list = []
+    spec = SubagentSpec(name="synth", type="worker", disable_tools=True)
+
+    result = await _spawn_one(_ctx(), SubagentJob(spec=spec, task="synthesize"), invoke=_ok_invoke(capture=captured))
+
+    assert result.ok
+    assert captured[0].disable_tools is True
+    # Default stays off — existing subagents are untouched.
+    captured.clear()
+    await _spawn_one(_ctx(), SubagentJob(spec=SubagentSpec(name="e", type="explorer"), task="t"), invoke=_ok_invoke(capture=captured))
+    assert captured[0].disable_tools is False

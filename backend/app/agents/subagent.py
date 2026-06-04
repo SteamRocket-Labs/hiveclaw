@@ -152,6 +152,10 @@ class SubagentSpec:
     parent_knowledge: Literal["readonly", "none"] = "readonly"
     soul: bool = False  # no digital-employee identity layer (soul/T3/dream)
     system_prompt: str = ""  # 定义.md body → request.system_prompt_suffix (cut ⑤)
+    # RC11 semantics for synthesis-style leaves: expose ZERO tools. An empty
+    # ``allowed_tools`` falls back to the type preset, so this is an explicit
+    # switch threaded to ``AgentInvocationRequest.disable_tools``.
+    disable_tools: bool = False
 
 
 @dataclass(slots=True)
@@ -504,6 +508,7 @@ async def _spawn_one(
         allowed_tool_names=allowed,
         excluded_tool_names=excluded,
         expand_tools=False,
+        disable_tools=spec.disable_tools,
         max_tool_rounds=rounds,
         delegation_token=ctx.delegation_token,
         tool_executor=ctx.tool_executor,

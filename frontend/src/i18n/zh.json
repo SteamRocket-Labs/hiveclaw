@@ -226,6 +226,8 @@
       "toolsTooltip": "通过 MCP 接入的外部连接器与工具 — 服务器、能力与访问策略",
       "skills": "技能",
       "skillsTooltip": "通过指令文件定义的专门行为",
+      "subagents": "子代理",
+      "subagentsTooltip": "该员工可派生的具名工作分身定义——委派子任务时使用的手艺人分身",
       "relationships": "关系",
       "relationshipsTooltip": "与团队成员和其他数字员工的连接",
       "workspace": "工作区",
@@ -1004,7 +1006,28 @@
       "uploading": "上传中..."
     },
     "workflows": "工作流",
-    "workflowsTooltip": "确定性自动化管线——预览、运行、模板与审批"
+    "workflowsTooltip": "确定性自动化管线——预览、运行、模板与审批",
+    "subagents": {
+      "title": "子代理",
+      "description": "该员工可派生的具名 worker 定义：agent 级是它自己的工作方法；公司级来自企业共享库；内置类型是只读模板。",
+      "newButton": "新建定义",
+      "empty": "还没有子代理定义。可以在这里创建，或让 agent 在 subagents/ 下自建。",
+      "scope": {
+        "agent": "本员工",
+        "tenant": "公司库",
+        "builtin": "内置"
+      },
+      "memoryEntries": "{{count}} 条手艺记忆",
+      "tenantHint": "公司库定义（全公司共享）。在此编辑会保存为本员工的 agent 级副本，仅对该员工优先生效。",
+      "forkButton": "用作模板",
+      "editButton": "编辑",
+      "deleteButton": "删除",
+      "deleteConfirm": "删除 agent 级定义 \"{{name}}\"？若公司库存在同名定义，删除后将回落生效。",
+      "createTitle": "新建 agent 级定义",
+      "editTitle": "编辑定义",
+      "nameRequired": "名称必填",
+      "namePlaceholder": "定义名，如 market-scout"
+    }
   },
   "wizard": {
     "steps": {

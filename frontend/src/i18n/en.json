@@ -226,6 +226,8 @@
       "toolsTooltip": "External connectors and tools via MCP — servers, capabilities, and access policy",
       "skills": "Skills",
       "skillsTooltip": "Specialized behaviors defined as instruction files",
+      "subagents": "Sub-agents",
+      "subagentsTooltip": "Reusable worker definitions this employee spawns for delegated sub-tasks — its craft clones",
       "relationships": "Relationships",
       "relationshipsTooltip": "Connections to team members and other digital employees",
       "workspace": "Workspace",
@@ -976,7 +978,28 @@
       "uploading": "Uploading..."
     },
     "workflows": "Workflows",
-    "workflowsTooltip": "Deterministic automation pipelines — preview, run, templates and approvals"
+    "workflowsTooltip": "Deterministic automation pipelines — preview, run, templates and approvals",
+    "subagents": {
+      "title": "Sub-agents",
+      "description": "Named worker definitions this employee can spawn: agent-level definitions are its own work methods; tenant ones come from the company library; builtins are read-only templates.",
+      "newButton": "New definition",
+      "empty": "No sub-agent definitions yet. Create one, or let the agent author its own under subagents/.",
+      "scope": {
+        "agent": "agent",
+        "tenant": "company",
+        "builtin": "builtin"
+      },
+      "memoryEntries": "{{count}} memory entries",
+      "tenantHint": "Company-library definition (shared across agents). Editing it here saves an agent-level copy that takes precedence for this agent only.",
+      "forkButton": "Use as template",
+      "editButton": "Edit",
+      "deleteButton": "Delete",
+      "deleteConfirm": "Delete agent-level definition \"{{name}}\"? A same-named company definition (if any) becomes effective again.",
+      "createTitle": "New agent-level definition",
+      "editTitle": "Edit definition",
+      "nameRequired": "Name is required",
+      "namePlaceholder": "definition name, e.g. market-scout"
+    }
   },
   "wizard": {
     "templates": {

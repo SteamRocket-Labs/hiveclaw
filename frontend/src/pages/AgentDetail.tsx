@@ -17,6 +17,7 @@ import AgentKnowledgeSection from './agent-detail/AgentKnowledgeSection';
 import OfficeWorkbenchSection from './agent-detail/OfficeWorkbenchSection';
 import AgentSettingsSection from './agent-detail/AgentSettingsSection';
 import AgentSkillsSection from './agent-detail/AgentSkillsSection';
+import AgentSubagentsSection from './agent-detail/AgentSubagentsSection';
 import AgentStatusSection from './agent-detail/AgentStatusSection';
 import AgentWorkspaceSection from './agent-detail/AgentWorkspaceSection';
 import {
@@ -48,12 +49,14 @@ import { useAuthStore } from '../stores';
 // raw-file "mind" tab as the primary memory view (raw Markdown lives in the
 // Knowledge → Raw subview); `tools` is the MCP plane; skills and workflows
 // stay standalone capability modules that Knowledge only deep-links to.
-const TABS = ['status', 'aware', 'knowledge', 'evolution', 'tools', 'skills', 'relationships', 'workspace', 'workflows', 'office', 'chat', 'activityLog', 'approvals', 'settings'] as const;
+// C3 (docs/subagent-source-capability.md §12.8): subagents joins as the
+// fourth capability module — the employee's craft-clone work methods.
+const TABS = ['status', 'aware', 'knowledge', 'evolution', 'tools', 'skills', 'subagents', 'relationships', 'workspace', 'workflows', 'office', 'chat', 'activityLog', 'approvals', 'settings'] as const;
 
 /** Visual grouping of tabs for the tab bar — groups are separated by thin dividers */
 const TAB_GROUPS: { tabs: (typeof TABS[number])[]; }[] = [
     { tabs: ['status', 'chat'] },
-    { tabs: ['aware', 'knowledge', 'evolution', 'tools', 'skills'] },
+    { tabs: ['aware', 'knowledge', 'evolution', 'tools', 'skills', 'subagents'] },
     { tabs: ['workspace', 'workflows', 'office', 'relationships', 'activityLog', 'approvals'] },
     { tabs: ['settings'] },
 ];
@@ -64,7 +67,7 @@ function AgentDetailInner() {
     const navigate = useNavigate();
     const queryClient = useQueryClient();
     const location = useLocation();
-    const validTabs = ['status', 'aware', 'knowledge', 'evolution', 'tools', 'skills', 'relationships', 'workspace', 'workflows', 'office', 'chat', 'activityLog', 'approvals', 'settings'];
+    const validTabs = ['status', 'aware', 'knowledge', 'evolution', 'tools', 'skills', 'subagents', 'relationships', 'workspace', 'workflows', 'office', 'chat', 'activityLog', 'approvals', 'settings'];
     // Legacy deep links: #mind was the raw-file memory tab before the
     // Knowledge plane replaced it (P8).
     const rawHashTab = location.hash?.replace('#', '');
@@ -1433,6 +1436,11 @@ function AgentDetailInner() {
                 {/* ── Skills Tab ── */}
                 {
                     activeTab === 'skills' && <AgentSkillsSection agentId={id!} />
+                }
+
+                {/* ── Sub-agents Tab (C3, §12.8 fourth capability module) ── */}
+                {
+                    activeTab === 'subagents' && <AgentSubagentsSection agentId={id!} canManage={canManage} />
                 }
 
                 {/* ── Relationships Tab ── */}

@@ -317,7 +317,7 @@ async def fanout_subagents(
 | 轴2 | 工作流编排（借鉴 CC Workflow） | ⏸ 后续 | — |
 | C1 | 配置面：agent 级 store + 解析链 + 记忆跟随作用域（§12） | ✅ done（2026-06-05） | 本切口 commit |
 | C2 | 配置面：7 端点 API（§12.7） | ✅ done（2026-06-05） | 本切口 commit |
-| C3 | 配置面：AgentDetail Sub-agents tab（§12.8） | 📋 已设计待实施 | — |
+| C3 | 配置面：AgentDetail Sub-agents tab（§12.8） | ✅ done（2026-06-05） | 本切口 commit |
 | C4 | 配置面：Company Admin tenant 库管理（§12.8） | 📋 已设计待实施 | — |
 
 ---
@@ -448,6 +448,8 @@ DELETE /enterprise/subagents/{name}
 
 **C2 实装证据（2026-06-05）**：新文件 `app/api/agent_subagents.py`（enterprise.py 已 1100+ 行不再塞）双 router：agent 级 4 端点（GET list 合并标 scope / GET detail 定义全文+生效 scope+记忆存在性/entry 计数摘要，builtin 名返回只读模板行 / PUT manage 守卫+parse 校验+frontmatter name 与 URL name 不一致 422 / DELETE 只删 agent 级、tenant 不受影响删后回落）+ tenant 级 3 端点（`/enterprise/subagents`，org_admin/platform_admin 守卫与 enterprise.py `_require_tenant_admin` 同语义）；PUT 收 markdown 全文走 runtime 同一 `parse_subagent_definition`（无第二 schema 无漂移）；`SubagentDefinitionStore.delete` 补齐（path guard 原样过）；main.py 注册 `/api`+`/api/v1` 双前缀实证 8 条路由。TDD red→green：`tests/api/test_agent_subagents_api.py` 14 例（合并 scope/detail 三态/PUT 创建/manage 403/坏 frontmatter 422/name mismatch 422/URL name 穿越拒/删除回落/删 tenant-only 404/跨 agent 404/enterprise CRUD/member 403），先 collection error 再实现转绿。回归：全量 3776 passed / 7 skipped（基线 3750+新增 26 精确吻合）；ruff+format 干净。
 | **C3** AgentDetail UI | Sub-agents tab + adapter + i18n | 渲染/列表 scope 标记/编辑流 | 用户在 agent 详情页完成日常配置 |
+
+**C3 实装证据（2026-06-05）**：`api/domains/subagents.ts` 七端点 typed adapter（agent 级 4 + enterprise 3，C4 复用）；`agent-detail/AgentSubagentsSection.tsx` 第四能力模块 = 合并列表（name/scope 徽章/type/model/工具面摘要）→ 详情（定义全文 + 记忆 entry 计数）→ markdown 编辑器（服务端 422 原因直显）；builtin 行只读、"用作模板" fork 成 agent 级；tenant 行编辑提示"保存为本员工 agent 级副本优先生效"；删除仅 agent 级并提示回落；canManage 守卫写入口。AgentDetail.tsx 接线 TABS/TAB_GROUPS（capability 组第六位）/validTabs/渲染块。i18n en+zh 同步（`agent.tabs.subagents`+tooltip / `agent.subagents.*` 15 键，diff 各 +25 行零重排）。测试：`AgentSubagentsSection.test.tsx` 4 例（合并列表 scope 徽章渲染/manage 才有新建/toolFaceSummary 溢出计数+preset 空摘要）；前端全量 159 passed / tsc 静默 / production build 2.26s 过。
 | **C4** Company Admin UI | tenant 库管理 + i18n | admin 守卫渲染 | 管理员策展公司库 |
 
 不变量复述：配置面**不新增任何运行时权力**——工具面收窄、capability gate、防递归、governed memory write 全部原样；本节只是给已有治理开人类入口。

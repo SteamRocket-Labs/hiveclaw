@@ -163,6 +163,15 @@ class SubagentDefinitionStore:
             return []
         return sorted(p.stem for p in self.base_dir.glob("*.md"))
 
+    def delete(self, name: str) -> bool:
+        """Delete a definition file; returns False when it does not exist."""
+
+        path = self._path(name)
+        if not path.exists():
+            return False
+        path.unlink()
+        return True
+
 
 def definition_store_for_tenant(tenant_id: object, *, agent_data_dir: Path | str | None = None) -> SubagentDefinitionStore:
     """Construct the tenant-scoped persistent subagent definition store."""

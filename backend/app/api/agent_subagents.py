@@ -1,0 +1,237 @@
+"""Subagent configuration API (cut C2, §12.7) — the human door onto the stores.
+
+Seven endpoints over the C1 resolution chain: four agent-level (the daily
+driver, ``check_agent_access`` guarded — reads need access, writes need
+manage) and three tenant-level (the company library, org-admin guarded).
+Markdown is the configuration format end to end: PUT accepts the full
+定义.md text and validates it through the same parser the runtime uses —
+no second schema, no drift.
+
+Invariant (§12.9): this surface adds zero runtime power. Tool-face
+narrowing, capability gates, recursion guards, and governed memory writes
+are enforced at spawn time regardless of how a definition got written.
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.agents.subagent import _TYPE_PRESETS, SubagentSpec
+from app.agents.subagent_definition import (
+    SCOPE_AGENT,
+    SCOPE_BUILTIN,
+    SCOPE_TENANT,
+    SubagentDefinitionStore,
+    definition_store_for_agent,
+    definition_store_for_tenant,
+    list_subagent_definitions,
+    parse_subagent_definition,
+    render_subagent_definition,
+    resolve_subagent_definition,
+)
+from app.agents.subagent_memory import memory_store_for_agent, memory_store_for_tenant
+from app.core.permissions import check_agent_access
+from app.core.security import get_current_user
+from app.database import get_db
+from app.models.user import User
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/agents/{agent_id}/subagents", tags=["subagents"])
+enterprise_router = APIRouter(prefix="/enterprise/subagents", tags=["enterprise"])
+
+
+class SubagentDefinitionPayload(BaseModel):
+    definition: str
+
+
+def _spec_summary(spec: SubagentSpec) -> dict:
+    return {
+        "name": spec.name,
+        "type": spec.type,
+        "model": spec.model,
+        "isolation": spec.isolation,
+        "max_tool_rounds": spec.max_tool_rounds,
+        "allowed_tools": list(spec.allowed_tools),
+        "excluded_tools": list(spec.excluded_tools),
+    }
+
+
+def _memory_summary(store, name: str) -> dict:
+    """Existence + entry-count digest of a 记忆.md (§12.7: presence/summary, not body)."""
+
+    try:
+        text = store.load(name)
+    except ValueError:
+        return {"exists": False, "entries": 0}
+    if not text:
+        return {"exists": False, "entries": 0}
+    return {"exists": True, "entries": sum(1 for line in text.splitlines() if line.startswith("- ["))}
+
+
+def _builtin_detail(name: str) -> dict | None:
+    preset = _TYPE_PRESETS.get(name)
+    if preset is None:
+        return None
+    template = SubagentSpec(name=name, type=name, system_prompt="")
+    return {
+        "name": name,
+        "scope": SCOPE_BUILTIN,
+        "definition": render_subagent_definition(template),
+        "spec": {**_spec_summary(template), "allowed_tools": list(preset)},
+        "memory": {"exists": False, "entries": 0},
+    }
+
+
+def _parse_validated(name: str, payload: SubagentDefinitionPayload) -> SubagentSpec:
+    """Parse + validate a PUT body against the URL name; HTTP 422 on any mismatch."""
+
+    try:
+        spec = parse_subagent_definition(payload.definition)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if spec.name != name:
+        raise HTTPException(
+            status_code=422,
+            detail=f"frontmatter name {spec.name!r} mismatches URL name {name!r}",
+        )
+    return spec
+
+
+def _save_and_respond(store: SubagentDefinitionStore, spec: SubagentSpec, scope: str) -> dict:
+    try:
+        store.save(spec)
+    except ValueError as exc:  # name guard double-checks at the path layer
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"name": spec.name, "scope": scope, "spec": _spec_summary(spec)}
+
+
+# --- agent-level surface (daily driver, §12.2) --------------------------------
+
+
+@router.get("")
+async def list_agent_subagents(
+    agent_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    return {"subagents": list_subagent_definitions(agent_id=agent_id, tenant_id=agent.tenant_id)}
+
+
+@router.get("/{name}")
+async def get_agent_subagent(
+    agent_id: uuid.UUID,
+    name: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    try:
+        resolved = resolve_subagent_definition(name, agent_id=agent_id, tenant_id=agent.tenant_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if resolved is None:
+        builtin = _builtin_detail(name)
+        if builtin is None:
+            raise HTTPException(status_code=404, detail="Subagent definition not found")
+        return builtin
+
+    if resolved.scope == SCOPE_AGENT:
+        memory = _memory_summary(memory_store_for_agent(agent_id), name)
+    else:
+        memory = _memory_summary(memory_store_for_tenant(agent.tenant_id), name)
+    return {
+        "name": resolved.spec.name,
+        "scope": resolved.scope,
+        "definition": render_subagent_definition(resolved.spec),
+        "spec": _spec_summary(resolved.spec),
+        "memory": memory,
+    }
+
+
+@router.put("/{name}")
+async def put_agent_subagent(
+    agent_id: uuid.UUID,
+    name: str,
+    payload: SubagentDefinitionPayload,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if access_level != "manage":
+        raise HTTPException(status_code=403, detail="Editing subagent definitions requires manage access")
+    spec = _parse_validated(name, payload)
+    return _save_and_respond(definition_store_for_agent(agent_id), spec, SCOPE_AGENT)
+
+
+@router.delete("/{name}")
+async def delete_agent_subagent(
+    agent_id: uuid.UUID,
+    name: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if access_level != "manage":
+        raise HTTPException(status_code=403, detail="Deleting subagent definitions requires manage access")
+    try:
+        deleted = definition_store_for_agent(agent_id).delete(name)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not deleted:
+        # Tenant-level definitions are not deletable through the agent surface;
+        # after an agent-level delete the name falls back to tenant scope.
+        raise HTTPException(status_code=404, detail="No agent-level definition with this name")
+    return {"deleted": name, "scope": SCOPE_AGENT}
+
+
+# --- tenant-level company library (§12.3, org-admin curated) -------------------
+
+
+def _require_tenant_admin(current_user: User) -> uuid.UUID:
+    """Org-admin guard for the company library; returns the curated tenant id."""
+
+    if current_user.role not in ("platform_admin", "org_admin"):
+        raise HTTPException(status_code=403, detail="Requires admin privileges")
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No company assigned")
+    return current_user.tenant_id
+
+
+@enterprise_router.get("")
+async def list_tenant_subagents(current_user: User = Depends(get_current_user)):
+    tenant_id = _require_tenant_admin(current_user)
+    return {"subagents": list_subagent_definitions(agent_id=None, tenant_id=tenant_id)}
+
+
+@enterprise_router.put("/{name}")
+async def put_tenant_subagent(
+    name: str,
+    payload: SubagentDefinitionPayload,
+    current_user: User = Depends(get_current_user),
+):
+    tenant_id = _require_tenant_admin(current_user)
+    spec = _parse_validated(name, payload)
+    return _save_and_respond(definition_store_for_tenant(tenant_id), spec, SCOPE_TENANT)
+
+
+@enterprise_router.delete("/{name}")
+async def delete_tenant_subagent(
+    name: str,
+    current_user: User = Depends(get_current_user),
+):
+    tenant_id = _require_tenant_admin(current_user)
+    try:
+        deleted = definition_store_for_tenant(tenant_id).delete(name)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="No tenant-level definition with this name")
+    return {"deleted": name, "scope": SCOPE_TENANT}

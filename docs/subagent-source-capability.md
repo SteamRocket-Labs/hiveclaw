@@ -316,7 +316,7 @@ async def fanout_subagents(
 | DR-B | deep research critic 解 RC15 | ⏸ 后续 | — |
 | 轴2 | 工作流编排（借鉴 CC Workflow） | ⏸ 后续 | — |
 | C1 | 配置面：agent 级 store + 解析链 + 记忆跟随作用域（§12） | ✅ done（2026-06-05） | 本切口 commit |
-| C2 | 配置面：7 端点 API（§12.7） | 📋 已设计待实施 | — |
+| C2 | 配置面：7 端点 API（§12.7） | ✅ done（2026-06-05） | 本切口 commit |
 | C3 | 配置面：AgentDetail Sub-agents tab（§12.8） | 📋 已设计待实施 | — |
 | C4 | 配置面：Company Admin tenant 库管理（§12.8） | 📋 已设计待实施 | — |
 
@@ -445,6 +445,8 @@ DELETE /enterprise/subagents/{name}
 
 **C1 实装证据（2026-06-05）**：`subagent_definition.py` 增 `SCOPE_*` 常量、`agent_subagent_root`/`definition_store_for_agent`（同 store 类换 base_dir，零新格式）、`resolve_subagent_definition`（agent 优先 → tenant fallback → None）、`list_subagent_definitions`（合并去重 agent 胜、builtin 只读模板行、损坏文件跳过并 warn 不空整表）；`subagent_memory.py` 增 `memory_store_for_agent`（`<workspace>/subagents/.memory/`，dot-dir 避开定义 glob）；spawn handler 改走解析链、响应带 `definition_scope`、not found 附合并可用列表（含 builtin 并指引 inline spawn）、记忆跟随定义作用域（inline spec 保持 tenant store 现状）、放宽"definition_name 必须有 tenant_id"（agent 级可独立解析）。TDD red→green：`tests/agents/test_subagent_scope_resolution.py` 8 例（同名覆盖/fallback/删除回落/记忆隔离含跨 agent/路径边界/list 合并+builtin 遮蔽）+ `test_subagent_spawn_tool.py` 新增 4 例（agent 胜+记忆跟随、tenant fallback、not found 双 scope 列表、无 tenant 解析 agent 级），先验证 collection error/4 failed 再实现转绿。回归：tests/agents/ + tests/tools/ 450 passed；§12.2 断言验证 = 工具层 `_write_file` guard 只封 `memory/`，`subagents/` agent 可自建。
 | **C2** API | 7 端点 + 权限 | 多租户守卫（跨 tenant 404）、manage 写权限、格式非法 422、name 校验 | 前端可全 CRUD；非法 frontmatter 被拒带原因 |
+
+**C2 实装证据（2026-06-05）**：新文件 `app/api/agent_subagents.py`（enterprise.py 已 1100+ 行不再塞）双 router：agent 级 4 端点（GET list 合并标 scope / GET detail 定义全文+生效 scope+记忆存在性/entry 计数摘要，builtin 名返回只读模板行 / PUT manage 守卫+parse 校验+frontmatter name 与 URL name 不一致 422 / DELETE 只删 agent 级、tenant 不受影响删后回落）+ tenant 级 3 端点（`/enterprise/subagents`，org_admin/platform_admin 守卫与 enterprise.py `_require_tenant_admin` 同语义）；PUT 收 markdown 全文走 runtime 同一 `parse_subagent_definition`（无第二 schema 无漂移）；`SubagentDefinitionStore.delete` 补齐（path guard 原样过）；main.py 注册 `/api`+`/api/v1` 双前缀实证 8 条路由。TDD red→green：`tests/api/test_agent_subagents_api.py` 14 例（合并 scope/detail 三态/PUT 创建/manage 403/坏 frontmatter 422/name mismatch 422/URL name 穿越拒/删除回落/删 tenant-only 404/跨 agent 404/enterprise CRUD/member 403），先 collection error 再实现转绿。回归：全量 3776 passed / 7 skipped（基线 3750+新增 26 精确吻合）；ruff+format 干净。
 | **C3** AgentDetail UI | Sub-agents tab + adapter + i18n | 渲染/列表 scope 标记/编辑流 | 用户在 agent 详情页完成日常配置 |
 | **C4** Company Admin UI | tenant 库管理 + i18n | admin 守卫渲染 | 管理员策展公司库 |
 

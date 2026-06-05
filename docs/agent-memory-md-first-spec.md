@@ -1089,12 +1089,46 @@ Evidence:
 
 ### P4: Skill / Workflow Candidate Lane
 
+**Status: ✅ DONE (2026-06-04).**
+
 Acceptance:
 
 - Heartbeat only records skill/workflow candidate signals.
 - SkillDistiller consumes `skill_candidate`.
 - Workflow promotion consumes `workflow_candidate`.
 - Promoted T3 strategy entries mark `promoted_to_skill` or `promoted_to_workflow`.
+
+Evidence:
+
+- Heartbeat lane closed both ways: the tool executor BLOCKS `save_skill`
+  with a candidate-signal redirect, and the "Skill Candidate Opportunity"
+  nudge + HEARTBEAT.md (default and `hr_agent_template`) instruct
+  `save_memory(category="strategy", container_candidate="skill_candidate"
+  | "workflow_candidate", source_refs=[...])` — direct creation guidance
+  removed (no dual path).
+- Consumption side in `skill_distiller.py`:
+  `load_memory_skill_candidates()` / `load_memory_workflow_candidates()`
+  read unpromoted `[container=...]` T3 entries via the manifest;
+  `run_skill_distillation_cycle` feeds skill candidates into the LLM draft
+  prompt as `memory_candidate_evidence` and the LLM names
+  `consumed_memory_candidate_ids` (semantic attribution stays with the
+  model; ids validated against the known pool).
+- Workflow lane: `record_workflow_candidates_from_memory()` surfaces each
+  `workflow_candidate` as an auditable evolution-ledger candidate
+  (idempotent per entry_id) — automatic workflow approval stays deferred
+  per §13; the promotion lane consumes evidence, not memory greps.
+- Promotion marking: `md_store.mark_t3_entry_promoted()` stamps
+  `[promoted_to=skill|workflow][promoted_target=...]` on the T3 line
+  (evidence stays in T3, entry leaves the candidate pool); called after a
+  successful skill save for every consumed candidate.
+- Eval contracts updated with the spec (prompt_eval
+  `heartbeat_skill_curation_consistency` + duplicate-guidance check now
+  pin the candidate-lane wording; the old checks pinned `save_skill`
+  guidance — the known "evals lock implementation details" trap).
+- Tests: `backend/tests/services/test_candidate_lane.py` (7 — executor
+  block + passthrough, template contracts, candidate readers, promoted
+  marker leaves pool, workflow ledger recording idempotence). Full backend
+  3668 passed.
 
 ### P5: Scene / Wiki Curator MVP
 

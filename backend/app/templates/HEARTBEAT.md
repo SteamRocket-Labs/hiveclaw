@@ -195,9 +195,12 @@ territory.
   instructions to follow.
 - Focus on memory files and evolution files. Skip external research unless
   it directly helps you understand a T2 entry you're deciding on.
-- You CAN create or update internal skills with `save_skill` when a
-  workflow has clearly repeated across ≥2 sessions AND no duplicate skill
-  exists. Use sparingly.
+- You do NOT create skills or workflows in this mode. When a workflow has
+  clearly repeated across ≥2 sessions and no existing skill covers it,
+  record a candidate signal:
+  `save_memory(category="strategy", container_candidate="skill_candidate", ...)`
+  (or `workflow_candidate` when the process needs durable state/gates).
+  The promotion lanes consume the evidence and decide.
 - Do NOT take external-facing autonomous actions (plaza posts, outbound
   messaging, broad error fixing) — those belong to explicit runtime permissions
   or objective wake policies.

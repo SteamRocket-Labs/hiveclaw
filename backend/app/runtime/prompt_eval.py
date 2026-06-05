@@ -179,14 +179,15 @@ def _build_heartbeat_template_checks(heartbeat_template: str) -> dict[str, _Chec
     normalized = " ".join(heartbeat_template.split()).lower()
     return {
         "skill_patch_instead_of_duplicate_guidance": _CheckSpec(
-            # PR-12 rewrote HEARTBEAT.md with decision-matrix wording. Patch-
-            # over-duplicate guidance reads "no duplicate skill exists"; older
-            # templates may use "patch the existing skill instead".
-            predicate=lambda: "no duplicate skill exists" in normalized or "patch the existing skill" in normalized,
+            # P4 candidate lane: the curator checks for an existing covering
+            # skill before recording a skill_candidate signal — duplicates are
+            # filtered at the evidence stage, not after creation.
+            predicate=lambda: "no existing skill covers it" in normalized
+            or "no duplicate skill exists" in normalized,
             severity="medium",
-            remediation="Restore guidance that stale skills should be patched or updated instead of duplicated.",
-            success_detail="Prompt contracts tell the agent to patch stale skills instead of creating duplicates.",
-            failure_detail="Prompt contracts no longer explain how to patch stale skills instead of duplicating them.",
+            remediation="Restore guidance that candidate signals are only recorded when no existing skill covers the workflow.",
+            success_detail="Prompt contracts tell the curator to check skill coverage before recording candidates.",
+            failure_detail="Prompt contracts no longer require checking existing skill coverage before recording candidates.",
         ),
         "heartbeat_weight_policy": _CheckSpec(
             # PR-12 moved weight thresholds into a decision_matrix with
@@ -211,15 +212,17 @@ def _build_heartbeat_template_checks(heartbeat_template: str) -> dict[str, _Chec
             failure_detail="Heartbeat template lost weight thresholds or external instruction filtering guidance.",
         ),
         "heartbeat_skill_curation_consistency": _CheckSpec(
+            # P4 candidate lane (spec §12): heartbeat records skill/workflow
+            # candidate signals via save_memory; it never writes skills itself.
             predicate=lambda: (
-                "save_skill" in heartbeat_template
+                "skill_candidate" in heartbeat_template
                 and "Do NOT take external-facing autonomous actions" in heartbeat_template
-                and ("create or update internal skills" in heartbeat_template)
+                and "do NOT create skills or workflows" in heartbeat_template
             ),
             severity="medium",
-            remediation="Restore heartbeat guidance that permits internal save_skill curation while still blocking external-facing autonomous actions.",
-            success_detail="Heartbeat template stays consistent with the save_skill self-evolution loop and external-action boundaries.",
-            failure_detail="Heartbeat template no longer aligns internal skill curation with external-action safety boundaries.",
+            remediation="Restore heartbeat guidance that records skill/workflow candidate signals (save_memory + container_candidate) while blocking direct skill creation and external-facing autonomous actions.",
+            success_detail="Heartbeat template routes skill evidence through the candidate lane and keeps external-action boundaries.",
+            failure_detail="Heartbeat template no longer aligns candidate-signal curation with external-action safety boundaries.",
         ),
     }
 

@@ -329,7 +329,7 @@ async def test_build_evolution_context_includes_error_details():
 
 
 @pytest.mark.asyncio
-async def test_build_evolution_context_suggests_save_skill_for_repeated_workflow():
+async def test_build_evolution_context_suggests_skill_candidate_for_repeated_workflow():
     from app.services.heartbeat import _build_evolution_context
 
     agent_id = uuid4()
@@ -346,8 +346,11 @@ async def test_build_evolution_context_suggests_save_skill_for_repeated_workflow
 
     result = await _build_evolution_context(agent_id, activities)
 
-    assert "Skill Creation Opportunity" in result
-    assert "save_skill" in result
+    # P4 candidate lane: the nudge records evidence via save_memory; the
+    # skill distillation lane owns creation.
+    assert "Skill Candidate Opportunity" in result
+    assert "save_memory" in result
+    assert "skill_candidate" in result
     assert "load_skill" in result
     assert "workflow" in result.lower()
 

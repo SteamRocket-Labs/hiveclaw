@@ -109,6 +109,7 @@ class DistilledSkillDraft:
     declared_tools: tuple[str, ...]
     declared_packs: tuple[str, ...]
     reason: str
+    consumed_memory_candidate_ids: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -116,6 +117,96 @@ class SkillConflictResolution:
     final_decision: str
     existing_skill_name: str | None = None
     reason: str = ""
+
+
+# ── Memory candidate lane (spec §12 P4) ──
+#
+# The Memory Curator (heartbeat) promotes strategy evidence into T3 with a
+# `[container=skill_candidate|workflow_candidate]` marker. These readers are
+# the consumption side: the SkillDistiller drafts from skill candidates and
+# the workflow promotion lane records workflow candidates into the evolution
+# ledger. Entries stamped `[promoted_to=...]` have left the candidate pool.
+
+
+def _load_memory_container_candidates(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    *,
+    container: str,
+) -> list[dict[str, str]]:
+    from app.memory.md_store import build_t3_entry_manifest
+
+    candidates: list[dict[str, str]] = []
+    for entry in build_t3_entry_manifest(data_root, agent_id):
+        metadata = entry.metadata
+        if (metadata.get("container") or "").strip().lower() != container:
+            continue
+        if metadata.get("promoted_to"):
+            continue
+        candidates.append(
+            {
+                "entry_id": entry.entry_id,
+                "content": entry.content,
+                "timestamp": entry.timestamp,
+                "filename": entry.filename,
+                "source": entry.source,
+            }
+        )
+    return candidates
+
+
+def load_memory_skill_candidates(data_root: Path, agent_id: uuid.UUID) -> list[dict[str, str]]:
+    """Unpromoted T3 entries marked `[container=skill_candidate]`."""
+    return _load_memory_container_candidates(data_root, agent_id, container="skill_candidate")
+
+
+def load_memory_workflow_candidates(data_root: Path, agent_id: uuid.UUID) -> list[dict[str, str]]:
+    """Unpromoted T3 entries marked `[container=workflow_candidate]`."""
+    return _load_memory_container_candidates(data_root, agent_id, container="workflow_candidate")
+
+
+def record_workflow_candidates_from_memory(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    *,
+    workspace: Path,
+) -> int:
+    """Surface memory workflow candidates into the evolution ledger.
+
+    Automatic workflow approval is deferred (spec §13); this records each
+    `workflow_candidate` as an auditable evolution candidate so the workflow
+    promotion lane (operator or future automation) consumes evidence instead
+    of raw memory greps. Idempotent per entry_id. Returns newly recorded count.
+    """
+    from app.services.evolution_ledger import record_evolution_candidate
+
+    candidates = load_memory_workflow_candidates(data_root, agent_id)
+    if not candidates:
+        return 0
+
+    ledger_path = workspace / "evolution" / "evolution_ledger.jsonl"
+    seen = ledger_path.read_text(encoding="utf-8", errors="replace") if ledger_path.exists() else ""
+
+    recorded = 0
+    for candidate in candidates:
+        marker = f"memory:{candidate['entry_id']}"
+        if marker in seen:
+            continue
+        record_evolution_candidate(
+            workspace,
+            target_type="workflow",
+            target_id=candidate["entry_id"],
+            diff=candidate["content"],
+            source_attempt_ids=[marker],
+            baseline_version="none",
+            metadata={
+                "lane": "memory_workflow_candidate",
+                "source": candidate["source"],
+                "timestamp": candidate["timestamp"],
+            },
+        )
+        recorded += 1
+    return recorded
 
 
 def _state_path(workspace: Path) -> Path:
@@ -438,6 +529,7 @@ async def _draft_skill_with_llm(
     evidence: list[SessionWorkflowEvidence],
     declared_packs: tuple[str, ...],
     workspace: Path,
+    memory_candidates: list[dict[str, str]] | None = None,
 ) -> DistilledSkillDraft:
     system_prompt = (
         "<role>\n"
@@ -506,6 +598,17 @@ async def _draft_skill_with_llm(
             f"  tools={', '.join(item.tool_names)}\n"
             f"  summary={item.summary}"
         )
+    memory_lines = [
+        f"- id={candidate['entry_id']} [{candidate.get('timestamp') or '-'}] {candidate['content']}"
+        for candidate in (memory_candidates or [])[:5]
+    ]
+    memory_block = (
+        "memory_candidate_evidence (curated skill_candidate signals from T3 memory; "
+        "list the ids your skill actually builds on in consumed_memory_candidate_ids):\n"
+        f"{chr(10).join(memory_lines)}\n\n"
+        if memory_lines
+        else ""
+    )
     prompt = (
         "Draft a reusable internal skill.\n\n"
         f"workflow_signature: {workflow_signature}\n"
@@ -515,6 +618,7 @@ async def _draft_skill_with_llm(
         f"{_render_existing_skill_summaries(workspace)}\n\n"
         "recent_evidence:\n"
         f"{chr(10).join(evidence_lines)}\n\n"
+        f"{memory_block}"
         "Respond with JSON only using:\n"
         "{"
         '"decision":"promote|patch|defer|reject",'
@@ -524,6 +628,7 @@ async def _draft_skill_with_llm(
         '"instructions_markdown":"...",'
         '"declared_tools":["..."],'
         '"declared_packs":["..."],'
+        '"consumed_memory_candidate_ids":["..."],'
         '"reason":"..."'
         "}"
     )
@@ -580,6 +685,7 @@ async def _draft_skill_with_llm(
         reason="",
         decision=decision_str,
     )
+    known_candidate_ids = {candidate["entry_id"] for candidate in (memory_candidates or [])}
     return DistilledSkillDraft(
         decision=decision_str,
         confidence=float(payload.get("confidence", 0.0) or 0.0),
@@ -589,6 +695,11 @@ async def _draft_skill_with_llm(
         declared_tools=tuple(str(item).strip() for item in payload.get("declared_tools", []) if str(item).strip()),
         declared_packs=tuple(str(item).strip() for item in payload.get("declared_packs", []) if str(item).strip()),
         reason=str(payload.get("reason", "")).strip(),
+        consumed_memory_candidate_ids=tuple(
+            str(item).strip()
+            for item in payload.get("consumed_memory_candidate_ids", [])
+            if str(item).strip() in known_candidate_ids
+        ),
     )
 
 
@@ -640,6 +751,19 @@ async def run_skill_distillation_cycle(
     if not getattr(runtime_config, "skill_candidate_loop_enabled", False):
         return {"status": "disabled", "processed_sessions": 0}
 
+    # Memory candidate lane (spec §12 P4): surface workflow candidates into
+    # the evolution ledger and load skill candidates as drafting evidence.
+    from app.config import get_settings
+
+    data_root = Path(get_settings().AGENT_DATA_DIR)
+    workflow_candidates_recorded = 0
+    memory_skill_candidates: list[dict[str, str]] = []
+    try:
+        workflow_candidates_recorded = record_workflow_candidates_from_memory(data_root, agent_id, workspace=workspace)
+        memory_skill_candidates = load_memory_skill_candidates(data_root, agent_id)
+    except Exception as exc:  # noqa: BLE001 — candidate-lane IO must not break distillation
+        logger.warning("[skill_distiller] memory candidate lane failed for %s: %s", agent_id, exc)
+
     state = load_distiller_state(workspace)
     evidence = await _load_internal_session_evidence(
         agent_id=agent_id,
@@ -648,7 +772,12 @@ async def run_skill_distillation_cycle(
         current_session_id=current_session_id,
     )
     if not evidence:
-        return {"status": "idle", "processed_sessions": 0}
+        return {
+            "status": "idle",
+            "processed_sessions": 0,
+            "workflow_candidates_recorded": workflow_candidates_recorded,
+            "memory_skill_candidates": len(memory_skill_candidates),
+        }
 
     processed = 0
     last_cursor = (state.last_processed_at or "", state.last_processed_session_id or "")
@@ -725,6 +854,7 @@ async def run_skill_distillation_cycle(
         if evidence_for_candidate
         else (),
         workspace=workspace,
+        memory_candidates=memory_skill_candidates,
     )
 
     conflict = resolve_existing_skill_conflict(workspace=workspace, draft=draft)
@@ -864,6 +994,26 @@ async def run_skill_distillation_cycle(
 
     evolution_validation = validate_evolution_ledger(workspace, write_report=True)
 
+    # Spec §12 P4: promoted strategy evidence leaves the candidate pool —
+    # the LLM names which memory candidates this skill consumed; we stamp
+    # `[promoted_to=skill]` so they stop surfacing as open candidates.
+    promoted_memory_ids: list[str] = []
+    if draft.consumed_memory_candidate_ids:
+        from app.memory.md_store import mark_t3_entry_promoted
+
+        for candidate_id in draft.consumed_memory_candidate_ids:
+            try:
+                if mark_t3_entry_promoted(
+                    data_root,
+                    agent_id,
+                    entry_id=candidate_id,
+                    promoted_to="skill",
+                    target=draft.name,
+                ):
+                    promoted_memory_ids.append(candidate_id)
+            except Exception as exc:  # noqa: BLE001 — marker failure is auditable, not fatal
+                logger.warning("[skill_distiller] failed to mark memory candidate %s promoted: %s", candidate_id, exc)
+
     promoted_at = datetime.now(timezone.utc).isoformat()
     update_skill_candidate_record(
         workspace,
@@ -883,4 +1033,6 @@ async def run_skill_distillation_cycle(
         "workflow_signature": record.workflow_signature,
         "evolution_validation_passed": evolution_validation["passed"],
         "evolution_validation": evolution_validation.get("report_artifact"),
+        "workflow_candidates_recorded": workflow_candidates_recorded,
+        "promoted_memory_candidates": promoted_memory_ids,
     }

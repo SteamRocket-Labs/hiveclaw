@@ -301,6 +301,53 @@ def append_t3_entry(
     return path
 
 
+def mark_t3_entry_promoted(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    *,
+    entry_id: str,
+    promoted_to: str,
+    target: str = "",
+) -> bool:
+    """Stamp `[promoted_to=skill|workflow]` on the T3 line carrying entry_id.
+
+    Spec §12 P4: promoted strategy entries keep their evidence in T3 but
+    leave the candidate pool. Returns True when a line was stamped; False on
+    missing entry, already-promoted entry, or invalid promoted_to value.
+    """
+    normalized_target_kind = (promoted_to or "").strip().lower()
+    if normalized_target_kind not in {"skill", "workflow", "soul"}:
+        return False
+    needle = f"[entry_id={entry_id}]"
+
+    mem_dir = memory_dir(data_root, agent_id)
+    for spec in T3_FILE_SPECS:
+        path = mem_dir / spec["filename"]
+        if not path.exists():
+            continue
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        for index, line in enumerate(lines):
+            if needle not in line:
+                continue
+            if "[promoted_to=" in line:
+                return False
+            record = parse_entry_record(line)
+            suffix = f"[promoted_to={normalized_target_kind}]"
+            if target.strip():
+                safe_target = " ".join(target.replace("[", "(").replace("]", ")").split())[:120]
+                suffix += f"[promoted_target={safe_target}]"
+            # Insert the markers right before the content, after existing metadata.
+            content_start = line.find(record.content) if record.content else -1
+            if content_start > 0:
+                lines[index] = line[:content_start].rstrip() + suffix + " " + line[content_start:]
+            else:
+                lines[index] = line + " " + suffix
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            rebuild_index(data_root, agent_id)
+            return True
+    return False
+
+
 def rebuild_index(data_root: Path, agent_id: uuid.UUID) -> Path:
     mem_dir = ensure_t3_layout(data_root, agent_id)
     updated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")

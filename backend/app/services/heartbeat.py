@@ -801,13 +801,16 @@ async def _build_evolution_context(
 
             if should_push and frequent_tools:
                 parts.append(
-                    "\n---\n## Skill Creation Opportunity\n"
+                    "\n---\n## Skill Candidate Opportunity\n"
                     f"You have used these tools repeatedly: {', '.join(frequent_tools)}.\n"
-                    "Consider whether the workflow around them is worth saving as a reusable skill:\n"
+                    "If the workflow around them is genuinely reusable, record it as a candidate "
+                    "signal — you curate evidence; the skill distillation lane decides promotion:\n"
                     "1. FIRST call `tool_search` and `load_skill` to confirm no existing skill already covers this workflow\n"
-                    "2. If no matching skill exists, call `save_skill` with a distinctive name/description\n"
-                    "3. Include: name, description, reusable step-by-step instructions, verification, and declared tools/packs only when stable\n"
-                    "4. A good skill captures the *workflow* (multiple tools in sequence), not a single tool or one-off note\n"
+                    "2. If none covers it, call `save_memory` with category=\"strategy\", "
+                    "container_candidate=\"skill_candidate\", and a self-contained description of the "
+                    "workflow (tools in sequence, when to use it, how to verify success)\n"
+                    "3. Include `source_refs` pointing at the sessions/evidence where the workflow repeated\n"
+                    "4. A good candidate captures the *workflow* (multiple tools in sequence), not a single tool or one-off note\n"
                     "This counts as a high-value heartbeat action (score 7+)."
                 )
                 if tick_count:
@@ -1222,6 +1225,16 @@ def _build_heartbeat_tool_executor(agent_id: uuid.UUID, creator_id: uuid.UUID):
 
     async def _executor(tool_name: str, args: dict) -> str:
         nonlocal plaza_posts_made, plaza_comments_made
+
+        if tool_name == "save_skill":
+            # Spec §12 P4: the Memory Curator records candidate signals only;
+            # skill creation runs through the SkillDistiller candidate lane.
+            return (
+                "[BLOCKED] Heartbeat does not write skills directly. Record the evidence as a "
+                "candidate signal instead: save_memory(category=\"strategy\", "
+                "container_candidate=\"skill_candidate\", content=\"<the reusable workflow, "
+                "self-contained>\", source_refs=[...]). The skill distillation lane consumes it."
+            )
 
         if tool_name == "plaza_create_post":
             if plaza_posts_made >= 1:

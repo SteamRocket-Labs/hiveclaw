@@ -285,12 +285,14 @@ class TestHeartbeatTemplate:
         # External sources (web/PDF/email) must still be called out by name.
         assert "web_search" in content or "feishu" in content.lower() or "external sources" in content.lower()
 
-    def test_allows_internal_skill_curation_but_blocks_external_side_effects(self) -> None:
-        # PR-12 simplified the language: "create or update internal skills"
-        # paired with the external-actions prohibition.
+    def test_routes_skill_evidence_to_candidate_lane_and_blocks_external_side_effects(self) -> None:
+        # P4 candidate lane (spec §12): the curator records skill/workflow
+        # candidate signals; it never creates skills directly. External-action
+        # prohibition is unchanged.
         from app.services.heartbeat import _HEARTBEAT_TEMPLATE_PATH
 
         content = _HEARTBEAT_TEMPLATE_PATH.read_text(encoding="utf-8")
-        assert "create or update internal skills" in content
-        assert "save_skill" in content
+        assert "do NOT create skills or workflows" in content
+        assert "skill_candidate" in content
+        assert "save_skill" not in content
         assert "Do NOT take external-facing autonomous actions" in content

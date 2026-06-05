@@ -266,7 +266,8 @@ def test_runtime_templates_no_longer_reference_jina() -> None:
     assert "jina_" not in skill_vetter.lower()
     assert "web_fetch" in skill_vetter
     assert "jina_" not in heartbeat.lower()
-    assert "save_skill" in heartbeat
+    # P4 candidate lane: heartbeat records skill_candidate signals, never save_skill.
+    assert "skill_candidate" in heartbeat
 
 
 def test_settings_no_longer_define_jina_api_key() -> None:

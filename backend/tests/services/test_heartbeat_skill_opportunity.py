@@ -42,7 +42,7 @@ async def test_skill_opportunity_pushed_on_first_detection(monkeypatch, workspac
     activities = _repeat_activities("web_search", 3) + _repeat_activities("web_fetch", 3)
     out = await hb._build_evolution_context(agent_id, activities, tick_count=1)
 
-    assert "Skill Creation Opportunity" in out
+    assert "Skill Candidate Opportunity" in out
     assert "web_search" in out
     assert "web_fetch" in out
     # state persisted
@@ -64,11 +64,11 @@ async def test_skill_opportunity_suppressed_within_cooldown(monkeypatch, workspa
     activities = _repeat_activities("web_search", 3) + _repeat_activities("web_fetch", 3)
     # First tick — fires
     out1 = await hb._build_evolution_context(agent_id, activities, tick_count=1)
-    assert "Skill Creation Opportunity" in out1
+    assert "Skill Candidate Opportunity" in out1
 
     # Second tick with same tools, only 2 ticks later (cooldown=5) → suppressed
     out2 = await hb._build_evolution_context(agent_id, activities, tick_count=3)
-    assert "Skill Creation Opportunity" not in out2
+    assert "Skill Candidate Opportunity" not in out2
 
 
 @pytest.mark.asyncio
@@ -81,11 +81,11 @@ async def test_skill_opportunity_fires_after_cooldown(monkeypatch, workspace):
 
     activities = _repeat_activities("web_search", 3) + _repeat_activities("web_fetch", 3)
     out1 = await hb._build_evolution_context(agent_id, activities, tick_count=1)
-    assert "Skill Creation Opportunity" in out1
+    assert "Skill Candidate Opportunity" in out1
 
     # 7 ticks later (> cooldown=5) → fires again
     out2 = await hb._build_evolution_context(agent_id, activities, tick_count=8)
-    assert "Skill Creation Opportunity" in out2
+    assert "Skill Candidate Opportunity" in out2
 
     state = json.loads((workspace / "evolution" / "skill_opportunity_cooldown.json").read_text(encoding="utf-8"))
     assert state["tick"] == 8
@@ -116,7 +116,7 @@ async def test_skill_opportunity_suppressed_when_existing_skill_covers_tools(mon
     activities = _repeat_activities("web_search", 3) + _repeat_activities("web_fetch", 3)
     out = await hb._build_evolution_context(agent_id, activities, tick_count=1)
 
-    assert "Skill Creation Opportunity" not in out
+    assert "Skill Candidate Opportunity" not in out
     # cooldown state should not be written — push was suppressed by coverage, not cooldown
     assert not (workspace / "evolution" / "skill_opportunity_cooldown.json").exists()
 
@@ -135,9 +135,9 @@ async def test_skill_opportunity_fires_for_new_tool_set(monkeypatch, workspace):
     )
 
     out1 = await hb._build_evolution_context(agent_id, web_activities, tick_count=1)
-    assert "Skill Creation Opportunity" in out1
+    assert "Skill Candidate Opportunity" in out1
 
     # tick 2: new tool set (different from last fire) → must fire
     out2 = await hb._build_evolution_context(agent_id, feishu_activities, tick_count=2)
-    assert "Skill Creation Opportunity" in out2
+    assert "Skill Candidate Opportunity" in out2
     assert "feishu_doc_create" in out2

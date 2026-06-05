@@ -7,8 +7,11 @@
  *   POST /agents/{agentId}/workflows/preview            compile+admission+risk, never runs
  *   POST /agents/{agentId}/workflows/runs               start (low risk: user-confirmed click;
  *                                                       high risk: confirmed plan required)
+ *   GET  /agents/{agentId}/workflows/runs               run history (asset view §4)
  *   GET  /agents/{agentId}/workflows/runs/{runId}       run + step journal
  *   POST /agents/{agentId}/workflows/runs/{runId}/cancel kill (resumable later)
+ *   POST /agents/{agentId}/workflows/runs/{runId}/promote 固化 → registered DRAFT (provenance kept)
+ *   GET  /agents/{agentId}/workflows/promote-suggestions repeated-run evidence
  *
  *   POST /workflow-definitions                          create draft (versioned, immutable)
  *   GET  /workflow-definitions                          list visible to the tenant/agent
@@ -78,6 +81,7 @@ export interface WorkflowStartResult {
 export interface WorkflowDefinitionRecord {
   id: string;
   name: string;
+  description: string;
   definition_version: number;
   definition_hash: string;
   status: WorkflowDefinitionStatus;
@@ -86,6 +90,30 @@ export interface WorkflowDefinitionRecord {
   owner_id: string | null;
   call_policy: Record<string, unknown> | null;
   promoted_from_run_id: string | null;
+}
+
+/** One row of the agent's run history — the archived ephemeral flow. */
+export interface WorkflowRunSummary {
+  run_id: string;
+  status: WorkflowRunStatus;
+  name: string;
+  description: string;
+  definition_source: string | null;
+  definition_hash: string | null;
+  created_at: string | null;
+  completed_at: string | null;
+  steps_total: number;
+  steps_done: number;
+  steps_failed: number;
+  promoted_definition_id: string | null;
+}
+
+/** Repeated-run evidence: "this flow ran N times — suggest 固化". */
+export interface WorkflowPromoteSuggestion {
+  definition_hash: string;
+  name: string;
+  run_count: number;
+  sample_run_ids: string[];
 }
 
 /** trigger.config.workflow_ref — the creation-time pin (§6.2 / P8). */
@@ -139,6 +167,19 @@ export function getWorkflowRun(agentId: string, runId: string): Promise<Workflow
 
 export function cancelWorkflowRun(agentId: string, runId: string): Promise<{ run_id: string; status: string }> {
   return post<{ run_id: string; status: string }>(`/agents/${agentId}/workflows/runs/${runId}/cancel`);
+}
+
+export function listWorkflowRuns(agentId: string, limit = 50): Promise<WorkflowRunSummary[]> {
+  return get<WorkflowRunSummary[]>(`/agents/${agentId}/workflows/runs?limit=${limit}`);
+}
+
+/** 固化: archive → registered DRAFT. Activation still walks approve-promotion. */
+export function promoteWorkflowRun(agentId: string, runId: string): Promise<WorkflowDefinitionRecord> {
+  return post<WorkflowDefinitionRecord>(`/agents/${agentId}/workflows/runs/${runId}/promote`);
+}
+
+export function listPromoteSuggestions(agentId: string): Promise<WorkflowPromoteSuggestion[]> {
+  return get<WorkflowPromoteSuggestion[]>(`/agents/${agentId}/workflows/promote-suggestions`);
 }
 
 // ---------------------------------------------------------------------------

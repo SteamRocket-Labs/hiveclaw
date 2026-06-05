@@ -183,6 +183,7 @@ describe('classifyTriggerPin (§6.2 mismatch surfacing)', () => {
     {
       id: 'd-1',
       name: 'weekly-report',
+      description: '',
       definition_version: 2,
       definition_hash: 'hash-v2',
       status: 'active',
@@ -228,5 +229,68 @@ describe('classifyTriggerPin (§6.2 mismatch surfacing)', () => {
         records,
       ),
     ).toBe('missing');
+  });
+});
+
+describe('run history + promote (asset view)', () => {
+  it('GETs the run history with limit', async () => {
+    const { listWorkflowRuns } = await import('./workflows');
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([
+        {
+          run_id: 'r1',
+          status: 'completed',
+          name: 'contract-batch',
+          description: 'OCR → extract → risk table',
+          definition_source: 'ephemeral',
+          definition_hash: 'h',
+          created_at: '2026-06-05T12:00:00Z',
+          completed_at: '2026-06-05T12:05:00Z',
+          steps_total: 3,
+          steps_done: 3,
+          steps_failed: 0,
+          promoted_definition_id: null,
+        },
+      ]),
+    );
+    const runs = await listWorkflowRuns('agent-1', 20);
+    expect(requestOf().url).toContain('/agents/agent-1/workflows/runs?limit=20');
+    expect(runs[0].name).toBe('contract-batch');
+    expect(runs[0].description).toContain('OCR');
+  });
+
+  it('POSTs promote and returns the draft record with provenance', async () => {
+    const { promoteWorkflowRun } = await import('./workflows');
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: 'd1',
+        name: 'contract-batch',
+        description: 'OCR → extract → risk table',
+        definition_version: 1,
+        definition_hash: 'h',
+        status: 'draft',
+        visibility_scope: 'agent',
+        owner_type: 'agent',
+        owner_id: 'agent-1',
+        call_policy: null,
+        promoted_from_run_id: 'r1',
+      }),
+    );
+    const record = await promoteWorkflowRun('agent-1', 'r1');
+    const { url, init } = requestOf();
+    expect(url).toContain('/agents/agent-1/workflows/runs/r1/promote');
+    expect(init.method).toBe('POST');
+    expect(record.status).toBe('draft');
+    expect(record.promoted_from_run_id).toBe('r1');
+  });
+
+  it('GETs promote suggestions', async () => {
+    const { listPromoteSuggestions } = await import('./workflows');
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([{ definition_hash: 'h', name: 'contract-batch', run_count: 3, sample_run_ids: ['r1'] }]),
+    );
+    const suggestions = await listPromoteSuggestions('agent-1');
+    expect(requestOf().url).toContain('/agents/agent-1/workflows/promote-suggestions');
+    expect(suggestions[0].run_count).toBe(3);
   });
 });

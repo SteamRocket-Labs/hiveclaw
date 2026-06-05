@@ -111,6 +111,8 @@ async function bootstrapApp(page: Page, options: { risk: 'low' | 'high' }) {
 test('low-risk ephemeral: preview → confirm → run completes', async ({ page }) => {
   await bootstrapApp(page, { risk: 'low' });
 
+  // The manual JSON flow now lives behind the advanced toggle (asset-view IA).
+  await page.getByTestId('workflow-advanced-toggle').click();
   await page.getByTestId('workflow-definition-input').fill(LOW_RISK_DEFINITION);
   await page.getByTestId('workflow-preview-button').click();
 
@@ -131,6 +133,7 @@ test('low-risk ephemeral: preview → confirm → run completes', async ({ page 
 test('high-risk ephemeral: start requires confirmed Plan Mode handoff', async ({ page }) => {
   await bootstrapApp(page, { risk: 'high' });
 
+  await page.getByTestId('workflow-advanced-toggle').click();
   await page.getByTestId('workflow-definition-input').fill(LOW_RISK_DEFINITION);
   await page.getByTestId('workflow-preview-button').click();
 

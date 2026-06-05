@@ -676,6 +676,7 @@ describe('AgentDetail extracted sections', () => {
     const workflow = {
       id: 'wf-1',
       name: 'daily-report',
+      description: '',
       definition_version: 3,
       definition_hash: 'hash-v3',
       status: 'active' as const,
@@ -742,6 +743,7 @@ describe('AgentDetail extracted sections', () => {
         {
           id: 'wf-1',
           name: 'daily-report',
+          description: '',
           definition_version: 3,
           definition_hash: 'hash-v3',
           status: 'active',
@@ -804,6 +806,7 @@ describe('AgentDetail extracted sections', () => {
         {
           id: 'wf-1',
           name: 'daily-report',
+          description: '',
           definition_version: 3,
           definition_hash: 'hash-v3',
           status: 'active',

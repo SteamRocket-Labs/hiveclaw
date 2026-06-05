@@ -621,7 +621,20 @@ npm test -- --run
 npm run test:e2e -- --project=chromium
 ```
 
-### P13 Office workflows
+#### P12.1 产品面补课：资产视图重构（2026-06-05，用户拍板）
+
+> **背景（诚实记录）**：P12 初版把每个 API 端点 1:1 翻译成 UI 控件——JSON 粘贴框占 C 位、模板表裸露 hash/scope、tab i18n key 错层级裸显 `agent.tabs.workflows`。这违背了 §4 自己定下的"一个心智模型"原则：**创作面在对话里**（agent 经 `preview_workflow`/`start_workflow` 生成 definition），这个 tab 应是**资产视图 + 治理面**，不是创作面。用户批评成立，本切口补课。
+>
+> **后端补口（API 8→11 端点）**：
+> - `GET /agents/{id}/workflows/runs` — 运行历史列表（新 `WorkflowRuntimeService.list_runs_for_agent`：parent_agent_id 过滤 + tenant metadata mirror 过滤 + step 聚合 + promote 溯源 map，真 PG 红测试）。
+> - `POST /agents/{id}/workflows/runs/{run_id}/promote` — 固化：归档 definition → registered DRAFT，**首次真正写入 `promoted_from_run_id` 溯源**（列在 P1 就建好但无人写）；manage 权限 + 仅 completed run；激活仍走 approve-promotion 人审（§10 决策 4 不变）。
+> - `GET /agents/{id}/workflows/promote-suggestions` — 接通孤儿服务 `collect_promote_suggestions`（P13 建成后零消费者），新增 `agent_id` 过滤参数。
+> - `record_payload` 补 `description`（definition schema 本有此字段，wire 层一直没带出）。
+> - **顺手修实锤安全缺口**：`get/cancel run` 把 `check_agent_access` 的 tuple 返回值当 Agent 对象用 → `tenant_id` 恒 None，且无 run↔agent 归属校验（runtime_tasks 无 tenant 列/无 RLS）→ 跨租户按 run UUID 可读/可杀。修复 = `_load_owned_run`（parent_agent_id + tenant mirror 双校验，归属不符与不存在同样 404）；`collect_promote_suggestions` 的 registered_names 查询补显式 tenant 过滤（belt-and-braces，superuser 测试环境实证 RLS 旁路泄漏）。
+>
+> **前端三段式 IA（查看为主，修改弱化）**：① 模板库（名称+描述+版本+状态+可见域+「源自运行」溯源，管理动作仅 manage 可见）→ ② 运行记录（按归档 definition 展示名称/描述/步骤进度/时间，点击展开 step journal，completed ephemeral 一键「固化为模板」，已固化显徽章，重复运行建议横幅）→ ③ 高级·手动运行（原 JSON 流程整体折叠降级，E2E testids 全保留）。tab i18n key 从 `agent.workflows` 挪正到 `agent.tabs.workflows`（错层级根因），文案改为用户语言。
+>
+> **证据**：后端 workflow 相关 67 passed（新增 API 9 + service 2 红测试先红后绿）；前端 `npm run build` ✓ / vitest 170 passed（+9）/ Playwright 2 passed（高级区展开步进已更新）。
 
 > **✅ 完成（2026-06-04）** — 证据：`pytest tests/ -q` → **3625 passed**（+8：office 真 PG 5 + promote suggestion 真 PG 3）；ruff app+tests 全 clean。
 >

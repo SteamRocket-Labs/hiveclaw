@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -9,7 +8,6 @@ from typing import Any
 
 from app.services.deep_research.evaluator import ResearchEvaluator
 from app.services.deep_research.extractor import extract_claims_from_source
-from app.services.deep_research.language import paragraph_language_consistency, resolve_output_language_code
 from app.services.deep_research.ledger import EvidenceLedger
 from app.services.deep_research.plan_contract import research_plan_from_contract, validate_runtime_contract
 from app.services.deep_research.planner import build_research_plan
@@ -936,294 +934,36 @@ async def _synthesize_report(
     raise DeepResearchSynthesisFailed("; ".join(errors) or "Synthesis attempts exhausted")
 
 
-_INLINE_SOURCE_TOKEN_RE = re.compile(
-    r"\[(src_[a-zA-Z0-9_]{8,})\]"  # [src_ab12]
-    r"|(?<![`\-])(src_[a-zA-Z0-9_]{8,})\b"  # bare src_ab12 in prose
+# DR-6a: synthesis gates moved to synthesis_gates.py (single source of truth
+# for the workflow path); re-imported here so the retiring linear path keeps
+# working until DR-6b deletes this module.
+from app.services.deep_research.synthesis_gates import (  # noqa: E402, F401
+    _CODE_FENCE_RE,
+    _COVERAGE_NOTICE_MARKER,
+    _FOOTNOTE_REF_RE,
+    _HEADING_RE,
+    _INLINE_SOURCE_TOKEN_RE,
+    _PROSE_INNER_TITLECASE_RE,
+    _PROSE_PROPER_RE,
+    _SOURCE_REF_RE,
+    _TABLE_DIVIDER_RE,
+    _ZH_ENTITY_RE,
+    _apply_footnotes,
+    _evaluate_synthesis_quality,
+    _looks_like_evidence_list_dump,
+    _looks_like_generic_summary,
+    _minimum_report_chars,
+    _named_entity_count,
+    _narrowed_minimum_chars,
+    _prose_digit_count,
+    _required_digit_count,
+    _required_entity_count,
+    _strip_for_prose,
+    _strip_tool_call_envelope,
+    _strip_unknown_source_refs,
+    _unknown_source_refs,
+    _with_coverage_notice,
 )
-
-
-def _apply_footnotes(report: str | None, ledger: EvidenceLedger) -> str | None:
-    """Tier 2-5: rewrite inline [src_xxx] / bare src_xxx prose references as [^N]
-    footnote markers and append a `## Footnotes` block at the end of the report.
-    Backtick-quoted `src_xxx` entries (used inside `## Source Ledger`) are left intact
-    so the ledger keeps its native form.
-    """
-    # Task3: strip a hallucinated tool-call envelope first — regardless of ledger
-    # state — so report.md is always clean markdown, not a raw `<FileWriter ...>` blob.
-    report = _strip_tool_call_envelope(report)
-    if not report or not ledger.sources:
-        return report
-
-    # RC12: neutralize hallucinated citations (ids not in the ledger) before footnote
-    # conversion, so a few fabricated refs do not one-vote-veto an otherwise grounded report.
-    report = _strip_unknown_source_refs(report, ledger)
-
-    used: dict[str, int] = {}
-
-    def _replace(match: re.Match) -> str:
-        sid = match.group(1) or match.group(2)
-        if sid not in ledger.sources:
-            return match.group(0)
-        if sid not in used:
-            used[sid] = len(used) + 1
-        return f"[^{used[sid]}]"
-
-    converted = _INLINE_SOURCE_TOKEN_RE.sub(_replace, report)
-
-    if not used:
-        return converted
-
-    if "## Footnotes" in converted:
-        return converted
-
-    lines = ["", "## Footnotes", ""]
-    for sid, num in sorted(used.items(), key=lambda kv: kv[1]):
-        source = ledger.sources[sid]
-        title = source.title or "Source"
-        publisher = source.publisher or "Unknown publisher"
-        url = source.url or ""
-        lines.append(f"[^{num}]: {title} — {publisher} — {url}")
-    return converted.rstrip() + "\n\n" + "\n".join(lines) + "\n"
-
-
-_SOURCE_REF_RE = re.compile(r"\[src_[a-zA-Z0-9_]+\]|`src_[a-zA-Z0-9_]+`|\bsrc_[a-zA-Z0-9_]+")
-_FOOTNOTE_REF_RE = re.compile(r"\[\^?\d+\]")
-_CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
-_HEADING_RE = re.compile(r"^#{1,6}\s+.*$", re.MULTILINE)
-_TABLE_DIVIDER_RE = re.compile(r"^\s*\|[\s\-:|]+\|\s*$", re.MULTILINE)
-
-_PROSE_PROPER_RE = re.compile(
-    r"\b[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]*)+\b"  # Multi-word Title Case (Issuer A, Federal Reserve)
-    r"|\b[A-Z][a-z]+[A-Z][a-zA-Z]+\b"  # CamelCase (BlackRock, JPMorgan)
-    r"|\b[A-Z]{2,6}\b"  # Acronyms (SEC, MAS, BUIDL)
-)
-_PROSE_INNER_TITLECASE_RE = re.compile(r"(?<=[a-z][\s,])[A-Z][a-z]{2,}\b")
-_ZH_ENTITY_RE = re.compile(
-    r"[一-鿿]{2,8}(?:公司|集团|局|委员会|银行|协会|交易所|证监会|央行|部|院|大学|证券|基金|保险)"
-)
-
-
-def _evaluate_synthesis_quality(
-    report: str | None, *, request: ResearchRequest, ledger: EvidenceLedger
-) -> tuple[str, str]:
-    if not report:
-        return "failed", "Synthesis quality failed: report is too short for a deep research deliverable."
-    if not ledger.sources:
-        return "failed", "Synthesis quality failed: no fetched source is available for source-grounded synthesis."
-    target_language = resolve_output_language_code(request)
-    # F5: a narrowed report (limited evidence + explicit coverage notice) is held to a lower floor
-    # and skips the digit/entity density gates that assume full-coverage synthesis.
-    is_narrowed = _COVERAGE_NOTICE_MARKER in report
-    language_ok, foreign_paragraphs = paragraph_language_consistency(report, target_language)
-    if not language_ok:
-        return (
-            "failed",
-            (
-                f"Synthesis quality failed: report mixes languages — {foreign_paragraphs} paragraph(s) are not in "
-                f"the target output language ({target_language}). Rewrite the whole report in one language."
-            ),
-        )
-    unknown_refs = _unknown_source_refs(report, ledger)
-    if unknown_refs:
-        return (
-            "failed",
-            "Synthesis quality failed: report cites unknown source ids not in the evidence ledger: "
-            + ", ".join(unknown_refs[:8]),
-        )
-    floor = _narrowed_minimum_chars(request) if is_narrowed else _minimum_report_chars(request)
-    if len(report.strip()) < floor:
-        return "failed", "Synthesis quality failed: report is too short for a deep research deliverable."
-    cited_source_ids = {source_id for source_id in ledger.sources if source_id in report}
-    footnote_markers = len(re.findall(r"\[\^\d+\]", report))
-    required_citations = min(max(2, len(ledger.sources) // 2), len(ledger.sources))
-    # Tier 2-5: footnote markers count as citations too — the synthesis path now rewrites
-    # inline [src_xxx] to [^N] and emits a Footnotes table.
-    if max(len(cited_source_ids), footnote_markers) < required_citations:
-        return (
-            "failed",
-            "Synthesis quality failed: report does not cite enough source ids or footnotes from the evidence ledger.",
-        )
-    required_sections = ("Executive", "Findings", "Source")
-    if not all(section.casefold() in report.casefold() for section in required_sections):
-        return "failed", "Synthesis quality failed: report is missing executive, findings, or source-grounded sections."
-    if request.mode != "source_ledger_audit" and _looks_like_evidence_list_dump(report):
-        return "failed", "Synthesis quality failed: report is an evidence-list dump, not analytical writing."
-    if _looks_like_generic_summary(report):
-        return "failed", "Synthesis quality failed: report is generic and lacks concrete source-grounded analysis."
-
-    digit_count = _prose_digit_count(report)
-    required_digits = _required_digit_count(request)
-    if not is_narrowed and digit_count < required_digits:
-        return (
-            "failed",
-            (
-                f"Synthesis quality failed: report has only {digit_count} concrete numbers in prose; "
-                f"deep research at mode={request.mode}/depth={request.depth or 'standard'} requires at least {required_digits}."
-            ),
-        )
-
-    if not is_narrowed and request.mode != "source_ledger_audit":
-        entity_count = _named_entity_count(report)
-        required_entities = _required_entity_count(request)
-        if entity_count < required_entities:
-            return (
-                "failed",
-                (
-                    f"Synthesis quality failed: report references only {entity_count} named entities (companies, "
-                    f"regulators, products); analyst-grade synthesis requires at least {required_entities} for "
-                    f"mode={request.mode}."
-                ),
-            )
-
-    return "passed", ""
-
-
-def _unknown_source_refs(report: str, ledger: EvidenceLedger) -> list[str]:
-    refs = set(re.findall(r"src_[a-zA-Z0-9_]+", report or ""))
-    return sorted(ref for ref in refs if ref not in ledger.sources)
-
-
-def _strip_unknown_source_refs(report: str, ledger: EvidenceLedger) -> str:
-    """RC12: neutralize hallucinated citations — remove [src_xxx] / `src_xxx` / bare src_xxx
-    tokens whose id is not in the evidence ledger (model-fabricated refs), keeping the prose.
-    A few invented ids then no longer fail an otherwise source-grounded report; genuine ledger
-    refs are untouched (later converted to footnotes). If too few real refs remain, the
-    citation-sufficiency gate still fails the report downstream."""
-    unknown = {ref for ref in re.findall(r"src_[a-zA-Z0-9_]+", report or "") if ref not in ledger.sources}
-    if not unknown:
-        return report
-    cleaned = report
-    for ref in unknown:
-        cleaned = re.sub(rf"\[\s*{re.escape(ref)}\s*\]", "", cleaned)  # [src_xxx]
-        cleaned = cleaned.replace(f"`{ref}`", "")  # `src_xxx`
-        cleaned = re.sub(rf"\b{re.escape(ref)}\b", "", cleaned)  # bare src_xxx
-    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)  # collapse doubled spaces left by removal
-    cleaned = re.sub(r"\s+([.,;)])", r"\1", cleaned)  # tidy orphaned space before punctuation
-    return cleaned
-
-
-def _strip_tool_call_envelope(report: str | None) -> str | None:
-    """Task3: neutralize a hallucinated tool-call envelope wrapping the report.
-
-    With tools disabled (RC11) the synthesis LLM cannot emit a real write_file call,
-    but some models still wrap the whole report in a *textual* pseudo tool-call, e.g.
-    `<FileWriter path="..." content="# Title ...">` (f733867 left it unterminated, so
-    the body ran to EOF). That raw string was persisted verbatim as report.md. A real
-    report always opens with a markdown H1 (`# <title>` per the synthesis contract) and
-    never with `<`, so this only fires on the malformed case and recovers the markdown.
-    """
-    if not report:
-        return report
-    stripped = report.lstrip()
-    if not stripped.startswith("<"):
-        return report  # normal markdown — leave untouched
-
-    # Form A (observed): a content="..." attribute holds the markdown, often unterminated.
-    attr = re.match(r'<[^>]*?\bcontent\s*=\s*"(?P<body>.*)$', stripped, re.DOTALL)
-    if attr and attr.group("body").strip():
-        return re.sub(r'"\s*/?>?\s*$', "", attr.group("body")).strip()
-
-    # Form B: markdown wrapped between tags — recover from the first H1, drop close tag.
-    h1 = re.search(r"(?m)^#\s+\S", stripped)
-    if h1:
-        return re.sub(r"</[A-Za-z_][\w.\-]*>\s*$", "", stripped[h1.start() :]).strip()
-
-    return report
-
-
-def _minimum_report_chars(request: ResearchRequest) -> int:
-    depth = (request.depth or "").strip().lower()
-    if depth in {"full", "flagship", "deep"}:
-        return 1200
-    if depth in {"quick", "light"}:
-        return 700
-    return 900
-
-
-_COVERAGE_NOTICE_MARKER = "**Coverage notice:**"
-
-
-def _narrowed_minimum_chars(request: ResearchRequest) -> int:
-    """F5: a narrowed (coverage-limited) report is held to a lower floor than a full report —
-    honestly reporting limited evidence should not be punished as an outright failure."""
-    return max(400, _minimum_report_chars(request) // 3)
-
-
-def _with_coverage_notice(report: str, plan, ledger: EvidenceLedger) -> str:
-    """Prefix a narrowed report with an explicit coverage notice naming the lanes that still have
-    no usable source (F5/RC4). Keeps the run honest: partial coverage is stated, not hidden."""
-    covered = {source.lane_id for source in ledger.sources.values() if source.lane_id}
-    uncovered = [lane.label or lane.lane_id for lane in plan.lanes if lane.lane_id not in covered]
-    lines = [
-        f"> {_COVERAGE_NOTICE_MARKER} Evidence was limited, so this is a narrowed report scoped to the "
-        f"{len(ledger.sources)} source(s) that returned usable content."
-    ]
-    if uncovered:
-        lines.append("> Research lanes still uncovered: " + ", ".join(uncovered) + ".")
-    return "\n".join(lines) + "\n\n" + report.strip() + "\n"
-
-
-def _required_digit_count(request: ResearchRequest) -> int:
-    """Mode/depth-aware concrete-number threshold. source_ledger_audit relaxes since
-    audit reports center on provenance, not market quantification."""
-    if request.mode == "source_ledger_audit":
-        return 8
-    depth = (request.depth or "").strip().lower()
-    if depth in {"full", "flagship", "deep"}:
-        return 20
-    if depth in {"quick", "light"}:
-        return 8
-    return 12
-
-
-def _required_entity_count(request: ResearchRequest) -> int:
-    """Mode-aware named-entity threshold. topic_deep_dive tolerates narrower coverage
-    than industry_research, but both demand concrete actors."""
-    if request.mode == "industry_research":
-        return 8
-    return 6
-
-
-def _strip_for_prose(report: str) -> str:
-    body = _SOURCE_REF_RE.sub("", report)
-    body = _FOOTNOTE_REF_RE.sub("", body)
-    body = _CODE_FENCE_RE.sub("", body)
-    body = _HEADING_RE.sub("", body)
-    body = _TABLE_DIVIDER_RE.sub("", body)
-    return body
-
-
-def _prose_digit_count(report: str) -> int:
-    return sum(1 for ch in _strip_for_prose(report) if ch.isdigit())
-
-
-def _named_entity_count(report: str) -> int:
-    body = _strip_for_prose(report)
-    entities: set[str] = set()
-    entities.update(_PROSE_PROPER_RE.findall(body))
-    entities.update(_PROSE_INNER_TITLECASE_RE.findall(body))
-    entities.update(_ZH_ENTITY_RE.findall(body))
-    return len(entities)
-
-
-def _looks_like_evidence_list_dump(report: str) -> bool:
-    """Heuristic: many ledger lines of the form "- `src_xxx`" paired with very few H2
-    sections signals a pasted evidence list, not analytical writing."""
-    ledger_lines = report.count("\n- `src_")
-    section_count = report.count("\n## ")
-    return ledger_lines >= 3 and section_count <= 5
-
-
-def _looks_like_generic_summary(report: str) -> bool:
-    lowered = " ".join(report.casefold().split())
-    generic_phrases = (
-        "big opportunity",
-        "follow compliance",
-        "manage risks",
-        "early stage",
-        "important trend",
-    )
-    return len(report) < 1800 and sum(1 for phrase in generic_phrases if phrase in lowered) >= 2
 
 
 def _append_next_queries(plan, next_queries: list[str]) -> None:

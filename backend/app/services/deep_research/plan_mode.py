@@ -20,7 +20,6 @@ DEEP_RESEARCH_HANDOFF_TARGET = "deep_research"
 
 async def build_deep_research_plan_preview(research_request: ResearchRequest) -> dict[str, Any]:
     """Build a no-side-effect preview for the Plan Mode confirmation card."""
-    from app.services.deep_research.orchestrator import _topic_budget, _worker_topics
     from app.services.deep_research.planner import build_research_plan
 
     plan = build_research_plan(research_request)
@@ -210,7 +209,13 @@ async def deep_research_handoff_handler(_db: Any, plan: Any) -> dict[str, Any]:
     deep_research_plan = plan_json.get("deep_research") if isinstance(plan_json.get("deep_research"), dict) else {}
     runtime_contract = deep_research_plan.get("runtime_contract") if isinstance(deep_research_plan, dict) else None
     if isinstance(runtime_contract, dict):
-        payload.update({key: value for key, value in request_arguments_from_contract(runtime_contract).items() if value is not None})
+        payload.update(
+            {
+                key: value
+                for key, value in request_arguments_from_contract(runtime_contract).items()
+                if value is not None
+            }
+        )
     payload["plan_confirmed"] = True
     request = ResearchRequest.from_arguments(payload)
     workspace = Path(get_settings().AGENT_DATA_DIR) / str(plan.agent_id)
@@ -402,3 +407,55 @@ def _token_cost_for_depth(depth: str) -> str:
         "flagship": "high",
         "deep": "high",
     }.get(str(depth or "").lower(), "medium")
+
+
+# DR-6a: worker-topic derivation moved here from the retiring orchestrator
+# (this module is its only surviving consumer).
+def _short_question(question: str, *, limit: int = 200) -> str:
+    """Compress a long mega-question into a short background line so worker prompts stay
+    lane-focused instead of pasting all 10 dimensions into every worker (F3/RC3)."""
+    text = " ".join((question or "").split())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "…"
+
+
+async def _worker_topics(reasoner: Any | None, request: ResearchRequest, plan) -> list[str]:
+    if reasoner is not None and hasattr(reasoner, "decide_next"):
+        try:
+            decision = await reasoner.decide_next(request=request, plan=plan)
+        except Exception:
+            decision = None
+        topics = _topics_from_decision(decision)
+        if topics:
+            return topics[: _topic_budget(request, plan)]
+
+    topics: list[str] = []
+    background = _short_question(request.question)
+    for lane in plan.lanes:
+        queries = "; ".join(query.query for query in lane.queries[:4] if query.query)
+        # F3 (RC3): focus each worker on its own lane. Pasting the full 10-dimension question into
+        # every worker made each one chase the whole topic and blow the token budget.
+        topic = (
+            f"Research lane: {lane.label or lane.lane_id}\n"
+            f"Goal: {lane.goal or 'collect source-grounded evidence'}\n"
+            f"Focus queries: {queries or lane.label or background}\n"
+            f"Background (stay on this lane, do not chase the whole question): {background}"
+        )
+        topics.append(topic)
+    return topics[: _topic_budget(request, plan)]
+
+
+def _topic_budget(request: ResearchRequest, plan) -> int:
+    lane_count = len(getattr(plan, "lanes", []) or [])
+    return max(1, min(request.max_sources, max(lane_count, 3), 6))
+
+
+def _topics_from_decision(decision: Any) -> list[str]:
+    if not isinstance(decision, dict):
+        return []
+    raw_topics = decision.get("topics") or decision.get("worker_topics") or decision.get("next_topics")
+    if not isinstance(raw_topics, list):
+        return []
+    topics = [str(topic).strip() for topic in raw_topics if str(topic or "").strip()]
+    return list(dict.fromkeys(topics))

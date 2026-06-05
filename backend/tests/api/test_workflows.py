@@ -1,14 +1,18 @@
-"""§9 P4 red tests: workflow REST surface — preview / start / get / cancel.
+"""§9 P4 red tests: workflow REST surface — preview / start / get / cancel,
+plus the asset-view endpoints (run history list / promote-from-run /
+promote suggestions) and run-ownership guards.
 
 API-layer responsibilities only (service behaviour is covered on real PG in
 tests/services/): agent access control, risk-graded confirmation
 (low → user-confirmed start allowed; high → confirmed plan REQUIRED,
-hash-bound), and error mapping. The runtime service is stubbed.
+hash-bound), run↔agent/tenant ownership, and error mapping. The runtime
+service is stubbed.
 """
 
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from fastapi import FastAPI
@@ -57,7 +61,7 @@ def _high_risk_definition() -> dict:
     }
 
 
-def _client(user, monkeypatch, *, gate_allowed=True, gate_reason=None):
+def _client(user, monkeypatch, *, gate_allowed=True, gate_reason=None, access_level="manage"):
     api = FastAPI()
     api.include_router(workflows_api.router)
 
@@ -71,8 +75,9 @@ def _client(user, monkeypatch, *, gate_allowed=True, gate_reason=None):
     api.dependency_overrides[get_db] = override_db
 
     # Agent access always passes (cross-agent denial tested separately).
+    # Mirrors the real contract: returns (agent, access_level).
     async def fake_access(db, current_user, agent_id):
-        return SimpleNamespace(id=agent_id, tenant_id=user.tenant_id, name="agent")
+        return SimpleNamespace(id=agent_id, tenant_id=user.tenant_id, name="agent"), access_level
 
     monkeypatch.setattr(workflows_api, "check_agent_access", fake_access)
 
@@ -163,35 +168,299 @@ def test_high_risk_start_with_confirmed_plan_passes_gate(monkeypatch):
     assert len(client.fake_launch.calls) == 1
 
 
-def test_get_run_returns_steps(monkeypatch):
-    client = _client(_user(), monkeypatch)
-    run_id = uuid.uuid4()
+def _run_task(*, run_id, agent_id, tenant_id, status="completed", name="contract-batch", source="ephemeral"):
+    """A RuntimeTask(task_type=workflow) stand-in carrying the ephemeral archive."""
+    return SimpleNamespace(
+        id=run_id,
+        status=status,
+        task_type="workflow",
+        parent_agent_id=agent_id,
+        created_at=datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc),
+        completed_at=datetime(2026, 6, 5, 12, 5, tzinfo=timezone.utc) if status == "completed" else None,
+        metadata_json={
+            "tenant_id": str(tenant_id),
+            "definition_source": source,
+            "definition_hash": "h",
+            "definition_json": {
+                "name": name,
+                "description": "OCR → extract → risk table",
+                "steps": [
+                    {
+                        "id": "scan",
+                        "type": "agent_step",
+                        "leaf": {"name": "scanner", "type": "explorer"},
+                        "task": "Scan",
+                    }
+                ],
+            },
+            "args": {},
+        },
+    )
 
+
+def _patch_load(monkeypatch, loaded_factory):
     async def fake_load(self, rid, *, tenant_id=None):
-        return SimpleNamespace(
-            task=SimpleNamespace(
-                id=run_id, status="completed", task_type="workflow", metadata_json={"definition_hash": "h"}
-            ),
-            steps=[SimpleNamespace(step_id="scan", status="done", step_type="agent_step", error=None)],
-        )
+        return loaded_factory(rid)
 
     monkeypatch.setattr(workflows_api.WorkflowRuntimeService, "load_run", fake_load)
-    resp = client.get(f"/agents/{uuid.uuid4()}/workflows/runs/{run_id}")
+
+
+def test_get_run_returns_steps(monkeypatch):
+    user = _user()
+    client = _client(user, monkeypatch)
+    run_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    _patch_load(
+        monkeypatch,
+        lambda rid: SimpleNamespace(
+            task=_run_task(run_id=run_id, agent_id=agent_id, tenant_id=user.tenant_id),
+            steps=[SimpleNamespace(step_id="scan", status="done", step_type="agent_step", error=None)],
+        ),
+    )
+    resp = client.get(f"/agents/{agent_id}/workflows/runs/{run_id}")
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "completed"
     assert body["steps"][0]["step_id"] == "scan"
 
 
+def test_get_run_404_when_run_belongs_to_another_agent(monkeypatch):
+    """Run↔agent binding: agent A's URL must not expose agent B's run."""
+    user = _user()
+    client = _client(user, monkeypatch)
+    run_id = uuid.uuid4()
+    _patch_load(
+        monkeypatch,
+        lambda rid: SimpleNamespace(
+            task=_run_task(run_id=run_id, agent_id=uuid.uuid4(), tenant_id=user.tenant_id),
+            steps=[],
+        ),
+    )
+    resp = client.get(f"/agents/{uuid.uuid4()}/workflows/runs/{run_id}")
+    assert resp.status_code == 404
+
+
+def test_get_run_404_when_tenant_mirror_mismatch(monkeypatch):
+    """runtime_tasks has no tenant column — the metadata mirror is the
+    tenant boundary and MUST be enforced at the API."""
+    user = _user()
+    client = _client(user, monkeypatch)
+    run_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    _patch_load(
+        monkeypatch,
+        lambda rid: SimpleNamespace(
+            task=_run_task(run_id=run_id, agent_id=agent_id, tenant_id=uuid.uuid4()),  # foreign tenant
+            steps=[],
+        ),
+    )
+    resp = client.get(f"/agents/{agent_id}/workflows/runs/{run_id}")
+    assert resp.status_code == 404
+
+
 def test_cancel_run_kills(monkeypatch):
-    client = _client(_user(), monkeypatch)
+    user = _user()
+    client = _client(user, monkeypatch)
     killed: list = []
+    run_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    _patch_load(
+        monkeypatch,
+        lambda rid: SimpleNamespace(
+            task=_run_task(run_id=run_id, agent_id=agent_id, tenant_id=user.tenant_id, status="running"),
+            steps=[],
+        ),
+    )
 
     async def fake_kill(self, rid, *, tenant_id=None):
         killed.append(rid)
 
     monkeypatch.setattr(workflows_api.WorkflowRuntimeService, "kill_run", fake_kill)
-    run_id = uuid.uuid4()
-    resp = client.post(f"/agents/{uuid.uuid4()}/workflows/runs/{run_id}/cancel")
+    resp = client.post(f"/agents/{agent_id}/workflows/runs/{run_id}/cancel")
     assert resp.status_code == 200
     assert killed == [run_id]
+
+
+def test_cancel_404_for_foreign_run_and_never_kills(monkeypatch):
+    user = _user()
+    client = _client(user, monkeypatch)
+    killed: list = []
+    run_id = uuid.uuid4()
+    _patch_load(
+        monkeypatch,
+        lambda rid: SimpleNamespace(
+            task=_run_task(run_id=run_id, agent_id=uuid.uuid4(), tenant_id=user.tenant_id, status="running"),
+            steps=[],
+        ),
+    )
+
+    async def fake_kill(self, rid, *, tenant_id=None):
+        killed.append(rid)
+
+    monkeypatch.setattr(workflows_api.WorkflowRuntimeService, "kill_run", fake_kill)
+    resp = client.post(f"/agents/{uuid.uuid4()}/workflows/runs/{run_id}/cancel")
+    assert resp.status_code == 404
+    assert killed == []  # the kill must NOT happen
+
+
+# ── run history list (asset view) ──────────────────────────────────
+
+
+def test_list_runs_returns_archived_summaries(monkeypatch):
+    user = _user()
+    client = _client(user, monkeypatch)
+    agent_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    promoted_id = uuid.uuid4()
+    calls: list = []
+
+    async def fake_list(self, aid, *, tenant_id=None, limit=50):
+        calls.append({"agent_id": aid, "tenant_id": tenant_id, "limit": limit})
+        return [
+            SimpleNamespace(
+                task=_run_task(run_id=run_id, agent_id=aid, tenant_id=user.tenant_id),
+                step_counts={"done": 2, "failed": 1},
+                promoted_definition_id=promoted_id,
+            )
+        ]
+
+    monkeypatch.setattr(workflows_api.WorkflowRuntimeService, "list_runs_for_agent", fake_list, raising=False)
+    resp = client.get(f"/agents/{agent_id}/workflows/runs")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    run = body[0]
+    assert run["run_id"] == str(run_id)
+    assert run["name"] == "contract-batch"
+    assert run["description"] == "OCR → extract → risk table"
+    assert run["definition_source"] == "ephemeral"
+    assert run["status"] == "completed"
+    assert run["steps_total"] == 3
+    assert run["steps_done"] == 2
+    assert run["steps_failed"] == 1
+    assert run["promoted_definition_id"] == str(promoted_id)
+    assert run["created_at"].startswith("2026-06-05")
+    # the service is called with the ACCESS-CHECKED agent/tenant, not raw input
+    assert calls[0]["agent_id"] == agent_id
+    assert str(calls[0]["tenant_id"]) == str(user.tenant_id)
+
+
+# ── promote from run (固化) ────────────────────────────────────────
+
+
+def _promote_client(user, monkeypatch, *, access_level="manage"):
+    from app.api.workflow_definitions import get_workflow_definition_service
+
+    client = _client(user, monkeypatch, access_level=access_level)
+    created: list[dict] = []
+
+    class FakeDefinitionService:
+        async def create_draft(self, **kwargs):
+            created.append(kwargs)
+            definition = kwargs["definition_data"]
+            return SimpleNamespace(
+                id=uuid.uuid4(),
+                name=definition["name"],
+                definition_version=1,
+                definition_hash="newhash",
+                definition_json=definition,
+                status="draft",
+                visibility_scope=kwargs.get("visibility_scope", "agent"),
+                owner_type=kwargs.get("owner_type", "agent"),
+                owner_id=kwargs.get("owner_id"),
+                call_policy=None,
+                promoted_from_run_id=kwargs.get("promoted_from_run_id"),
+            )
+
+    client.app.dependency_overrides[get_workflow_definition_service] = lambda: FakeDefinitionService()
+    client.created = created
+    return client
+
+
+def test_promote_run_creates_draft_with_provenance(monkeypatch):
+    user = _user()
+    client = _promote_client(user, monkeypatch)
+    run_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    _patch_load(
+        monkeypatch,
+        lambda rid: SimpleNamespace(
+            task=_run_task(run_id=run_id, agent_id=agent_id, tenant_id=user.tenant_id),
+            steps=[],
+        ),
+    )
+    resp = client.post(f"/agents/{agent_id}/workflows/runs/{run_id}/promote")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "draft"
+    assert body["promoted_from_run_id"] == str(run_id)
+    assert body["description"] == "OCR → extract → risk table"
+    kwargs = client.created[0]
+    assert kwargs["promoted_from_run_id"] == run_id
+    assert kwargs["owner_type"] == "agent"
+    assert kwargs["owner_id"] == agent_id
+    assert kwargs["created_by_user_id"] == user.id
+    assert kwargs["definition_data"]["name"] == "contract-batch"
+
+
+def test_promote_run_requires_manage_access(monkeypatch):
+    user = _user()
+    client = _promote_client(user, monkeypatch, access_level="use")
+    run_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    _patch_load(
+        monkeypatch,
+        lambda rid: SimpleNamespace(
+            task=_run_task(run_id=run_id, agent_id=agent_id, tenant_id=user.tenant_id),
+            steps=[],
+        ),
+    )
+    resp = client.post(f"/agents/{agent_id}/workflows/runs/{run_id}/promote")
+    assert resp.status_code == 403
+    assert client.created == []
+
+
+def test_promote_run_rejects_uncompleted_run(monkeypatch):
+    user = _user()
+    client = _promote_client(user, monkeypatch)
+    run_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    _patch_load(
+        monkeypatch,
+        lambda rid: SimpleNamespace(
+            task=_run_task(run_id=run_id, agent_id=agent_id, tenant_id=user.tenant_id, status="running"),
+            steps=[],
+        ),
+    )
+    resp = client.post(f"/agents/{agent_id}/workflows/runs/{run_id}/promote")
+    assert resp.status_code == 409
+    assert client.created == []
+
+
+# ── promote suggestions ────────────────────────────────────────────
+
+
+def test_promote_suggestions_returns_agent_scoped_payload(monkeypatch):
+    user = _user()
+    client = _client(user, monkeypatch)
+    agent_id = uuid.uuid4()
+    sample = uuid.uuid4()
+    calls: list = []
+
+    async def fake_collect(*, tenant_id, agent_id=None, **kwargs):
+        calls.append({"tenant_id": tenant_id, "agent_id": agent_id})
+        return [
+            SimpleNamespace(
+                definition_hash="abc", name="contract-batch", run_count=3, sample_run_ids=[sample]
+            )
+        ]
+
+    monkeypatch.setattr(workflows_api, "collect_promote_suggestions", fake_collect, raising=False)
+    resp = client.get(f"/agents/{agent_id}/workflows/promote-suggestions")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == [
+        {"definition_hash": "abc", "name": "contract-batch", "run_count": 3, "sample_run_ids": [str(sample)]}
+    ]
+    assert calls[0]["agent_id"] == agent_id
+    assert str(calls[0]["tenant_id"]) == str(user.tenant_id)

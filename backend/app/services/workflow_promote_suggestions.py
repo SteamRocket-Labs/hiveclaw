@@ -12,7 +12,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.config import get_settings
 from app.database import tenant_scoped_session
@@ -31,29 +31,33 @@ class PromoteSuggestion:
 async def collect_promote_suggestions(
     *,
     tenant_id: uuid.UUID,
+    agent_id: uuid.UUID | None = None,
     session_factory=None,
     threshold: int | None = None,
 ) -> list[PromoteSuggestion]:
     """Group completed ephemeral runs by definition_hash; suggest promotion
     once a hash crosses the threshold and no registered definition already
-    carries that name."""
+    carries that name. ``agent_id`` narrows the evidence to one agent's runs
+    (the agent-page surface)."""
     limit = threshold if threshold is not None else get_settings().WORKFLOW_PROMOTE_SUGGESTION_THRESHOLD
 
     async with tenant_scoped_session(str(tenant_id), session_factory=session_factory) as session:
-        rows = (
-            (
-                await session.execute(
-                    select(RuntimeTask).where(RuntimeTask.task_type == "workflow", RuntimeTask.status == "completed")
-                )
-            )
-            .scalars()
-            .all()
-        )
+        criteria = [RuntimeTask.task_type == "workflow", RuntimeTask.status == "completed"]
+        if agent_id is not None:
+            criteria.append(RuntimeTask.parent_agent_id == agent_id)
+        rows = (await session.execute(select(RuntimeTask).where(*criteria))).scalars().all()
+        # Explicit tenant filter (belt-and-braces over RLS, same spirit as the
+        # runtime_tasks metadata-mirror filter below): NULL = platform-curated
+        # templates, whose names are taken for every tenant.
         registered_names = set(
             (
                 await session.execute(
                     select(WorkflowDefinitionRecord.name).where(
-                        WorkflowDefinitionRecord.status.in_(("draft", "active"))
+                        WorkflowDefinitionRecord.status.in_(("draft", "active")),
+                        or_(
+                            WorkflowDefinitionRecord.tenant_id == tenant_id,
+                            WorkflowDefinitionRecord.tenant_id.is_(None),
+                        ),
                     )
                 )
             )

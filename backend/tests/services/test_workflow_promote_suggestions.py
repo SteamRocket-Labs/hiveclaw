@@ -25,7 +25,9 @@ async def tenant_id(owner_sessionmaker) -> uuid.UUID:
     return tid
 
 
-async def _run_contract_review(service: WorkflowRuntimeService, tenant_id: uuid.UUID):
+async def _run_contract_review(
+    service: WorkflowRuntimeService, tenant_id: uuid.UUID, agent_id: uuid.UUID | None = None
+):
     async def leaf(request: LeafRequest) -> LeafOutcome:
         return LeafOutcome(ok=True, output={"text": request.step_id}, tokens_used=1)
 
@@ -34,6 +36,7 @@ async def _run_contract_review(service: WorkflowRuntimeService, tenant_id: uuid.
         definition_data=CONTRACT_REVIEW_EXAMPLE,
         args={"doc_path": "contracts/msa.docx"},
         leaf_executor=leaf,
+        agent_id=agent_id,
     )
 
 
@@ -77,3 +80,29 @@ async def test_already_registered_name_is_not_suggested(tenant_id, owner_session
     assert all(s.name != "office-contract-review" for s in suggestions), (
         "a flow that already became a template needs no further suggestion"
     )
+
+
+async def test_agent_filter_scopes_suggestions(tenant_id, owner_sessionmaker):
+    """agent_id narrows the evidence to that agent's runs (agent-page surface)."""
+    service = WorkflowRuntimeService(session_factory=owner_sessionmaker)
+    agent_a = uuid.uuid4()
+    agent_b = uuid.uuid4()
+    for _ in range(3):
+        await _run_contract_review(service, tenant_id, agent_id=agent_a)
+    for _ in range(2):
+        await _run_contract_review(service, tenant_id, agent_id=agent_b)
+
+    for_a = await collect_promote_suggestions(
+        tenant_id=tenant_id, agent_id=agent_a, session_factory=owner_sessionmaker
+    )
+    matching = [s for s in for_a if s.name == "office-contract-review"]
+    assert len(matching) == 1
+    assert matching[0].run_count == 3, "B's runs must not inflate A's evidence"
+
+    for_b = await collect_promote_suggestions(
+        tenant_id=tenant_id, agent_id=agent_b, session_factory=owner_sessionmaker
+    )
+    assert all(s.name != "office-contract-review" for s in for_b), "2 < threshold stays silent"
+
+    tenant_wide = await collect_promote_suggestions(tenant_id=tenant_id, session_factory=owner_sessionmaker)
+    assert any(s.run_count == 5 for s in tenant_wide if s.name == "office-contract-review")

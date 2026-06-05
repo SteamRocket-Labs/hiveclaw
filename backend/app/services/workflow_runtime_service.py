@@ -67,6 +67,16 @@ class LoadedWorkflowRun:
 
 
 @dataclass(slots=True)
+class WorkflowRunSummary:
+    """One row of the agent's run history (asset view): the archived run plus
+    step aggregates and promote provenance."""
+
+    task: RuntimeTask
+    step_counts: dict[str, int] = field(default_factory=dict)
+    promoted_definition_id: uuid.UUID | None = None
+
+
+@dataclass(slots=True)
 class ResumedRun:
     run_id: uuid.UUID
     outcome: WorkflowRunOutcome
@@ -556,7 +566,9 @@ class WorkflowRuntimeService:
         gate_decider: CheckpointGateDecider | None = None,
     ) -> None:
         self._session_factory = session_factory
-        self._gate_decider = gate_decider if gate_decider is not None else CheckpointGateDecider(session_factory=session_factory)
+        self._gate_decider = (
+            gate_decider if gate_decider is not None else CheckpointGateDecider(session_factory=session_factory)
+        )
         self._lease_manager = PGRunLeaseManager(session_factory)
         self._draining = False
 
@@ -676,7 +688,9 @@ class WorkflowRuntimeService:
         record_workflow_resume_attempt()
         lease = await self._lease_manager.try_acquire(run_id)
         if lease is None:
-            outcome = WorkflowRunOutcome(status="suspended", reason="run lease held by another worker; not resuming here")
+            outcome = WorkflowRunOutcome(
+                status="suspended", reason="run lease held by another worker; not resuming here"
+            )
             record_workflow_resume_finished(outcome.status)
             return outcome
         try:
@@ -784,6 +798,68 @@ class WorkflowRuntimeService:
                 .all()
             )
         return LoadedWorkflowRun(task=task, steps=list(steps))
+
+    async def list_runs_for_agent(
+        self, agent_id: uuid.UUID, *, tenant_id: uuid.UUID | str | None = None, limit: int = 50
+    ) -> list[WorkflowRunSummary]:
+        """The agent's run history (asset view §4): newest first, with step
+        aggregates and promote provenance.
+
+        runtime_tasks has no tenant column — the metadata mirror is the
+        tenant boundary and is enforced here, same as ``resume_pending_runs``.
+        """
+        from sqlalchemy import func
+
+        from app.models.workflow import WorkflowDefinitionRecord
+
+        async with self._session(tenant_id) as session:
+            tasks = (
+                (
+                    await session.execute(
+                        select(RuntimeTask)
+                        .where(
+                            RuntimeTask.task_type == "workflow",
+                            RuntimeTask.parent_agent_id == agent_id,
+                        )
+                        .order_by(RuntimeTask.created_at.desc())
+                        .limit(limit)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if tenant_id is not None:
+                tasks = [t for t in tasks if (t.metadata_json or {}).get("tenant_id") == str(tenant_id)]
+            run_ids = [t.id for t in tasks]
+            counts: dict[uuid.UUID, dict[str, int]] = {rid: {} for rid in run_ids}
+            promoted: dict[uuid.UUID, uuid.UUID] = {}
+            if run_ids:
+                count_rows = (
+                    await session.execute(
+                        select(WorkflowStep.run_id, WorkflowStep.status, func.count())
+                        .where(WorkflowStep.run_id.in_(run_ids))
+                        .group_by(WorkflowStep.run_id, WorkflowStep.status)
+                    )
+                ).all()
+                for rid, step_status, n in count_rows:
+                    counts[rid][step_status] = n
+                promo_rows = (
+                    await session.execute(
+                        select(WorkflowDefinitionRecord.id, WorkflowDefinitionRecord.promoted_from_run_id).where(
+                            WorkflowDefinitionRecord.promoted_from_run_id.in_(run_ids)
+                        )
+                    )
+                ).all()
+                for definition_id, rid in promo_rows:
+                    promoted[rid] = definition_id
+        return [
+            WorkflowRunSummary(
+                task=task,
+                step_counts=counts.get(task.id, {}),
+                promoted_definition_id=promoted.get(task.id),
+            )
+            for task in tasks
+        ]
 
     # ── startup resume (precedent: resume_persisted_async_delegations) ──
 

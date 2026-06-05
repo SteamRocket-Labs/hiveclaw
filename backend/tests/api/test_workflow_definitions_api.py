@@ -23,6 +23,7 @@ def _record(**overrides):
         name="wf",
         definition_version=1,
         definition_hash="hash",
+        definition_json={"name": "wf", "description": "what this flow does", "steps": []},
         status="draft",
         visibility_scope="agent",
         owner_type="agent",
@@ -32,6 +33,18 @@ def _record(**overrides):
     )
     data.update(overrides)
     return SimpleNamespace(**data)
+
+
+def test_record_payload_carries_description():
+    """The asset view shows 说明 — the payload must surface the definition's
+    description (and tolerate definitions that never set one)."""
+    from app.api import workflow_definitions as api
+
+    payload = api.record_payload(_record())
+    assert payload["description"] == "what this flow does"
+
+    bare = api.record_payload(_record(definition_json={"name": "wf", "steps": []}))
+    assert bare["description"] == ""
 
 
 class _FakeDefinitionService:

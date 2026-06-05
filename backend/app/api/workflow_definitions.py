@@ -43,10 +43,13 @@ class ForkRequest(BaseModel):
     patch: dict[str, Any] = Field(default_factory=dict)
 
 
-def _record_payload(record) -> dict:
+def record_payload(record) -> dict:
+    """Wire shape of a registered definition (shared with the promote-from-run
+    endpoint in app.api.workflows)."""
     return {
         "id": str(record.id),
         "name": record.name,
+        "description": (record.definition_json or {}).get("description", ""),
         "definition_version": record.definition_version,
         "definition_hash": record.definition_hash,
         "status": record.status,
@@ -80,7 +83,9 @@ def _require_definition_admin(user: User) -> None:
 async def _require_agent_manage(db: AsyncSession, user: User, agent_id: uuid.UUID) -> None:
     _agent, access_level = await check_agent_access(db, user, agent_id)
     if access_level != "manage":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Managing this workflow requires agent manage access")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Managing this workflow requires agent manage access"
+        )
 
 
 async def _authorize_create_definition(
@@ -135,7 +140,7 @@ async def create_definition_draft(
         )
     except WorkflowDefinitionError as exc:
         _raise_mapped(exc)
-    return _record_payload(record)
+    return record_payload(record)
 
 
 @router.get("")
@@ -153,7 +158,7 @@ async def list_definitions(
         tenant_id=current_user.tenant_id,
         agent_id=agent_id,
     )
-    return [_record_payload(record) for record in records]
+    return [record_payload(record) for record in records]
 
 
 @router.post("/{definition_id}/activate")
@@ -169,7 +174,7 @@ async def activate_definition(
         record = await service.activate(definition_id, tenant_id=current_user.tenant_id, actor_user_id=current_user.id)
     except WorkflowDefinitionError as exc:
         _raise_mapped(exc)
-    return _record_payload(record)
+    return record_payload(record)
 
 
 @router.post("/{definition_id}/deprecate")
@@ -185,7 +190,7 @@ async def deprecate_definition(
         record = await service.deprecate(definition_id, tenant_id=current_user.tenant_id)
     except WorkflowDefinitionError as exc:
         _raise_mapped(exc)
-    return _record_payload(record)
+    return record_payload(record)
 
 
 @router.post("/{definition_id}/revoke")
@@ -201,7 +206,7 @@ async def revoke_definition(
         record = await service.revoke(definition_id, tenant_id=current_user.tenant_id)
     except WorkflowDefinitionError as exc:
         _raise_mapped(exc)
-    return _record_payload(record)
+    return record_payload(record)
 
 
 @router.post("/{definition_id}/approve-promotion")
@@ -221,7 +226,7 @@ async def approve_promotion(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except WorkflowDefinitionError as exc:
         _raise_mapped(exc)
-    return _record_payload(record)
+    return record_payload(record)
 
 
 @router.post("/{definition_id}/fork")

@@ -297,3 +297,72 @@ async def test_workflow_metrics_record_run_step_leaf_resume_and_quota_denial(ser
     assert snapshot["resume_attempts_total"] >= 1
     assert snapshot["quota_denials_total"] >= 1
     assert snapshot["step_duration_seconds"]["count"] >= 1
+
+
+# ── run history list (asset view, §4 一次性编排归档) ────────────────
+
+
+async def test_list_runs_for_agent_scopes_counts_and_provenance(service, tenant_id, owner_sessionmaker):
+    """list_runs_for_agent returns ONLY the agent's tenant-mirrored runs,
+    newest first, with step counts and promote provenance."""
+    from app.models.tenant import Tenant
+    from app.services.workflow_definitions import WorkflowDefinitionService
+
+    agent_a = uuid.uuid4()
+    agent_b = uuid.uuid4()
+
+    first = await service.start_run(
+        tenant_id=tenant_id,
+        definition_data=_definition(),
+        args={"target": "one"},
+        leaf_executor=_ok_leaf(),
+        agent_id=agent_a,
+    )
+    second = await service.start_run(
+        tenant_id=tenant_id,
+        definition_data=_definition(),
+        args={"target": "two"},
+        leaf_executor=_ok_leaf(),
+        agent_id=agent_a,
+    )
+    # another agent's run — must not leak into A's history
+    await service.start_run(
+        tenant_id=tenant_id,
+        definition_data=_definition(),
+        args={"target": "other"},
+        leaf_executor=_ok_leaf(),
+        agent_id=agent_b,
+    )
+    # same parent agent under a FOREIGN tenant — the metadata mirror is the
+    # boundary (runtime_tasks has no tenant column)
+    foreign_tenant = uuid.uuid4()
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        session.add(Tenant(id=foreign_tenant, name="wf-foreign", slug=f"fx-{foreign_tenant.hex[:10]}"))
+    await service.start_run(
+        tenant_id=foreign_tenant,
+        definition_data=_definition(),
+        args={"target": "foreign"},
+        leaf_executor=_ok_leaf(),
+        agent_id=agent_a,
+    )
+
+    # promote the first run → provenance must surface in the listing
+    definitions = WorkflowDefinitionService(session_factory=owner_sessionmaker)
+    record = await definitions.create_draft(
+        tenant_id=tenant_id,
+        definition_data=_definition(),
+        owner_type="agent",
+        owner_id=agent_a,
+        promoted_from_run_id=first.run_id,
+    )
+
+    summaries = await service.list_runs_for_agent(agent_a, tenant_id=tenant_id)
+
+    assert [s.task.id for s in summaries] == [second.run_id, first.run_id], (
+        "newest first, only agent A's tenant-mirrored runs"
+    )
+    by_id = {s.task.id: s for s in summaries}
+    assert by_id[first.run_id].promoted_definition_id == record.id
+    assert by_id[second.run_id].promoted_definition_id is None
+    assert by_id[first.run_id].step_counts.get("done") == 2
+    assert by_id[first.run_id].task.metadata_json["definition_json"]["name"] == "two-step"

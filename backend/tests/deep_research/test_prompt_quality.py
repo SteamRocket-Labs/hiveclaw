@@ -15,7 +15,7 @@ def test_prompt_craft_constants_carry_calibration_and_anti_slop():
 
 
 def test_digest_synthesis_instruction_includes_reasoning_and_writing_quality():
-    from app.services.deep_research.reasoner import build_digest_synthesis_instruction
+    from app.services.deep_research.synthesis_gates import build_digest_synthesis_instruction
     from app.services.deep_research.schemas import ResearchRequest
 
     text = build_digest_synthesis_instruction(ResearchRequest(question="Research X"), "English")
@@ -32,7 +32,7 @@ def test_digest_synthesis_instruction_mandates_dimension_coverage():
     subsections, silently dropping half the dimensions (issuer/use-cases/risk). The instruction
     must require one subsection per worker dimension — complete coverage over single-dimension
     depth — while keeping integration (no per-worker stitching)."""
-    from app.services.deep_research.reasoner import build_digest_synthesis_instruction
+    from app.services.deep_research.synthesis_gates import build_digest_synthesis_instruction
     from app.services.deep_research.schemas import ResearchRequest
 
     text = build_digest_synthesis_instruction(ResearchRequest(question="q", depth="full"), "English")
@@ -44,30 +44,8 @@ def test_digest_synthesis_instruction_mandates_dimension_coverage():
     assert "INTEGRATION, NOT SUMMARIZATION" in text
 
 
-def test_worker_prompt_has_epistemic_calibration_and_anti_slop():
-    from app.services.deep_research.schemas import ResearchRequest
-    from app.services.deep_research.worker import _build_worker_prompt
-
-    prompt = _build_worker_prompt(ResearchRequest(question="Research X"), "lane A")
-    assert "warrant" in prompt.lower()
-    assert "verified" in prompt and "inferred" in prompt
-    assert "delve" in prompt  # anti-slop filler list
-
-
-def test_synthesize_report_instruction_path_is_integration_based():
-    """The linear (non-worker) synthesizer must also be integration-based, not summarization."""
-    import inspect
-
-    from app.services.deep_research.reasoner import RuntimeDeepResearchReasoner
-
-    src = inspect.getsource(RuntimeDeepResearchReasoner.synthesize_report)
-    assert "INTEGRATION, NOT SUMMARIZATION" in src
-    assert "REASONING_CALIBRATION" in src
-    assert "WRITING_QUALITY" in src
-
-
 def test_digest_synthesis_instruction_sets_depth_expectation():
-    from app.services.deep_research.reasoner import build_digest_synthesis_instruction
+    from app.services.deep_research.synthesis_gates import build_digest_synthesis_instruction
     from app.services.deep_research.schemas import ResearchRequest
 
     full = build_digest_synthesis_instruction(ResearchRequest(question="q", depth="full"), "English")
@@ -86,7 +64,7 @@ def test_digest_synthesis_instruction_sets_depth_expectation():
 
 
 def test_digest_synthesis_instruction_requires_research_report_structure_not_stitching():
-    from app.services.deep_research.reasoner import build_digest_synthesis_instruction
+    from app.services.deep_research.synthesis_gates import build_digest_synthesis_instruction
     from app.services.deep_research.schemas import ResearchRequest
 
     text = build_digest_synthesis_instruction(ResearchRequest(question="Research X", depth="full"), "English")

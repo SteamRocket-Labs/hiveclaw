@@ -17,7 +17,7 @@ from app.services.deep_research.leaf_presets import (
     register_deep_research_leaf_presets,
     run_artifact_dir,
 )
-from app.services.deep_research.worker import (
+from app.services.deep_research.leaf_presets import (
     RESEARCH_WORKER_ALLOWED_TOOLS,
 )
 from app.services.workflow_launch import build_subagent_leaf_executor

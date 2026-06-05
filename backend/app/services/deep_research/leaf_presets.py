@@ -24,20 +24,97 @@ from app.runtime.workflow_engine import LeafOutcome, LeafRequest
 from app.services.deep_research.extractor import clean_fetched_text, extract_claims_from_source
 from app.services.deep_research.ledger import EvidenceLedger
 from app.services.deep_research.schemas import ResearchRequest, SourceRecord, SourceType, to_jsonable
-from app.services.deep_research.worker import (
-    _MAX_SOURCE_CONTENT_CHARS,
-    _MAX_SOURCES_PER_WORKER,
-    RESEARCH_WORKER_ALLOWED_TOOLS,
-    RESEARCH_WORKER_EXCLUDED_TOOLS,
-    _extract_title,
-    _has_usable_content,
-    _infer_source_type,
-    _looks_like_binary_or_pdf,
-    _publisher_from_url,
-)
+from urllib.parse import urlparse
 from app.services.workflow_leaf_presets import LeafPreset, register_leaf_preset
 
 logger = logging.getLogger(__name__)
+
+# ── source-refinement surface (moved verbatim from the retired worker.py, DR-6b) ──
+
+RESEARCH_WORKER_ALLOWED_TOOLS: tuple[str, ...] = (
+    "web_search",
+    "web_fetch",
+    "firecrawl_fetch",
+    "xcrawl_scrape",
+)
+RESEARCH_WORKER_EXCLUDED_TOOLS: tuple[str, ...] = (
+    "deep_research_run",
+    "deep_research_start",
+    "deep_research_check",
+    "deep_research_cancel",
+    "deep_research_export",
+    "delegate_to_agent",
+    "send_message_to_agent",
+    "write_file",
+    "edit_file",
+    "delete_file",
+)
+_FETCH_TOOLS = {"web_fetch", "firecrawl_fetch", "xcrawl_scrape"}
+# F2/F3 (RC2/RC3): cap a single captured source so one oversized page cannot blow the
+# worker token budget (the production incident: worker #3 burned 452K tokens on one giant page).
+_MAX_SOURCE_CONTENT_CHARS = 12000
+# F3 (RC3): cap how many sources one worker hoards (production: worker #3 grabbed 18 sources).
+_MAX_SOURCES_PER_WORKER = 8
+
+
+def _looks_like_binary_or_pdf(text: str) -> bool:
+    """Reject unparsed PDF or raw binary payloads (RC2).
+
+    A fetch tool that returned bytes-as-text (e.g. a `%PDF-1.4` / `/FlateDecode` stream)
+    must never become a source: it wastes tokens and poisons synthesis.
+    """
+    if not text:
+        return False
+    head = text.lstrip()[:1024]
+    if head.startswith("%PDF") or "/FlateDecode" in head:
+        return True
+    sample = text[:2000]
+    control_chars = sum(1 for ch in sample if ord(ch) < 9 or 13 < ord(ch) < 32)
+    return control_chars / len(sample) > 0.10
+
+
+def _has_usable_content(text: str) -> bool:
+    if len(text) < 80:
+        return False
+    lowered = text.lower()
+    return not lowered.startswith(("❌", "[error]", "error:", "web_fetch failed", "firecrawl_fetch failed"))
+
+
+def _extract_title(text: str) -> str:
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        # RC8: skip fetch envelopes, PDF headers, extracted-PDF page markers, and pure-symbol lines
+        # so the title is a real heading, not "%PDF-1.4" or "📄 Fetched content from ...".
+        if "fetched content from:" in lowered or "content from:" in lowered:
+            continue
+        if line.startswith("%PDF") or line.startswith("📄") or line.startswith("---"):
+            continue
+        if not any(ch.isalnum() for ch in line):
+            continue
+        for prefix in ("title:", "#"):
+            if lowered.startswith(prefix):
+                return line[len(prefix) :].strip()
+        return line[:120]
+    return ""
+
+
+def _publisher_from_url(url: str) -> str:
+    return urlparse(url).netloc.removeprefix("www.")
+
+
+def _infer_source_type(url: str) -> SourceType:
+    """Domain-general source-type inference (RC6) so captured sources are not all UNKNOWN→tier3.
+    Uses universal authority signals (government / academic), not a domain-specific allowlist."""
+    host = urlparse(url).netloc.casefold()
+    if any(fragment in host for fragment in (".gov", ".gov.", ".mil", ".int", "europa.eu")):
+        return SourceType.REGULATORY
+    if any(fragment in host for fragment in (".edu", ".edu.", ".ac.", "arxiv.org", "doi.org", "ssrn.")):
+        return SourceType.PRIMARY
+    return SourceType.UNKNOWN
+
 
 DEEP_RESEARCH_ARTIFACT_SUBDIR = "deep_research"
 
@@ -443,7 +520,7 @@ DEEP_RESEARCH_CRITIC_PRESET = LeafPreset(
 async def _synthesizer_pre_process(request: LeafRequest, ctx: SubagentSpawnContext) -> str:
     from app.services.deep_research.evaluator import ResearchEvaluator
     from app.services.deep_research.language import resolve_output_language_label
-    from app.services.deep_research.reasoner import (
+    from app.services.deep_research.synthesis_gates import (
         _compress_claims_for_synthesis,
         build_digest_synthesis_instruction,
     )
@@ -507,7 +584,7 @@ async def _synthesizer_pre_process(request: LeafRequest, ctx: SubagentSpawnConte
 def _workflow_coverage_notice(report: str, ledger: EvidenceLedger, digests: list[dict[str, Any]]) -> str:
     """Workflow-shape `_with_coverage_notice`: lanes are explorer topics; a
     topic whose shard contributed no usable source is named as uncovered."""
-    from app.services.deep_research.orchestrator import _COVERAGE_NOTICE_MARKER
+    from app.services.deep_research.synthesis_gates import _COVERAGE_NOTICE_MARKER
 
     covered = {source.lane_id for source in ledger.sources.values() if source.lane_id}
     uncovered: list[str] = []
@@ -530,7 +607,7 @@ async def _synthesizer_post_process(
     result: SubagentResult | None,
     outcome: LeafOutcome,
 ) -> LeafOutcome:
-    from app.services.deep_research.orchestrator import (
+    from app.services.deep_research.synthesis_gates import (
         _apply_footnotes,
         _evaluate_synthesis_quality,
         _narrowed_minimum_chars,

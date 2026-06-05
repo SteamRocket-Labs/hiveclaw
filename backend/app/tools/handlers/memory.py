@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 
 from app.services.session_recall import search_session_history
 from app.tools.decorator import ToolMeta, tool
@@ -175,16 +176,30 @@ def load_memory(agent_id: uuid.UUID, arguments: dict) -> str:
     if not entries:
         return f"No memory entries found for ids: {', '.join(ids)}"
 
-    found_ids = {entry.entry_id for entry in entries}
-    lines = ["## Loaded Memory"]
+    visible_entries = []
+    suppressed_ids = []
     for entry in entries:
+        if _memory_metadata_visible(entry.metadata):
+            visible_entries.append(entry)
+        else:
+            suppressed_ids.append(entry.entry_id)
+
+    found_ids = {entry.entry_id for entry in visible_entries}
+    if not visible_entries:
+        lines = ["No visible memory entries found."]
+    else:
+        lines = ["## Loaded Memory"]
+    for entry in visible_entries:
         ts = f" timestamp={entry.timestamp}" if entry.timestamp else ""
         lines.append(f"- id={entry.entry_id} source={entry.source} category={entry.category}{ts}")
         lines.append(f"  {entry.content}")
-    missing = [entry_id for entry_id in ids if entry_id not in found_ids]
+    missing = [entry_id for entry_id in ids if entry_id not in found_ids and entry_id not in suppressed_ids]
     if missing:
         lines.append("")
         lines.append(f"Missing ids: {', '.join(missing)}")
+    if suppressed_ids:
+        lines.append("")
+        lines.append(f"Suppressed entries: {len(suppressed_ids)}")
     return "\n".join(lines)
 
 
@@ -279,6 +294,7 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
         )
         if backend_facts:
             facts = _dedupe_fact_results([*backend_facts, *facts])[:limit]
+        facts = [fact for fact in facts if _memory_fact_visible(fact)]
         if facts:
             results.append("## Semantic Memory")
             for f in facts:
@@ -301,12 +317,13 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
             wiki_hits = search_wiki_pages(Path(settings.AGENT_DATA_DIR), agent_id, query, limit=min(limit, 5))
         except Exception:  # noqa: BLE001 — wiki layer is an accelerator; facts/sessions still answer
             wiki_hits = []
+        wiki_hits = [hit for hit in wiki_hits if _wiki_hit_visible(Path(settings.AGENT_DATA_DIR), agent_id, hit)]
         if wiki_hits:
             results.append("## Knowledge Pages")
             for hit in wiki_hits:
                 results.append(
                     f"- [{hit['kind']}] {hit['title']} — {hit['preview'][:120]} "
-                    f"(read_file(\"{hit['source_ref']}\") for the full page)"
+                    f'(read_file("{hit["source_ref"]}") for the full page)'
                 )
 
     # --- Cross-session recall ---
@@ -432,3 +449,44 @@ def _dedupe_fact_results(facts: list[dict]) -> list[dict]:
 
 def _normalize_fact_content(content: object) -> str:
     return " ".join(str(content or "").lower().split())
+
+
+def _memory_metadata_visible(metadata: dict | None) -> bool:
+    from app.memory.visibility import can_access_metadata
+
+    return can_access_metadata(metadata)
+
+
+def _memory_fact_visible(fact: dict) -> bool:
+    sensitivity = fact.get("sensitivity")
+    if not sensitivity:
+        from app.memory.visibility import classify_text_sensitivity
+
+        sensitivity = classify_text_sensitivity(str(fact.get("content") or fact.get("preview") or ""))
+    return _memory_metadata_visible({"sensitivity": sensitivity})
+
+
+def _wiki_hit_visible(data_root: Path, agent_id: uuid.UUID, hit: dict) -> bool:
+    from app.memory.visibility import can_access_sensitivity, classify_text_sensitivity
+
+    text = _wiki_hit_source_text(data_root, agent_id, hit) or " ".join(
+        str(hit.get(key) or "") for key in ("title", "kind", "preview", "source_ref")
+    )
+    return can_access_sensitivity(classify_text_sensitivity(text))
+
+
+def _wiki_hit_source_text(data_root: Path, agent_id: uuid.UUID, hit: dict) -> str:
+    source_ref = str(hit.get("source_ref") or "").replace("\\", "/")
+    if not source_ref.startswith("memory/"):
+        return ""
+    rel_path = Path(source_ref.removeprefix("memory/"))
+    if rel_path.is_absolute() or ".." in rel_path.parts or rel_path.suffix.lower() != ".md":
+        return ""
+    base = (Path(data_root) / str(agent_id) / "memory").resolve()
+    target = (base / rel_path).resolve()
+    if base not in target.parents:
+        return ""
+    try:
+        return target.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""

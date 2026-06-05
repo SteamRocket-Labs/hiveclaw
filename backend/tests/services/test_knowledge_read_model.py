@@ -171,6 +171,45 @@ def test_entries_expose_heat_telemetry_and_candidates(tmp_path: Path) -> None:
     assert by_id["mem_f1"]["sensitivity"] == "PL2_pii"
 
 
+def test_entries_suppress_pl3_for_unauthorized_principal(tmp_path: Path) -> None:
+    from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
+
+    _seed_workspace(tmp_path)
+    mem_dir = tmp_path / str(AGENT) / "memory"
+    with (mem_dir / "knowledge.md").open("a", encoding="utf-8") as fh:
+        fh.write("- [2026-06-05][entry_id=mem_pl3][sensitivity=PL3_sensitive] salary planning is confidential\n")
+    owner = Principal(role=PrincipalRole.OWNER, id="owner-1")
+    viewer = Principal(role=PrincipalRole.CURRENT_USER, id="viewer-1")
+    stack = PrincipalStack(direct_owner=owner, current_user=viewer)
+
+    entries = list_knowledge_entries(tmp_path, AGENT, principal_stack=stack)
+
+    ids = {entry["id"] for entry in entries}
+    assert "mem_pl3" not in ids
+    assert all("salary planning" not in entry["content"] for entry in entries)
+
+
+def test_page_markdown_redacts_pl3_for_unauthorized_principal(tmp_path: Path) -> None:
+    from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
+
+    _seed_workspace(tmp_path)
+    page_path = tmp_path / str(AGENT) / "memory" / "wiki" / "salary-planning.md"
+    page_path.write_text(
+        "---\ntitle: Salary Planning\ntype: concept\nstatus: active\n---\n\n"
+        "## Current Claim\n\nsalary planning is confidential\n",
+        encoding="utf-8",
+    )
+    owner = Principal(role=PrincipalRole.OWNER, id="owner-1")
+    viewer = Principal(role=PrincipalRole.CURRENT_USER, id="viewer-1")
+    stack = PrincipalStack(direct_owner=owner, current_user=viewer)
+
+    page = get_knowledge_page(tmp_path, AGENT, "wiki/salary-planning", principal_stack=stack)
+
+    assert page is not None
+    assert page["markdown"] == "[REDACTED_PL3]"
+    assert "salary planning is confidential" not in page["markdown"]
+
+
 def test_events_merge_audit_and_dream_history(tmp_path: Path) -> None:
     _seed_workspace(tmp_path)
     events = list_knowledge_events(tmp_path, AGENT)

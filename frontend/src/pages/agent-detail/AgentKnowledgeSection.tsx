@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
@@ -112,6 +112,13 @@ export default function AgentKnowledgeSection({ agentId, canEdit, onNavigateTab 
   const { t } = useTranslation();
   const [subView, setSubView] = useState<SubView>('overview');
   const [selectedPageId, setSelectedPageId] = useState<string | null>(null);
+  const availableSubViews = canEdit ? SUBVIEWS : SUBVIEWS.filter((view) => view !== 'raw');
+
+  useEffect(() => {
+    if (!canEdit && subView === 'raw') {
+      setSubView('overview');
+    }
+  }, [canEdit, subView]);
 
   const overviewQuery = useQuery({
     queryKey: ['knowledge-overview', agentId],
@@ -147,7 +154,7 @@ export default function AgentKnowledgeSection({ agentId, canEdit, onNavigateTab 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
       <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-        {SUBVIEWS.map((view) => (
+        {availableSubViews.map((view) => (
           <button
             key={view}
             className={`btn btn-sm ${subView === view ? 'btn-primary' : ''}`}
@@ -322,7 +329,7 @@ export default function AgentKnowledgeSection({ agentId, canEdit, onNavigateTab 
         </div>
       )}
 
-      {subView === 'raw' && <AgentMindSection agentId={agentId} canEdit={canEdit} />}
+      {canEdit && subView === 'raw' && <AgentMindSection agentId={agentId} canEdit={canEdit} />}
     </div>
   );
 }

@@ -35,6 +35,12 @@ _CURSOR_FILENAME = ".curation_cursor.json"
 _MIN_NEW_ENTRIES = 3
 _MAX_BATCH = 8
 _CURATED_FILES = {"knowledge.md", "strategies.md"}
+_RETRYABLE_HOLD_MARKERS = (
+    "no llm",
+    "llm output invalid",
+    "missing frontmatter",
+    "missing required sections",
+)
 
 
 def _cursor_path(data_root: Path, agent_id: uuid.UUID) -> Path:
@@ -61,6 +67,13 @@ def _write_cursor(data_root: Path, agent_id: uuid.UUID, processed: set[str]) -> 
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _is_retryable_hold(status: str, reason: str) -> bool:
+    if status != "held":
+        return False
+    normalized = (reason or "").lower()
+    return any(marker in normalized for marker in _RETRYABLE_HOLD_MARKERS)
 
 
 async def _build_llm_caller(tenant_id: uuid.UUID | None) -> LlmFn | None:
@@ -150,14 +163,19 @@ async def run_scene_wiki_curation_tick(
             if wiki_candidate.status == "proposed":
                 wiki_result["apply"] = apply_wiki_patch(data_root, agent_id, wiki_candidate)
 
-        cursor.update(entry.entry_id for entry in batch)
-        _write_cursor(data_root, agent_id, cursor)
+        retryable_hold = _is_retryable_hold(scene_result["status"], scene_result.get("reason", "")) or (
+            _is_retryable_hold(wiki_result.get("status", ""), wiki_result.get("reason", ""))
+        )
+        if not retryable_hold:
+            cursor.update(entry.entry_id for entry in batch)
+            _write_cursor(data_root, agent_id, cursor)
 
         return {
             "status": "ran",
             "batch": len(batch),
             "scene": scene_result,
             "wiki": wiki_result,
+            "retryable_hold": retryable_hold,
         }
     except Exception as exc:  # noqa: BLE001 — curation must never break the heartbeat tick
         logger.warning("[MemoryCuration] curation tick failed for %s: %s", agent_id, exc)

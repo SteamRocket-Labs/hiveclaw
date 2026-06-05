@@ -4,7 +4,7 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
-- 2026-06-05T07:59Z [sid:96a0f9cf]; branch:main; 4 files (orphan-trail.md, leaf_presets.py, ledger.py, +1); last commit: 7978a6b7 feat(memory): P9 关系图/KG+PPR 检索/记忆 eval benchmark — 
+- 2026-06-05T08:35Z [sid:96a0f9cf]; branch:main; 46 files (agent_knowledge.py, files.py, config.py, +43); last commit: 58ba91ca refactor(workflow): DR-6a 合成质量门搬家 — synthesis_gates
 - 2026-06-05T07:51Z [sid:27e1f4c6]; branch:main; 1 files (orphan-trail.md); last commit: 89d16139 docs(memory): spec §12 路线图总状态 — P0-P8 全部实装收口
 - 2026-06-05T07:44Z [sid:96a0f9cf]; branch:main; 1 files (orphan-trail.md); last commit: 89d16139 docs(memory): spec §12 路线图总状态 — P0-P8 全部实装收口
 - 2026-06-05T00:27Z [sid:26c03780]; branch:main; 1 files (orphan-trail.md); last commit: 35dea5c9 docs(memory): agent memory 研究 + MD-first 记忆引擎合并规格（施

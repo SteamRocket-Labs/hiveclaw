@@ -177,6 +177,21 @@ def test_apply_scene_patch_writes_governed_file(tmp_path: Path) -> None:
     assert "Railway Deployments" in body
 
 
+def test_apply_scene_patch_rejects_path_traversal(tmp_path: Path) -> None:
+    candidate = ScenePatchCandidate(
+        status="proposed",
+        action="create",
+        scene_path="memory/scenes/../../soul.md",
+        patch_markdown="---\ntitle: Escape\ntype: scene\nstatus: active\n---\n\n## Narrative\n\nsafe\n",
+        source_refs=["t2:insights#1"],
+        reason="bad path",
+        confidence=0.85,
+    )
+    result = apply_scene_patch(tmp_path, AGENT, candidate)
+    assert result["applied"] is False
+    assert not (tmp_path / str(AGENT) / "soul.md").exists()
+
+
 def test_apply_scene_patch_rejects_credentials(tmp_path: Path) -> None:
     candidate = ScenePatchCandidate(
         status="proposed",
@@ -311,6 +326,22 @@ def test_apply_wiki_patch_writes_page(tmp_path: Path) -> None:
     assert "## Current Claim" in body
 
 
+def test_apply_wiki_patch_rejects_path_traversal(tmp_path: Path) -> None:
+    candidate = WikiPatchCandidate(
+        status="proposed",
+        action="upsert",
+        page_path="memory/wiki/../../soul.md",
+        page_markdown=_WIKI_PAGE,
+        source_refs=["t3:feedback#1"],
+        reason="bad path",
+        confidence=0.9,
+        concept="Memory Control Plane",
+    )
+    result = apply_wiki_patch(tmp_path, AGENT, candidate)
+    assert result["applied"] is False
+    assert not (tmp_path / str(AGENT) / "soul.md").exists()
+
+
 def test_apply_wiki_patch_refuses_held(tmp_path: Path) -> None:
     candidate = WikiPatchCandidate(
         status="held",
@@ -352,13 +383,14 @@ async def test_curation_tick_skips_below_threshold(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_curation_tick_runs_holds_without_llm_and_advances_cursor(tmp_path: Path) -> None:
+async def test_curation_tick_does_not_advance_cursor_on_infrastructure_hold(tmp_path: Path) -> None:
     from app.services.memory_curation import run_scene_wiki_curation_tick
 
     agent_id = uuid.uuid4()
     _seed_t3(tmp_path, agent_id, 4)
 
-    # tenant_id=None → no LLM caller → curators hold; cursor still advances.
+    # tenant_id=None → no LLM caller → infrastructure hold. This must remain
+    # retryable; only semantic/applied decisions are terminal cursor progress.
     summary = await run_scene_wiki_curation_tick(agent_id, None, data_root=tmp_path)
     assert summary["status"] == "ran"
     assert summary["scene"]["status"] == "held"
@@ -366,10 +398,11 @@ async def test_curation_tick_runs_holds_without_llm_and_advances_cursor(tmp_path
     audit = (tmp_path / str(agent_id) / "memory" / "distillation_audit.jsonl").read_text(encoding="utf-8")
     assert "scene_curation" in audit
 
-    # Second tick: nothing new → skipped (cursor advanced).
+    # Second tick sees the same entries again because the missing LLM is a
+    # transient infrastructure failure, not a terminal semantic decision.
     again = await run_scene_wiki_curation_tick(agent_id, None, data_root=tmp_path)
-    assert again["status"] == "skipped"
-    assert again["new_entries"] == 0
+    assert again["status"] == "ran"
+    assert again["batch"] == 4
 
 
 @pytest.mark.asyncio

@@ -127,7 +127,6 @@ class Settings(BaseSettings):
     # admission rejects (never warns) past these. Env-overridable per deploy.
     WORKFLOW_RUNTIME_ENABLED: bool = True
     WORKFLOW_TRIGGER_ENABLED: bool = True
-    WORKFLOW_DEEP_RESEARCH_ENABLED: bool = False
     WORKFLOW_MAX_RUN_BUDGET_TOKENS: int = 2_000_000
     WORKFLOW_MAX_FANOUT_ITEMS: int = 16
     WORKFLOW_MAX_CONCURRENCY: int = 8

@@ -111,6 +111,22 @@ def _slugify(value: str) -> str:
     return slug[:80] or "concept"
 
 
+def _resolve_candidate_wiki_path(data_root: Path, agent_id: uuid.UUID, page_path: str) -> Path | None:
+    prefix = "memory/wiki/"
+    normalized = str(page_path or "").replace("\\", "/")
+    if not normalized.startswith(prefix):
+        return None
+    relative = normalized.removeprefix(prefix)
+    rel_path = Path(relative)
+    if rel_path.is_absolute() or ".." in rel_path.parts or len(rel_path.parts) != 1 or rel_path.suffix.lower() != ".md":
+        return None
+    base = wiki_dir(data_root, agent_id).resolve()
+    target = (base / rel_path).resolve()
+    if base not in target.parents:
+        return None
+    return target
+
+
 def _held(
     data_root: Path,
     agent_id: uuid.UUID,
@@ -266,8 +282,18 @@ def apply_wiki_patch(data_root: Path, agent_id: uuid.UUID, candidate: WikiPatchC
         )
         return {"applied": False, "reason": f"privacy gate: {privacy.reason}"}
 
-    relative = candidate.page_path.removeprefix("memory/wiki/")
-    target = wiki_dir(data_root, agent_id) / relative
+    target = _resolve_candidate_wiki_path(data_root, agent_id, candidate.page_path)
+    if target is None:
+        write_distillation_audit(
+            data_root,
+            agent_id,
+            stage="wiki_apply",
+            outcome="refused",
+            reason="invalid wiki path",
+            detail={"page_path": candidate.page_path, "concept": candidate.concept},
+        )
+        return {"applied": False, "reason": "invalid wiki path"}
+
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(privacy.sanitized_text.rstrip() + "\n", encoding="utf-8")
     write_distillation_audit(

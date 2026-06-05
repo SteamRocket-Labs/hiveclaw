@@ -433,6 +433,44 @@ async def _resolve_memory_context(
     return "\n\n".join(parts)
 
 
+async def _resolve_memory_navigation_context(
+    request: AgentInvocationRequest,
+    tenant_id: uuid.UUID | None,
+) -> str:
+    if not request.agent_id:
+        return ""
+
+    principal_stack = None
+    if tenant_id:
+        try:
+            from app.services.memory_service import _resolve_activation_context
+
+            current_user_name = await _resolve_current_user_name(request.user_id) if request.user_id else None
+            activation_context = await _resolve_activation_context(
+                agent_id=request.agent_id,
+                tenant_id=tenant_id,
+                query=_last_user_query(request.messages),
+                current_user_id=request.user_id,
+                current_user_name=current_user_name,
+            )
+            if activation_context:
+                principal_stack = activation_context.principal_stack
+        except Exception as exc:  # noqa: BLE001 — default navigation visibility is the safe fallback
+            logger.debug("[MemoryNavigation] principal stack unavailable for %s: %s", request.agent_id, exc)
+
+    try:
+        from app.runtime.prompt_sections import build_memory_navigation_section
+
+        return build_memory_navigation_section(
+            Path(get_settings().AGENT_DATA_DIR),
+            request.agent_id,
+            principal_stack=principal_stack,
+        )
+    except Exception as exc:  # noqa: BLE001 — navigation is optional context
+        logger.debug("[MemoryNavigation] render skipped for %s: %s", request.agent_id, exc)
+        return ""
+
+
 async def _resolve_retrieval_context(
     request: AgentInvocationRequest,
     tenant_id: uuid.UUID | None,
@@ -822,6 +860,12 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
     ) -> str:
         return await _resolve_retrieval_context(request, tenant_id)  # type: ignore[arg-type]
 
+    async def _kernel_resolve_memory_navigation_context(
+        request: InvocationRequest,
+        tenant_id: uuid.UUID | None,
+    ) -> str:
+        return await _resolve_memory_navigation_context(request, tenant_id)  # type: ignore[arg-type]
+
     async def _kernel_get_tools(agent_id: uuid.UUID, core_only: bool) -> list[dict]:
         # RC11: deep-research reasoning passes disable the tool surface entirely so the
         # synthesis LLM cannot route its report through a write_file call (which blew the
@@ -876,6 +920,7 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
             build_system_prompt=_kernel_build_system_prompt,
             resolve_memory_context=_kernel_resolve_memory_context,
             resolve_retrieval_context=_kernel_resolve_retrieval_context,
+            resolve_memory_navigation_context=_kernel_resolve_memory_navigation_context,
             get_tools=_kernel_get_tools,
             resolve_tool_expansion=_resolve_tool_expansion,
             maybe_compress_messages=maybe_compress_messages,

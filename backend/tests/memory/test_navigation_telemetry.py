@@ -66,6 +66,48 @@ def test_memory_navigation_section_renders_heat_ordered_rows(tmp_path: Path) -> 
     assert "recall" in section.lower()
 
 
+def test_memory_navigation_suppresses_pl3_without_authorized_principal(tmp_path: Path) -> None:
+    from app.runtime.prompt_sections import build_memory_navigation_section
+
+    agent_id = uuid.uuid4()
+    mem_dir = tmp_path / str(agent_id) / "memory"
+    mem_dir.mkdir(parents=True)
+    (mem_dir / "knowledge.md").write_text(
+        "# Knowledge\n\n"
+        "- [2026-06-05][entry_id=mem_public][sensitivity=PL1_public] public deployment note\n"
+        "- [2026-06-05][entry_id=mem_salary][sensitivity=PL3_sensitive] salary planning is confidential\n",
+        encoding="utf-8",
+    )
+
+    section = build_memory_navigation_section(tmp_path, agent_id)
+
+    assert "mem_public" in section
+    assert "public deployment note" in section
+    assert "mem_salary" not in section
+    assert "salary planning" not in section
+
+
+def test_memory_navigation_allows_pl3_for_direct_owner(tmp_path: Path) -> None:
+    from app.runtime.prompt_sections import build_memory_navigation_section
+    from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
+
+    agent_id = uuid.uuid4()
+    mem_dir = tmp_path / str(agent_id) / "memory"
+    mem_dir.mkdir(parents=True)
+    (mem_dir / "knowledge.md").write_text(
+        "# Knowledge\n\n"
+        "- [2026-06-05][entry_id=mem_salary][sensitivity=PL3_sensitive] salary planning is confidential\n",
+        encoding="utf-8",
+    )
+    principal = Principal(role=PrincipalRole.OWNER, id="owner-1", label="Owner")
+    stack = PrincipalStack(direct_owner=principal, current_user=principal)
+
+    section = build_memory_navigation_section(tmp_path, agent_id, principal_stack=stack)
+
+    assert "mem_salary" in section
+    assert "salary planning is confidential" in section
+
+
 def test_memory_navigation_section_empty_without_memory(tmp_path: Path) -> None:
     from app.runtime.prompt_sections import build_memory_navigation_section
 

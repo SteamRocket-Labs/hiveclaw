@@ -85,12 +85,20 @@ describe('AgentKnowledgeSection', () => {
     expect(html).not.toContain('raw markdown browser');
   });
 
-  it('exposes subviews including the Raw advanced view', () => {
+  it('exposes the Raw advanced view only for manage access', () => {
     const html = renderToStaticMarkup(
-      <AgentKnowledgeSection agentId="agent-1" canEdit={false} onNavigateTab={() => {}} />,
+      <AgentKnowledgeSection agentId="agent-1" canEdit onNavigateTab={() => {}} />,
     );
     for (const view of ['overview', 'pages', 'entries', 'candidates', 'timeline', 'raw']) {
       expect(html).toContain(view);
     }
+  });
+
+  it('hides the Raw advanced view for use-only access', () => {
+    const html = renderToStaticMarkup(
+      <AgentKnowledgeSection agentId="agent-1" canEdit={false} onNavigateTab={() => {}} />,
+    );
+    expect(html).toContain('overview');
+    expect(html).not.toContain('raw');
   });
 });

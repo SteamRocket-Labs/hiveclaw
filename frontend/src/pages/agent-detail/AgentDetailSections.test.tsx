@@ -294,7 +294,13 @@ vi.mock('../../stores', () => {
 });
 
 vi.mock('../../components/FileBrowser', () => ({
-  default: ({ title }: { title?: string }) => <div>{title || 'File Browser Mock'}</div>,
+  default: ({ title, rootPath, readOnly }: { title?: string; rootPath?: string; readOnly?: boolean }) => (
+    <div>
+      {title || 'File Browser Mock'}
+      {rootPath ? ` root=${rootPath}` : ''}
+      {readOnly ? ' readOnly=true' : ''}
+    </div>
+  ),
 }));
 
 vi.mock('../../components/MarkdownRenderer', () => ({
@@ -818,6 +824,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Long-term knowledge curated from conversations. Feedback, strategies, blocked patterns, and project knowledge.');
     expect(markup).toContain('Curation history, performance scorecard, and blocked approaches.');
     expect(markup).toContain('File Browser Mock');
+    expect(markup).toContain('root=memory readOnly=true');
   });
 
   it('renders AgentSettingsSection as a standalone settings module', () => {

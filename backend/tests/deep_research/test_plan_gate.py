@@ -66,9 +66,10 @@ async def test_run_without_plan_confirmed_returns_needs_plan(tmp_path, monkeypat
     from app.tools.handlers import deep_research as handler
 
     async def fail_run(**_kwargs):
-        raise AssertionError("run_deep_research must not execute before plan confirmation")
+        raise AssertionError("the research workflow must not start before plan confirmation")
 
-    monkeypatch.setattr(handler, "run_deep_research", fail_run)
+    monkeypatch.setattr(handler, "start_deep_research_workflow_run", fail_run)
+    monkeypatch.setattr(handler, "_schedule_deep_research_workflow_background", fail_run)
     _patch_fake_plan_service(monkeypatch, handler, tmp_path)
     req = _request(tmp_path)
     req.arguments.update({"question": "Research the RWA launchpad opportunity", "depth": "standard"})
@@ -88,9 +89,9 @@ async def test_start_without_plan_confirmed_returns_needs_plan(tmp_path, monkeyp
     from app.tools.handlers import deep_research as handler
 
     async def fail_create(**_kwargs):
-        raise AssertionError("no runtime task should be created before plan confirmation")
+        raise AssertionError("no workflow run should start before plan confirmation")
 
-    monkeypatch.setattr(handler, "create_runtime_task_record", fail_create)
+    monkeypatch.setattr(handler, "_schedule_deep_research_workflow_background", fail_create)
     _patch_fake_plan_service(monkeypatch, handler, tmp_path)
     req = _request(tmp_path)
     req.arguments.update({"question": "Research the RWA launchpad opportunity", "depth": "full"})
@@ -109,7 +110,7 @@ async def test_start_without_plan_confirmed_returns_confirmable_plan_card_payloa
     from app.services import plan_mode_core
 
     async def fail_create(**_kwargs):
-        raise AssertionError("no runtime task should be created before plan confirmation")
+        raise AssertionError("no workflow run should start before plan confirmation")
 
     plan_id = uuid.uuid4()
     plan_json = {
@@ -161,7 +162,7 @@ async def test_start_without_plan_confirmed_returns_confirmable_plan_card_payloa
             return plan
 
     fake_plan_service = FakePlanService()
-    monkeypatch.setattr(handler, "create_runtime_task_record", fail_create)
+    monkeypatch.setattr(handler, "_schedule_deep_research_workflow_background", fail_create)
     monkeypatch.setattr(handler, "get_plan_mode_service", lambda: fake_plan_service, raising=False)
     req = _request(tmp_path)
     req.arguments.update(
@@ -199,7 +200,7 @@ async def test_needs_plan_forbids_agent_self_confirmation(tmp_path, monkeypatch)
     async def fail_create(**_kwargs):
         raise AssertionError("no runtime task before plan confirmation")
 
-    monkeypatch.setattr(handler, "create_runtime_task_record", fail_create)
+    monkeypatch.setattr(handler, "_schedule_deep_research_workflow_background", fail_create)
     _patch_fake_plan_service(monkeypatch, handler, tmp_path)
     req = _request(tmp_path)
     req.arguments.update({"question": "Research the RWA launchpad opportunity", "depth": "full"})
@@ -215,27 +216,17 @@ async def test_needs_plan_forbids_agent_self_confirmation(tmp_path, monkeypatch)
 
 @pytest.mark.asyncio
 async def test_run_with_plan_confirmed_executes(tmp_path, monkeypatch):
-    from app.services.deep_research.schemas import ResearchRun
     from app.tools.handlers import deep_research as handler
 
-    async def fake_run(*, request, agent_id, user_id, workspace, runtime_task_id=None):
-        artifact_dir = workspace / "runtime_artifacts" / "deep_research" / "confirmed"
-        artifact_dir.mkdir(parents=True)
-        (artifact_dir / "report.md").write_text("# Report\n", encoding="utf-8")
-        (artifact_dir / "sources.jsonl").write_text("{}", encoding="utf-8")
-        (artifact_dir / "claims.jsonl").write_text("{}", encoding="utf-8")
-        return ResearchRun(
-            run_id="confirmed",
-            status="completed",
-            summary="done",
-            artifact_dir=artifact_dir.as_posix(),
-            report_path=(artifact_dir / "report.md").as_posix(),
-            sources_path=(artifact_dir / "sources.jsonl").as_posix(),
-            claims_path=(artifact_dir / "claims.jsonl").as_posix(),
-            quality_gates={"attribution": "passed"},
-        )
+    async def fake_workflow_run(*, request, agent_id, user_id, workspace, plan_id=None, run_id=None, **_kwargs):
+        return {
+            "workflow_run_id": "confirmed",
+            "status": "completed",
+            "report_path": str(workspace / "report.md"),
+            "workspace_artifact_dir": str(workspace),
+        }
 
-    monkeypatch.setattr(handler, "run_deep_research", fake_run)
+    monkeypatch.setattr(handler, "start_deep_research_workflow_run", fake_workflow_run)
     req = _request(tmp_path)
     req.arguments.update(
         {"question": "Research RWA", "depth": "standard", "plan_confirmed": True, "worker_topics": ["lane A"]}
@@ -251,20 +242,8 @@ async def test_run_with_plan_confirmed_executes(tmp_path, monkeypatch):
 async def test_dedup_blocks_second_concurrent_start(tmp_path, monkeypatch):
     from app.tools.handlers import deep_research as handler
 
-    async def noop_create(**kwargs):
-        return kwargs["task_id"]
-
-    async def noop_plan(**_kwargs):
-        return {}
-
-    async def noop_progress(**_kwargs):
-        return {}
-
-    monkeypatch.setattr(handler, "create_runtime_task_record", noop_create)
-    monkeypatch.setattr(handler, "record_long_task_plan", noop_plan)
-    monkeypatch.setattr(handler, "record_long_task_progress", noop_progress)
-    # Keep the background task pending so the in-flight key persists.
-    monkeypatch.setattr(handler, "_schedule_deep_research_background", lambda *_a, **_k: None)
+    # Keep the background run pending so the in-flight key persists.
+    monkeypatch.setattr(handler, "_schedule_deep_research_workflow_background", lambda **_k: None)
 
     agent_id = uuid.uuid4()
     question = "Dedup this exact question about RWA"
@@ -365,28 +344,18 @@ in the ledger before completion, and weakly graded sources cannot solely support
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_uses_confirmed_worker_topics(tmp_path):
-    from app.services.deep_research.orchestrator import DeepResearchOrchestrator
+async def test_workflow_args_use_confirmed_worker_topics(tmp_path):
+    """DR-6b 等价锚：用户确认的 worker topics 必须原样成为 fanout items —
+    workflow 形态里 explore 步的 items_from=args.worker_topics。"""
     from app.services.deep_research.schemas import ResearchRequest
+    from app.services.deep_research.workflow_definition import deep_research_workflow_args
 
-    async def _no_linear(tool_name: str, arguments: dict) -> str:
-        raise AssertionError("linear path must not run")
-
-    runner = _TopicRecordingRunner()
-    result = await DeepResearchOrchestrator(_no_linear, reasoner=_MiniReasoner(), worker_runner=runner).run(
+    args = deep_research_workflow_args(
         ResearchRequest(
             question="Audit RWA custody claims.",
             mode="source_ledger_audit",
-            depth="quick",
-            max_rounds=1,
-            max_sources=3,
-            concurrency=3,
             plan_confirmed=True,
             worker_topics=["confirmed lane alpha", "confirmed lane beta"],
-        ),
-        artifact_dir=tmp_path,
+        )
     )
-
-    assert result.status == "completed"
-    # The orchestrator must use the user-confirmed topics verbatim, not planner-generated ones.
-    assert set(runner.topics) == {"confirmed lane alpha", "confirmed lane beta"}
+    assert args["worker_topics"] == ["confirmed lane alpha", "confirmed lane beta"]

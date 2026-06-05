@@ -190,6 +190,92 @@ def test_load_memory_reports_missing_ids(tmp_path: Path) -> None:
     assert "missing-id" in result
 
 
+def test_load_memory_suppresses_pl3_by_default(tmp_path: Path) -> None:
+    from app.memory.md_store import ensure_t3_layout
+    from app.tools.handlers.memory import load_memory
+
+    agent_id = uuid.uuid4()
+    mem_dir = ensure_t3_layout(tmp_path, agent_id)
+    (mem_dir / "knowledge.md").write_text(
+        "# Knowledge\n\n"
+        "- [2026-06-05][entry_id=mem_public][sensitivity=PL1_public] public deployment note\n"
+        "- [2026-06-05][entry_id=mem_salary][sensitivity=PL3_sensitive] salary planning is confidential\n",
+        encoding="utf-8",
+    )
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "app.config.get_settings",
+            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+        )
+        result = load_memory(agent_id, {"ids": ["mem_public", "mem_salary"]})
+
+    assert "public deployment note" in result
+    assert "mem_salary" not in result
+    assert "salary planning is confidential" not in result
+    assert "Suppressed entries: 1" in result
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "app.config.get_settings",
+            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+        )
+        suppressed_only = load_memory(agent_id, {"ids": ["mem_salary"]})
+
+    assert "mem_salary" not in suppressed_only
+    assert "No visible memory entries found." in suppressed_only
+    assert "Suppressed entries: 1" in suppressed_only
+
+
+@pytest.mark.asyncio
+async def test_search_memory_suppresses_pl3_by_default(tmp_path: Path) -> None:
+    from app.memory.md_store import ensure_t3_layout
+    from app.tools.handlers.memory import search_memory
+
+    agent_id = uuid.uuid4()
+    mem_dir = ensure_t3_layout(tmp_path, agent_id)
+    (mem_dir / "knowledge.md").write_text(
+        "# Knowledge\n\n"
+        "- [2026-06-05][entry_id=mem_salary][sensitivity=PL3_sensitive] salary planning is confidential\n",
+        encoding="utf-8",
+    )
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "app.config.get_settings",
+            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+        )
+        result = await search_memory(agent_id, {"query": "salary", "scope": "facts"})
+
+    assert "salary planning is confidential" not in result
+    assert "mem_salary" not in result
+
+
+@pytest.mark.asyncio
+async def test_search_memory_suppresses_sensitive_wiki_page_even_when_preview_is_safe(tmp_path: Path) -> None:
+    from app.tools.handlers.memory import search_memory
+
+    agent_id = uuid.uuid4()
+    wiki_dir = tmp_path / str(agent_id) / "memory" / "wiki"
+    wiki_dir.mkdir(parents=True)
+    (wiki_dir / "comp-plan.md").write_text(
+        "---\ntitle: Comp Plan\ntype: concept\nstatus: active\n---\n\n"
+        "## Current Claim\n\n"
+        f"{'public context ' * 20}\n\nsalary planning is confidential\n",
+        encoding="utf-8",
+    )
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "app.config.get_settings",
+            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+        )
+        result = await search_memory(agent_id, {"query": "public context", "scope": "facts"})
+
+    assert "Comp Plan" not in result
+    assert "salary planning is confidential" not in result
+
+
 @pytest.mark.asyncio
 async def test_search_memory_session_scope_formats_recalled_sessions() -> None:
     from app.tools.handlers.memory import search_memory

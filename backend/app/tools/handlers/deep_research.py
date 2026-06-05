@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import html
 import json
+import logging
 import shutil
 import uuid
 from collections.abc import AsyncIterator
@@ -17,22 +18,22 @@ from app.services.deep_research.plan_mode import (
     deep_research_plan_signature,
     normalize_deep_research_output_format,
 )
-from app.services.deep_research.orchestrator import run_deep_research
-from app.services.deep_research.schemas import ResearchRequest, ResearchRun, to_jsonable
+from app.services.deep_research.schemas import ResearchRequest, to_jsonable
 from app.services.deep_research.workflow_definition import (
-    deep_research_workflow_enabled,
     start_deep_research_workflow_run,
 )
-from app.services.long_task_runtime import record_long_task_plan, record_long_task_progress
+from app.services.long_task_runtime import record_long_task_progress
 from app.services.office_document_service import OfficeDocumentService
 from app.services.plan_mode_service import get_plan_mode_service
 from app.services.runtime_task_service import (
-    create_runtime_task_record,
     get_runtime_task_record,
     update_runtime_task_record,
 )
 from app.tools.decorator import ToolMeta, tool
 from app.tools.runtime import ToolExecutionRequest
+
+
+logger = logging.getLogger(__name__)
 
 
 def _schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
@@ -209,22 +210,16 @@ async def deep_research_run(request: ToolExecutionRequest) -> str:
         preview = await _plan_preview(research_request)
         return _json(await _materialize_plan_card_payload(request, research_request, preview))
 
-    run = await run_deep_research(
+    # DR-6b: the workflow runtime is the ONE Deep Research path. quick/standard
+    # depth runs synchronously to completion (export + workspace packet happen
+    # inside the launch on completion).
+    payload = await start_deep_research_workflow_run(
         request=research_request,
         agent_id=request.context.agent_id,
         user_id=request.context.user_id,
         workspace=request.context.workspace,
     )
-    _materialize_requested_output_format(
-        request.context.workspace, Path(run.artifact_dir), research_request.output_format
-    )
-    _publish_workspace_packet(request.context.workspace, run.run_id, Path(run.artifact_dir))
-    return _json(
-        {
-            "ok": run.status == "completed",
-            **_run_payload(run, request.context.workspace, output_format=research_request.output_format),
-        }
-    )
+    return _json({"ok": payload.get("status") == "completed", **payload})
 
 
 @tool(
@@ -258,24 +253,6 @@ async def deep_research_start(request: ToolExecutionRequest) -> str:
         preview = await _plan_preview(research_request)
         return _json(await _materialize_plan_card_payload(request, research_request, preview))
 
-    if deep_research_workflow_enabled():
-        workflow_payload = await start_deep_research_workflow_run(
-            request=research_request,
-            agent_id=request.context.agent_id,
-            user_id=request.context.user_id,
-            workspace=request.context.workspace,
-        )
-        return _json(
-            {
-                "ok": workflow_payload.get("status") not in {"failed", "killed"},
-                **workflow_payload,
-                "next_action": (
-                    "Deep Research started through the registered deep_research.v1 workflow. "
-                    "Use the workflow run/journal surfaces for progress, resume, and repair."
-                ),
-            }
-        )
-
     dedup_key = (str(request.context.agent_id), research_request.question.casefold())
     existing_task = _INFLIGHT_DEEP_RESEARCH.get(dedup_key)
     if existing_task:
@@ -292,64 +269,33 @@ async def deep_research_start(request: ToolExecutionRequest) -> str:
             }
         )
 
-    task_id = uuid.uuid4()
-    _INFLIGHT_DEEP_RESEARCH[dedup_key] = task_id.hex
-    await create_runtime_task_record(
-        task_id=task_id.hex,
-        task_type="deep_research",
-        status="running",
-        parent_agent_id=request.context.agent_id,
-        prompt=research_request.question,
-        parent_session_id=request.context.session_id,
-        child_session_id=request.context.session_id,
-        metadata_json={
-            "session_id": request.context.session_id,
-            "deep_research": {
-                "question": research_request.question,
-                "mode": research_request.mode,
-                "scope": research_request.scope,
-            },
-        },
-    )
-    await record_long_task_plan(
+    # DR-6b single path: pre-generate the workflow run id, schedule the run in
+    # the background, and hand the caller a checkable task id immediately —
+    # the same async contract the retired RuntimeTask(deep_research) path had.
+    run_id = uuid.uuid4()
+    _INFLIGHT_DEEP_RESEARCH[dedup_key] = str(run_id)
+    _schedule_deep_research_workflow_background(
+        research_request=research_request,
+        run_id=run_id,
         agent_id=request.context.agent_id,
-        runtime_task_id=task_id,
-        objective_id=None,
-        spec=research_request.question,
-        acceptance_criteria=[
-            "Deep research artifacts include report.md, sources.jsonl, claims.jsonl, steps.jsonl, and final.json.",
-            "Every material claim is source-bound or explicitly marked unsupported.",
-            "Terminal status and progress are recorded honestly.",
-        ],
-        verification_commands=[
-            "deep_research_check({ task_id })",
-        ],
-        risk_gates=[
-            "Do not use search snippets as final evidence.",
-            "Do not mark unsupported claims as verified.",
-        ],
+        user_id=request.context.user_id,
+        workspace=request.context.workspace,
     )
-    await record_long_task_progress(
-        agent_id=request.context.agent_id,
-        runtime_task_id=task_id,
-        status="running",
-        delta="Deep research task created and background execution scheduled.",
-        output_paths=[_relative(request.context.workspace, _deep_research_dir(request.context.workspace, task_id))],
-    )
-    _schedule_deep_research_background(request, research_request, task_id)
-    workspace_artifact_dir = _workspace_export_dir(request.context.workspace, task_id.hex)
+    from app.services.deep_research.leaf_presets import run_artifact_dir
+
+    artifact_root = run_artifact_dir(request.context.agent_id, run_id)
+    workspace_artifact_dir = _workspace_export_dir(request.context.workspace, run_id.hex)
     return _json(
         {
             "ok": True,
-            "task_id": task_id.hex,
+            "task_id": str(run_id),
+            "workflow_run_id": str(run_id),
             "status": "running",
-            "artifact_dir": _relative(
-                request.context.workspace, _deep_research_dir(request.context.workspace, task_id)
-            ),
+            "artifact_dir": str(artifact_root),
             "workspace_artifact_dir": _relative(request.context.workspace, workspace_artifact_dir),
             "next_action": (
                 "This research runs asynchronously in the background (usually several minutes). "
-                f"Call deep_research_check with task_id {task_id.hex} at most once to confirm it "
+                f"Call deep_research_check with task_id {run_id} at most once to confirm it "
                 "started; if it is still running, stop here and tell the user the research is "
                 "running in the background and they can check back shortly. Do not repeatedly poll "
                 "the same running task in one turn: it will not speed it up and will trip the loop "
@@ -486,20 +432,6 @@ async def deep_research_export(request: ToolExecutionRequest) -> str:
     )
 
 
-def _schedule_deep_research_background(
-    request: ToolExecutionRequest,
-    research_request: ResearchRequest,
-    task_id: uuid.UUID,
-) -> None:
-    _schedule_deep_research_background_context(
-        research_request=research_request,
-        task_id=task_id,
-        agent_id=request.context.agent_id,
-        user_id=request.context.user_id,
-        workspace=request.context.workspace,
-    )
-
-
 async def start_deep_research_background_run(
     *,
     request: ResearchRequest,
@@ -508,183 +440,76 @@ async def start_deep_research_background_run(
     workspace: Path,
     plan_id: uuid.UUID | str | None = None,
 ) -> dict[str, Any]:
-    if deep_research_workflow_enabled():
-        return await start_deep_research_workflow_run(
-            request=request,
-            agent_id=agent_id,
-            user_id=user_id,
-            workspace=workspace,
-            plan_id=plan_id,
-        )
+    """Plan-handoff entry (confirmed plan → background workflow run).
 
-    task_id = uuid.uuid4()
-    workspace_artifact_dir = _workspace_export_dir(workspace, task_id.hex)
-    await create_runtime_task_record(
-        task_id=task_id.hex,
-        task_type="deep_research",
-        status="running",
-        parent_agent_id=agent_id,
-        prompt=request.question,
-        metadata_json={
-            "deep_research": {
-                "question": request.question,
-                "mode": request.mode,
-                "scope": request.scope,
-                "output_format": normalize_deep_research_output_format(request.output_format),
-            },
-            "plan_id": str(plan_id) if plan_id else None,
-        },
-    )
-    await record_long_task_plan(
-        agent_id=agent_id,
-        runtime_task_id=task_id,
-        objective_id=None,
-        spec=request.question,
-        acceptance_criteria=[
-            "Deep research artifacts include report.md, sources.jsonl, claims.jsonl, steps.jsonl, and final.json.",
-            "Every material claim is source-bound or explicitly marked unsupported.",
-            "Terminal status and progress are recorded honestly.",
-            "If a derived output format is requested, report.md remains the canonical source artifact.",
-        ],
-        verification_commands=[
-            "deep_research_check({ task_id })",
-        ],
-        risk_gates=[
-            "Do not use search snippets as final evidence.",
-            "Do not mark unsupported claims as verified.",
-        ],
-    )
-    await record_long_task_progress(
-        agent_id=agent_id,
-        runtime_task_id=task_id,
-        status="running",
-        delta="Deep research task created from a confirmed plan and background execution scheduled.",
-        output_paths=[_relative(workspace, _deep_research_dir(workspace, task_id))],
-    )
-    _schedule_deep_research_background_context(
+    DR-6b single path: pre-generate the run id, schedule the workflow in the
+    background, return a checkable id immediately — confirmation must never
+    block on a multi-minute research run.
+    """
+    run_id = uuid.uuid4()
+    _INFLIGHT_DEEP_RESEARCH[(str(agent_id), request.question.casefold())] = str(run_id)
+    _schedule_deep_research_workflow_background(
         research_request=request,
-        task_id=task_id,
+        run_id=run_id,
         agent_id=agent_id,
         user_id=user_id,
         workspace=workspace,
+        plan_id=plan_id,
     )
+    from app.services.deep_research.leaf_presets import run_artifact_dir
+
     return {
-        "created_runtime_task_id": task_id.hex,
-        "task_id": task_id.hex,
+        "created_workflow_run_id": str(run_id),
+        "task_id": str(run_id),
         "status": "running",
-        "artifact_dir": _relative(workspace, _deep_research_dir(workspace, task_id)),
-        "workspace_artifact_dir": _relative(workspace, workspace_artifact_dir),
+        "artifact_dir": str(run_artifact_dir(agent_id, run_id)),
+        "workspace_artifact_dir": _relative(workspace, _workspace_export_dir(workspace, run_id.hex)),
         "output_format": normalize_deep_research_output_format(request.output_format),
     }
 
 
-def _schedule_deep_research_background_context(
+def _schedule_deep_research_workflow_background(
     *,
     research_request: ResearchRequest,
-    task_id: uuid.UUID,
+    run_id: uuid.UUID,
     agent_id: uuid.UUID,
     user_id: uuid.UUID,
     workspace: Path,
+    plan_id: uuid.UUID | str | None = None,
 ) -> None:
+    """Run the deep_research.v1 workflow in the background.
+
+    The workflow runtime owns the RuntimeTask row, journal, status and
+    completion-edge artifact landing; this runner only annotates the result
+    payload onto the task metadata and clears the in-flight dedup slot."""
+
     async def runner() -> None:
         try:
-            run = await run_deep_research(
+            payload = await start_deep_research_workflow_run(
                 request=research_request,
                 agent_id=agent_id,
                 user_id=user_id,
                 workspace=workspace,
-                runtime_task_id=task_id,
-            )
-            _materialize_requested_output_format(workspace, Path(run.artifact_dir), research_request.output_format)
-            _publish_workspace_packet(workspace, task_id.hex, Path(run.artifact_dir))
-            run_payload = _run_payload(
-                run,
-                workspace,
-                output_format=research_request.output_format,
+                plan_id=plan_id,
+                run_id=run_id,
             )
             await update_runtime_task_record(
-                task_id.hex,
-                status=run.status,
-                result_summary=run.summary,
-                metadata_json={"deep_research_result": run_payload},
-            )
-            await record_long_task_progress(
-                agent_id=agent_id,
-                runtime_task_id=task_id,
-                status=run.status,
-                delta=run.summary,
-                output_paths=[
-                    run_payload["report_path"],
-                    run_payload["sources_path"],
-                    run_payload["claims_path"],
-                ],
-                blocked_reason="; ".join(run.gaps) if run.status != "completed" else None,
+                run_id.hex,
+                result_summary=f"Deep research workflow {payload.get('status')}",
+                metadata_json={"deep_research_result": payload},
             )
         except Exception as exc:
-            await update_runtime_task_record(
-                task_id.hex, status="failed", result_summary=f"Deep research failed: {type(exc).__name__}"
-            )
-            await record_long_task_progress(
-                agent_id=agent_id,
-                runtime_task_id=task_id,
-                status="failed",
-                delta="Deep research failed before completion.",
-                blocked_reason=f"{type(exc).__name__}: {exc}",
-            )
+            logger.warning("[DeepResearch] background workflow run %s failed: %s", run_id, exc)
+            try:
+                await update_runtime_task_record(
+                    run_id.hex, result_summary=f"Deep research failed: {type(exc).__name__}: {exc}"
+                )
+            except Exception:
+                logger.warning("[DeepResearch] failed to annotate failure on run %s", run_id, exc_info=True)
         finally:
             _INFLIGHT_DEEP_RESEARCH.pop((str(agent_id), research_request.question.casefold()), None)
 
     asyncio.create_task(runner())
-
-
-def _run_payload(run: ResearchRun, workspace: Path, *, output_format: str = "markdown") -> dict[str, Any]:
-    artifact_dir = Path(run.artifact_dir) if run.artifact_dir else Path()
-    workspace_dir = _workspace_export_dir(workspace, run.run_id)
-    output_format = normalize_deep_research_output_format(output_format)
-    output_file_name = _output_file_name(output_format)
-    workspace_report_path = workspace_dir / "report.md"
-    workspace_output_path = workspace_dir / output_file_name
-    workspace_sources_path = workspace_dir / "sources.jsonl"
-    workspace_claims_path = workspace_dir / "claims.jsonl"
-    workspace_steps_path = workspace_dir / "steps.jsonl"
-    workspace_final_path = workspace_dir / "final.json"
-    return {
-        "status": run.status,
-        "summary": run.summary,
-        "artifact_dir": _relative(workspace, artifact_dir),
-        "workspace_artifact_dir": _relative(workspace, workspace_dir) if workspace_dir.exists() else None,
-        "report_path": _relative(
-            workspace, workspace_report_path if workspace_report_path.exists() else Path(run.report_path)
-        ),
-        "sources_path": _relative(
-            workspace, workspace_sources_path if workspace_sources_path.exists() else Path(run.sources_path)
-        ),
-        "claims_path": _relative(
-            workspace, workspace_claims_path if workspace_claims_path.exists() else Path(run.claims_path)
-        ),
-        "steps_path": _relative(
-            workspace, workspace_steps_path if workspace_steps_path.exists() else Path(run.steps_path)
-        ),
-        "final_path": _relative(
-            workspace, workspace_final_path if workspace_final_path.exists() else Path(run.final_path)
-        ),
-        "artifact_report_path": _relative(workspace, Path(run.report_path)),
-        "artifact_sources_path": _relative(workspace, Path(run.sources_path)),
-        "artifact_claims_path": _relative(workspace, Path(run.claims_path)),
-        "artifact_steps_path": _relative(workspace, Path(run.steps_path)),
-        "artifact_final_path": _relative(workspace, Path(run.final_path)),
-        "output_format": output_format,
-        "output_path": _relative(
-            workspace,
-            workspace_output_path if workspace_output_path.exists() else artifact_dir / output_file_name,
-        )
-        if output_file_name
-        else None,
-        "source_count": run.source_count,
-        "claim_count": run.claim_count,
-        "quality_gates": run.quality_gates,
-        "gaps": run.gaps,
-    }
 
 
 def _read_deep_research_artifact(workspace: Path, task_id: str) -> dict[str, Any]:

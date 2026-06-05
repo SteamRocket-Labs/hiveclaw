@@ -903,12 +903,13 @@ type AgentKnowledgeOverview = {
 
 ## 12. Implementation Roadmap
 
-> **Status (2026-06-05): P0–P9 ALL IMPLEMENTED** — one commit per phase
+> **Status (2026-06-05): P0–P10 ALL IMPLEMENTED** — one commit per phase
 > (`60502154` P0 → `28d31666` P1 → `e3fa4480` P2 → `18cf3f5b` P3 →
 > `a2bfdffc` P4 → `8ba6feed` P5 → `1023818f` P6 → `acd661a0` P7 →
-> `a1478e6d` P8 → P9 in its own commit), each with TDD red→green evidence
-> recorded under its phase below. Final state: backend 3712 passed / ruff
-> clean, frontend 154 passed / tsc clean / production build passed. P9 was
+> `a1478e6d` P8 → `7978a6b7` P9 → P10 review closure in the current patch),
+> each with TDD red→green evidence recorded under its phase below. P9 baseline:
+> backend 3712 passed / ruff clean, frontend 154 passed / tsc clean /
+> production build passed. P9 was
 > originally deferred (§13) and explicitly green-lit by the owner on
 > 2026-06-05; the retrieval benchmark settled the experiment (PPR wins
 > multi-hop 1.0 vs 0.333 with no direct-hit regression).
@@ -1354,6 +1355,60 @@ Evidence:
   eval report shape + multi-hop dominance, retirement safety, page-detail
   links). Full backend 3712 passed; frontend 154 passed / tsc clean /
   build passed.
+
+### P10: Review Closure — Runtime Boundary Hardening
+
+**Status: ✅ DONE (2026-06-05; post-implementation full review).**
+
+This phase records the issues found after comparing the spec against the
+implemented code. It does not add a new container; it closes gaps where P6-P9
+were correct structurally but not yet consistently enforced at every runtime
+entry point.
+
+Findings fixed:
+
+- **Sensitive memory could bypass activation policy.** `Memory Navigation`,
+  `load_memory`, and `search_memory` could expose PL3 entries without a
+  resolved `PrincipalStack`. Fixed by adding shared read-visibility helpers
+  and making all three consumers default to PL1/PL2 only; PL3 requires direct
+  owner or company-admin principal, PL4 remains unreadable.
+- **Knowledge Read Model was structured but not privacy-governed.** Entry
+  lists, page lists, and page detail now apply the same principal-aware
+  sensitivity boundary. Unauthorized PL3 pages redact body/frontmatter and
+  omit relation links; page lists skip inaccessible pages instead of leaking
+  titles.
+- **Raw file APIs still formed a side door into `memory/`.** Generic
+  workspace file APIs now refuse all raw writes/deletes under `memory/`, block
+  `use` access from raw listing/reading/downloading memory files, and leave
+  governed read access to the Knowledge API. Frontend Raw view is manage-only;
+  its memory browser is read-only.
+- **Curator apply trusted candidate paths.** Scene/wiki apply functions now
+  resolve candidate paths under flat `memory/scenes/<slug>.md` and
+  `memory/wiki/<slug>.md` only; traversal attempts are refused and audited.
+- **Curation cursor treated infrastructure holds as terminal.** Missing LLM,
+  invalid LLM output, missing scene frontmatter, and missing wiki required
+  sections are retryable holds, so the cursor is not advanced. Semantic holds
+  remain terminal.
+- **Kernel prompt path had navigation only in the legacy builder.** The real
+  `AgentKernel.handle()` path now resolves Memory Navigation through a
+  dependency and passes it into every dynamic suffix rebuild, including prompt
+  cache hits and prompt-too-long retries. Navigation stays outside `soul.md`
+  and outside the frozen prefix.
+
+Evidence:
+
+- Backend red→green suite:
+  `backend/tests/memory/test_navigation_telemetry.py`,
+  `backend/tests/services/test_knowledge_read_model.py`,
+  `backend/tests/tools/test_memory_handler.py`,
+  `backend/tests/api/test_security_regressions.py`,
+  `backend/tests/kernel/test_prompt_cache_integration.py`,
+  `backend/tests/memory/test_scene_wiki_curators.py` — 69 passed.
+- Frontend IA regression:
+  `npm run test -- AgentKnowledgeSection AgentDetailSections` — 38 passed.
+- Broader memory-phase regression:
+  P1-P10 focused backend suite — 131 passed; frontend production build
+  (`npm run build`) passed.
 
 ## 13. Immediate Decisions
 

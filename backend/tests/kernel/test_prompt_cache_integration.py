@@ -57,10 +57,16 @@ async def test_kernel_reuses_frozen_prefix_but_refreshes_dynamic_retrieval():
         retrieval_calls.append(value)
         return value
 
-    fake_client = _FakeClient([
-        SimpleNamespace(content="first", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
-        SimpleNamespace(content="second", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
-    ])
+    async def resolve_memory_navigation_context(request, tenant_id):
+        del request, tenant_id
+        return "## Memory Navigation\n| mem_safe | knowledge.md | project | 1 | 0 | never | public note |"
+
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(content="first", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
+            SimpleNamespace(content="second", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
+        ]
+    )
 
     kernel = AgentKernel(
         KernelDependencies(
@@ -69,6 +75,7 @@ async def test_kernel_reuses_frozen_prefix_but_refreshes_dynamic_retrieval():
             build_system_prompt=build_system_prompt,
             resolve_memory_context=lambda *_args, **_kwargs: "SNAPSHOT_BLOCK",
             resolve_retrieval_context=resolve_retrieval_context,
+            resolve_memory_navigation_context=resolve_memory_navigation_context,
             get_tools=lambda *_args, **_kwargs: [],
             maybe_compress_messages=lambda messages, **_kwargs: messages,
             create_client=lambda _model: fake_client,
@@ -108,6 +115,8 @@ async def test_kernel_reuses_frozen_prefix_but_refreshes_dynamic_retrieval():
     assert second_prompt.count("SNAPSHOT_BLOCK") == 1
     assert "RETRIEVAL_1" in first_prompt
     assert "RETRIEVAL_2" in second_prompt
+    assert "## Memory Navigation" in first_prompt
+    assert "mem_safe" in second_prompt
 
 
 @pytest.mark.asyncio
@@ -124,10 +133,12 @@ async def test_kernel_rebuilds_frozen_prefix_when_prompt_cache_key_changes():
         build_calls.append(f"{request.agent_id}:{request.execution_mode or 'conversation'}")
         return f"FROZEN::{request.agent_name}::{request.execution_mode or 'conversation'}"
 
-    fake_client = _FakeClient([
-        SimpleNamespace(content="first", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
-        SimpleNamespace(content="second", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
-    ])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(content="first", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
+            SimpleNamespace(content="second", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
+        ]
+    )
 
     kernel = AgentKernel(
         KernelDependencies(
@@ -191,15 +202,17 @@ async def test_tool_expansion_rebuild_preserves_dynamic_memory_and_effective_suf
     from app.kernel.contracts import InvocationRequest, RuntimeConfig
     from app.kernel.engine import AgentKernel, KernelDependencies, ToolExpansionResult
 
-    fake_client = _FakeClient([
-        SimpleNamespace(
-            content="",
-            tool_calls=[{"id": "call_1", "function": {"name": "load_skill", "arguments": '{"name":"research"}'}}],
-            reasoning_content=None,
-            usage={"total_tokens": 3},
-        ),
-        SimpleNamespace(content="done", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
-    ])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[{"id": "call_1", "function": {"name": "load_skill", "arguments": '{"name":"research"}'}}],
+                reasoning_content=None,
+                usage={"total_tokens": 3},
+            ),
+            SimpleNamespace(content="done", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
+        ]
+    )
 
     async def resolve_tool_expansion(_request, _tool_name, _args):
         return ToolExpansionResult(
@@ -262,10 +275,12 @@ async def test_prompt_too_long_retry_preserves_dynamic_context_blocks():
     from app.kernel.engine import AgentKernel, KernelDependencies
     from app.services.llm_utils import LLMError
 
-    fake_client = _FakeClient([
-        LLMError("HTTP 400: context_length_exceeded - maximum context length exceeded"),
-        SimpleNamespace(content="done", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
-    ])
+    fake_client = _FakeClient(
+        [
+            LLMError("HTTP 400: context_length_exceeded - maximum context length exceeded"),
+            SimpleNamespace(content="done", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
+        ]
+    )
 
     kernel = AgentKernel(
         KernelDependencies(
@@ -342,9 +357,7 @@ def test_cache_key_ignores_current_user_name():
     key_bob = _build_frozen_prompt_cache_key(req, cfg, current_user_name="Bob")
     key_none = _build_frozen_prompt_cache_key(req, cfg, current_user_name=None)
 
-    assert key_alice == key_bob == key_none, (
-        "current_user_name must not affect frozen-prefix cache key (P1-1a)"
-    )
+    assert key_alice == key_bob == key_none, "current_user_name must not affect frozen-prefix cache key (P1-1a)"
 
 
 def test_cache_key_ignores_context_window_tokens():
@@ -357,12 +370,20 @@ def test_cache_key_ignores_context_window_tokens():
     user_id = uuid4()
 
     model_small = SimpleNamespace(
-        provider="openai", model="gpt-4.1", api_key="k", base_url=None,
-        max_output_tokens=None, max_input_tokens=8192,
+        provider="openai",
+        model="gpt-4.1",
+        api_key="k",
+        base_url=None,
+        max_output_tokens=None,
+        max_input_tokens=8192,
     )
     model_large = SimpleNamespace(
-        provider="openai", model="gpt-4.1", api_key="k", base_url=None,
-        max_output_tokens=None, max_input_tokens=128_000,
+        provider="openai",
+        model="gpt-4.1",
+        api_key="k",
+        base_url=None,
+        max_output_tokens=None,
+        max_input_tokens=128_000,
     )
 
     # Build two requests differing only in max_input_tokens.
@@ -374,9 +395,7 @@ def test_cache_key_ignores_context_window_tokens():
 
     key_small = _build_frozen_prompt_cache_key(req_small, cfg, current_user_name="x")
     key_large = _build_frozen_prompt_cache_key(req_large, cfg, current_user_name="x")
-    assert key_small == key_large, (
-        "context_window_tokens must not affect frozen-prefix cache key (P1-1a)"
-    )
+    assert key_small == key_large, "context_window_tokens must not affect frozen-prefix cache key (P1-1a)"
 
 
 def test_cache_key_changes_on_model_swap():
@@ -390,13 +409,13 @@ def test_cache_key_changes_on_model_swap():
 
     req_a = _base_request(
         user_id=user_id,
-        model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k",
-                              base_url=None, max_output_tokens=None),
+        model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None),
     )
     req_b = _base_request(
         user_id=user_id,
-        model=SimpleNamespace(provider="anthropic", model="claude-sonnet-4.6",
-                              api_key="k", base_url=None, max_output_tokens=None),
+        model=SimpleNamespace(
+            provider="anthropic", model="claude-sonnet-4.6", api_key="k", base_url=None, max_output_tokens=None
+        ),
     )
     req_b.agent_id = req_a.agent_id
     req_b.session_context = req_a.session_context

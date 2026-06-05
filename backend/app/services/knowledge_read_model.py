@@ -20,6 +20,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.services.principal_context import PrincipalStack
+
 logger = logging.getLogger(__name__)
 
 _SLUG_SAFE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
@@ -154,7 +156,14 @@ def build_knowledge_overview(data_root: Path, agent_id: uuid.UUID) -> dict:
 # ── Pages (wiki + scenes) ──
 
 
-def list_knowledge_pages(data_root: Path, agent_id: uuid.UUID) -> list[dict]:
+def list_knowledge_pages(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    *,
+    principal_stack: PrincipalStack | None = None,
+) -> list[dict]:
+    from app.memory.visibility import can_access_sensitivity, classify_text_sensitivity
+
     root = _agent_root(data_root, agent_id) / "memory"
     pages: list[dict] = []
     for kind, subdir in (("wiki", "wiki"), ("scene", "scenes")):
@@ -163,6 +172,8 @@ def list_knowledge_pages(data_root: Path, agent_id: uuid.UUID) -> list[dict]:
             continue
         for path in sorted(directory.glob("*.md")):
             text = _read_text(path)
+            if not can_access_sensitivity(classify_text_sensitivity(text), principal_stack):
+                continue
             frontmatter = _parse_frontmatter(text)
             pages.append(
                 {
@@ -178,7 +189,15 @@ def list_knowledge_pages(data_root: Path, agent_id: uuid.UUID) -> list[dict]:
     return pages
 
 
-def get_knowledge_page(data_root: Path, agent_id: uuid.UUID, page_id: str) -> dict | None:
+def get_knowledge_page(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    page_id: str,
+    *,
+    principal_stack: PrincipalStack | None = None,
+) -> dict | None:
+    from app.memory.visibility import classify_and_redact_text
+
     subdir, _, slug = page_id.partition("/")
     if subdir not in {"wiki", "scenes"} or not _SLUG_SAFE_RE.match(slug or ""):
         return None
@@ -186,23 +205,25 @@ def get_knowledge_page(data_root: Path, agent_id: uuid.UUID, page_id: str) -> di
     if not path.exists():
         return None
     text = _read_text(path)
+    visible_text, _sensitivity = classify_and_redact_text(text, principal_stack)
 
     # P9 wikilink navigation: outgoing/incoming edges from the derived
     # relation graph (rebuilt from Markdown — never persisted).
     links: dict = {"outgoing": [], "incoming": []}
-    try:
-        from app.memory.relation_graph import build_relation_graph
+    if visible_text == text:
+        try:
+            from app.memory.relation_graph import build_relation_graph
 
-        links = build_relation_graph(data_root, agent_id).links_for(page_id)
-    except Exception as exc:  # noqa: BLE001 — navigation is an accelerator, never blocks the page read
-        logger.debug("[KnowledgeReadModel] relation graph failed for %s: %s", agent_id, exc)
+            links = build_relation_graph(data_root, agent_id).links_for(page_id)
+        except Exception as exc:  # noqa: BLE001 — navigation is an accelerator, never blocks the page read
+            logger.debug("[KnowledgeReadModel] relation graph failed for %s: %s", agent_id, exc)
 
     return {
         "id": page_id,
         "kind": "wiki" if subdir == "wiki" else "scene",
         "slug": slug,
-        "frontmatter": _parse_frontmatter(text),
-        "markdown": text,
+        "frontmatter": _parse_frontmatter(visible_text),
+        "markdown": visible_text,
         "updatedAt": _file_mtime_iso(path),
         "links": links,
     }
@@ -211,12 +232,20 @@ def get_knowledge_page(data_root: Path, agent_id: uuid.UUID, page_id: str) -> di
 # ── Entries ──
 
 
-def list_knowledge_entries(data_root: Path, agent_id: uuid.UUID) -> list[dict]:
+def list_knowledge_entries(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    *,
+    principal_stack: PrincipalStack | None = None,
+) -> list[dict]:
     from app.memory.md_store import build_t3_entry_manifest, compute_entry_heat
+    from app.memory.visibility import can_access_metadata
 
     entries: list[dict] = []
     for entry in build_t3_entry_manifest(data_root, agent_id):
         metadata = entry.metadata
+        if not can_access_metadata(metadata, principal_stack):
+            continue
         entries.append(
             {
                 "id": entry.entry_id,

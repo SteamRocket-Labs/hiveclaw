@@ -12,6 +12,8 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
+from app.services.principal_context import PrincipalStack
+
 _MAX_ROWS = 20
 _PREVIEW_CHARS = 90
 
@@ -21,9 +23,11 @@ def build_memory_navigation_section(
     agent_id: uuid.UUID,
     *,
     max_rows: int = _MAX_ROWS,
+    principal_stack: PrincipalStack | None = None,
 ) -> str:
     """Render the heat-ordered memory navigation table. Empty string when bare."""
     from app.memory.md_store import build_t3_entry_manifest, compute_entry_heat
+    from app.memory.visibility import can_access_metadata
 
     try:
         manifest = build_t3_entry_manifest(data_root, agent_id)
@@ -34,6 +38,8 @@ def build_memory_navigation_section(
 
     rows: list[tuple[float, str, str]] = []
     for entry in manifest:
+        if not can_access_metadata(entry.metadata, principal_stack):
+            continue
         heat = compute_entry_heat(entry.metadata)
         recall_count = entry.metadata.get("access_count", "0")
         last_recalled = entry.metadata.get("last_accessed", "never")
@@ -48,6 +54,9 @@ def build_memory_navigation_section(
                 f"{recall_count} | {last_recalled} | {preview} |",
             )
         )
+
+    if not rows:
+        return ""
 
     rows.sort(key=lambda item: (item[0], item[1]), reverse=True)
     table = "\n".join(row for _heat, _ts, row in rows[:max_rows])

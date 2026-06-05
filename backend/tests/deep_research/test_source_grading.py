@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
 
 def _record(source_type, *, url="https://x.example/a", publisher=""):
@@ -54,7 +53,7 @@ def test_ledger_add_source_attaches_grade(tmp_path):
 
 
 def test_synthesis_instruction_weights_by_tier():
-    from app.services.deep_research.reasoner import build_digest_synthesis_instruction
+    from app.services.deep_research.synthesis_gates import build_digest_synthesis_instruction
     from app.services.deep_research.schemas import ResearchRequest
 
     text = build_digest_synthesis_instruction(ResearchRequest(question="Research X"), "English")
@@ -138,37 +137,3 @@ class _SimpleWorkerRunner:
         )
 
 
-@pytest.mark.asyncio
-async def test_worker_path_skips_per_source_llm_and_grades_sources(tmp_path):
-    from app.services.deep_research.orchestrator import DeepResearchOrchestrator
-    from app.services.deep_research.schemas import ResearchRequest
-
-    async def _no_linear(tool_name: str, arguments: dict) -> str:
-        raise AssertionError(f"linear tool path must not run: {tool_name}")
-
-    reasoner = _NoPerSourceReasoner()
-    result = await DeepResearchOrchestrator(
-        _no_linear,
-        reasoner=reasoner,
-        worker_runner=_SimpleWorkerRunner(),
-    ).run(
-        ResearchRequest(
-            question="Audit custody claims with workers.",
-            mode="source_ledger_audit",
-            depth="quick",
-            max_rounds=1,
-            max_sources=3,
-            concurrency=3,
-        ),
-        artifact_dir=tmp_path,
-    )
-
-    assert result.status == "completed"
-    # P2: the worker path must NOT spend per-source LLM calls.
-    assert reasoner.extract_claims_called is False
-    assert reasoner.summarize_source_called is False
-    # P-Q1: every ledgered source carries a deterministic tier + grade.
-    final = json.loads((tmp_path / "final.json").read_text(encoding="utf-8"))
-    assert final["sources"], "expected at least one ledgered source"
-    assert all(src["evidence_tier"] for src in final["sources"])
-    assert all(src["evidence_grade"] for src in final["sources"])

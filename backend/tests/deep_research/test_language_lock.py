@@ -96,30 +96,8 @@ def test_paragraph_consistency_flags_chinese_paragraphs_in_english_report():
 # ── worker prompt language + integration contract ──────────────────────────
 
 
-def test_worker_prompt_pins_language_and_integration_contract():
-    from app.services.deep_research.schemas import ResearchRequest
-    from app.services.deep_research.worker import _build_worker_prompt, _build_worker_system_prompt
-
-    zh_req = ResearchRequest(question="研究 RWA 托管合规")
-    prompt = _build_worker_prompt(zh_req, "custody lane")
-    assert "Chinese" in prompt
-    assert "Never mix languages" in prompt
-    # integration / anti-cherry-pick contract
-    assert "INTEGRATED" in prompt
-    assert "do not summarize each page" in prompt
-    assert "do not cherry-pick" in prompt.lower()
-
-    en_req = ResearchRequest(question="Research RWA custody compliance")
-    sys_prompt = _build_worker_system_prompt(en_req, "custody lane")
-    assert "English" in sys_prompt
-    assert "Integrate findings across sources" in sys_prompt
-
-
-# ── synthesis instruction: integration not summarization + language ────────
-
-
 def test_synthesis_instruction_has_integration_antipatterns_and_language():
-    from app.services.deep_research.reasoner import build_digest_synthesis_instruction
+    from app.services.deep_research.synthesis_gates import build_digest_synthesis_instruction
     from app.services.deep_research.schemas import ResearchRequest
 
     req = ResearchRequest(question="研究 RWA 行业格局", mode="industry_research")
@@ -135,7 +113,7 @@ def test_synthesis_instruction_has_integration_antipatterns_and_language():
 
 
 def test_synthesis_gate_rejects_mixed_language_report(tmp_path):
-    from app.services.deep_research.orchestrator import _evaluate_synthesis_quality
+    from app.services.deep_research.synthesis_gates import _evaluate_synthesis_quality
     from app.services.deep_research.schemas import ResearchRequest
 
     source_ids = ["src_aaaaaaaaaaaa", "src_bbbbbbbbbbbb", "src_cccccccccccc", "src_dddddddddddd"]
@@ -158,3 +136,18 @@ def test_synthesis_gate_rejects_mixed_language_report(tmp_path):
 
     assert state == "failed"
     assert "language" in gap.lower()
+
+
+def test_explorer_surface_pins_integration_contract_and_language_rides_args():
+    """DR-6b 等价锚（替代旧 worker prompt 语言锁测试）：整合/反 cherry-pick 契约
+    住在 explorer preset 的 system_prompt；输出语言经 definition 模板进 explore
+    的 per-item task（最终报告语言由 RC13 语言门强制）。"""
+    from app.services.deep_research.leaf_presets import _EXPLORER_SYSTEM_PROMPT
+    from app.services.deep_research.workflow_definition import build_deep_research_workflow_definition
+
+    assert "Integrate findings across sources" in _EXPLORER_SYSTEM_PROMPT
+    assert "do not cherry-pick" in _EXPLORER_SYSTEM_PROMPT.lower()
+
+    definition = build_deep_research_workflow_definition()
+    explore = next(step for step in definition["steps"] if step["id"] == "explore")
+    assert "{{args.output_language}}" in explore["per_item_task"]

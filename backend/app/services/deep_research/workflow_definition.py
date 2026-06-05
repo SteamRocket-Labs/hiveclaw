@@ -65,7 +65,9 @@ def build_deep_research_workflow_definition() -> dict[str, Any]:
                 "items_from": "args.worker_topics",
                 "per_item_task": (
                     "Explore worker topic {{item}} for question {{args.question}}. Use the plan context "
-                    "{{steps.plan.output}} and return source-bound findings with gaps."
+                    "{{steps.plan.output}} and return source-bound findings with gaps. "
+                    "Write the digest in {{args.output_language}}; keep proper names and identifiers "
+                    "in their original form."
                 ),
                 "max_concurrency": 4,
             },
@@ -112,12 +114,6 @@ def deep_research_workflow_args(request: ResearchRequest) -> dict[str, Any]:
         "output_format": normalize_deep_research_output_format(request.output_format),
         "output_language": request.output_language or "not specified",
     }
-
-
-def deep_research_workflow_enabled() -> bool:
-    from app.config import get_settings
-
-    return bool(get_settings().WORKFLOW_DEEP_RESEARCH_ENABLED)
 
 
 def _ensure_lock_key(tenant_id: uuid.UUID) -> int:
@@ -209,6 +205,7 @@ async def start_deep_research_workflow_run(
     plan_id: uuid.UUID | str | None = None,
     session_factory=None,
     spawn=None,
+    run_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     import json
 
@@ -231,7 +228,9 @@ async def start_deep_research_workflow_run(
 
     # Pre-generate the run id so request.json — the domain context every
     # non-explorer leaf rebuilds from — is on disk BEFORE the first leaf runs.
-    run_id = uuid.uuid4()
+    # The handler passes its own id so the background-start tool can hand the
+    # caller a checkable task id immediately.
+    run_id = run_id or uuid.uuid4()
     artifact_root = run_artifact_dir(agent_id, run_id)
     artifact_root.mkdir(parents=True, exist_ok=True)
     (artifact_root / "request.json").write_text(

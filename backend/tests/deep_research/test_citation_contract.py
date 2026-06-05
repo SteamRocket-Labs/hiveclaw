@@ -1,25 +1,6 @@
 from __future__ import annotations
 
-import json
 
-import pytest
-
-
-def test_worker_assigns_stable_source_id_at_capture():
-    from app.services.deep_research.worker import _source_from_tool_event
-
-    event = {
-        "tool_name": "web_fetch",
-        "status": "done",
-        "args": {"url": "https://issuer.example/rwa"},
-        "result": (
-            "Title: Issuer RWA Disclosure\n"
-            "Issuer A disclosed 35% growth across 12 jurisdictions in 2026 with custody and transfer controls."
-        ),
-    }
-    source = _source_from_tool_event(event)
-    assert source is not None
-    assert source.source_id.startswith("src_")
 
 
 def test_ledger_preserves_provided_source_id(tmp_path):
@@ -128,34 +109,3 @@ class _CiteReasoner:
         return _passing_audit_report(list(ledger.sources))
 
 
-@pytest.mark.asyncio
-async def test_worker_assigned_id_survives_into_ledger_and_report(tmp_path):
-    from app.services.deep_research.orchestrator import DeepResearchOrchestrator
-    from app.services.deep_research.schemas import ResearchRequest
-
-    async def _no_linear(tool_name: str, arguments: dict) -> str:
-        raise AssertionError("linear path must not run")
-
-    result = await DeepResearchOrchestrator(_no_linear, reasoner=_CiteReasoner(), worker_runner=_StableIdRunner()).run(
-        ResearchRequest(
-            question="Audit custody claims.",
-            mode="source_ledger_audit",
-            depth="quick",
-            max_rounds=1,
-            max_sources=2,
-            concurrency=2,
-            plan_confirmed=True,
-            worker_topics=["lane alpha", "lane beta"],
-        ),
-        artifact_dir=tmp_path,
-    )
-
-    assert result.status == "completed"
-    final = json.loads((tmp_path / "final.json").read_text(encoding="utf-8"))
-    ids = {s["source_id"] for s in final["sources"]}
-    # P4: ids assigned at worker capture are preserved verbatim in the ledger (not re-minted).
-    assert ids == {"src_wfalpha01", "src_wfbeta0002"}
-    report = (tmp_path / "report.md").read_text(encoding="utf-8")
-    # The report's footnotes resolve to those same stable sources.
-    assert "## Footnotes" in report
-    assert "src_wfalpha01.example" in report

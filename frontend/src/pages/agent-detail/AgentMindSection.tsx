@@ -35,7 +35,7 @@ export default function AgentMindSection({ agentId, canEdit }: AgentMindSectionP
         <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
           {t('agent.mind.memoryDesc', 'Long-term knowledge curated from conversations. Feedback, strategies, blocked patterns, and project knowledge.')}
         </p>
-        <FileBrowser api={adapter} rootPath="memory" features={{ edit: canEdit }} />
+        <FileBrowser api={adapter} rootPath="memory" readOnly features={{}} />
       </div>
 
       <div>

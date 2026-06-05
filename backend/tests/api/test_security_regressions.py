@@ -216,6 +216,70 @@ def test_extract_text_docx_does_not_shell_out(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_agent_files_refuses_direct_memory_writes_and_deletes(monkeypatch, tmp_path):
+    import app.api.files as files_api
+
+    agent_id = uuid.uuid4()
+    monkeypatch.setattr(files_api.settings, "AGENT_DATA_DIR", str(tmp_path))
+
+    async def fake_check_agent_access(db, current_user, requested_agent_id):
+        return SimpleNamespace(id=requested_agent_id, tenant_id=current_user.tenant_id), "manage"
+
+    monkeypatch.setattr(files_api, "check_agent_access", fake_check_agent_access)
+    current_user = SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4(), role="member")
+
+    with pytest.raises(HTTPException) as write_exc:
+        await files_api.write_file(
+            agent_id=agent_id,
+            path="memory/knowledge.md",
+            data=files_api.FileWrite(content="raw bypass"),
+            current_user=current_user,
+            db=object(),
+        )
+    assert write_exc.value.status_code == 403
+
+    memory_path = tmp_path / str(agent_id) / "memory" / "knowledge.md"
+    memory_path.parent.mkdir(parents=True)
+    memory_path.write_text("# Knowledge\n\n- [2026-06-05] safe\n", encoding="utf-8")
+
+    with pytest.raises(HTTPException) as delete_exc:
+        await files_api.delete_file(
+            agent_id=agent_id,
+            path="memory/knowledge.md",
+            current_user=current_user,
+            db=object(),
+        )
+    assert delete_exc.value.status_code == 403
+    assert memory_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_agent_files_use_access_cannot_read_raw_memory(monkeypatch, tmp_path):
+    import app.api.files as files_api
+
+    agent_id = uuid.uuid4()
+    monkeypatch.setattr(files_api.settings, "AGENT_DATA_DIR", str(tmp_path))
+
+    async def fake_check_agent_access(db, current_user, requested_agent_id):
+        return SimpleNamespace(id=requested_agent_id, tenant_id=current_user.tenant_id), "use"
+
+    monkeypatch.setattr(files_api, "check_agent_access", fake_check_agent_access)
+    memory_path = tmp_path / str(agent_id) / "memory" / "knowledge.md"
+    memory_path.parent.mkdir(parents=True)
+    memory_path.write_text("# Knowledge\n\n- [2026-06-05] salary planning is confidential\n", encoding="utf-8")
+
+    with pytest.raises(HTTPException) as exc:
+        await files_api.read_file(
+            agent_id=agent_id,
+            path="memory/knowledge.md",
+            current_user=SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4(), role="member"),
+            db=object(),
+        )
+
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_list_agent_triggers_checks_agent_access(monkeypatch):
     import app.api.triggers as triggers_api
 
@@ -290,7 +354,9 @@ async def test_plaza_comment_uses_authenticated_identity():
         tenant_id=uuid.uuid4(),
         role="member",
     )
-    post = SimpleNamespace(id=uuid.uuid4(), author_id=current_user.id, tenant_id=current_user.tenant_id, comments_count=0)
+    post = SimpleNamespace(
+        id=uuid.uuid4(), author_id=current_user.id, tenant_id=current_user.tenant_id, comments_count=0
+    )
     db = _QueuedDB([_ScalarResult(post)])
     body = plaza_api.CommentCreate(
         content="Nice work",

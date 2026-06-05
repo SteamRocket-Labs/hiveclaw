@@ -31,28 +31,19 @@ def _request(
 
 
 @pytest.mark.asyncio
-async def test_deep_research_run_returns_artifact_paths(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.services.deep_research.schemas import ResearchRun
+async def test_deep_research_run_executes_workflow_synchronously(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """DR-6b 单路径：同步工具直接驱动 workflow run 到完成并透传 payload。"""
     from app.tools.handlers.deep_research import deep_research_run
 
-    async def fake_run_research(*, request, agent_id, user_id, workspace, runtime_task_id=None):
-        artifact_dir = workspace / "runtime_artifacts" / "deep_research" / "sync-run"
-        artifact_dir.mkdir(parents=True)
-        (artifact_dir / "report.md").write_text("# Deep Research Report\n", encoding="utf-8")
-        (artifact_dir / "sources.jsonl").write_text("{}", encoding="utf-8")
-        (artifact_dir / "claims.jsonl").write_text("{}", encoding="utf-8")
-        return ResearchRun(
-            run_id="sync-run",
-            status="completed",
-            summary="done",
-            artifact_dir=artifact_dir.as_posix(),
-            report_path=(artifact_dir / "report.md").as_posix(),
-            sources_path=(artifact_dir / "sources.jsonl").as_posix(),
-            claims_path=(artifact_dir / "claims.jsonl").as_posix(),
-            quality_gates={"attribution": "passed"},
-        )
+    async def fake_workflow_run(*, request, agent_id, user_id, workspace, plan_id=None, run_id=None, **_kwargs):
+        return {
+            "workflow_run_id": "sync-run",
+            "status": "completed",
+            "report_path": str(workspace / "report.md"),
+            "workspace_artifact_dir": str(workspace),
+        }
 
-    monkeypatch.setattr("app.tools.handlers.deep_research.run_deep_research", fake_run_research)
+    monkeypatch.setattr("app.tools.handlers.deep_research.start_deep_research_workflow_run", fake_workflow_run)
     req = _request(tmp_path, session_id="session-work-ledger")
     req.arguments.update({"question": "RWA adoption", "max_rounds": 1, "max_sources": 1, "plan_confirmed": True})
 
@@ -60,11 +51,7 @@ async def test_deep_research_run_returns_artifact_paths(tmp_path, monkeypatch: p
 
     assert payload["ok"] is True
     assert payload["status"] == "completed"
-    assert payload["report_path"] == "workspace/deep_research_reports/sync-run/report.md"
-    assert (tmp_path / "workspace" / "deep_research_reports" / "sync-run" / "report.md").is_file()
-    assert (tmp_path / "workspace" / "deep_research_reports" / "sync-run" / "sources.jsonl").is_file()
-    assert payload["artifact_report_path"].endswith("runtime_artifacts/deep_research/sync-run/report.md")
-    assert payload["quality_gates"]["attribution"] == "passed"
+    assert payload["workflow_run_id"] == "sync-run"
 
 
 @pytest.mark.asyncio
@@ -77,7 +64,7 @@ async def test_deep_research_run_routes_full_depth_to_async_start(
     async def fail_if_called(**_kwargs):
         raise AssertionError("full depth should not run synchronously")
 
-    monkeypatch.setattr("app.tools.handlers.deep_research.run_deep_research", fail_if_called)
+    monkeypatch.setattr("app.tools.handlers.deep_research.start_deep_research_workflow_run", fail_if_called)
     req = _request(tmp_path, session_id="session-work-ledger")
     req.arguments.update({"question": "RWA adoption", "depth": "full"})
 
@@ -90,40 +77,33 @@ async def test_deep_research_run_routes_full_depth_to_async_start(
 
 
 @pytest.mark.asyncio
-async def test_deep_research_start_creates_runtime_task(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.tools.handlers.deep_research import deep_research_start
+async def test_deep_research_start_schedules_background_workflow(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """DR-6b 单路径：start 立即返回可查的 workflow run id（异步契约保真），
+    防轮询指引原样保留。"""
+    import uuid as _uuid
 
-    created: dict = {}
+    from app.config import get_settings
+    from app.tools.handlers import deep_research as handler
 
-    async def fake_create_runtime_task_record(**kwargs):
-        created.update(kwargs)
-        return kwargs["task_id"]
+    monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path / "agents"))
+    scheduled: dict = {}
 
-    async def fake_record_plan(**_kwargs):
-        return {"path": "runtime_artifacts/long_tasks/task/plan.json"}
+    def fake_schedule(**kwargs):
+        scheduled.update(kwargs)
 
-    async def fake_record_progress(**_kwargs):
-        return {"path": "runtime_artifacts/long_tasks/task/progress.jsonl"}
-
-    monkeypatch.setattr("app.tools.handlers.deep_research.create_runtime_task_record", fake_create_runtime_task_record)
-    monkeypatch.setattr("app.tools.handlers.deep_research.record_long_task_plan", fake_record_plan)
-    monkeypatch.setattr("app.tools.handlers.deep_research.record_long_task_progress", fake_record_progress)
-    monkeypatch.setattr(
-        "app.tools.handlers.deep_research._schedule_deep_research_background", lambda *_args, **_kwargs: None
-    )
+    monkeypatch.setattr(handler, "_schedule_deep_research_workflow_background", fake_schedule)
 
     req = _request(tmp_path, session_id="session-work-ledger")
     req.arguments.update({"question": "RWA adoption", "max_rounds": 2, "plan_confirmed": True})
 
-    payload = json.loads(await deep_research_start(req))
+    payload = json.loads(await handler.deep_research_start(req))
 
     assert payload["ok"] is True
     assert payload["status"] == "running"
-    assert created["task_type"] == "deep_research"
-    assert created["parent_agent_id"] == req.context.agent_id
-    assert created["parent_session_id"] == "session-work-ledger"
-    assert created["child_session_id"] == "session-work-ledger"
-    assert created["metadata_json"]["session_id"] == "session-work-ledger"
+    assert payload["task_id"] == str(scheduled["run_id"])  # checkable id handed out immediately
+    assert payload["workflow_run_id"] == payload["task_id"]
+    assert _uuid.UUID(payload["task_id"])  # well-formed run id
+    assert scheduled["agent_id"] == req.context.agent_id
     next_action = payload["next_action"]
     # The agent must NOT busy-loop deep_research_check on a still-running async task:
     # 5 identical polls trip the kernel loop guard. The guidance must say so explicitly.
@@ -131,56 +111,7 @@ async def test_deep_research_start_creates_runtime_task(tmp_path, monkeypatch: p
     assert "at most once" in next_action
     assert "loop guard" in next_action.lower()
     assert "Do not create triggers" in next_action
-
-
-@pytest.mark.asyncio
-async def test_deep_research_start_uses_workflow_when_rollout_flag_enabled(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from app.tools.handlers.deep_research import deep_research_start
-
-    started: dict = {}
-
-    async def fake_start_workflow(**kwargs):
-        started.update(kwargs)
-        return {
-            "created_workflow_run_id": "wf-run-1",
-            "workflow_run_id": "wf-run-1",
-            "status": "running",
-            "definition_name": "deep_research.v1",
-            "definition_version": 1,
-            "definition_hash": "hash",
-            "legacy_path_available": True,
-        }
-
-    async def fail_old_path(**_kwargs):
-        raise AssertionError("workflow flag must bypass the legacy RuntimeTask path")
-
-    monkeypatch.setattr("app.tools.handlers.deep_research.deep_research_workflow_enabled", lambda: True)
-    monkeypatch.setattr("app.tools.handlers.deep_research.start_deep_research_workflow_run", fake_start_workflow)
-    monkeypatch.setattr("app.tools.handlers.deep_research.create_runtime_task_record", fail_old_path)
-
-    req = _request(tmp_path, session_id="session-work-ledger")
-    req.arguments.update(
-        {
-            "question": "RWA adoption",
-            "worker_topics": ["market", "regulation"],
-            "max_rounds": 2,
-            "plan_confirmed": True,
-        }
-    )
-
-    payload = json.loads(await deep_research_start(req))
-
-    assert payload["ok"] is True
-    assert payload["status"] == "running"
-    assert payload["workflow_run_id"] == "wf-run-1"
-    assert payload["definition_name"] == "deep_research.v1"
-    assert payload["legacy_path_available"] is True
-    assert started["agent_id"] == req.context.agent_id
-    assert started["user_id"] == req.context.user_id
-    assert started["request"].worker_topics == ["market", "regulation"]
+    handler._INFLIGHT_DEEP_RESEARCH.pop((str(req.context.agent_id), "rwa adoption"), None)
 
 
 @pytest.mark.asyncio

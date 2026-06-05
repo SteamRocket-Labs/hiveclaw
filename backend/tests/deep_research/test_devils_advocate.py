@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import json
 
-import pytest
 
 
 def _passing_audit_report(source_ids: list[str]) -> str:
@@ -122,36 +120,3 @@ def _request():
     )
 
 
-@pytest.mark.asyncio
-async def test_devils_advocate_runs_before_synthesis_and_is_consumed(tmp_path):
-    from app.services.deep_research.orchestrator import DeepResearchOrchestrator
-
-    reasoner = _DAReasoner()
-    result = await DeepResearchOrchestrator(_no_linear, reasoner=reasoner, worker_runner=_SimpleWorkerRunner()).run(
-        _request(), artifact_dir=tmp_path
-    )
-
-    assert result.status == "completed"
-    assert reasoner.da_called is True
-    # synthesis received the DA review and can address it
-    assert reasoner.devils_advocate_seen is not None
-    assert "strongest_counter_argument" in reasoner.devils_advocate_seen
-    # persisted for inspection + final.json reference
-    da_path = tmp_path / "devils_advocate.jsonl"
-    assert da_path.is_file()
-    record = json.loads(da_path.read_text(encoding="utf-8").splitlines()[0])
-    assert "strongest_counter_argument" in record
-    final = json.loads((tmp_path / "final.json").read_text(encoding="utf-8"))
-    assert final["devils_advocate_path"] == da_path.as_posix()
-
-
-@pytest.mark.asyncio
-async def test_devils_advocate_optional_when_reasoner_lacks_method(tmp_path):
-    from app.services.deep_research.orchestrator import DeepResearchOrchestrator
-
-    result = await DeepResearchOrchestrator(
-        _no_linear, reasoner=_NoDAReasoner(), worker_runner=_SimpleWorkerRunner()
-    ).run(_request(), artifact_dir=tmp_path)
-
-    assert result.status == "completed"
-    assert not (tmp_path / "devils_advocate.jsonl").exists()

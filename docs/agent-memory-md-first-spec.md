@@ -905,6 +905,8 @@ type AgentKnowledgeOverview = {
 
 ### P0: Freeze Terms And Prompt Contracts
 
+**Status: ✅ DONE (2026-06-04).**
+
 Files:
 
 - `backend/app/services/extract_agent.py`
@@ -920,6 +922,31 @@ Acceptance:
 - Dream is Reconsolidator + IdentityPromoter, not free identity editor.
 - SkillDistiller consumes candidate evidence, not raw ungoverned patterns.
 - Prompts output or reason about `container_candidate`.
+
+Evidence:
+
+- `CONTAINER_CANDIDATES` vocabulary frozen in `backend/app/memory/types.py`
+  (`memory_append | soul_candidate | skill_candidate | workflow_candidate |
+  artifact_only`) — shared by Extractor prompt, T2 metadata, and (P1)
+  PromotionRouter.
+- Extractor: role rewritten to ATOM EXTRACTION with `<container_candidate>`
+  advisory-hint section; `_parse_extractions` parses `[container=...]` into
+  `container_candidate` (invalid vocabulary dropped). Output examples carry
+  container hints.
+- T2 round-trip: `format_t2_entry(container_candidate=...)` emits
+  `[container=...]`; `parse_t2_entry_line` restores it;
+  `render_t2_snapshot` surfaces it to the heartbeat tick injection.
+- HEARTBEAT.md: retitled Memory Curator; "not the final skill or workflow
+  writer" boundary; container-candidate reasoning block in decision matrix;
+  T3 lines preserve `[container=...]` markers (Example D).
+- Dream: system prompt names Reconsolidator + IdentityPromoter, "not a free
+  identity editor", decisions framed as lifecycle patch candidates.
+- SkillDistiller: prompt consumes evidence-backed `skill_candidate` signals,
+  "does not invent skills from raw ungoverned patterns".
+- Tests: `backend/tests/services/test_container_candidate_contracts.py`
+  (7 tests — prompt contracts + parse/round-trip/persist). Affected-area
+  suite 252 passed (extract_agent, auto_dream, prompt_contracts,
+  distillation_boundary_contracts, t2_store, heartbeat, skill_distiller).
 
 ### P1: PromotionRouter Pure Module
 

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.memory.lifecycle_store import record_active_memory_lifecycle
+from app.memory.types import CONTAINER_CANDIDATES
 from app.memory.write_gate import prepare_memory_write
 
 
@@ -186,6 +187,7 @@ def format_t2_entry(
     novelty: float | str | None = None,
     reusability: float | str | None = None,
     concept: str | None = None,
+    container_candidate: str | None = None,
     discovery_tokens: int | str | None = None,
     metadata: dict[str, str] | None = None,
 ) -> str:
@@ -199,11 +201,14 @@ def format_t2_entry(
         f"[cat={normalized_category}]",
     ]
     for key, value in (metadata or {}).items():
-        if key and value and key not in {"evidence_refs", "concept", "discovery_tokens"}:
+        if key and value and key not in {"evidence_refs", "concept", "discovery_tokens", "container_candidate"}:
             meta_parts.append(f"[{key}={value}]")
     normalized_concept = _sanitize_meta(str(concept or (metadata or {}).get("concept") or "")).strip().lower()
     if normalized_concept:
         meta_parts.append(f"[concept={normalized_concept}]")
+    normalized_container = str(container_candidate or (metadata or {}).get("container_candidate") or "").strip().lower()
+    if normalized_container in CONTAINER_CANDIDATES:
+        meta_parts.append(f"[container={normalized_container}]")
     token_count = _positive_int(discovery_tokens or (metadata or {}).get("discovery_tokens"))
     if token_count is not None:
         meta_parts.append(f"[discovery_tokens={token_count}]")
@@ -247,6 +252,7 @@ def parse_t2_entry_line(
     novelty = _clamp_score(metadata.get("nov") or metadata.get("novelty"))
     reusability = _clamp_score(metadata.get("reuse") or metadata.get("reusability"))
     concept = (metadata.get("concept") or "").strip().lower()
+    container_candidate = (metadata.get("container") or metadata.get("container_candidate") or "").strip().lower()
     discovery_tokens = _positive_int(metadata.get("discovery_tokens"))
 
     parsed = {
@@ -270,6 +276,8 @@ def parse_t2_entry_line(
         parsed["reusability"] = reusability
     if concept:
         parsed["concept"] = concept
+    if container_candidate in CONTAINER_CANDIDATES:
+        parsed["container_candidate"] = container_candidate
     if discovery_tokens is not None:
         parsed["discovery_tokens"] = discovery_tokens
     for key in (
@@ -345,6 +353,7 @@ def append_t2_entries(
                 novelty=extraction.get("novelty") or extraction.get("nov"),
                 reusability=extraction.get("reusability") or extraction.get("reuse"),
                 concept=extraction.get("concept"),
+                container_candidate=extraction.get("container_candidate") or extraction.get("container"),
                 discovery_tokens=extraction.get("discovery_tokens"),
                 metadata=metadata,
             )
@@ -516,6 +525,8 @@ def render_t2_snapshot(entries: list[dict]) -> str:
             extra_meta = ""
             if entry.get("concept"):
                 extra_meta += f"[concept={entry.get('concept')}]"
+            if entry.get("container_candidate"):
+                extra_meta += f"[container={entry.get('container_candidate')}]"
             if entry.get("discovery_tokens") is not None:
                 extra_meta += f"[discovery_tokens={int(entry.get('discovery_tokens', 0))}]"
             lines.append(

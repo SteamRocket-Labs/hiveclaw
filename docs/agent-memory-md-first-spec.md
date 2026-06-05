@@ -1256,6 +1256,8 @@ Evidence:
 
 ### P8: AgentDetail IA
 
+**Status: ✅ DONE (2026-06-04).**
+
 Acceptance:
 
 - Knowledge is separate from Skills, MCP, and Workflows.
@@ -1263,6 +1265,31 @@ Acceptance:
 - `tools` is renamed or split to MCP.
 - `workflows` remains standalone.
 - Knowledge only deep-links to capability modules.
+
+Evidence:
+
+- New `AgentKnowledgeSection.tsx` — the Knowledge plane over the P7 read
+  model with six subviews: Overview (identity/memory/distillers/linked-
+  capabilities cards + held curations), Pages (wiki + scenes with markdown
+  rendering), Entries (heat/recall/lane table), Candidates, Timeline, and
+  Raw (the advanced view — reuses the former Mind file browser, so raw
+  Markdown stays reachable but is no longer the primary view; default view
+  is Overview per §10.3).
+- `AgentDetail.tsx`: the raw-file `mind` tab is REPLACED by `knowledge`
+  (no dual path; legacy `#mind` deep links map to `#knowledge`); tab
+  groups updated.
+- `tools` tab renamed to **MCP** in both locales (en + zh tooltips
+  describe external connectors/policy); ToolsManager content was already
+  MCP-only from the extension-surface work.
+- Deep-link only: skill candidates → Skills tab, workflow candidates →
+  Workflows tab via `onNavigateTab` — Knowledge never installs/edits
+  capabilities. `skills` and `workflows` tabs untouched.
+- Typed adapter `api/domains/knowledge.ts` for all six endpoints.
+- i18n: `agent.tabs.knowledge(+Tooltip)` added, `mind` keys removed from
+  tabs (section copy reused by Raw view retained), en+zh in sync.
+- Tests: `AgentKnowledgeSection.test.tsx` (2 — read-model rendering with
+  default-not-file-browser pin, subview surface incl. Raw). Frontend 154
+  tests passed, `tsc --noEmit` clean, production build passed.
 
 ### P9: Advanced Graph / KG / PPR
 

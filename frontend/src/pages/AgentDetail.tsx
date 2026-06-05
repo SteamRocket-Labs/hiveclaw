@@ -13,7 +13,7 @@ import AgentActivityLogSection from './agent-detail/AgentActivityLogSection';
 import AgentAwareSection from './agent-detail/AgentAwareSection';
 import AgentChatSection from './agent-detail/AgentChatSection';
 import AgentEvolutionSection from './agent-detail/AgentEvolutionSection';
-import AgentMindSection from './agent-detail/AgentMindSection';
+import AgentKnowledgeSection from './agent-detail/AgentKnowledgeSection';
 import OfficeWorkbenchSection from './agent-detail/OfficeWorkbenchSection';
 import AgentSettingsSection from './agent-detail/AgentSettingsSection';
 import AgentSkillsSection from './agent-detail/AgentSkillsSection';
@@ -44,12 +44,16 @@ import { chatApi, type SessionRun } from '../api/domains/chat';
 import { uploadFileWithProgress } from '../api/core/upload-progress';
 import { useAuthStore } from '../stores';
 
-const TABS = ['status', 'aware', 'mind', 'evolution', 'tools', 'skills', 'relationships', 'workspace', 'workflows', 'office', 'chat', 'activityLog', 'approvals', 'settings'] as const;
+// P8 IA (docs/agent-memory-md-first-spec.md §10): Knowledge replaces the
+// raw-file "mind" tab as the primary memory view (raw Markdown lives in the
+// Knowledge → Raw subview); `tools` is the MCP plane; skills and workflows
+// stay standalone capability modules that Knowledge only deep-links to.
+const TABS = ['status', 'aware', 'knowledge', 'evolution', 'tools', 'skills', 'relationships', 'workspace', 'workflows', 'office', 'chat', 'activityLog', 'approvals', 'settings'] as const;
 
 /** Visual grouping of tabs for the tab bar — groups are separated by thin dividers */
 const TAB_GROUPS: { tabs: (typeof TABS[number])[]; }[] = [
     { tabs: ['status', 'chat'] },
-    { tabs: ['aware', 'mind', 'evolution', 'tools', 'skills'] },
+    { tabs: ['aware', 'knowledge', 'evolution', 'tools', 'skills'] },
     { tabs: ['workspace', 'workflows', 'office', 'relationships', 'activityLog', 'approvals'] },
     { tabs: ['settings'] },
 ];
@@ -60,8 +64,11 @@ function AgentDetailInner() {
     const navigate = useNavigate();
     const queryClient = useQueryClient();
     const location = useLocation();
-    const validTabs = ['status', 'aware', 'mind', 'evolution', 'tools', 'skills', 'relationships', 'workspace', 'workflows', 'office', 'chat', 'activityLog', 'approvals', 'settings'];
-    const hashTab = location.hash?.replace('#', '');
+    const validTabs = ['status', 'aware', 'knowledge', 'evolution', 'tools', 'skills', 'relationships', 'workspace', 'workflows', 'office', 'chat', 'activityLog', 'approvals', 'settings'];
+    // Legacy deep links: #mind was the raw-file memory tab before the
+    // Knowledge plane replaced it (P8).
+    const rawHashTab = location.hash?.replace('#', '');
+    const hashTab = rawHashTab === 'mind' ? 'knowledge' : rawHashTab;
     const [activeTab, setActiveTabRaw] = useState<string>(hashTab && validTabs.includes(hashTab) ? hashTab : 'status');
 
     // Sync URL hash when tab changes
@@ -1396,7 +1403,13 @@ function AgentDetailInner() {
 
 
                 {/* ── Mind Tab (Soul + Memory + Heartbeat) ── */}
-                {activeTab === 'mind' && <AgentMindSection agentId={id!} canEdit={(agent as any)?.access_level !== 'use'} />}
+                {activeTab === 'knowledge' && (
+                    <AgentKnowledgeSection
+                        agentId={id!}
+                        canEdit={(agent as any)?.access_level !== 'use'}
+                        onNavigateTab={setActiveTab}
+                    />
+                )}
 
                 {/* ── Evolution Tab (skill lifecycle + evolution timeline) ── */}
                 {activeTab === 'evolution' && <AgentEvolutionSection agentId={id!} active={canLoadAgentScopedData} />}

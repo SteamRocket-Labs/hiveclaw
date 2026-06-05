@@ -47,6 +47,22 @@ def test_parse_requires_name():
         parse_subagent_definition("---\ntype: explorer\n---\nbody")
 
 
+@pytest.mark.parametrize(
+    ("definition", "message"),
+    [
+        ("---\nname: bad\ntype: explorer\nallowed_tools: read_file\n---\nbody", "allowed_tools"),
+        ("---\nname: bad\ntype: explorer\nexcluded_tools: write_file\n---\nbody", "excluded_tools"),
+        ("---\nname: bad\ntype: explorer\nallowed_tools:\n  - ''\n---\nbody", "allowed_tools"),
+        ("---\nname: bad\ntype: explorer\nmax_tool_rounds: nope\n---\nbody", "max_tool_rounds"),
+        ("---\nname: bad\ntype: explorer\nmax_tool_rounds: 0\n---\nbody", "max_tool_rounds"),
+        ("---\nname: bad\ntype: explorer\nisolation: session\n---\nbody", "isolation"),
+    ],
+)
+def test_parse_rejects_invalid_frontmatter_contract_fields(definition, message):
+    with pytest.raises(ValueError, match=message):
+        parse_subagent_definition(definition)
+
+
 def test_render_round_trips():
     spec = SubagentSpec(
         name="code-critic",
@@ -103,6 +119,14 @@ def test_store_rejects_path_traversal_names(tmp_path):
         store.load("../escape")
 
     assert not (tmp_path.parent / "escape.md").exists()
+
+
+def test_store_rejects_filename_frontmatter_name_mismatch(tmp_path):
+    store = SubagentDefinitionStore(tmp_path)
+    (tmp_path / "foo.md").write_text("---\nname: bar\ntype: explorer\n---\nbody\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="mismatches file name"):
+        store.load("foo")
 
 
 @pytest.mark.asyncio

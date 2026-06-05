@@ -47,13 +47,7 @@ def validate_subagent_name(name: str) -> str:
     """
 
     value = str(name or "").strip()
-    if (
-        not value
-        or not _SAFE_SUBAGENT_NAME_RE.fullmatch(value)
-        or ".." in value
-        or "/" in value
-        or "\\" in value
-    ):
+    if not value or not _SAFE_SUBAGENT_NAME_RE.fullmatch(value) or ".." in value or "/" in value or "\\" in value:
         raise ValueError(
             "invalid subagent name: use 1-128 ASCII letters, digits, '.', '_' or '-' without path traversal"
         )
@@ -68,12 +62,45 @@ def _tenant_subagent_root(tenant_id: object, *, kind: str, agent_data_dir: Path 
 
 
 def _coerce_isolation(value: object) -> ForkLevel:
-    """Validate an isolation value from frontmatter; fall back to 'none'."""
+    """Validate an isolation value from frontmatter."""
 
     raw = str(value or "none")
     if raw in _VALID_ISOLATION:
         return cast("ForkLevel", raw)
-    return "none"
+    raise ValueError(f"invalid isolation {raw!r}: expected one of {_VALID_ISOLATION}")
+
+
+def _coerce_tool_list(front: dict, field_name: str) -> tuple[str, ...]:
+    value = front.get(field_name)
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a YAML list of non-empty tool names")
+    tools: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"{field_name} must contain only non-empty string tool names")
+        tools.append(item.strip())
+    return tuple(tools)
+
+
+def _coerce_optional_positive_int(front: dict, field_name: str) -> int | None:
+    value = front.get(field_name)
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ValueError(f"{field_name} must be a positive integer or null")
+    return value
+
+
+def _coerce_optional_string(front: dict, field_name: str) -> str | None:
+    value = front.get(field_name)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string or null")
+    stripped = value.strip()
+    return stripped or None
 
 
 def parse_subagent_definition(text: str) -> SubagentSpec:
@@ -103,10 +130,10 @@ def parse_subagent_definition(text: str) -> SubagentSpec:
     return SubagentSpec(
         name=name,
         type=str(front.get("type") or SUBAGENT_TYPE_EXPLORER),
-        allowed_tools=tuple(front.get("allowed_tools") or ()),
-        excluded_tools=tuple(front.get("excluded_tools") or ()),
-        model=front.get("model"),
-        max_tool_rounds=front.get("max_tool_rounds"),
+        allowed_tools=_coerce_tool_list(front, "allowed_tools"),
+        excluded_tools=_coerce_tool_list(front, "excluded_tools"),
+        model=_coerce_optional_string(front, "model"),
+        max_tool_rounds=_coerce_optional_positive_int(front, "max_tool_rounds"),
         isolation=_coerce_isolation(front.get("isolation")),
         system_prompt=body.strip(),
     )
@@ -153,10 +180,14 @@ class SubagentDefinitionStore:
         return path
 
     def load(self, name: str) -> SubagentSpec | None:
+        safe_name = validate_subagent_name(name)
         path = self._path(name)
         if not path.exists():
             return None
-        return parse_subagent_definition(path.read_text(encoding="utf-8"))
+        spec = parse_subagent_definition(path.read_text(encoding="utf-8"))
+        if spec.name != safe_name:
+            raise ValueError(f"frontmatter name {spec.name!r} mismatches file name {safe_name!r}")
+        return spec
 
     def list_names(self) -> list[str]:
         if not self.base_dir.exists():
@@ -173,7 +204,9 @@ class SubagentDefinitionStore:
         return True
 
 
-def definition_store_for_tenant(tenant_id: object, *, agent_data_dir: Path | str | None = None) -> SubagentDefinitionStore:
+def definition_store_for_tenant(
+    tenant_id: object, *, agent_data_dir: Path | str | None = None
+) -> SubagentDefinitionStore:
     """Construct the tenant-scoped persistent subagent definition store."""
 
     return SubagentDefinitionStore(_tenant_subagent_root(tenant_id, kind="definitions", agent_data_dir=agent_data_dir))
@@ -188,7 +221,9 @@ def agent_subagent_root(agent_id: object, *, agent_data_dir: Path | str | None =
     return root / str(agent_id) / "subagents"
 
 
-def definition_store_for_agent(agent_id: object, *, agent_data_dir: Path | str | None = None) -> SubagentDefinitionStore:
+def definition_store_for_agent(
+    agent_id: object, *, agent_data_dir: Path | str | None = None
+) -> SubagentDefinitionStore:
     """Construct the agent-scoped definition store (daily driver, §12.2).
 
     Same format, parser, renderer and name guard as the tenant store — the

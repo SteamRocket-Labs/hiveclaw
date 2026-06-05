@@ -1,8 +1,8 @@
 """Subagent configuration API (cut C2, §12.7) — the human door onto the stores.
 
-Seven endpoints over the C1 resolution chain: four agent-level (the daily
+Eight endpoints over the C1 resolution chain: four agent-level (the daily
 driver, ``check_agent_access`` guarded — reads need access, writes need
-manage) and three tenant-level (the company library, org-admin guarded).
+manage) and four tenant-level (the company library, org-admin guarded).
 Markdown is the configuration format end to end: PUT accepts the full
 定义.md text and validates it through the same parser the runtime uses —
 no second schema, no drift.

@@ -175,6 +175,26 @@ def test_put_rejects_invalid_frontmatter(monkeypatch, data_root):
     assert "name" in resp.json()["detail"]
 
 
+def test_put_rejects_invalid_contract_field_types(monkeypatch, data_root):
+    agent_id, tenant_id = uuid.uuid4(), uuid.uuid4()
+    client, _db, _user = _build_client(tenant_id=tenant_id)
+    _grant_access(monkeypatch, agent_id, tenant_id)
+
+    resp = client.put(
+        f"/agents/{agent_id}/subagents/my-scout",
+        json={"definition": "---\nname: my-scout\ntype: explorer\nmax_tool_rounds: nope\n---\nprompt"},
+    )
+    assert resp.status_code == 422
+    assert "max_tool_rounds" in resp.json()["detail"]
+
+    resp = client.put(
+        f"/agents/{agent_id}/subagents/my-scout",
+        json={"definition": "---\nname: my-scout\ntype: explorer\nallowed_tools: read_file\n---\nprompt"},
+    )
+    assert resp.status_code == 422
+    assert "allowed_tools" in resp.json()["detail"]
+
+
 def test_put_rejects_name_mismatch(monkeypatch, data_root):
     agent_id, tenant_id = uuid.uuid4(), uuid.uuid4()
     client, _db, _user = _build_client(tenant_id=tenant_id)

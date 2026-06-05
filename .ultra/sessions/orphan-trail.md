@@ -4,6 +4,9 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
+- 2026-06-05T09:54Z [sid:d8544712]; branch:main; 1 files (orphan-trail.md); last commit: 3df517d5 feat(subagent): C4 Company Admin 公司库面板 — §12 配置面四切口
+- 2026-06-05T08:55Z [sid:96a0f9cf]; branch:main; 5 files (orphan-trail.md, agent_knowledge.py, files.py, +2); last commit: 5064624b docs(subagent): §12 配置面与作用域设计 v4 — 双层作用域 + 人类入口（待拍板
+- 2026-06-05T08:45Z [sid:27e1f4c6]; branch:main; 5 files (agent_knowledge.py, files.py, engine.py, +2); last commit: 8c6627be feat(workflow)!: DR-6b 旧路径退役 — Deep Research 单一 wor
 - 2026-06-05T08:35Z [sid:96a0f9cf]; branch:main; 46 files (agent_knowledge.py, files.py, config.py, +43); last commit: 58ba91ca refactor(workflow): DR-6a 合成质量门搬家 — synthesis_gates
 - 2026-06-05T07:51Z [sid:27e1f4c6]; branch:main; 1 files (orphan-trail.md); last commit: 89d16139 docs(memory): spec §12 路线图总状态 — P0-P8 全部实装收口
 - 2026-06-05T07:44Z [sid:96a0f9cf]; branch:main; 1 files (orphan-trail.md); last commit: 89d16139 docs(memory): spec §12 路线图总状态 — P0-P8 全部实装收口

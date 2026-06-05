@@ -115,7 +115,11 @@ async def test_spawn_tool_resolves_model_and_spawns(monkeypatch):
     captured: dict = {}
 
     async def fake_resolve(agent_id):
-        return SimpleNamespace(model="x"), None, SimpleNamespace(name="HR")
+        return (
+            SimpleNamespace(provider="openai", api_key="k", model="x", base_url=None),
+            None,
+            SimpleNamespace(name="HR"),
+        )
 
     async def fake_spawn(ctx, spec, task, **kwargs):
         captured["ctx"] = ctx
@@ -147,6 +151,38 @@ async def test_spawn_tool_resolves_model_and_spawns(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_spawn_tool_wires_llm_memory_distiller(monkeypatch):
+    """The self-evolution loop must be LIVE in production: when a memory store
+    exists, the spawn context carries an LLM How-distiller bound to the
+    parent's model — without it, 记忆.md is read-only forever."""
+
+    import app.tools.handlers.subagent as handler_mod
+
+    captured: dict = {}
+
+    async def fake_resolve(agent_id):
+        model = SimpleNamespace(provider="openai", api_key="k", model="m", base_url=None)
+        return model, None, SimpleNamespace(name="HR")
+
+    async def fake_spawn(ctx, spec, task, **kwargs):
+        captured["ctx"] = ctx
+        return SubagentHandle(
+            name=spec.name,
+            trace_id="",
+            depth=2,
+            result=SubagentResult(name=spec.name, type=spec.type, status="completed", content="ok"),
+        )
+
+    monkeypatch.setattr(handler_mod, "_resolve_parent_runtime", fake_resolve)
+    monkeypatch.setattr(handler_mod, "spawn_subagent", fake_spawn)
+
+    out = await handler_mod.spawn_subagent_tool(_tool_request({"task": "t"}, tenant_id=str(uuid.uuid4())))
+    assert json.loads(out)["ok"] is True
+    assert captured["ctx"].memory_store is not None
+    assert captured["ctx"].memory_distiller is not None
+
+
+@pytest.mark.asyncio
 async def test_spawn_tool_inline_type_selects_builtin(monkeypatch):
     """CC parity: all three builtin types are reachable from the spawn surface."""
 
@@ -155,7 +191,11 @@ async def test_spawn_tool_inline_type_selects_builtin(monkeypatch):
     captured: dict = {}
 
     async def fake_resolve(agent_id):
-        return SimpleNamespace(model="x"), None, SimpleNamespace(name="HR")
+        return (
+            SimpleNamespace(provider="openai", api_key="k", model="x", base_url=None),
+            None,
+            SimpleNamespace(name="HR"),
+        )
 
     async def fake_spawn(ctx, spec, task, **kwargs):
         captured["spec"] = spec
@@ -182,7 +222,11 @@ async def test_spawn_tool_rejects_unknown_inline_type(monkeypatch):
     import app.tools.handlers.subagent as handler_mod
 
     async def fake_resolve(agent_id):
-        return SimpleNamespace(model="x"), None, SimpleNamespace(name="HR")
+        return (
+            SimpleNamespace(provider="openai", api_key="k", model="x", base_url=None),
+            None,
+            SimpleNamespace(name="HR"),
+        )
 
     monkeypatch.setattr(handler_mod, "_resolve_parent_runtime", fake_resolve)
 
@@ -214,7 +258,11 @@ async def test_spawn_tool_can_load_persistent_definition(monkeypatch, tmp_path):
     captured: dict = {}
 
     async def fake_resolve(agent_id):
-        return SimpleNamespace(model="x"), None, SimpleNamespace(name="HR")
+        return (
+            SimpleNamespace(provider="openai", api_key="k", model="x", base_url=None),
+            None,
+            SimpleNamespace(name="HR"),
+        )
 
     async def fake_spawn(ctx, spec, task, **kwargs):
         captured["ctx"] = ctx
@@ -258,7 +306,11 @@ def _scoped_spawn_setup(monkeypatch, tmp_path):
     captured: dict = {}
 
     async def fake_resolve(agent_id):
-        return SimpleNamespace(model="x"), None, SimpleNamespace(name="HR")
+        return (
+            SimpleNamespace(provider="openai", api_key="k", model="x", base_url=None),
+            None,
+            SimpleNamespace(name="HR"),
+        )
 
     async def fake_spawn(ctx, spec, task, **kwargs):
         captured["ctx"] = ctx

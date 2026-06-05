@@ -76,19 +76,89 @@ def test_store_rejects_path_traversal_names(tmp_path, monkeypatch):
     assert not (tmp_path.parent / "escape.记忆.md").exists()
 
 
-def test_distill_and_record_one_layer(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_distill_and_record_one_layer(tmp_path, monkeypatch):
     monkeypatch.setattr(mem_mod, "prepare_memory_write", _allowed_decision)
     store = SubagentMemoryStore(tmp_path)
 
     def distiller(run_log):
         return [("pitfall", "Avoid PDF blobs."), ("source_calibration", "Gov sources rank high.")]
 
-    results = distill_and_record(store, "scout", "<run log>", distiller=distiller)
+    results = await distill_and_record(store, "scout", "<run log>", distiller=distiller)
     assert len(results) == 2
     assert all(r.written for r in results)
     loaded = store.load("scout")
     assert "Avoid PDF blobs." in loaded
     assert "Gov sources rank high." in loaded
+
+
+@pytest.mark.asyncio
+async def test_distill_and_record_accepts_async_distiller(tmp_path, monkeypatch):
+    monkeypatch.setattr(mem_mod, "prepare_memory_write", _allowed_decision)
+    store = SubagentMemoryStore(tmp_path)
+
+    async def distiller(run_log):
+        return [("pointer_map", "Filings live under ir.example.com/annual.")]
+
+    results = await distill_and_record(store, "scout", "<run log>", distiller=distiller)
+    assert len(results) == 1 and results[0].written
+    assert "ir.example.com" in store.load("scout")
+
+
+# --- LLM How distiller (production wiring for the spawn path) -----------------
+
+
+def _llm_response(content: str) -> dict:
+    return {"choices": [{"message": {"content": content}}]}
+
+
+def test_distill_prompt_is_vendor_neutral_and_how_only():
+    from app.agents.subagent_memory import DISTILL_HOW_SYSTEM_PROMPT
+
+    lowered = DISTILL_HOW_SYSTEM_PROMPT.lower()
+    for vendor in ("claude", "anthropic", "gpt", "openai", "gemini", "deepseek"):
+        assert vendor not in lowered
+    # the four How-craft categories are spelled out for the model
+    for category in ("source_calibration", "judgment_calibration", "pitfall", "pointer_map"):
+        assert category in DISTILL_HOW_SYSTEM_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_llm_distiller_parses_lessons(monkeypatch):
+    from app.agents.subagent_memory import make_llm_how_distiller
+
+    async def fake_chat_complete(**kwargs):
+        return _llm_response('[{"category": "pitfall", "lesson": "Search snippets truncate tables."}]')
+
+    monkeypatch.setattr(mem_mod, "chat_complete", fake_chat_complete)
+    distiller = make_llm_how_distiller({"provider": "p", "api_key": "k", "model": "m", "base_url": None})
+    assert await distiller("<run log>") == [("pitfall", "Search snippets truncate tables.")]
+
+
+@pytest.mark.asyncio
+async def test_llm_distiller_empty_array_is_normal(monkeypatch):
+    from app.agents.subagent_memory import make_llm_how_distiller
+
+    async def fake_chat_complete(**kwargs):
+        return _llm_response("[]")
+
+    monkeypatch.setattr(mem_mod, "chat_complete", fake_chat_complete)
+    distiller = make_llm_how_distiller({"provider": "p", "api_key": "k", "model": "m", "base_url": None})
+    assert await distiller("<run log>") == []
+
+
+@pytest.mark.asyncio
+async def test_llm_distiller_fails_soft_on_garbage(monkeypatch):
+    # Distillation is a bonus path: an unusable model response must not break
+    # the spawn result — log and return no lessons.
+    from app.agents.subagent_memory import make_llm_how_distiller
+
+    async def fake_chat_complete(**kwargs):
+        return _llm_response("I refuse to answer in JSON")
+
+    monkeypatch.setattr(mem_mod, "chat_complete", fake_chat_complete)
+    distiller = make_llm_how_distiller({"provider": "p", "api_key": "k", "model": "m", "base_url": None})
+    assert await distiller("<run log>") == []
 
 
 def test_record_how_real_gate_smoke(tmp_path):

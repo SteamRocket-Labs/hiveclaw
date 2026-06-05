@@ -45,7 +45,8 @@ logger = logging.getLogger(__name__)
 # Dependency-injection seam for tests (mirrors ``RuntimeResearchWorker.invoke``).
 InvokeAgent = Callable[[AgentInvocationRequest], Awaitable[Any]]
 ModelResolver = Callable[[str], Awaitable[Any] | Any]
-MemoryDistiller = Callable[[str], list[tuple[str, str]]]
+# Sync (tests/pattern extractors) or async (the production LLM distiller).
+MemoryDistiller = Callable[[str], "list[tuple[str, str]] | Awaitable[list[tuple[str, str]]]"]
 
 # --- Built-in subagent types ------------------------------------------------
 SUBAGENT_TYPE_EXPLORER = "explorer"
@@ -492,14 +493,14 @@ def _build_subagent_run_log(job: SubagentJob, result: SubagentResult) -> str:
     )
 
 
-def _record_memory_from_result(ctx: SubagentSpawnContext, job: SubagentJob, result: SubagentResult) -> None:
+async def _record_memory_from_result(ctx: SubagentSpawnContext, job: SubagentJob, result: SubagentResult) -> None:
     spec = job.spec
     if not result.ok or not spec.has_own_memory or ctx.memory_store is None or ctx.memory_distiller is None:
         return
     try:
         from app.agents.subagent_memory import distill_and_record
 
-        distill_and_record(
+        await distill_and_record(
             ctx.memory_store,
             spec.name,
             _build_subagent_run_log(job, result),
@@ -719,7 +720,7 @@ async def _spawn_one(
         tokens_used=tokens_used,
         sources=captured_sources,
     )
-    _record_memory_from_result(ctx, job, subagent_result)
+    await _record_memory_from_result(ctx, job, subagent_result)
     return subagent_result
 
 

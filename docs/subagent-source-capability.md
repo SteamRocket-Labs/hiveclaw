@@ -473,6 +473,12 @@ DELETE /enterprise/subagents/{name}
 
 **Breaking**：存量定义.md 无 `description` 者 parse 拒绝（list 跳过 + warn，不空整表——同 CC failedFiles 语义）；配置面上线仅一天、存量≈0，用户知情拍板。证据：后端全量 **3804 passed**（新增 standalone 套件 `tests/runtime/test_standalone_prompt.py` 5 例：standalone 替换宿主身份/三 resolver 短路/控制组宿主路径不动）；前端 subagent 测试 6 passed / 我方文件 tsc 干净。
 
+### 13.2 记忆双修：堵父 T2 泄漏 + 接活蒸馏（同日第三轮，用户架构质疑实锤）
+
+用户质疑"自动蒸馏到底进哪边"→ 调查实锤**双错**：① `_record_memory_from_result` 要求 `ctx.memory_distiller` 但生产唯一入口（spawn 工具 handler）从不传 → 切口⑥的蒸馏管线从未在生产执行，记忆.md 只读不写；② `engine.py` RESPONSE_COMPLETE 只排 heartbeat → subagent 内部会话以父 agent_id 被提取进**父 T2**（t2_store 分桶 "subagent" 不在名单落 system 桶 0.55-0.85，比 autonomous 还高）+ persist_memory 同样不排 → 双重计入（结论本就经父主会话的 spawn 工具结果进 T2）+ 中间噪音淹结论。
+
+**修1（止血）**：engine 对 `source=="subagent"` 同时跳过 persist_memory 与 RESPONSE_COMPLETE（镜像 heartbeat 排除）；结论照常经父主会话进父 T2，零损失。测试 `tests/kernel/test_subagent_memory_isolation.py`（隔离用例 + web 控制组）。**修2（接活）**：`subagent_memory.py` 增 `DISTILL_HOW_SYSTEM_PROMPT`（How-not-What 铁律拼写进提示词：四类 craft、空数组是常态防熵增、禁 secrets、≤200 字符、语言跟随 run log；vendor-neutral 钉子测试）+ `llm_distill_how`/`make_llm_how_distiller`（chat_complete，fail-soft：坏响应 log+空列表，绝不破坏 spawn 结果）；`distill_and_record` 改 async（sync/async distiller 双兼容）；spawn handler 在 memory_store 存在时注入父模型 distiller（测试钉死注入非 None）。每条 lesson 仍逐条过 write gate（PL4 拒/敏感分级原样）。证据：后端全量 **3825 passed**（隔离 2 + 蒸馏 5 + 注入 1 新增）。
+
 ### 13.1 AI 生成创建流（CC `/agents` "Generate" 方法移植，vendor-neutral —— 同日第二轮）
 
 格式对齐后用户追问创建流程：CC `/agents` 向导的主路径是 **MethodStep "Generate"** —— 一句话描述 → `generateAgent.ts` 的 agent-architect 提示词 → LLM 产出 `{identifier, whenToUse, systemPrompt}` → 逐步确认 → 写盘；Hive 此前只有裸 md 编辑器（= CC 的 Manual 次路径），对企业非技术用户不可用且属 L1 违例（意图→定义的翻译是智能步骤却只给机械路径）。**用户拍板补齐 + L3 中立化约束：UI 与提示词一律 "AI 生成"，不得出现 Claude 或任何 vendor/模型名。**

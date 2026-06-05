@@ -2255,7 +2255,15 @@ class AgentKernel:
 
                     if not response.tool_calls:
                         final_content = response.content or "[LLM returned empty content]"
-                        if request.agent_id and runtime_config.tenant_id:
+                        # Subagent runs execute under the parent's agent_id but are
+                        # clean specialists (standalone prompt): their INTERNAL
+                        # transcript is not the parent's behavior. The conclusion
+                        # reaches the parent's memory through the parent's own main
+                        # session (the spawn tool result) — persisting/extracting the
+                        # subagent session too would double-count it as tool noise.
+                        _session_source = request.session_context.source if request.session_context else "runtime"
+                        _memory_isolated = _session_source == "subagent"
+                        if request.agent_id and runtime_config.tenant_id and not _memory_isolated:
                             try:
                                 await _maybe_await(
                                     self._deps.persist_memory(
@@ -2273,8 +2281,9 @@ class AgentKernel:
                             await _maybe_await(self._deps.record_token_usage(request.agent_id, accumulated_tokens))
 
                         # ── RESPONSE_COMPLETE hook: fire-and-forget extraction trigger ──
-                        _session_source = request.session_context.source if request.session_context else "runtime"
-                        if _session_source != "heartbeat":
+                        # (skipped for heartbeat — SOP-driven distiller — and for
+                        # subagent internals, per the isolation note above)
+                        if _session_source != "heartbeat" and not _memory_isolated:
                             try:
                                 from app.runtime.hooks import HookEvent, emit_hook
 

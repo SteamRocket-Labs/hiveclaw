@@ -32,7 +32,7 @@ from app.agents.subagent_definition import (
     resolve_subagent_definition,
     validate_subagent_name,
 )
-from app.agents.subagent_memory import memory_store_for_agent, memory_store_for_tenant
+from app.agents.subagent_memory import make_llm_how_distiller, memory_store_for_agent, memory_store_for_tenant
 from app.database import async_session
 from app.models.agent import Agent
 from app.models.llm import LLMModel
@@ -245,6 +245,18 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
         memory_store = memory_store_for_agent(agent_id)
     else:
         memory_store = memory_store_for_tenant(tenant_id) if tenant_id is not None else None
+    # Cut ⑥ live wire: LLM How-distillation on the parent's model. Without a
+    # distiller the run ends with no writeback and 记忆.md stays read-only.
+    memory_distiller = None
+    if memory_store is not None:
+        memory_distiller = make_llm_how_distiller(
+            {
+                "provider": model.provider,
+                "api_key": model.api_key,
+                "model": model.model,
+                "base_url": getattr(model, "base_url", None),
+            }
+        )
     ctx = SubagentSpawnContext(
         parent_agent_id=agent_id,
         parent_user_id=request.context.user_id,
@@ -254,6 +266,7 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
         tenant_id=tenant_id,
         model_resolver=(lambda model_name: _resolve_model_override(model_name, tenant_id)) if tenant_id else None,
         memory_store=memory_store,
+        memory_distiller=memory_distiller,
         parent_session_id=request.context.session_id,
     )
 

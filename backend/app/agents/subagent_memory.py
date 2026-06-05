@@ -18,13 +18,16 @@ follow-up (kept out of this cut so the governed-write invariant lands first).
 
 from __future__ import annotations
 
+import inspect
+import json
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from app.agents.subagent_definition import _tenant_subagent_root, validate_subagent_name
 from app.memory.write_gate import prepare_memory_write
+from app.services.llm_client import chat_complete
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +41,10 @@ SUBAGENT_HOW_CATEGORIES = (
     "pointer_map",
 )
 
-# A distiller turns a run log into [(how_category, how_text), ...]. Injected by the
-# daemon (LLM or pattern) so this module stays testable and IO-free.
-HowDistiller = Callable[[str], list[tuple[str, str]]]
+# A distiller turns a run log into [(how_category, how_text), ...]. Injected by
+# the spawn path / daemon (LLM or pattern, sync or async) so this module stays
+# testable and IO-free by default.
+HowDistiller = Callable[[str], "list[tuple[str, str]] | Awaitable[list[tuple[str, str]]]"]
 
 
 @dataclass(slots=True)
@@ -106,7 +110,7 @@ class SubagentMemoryStore:
         return f"\n- [{category}][s={sensitivity}][id={entry_id}] {content}\n"
 
 
-def distill_and_record(
+async def distill_and_record(
     store: SubagentMemoryStore,
     spec_name: str,
     run_log: str,
@@ -115,12 +119,88 @@ def distill_and_record(
 ) -> list[HowWriteResult]:
     """One-layer evolution: distill How from a run log, record each via the gate.
 
-    ``distiller`` is injected (the daemon supplies the LLM/pattern extractor). This
-    is the single ``task → distill → governed write-back`` layer — no T3/soul/dream.
-    Periodic T0 scanning + scheduling is operational wiring on top of this.
+    ``distiller`` is injected (the spawn path supplies the LLM distiller; tests
+    and daemons may supply sync pattern extractors). This is the single
+    ``task → distill → governed write-back`` layer — no T3/soul/dream.
     """
 
-    return [store.record_how(spec_name, how_text, category=category) for category, how_text in distiller(run_log)]
+    raw = distiller(run_log)
+    lessons: list[tuple[str, str]] = await raw if inspect.isawaitable(raw) else raw
+    return [store.record_how(spec_name, how_text, category=category) for category, how_text in lessons]
+
+
+# ── LLM How distiller (production spawn wiring) ────────────────────────────────
+
+# Vendor-neutral by product law (L3 model equality) — pinned by test.
+DISTILL_HOW_SYSTEM_PROMPT = """\
+You distill reusable CRAFT from a subagent's run log — how it should work next time, never what it learned about the world.
+
+Hard rules:
+- HOW, not WHAT: domain facts, findings, and conclusions belong to the caller's report, NOT here. Record only durable improvements to the subagent's own working method.
+- Most runs teach nothing durable. An empty list is the normal result — record a lesson ONLY when the run revealed something that would change how the subagent works next time.
+- Never record secrets, credentials, or personal data.
+- Each lesson is one self-contained sentence, at most 200 characters, written in the same language as the run log.
+
+Categories (choose exactly one per lesson):
+- "source_calibration" — which sources/tools proved reliable or unreliable for which purpose
+- "judgment_calibration" — where the subagent's confidence was miscalibrated and how to adjust
+- "pitfall" — a concrete trap in this kind of task and how to avoid it
+- "pointer_map" — where relevant things live (paths, structures, entry points) that took effort to find
+
+Return ONLY a JSON array, no other text: [{"category": "...", "lesson": "..."}, ...] — or [] when nothing durable was learned.
+"""
+
+
+async def llm_distill_how(run_log: str, *, model_config: dict) -> list[tuple[str, str]]:
+    """LLM-distill How-craft lessons from a run log.
+
+    Fail-soft by design: distillation is a bonus path layered on a completed
+    run — an unusable model response logs a warning and yields no lessons, it
+    never breaks the spawn result. The governed write gate still judges every
+    lesson downstream (record_how).
+    """
+
+    try:
+        response = await chat_complete(
+            provider=model_config["provider"],
+            api_key=model_config["api_key"],
+            model=model_config["model"],
+            base_url=model_config.get("base_url"),
+            messages=[
+                {"role": "system", "content": DISTILL_HOW_SYSTEM_PROMPT},
+                {"role": "user", "content": run_log},
+            ],
+            temperature=0.2,
+            max_tokens=1500,
+            timeout=45.0,
+        )
+        content = str(response.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
+        if content.startswith("```"):
+            content = content.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        parsed = json.loads(content)
+        if not isinstance(parsed, list):
+            raise ValueError("distiller response must be a JSON array")
+        lessons: list[tuple[str, str]] = []
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            category = str(item.get("category") or "").strip()
+            lesson = str(item.get("lesson") or "").strip()
+            if category and lesson:
+                lessons.append((category, lesson))
+        return lessons
+    except Exception as exc:
+        logger.warning("[SubagentMemory] LLM How distillation skipped (model=%s): %s", model_config.get("model"), exc)
+        return []
+
+
+def make_llm_how_distiller(model_config: dict) -> Callable[[str], Awaitable[list[tuple[str, str]]]]:
+    """Bind a model config into an async HowDistiller for the spawn context."""
+
+    async def _distill(run_log: str) -> list[tuple[str, str]]:
+        return await llm_distill_how(run_log, model_config=model_config)
+
+    return _distill
 
 
 def memory_store_for_tenant(tenant_id: object, *, agent_data_dir: Path | str | None = None) -> SubagentMemoryStore:

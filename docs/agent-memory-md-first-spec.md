@@ -1183,12 +1183,43 @@ Evidence:
 
 ### P6: Navigation And Access Telemetry
 
+**Status: ✅ DONE (2026-06-04).**
+
 Acceptance:
 
 - `memory/INDEX.md` or manifest has consumer in prompt assembly.
 - Entry-level `recall_count` and `last_recalled_at` are updated.
 - Heat drives navigation order and retirement candidates.
 - Activated memory includes activation reasons.
+
+Evidence:
+
+- Manifest consumer: new `prompt_sections/memory_navigation.py` renders the
+  §8 navigation table (id / file / category / heat / recall_count /
+  last_recalled / preview + `load_memory(ids=[...])` instruction) from
+  `build_t3_entry_manifest()`; wired through `build_runtime_prompt` →
+  `build_dynamic_prompt_suffix(memory_navigation=...)` as its OWN section
+  (never inside soul — §8 boundary).
+- Recall telemetry: per-entry counters were already wired end-to-end
+  (engine field names `access_count` / `last_accessed`, stamped by the
+  write gate and bumped on every activation by
+  `retriever._apply_activation` → `access_log.bump_access`); the
+  navigation/read layer exposes them under the spec names recall_count /
+  last_recalled.
+- Heat: `md_store.compute_entry_heat()` (access_count + recency bonus —
+  engineering score per §1) orders the navigation table descending and
+  ranks `md_store.list_retirement_candidates()` ascending (excludes
+  promoted entries and preservation-flag matches).
+- Retirement evidence reaches the Reconsolidator: dream's consolidation
+  prompt now carries a `<low_heat_retirement_candidates>` block (mechanical
+  ranking, LLM decision, preservation flags excluded mechanically).
+- Activation reasons: already rendered into the prompt as `[why=...]` by
+  `assembler._activation_suffix` from `activation_reasons` metadata
+  (pre-existing; verified in the audit).
+- Tests: `backend/tests/memory/test_navigation_telemetry.py` (7 — heat
+  ordering, navigation rendering/ordering/empty, dynamic-suffix consumer,
+  retirement ranking + protection, dream prompt block). Full backend 3691
+  passed.
 
 ### P7: Knowledge Read Model API
 

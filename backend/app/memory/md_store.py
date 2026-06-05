@@ -301,6 +301,72 @@ def append_t3_entry(
     return path
 
 
+def compute_entry_heat(metadata: dict[str, str]) -> float:
+    """Heat = recall pressure for navigation order and retirement (spec §12 P6).
+
+    Engineering score, not neuroscience truth: access_count plus a recency
+    bonus from last_accessed. The sidecar fields are written by
+    `access_log.bump_access` on every prompt activation.
+    """
+    try:
+        count = max(0, int(metadata.get("access_count", "0")))
+    except (TypeError, ValueError):
+        count = 0
+
+    recency_bonus = 0.0
+    raw_ts = (metadata.get("last_accessed") or "").strip()
+    if raw_ts and raw_ts != "never":
+        from app.memory.types import parse_utc_timestamp
+
+        ts = parse_utc_timestamp(raw_ts)
+        if ts is not None:
+            age_days = max(0.0, (datetime.now(timezone.utc) - ts).total_seconds() / 86400)
+            if age_days <= 7:
+                recency_bonus = 2.0
+            elif age_days <= 30:
+                recency_bonus = 1.0
+    return round(count + recency_bonus, 2)
+
+
+def list_retirement_candidates(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    *,
+    limit: int = 10,
+    protected_markers: list[str] | None = None,
+) -> list[dict]:
+    """Lowest-heat active entries — the decay-lane retirement shortlist.
+
+    Mechanical ranking only: the Reconsolidator (dream) makes the semantic
+    retire/keep decision. Entries matching `protected_markers` (preservation
+    flags) and already-promoted entries are excluded.
+    """
+    markers = [m for m in (protected_markers or []) if m]
+    ranked: list[tuple[float, str, dict]] = []
+    for entry in build_t3_entry_manifest(data_root, agent_id):
+        if entry.metadata.get("promoted_to"):
+            continue
+        if markers and any(marker in entry.content for marker in markers):
+            continue
+        heat = compute_entry_heat(entry.metadata)
+        ranked.append(
+            (
+                heat,
+                entry.timestamp or "",
+                {
+                    "entry_id": entry.entry_id,
+                    "content": entry.content,
+                    "filename": entry.filename,
+                    "category": entry.category,
+                    "timestamp": entry.timestamp,
+                    "heat": heat,
+                },
+            )
+        )
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return [payload for _heat, _ts, payload in ranked[:limit]]
+
+
 def mark_t3_entry_promoted(
     data_root: Path,
     agent_id: uuid.UUID,

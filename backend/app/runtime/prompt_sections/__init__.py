@@ -27,6 +27,7 @@ from .executing_actions import build_executing_actions_section
 from .identity import build_identity_section
 from .knowledge import build_knowledge_section
 from .memory import build_memory_section
+from .memory_navigation import build_memory_navigation_section
 from .scenario import build_scenario_section
 from .relationships import build_relationships_section
 from .skills_catalog import build_skills_catalog_section
@@ -48,6 +49,7 @@ __all__ = [
     "build_relationships_section",
     # Dynamic suffix
     "build_memory_section",
+    "build_memory_navigation_section",
     "build_scenario_section",
     "build_active_tool_groups_section",
     "build_knowledge_section",

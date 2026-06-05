@@ -333,11 +333,15 @@ def _build_dream_consolidation_user_prompt(
     agent_name: str,
     soul_excerpt: str,
     t3_files: dict[str, str],
+    retirement_candidates: list[dict] | None = None,
 ) -> str:
     """Format the dream LLM user prompt with soul.md + all T3 files.
 
     Full fidelity when soul + T3 fit `_DREAM_INPUT_TOTAL_BUDGET_CHARS`;
     over budget, per-section caps engage with observable truncation markers.
+    `retirement_candidates` (P6: lowest-heat entries from the access
+    telemetry) are surfaced so the Reconsolidator can consider decay-lane
+    retirement — the LLM decides, the heat ranking is only evidence.
     """
     soul = soul_excerpt.strip()
     bodies = {fname: body.strip() for fname, body in t3_files.items()}
@@ -360,6 +364,20 @@ def _build_dream_consolidation_user_prompt(
         soul_excerpt=soul or "(empty)",
         t3_block=t3_block,
     )
+    if retirement_candidates:
+        rows = "\n".join(
+            f"- [{c.get('entry_id', '?')}] heat={c.get('heat', 0)} ({c.get('filename', '?')}) {c.get('content', '')}"
+            for c in retirement_candidates[:10]
+        )
+        base_prompt += (
+            "\n\n<low_heat_retirement_candidates>\n"
+            "Access telemetry ranks these entries lowest-heat (rarely recalled). They are\n"
+            "RETIREMENT EVIDENCE, not commands: consider them for t3_merges (when redundant)\n"
+            "or leave them alone when still valuable. Never retire safety constraints or\n"
+            "foundational principles just because recall is low.\n"
+            f"{rows}\n"
+            "</low_heat_retirement_candidates>"
+        )
     return _load_dream_consolidator_instruction() + "\n\n" + base_prompt
 
 
@@ -440,7 +458,30 @@ async def _dream_llm_consolidate(
 
     soul_path = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "soul.md"
     soul_excerpt = soul_path.read_text(encoding="utf-8", errors="replace") if soul_path.exists() else ""
-    user_prompt = _build_dream_consolidation_user_prompt(agent_name, soul_excerpt, t3_files)
+
+    # P6: heat-ranked retirement candidates (decay lane evidence). Preserved
+    # entries are excluded mechanically; the Reconsolidator decides.
+    retirement_candidates: list[dict] = []
+    try:
+        from app.memory.md_store import list_retirement_candidates
+
+        protected_markers = [
+            str(flag.get("content", "")).strip()
+            for flag in _read_preservation_flags(agent_id)
+            if str(flag.get("content", "")).strip()
+        ]
+        retirement_candidates = list_retirement_candidates(
+            Path(get_settings().AGENT_DATA_DIR),
+            agent_id,
+            limit=10,
+            protected_markers=protected_markers,
+        )
+    except Exception as exc:  # noqa: BLE001 — telemetry evidence is optional, never blocks dream
+        logger.debug("[Dream] retirement candidate ranking failed for %s: %s", agent_id, exc)
+
+    user_prompt = _build_dream_consolidation_user_prompt(
+        agent_name, soul_excerpt, t3_files, retirement_candidates=retirement_candidates
+    )
 
     # P1-W3-10 — autonomous LLM call surfaces in metrics so operators
     # can chart dream call rate / success ratio independently from

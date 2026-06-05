@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import inspect
 import re
 import uuid
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from app.memory.metrics import record_frozen_prefix_metering
@@ -387,6 +388,7 @@ def build_dynamic_prompt_suffix(
     budget_profile: ContextBudget | None = None,
     latest_user_query: str = "",
     memory_snapshot: str = "",
+    memory_navigation: str = "",
     user_name: str = "",
     channel: str = "",
     agent_name: str = "",
@@ -394,8 +396,8 @@ def build_dynamic_prompt_suffix(
 ) -> str:
     """Build the per-round dynamic suffix.
 
-    Contains: § Memory, active runtime tool groups, knowledge retrieval results,
-    § Environment, and request-specific suffix.
+    Contains: § Memory, § Memory Navigation, active runtime tool groups,
+    knowledge retrieval results, § Environment, and request-specific suffix.
     These CAN change between rounds within the same session.
     """
     from app.runtime.prompt_sections import (
@@ -419,6 +421,14 @@ def build_dynamic_prompt_suffix(
     if memory_snapshot:
         snapshot_cap = max(int(memory_budget_chars * _MEMORY_SNAPSHOT_BUDGET_RATIO), 1500)
         parts.append(build_memory_section(memory_snapshot, budget_chars=snapshot_cap))
+
+    # § Memory Navigation (spec §8 / §12 P6) — heat-ordered entry index as
+    # its own section (never inside soul); pairs with load_memory for
+    # progressive disclosure.
+    if memory_navigation:
+        navigation_block = _trim_block(memory_navigation, budget_chars=4000)
+        if navigation_block:
+            parts.append(navigation_block)
 
     if session_learning_projection:
         learning_block = _trim_block(session_learning_projection, budget_chars=1200)
@@ -690,9 +700,21 @@ async def build_runtime_prompt(
     if runtime_context and runtime_context.session.active_tool_groups:
         active_tool_groups = runtime_context.session.active_tool_groups
 
+    # § Memory Navigation (spec §12 P6) — heat-ordered manifest consumer.
+    memory_navigation = ""
+    if agent_id:
+        try:
+            from app.config import get_settings
+            from app.runtime.prompt_sections import build_memory_navigation_section
+
+            memory_navigation = build_memory_navigation_section(Path(get_settings().AGENT_DATA_DIR), agent_id)
+        except Exception:
+            memory_navigation = ""
+
     dynamic = build_dynamic_prompt_suffix(
         active_tool_groups=active_tool_groups,
         memory_snapshot=memory_context,
+        memory_navigation=memory_navigation,
         continuity_context=continuity_context,
         runtime_metadata_context=runtime_metadata_context,
         retrieval_context=retrieval,

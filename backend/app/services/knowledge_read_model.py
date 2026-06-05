@@ -186,6 +186,17 @@ def get_knowledge_page(data_root: Path, agent_id: uuid.UUID, page_id: str) -> di
     if not path.exists():
         return None
     text = _read_text(path)
+
+    # P9 wikilink navigation: outgoing/incoming edges from the derived
+    # relation graph (rebuilt from Markdown — never persisted).
+    links: dict = {"outgoing": [], "incoming": []}
+    try:
+        from app.memory.relation_graph import build_relation_graph
+
+        links = build_relation_graph(data_root, agent_id).links_for(page_id)
+    except Exception as exc:  # noqa: BLE001 — navigation is an accelerator, never blocks the page read
+        logger.debug("[KnowledgeReadModel] relation graph failed for %s: %s", agent_id, exc)
+
     return {
         "id": page_id,
         "kind": "wiki" if subdir == "wiki" else "scene",
@@ -193,6 +204,7 @@ def get_knowledge_page(data_root: Path, agent_id: uuid.UUID, page_id: str) -> di
         "frontmatter": _parse_frontmatter(text),
         "markdown": text,
         "updatedAt": _file_mtime_iso(path),
+        "links": links,
     }
 
 

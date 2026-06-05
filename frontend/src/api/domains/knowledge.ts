@@ -48,6 +48,14 @@ export interface KnowledgePageSummary {
   updatedAt: string;
 }
 
+export interface KnowledgePageLink {
+  page_id: string;
+  title: string;
+  rel_type: string;
+  exists: boolean;
+  status: string;
+}
+
 export interface KnowledgePageDetail {
   id: string;
   kind: string;
@@ -55,6 +63,7 @@ export interface KnowledgePageDetail {
   frontmatter: Record<string, string>;
   markdown: string;
   updatedAt: string;
+  links: { outgoing: KnowledgePageLink[]; incoming: KnowledgePageLink[] };
 }
 
 export interface KnowledgeEntry {

@@ -200,8 +200,38 @@ export default function AgentKnowledgeSection({ agentId, canEdit, onNavigateTab 
             )}
           </div>
           {selectedPageId && pageQuery.data && (
-            <div style={cardStyle}>
-              <MarkdownRenderer content={pageQuery.data.markdown} />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <div style={cardStyle}>
+                <MarkdownRenderer content={pageQuery.data.markdown} />
+              </div>
+              {(pageQuery.data.links?.outgoing?.length > 0 || pageQuery.data.links?.incoming?.length > 0) && (
+                <div style={cardStyle}>
+                  <h4 style={{ marginBottom: '8px' }}>🔗 {t('agent.knowledge.linkedPages', 'Linked pages')}</h4>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                    {[...(pageQuery.data.links?.outgoing ?? []), ...(pageQuery.data.links?.incoming ?? [])].map(
+                      (link, index) =>
+                        link.exists ? (
+                          <button
+                            key={`${link.page_id}-${index}`}
+                            className="btn btn-sm"
+                            onClick={() => setSelectedPageId(link.page_id)}
+                          >
+                            {link.rel_type} → {link.title}
+                          </button>
+                        ) : (
+                          <span
+                            key={`${link.page_id}-${index}`}
+                            className="badge"
+                            style={{ color: 'var(--text-tertiary)' }}
+                            title={t('agent.knowledge.pageNotCreated', 'Page not created yet')}
+                          >
+                            {link.rel_type} → {link.title} ✦
+                          </span>
+                        ),
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

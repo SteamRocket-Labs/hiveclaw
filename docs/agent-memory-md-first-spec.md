@@ -903,13 +903,15 @@ type AgentKnowledgeOverview = {
 
 ## 12. Implementation Roadmap
 
-> **Status (2026-06-04): P0–P8 ALL IMPLEMENTED** — one commit per phase
+> **Status (2026-06-05): P0–P9 ALL IMPLEMENTED** — one commit per phase
 > (`60502154` P0 → `28d31666` P1 → `e3fa4480` P2 → `18cf3f5b` P3 →
 > `a2bfdffc` P4 → `8ba6feed` P5 → `1023818f` P6 → `acd661a0` P7 →
-> `a1478e6d` P8), each with TDD red→green evidence recorded under its
-> phase below. Final state: backend 3699 passed / ruff clean, frontend
-> 154 passed / tsc clean / production build passed. P9 remains deferred
-> by design (§13: KG/PPR is a future-facing experiment).
+> `a1478e6d` P8 → P9 in its own commit), each with TDD red→green evidence
+> recorded under its phase below. Final state: backend 3712 passed / ruff
+> clean, frontend 154 passed / tsc clean / production build passed. P9 was
+> originally deferred (§13) and explicitly green-lit by the owner on
+> 2026-06-05; the retrieval benchmark settled the experiment (PPR wins
+> multi-hop 1.0 vs 0.333 with no direct-hit regression).
 
 ### P0: Freeze Terms And Prompt Contracts
 
@@ -1301,12 +1303,57 @@ Evidence:
 
 ### P9: Advanced Graph / KG / PPR
 
+**Status: ✅ DONE (2026-06-05; owner explicitly lifted the §13 deferral).**
+
 Only after P0-P8:
 
 - Derived relation graph from Markdown.
 - `[[wikilink]]` graph navigation.
 - Optional KG + PPR retrieval experiment.
 - Memory eval benchmark for retrieval quality and retirement safety.
+
+Evidence:
+
+- Design judgments (pinned before construction): the KG **is** the wikilink
+  network the P5 curators (LLM) already author — no second LLM
+  triple-extraction pipeline, so no second truth source (§0);
+  `relation_graph.py` does deterministic syntax parsing only (§3.1
+  `## Relations` typed edges + inline `[[wikilinks]]`, forward references
+  kept as exists=False nodes); the graph is rebuilt from Markdown on every
+  call — zero persisted derived state (pinned by test); no standalone
+  `/graph` API endpoint (would be an orphan) — navigation ships as two real
+  consumers instead.
+- `relation_graph.py`: `build_relation_graph()` over `memory/wiki` +
+  `memory/scenes`, `links_for()` navigation rows, and
+  `personalized_pagerank()` — pure-Python power iteration, dangling-mass
+  restart, zero new dependencies.
+- `wiki_retrieval.py`: `search_wiki_pages(method="bm25"|"ppr")` — BM25
+  (reusing md_store's tokenizer/scorer) seeds the PPR personalization
+  vector; blended ranking keeps direct hits ahead of equally-connected
+  neighbors; only `status=active` pages retrievable (§4.9 de-index);
+  every hit carries `source_ref` back to its Markdown path (§1.3).
+- `retrieval_eval.py` — the benchmark decides the default, not taste:
+  fixed 6-page ops-wiki corpus, 7 cases (4 direct + 3 multi-hop).
+  **Measured: PPR recall@3 = 1.0 / MRR 0.738 vs BM25 0.714 / 0.619;
+  multi-hop slice PPR 1.0 vs BM25 0.333; direct slice both rank@1.**
+  → `DEFAULT_WIKI_METHOD = "ppr"`, and the eval pins
+  `multi_hop.ppr_recall >= bm25_recall` so a regression flips the test.
+  `evaluate_retirement_safety()`: 5 checks all passing — protected /
+  promoted entries never become candidates, cold ranks before hot,
+  cap-eviction archives every removed line (lifecycle `archived` records),
+  protected + hot entries survive the pass.
+- Consumers (no orphans): `search_memory` tool appends a "Knowledge Pages"
+  section (PPR-ranked, `read_file` hint to the Markdown source);
+  `get_knowledge_page` read model returns `links.outgoing/incoming`; the
+  frontend Knowledge → Pages detail renders clickable linked-page chips
+  (forward references shown as not-yet-created, unclickable).
+- Tests: `backend/tests/memory/test_graph_ppr_eval.py` (13 — typed/inline
+  edge parsing, forward references, zero-persistence pin, links_for both
+  directions, PPR multi-hop + empty-input, BM25 direct hit, PPR reaches a
+  page BM25 provably cannot, active-only filter, empty corpus, retrieval
+  eval report shape + multi-hop dominance, retirement safety, page-detail
+  links). Full backend 3712 passed; frontend 154 passed / tsc clean /
+  build passed.
 
 ## 13. Immediate Decisions
 
@@ -1324,7 +1371,8 @@ Adopt now:
 Defer:
 
 1. Merging `knowledge.md` and `strategies.md`.
-2. Full KG/PPR retrieval.
+2. ~~Full KG/PPR retrieval.~~ — deferral lifted by the owner 2026-06-05;
+   implemented as P9 (wikilink-network KG + PPR, benchmark-validated).
 3. Automatic skill/workflow approval.
 4. Physical deletion of retired memory.
 5. Frontend visual redesign before read model exists.

@@ -1745,6 +1745,18 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
             except Exception as _distill_err:
                 logger.warning("[Heartbeat] Skill distillation setup failed for {}: {}", agent_id, _distill_err)
 
+            # Scene/wiki curation (spec §12 P5): consolidate new knowledge/
+            # strategy entries into scene narratives and wiki concept pages.
+            # Cursor-gated, candidate-first, never breaks the tick.
+            try:
+                from app.services.memory_curation import run_scene_wiki_curation_tick
+
+                curation_summary = await run_scene_wiki_curation_tick(agent_id, agent.tenant_id)
+                if curation_summary.get("status") == "ran":
+                    logger.info("[Heartbeat] Scene/wiki curation for {}: {}", agent_id, curation_summary)
+            except Exception as _curation_err:
+                logger.warning("[Heartbeat] Scene/wiki curation failed for {}: {}", agent_id, _curation_err)
+
             # Count heartbeat as a session for auto-dream gate so agents with
             # low user-chat but high heartbeat activity still trigger distillation.
             try:

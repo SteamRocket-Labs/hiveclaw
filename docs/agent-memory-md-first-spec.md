@@ -1132,6 +1132,8 @@ Evidence:
 
 ### P5: Scene / Wiki Curator MVP
 
+**Status: ✅ DONE (2026-06-04).**
+
 This is not the full graph system. It is the first concrete home for the lifecycle stages named in section 4.
 
 Files:
@@ -1147,6 +1149,37 @@ Acceptance:
 - Both curators emit candidates first; governed write APIs apply accepted patches.
 - Ambiguous scene merge or wiki claim conflict becomes a held candidate with audit reason.
 - No graph database, KG, or PPR is required for this phase.
+
+Evidence:
+
+- `scene_curator.py`: `curate_scene(atoms, llm)` → `ScenePatchCandidate`
+  (proposed/held). LLM (injected async callable) owns update-vs-create-vs-
+  hold with anti-proliferation prompt (prefer update, capacity pressure,
+  evolution trail via `## Changes`); mechanical layer supplies similar-scene
+  retrieval (jaccard), capacity signal, frontmatter/schema validation.
+  `apply_scene_patch` is the governed write under `memory/scenes/` with a
+  privacy gate (PL4 patch refused, never written).
+- `wiki_curator.py`: `curate_wiki_page(concept, evidence, llm)` →
+  `WikiPatchCandidate`; six-section page contract (Current Claim / Scope /
+  Evidence / Contradictions / Changes / Retrieval Tags) validated
+  mechanically; claim-safety prompt (weak contradiction → Contradictions
+  section, never silent claim rewrite) + confidence floor 0.5 holds weak
+  claim upserts. `apply_wiki_patch` governed write under `memory/wiki/`.
+- Every hold/refusal/rejection writes `memory/distillation_audit.jsonl`
+  (new `distillation_audit.py` sidecar — spec §3): no LLM, invalid output,
+  explicit LLM hold, missing sections, low confidence, privacy rejection.
+- Live entry point (no orphan): `services/memory_curation.py`
+  `run_scene_wiki_curation_tick` wired into the heartbeat tick — cursor-
+  gated (`memory/.curation_cursor.json`, ≥3 new knowledge/strategy entries,
+  batch 8), tenant summary-model wrapped as the injected LLM, dominant
+  `concept` drives the wiki pass, never breaks the tick.
+- Raw writes to `memory/scenes/` and `memory/wiki/` were already refused at
+  the workspace layer by P2's `memory/` guard — curator apply functions are
+  the only write path.
+- Tests: `backend/tests/memory/test_scene_wiki_curators.py` (16 — create/
+  update/hold paths, audit records, schema holds, confidence floor, governed
+  apply incl. PL4 rejection and held refusal, runtime tick skip/run/cursor/
+  never-raises). Full backend 3684 passed.
 
 ### P6: Navigation And Access Telemetry
 

@@ -21,10 +21,19 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.memory.lifecycle_store import (
+    LifecycleStatus,
+    MemoryLifecycleStore,
+    lifecycle_path,
+)
 from app.memory.md_store import (
     MEMORY_DEDUP_THRESHOLD,
+    _stable_entry_id,
     append_t3_entry,
     find_similar_t3_entries,
+    memory_dir,
+    parse_entry_record,
+    rebuild_index,
     t3_spec_for_category,
 )
 from app.memory.types import CONTAINER_CANDIDATES, MEMORY_CATEGORIES
@@ -33,6 +42,9 @@ from app.memory.write_gate import prepare_memory_write
 logger = logging.getLogger(__name__)
 
 _MAX_CONTENT_CHARS = 2000
+
+# Retirement reasons that record a SUPERSEDED edge; everything else archives.
+_SUPERSEDE_REASONS = frozenset({"superseded", "dedup_superseded", "contradiction_resolved"})
 
 
 @dataclass(slots=True)
@@ -155,3 +167,135 @@ async def append_t3_memory_candidate(
         reason=f"appended to memory/{spec['filename']} by {metadata['proposed_by']}",
         sensitivity=decision.sensitivity,
     )
+
+
+# ── Reversible retirement (spec §4.9 / §12 P3) ──
+#
+# Retirement de-indexes from active recall and archives in Markdown; it never
+# physically deletes evidence. Active T3 files stay clean so every reader
+# (retriever, manifest, prompt injection, hindsight) naturally sees only
+# active entries; memory/archive.md plus lifecycle.json hold the audit trail.
+
+
+def archive_t3_lines(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    *,
+    filename: str,
+    lines: list[str],
+    reason: str,
+    superseded_by: str = "",
+) -> int:
+    """Archive already-removed T3 lines into memory/archive.md + lifecycle.
+
+    Pure archival: callers own the active-file rewrite. Each line gets an
+    archive row (original date preserved) and a lifecycle retirement edge —
+    SUPERSEDED for merge/contradiction reasons, ARCHIVED for decay/cap.
+    Returns the number of lines archived.
+    """
+    cleaned = [line.strip() for line in lines if line and line.strip()]
+    if not cleaned:
+        return 0
+
+    mem_dir = memory_dir(data_root, agent_id)
+    mem_dir.mkdir(parents=True, exist_ok=True)
+    archive_path = mem_dir / "archive.md"
+    existing = (
+        archive_path.read_text(encoding="utf-8", errors="replace")
+        if archive_path.exists()
+        else "# Memory Archive\n\nRetired entries — de-indexed from active recall, preserved as evidence.\n\n"
+    )
+
+    normalized_reason = (reason or "archived").strip().lower() or "archived"
+    status = LifecycleStatus.SUPERSEDED if normalized_reason in _SUPERSEDE_REASONS else LifecycleStatus.ARCHIVED
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    store = MemoryLifecycleStore(lifecycle_path(data_root, agent_id))
+
+    rows: list[str] = []
+    for line in cleaned:
+        record = parse_entry_record(line)
+        if not record.content:
+            continue
+        entry_id = record.metadata.get("entry_id") or _stable_entry_id(filename, record.content)
+        meta_parts = [f"[from={filename}]", f"[reason={normalized_reason}]", f"[entry_id={entry_id}]"]
+        if record.timestamp:
+            meta_parts.append(f"[orig_date={record.timestamp}]")
+        if superseded_by:
+            meta_parts.append(f"[superseded_by={_sanitize_archive_meta(superseded_by)}]")
+        rows.append(f"- [{today}]{''.join(meta_parts)} {record.content}")
+
+        store.mark_retired(
+            entry_id,
+            status=status,
+            content=record.content,
+            superseded_by=_sanitize_archive_meta(superseded_by) if superseded_by else None,
+            metadata={"from": filename, "reason": normalized_reason, "retired_at": today},
+        )
+
+    if not rows:
+        return 0
+
+    updated = existing.rstrip() + "\n" + "\n".join(rows) + "\n"
+    archive_path.write_text(updated, encoding="utf-8")
+    return len(rows)
+
+
+def retire_t3_entries(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    *,
+    filename: str,
+    drops: list[str],
+    reason: str,
+    superseded_by: str = "",
+) -> int:
+    """Remove matching entry lines from an active T3 file and archive them.
+
+    ``drops`` use substring matching against entry lines (the dream decision
+    contract). Returns the number of entries retired. Rebuilds INDEX.md when
+    anything moved so de-indexing is immediate.
+    """
+    needles = [str(d).strip() for d in drops if str(d).strip()]
+    if not needles:
+        return 0
+
+    path = memory_dir(data_root, agent_id) / filename
+    if not path.exists():
+        return 0
+
+    # The canonical (kept) line often contains a drop needle as a substring
+    # — e.g. keep "...emoji in responses (3rd confirmation)" vs drop
+    # "...emoji in responses". Never retire the line the merge keeps.
+    keep_marker = parse_entry_record(superseded_by).content if superseded_by.strip() else ""
+
+    content = path.read_text(encoding="utf-8", errors="replace")
+    kept_lines: list[str] = []
+    dropped_lines: list[str] = []
+    for line in content.splitlines():
+        is_entry = line.strip().startswith("-")
+        if is_entry and keep_marker and keep_marker in line:
+            kept_lines.append(line)
+            continue
+        if is_entry and any(needle in line for needle in needles):
+            dropped_lines.append(line)
+            continue
+        kept_lines.append(line)
+
+    if not dropped_lines:
+        return 0
+
+    path.write_text("\n".join(kept_lines) + "\n", encoding="utf-8")
+    archived = archive_t3_lines(
+        data_root,
+        agent_id,
+        filename=filename,
+        lines=dropped_lines,
+        reason=reason,
+        superseded_by=superseded_by,
+    )
+    rebuild_index(data_root, agent_id)
+    return archived if archived else len(dropped_lines)
+
+
+def _sanitize_archive_meta(value: str) -> str:
+    return " ".join(str(value).replace("[", "(").replace("]", ")").split())[:160]

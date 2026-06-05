@@ -91,6 +91,37 @@ class MemoryLifecycleStore:
         self._flush()
         return replacement
 
+    def mark_retired(
+        self,
+        entry_id: str,
+        *,
+        status: LifecycleStatus,
+        content: str = "",
+        superseded_by: str | None = None,
+        metadata: dict[str, str] | None = None,
+    ) -> MemoryLifecycleEntry:
+        """Record a retirement edge (SUPERSEDED / ARCHIVED) for an entry.
+
+        Upserts: legacy MD lines that never got a lifecycle record on write
+        still get an auditable terminal record on retirement. Existing
+        entries keep their history and gain the new status + edge metadata.
+        """
+        if status not in (LifecycleStatus.SUPERSEDED, LifecycleStatus.ARCHIVED):
+            raise ValueError(f"mark_retired only accepts superseded/archived, got {status}")
+        entry = self._entries.get(entry_id)
+        if entry is None:
+            entry = MemoryLifecycleEntry(id=entry_id, content=content, status=status)
+            self._entries[entry.id] = entry
+        else:
+            entry.status = status
+        if superseded_by:
+            entry.superseded_by = superseded_by
+        if metadata:
+            entry.metadata.update({str(key): str(value) for key, value in metadata.items()})
+        entry.updated_at = datetime.now(UTC)
+        self._flush()
+        return entry
+
     def discard_expired(self, *, now: datetime | None = None) -> list[str]:
         current = now or datetime.now(UTC)
         discarded: list[str] = []

@@ -1050,6 +1050,8 @@ Evidence:
 
 ### P3: Dream Lifecycle Patch
 
+**Status: ✅ DONE (2026-06-04).**
+
 Change Dream from direct line deletion to lifecycle patch.
 
 Acceptance:
@@ -1058,6 +1060,32 @@ Acceptance:
 - Contradiction creates contradiction or supersession edges.
 - Cap cleanup archives / de-indexes entries instead of silent deletion.
 - Hindsight only syncs active entries.
+
+Evidence:
+
+- New retirement APIs in `t3_store.py`: `retire_t3_entries()` (remove from
+  active file → archive → rebuild index) and `archive_t3_lines()` (pure
+  archival for callers that own the active-file rewrite). Retired lines
+  land in `memory/archive.md` with `[from=][reason=][entry_id=][orig_date=]
+  [superseded_by=]` metadata — reversible, MD-first evidence, never
+  physical deletion.
+- `lifecycle_store.MemoryLifecycleStore.mark_retired()` upserts terminal
+  SUPERSEDED/ARCHIVED records (legacy lines without prior lifecycle rows
+  still get an auditable edge).
+- Dream `_apply_dream_decisions_unlocked`: t3_merges → supersede edges
+  (`superseded_by=keep`); t3_contradictions → `contradiction_resolved`
+  supersession toward the winning entry; direct line-deletion code removed
+  (no dual path). Fixed a latent bug: a drop needle that is a substring of
+  the kept canonical line no longer retires the keep line.
+- `_consolidate_t3_files`: dedup drops archive as `dedup_superseded`, cap
+  evictions archive as `cap_eviction`; preservation flags still sticky.
+- De-index is structural: `archive.md` is not in `T3_FILE_SPECS` /
+  `hindsight_sync._T3_FILES`, so manifest, INDEX.md, BM25 search, prompt
+  injection, and Hindsight all see only active entries (pinned by test).
+- Tests: `backend/tests/services/test_dream_lifecycle_patch.py` (5 —
+  merge edges, contradiction edges, archival completeness on consolidation,
+  archive out of active recall, hindsight active-files pin). Full backend
+  3661 passed.
 
 ### P4: Skill / Workflow Candidate Lane
 

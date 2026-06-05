@@ -675,66 +675,58 @@ def _apply_dream_decisions_unlocked(agent_id: uuid.UUID, decision: dict) -> dict
             continue
         report["soul_added"] += _upsert_soul_section(soul_path, section, entries)
 
-    # --- T3 merges: drop listed duplicates, keep the canonical line ---
-    mem_dir = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "memory"
+    # --- T3 merges: lifecycle patch — duplicates become superseded edges ---
+    # (spec §12 P3: merge never silently deletes; retired lines move to
+    # memory/archive.md and lifecycle.json records the supersession.)
+    from app.memory.t3_store import retire_t3_entries
+
+    data_root = Path(get_settings().AGENT_DATA_DIR)
     for merge in decision.get("t3_merges") or []:
         if not isinstance(merge, dict):
             continue
         fname = str(merge.get("file") or "").strip()
         if fname not in _T3_FILES:
             continue
-        fpath = mem_dir / fname
-        if not fpath.exists():
-            continue
         drops = [str(d).strip() for d in (merge.get("drop") or []) if d]
         if not drops:
             continue
-        content = fpath.read_text(encoding="utf-8", errors="replace")
-        new_lines: list[str] = []
-        dropped_any = False
-        for line in content.splitlines():
-            if any(drop in line for drop in drops) and line.strip().startswith("-"):
-                dropped_any = True
-                continue
-            new_lines.append(line)
-        if dropped_any:
-            fpath.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        retired = retire_t3_entries(
+            data_root,
+            agent_id,
+            filename=fname,
+            drops=drops,
+            reason="superseded",
+            superseded_by=str(merge.get("keep") or "").strip(),
+        )
+        if retired:
             report["t3_merges_applied"] += 1
 
-    # --- contradictions: apply resolution ---
+    # --- contradictions: supersession edge toward the winning entry ---
     for contra in decision.get("t3_contradictions") or []:
         if not isinstance(contra, dict):
             continue
         fname = str(contra.get("file") or "").strip()
         if fname not in _T3_FILES:
             continue
-        fpath = mem_dir / fname
-        if not fpath.exists():
-            continue
         resolution = str(contra.get("resolution") or "").strip()
         new_text = str(contra.get("new") or "").strip()
         old_text = str(contra.get("old") or "").strip()
-        to_drop: list[str] = []
         if resolution == "kept_new" and old_text:
-            to_drop = [old_text]
+            to_drop, winner = [old_text], new_text
         elif resolution == "kept_old" and new_text:
-            to_drop = [new_text]
-        elif resolution == "both":
-            to_drop = []
+            to_drop, winner = [new_text], old_text
         else:
+            # "both" keeps both lines; anything else is an invalid resolution.
             continue
-        if not to_drop:
-            continue
-        content = fpath.read_text(encoding="utf-8", errors="replace")
-        new_lines = []
-        resolved_any = False
-        for line in content.splitlines():
-            if any(drop in line for drop in to_drop) and line.strip().startswith("-"):
-                resolved_any = True
-                continue
-            new_lines.append(line)
-        if resolved_any:
-            fpath.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        retired = retire_t3_entries(
+            data_root,
+            agent_id,
+            filename=fname,
+            drops=to_drop,
+            reason="contradiction_resolved",
+            superseded_by=winner,
+        )
+        if retired:
             report["contradictions_resolved"] += 1
 
     # --- preservation flags: persist sidecar ---
@@ -824,9 +816,16 @@ def _consolidate_t3_files(agent_id: uuid.UUID) -> dict[str, int]:
 
     PR-10: respects preservation flags written by the dream LLM consolidator
     so foundational principles aren't silently evicted by size-based truncation.
+
+    P3 (spec §12): retirement is a lifecycle patch, never silent deletion —
+    near-duplicates archive as superseded, cap evictions archive as
+    cap_eviction; both land in memory/archive.md + lifecycle.json.
     """
+    from app.memory.t3_store import archive_t3_lines
+
     stats: dict[str, int] = {}
     t3_files = _read_all_t3(agent_id)
+    data_root = Path(get_settings().AGENT_DATA_DIR)
 
     preservation_flags = _read_preservation_flags(agent_id)
     # Group protected entries by filename for fast lookup.
@@ -854,16 +853,20 @@ def _consolidate_t3_files(agent_id: uuid.UUID) -> dict[str, int]:
         before = len(entry_lines)
         # Dedup (but don't let dedup kill a protected line if its near-dup came later)
         deduped = _programmatic_dedup(entry_lines)
+        dedup_dropped = [line for line in entry_lines if line not in deduped]
 
         # Cap: keep most recent (last N entries), but protected entries are sticky.
         protected_markers = protected_by_file.get(fname, [])
+        cap_evicted: list[str] = []
         if len(deduped) > _T3_MAX_ENTRIES_PER_FILE and protected_markers:
             protected_lines = [line for line in deduped if any(marker in line for marker in protected_markers)]
             non_protected = [line for line in deduped if not any(marker in line for marker in protected_markers)]
             # Keep all protected + last N-len(protected) non-protected.
             keep_non_protected = max(0, _T3_MAX_ENTRIES_PER_FILE - len(protected_lines))
-            deduped = protected_lines + non_protected[-keep_non_protected:]
+            cap_evicted = non_protected[:-keep_non_protected] if keep_non_protected else non_protected
+            deduped = protected_lines + (non_protected[-keep_non_protected:] if keep_non_protected else [])
         elif len(deduped) > _T3_MAX_ENTRIES_PER_FILE:
+            cap_evicted = deduped[:-_T3_MAX_ENTRIES_PER_FILE]
             deduped = deduped[-_T3_MAX_ENTRIES_PER_FILE:]
 
         after = len(deduped)
@@ -872,8 +875,14 @@ def _consolidate_t3_files(agent_id: uuid.UUID) -> dict[str, int]:
         if removed > 0:
             new_content = "\n".join(header_lines + deduped) + "\n"
             _write_t3_file(agent_id, fname, new_content)
+            if dedup_dropped:
+                archive_t3_lines(
+                    data_root, agent_id, filename=fname, lines=dedup_dropped, reason="dedup_superseded"
+                )
+            if cap_evicted:
+                archive_t3_lines(data_root, agent_id, filename=fname, lines=cap_evicted, reason="cap_eviction")
             logger.info(
-                "[Dream] T3 %s: %d → %d entries (%d removed, %d protected)",
+                "[Dream] T3 %s: %d → %d entries (%d retired to archive, %d protected)",
                 fname,
                 before,
                 after,

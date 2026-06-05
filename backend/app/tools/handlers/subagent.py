@@ -20,8 +20,13 @@ from typing import Any
 from sqlalchemy import select
 
 from app.agents.subagent import SubagentSpawnContext, SubagentSpec, spawn_subagent
-from app.agents.subagent_definition import definition_store_for_tenant, validate_subagent_name
-from app.agents.subagent_memory import memory_store_for_tenant
+from app.agents.subagent_definition import (
+    SCOPE_AGENT,
+    list_subagent_definitions,
+    resolve_subagent_definition,
+    validate_subagent_name,
+)
+from app.agents.subagent_memory import memory_store_for_agent, memory_store_for_tenant
 from app.database import async_session
 from app.models.agent import Agent
 from app.models.llm import LLMModel
@@ -110,8 +115,9 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
         "definition_name": {
             "type": "string",
             "description": (
-                "Optional tenant-persistent subagent definition name. When set, the stored 定义.md contract "
-                "controls type, tools, model, rounds, isolation, and system prompt."
+                "Optional persistent subagent definition name, resolved agent-scope first "
+                "(your workspace subagents/<name>.md), then tenant shared library. When set, the stored "
+                "定义.md contract controls type, tools, model, rounds, isolation, and system prompt."
             ),
         },
         "max_tool_rounds": {
@@ -164,15 +170,30 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
     raw_rounds = request.arguments.get("max_tool_rounds")
     max_tool_rounds = int(raw_rounds) if isinstance(raw_rounds, int) else None
 
+    definition_scope: str | None = None
     if definition_name:
-        if tenant_id is None:
-            return _json({"ok": False, "error": "definition_name requires a valid tenant_id"})
         try:
-            spec = definition_store_for_tenant(tenant_id).load(definition_name)
+            resolved = resolve_subagent_definition(definition_name, agent_id=agent_id, tenant_id=tenant_id)
         except ValueError as exc:
             return _json({"ok": False, "error": str(exc)})
-        if spec is None:
-            return _json({"ok": False, "error": f"subagent definition {definition_name!r} not found"})
+        if resolved is None:
+            # §12.4: attach the merged available list (agent + tenant + builtin
+            # template rows) so the model can self-correct — builtins spawn via
+            # inline `name`/type, not via definition_name.
+            available = list_subagent_definitions(agent_id=agent_id, tenant_id=tenant_id)
+            return _json(
+                {
+                    "ok": False,
+                    "error": (
+                        f"subagent definition {definition_name!r} not found in agent or tenant scope. "
+                        "Builtin types (scope=builtin) are inline templates: spawn them via 'name' without "
+                        "definition_name."
+                    ),
+                    "available": [{"name": row["name"], "scope": row["scope"]} for row in available],
+                }
+            )
+        spec = resolved.spec
+        definition_scope = resolved.scope
     else:
         name = str(request.arguments.get("name") or "explorer").strip() or "explorer"
         try:
@@ -181,7 +202,13 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
             return _json({"ok": False, "error": str(exc)})
         spec = SubagentSpec(name=name, type="explorer", max_tool_rounds=max_tool_rounds)
 
-    memory_store = memory_store_for_tenant(tenant_id) if tenant_id is not None else None
+    # §12.5: memory follows the definition's scope — agent-private definitions
+    # accumulate craft in the agent workspace; tenant definitions (and inline
+    # specs, unchanged) share the tenant store.
+    if definition_scope == SCOPE_AGENT:
+        memory_store = memory_store_for_agent(agent_id)
+    else:
+        memory_store = memory_store_for_tenant(tenant_id) if tenant_id is not None else None
     ctx = SubagentSpawnContext(
         parent_agent_id=agent_id,
         parent_user_id=request.context.user_id,
@@ -201,6 +228,7 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
             "ok": bool(result and result.ok),
             "subagent": spec.name,
             "type": spec.type,
+            "definition_scope": definition_scope,
             "status": result.status if result else "failed",
             "content": result.content if result else "",
             "error": result.error if result else "spawn produced no result",

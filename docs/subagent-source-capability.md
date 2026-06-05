@@ -315,7 +315,7 @@ async def fanout_subagents(
 | DR-A | deep research 接 fanout（保留 RC/F backstop） | ⏸ 后续 | — |
 | DR-B | deep research critic 解 RC15 | ⏸ 后续 | — |
 | 轴2 | 工作流编排（借鉴 CC Workflow） | ⏸ 后续 | — |
-| C1 | 配置面：agent 级 store + 解析链 + 记忆跟随作用域（§12） | 📋 已设计待实施 | — |
+| C1 | 配置面：agent 级 store + 解析链 + 记忆跟随作用域（§12） | ✅ done（2026-06-05） | 本切口 commit |
 | C2 | 配置面：7 端点 API（§12.7） | 📋 已设计待实施 | — |
 | C3 | 配置面：AgentDetail Sub-agents tab（§12.8） | 📋 已设计待实施 | — |
 | C4 | 配置面：Company Admin tenant 库管理（§12.8） | 📋 已设计待实施 | — |
@@ -442,6 +442,8 @@ DELETE /enterprise/subagents/{name}
 | 切口 | 内容 | Red tests | 验收 |
 |---|---|---|---|
 | **C1** 后端解析链 | agent 级 store + spawn/discovery 解析链（agent→tenant→builtin）+ 记忆跟随作用域 | 同名覆盖、fallback、删 agent 级回落、agent 级记忆不串 tenant、路径边界 | spawn_subagent(definition_name) 两级都能命中；list 合并标 scope |
+
+**C1 实装证据（2026-06-05）**：`subagent_definition.py` 增 `SCOPE_*` 常量、`agent_subagent_root`/`definition_store_for_agent`（同 store 类换 base_dir，零新格式）、`resolve_subagent_definition`（agent 优先 → tenant fallback → None）、`list_subagent_definitions`（合并去重 agent 胜、builtin 只读模板行、损坏文件跳过并 warn 不空整表）；`subagent_memory.py` 增 `memory_store_for_agent`（`<workspace>/subagents/.memory/`，dot-dir 避开定义 glob）；spawn handler 改走解析链、响应带 `definition_scope`、not found 附合并可用列表（含 builtin 并指引 inline spawn）、记忆跟随定义作用域（inline spec 保持 tenant store 现状）、放宽"definition_name 必须有 tenant_id"（agent 级可独立解析）。TDD red→green：`tests/agents/test_subagent_scope_resolution.py` 8 例（同名覆盖/fallback/删除回落/记忆隔离含跨 agent/路径边界/list 合并+builtin 遮蔽）+ `test_subagent_spawn_tool.py` 新增 4 例（agent 胜+记忆跟随、tenant fallback、not found 双 scope 列表、无 tenant 解析 agent 级），先验证 collection error/4 failed 再实现转绿。回归：tests/agents/ + tests/tools/ 450 passed；§12.2 断言验证 = 工具层 `_write_file` guard 只封 `memory/`，`subagents/` agent 可自建。
 | **C2** API | 7 端点 + 权限 | 多租户守卫（跨 tenant 404）、manage 写权限、格式非法 422、name 校验 | 前端可全 CRUD；非法 frontmatter 被拒带原因 |
 | **C3** AgentDetail UI | Sub-agents tab + adapter + i18n | 渲染/列表 scope 标记/编辑流 | 用户在 agent 详情页完成日常配置 |
 | **C4** Company Admin UI | tenant 库管理 + i18n | admin 守卫渲染 | 管理员策展公司库 |

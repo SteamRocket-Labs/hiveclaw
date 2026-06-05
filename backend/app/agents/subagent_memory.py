@@ -127,3 +127,20 @@ def memory_store_for_tenant(tenant_id: object, *, agent_data_dir: Path | str | N
     """Construct the tenant-scoped persistent subagent memory store."""
 
     return SubagentMemoryStore(_tenant_subagent_root(tenant_id, kind="memory", agent_data_dir=agent_data_dir))
+
+
+def memory_store_for_agent(agent_id: object, *, agent_data_dir: Path | str | None = None) -> SubagentMemoryStore:
+    """Construct the agent-scoped memory store (§12.5: memory follows the
+    definition's scope).
+
+    Agent-private definitions accumulate craft at
+    ``<workspace>/subagents/.memory/<name>.记忆.md`` — the dot-dir keeps memory
+    files out of the definition glob, and two agents with same-named private
+    definitions never share memory. Tenant isolation is inherited (the agent
+    workspace already lives inside the tenant boundary); the governed write
+    gate applies identically.
+    """
+
+    from app.agents.subagent_definition import agent_subagent_root
+
+    return SubagentMemoryStore(agent_subagent_root(agent_id, agent_data_dir=agent_data_dir) / ".memory")

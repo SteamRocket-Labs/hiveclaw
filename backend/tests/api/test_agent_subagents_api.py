@@ -150,6 +150,93 @@ def test_detail_builtin_templates_all_carry_baseline_prompt(monkeypatch, data_ro
         assert payload["spec"]["description"], f"builtin {name} must carry a whenToUse description"
 
 
+# --- AI generation (CC /agents "generate" method, vendor-neutral) -------------
+
+
+def _patch_generation(monkeypatch, *, definition: str = "GENERATED-MD", capture: dict | None = None):
+    async def fake_resolve_model(*args, **kwargs):
+        return {"provider": "openai", "api_key": "k", "model": "m", "base_url": None}
+
+    async def fake_generate(request, *, model_config, existing_names=None):
+        if capture is not None:
+            capture.update(request=request, model_config=model_config, existing_names=existing_names)
+        return definition
+
+    monkeypatch.setattr(subagents_mod, "_resolve_generation_model_config", fake_resolve_model)
+    monkeypatch.setattr(subagents_mod, "generate_subagent_definition", fake_generate)
+
+
+def test_generate_agent_subagent_returns_definition(monkeypatch, data_root):
+    agent_id, tenant_id = uuid.uuid4(), uuid.uuid4()
+    client, _db, _user = _build_client(tenant_id=tenant_id)
+    _grant_access(monkeypatch, agent_id, tenant_id)
+    capture: dict = {}
+    _patch_generation(monkeypatch, capture=capture)
+
+    resp = client.post(
+        f"/agents/{agent_id}/subagents/generate",
+        json={"description": "track DeFi market movements"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["definition"] == "GENERATED-MD"
+    assert capture["request"] == "track DeFi market movements"
+    # existing names (incl. builtins) reach the generator so it avoids collisions
+    assert "explorer" in (capture["existing_names"] or [])
+
+
+def test_generate_agent_subagent_requires_manage(monkeypatch, data_root):
+    agent_id, tenant_id = uuid.uuid4(), uuid.uuid4()
+    client, _db, _user = _build_client(tenant_id=tenant_id)
+    _grant_access(monkeypatch, agent_id, tenant_id, level="use")
+    _patch_generation(monkeypatch)
+
+    resp = client.post(f"/agents/{agent_id}/subagents/generate", json={"description": "x"})
+    assert resp.status_code == 403
+
+
+def test_generate_agent_subagent_requires_description(monkeypatch, data_root):
+    agent_id, tenant_id = uuid.uuid4(), uuid.uuid4()
+    client, _db, _user = _build_client(tenant_id=tenant_id)
+    _grant_access(monkeypatch, agent_id, tenant_id)
+    _patch_generation(monkeypatch)
+
+    resp = client.post(f"/agents/{agent_id}/subagents/generate", json={"description": "   "})
+    assert resp.status_code == 422
+
+
+def test_generate_surfaces_generation_failure(monkeypatch, data_root):
+    from app.services.subagent_generator import SubagentGenerationError
+
+    agent_id, tenant_id = uuid.uuid4(), uuid.uuid4()
+    client, _db, _user = _build_client(tenant_id=tenant_id)
+    _grant_access(monkeypatch, agent_id, tenant_id)
+
+    async def fake_resolve_model(*args, **kwargs):
+        return {"provider": "openai", "api_key": "k", "model": "m", "base_url": None}
+
+    async def fake_generate(request, *, model_config, existing_names=None):
+        raise SubagentGenerationError("model returned an empty response")
+
+    monkeypatch.setattr(subagents_mod, "_resolve_generation_model_config", fake_resolve_model)
+    monkeypatch.setattr(subagents_mod, "generate_subagent_definition", fake_generate)
+
+    resp = client.post(f"/agents/{agent_id}/subagents/generate", json={"description": "x"})
+    assert resp.status_code == 502
+    assert "empty response" in resp.json()["detail"]
+
+
+def test_generate_enterprise_subagent_org_admin_only(monkeypatch, data_root):
+    client, _db, _user = _build_client(role="org_admin")
+    _patch_generation(monkeypatch)
+    resp = client.post("/enterprise/subagents/generate", json={"description": "company-wide reviewer"})
+    assert resp.status_code == 200
+    assert resp.json()["definition"] == "GENERATED-MD"
+
+    member_client, _db2, _user2 = _build_client(role="member")
+    resp = member_client.post("/enterprise/subagents/generate", json={"description": "x"})
+    assert resp.status_code == 403
+
+
 # --- agent-level: write path --------------------------------------------------
 
 

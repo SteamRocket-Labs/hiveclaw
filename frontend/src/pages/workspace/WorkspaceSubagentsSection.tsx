@@ -20,6 +20,27 @@ export default function WorkspaceSubagentsSection() {
   const [editorText, setEditorText] = useState('');
   const [saving, setSaving] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [genPrompt, setGenPrompt] = useState('');
+  const [generating, setGenerating] = useState(false);
+
+  // AI generation (vendor-neutral): description → complete 定义.md prefilled
+  // into the editor; the admin stays the final confirmation gate.
+  const generateWithAI = async () => {
+    const description = genPrompt.trim();
+    if (!description) return;
+    setGenerating(true);
+    setActionError(null);
+    try {
+      const { definition } = await subagentApi.enterpriseGenerate(description);
+      setEditorText(definition);
+      const nameMatch = definition.match(/^name:\s*(\S+)\s*$/m);
+      if (nameMatch) setEditorName(nameMatch[1]);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   const { data, isLoading } = useQuery({
     queryKey: ['enterprise-subagents'],
@@ -193,21 +214,48 @@ export default function WorkspaceSubagentsSection() {
             </span>
           </div>
           {editorMode === 'create' && (
-            <input
-              type="text"
-              value={editorName}
-              onChange={(e) => setEditorName(e.target.value)}
-              placeholder={t('agent.subagents.namePlaceholder')}
-              style={{
-                width: '100%',
-                marginBottom: '8px',
-                padding: '8px 10px',
-                fontSize: '13px',
-                border: '1px solid var(--border-primary)',
-                borderRadius: '6px',
-                background: 'var(--bg-primary)',
-              }}
-            />
+            <>
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                <input
+                  type="text"
+                  value={genPrompt}
+                  onChange={(e) => setGenPrompt(e.target.value)}
+                  placeholder={t('agent.subagents.generatePlaceholder')}
+                  disabled={generating}
+                  style={{
+                    flex: 1,
+                    padding: '8px 10px',
+                    fontSize: '13px',
+                    border: '1px solid var(--border-primary)',
+                    borderRadius: '6px',
+                    background: 'var(--bg-primary)',
+                  }}
+                />
+                <button
+                  className="btn btn-secondary"
+                  style={{ fontSize: '12px', flexShrink: 0 }}
+                  onClick={generateWithAI}
+                  disabled={generating || !genPrompt.trim()}
+                >
+                  {generating ? t('agent.subagents.generating') : t('agent.subagents.generateButton')}
+                </button>
+              </div>
+              <input
+                type="text"
+                value={editorName}
+                onChange={(e) => setEditorName(e.target.value)}
+                placeholder={t('agent.subagents.namePlaceholder')}
+                style={{
+                  width: '100%',
+                  marginBottom: '8px',
+                  padding: '8px 10px',
+                  fontSize: '13px',
+                  border: '1px solid var(--border-primary)',
+                  borderRadius: '6px',
+                  background: 'var(--bg-primary)',
+                }}
+              />
+            </>
           )}
           <textarea
             value={editorText}

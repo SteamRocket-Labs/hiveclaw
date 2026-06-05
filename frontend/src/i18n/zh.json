@@ -1026,7 +1026,10 @@
       "createTitle": "新建 agent 级定义",
       "editTitle": "编辑定义",
       "nameRequired": "名称必填",
-      "namePlaceholder": "定义名，如 market-scout"
+      "namePlaceholder": "定义名，如 market-scout",
+      "generatePlaceholder": "用一句话描述这个子代理要做什么，AI 会起草定义\u2026",
+      "generateButton": "AI 生成",
+      "generating": "生成中\u2026"
     }
   },
   "wizard": {

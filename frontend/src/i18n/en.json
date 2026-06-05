@@ -998,7 +998,10 @@
       "createTitle": "New agent-level definition",
       "editTitle": "Edit definition",
       "nameRequired": "Name is required",
-      "namePlaceholder": "definition name, e.g. market-scout"
+      "namePlaceholder": "definition name, e.g. market-scout",
+      "generatePlaceholder": "Describe what this subagent should do, and AI will draft the definition\u2026",
+      "generateButton": "AI Generate",
+      "generating": "Generating\u2026"
     }
   },
   "wizard": {

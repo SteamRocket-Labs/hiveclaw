@@ -17,7 +17,7 @@
  *   DELETE /enterprise/subagents/{name}
  */
 
-import { del, get, put } from '../core';
+import { del, get, post, put } from '../core';
 
 export type SubagentScope = 'agent' | 'tenant' | 'builtin';
 
@@ -64,6 +64,9 @@ export const subagentApi = {
     put<SubagentSaveResult>(`/agents/${agentId}/subagents/${encodeURIComponent(name)}`, { definition }),
   remove: (agentId: string, name: string) =>
     del<{ deleted: string; scope: SubagentScope }>(`/agents/${agentId}/subagents/${encodeURIComponent(name)}`),
+  // AI generation: description → complete 定义.md prefilled into the editor.
+  generate: (agentId: string, description: string) =>
+    post<{ definition: string }>(`/agents/${agentId}/subagents/generate`, { description }),
 
   enterpriseList: () => get<{ subagents: SubagentRow[] }>(`/enterprise/subagents`),
   enterpriseGet: (name: string) => get<SubagentDetail>(`/enterprise/subagents/${encodeURIComponent(name)}`),
@@ -71,4 +74,6 @@ export const subagentApi = {
     put<SubagentSaveResult>(`/enterprise/subagents/${encodeURIComponent(name)}`, { definition }),
   enterpriseRemove: (name: string) =>
     del<{ deleted: string; scope: SubagentScope }>(`/enterprise/subagents/${encodeURIComponent(name)}`),
+  enterpriseGenerate: (description: string) =>
+    post<{ definition: string }>(`/enterprise/subagents/generate`, { description }),
 };

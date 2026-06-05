@@ -39,6 +39,7 @@ from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.user import User
+from app.services.subagent_generator import SubagentGenerationError, generate_subagent_definition
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,66 @@ enterprise_router = APIRouter(prefix="/enterprise/subagents", tags=["enterprise"
 
 class SubagentDefinitionPayload(BaseModel):
     definition: str
+
+
+class SubagentGeneratePayload(BaseModel):
+    description: str
+
+
+async def _resolve_generation_model_config(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID | None,
+    agent=None,
+) -> dict:
+    """Model config for the generation LLM: the agent's primary model when
+    generating on an agent page, else the tenant's first enabled model."""
+
+    from sqlalchemy import select
+
+    from app.models.llm import LLMModel
+
+    model = None
+    if agent is not None and getattr(agent, "primary_model_id", None):
+        model = (
+            await db.execute(
+                select(LLMModel).where(
+                    LLMModel.id == agent.primary_model_id,
+                    LLMModel.tenant_id == tenant_id,
+                    LLMModel.enabled.is_(True),
+                )
+            )
+        ).scalar_one_or_none()
+    if model is None and tenant_id is not None:
+        model = (
+            await db.execute(
+                select(LLMModel)
+                .where(LLMModel.tenant_id == tenant_id, LLMModel.enabled.is_(True))
+                .order_by(LLMModel.created_at)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    if model is None:
+        raise HTTPException(status_code=503, detail="No enabled model available for AI generation")
+    return {"provider": model.provider, "api_key": model.api_key, "model": model.model, "base_url": model.base_url}
+
+
+async def _generate_definition_response(
+    description: str,
+    *,
+    model_config: dict,
+    agent_id: uuid.UUID | None,
+    tenant_id: uuid.UUID | None,
+) -> dict:
+    value = description.strip()
+    if not value:
+        raise HTTPException(status_code=422, detail="description is required")
+    existing = [row["name"] for row in list_subagent_definitions(agent_id=agent_id, tenant_id=tenant_id)]
+    try:
+        definition = await generate_subagent_definition(value, model_config=model_config, existing_names=existing)
+    except SubagentGenerationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"definition": definition}
 
 
 def _spec_summary(spec: SubagentSpec) -> dict:
@@ -166,6 +227,31 @@ async def get_agent_subagent(
     }
 
 
+@router.post("/generate")
+async def generate_agent_subagent(
+    agent_id: uuid.UUID,
+    payload: SubagentGeneratePayload,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """AI-generate a complete 定义.md from a natural-language description.
+
+    The result prefills the editor — the human stays the final confirmation
+    gate, and saving still round-trips the same PUT validation chain.
+    """
+
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if access_level != "manage":
+        raise HTTPException(status_code=403, detail="Generating subagent definitions requires manage access")
+    model_config = await _resolve_generation_model_config(db, tenant_id=agent.tenant_id, agent=agent)
+    return await _generate_definition_response(
+        payload.description,
+        model_config=model_config,
+        agent_id=agent_id,
+        tenant_id=agent.tenant_id,
+    )
+
+
 @router.put("/{name}")
 async def put_agent_subagent(
     agent_id: uuid.UUID,
@@ -243,6 +329,22 @@ async def get_tenant_subagent(
         "spec": _spec_summary(spec),
         "memory": _memory_summary(memory_store_for_tenant(tenant_id), name),
     }
+
+
+@enterprise_router.post("/generate")
+async def generate_tenant_subagent(
+    payload: SubagentGeneratePayload,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    tenant_id = _require_tenant_admin(current_user)
+    model_config = await _resolve_generation_model_config(db, tenant_id=tenant_id)
+    return await _generate_definition_response(
+        payload.description,
+        model_config=model_config,
+        agent_id=None,
+        tenant_id=tenant_id,
+    )
 
 
 @enterprise_router.put("/{name}")

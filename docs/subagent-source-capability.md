@@ -315,6 +315,10 @@ async def fanout_subagents(
 | DR-A | deep research 接 fanout（保留 RC/F backstop） | ⏸ 后续 | — |
 | DR-B | deep research critic 解 RC15 | ⏸ 后续 | — |
 | 轴2 | 工作流编排（借鉴 CC Workflow） | ⏸ 后续 | — |
+| C1 | 配置面：agent 级 store + 解析链 + 记忆跟随作用域（§12） | 📋 已设计待实施 | — |
+| C2 | 配置面：7 端点 API（§12.7） | 📋 已设计待实施 | — |
+| C3 | 配置面：AgentDetail Sub-agents tab（§12.8） | 📋 已设计待实施 | — |
+| C4 | 配置面：Company Admin tenant 库管理（§12.8） | 📋 已设计待实施 | — |
 
 ---
 
@@ -355,4 +359,95 @@ async def fanout_subagents(
 
 ---
 
-> **状态**：设计稿 **v3**（2026-06-02：DR 接入从主线抽离为后续阶段，subagent 先成完整源能力；"完整"= 到切口⑥含记忆进化；新增本节状态追踪）。v2 内容（术语边界 + CC agent memory 事实纠正 + 切口拆分 + Memory Control Plane 闸 + §5.1 收窄）保留。取舍（§4）+ 主线切口顺序（§8 v3）+ 三待决已拍板冻结。轴 2（工作流编排，借鉴 CC Workflow 工具）作为独立后续。
+## 12. 配置面与作用域（人类入口，v4 新增 —— 2026-06-05 用户拍板方向）
+
+### 12.0 问题：仓库建好了，没有门
+
+切口①-⑥ 落的是**运行时层 + 定义层**：`spawn_subagent` 能按 `definition_name` 从 tenant store 加载持久 `定义.md`，但**零 API、零前端**——没有任何人类入口能创建/查看/编辑 subagent 定义。唯一的"配置方式"是 agent 在对话中 inline spawn，或操作员手动往 `_tenants/<tid>/subagents/definitions/` 拼文件。本节补齐人类配置面。
+
+### 12.1 作用域模型（CC 基线 + Hive delta）
+
+CC 以**项目**为工作单元（项目级 `.claude/agents/` + 用户级 `~/.claude/agents/`，项目覆盖用户）；Hive 以 **agent** 为工作单元（agent workspace ≈ 项目空间）。映射：
+
+| CC 基线 | Hive 对应 | 状态 |
+|---|---|---|
+| 对话内 `Task` 工具即兴 spawn | `spawn_subagent` inline spec | ✅ 切口② |
+| **项目级** `.claude/agents/*.md`（跟项目走，日常主力） | **agent 级** `<agent_workspace>/subagents/*.md`（跟 agent 走） | 🆕 C1 |
+| **用户级** `~/.claude/agents/*.md`（跨项目共享） | **tenant 级** 公司库 `_tenants/<tid>/subagents/definitions/`（跨 agent 共享、公司策展） | ✅ 切口⑤（存储）/ 🆕 C2+C4（门） |
+| 项目级覆盖用户级 | **agent 级覆盖 tenant 级**（同名时） | 🆕 C1 |
+
+Hive delta（CC 没有的）：① tenant 级是**组织策展**语义（控制中台），不是个人偏好；② 全部入口受多租户 RLS + capability gate + 审计治理；③ subagent 工具面 ⊆ 主 agent 工具面（只收窄不放宽，运行时已 enforce——配置面不新增权力，只开人类入口）。
+
+### 12.2 agent 级定义（日常主力，C1）
+
+- **路径**：`AGENT_DATA_DIR/<agent_id>/subagents/<name>.md`，格式与 tenant 级完全一致（同一 `parse_subagent_definition` / `render_subagent_definition`，零新格式）。
+- **与 `skills/` 同构**：markdown 即配置、agent-legible。主 agent 可以用 `write_file` 自建/改自己的 `subagents/*.md`（self-evolution 闭环，与 save_skill 对称；workspace 工具治理已覆盖，`subagents/` 不在 P2 的 `memory/` 封禁范围）。
+- **store**：复用 `SubagentDefinitionStore`（`base_dir = <agent_workspace>/subagents`），`validate_subagent_name` 路径边界校验原样生效。
+
+### 12.3 tenant 级公司库（开门，C2+C4）
+
+- 存储已有（切口⑤）。开两扇门：admin API + Company Admin UI。
+- 公司管理员策展共享定义（如 `market-research-explorer`），全 tenant agent 可用。
+- **治理叠加（后续，不在本轮）**：per-agent 可用性策略（哪些 agent 能用哪些 tenant 定义，对标 MCP server 的 per-agent override 模式）。MVP 先全 tenant 可用 = 现状语义不变。
+
+### 12.4 解析链（无双路径）
+
+```text
+spawn_subagent(definition_name)
+  → agent 级 store（<workspace>/subagents/<name>.md）   # 优先
+  → tenant 级 store（_tenants/<tid>/.../definitions/）   # fallback
+  → 都没有 → 报错并附两级可用定义列表
+```
+
+一条解析链、两个作用域；list 面（API/工具 discovery）合并去重、同名 agent 级胜、每行标 `scope: agent | tenant | builtin`。内置 type（explorer/worker/critic）在 list 中呈现为 `builtin` 只读行（可作新建模板），不落盘。
+
+### 12.5 记忆跟随定义作用域（待决1 的延伸澄清，非推翻）
+
+待决1 拍板"`记忆.md` 纯 tenant-scoped"时**只存在 tenant 级定义**。引入 agent 级定义后，对称规则：**记忆跟随定义的作用域**——
+
+| 定义作用域 | `记忆.md` 位置 | 理由 |
+|---|---|---|
+| tenant 级定义 | `_tenants/<tid>/subagents/memory/<name>.md`（现状不动） | 公司共享实体，经验全 tenant 复用 |
+| agent 级定义 | `<agent_workspace>/subagents/.memory/<name>.md` | 防跨 agent 串忆：两个 agent 各有同名私有定义时，手艺各自积累 |
+
+tenant 隔离铁律不破（agent workspace 本就在 tenant 内）；governed write gate 不变量原样适用两处。
+
+### 12.6 产品边界：subagent 配置 ≠ HR 雇人
+
+正式 agent = 数字员工（HR 入职、org chart、soul、channel、长期身份）；subagent = 该员工的**手艺人分身**（无身份、记忆只记 How、任务级回收）。所以配置入口在 **AgentDetail 能力区**（给员工配工作方法），绝不在 HR/组织流程。延续术语边界（spawn 只收 worker，不并 peer delegation）。
+
+### 12.7 API 面
+
+```text
+# agent 级（check_agent_access 守卫；写需 manage）
+GET    /agents/{agent_id}/subagents              # 合并列表（agent+tenant+builtin，标 scope；同名 agent 级胜）
+GET    /agents/{agent_id}/subagents/{name}       # 详情（定义全文 + 生效 scope + 记忆.md 存在性/摘要）
+PUT    /agents/{agent_id}/subagents/{name}       # 创建/更新 agent 级定义（render→save，格式校验）
+DELETE /agents/{agent_id}/subagents/{name}       # 删除 agent 级定义（tenant 级定义不受影响 → 删后回落 fallback）
+
+# tenant 级（org admin 守卫）
+GET    /enterprise/subagents
+PUT    /enterprise/subagents/{name}
+DELETE /enterprise/subagents/{name}
+```
+
+### 12.8 UI 面
+
+- **AgentDetail 新 "Sub-agents" tab**（capability 组，与 Skills/MCP/Workflows 并列第四能力模块；Knowledge 维持只 deep-link 不管理的边界）：列表（name/scope/type/model/工具面摘要）→ 详情/编辑（markdown 编辑器 + frontmatter 校验）→ 从 builtin 模板新建。
+- **Company Admin 新区段**：tenant 库同款列表/编辑。
+- i18n en+zh 同步。
+
+### 12.9 切口与验收
+
+| 切口 | 内容 | Red tests | 验收 |
+|---|---|---|---|
+| **C1** 后端解析链 | agent 级 store + spawn/discovery 解析链（agent→tenant→builtin）+ 记忆跟随作用域 | 同名覆盖、fallback、删 agent 级回落、agent 级记忆不串 tenant、路径边界 | spawn_subagent(definition_name) 两级都能命中；list 合并标 scope |
+| **C2** API | 7 端点 + 权限 | 多租户守卫（跨 tenant 404）、manage 写权限、格式非法 422、name 校验 | 前端可全 CRUD；非法 frontmatter 被拒带原因 |
+| **C3** AgentDetail UI | Sub-agents tab + adapter + i18n | 渲染/列表 scope 标记/编辑流 | 用户在 agent 详情页完成日常配置 |
+| **C4** Company Admin UI | tenant 库管理 + i18n | admin 守卫渲染 | 管理员策展公司库 |
+
+不变量复述：配置面**不新增任何运行时权力**——工具面收窄、capability gate、防递归、governed memory write 全部原样；本节只是给已有治理开人类入口。
+
+---
+
+> **状态**：设计稿 **v4**（2026-06-05：新增 §12 配置面与作用域，用户拍板"agent 级 + tenant 级双层、AgentDetail 第四能力模块 + Company Admin 公司库"方向；待文档拍板后实施 C1-C4）。v3（2026-06-02：DR 接入从主线抽离为后续阶段，subagent 先成完整源能力；"完整"= 到切口⑥含记忆进化）+ v2 内容（术语边界 + CC agent memory 事实纠正 + 切口拆分 + Memory Control Plane 闸 + §5.1 收窄）保留。取舍（§4）+ 主线切口顺序（§8 v3）+ 三待决已拍板冻结。轴 2（工作流编排，借鉴 CC Workflow 工具）作为独立后续。

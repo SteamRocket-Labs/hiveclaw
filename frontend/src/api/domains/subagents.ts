@@ -23,6 +23,8 @@ export type SubagentScope = 'agent' | 'tenant' | 'builtin';
 
 export interface SubagentSpecSummary {
   name: string;
+  /** whenToUse (CC parity): when should the parent pick this subagent. */
+  description: string;
   type: string;
   model: string | null;
   isolation: 'none' | 'brief' | 'all';

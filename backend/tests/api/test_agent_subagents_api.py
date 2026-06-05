@@ -61,7 +61,9 @@ def _grant_access(monkeypatch, agent_id: uuid.UUID, tenant_id: uuid.UUID, *, lev
 
 
 def _md(name: str, prompt: str, *, type_: str = "explorer") -> str:
-    return render_subagent_definition(SubagentSpec(name=name, type=type_, system_prompt=prompt))
+    return render_subagent_definition(
+        SubagentSpec(name=name, description=f"{name} helper definition", type=type_, system_prompt=prompt)
+    )
 
 
 @pytest.fixture
@@ -79,10 +81,10 @@ def test_list_merges_scopes(monkeypatch, data_root):
     _grant_access(monkeypatch, agent_id, tenant_id)
 
     definition_store_for_agent(agent_id, agent_data_dir=data_root).save(
-        SubagentSpec(name="mine", type="explorer", system_prompt="agent def")
+        SubagentSpec(name="mine", description="d", type="explorer", system_prompt="agent def")
     )
     definition_store_for_tenant(tenant_id, agent_data_dir=data_root).save(
-        SubagentSpec(name="ours", type="critic", system_prompt="tenant def")
+        SubagentSpec(name="ours", description="d", type="critic", system_prompt="tenant def")
     )
 
     resp = client.get(f"/agents/{agent_id}/subagents")
@@ -99,7 +101,7 @@ def test_detail_returns_definition_scope_and_memory(monkeypatch, data_root):
     _grant_access(monkeypatch, agent_id, tenant_id)
 
     definition_store_for_agent(agent_id, agent_data_dir=data_root).save(
-        SubagentSpec(name="mine", type="explorer", system_prompt="agent def body")
+        SubagentSpec(name="mine", description="d", type="explorer", system_prompt="agent def body")
     )
 
     resp = client.get(f"/agents/{agent_id}/subagents/mine")
@@ -129,6 +131,23 @@ def test_detail_builtin_template_row(monkeypatch, data_root):
     payload = resp.json()
     assert payload["scope"] == "builtin"
     assert payload["spec"]["type"] == "explorer"
+    # The builtin template is a real template: its body must be the same
+    # baseline prompt the runtime injects at spawn time — never an empty doc.
+    assert "READ-ONLY" in payload["definition"]
+    assert payload["spec"]["description"]  # whenToUse surfaces for the edit flow
+
+
+def test_detail_builtin_templates_all_carry_baseline_prompt(monkeypatch, data_root):
+    agent_id, tenant_id = uuid.uuid4(), uuid.uuid4()
+    client, _db, _user = _build_client(tenant_id=tenant_id)
+    _grant_access(monkeypatch, agent_id, tenant_id)
+
+    # Anchors from the CC built-in agent ports (Explore / general-purpose / verification)
+    for name, anchor in (("explorer", "READ-ONLY"), ("worker", "agent for Hive"), ("critic", "VERDICT")):
+        payload = client.get(f"/agents/{agent_id}/subagents/{name}").json()
+        body = payload["definition"].split("---", 2)[-1]
+        assert anchor in body, f"builtin {name} template body must carry its baseline prompt"
+        assert payload["spec"]["description"], f"builtin {name} must carry a whenToUse description"
 
 
 # --- agent-level: write path --------------------------------------------------
@@ -182,14 +201,16 @@ def test_put_rejects_invalid_contract_field_types(monkeypatch, data_root):
 
     resp = client.put(
         f"/agents/{agent_id}/subagents/my-scout",
-        json={"definition": "---\nname: my-scout\ntype: explorer\nmax_tool_rounds: nope\n---\nprompt"},
+        json={"definition": "---\nname: my-scout\ndescription: d\ntype: explorer\nmax_tool_rounds: nope\n---\nprompt"},
     )
     assert resp.status_code == 422
     assert "max_tool_rounds" in resp.json()["detail"]
 
     resp = client.put(
         f"/agents/{agent_id}/subagents/my-scout",
-        json={"definition": "---\nname: my-scout\ntype: explorer\nallowed_tools: read_file\n---\nprompt"},
+        json={
+            "definition": "---\nname: my-scout\ndescription: d\ntype: explorer\nallowed_tools: read_file\n---\nprompt"
+        },
     )
     assert resp.status_code == 422
     assert "allowed_tools" in resp.json()["detail"]
@@ -226,10 +247,10 @@ def test_delete_agent_definition_falls_back_to_tenant(monkeypatch, data_root):
     _grant_access(monkeypatch, agent_id, tenant_id)
 
     definition_store_for_agent(agent_id, agent_data_dir=data_root).save(
-        SubagentSpec(name="dup", type="explorer", system_prompt="agent version")
+        SubagentSpec(name="dup", description="d", type="explorer", system_prompt="agent version")
     )
     definition_store_for_tenant(tenant_id, agent_data_dir=data_root).save(
-        SubagentSpec(name="dup", type="critic", system_prompt="tenant version")
+        SubagentSpec(name="dup", description="d", type="critic", system_prompt="tenant version")
     )
 
     resp = client.delete(f"/agents/{agent_id}/subagents/dup")
@@ -247,7 +268,7 @@ def test_delete_404_when_no_agent_definition(monkeypatch, data_root):
 
     # tenant-level definition alone does not make DELETE on agent scope a hit
     definition_store_for_tenant(tenant_id, agent_data_dir=data_root).save(
-        SubagentSpec(name="ours", type="critic", system_prompt="tenant def")
+        SubagentSpec(name="ours", description="d", type="critic", system_prompt="tenant def")
     )
     assert client.delete(f"/agents/{agent_id}/subagents/ours").status_code == 404
 

@@ -459,6 +459,20 @@ DELETE /enterprise/subagents/{name}
 
 不变量复述：配置面**不新增任何运行时权力**——工具面收窄、capability gate、防递归、governed memory write 全部原样；本节只是给已有治理开人类入口。
 
+## 13. CC 全对齐三修（v5 —— 2026-06-05 用户拍板"ABC 全部一次对齐 一模一样"）
+
+配置面上线第一天，用户点开内置三类型发现 **md body 是空的**。溯源 + 对照 CC 源码（`loadAgentsDir.ts` / `built-in/*.ts` / `runAgent.ts:getAgentSystemPrompt`）后实锤三处与 CC 的实质差异，一次全部对齐：
+
+| # | 差异 | CC 真实做法（源码锚） | 修后 Hive |
+|---|---|---|---|
+| **A** | 内置类型零 prompt（`_TYPE_PRESETS` 只有工具白名单；运行时 spawn 即裸 LLM + 任务文本 = L1 违例） | 内置 agent 是代码常量但每个都带完整打磨 prompt（`exploreAgent.ts` ~35 行 / `generalPurposeAgent.ts` / `verificationAgent.ts` 含失败模式预判 + rationalization 自识别） | `_TYPE_PROMPTS` 三段 CC 移植文本（explorer←Explore 工具名落地 Hive 面；worker←general-purpose；critic←verification 适配 read-only 工具面，保留 VERDICT: PASS/FAIL/PARTIAL 输出契约）。运行时 fallback 与 `resolve_subagent_tools` 的 preset fallback 完全同构：显式 body 替换基线，空 body 落基线 |
+| **B** | 定义无 `description`（whenToUse）字段——父 agent 选人零依据 | `parseAgentFromMarkdown` 必填 `name`+`description`，父 agent 靠 description 决定派谁 | `SubagentSpec.description` + parse/render 双侧必填守卫（渲染出的必能读回）；内置三类型 `_TYPE_DESCRIPTIONS` 移植 CC whenToUse；spawn 工具 description 静态写明三类型 + not-found 可用列表每行带 description；API `_spec_summary`/`_definition_row`/builtin 行全带；前端列表行 ellipsis 列 + 新建模板含 `description:` 行 |
+| **C** | suffix 叠加语义——subagent 继承宿主完整 prompt（soul/memory/skills/tasks）再叠 spec.system_prompt | `getSystemPrompt()` 返回值**就是** subagent 全部 system prompt（替换不叠加；Explore/Plan 还 `omitClaudeMd` 省 token） | `AgentInvocationRequest.standalone_system_prompt`（kernel contracts 贯穿）：设置时 `_build_system_prompt` 直接返回该文本，宿主 memory snapshot / retrieval / navigation 三 resolver 全短路返回空；`_spawn_one` 改走 standalone（`_build_standalone_system_prompt` = role prompt + subagent 自有 记忆.md，对应 CC `loadAgentMemoryPrompt` 拼接）。`system_prompt_suffix` 的 channel/delegation 叠加语义原样保留，零影响 |
+
+附带修正：inline spawn 增加 `type` 参数（此前硬编码 explorer，worker/critic 内置类型从 spawn 面**不可达**）；未知 type 报错附合法清单。DR/workflow leaf 走同一 `_spawn_one` 路径，自动获得替换语义——其 leaf prompt 本就写成独立身份（"SUB-AGENT ROLE: …"），此前实际叠在宿主 prompt 后属于偏差，本次顺势归位（tests/deep_research + workflow leaf 回归绿）。
+
+**Breaking**：存量定义.md 无 `description` 者 parse 拒绝（list 跳过 + warn，不空整表——同 CC failedFiles 语义）；配置面上线仅一天、存量≈0，用户知情拍板。证据：后端全量 **3804 passed**（新增 standalone 套件 `tests/runtime/test_standalone_prompt.py` 5 例：standalone 替换宿主身份/三 resolver 短路/控制组宿主路径不动）；前端 subagent 测试 6 passed / 我方文件 tsc 干净。
+
 ---
 
-> **状态**：**v4 已实施**（2026-06-05：§12 配置面 C1-C4 全部落地——C1 解析链/C2 八端点 API（7+1 detail 修正）/C3 AgentDetail 第四能力 tab/C4 Company Admin 公司库，每切口 TDD red→green + 独立 commit；终态证据 = 后端 3777 绿 / 前端 161 绿 / tsc / build。设计于同日拍板"agent 级 + tenant 级双层、AgentDetail 第四能力模块 + Company Admin 公司库"方向）。v3（2026-06-02：DR 接入从主线抽离为后续阶段，subagent 先成完整源能力；"完整"= 到切口⑥含记忆进化）+ v2 内容（术语边界 + CC agent memory 事实纠正 + 切口拆分 + Memory Control Plane 闸 + §5.1 收窄）保留。取舍（§4）+ 主线切口顺序（§8 v3）+ 三待决已拍板冻结。轴 2（工作流编排，借鉴 CC Workflow 工具）作为独立后续。
+> **状态**：**v5 已实施**（2026-06-05 晚：CC 全对齐三修 A/B/C + spawn type 参数，§13；同日早 v4 = §12 配置面 C1-C4 全部落地——C1 解析链/C2 八端点 API（7+1 detail 修正）/C3 AgentDetail 第四能力 tab/C4 Company Admin 公司库，每切口 TDD red→green + 独立 commit）。v3（2026-06-02：DR 接入从主线抽离为后续阶段，subagent 先成完整源能力；"完整"= 到切口⑥含记忆进化）+ v2 内容（术语边界 + CC agent memory 事实纠正 + 切口拆分 + Memory Control Plane 闸 + §5.1 收窄）保留。取舍（§4）+ 主线切口顺序（§8 v3）+ 三待决已拍板冻结。轴 2（工作流编排，借鉴 CC Workflow 工具）作为独立后续。

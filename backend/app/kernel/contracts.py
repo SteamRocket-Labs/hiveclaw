@@ -45,6 +45,10 @@ class InvocationRequest:
     memory_messages: list[dict] | None = None
     session_context: SessionContext | None = None
     system_prompt_suffix: str = ""
+    # CC subagent semantics: when set, this text IS the entire system prompt —
+    # the platform must not assemble the host agent's identity (soul, memory,
+    # skills, tasks) around it. Read by the prompt/memory dependency callbacks.
+    standalone_system_prompt: str = ""
     tool_executor: ToolExecutor | None = None
     cancel_event: asyncio.Event | None = None
     initial_tools: list[dict] | None = None

@@ -19,6 +19,7 @@ vi.mock('react-i18next', () => ({
 const tenantRows: SubagentRow[] = [
   {
     name: 'shared-critic',
+    description: 'Company-wide adversarial reviewer.',
     scope: 'tenant',
     type: 'critic',
     model: null,
@@ -29,6 +30,7 @@ const tenantRows: SubagentRow[] = [
   },
   {
     name: 'worker',
+    description: 'General-purpose agent for multi-step tasks.',
     scope: 'builtin',
     type: 'worker',
     model: null,
@@ -50,6 +52,9 @@ describe('WorkspaceSubagentsSection', () => {
     expect(html).toContain('shared-critic');
     expect(html).toContain('tenant');
     expect(html).toContain('builtin');
+    // whenToUse description surfaces on every row (CC parity)
+    expect(html).toContain('Company-wide adversarial reviewer.');
+    expect(html).toContain('General-purpose agent for multi-step tasks.');
   });
 
   it('offers delete only on tenant rows and fork on builtin rows', () => {

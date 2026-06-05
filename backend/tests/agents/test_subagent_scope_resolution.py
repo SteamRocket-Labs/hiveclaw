@@ -30,7 +30,7 @@ TENANT_ID = uuid.UUID("00000000-0000-0000-0000-00000000b001")
 
 
 def _spec(name: str, prompt: str) -> SubagentSpec:
-    return SubagentSpec(name=name, type="explorer", system_prompt=prompt)
+    return SubagentSpec(name=name, description="d", type="explorer", system_prompt=prompt)
 
 
 def test_agent_store_roundtrip(tmp_path):
@@ -110,7 +110,7 @@ def test_list_merges_and_marks_scope(tmp_path):
 def test_list_skips_filename_frontmatter_name_mismatch(tmp_path):
     agent_base = tmp_path / str(AGENT_ID) / "subagents"
     agent_base.mkdir(parents=True)
-    (agent_base / "foo.md").write_text("---\nname: bar\ntype: explorer\n---\nbody\n", encoding="utf-8")
+    (agent_base / "foo.md").write_text("---\nname: bar\ndescription: d\ntype: explorer\n---\nbody\n", encoding="utf-8")
 
     rows = list_subagent_definitions(agent_id=AGENT_ID, tenant_id=None, agent_data_dir=tmp_path)
     assert all(row["name"] != "bar" for row in rows)

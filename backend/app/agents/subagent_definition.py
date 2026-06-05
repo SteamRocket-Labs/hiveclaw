@@ -24,7 +24,13 @@ from typing import cast
 
 import yaml
 
-from app.agents.subagent import _TYPE_PRESETS, SUBAGENT_TYPE_EXPLORER, ForkLevel, SubagentSpec
+from app.agents.subagent import (
+    _TYPE_PRESETS,
+    SUBAGENT_TYPE_EXPLORER,
+    ForkLevel,
+    SubagentSpec,
+    builtin_type_description,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -127,8 +133,15 @@ def parse_subagent_definition(text: str) -> SubagentSpec:
         raise ValueError("subagent definition missing required 'name'")
     name = validate_subagent_name(raw_name)
 
+    # CC parity (parseAgentFromMarkdown): 'description' is required — it is the
+    # whenToUse the parent model selects on; a definition without it is unusable.
+    description = str(front.get("description") or "").strip()
+    if not description:
+        raise ValueError("subagent definition missing required 'description' (when should the parent use it?)")
+
     return SubagentSpec(
         name=name,
+        description=description,
         type=str(front.get("type") or SUBAGENT_TYPE_EXPLORER),
         allowed_tools=_coerce_tool_list(front, "allowed_tools"),
         excluded_tools=_coerce_tool_list(front, "excluded_tools"),
@@ -140,10 +153,19 @@ def parse_subagent_definition(text: str) -> SubagentSpec:
 
 
 def render_subagent_definition(spec: SubagentSpec) -> str:
-    """Render a SubagentSpec back to 定义.md text (round-trips ``parse``)."""
+    """Render a SubagentSpec back to 定义.md text (round-trips ``parse``).
+
+    Write-side mirror of the parse guard: anything rendered must read back, so
+    an empty ``description`` is rejected here instead of producing a file that
+    the next load refuses.
+    """
+
+    if not spec.description.strip():
+        raise ValueError("subagent definition requires a non-empty 'description' (when should the parent use it?)")
 
     front = {
         "name": spec.name,
+        "description": spec.description,
         "type": spec.type,
         "allowed_tools": list(spec.allowed_tools),
         "excluded_tools": list(spec.excluded_tools),
@@ -271,6 +293,7 @@ def resolve_subagent_definition(
 def _definition_row(spec: SubagentSpec, scope: str) -> dict:
     return {
         "name": spec.name,
+        "description": spec.description,
         "scope": scope,
         "type": spec.type,
         "model": spec.model,
@@ -318,6 +341,7 @@ def list_subagent_definitions(
             continue  # custom definition shadows the builtin row
         rows[builtin_type] = {
             "name": builtin_type,
+            "description": builtin_type_description(builtin_type),
             "scope": SCOPE_BUILTIN,
             "type": builtin_type,
             "model": None,

@@ -147,6 +147,53 @@ async def test_spawn_tool_resolves_model_and_spawns(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_spawn_tool_inline_type_selects_builtin(monkeypatch):
+    """CC parity: all three builtin types are reachable from the spawn surface."""
+
+    import app.tools.handlers.subagent as handler_mod
+
+    captured: dict = {}
+
+    async def fake_resolve(agent_id):
+        return SimpleNamespace(model="x"), None, SimpleNamespace(name="HR")
+
+    async def fake_spawn(ctx, spec, task, **kwargs):
+        captured["spec"] = spec
+        return SubagentHandle(
+            name=spec.name,
+            trace_id="",
+            depth=2,
+            result=SubagentResult(name=spec.name, type=spec.type, status="completed", content="ok"),
+        )
+
+    monkeypatch.setattr(handler_mod, "_resolve_parent_runtime", fake_resolve)
+    monkeypatch.setattr(handler_mod, "spawn_subagent", fake_spawn)
+
+    out = await handler_mod.spawn_subagent_tool(_tool_request({"task": "verify this", "type": "critic"}))
+    data = json.loads(out)
+    assert data["ok"] is True
+    assert data["type"] == "critic"
+    assert captured["spec"].type == "critic"
+    assert captured["spec"].name == "critic"  # name defaults to the type
+
+
+@pytest.mark.asyncio
+async def test_spawn_tool_rejects_unknown_inline_type(monkeypatch):
+    import app.tools.handlers.subagent as handler_mod
+
+    async def fake_resolve(agent_id):
+        return SimpleNamespace(model="x"), None, SimpleNamespace(name="HR")
+
+    monkeypatch.setattr(handler_mod, "_resolve_parent_runtime", fake_resolve)
+
+    out = await handler_mod.spawn_subagent_tool(_tool_request({"task": "t", "type": "bogus"}))
+    data = json.loads(out)
+    assert data["ok"] is False
+    assert "bogus" in data["error"]
+    assert "explorer" in data["error"]  # lists the valid builtin types
+
+
+@pytest.mark.asyncio
 async def test_spawn_tool_can_load_persistent_definition(monkeypatch, tmp_path):
     import app.tools.handlers.subagent as handler_mod
     from app.agents.subagent_definition import definition_store_for_tenant
@@ -157,6 +204,7 @@ async def test_spawn_tool_can_load_persistent_definition(monkeypatch, tmp_path):
     definition_store_for_tenant(tenant_id, agent_data_dir=tmp_path).save(
         SubagentSpec(
             name="critic-def",
+            description="Persistent critic for diff review.",
             type="critic",
             allowed_tools=("read_file",),
             max_tool_rounds=3,
@@ -238,10 +286,10 @@ async def test_spawn_tool_agent_definition_wins_and_memory_follows(monkeypatch, 
     agent_id = request.context.agent_id
 
     definition_store_for_tenant(tenant_id, agent_data_dir=tmp_path).save(
-        SubagentSpec(name="dup", type="explorer", system_prompt="tenant version")
+        SubagentSpec(name="dup", description="d", type="explorer", system_prompt="tenant version")
     )
     definition_store_for_agent(agent_id, agent_data_dir=tmp_path).save(
-        SubagentSpec(name="dup", type="explorer", system_prompt="agent version")
+        SubagentSpec(name="dup", description="d", type="explorer", system_prompt="agent version")
     )
 
     out = await handler_mod.spawn_subagent_tool(request)
@@ -264,7 +312,7 @@ async def test_spawn_tool_tenant_fallback_memory_stays_tenant(monkeypatch, tmp_p
     request = _tool_request({"task": "scout", "definition_name": "shared"}, tenant_id=tenant_id)
 
     definition_store_for_tenant(tenant_id, agent_data_dir=tmp_path).save(
-        SubagentSpec(name="shared", type="explorer", system_prompt="tenant shared")
+        SubagentSpec(name="shared", description="d", type="explorer", system_prompt="tenant shared")
     )
 
     out = await handler_mod.spawn_subagent_tool(request)
@@ -287,10 +335,10 @@ async def test_spawn_tool_definition_not_found_lists_both_scopes(monkeypatch, tm
     agent_id = request.context.agent_id
 
     definition_store_for_agent(agent_id, agent_data_dir=tmp_path).save(
-        SubagentSpec(name="mine", type="explorer", system_prompt="agent def")
+        SubagentSpec(name="mine", description="d", type="explorer", system_prompt="agent def")
     )
     definition_store_for_tenant(tenant_id, agent_data_dir=tmp_path).save(
-        SubagentSpec(name="ours", type="critic", system_prompt="tenant def")
+        SubagentSpec(name="ours", description="d", type="critic", system_prompt="tenant def")
     )
 
     out = await handler_mod.spawn_subagent_tool(request)
@@ -303,6 +351,10 @@ async def test_spawn_tool_definition_not_found_lists_both_scopes(monkeypatch, tm
     assert available["ours"] == "tenant"
     # Builtin template rows included so the model can self-correct to inline spawn.
     assert available["explorer"] == "builtin"
+    # CC parity: every row carries its whenToUse so the model can pick by purpose.
+    descriptions = {row["name"]: row["description"] for row in data["available"]}
+    assert descriptions["mine"] == "d"
+    assert descriptions["explorer"]  # builtin whenToUse is non-empty
 
 
 @pytest.mark.asyncio
@@ -314,7 +366,7 @@ async def test_spawn_tool_agent_definition_resolves_without_tenant(monkeypatch, 
     agent_id = request.context.agent_id
 
     definition_store_for_agent(agent_id, agent_data_dir=tmp_path).save(
-        SubagentSpec(name="mine", type="explorer", system_prompt="agent def")
+        SubagentSpec(name="mine", description="d", type="explorer", system_prompt="agent def")
     )
 
     out = await handler_mod.spawn_subagent_tool(request)

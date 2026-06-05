@@ -74,7 +74,7 @@ export default function AgentSubagentsSection({ agentId, canManage }: AgentSubag
     setEditorName(template?.name ?? '');
     setEditorText(
       template?.definition ??
-        `---\nname: \ntype: explorer\nallowed_tools: []\nexcluded_tools: []\nmodel: null\nmax_tool_rounds: null\nisolation: none\n---\n\n`,
+        `---\nname: \ndescription: \ntype: explorer\nallowed_tools: []\nexcluded_tools: []\nmodel: null\nmax_tool_rounds: null\nisolation: none\n---\n\n`,
     );
     setEditorMode('create');
   };
@@ -183,7 +183,21 @@ export default function AgentSubagentsSection({ agentId, canManage }: AgentSubag
               {row.model && (
                 <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{row.model}</span>
               )}
-              <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginLeft: 'auto' }}>
+              <span
+                title={row.description}
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  fontSize: '12px',
+                  color: 'var(--text-tertiary)',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                }}
+              >
+                {row.description}
+              </span>
+              <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginLeft: 'auto', flexShrink: 0 }}>
                 {toolFaceSummary(row)}
               </span>
             </div>

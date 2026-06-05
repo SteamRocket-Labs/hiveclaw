@@ -117,6 +117,11 @@ class AgentInvocationRequest:
     memory_messages: list[dict] | None = None
     session_context: SessionContext | None = None
     system_prompt_suffix: str = ""
+    # CC subagent semantics (replace, not layer): when set, this text IS the
+    # entire system prompt — no host soul/memory/skills/tasks are assembled
+    # around it. Subagent spawn sets this; channel/delegation paths keep using
+    # system_prompt_suffix, whose layered semantics are unchanged.
+    standalone_system_prompt: str = ""
     tool_executor: ToolExecutor | None = None
     cancel_event: asyncio.Event | None = None
     initial_tools: list[dict] | None = None
@@ -295,6 +300,11 @@ async def _build_system_prompt(
     resolved_memory_context: str,
     current_user_name: str | None = None,
 ) -> str:
+    # CC subagent semantics: a standalone prompt IS the whole frozen prefix —
+    # the spawned agent is a clean specialist, not the host plus a suffix.
+    standalone = (request.standalone_system_prompt or "").strip()
+    if standalone:
+        return standalone
     if current_user_name is None:
         current_user_name = await _resolve_current_user_name(request.user_id)
     del tenant_id  # reserved for future prompt builders
@@ -346,6 +356,11 @@ async def _resolve_memory_context(
     # ALWAYS load memory — even when prompt_prefix is cached.
     # The engine injects memory as a dynamic suffix outside the frozen prefix,
     # so fresh memory can vary without invalidating the stable system prompt cache.
+    # CC subagent semantics: a standalone-prompt invocation is a clean specialist —
+    # the HOST agent's memory pyramid must not leak into its context. (Its own
+    # subagent 记忆.md is appended to the standalone prompt by the spawn layer.)
+    if (request.standalone_system_prompt or "").strip():
+        return ""
     parts: list[str] = []
     session_id = request.memory_session_id
     if not session_id and request.session_context:
@@ -437,6 +452,8 @@ async def _resolve_memory_navigation_context(
     request: AgentInvocationRequest,
     tenant_id: uuid.UUID | None,
 ) -> str:
+    if (request.standalone_system_prompt or "").strip():
+        return ""  # CC subagent semantics: no host memory navigation
     if not request.agent_id:
         return ""
 
@@ -475,6 +492,8 @@ async def _resolve_retrieval_context(
     request: AgentInvocationRequest,
     tenant_id: uuid.UUID | None,
 ) -> str:
+    if (request.standalone_system_prompt or "").strip():
+        return ""  # CC subagent semantics: no host retrieval context
     query = _last_user_query(request.messages)
     if not query:
         return ""
@@ -1060,6 +1079,7 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
         memory_messages=request.memory_messages,
         session_context=request.session_context,
         system_prompt_suffix=request.system_prompt_suffix,
+        standalone_system_prompt=request.standalone_system_prompt,
         tool_executor=request.tool_executor,
         cancel_event=request.cancel_event,
         initial_tools=request.initial_tools or (get_combined_openai_tools() if request.agent_id is None else None),

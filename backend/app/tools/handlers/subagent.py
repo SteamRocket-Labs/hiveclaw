@@ -19,7 +19,13 @@ from typing import Any
 
 from sqlalchemy import select
 
-from app.agents.subagent import SubagentSpawnContext, SubagentSpec, spawn_subagent
+from app.agents.subagent import (
+    _TYPE_PRESETS,
+    SUBAGENT_TYPE_EXPLORER,
+    SubagentSpawnContext,
+    SubagentSpec,
+    spawn_subagent,
+)
 from app.agents.subagent_definition import (
     SCOPE_AGENT,
     list_subagent_definitions,
@@ -86,7 +92,9 @@ async def _resolve_model_override(model_name: str, tenant_id: uuid.UUID | None) 
         except ValueError:
             model_id = None
         if model_id is not None:
-            return (await db.execute(select(LLMModel).where(LLMModel.id == model_id, *base_filters))).scalar_one_or_none()
+            return (
+                await db.execute(select(LLMModel).where(LLMModel.id == model_id, *base_filters))
+            ).scalar_one_or_none()
 
         return (
             await db.execute(
@@ -104,13 +112,21 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
         "task": {
             "type": "string",
             "description": (
-                "The self-contained task for the spawned explorer. It runs in isolation with only "
+                "The self-contained task for the spawned subagent. It runs in isolation with only "
                 "this task as context and returns a conclusion digest — not its intermediate steps."
+            ),
+        },
+        "type": {
+            "type": "string",
+            "enum": ["explorer", "worker", "critic"],
+            "description": (
+                "Built-in subagent type for inline spawns (ignored when definition_name is set). "
+                "Defaults to 'explorer'."
             ),
         },
         "name": {
             "type": "string",
-            "description": "Optional short name for the explorer (e.g. 'market-scout'). Defaults to 'explorer'.",
+            "description": "Optional short name for the subagent (e.g. 'market-scout'). Defaults to the type name.",
         },
         "definition_name": {
             "type": "string",
@@ -122,7 +138,7 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
         },
         "max_tool_rounds": {
             "type": "integer",
-            "description": "Optional cap on the explorer's tool rounds (default 8).",
+            "description": "Optional cap on the subagent's tool rounds (default 8).",
         },
     },
     "required": ["task"],
@@ -133,10 +149,17 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
     ToolMeta(
         name="spawn_subagent",
         description=(
-            "Spawn a lightweight read-only explorer subagent to investigate one self-contained task "
-            "in isolation and return a conclusion digest. Use this to parallelize exploration or to "
-            "keep a noisy sub-investigation out of your own context. The explorer has read-only web + "
-            "file + memory tools, cannot delegate or spawn further, and runs under the same governance "
+            "Spawn a lightweight subagent to handle one self-contained task in isolation and return a "
+            "conclusion digest. Use this to parallelize work or keep a noisy sub-investigation out of "
+            "your own context. Built-in types: "
+            "'explorer' — fast READ-ONLY reconnaissance over files and the web; use for finding files, "
+            "searching content, and answering questions about a large body of material. "
+            "'worker' — general-purpose agent that can read AND edit workspace files; use to complete "
+            "one well-scoped multi-step task end to end. "
+            "'critic' — read-only verification specialist; pass it the original task plus the claims or "
+            "artifacts to check and it returns a PASS/FAIL/PARTIAL verdict with evidence. "
+            "Named definitions (via definition_name) override type, tools, model, and prompt from their "
+            "stored 定义.md. Subagents cannot delegate or spawn further and run under the same governance "
             "as you. To hand work to another standalone digital employee, use delegate_to_agent instead."
         ),
         parameters=_SPAWN_PARAMETERS,
@@ -178,29 +201,42 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
             return _json({"ok": False, "error": str(exc)})
         if resolved is None:
             # §12.4: attach the merged available list (agent + tenant + builtin
-            # template rows) so the model can self-correct — builtins spawn via
-            # inline `name`/type, not via definition_name.
+            # template rows) with their whenToUse descriptions so the model can
+            # self-correct — builtins spawn via inline `type`, not definition_name.
             available = list_subagent_definitions(agent_id=agent_id, tenant_id=tenant_id)
             return _json(
                 {
                     "ok": False,
                     "error": (
                         f"subagent definition {definition_name!r} not found in agent or tenant scope. "
-                        "Builtin types (scope=builtin) are inline templates: spawn them via 'name' without "
+                        "Builtin types (scope=builtin) are inline templates: spawn them via 'type' without "
                         "definition_name."
                     ),
-                    "available": [{"name": row["name"], "scope": row["scope"]} for row in available],
+                    "available": [
+                        {"name": row["name"], "scope": row["scope"], "description": row.get("description", "")}
+                        for row in available
+                    ],
                 }
             )
         spec = resolved.spec
         definition_scope = resolved.scope
     else:
-        name = str(request.arguments.get("name") or "explorer").strip() or "explorer"
+        subagent_type = str(request.arguments.get("type") or SUBAGENT_TYPE_EXPLORER).strip()
+        if subagent_type not in _TYPE_PRESETS:
+            return _json(
+                {
+                    "ok": False,
+                    "error": (
+                        f"unknown builtin subagent type {subagent_type!r}; expected one of {sorted(_TYPE_PRESETS)}"
+                    ),
+                }
+            )
+        name = str(request.arguments.get("name") or subagent_type).strip() or subagent_type
         try:
             name = validate_subagent_name(name)
         except ValueError as exc:
             return _json({"ok": False, "error": str(exc)})
-        spec = SubagentSpec(name=name, type="explorer", max_tool_rounds=max_tool_rounds)
+        spec = SubagentSpec(name=name, type=subagent_type, max_tool_rounds=max_tool_rounds)
 
     # §12.5: memory follows the definition's scope — agent-private definitions
     # accumulate craft in the agent workspace; tenant definitions (and inline

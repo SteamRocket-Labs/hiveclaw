@@ -20,6 +20,7 @@ vi.mock('react-i18next', () => ({
 const listRows: SubagentRow[] = [
   {
     name: 'market-scout',
+    description: 'Market research scout for DeFi landscape questions.',
     scope: 'agent',
     type: 'explorer',
     model: null,
@@ -30,6 +31,7 @@ const listRows: SubagentRow[] = [
   },
   {
     name: 'shared-critic',
+    description: 'Company-wide adversarial reviewer.',
     scope: 'tenant',
     type: 'critic',
     model: 'claude-x',
@@ -40,6 +42,7 @@ const listRows: SubagentRow[] = [
   },
   {
     name: 'explorer',
+    description: 'Fast read-only agent specialized for exploring codebases.',
     scope: 'builtin',
     type: 'explorer',
     model: null,
@@ -75,6 +78,9 @@ describe('AgentSubagentsSection', () => {
     expect(html).toContain('builtin');
     // model surfaces on the row when set
     expect(html).toContain('claude-x');
+    // whenToUse description surfaces on every row (CC parity)
+    expect(html).toContain('Market research scout for DeFi landscape questions.');
+    expect(html).toContain('Fast read-only agent specialized for exploring codebases.');
   });
 
   it('shows the new-definition button only with manage access', () => {

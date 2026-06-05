@@ -32,7 +32,7 @@ export default function WorkspaceSubagentsSection() {
     setActionError(null);
     setEditorName('');
     setEditorText(
-      `---\nname: \ntype: explorer\nallowed_tools: []\nexcluded_tools: []\nmodel: null\nmax_tool_rounds: null\nisolation: none\n---\n\n`,
+      `---\nname: \ndescription: \ntype: explorer\nallowed_tools: []\nexcluded_tools: []\nmodel: null\nmax_tool_rounds: null\nisolation: none\n---\n\n`,
     );
     setEditorMode('create');
   };
@@ -43,7 +43,7 @@ export default function WorkspaceSubagentsSection() {
       // Builtin rows are templates: editing forks them into a named tenant definition.
       setEditorName('');
       setEditorText(
-        `---\nname: \ntype: ${row.type}\nallowed_tools: []\nexcluded_tools: []\nmodel: null\nmax_tool_rounds: null\nisolation: none\n---\n\n`,
+        `---\nname: \ndescription: \ntype: ${row.type}\nallowed_tools: []\nexcluded_tools: []\nmodel: null\nmax_tool_rounds: null\nisolation: none\n---\n\n`,
       );
       setEditorMode('create');
       return;
@@ -133,7 +133,21 @@ export default function WorkspaceSubagentsSection() {
               <span style={scopeBadgeStyle(row.scope)}>{t(`agent.subagents.scope.${row.scope}`)}</span>
               <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{row.type}</span>
               {row.model && <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{row.model}</span>}
-              <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginLeft: 'auto' }}>
+              <span
+                title={row.description}
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  fontSize: '12px',
+                  color: 'var(--text-tertiary)',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                }}
+              >
+                {row.description}
+              </span>
+              <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginLeft: 'auto', flexShrink: 0 }}>
                 {toolFaceSummary(row)}
               </span>
               <span style={{ display: 'flex', gap: '8px' }}>

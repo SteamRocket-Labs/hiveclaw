@@ -104,6 +104,71 @@ def test_resolve_tools_dedups_exclusions():
     assert "custom_tool" in excluded
 
 
+# --- type baseline prompts (CC built-in agent ports) -------------------------
+
+
+def test_builtin_type_prompts_exist_and_nonempty():
+    from app.agents.subagent import _TYPE_PRESETS, builtin_type_prompt
+
+    anchors = {
+        "explorer": "READ-ONLY",  # CC Explore port
+        "worker": "agent for Hive",  # CC general-purpose port
+        "critic": "VERDICT",  # CC verification port
+    }
+    for builtin_type in _TYPE_PRESETS:
+        prompt = builtin_type_prompt(builtin_type)
+        assert prompt and prompt.strip(), f"builtin type {builtin_type!r} must ship a baseline prompt"
+        assert anchors[builtin_type] in prompt
+
+
+def test_builtin_type_descriptions_exist_and_nonempty():
+    from app.agents.subagent import _TYPE_PRESETS, builtin_type_description
+
+    for builtin_type in _TYPE_PRESETS:
+        description = builtin_type_description(builtin_type)
+        assert description and description.strip(), f"builtin type {builtin_type!r} must ship a whenToUse"
+    assert builtin_type_description("made-up-type") == ""
+
+
+def test_builtin_type_prompt_unknown_type_is_empty():
+    from app.agents.subagent import builtin_type_prompt
+
+    assert builtin_type_prompt("made-up-type") == ""
+
+
+@pytest.mark.asyncio
+async def test_spawn_builtin_type_injects_baseline_prompt():
+    captured: list = []
+    result = await _spawn_one(
+        _ctx(),
+        SubagentJob(spec=explorer_spec("scout"), task="t"),
+        invoke=_ok_invoke(capture=captured),
+    )
+    assert result.ok
+    assert "READ-ONLY" in captured[0].standalone_system_prompt
+
+
+@pytest.mark.asyncio
+async def test_spawn_custom_prompt_replaces_baseline():
+    captured: list = []
+    spec = SubagentSpec(name="scout", type="explorer", system_prompt="Custom marching orders.")
+    result = await _spawn_one(_ctx(), SubagentJob(spec=spec, task="t"), invoke=_ok_invoke(capture=captured))
+    assert result.ok
+    # Mirror of the allowed_tools preset fallback: an explicit body REPLACES
+    # the type baseline (CC semantics: the definition body IS the prompt).
+    assert "Custom marching orders." in captured[0].standalone_system_prompt
+    assert "READ-ONLY MODE" not in captured[0].standalone_system_prompt
+
+
+@pytest.mark.asyncio
+async def test_spawn_unknown_type_has_no_baseline():
+    captured: list = []
+    spec = SubagentSpec(name="x", type="bespoke", system_prompt="", allowed_tools=("read_file",))
+    result = await _spawn_one(_ctx(), SubagentJob(spec=spec, task="t"), invoke=_ok_invoke(capture=captured))
+    assert result.ok
+    assert captured[0].standalone_system_prompt == ""
+
+
 # --- message assembly (fork) ------------------------------------------------
 
 
@@ -339,8 +404,8 @@ async def test_spawn_injects_memory_and_records_distilled_how(tmp_path, monkeypa
     result = await _spawn_one(ctx, SubagentJob(spec=explorer_spec("e"), task="t"), invoke=invoke)
 
     assert result.ok
-    assert "Subagent Memory" in captured[0].system_prompt_suffix
-    assert "Prefer official docs." in captured[0].system_prompt_suffix
+    assert "Subagent Memory" in captured[0].standalone_system_prompt
+    assert "Prefer official docs." in captured[0].standalone_system_prompt
     assert "Avoid thin snippets." in memory_store.load("e")
 
 
@@ -437,5 +502,7 @@ async def test_spawn_disable_tools_reaches_invocation_request():
     assert captured[0].disable_tools is True
     # Default stays off — existing subagents are untouched.
     captured.clear()
-    await _spawn_one(_ctx(), SubagentJob(spec=SubagentSpec(name="e", type="explorer"), task="t"), invoke=_ok_invoke(capture=captured))
+    await _spawn_one(
+        _ctx(), SubagentJob(spec=SubagentSpec(name="e", type="explorer"), task="t"), invoke=_ok_invoke(capture=captured)
+    )
     assert captured[0].disable_tools is False

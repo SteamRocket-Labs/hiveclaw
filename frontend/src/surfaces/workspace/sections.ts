@@ -6,6 +6,7 @@ export type WorkspaceSectionTab =
   | 'hr'
   | 'tools'
   | 'skills'
+  | 'subagents'
   | 'quotas'
   | 'users'
   | 'org'
@@ -31,6 +32,7 @@ export const WORKSPACE_SECTIONS: WorkspaceSection[] = [
   { tab: 'hr', slug: 'hr', path: '/enterprise/hr', labelKey: 'enterprise.tabs.hr', fallbackLabel: 'HR Agent' },
   { tab: 'tools', slug: 'tools', path: '/enterprise/tools', labelKey: 'enterprise.tabs.tools', fallbackLabel: 'Tools' },
   { tab: 'skills', slug: 'skills', path: '/enterprise/skills', labelKey: 'enterprise.tabs.skills', fallbackLabel: 'Skills' },
+  { tab: 'subagents', slug: 'subagents', path: '/enterprise/subagents', labelKey: 'enterprise.tabs.subagents', fallbackLabel: 'Sub-agents' },
   { tab: 'quotas', slug: 'quotas', path: '/enterprise/quotas', labelKey: 'enterprise.tabs.quotas', fallbackLabel: 'Quotas' },
   { tab: 'users', slug: 'users', path: '/enterprise/users', labelKey: 'enterprise.tabs.users', fallbackLabel: 'Users' },
   { tab: 'org', slug: 'org', path: '/enterprise/org', labelKey: 'enterprise.tabs.org', fallbackLabel: 'Org Structure' },

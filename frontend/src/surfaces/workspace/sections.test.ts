@@ -20,6 +20,7 @@ describe('workspace section routing', () => {
       '/enterprise/hr',
       '/enterprise/tools',
       '/enterprise/skills',
+      '/enterprise/subagents',
       '/enterprise/quotas',
       '/enterprise/users',
       '/enterprise/org',

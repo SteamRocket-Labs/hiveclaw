@@ -260,15 +260,30 @@ def test_enterprise_crud_for_org_admin(monkeypatch, data_root):
     names = {row["name"] for row in listed.json()["subagents"]}
     assert "shared-critic" in names
 
+    # Detail returns the full definition text — the edit flow must round-trip
+    # the body, never reconstruct frontmatter from list rows (C4 fix).
+    detail = client.get("/enterprise/subagents/shared-critic")
+    assert detail.status_code == 200
+    payload = detail.json()
+    assert payload["scope"] == "tenant"
+    assert "shared critic prompt" in payload["definition"]
+    assert payload["memory"]["exists"] is False
+
     assert client.delete("/enterprise/subagents/shared-critic").status_code == 200
     saved = definition_store_for_tenant(tenant_id, agent_data_dir=data_root).load("shared-critic")
     assert saved is None
+
+
+def test_enterprise_detail_404_when_absent(monkeypatch, data_root):
+    client, _db, _user = _build_client(role="org_admin")
+    assert client.get("/enterprise/subagents/ghost").status_code == 404
 
 
 def test_enterprise_forbidden_for_member(monkeypatch, data_root):
     client, _db, _user = _build_client(role="member")
 
     assert client.get("/enterprise/subagents").status_code == 403
+    assert client.get("/enterprise/subagents/x").status_code == 403
     assert (
         client.put(
             "/enterprise/subagents/x",

@@ -1223,6 +1223,7 @@
       "kb": "知识库",
       "approvals": "审批",
       "skills": "技能库",
+      "subagents": "子代理",
       "quotas": "用量配额",
       "users": "团队成员",
       "invites": "邀请码",
@@ -1460,6 +1461,14 @@
       "textPlaceholder": "例：欢迎使用 HiveClaw！创建你的第一个数字员工开始体验。",
       "description": "在页面顶部显示公告横幅，所有团队成员可见。",
       "preview": "预览"
+    },
+    "subagents": {
+      "title": "子代理公司库",
+      "description": "策展全公司共享的 worker 定义，公司内所有 agent 均可派生使用。内置类型是只读模板；agent 还可保留自己的 agent 级定义并优先生效。",
+      "empty": "公司库还没有定义。可以从零创建，或从内置模板派生。",
+      "createTitle": "新建公司库定义",
+      "editTitle": "编辑公司库定义",
+      "deleteConfirm": "删除公司库定义 \"{{name}}\"？已被 agent 级副本遮蔽的员工不受影响。"
     }
   },
   "notifications": {

@@ -18,6 +18,7 @@ import WorkspaceLlmSection from './workspace/WorkspaceLlmSection';
 import WorkspaceOrgSection from './workspace/WorkspaceOrgSection';
 import WorkspaceQuotasSection from './workspace/WorkspaceQuotasSection';
 import WorkspaceSkillsSection from './workspace/WorkspaceSkillsSection';
+import WorkspaceSubagentsSection from './workspace/WorkspaceSubagentsSection';
 import WorkspaceHrAgentSection from './workspace/WorkspaceHrAgentSection';
 import WorkspaceMemorySection from './workspace/WorkspaceMemorySection';
 import WorkspaceToolsSection from './workspace/WorkspaceToolsSection';
@@ -651,7 +652,7 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
                     <div className="tabs">
                         {([
                             { tabs: ['info', 'org', 'users', 'invites'] as const },
-                            { tabs: ['llm', 'tools', 'skills', 'hr'] as const },
+                            { tabs: ['llm', 'tools', 'skills', 'subagents', 'hr'] as const },
                             { tabs: ['quotas', 'approvals', 'audit'] as const },
                         ]).flatMap((group, gi) => [
                             ...(gi > 0 ? [<div key={`sep-${gi}`} className="tab-separator" />] : []),
@@ -730,6 +731,9 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
 
                 {/* ── Skills Tab ── */}
                 {activeTab === 'skills' && <WorkspaceSkillsSection />}
+
+                {/* ── Sub-agents Company Library (C4, §12.8) ── */}
+                {activeTab === 'subagents' && <WorkspaceSubagentsSection />}
 
                 {/* ── Memory Config Tab ── */}
                 {activeTab === 'memory' && <WorkspaceMemorySection selectedTenantId={selectedTenantId} />}

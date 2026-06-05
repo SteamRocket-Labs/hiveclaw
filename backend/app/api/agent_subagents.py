@@ -211,6 +211,30 @@ async def list_tenant_subagents(current_user: User = Depends(get_current_user)):
     return {"subagents": list_subagent_definitions(agent_id=None, tenant_id=tenant_id)}
 
 
+@enterprise_router.get("/{name}")
+async def get_tenant_subagent(
+    name: str,
+    current_user: User = Depends(get_current_user),
+):
+    """Full definition text for the edit flow — list rows carry only the spec
+    summary, and reconstructing frontmatter from them would drop the body."""
+
+    tenant_id = _require_tenant_admin(current_user)
+    try:
+        spec = definition_store_for_tenant(tenant_id).load(name)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if spec is None:
+        raise HTTPException(status_code=404, detail="No tenant-level definition with this name")
+    return {
+        "name": spec.name,
+        "scope": SCOPE_TENANT,
+        "definition": render_subagent_definition(spec),
+        "spec": _spec_summary(spec),
+        "memory": _memory_summary(memory_store_for_tenant(tenant_id), name),
+    }
+
+
 @enterprise_router.put("/{name}")
 async def put_tenant_subagent(
     name: str,

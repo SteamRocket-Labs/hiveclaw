@@ -318,7 +318,7 @@ async def fanout_subagents(
 | C1 | 配置面：agent 级 store + 解析链 + 记忆跟随作用域（§12） | ✅ done（2026-06-05） | 本切口 commit |
 | C2 | 配置面：7 端点 API（§12.7） | ✅ done（2026-06-05） | 本切口 commit |
 | C3 | 配置面：AgentDetail Sub-agents tab（§12.8） | ✅ done（2026-06-05） | 本切口 commit |
-| C4 | 配置面：Company Admin tenant 库管理（§12.8） | 📋 已设计待实施 | — |
+| C4 | 配置面：Company Admin tenant 库管理（§12.8） | ✅ done（2026-06-05） | 本切口 commit |
 
 ---
 
@@ -427,9 +427,12 @@ DELETE /agents/{agent_id}/subagents/{name}       # 删除 agent 级定义（tena
 
 # tenant 级（org admin 守卫）
 GET    /enterprise/subagents
+GET    /enterprise/subagents/{name}   # C4 实施修正：编辑流需定义全文往返（list 行只有 spec 摘要，重建 frontmatter 会丢 body）
 PUT    /enterprise/subagents/{name}
 DELETE /enterprise/subagents/{name}
 ```
+
+> 实施注记（2026-06-05）：原设计 7 端点漏了 enterprise GET detail——§12.8"tenant 库同款列表/编辑"隐含编辑流必须读到定义全文。C4 实施时补为 8 端点；不开 detail 会迫使前端从 list 行重建 frontmatter、静默清空 system prompt body（数据完整性 bug）。
 
 ### 12.8 UI 面
 
@@ -452,8 +455,10 @@ DELETE /enterprise/subagents/{name}
 **C3 实装证据（2026-06-05）**：`api/domains/subagents.ts` 七端点 typed adapter（agent 级 4 + enterprise 3，C4 复用）；`agent-detail/AgentSubagentsSection.tsx` 第四能力模块 = 合并列表（name/scope 徽章/type/model/工具面摘要）→ 详情（定义全文 + 记忆 entry 计数）→ markdown 编辑器（服务端 422 原因直显）；builtin 行只读、"用作模板" fork 成 agent 级；tenant 行编辑提示"保存为本员工 agent 级副本优先生效"；删除仅 agent 级并提示回落；canManage 守卫写入口。AgentDetail.tsx 接线 TABS/TAB_GROUPS（capability 组第六位）/validTabs/渲染块。i18n en+zh 同步（`agent.tabs.subagents`+tooltip / `agent.subagents.*` 15 键，diff 各 +25 行零重排）。测试：`AgentSubagentsSection.test.tsx` 4 例（合并列表 scope 徽章渲染/manage 才有新建/toolFaceSummary 溢出计数+preset 空摘要）；前端全量 159 passed / tsc 静默 / production build 2.26s 过。
 | **C4** Company Admin UI | tenant 库管理 + i18n | admin 守卫渲染 | 管理员策展公司库 |
 
+**C4 实装证据（2026-06-05）**：路由数据驱动接入 = `surfaces/workspace/sections.ts` 加 `subagents` tab + `/enterprise/subagents` 条目（App.tsx WORKSPACE_SETTINGS_SECTIONS.map 自动生成路由），`sections.test.ts` 先红后绿锚定路径表；`WorkspaceLayout.tsx` 导航图标（IconSitemap，tsc 实锤映射表缺项后补）；`pages/workspace/WorkspaceSubagentsSection.tsx` 公司库策展面 = tenant+builtin 行列表（复用 C3 的 scopeBadgeStyle/toolFaceSummary）、tenant 行编辑/删除、builtin 行"用作模板" fork、markdown 编辑器同款；EnterpriseSettings.tsx tab group + 渲染块接线。**API 修正**：补第 8 端点 `GET /enterprise/subagents/{name}`（红测先行：detail 全文往返断言 + 404 + member 403），根因 = list 行只有 spec 摘要，前端重建 frontmatter 会静默丢 system prompt body。i18n en+zh（`enterprise.tabs.subagents` + `enterprise.subagents.*` 6 键）。证据：后端全量 3777 passed / 7 skipped；前端 161 passed / tsc clean / build 2.24s；ruff 干净。
+
 不变量复述：配置面**不新增任何运行时权力**——工具面收窄、capability gate、防递归、governed memory write 全部原样；本节只是给已有治理开人类入口。
 
 ---
 
-> **状态**：设计稿 **v4**（2026-06-05：新增 §12 配置面与作用域，用户拍板"agent 级 + tenant 级双层、AgentDetail 第四能力模块 + Company Admin 公司库"方向；待文档拍板后实施 C1-C4）。v3（2026-06-02：DR 接入从主线抽离为后续阶段，subagent 先成完整源能力；"完整"= 到切口⑥含记忆进化）+ v2 内容（术语边界 + CC agent memory 事实纠正 + 切口拆分 + Memory Control Plane 闸 + §5.1 收窄）保留。取舍（§4）+ 主线切口顺序（§8 v3）+ 三待决已拍板冻结。轴 2（工作流编排，借鉴 CC Workflow 工具）作为独立后续。
+> **状态**：**v4 已实施**（2026-06-05：§12 配置面 C1-C4 全部落地——C1 解析链/C2 八端点 API（7+1 detail 修正）/C3 AgentDetail 第四能力 tab/C4 Company Admin 公司库，每切口 TDD red→green + 独立 commit；终态证据 = 后端 3777 绿 / 前端 161 绿 / tsc / build。设计于同日拍板"agent 级 + tenant 级双层、AgentDetail 第四能力模块 + Company Admin 公司库"方向）。v3（2026-06-02：DR 接入从主线抽离为后续阶段，subagent 先成完整源能力；"完整"= 到切口⑥含记忆进化）+ v2 内容（术语边界 + CC agent memory 事实纠正 + 切口拆分 + Memory Control Plane 闸 + §5.1 收窄）保留。取舍（§4）+ 主线切口顺序（§8 v3）+ 三待决已拍板冻结。轴 2（工作流编排，借鉴 CC Workflow 工具）作为独立后续。

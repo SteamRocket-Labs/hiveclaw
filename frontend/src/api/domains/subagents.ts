@@ -12,6 +12,7 @@
  *   DELETE /agents/{agentId}/subagents/{name}   delete agent-level only (name falls back to tenant)
  *
  *   GET    /enterprise/subagents                tenant company library (org admin)
+ *   GET    /enterprise/subagents/{name}         full definition text for the edit flow
  *   PUT    /enterprise/subagents/{name}
  *   DELETE /enterprise/subagents/{name}
  */
@@ -63,6 +64,7 @@ export const subagentApi = {
     del<{ deleted: string; scope: SubagentScope }>(`/agents/${agentId}/subagents/${encodeURIComponent(name)}`),
 
   enterpriseList: () => get<{ subagents: SubagentRow[] }>(`/enterprise/subagents`),
+  enterpriseGet: (name: string) => get<SubagentDetail>(`/enterprise/subagents/${encodeURIComponent(name)}`),
   enterpriseSave: (name: string, definition: string) =>
     put<SubagentSaveResult>(`/enterprise/subagents/${encodeURIComponent(name)}`, { definition }),
   enterpriseRemove: (name: string) =>

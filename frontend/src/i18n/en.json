@@ -1168,6 +1168,7 @@
       "kb": "Knowledge Base",
       "approvals": "Approvals",
       "skills": "Skills Library",
+      "subagents": "Sub-agents",
       "quotas": "Usage Quotas",
       "users": "Team Members",
       "invites": "Invitation Codes",
@@ -1432,6 +1433,14 @@
       "textPlaceholder": "e.g. Welcome to HiveClaw! Get started by creating your first digital employee.",
       "description": "Display a banner at the top of the page, visible to all team members.",
       "preview": "Preview"
+    },
+    "subagents": {
+      "title": "Sub-agent Company Library",
+      "description": "Curate shared worker definitions every agent in the company can spawn. Builtins are read-only templates; agents may also keep their own agent-level definitions that take precedence.",
+      "empty": "No company definitions yet. Create one from scratch or fork a builtin template.",
+      "createTitle": "New company definition",
+      "editTitle": "Edit company definition",
+      "deleteConfirm": "Delete company definition \"{{name}}\"? Agents whose agent-level copy shadows it are unaffected."
     }
   },
   "notifications": {

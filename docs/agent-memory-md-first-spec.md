@@ -950,6 +950,8 @@ Evidence:
 
 ### P1: PromotionRouter Pure Module
 
+**Status: ✅ DONE (2026-06-04).**
+
 Files:
 
 - `backend/app/memory/promotion_router.py`
@@ -960,6 +962,26 @@ Acceptance:
 - Same input cannot route to skill and workflow simultaneously.
 - Every route has source refs, confidence, and reason.
 - Runtime artifacts can be classified as artifact-only.
+
+Evidence:
+
+- Pure module (zero IO / zero LLM-client imports): `PromotionKind` (6 kinds
+  per §6) + `PromotionSignal` → `fast_path_route()` deterministic pass →
+  `route_promotion_signal()` with injected async `AdjudicatorFn`.
+- Single-candidate invariant: route output is one `PromotionCandidate` or an
+  escalation/hold — skill+workflow simultaneity impossible by construction.
+- Anti-Mem0-V3 enforced: hint/rule conflicts, cross-container hints, and
+  low-confidence durable promotions return `NEEDS_ADJUDICATION`; mechanical
+  code never picks between soul/skill/workflow on semantic evidence.
+- Fail-closed: adjudicator absent / raising / verdict outside
+  `allowed_kinds` → `HELD` with audit reason (`no_adjudicator` /
+  `adjudicator_error` / `verdict_out_of_bounds`); durable kinds without
+  source_refs → `HELD` (`missing_source_refs`).
+- Vocabulary shared with P0: `container_hint` validated against
+  `CONTAINER_CANDIDATES` from `memory/types.py`.
+- Tests: 22 passed (`backend/tests/memory/test_promotion_router.py`) —
+  category rules, lifecycle edges, artifact-only, escalations, adjudication
+  wiring incl. rogue-verdict and no-call-on-unambiguous.
 
 ### P2: Governed T3 Append API
 

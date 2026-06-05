@@ -116,6 +116,8 @@ registered ──本次需要微调──▶ fork ──▶ ephemeral run
 
 ## 4. 办公场景的产品路径（一个心智模型，三个阶段）
 
+> **何时该用 workflow 而非散文 ReAct / skill**——三档执行方式的选择判据与引导面联动设计，见上位文档 `docs/execution-mode-spectrum.md`（2026-06-05 立项，待拍板）。
+
 用户**不应该**看到"临时 workflow / 固定 workflow"两个入口。产品上是一个东西：**自动化流程 / 工作流**。内部是同一条成熟路径的三个阶段：
 
 ```
@@ -752,7 +754,7 @@ alembic heads
 1. **definition 表达力边界**：v1 支持 `sequence`、bounded `fanout/map`、structured `condition`、`gate`、`wait_until`/time suspend。允许 `retry(max_attempts=...)`，但只允许可逆步骤重试；P11 后 v2 开放 `wait_signal_step`，且只能绑定 PostgreSQL-backed Signal + persistent signal-resume consumer；不开放任意 loop、任意 Python/JS 表达式、动态生成新 step。
 2. **condition 谓词形态**：谓词是结构化比较 AST，不是字符串表达式。原子形态为 `{field, op, value}`，`field` 只能指向 `args` 或 structured step output，`op ∈ {eq, ne, gt, lt, gte, lte, contains, exists, in}`；布尔组合仅 `and/or/not`，且嵌套深度有上限。禁止 `eval`、Jinja、Python/JS 表达式、模板求值或任意解释器。
 3. **ephemeral 的"确认后运行"分级**：按风险分级，不按 ephemeral/registered 分级。低风险 ephemeral 可走对话内 definition preview + 用户确认；外部可见、不可逆/敏感、创建/启用 trigger、高预算/高 fanout/长时运行、跨 agent/org/company 资源、或 promote 成 registered 时，必须走 Plan Mode 确认面。预算、fanout、时长阈值进入配置，不硬编码。
-4. **promote 权限**：agent 只能建议 promote，不能自行 promote。流程是 repeated ephemeral evidence → promote proposal → 用户/owner/admin 审批 → compile/admission/capability check → registered workflow version/hash → audit log。
+4. **promote 权限**：agent 只能建议 promote，不能自行 promote。流程是 repeated ephemeral evidence → promote proposal → 用户/owner/admin 审批 → compile/admission/capability check → registered workflow version/hash → audit log。*演进口径（2026-06-05，权威见 `docs/org-agent-asset-rights-model.md` §0/§6.7 解耦三律）：真正的不变量是"source agent 不得自审 + 准入过 gate + admission/provenance 留痕"；审批者当前是人，未来是 Asset Curator Agent（高风险/破例仍 human checkpoint）——实施时本条同步修订，人审不是永久产品上限。*
 5. **registered 权限模型**：拆成可见性与可执行性。`visibility_scope = agent | org | tenant | platform`；`call_policy = allowed_agents / allowed_roles / allowed_orgs`；`owner_type = user | agent | org | tenant | platform`；`status = draft | active | deprecated | revoked`；`definition_version` + `definition_hash` immutable。registered workflow 可见不等于可执行，leaf capability 仍必须逐 run 校验。`platform` scope 只能是出厂策展只读模板，不能由租户产物聚合生成。
 6. **journal 粒度**：fanout 必须 leaf-level journal。结构为 `RuntimeTask(task_type="workflow") -> WorkflowStep -> WorkflowLeafCall`；`WorkflowLeafCall` 至少记录 `run_id`、`step_id`、`leaf_id`、`input_hash`、`definition_hash`、`status`、`result_ref`、`token_usage`、`error`、`started_at`、`finished_at`、`idempotency_key`，避免 8 叶跑完 7 叶后整步重跑。
 

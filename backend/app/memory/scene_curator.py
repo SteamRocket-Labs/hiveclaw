@@ -124,6 +124,22 @@ def find_similar_scenes(
     return hits[:limit]
 
 
+def _resolve_candidate_scene_path(data_root: Path, agent_id: uuid.UUID, scene_path: str) -> Path | None:
+    prefix = "memory/scenes/"
+    normalized = str(scene_path or "").replace("\\", "/")
+    if not normalized.startswith(prefix):
+        return None
+    relative = normalized.removeprefix(prefix)
+    rel_path = Path(relative)
+    if rel_path.is_absolute() or ".." in rel_path.parts or len(rel_path.parts) != 1 or rel_path.suffix.lower() != ".md":
+        return None
+    base = scenes_dir(data_root, agent_id).resolve()
+    target = (base / rel_path).resolve()
+    if base not in target.parents:
+        return None
+    return target
+
+
 def _held(
     data_root: Path,
     agent_id: uuid.UUID,
@@ -274,8 +290,18 @@ def apply_scene_patch(data_root: Path, agent_id: uuid.UUID, candidate: ScenePatc
         )
         return {"applied": False, "reason": f"privacy gate: {privacy.reason}"}
 
-    relative = candidate.scene_path.removeprefix("memory/scenes/")
-    target = scenes_dir(data_root, agent_id) / relative
+    target = _resolve_candidate_scene_path(data_root, agent_id, candidate.scene_path)
+    if target is None:
+        write_distillation_audit(
+            data_root,
+            agent_id,
+            stage="scene_apply",
+            outcome="refused",
+            reason="invalid scene path",
+            detail={"scene_path": candidate.scene_path},
+        )
+        return {"applied": False, "reason": "invalid scene path"}
+
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(privacy.sanitized_text.rstrip() + "\n", encoding="utf-8")
     write_distillation_audit(

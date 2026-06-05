@@ -122,6 +122,7 @@ ResolveCurrentUserName = Callable[[Any], Awaitable[str | None] | str | None]
 BuildSystemPrompt = Callable[[InvocationRequest, Any, str, str | None], Awaitable[str] | str]
 ResolveMemoryContext = Callable[[InvocationRequest, Any], Awaitable[str] | str]
 ResolveRetrievalContext = Callable[[InvocationRequest, Any], Awaitable[str] | str]
+ResolveMemoryNavigationContext = Callable[[InvocationRequest, Any], Awaitable[str] | str]
 GetTools = Callable[[Any, bool], Awaitable[list[dict]] | list[dict]]
 ResolveToolExpansion = Callable[
     [InvocationRequest, str, dict[str, Any]],
@@ -156,6 +157,7 @@ class KernelDependencies:
     estimate_tokens_from_chars: EstimateTokensFromChars
     resolve_tool_expansion: ResolveToolExpansion | None = None
     resolve_retrieval_context: ResolveRetrievalContext | None = None
+    resolve_memory_navigation_context: ResolveMemoryNavigationContext | None = None
     apply_vision_transform: ApplyVisionTransform | None = None
     apply_cache_hints: ApplyCacheHints | None = None
 
@@ -1530,6 +1532,14 @@ class AgentKernel:
                 resolved_retrieval_context = await _maybe_await(
                     self._deps.resolve_retrieval_context(request, runtime_config.tenant_id)
                 )
+            resolved_memory_navigation_context = ""
+            if self._deps.resolve_memory_navigation_context:
+                try:
+                    resolved_memory_navigation_context = await _maybe_await(
+                        self._deps.resolve_memory_navigation_context(request, runtime_config.tenant_id)
+                    )
+                except Exception as exc:  # noqa: BLE001 — navigation is an accelerator, never blocks invocation
+                    logger.debug("[Kernel] Memory navigation skipped for agent %s: %s", request.agent_id, exc)
             current_user_name = await _maybe_await(self._deps.resolve_current_user_name(request.user_id))
 
             # Prompt cache: reuse frozen prefix from session if available
@@ -1585,6 +1595,7 @@ class AgentKernel:
                 dynamic_suffix = build_dynamic_prompt_suffix(
                     active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                     memory_snapshot=resolved_memory_context,
+                    memory_navigation=resolved_memory_navigation_context,
                     retrieval_context=resolved_retrieval_context,
                     system_prompt_suffix=_effective_suffix,
                     budget_profile=budget_profile,
@@ -1616,6 +1627,7 @@ class AgentKernel:
                 dynamic_suffix = build_dynamic_prompt_suffix(
                     active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                     memory_snapshot=resolved_memory_context,
+                    memory_navigation=resolved_memory_navigation_context,
                     retrieval_context=resolved_retrieval_context,
                     system_prompt_suffix=_effective_suffix,
                     budget_profile=budget_profile,
@@ -1993,6 +2005,7 @@ class AgentKernel:
                                         _ptl_dynamic = build_dynamic_prompt_suffix(
                                             active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                                             memory_snapshot=resolved_memory_context,
+                                            memory_navigation=resolved_memory_navigation_context,
                                             retrieval_context=resolved_retrieval_context,
                                             system_prompt_suffix=_effective_suffix,
                                             budget_profile=budget_profile,
@@ -2065,6 +2078,7 @@ class AgentKernel:
                                                 if session_ctx
                                                 else [],
                                                 memory_snapshot=resolved_memory_context,
+                                                memory_navigation=resolved_memory_navigation_context,
                                                 retrieval_context=resolved_retrieval_context,
                                                 system_prompt_suffix=_effective_suffix,
                                                 budget_profile=budget_profile,
@@ -2615,6 +2629,7 @@ class AgentKernel:
                                                 build_dynamic_prompt_suffix(
                                                     active_tool_groups=session_context.active_tool_groups,
                                                     memory_snapshot=resolved_memory_context,
+                                                    memory_navigation=resolved_memory_navigation_context,
                                                     retrieval_context=resolved_retrieval_context,
                                                     system_prompt_suffix=_effective_suffix,
                                                     budget_profile=budget_profile,

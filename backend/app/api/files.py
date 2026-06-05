@@ -57,6 +57,29 @@ def _safe_path(agent_id: uuid.UUID, rel_path: str) -> Path:
     return full
 
 
+def _normalized_rel_path(path: str) -> str:
+    return str(path or "").replace("\\", "/").strip().lstrip("/")
+
+
+def _is_governed_memory_path(path: str) -> bool:
+    normalized = _normalized_rel_path(path)
+    return normalized == "memory" or normalized.startswith("memory/")
+
+
+def _raise_memory_write_guard() -> None:
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="memory/ is governed by the Memory Control Plane; use memory APIs instead of raw file writes.",
+    )
+
+
+def _raise_raw_memory_read_guard() -> None:
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Raw memory files require manage access; use the Knowledge read model for governed memory reads.",
+    )
+
+
 def _skill_guard_detail(report: SkillGuardReport) -> dict:
     return {
         "message": f"SkillGuard blocked skill package: {len(report.blocking_findings)} blocking finding(s).",
@@ -79,7 +102,9 @@ async def list_files(
     db: AsyncSession = Depends(get_db),
 ):
     """List files and directories in an agent's file system."""
-    await check_agent_access(db, current_user, agent_id)
+    _agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if access_level == "use" and _is_governed_memory_path(path):
+        _raise_raw_memory_read_guard()
     target = _safe_path(agent_id, path)
 
     if not target.exists():
@@ -114,7 +139,9 @@ async def read_file(
     db: AsyncSession = Depends(get_db),
 ):
     """Read the content of a file."""
-    await check_agent_access(db, current_user, agent_id)
+    _agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if access_level == "use" and _is_governed_memory_path(path):
+        _raise_raw_memory_read_guard()
     target = _safe_path(agent_id, path)
 
     if not target.exists() or not target.is_file():
@@ -187,6 +214,8 @@ async def download_file(
         except InvalidChannelFileDownloadToken as exc:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
         else:
+            if _is_governed_memory_path(path):
+                _raise_raw_memory_read_guard()
             target = _safe_path(agent_id, path)
             if not target.exists() or not target.is_file():
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
@@ -212,7 +241,9 @@ async def download_file(
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
 
-    await check_agent_access(db, user, agent_id)
+    _agent, access_level = await check_agent_access(db, user, agent_id)
+    if access_level == "use" and _is_governed_memory_path(path):
+        _raise_raw_memory_read_guard()
     target = _safe_path(agent_id, path)
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
@@ -229,6 +260,8 @@ async def write_file(
 ):
     """Write content to a file (create or overwrite)."""
     await check_agent_access(db, current_user, agent_id)
+    if _is_governed_memory_path(path):
+        _raise_memory_write_guard()
     target = _safe_path(agent_id, path)
 
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -247,6 +280,8 @@ async def delete_file(
 ):
     """Delete a file."""
     await check_agent_access(db, current_user, agent_id)
+    if _is_governed_memory_path(path):
+        _raise_memory_write_guard()
     target = _safe_path(agent_id, path)
 
     if not target.exists():

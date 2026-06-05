@@ -906,7 +906,8 @@ type AgentKnowledgeOverview = {
 > **Status (2026-06-05): P0–P10 ALL IMPLEMENTED** — one commit per phase
 > (`60502154` P0 → `28d31666` P1 → `e3fa4480` P2 → `18cf3f5b` P3 →
 > `a2bfdffc` P4 → `8ba6feed` P5 → `1023818f` P6 → `acd661a0` P7 →
-> `a1478e6d` P8 → `7978a6b7` P9 → P10 review closure in the current patch),
+> `a1478e6d` P8 → `7978a6b7` P9 → P10 review closure committed 2026-06-05
+> after independent main-agent review: full backend 3750 passed / 7 skipped),
 > each with TDD red→green evidence recorded under its phase below. P9 baseline:
 > backend 3712 passed / ruff clean, frontend 154 passed / tsc clean /
 > production build passed. P9 was
@@ -1409,6 +1410,28 @@ Evidence:
 - Broader memory-phase regression:
   P1-P10 focused backend suite — 131 passed; frontend production build
   (`npm run build`) passed.
+
+Independent review closure (main-agent verification, 2026-06-05):
+
+- Full backend suite green at commit time: **3750 passed, 7 skipped**
+  (`pytest tests/ -x -q`, 49s); ruff check clean; all five touched files
+  format-clean.
+- **Incident recorded:** the DR-6b commit (`8c6627be`) accidentally carried
+  half of P10 (`knowledge_read_model.py`, `prompt_sections/memory_navigation.py`,
+  `tools/handlers/memory.py` visibility imports) but missed the new
+  `app/memory/visibility.py` file — leaving HEAD with lazy imports of a module
+  that did not exist in git. Window was local-only (never pushed); closed by
+  this commit adding `visibility.py`.
+- Boundary notes verified during review: `overview`/`events`/`candidates`
+  endpoints intentionally skip `principal_stack` — they expose only counts and
+  curation-audit metadata, never memory body text (convention: audit writers
+  must not embed body text in `detail`). `platform_admin` maps to
+  `CURRENT_USER` role in the read-model principal stack, so PL3 stays
+  company-domain (manage-level raw file API remains the operator escape
+  hatch). Upload endpoint already whitelists `workspace/`+`skills/` so the
+  `memory/` write guard cannot be bypassed. Legacy `build_runtime_prompt`
+  remains production-orphaned (tests only) — navigation now lives on the
+  kernel path; orphan cleanup deferred (out of P10 scope).
 
 ## 13. Immediate Decisions
 

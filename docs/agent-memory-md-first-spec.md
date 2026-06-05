@@ -903,6 +903,14 @@ type AgentKnowledgeOverview = {
 
 ## 12. Implementation Roadmap
 
+> **Status (2026-06-04): P0–P8 ALL IMPLEMENTED** — one commit per phase
+> (`60502154` P0 → `28d31666` P1 → `e3fa4480` P2 → `18cf3f5b` P3 →
+> `a2bfdffc` P4 → `8ba6feed` P5 → `1023818f` P6 → `acd661a0` P7 →
+> `a1478e6d` P8), each with TDD red→green evidence recorded under its
+> phase below. Final state: backend 3699 passed / ruff clean, frontend
+> 154 passed / tsc clean / production build passed. P9 remains deferred
+> by design (§13: KG/PPR is a future-facing experiment).
+
 ### P0: Freeze Terms And Prompt Contracts
 
 **Status: ✅ DONE (2026-06-04).**

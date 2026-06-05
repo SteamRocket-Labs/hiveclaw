@@ -5,6 +5,8 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
+import pytest
+
 from app.memory.md_store import (
     MEMORY_DEDUP_THRESHOLD,
     SKILL_DEDUP_THRESHOLD,
@@ -74,7 +76,8 @@ def test_find_similar_t3_filters_by_category(tmp_path: Path):
     assert hits_distinct == []
 
 
-def test_save_memory_rejects_english_paraphrase(tmp_path: Path, monkeypatch):
+@pytest.mark.asyncio
+async def test_save_memory_rejects_english_paraphrase(tmp_path: Path, monkeypatch):
     """End-to-end handler: second save with paraphrased content must return [Skipped]."""
     from app.config import Settings
     from app.tools.handlers.memory import save_memory
@@ -87,13 +90,13 @@ def test_save_memory_rejects_english_paraphrase(tmp_path: Path, monkeypatch):
 
     agent_id = uuid.uuid4()
 
-    r1 = save_memory(
+    r1 = await save_memory(
         agent_id,
         {"content": "User prefers short replies without lists", "category": "feedback"},
     )
     assert r1.startswith("Saved to long-term memory")
 
-    r2 = save_memory(
+    r2 = await save_memory(
         agent_id,
         {"content": "user likes short replies no lists", "category": "feedback"},
     )
@@ -101,7 +104,7 @@ def test_save_memory_rejects_english_paraphrase(tmp_path: Path, monkeypatch):
     assert "similar memory already exists" in r2.lower()
 
     # Distinct fact is accepted
-    r3 = save_memory(
+    r3 = await save_memory(
         agent_id,
         {"content": "Launch deadline is 2026-05-01", "category": "project"},
     )

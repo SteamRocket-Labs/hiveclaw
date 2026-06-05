@@ -7,7 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 
-def test_save_memory_writes_t3_file_and_index(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_save_memory_writes_t3_file_and_index(tmp_path: Path) -> None:
     from app.tools.handlers.memory import save_memory
 
     agent_id = uuid.uuid4()
@@ -18,7 +19,7 @@ def test_save_memory_writes_t3_file_and_index(tmp_path: Path) -> None:
             lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
         )
 
-        result = save_memory(
+        result = await save_memory(
             agent_id,
             {
                 "content": "User prefers concise answers",
@@ -36,7 +37,8 @@ def test_save_memory_writes_t3_file_and_index(tmp_path: Path) -> None:
     assert "feedback.md" in index_path.read_text(encoding="utf-8")
 
 
-def test_save_memory_persists_control_plane_metadata(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_save_memory_persists_control_plane_metadata(tmp_path: Path) -> None:
     from app.memory.lifecycle_store import MemoryLifecycleStore
     from app.memory.md_store import parse_entry_record
     from app.tools.handlers.memory import save_memory
@@ -49,7 +51,7 @@ def test_save_memory_persists_control_plane_metadata(tmp_path: Path) -> None:
             lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
         )
 
-        result = save_memory(
+        result = await save_memory(
             agent_id,
             {
                 "content": "Owner Alice email is alice@example.com for vendor escalation.",
@@ -77,7 +79,8 @@ def test_save_memory_persists_control_plane_metadata(tmp_path: Path) -> None:
     assert lifecycle_entry.status == "active"
 
 
-def test_save_memory_maps_project_to_knowledge(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_save_memory_maps_project_to_knowledge(tmp_path: Path) -> None:
     from app.tools.handlers.memory import save_memory
 
     agent_id = uuid.uuid4()
@@ -87,7 +90,7 @@ def test_save_memory_maps_project_to_knowledge(tmp_path: Path) -> None:
             "app.config.get_settings",
             lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
         )
-        save_memory(
+        await save_memory(
             agent_id,
             {
                 "content": "Project deadline is 2026-04-15",
@@ -113,7 +116,7 @@ async def test_search_memory_reads_saved_t3_shadow_index(tmp_path: Path) -> None
             "app.config.get_settings",
             lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
         )
-        save_memory(
+        await save_memory(
             agent_id,
             {
                 "content": "Use snake_case for Python variable names",

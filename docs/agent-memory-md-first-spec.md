@@ -985,6 +985,8 @@ Evidence:
 
 ### P2: Governed T3 Append API
 
+**Status: ✅ DONE (2026-06-04).**
+
 Files:
 
 - `backend/app/memory/t3_store.py`
@@ -1020,6 +1022,31 @@ Acceptance:
 - Heartbeat cannot bypass write gate for T3.
 - Entries have ids and lifecycle records.
 - Hindsight sync remains derived and best effort.
+
+Evidence:
+
+- `append_t3_memory_candidate()` implements the exact internal-call chain
+  above (+ `container_candidate` and `proposed_by` stamped into entry
+  metadata). Returns structured `T3AppendResult`
+  (accepted/rejected/duplicate) — gate decisions are results, not errors.
+- Single write path, no dual path: `save_memory` tool rewritten as a thin
+  wrapper over the API (its previous inline gate→dedup→append chain
+  removed); raw `write_file`/`edit_file` under `memory/` is REFUSED at the
+  workspace layer (`_is_governed_memory_path`) with a save_memory hint —
+  this covers heartbeat, dream, and ordinary sessions alike.
+- HEARTBEAT.md curation switched from `read_file`+`write_file` to
+  `save_memory(category=..., container_candidate=..., source_refs=...)`;
+  format/entry-id/lifecycle stamping is owned by the runtime; dedup is
+  tool-enforced (`[Skipped]` reply).
+- `save_memory` gained `container_candidate` + `source_refs` parameters
+  (promotion-lane evidence); tool description updated; `write_file`
+  description no longer advertises `memory/knowledge.md` as a target.
+- Hindsight sync added as sanctioned trigger #4 in
+  `app/memory/hindsight_sync.py` docstring + caller allowlist test.
+- Tests: `backend/tests/memory/test_t3_store.py` (8 — id/lifecycle/index,
+  PL4 rejection, near-dup skip, container marker, hindsight failure
+  non-fatal, write_file/edit_file refusal, non-memory paths still
+  writable). Full backend suite 3656 passed.
 
 ### P3: Dream Lifecycle Patch
 

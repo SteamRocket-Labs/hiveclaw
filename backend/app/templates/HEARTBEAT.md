@@ -35,9 +35,9 @@ What this means for your output:
 - T3 entries must be **self-contained and reusable across sessions**.
   "Agreed to user's feedback" is useless; "User rejects emoji in assistant
   responses — plain text only" is reusable.
-- Format is hard-enforced: `- [YYYY-MM-DD] description`. The dream parser
-  only recognizes this exact prefix. A format-repair pass (PR-9) auto-fixes
-  drift, but don't rely on it — write it right the first time.
+- The stored format `- [YYYY-MM-DD] description` is stamped by the
+  `save_memory` runtime — you pass clean content; the tool owns the
+  format, the entry id, and the lifecycle record.
 </pipeline_context>
 
 <session_context>
@@ -102,32 +102,37 @@ Read current state (2–3 tool calls max):
 
 <phase_2_curate>
 For each incremental T2 entry, apply `<decision_matrix>`. Then for each
-PROMOTE decision, write to the target T3 file using `read_file` (if you
-haven't seen it this tick) then `write_file`.
+PROMOTE decision, call `save_memory` with the rewritten content, the
+category, and (when the T2 entry carried one) the `container_candidate`.
+`save_memory` is the ONLY write path into T3 — it runs the privacy gate,
+semantic dedup, lifecycle records, and index updates for you. Direct
+`write_file` / `edit_file` under `memory/` is refused by the runtime.
 
-**Append** new entries — do not rewrite the file. Dedup and reorganize
-are dream's job.
+Pass `source_refs` when you can point at evidence (the T2 line, a session
+id, an artifact path). Dedup is enforced by the tool: a `[Skipped]` reply
+means a semantically equivalent memory already exists — do not retry with
+rephrasings unless the new fact is genuinely distinct.
+
+**Append-only mindset** — you add memories; you do not rewrite or reorder
+T3 files. Dedup and reorganization are dream's job.
 
 <good_curation_examples>
 **Example A — high-signal feedback**
 T2: `- [2026-04-14][w=1.00][repeat=1][src=web][cat=feedback] User requires all API responses to include absolute timestamps`
-Action: PROMOTE → `memory/feedback.md`
-T3 line: `- [2026-04-14] User requires all API responses to include absolute timestamps`
+Action: PROMOTE → `save_memory(category="feedback", content="User requires all API responses to include absolute timestamps")`
 
 **Example B — medium-signal strategy crossing threshold via repeat**
 T2: `- [2026-04-14][w=0.70][repeat=3][src=slack][cat=strategy] Three-phase approach (research→design→verify) consistently produced better-reviewed PRs`
-Action: PROMOTE (0.70 + repeat=3 crosses the threshold) → `memory/strategies.md`
-T3 line: `- [2026-04-14] Research → design → verify three-phase workflow for PRs reduces review iterations`
+Action: PROMOTE (0.70 + repeat=3 crosses the threshold) → `save_memory(category="strategy", content="Research → design → verify three-phase workflow for PRs reduces review iterations")`
 
 **Example C — constraint promoted immediately**
 T2: `- [2026-04-14][w=0.85][repeat=1][src=feishu][cat=constraint] Never push to main without running the integration suite`
-Action: PROMOTE → `memory/feedback.md` (constraints bucket with feedback)
-T3 line: `- [2026-04-14] Never push to main without running the integration suite — constraint from user`
+Action: PROMOTE → `save_memory(category="constraint", content="Never push to main without running the integration suite — constraint from user")`
 
 **Example D — strategy with container hint: promote, preserve marker, do NOT build the skill**
 T2: `- [2026-04-14][w=0.80][repeat=3][src=web][cat=strategy][container=skill_candidate] Research → design → verify three-phase workflow reduced review iterations across 3 PRs`
-Action: PROMOTE (0.80 + repeat=3) → `memory/strategies.md`; the skill itself is the candidate lane's decision, not this tick's.
-T3 line: `- [2026-04-14][container=skill_candidate] Research → design → verify three-phase workflow reduces review iterations — proven across 3 PRs`
+Action: PROMOTE (0.80 + repeat=3) → `save_memory(category="strategy", container_candidate="skill_candidate", content="Research → design → verify three-phase workflow reduces review iterations — proven across 3 PRs")`
+Result: the stored T3 line keeps the `[container=skill_candidate]` marker; the skill itself is the candidate lane's decision, not this tick's.
 </good_curation_examples>
 
 <bad_curation_examples>
@@ -151,20 +156,20 @@ Action: ❌ DO NOT append duplicate. Dream will consolidate — don't pile on.
 </phase_2_curate>
 
 <t3_entry_rules>
-1. **Format is HARD**: `- [YYYY-MM-DD] description`. Exactly this prefix.
-   Do NOT use `* description`, `1. description`, or dateless bullets —
-   dream's parser drops them silently (PR-9's validator will auto-repair,
-   but don't rely on it).
-2. **Drop T2 metadata** (`[w=][repeat=][src=][cat=]`) when writing T3.
+1. **Pass clean content to save_memory** — the runtime stamps the date,
+   entry id, and lifecycle metadata. Do not include `- [date]` prefixes or
+   metadata brackets in the content you pass.
+2. **Drop T2 metadata** (`[w=][repeat=][src=][cat=]`) from the content.
    T3 is clean semantic memory, not an annotated ranking feed.
-   EXCEPTION: keep `[container=...]` right after the date —
-   `- [YYYY-MM-DD][container=skill_candidate] description` — so promotion
-   lanes can find candidate evidence.
+   EXCEPTION: when the T2 entry carried `[container=...]`, pass it as the
+   `container_candidate` argument so the stored line keeps the marker —
+   promotion lanes find candidate evidence through it.
 3. **Rewrite for long-term reusability**:
-   - BAD: `- [2026-04-14] Agreed to user's feedback`
-   - GOOD: `- [2026-04-14] User rejects emoji in assistant responses — plain text only`
-4. **Dedup before writing**: if the target T3 file already has a
-   semantically equivalent line (even with different wording), skip.
+   - BAD: `Agreed to user's feedback`
+   - GOOD: `User rejects emoji in assistant responses — plain text only`
+4. **Dedup is enforced by the tool**: a `[Skipped]` reply means a
+   semantically equivalent memory exists — move on instead of rephrasing,
+   unless the new fact is genuinely distinct (then make the delta explicit).
 5. **When in doubt, keep it** — false negative is worse than false positive
    at T3 because heartbeat only fires when new T2 arrives.
 </t3_entry_rules>

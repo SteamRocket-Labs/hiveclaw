@@ -607,6 +607,21 @@ _WRITE_PROTECTED = {
 # soul.md is append-only: heartbeat can add evolution notes but not overwrite identity
 _APPEND_ONLY = {"soul.md"}
 
+# memory/ is governed by the Memory Control Plane (spec §12 P2): durable T3
+# writes must run through save_memory → append_t3_memory_candidate (privacy
+# gate, dedup, lifecycle, index). Raw file writes would bypass the gate.
+_GOVERNED_MEMORY_PREFIX = "memory/"
+_GOVERNED_MEMORY_MESSAGE = (
+    "memory/ is governed by the Memory Control Plane — direct file writes are not allowed. "
+    "Use the save_memory tool to add durable memory; it runs privacy/write-gate checks, "
+    "semantic dedup, lifecycle records, and index updates for you."
+)
+
+
+def _is_governed_memory_path(rel_path: str) -> bool:
+    normalized = rel_path.strip("/").replace("\\", "/")
+    return normalized == "memory" or normalized.startswith(_GOVERNED_MEMORY_PREFIX)
+
 
 def _write_file(ws: Path, rel_path: str, content: str, tool_name: str = "write_file") -> str:
     if not rel_path or not rel_path.strip("/"):
@@ -620,6 +635,14 @@ def _write_file(ws: Path, rel_path: str, content: str, tool_name: str = "write_f
     _blocked = _WRITE_PROTECTED.get(rel_path.strip("/"))
     if _blocked:
         return _workspace_error(tool_name, "auth_or_permission", _blocked)
+
+    if _is_governed_memory_path(rel_path):
+        return _workspace_error(
+            tool_name,
+            "auth_or_permission",
+            _GOVERNED_MEMORY_MESSAGE,
+            actionable_hint="Call save_memory with content + category (and optional container_candidate).",
+        )
 
     # soul.md is append-only: new content is appended under an evolution section
     _APPEND_ONLY_MAX_CHARS = 16000
@@ -668,6 +691,13 @@ def _edit_file(
     replace_all: bool = False,
     tool_name: str = "edit_file",
 ) -> str:
+    if _is_governed_memory_path(rel_path):
+        return _workspace_error(
+            tool_name,
+            "auth_or_permission",
+            _GOVERNED_MEMORY_MESSAGE,
+            actionable_hint="Call save_memory with content + category (and optional container_candidate).",
+        )
     file_path = (ws / rel_path).resolve()
     if not str(file_path).startswith(str(ws.resolve())):
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")

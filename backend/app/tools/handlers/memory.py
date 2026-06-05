@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
 
 from app.services.session_recall import search_session_history
 from app.tools.decorator import ToolMeta, tool
@@ -16,7 +15,8 @@ from app.tools.decorator import ToolMeta, tool
     ToolMeta(
         name="save_memory",
         description=(
-            "Persist a fact to your long-term memory so it is available in future conversations.\n\n"
+            "Persist a fact to your long-term memory so it is available in future conversations. "
+            "This is the ONLY write path for durable memory — direct file edits under memory/ are refused.\n\n"
             "Use this tool when you encounter information worth remembering across sessions:\n"
             "- User corrections or preferences (category: feedback)\n"
             "- Important project decisions or deadlines (category: project)\n"
@@ -26,7 +26,9 @@ from app.tools.decorator import ToolMeta, tool
             "- External system references, URLs, tool names (category: reference)\n"
             "- User role, knowledge, working style (category: user)\n\n"
             "Each fact should be a single, concise statement (under 200 chars is ideal).\n"
-            "Do NOT store transient task state, raw tool output, or debugging logs."
+            "Do NOT store transient task state, raw tool output, or debugging logs.\n"
+            "When the fact is promotion-lane evidence (a proven reusable method, an identity-level "
+            "rule), pass container_candidate so the promotion lanes can find it later."
         ),
         parameters={
             "type": "object",
@@ -53,6 +55,26 @@ from app.tools.decorator import ToolMeta, tool
                     "type": "string",
                     "description": "Optional topic/subject tag for grouping related facts.",
                 },
+                "container_candidate": {
+                    "type": "string",
+                    "enum": [
+                        "memory_append",
+                        "soul_candidate",
+                        "skill_candidate",
+                        "workflow_candidate",
+                        "artifact_only",
+                    ],
+                    "description": (
+                        "Optional promotion-lane hint. Use skill_candidate / workflow_candidate for "
+                        "proven reusable strategies, soul_candidate for repeated identity-level rules. "
+                        "The promotion gates decide — this is evidence, not a command."
+                    ),
+                },
+                "source_refs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional evidence pointers (T2 entry ids, artifact paths, session ids).",
+                },
             },
             "required": ["content", "category"],
         },
@@ -65,46 +87,31 @@ from app.tools.decorator import ToolMeta, tool
         adapter="agent_args",
     )
 )
-def save_memory(agent_id: uuid.UUID, arguments: dict) -> str:
-    from pathlib import Path
-
-    from app.config import get_settings
-    from app.memory.md_store import (
-        MEMORY_DEDUP_THRESHOLD,
-        append_t3_entry,
-        find_similar_t3_entries,
-    )
-    from app.memory.types import MEMORY_CATEGORIES
-    from app.memory.write_gate import prepare_memory_write
+async def save_memory(agent_id: uuid.UUID, arguments: dict) -> str:
+    from app.memory.t3_store import append_t3_memory_candidate
 
     content = (arguments.get("content") or "").strip()
     if not content:
         return "[Error] content is required and cannot be empty."
 
-    category = arguments.get("category", "general")
-    if category not in MEMORY_CATEGORIES:
-        category = "general"
+    raw_refs = arguments.get("source_refs")
+    source_refs = [str(ref).strip() for ref in raw_refs if str(ref).strip()] if isinstance(raw_refs, list) else []
+    source_refs.append("tool:save_memory")
 
-    write_decision = prepare_memory_write(content, category=category, evidence_refs=["tool:save_memory"])
-    if write_decision.rejected:
-        return f"[Rejected] {write_decision.sensitivity}: {write_decision.reason}"
-    content_to_store = write_decision.content
-
-    settings = get_settings()
-    data_root = Path(settings.AGENT_DATA_DIR)
-
-    # Semantic near-dedup: reject paraphrases of an already-saved fact so
-    # T3 does not accumulate "用户喜欢简短回复" / "偏好简短的回复" twice.
-    similar = find_similar_t3_entries(
-        data_root,
+    result = await append_t3_memory_candidate(
         agent_id,
-        content=content_to_store[:2000],
-        category=category,
-        threshold=MEMORY_DEDUP_THRESHOLD,
-        limit=1,
+        category=arguments.get("category", "general"),
+        content=content,
+        source_refs=source_refs,
+        proposed_by="agent_tool",
+        container_candidate=arguments.get("container_candidate"),
     )
-    if similar:
-        hit = similar[0]
+
+    if result.status == "rejected":
+        return f"[Rejected] {result.sensitivity}: {result.reason}"
+
+    if result.status == "duplicate" and result.similar:
+        hit = result.similar
         ts = f" ({hit['timestamp']})" if hit.get("timestamp") else ""
         return (
             f"[Skipped] A similar memory already exists (similarity={hit['similarity']:.2f}):\n"
@@ -114,19 +121,8 @@ def save_memory(agent_id: uuid.UUID, arguments: dict) -> str:
             f"difference explicit (e.g. include the date or the delta)."
         )
 
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    append_t3_entry(
-        data_root,
-        agent_id,
-        category=category,
-        content=content_to_store[:2000],
-        timestamp=timestamp,
-        metadata=write_decision.metadata,
-    )
-
-    return (
-        f"Saved to long-term memory [{category}]: {content_to_store[:80]}{'...' if len(content_to_store) > 80 else ''}"
-    )
+    saved = content[:80]
+    return f"Saved to long-term memory [{result.category}]: {saved}{'...' if len(content) > 80 else ''}"
 
 
 # -- load_memory ---------------------------------------------------------------

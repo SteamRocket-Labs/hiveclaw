@@ -94,26 +94,29 @@ class TestCurationExamples:
     def test_examples_show_before_after_rewrite(self, template_text: str) -> None:
         # The "rewrite for long-term reusability" section must show good/bad pair.
         assert "User rejects emoji" in template_text  # canonical good-rewrite example
-        # The raw T2 → T3 mapping should appear at least once.
-        assert "T3 line:" in template_text
+        # Promotions are expressed as governed save_memory calls (spec §12 P2).
+        assert "save_memory(" in template_text
 
 
 class TestT3EntryRules:
-    def test_format_rule_is_hard(self, template_text: str) -> None:
+    def test_format_is_owned_by_save_memory_runtime(self, template_text: str) -> None:
+        # The curator passes clean content; the governed API stamps the
+        # `- [YYYY-MM-DD]` format, entry id, and lifecycle record.
         assert "- [YYYY-MM-DD] description" in template_text
-        assert "Format is HARD" in template_text or "Format is hard" in template_text
+        assert "save_memory" in template_text
 
-    def test_template_warns_against_wrong_bullet_markers(self, template_text: str) -> None:
-        # The prompt must explicitly name the two most common format drifts.
-        assert "* description" in template_text
-        assert "1. description" in template_text
+    def test_template_forbids_raw_memory_file_writes(self, template_text: str) -> None:
+        # Direct write_file/edit_file under memory/ is refused by the runtime;
+        # the template must say so to prevent the curator from drifting back.
+        assert "refused" in template_text
+        assert "ONLY write path" in template_text or "only write path" in template_text.lower()
 
     def test_template_instructs_to_drop_t2_metadata(self, template_text: str) -> None:
         assert "Drop T2 metadata" in template_text or "drop the T2 metadata" in template_text.lower()
         assert "[w=]" in template_text
 
-    def test_template_requires_dedup_before_write(self, template_text: str) -> None:
-        assert "Dedup before writing" in template_text or "already has a semantically equivalent" in template_text
+    def test_template_says_dedup_is_tool_enforced(self, template_text: str) -> None:
+        assert "Dedup is enforced by the tool" in template_text or "[Skipped]" in template_text
 
 
 class TestOperationalInvariants:

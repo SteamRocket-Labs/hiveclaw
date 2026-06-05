@@ -20,9 +20,13 @@ P1-W3-8 — Sync trigger points (canonical list):
   3. **Admin rebuild** (`admin/rebuild_hindsight.py`) — manual reset
      for operators after data migrations or schema bumps. Resets the
      cursor and re-syncs the entire T3 surface.
+  4. **Governed T3 append** (`memory/t3_store.py`) — fires after
+     `append_t3_memory_candidate` lands a new durable entry (spec §12
+     P2). Every write-gate-approved T3 mutation propagates immediately
+     instead of waiting for the next heartbeat window.
 
 Anywhere else syncing T3→Hindsight is a regression — those are the only
-three windows where the upstream MD has actually changed. Adding new
+four windows where the upstream MD has actually changed. Adding new
 trigger points should require a comment here so the policy stays clear.
 """
 

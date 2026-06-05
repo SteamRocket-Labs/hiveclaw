@@ -116,6 +116,8 @@ def test_sanctioned_callers_only() -> None:
     sanctioned = {
         # The function definition itself.
         Path("app/memory/hindsight_sync.py"),
+        # Governed T3 append API: every durable T3 write propagates (spec §12 P2).
+        Path("app/memory/t3_store.py"),
         # Heartbeat: T2→T3 curation tick.
         Path("app/services/heartbeat.py"),
         # Dream: post-consolidation propagation (P1-W3-8).

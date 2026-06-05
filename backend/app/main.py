@@ -34,6 +34,7 @@ from app.api.guard_policies import router as guard_policies_router
 from app.api.deep_research import router as deep_research_router
 from app.api.workflows import router as workflows_router
 from app.api.workflow_definitions import router as workflow_definitions_router
+from app.api.agent_knowledge import router as agent_knowledge_router
 from app.api.llm_proxy import router as llm_proxy_router
 from app.api.memory import router as memory_router
 from app.api.messages import router as messages_router
@@ -617,6 +618,7 @@ _api_routers = [
     deep_research_router,
     workflows_router,
     workflow_definitions_router,
+    agent_knowledge_router,
 ]
 
 for _r in _api_routers:

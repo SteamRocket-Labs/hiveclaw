@@ -1223,11 +1223,36 @@ Evidence:
 
 ### P7: Knowledge Read Model API
 
+**Status: ✅ DONE (2026-06-04).**
+
 Acceptance:
 
 - Frontend no longer parses raw file layout for primary view.
 - Overview, entries, timeline, and candidates are structured.
 - Raw Markdown remains available as advanced view.
+
+Evidence:
+
+- `services/knowledge_read_model.py` — pure read side (zero writes, zero
+  LLM): overview (§11 `AgentKnowledgeOverview` shape: identity/memory
+  counters incl. lifecycle superseded/archived + sensitiveSuppressed,
+  distiller statuses from state-file traces, linkedCapabilities incl.
+  skill/workflow candidate counts), pages (wiki + scenes with frontmatter),
+  page detail (markdown + frontmatter, slug-validated against traversal),
+  entries (heat-ordered with recallCount/lastRecalledAt/container/
+  promoted_to/sensitivity), events (distillation_audit.jsonl + dream
+  history merged, newest first), candidates (skill / workflow / soul-hold
+  from evolution_ledger.jsonl + held curations).
+- `api/agent_knowledge.py` — the six §11 GET endpoints under
+  `/api/agents/{agent_id}/knowledge/*`, each guarded by
+  `check_agent_access` (multi-tenant invariant); registered in `main.py`
+  under both `/api` and `/api/v1`.
+- Raw Markdown advanced view unchanged: workspace file APIs still serve
+  `soul.md` / `memory/` / `evolution/` verbatim.
+- Tests: `backend/tests/services/test_knowledge_read_model.py` (8 —
+  overview structure, pages, page detail + traversal rejection, entries
+  telemetry, events merge/order, candidate lanes, empty workspace, router
+  route-set pin). Full backend 3699 passed.
 
 ### P8: AgentDetail IA
 

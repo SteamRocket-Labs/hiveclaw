@@ -68,6 +68,7 @@ class EvidenceLedger:
         evidence: str = "",
         notes: str = "",
         contradiction_group: str | None = None,
+        claim_id: str = "",
     ) -> ClaimRecord:
         valid_source_ids = [source_id for source_id in (source_ids or []) if source_id in self.sources]
         effective_status = ClaimStatus(status)
@@ -79,8 +80,12 @@ class EvidenceLedger:
         }:
             if not valid_source_ids:
                 effective_status = ClaimStatus.UNSUPPORTED
+        # Same contract as add_source's source_id: a shard merge preserves the
+        # id assigned at extraction so critic verdicts keep pointing at it.
+        existing_ids = {claim.claim_id for claim in self.claims}
+        resolved_claim_id = claim_id.strip() if claim_id and claim_id.strip() not in existing_ids else new_id("claim")
         record = ClaimRecord(
-            claim_id=new_id("claim"),
+            claim_id=resolved_claim_id,
             text=text.strip(),
             status=effective_status,
             source_ids=valid_source_ids,

@@ -241,9 +241,20 @@ def _source_meta(record: SourceRecord) -> dict[str, Any]:
     }
 
 
-def _merged_ledger(root: Path, sources: list[SourceRecord], claim_rows: list[dict]) -> EvidenceLedger:
+def _merged_ledger(
+    root: Path,
+    sources: list[SourceRecord],
+    claim_rows: list[dict],
+    refuted: dict[str, str] | None = None,
+) -> EvidenceLedger:
     """Materialise the top-level merged ledger (same filenames as the legacy
-    artifact contract: sources.jsonl / claims.jsonl at the run root)."""
+    artifact contract: sources.jsonl / claims.jsonl at the run root).
+
+    ``refuted`` maps claim_id → critic reason (DR-5b, CC Verify semantics):
+    a refuted claim is downgraded to unsupported WITH the reason annotated —
+    killed for the writer, visible for audit.
+    """
+    refuted = refuted or {}
     for name in ("sources.jsonl", "claims.jsonl"):
         path = root / name
         if path.exists():
@@ -263,13 +274,19 @@ def _merged_ledger(root: Path, sources: list[SourceRecord], claim_rows: list[dic
             source_id=record.source_id,
         )
     for row in claim_rows:
+        claim_id = str(row.get("claim_id") or "")
+        refute_reason = refuted.get(claim_id)
+        notes = str(row.get("notes") or "")
+        if refute_reason is not None:
+            notes = f"refuted-by-critic: {refute_reason}" + (f" | {notes}" if notes else "")
         ledger.add_claim(
             text=str(row.get("text") or ""),
-            status=str(row.get("status") or "unsupported"),
+            status="unsupported" if refute_reason is not None else str(row.get("status") or "unsupported"),
             source_ids=list(row.get("source_ids") or []),
             evidence=str(row.get("evidence") or ""),
-            notes=str(row.get("notes") or ""),
+            notes=notes,
             contradiction_group=row.get("contradiction_group"),
+            claim_id=claim_id,
         )
     return ledger
 
@@ -327,8 +344,14 @@ _CRITIC_INSTRUCTION = (
     '  "strongest_counter_argument": str,\n'
     '  "whats_missing": [str],\n'
     '  "overrated_claims": [{"claim": str, "why": str}],\n'
+    '  "claim_verdicts": [{"claim_id": str, "verdict": "uphold" | "refute", "reason": str}],\n'
     '  "so_what": str\n'
-    "}\n"
+    "}\n\n"
+    "claim_verdicts is the per-claim adversarial judgement (CC Verify semantics): "
+    "examine EVERY claim in `claims` by its claim_id; refute a claim only when the "
+    "evidence cannot carry it (wrong, unwarranted leap, single weak source stated as "
+    "fact). A refuted claim is REMOVED from the writer's evidence — refute decisively "
+    "but never casually.\n"
 )
 
 
@@ -428,8 +451,6 @@ async def _synthesizer_pre_process(request: LeafRequest, ctx: SubagentSpawnConte
     root = run_artifact_dir(ctx.parent_agent_id, request.run_id)
     research_request = _load_request(root)
     digests, sources, claim_rows = _load_shards(root)
-    ledger = _merged_ledger(root, sources, claim_rows)
-    evaluation = ResearchEvaluator().evaluate(request=research_request, ledger=ledger, round_index=1)
 
     devils_advocate: dict[str, Any] = {}
     da_path = root / "devils_advocate.jsonl"
@@ -437,6 +458,18 @@ async def _synthesizer_pre_process(request: LeafRequest, ctx: SubagentSpawnConte
         lines = [line for line in da_path.read_text(encoding="utf-8").splitlines() if line.strip()]
         if lines:
             devils_advocate = json.loads(lines[-1])
+    # DR-5b (CC Verify semantics): apply the critic's per-claim verdicts at
+    # merge time — refuted claims are downgraded+annotated in the ledger and
+    # never reach the writer's payload.
+    refuted: dict[str, str] = {}
+    for verdict in devils_advocate.get("claim_verdicts") or []:
+        if isinstance(verdict, dict) and str(verdict.get("verdict") or "").casefold() == "refute":
+            claim_key = str(verdict.get("claim_id") or "").strip()
+            if claim_key:
+                refuted[claim_key] = str(verdict.get("reason") or "refuted by critic")
+
+    ledger = _merged_ledger(root, sources, claim_rows, refuted=refuted)
+    evaluation = ResearchEvaluator().evaluate(request=research_request, ledger=ledger, round_index=1)
 
     payload = {
         "question": research_request.question,
@@ -451,7 +484,9 @@ async def _synthesizer_pre_process(request: LeafRequest, ctx: SubagentSpawnConte
         "source_notes": [],
         "lane_summaries": [],
         "sources": [_source_meta(record) for record in ledger.sources.values()],
-        "claims": _compress_claims_for_synthesis(ledger.claims),
+        # Refuted claims are killed for the writer (audit keeps them in
+        # claims.jsonl, downgraded + annotated).
+        "claims": _compress_claims_for_synthesis([claim for claim in ledger.claims if claim.claim_id not in refuted]),
         "quality_gates": evaluation.quality_gates,
         "gaps": evaluation.gaps,
         "devils_advocate": devils_advocate,

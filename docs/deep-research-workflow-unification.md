@@ -83,6 +83,12 @@ v1 引擎决策：`items_from` 只能引用 `args.*`（admission 时固定）。
 - `start_deep_research_workflow_run` 返回真实 `workspace_artifact_dir`（替换现在的 null——I4 的硬验收）
 - `deep_research_check` 改为：workflow run journal（步状态/进度）+ artifact_dir 增量读（partial report）。`RuntimeTask(task_type="deep_research")` 不再创建。
 
+### D7 — per-claim verdict（DR-5b，对齐 CC deep-research 的 Verify 语义；2026-06-05 用户拍板）
+
+CC 自己的 deep-research：per-claim 对抗验证、扛不住即从报告剔除。Hive 对齐版（引擎不动）：critic instruction 增加 `claim_verdicts`（逐 claim uphold/refute + reason），synthesizer pre 在 merge 时应用 — 被 refute 的 claim **降级 unsupported + `refuted-by-critic:` 注记**（审计可见）且**从合成 payload 剔除**（写手看不到 = 杀语义）。`EvidenceLedger.add_claim` 增加 `claim_id` 保留参数（与 `add_source` 的 source_id 同契约——merge 保 id，verdict 才能指得到）。CC 的「3 票独立 skeptic」需要 fanout items 来自运行时产物（claims），v1 引擎 `items_from` 只认 args —— 3 票版留给引擎 v2。
+
+✅ 完成（2026-06-05）：2 red→green（critic payload 带 claims+verdict 指令 / refuted claim 杀给写手+审计留痕）；全量 **3821 passed**（基线随用户记忆系统 commits 上移）。
+
 ### D6 — critic leaf = devils_advocate 下沉
 
 旧 worker path 的 `devils_advocate_review`（对抗评审）即 critic leaf 的实现内核：disable_tools + 对抗提示词，输出结构化批评（coverage/attribution/contradictions/freshness/unsupported）。批评结果写 `devils_advocate.jsonl`（parity）并作为 run 输出的一部分；**不自动回写报告**（批评是给用户/后续 RC15 的输入，不是静默改稿——与「dream 提议不静默改 charter」同一哲学）。

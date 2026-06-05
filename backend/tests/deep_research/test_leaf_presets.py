@@ -369,3 +369,81 @@ def test_definition_order_critic_before_synthesize_with_retry():
     assert order == ["plan", "explore", "critic", "synthesize"]
     synthesize = definition["steps"][3]
     assert synthesize["retry"] == {"max_attempts": 2}
+
+
+# ── DR-5b: per-claim adversarial verdicts (CC Verify alignment) ────
+
+
+async def test_critic_payload_carries_claims_and_demands_verdicts():
+    """The critic must receive the claim ledger (with ids) and be instructed
+    to return per-claim uphold/refute verdicts — CC's Verify semantics."""
+    ctx = _ctx()
+    run_id = str(uuid.uuid4())
+    _seed_request_json(ctx, run_id)
+    await _seed_explorer_shards(ctx, run_id)
+    preset = resolve_leaf_preset("deep_research_critic")
+    request = _request(run_id, leaf_id=None)
+    request.step_id = "critic"
+
+    task = await preset.pre_process(request, ctx)
+
+    assert "claim_verdicts" in task, "instruction must demand per-claim verdicts"
+    assert '"claim_id"' in task and "refute" in task
+
+
+async def test_refuted_claims_are_killed_for_synthesis_but_audit_visible():
+    """A claim the critic refutes must (a) never reach the synthesis payload
+    and (b) stay in the merged claims.jsonl downgraded to unsupported with the
+    refute reason — killed for the report, visible for audit."""
+    ctx = _ctx()
+    run_id = str(uuid.uuid4())
+    _seed_request_json(ctx, run_id)
+    await _seed_explorer_shards(ctx, run_id)
+    root = run_artifact_dir(ctx.parent_agent_id, run_id)
+
+    # Identify a real claim id from the shards to refute.
+    shard_claims = []
+    for shard in sorted((root / "shards").iterdir()):
+        path = shard / "claims.jsonl"
+        if path.exists():
+            shard_claims.extend(json.loads(line) for line in path.read_text().splitlines() if line.strip())
+    assert shard_claims, "fixture must produce at least one extracted claim"
+    doomed = shard_claims[0]["claim_id"]
+
+    (root / "devils_advocate.jsonl").write_text(
+        json.dumps(
+            {
+                "strongest_counter_argument": "registry data is self-reported",
+                "claim_verdicts": [{"claim_id": doomed, "verdict": "refute", "reason": "single self-reported source"}],
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    preset = resolve_leaf_preset("deep_research_synthesizer")
+    request = _request(run_id, leaf_id=None)
+    request.step_id = "synthesize"
+    task = await preset.pre_process(request, ctx)
+
+    # (a) killed for the writer: the doomed claim id is absent from the payload.
+    payload_str = task[task.find("{") :]
+    payload = (
+        json.loads(payload_str[payload_str.find('{"question"') :])
+        if '{"question"' in payload_str
+        else json.loads(payload_str)
+    )
+    payload_claim_ids = {claim.get("claim_id") for claim in payload.get("claims", [])}
+    assert doomed not in payload_claim_ids
+
+    # (b) audit-visible: merged claims.jsonl keeps it, downgraded + annotated.
+    merged_claims = [
+        json.loads(line) for line in (root / "claims.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
+    doomed_rows = [
+        row for row in merged_claims if row.get("claim_id") == doomed or "refuted" in str(row.get("notes", ""))
+    ]
+    assert any(
+        row.get("status") == "unsupported" and "refute" in str(row.get("notes", "")).casefold() for row in doomed_rows
+    ), f"refuted claim must stay downgraded+annotated, got: {doomed_rows}"

@@ -4,7 +4,13 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
-- 2026-06-04T21:41Z [sid:8cf70fc1]; branch:main; 7 files (orphan-trail.md, workflow_definition.py, workflow_launch.py, +4); last commit: 01e3d36e docs: 知识容器边界 — codex 修正并入 + 三方对照决议(§8)
+- 2026-06-05T07:59Z [sid:96a0f9cf]; branch:main; 4 files (orphan-trail.md, leaf_presets.py, ledger.py, +1); last commit: 7978a6b7 feat(memory): P9 关系图/KG+PPR 检索/记忆 eval benchmark — 
+- 2026-06-05T07:51Z [sid:27e1f4c6]; branch:main; 1 files (orphan-trail.md); last commit: 89d16139 docs(memory): spec §12 路线图总状态 — P0-P8 全部实装收口
+- 2026-06-05T07:44Z [sid:96a0f9cf]; branch:main; 1 files (orphan-trail.md); last commit: 89d16139 docs(memory): spec §12 路线图总状态 — P0-P8 全部实装收口
+- 2026-06-05T00:27Z [sid:26c03780]; branch:main; 1 files (orphan-trail.md); last commit: 35dea5c9 docs(memory): agent memory 研究 + MD-first 记忆引擎合并规格（施
+- 2026-06-04T22:02Z [sid:8cf70fc1]; branch:main; 1 files (orphan-trail.md); last commit: e69c606f docs: 知识容器边界 — 封存状态:全部未拍板,下 session 续
+- 2026-06-04T21:50Z [sid:27e1f4c6]; branch:main; 2 files (orphan-trail.md, knowledge-container-boundaries.md); last commit: 862c31ee feat(workflow): DR-5 前置 — 全链四步集成钉死（除真 LLM 外全真）
+- 2026-06-04T21:49Z [sid:8cf70fc1]; branch:main; 1 files (knowledge-container-boundaries.md); last commit: 862c31ee feat(workflow): DR-5 前置 — 全链四步集成钉死（除真 LLM 外全真）
 - 2026-06-04T18:35Z [sid:27e1f4c6]; branch:main; 25 files (compact-snapshot.md, orphan-trail.md, coordination_rls_0604.py, +22); last commit: 09f8e52e Refine plan mode and agent work ledger flows
 - 2026-06-04T04:44Z [sid:3f97d3a5]; branch:main; 1 files (orphan-trail.md); last commit: 61153d3 docs(workflow): 轴2 v0.6 — P0-P15 全量唯一权威路线 + review 缺
 - 2026-06-04T03:32Z [sid:7abb3cd3]; branch:main; 2 files (orphan-trail.md, workflow-source-capability.md); last commit: a5ae9ec fix(work-ledger): blocked_pattern evidence 改 agent_l

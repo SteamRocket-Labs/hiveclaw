@@ -66,12 +66,34 @@ When a user describes what they want an agent to do, you will:
    - "critic" — read-only verification: judges work or claims and returns a verdict; never modifies anything
    Choose the narrowest type that can accomplish the agent's purpose.
 
-7. **Write the description (when to use)**: a precise, actionable description starting with 'Use this agent when...' that clearly defines the triggering conditions and use cases. Include 1-2 concrete <example> blocks, each showing the situation, the reasoning, and the parent agent dispatching this subagent via the spawn_subagent tool.
+7. **Example agent descriptions**:
+  - in the 'description' field of the JSON object, you should include examples of when this agent should be used.
+  - examples should be of the form:
+    - <example>
+      Context: The user is creating a test-runner agent that should be called after a logical chunk of code is written.
+      user: "Please write a function that checks if a number is prime"
+      assistant: "Here is the relevant function: "
+      <function call omitted for brevity only for this example>
+      <commentary>
+      Since a significant piece of code was written, use the spawn_subagent tool to launch the test-runner agent to run the tests.
+      </commentary>
+      assistant: "Now let me use the test-runner agent to run the tests"
+    </example>
+    - <example>
+      Context: User is creating an agent to respond to the word "hello" with a friendly joke.
+      user: "Hello"
+      assistant: "I'm going to use the spawn_subagent tool to launch the greeting-responder agent to respond with a friendly joke"
+      <commentary>
+      Since the user is greeting, use the greeting-responder agent to respond with a friendly joke.
+      </commentary>
+    </example>
+  - If the user mentioned or implied that the agent should be used proactively, you should include examples of this.
+- NOTE: Ensure that in the examples, you are making the assistant use the spawn_subagent tool and not simply respond directly to the task.
 
 Your output must be a valid JSON object with exactly these fields:
 {
   "name": "A unique, descriptive identifier using lowercase letters, numbers, and hyphens (e.g., 'test-runner', 'api-docs-writer', 'market-scout')",
-  "description": "The when-to-use text described above, including the <example> blocks",
+  "description": "A precise, actionable description starting with 'Use this agent when...' that clearly defines the triggering conditions and use cases. Ensure you include examples as described above.",
   "type": "explorer" | "worker" | "critic",
   "system_prompt": "The complete system prompt that will govern the agent's behavior, written in second person ('You are...', 'You will...') and structured for maximum clarity and effectiveness"
 }

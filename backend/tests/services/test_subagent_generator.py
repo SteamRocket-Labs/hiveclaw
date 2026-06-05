@@ -53,6 +53,15 @@ def test_generation_prompt_speaks_hive_tooling():
     assert "critic" in GENERATION_SYSTEM_PROMPT
 
 
+def test_generation_prompt_keeps_fewshot_examples():
+    # CC parity: the two full <example> demonstrations are few-shot format
+    # teaching for the description field — owner decision: no simplification.
+    assert GENERATION_SYSTEM_PROMPT.count("<example>") == 2
+    assert GENERATION_SYSTEM_PROMPT.count("</example>") == 2
+    assert "test-runner" in GENERATION_SYSTEM_PROMPT
+    assert "greeting-responder" in GENERATION_SYSTEM_PROMPT
+
+
 @pytest.mark.asyncio
 async def test_generate_returns_parseable_definition(monkeypatch):
     captured: dict = {}

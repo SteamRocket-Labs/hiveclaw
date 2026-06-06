@@ -110,5 +110,9 @@ def test_minimal_kernel_tool_set_stays_small_and_explicit():
         "spawn_subagent",
         "preview_workflow",
         "start_workflow",
+        # T1.2: work ledger is core working memory, not DB-conditional.
+        "track_todo",
+        "record_finding",
+        "read_ledger",
     }
     assert "web_search" not in CORE_TOOL_NAMES

@@ -170,6 +170,12 @@ CORE_TOOL_NAMES = {
     "spawn_subagent",
     "preview_workflow",
     "start_workflow",
+    # Work ledger (T1.2): working memory is an agent thinking tool — it must
+    # not depend on DB Tool.is_default/assignment rows to exist. The
+    # should_enable_work_ledger gate keeps governing reminder frequency only.
+    "track_todo",
+    "record_finding",
+    "read_ledger",
 }
 
 # Core tools that should always be available to agents regardless of

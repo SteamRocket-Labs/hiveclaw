@@ -7,11 +7,18 @@ in the SAME commit — both recursion exclusion sets deny them. Once the tools
 are in core, ``core_tools_only=True`` child profiles would otherwise leak them
 into child tool surfaces (the pack gate that passively blocked them is no
 longer in the path).
+
+T1.2 (red test #2): the work-ledger trio ``track_todo`` / ``record_finding`` /
+``read_ledger`` joins ``CORE_TOOL_NAMES`` — working memory is an agent
+thinking tool and must not depend on DB ``Tool.is_default``/assignment to
+exist. The ``should_enable_work_ledger`` reminder gate is untouched: it
+governs reminder frequency (session metadata), never tool visibility.
 """
 
 from __future__ import annotations
 
 SOURCE_CAPABILITY_TOOLS = {"spawn_subagent", "preview_workflow", "start_workflow"}
+WORK_LEDGER_TOOLS = {"track_todo", "record_finding", "read_ledger"}
 
 
 # ── Red test #1 — turn-1 visibility ─────────────────────────────────
@@ -30,6 +37,24 @@ def test_collected_surface_provides_schemas_for_core_source_capabilities():
 
     combined_names = {t["function"]["name"] for t in get_combined_openai_tools()}
     assert SOURCE_CAPABILITY_TOOLS <= (combined_names & CORE_TOOL_NAMES)
+
+
+# ── Red test #2 (T1.2) — work ledger is core, not DB-conditional ────
+
+
+def test_core_tool_names_include_work_ledger():
+    from app.services.agent_tools import CORE_TOOL_NAMES
+
+    assert WORK_LEDGER_TOOLS <= CORE_TOOL_NAMES
+
+
+def test_collected_surface_provides_schemas_for_core_ledger_tools():
+    """Core membership grants the ``_always_tools`` fallback: availability no
+    longer depends on DB ``Tool.is_default``/assignment rows."""
+    from app.services.agent_tools import CORE_TOOL_NAMES, get_combined_openai_tools
+
+    combined_names = {t["function"]["name"] for t in get_combined_openai_tools()}
+    assert WORK_LEDGER_TOOLS <= (combined_names & CORE_TOOL_NAMES)
 
 
 # ── Red test #3 — recursion guard, BOTH paths ───────────────────────

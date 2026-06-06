@@ -280,11 +280,14 @@ async def test_get_rerank_model_config_falls_back_to_tenant_default_model(monkey
 
     config = await memory_service._get_rerank_model_config(tenant_id)
 
+    # The window hint stays in the dict; create_llm_client_from_config filters
+    # non-client keys at the only consumption point (post-incident contract).
     assert config == {
         "provider": "openai",
         "model": "gpt-5.4-mini",
         "api_key": "test-key",
         "base_url": None,
+        "max_input_tokens": None,
     }
 
 

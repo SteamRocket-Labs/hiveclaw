@@ -591,7 +591,7 @@ async def _llm_summarize(messages: list[dict], model_config: dict) -> str | None
     Uses <analysis>/<summary> scratchpad pattern: LLM reasons in <analysis>
     tags (stripped before persistence), outputs clean summary in <summary> tags.
     """
-    from app.services.llm_client import LLMMessage, create_llm_client
+    from app.services.llm_client import LLMMessage, create_llm_client_from_config
 
     provider = model_config.get("provider", "")
     model_name = model_config.get("model", "")
@@ -603,7 +603,7 @@ async def _llm_summarize(messages: list[dict], model_config: dict) -> str | None
     if not text:
         return None
 
-    client = create_llm_client(**{k: v for k, v in model_config.items() if k != "max_input_tokens"})
+    client = create_llm_client_from_config(model_config)
     try:
         response = await client.stream(
             messages=[

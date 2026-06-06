@@ -752,11 +752,9 @@ async def _get_summary_model_config(
 async def _get_rerank_model_config(tenant_id: uuid.UUID) -> dict | None:
     """Resolve the optional LLM model to use for semantic memory reranking."""
     config = await _get_memory_config(tenant_id)
-    model_config = await _get_memory_model_config(tenant_id, config.get("rerank_model_id"), "rerank")
-    if model_config:
-        # Rerank expands this dict straight into create_llm_client() — drop the window hint.
-        model_config.pop("max_input_tokens", None)
-    return model_config
+    # Consumers create clients via create_llm_client_from_config, which filters
+    # non-client hints (max_input_tokens) — no per-caller pop needed.
+    return await _get_memory_model_config(tenant_id, config.get("rerank_model_id"), "rerank")
 
 
 async def _generate_session_summary(messages: list[dict], tenant_id: uuid.UUID) -> str | None:

@@ -2182,6 +2182,24 @@ def create_llm_client(
         )
 
 
+# Parameters create_llm_client actually accepts — used by the config-dict factory.
+_CLIENT_FACTORY_PARAMS = frozenset({"provider", "api_key", "model", "base_url", "timeout"})
+
+
+def create_llm_client_from_config(model_config: dict) -> LLMClient:
+    """Create a client from a model-config dict, ignoring non-client hints.
+
+    Model-config dicts (e.g. memory_service._model_config) legitimately carry
+    extra hints such as ``max_input_tokens`` for input budgeting. Expanding
+    such a dict straight into ``create_llm_client(**config)`` raises TypeError
+    — an implicit "pop it first" contract that four memory pipelines missed
+    (production incident, 2026-06-05). This factory IS that contract, made
+    explicit: every config-dict consumer goes through here.
+    """
+
+    return create_llm_client(**{k: v for k, v in model_config.items() if k in _CLIENT_FACTORY_PARAMS})
+
+
 # ============================================================================
 # High-level Convenience Functions
 # ============================================================================

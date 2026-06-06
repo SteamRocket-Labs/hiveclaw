@@ -104,7 +104,7 @@ async def _rerank_semantic_items(
         return items[:max_select]
 
     try:
-        from app.services.llm_client import LLMMessage, create_llm_client
+        from app.services.llm_client import LLMMessage, create_llm_client_from_config
     except ImportError:
         return items[:max_select]
 
@@ -152,7 +152,7 @@ async def _rerank_semantic_items(
     )
     client = None
     try:
-        client = create_llm_client(**model_config)
+        client = create_llm_client_from_config(model_config)
         response = await asyncio.wait_for(
             client.stream(
                 messages=[

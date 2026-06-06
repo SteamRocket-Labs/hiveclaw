@@ -92,9 +92,9 @@ async def _build_llm_caller(tenant_id: uuid.UUID | None) -> LlmFn | None:
 
     async def caller(system: str, user: str) -> str:
         from app.memory.metrics import record_autonomous_llm_call
-        from app.services.llm_client import LLMMessage, create_llm_client
+        from app.services.llm_client import LLMMessage, create_llm_client_from_config
 
-        client = create_llm_client(**model_config)
+        client = create_llm_client_from_config(model_config)
         try:
             response = await client.stream(
                 messages=[LLMMessage(role="system", content=system), LLMMessage(role="user", content=user)],

@@ -451,7 +451,7 @@ async def _dream_llm_consolidate(
         return None
 
     try:
-        from app.services.llm_client import LLMMessage, create_llm_client
+        from app.services.llm_client import LLMMessage, create_llm_client_from_config
     except ImportError as exc:
         logger.debug("[Dream] llm_client import unavailable: %s", exc)
         return None
@@ -491,7 +491,7 @@ async def _dream_llm_consolidate(
 
     client = None
     try:
-        client = create_llm_client(**model_config)
+        client = create_llm_client_from_config(model_config)
         response = await client.stream(
             messages=[
                 LLMMessage(role="system", content=_AUTO_DREAM_SYSTEM_PROMPT),

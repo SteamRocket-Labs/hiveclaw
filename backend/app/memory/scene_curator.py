@@ -220,6 +220,7 @@ async def curate_scene(
             agent_id,
             reason=f"scene LLM output invalid ({type(exc).__name__})",
             source_refs=source_refs,
+            detail={"error": str(exc)[:500]},
         )
 
     action = str(payload.get("action") or "").strip().lower()

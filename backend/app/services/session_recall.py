@@ -355,14 +355,14 @@ async def _summarize_recall_hits(
         return hits
 
     try:
-        from app.services.llm_client import LLMMessage, create_llm_client
+        from app.services.llm_client import LLMMessage, create_llm_client_from_config
         from app.services.memory_service import _get_summary_model_config
 
         model_config = await _get_summary_model_config(tenant_id)
         if not model_config:
             return hits
 
-        client = create_llm_client(**model_config)
+        client = create_llm_client_from_config(model_config)
         try:
             for hit in hits:
                 evidence = hit.get("context_snippets") or hit.get("snippets") or []

@@ -571,7 +571,7 @@ async def _llm_extract(messages: list[dict], tenant_id: uuid.UUID, agent_name: s
     is about to be lost — without it, transient LLM hiccups silently drop
     all memory extraction for the session.
     """
-    from app.services.llm_client import LLMMessage, create_llm_client
+    from app.services.llm_client import LLMMessage, create_llm_client_from_config
     from app.services.memory_service import _get_summary_model_config
 
     model_config = await _get_summary_model_config(tenant_id)
@@ -586,7 +586,7 @@ async def _llm_extract(messages: list[dict], tenant_id: uuid.UUID, agent_name: s
 
     last_exc: Exception | None = None
     for attempt in range(2):
-        client = create_llm_client(**model_config)
+        client = create_llm_client_from_config(model_config)
         try:
             response = await client.stream(
                 messages=[LLMMessage(role="user", content=prompt)],

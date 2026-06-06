@@ -57,11 +57,11 @@ PromotionRouter; the Memory Control Plane owns the final write decision.
 
 <pipeline_context>
 Downstream:
-- heartbeat (every ~45min) — the Memory Curator — reads your T2 atom
+- heartbeat (every ~2h) — the Memory Curator — reads your T2 atom
   candidates and decides which to promote into T3 long-term memory. It uses
   the category AND the source weight (w=) to rank them, and reads your
   `container` hint when routing strategy evidence.
-- dream (every ~4h + 3 sessions) reads T3 and promotes stable patterns into
+- dream (daily, given real activity) reads T3 and promotes stable patterns into
   soul.md, the agent's permanent identity.
 
 What this means for your output:
@@ -590,7 +590,11 @@ async def _llm_extract(messages: list[dict], tenant_id: uuid.UUID, agent_name: s
         try:
             response = await client.stream(
                 messages=[LLMMessage(role="user", content=prompt)],
-                max_tokens=1000,
+                # Output budget = worst-case contract (8 fully-tagged atoms
+                # ≈1200-1600t) × 2 headroom. max_tokens is a cap, not spend —
+                # a starved cap only truncates atoms 6-8 (L1: never starve the
+                # intelligence step). 1000 was an unaudited initial-commit value.
+                max_tokens=4000,
                 temperature=0.3,
             )
             parsed = _parse_extractions(response.content or "")

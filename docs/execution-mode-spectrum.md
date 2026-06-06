@@ -1,6 +1,7 @@
 # 工具调用哲学:暴露架构 × 决策模型(agent runtime 行为)
 
-> 状态:**v0.5 源码再验证稿**(2026-06-05)。
+> 状态:**v0.6 小切口全量落地**(2026-06-05)。**§8 主线 T1.1/T1.2/T1.3/T2 四切口全部 ✅**(commits `7a462652`/`246fb8bf`/`9f80e7cf`/`fee89e7f`,每切口红测先行+一 commit+证据块);小切口 DoD 三项达成(§8 表下验收声明);§3 现状表已同步为落地后新现状。未来路线(完整 CC 对齐 T3a/T3b/T4/T5)见 §8.3。
+> 前版:**v0.5 源码再验证稿**(2026-06-05)。
 > v0.1(三档光谱+引导面盘点)经用户三轮校准重构:① 回到工具调用本身——agent 每一轮真正面对的是"一次 tool call 的选择",暴露架构决定一切;② 原子能力必须在 core;③ 对照 CC 源码 toolsets 理顺全路径;④ **拆分**:本文档只管**问题一——agent runtime 怎么做工具调用**(follow CC + Hive 特色);**问题二——沉淀资产如何进入公司**(准入/审批/晋升/Curator)是另一套逻辑,权威文档为 `docs/org-agent-asset-rights-model.md`。
 > **v0.5 修订**(CC 源码逐行再核验,用户拍板):§2 重写 defer 条目为永驻分界线(§2.2)+dynamic tool loading 全机制(§2.3,此前只写了 defer_loading 标记层)+cache 稳定性约束(§2.7);宣告**只发名字**(CC A/B 实证摘要无收益);§3.4 补 tool_search 语义差异实锤;§4.1 任务工具论据替换(对比对象=CC 现役 Task 体系)+ web_fetch/get_current_time 现状校正;§4.2 实现路径定为客户端 dynamic loading(零 vendor beta 依赖);§4.3 新增发现集存活/cache 稳定/no-op 容错三不变量;§4.4 tool_search 标注为语义反转。
 > **v0.5 二轮**(Codex 协改 §4.1/§4.2 细化 + 我复核):§4.1 重排为判定准则+全局/上下文两级常驻表(T1=6 工具,35→41);§4.2 deferred 集逐 pack 落表;修正 Codex 一处事实错(preview/start_workflow 实为 coordination_pack gated)+Workflow 永驻补运行时观测证据;**§4.4 改为 Pack→Deferred 迁移改动面全量盘点(11 接线点逐线核实)+§4.5 迁移序列(T3a 加法并行→T3b 切换可 revert→T4 收敛单一路径)**;§4.6 新增"选择性去 skill 化"小切口路线;§8 T3 拆 T3a/T3b 并标为完整 CC 对齐路线。
@@ -58,12 +59,14 @@ Agent 的一切行为最终落在一次次 tool call 上。本文档回答两个
 | 原语 | 回答的问题 | 暴露 | 引导现状 |
 |---|---|---|---|
 | 直接 tool call | 这一步现在做 | core | ✅ |
-| track_todo/ledger | 我怎么不丢步骤(工作记忆) | 条件 | ✅ |
-| skill | **怎么做**(知识) | core | ✅ 三处判据成体系 |
-| subagent | **谁去做**这一段(分身) | ⚠️ pack | ⚠️ 判据好但藏在看不见处 |
-| workflow | 步骤**必须**怎么排(强制控制流) | ⚠️ pack | ❌ 零判据 |
-| trigger | **何时**醒来 | core | ✅ "wake policy not goal" |
+| track_todo/ledger | 我怎么不丢步骤(工作记忆) | core(T1.2 ✅) | ✅ + blocks/blockedBy 契约(T1.3 ✅) |
+| skill | **怎么做**(知识) | core | ✅ 三处判据成体系 + §7 分界进 save_skill 描述(T2 ✅) |
+| subagent | **谁去做**这一段(分身) | core(T1.1 ✅) | ✅ 判据随可见性生效 + ↔ workflow/delegate 互指(T2 ✅) |
+| workflow | 步骤**必须**怎么排(强制控制流) | core(T1.1 ✅) | ✅ when-NOT 判据 + ↔ spawn 互指 + 决策序列(T2 ✅) |
+| trigger | **何时**醒来 | core | ✅ "wake policy not goal" + workflow_ref 判据(T2 ✅) |
 | objective / plan | **为什么**做 / 人批准什么 | core | ✅ |
+
+**七原语决策地图已进 executing_actions(T2 ✅)** — "Choosing the right primitive" 单要点承载 §5 总纲全文。
 
 ### 3.3 五层嵌套链(无一处向模型讲全)
 
@@ -75,9 +78,9 @@ workflow definition → leaf(SubagentSpec,无 skill 字段)→ subagent 运行�
 ### 3.4 四个病根
 
 1. **轻重倒挂**:最重的 delegate_to_agent 在 core;最轻的 spawn_subagent、start_workflow 锁在 pack。Plan Mode/trigger/objective 三个原能力都在 core,**唯独轴1 轴2 两个源能力被关在 pack 里**——与"源能力"定位自相矛盾。**→ T1.1 已修(✅ 2026-06-05):三源能力进 core,防递归双路径排除集同 commit 补排。**
-2. **判据藏在看不见的地方**:spawn_subagent 的 when-to-use 写在工具描述里,但 pack-gated 工具不可见时描述也不可见。
-3. **七原语没有一张决策地图**:各引导段各说各话,任务视角的统一叙事不存在。
-4. **三关注点耦死**(对照 §2.4):pack-gate 同时承担 token 优化+能力存在性;skill 同时承担知识+解锁。"agent 看不见源能力"不是设计决策,是耦合副作用。
+2. **判据藏在看不见的地方**:spawn_subagent 的 when-to-use 写在工具描述里,但 pack-gated 工具不可见时描述也不可见。**→ T1.1 已修:可见性恢复即判据生效;T2 再补互指。**
+3. **七原语没有一张决策地图**:各引导段各说各话,任务视角的统一叙事不存在。**→ T2 已修(✅ 2026-06-05):§5 决策序列进 executing_actions"Choosing the right primitive"。**
+4. **三关注点耦死**(对照 §2.4):pack-gate 同时承担 token 优化+能力存在性;skill 同时承担知识+解锁。"agent 看不见源能力"不是设计决策,是耦合副作用。**→ 小切口部分修复:源能力+ledger 已脱钩(T1.1/T1.2);集成 pack 保留 skill 解锁(§4.6 拍板),完全解耦归 §8.3 T3。**
 5. **(v0.5 实锤)`tool_search` 与 CC 的 ToolSearch 语义根本不同**:Hive 现状(`tools/handlers/skills.py:152`)是**目录查询**——返回 pack/skill 摘要,明确 "does not auto-load tools",要求模型再调 `load_skill` 激活;CC 的 ToolSearch 是**schema 加载器**——搜到即可调用。这意味着 §4 的 tool_search 改造是语义反转,不是文案调整。
 
 ---
@@ -200,8 +203,8 @@ Deferred 的对象是"当前 agent 可用,但不该占 turn-1 schema"的工具�
 
 | 分层 | 工具/pack | 最小改动判定 | 结果 |
 |---|---|---|---|
-| 必须去 skill 化 | `coordination_pack` 里的源能力:`spawn_subagent`,`preview_workflow`,`start_workflow` | 回答"谁去做/流程怎么强制执行",属于 agent runtime 原语;藏在 skill 后会让模型根本不知道可用 | 加入 `CORE_TOOL_NAMES`;`coordination_pack` 继续作为目录/前端分组,不再控制这些源能力存在性 |
-| 必须 core 化 | `track_todo`,`record_finding`,`read_ledger` | 工作记忆是 agent 思考工具,不应依赖 DB default/assignment 才出现;`should_enable_work_ledger` 只管 reminder 频率 | 加入 `CORE_TOOL_NAMES`;reminder gate 保留不动 |
+| 必须去 skill 化 **✅ T1.1** | `coordination_pack` 里的源能力:`spawn_subagent`,`preview_workflow`,`start_workflow` | 回答"谁去做/流程怎么强制执行",属于 agent runtime 原语;藏在 skill 后会让模型根本不知道可用 | 已加入 `CORE_TOOL_NAMES`;`coordination_pack` 继续作为目录/前端分组,不再控制这些源能力存在性(红测 #7 钉) |
+| 必须 core 化 **✅ T1.2** | `track_todo`,`record_finding`,`read_ledger` | 工作记忆是 agent 思考工具,不应依赖 DB default/assignment 才出现;`should_enable_work_ledger` 只管 reminder 频率 | 已加入 `CORE_TOOL_NAMES`;reminder gate 保留不动 |
 | 保留 skill 化 | `web_search/firecrawl_fetch/xcrawl_scrape`,`feishu_pack`,`email_pack`,`office_pack`,`plaza_pack`,`deep_research_pack`,`mcp_admin_pack`,`DB task tools` | 垂直集成/重型工具/账号配置/专属长任务,由 skill 指导怎么用是合理的;当前 pack 激活不立即破坏核心决策能力 | 继续通过 `load_skill` / 读 `SKILL.md` 的 declared packs 解锁;T3 前不做 breaking |
 | 上下文常驻 | HR/SystemHR 工具、当前 channel 必需回复工具、少数未来 `always_load` MCP 工具 | 只有特定 profile/channel turn-1 必需 | 维持条件注入;不提升为所有 agent 全局常驻 |
 
@@ -277,9 +280,11 @@ L2 底线(无人值守+外向是否强制 workflow/Checkpoint):v1 不绑,记观�
 
 > **T1.3 ✅ 完成(2026-06-05,commit `9f80e7cf`)** — 红测 #4/#5 共 6 测追加至三处既有测试文件(`test_work_ledger_handler.py` schema+真服务 DAG 往返 / `test_subagent_spawn_tool.py` schema+handler 透传 / `test_orchestrator_ledger_todo.py` schema+messaging 透传)→ **6 failed 如预期** → GREEN 纯 schema 接线:`track_todo` 暴露 `blocks`/`blockedBy`(handler→`upsert_agent_work_ledger_todo(blocks=,blocked_by=)`,service 自切口③就绪);`spawn_subagent` 暴露 `ledger_todo_id`(→`spawn_subagent(ledger_todo_id=)` stamp/write-back);`delegate_to_agent` 暴露 `ledger_todo_id`(schema:`handlers/communication.py` + 透传:`messaging._delegate_to_agent_async`→`delegate_async`)。三断线(2026-06-05 对位审计)全闭合,CC Task 契约对位(`blocks/blockedBy`/owner 认领)schema 层打通。证据:`pytest -q` → **3858 passed, 7 skipped**(+6;同前排除外部半成品);`ruff check`+`format` clean。
 
-> **T2 ✅ 完成(2026-06-05)** — 红测先行:新增 `tests/runtime/test_t2_guidance_surface.py`(11 钉)→ **9 failed 如预期**(1 绿 = `tool_search` 目录语义本就是现状,T2 写作约束钉)→ GREEN 六文件:① `executing_actions.py` 新增 **Choosing the right primitive** 要点(§5 七原语决策序列全文 + §7 固化判据:skill=自己的笔记本可适配/不许漂移的流程=workflow 晋升材料 reviewed-never-self-approved/一次性=track_todo 足矣)+ Skills 行修正(集成 pack 仍 skill 解锁,源能力 never need a skill);② `system.py` tool_governance 段源能力常驻条目(call directly, no skill needed + call-time governance still applies);③ `start_workflow` 描述加 when-NOT(step order itself is a requirement,一次性并行→spawn_subagent,同事→delegate);④ `spawn_subagent` 描述加 ↔ workflow 互指(原 ↔ delegate 互指保留);⑤ `save_skill` 描述去"workflow"歧义(approach)+ §7 分界全文;⑥ `set_trigger` config 描述补 `workflow_ref` 形态(definition_name/version/hash/args)+判据(仅当用户要求每次 fire 与已晋升模板严格一致,默认散文)。验收:渲染后决策序列/governance 段人工 review 通过;既有 prompt 钉同步 2 处(`test_system_section.py` pack-gated 断言改 normalize+新增源能力常驻钉;`test_prompt_contracts.py` save_skill 措辞钉更新并加 never-self-approved 钉)。证据:`pytest -q` → **3869 passed, 7 skipped**(+11;同前排除外部半成品);`ruff check`+`format` clean。
+> **T2 ✅ 完成(2026-06-05,commit `fee89e7f`)** — 红测先行:新增 `tests/runtime/test_t2_guidance_surface.py`(11 钉)→ **9 failed 如预期**(1 绿 = `tool_search` 目录语义本就是现状,T2 写作约束钉)→ GREEN 六文件:① `executing_actions.py` 新增 **Choosing the right primitive** 要点(§5 七原语决策序列全文 + §7 固化判据:skill=自己的笔记本可适配/不许漂移的流程=workflow 晋升材料 reviewed-never-self-approved/一次性=track_todo 足矣)+ Skills 行修正(集成 pack 仍 skill 解锁,源能力 never need a skill);② `system.py` tool_governance 段源能力常驻条目(call directly, no skill needed + call-time governance still applies);③ `start_workflow` 描述加 when-NOT(step order itself is a requirement,一次性并行→spawn_subagent,同事→delegate);④ `spawn_subagent` 描述加 ↔ workflow 互指(原 ↔ delegate 互指保留);⑤ `save_skill` 描述去"workflow"歧义(approach)+ §7 分界全文;⑥ `set_trigger` config 描述补 `workflow_ref` 形态(definition_name/version/hash/args)+判据(仅当用户要求每次 fire 与已晋升模板严格一致,默认散文)。验收:渲染后决策序列/governance 段人工 review 通过;既有 prompt 钉同步 2 处(`test_system_section.py` pack-gated 断言改 normalize+新增源能力常驻钉;`test_prompt_contracts.py` save_skill 措辞钉更新并加 never-self-approved 钉)。证据:`pytest -q` → **3869 passed, 7 skipped**(+11;同前排除外部半成品);`ruff check`+`format` clean。
 
 **小切口完成定义(DoD)**:① §4.6 验收口径达成——模型 turn-1 能看见并正确选择 subagent/workflow/ledger;② 全量测试绿;③ §3 现状表更新为落地后新现状(本文档自身的证据闭环)。
+
+> **DoD 验收(2026-06-05,四切口全 ✅ 后)**:① **达成** — "看见"=六工具皆 `CORE_TOOL_NAMES` 成员享 `_always_tools` 兜底(红测 #1/#2 钉死);"正确选择"=§5 决策序列进 executing_actions + 工具描述互指 + when-NOT 判据(T2 11 钉);② **达成** — `pytest -q` → **3869 passed, 7 skipped**,`ruff` clean(注:同工作区另有外部进程未提交的 subagent-evolution 半成品,其 5 项自带失败与本工程四 commit diff 零交集,验证时显式排除);③ **达成** — §3.1 三层表/§3.2 七原语表/§3.4 病根标注均已同步落地后现状。
 
 > T1.1 单独上线即净改善:spawn_subagent 等工具描述里的 when-to-use 判据(§3.4 病根 2"判据好但藏在看不见处")随可见性立刻生效,不必等 T2。
 

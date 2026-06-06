@@ -47,12 +47,16 @@ def load_skill(workspace: Path, arguments: dict, tenant_id: str | None = None) -
 @tool(ToolMeta(
     name="save_skill",
     description=(
-        "Save a reusable workflow as a skill inside the workspace skills/ directory.\n\n"
+        "Save a reusable approach as a skill inside the workspace skills/ directory.\n\n"
+        "A skill is your own notebook: HOW-knowledge you read and may adapt while executing. "
+        "A process whose step order must NEVER drift is not a skill — run it as a workflow and "
+        "propose it for promotion to the company library (promotion is reviewed, never "
+        "self-approved). A one-off task needs neither: track_todo is enough.\n\n"
         "Usage:\n"
-        "- Only use this after a workflow has succeeded repeatedly and the steps, decision rules, and verification pattern are stable.\n"
+        "- Only use this after an approach has succeeded repeatedly and the steps, decision rules, and verification pattern are stable.\n"
         "- Save durable, reusable instructions that will help future runs of a similar task.\n"
         "- Do NOT save one-off notes, transient state, or raw transcripts as skills. Durable user corrections belong in `save_memory` when the Memory Guide qualifies them; operational notes and evidence belong in workspace files.\n"
-        "- Include declared tools/packs only when they are truly part of the repeatable workflow.\n"
+        "- Include declared tools/packs only when they are truly part of the repeatable approach.\n"
         "- Use `overwrite: true` only when intentionally updating an existing skill."
     ),
     parameters={

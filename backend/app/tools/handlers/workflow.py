@@ -86,6 +86,10 @@ async def preview_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
         name="start_workflow",
         description=(
             "Start an ephemeral workflow run from a structured definition.\n\n"
+            "Use a workflow ONLY when the step order itself is a requirement — a fixed sequence "
+            "that must not drift, mandatory mid-run approval gates, or large fan-out under a hard "
+            "budget. For one-off parallelism or isolation, spawn_subagent is enough; for handing "
+            "work to another digital employee, use delegate_to_agent.\n\n"
             "Usage:\n"
             "- preview_workflow FIRST and show the user what will run.\n"
             "- Low-risk (read-only/workspace, small budget) runs start directly.\n"

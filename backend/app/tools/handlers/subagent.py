@@ -167,7 +167,9 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
             "artifacts to check and it returns a PASS/FAIL/PARTIAL verdict with evidence. "
             "Named definitions (via definition_name) override type, tools, model, and prompt from their "
             "stored 定义.md. Subagents cannot delegate or spawn further and run under the same governance "
-            "as you. To hand work to another standalone digital employee, use delegate_to_agent instead."
+            "as you. To hand work to another standalone digital employee, use delegate_to_agent instead. "
+            "If the step ORDER itself is the requirement (fixed sequence, mid-run approval gates, "
+            "budgeted fan-out), use preview_workflow/start_workflow instead of spawning."
         ),
         parameters=_SPAWN_PARAMETERS,
         category="coordination",

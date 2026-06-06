@@ -148,7 +148,10 @@ def test_core_tool_descriptions_define_when_not_to_use_and_fallbacks() -> None:
     assert "Do NOT create a trigger without a clear reason" in tools["set_trigger"]
     assert "Do NOT load a skill speculatively" in tools["load_skill"]
     assert "Do NOT use `run_command` to inspect platform or channel credential env vars" in tools["load_skill"]
-    assert "Only use this after a workflow has succeeded repeatedly" in tools["save_skill"]
+    # T2: "workflow" is the engine's proper noun now — save_skill speaks of an
+    # "approach" and carries the §7 skill-vs-workflow-promotion boundary.
+    assert "Only use this after an approach has succeeded repeatedly" in tools["save_skill"]
+    assert "never self-approved" in tools["save_skill"]
     assert "Do NOT save one-off notes, transient state, or raw transcripts as skills" in tools["save_skill"]
     assert "Durable user corrections belong in `save_memory`" in tools["save_skill"]
     assert "operational notes and evidence belong in workspace files" in tools["save_skill"]

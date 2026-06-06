@@ -89,8 +89,16 @@ class TestToolGovernance:
         assert "approval flow" in normalized
 
     def test_pack_gated_tools_require_skill(self, prompt_text: str) -> None:
-        assert "pack-gated tool" in prompt_text
-        assert "governance will block it" in prompt_text
+        normalized = " ".join(prompt_text.split())
+        assert "pack-gated tool" in normalized
+        assert "governance will block it" in normalized
+
+    def test_source_capabilities_are_core_resident(self, prompt_text: str) -> None:
+        """T2 small cut: source capabilities never need a skill; call-time
+        governance still applies (visibility ≠ authorization)."""
+        normalized = " ".join(prompt_text.split())
+        assert "no skill needed" in normalized
+        assert "Call-time governance still applies" in normalized
 
     def test_managed_credentials_are_never_shell_env_probed(self, prompt_text: str) -> None:
         normalized = " ".join(prompt_text.split())

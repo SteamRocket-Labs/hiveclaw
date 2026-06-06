@@ -1,6 +1,6 @@
 # 运行时动态引导体系：机制 × 提示词（对标 CC attachment/reminder 层）
 
-> 状态:**v0.4 执行稿**(2026-06-06)。T-G1/T-G2 已落地:全部 runtime reminder 经 per-invocation `ReminderScheduler` 注册,只 transient 拼入本轮 `stream_messages`,永不写回 `api_messages`/persist;`should_enable_work_ledger` 已收窄为 eligibility,频率由 `observe(tool_names)` 行为计数决定;compaction `reset()` 只重启 idle/cooldown/fire-once 时钟,**不清空已排队的 loop_guard 事件**。T-G2 已补齐 gentle/internal guard、Work Ledger persisted snapshot、round-pressure/loop_guard 防泄漏文案。T-G3 全面对标见 §5.3。
+> 状态:**v0.5 完成稿**(2026-06-06)。T-G1/T-G2/T-G3 已落地:全部 runtime reminder 经 per-invocation `ReminderScheduler` 注册,只 transient 拼入本轮 `stream_messages`,永不写回 `api_messages`/persist;`should_enable_work_ledger` 已收窄为 eligibility,频率由 `observe(tool_names)` 行为计数决定;compaction `reset()` 只重启 idle/cooldown/fire-once 时钟,**不清空已排队的 loop_guard 事件**。T-G2 已补齐 gentle/internal guard、Work Ledger persisted snapshot、round-pressure/loop_guard 防泄漏文案。T-G3 已固化为代码 catalog:`backend/app/kernel/runtime_guidance_catalog.py`(45 项,have 31/planned 4/n-a 10),每项登记 Hive surface、持久化策略和唯一入口。
 > 前版:**v0.1 审计定稿**(2026-06-05)。源码实证:CC `utils/attachments.ts` / `utils/messages.ts` / `constants/prompts.ts`;Hive `kernel/engine.py`。
 > 关系:`docs/execution-mode-spectrum.md` 管 CC 引导体系的前两层——暴露架构 + 静态引导(§5 七原语决策序列、工具描述互指,T2 ✅ 已落地);**本文档管第三层:运行中的动态引导(reminder 注入)**。三层一起构成完整的"关键节点给模型判断信息"的体系。
 > 流程(用户拍板,2026-06-05):**机制对齐 → 提示词对齐 → 全面 CC 对标**。本文档按此分 §5 三阶段路线。
@@ -15,7 +15,7 @@ CC 的引导体系是三层结构:
 |---|---|---|
 | 静态系统提示 | 刻意做轻:`# Using your tools` 四条(dedicated-over-Bash 映射、任务管理一句话、并行引导、Agent 一句 when-to-use),选择哲学下放 | ✅ T2 落地(决策序列比 CC 总纲重,有意 delta,见 §4 P5) |
 | 工具描述 | when-to-use / when-NOT / 互指网 | ✅ T2 对齐 |
-| **动态 reminder** | **40+ attachment 类型,事件驱动,节流注入** | ⚠️ 机制存在(2026-06-03 切口②)但**从未对标过 CC 的注入哲学**——本文档主题 |
+| **动态 reminder** | **40+ attachment 类型,事件驱动,节流注入** | ✅ T-G1/T-G2/T-G3 已完成:机制、文案/快照、45 项代码 catalog |
 
 本文档回答三问:① Hive 动态引导**机制自身**有什么缺陷(§3,不依赖 CC 视角);② 提示词与 CC 的差距(§4);③ 对齐路线(§5)。
 
@@ -115,7 +115,28 @@ CC 把动态 reminder 当**低频、事件驱动、带状态、可忽略**的旁
 
 ### T-G3 全面 CC 对标(40+ attachment 逐项 gap 盘点)
 
-以 §1.1 清单为底,逐项登记 `have / planned / N-A`,各自独立成切口拍板——预判结论:`task_status`(Hive ledger 私有便签语义不同,可 N-A)、`diagnostics`/`edited_text_file`(依赖 LSP/file-watch 设施,独立议题)、`skill_discovery`(Hive skill 目录在静态 prompt,对位已存在)、`critical_system_reminder`(值得 planned)、`nested_memory`(Hive 记忆管线已覆盖,N-A)。**本阶段产出的是盘点表+切口清单,不在本文档预先实施。**
+> **✅ 完成(2026-06-06)** — 工程落地为代码权威源:`backend/app/kernel/runtime_guidance_catalog.py`。catalog 覆盖 45 个 CC attachment/reminder 类型,每项都有 `status`(`have`/`planned`/`n/a`)、Hive surface、`single_ingress`、`persistence_policy`、决策说明。测试 `tests/kernel/test_runtime_guidance_catalog.py` 钉住:覆盖 ≥40 且关键项存在;无重复;每项有状态/持久化/唯一入口;所有 today-runtime transient prompt 条目唯一入口必须是 `kernel/reminder_scheduler.py::ReminderScheduler`;按状态可分组供文档和 review 使用。证据:`pytest tests/kernel/test_runtime_guidance_catalog.py -q` → **4 passed**;`ruff check app/kernel/runtime_guidance_catalog.py tests/kernel/test_runtime_guidance_catalog.py` clean。
+
+状态汇总:
+
+| 状态 | 数量 | 含义 |
+|---|---:|---|
+| `have` | 31 | Hive 已有等价 surface,并记录唯一入口与持久化策略 |
+| `planned` | 4 | 需要独立基础设施/策略切口,不混入 runtime reminder 主线 |
+| `n/a` | 10 | CC attachment 在 Hive 中属于治理/内部 hook/记忆控制面,不应作为 prompt 注入 |
+
+代表性结论:
+
+| CC 类型/家族 | T-G3 结论 | Hive 唯一路径 |
+|---|---|---|
+| `todo_reminder` / `task_reminder` | `have` | `ReminderScheduler` transient + Work Ledger persisted snapshot |
+| `plan_mode` / `plan_mode_reentry` | `have` | `ReminderScheduler` transient + compaction re-arm |
+| `token_budget_warning` / `loop_guard_warning` | `have` | `ReminderScheduler` transient;LoopGuard 只产出 decision |
+| `skill_listing` / `skill_discovery` | `have` | `tool_search` / `load_skill` 的工具结果路径,不重复动态注入 |
+| `relevant_memories` | `have` | Memory Control Plane dynamic suffix |
+| `nested_memory` | `n/a` | Hive 用 tenant/owner/company governed memory scope 表达,不是 CC 式 attachment |
+| `diagnostics` / `edited_text_file` | `planned` | 依赖 LSP/file-watch substrate,独立切口 |
+| hook 系 | `have` 或 `n/a` | 内部治理/记忆 hook,不是 prompt 注入通道 |
 
 ### 红测样例(T-G1/G2)
 
@@ -135,7 +156,7 @@ CC 把动态 reminder 当**低频、事件驱动、带状态、可忽略**的旁
 ## 6. 非目标
 
 - 不删 reminder gate(`should_enable_work_ledger`,T1.2 拍板)——T-G2④ 只收窄其语义,且单独拍板;
-- 不在本文档实施 T-G3 的任何新 attachment 类型(逐项独立拍板);
+- T-G3 的 `planned` 项只登记独立切口,不在本文档内抢跑 LSP/file-watch/web-quality 等新基础设施;
 - 不动静态层(execution-mode-spectrum T2 已收口;P5 是记录在案的有意 delta);
 - 不把 `runtime/hooks.py` 事件总线改造为 prompt 注入通道(职责不同);
 - 工具结果内嵌 next_action 引导(Hive 特色)保留现状,不强行 CC 化。

@@ -1757,13 +1757,13 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
             except Exception as _curation_err:
                 logger.warning("[Heartbeat] Scene/wiki curation failed for {}: {}", agent_id, _curation_err)
 
-            # Count heartbeat as a session for auto-dream gate so agents with
-            # low user-chat but high heartbeat activity still trigger distillation.
+            # Count PRODUCTIVE heartbeats toward the auto-dream gate so agents
+            # with low user-chat but real autonomous output still distill —
+            # idle ticks (OUTCOME:noop) are not activity.
             try:
-                from app.services.auto_dream import record_heartbeat_tick, record_session_end, should_dream, run_dream
+                from app.services.auto_dream import record_dream_activity, should_dream, run_dream
 
-                record_heartbeat_tick(agent_id)
-                record_session_end(agent_id)
+                record_dream_activity(agent_id, outcome_type)
                 if should_dream(agent_id) and agent.tenant_id:
                     asyncio.create_task(run_dream(agent_id, agent.tenant_id))
                     logger.info("[Heartbeat] Auto-dream triggered for agent {}", agent_id)

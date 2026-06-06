@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -77,6 +77,56 @@ class TestDreamGates:
             record_session_end(a1)
         assert should_dream(a1) is True
         assert should_dream(a2) is False
+
+    def test_record_dream_activity_skips_noop(self) -> None:
+        """An idle heartbeat tick (OUTCOME:noop) is not dream-worthy activity —
+        without this, the activity gate is a pure timer and silent agents dream."""
+        from app.services.auto_dream import record_dream_activity
+
+        _reset_state()
+        agent_id = uuid.uuid4()
+        record_dream_activity(agent_id, "noop")
+        assert _sessions_since_dream.get(agent_id.hex, 0) == 0
+        assert _heartbeat_ticks_since_dream.get(agent_id.hex, 0) == 0
+
+        record_dream_activity(agent_id, "action_taken")
+        assert _sessions_since_dream[agent_id.hex] == 1
+        assert _heartbeat_ticks_since_dream[agent_id.hex] == 1
+
+    def test_soft_dream_allowed_while_full_dream_waits_on_time(self, monkeypatch) -> None:
+        """The relief valve must work during the 24h full-dream wait: sessions
+        may exceed the activity gate long before the time gate opens, and soft
+        dream must NOT stand aside for a full dream that is hours away."""
+        import app.services.auto_dream as auto_dream
+        from app.services.auto_dream import should_soft_dream
+
+        _reset_state()
+        agent_id = uuid.uuid4()
+        for _ in range(MIN_SESSIONS_SINCE_DREAM + 1):  # activity gate long met
+            record_session_end(agent_id)
+        # last full dream: recent enough that the 24h gate is closed, old
+        # enough that the soft-dream spacing has passed
+        _last_dream_time[agent_id.hex] = datetime.now(timezone.utc) - timedelta(
+            hours=auto_dream._MIN_HOURS_BETWEEN_SOFT_DREAMS + 1
+        )
+        monkeypatch.setattr(auto_dream, "_count_t3_entries", lambda _aid: 120)
+
+        assert should_dream(agent_id) is False  # full dream still waiting on time
+        assert should_soft_dream(agent_id) is True  # relief valve stays open
+
+    def test_soft_dream_yields_when_full_dream_is_due(self, monkeypatch) -> None:
+        import app.services.auto_dream as auto_dream
+        from app.services.auto_dream import should_soft_dream
+
+        _reset_state()
+        agent_id = uuid.uuid4()
+        for _ in range(MIN_SESSIONS_SINCE_DREAM):
+            record_session_end(agent_id)
+        # no last dream on record → time gate open → full dream due
+        monkeypatch.setattr(auto_dream, "_count_t3_entries", lambda _aid: 120)
+
+        assert should_dream(agent_id) is True
+        assert should_soft_dream(agent_id) is False  # yields to the full dream
 
     def test_gate_persists_across_in_memory_reset(self, monkeypatch, tmp_path) -> None:
         import app.services.auto_dream as auto_dream

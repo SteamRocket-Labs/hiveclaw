@@ -113,9 +113,11 @@ class Settings(BaseSettings):
     # Tick frequency for the evolution daemon (heartbeat dispatcher).
     # Production: 60s. Dev/staging may set 5-15s to exercise the path.
     HEARTBEAT_TICK_SECONDS: int = 60
-    # Default per-agent heartbeat interval when an Agent row has no override.
-    # Production: 45 minutes (matches the legacy mapped_column default).
-    HEARTBEAT_DEFAULT_INTERVAL_MINUTES: int = 45
+    # Platform-managed heartbeat cadence (heartbeat_policy overrides per-agent
+    # rows). 2026-06-05 owner decision: 2h — T2 accumulation never kept up with
+    # the old 45min digestion rhythm (most ticks idled), and in-conversation
+    # memory rides the per-response extraction hook, not this loop.
+    HEARTBEAT_DEFAULT_INTERVAL_MINUTES: int = 120
     # Subagent evolution loop (docs/subagent-evolution-loop.md §4.1): an
     # agent-level definition with this many ACTIVE memory entries (and no
     # pending proposal) gets an LLM-drafted definition-improvement proposal.

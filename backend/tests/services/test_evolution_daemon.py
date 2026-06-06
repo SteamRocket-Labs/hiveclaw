@@ -56,7 +56,7 @@ def test_settings_exposes_heartbeat_default_minutes() -> None:
     so the heartbeat dispatcher fallback and CLAUDE.md stay in sync."""
     from app.config import get_settings
 
-    assert get_settings().HEARTBEAT_DEFAULT_INTERVAL_MINUTES == 45
+    assert get_settings().HEARTBEAT_DEFAULT_INTERVAL_MINUTES == 120
 
 
 # ── Behaviour: one tick fires + cleanup runs + sleeps ─────────

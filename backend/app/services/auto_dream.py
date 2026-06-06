@@ -62,13 +62,14 @@ def _dream_writeback_lock(agent_id: uuid.UUID) -> Iterator[None]:
 
 # Consolidation gates — tuned for active agents that run heartbeats/triggers.
 # Both conditions must be met: enough time elapsed AND enough new sessions.
-MIN_HOURS_BETWEEN_DREAMS = 4  # B4 fix: lowered from 6 for better coverage
+MIN_HOURS_BETWEEN_DREAMS = 24  # 2026-06-05 owner decision: soul is the identity layer —
+# it consolidates once a day, not six times. Soft dreams relieve T3 pressure in between.
 MIN_SESSIONS_SINCE_DREAM = 3
 
 # Soft dream: lightweight maintenance (dedup + index/shadow refresh, no LLM)
 # Triggers when facts approach the 150 cap but full dream gate isn't met yet.
 _SOFT_DREAM_FACT_THRESHOLD = 100
-_MIN_HOURS_BETWEEN_SOFT_DREAMS = 2
+_MIN_HOURS_BETWEEN_SOFT_DREAMS = 6  # 1/4 of the full-dream cadence
 
 # Per-agent tracking (in-memory, resets on process restart)
 _last_dream_time: dict[str, datetime] = {}
@@ -1262,6 +1263,20 @@ def _persist_dream_state(agent_id: uuid.UUID) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def record_dream_activity(agent_id: uuid.UUID, outcome_type: str) -> None:
+    """Count a heartbeat tick toward the dream activity gate — productive ticks only.
+
+    An idle tick (OUTCOME:noop) is not activity: counting it unconditionally
+    turned the activity gate into a pure timer, so completely silent agents
+    dreamed on schedule about nothing.
+    """
+
+    if (outcome_type or "").strip().lower() == "noop":
+        return
+    record_heartbeat_tick(agent_id)
+    record_session_end(agent_id)
+
+
 def record_session_end(agent_id: uuid.UUID) -> None:
     """Increment session counter for dream gate evaluation."""
     key = agent_id.hex
@@ -1292,8 +1307,10 @@ def should_soft_dream(agent_id: uuid.UUID) -> bool:
     last, sessions = _load_dream_state(agent_id)
     if sessions < 1:
         return False
-    # Don't soft-dream if full dream is about to trigger
-    if sessions >= MIN_SESSIONS_SINCE_DREAM:
+    # Yield ONLY when the full dream is actually due (time + activity gates).
+    # Yielding on session count alone closed the relief valve for the whole
+    # 24h wait window — T3 pressure had nowhere to go.
+    if should_dream(agent_id):
         return False
     # Time gate for soft dream
     if last is not None:

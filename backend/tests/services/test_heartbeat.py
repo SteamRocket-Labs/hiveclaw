@@ -436,7 +436,7 @@ async def test_heartbeat_tick_uses_platform_managed_cadence(monkeypatch):
         heartbeat_enabled=False,
         heartbeat_interval_minutes=9999,
         heartbeat_active_hours="00:00-00:01",
-        last_heartbeat_at=datetime.now(timezone.utc) - timedelta(minutes=46),
+        last_heartbeat_at=datetime.now(timezone.utc) - timedelta(minutes=121),  # > managed 120min cadence
         timezone="UTC",
     )
     tenant = SimpleNamespace(id=tenant_id, timezone="UTC")

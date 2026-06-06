@@ -598,7 +598,7 @@ pytest tests/runtime/test_workflow_wait_signal.py tests/agents/test_coordination
 > - `api/domains/workflows.ts`：ephemeral preview/start（confirmed plan 绑定透传）/getRun/cancel + registered 全生命周期（create draft/list/activate/deprecate/revoke/approve-promotion/fork）+ `classifyTriggerPin`（§6.2 pin 状态推导：pinned/version_mismatch/hash_mismatch/missing）。Vitest 10 条覆盖文档红测试四项（preview/run status/registered list/trigger mismatch）。
 > - **`AgentWorkflowsSection`（一个心智模型 §4）**：一次性编排（definition 粘贴→preview 风险卡→确认运行，高风险禁用并列 reasons）→ 运行进度（step journal 轮询+cancel）→ 模板表（version/status/visibility/hash + promote 审批/fork/deprecate/revoke）。AgentDetail 注册 `workflows` tab。
 > - i18n：`en.json`/`zh.json` 双语全量（tab + workflows.* 19 keys）。
-> - **覆盖面诚实记录**：Office workbench 工作流入口归 P13（office 场景接线时才有内容）；Trigger 创建 UI 的 workflow_ref 选择器未做（pin 状态推导函数已就位，绑定 UI 留待 trigger 表单改版时接入——P8 后端校验已兜底）。
+> - **覆盖面诚实记录**：Office workbench 工作流入口归 P13（office 场景接线时才有内容）；Trigger 创建 UI 的 workflow_ref 选择器已在 `AgentAwareSection` 落地（active registered workflow 下拉 + args JSON 输入,测试覆盖 `buildWakePolicyPayload` pin/stale/invalid args），后续维护归 trigger 表单/Workflow 前端体验迭代。
 
 目标：给办公用户一个工作流心智模型，而不是暴露 ephemeral / registered 两套入口。
 

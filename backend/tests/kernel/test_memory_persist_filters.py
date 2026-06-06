@@ -21,8 +21,9 @@ from app.runtime.session import PlanModeState, SessionContext
 
 
 class _ToolLoopClient:
-    def __init__(self, tool_rounds: int) -> None:
+    def __init__(self, tool_rounds: int, *, distinct_args: bool = False) -> None:
         self._remaining = tool_rounds
+        self._distinct_args = distinct_args
         self.calls: list[dict] = []
 
     async def stream(self, **kwargs):
@@ -35,7 +36,10 @@ class _ToolLoopClient:
                     {
                         "id": f"call-{self._remaining}",
                         "type": "function",
-                        "function": {"name": "read_file", "arguments": '{"path": "x"}'},
+                        "function": {
+                            "name": "read_file",
+                            "arguments": f'{{"path": "x-{self._remaining}"}}' if self._distinct_args else '{"path": "x"}',
+                        },
                     }
                 ],
                 reasoning_content=None,
@@ -134,7 +138,7 @@ async def test_persisted_messages_contain_no_ledger_or_pressure_reminder_text():
     persist_sink: list = []
     # 14 tool rounds: enough for the ledger reminder (idle 10) AND the
     # round-pressure thresholds of max_tool_rounds=15 (80% → 12, final-2 → 13).
-    client = _ToolLoopClient(tool_rounds=14)
+    client = _ToolLoopClient(tool_rounds=14, distinct_args=True)
 
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
 
@@ -181,7 +185,8 @@ async def test_persisted_messages_contain_no_ledger_or_pressure_reminder_text():
 
     assert persist_sink
     texts = _persisted_texts(persist_sink)
-    assert not any("Keep your work ledger current" in t for t in texts), "ledger reminder leaked into persist"
+    assert not any("gentle reminder" in t for t in texts), "ledger reminder leaked into persist"
+    assert not any("Current Work Ledger snapshot" in t for t in texts), "ledger snapshot leaked into persist"
     assert not any("tool rounds used" in t for t in texts), "round-pressure warning leaked into persist"
 
 

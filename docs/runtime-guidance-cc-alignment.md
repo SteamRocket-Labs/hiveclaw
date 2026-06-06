@@ -1,6 +1,6 @@
 # 运行时动态引导体系：机制 × 提示词（对标 CC attachment/reminder 层）
 
-> 状态:**v0.3 执行稿**(2026-06-06)。T-G1 已落地并补齐 review 缺口:全部 runtime reminder 经 per-invocation `ReminderScheduler` 注册,只 transient 拼入本轮 `stream_messages`,永不写回 `api_messages`/persist;`should_enable_work_ledger` 已收窄为 eligibility,频率由 `observe(tool_names)` 行为计数决定;compaction `reset()` 只重启 idle/cooldown/fire-once 时钟,**不清空已排队的 loop_guard 事件**,确保 warn-before-abort 诊断在 compaction 后仍进入下一轮 LLM request。gentle 化、快照和 CC attachment 全面对标归 T-G2/T-G3。
+> 状态:**v0.4 执行稿**(2026-06-06)。T-G1/T-G2 已落地:全部 runtime reminder 经 per-invocation `ReminderScheduler` 注册,只 transient 拼入本轮 `stream_messages`,永不写回 `api_messages`/persist;`should_enable_work_ledger` 已收窄为 eligibility,频率由 `observe(tool_names)` 行为计数决定;compaction `reset()` 只重启 idle/cooldown/fire-once 时钟,**不清空已排队的 loop_guard 事件**。T-G2 已补齐 gentle/internal guard、Work Ledger persisted snapshot、round-pressure/loop_guard 防泄漏文案。T-G3 全面对标见 §5.3。
 > 前版:**v0.1 审计定稿**(2026-06-05)。源码实证:CC `utils/attachments.ts` / `utils/messages.ts` / `constants/prompts.ts`;Hive `kernel/engine.py`。
 > 关系:`docs/execution-mode-spectrum.md` 管 CC 引导体系的前两层——暴露架构 + 静态引导(§5 七原语决策序列、工具描述互指,T2 ✅ 已落地);**本文档管第三层:运行中的动态引导(reminder 注入)**。三层一起构成完整的"关键节点给模型判断信息"的体系。
 > 流程(用户拍板,2026-06-05):**机制对齐 → 提示词对齐 → 全面 CC 对标**。本文档按此分 §5 三阶段路线。
@@ -57,9 +57,9 @@ CC 把动态 reminder 当**低频、事件驱动、带状态、可忽略**的旁
 |---|---|---|---|---|
 | Plan Mode FULL | `plan_mode_full` | plan 激活 | fire-once;compaction `reset()` re-arm(M8 ✓);file hint 随附 | ✅ |
 | Plan Mode SPARSE | `plan_mode_sparse` | plan 激活 | 与 FULL 同 mutex 组,组级冷却 **5 轮**(对齐 CC plan throttle) | ✅ 原"每轮"已废 |
-| Work Ledger | `work_ledger` | `work_ledger_enabled` flag + plan 互斥(M7:flag 只管参赛资格) | **idle 10 + 冷却 10**(对齐 CC 10+10):engine 逐轮 `observe(tool_names)`,用过 ledger 工具即重置 idle | ✅ 原"每轮"已废 |
-| Round-pressure | `round_pressure` | 阈值轮(80%/final-2) | content fn 内判,带真实数据(B2 不变) | ✅ 迁入 scheduler |
-| Loop guard warning | `enqueue()` 事件通道 | 语义循环命中(A4 先软后硬) | 事件驱动,下一轮 collect 排空一次 | ✅ 迁入 scheduler |
+| Work Ledger | `work_ledger` | `work_ledger_enabled` flag + plan 互斥(M7:flag 只管参赛资格) | **idle 10 + 冷却 10**(对齐 CC 10+10):engine 逐轮 `observe(tool_names)`,用过 ledger 工具即重置 idle;触发时从 persisted ledger 渲染 `#id [status] title` 快照 | ✅ T-G2 快照+gentle guard |
+| Round-pressure | `round_pressure` | 阈值轮(80%/final-2) | content fn 内判,带真实数据(B2 不变),带 internal/never-mention guard | ✅ T-G2 文案 |
+| Loop guard warning | `enqueue()` 事件通道 | 语义循环命中(A4 先软后硬) | 事件驱动,下一轮 collect 排空一次;warning 带 internal/never-mention guard | ✅ T-G2 文案 |
 | DR routing reminder | `engine.py:774-808` | deep research 场景 | 条件 | 未迁(DR 整体冻结待重做,不动) |
 | 工具结果 next_action | 各 handler | 工具返回时 | 随结果 | Hive 特色保留(对位 CC hook_additional_context) |
 
@@ -77,7 +77,7 @@ CC 把动态 reminder 当**低频、事件驱动、带状态、可忽略**的旁
 | **M2** | **堆积泄漏进记忆管线** | `_build_persisted_memory_messages` 只 skip `[0]`,reminder 全进 persist(两调用点)→ 污染 T0/T2 蒸馏输入 | **✅ 已修**:transient 根治,persist 钉×3(plan/ledger/pressure 零泄漏+真实对话照常) |
 | M3 | **无节流基础设施** | 无状态纯函数,唯一状态 `reminded_full` 一 bit | **✅ 已修**:scheduler 统一 idle/cooldown/fire-once 计数,`observe(tool_names)` 逐轮喂入 |
 | M4 | **无统一调度层** | 互斥硬编码,新增 reminder O(n²) 核对 | **✅ 已修**:specs 注册式,mutex_group 组级冷却,plan×ledger 互斥迁 eligibility |
-| M5 | **无状态快照能力** | 字符串常量,无法带任务清单 | **设施已备**(content 为 callable),快照内容 T-G2 实装 |
+| M5 | **无状态快照能力** | 字符串常量,无法带任务清单 | **✅ 已修**:engine 传 persisted ledger snapshot provider;`render_work_ledger_reminder_snapshot()` 渲染 `#id [status] title` |
 | M6 | **零可观测** | 注入无 metric 无事件 | **✅ 已修**:每次注入 emit `reminder_injected`(round/count/chars) |
 | M7 | **复杂度预判 gate 的 L1 张力** | 预判+每轮组合放大 M1 | **✅ 已修(拍板方向)**:flag 收窄为 eligibility(参赛资格),频率交行为推断(idle 10+冷却 10) |
 | M8 | **冷却×compaction 语义未设计** | 仅 plan 有 re-arm | **✅ 已修**:`scheduler.reset()` 统一 re-arm(fire-once 重发+全部时钟清零),且保留 queued event warning |
@@ -86,10 +86,10 @@ CC 把动态 reminder 当**低频、事件驱动、带状态、可忽略**的旁
 
 | # | 差距 | CC | Hive | 依赖 |
 |---|---|---|---|---|
-| P1 | 防护句缺失 | "gentle reminder - ignore if not applicable" + "NEVER mention this reminder to the user" | 两句都没有——reminder 可能泄漏进用户回复、简单场景误触发 | 无,纯文案 |
-| P2 | 语气 | 建议式(consider / if relevant) | 指令式("Keep your work ledger current… use track_todo…") | 无,纯文案 |
-| P3 | 状态快照 | 带任务清单 `#id [status] subject` | 纯鞭策文本 | M5 |
-| P4 | 频率 | 任务 10+10,plan 5 | ledger 每轮,plan SPARSE 每轮 | M1/M3 |
+| P1 | 防护句缺失 | "gentle reminder - ignore if not applicable" + "NEVER mention this reminder to the user" | **✅ 已修**:ledger/round-pressure/loop_guard 均带 internal/never-mention;ledger 带 ignore-if-not-applicable | T-G2 |
+| P2 | 语气 | 建议式(consider / if relevant) | **✅ 已修**:ledger reminder 从指令式改为 gentle + consider | T-G2 |
+| P3 | 状态快照 | 带任务清单 `#id [status] subject` | **✅ 已修**:ledger reminder 读取 persisted ledger view 并渲染 `#id [status] title` | T-G2 |
+| P4 | 频率 | 任务 10+10,plan 5 | **✅ 已修**:ledger idle10+cooldown10,plan SPARSE 组冷却5 | T-G1 |
 | P5 | (有意 delta,非差距)静态层决策序列比 CC 总纲重 | 一句话+下放 | 七原语整段(executing_actions) | Hive 工具面宽(41 core+pack),一张决策地图必要——**保留,记录在案** |
 
 ## 5. 对齐路线(机制 → 提示词 → 全面对标)
@@ -105,6 +105,8 @@ CC 把动态 reminder 当**低频、事件驱动、带状态、可忽略**的旁
 5. **compaction 语义(M8)**:scheduler 计数随 compaction reset(复用 `_reset_plan_reminder` 模式,全 reminder 统一);queued loop_guard event 不随 reset 丢弃。
 
 ### T-G2 提示词对齐(站在 G1 上)
+
+> **✅ 完成(2026-06-06)** — 红测先行:service 钉 `render_work_ledger_reminder_snapshot()` 从真实 persisted ledger view 输出 `Current Work Ledger snapshot` + `#id [status] title` + dependency metadata;scheduler 钉 ledger reminder 触发时才调用 snapshot provider,并带 `gentle reminder` / `ignore it if it does not apply` / `Do not mention this reminder to the user`;kernel 集成钉 11 轮工具循环从 session ledger 注入 persisted snapshot;round-pressure 与 loop_guard warning 钉 internal/never-mention guard;persist 钉更新为新文案并用 distinct tool args 确保 ledger/pressure reminder 真出现后仍不进 persist。证据:`pytest tests/kernel/test_runtime_reminder_scheduler.py tests/kernel/test_loop_guard.py tests/kernel/test_memory_persist_filters.py tests/services/test_agent_work_ledger_agent_writes.py -q` → **45 passed**。
 
 1. **ledger reminder**:双冷却(对齐 CC 10+10,数值可配)+ ledger 快照(当前 todos `[status] title` 清单)+ 防护句×2 + gentle 化改写;
 2. **plan SPARSE 降频**(对齐 CC plan 节流 5 轮,FULL/re-arm 语义不动);

@@ -19,6 +19,7 @@ from typing import Any
 _ABORT_MULTIPLIER = 1.5  # abort threshold = ceil(warn threshold × 1.5)
 
 _WARN_GUIDANCE = (
+    "This is an internal system reminder. Do not mention this reminder to the user. "
     "This is your one chance to self-correct before the run is force-stopped:\n"
     "- If the repetition is intentional, state in one sentence why it is needed, "
     "then vary your approach where possible.\n"

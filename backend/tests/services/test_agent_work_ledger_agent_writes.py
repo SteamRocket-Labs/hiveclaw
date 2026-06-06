@@ -237,6 +237,43 @@ def test_render_reboot_block_answers_five_reboot_questions(tmp_path):
     assert "continue from the next open todo" in block
 
 
+def test_render_reminder_snapshot_lists_current_todos_with_status(tmp_path):
+    """T-G2 M5: runtime reminders get a compact snapshot from persisted ledger state."""
+    from app.services.agent_work_ledger import (
+        initialize_agent_work_ledger_artifact,
+        read_agent_work_ledger_view,
+        render_work_ledger_reminder_snapshot,
+        upsert_agent_work_ledger_todo,
+    )
+
+    agent_id = uuid4()
+    initialize_agent_work_ledger_artifact(
+        agent_id=agent_id, source="agent_authored", current_phase="execution", data_root=tmp_path
+    )
+    first = upsert_agent_work_ledger_todo(
+        agent_id=agent_id,
+        title="Collect Q3 revenue figures",
+        status="in_progress",
+        data_root=tmp_path,
+    )
+    upsert_agent_work_ledger_todo(
+        agent_id=agent_id,
+        title="Draft the variance summary",
+        status="pending",
+        blocked_by=[first["item"]["id"]],
+        data_root=tmp_path,
+    )
+
+    view = read_agent_work_ledger_view(agent_id=agent_id, data_root=tmp_path)
+    snapshot = render_work_ledger_reminder_snapshot(view)
+
+    assert "Current Work Ledger snapshot" in snapshot
+    assert f"#{first['item']['id']}" in snapshot
+    assert "[in_progress] Collect Q3 revenue figures" in snapshot
+    assert "[pending] Draft the variance summary" in snapshot
+    assert "blockedBy:" in snapshot
+
+
 # ── 切口③ owner / dependency fields + delegation contract (§5.5 Delta-4) ──────
 
 

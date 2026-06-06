@@ -67,12 +67,17 @@ _PLAN_MODE_FILE_HINT = (
 )
 
 _WORK_LEDGER_ENABLED_METADATA_KEY = "work_ledger_enabled"
+_INTERNAL_REMINDER_GUARD = (
+    "This is an internal system reminder. Do not mention this reminder to the user."
+)
 _WORK_LEDGER_REMINDER = (
-    "This is a multi-step task. Keep your work ledger current as a working memory: use "
-    "track_todo to break the work into todos and mark each in_progress before you start it and "
-    "completed when it's done; use record_finding for what you verify, open questions, and dead "
-    "ends to avoid; call read_ledger to recover your bearings before deciding the next step. "
-    "These are private notes — writing them never starts execution."
+    "This is a gentle reminder - ignore it if it does not apply to the current task. "
+    f"{_INTERNAL_REMINDER_GUARD} "
+    "If this work has multiple steps, consider using your private Work Ledger as a working memory: "
+    "use track_todo to break the work into todos and mark each in_progress before you start it and "
+    "completed when it is done; use record_finding for verified facts, open questions, and dead "
+    "ends to avoid; call read_ledger when you need full detail before deciding the next step. "
+    "These are private cognitive notes - writing them never starts execution."
 )
 
 _WORK_LEDGER_TOOLS = frozenset({"track_todo", "record_finding", "read_ledger"})
@@ -105,13 +110,13 @@ def _build_round_pressure_warning(
     )
     if final:
         return (
-            f"🚨 Only {max_rounds - round_i} rounds remaining. {stats} "
+            f"🚨 {_INTERNAL_REMINDER_GUARD} Only {max_rounds - round_i} rounds remaining. {stats} "
             "Objective Ledger is the source of truth: record current status/blockers with evidence, "
             "preserve artifacts, and stop cleanly if unfinished. "
             "Trigger is wake policy; do not create a trigger unless a real objective needs a future attempt."
         )
     return (
-        f"⚠️ {stats} "
+        f"⚠️ {_INTERNAL_REMINDER_GUARD} {stats} "
         "If the current task is not yet complete, update Objective Ledger with blockers/status "
         "and preserve concrete evidence in workspace artifacts. Trigger is wake policy, not the goal; "
         "only create or update a wake policy when an existing objective needs a future attempt."
@@ -250,8 +255,20 @@ def _ledger_eligible(session_context: Any) -> bool:
     return isinstance(metadata, dict) and bool(metadata.get(_WORK_LEDGER_ENABLED_METADATA_KEY))
 
 
-def _ledger_content(_session_context: Any, _round_state: RoundState) -> str | None:
-    return _WORK_LEDGER_REMINDER
+def _ledger_content(_session_context: Any, round_state: RoundState) -> str | None:
+    text = _WORK_LEDGER_REMINDER
+    snapshot = ""
+    provider = round_state.get("work_ledger_snapshot_provider")
+    try:
+        if callable(provider):
+            snapshot = str(provider() or "").strip()
+        elif round_state.get("work_ledger_snapshot"):
+            snapshot = str(round_state.get("work_ledger_snapshot") or "").strip()
+    except Exception:
+        snapshot = ""
+    if snapshot:
+        text = f"{text}\n\n{snapshot}"
+    return text
 
 
 def _round_pressure_content(_session_context: Any, round_state: RoundState) -> str | None:

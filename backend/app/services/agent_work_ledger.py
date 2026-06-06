@@ -852,6 +852,54 @@ def render_work_ledger_resume_block(summary: dict[str, Any] | None) -> str:
     return "\n".join(lines)
 
 
+def render_work_ledger_reminder_snapshot(view: dict[str, Any] | None, *, limit: int = 8) -> str:
+    """Render the compact todo snapshot attached to runtime ledger reminders.
+
+    T-G2 aligns with CC's task reminder shape: the nudge carries the current
+    task list (`#id [status] subject`) so the model can recover state without an
+    immediate read_ledger call. The full ledger remains available through
+    read_ledger; this renderer is intentionally small.
+    """
+
+    if not view:
+        return ""
+    todos = [item for item in view.get("todo_items", []) if isinstance(item, dict)]
+    display_items = []
+    for item in todos:
+        title = _clean_text(item.get("title") or item.get("subject") or item.get("content"))
+        item_id = _clean_text(item.get("id"))
+        if not title or not item_id:
+            continue
+        display_items.append(item)
+        if len(display_items) >= max(1, limit):
+            break
+    if not display_items:
+        return ""
+
+    lines = ["Current Work Ledger snapshot:"]
+    for item in display_items:
+        title = _clean_text(item.get("title") or item.get("subject") or item.get("content"))
+        item_id = _clean_text(item.get("id"))
+        status = _normalize_task_status(item.get("status"))
+        suffixes: list[str] = []
+        owner = _clean_text(item.get("owner"))
+        if owner:
+            suffixes.append(f"owner: {owner}")
+        blocked_by = [str(ref).strip() for ref in (item.get("blockedBy") or []) if str(ref).strip()]
+        if blocked_by:
+            suffixes.append("blockedBy: " + ", ".join(blocked_by[:3]))
+        blocks = [str(ref).strip() for ref in (item.get("blocks") or []) if str(ref).strip()]
+        if blocks:
+            suffixes.append("blocks: " + ", ".join(blocks[:3]))
+        suffix = f" ({'; '.join(suffixes)})" if suffixes else ""
+        lines.append(f"- #{item_id} [{status}] {title}{suffix}")
+
+    remaining = len(todos) - len(display_items)
+    if remaining > 0:
+        lines.append(f"- ... {remaining} more todo(s); call read_ledger for full detail.")
+    return "\n".join(lines)
+
+
 def _display_item(item: dict[str, Any], *, title_key: str = "title") -> dict[str, Any]:
     title = _clean_text(
         item.get("content")
@@ -1325,6 +1373,7 @@ __all__ = [
     "read_latest_session_work_ledger_view",
     "read_agent_work_ledger_view",
     "record_delegated_todo_status",
+    "render_work_ledger_reminder_snapshot",
     "render_work_ledger_resume_block",
     "should_enable_work_ledger",
     "upsert_agent_work_ledger_todo",

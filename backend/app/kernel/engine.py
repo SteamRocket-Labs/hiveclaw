@@ -1535,6 +1535,33 @@ class AgentKernel:
             reminder_scheduler = ReminderScheduler(build_default_reminder_specs())
             _round_tool_names: list[str] = []
 
+            def _work_ledger_snapshot_provider() -> str:
+                if not request.agent_id or request.session_context is None:
+                    return ""
+                _meta = getattr(request.session_context, "metadata", None)
+                if not isinstance(_meta, dict) or not _meta.get(_WORK_LEDGER_ENABLED_METADATA_KEY):
+                    return ""
+                try:
+                    from app.services.agent_work_ledger import (
+                        read_agent_work_ledger_view,
+                        render_work_ledger_reminder_snapshot,
+                    )
+
+                    _plan_state = getattr(request.session_context, "plan_mode", None)
+                    _plan_id = _meta.get("plan_id") or getattr(_plan_state, "plan_id", None)
+                    _runtime_task_id = _meta.get("runtime_task_id") or _meta.get("task_id")
+                    _session_id = request.memory_session_id or getattr(request.session_context, "session_id", None)
+                    _view = read_agent_work_ledger_view(
+                        agent_id=request.agent_id,
+                        plan_id=_plan_id,
+                        runtime_task_id=_runtime_task_id,
+                        session_id=None if _plan_id or _runtime_task_id else _session_id,
+                    )
+                    return render_work_ledger_reminder_snapshot(_view)
+                except Exception as _ledger_err:
+                    logger.debug("[Kernel] Work Ledger reminder snapshot failed: %s", _ledger_err)
+                    return ""
+
             async def _emit_event(event: dict[str, Any]) -> None:
                 if request.on_event:
                     try:
@@ -1782,6 +1809,7 @@ class AgentKernel:
                             "total_tool_calls": loop_guard.total_tool_calls,
                             "failed_tool_calls": loop_guard.failed_tool_calls,
                             "context_tokens": self._deps.estimate_tokens_from_chars(_ctx_chars),
+                            "work_ledger_snapshot_provider": _work_ledger_snapshot_provider,
                         },
                     )
                     if _transient_reminders:

@@ -113,6 +113,35 @@ def test_ledger_cooldown_between_injections():
     assert ledger_rounds[1] - ledger_rounds[0] >= 10
 
 
+def test_ledger_reminder_is_gentle_and_includes_current_snapshot():
+    """T-G2: ledger reminder is a low-frequency nudge with current persisted state."""
+    scheduler = _scheduler()
+    ctx = _ledger_ctx()
+    snapshot_calls = 0
+
+    def _snapshot() -> str:
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        return "Current Work Ledger snapshot:\n- #todo-1 [in_progress] Collect Q3 revenue figures"
+
+    fired: dict[int, list[str]] = {}
+    for i in range(11):
+        fired[i] = scheduler.collect(
+            ctx,
+            _round_state(round_i=i, work_ledger_snapshot_provider=_snapshot),
+        )
+        scheduler.observe(())
+
+    text = next(t for t in fired[10] if "track_todo" in t)
+    lowered = text.lower()
+    assert snapshot_calls == 1
+    assert "gentle reminder" in lowered
+    assert "ignore it if it does not apply" in lowered
+    assert "do not mention this reminder to the user" in lowered
+    assert "Current Work Ledger snapshot" in text
+    assert "#todo-1 [in_progress] Collect Q3 revenue figures" in text
+
+
 def test_ledger_eligibility_gate_is_hard():
     """M7: without the work_ledger_enabled flag the reminder NEVER fires —
     eligibility is the gate, behaviour only governs frequency."""
@@ -207,6 +236,21 @@ def test_round_pressure_fires_at_thresholds_with_data():
     assert "16/20" in warn
 
 
+def test_round_pressure_warning_has_internal_guard_text():
+    scheduler = _scheduler()
+    ctx = SessionContext()
+
+    fired = scheduler.collect(
+        ctx,
+        _round_state(round_i=16, max_rounds=20, total_tool_calls=32, context_tokens=5_000),
+    )
+
+    text = next(t for t in fired if "tool rounds used" in t)
+    lowered = text.lower()
+    assert "internal system reminder" in lowered
+    assert "do not mention this reminder to the user" in lowered
+
+
 # ── Event-driven channel (loop guard) ───────────────────────────────
 
 
@@ -251,8 +295,9 @@ def test_reset_preserves_enqueued_event_until_next_collect():
 class _ToolLoopClient:
     """Fake client: N tool-call rounds then a final text round."""
 
-    def __init__(self, tool_rounds: int) -> None:
+    def __init__(self, tool_rounds: int, *, distinct_args: bool = False) -> None:
         self._remaining = tool_rounds
+        self._distinct_args = distinct_args
         self.calls: list[dict] = []
 
     async def stream(self, **kwargs):
@@ -265,7 +310,10 @@ class _ToolLoopClient:
                     {
                         "id": f"call-{self._remaining}",
                         "type": "function",
-                        "function": {"name": "read_file", "arguments": '{"path": "x"}'},
+                        "function": {
+                            "name": "read_file",
+                            "arguments": f'{{"path": "x-{self._remaining}"}}' if self._distinct_args else '{"path": "x"}',
+                        },
                     }
                 ],
                 reasoning_content=None,
@@ -378,3 +426,61 @@ async def test_first_round_request_still_carries_full_reminder():
 
     first_messages = client.calls[0]["messages"]
     assert any(m.role == "system" and "Plan Mode is active" in (m.content or "") for m in first_messages)
+
+
+@pytest.mark.asyncio
+async def test_kernel_ledger_reminder_reads_persisted_session_snapshot(tmp_path, monkeypatch):
+    """T-G2 integration: the engine wires the persisted session ledger into the scheduler path."""
+    from app.kernel.contracts import InvocationRequest
+    from app.services.agent_work_ledger import (
+        initialize_agent_work_ledger_artifact,
+        upsert_agent_work_ledger_todo,
+    )
+
+    monkeypatch.setattr(
+        "app.services.agent_work_ledger.get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+    )
+    agent_id = uuid4()
+    session_id = "sess-snapshot"
+    initialize_agent_work_ledger_artifact(
+        agent_id=agent_id,
+        source="agent_authored",
+        session_id=session_id,
+        current_phase="execution",
+        data_root=tmp_path,
+    )
+    upsert_agent_work_ledger_todo(
+        agent_id=agent_id,
+        session_id=session_id,
+        title="Collect Q3 revenue figures",
+        status="in_progress",
+        data_root=tmp_path,
+    )
+
+    client = _ToolLoopClient(tool_rounds=11, distinct_args=True)
+    kernel = _kernel(client, max_rounds=20)
+    sc = SessionContext(session_id=session_id)
+    sc.metadata = {"work_ledger_enabled": True}
+
+    await kernel.handle(
+        InvocationRequest(
+            model=_model(),
+            messages=[{"role": "user", "content": "multi-step analysis"}],
+            agent_name="Agent",
+            role_description="desc",
+            agent_id=agent_id,
+            user_id=uuid4(),
+            memory_session_id=session_id,
+            session_context=sc,
+        )
+    )
+
+    reminder_messages = [
+        m.content or ""
+        for call in client.calls
+        for m in call["messages"]
+        if m.role == "system" and "Current Work Ledger snapshot" in (m.content or "")
+    ]
+    assert reminder_messages, "ledger reminder never carried the persisted snapshot"
+    assert any("[in_progress] Collect Q3 revenue figures" in text for text in reminder_messages)

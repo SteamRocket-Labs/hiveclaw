@@ -54,6 +54,8 @@ def test_loop_guard_warn_message_teaches_self_correction() -> None:
     assert "self-correct" in lowered  # it's a chance, not a verdict
     assert "intentional" in lowered  # legitimate repetition has an out
     assert "change approach" in lowered  # concrete next step
+    assert "internal system reminder" in lowered
+    assert "do not mention this reminder to the user" in lowered
 
 
 def test_loop_guard_abort_decisions_keep_severity_abort() -> None:

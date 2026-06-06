@@ -1014,11 +1014,11 @@ def _resolve_effective_turn_route(
     if request.session_context is not None:
         session_metadata = _session_metadata(request.session_context)
         session_metadata["turn_route"] = route_metadata
-        # Work Ledger 切口②: decide on the general path whether the cognitive
-        # scaffold is warranted this turn (complex → per-round reminder +
-        # compaction reboot; simple Q&A → zero overhead). The kernel reads this
-        # flag; the threshold itself lives in the ledger service so the policy is
-        # testable in isolation (cognitive-scaffold doc §5.3 Delta-2 / §9).
+        # Work Ledger 切口②/T-G1: decide on the general path whether the
+        # cognitive scaffold may participate this turn (complex → scheduler
+        # eligibility + compaction reboot; simple Q&A → zero overhead). The
+        # kernel reads this flag; actual reminder frequency lives in the
+        # scheduler and is inferred from behavior.
         session_metadata["work_ledger_enabled"] = should_enable_work_ledger(
             task_profile_name=route.task_profile.name,
             complexity=route.task_profile.complexity,

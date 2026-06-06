@@ -925,7 +925,7 @@ def _maybe_activate_interactive_plan_from_tool_result(request: Any, result_str: 
     returns an ``activate_interactive_plan`` signal (path-unification §5.3).
 
     Two eligible run shapes share ONE Plan Mode runtime (read-only policy +
-    per-round reminder + exit_plan_mode); they differ only in confirmation
+    scheduler-driven transient reminder + exit_plan_mode); they differ only in confirmation
     timing, recorded via ``PlanModeState.source``:
 
     * **live chat** — synchronous confirmation; source ``"tool_intercept"``.
@@ -1056,7 +1056,7 @@ def _build_restoration_context(
     # memory. Compaction can drop the ledger state it had been tracking, so
     # re-inject the 5-question reboot (where am I / what's open / what's verified
     # / what failed / what's pending) from the persisted ledger file. Gated on the
-    # same complexity flag that enabled the per-round reminder, so simple turns
+    # same eligibility flag that allows the scheduler reminder, so simple turns
     # never pay for the read (cognitive-scaffold doc §5.3 / §9 acceptance 3).
     if _resolved_ws and total < _restore_budget:
         _ledger_enabled = False

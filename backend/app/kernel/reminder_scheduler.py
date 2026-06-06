@@ -18,8 +18,9 @@ pressure, loop-guard events):
   "may this run see ledger reminders at all"); when and how often to fire is
   decided here from observed behavior.
 * **reset() re-arms after compaction (M8)**: fire-once reminders (plan FULL)
-  re-send, counters restart — the old ``_reset_plan_reminder`` generalized to
-  every registered reminder.
+  re-send, counters restart, and event-driven warnings already queued for the
+  next request are preserved — the old ``_reset_plan_reminder`` generalized to
+  every registered reminder without losing loop-guard diagnostics.
 
 Pure Functional Core: no IO, no engine imports. The reminder texts live here
 (single home) so the engine depends on the scheduler, never the reverse.
@@ -204,13 +205,18 @@ class ReminderScheduler:
         return out
 
     def reset(self) -> None:
-        """Compaction re-arm (M8): fire-once reminders re-send, clocks restart."""
+        """Compaction re-arm (M8): fire-once reminders re-send, clocks restart.
+
+        ``_queue`` intentionally survives reset. It carries event-driven
+        diagnostics (currently loop-guard warnings) that have already been
+        emitted by the engine and must still reach the next LLM request even if
+        compaction occurs before that request is built.
+        """
         for name in self._idle:
             self._idle[name] = 0
         for group in self._since_group_injection:
             self._since_group_injection[group] = None
         self._fired.clear()
-        self._queue.clear()
 
 
 # ── Default registry (the production reminder set) ──────────────────────────

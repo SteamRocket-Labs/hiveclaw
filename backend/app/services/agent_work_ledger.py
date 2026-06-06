@@ -779,8 +779,9 @@ def should_enable_work_ledger(
 
     切口② (docs/agent-task-cognitive-scaffold.md §5.3 Delta-2 + §9 acceptance 2,
     threshold from docs/plan-mode-agent-work-ledger.md §8): the general invocation
-    path should make the ledger *available* (per-round reminder + compaction resume)
-    on complex multi-step turns, but stay **zero-overhead on simple Q&A**.
+    path should make the ledger *available* (scheduler reminder eligibility +
+    compaction resume) on complex multi-step turns, but stay **zero-overhead on
+    simple Q&A**.
 
     The §8 threshold (``expected_tool_calls >= 5`` / multi-file / external side
     effect / future autonomy) has no single first-class signal in the runtime; the

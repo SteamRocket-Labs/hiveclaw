@@ -122,8 +122,8 @@ class SessionContext:
     # Plan Mode as a first-class runtime state. The legacy mirror still lives in
     # ``metadata["plan_mode"]`` (written by _activate_interactive_plan_mode) for
     # the ContextVar / exit_plan_mode / suffix / frontend; this is the typed
-    # source of truth for per-round reminder injection (Phase 2) and the
-    # unified read-only gate (Phase 3).
+    # source of truth for Plan Mode eligibility/content while reminder clocks
+    # live in kernel/reminder_scheduler.py.
     plan_mode: PlanModeState = field(default_factory=PlanModeState)
     # Prompt cache: frozen prefix reused within the same session
     prompt_prefix: str | None = None
@@ -244,7 +244,7 @@ _INTERACTIVE_PLAN_CHAT_SURFACES = frozenset({"web", "web_chat", "chat", "feishu"
 # (path-unification §5.3 / cut ②, made unconditional in cut ④). These are
 # multi-round kernel loops with no live user stream: a blocked gated tool flips
 # the run into the SAME Plan Mode runtime as live chat (read-only policy +
-# per-round reminder + exit_plan_mode), and the authored plan lands
+# scheduler-driven transient reminder + exit_plan_mode), and the authored plan lands
 # awaiting_confirmation for asynchronous user confirmation from the plan queue.
 _UNATTENDED_PLAN_RUN_SOURCES = frozenset({"trigger", "heartbeat"})
 

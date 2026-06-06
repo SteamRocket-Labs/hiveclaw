@@ -224,6 +224,27 @@ def test_enqueued_event_drains_once():
     assert not any("LOOP-GUARD" in t for t in second)
 
 
+def test_reset_preserves_enqueued_event_until_next_collect():
+    """Compaction reset must not drop event-driven warnings.
+
+    Loop-guard warnings are queued after a tool round and injected into the next
+    LLM request. If mid-loop compaction happens between those two points, reset()
+    may restart cooldown clocks, but it must preserve the queued warning so the
+    model still gets its warn-before-abort self-correction chance.
+    """
+    scheduler = _scheduler()
+    ctx = SessionContext()
+
+    scheduler.enqueue("LOOP-GUARD: stop repeating yourself")
+    scheduler.reset()
+
+    first = scheduler.collect(ctx, _round_state(round_i=1))
+    second = scheduler.collect(ctx, _round_state(round_i=2))
+
+    assert any("LOOP-GUARD" in t for t in first)
+    assert not any("LOOP-GUARD" in t for t in second)
+
+
 # ── Kernel integration: transient means NO stacking (M1) ────────────
 
 

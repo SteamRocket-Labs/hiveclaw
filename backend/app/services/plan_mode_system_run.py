@@ -8,7 +8,7 @@ authoring it in its own main-loop Plan Mode, not from an isolated RPC planner.
 
 This module bridges that gap: given a freshly created **draft** plan, it
 pre-arms the SAME Plan Mode runtime used by live chat / unattended
-tool-intercept (read-only policy + per-round reminder + ``exit_plan_mode``),
+tool-intercept (read-only policy + scheduler reminder + ``exit_plan_mode``),
 seeds the loop with a guiding user prompt, and runs the agent. The agent
 explores read-only, then calls ``exit_plan_mode``, which — because the run was
 pre-armed with the draft's ``plan_id`` (cut ③a) — fills THAT draft and lands it
@@ -163,8 +163,9 @@ async def launch_system_plan_run(
         },
     )
     # The metadata mirror + ContextVar must both carry the armed state (the
-    # per-round reminder reads typed state; exit_plan_mode + the read-only gate
-    # read the ContextVar) — same dual-source invariant as kernel activation.
+    # scheduler reads typed state for reminder eligibility/content; exit_plan_mode
+    # + the read-only gate read the ContextVar) — same dual-source invariant as
+    # kernel activation.
     session_context.metadata["plan_mode"] = state.to_metadata()
     token = set_interactive_plan_mode(state.to_metadata())
     try:

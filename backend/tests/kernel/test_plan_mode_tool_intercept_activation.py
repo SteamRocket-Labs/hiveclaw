@@ -117,7 +117,7 @@ def test_activation_writes_typed_state_mirror_and_arms_contextvar():
     token = _maybe_activate_interactive_plan_from_tool_result(_make_request(sc), _signal())
     try:
         assert token is not None
-        # typed state (feeds the per-round reminder, engine:1634)
+        # typed state (feeds scheduler eligibility/content for Plan Mode)
         assert sc.plan_mode.active is True
         assert sc.plan_mode.action_kind == "create_enabled_trigger"
         assert sc.plan_mode.tool_name == "set_trigger"

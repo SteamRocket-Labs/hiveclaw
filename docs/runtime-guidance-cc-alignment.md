@@ -49,35 +49,38 @@ CC 把动态 reminder 当**低频、事件驱动、带状态、可忽略**的旁
 
 ## 2. Hive 现状全图(Fact,2026-06-05 盘点)
 
-### 2.1 动态引导通道清单
+### 2.1 动态引导通道清单(T-G1 落地后新现状,2026-06-06)
 
-| 通道 | 位置 | 触发 | 频率 | 内容 |
+全部 runtime reminder 经 **`kernel/reminder_scheduler.py`** 统一注册(`build_default_reminder_specs`),engine 每 invocation 建一个 `ReminderScheduler`:
+
+| 通道 | spec | 触发(eligibility) | 频率(行为节流) | 状态 |
 |---|---|---|---|---|
-| Plan Mode reminder | `engine.py:884-945` | plan 激活 | FULL 一次(+compaction re-arm ✓)→ **SPARSE 每轮** | 静态文本 |
-| Work Ledger reminder | `engine.py:957-1016` | `work_ledger_enabled` metadata(invoker 复杂度预判)+ plan 互斥 | **每轮** | 静态文本,无快照,无防护句 |
-| Round-pressure warning | `engine.py:966-996` | 80% 轮 + 最后 2 轮 | 各一次 | ✅ 带真实数据(B2 已对标 CC token nudge) |
-| Loop guard warning | `engine.py:1706-1715` | 语义循环检测命中 | 事件驱动(先软后硬,A4) | 事件化文本 |
-| DR routing reminder | `engine.py:774-808` | deep research 场景 | 条件 | 领域专用 |
-| 工具结果 next_action | 各 handler | 工具返回时 | 随结果 | Hive 特色:结果内嵌引导(对位 CC hook_additional_context) |
+| Plan Mode FULL | `plan_mode_full` | plan 激活 | fire-once;compaction `reset()` re-arm(M8 ✓);file hint 随附 | ✅ |
+| Plan Mode SPARSE | `plan_mode_sparse` | plan 激活 | 与 FULL 同 mutex 组,组级冷却 **5 轮**(对齐 CC plan throttle) | ✅ 原"每轮"已废 |
+| Work Ledger | `work_ledger` | `work_ledger_enabled` flag + plan 互斥(M7:flag 只管参赛资格) | **idle 10 + 冷却 10**(对齐 CC 10+10):engine 逐轮 `observe(tool_names)`,用过 ledger 工具即重置 idle | ✅ 原"每轮"已废 |
+| Round-pressure | `round_pressure` | 阈值轮(80%/final-2) | content fn 内判,带真实数据(B2 不变) | ✅ 迁入 scheduler |
+| Loop guard warning | `enqueue()` 事件通道 | 语义循环命中(A4 先软后硬) | 事件驱动,下一轮 collect 排空一次 | ✅ 迁入 scheduler |
+| DR routing reminder | `engine.py:774-808` | deep research 场景 | 条件 | 未迁(DR 整体冻结待重做,不动) |
+| 工具结果 next_action | 各 handler | 工具返回时 | 随结果 | Hive 特色保留(对位 CC hook_additional_context) |
 
-### 2.2 注入机制(与 CC 的根本差异)
+### 2.2 注入机制(T-G1 后)
 
-`api_messages` 在轮循环**外**构建一次(`engine.py:1841`),plan/ledger reminder 在 `for round_i` 循环**内** `append(LLMMessage(role="system", …))`(`engine.py:1899/1909`),**无去重、无清理**。
+**Transient**:`scheduler.collect()` 的产出只拼进本轮 `stream_messages = _clone_api_messages(api_messages) + reminders`(PTL retry 自带)——**永不进入 `api_messages`**,故不堆积(M1 ✓)、不进 persist(M2 ✓,正常+abnormal 两路径)。可观测:每次注入 emit `reminder_injected` 事件(round/count/chars,M6 ✓)。compaction 重建处调 `scheduler.reset()`(M8 ✓)。
 
 ---
 
 ## 3. 机制层缺陷(自身审视,按严重度排序)
 
-| # | 缺陷 | 实锤 | 后果 |
+| # | 缺陷 | 实锤(修复前) | 状态(T-G1 后) |
 |---|---|---|---|
-| **M1** | **reminder 逐轮堆积** | append 在循环内,数组跨轮持有,无 pop/去重(全文件仅 prompt-too-long 截断 `:2027` 和 compaction 恢复 `:2855` 两处整体重建) | 40 轮 heartbeat run 堆 40 条相同 ledger reminder(或 39 条 SPARSE plan reminder)≈3000+ token 纯重复;**壁纸效应**——重复越多模型越确信这段文本可忽略,提醒失效与 token 浪费同时发生 |
-| **M2** | **堆积泄漏进记忆管线** | `_build_persisted_memory_messages`(`engine.py:185-198`)只 skip `api_messages[0]`,role=system reminder 全部进 persist(两个调用点 `:1480/:2269`) | T0/T2 蒸馏的输入被 reminder 噪音污染——蒸馏器读到的"会话"里混着几十条系统鞭策文本,影响 learnings 质量(违 L1 输入视野纯净) |
-| M3 | **无节流基础设施** | reminder 函数是无状态纯函数,唯一状态是 `plan_state.reminded_full` 一个 bit;无"上次提醒在第几轮"的任何追踪 | 想加冷却就要逐 reminder 发明私有状态——机制缺一个统一的轮次计数/冷却设施 |
-| M4 | **无统一调度层** | ledger×plan 互斥硬编码在 `_work_ledger_reminder_content` 内部(`:1010-1012`);round-pressure/loop-guard 与其他 reminder 同轮可叠加,无优先级概念 | 每新增一个 reminder 都要手工核对全部现有 reminder 的冲突关系,O(n²) 维护;CC 的 attachment 管线是注册组合式(`maybe()` 组合器) |
-| M5 | **无状态快照能力** | reminder 是模块级字符串常量 | 无法做 CC 式"带当前任务清单"——提醒只能鞭策不能给料 |
-| M6 | **零可观测** | 注入无 metric、无事件;reminder 不以独立形态落 T0(只以 M2 的噪音形态混进历史) | 操作者不知道某 session 注入了多少 reminder、模型是否响应;self-evolution 管线也无从学习"提醒是否有效" |
-| M7 | **复杂度预判 gate 的 L1 张力** | `should_enable_work_ledger` 是 invoker 侧机械启发式(`invoker.py:1022`) | CC 的行为推断(从"模型用没用"倒推)不预判任务性质,更符合 L1"判断归模型"。gate 保留是拍板项(T1.2),但**预判+每轮**的组合放大了 M1;演进方向=gate 只决定"是否参赛",频率交给行为推断 |
-| M8 | **冷却×compaction 语义未设计** | plan re-arm ✓ 已处理;但未来引入冷却计数后,compaction 重置怎么算没有答案 | CC 扫窗口计数,压缩后 attachment 消失自然重置;Hive 若用 scheduler 状态计数,需显式 reset 钩子(已有 `_reset_plan_reminder` 先例) |
+| **M1** | **reminder 逐轮堆积** | append 在循环内,数组跨轮持有,无 pop/去重——40 轮 run 堆 40 条相同文本,壁纸效应+token 浪费 | **✅ 已修**:transient 注入,reminder 永不进 `api_messages`(集成钉:最后一轮请求中 FULL/SPARSE 各 ≤1) |
+| **M2** | **堆积泄漏进记忆管线** | `_build_persisted_memory_messages` 只 skip `[0]`,reminder 全进 persist(两调用点)→ 污染 T0/T2 蒸馏输入 | **✅ 已修**:transient 根治,persist 钉×3(plan/ledger/pressure 零泄漏+真实对话照常) |
+| M3 | **无节流基础设施** | 无状态纯函数,唯一状态 `reminded_full` 一 bit | **✅ 已修**:scheduler 统一 idle/cooldown/fire-once 计数,`observe(tool_names)` 逐轮喂入 |
+| M4 | **无统一调度层** | 互斥硬编码,新增 reminder O(n²) 核对 | **✅ 已修**:specs 注册式,mutex_group 组级冷却,plan×ledger 互斥迁 eligibility |
+| M5 | **无状态快照能力** | 字符串常量,无法带任务清单 | **设施已备**(content 为 callable),快照内容 T-G2 实装 |
+| M6 | **零可观测** | 注入无 metric 无事件 | **✅ 已修**:每次注入 emit `reminder_injected`(round/count/chars) |
+| M7 | **复杂度预判 gate 的 L1 张力** | 预判+每轮组合放大 M1 | **✅ 已修(拍板方向)**:flag 收窄为 eligibility(参赛资格),频率交行为推断(idle 10+冷却 10) |
+| M8 | **冷却×compaction 语义未设计** | 仅 plan 有 re-arm | **✅ 已修**:`scheduler.reset()` 统一 re-arm(fire-once 重发+全部时钟清零) |
 
 ## 4. 提示词层差距(对 CC,依赖 §3 机制修复的标注在列)
 
@@ -92,6 +95,8 @@ CC 把动态 reminder 当**低频、事件驱动、带状态、可忽略**的旁
 ## 5. 对齐路线(机制 → 提示词 → 全面对标)
 
 ### T-G1 机制对齐(地基,先行)
+
+> **✅ 完成(2026-06-06)** — 红测先行(用户定序):新增 `tests/kernel/test_runtime_reminder_scheduler.py`(13 钉:ledger idle10/冷却10/工具使用重置/eligibility 硬门/plan 互斥不变性/FULL-once+SPARSE 组冷却5/reset re-arm/file hint 迁移钉/round-pressure 阈值+数据/enqueue 单次排空/kernel 集成不堆积+第一轮可见)+ `test_memory_persist_filters.py`(3 钉:plan/ledger+pressure 不进 persist + 真实对话照常持久)→ **13 failed 如预期**(2 个行为不变性钉先绿;persist 双钉 RED = M2 泄漏实锤)→ GREEN:新模块 `kernel/reminder_scheduler.py`(纯 Functional Core,specs 注册式:eligibility/cooldown/idle+observed_tools/fire_once/mutex_group 组级冷却;文本常量与 `_build_round_pressure_warning` 单一住所随迁);engine 接线=循环内三段 append 整删 → `collect()`+transient 拼接(`stream_messages` clone 后)+`observe(tool_names)` 逐轮喂入+loop guard `enqueue()`+compaction `reset()`+`reminder_injected` 事件;**路径统一删除**:`_plan_mode_reminder_content`/`_reset_plan_reminder`/`_work_ledger_reminder_content` 三纯函数 + `PlanModeState.reminded_full`/`entered_round` 死字段(session.py);既有测试同步 5 文件(plan_mode_reminder 重写留文本钉+B3/work_ledger_scaffold gating→eligibility 钉/round_pressure import/plan_mode_state 字段断言/test_engine PTL 事件按类型过滤——M6 新事件所致)。证据:`pytest -q` → **3902 passed, 7 skipped, 0 failed**(全量零排除);`ruff check`+`format` clean。M1/M2/M3/M4/M6/M7/M8 全闭(M5 快照装配能力为 T-G2 供能项,specs 已支持 callable content,T-G2 实装快照内容)。
 
 1. **堆积归零(M1)+持久化过滤(M2)**:reminder 改为**transient 注入**——每轮发送给 LLM 的请求中包含,但不滞留 `api_messages` 数组、不进 persist。
    - **设计分叉(待拍板)**:CC 是"持久进历史+节流控量"(它靠扫历史计数,且无记忆蒸馏管线);Hive 有记忆管线,reminder 进蒸馏是污染。**推荐 transient+scheduler 计数**:每轮构建请求时由调度器决定本轮注入哪些(冷却到了才有),注入只在当轮请求生效;计数状态放 session_context(与 `reminded_full` 同位)。cache:注入点在消息流尾部,前缀不变,安全。

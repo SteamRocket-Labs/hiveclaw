@@ -23,54 +23,57 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 
-# ── Per-round reminder gating (pure) ─────────────────────────────────────────
+# ── Reminder eligibility gate (pure; throttling moved to the scheduler) ──────
+# T-G1: the per-round injection decision lives in kernel/reminder_scheduler.py
+# (behavioral throttling pinned in test_runtime_reminder_scheduler.py). These
+# tests pin the ELIGIBILITY gate (M7: flag answers "may this run see ledger
+# reminders at all") and the load-bearing reminder text.
 
 
-def test_reminder_is_none_without_session_context():
-    from app.kernel.engine import _work_ledger_reminder_content
+def test_eligibility_is_false_without_session_context():
+    from app.kernel.reminder_scheduler import _ledger_eligible
 
-    assert _work_ledger_reminder_content(None) is None
+    assert _ledger_eligible(None) is False
 
 
-def test_reminder_is_none_when_flag_absent_or_false():
-    from app.kernel.engine import _work_ledger_reminder_content
+def test_eligibility_is_false_when_flag_absent_or_false():
+    from app.kernel.reminder_scheduler import _ledger_eligible
     from app.runtime.session import SessionContext
 
-    # No metadata flag at all → simple Q&A default, no reminder.
-    assert _work_ledger_reminder_content(SessionContext()) is None
+    # No metadata flag at all → simple Q&A default, not eligible.
+    assert _ledger_eligible(SessionContext()) is False
 
     sc = SessionContext()
     sc.metadata = {"work_ledger_enabled": False}
-    assert _work_ledger_reminder_content(sc) is None
+    assert _ledger_eligible(sc) is False
 
 
-def test_reminder_fires_on_complex_turn():
-    from app.kernel.engine import _WORK_LEDGER_REMINDER, _work_ledger_reminder_content
+def test_reminder_text_teaches_the_ledger_tools():
+    from app.kernel.reminder_scheduler import _WORK_LEDGER_REMINDER, _ledger_eligible
     from app.runtime.session import SessionContext
 
     sc = SessionContext()
     sc.metadata = {"work_ledger_enabled": True}
-    content = _work_ledger_reminder_content(sc)
-    assert content == _WORK_LEDGER_REMINDER
+    assert _ledger_eligible(sc) is True
     # The reminder must teach the three 切口① tools as working memory.
-    assert "track_todo" in content
-    assert "record_finding" in content
-    assert "read_ledger" in content
+    assert "track_todo" in _WORK_LEDGER_REMINDER
+    assert "record_finding" in _WORK_LEDGER_REMINDER
+    assert "read_ledger" in _WORK_LEDGER_REMINDER
     # And reassert the cognitive≠execution invariant.
-    assert "never starts execution" in content
+    assert "never starts execution" in _WORK_LEDGER_REMINDER
 
 
-def test_reminder_suppressed_while_plan_mode_active():
+def test_eligibility_suppressed_while_plan_mode_active():
     # §8 invariant: the ledger reminder and the plan-mode reminder coexist
     # without conflict. Planning is read-only / no-execution, so a "track your
-    # execution todos" nudge is suppressed there — at most one fires per round.
-    from app.kernel.engine import _work_ledger_reminder_content
+    # execution todos" nudge is suppressed there.
+    from app.kernel.reminder_scheduler import _ledger_eligible
     from app.runtime.session import PlanModeState, SessionContext
 
     sc = SessionContext()
     sc.metadata = {"work_ledger_enabled": True}
     sc.plan_mode = PlanModeState(active=True)
-    assert _work_ledger_reminder_content(sc) is None
+    assert _ledger_eligible(sc) is False
 
 
 # ── Post-compaction reboot injection (real service + temp data_root) ─────────

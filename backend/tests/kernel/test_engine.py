@@ -742,13 +742,15 @@ async def test_agent_kernel_emits_runtime_fallback_event_after_prompt_too_long()
     )
 
     assert result.content == "fallback recovered"
-    assert len(runtime_events) == 1
-    assert runtime_events[0]["type"] == "runtime_fallback"
-    assert runtime_events[0]["reason"] == "prompt_too_long"
-    assert runtime_events[0]["from_model"] == "gpt-4.1"
-    assert runtime_events[0]["to_model"] == "claude-sonnet"
-    assert runtime_events[0]["provider"] == "anthropic"
-    assert runtime_events[0]["part"]["event_type"] == "runtime_fallback"
+    # T-G1 also emits reminder_injected observability events (max_tool_rounds=2
+    # puts round 0 on the final-pressure threshold), so filter by type.
+    fallback_events = [e for e in runtime_events if e["type"] == "runtime_fallback"]
+    assert len(fallback_events) == 1
+    assert fallback_events[0]["reason"] == "prompt_too_long"
+    assert fallback_events[0]["from_model"] == "gpt-4.1"
+    assert fallback_events[0]["to_model"] == "claude-sonnet"
+    assert fallback_events[0]["provider"] == "anthropic"
+    assert fallback_events[0]["part"]["event_type"] == "runtime_fallback"
 
 
 @pytest.mark.asyncio

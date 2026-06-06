@@ -5,7 +5,7 @@ from __future__ import annotations
 
 
 def test_round_pressure_warning_carries_real_data() -> None:
-    from app.kernel.engine import _build_round_pressure_warning
+    from app.kernel.reminder_scheduler import _build_round_pressure_warning
 
     text = _build_round_pressure_warning(
         round_i=160,
@@ -24,7 +24,7 @@ def test_round_pressure_warning_carries_real_data() -> None:
 
 
 def test_round_pressure_final_warning_states_two_rounds_left() -> None:
-    from app.kernel.engine import _build_round_pressure_warning
+    from app.kernel.reminder_scheduler import _build_round_pressure_warning
 
     text = _build_round_pressure_warning(
         round_i=198,

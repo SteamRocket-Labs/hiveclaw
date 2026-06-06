@@ -7,9 +7,9 @@ it is still consumed by the interactive ContextVar mirror, the ``exit_plan_mode`
 tool, the prompt suffix, the frontend plan card, and existing tests.
 
 Invariant under test (paradigm-convergence doc §6.1): the typed state is the
-source of truth for runtime injection bookkeeping (``reminded_full`` /
-``entered_round``), which must NOT leak into the legacy metadata mirror to avoid
-drift between the two representations.
+source of truth for the legacy metadata mirror, which must stay byte-compatible.
+(Per-round reminder bookkeeping moved off this state entirely — the scheduler
+in ``kernel/reminder_scheduler.py`` owns those clocks since T-G1.)
 """
 
 from __future__ import annotations
@@ -22,8 +22,6 @@ def test_plan_mode_state_defaults_to_inactive():
     assert state.active is False
     assert state.plan_id is None
     assert state.intent_type is None
-    assert state.entered_round == 0
-    assert state.reminded_full is False
     assert state.plan_file_path is None
 
 
@@ -81,10 +79,10 @@ def test_to_metadata_includes_deep_research_payload_when_set():
 
 
 def test_runtime_only_fields_never_leak_into_metadata_mirror():
-    # reminded_full / entered_round are Phase 2 per-round injection bookkeeping;
-    # they live only on the typed state and must never reach the legacy dict.
+    # Reminder bookkeeping no longer lives on this state (T-G1 moved it to the
+    # scheduler); the mirror must stay free of any such runtime-only keys.
     # (plan_file_path DOES belong in the mirror — see the next test.)
-    state = PlanModeState(active=True, entered_round=7, reminded_full=True)
+    state = PlanModeState(active=True)
     data = state.to_metadata()
     assert "entered_round" not in data
     assert "reminded_full" not in data

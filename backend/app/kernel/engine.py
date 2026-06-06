@@ -19,6 +19,11 @@ from app.core.execution_context import (
 )
 from app.kernel.contracts import InvocationRequest, InvocationResult, RuntimeConfig
 from app.kernel.loop_guard import LoopGuard, LoopGuardDecision
+from app.kernel.reminder_scheduler import (
+    _WORK_LEDGER_ENABLED_METADATA_KEY,
+    ReminderScheduler,
+    build_default_reminder_specs,
+)
 from app.runtime.session import SessionContext
 from app.services.chat_message_parts import (
     build_compaction_event,
@@ -875,147 +880,11 @@ _POST_COMPACT_RESTORE_BUDGET = 60000  # chars (~17K tokens) — was 20K, too thi
 _POST_COMPACT_PER_FILE_CAP = 8000  # chars per file — was 5K
 
 
-# ── Plan Mode per-round reminder (paradigm-convergence doc §6.2) ──
-# Injected fresh every round as a role="system" message while Plan Mode is
-# active, replacing the old system_prompt_suffix injection. FULL on the first
-# round (and after a compaction re-arm); SPARSE thereafter. Text consolidates the
-# read-only operating boundary + fact-discipline rules for agent-authored Plan
-# Mode. English, to match round-pressure/system injections.
-_PLAN_MODE_REMINDER_FULL = (
-    "Plan Mode is active. The user has NOT approved execution, so you MUST NOT produce any "
-    "side effects: do not create or enable triggers, start long tasks, delegate, write workspace "
-    "files, send external messages, save memory, or run commands. Only read-only exploration is "
-    "allowed. This instruction overrides conflicting guidance.\n\n"
-    "How to work (stay in this conversation loop — do not dump a one-shot JSON plan):\n"
-    "1. Understand the real goal, the intent type, and the likely handoff target.\n"
-    "2. Use read-only tools to survey reality: relevant files, existing schedules/objectives, "
-    "memory, and current web facts. Do not invent file paths, APIs, dependencies, or external "
-    "facts — mark anything unverified as an assumption.\n"
-    "3. Progressively shape the plan: objective, motivation, ordered steps, success criteria "
-    "(observable, not a restatement of the request), stop conditions, risks, external side "
-    "effects, estimated cost, wake policy (for scheduled work), and verification.\n"
-    "4. Make the plan decision-complete: an executor should be able to follow it without making "
-    "further decisions.\n"
-    "5. When the plan is ready, call exit_plan_mode to submit it for approval. Do NOT ask "
-    "'is this plan OK?' in prose — exit_plan_mode IS the approval request.\n\n"
-    "Your turn should end one of two ways: ask a brief clarifying question when a key decision is "
-    "genuinely undecided, or call exit_plan_mode when the plan is ready to execute."
-)
-_PLAN_MODE_REMINDER_SPARSE = (
-    "Plan Mode is still active (full instructions above). Stay read-only — no side effects. Keep "
-    "refining the plan, then call exit_plan_mode to submit it for approval. Do not ask for "
-    "approval in prose; exit_plan_mode is the approval request."
-)
-# Phase 4B: appended to the FULL reminder only when a plan file is provisioned.
-_PLAN_MODE_FILE_HINT = (
-    "\n\nYou may progressively write the plan to this exact file, the only path writable in Plan "
-    "Mode: {plan_file}. Writing the file does not submit it — you must still call exit_plan_mode "
-    "to request approval."
-)
-
-
-def _plan_mode_reminder_content(plan_state: Any | None) -> tuple[str, bool] | None:
-    """Pure: pick the per-round Plan Mode reminder for an active state.
-
-    Returns ``(reminder_text, is_full)`` or ``None`` when Plan Mode is inactive.
-    The first round (and the round after a compaction re-arm) gets the FULL
-    text; the caller flips ``reminded_full`` so later rounds get SPARSE. When a
-    plan file is provisioned (Phase 4B), the FULL text gains a hint naming that
-    exact writable file.
-    """
-    if plan_state is None or not getattr(plan_state, "active", False):
-        return None
-    if not getattr(plan_state, "reminded_full", False):
-        text = _PLAN_MODE_REMINDER_FULL
-        plan_file = getattr(plan_state, "plan_file_path", None)
-        if plan_file:
-            text = text + _PLAN_MODE_FILE_HINT.format(plan_file=plan_file)
-        return text, True
-    return _PLAN_MODE_REMINDER_SPARSE, False
-
-
-def _reset_plan_reminder(session_context: Any | None) -> None:
-    """Re-arm the FULL Plan Mode reminder after a compaction.
-
-    Compaction can drop the earlier FULL reminder from the window, so the next
-    round must re-send it. No-op when Plan Mode is inactive or absent.
-    """
-    plan_state = getattr(session_context, "plan_mode", None)
-    if plan_state is not None and getattr(plan_state, "active", False):
-        plan_state.reminded_full = False
-
-
-# ── Work Ledger per-round reminder (cognitive scaffold 切口②) ──
-# docs/agent-task-cognitive-scaffold.md §5.3 Delta-2 / §9 acceptance 2-3.
-# Injected fresh every round (same role="system" mechanism as the plan-mode and
-# round-pressure reminders) ONLY when the invoker has flagged this turn complex
-# (metadata["work_ledger_enabled"]). It keeps the ledger *available* in long
-# complex runs — nudging the agent to track_todo / read_ledger — without any
-# overhead on simple Q&A. Reuses the regulation mechanism the planning loop got
-# in plan-mode-runtime-paradigm.md §6.2 rather than building a new one.
-_WORK_LEDGER_ENABLED_METADATA_KEY = "work_ledger_enabled"
-_WORK_LEDGER_REMINDER = (
-    "This is a multi-step task. Keep your work ledger current as a working memory: use "
-    "track_todo to break the work into todos and mark each in_progress before you start it and "
-    "completed when it's done; use record_finding for what you verify, open questions, and dead "
-    "ends to avoid; call read_ledger to recover your bearings before deciding the next step. "
-    "These are private notes — writing them never starts execution."
-)
-
-
-def _build_round_pressure_warning(
-    *,
-    round_i: int,
-    max_rounds: int,
-    total_tool_calls: int,
-    failed_tool_calls: int,
-    context_tokens: int,
-    final: bool,
-) -> str:
-    """Round-pressure warning with real data (B2, CC token-budget-nudge style).
-
-    Concrete numbers let the model budget its wind-down: how many calls it has
-    burned, how many failed, and how heavy the context already is.
-    """
-    stats = (
-        f"{round_i}/{max_rounds} tool rounds used; {total_tool_calls} tool calls so far "
-        f"({failed_tool_calls} failed); context ≈{context_tokens:,} tokens."
-    )
-    if final:
-        return (
-            f"🚨 Only {max_rounds - round_i} rounds remaining. {stats} "
-            "Objective Ledger is the source of truth: record current status/blockers with evidence, "
-            "preserve artifacts, and stop cleanly if unfinished. "
-            "Trigger is wake policy; do not create a trigger unless a real objective needs a future attempt."
-        )
-    return (
-        f"⚠️ {stats} "
-        "If the current task is not yet complete, update Objective Ledger with blockers/status "
-        "and preserve concrete evidence in workspace artifacts. Trigger is wake policy, not the goal; "
-        "only create or update a wake policy when an existing objective needs a future attempt."
-    )
-
-
-def _work_ledger_reminder_content(session_context: Any | None) -> str | None:
-    """Pure: return the per-round Work Ledger reminder when this turn is complex.
-
-    Gated on the invoker-resolved ``metadata["work_ledger_enabled"]`` flag so
-    simple Q&A pays zero cost. Suppressed while Plan Mode is active: planning is a
-    read-only, no-execution phase, so a "track your execution todos" nudge there
-    would contradict the plan-mode reminder. The two reminders therefore coexist
-    without conflict (§8 invariant) — at most one fires per round.
-    """
-    if session_context is None:
-        return None
-    plan_state = getattr(session_context, "plan_mode", None)
-    if plan_state is not None and getattr(plan_state, "active", False):
-        return None
-    metadata = getattr(session_context, "metadata", None)
-    if not isinstance(metadata, dict) or not metadata.get(_WORK_LEDGER_ENABLED_METADATA_KEY):
-        return None
-    return _WORK_LEDGER_REMINDER
-
-
+# ── Runtime reminders (T-G1, runtime-guidance-cc-alignment doc §5) ──
+# Texts, throttling, and the per-round injection decision all live in
+# kernel/reminder_scheduler.py. The engine only: builds one scheduler per
+# invocation, feeds observe(tool_names) each round, collects the transient
+# texts before each LLM call, and resets the scheduler after a compaction.
 def _parse_interactive_plan_signal(result_str: str) -> dict[str, Any] | None:
     """Return the ``interactive_plan_seed`` from a ``needs_plan`` tool result
     that asks to activate interactive Plan Mode, else ``None`` (Phase 5).
@@ -1661,6 +1530,10 @@ class AgentKernel:
             streamed_thinking: list[str] = []
             _callback_failure_count: int = 0
             loop_guard = LoopGuard()
+            # Runtime reminders (T-G1): one scheduler per invocation; texts are
+            # transient (per-round stream clone only — never api_messages).
+            reminder_scheduler = ReminderScheduler(build_default_reminder_specs())
+            _round_tool_names: list[str] = []
 
             async def _emit_event(event: dict[str, Any]) -> None:
                 if request.on_event:
@@ -1706,7 +1579,9 @@ class AgentKernel:
             async def _inject_loop_guard_warning(decision: LoopGuardDecision) -> None:
                 # A4 warn-before-abort: give the model the diagnostic + one
                 # self-correction chance (CC §12.2 soft-constraints-first).
-                api_messages.append(LLMMessage(role="system", content=decision.message))
+                # T-G1: queued on the scheduler — injected transiently into the
+                # next round's request, never persisted into api_messages.
+                reminder_scheduler.enqueue(decision.message)
                 await _emit_event(
                     {
                         "type": "loop_guard",
@@ -1887,51 +1762,53 @@ class AgentKernel:
                             final_tools=tools_for_llm,
                             collected_parts=collected_parts,
                         )
-                    # Plan Mode: inject a fresh per-round reminder (FULL on the
-                    # first round / after a compaction re-arm, SPARSE thereafter).
-                    # Read from the typed plan state; absent/inactive → no-op.
-                    # This replaces the old system_prompt_suffix injection so the
-                    # frozen prefix stays cacheable (paradigm-convergence doc §6.2).
-                    _plan_state = getattr(request.session_context, "plan_mode", None)
-                    _plan_reminder = _plan_mode_reminder_content(_plan_state)
-                    if _plan_reminder is not None and _plan_state is not None:
-                        _plan_reminder_text, _plan_reminder_is_full = _plan_reminder
-                        api_messages.append(LLMMessage(role="system", content=_plan_reminder_text))
-                        if _plan_reminder_is_full:
-                            _plan_state.reminded_full = True
-
-                    # Work Ledger: on complex turns (invoker-flagged) nudge the
-                    # agent to keep its ledger current as working memory. Suppressed
-                    # in Plan Mode (helper returns None) so the two reminders never
-                    # conflict (cognitive-scaffold doc §5.3 / §8 invariant).
-                    _ledger_reminder = _work_ledger_reminder_content(request.session_context)
-                    if _ledger_reminder is not None:
-                        api_messages.append(LLMMessage(role="system", content=_ledger_reminder))
-
-                    warn_threshold_80 = int(max_rounds * 0.8)
-                    warn_threshold_96 = max_rounds - 2
-                    if round_i in (warn_threshold_80, warn_threshold_96):
-                        # B2: warnings carry real data (CC token-budget-nudge
-                        # style) so the model can plan its wind-down concretely.
-                        _ctx_chars = sum(len(m.content or "") for m in api_messages)
-                        api_messages.append(
-                            LLMMessage(
-                                role="system",
-                                content=_build_round_pressure_warning(
-                                    round_i=round_i,
-                                    max_rounds=max_rounds,
-                                    total_tool_calls=loop_guard.total_tool_calls,
-                                    failed_tool_calls=loop_guard.failed_tool_calls,
-                                    context_tokens=self._deps.estimate_tokens_from_chars(_ctx_chars),
-                                    final=round_i == warn_threshold_96,
-                                ),
-                            )
+                    # Runtime reminders (T-G1): the scheduler decides what this
+                    # round gets (plan FULL/SPARSE, work-ledger nudge, round
+                    # pressure, queued loop-guard warnings) under behavioral
+                    # throttling. The texts are TRANSIENT — appended to the
+                    # per-round stream clone below, never to api_messages — so
+                    # they cannot stack across rounds (M1) and never reach
+                    # memory persistence (M2). Feed the previous round's
+                    # tool-call names first so idle/cooldown clocks advance.
+                    if round_i > 0:
+                        reminder_scheduler.observe(_round_tool_names)
+                    _round_tool_names = []
+                    _ctx_chars = sum(len(m.content or "") for m in api_messages)
+                    _transient_reminders = reminder_scheduler.collect(
+                        request.session_context,
+                        {
+                            "round_i": round_i,
+                            "max_rounds": max_rounds,
+                            "total_tool_calls": loop_guard.total_tool_calls,
+                            "failed_tool_calls": loop_guard.failed_tool_calls,
+                            "context_tokens": self._deps.estimate_tokens_from_chars(_ctx_chars),
+                        },
+                    )
+                    if _transient_reminders:
+                        # M6 observability: reminders no longer appear in the
+                        # persisted transcript, so emit an event per injection.
+                        await _emit_event(
+                            {
+                                "type": "reminder_injected",
+                                "part": {
+                                    "type": "event",
+                                    "event_type": "reminder_injected",
+                                    "title": "Runtime Reminder",
+                                    "round": round_i,
+                                    "count": len(_transient_reminders),
+                                    "chars": sum(len(t) for t in _transient_reminders),
+                                },
+                            }
                         )
 
                     # Apply capability-driven cache hints.
                     ptl_retries = 0
                     while True:
                         stream_messages = _clone_api_messages(api_messages)
+                        if _transient_reminders:
+                            stream_messages = stream_messages + [
+                                LLMMessage(role="system", content=text) for text in _transient_reminders
+                            ]
                         if self._deps.apply_vision_transform:
                             stream_messages = self._deps.apply_vision_transform(
                                 stream_messages,
@@ -2371,6 +2248,7 @@ class AgentKernel:
                     # Per-round aggregate budget tracker.
                     _round_tool_chars = 0
                     for _tc, tool_name, args in parsed_tool_calls:
+                        _round_tool_names.append(tool_name)
                         call_loop_decision = loop_guard.observe_tool_call(tool_name, args)
                         if call_loop_decision:
                             if call_loop_decision.severity == "warn":
@@ -2853,9 +2731,9 @@ class AgentKernel:
                                     1 if len(restored_msgs) > 1 else 0, LLMMessage(role="system", content=_restored)
                                 )
                             api_messages = [api_messages[0]] + restored_msgs
-                            # Plan Mode: compaction may have dropped the earlier FULL reminder,
-                            # so re-arm it for the next round (paradigm-convergence doc §6.2).
-                            _reset_plan_reminder(request.session_context)
+                            # Compaction re-arm (T-G1, M8): fire-once reminders
+                            # (plan FULL) re-send and all throttle clocks restart.
+                            reminder_scheduler.reset()
                             # Preserve pre-compaction parts so clients get full event history (C-02)
                             # Mark them as pre-compaction to avoid duplicate persistence
                             logger.info(

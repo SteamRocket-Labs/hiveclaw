@@ -25,10 +25,9 @@ class PlanModeState:
     ContextVar, the ``exit_plan_mode`` tool, the prompt suffix, and the frontend
     plan card all still read it.
 
-    ``entered_round`` / ``reminded_full`` are Phase 2 per-round reminder
-    bookkeeping and live ONLY here — they are deliberately excluded from
-    :meth:`to_metadata` so the legacy mirror cannot drift on values it never
-    owned (the ContextVar and ``exit_plan_mode`` consume neither).
+    Per-round reminder bookkeeping (FULL-once / SPARSE-cooldown) moved to
+    ``kernel/reminder_scheduler.py`` (T-G1) — the scheduler owns those clocks
+    per invocation, so this state carries no reminder fields.
     """
 
     active: bool = False
@@ -47,9 +46,6 @@ class PlanModeState:
     reason: str | None = None
     deep_research: bool = False
     deep_research_args: dict[str, Any] = field(default_factory=dict)
-    # Phase 2 per-round reminder bookkeeping (runtime-only; never mirrored).
-    entered_round: int = 0
-    reminded_full: bool = False
     # Phase 4B plan-file writing target (reserved; unused until that phase).
     plan_file_path: str | None = None
     source: str = "web_chat"
@@ -85,8 +81,7 @@ class PlanModeState:
             data["deep_research"] = True
             data["deep_research_args"] = dict(self.deep_research_args)
         # Phase 4B: the read-only gate reads the plan file off the ContextVar
-        # mirror, so a provisioned plan_file_path must round-trip (unlike the
-        # per-round reminded_full / entered_round bookkeeping, which stays local).
+        # mirror, so a provisioned plan_file_path must round-trip.
         if self.plan_file_path:
             data["plan_file_path"] = self.plan_file_path
         return data

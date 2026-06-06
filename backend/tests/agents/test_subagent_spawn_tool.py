@@ -427,3 +427,46 @@ async def test_spawn_tool_agent_definition_resolves_without_tenant(monkeypatch, 
     assert data["ok"] is True
     assert data["definition_scope"] == "agent"
     assert captured["spec"].system_prompt == "agent def"
+
+
+# ── T1.3 (§8.1 #5) — ledger_todo_id exposed on the spawn contract ──
+
+
+def test_spawn_parameters_expose_ledger_todo_id():
+    """The service entry has accepted ``ledger_todo_id`` since 切口③ (stamp on
+    spawn, write-back on completion); T1.3 exposes it on the tool schema."""
+    import app.tools.handlers.subagent as handler_mod
+
+    properties = handler_mod._SPAWN_PARAMETERS["properties"]
+    assert "ledger_todo_id" in properties
+    assert properties["ledger_todo_id"]["type"] == "string"
+
+
+@pytest.mark.asyncio
+async def test_spawn_tool_threads_ledger_todo_id(monkeypatch):
+    import app.tools.handlers.subagent as handler_mod
+
+    captured: dict = {}
+
+    async def fake_resolve(agent_id):
+        return (
+            SimpleNamespace(provider="openai", api_key="k", model="x", base_url=None),
+            None,
+            SimpleNamespace(name="HR"),
+        )
+
+    async def fake_spawn(ctx, spec, task, **kwargs):
+        captured["ledger_todo_id"] = kwargs.get("ledger_todo_id")
+        return SubagentHandle(
+            name=spec.name,
+            trace_id="",
+            depth=2,
+            result=SubagentResult(name=spec.name, type="explorer", status="completed", content="d", tokens_used=1),
+        )
+
+    monkeypatch.setattr(handler_mod, "_resolve_parent_runtime", fake_resolve)
+    monkeypatch.setattr(handler_mod, "spawn_subagent", fake_spawn)
+
+    out = await handler_mod.spawn_subagent_tool(_tool_request({"task": "investigate", "ledger_todo_id": "todo-42"}))
+    assert json.loads(out)["ok"] is True
+    assert captured["ledger_todo_id"] == "todo-42"

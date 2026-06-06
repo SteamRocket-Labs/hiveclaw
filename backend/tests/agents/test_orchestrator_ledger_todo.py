@@ -170,3 +170,50 @@ async def test_no_ledger_todo_id_means_no_ledger_writes(ledger_root, monkeypatch
     todo = _todo(parent_id, todo_id)
     assert todo["status"] == "pending"
     assert "owner" not in todo
+
+
+# ── T1.3 (§8.1 #5) — ledger_todo_id exposed on the delegate contract ──
+
+
+def test_delegate_to_agent_schema_exposes_ledger_todo_id():
+    """``delegate_async`` has threaded ``ledger_todo_id`` since 切口③; T1.3
+    exposes it on the tool schema so the parent model can bind the delegation
+    to its own work-ledger todo."""
+    from app.services.agent_tools import get_combined_openai_tools
+
+    schema = next(
+        t["function"]["parameters"] for t in get_combined_openai_tools() if t["function"]["name"] == "delegate_to_agent"
+    )
+    properties = schema["properties"]
+    assert "ledger_todo_id" in properties
+    assert properties["ledger_todo_id"]["type"] == "string"
+
+
+@pytest.mark.asyncio
+async def test_delegate_tool_args_thread_ledger_todo_id(monkeypatch):
+    """messaging._delegate_to_agent_async passes args.ledger_todo_id through to
+    delegate_async (the service half is covered by the stamp/write-back tests
+    above)."""
+    from app.services.agent_tool_domains import messaging
+
+    captured: dict = {}
+
+    async def fake_resolve(from_agent_id, agent_name, target_agent_id=None):
+        source = SimpleNamespace(name="parent", creator_id=uuid.uuid4(), tenant_id=None)
+        target = _stub_target()
+        model = SimpleNamespace(provider="openai", model="x")
+        return source, target, model, None
+
+    async def fake_delegate_async(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(task_id="t-1", target_name="child-agent", trace_id="tr-1")
+
+    monkeypatch.setattr(messaging, "_resolve_target_agent_runtime", fake_resolve)
+    monkeypatch.setattr(orchestrator, "delegate_async", fake_delegate_async)
+
+    out = await messaging._delegate_to_agent_async(
+        uuid.uuid4(),
+        {"agent_name": "child-agent", "message": "do the thing", "ledger_todo_id": "todo-7"},
+    )
+    assert "t-1" in out
+    assert captured["ledger_todo_id"] == "todo-7"

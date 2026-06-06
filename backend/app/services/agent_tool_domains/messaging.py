@@ -1141,6 +1141,7 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
             confirmed_plan_id=args.get("confirmed_plan_id"),
             confirmed_plan_version=args.get("confirmed_plan_version"),
             confirmed_plan_hash=args.get("confirmed_plan_hash"),
+            ledger_todo_id=str(args.get("ledger_todo_id") or "").strip() or None,
         )
         return json.dumps(
             {

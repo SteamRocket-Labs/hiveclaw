@@ -140,6 +140,13 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
             "type": "integer",
             "description": "Optional cap on the subagent's tool rounds (default 8).",
         },
+        "ledger_todo_id": {
+            "type": "string",
+            "description": (
+                "Optional id of your work-ledger todo this subagent serves: spawn stamps the "
+                "subagent as the todo's owner and completion writes the terminal status back."
+            ),
+        },
     },
     "required": ["task"],
 }
@@ -270,7 +277,8 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
         parent_session_id=request.context.session_id,
     )
 
-    handle = await spawn_subagent(ctx, spec, task, fork=spec.isolation)
+    ledger_todo_id = str(request.arguments.get("ledger_todo_id") or "").strip() or None
+    handle = await spawn_subagent(ctx, spec, task, fork=spec.isolation, ledger_todo_id=ledger_todo_id)
     result = handle.result
     return _json(
         {

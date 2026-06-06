@@ -192,6 +192,13 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict) -> str:
                         "`research_readonly` restricts the child to read-only research + recall tools."
                     ),
                 },
+                "ledger_todo_id": {
+                    "type": "string",
+                    "description": (
+                        "Optional id of your work-ledger todo this delegation serves: the worker is "
+                        "stamped as the todo's owner and completion writes the terminal status back."
+                    ),
+                },
             },
             "required": ["agent_name", "message"],
         },

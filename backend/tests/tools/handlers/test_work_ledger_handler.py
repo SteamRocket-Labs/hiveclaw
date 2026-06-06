@@ -351,3 +351,66 @@ async def test_track_todo_add_with_owner_persists_owner(tmp_path, monkeypatch):
 
     ledger = load_agent_work_ledger(agent_id=agent_id, session_id="sess-1", data_root=tmp_path)
     assert ledger["todo_items"][0]["owner"] == "researcher-bot"
+
+
+# ── T1.3 (§8.1 #4) — dependency DAG exposed on the tool contract ──
+
+
+def test_track_todo_schema_exposes_blocks_and_blocked_by():
+    """The service has carried ``blocks``/``blocked_by`` since 切口③; T1.3
+    exposes them on the tool schema so the model can express the dependency
+    DAG (CC Task parity: ``blocks``/``blockedBy``)."""
+    from app.services.agent_tools import get_combined_openai_tools
+
+    schema = next(
+        t["function"]["parameters"] for t in get_combined_openai_tools() if t["function"]["name"] == "track_todo"
+    )
+    properties = schema["properties"]
+    assert "blocks" in properties
+    assert "blockedBy" in properties
+    assert properties["blocks"]["type"] == "array"
+    assert properties["blockedBy"]["type"] == "array"
+
+
+@pytest.mark.asyncio
+async def test_track_todo_persists_blocks_and_blocked_by(tmp_path, monkeypatch):
+    """Handler → real service → ledger round-trip for the dependency DAG."""
+    from app.services.agent_work_ledger import load_agent_work_ledger
+    from app.tools.handlers.work_ledger import track_todo
+
+    agent_id = uuid.uuid4()
+    _settings_patch(monkeypatch, tmp_path)
+
+    first = json.loads(
+        await track_todo(_request(tmp_path, {"action": "add", "title": "Gather data"}, agent_id=agent_id))
+    )
+    blocker_id = first["item"]["id"]
+
+    payload = json.loads(
+        await track_todo(
+            _request(
+                tmp_path,
+                {"action": "add", "title": "Write report", "blockedBy": [blocker_id]},
+                agent_id=agent_id,
+            )
+        )
+    )
+    assert payload["ok"] is True
+    assert payload["item"]["blockedBy"] == [blocker_id]
+
+    update = json.loads(
+        await track_todo(
+            _request(
+                tmp_path,
+                {"action": "update", "item_id": blocker_id, "blocks": [payload["item"]["id"]]},
+                agent_id=agent_id,
+            )
+        )
+    )
+    assert update["ok"] is True
+    assert update["item"]["blocks"] == [payload["item"]["id"]]
+
+    ledger = load_agent_work_ledger(agent_id=agent_id, session_id="sess-1", data_root=tmp_path)
+    by_id = {item["id"]: item for item in ledger["todo_items"]}
+    assert by_id[blocker_id]["blocks"] == [payload["item"]["id"]]
+    assert by_id[payload["item"]["id"]]["blockedBy"] == [blocker_id]

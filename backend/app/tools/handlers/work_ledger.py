@@ -103,6 +103,22 @@ def _scope(request: ToolExecutionRequest) -> tuple[str | None, str | None, str |
                         "or delegate any work on its own."
                     ),
                 },
+                "blocks": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional ids of todos that cannot start until this one completes "
+                        "(dependency note only — never triggers or orders execution)."
+                    ),
+                },
+                "blockedBy": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional ids of todos that must complete before this one can start "
+                        "(dependency note only — never triggers or orders execution)."
+                    ),
+                },
             },
             "required": ["action"],
         },
@@ -128,6 +144,12 @@ async def track_todo(request: ToolExecutionRequest) -> str:
     if evidence_refs is not None and not isinstance(evidence_refs, list):
         evidence_refs = None
     owner = args.get("owner")
+    blocks = args.get("blocks")
+    if blocks is not None and not isinstance(blocks, list):
+        blocks = None
+    blocked_by = args.get("blockedBy") or args.get("blocked_by")
+    if blocked_by is not None and not isinstance(blocked_by, list):
+        blocked_by = None
 
     if action == "add":
         if not title:
@@ -148,6 +170,8 @@ async def track_todo(request: ToolExecutionRequest) -> str:
             active_form=str(active_form).strip() if active_form is not None else None,
             evidence_refs=[str(ref) for ref in evidence_refs] if evidence_refs is not None else None,
             owner=str(owner).strip() if owner is not None else None,
+            blocks=[str(ref) for ref in blocks] if blocks is not None else None,
+            blocked_by=[str(ref) for ref in blocked_by] if blocked_by is not None else None,
             plan_id=plan_id,
             runtime_task_id=runtime_task_id,
             session_id=session_id,

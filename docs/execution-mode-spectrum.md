@@ -284,7 +284,7 @@ L2 底线(无人值守+外向是否强制 workflow/Checkpoint):v1 不绑,记观�
 
 **小切口完成定义(DoD)**:① §4.6 验收口径达成——模型 turn-1 能看见并正确选择 subagent/workflow/ledger;② 全量测试绿;③ §3 现状表更新为落地后新现状(本文档自身的证据闭环)。
 
-> **DoD 验收(2026-06-05,四切口全 ✅ 后)**:① **达成** — "看见"=六工具皆 `CORE_TOOL_NAMES` 成员享 `_always_tools` 兜底(红测 #1/#2 钉死);"正确选择"=§5 决策序列进 executing_actions + 工具描述互指 + when-NOT 判据(T2 11 钉);② **达成** — `pytest -q` → **3869 passed, 7 skipped**,`ruff` clean(注:同工作区另有外部进程未提交的 subagent-evolution 半成品,其 5 项自带失败与本工程四 commit diff 零交集,验证时显式排除);③ **达成** — §3.1 三层表/§3.2 七原语表/§3.4 病根标注均已同步落地后现状。
+> **DoD 验收(2026-06-05,四切口全 ✅ 后)**:① **达成** — "看见"=六工具皆 `CORE_TOOL_NAMES` 成员享 `_always_tools` 兜底(红测 #1/#2 钉死);"正确选择"=§5 决策序列进 executing_actions + 工具描述互指 + when-NOT 判据(T2 11 钉);② **达成** — `pytest -q` → **3869 passed, 7 skipped**,`ruff` clean(注:同工作区另有外部进程未提交的 subagent-evolution 半成品,其 5 项自带失败与本工程四 commit diff 零交集,验证时显式排除;**尾巴已闭合**:该外部工作随后自行 commit `5ffab723`,收尾时真全量(零排除)→ **3885 passed, 7 skipped, 0 failed**);③ **达成** — §3.1 三层表/§3.2 七原语表/§3.4 病根标注均已同步落地后现状。
 
 > T1.1 单独上线即净改善:spawn_subagent 等工具描述里的 when-to-use 判据(§3.4 病根 2"判据好但藏在看不见处")随可见性立刻生效,不必等 T2。
 

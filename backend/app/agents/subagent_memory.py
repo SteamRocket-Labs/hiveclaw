@@ -64,7 +64,7 @@ class SubagentMemoryStore:
     def _path(self, spec_name: str) -> Path:
         safe_name = validate_subagent_name(spec_name)
         base = self.base_dir.resolve()
-        path = (base / f"{safe_name}.记忆.md").resolve()
+        path = (base / f"{safe_name}.memory.md").resolve()
         if not path.is_relative_to(base):
             raise ValueError("invalid subagent name: path escapes tenant memory store")
         return path
@@ -214,7 +214,7 @@ def memory_store_for_agent(agent_id: object, *, agent_data_dir: Path | str | Non
     definition's scope).
 
     Agent-private definitions accumulate craft at
-    ``<workspace>/subagents/.memory/<name>.记忆.md`` — the dot-dir keeps memory
+    ``<workspace>/subagents/.memory/<name>.memory.md`` — the dot-dir keeps memory
     files out of the definition glob, and two agents with same-named private
     definitions never share memory. Tenant isolation is inherited (the agent
     workspace already lives inside the tenant boundary); the governed write

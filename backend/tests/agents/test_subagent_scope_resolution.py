@@ -133,7 +133,7 @@ def test_agent_memory_store_isolated_from_tenant(tmp_path):
     assert other_mem.load("dup") == ""
     assert tenant_mem.load("dup") == ""
     # Path contract: dot-dir keeps memory files out of the definition glob.
-    assert (tmp_path / str(AGENT_ID) / "subagents" / ".memory" / "dup.记忆.md").exists()
+    assert (tmp_path / str(AGENT_ID) / "subagents" / ".memory" / "dup.memory.md").exists()
     assert definition_store_for_agent(AGENT_ID, agent_data_dir=tmp_path).list_names() == []
 
 

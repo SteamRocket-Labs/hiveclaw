@@ -73,7 +73,7 @@ def test_store_rejects_path_traversal_names(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="subagent name"):
         store.load("../escape")
 
-    assert not (tmp_path.parent / "escape.记忆.md").exists()
+    assert not (tmp_path.parent / "escape.memory.md").exists()
 
 
 @pytest.mark.asyncio

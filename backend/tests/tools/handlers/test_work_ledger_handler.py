@@ -414,3 +414,42 @@ async def test_track_todo_persists_blocks_and_blocked_by(tmp_path, monkeypatch):
     by_id = {item["id"]: item for item in ledger["todo_items"]}
     assert by_id[blocker_id]["blocks"] == [payload["item"]["id"]]
     assert by_id[payload["item"]["id"]]["blockedBy"] == [blocker_id]
+
+
+@pytest.mark.asyncio
+async def test_track_todo_can_clear_blocked_by_dependencies(tmp_path, monkeypatch):
+    """Empty dependency arrays are intentional updates, not missing fields."""
+    from app.services.agent_work_ledger import load_agent_work_ledger
+    from app.tools.handlers.work_ledger import track_todo
+
+    agent_id = uuid.uuid4()
+    _settings_patch(monkeypatch, tmp_path)
+
+    blocker = json.loads(
+        await track_todo(_request(tmp_path, {"action": "add", "title": "Gather source"}, agent_id=agent_id))
+    )
+    blocked = json.loads(
+        await track_todo(
+            _request(
+                tmp_path,
+                {"action": "add", "title": "Draft report", "blockedBy": [blocker["item"]["id"]]},
+                agent_id=agent_id,
+            )
+        )
+    )
+
+    cleared = json.loads(
+        await track_todo(
+            _request(
+                tmp_path,
+                {"action": "update", "item_id": blocked["item"]["id"], "blockedBy": []},
+                agent_id=agent_id,
+            )
+        )
+    )
+    assert cleared["ok"] is True
+    assert cleared["item"]["blockedBy"] == []
+
+    ledger = load_agent_work_ledger(agent_id=agent_id, session_id="sess-1", data_root=tmp_path)
+    by_id = {item["id"]: item for item in ledger["todo_items"]}
+    assert by_id[blocked["item"]["id"]]["blockedBy"] == []

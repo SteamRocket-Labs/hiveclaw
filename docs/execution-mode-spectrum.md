@@ -114,8 +114,8 @@ workflow definition → leaf(SubagentSpec,无 skill 字段)→ subagent 运行�
 | 目标/计划收口 | `list_objectives`,`propose_objective`,`update_objective`,`complete_objective`,`exit_plan_mode` | 已在 core | 常驻;属于 agent 自我管理与 interactive plan 收口 |
 | 工作台账 | `track_todo`,`record_finding`,`read_ledger` | **已在 core(T1.2 ✅)**,享 `_always_tools` 无条件兜底;`should_enable_work_ledger` 只控制 reminder | 常驻;reminder gate 保留,只管提示频率 |
 | A2A/异步协作 | `send_message_to_agent`,`delegate_to_agent`,`check_async_task`,`cancel_async_task`,`list_async_tasks` | 已在 core | 常驻;企业治理通过调用时 gate,不靠隐藏 schema |
-| Subagent 源能力 | `spawn_subagent` | **当前 pack-gated(`coordination_pack`)** | T1.1 加入 core;这是本轮最关键的 CC-aligned 修正 |
-| Workflow 源能力 | `preview_workflow`,`start_workflow` | **当前 pack-gated(`coordination_pack`,`runtime_tool_groups.py:96-97`)** | T1.1 加入 core;`start_workflow` 保持 plan gate/governance,但 schema 必须可见 |
+| Subagent 源能力 | `spawn_subagent` | **已在 core(T1.1 ✅)**;`coordination_pack` 仅保留目录/分组语义 | 常驻;这是本轮最关键的 CC-aligned 修正 |
+| Workflow 源能力 | `preview_workflow`,`start_workflow` | **已在 core(T1.1 ✅)**;`coordination_pack` 仅保留目录/分组语义 | 常驻;`start_workflow` 保持 plan gate/governance,但 schema 必须可见 |
 | Trigger/Autonomy | `set_trigger`,`update_trigger`,`cancel_trigger`,`list_triggers` | 已在 core | 常驻;Hive delta。CC Cron×3 是 deferred,但 Hive trigger 是数字员工自治原能力,不应由 skill 解锁 |
 | 当前通道回复 | `send_channel_message`,`send_channel_file` | 已在 core | 常驻;只回复当前 requester/绑定 reply target,不是任意外部联系人 |
 | 时间/已知 URL | `get_current_time`,`web_fetch` | 已在 core | 常驻;`web_fetch` 是已知 URL 的确定性读取入口,`web_search` 仍 deferred |

@@ -147,7 +147,7 @@ async def track_todo(request: ToolExecutionRequest) -> str:
     blocks = args.get("blocks")
     if blocks is not None and not isinstance(blocks, list):
         blocks = None
-    blocked_by = args.get("blockedBy") or args.get("blocked_by")
+    blocked_by = args["blockedBy"] if "blockedBy" in args else args.get("blocked_by")
     if blocked_by is not None and not isinstance(blocked_by, list):
         blocked_by = None
 

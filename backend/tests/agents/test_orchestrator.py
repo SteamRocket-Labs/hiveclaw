@@ -78,6 +78,11 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
     assert request.excluded_tool_names == (
         "delegate_to_agent",
         "send_message_to_agent",
+        # T1.1 recursion guard: source capabilities are core members now, so
+        # the delegation base exclusions deny them explicitly.
+        "spawn_subagent",
+        "preview_workflow",
+        "start_workflow",
         "set_trigger",
         "update_trigger",
         "cancel_trigger",

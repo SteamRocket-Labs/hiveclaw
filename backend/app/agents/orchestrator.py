@@ -31,6 +31,15 @@ ToolExecutor = Callable[..., Awaitable[str] | str]
 _DELEGATION_BASE_EXCLUDED_TOOLS = (
     "delegate_to_agent",
     "send_message_to_agent",
+    # Source capabilities are CORE_TOOL_NAMES members (T1.1): core_tools_only
+    # profiles would otherwise leak them into delegation children through the
+    # core fallback (recursion guard — mirrors _SUBAGENT_BASE_EXCLUDED_TOOLS).
+    # Whether delegation children should one day spawn their own subagents
+    # (digital-employee colleague semantics) is a separate decision; T1 pins
+    # behavioural invariance first.
+    "spawn_subagent",
+    "preview_workflow",
+    "start_workflow",
     "set_trigger",
     "update_trigger",
     "cancel_trigger",

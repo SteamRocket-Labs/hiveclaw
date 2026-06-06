@@ -49,9 +49,9 @@ Agent 的一切行为最终落在一次次 tool call 上。本文档回答两个
 
 | 层 | 内容 | 模型何时看见 |
 |---|---|---|
-| Core 常驻(`CORE_TOOL_NAMES` 35 个,`services/agent_tools.py:130`) | 文件IO、execute_code、load_skill/save_skill/tool_search、memory×3、objective×4、set_trigger×4、**delegate_to_agent**、async×3、channel message、exit_plan_mode、**web_fetch、get_current_time(已在,v0.4 误记为待加)** | 永远 |
-| 条件注入 | track_todo/record_finding/read_ledger——**v0.5 三轮事实修正**:`should_enable_work_ledger` 只控制**每轮 reminder + compaction reboot**(invoker:1022 写 metadata→engine 读),从不控制工具列表;三工具实际经 DB `Tool.is_default`/assignment 暴露,不在 `CORE_TOOL_NAMES`(=不享 `_always_tools` 无条件兜底) | 取决于 DB 配置,非复杂度 |
-| Pack-gated(`runtime_tool_groups.py`) | web_search、feishu/email/office/plaza、**coordination_pack={spawn_subagent, preview_workflow, start_workflow,…}**、mcp_admin | **skill 激活后才存在**——不激活则模型完全不知道 |
+| Core 常驻(`CORE_TOOL_NAMES` 38 个,`services/agent_tools.py:130`;T1.1 落地后) | 文件IO、execute_code、load_skill/save_skill/tool_search、memory×3、objective×4、set_trigger×4、**delegate_to_agent**、async×3、channel message、exit_plan_mode、web_fetch、get_current_time、**spawn_subagent / preview_workflow / start_workflow(T1.1 ✅,源能力原子对,双路径排除集同 commit)** | 永远 |
+| 条件注入 | track_todo/record_finding/read_ledger——**v0.5 三轮事实修正**:`should_enable_work_ledger` 只控制**每轮 reminder + compaction reboot**(invoker:1022 写 metadata→engine 读),从不控制工具列表;三工具实际经 DB `Tool.is_default`/assignment 暴露,不在 `CORE_TOOL_NAMES`(=不享 `_always_tools` 无条件兜底)→ **T1.2 落地后迁入 core** | 取决于 DB 配置,非复杂度 |
+| Pack-gated(`runtime_tool_groups.py`) | web_search、feishu/email/office/plaza、coordination_pack(目录语义保留,源能力三工具已迁 core;余 send_message_to_agent/delegate_to_agent/async×3 本就在 core,pack 仅作分组锚点)、mcp_admin | **skill 激活后才存在**——不激活则模型完全不知道(源能力已不受此门约束) |
 
 ### 3.2 七原语(被混为一谈的概念,各回答不同问题)
 
@@ -74,7 +74,7 @@ workflow definition → leaf(SubagentSpec,无 skill 字段)→ subagent 运行�
 
 ### 3.4 四个病根
 
-1. **轻重倒挂**:最重的 delegate_to_agent 在 core;最轻的 spawn_subagent、start_workflow 锁在 pack。Plan Mode/trigger/objective 三个原能力都在 core,**唯独轴1 轴2 两个源能力被关在 pack 里**——与"源能力"定位自相矛盾。
+1. **轻重倒挂**:最重的 delegate_to_agent 在 core;最轻的 spawn_subagent、start_workflow 锁在 pack。Plan Mode/trigger/objective 三个原能力都在 core,**唯独轴1 轴2 两个源能力被关在 pack 里**——与"源能力"定位自相矛盾。**→ T1.1 已修(✅ 2026-06-05):三源能力进 core,防递归双路径排除集同 commit 补排。**
 2. **判据藏在看不见的地方**:spawn_subagent 的 when-to-use 写在工具描述里,但 pack-gated 工具不可见时描述也不可见。
 3. **七原语没有一张决策地图**:各引导段各说各话,任务视角的统一叙事不存在。
 4. **三关注点耦死**(对照 §2.4):pack-gate 同时承担 token 优化+能力存在性;skill 同时承担知识+解锁。"agent 看不见源能力"不是设计决策,是耦合副作用。
@@ -266,10 +266,12 @@ L2 底线(无人值守+外向是否强制 workflow/Checkpoint):v1 不绑,记观�
 | 切口 | 内容 | 红测(§8.1) | 量级 | 依赖 |
 |---|---|---|---|---|
 | T0 | 文档拍板(§4 架构 + §4.6 小切口 + core 集清单) | — | **✅ 完成** | — |
-| T1.1 | **源能力 core 化(原子对)**:spawn_subagent / preview_workflow / start_workflow 进 `CORE_TOOL_NAMES` **+ 双路径排除集同 commit 补排**(`_SUBAGENT_BASE_EXCLUDED_TOOLS` + `_DELEGATION_BASE_EXCLUDED_TOOLS` 各补三工具)——防递归不变量不允许两半分离落地 | #1 #3 #6 #7 | 小 | T0 |
+| T1.1 | **源能力 core 化(原子对)**:spawn_subagent / preview_workflow / start_workflow 进 `CORE_TOOL_NAMES` **+ 双路径排除集同 commit 补排**(`_SUBAGENT_BASE_EXCLUDED_TOOLS` + `_DELEGATION_BASE_EXCLUDED_TOOLS` 各补三工具)——防递归不变量不允许两半分离落地 | #1 #3 #6 #7 | **✅ 完成** | T0 |
 | T1.2 | **工作记忆 core 化**:track_todo / record_finding / read_ledger 进 `CORE_TOOL_NAMES`;reminder gate(`should_enable_work_ledger`)保留不动(管提示频率非能力可见性) | #2 #6 | 小 | T0(与 T1.1 独立) |
 | T1.3 | **Ledger 契约接线**:track_todo 暴露 `blocks/blockedBy`;spawn_subagent / delegate_to_agent 暴露 `ledger_todo_id`(服务层全就绪,纯 schema 接线) | #4 #5 | 小 | T0(与 T1.1/1.2 独立) |
 | T2 | **引导面一次改齐**:executing_actions 决策序列(§5 总纲 + §7 一句话判据,**措辞动手前贴用户拍板**)+ 工具描述互指 + set_trigger 补 workflow_ref + system.py 话术(小切口版:补源能力常驻,pack 仍 skill 激活)。验收:渲染后完整 system prompt 人工 review + 既有 prompt 测试零回归 | 自有验收 | 小 | T1.1+T1.2(引导所指工具必须已可见) |
+
+> **T1.1 ✅ 完成(2026-06-05)** — 红测先行实证 RED:新增 `tests/services/test_agent_tools_core_surface.py`(7 测)+ `test_capability_gate_strict_mapping.py` 追加 #6 映射钉(1 测)→ **5 failed 如预期**(#1×2 + #3 双路径×3;`test_delegation_profiles_never_grant_source_capabilities` 现状绿 = "靠 pack 被动挡"的行为实证,入 core 不补排除集即转红)。GREEN 改动:`CORE_TOOL_NAMES` +3(35→38,`agent_tools.py:130`)+ `_SUBAGENT_BASE_EXCLUDED_TOOLS` +2(preview/start_workflow)+ `_DELEGATION_BASE_EXCLUDED_TOOLS` +3(spawn/preview/start)同 commit;既有守卫断言同步:`test_tool_registry.py::test_minimal_kernel_tool_set_stays_small_and_explicit`(CORE 全集钉)+ `test_orchestrator.py::test_delegate_to_agent_builds_runtime_request`(排除集元组钉)。证据:`pytest -q` → **3854 passed, 7 skipped**(新增 8);`ruff check` clean。
 
 **小切口完成定义(DoD)**:① §4.6 验收口径达成——模型 turn-1 能看见并正确选择 subagent/workflow/ledger;② 全量测试绿;③ §3 现状表更新为落地后新现状(本文档自身的证据闭环)。
 

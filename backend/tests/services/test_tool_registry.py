@@ -105,5 +105,10 @@ def test_minimal_kernel_tool_set_stays_small_and_explicit():
         "send_channel_message",
         "tool_search",
         "web_fetch",
+        # T1.1 (execution-mode-spectrum §4.6): source capabilities are runtime
+        # primitives — turn-1 visible, never gated behind a skill pack.
+        "spawn_subagent",
+        "preview_workflow",
+        "start_workflow",
     }
     assert "web_search" not in CORE_TOOL_NAMES

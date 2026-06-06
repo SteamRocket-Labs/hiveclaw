@@ -29,6 +29,7 @@ def _reset_unmapped_counter():
 @pytest.mark.asyncio
 async def test_unmapped_tool_increments_counter(monkeypatch) -> None:
     from app.config import get_settings
+
     monkeypatch.setattr(get_settings(), "STRICT_CAPABILITY_MAPPING", False, raising=False)
 
     result = await capability_gate.check_capability(
@@ -46,6 +47,7 @@ async def test_unmapped_tool_increments_counter(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_repeated_unmapped_calls_accumulate(monkeypatch) -> None:
     from app.config import get_settings
+
     monkeypatch.setattr(get_settings(), "STRICT_CAPABILITY_MAPPING", False, raising=False)
 
     for _ in range(3):
@@ -89,6 +91,7 @@ async def test_mapped_tool_does_not_touch_counter(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_strict_mode_denies_unmapped_tool(monkeypatch) -> None:
     from app.config import get_settings
+
     monkeypatch.setattr(get_settings(), "STRICT_CAPABILITY_MAPPING", True, raising=False)
 
     result = await capability_gate.check_capability(
@@ -108,6 +111,7 @@ async def test_strict_mode_denies_unmapped_tool(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_lenient_mode_allows_unmapped_tool(monkeypatch) -> None:
     from app.config import get_settings
+
     monkeypatch.setattr(get_settings(), "STRICT_CAPABILITY_MAPPING", False, raising=False)
 
     result = await capability_gate.check_capability(
@@ -147,6 +151,7 @@ def test_audit_returns_unmapped_and_stale_lists(monkeypatch) -> None:
     # Also stub the import inside audit_capability_mapping so it picks
     # the local fake rather than the real collector.
     import app.tools.collector as real_collector
+
     monkeypatch.setattr(real_collector, "collect_tools", lambda: fake)
 
     # Inject one stale entry into CAPABILITY_MAP for this test only.
@@ -168,6 +173,7 @@ def test_audit_clean_when_everything_mapped_or_exempt(monkeypatch) -> None:
 
     fake = _FakeCollected(safe={"read_file"}, sensitive={"send_email"})
     import app.tools.collector as real_collector
+
     monkeypatch.setattr(real_collector, "collect_tools", lambda: fake)
 
     result = cg.audit_capability_mapping()
@@ -183,8 +189,27 @@ def test_audit_handles_collector_failure_gracefully(monkeypatch) -> None:
         raise RuntimeError("collector broken")
 
     import app.tools.collector as real_collector
+
     monkeypatch.setattr(real_collector, "collect_tools", boom)
 
     result = cg.audit_capability_mapping()
 
     assert result == {"unmapped": [], "stale": []}
+
+
+# ── T1 (§8.1 #6) — promoted core tools must stay mapped ───────────
+
+
+def test_t1_core_promoted_tools_have_capability_mappings() -> None:
+    """The six T1 tools (source capabilities + work ledger) are promoted to
+    CORE_TOOL_NAMES; under STRICT_CAPABILITY_MAPPING an unmapped tool is
+    denied at call time, so their mappings are pinned here against drift."""
+    for tool_name in (
+        "spawn_subagent",
+        "preview_workflow",
+        "start_workflow",
+        "track_todo",
+        "record_finding",
+        "read_ledger",
+    ):
+        assert tool_name in capability_gate.CAPABILITY_MAP, tool_name

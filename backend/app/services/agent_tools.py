@@ -163,6 +163,13 @@ CORE_TOOL_NAMES = {
     "send_channel_file",
     "tool_search",
     "web_fetch",
+    # Source capabilities (T1.1, execution-mode-spectrum §4.6): subagent and
+    # workflow are runtime primitives — their schemas must be turn-1 visible,
+    # never gated behind a skill-activated pack. Call-time governance
+    # (capability gate / plan gate / approval) remains the execution boundary.
+    "spawn_subagent",
+    "preview_workflow",
+    "start_workflow",
 }
 
 # Core tools that should always be available to agents regardless of

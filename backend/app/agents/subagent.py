@@ -111,6 +111,11 @@ _SUBAGENT_BASE_EXCLUDED_TOOLS: tuple[str, ...] = (
     "send_message_to_agent",
     "spawn_subagent",
     "fanout_subagents",
+    # Workflow source capabilities are CORE_TOOL_NAMES members (T1.1): without
+    # this explicit deny they would leak into child tool surfaces through the
+    # core fallback (the pack gate that passively blocked them is gone).
+    "preview_workflow",
+    "start_workflow",
     "set_trigger",
     "update_trigger",
     "cancel_trigger",
@@ -443,7 +448,9 @@ async def _resolve_child_model(ctx: SubagentSpawnContext, spec: SubagentSpec) ->
 def _load_subagent_memory(ctx: SubagentSpawnContext, spec: SubagentSpec) -> str:
     if not spec.has_own_memory or ctx.memory_store is None:
         return ""
-    return str(ctx.memory_store.load(spec.name) or "").strip()
+    # Evolution loop P0: absorbed entries live on in the definition body —
+    # injecting them again would double-apply promoted craft.
+    return str(ctx.memory_store.load(spec.name, active_only=True) or "").strip()
 
 
 def _build_standalone_system_prompt(ctx: SubagentSpawnContext, spec: SubagentSpec) -> str:
@@ -500,7 +507,7 @@ async def _record_memory_from_result(ctx: SubagentSpawnContext, job: SubagentJob
     try:
         from app.agents.subagent_memory import distill_and_record
 
-        await distill_and_record(
+        write_results = await distill_and_record(
             ctx.memory_store,
             spec.name,
             _build_subagent_run_log(job, result),
@@ -508,6 +515,29 @@ async def _record_memory_from_result(ctx: SubagentSpawnContext, job: SubagentJob
         )
     except Exception as exc:
         logger.warning("[Subagent] memory writeback failed (non-fatal): name=%s err=%s", spec.name, exc)
+        return
+
+    if not any(r.written for r in write_results):
+        return
+    # Evolution loop P1 (docs/subagent-evolution-loop.md §4.1): a successful
+    # distillation write is the nomination checkpoint — threshold-gated,
+    # agent-level definitions only, fail-soft inside.
+    try:
+        from app.agents import subagent_evolution
+
+        await subagent_evolution.maybe_nominate(
+            agent_id=ctx.parent_agent_id,
+            spec_name=spec.name,
+            memory_store=ctx.memory_store,
+            model_config={
+                "provider": getattr(ctx.model, "provider", ""),
+                "api_key": getattr(ctx.model, "api_key", ""),
+                "model": getattr(ctx.model, "model", ""),
+                "base_url": getattr(ctx.model, "base_url", None),
+            },
+        )
+    except Exception as exc:
+        logger.warning("[Subagent] evolution nomination failed (non-fatal): name=%s err=%s", spec.name, exc)
 
 
 def _build_brief_from_messages(messages: list[dict]) -> str:

@@ -98,7 +98,7 @@ async def _build_llm_caller(tenant_id: uuid.UUID | None) -> LlmFn | None:
         try:
             response = await client.stream(
                 messages=[LLMMessage(role="system", content=system), LLMMessage(role="user", content=user)],
-                max_tokens=4000,
+                max_tokens=8192,  # CC-standard auxiliary-call floor
                 temperature=0.2,
             )
             record_autonomous_llm_call(source="memory_curation", outcome="success")

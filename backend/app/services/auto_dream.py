@@ -501,7 +501,7 @@ async def _dream_llm_consolidate(
             # 蒸馏器核查: 3000 starved the decision JSON (promotions + rewrites +
             # dedups + reasoning over up to 5 T3 files). 8000 matches the
             # compaction-P0 output budget philosophy.
-            max_tokens=8000,
+            max_tokens=8192,  # CC-standard auxiliary-call floor
             temperature=0.2,
         )
     except Exception as exc:  # noqa: BLE001

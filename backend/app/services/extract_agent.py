@@ -590,11 +590,11 @@ async def _llm_extract(messages: list[dict], tenant_id: uuid.UUID, agent_name: s
         try:
             response = await client.stream(
                 messages=[LLMMessage(role="user", content=prompt)],
-                # Output budget = worst-case contract (8 fully-tagged atoms
-                # ≈1200-1600t) × 2 headroom. max_tokens is a cap, not spend —
-                # a starved cap only truncates atoms 6-8 (L1: never starve the
-                # intelligence step). 1000 was an unaudited initial-commit value.
-                max_tokens=4000,
+                # CC-standard floor for auxiliary LLM calls: 8192 (CC caps even
+                # 64k-native models to 8k by default — BQ p99 output 4,911 ×
+                # headroom — and gives distillation calls 40k). A cap is not
+                # spend; below-floor caps only truncate the intelligence step.
+                max_tokens=8192,
                 temperature=0.3,
             )
             parsed = _parse_extractions(response.content or "")

@@ -165,7 +165,7 @@ async def generate_subagent_definition(
             {"role": "user", "content": user_message},
         ],
         temperature=0.4,
-        max_tokens=8000,
+        max_tokens=8192,  # CC-standard auxiliary-call floor
         timeout=90.0,
     )
     content = response.get("choices", [{}])[0].get("message", {}).get("content", "")

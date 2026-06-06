@@ -207,7 +207,7 @@ async def llm_distill_how(run_log: str, *, model_config: dict) -> list[tuple[str
                 {"role": "user", "content": run_log},
             ],
             temperature=0.2,
-            max_tokens=1500,
+            max_tokens=8192,  # CC-standard auxiliary-call floor
             timeout=45.0,
         )
         content = str(response.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()

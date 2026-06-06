@@ -408,7 +408,7 @@ async def _refine_soul_inputs(
             base_url=model_config.get("base_url"),
             messages=[{"role": "user", "content": prompt}],
             temperature=0.4,
-            max_tokens=3000,
+            max_tokens=8192,  # CC-standard auxiliary-call floor
             timeout=45.0,
         )
         content = response.get("choices", [{}])[0].get("message", {}).get("content", "")

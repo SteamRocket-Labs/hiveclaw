@@ -189,7 +189,7 @@ async def draft_improvement(
                 {"role": "user", "content": user_message},
             ],
             temperature=0.3,
-            max_tokens=8000,
+            max_tokens=8192,  # CC-standard auxiliary-call floor
             timeout=90.0,
         )
         content = str(response.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()

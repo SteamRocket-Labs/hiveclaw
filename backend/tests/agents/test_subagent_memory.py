@@ -161,6 +161,61 @@ async def test_llm_distiller_fails_soft_on_garbage(monkeypatch):
     assert await distiller("<run log>") == []
 
 
+# --- absorbed retirement (evolution loop P0: the exit exists before the entry) -
+
+
+def _seed_entries(store: SubagentMemoryStore, monkeypatch, n: int = 3) -> list[str]:
+    ids = []
+
+    def decision(content, **kwargs):
+        entry_id = f"e{len(ids) + 1}"
+        ids.append(entry_id)
+        return SimpleNamespace(
+            rejected=False, reason="", content=content, metadata={"entry_id": entry_id, "sensitivity": "internal"}
+        )
+
+    monkeypatch.setattr(mem_mod, "prepare_memory_write", decision)
+    for i in range(n):
+        store.record_how("scout", f"lesson {i + 1}", category="pitfall")
+    return ids
+
+
+def test_mark_absorbed_retires_entries_from_active_load(tmp_path, monkeypatch):
+    store = SubagentMemoryStore(tmp_path)
+    ids = _seed_entries(store, monkeypatch, n=3)
+
+    marked = store.mark_absorbed("scout", [ids[0], ids[2]], proposal_id="prop-1")
+    assert marked == 2
+
+    full = store.load("scout")
+    assert "lesson 1" in full and "lesson 3" in full  # nothing deleted (reversible)
+    assert full.count("[absorbed=prop-1]") == 2
+
+    active = store.load("scout", active_only=True)
+    assert "lesson 2" in active
+    assert "lesson 1" not in active and "lesson 3" not in active
+
+
+def test_mark_absorbed_is_idempotent_and_skips_unknown_ids(tmp_path, monkeypatch):
+    store = SubagentMemoryStore(tmp_path)
+    ids = _seed_entries(store, monkeypatch, n=1)
+
+    assert store.mark_absorbed("scout", [ids[0]], proposal_id="prop-1") == 1
+    assert store.mark_absorbed("scout", [ids[0]], proposal_id="prop-2") == 0  # already absorbed
+    assert store.mark_absorbed("scout", ["ghost-id"], proposal_id="prop-3") == 0
+
+    assert store.load("scout").count("[absorbed=") == 1
+
+
+def test_count_active_entries(tmp_path, monkeypatch):
+    store = SubagentMemoryStore(tmp_path)
+    ids = _seed_entries(store, monkeypatch, n=3)
+    assert store.count_active_entries("scout") == 3
+    store.mark_absorbed("scout", ids[:2], proposal_id="p")
+    assert store.count_active_entries("scout") == 1
+    assert store.count_active_entries("nope") == 0
+
+
 def test_record_how_real_gate_smoke(tmp_path):
     # integration: the real write_gate is invoked and record_how does not crash
     store = SubagentMemoryStore(tmp_path)

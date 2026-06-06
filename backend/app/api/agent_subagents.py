@@ -34,6 +34,7 @@ from app.agents.subagent_definition import (
     render_subagent_definition,
     resolve_subagent_definition,
 )
+from app.agents.subagent_evolution import apply_proposal, proposal_store_for_agent, reject_proposal
 from app.agents.subagent_memory import memory_store_for_agent, memory_store_for_tenant
 from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
@@ -192,7 +193,16 @@ async def list_agent_subagents(
     current_user: User = Depends(get_current_user),
 ):
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
-    return {"subagents": list_subagent_definitions(agent_id=agent_id, tenant_id=agent.tenant_id)}
+    rows = list_subagent_definitions(agent_id=agent_id, tenant_id=agent.tenant_id)
+    # Evolution loop (§4.3): pending-proposal badge for agent-level rows + the
+    # agent's approval-mode switch state for the settings toggle.
+    proposal_store = proposal_store_for_agent(agent_id)
+    for row in rows:
+        row["pending_proposal"] = row["scope"] == SCOPE_AGENT and proposal_store.load_pending(row["name"]) is not None
+    return {
+        "subagents": rows,
+        "evolution_auto_approve": bool(getattr(agent, "subagent_evolution_auto_approve", False)),
+    }
 
 
 @router.get("/{name}")
@@ -218,13 +228,25 @@ async def get_agent_subagent(
         memory = _memory_summary(memory_store_for_agent(agent_id), name)
     else:
         memory = _memory_summary(memory_store_for_tenant(agent.tenant_id), name)
-    return {
+    payload = {
         "name": resolved.spec.name,
         "scope": resolved.scope,
         "definition": render_subagent_definition(resolved.spec),
         "spec": _spec_summary(resolved.spec),
         "memory": memory,
     }
+    if resolved.scope == SCOPE_AGENT:
+        pending = proposal_store_for_agent(agent_id).load_pending(name)
+        if pending is not None:
+            # Diff view: the base body lives in `definition`; this is the revision.
+            payload["proposal"] = {
+                "proposal_id": pending.proposal_id,
+                "rationale": pending.rationale,
+                "absorbed_entry_ids": pending.absorbed_entry_ids,
+                "created_at": pending.created_at,
+                "body": pending.body,
+            }
+    return payload
 
 
 @router.post("/generate")
@@ -265,6 +287,75 @@ async def put_agent_subagent(
         raise HTTPException(status_code=403, detail="Editing subagent definitions requires manage access")
     spec = _parse_validated(name, payload)
     return _save_and_respond(definition_store_for_agent(agent_id), spec, SCOPE_AGENT)
+
+
+class EvolutionModePayload(BaseModel):
+    auto_approve: bool
+
+
+@router.post("/evolution-mode")
+async def set_evolution_mode(
+    agent_id: uuid.UUID,
+    payload: EvolutionModePayload,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Approval-mode switch (§4.3): auto-apply improvement proposals or hold
+    them for manual review. Auto mode skips only the human click — validation,
+    contract freeze, and ledger audit are identical."""
+
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if access_level != "manage":
+        raise HTTPException(status_code=403, detail="Changing evolution mode requires manage access")
+    agent.subagent_evolution_auto_approve = payload.auto_approve
+    await db.commit()
+    return {"evolution_auto_approve": payload.auto_approve}
+
+
+@router.post("/{name}/proposal/approve")
+async def approve_subagent_proposal(
+    agent_id: uuid.UUID,
+    name: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if access_level != "manage":
+        raise HTTPException(status_code=403, detail="Approving proposals requires manage access")
+    try:
+        result = apply_proposal(agent_id, name, approved_by=str(current_user.id))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not result.applied:
+        if result.error == "no_pending":
+            raise HTTPException(status_code=404, detail="No pending proposal for this definition")
+        if result.error == "stale_base":
+            raise HTTPException(
+                status_code=409,
+                detail="Definition changed after the proposal was drafted — proposal closed; a new one "
+                "will be nominated from current state",
+            )
+        raise HTTPException(status_code=422, detail=f"Proposal could not be applied: {result.error}")
+    return {
+        "applied": True,
+        "proposal_id": result.proposal_id,
+        "absorbed_marked": result.absorbed_marked,
+    }
+
+
+@router.post("/{name}/proposal/reject")
+async def reject_subagent_proposal(
+    agent_id: uuid.UUID,
+    name: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if access_level != "manage":
+        raise HTTPException(status_code=403, detail="Rejecting proposals requires manage access")
+    if not reject_proposal(agent_id, name, rejected_by=str(current_user.id)):
+        raise HTTPException(status_code=404, detail="No pending proposal for this definition")
+    return {"rejected": True}
 
 
 @router.delete("/{name}")

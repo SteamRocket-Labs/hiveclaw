@@ -35,11 +35,22 @@ export interface SubagentSpecSummary {
 
 export interface SubagentRow extends SubagentSpecSummary {
   scope: SubagentScope;
+  /** Evolution loop: an improvement proposal awaits review (agent scope only). */
+  pending_proposal?: boolean;
 }
 
 export interface SubagentMemoryDigest {
   exists: boolean;
   entries: number;
+}
+
+export interface SubagentProposal {
+  proposal_id: string;
+  rationale: string;
+  absorbed_entry_ids: string[];
+  created_at: string;
+  /** The revised system-prompt body (contract fields are frozen by construction). */
+  body: string;
 }
 
 export interface SubagentDetail {
@@ -48,6 +59,12 @@ export interface SubagentDetail {
   definition: string;
   spec: SubagentSpecSummary;
   memory: SubagentMemoryDigest;
+  proposal?: SubagentProposal;
+}
+
+export interface SubagentListResponse {
+  subagents: SubagentRow[];
+  evolution_auto_approve: boolean;
 }
 
 export interface SubagentSaveResult {
@@ -57,7 +74,7 @@ export interface SubagentSaveResult {
 }
 
 export const subagentApi = {
-  list: (agentId: string) => get<{ subagents: SubagentRow[] }>(`/agents/${agentId}/subagents`),
+  list: (agentId: string) => get<SubagentListResponse>(`/agents/${agentId}/subagents`),
   get: (agentId: string, name: string) =>
     get<SubagentDetail>(`/agents/${agentId}/subagents/${encodeURIComponent(name)}`),
   save: (agentId: string, name: string, definition: string) =>
@@ -67,6 +84,17 @@ export const subagentApi = {
   // AI generation: description → complete 定义.md prefilled into the editor.
   generate: (agentId: string, description: string) =>
     post<{ definition: string }>(`/agents/${agentId}/subagents/generate`, { description }),
+  // Evolution loop (§4.3): proposal review + approval-mode switch.
+  approveProposal: (agentId: string, name: string) =>
+    post<{ applied: boolean; proposal_id: string }>(
+      `/agents/${agentId}/subagents/${encodeURIComponent(name)}/proposal/approve`,
+    ),
+  rejectProposal: (agentId: string, name: string) =>
+    post<{ rejected: boolean }>(`/agents/${agentId}/subagents/${encodeURIComponent(name)}/proposal/reject`),
+  setEvolutionMode: (agentId: string, autoApprove: boolean) =>
+    post<{ evolution_auto_approve: boolean }>(`/agents/${agentId}/subagents/evolution-mode`, {
+      auto_approve: autoApprove,
+    }),
 
   enterpriseList: () => get<{ subagents: SubagentRow[] }>(`/enterprise/subagents`),
   enterpriseGet: (name: string) => get<SubagentDetail>(`/enterprise/subagents/${encodeURIComponent(name)}`),

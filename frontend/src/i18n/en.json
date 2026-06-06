@@ -1001,7 +1001,14 @@
       "namePlaceholder": "definition name, e.g. market-scout",
       "generatePlaceholder": "Describe what this subagent should do, and AI will draft the definition\u2026",
       "generateButton": "AI Generate",
-      "generating": "Generating\u2026"
+      "generating": "Generating\u2026",
+      "proposalBadge": "Improvement pending",
+      "proposalTitle": "Definition improvement proposal",
+      "proposalAbsorbs": "absorbs {{count}} memory entries",
+      "approveButton": "Approve & apply",
+      "rejectButton": "Reject",
+      "autoApprove": "Auto-apply improvements",
+      "autoApproveHint": "When on, definition-improvement proposals apply automatically through the same validation and audit path — only the manual click is skipped."
     }
   },
   "wizard": {

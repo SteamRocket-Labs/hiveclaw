@@ -32,6 +32,9 @@ class _FakeDB:
     async def execute(self, _stmt):
         raise AssertionError("Unexpected execute() call")
 
+    async def commit(self):
+        return None
+
 
 def _build_client(*, role: str = "member", tenant_id: uuid.UUID | None = None):
     app = FastAPI()
@@ -235,6 +238,126 @@ def test_generate_enterprise_subagent_org_admin_only(monkeypatch, data_root):
     member_client, _db2, _user2 = _build_client(role="member")
     resp = member_client.post("/enterprise/subagents/generate", json={"description": "x"})
     assert resp.status_code == 403
+
+
+# --- evolution loop: proposals + approval mode (§4.3) --------------------------
+
+
+def _seed_pending_proposal(agent_id, data_root, *, body: str = "You are a scout. Verify twice."):
+    from app.agents.subagent_definition import render_subagent_definition as render
+    from app.agents.subagent_evolution import EvolutionProposal, definition_sha, proposal_store_for_agent
+
+    base = definition_store_for_agent(agent_id, agent_data_dir=data_root).load("scout")
+    proposal = EvolutionProposal(
+        name="scout",
+        status="pending",
+        base_definition_sha=definition_sha(render(base)),
+        absorbed_entry_ids=["e1"],
+        rationale="mature lesson",
+        created_at="2026-06-05T00:00:00+00:00",
+        proposal_id="prop-api-1",
+        body=body,
+    )
+    proposal_store_for_agent(agent_id, agent_data_dir=data_root).save(proposal)
+    return proposal
+
+
+def _seed_agent_definition(agent_id, data_root):
+    definition_store_for_agent(agent_id, agent_data_dir=data_root).save(
+        SubagentSpec(name="scout", description="d", type="explorer", system_prompt="You are a scout.")
+    )
+
+
+def test_list_marks_pending_proposal_and_mode(monkeypatch, data_root):
+    agent_id, tenant_id = uuid.uuid4(), uuid.uuid4()
+    client, _db, _user = _build_client(tenant_id=tenant_id)
+    _grant_access(monkeypatch, agent_id, tenant_id)
+    _seed_agent_definition(agent_id, data_root)
+    _seed_pending_proposal(agent_id, data_root)
+
+    payload = client.get(f"/agents/{agent_id}/subagents").json()
+    rows = {row["name"]: row for row in payload["subagents"]}
+    assert rows["scout"]["pending_proposal"] is True
+    assert rows["explorer"]["pending_proposal"] is False
+    assert payload["evolution_auto_approve"] is False  # fake agent has no column → default off
+
+
+def test_detail_carries_pending_proposal(monkeypatch, data_root):
+    agent_id, tenant_id = uuid.uuid4(), uuid.uuid4()
+    client, _db, _user = _build_client(tenant_id=tenant_id)
+    _grant_access(monkeypatch, agent_id, tenant_id)
+    _seed_agent_definition(agent_id, data_root)
+    proposal = _seed_pending_proposal(agent_id, data_root)
+
+    payload = client.get(f"/agents/{agent_id}/subagents/scout").json()
+    assert payload["proposal"]["proposal_id"] == proposal.proposal_id
+    assert payload["proposal"]["body"] == proposal.body
+    assert "Verify twice" in payload["proposal"]["body"]
+
+
+def test_approve_proposal_applies_definition(monkeypatch, data_root):
+    agent_id, tenant_id = uuid.uuid4(), uuid.uuid4()
+    client, _db, _user = _build_client(tenant_id=tenant_id)
+    _grant_access(monkeypatch, agent_id, tenant_id)
+    _seed_agent_definition(agent_id, data_root)
+    _seed_pending_proposal(agent_id, data_root)
+
+    resp = client.post(f"/agents/{agent_id}/subagents/scout/proposal/approve")
+    assert resp.status_code == 200
+    assert resp.json()["applied"] is True
+
+    updated = definition_store_for_agent(agent_id, agent_data_dir=data_root).load("scout")
+    assert updated.system_prompt == "You are a scout. Verify twice."
+    # idempotence: a second approve finds nothing pending
+    assert client.post(f"/agents/{agent_id}/subagents/scout/proposal/approve").status_code == 404
+
+
+def test_approve_requires_manage_and_409_on_stale(monkeypatch, data_root):
+    agent_id, tenant_id = uuid.uuid4(), uuid.uuid4()
+    client, _db, _user = _build_client(tenant_id=tenant_id)
+    _grant_access(monkeypatch, agent_id, tenant_id, level="use")
+    assert client.post(f"/agents/{agent_id}/subagents/scout/proposal/approve").status_code == 403
+
+    client2, _db2, _user2 = _build_client(tenant_id=tenant_id)
+    _grant_access(monkeypatch, agent_id, tenant_id)
+    _seed_agent_definition(agent_id, data_root)
+    _seed_pending_proposal(agent_id, data_root)
+    # definition edited after drafting → stale
+    definition_store_for_agent(agent_id, agent_data_dir=data_root).save(
+        SubagentSpec(name="scout", description="d", type="explorer", system_prompt="edited meanwhile")
+    )
+    assert client2.post(f"/agents/{agent_id}/subagents/scout/proposal/approve").status_code == 409
+
+
+def test_reject_proposal_endpoint(monkeypatch, data_root):
+    agent_id, tenant_id = uuid.uuid4(), uuid.uuid4()
+    client, _db, _user = _build_client(tenant_id=tenant_id)
+    _grant_access(monkeypatch, agent_id, tenant_id)
+    _seed_agent_definition(agent_id, data_root)
+    _seed_pending_proposal(agent_id, data_root)
+
+    assert client.post(f"/agents/{agent_id}/subagents/scout/proposal/reject").json()["rejected"] is True
+    assert client.post(f"/agents/{agent_id}/subagents/scout/proposal/reject").status_code == 404
+    # definition untouched
+    assert (
+        definition_store_for_agent(agent_id, agent_data_dir=data_root).load("scout").system_prompt == "You are a scout."
+    )
+
+
+def test_evolution_mode_switch(monkeypatch, data_root):
+    agent_id, tenant_id = uuid.uuid4(), uuid.uuid4()
+    client, _db, _user = _build_client(tenant_id=tenant_id)
+    _grant_access(monkeypatch, agent_id, tenant_id)
+
+    resp = client.post(f"/agents/{agent_id}/subagents/evolution-mode", json={"auto_approve": True})
+    assert resp.status_code == 200
+    assert resp.json()["evolution_auto_approve"] is True
+
+    use_client, _db2, _user2 = _build_client(tenant_id=tenant_id)
+    _grant_access(monkeypatch, agent_id, tenant_id, level="use")
+    assert (
+        use_client.post(f"/agents/{agent_id}/subagents/evolution-mode", json={"auto_approve": True}).status_code == 403
+    )
 
 
 # --- agent-level: write path --------------------------------------------------

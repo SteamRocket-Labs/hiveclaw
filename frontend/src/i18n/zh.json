@@ -1029,7 +1029,14 @@
       "namePlaceholder": "定义名，如 market-scout",
       "generatePlaceholder": "用一句话描述这个子代理要做什么，AI 会起草定义\u2026",
       "generateButton": "AI 生成",
-      "generating": "生成中\u2026"
+      "generating": "生成中\u2026",
+      "proposalBadge": "待审改进",
+      "proposalTitle": "定义改进提案",
+      "proposalAbsorbs": "吸收 {{count}} 条记忆",
+      "approveButton": "批准并应用",
+      "rejectButton": "拒绝",
+      "autoApprove": "自动吸收改进",
+      "autoApproveHint": "开启后，定义改进提案将自动应用——校验与审计路径与人工批准完全相同，仅跳过手动点击。"
     }
   },
   "wizard": {

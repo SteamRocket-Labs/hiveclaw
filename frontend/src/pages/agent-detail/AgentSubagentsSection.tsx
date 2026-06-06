@@ -169,11 +169,33 @@ export default function AgentSubagentsSection({ agentId, canManage }: AgentSubag
           <h3 style={{ marginBottom: '4px' }}>{t('agent.subagents.title')}</h3>
           <p style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>{t('agent.subagents.description')}</p>
         </div>
-        {canManage && (
-          <button className="btn btn-primary" style={{ fontSize: '13px', flexShrink: 0 }} onClick={() => startCreate()}>
-            {t('agent.subagents.newButton')}
-          </button>
-        )}
+        <span style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
+          {canManage && (
+            <label
+              title={t('agent.subagents.autoApproveHint')}
+              style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', cursor: 'pointer' }}
+            >
+              <input
+                type="checkbox"
+                checked={listData?.evolution_auto_approve ?? false}
+                onChange={async (e) => {
+                  try {
+                    await subagentApi.setEvolutionMode(agentId, e.target.checked);
+                    await queryClient.invalidateQueries({ queryKey: ['agent-subagents', agentId] });
+                  } catch (err) {
+                    setActionError(err instanceof Error ? err.message : String(err));
+                  }
+                }}
+              />
+              {t('agent.subagents.autoApprove')}
+            </label>
+          )}
+          {canManage && (
+            <button className="btn btn-primary" style={{ fontSize: '13px' }} onClick={() => startCreate()}>
+              {t('agent.subagents.newButton')}
+            </button>
+          )}
+        </span>
       </div>
 
       {isLoading && <p style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('common.loading')}</p>}
@@ -200,6 +222,21 @@ export default function AgentSubagentsSection({ agentId, canManage }: AgentSubag
             >
               <span style={{ fontWeight: 600, fontSize: '13px', minWidth: '160px' }}>{row.name}</span>
               <span style={scopeBadgeStyle(row.scope)}>{t(`agent.subagents.scope.${row.scope}`)}</span>
+              {row.pending_proposal && (
+                <span
+                  style={{
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    padding: '1px 8px',
+                    borderRadius: '10px',
+                    color: 'var(--warning, #d97706)',
+                    border: '1px solid var(--warning, #d97706)',
+                    flexShrink: 0,
+                  }}
+                >
+                  {t('agent.subagents.proposalBadge')}
+                </span>
+              )}
               <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{row.type}</span>
               {row.model && (
                 <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{row.model}</span>
@@ -273,6 +310,88 @@ export default function AgentSubagentsSection({ agentId, canManage }: AgentSubag
                 <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>
                   {t('agent.subagents.tenantHint')}
                 </p>
+              )}
+              {detail.proposal && (
+                <div
+                  style={{
+                    marginBottom: '12px',
+                    border: '1px solid var(--warning, #d97706)',
+                    borderRadius: '6px',
+                    padding: '12px',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
+                    <strong style={{ fontSize: '13px' }}>{t('agent.subagents.proposalTitle')}</strong>
+                    <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                      {t('agent.subagents.proposalAbsorbs', { count: detail.proposal.absorbed_entry_ids.length })}
+                    </span>
+                    {canManage && (
+                      <span style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
+                        <button
+                          className="btn btn-primary"
+                          style={{ fontSize: '12px' }}
+                          disabled={saving}
+                          onClick={async () => {
+                            setSaving(true);
+                            setActionError(null);
+                            try {
+                              await subagentApi.approveProposal(agentId, detail.name);
+                              await queryClient.invalidateQueries({ queryKey: ['agent-subagents', agentId] });
+                              await queryClient.invalidateQueries({
+                                queryKey: ['agent-subagent-detail', agentId, detail.name],
+                              });
+                            } catch (err) {
+                              setActionError(err instanceof Error ? err.message : String(err));
+                            } finally {
+                              setSaving(false);
+                            }
+                          }}
+                        >
+                          {t('agent.subagents.approveButton')}
+                        </button>
+                        <button
+                          className="btn btn-secondary"
+                          style={{ fontSize: '12px' }}
+                          disabled={saving}
+                          onClick={async () => {
+                            setSaving(true);
+                            setActionError(null);
+                            try {
+                              await subagentApi.rejectProposal(agentId, detail.name);
+                              await queryClient.invalidateQueries({ queryKey: ['agent-subagents', agentId] });
+                              await queryClient.invalidateQueries({
+                                queryKey: ['agent-subagent-detail', agentId, detail.name],
+                              });
+                            } catch (err) {
+                              setActionError(err instanceof Error ? err.message : String(err));
+                            } finally {
+                              setSaving(false);
+                            }
+                          }}
+                        >
+                          {t('agent.subagents.rejectButton')}
+                        </button>
+                      </span>
+                    )}
+                  </div>
+                  <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                    {detail.proposal.rationale}
+                  </p>
+                  <pre
+                    style={{
+                      fontSize: '12px',
+                      whiteSpace: 'pre-wrap',
+                      background: 'var(--bg-primary)',
+                      border: '1px solid var(--border-primary)',
+                      borderRadius: '6px',
+                      padding: '12px',
+                      maxHeight: '260px',
+                      overflow: 'auto',
+                    }}
+                  >
+                    {detail.proposal.body}
+                  </pre>
+                </div>
               )}
               <pre
                 style={{

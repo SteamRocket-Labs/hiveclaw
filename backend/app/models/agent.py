@@ -90,6 +90,12 @@ class Agent(Base):
     )
     channel_perms: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
     config_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False, server_default="1")
+    # Subagent evolution loop (docs/subagent-evolution-loop.md §4.3): when True,
+    # definition-improvement proposals auto-apply through the SAME validation +
+    # audit path as a manual approval (only the human click is skipped).
+    subagent_evolution_auto_approve: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

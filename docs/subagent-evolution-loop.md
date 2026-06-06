@@ -1,6 +1,6 @@
 # Subagent 进化闭环：记忆 → 定义晋升（个体层）
 
-> **状态：v0 讨论稿（2026-06-05），待拍板。** 单一核心：一个 subagent 定义如何用自己的运行经验改进自己的 定义.md。组织层（晋升公司库）显式排除在外，归 `docs/org-agent-asset-rights-model.md` §6。
+> **状态：v1 定稿（2026-06-05 拍板：N=8 / 双模式审批 / 文件态 / P0→P2）。** 单一核心：一个 subagent 定义如何用自己的运行经验改进自己的 定义.md。组织层（晋升公司库）显式排除在外，归 `docs/org-agent-asset-rights-model.md` §6。
 >
 > 起点 = 用户架构质疑（2026-06-05）："Sub-agent 应该是一个单独的进化路径——memory 积累，最终晋升空间是它自己的 定义.md 改进，它不会干其他事。"核对结论：前半句已成立（§13.2 修后记忆只进自有 memory.md），后半句**通道不存在**——本文档补这条通道。
 
@@ -82,12 +82,14 @@ proposal 落盘 <workspace>/subagents/.proposals/<name>.proposal.md + 通知 own
 - 提示词要点：吸收的是**反复出现/普适**的 craft；孤例留在记忆；body 改写保持原有角色骨架（增量编辑非重写）；语言跟随定义语言；禁 vendor 名。
 - 起草产物在落盘 proposal 前先 `parse_subagent_definition` 验证（frontmatter 不动 + body 替换后必须合法），失败 → log + 放弃本次提名（fail-soft，下次蒸馏再触发）。
 
-### 4.3 审核（v1：人审 only）
+### 4.3 审核（双模式：人工审批 默认 / 自动审批 可选 —— 2026-06-05 用户拍板）
 
 - proposal 文件：`<workspace>/subagents/.proposals/<name>.proposal.md` —— frontmatter 记 `base_definition_sha`（防 TOCTOU：批准时定义已被人改 → 拒绝过期 proposal）、`absorbed_entry_ids`、`rationale`、`created_at`、`status: pending`；body = 修订后完整定义文本。
-- 通知：复用 notification 服务通知 agent owner；配置面 Sub-agents tab 列表行加"待审改进"徽标。
-- 批准 = 前端 diff 预览 → 调用新端点 `POST /agents/{id}/subagents/{name}/proposal/approve`（内部走与 PUT 同一校验+写回）→ ledger 落账 → 标记 absorbed → proposal 置 approved。拒绝 = status: rejected 留档（同样进 ledger，负样本可供后续校准）。
-- **无自动批准**。低风险自动审（Asset Curator）是组织层概念，归 §6。
+- **审批模式开关**（agent 级设置，默认 `manual`）：
+  - `manual`（默认）：proposal 落盘 + 通知 owner；前端 diff 预览 → 批准/拒绝。
+  - `auto`：proposal 落盘后**立即走与人工批准完全相同的代码路径**（parse 校验、契约冻结 enforce、base_sha 校验、写回、ledger、absorb 一个不少），ledger `approved_by: "auto"`；事后通知 owner"已自动应用改进，附 diff"。自动批准的只是"人点按钮"这一步，**不绕过任何治理**——任何校验失败照样把 proposal 留在 pending 转人工。
+- 批准 = `POST /agents/{id}/subagents/{name}/proposal/approve`（内部走与 PUT 同一校验+写回）→ ledger 落账 → 标记 absorbed → proposal 置 approved。拒绝 = status: rejected 留档（同样进 ledger，负样本可供后续校准）。
+- 组织层的 Asset Curator 自动审核（入库晋升）仍归 §6，与本开关无关。
 
 ### 4.4 吸收 + 退役
 
@@ -123,7 +125,7 @@ proposal 落盘 <workspace>/subagents/.proposals/<name>.proposal.md + 通知 own
 |------|------|-----------|------|
 | **P0 退役原语** | memory store：absorbed 标记 + `load(active_only)` + spawn 注入走 active_only | 标记后 load 默认不含/全量含；注入过滤 | 闭环的"出口"先于"入口"存在，任何吸收立即兑现瘦身 |
 | **P1 提名+起草** | 触发条件检查 + LLM 起草 + proposal 落盘 + 通知 | 阈值触发/互斥/起草产物过校验/失败 fail-soft/提示词 vendor-neutral 钉子 | spawn N 次后 .proposals/ 出现合法 proposal |
-| **P2 审核面** | approve/reject 端点 + 契约冻结 enforce + base_sha 校验 + ledger + 前端 diff 预览/徽标 | 422 契约变更拒/409 过期拒/批准写回+absorb+ledger 原子序 | owner 在配置面完成一次完整批准，定义更新且记忆瘦身 |
+| **P2 审核面** | approve/reject 端点 + 契约冻结 enforce + base_sha 校验 + ledger + **auto/manual 开关（agent 级，默认 manual）** + 前端 diff 预览/徽标/开关 | 422 契约变更拒/409 过期拒/批准写回+absorb+ledger 原子序/auto 模式即时应用且 approved_by=auto/auto 校验失败回落 pending | owner 在配置面完成一次完整批准，定义更新且记忆瘦身 |
 | **P3 实证 eval**（可选） | absorbed 后注入长度下降 + 定义行为不回退冒烟 | — | 数字证据进 ledger traces |
 
 ## 9. 非目标
@@ -132,13 +134,20 @@ proposal 落盘 <workspace>/subagents/.proposals/<name>.proposal.md + 通知 own
 - 契约字段（tools/model/rounds/isolation）的任何自动变更
 - tenant 级 / builtin 定义的自动进化
 - 跨 subagent 经验合并、记忆共享
-- 自动批准（含 Asset Curator）
+- 组织层 Asset Curator 自动审核（入库晋升；个体层 auto 开关已入 §4.3）
 
 ---
 
-## 待拍板
+## 拍板记录（2026-06-05 用户全部定稿）
 
-1. 触发阈值 N=8 默认值（env 可调）是否接受？
-2. 审批人 = agent owner（manage 权限），v1 无自动批准——确认？
-3. proposal 文件态（零新表）vs 入 DB——v1 文件态，确认？
-4. P0→P2 顺序（出口先于入口）——确认后按切口 TDD 实装。
+1. 触发阈值 N=8（env 可调）✅
+2. 审批：**双模式**——人工审批（默认）/ 自动审批（agent 级开关，用户可选；自动批准走与人审完全相同的校验与审计路径）✅
+3. proposal 文件态（零新表）✅
+4. P0→P2 顺序（出口先于入口）✅ → 按切口 TDD 实装。
+
+## 实装证据（2026-06-05 同日完成，commit 见 git log）
+
+- **P0**：`SubagentMemoryStore.mark_absorbed`（行内标记，幂等，可逆）+ `load(active_only)` + `count_active_entries`；spawn 注入走 active_only。tests/agents/test_subagent_memory.py +3 例。
+- **P1**：`app/agents/subagent_evolution.py` —— `EVOLUTION_DRAFT_SYSTEM_PROMPT`（vendor-neutral 钉子）/ `SubagentProposalStore`（.proposals/<name>.proposal.md，proposal body 只存修订后的 system prompt body=契约冻结 by construction）/ `draft_improvement`（fail-soft）/ `maybe_nominate`（agent 级 only、阈值 `SUBAGENT_EVOLUTION_THRESHOLD=8`、pending 互斥、ghost id 过滤、产物过 parse 链）；`_record_memory_from_result` 蒸馏写入成功后内联触发。tests/agents/test_subagent_evolution.py 提名 6 例。
+- **P2**：`apply_proposal`（唯一定义写入方：base_sha 校验→写回→mark_absorbed→evolution_ledger（workspace/evolution/，kind=subagent_definition_promotion）→close；stale 自动 rejected 解锁重提名）/ `reject_proposal`（负样本留档+ledger）/ auto 模式（`Agent.subagent_evolution_auto_approve` 列，migration `subagent_evolution_auto_0605` + entrypoint ALTER patch（生产走 stamp head 不跑 migration，patch 是生效路径）；auto=同一代码路径 approved_by=auto，失败回落 pending）；API 四端点（approve 200/404/409/403、reject、evolution-mode 开关、list 带 pending_proposal 徽标+开关态、detail 带 proposal body）；前端 = 行徽标/提案区（rationale+修订 body+批准/拒绝）/自动吸收开关 + i18n en/zh。
+- 证据：后端全量 **3865 passed**（evolution 16 + API 7 新增）；前端 170 passed / tsc / build 2.40s。

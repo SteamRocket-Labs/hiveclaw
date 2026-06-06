@@ -95,13 +95,49 @@ class SubagentMemoryStore:
             fh.write(entry)
         return HowWriteResult(written=True, rejected=False, content=decision.content)
 
-    def load(self, spec_name: str) -> str:
-        """Return the subagent's 记忆.md text (empty string if none yet)."""
+    def load(self, spec_name: str, *, active_only: bool = False) -> str:
+        """Return the subagent's memory text (empty string if none yet).
+
+        ``active_only=True`` filters entries already absorbed into the
+        definition body (evolution loop P0) — the spawn-time prompt injection
+        uses this so promoted craft is never injected twice.
+        """
 
         path = self._path(spec_name)
         if not path.exists():
             return ""
-        return path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
+        if not active_only:
+            return text
+        return "\n".join(line for line in text.splitlines() if "[absorbed=" not in line)
+
+    def mark_absorbed(self, spec_name: str, entry_ids: list[str], *, proposal_id: str) -> int:
+        """Tag entries as absorbed into the definition (reversible: tag, never delete).
+
+        Idempotent — an already-absorbed entry is never re-tagged. Returns the
+        number of entries newly tagged. Mirrors dream's archive semantics.
+        """
+
+        path = self._path(spec_name)
+        if not path.exists() or not entry_ids:
+            return 0
+        wanted = {str(entry_id) for entry_id in entry_ids if str(entry_id).strip()}
+        marked = 0
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for i, line in enumerate(lines):
+            if "[absorbed=" in line:
+                continue
+            if any(f"[id={entry_id}]" in line for entry_id in wanted):
+                lines[i] = f"{line} [absorbed={proposal_id}]"
+                marked += 1
+        if marked:
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return marked
+
+    def count_active_entries(self, spec_name: str) -> int:
+        """Number of not-yet-absorbed entries (the evolution-loop trigger metric)."""
+
+        return sum(1 for line in self.load(spec_name, active_only=True).splitlines() if line.startswith("- ["))
 
     @staticmethod
     def _format_entry(content: str, *, category: str, metadata: dict) -> str:

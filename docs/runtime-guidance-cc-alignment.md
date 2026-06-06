@@ -1,6 +1,7 @@
 # 运行时动态引导体系：机制 × 提示词（对标 CC attachment/reminder 层）
 
-> 状态:**v0.1 审计定稿**(2026-06-05)。源码实证:CC `utils/attachments.ts` / `utils/messages.ts` / `constants/prompts.ts`;Hive `kernel/engine.py`。
+> 状态:**v0.2 拍板稿**(2026-06-06)。用户独立核验源码确认 M1/M2 实锤(engine.py:1895/1907 循环内 append 同一数组、:185 persist 只跳 [0]、invoker.py:1022 复杂度预判)并定性:**这是 Hive 自身机制 bug,不是对齐 CC 的偏好问题**。两待拍板均按推荐方向拍定:① T-G1 走 **transient + scheduler**——scheduler 决定本轮注入什么,注入只参与本轮 LLM request,不写回 api_messages 历史、不进 persist;可观测用事件/metric,不靠污染对话历史;② **M7 gate 收窄为 eligibility**——`should_enable_work_ledger` 不删(T1.2 边界),只回答"这个 run 是否允许 ledger reminder 参赛";是否提醒、隔几轮提醒由 scheduler 行为推断(最近 N 轮有无 track_todo/record_finding/read_ledger + 距上次 reminder 冷却)。红测优先顺序(用户定):`test_runtime_reminder_scheduler.py`(不堆积+冷却)→ `test_memory_persist_filters.py`(不 persist);gentle 化与快照归 T-G2。实施三补充(我,拍板时确认):既有 reminder 守卫测试(`test_work_ledger_scaffold.py` 等)transient 化后预期转红属断言同步;行为推断数据源=engine 循环逐轮 `scheduler.observe(tool_names)` 喂入(不扫历史,O(1));persist 防御性过滤须用显式标记而非 role=system 角色判断(compaction summary/prompt-too-long 注入同为 system 形态,误滤即丢上下文),loop_guard/round-pressure 同纳入 scheduler,round-pressure 改持续 transient 注入可逐轮刷新真实数字。
+> 前版:**v0.1 审计定稿**(2026-06-05)。源码实证:CC `utils/attachments.ts` / `utils/messages.ts` / `constants/prompts.ts`;Hive `kernel/engine.py`。
 > 关系:`docs/execution-mode-spectrum.md` 管 CC 引导体系的前两层——暴露架构 + 静态引导(§5 七原语决策序列、工具描述互指,T2 ✅ 已落地);**本文档管第三层:运行中的动态引导(reminder 注入)**。三层一起构成完整的"关键节点给模型判断信息"的体系。
 > 流程(用户拍板,2026-06-05):**机制对齐 → 提示词对齐 → 全面 CC 对标**。本文档按此分 §5 三阶段路线。
 

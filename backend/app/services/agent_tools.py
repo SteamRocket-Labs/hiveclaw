@@ -16,6 +16,7 @@ import logging
 import threading
 import uuid
 from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -371,8 +372,13 @@ async def _agent_has_feishu_cli_access() -> bool:
 
 # ─── Dynamic Tool Loading from DB ──────────────────────────────
 
+@dataclass(frozen=True, slots=True)
+class _MCPGating:
+    reachable_by_tool_id: dict[str, bool]
+    always_load_tool_names: set[str]
 
-async def _resolve_agent_mcp_gating(db, agent_id: uuid.UUID) -> dict[str, bool] | None:
+
+async def _resolve_agent_mcp_gating(db, agent_id: uuid.UUID) -> _MCPGating | None:
     """Batch-resolve MCP-tool reachability from the new assignment tables.
 
     Returns ``{str(Tool.id): reachable}`` for every MCP tool the agent's
@@ -420,6 +426,7 @@ async def _resolve_agent_mcp_gating(db, agent_id: uuid.UUID) -> dict[str, bool] 
             deny_by_server.setdefault(str(ov.mcp_server_id), set()).add(ov.tool_name)
 
     gating: dict[str, bool] = {}
+    always_load_tool_names: set[str] = set()
     for assignment in assignments:
         sid = str(assignment.mcp_server_id)
         pairs = tools_by_server.get(sid, [])
@@ -430,9 +437,11 @@ async def _resolve_agent_mcp_gating(db, agent_id: uuid.UUID) -> dict[str, bool] 
             deny_by_server.get(sid, set()),
             getattr(assignment, "default_tool_mode", "auto"),
         )
+        if bool(getattr(assignment, "always_load", False)):
+            always_load_tool_names.update(reachable_names)
         for tool_id, tool_name in pairs:
             gating[tool_id] = tool_name in reachable_names
-    return gating
+    return _MCPGating(reachable_by_tool_id=gating, always_load_tool_names=always_load_tool_names)
 
 
 async def get_agent_tools_for_llm(
@@ -507,8 +516,8 @@ async def get_agent_tools_for_llm(
                 # MCP tools: when the agent has new-table data, assignment+overrides
                 # decide reachability (§8.5). Un-backfilled agents (mcp_gating is None,
                 # or tool absent from gating) keep the legacy decision above.
-                if t.type == "mcp" and mcp_gating is not None and tid in mcp_gating:
-                    enabled = mcp_gating[tid]
+                if t.type == "mcp" and mcp_gating is not None and tid in mcp_gating.reachable_by_tool_id:
+                    enabled = mcp_gating.reachable_by_tool_id[tid]
                 if not enabled:
                     continue
 
@@ -551,6 +560,8 @@ async def get_agent_tools_for_llm(
                         result.append(t)
                 if core_only:
                     keep = CORE_TOOL_NAMES | (_HR_TOOL_NAMES if hr_agent else set())
+                    if mcp_gating is not None:
+                        keep |= mcp_gating.always_load_tool_names
                     result = [t for t in result if t["function"]["name"] in keep]
                 elif requested_set:
                     result = [t for t in result if t["function"]["name"] in requested_set]

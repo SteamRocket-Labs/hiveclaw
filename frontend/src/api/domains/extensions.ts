@@ -27,6 +27,7 @@ export interface AgentMcpServer {
   enabled: boolean;
   tool_count: number;
   default_tool_mode: McpToolMode | string;
+  always_load: boolean;
 }
 
 export interface AgentMcpServerTool {
@@ -61,6 +62,7 @@ export interface McpAssignmentResult {
   server_id: string;
   enabled: boolean;
   default_tool_mode: McpToolMode | string;
+  always_load: boolean;
 }
 
 export interface McpBackfillSummary {
@@ -95,7 +97,7 @@ export const extensionsApi = {
   setAgentMcpAssignment: (
     agentId: string,
     serverId: string,
-    data: { enabled: boolean; default_tool_mode?: McpToolMode | string },
+    data: { enabled: boolean; default_tool_mode?: McpToolMode | string; always_load?: boolean },
   ) => put<McpAssignmentResult>(`/agents/${agentId}/mcp-servers/${serverId}`, data),
 
   /** Set one advanced per-tool policy override for an assigned MCP server. */

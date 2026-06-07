@@ -70,6 +70,7 @@ def test_get_extensions_returns_skills_and_mcp_servers(monkeypatch):
                     "enabled": True,
                     "tool_count": 18,
                     "default_tool_mode": "auto",
+                    "always_load": True,
                 }
             ],
         }
@@ -226,13 +227,16 @@ def test_put_agent_mcp_server_upserts_with_agent_tenant(monkeypatch):
     async def fake_check(db_session, user, target_agent_id):
         return SimpleNamespace(id=agent_id, tenant_id=agent_tenant), "manage"
 
-    async def fake_set(db_session, tenant_id, target_agent_id, target_server_id, *, enabled, default_tool_mode):
+    async def fake_set(
+        db_session, tenant_id, target_agent_id, target_server_id, *, enabled, default_tool_mode, always_load
+    ):
         captured.update(
             tenant_id=tenant_id,
             agent_id=target_agent_id,
             server_id=target_server_id,
             enabled=enabled,
             default_tool_mode=default_tool_mode,
+            always_load=always_load,
         )
         return {
             "id": str(uuid4()),
@@ -240,6 +244,7 @@ def test_put_agent_mcp_server_upserts_with_agent_tenant(monkeypatch):
             "server_id": str(target_server_id),
             "enabled": enabled,
             "default_tool_mode": default_tool_mode,
+            "always_load": always_load,
         }
 
     monkeypatch.setattr(mcp_mod, "check_agent_access", fake_check)
@@ -247,7 +252,7 @@ def test_put_agent_mcp_server_upserts_with_agent_tenant(monkeypatch):
 
     resp = client.put(
         f"/agents/{agent_id}/mcp-servers/{server_id}",
-        json={"enabled": True, "default_tool_mode": "approval"},
+        json={"enabled": True, "default_tool_mode": "approval", "always_load": True},
     )
 
     assert resp.status_code == 200
@@ -256,7 +261,9 @@ def test_put_agent_mcp_server_upserts_with_agent_tenant(monkeypatch):
     assert captured["server_id"] == server_id
     assert captured["enabled"] is True
     assert captured["default_tool_mode"] == "approval"
+    assert captured["always_load"] is True
     assert resp.json()["enabled"] is True
+    assert resp.json()["always_load"] is True
 
 
 def test_put_agent_mcp_server_defaults_tool_mode_auto(monkeypatch):
@@ -268,14 +275,18 @@ def test_put_agent_mcp_server_defaults_tool_mode_auto(monkeypatch):
     async def fake_check(db_session, user, target_agent_id):
         return SimpleNamespace(id=agent_id, tenant_id=current_user.tenant_id), "manage"
 
-    async def fake_set(db_session, tenant_id, target_agent_id, target_server_id, *, enabled, default_tool_mode):
+    async def fake_set(
+        db_session, tenant_id, target_agent_id, target_server_id, *, enabled, default_tool_mode, always_load
+    ):
         captured["default_tool_mode"] = default_tool_mode
+        captured["always_load"] = always_load
         return {
             "id": str(uuid4()),
             "agent_id": str(target_agent_id),
             "server_id": str(target_server_id),
             "enabled": enabled,
             "default_tool_mode": default_tool_mode,
+            "always_load": always_load,
         }
 
     monkeypatch.setattr(mcp_mod, "check_agent_access", fake_check)
@@ -285,6 +296,7 @@ def test_put_agent_mcp_server_defaults_tool_mode_auto(monkeypatch):
 
     assert resp.status_code == 200
     assert captured["default_tool_mode"] == "auto"
+    assert captured["always_load"] is False
 
 
 def test_put_agent_mcp_server_rejects_invalid_default_mode():

@@ -925,6 +925,8 @@
       "advancedToolControls": "Advanced tool controls",
       "configureTool": "Configure tool",
       "perAgentConfig": "Per-agent configuration (overrides global defaults)",
+      "alwaysLoad": "Load at start",
+      "alwaysLoadHint": "Keep this server’s approved tools in the first tool surface.",
       "toolCount": "{{count}} tools",
       "toolPolicyTitle": "Tool policy",
       "noMcpServerTools": "No server tools found",

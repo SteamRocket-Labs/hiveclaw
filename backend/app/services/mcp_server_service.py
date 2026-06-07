@@ -119,6 +119,7 @@ async def get_agent_mcp_servers(db: AsyncSession, agent_id: uuid.UUID) -> list[d
             MCPServer.status,
             AgentMCPServerAssignment.enabled,
             AgentMCPServerAssignment.default_tool_mode,
+            AgentMCPServerAssignment.always_load,
         )
         .join(AgentMCPServerAssignment, AgentMCPServerAssignment.mcp_server_id == MCPServer.id)
         .where(AgentMCPServerAssignment.agent_id == agent_id)
@@ -143,6 +144,7 @@ async def get_agent_mcp_servers(db: AsyncSession, agent_id: uuid.UUID) -> list[d
             "enabled": bool(row.enabled),
             "tool_count": tool_counts.get(row.id, 0),
             "default_tool_mode": row.default_tool_mode,
+            "always_load": bool(getattr(row, "always_load", False)),
         }
         for row in rows
     ]
@@ -223,6 +225,7 @@ async def set_agent_mcp_assignment(
     *,
     enabled: bool,
     default_tool_mode: str = "auto",
+    always_load: bool = False,
 ) -> dict:
     """Upsert one agent↔MCP server assignment (unique per tenant+agent+server)."""
     default_tool_mode = _validate_tool_mode(default_tool_mode, field_name="default_tool_mode")
@@ -242,11 +245,13 @@ async def set_agent_mcp_assignment(
             mcp_server_id=server_id,
             enabled=enabled,
             default_tool_mode=default_tool_mode,
+            always_load=always_load,
         )
         db.add(assignment)
     else:
         assignment.enabled = enabled
         assignment.default_tool_mode = default_tool_mode
+        assignment.always_load = always_load
     await db.commit()
     return {
         "id": str(assignment.id),
@@ -254,6 +259,7 @@ async def set_agent_mcp_assignment(
         "server_id": str(server_id),
         "enabled": bool(assignment.enabled),
         "default_tool_mode": assignment.default_tool_mode,
+        "always_load": bool(getattr(assignment, "always_load", False)),
     }
 
 

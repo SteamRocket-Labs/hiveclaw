@@ -41,6 +41,25 @@ describe('chatRuntime helpers', () => {
     });
   });
 
+  it('maps deferred tool discovery deltas into event messages', () => {
+    const message = getRuntimeEventMessage({
+      type: 'deferred_tools_delta',
+      message: 'Discovered deferred tools: web_search',
+      status: 'info',
+      tool_groups: [{ name: 'web_pack' }],
+      trigger_tool: 'tool_search',
+    });
+
+    expect(message).toMatchObject({
+      role: 'event',
+      eventType: 'deferred_tools_delta',
+      eventStatus: 'info',
+      content: 'Discovered deferred tools: web_search',
+      activatedToolGroupCount: 1,
+      triggerTool: 'tool_search',
+    });
+  });
+
   it('maps enriched permission runtime events into event messages', () => {
     const message = getRuntimeEventMessage({
       type: 'permission',

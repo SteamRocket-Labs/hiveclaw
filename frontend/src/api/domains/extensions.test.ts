@@ -31,10 +31,20 @@ describe('extensions API adapter', () => {
 
     await extensionsApi.getAgentMcpServerTools('agent-1', 'server-1');
     await extensionsApi.setAgentMcpToolPolicy('agent-1', 'server-1', 'github_search', { mode: 'approval' });
+    await extensionsApi.setAgentMcpAssignment('agent-1', 'server-1', {
+      enabled: true,
+      default_tool_mode: 'auto',
+      always_load: true,
+    });
 
     expect(get).toHaveBeenCalledWith('/agents/agent-1/mcp-servers/server-1/tools');
     expect(put).toHaveBeenCalledWith('/agents/agent-1/mcp-servers/server-1/tools/github_search/policy', {
       mode: 'approval',
+    });
+    expect(put).toHaveBeenCalledWith('/agents/agent-1/mcp-servers/server-1', {
+      enabled: true,
+      default_tool_mode: 'auto',
+      always_load: true,
     });
   });
 });

@@ -183,7 +183,7 @@ Deferred 的对象是"当前 agent 可用,但不该占 turn-1 schema"的工具�
 | G | `pack_policy_service`(tenant pack 开关)+`check_declared_packs_authorized` | pack=存在性门 | ✅ C2:pack 名保留为**治理锚点/目录**；`check_declared_packs_authorized` 兼容 no-op，调用时治理仍生效 | tenant 管控面不缩水；可见性策略细化归 C3/后续 |
 | H | `kernel/engine.py` ToolExpansionResult 消费+`tool_group_activation` 事件 | mid-session 换 tools 数组+事件 | 机制保留,触发源变为 tool_search 发现;事件名不变(降级观测) | `pack_service::_summarize_chat_messages`/前端 timeline 零改 |
 | I | subagent 工具面(类型白名单预设) | worker/explorer/critic 白名单,含 load_skill | 白名单不变;subagent 是否带 tool_search+独立发现集待 T3 设计 | 防递归不变量(§4.3)钉死 |
-| J | `api/packs.py`/`api/tools.py:413`/前端工具面板 | pack 目录+tenant 开关+declared_packs 注解 | 文案/语义改"目录";MCP 工具补 always_load 配置面 | Surface≠Plumbing 验收 |
+| J | `api/packs.py`/`api/tools.py:413`/前端工具面板 | pack 目录+tenant 开关+declared_packs 注解 | ✅ C3:MCP server-first 工具面板补 `always_load` 配置面；deferred event 前端识别；pack-derived identity 不回流 | Surface≠Plumbing 验收 |
 | K | `capability_gate.py` CAPABILITY_MAP | STRICT 默认 True | **全部 deferred 工具必须有映射**(发现后调用才过得了 gate) | 历史坑,红测试钉死 |
 
 ### 4.5 迁移序列(风险控制:先并行后切换,T3b 落地即收敛单一路径)
@@ -191,7 +191,7 @@ Deferred 的对象是"当前 agent 可用,但不该占 turn-1 schema"的工具�
 1. **T1.1-T1.3(已完成)**:源能力进 core 与双路径排除集同 commit；work ledger 三工具进 core 但 reminder gate 保留；三处 schema 断线已接。
 2. **T3a / C1(已完成,2026-06-07)**:发现集状态(B)+tool_search 反转(C)+名字宣告(D)落地；旧 skill unlock 路径当时并行保留。
 3. **T3b / C2(已完成,2026-06-07)**:skill 去解锁化(E)+pack 降目录(G)；唯一普通解锁路=发现；回退=revert C2 单切口。
-4. **T4 / C3(进行中/待完成)**:J + 残留双轨文案/前端/always_load 配置面清理，单一路径兑现。
+4. **T4 / C3(已完成,2026-06-07)**:J + 残留双轨文案/前端/always_load 配置面清理，单一路径兑现。
 
 **C0 拍板已按保守默认落地**:① 名字宣告载体=`deferred_tools_delta` runtime event；② 发现集持久化=`SessionContext.discovered_tools` + metadata mirror；③ subagent 独立发现集。
 
@@ -212,7 +212,7 @@ Deferred 的对象是"当前 agent 可用,但不该占 turn-1 schema"的工具�
 
 1. **T1/T2 即可先收口主要问题**:源能力和工作台账常驻,引导面讲清七原语;
 2. **C1/C2 已替代保守双轨**:普通集成 pack 不再经 skill 解锁；`tool_search` 在 core，模型缺能力时一步发现，matching schemas become callable；
-3. **剩余工作只剩 C3 surface 清理**:前端/工具面板/MCP 文案、always_load 配置面和少量历史文案；runtime 普通解锁路径已单一化。
+3. **C3 surface 已收口**:前端/工具面板/MCP 文案、always_load 配置面与 `deferred_tools_delta` 事件识别已落地；runtime 普通解锁路径已单一化。
 
 ---
 
@@ -309,7 +309,7 @@ L2 底线(无人值守+外向是否强制 workflow/Checkpoint):v1 不绑,记观�
 |---|---|---|---|
 | T3a / C1 | Deferred 基建(加法):发现集状态 + tool_search 语义反转 + 名字宣告(§4.4 B/C/D) | ✅ 完成 | C0 |
 | T3b / C2 | 切换(Breaking,可单独 revert):skill 去解锁化 + pack 降目录(§4.4 E/G) | ✅ 完成 | C1 |
-| T4 / C3 | 前端联动 + 双轨清理:工具面板/MCP 文案、always_load 配置面、单一路径兑现 | 中 | C2 |
+| T4 / C3 | 前端联动 + 双轨清理:工具面板/MCP 文案、always_load 配置面、单一路径兑现 | ✅ 完成 | C2 |
 | T5 | 感知统一(§7 WorkflowSignature 合流)+ 散文 trigger 重复检测——与暴露架构独立,挂此处仅作索引 | 大 | 独立 |
 
 > trigger 表单 workflow_ref 选择器(原 T4 项)不依赖 deferred 机制——后端 `trigger.config.workflow_ref` 与前端 `AgentAwareSection` selector/args 输入均已落地;后续维护归 workflow 文档,不占本路线。

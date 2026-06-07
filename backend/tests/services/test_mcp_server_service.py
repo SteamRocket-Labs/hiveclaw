@@ -121,6 +121,7 @@ async def test_get_agent_mcp_servers_shape_and_tool_mode():
         status="connected",
         enabled=True,
         default_tool_mode="auto",
+        always_load=True,
     )
     db = _SpyDB(
         [
@@ -139,6 +140,7 @@ async def test_get_agent_mcp_servers_shape_and_tool_mode():
             "enabled": True,
             "tool_count": 18,
             "default_tool_mode": "auto",
+            "always_load": True,
         }
     ]
     assert not (_NO_PACK_KEYS & result[0].keys())
@@ -232,7 +234,7 @@ async def test_set_agent_mcp_assignment_creates_row():
     )
 
     result = await mcp_server_service.set_agent_mcp_assignment(
-        db, tenant_id, agent_id, server_id, enabled=True, default_tool_mode="approval"
+        db, tenant_id, agent_id, server_id, enabled=True, default_tool_mode="approval", always_load=True
     )
 
     created = [o for o in db.added if isinstance(o, AgentMCPServerAssignment)]
@@ -242,9 +244,11 @@ async def test_set_agent_mcp_assignment_creates_row():
     assert created[0].mcp_server_id == server_id
     assert created[0].enabled is True
     assert created[0].default_tool_mode == "approval"
+    assert created[0].always_load is True
     assert db.committed is True
     assert result["enabled"] is True
     assert result["default_tool_mode"] == "approval"
+    assert result["always_load"] is True
     assert result["server_id"] == str(server_id)
 
 
@@ -285,7 +289,12 @@ async def test_set_agent_mcp_assignment_updates_existing_row():
     agent_id = uuid4()
     server_id = uuid4()
     existing = AgentMCPServerAssignment(
-        tenant_id=tenant_id, agent_id=agent_id, mcp_server_id=server_id, enabled=True, default_tool_mode="auto"
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        mcp_server_id=server_id,
+        enabled=True,
+        default_tool_mode="auto",
+        always_load=False,
     )
     existing.id = uuid4()
     db = _SpyDB(
@@ -296,15 +305,17 @@ async def test_set_agent_mcp_assignment_updates_existing_row():
     )
 
     result = await mcp_server_service.set_agent_mcp_assignment(
-        db, tenant_id, agent_id, server_id, enabled=False, default_tool_mode="deny"
+        db, tenant_id, agent_id, server_id, enabled=False, default_tool_mode="deny", always_load=True
     )
 
     assert db.added == []  # update path, no insert
     assert existing.enabled is False
     assert existing.default_tool_mode == "deny"
+    assert existing.always_load is True
     assert db.committed is True
     assert result["enabled"] is False
     assert result["default_tool_mode"] == "deny"
+    assert result["always_load"] is True
 
 
 @pytest.mark.asyncio

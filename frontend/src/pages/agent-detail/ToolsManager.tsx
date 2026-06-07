@@ -81,12 +81,34 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
       await extensionsApi.setAgentMcpAssignment(agentId, server.id, {
         enabled,
         default_tool_mode: server.default_tool_mode,
+        always_load: server.always_load,
       });
     } catch (error) {
       console.error(error);
       await loadExtensions();
     }
     setSavingServerId(null);
+  };
+
+  const setServerAlwaysLoad = async (server: AgentMcpServer, alwaysLoad: boolean) => {
+    setExtensions((prev) =>
+      prev
+        ? { ...prev, mcp_servers: prev.mcp_servers.map((s) => (s.id === server.id ? { ...s, always_load: alwaysLoad } : s)) }
+        : prev,
+    );
+    setSavingServerId(server.id);
+    try {
+      await extensionsApi.setAgentMcpAssignment(agentId, server.id, {
+        enabled: server.enabled,
+        default_tool_mode: server.default_tool_mode,
+        always_load: alwaysLoad,
+      });
+    } catch (error) {
+      console.error(error);
+      await loadExtensions();
+    } finally {
+      setSavingServerId(null);
+    }
   };
 
   const loadServerTools = async (serverId: string) => {
@@ -243,6 +265,24 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
                         </span>
                       )}
                     </div>
+
+                    {canManage && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'center', borderTop: '1px solid var(--border-subtle)', padding: '10px 14px' }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                            {t('agent.extensions.alwaysLoad', 'Load at start')}
+                          </div>
+                          <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                            {t('agent.extensions.alwaysLoadHint', 'Keep this server’s approved tools in the first tool surface.')}
+                          </div>
+                        </div>
+                        <Toggle
+                          checked={Boolean(server.always_load)}
+                          disabled={!server.enabled || savingServerId === server.id}
+                          onChange={(next) => void setServerAlwaysLoad(server, next)}
+                        />
+                      </div>
+                    )}
 
                     {server.tool_count > 0 && (
                       <div style={{ borderTop: '1px solid var(--border-subtle)' }}>

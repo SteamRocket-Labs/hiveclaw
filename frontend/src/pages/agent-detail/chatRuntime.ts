@@ -5,7 +5,13 @@ export const MIN_COMPOSER_HEIGHT = 44;
 export const MAX_COMPOSER_HEIGHT = 160;
 export const CHAT_SOCKET_KEEPALIVE_INTERVAL_MS = 30_000;
 
-export type RuntimeEventType = 'permission' | 'session_compact' | 'tool_group_activation' | 'pack_activation' | 'team_memory';
+export type RuntimeEventType =
+  | 'permission'
+  | 'session_compact'
+  | 'tool_group_activation'
+  | 'deferred_tools_delta'
+  | 'pack_activation'
+  | 'team_memory';
 
 export interface AgentChatMessage {
   role: 'user' | 'assistant' | 'tool_call' | 'event';
@@ -96,6 +102,7 @@ const RUNTIME_EVENT_TYPES = new Set<RuntimeEventType>([
   'permission',
   'session_compact',
   'tool_group_activation',
+  'deferred_tools_delta',
   'pack_activation',
   'team_memory',
 ]);

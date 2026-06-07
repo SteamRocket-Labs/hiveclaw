@@ -40,6 +40,7 @@ router = APIRouter(tags=["mcp-servers"])
 class AgentMcpAssignmentIn(BaseModel):
     enabled: bool
     default_tool_mode: Literal["auto", "approval", "deny"] = "auto"
+    always_load: bool = False
 
 
 class AgentMcpToolPolicyIn(BaseModel):
@@ -141,6 +142,7 @@ async def update_agent_mcp_server(
             server_id,
             enabled=data.enabled,
             default_tool_mode=data.default_tool_mode,
+            always_load=data.always_load,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))

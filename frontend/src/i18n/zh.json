@@ -953,6 +953,8 @@
       "advancedToolControls": "高级工具控制",
       "configureTool": "配置工具",
       "perAgentConfig": "按员工配置（覆盖全局默认值）",
+      "alwaysLoad": "启动即加载",
+      "alwaysLoadHint": "将此服务器已允许的工具保留在首轮工具面。",
       "toolCount": "{{count}} 个工具",
       "toolPolicyTitle": "工具策略",
       "noMcpServerTools": "未找到服务器工具",

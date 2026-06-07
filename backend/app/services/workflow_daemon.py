@@ -14,7 +14,11 @@ from typing import Any
 
 from app.config import get_settings
 from app.runtime.workflow_engine import LeafExecutor
-from app.services.subagent_wake_consumer import ParentWakeInvoker, drain_subagent_completion_wakes
+from app.services.subagent_wake_consumer import (
+    ParentWakeInvoker,
+    build_production_parent_wake_invoker,
+    drain_subagent_completion_wakes,
+)
 from app.services.workflow_launch import build_resumable_workflow_leaf_executor
 from app.services.workflow_runtime_service import WorkflowRuntimeService
 from app.services.workflow_signal_consumer import drain_signal_resumes
@@ -45,9 +49,13 @@ async def workflow_daemon_tick(
         service=service,
         session_factory=session_factory,
     )
+    # B2: default to the real production invoker so the parent-wake path is live
+    # even when callers (main.py's zero-arg start) pass nothing. Tests inject
+    # their own invoker to override.
+    effective_wake_invoker = subagent_wake_invoker or build_production_parent_wake_invoker()
     subagent_wakes = await drain_subagent_completion_wakes(
         session_factory=session_factory,
-        invoke_parent=subagent_wake_invoker,
+        invoke_parent=effective_wake_invoker,
     )
     return {
         "resumed_runs": len(resumed),

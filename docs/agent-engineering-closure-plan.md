@@ -194,7 +194,7 @@ M5 形态对齐    C0 拍板 → C1 T3a → C2 T3b → C3 T4 ─ Runtime 形态�
 - **c621c22a save_memory**：真 fix（原 A3 有 str/UUID `.hex` 崩溃隐患，新增 `_coerce_tenant_uuid`）。
 - 低危：`test_dream_phase6.py:279` 死断言（输入格式改了、负向断言期望串没跟改→永真，mutation test 实证），但同契约被 `test_memory_integration.py::test_t2_truncation` 的 count 断言强保护，契约未失守。返工时顺手改成 `"entry 1\n" not in truncated_t2`。
 
-### 🔴 R1 — B2 父唤醒返工（FAIL：生产死接线）
+### ✅ R1 — B2 父唤醒返工（已完成 2026-06-07）
 - **实锤**：`main.py:491` 调 `start_workflow_daemon()` 零参数 → `workflow_daemon.py:64` `subagent_wake_invoker` 默认 None → `subagent_wake_consumer.py:63` `if invoke_parent is None: return []` → 父永不被唤醒；生产零 `ParentWakeInvoker` 构造。更糟：`test_workflow_daemon.py:60` `assert subagent_calls == [(None, None, 50)]` **把断线钉成契约**（返工必须翻这条）。
 - **修法（commit: `fix(subagent): wire parent wake invoker into production daemon`）**：
   1. 新建生产 `ParentWakeInvoker`——对齐 `supervision_reminder._get_agent_reply`(:130-155) 无人值守模式：load agent→检查 runnable→load primary+fallback model→`set_agent_bot_identity(source="subagent_wake")`→`invoke_agent(AgentInvocationRequest(messages=[{"role":"user","content":"你的后台子代理 {from} 已完成：\n{content}\n复核结果并继续或收口"}], session_context=SessionContext(source="subagent_wake", channel="subagent_wake"), core_tools_only=True, ...))`。
@@ -202,6 +202,7 @@ M5 形态对齐    C0 拍板 → C1 T3a → C2 T3b → C3 T4 ─ Runtime 形态�
   3. **depth/budget/wake-storm guard**：consumer 加 ①per-tick per-parent dedup（同 tick 同父最多一次）②全局 wake budget cap（每 tick 最多 N 次，N≈10，独立于 50 信号扫描上限）。链式防护靠 `source="subagent_wake"` run + 既有 `DEFAULT_MAX_SUBAGENT_DEPTH=2`。
   4. 测试：翻 `test_workflow_daemon.py:60` 的 `(None,...)` 断言为真 invoker；加"从 `start_workflow_daemon` 走真 wiring（invoker 非 None 且被调用）"测试；加 dedup+cap 测试。**禁止注入 fake 掩盖 wiring**。
 - **验收**：`pytest tests/services/test_subagent_wake_consumer.py tests/services/test_workflow_daemon.py -q`；后台 spawn→父空闲→子完成→父在 daemon 周期内被真唤醒。
+- ✅ **落地证据（2026-06-07）**：① `workflow_daemon_tick` 改为 `effective_wake_invoker = subagent_wake_invoker or build_production_parent_wake_invoker()` → main.py 零参 `start_workflow_daemon()` 自动获得父唤醒（对齐 `leaf_executor or build_...()` 模式），不改 main.py。② 新建 `build_production_parent_wake_invoker()` 对齐 `supervision_reminder._get_agent_reply`：load agent→检查 runnable→resolve primary+fallback model→`set_agent_bot_identity(source="subagent_wake")`→`invoke_agent(source="subagent_wake", core_tools_only=True, 子结果入 message)`。③ guard：consumer 加 per-tick per-parent dedup（N 子完成=1 唤醒，余信号留 PG）+ 全局 `max_wakes=10` cap；失败也计入 guard 防紧循环重试。④ 翻 `test_workflow_daemon.py:60` 的 `(None,None,50)` → `(None, _sentinel_invoker, 50)`（证明 tick 默认构造真 invoker 而非 None）。⑤ 新测试不注入 fake 掩盖 wiring：dedup/cap 走真 PG，生产 invoker 用 fake session + 真 invoke_agent 边界 double 验证 request（source/content/core_tools_only/model）+ 非 runnable 跳过。测试隔离坑：drain 全局扫所有 tenant 信号（生产正确），加 autouse `_clear_completion_signals` 防测试间泄漏。全量 **3949 绿**。
 
 ### 🔴 R2 — B1 T2 引用保护返工（实质 FAIL：保护对真实数据不生效）
 - **实锤**：保护匹配格式 `t2:learnings/{file}#entry:{id}`（`t2_store.py:726-728`）**无生产 writer 产出**（`auto_dream.py:997` 产 `t3:` 前缀=T3 自引用）；扫描 `memory_root=.../memory`（`:703`）只扫 memory/ 跳过 learnings/，**漏 soul.md（workspace 根）+ evolution/ ledger**；唯一通过测试用手写伪造 ref（`test_t2_store.py:299` `entry_id=t2-1`，真实是 uuid hex）。计划点名的四引用源（T3/soul/skill/workflow），三个结构性在扫描外、第四个无数据流经。

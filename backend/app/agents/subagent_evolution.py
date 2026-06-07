@@ -413,6 +413,19 @@ async def maybe_nominate(
         if proposal_store.load_pending(spec_name) is not None:
             return None
 
+        # Draft-budget coherence guard: the drafter must return the REWRITTEN
+        # body in full within its 8192-token output budget. A body past ~24K
+        # chars (~6K tokens) cannot round-trip — skip loudly instead of
+        # burning an LLM call into a guaranteed parse failure on every
+        # distillation tick. Owner remedy: prune the definition manually.
+        if len(spec.system_prompt) > 24_000:
+            logger.warning(
+                "[SubagentEvolution] %s body too large for the draft budget (%d chars) — nomination skipped",
+                spec_name,
+                len(spec.system_prompt),
+            )
+            return None
+
         active_memory = memory_store.load(spec_name, active_only=True)
         draft = await draft_improvement(
             definition_body=spec.system_prompt,

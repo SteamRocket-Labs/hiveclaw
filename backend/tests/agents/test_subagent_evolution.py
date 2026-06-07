@@ -158,6 +158,33 @@ async def test_nominate_creates_pending_proposal(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_nominate_skips_oversized_body_without_llm_call(tmp_path, monkeypatch):
+    """Limit-coherence guard: a body too large to round-trip the 8192 draft
+    budget must skip nomination loudly instead of failing every tick."""
+    agent_id = uuid.uuid4()
+    _agent_definition(agent_id, tmp_path, body="x" * 25_000)
+    memory_store = SubagentMemoryStore(tmp_path / "mem")
+    _seed_memory(memory_store, monkeypatch, n=9)
+
+    async def fail_chat(**kwargs):
+        raise AssertionError("LLM must not be called for an oversized body")
+
+    monkeypatch.setattr(evo_mod, "chat_complete", fail_chat)
+
+    assert (
+        await maybe_nominate(
+            agent_id=agent_id,
+            spec_name="scout",
+            memory_store=memory_store,
+            model_config=_MODEL_CONFIG,
+            threshold=8,
+            agent_data_dir=tmp_path,
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
 async def test_nominate_skips_below_threshold_without_llm_call(tmp_path, monkeypatch):
     agent_id = uuid.uuid4()
     _agent_definition(agent_id, tmp_path)

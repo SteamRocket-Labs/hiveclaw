@@ -582,6 +582,22 @@ async def _llm_extract(messages: list[dict], tenant_id: uuid.UUID, agent_name: s
     if not conversation_text:
         return None
 
+    # Input budget: the worst case (120 msgs × 2500 chars ≈ 75K tokens) can
+    # overflow small-window summary models, failing the call and degrading to
+    # pattern extraction. Use the window hint already in model_config: ~60% of
+    # the window for conversation (4 chars/token), most-recent kept.
+    window_tokens = model_config.get("max_input_tokens") or 60_000
+    max_conv_chars = int(window_tokens * 4 * 0.6)
+    if len(conversation_text) > max_conv_chars:
+        cut = conversation_text[-max_conv_chars:]
+        newline = cut.find("\n")
+        conversation_text = cut[newline + 1 :] if 0 <= newline < 2000 else cut
+        logger.info(
+            "[Extractor] conversation truncated to fit window: %d chars (window hint %d tokens)",
+            len(conversation_text),
+            window_tokens,
+        )
+
     prompt = EXTRACT_PROMPT.format(agent_name=agent_name, conversation=conversation_text)
 
     last_exc: Exception | None = None

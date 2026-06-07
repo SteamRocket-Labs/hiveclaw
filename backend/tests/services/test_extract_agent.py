@@ -1121,3 +1121,38 @@ class TestBuildConversationTextCaps:
         ]
         out = _build_conversation_text(msgs)
         assert "tool(" not in out  # low-signal tool dropped entirely
+
+
+@pytest.mark.asyncio
+async def test_llm_extract_truncates_conversation_to_window_hint(monkeypatch):
+    """Limit-coherence: input must fit the summary model's window hint —
+    otherwise small-window models fail the call and extraction silently
+    degrades to pattern matching."""
+    import app.services.extract_agent as ea
+    import app.services.memory_service as ms
+
+    async def fake_config(tenant_id):
+        return {"provider": "p", "api_key": "k", "model": "m", "base_url": None, "max_input_tokens": 1000}
+
+    monkeypatch.setattr(ms, "_get_summary_model_config", fake_config)
+
+    captured = {}
+
+    class _Client:
+        async def stream(self, *, messages, max_tokens, temperature):
+            captured["prompt"] = messages[0].content
+            from types import SimpleNamespace
+
+            return SimpleNamespace(content="NOTHING")
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr("app.services.llm_client.create_llm_client", lambda **kw: _Client())
+
+    import uuid
+
+    big = [{"role": "user", "content": "x" * 3000} for _ in range(40)]  # ~120K chars
+    await ea._llm_extract(big, uuid.uuid4(), "Agent")
+    # 1000-token hint → 1000*4*0.6 = 2400 chars conversation budget
+    assert len(captured["prompt"]) < 2400 + len(ea.EXTRACT_PROMPT)

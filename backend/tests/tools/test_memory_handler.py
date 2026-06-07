@@ -38,6 +38,47 @@ async def test_save_memory_writes_t3_file_and_index(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_save_memory_passes_tenant_id_to_hindsight_sync(tmp_path: Path) -> None:
+    """Closure A3: agent-tool writes must carry tenant_id end-to-end.
+
+    hindsight_sync returns early on tenant_id=None, so a save_memory that
+    drops it silently skips the immediate read-side sync for every
+    Hindsight-enabled tenant. The agent_args adapter passes tenant_id as the
+    third positional argument once the handler signature accepts it.
+    """
+    from app.memory import hindsight_sync
+    from app.tools.handlers.memory import save_memory
+
+    agent_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    seen: dict = {}
+
+    # Test Double rationale: Hindsight is the optional external read-side
+    # accelerator boundary; the durable MD write chain below it runs for real.
+    async def _capture(aid, tid, *, data_root=None):
+        seen["agent_id"] = aid
+        seen["tenant_id"] = tid
+        return 0
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "app.config.get_settings",
+            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+        )
+        mp.setattr(hindsight_sync, "sync_t3_to_hindsight", _capture)
+
+        result = await save_memory(
+            agent_id,
+            {"content": "Tenant-scoped fact for sync", "category": "feedback"},
+            tenant_id,
+        )
+
+    assert "Saved to long-term memory" in result
+    assert seen["agent_id"] == agent_id
+    assert seen["tenant_id"] == tenant_id
+
+
+@pytest.mark.asyncio
 async def test_save_memory_persists_control_plane_metadata(tmp_path: Path) -> None:
     from app.memory.lifecycle_store import MemoryLifecycleStore
     from app.memory.md_store import parse_entry_record

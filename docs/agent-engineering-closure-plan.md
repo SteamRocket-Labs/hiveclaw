@@ -57,6 +57,7 @@
 - **修法**: handler 从 ExecutionIdentity ContextVar / session context 取 tenant_id 传入 `append_t3_memory_candidate(tenant_id=...)`。同时 grep 其余 `append_t3_memory_candidate` 调用方做一次 tenant_id 传递一致性审计（防同病灶他处复发）。
 - **红测**: 开 Hindsight 的 tenant 经 save_memory 写入 → `sync_t3_to_hindsight` 收到非 None tenant_id（mock 边界仅限外部 Hindsight HTTP，符合 Test Double rationale）。
 - **验收**: 调用链 tenant_id 全程非 None；一致性审计零遗漏。
+- ✅ **已落地（2026-06-07）**: 采 Codex 最小修法——`save_memory(agent_id, arguments, tenant_id=None)` 第三位置参数，`agent_args` adapter（`adapters.py:37-40`）签名检查自动注入 `request.context.tenant_id`；handler 透传给 `append_t3_memory_candidate(tenant_id=...)`。一致性审计：生产调用方仅此一处（其余 grep 命中均为注释/文档）。红测钉 tenant_id 端到端直达 hindsight_sync（durable MD 写链真实跑，仅替最外层可选加速器边界）；既有 2 参调用测试天然充当向后兼容回归。handler 套件 11 绿。
 
 ### A4 build_runtime_prompt 孤儿清理（量级 S）
 

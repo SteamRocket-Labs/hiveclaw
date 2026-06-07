@@ -88,7 +88,10 @@ from app.tools.decorator import ToolMeta, tool
         adapter="agent_args",
     )
 )
-async def save_memory(agent_id: uuid.UUID, arguments: dict) -> str:
+async def save_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID | None = None) -> str:
+    # Closure A3: the third positional parameter makes the agent_args adapter
+    # pass request.context.tenant_id — without it the immediate Hindsight sync
+    # is skipped for every agent-tool write (hindsight_sync early-returns on None).
     from app.memory.t3_store import append_t3_memory_candidate
 
     content = (arguments.get("content") or "").strip()
@@ -106,6 +109,7 @@ async def save_memory(agent_id: uuid.UUID, arguments: dict) -> str:
         source_refs=source_refs,
         proposed_by="agent_tool",
         container_candidate=arguments.get("container_candidate"),
+        tenant_id=tenant_id,
     )
 
     if result.status == "rejected":

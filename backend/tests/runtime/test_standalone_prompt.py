@@ -89,3 +89,31 @@ async def test_non_standalone_request_still_builds_host_prompt(monkeypatch):
     prompt = await invoker._build_system_prompt(request, uuid4(), "", current_user_name="rocky")
     assert prompt == "HOST CONTEXT"
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_production_frozen_prefix_excludes_per_turn_state(monkeypatch):
+    """Closure A4 migration (ex build_runtime_prompt cache-boundary test).
+
+    The production frozen prefix must exclude per-turn runtime metadata and
+    the memory snapshot — both live in the dynamic suffix, otherwise
+    prompt-cache reuse serves stale time/user/trigger state. The real
+    build_frozen_prompt_prefix runs so the static sections stay pinned.
+    """
+    from app.runtime import invoker
+
+    captured: dict = {}
+
+    async def fake_build_agent_context(**kwargs):
+        captured.update(kwargs)
+        return "HOST CONTEXT"
+
+    monkeypatch.setattr(invoker, "build_agent_context", fake_build_agent_context)
+
+    prompt = await invoker._build_system_prompt(_standalone_request(""), uuid4(), "", current_user_name="rocky")
+
+    assert captured["include_runtime_metadata"] is False
+    assert captured["include_memory_file"] is False
+    assert captured["include_focus"] is False
+    assert "HOST CONTEXT" in prompt
+    assert "## System" in prompt  # frozen prefix still carries the static sections

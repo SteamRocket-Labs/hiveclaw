@@ -65,6 +65,7 @@
 - **修法**（顺序钉死，不凭"看起来孤儿"就删）: ① `rg "build_runtime_prompt" backend/app` 确认零生产引用；② 挂靠测试**先**迁移到 kernel dependency path 等价断言并跑绿；③ 然后才删除函数。
 - **红测**: 迁移后的 kernel 路径测试先绿；删除后全量绿。
 - **验收**: `rg "build_runtime_prompt" backend/` 零生产引用、零残留测试引用；kernel 主路径 navigation 覆盖不降。
+- ✅ **已落地（2026-06-07）**: 顺序如钉——① rg 实证 app/ 零引用（仅定义+4 测试）；② 4 个旧测试的活语义迁两处先跑绿：`test_production_frozen_prefix_excludes_per_turn_state`（直测生产 `invoker._build_system_prompt`：include_runtime_metadata/include_memory_file/include_focus 全 False + 真实 frozen prefix 仍含静态 sections——吸收旧 cache-boundary 测试的 frozen 侧 + sections 断言；suffix 侧本有 `test_dynamic_suffix_includes_runtime_metadata_before_environment` 在测）+ `test_dynamic_suffix_renders_active_packs`（active packs 渲染直测 suffix builder——kernel 生产路径即直传）；③ 删 `build_runtime_prompt`（147 行）+ 4 旧测试 + 孤儿依赖（`_maybe_await`/`BuildAgentContextFn`/`KnowledgeLookupFn` alias 及 inspect/uuid/Path/RuntimeContext/build_agent_context/fetch_relevant_knowledge 等 import，Pyright+ruff 双确认 `Any` 等仍用项保留）。runtime 套件 503 绿、全量 3918 绿（对账：-4 旧 +2 新 +A3 的 1 = 自 3919 净 -1 ✓）。旧组装串联逻辑（legacy 包装独有）随函数消亡，组成件 `assemble_runtime_prompt`/`build_frozen_prompt_prefix`/`build_dynamic_prompt_suffix` 各有直测无损。
 
 ### A5 escalate-retry-on-cap（量级 M，Max Token 线收口项）
 

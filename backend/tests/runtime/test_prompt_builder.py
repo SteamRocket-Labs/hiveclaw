@@ -1,128 +1,7 @@
 from __future__ import annotations
 
-from uuid import uuid4
 
 import pytest
-
-
-@pytest.mark.asyncio
-async def test_prompt_builder_merges_agent_context_knowledge_memory_and_suffix(monkeypatch):
-    from app.runtime.context import RuntimeContext
-    from app.runtime.prompt_builder import build_runtime_prompt
-    from app.runtime.session import SessionContext
-
-    agent_id = uuid4()
-
-    async def fake_build_agent_context(_agent_id, _agent_name, _role_description, current_user_name=None):
-        assert current_user_name == "Rocky"
-        return "BASE_PROMPT"
-
-    async def fake_fetch_relevant_knowledge(query, tenant_id=None):
-        assert query == "latest market research status"
-        assert tenant_id == agent_id
-        return "KNOWLEDGE"
-
-    monkeypatch.setattr("app.runtime.prompt_builder.build_agent_context", fake_build_agent_context)
-    monkeypatch.setattr("app.runtime.prompt_builder.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
-
-    prompt = await build_runtime_prompt(
-        agent_id=agent_id,
-        agent_name="Ops Agent",
-        role_description="Operations",
-        messages=[
-            {"role": "assistant", "content": "old"},
-            {"role": "user", "content": "latest market research status"},
-        ],
-        tenant_id=agent_id,
-        current_user_name="Rocky",
-        memory_context="MEMORY",
-        system_prompt_suffix="SUFFIX",
-        runtime_context=RuntimeContext(
-            session=SessionContext(session_id="s-1", source="task", channel="task"),
-        ),
-    )
-
-    # Frozen prefix = agent_context + sections + memory; dynamic suffix = knowledge + env + suffix
-    assert "BASE_PROMPT" in prompt
-    assert "MEMORY" in prompt
-    assert "## System" in prompt
-    assert "## Doing Tasks" in prompt
-    assert "KNOWLEDGE" in prompt
-    assert "SUFFIX" in prompt
-    assert "__PROMPT_DYNAMIC_BOUNDARY__" in prompt
-    assert "## Task Playbook" in prompt
-    assert "verify sources" in prompt.lower()
-
-
-@pytest.mark.asyncio
-async def test_prompt_builder_skips_empty_sections(monkeypatch):
-    from app.runtime.prompt_builder import build_runtime_prompt
-
-    async def fake_build_agent_context(*args, **kwargs):
-        return "BASE"
-
-    async def fake_fetch_relevant_knowledge(*args, **kwargs):
-        return ""
-
-    monkeypatch.setattr("app.runtime.prompt_builder.build_agent_context", fake_build_agent_context)
-    monkeypatch.setattr("app.runtime.prompt_builder.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
-
-    prompt = await build_runtime_prompt(
-        agent_id=None,
-        agent_name="Agent",
-        role_description="",
-        messages=[{"role": "assistant", "content": "noop"}],
-        tenant_id=None,
-        current_user_name=None,
-        memory_context="",
-        system_prompt_suffix="",
-    )
-
-    # With sections injected, prompt starts with BASE but includes System/Tasks/Tools
-    assert prompt.startswith("BASE")
-    assert "## System" in prompt
-
-
-@pytest.mark.asyncio
-async def test_prompt_builder_includes_active_packs_section(monkeypatch):
-    from app.runtime.context import RuntimeContext
-    from app.runtime.prompt_builder import build_runtime_prompt
-    from app.runtime.session import SessionContext
-
-    async def fake_build_agent_context(*args, **kwargs):
-        return "BASE"
-
-    async def fake_fetch_relevant_knowledge(*args, **kwargs):
-        return ""
-
-    monkeypatch.setattr("app.runtime.prompt_builder.build_agent_context", fake_build_agent_context)
-    monkeypatch.setattr("app.runtime.prompt_builder.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
-
-    prompt = await build_runtime_prompt(
-        agent_id=None,
-        agent_name="Agent",
-        role_description="",
-        messages=[{"role": "assistant", "content": "noop"}],
-        tenant_id=None,
-        current_user_name=None,
-        memory_context="",
-        system_prompt_suffix="",
-        runtime_context=RuntimeContext(
-            session=SessionContext(
-                active_tool_groups=[
-                    {
-                        "name": "web_pack",
-                        "summary": "网页搜索与抓取能力",
-                        "tools": ["web_search", "firecrawl_fetch"],
-                    }
-                ]
-            )
-        ),
-    )
-
-    assert "## Active Runtime Tool Groups" in prompt
-    assert "web_pack" in prompt
-    assert "web_search, firecrawl_fetch" in prompt
 
 
 class TestModelAwareBudget:
@@ -180,6 +59,26 @@ class TestModelAwareBudget:
         assert "truncated" not in result
 
 
+def test_dynamic_suffix_renders_active_packs():
+    """Closure A4 migration (ex test_prompt_builder_includes_active_packs_section):
+    the kernel passes session.active_tool_groups straight to the suffix builder."""
+    from app.runtime.prompt_builder import build_dynamic_prompt_suffix
+
+    suffix = build_dynamic_prompt_suffix(
+        active_tool_groups=[
+            {
+                "name": "web_pack",
+                "summary": "网页搜索与抓取能力",
+                "tools": ["web_search", "firecrawl_fetch"],
+            }
+        ],
+    )
+
+    assert "## Active Runtime Tool Groups" in suffix
+    assert "web_pack" in suffix
+    assert "web_search, firecrawl_fetch" in suffix
+
+
 def test_dynamic_suffix_trims_large_retrieval_but_keeps_suffix():
     from app.runtime.prompt_builder import build_dynamic_prompt_suffix
 
@@ -206,65 +105,6 @@ def test_dynamic_suffix_includes_runtime_metadata_before_environment():
     assert "## Runtime Metadata" in suffix
     assert "ACTIVE_TRIGGER" in suffix
     assert suffix.index("## Runtime Metadata") < suffix.index("## Environment")
-
-
-@pytest.mark.asyncio
-async def test_runtime_metadata_lives_after_cache_boundary(monkeypatch):
-    from app.runtime.context import RuntimeContext
-    from app.runtime.prompt_builder import PROMPT_CACHE_BOUNDARY, build_runtime_prompt
-    from app.runtime.session import SessionContext
-
-    agent_id = uuid4()
-
-    async def fake_build_agent_context(
-        _agent_id,
-        _agent_name,
-        _role_description,
-        *,
-        current_user_name=None,
-        include_runtime_metadata=True,
-        budget_profile=None,
-    ):
-        del budget_profile
-        assert current_user_name == "Rocky"
-        assert include_runtime_metadata is False
-        return "FROZEN_AGENT_CONTEXT"
-
-    async def fake_runtime_context(_agent_id, *, current_user_name=None, budget_profile=None):
-        del budget_profile
-        assert _agent_id == agent_id
-        assert current_user_name == "Rocky"
-        return "## Runtime Metadata\nACTIVE_TRIGGER\nCurrent Conversation: Rocky"
-
-    async def fake_fetch_relevant_knowledge(query, tenant_id=None, **_kwargs):
-        assert query == "check status"
-        assert tenant_id == agent_id
-        return ""
-
-    monkeypatch.setattr("app.runtime.prompt_builder.build_agent_runtime_context", fake_runtime_context)
-    monkeypatch.setattr("app.runtime.prompt_builder.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
-
-    prompt = await build_runtime_prompt(
-        agent_id=agent_id,
-        agent_name="Ops Agent",
-        role_description="Operations",
-        messages=[{"role": "user", "content": "check status"}],
-        tenant_id=agent_id,
-        current_user_name="Rocky",
-        memory_context="",
-        system_prompt_suffix="",
-        runtime_context=RuntimeContext(
-            session=SessionContext(session_id="s-runtime", source="task", channel="web"),
-        ),
-        build_agent_context_fn=fake_build_agent_context,
-    )
-
-    frozen, dynamic = prompt.split(PROMPT_CACHE_BOUNDARY, 1)
-    assert "FROZEN_AGENT_CONTEXT" in frozen
-    assert "ACTIVE_TRIGGER" not in frozen
-    assert "Current Conversation: Rocky" not in frozen
-    assert "ACTIVE_TRIGGER" in dynamic
-    assert "Current Conversation: Rocky" in dynamic
 
 
 # ── P1-1b: Frozen prefix metering ──────────────────────────────

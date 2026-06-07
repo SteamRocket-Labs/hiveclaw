@@ -1,6 +1,6 @@
 # Agent 工程闭环一次性计划（Engineering Closure Plan）
 
-> 状态: **v0.1 草案（2026-06-07）——待拍板**。双 AI 交叉 review（Claude 三日审计线 × Codex 只读排查）合成；§0 每条裁决均经源码二次验证，非单方采信。
+> 状态: **v0.2 已拍板，进入执行（2026-06-07）**。v0.1 = 双 AI 交叉 review（Claude 三日审计线 × Codex 只读排查）合成，§0 每条裁决均经源码二次验证；v0.2 = 采纳 Codex 对计划稿的四点反馈（A2 元数据/执行两级语义、A5 重试范围保守化、B1 引用保护、A4 删除顺序钉死）后用户拍板。**执行方式 = 按 M1-M5 拆小批次，不当一次大改开干**：批次① A1/A2/A3/A4 → 批次② A5/A6 → 批次③ B1/B2 → 批次④ C，一项一 commit 红测先行，批次间独立可验收可 push。
 > 范围: **Agent 本身的运行时**——① Max Token / 限制机制 ② Runtime 四元能力（Subagent / Skill / MCP / Workflow）③ Memory。把全部已验证的缺陷与断点一次性补齐。
 > 完成定义（工程闭环）: 配置面承诺的语义在执行路径全部兑现；管线状态面板说真话；与 CC 的机制级差距清零或有定稿路线并执行完毕；每项红测先行、全量绿。**工程闭环 ≠ 生产实证**——生产验收（挂账 #7 五点清单）在本计划完成后放真实流量另案执行。
 > 证据基线: 行号以 2026-06-07 HEAD `02fb8322` 为准，实施前按符号重定位，勿盲信行号。
@@ -42,7 +42,10 @@
 ### A2 MCP approval 执行侧兑现（量级 M，治理最重项）
 
 - **问题**: `approval` 模式工具运行时与 `auto` 完全等价——UI 承诺审批、执行面静默放行。对企业治理产品是虚假承诺级缺陷。
-- **修法**: 执行路径（`web_mcp.py _execute_mcp_tool` 及 read/list 同族入口）resolve 到 `approval` 时接入**既有** approval flow（security zone → capability gate → approval_service checkpoint 体系，不另起炉灶）：未批准 → 创建审批请求并返回 pending 信息（含审批入口指引），不触达 MCP server；批准后放行；`deny` 维持现状硬阻断。审计记录完整（who/what/verdict）。
+- **修法**（两级语义，审批拦执行不拦发现——与 CC permission 语义一致）:
+  - **远端执行路径**（`web_mcp.py _execute_mcp_tool` 等真正触达 MCP server 的调用）: resolve 到 `approval` 且未批准 → 接入**既有** approval flow（security zone → capability gate → approval_service checkpoint 体系，不另起炉灶），创建审批请求并返回 pending 信息（含审批入口指引），**不触达 MCP server**；批准后放行。
+  - **元数据读取路径**（`list_mcp_resources` / `read_mcp_resource` 等目录/描述读取）: `deny` → 隐藏/阻断；`approval` → **可展示但明确标注"调用需审批"**——可见性 ≠ 可执行性，不对元数据读取走 pending。实施时逐入口核实读的是本地 DB 记录还是真打远端，凡触达远端的一律按执行路径处理。
+  - `deny` 全路径维持现状硬阻断；审计记录完整（who/what/verdict）。
 - **改动面**: `services/agent_tool_domains/web_mcp.py`、`tools/governance_resolver.py` 或 approval 接线层、审批 UI 已有面则零前端改动。
 - **红测**: ① approval 模式未批准 → 不执行 + pending 返回 + 审批记录创建；② 批准后同调用放行；③ deny 仍硬断；④ auto 不受影响；⑤ 多租户隔离（A 租户审批不影响 B）。
 - **验收**: 配置 approval 的 MCP 工具在无审批时**物理上无法**触达远端 server（断言 MCPClient 未被调用）。
@@ -57,18 +60,19 @@
 ### A4 build_runtime_prompt 孤儿清理（量级 S）
 
 - **问题**: 生产唯一路径是 kernel 回调（P10 已接 Memory Navigation 主路径），`build_runtime_prompt` 只剩测试在用，且因缺 principal_stack 等差异**已两次误导 review**（P10 边界注记 + 本轮 Codex 0.2 误报）。
-- **修法**: grep 确认零生产调用方 → 删除函数；挂靠测试迁移到 kernel 路径等价断言或删除。
-- **红测**: 删除后全量绿；kernel 主路径 navigation 测试覆盖保持。
-- **验收**: `grep -rn build_runtime_prompt app/` 仅余（若有）显式 deprecated 注记，无生产引用。
+- **修法**（顺序钉死，不凭"看起来孤儿"就删）: ① `rg "build_runtime_prompt" backend/app` 确认零生产引用；② 挂靠测试**先**迁移到 kernel dependency path 等价断言并跑绿；③ 然后才删除函数。
+- **红测**: 迁移后的 kernel 路径测试先绿；删除后全量绿。
+- **验收**: `rg "build_runtime_prompt" backend/` 零生产引用、零残留测试引用；kernel 主路径 navigation 覆盖不降。
 
 ### A5 escalate-retry-on-cap（量级 M，Max Token 线收口项）
 
 - **问题**: 全部 LLM 调用撞 `max_tokens` 静默截断——内容丢失且零信号。CC 撞 cap 以 64k 干净重试一次（`query.ts max_output_tokens_escalate`）。预算数值已对齐后这是唯一机制级差距；低频但故障形态最阴。
-- **修法**（两段式，先可观测后自救）:
-  1. **可观测**: `llm_client.py` 统一消费 `finish_reason ∈ {length, max_tokens}` → WARNING log + `llm_output_cap_hit` metric（带调用方标签）。覆盖流式与非流式全部出口。
-  2. **escalate 重试**: 非流式 `chat_complete` 路径撞 cap → 以 64k（clamp 到 provider/DB override 上限）**干净重试一次**（重发非续写），仍撞则带截断标记返回并计 metric。六大蒸馏/生成消费方经 `create_llm_client_from_config` 统一工厂自动受益。流式主循环撞 cap 的重试语义对齐 CC 现役行为，实施时先读 CC 源码锚定（`/Users/rocky243/vc-saas/Context Engineering/claude-code-org`），不自创范式。
-- **红测**: ① 模拟 finish_reason=length → metric+log；② 非流式撞 cap → 一次 64k 重试成功路径；③ 重试仍撞 → 标记返回不死循环；④ 正常 stop 零开销。
-- **验收**: 任何调用点撞 cap 不再静默；蒸馏管线（extract/dream/summarizer/skill_distiller/进化起草）全部在覆盖面内。
+- **修法**（两段式，先可观测后自救；**重试范围保守**）:
+  1. **可观测（全覆盖）**: `llm_client.py` 统一消费 `finish_reason ∈ {length, max_tokens}` → WARNING log + `llm_output_cap_hit` metric（带调用方标签）。覆盖流式与非流式全部出口。
+  2. **escalate 重试（仅限非流式、无副作用生成路径）**: 非流式 `chat_complete` 蒸馏/生成路径撞 cap → 以 64k（clamp 到 provider/DB override 上限）**干净重试一次**（重发非续写），仍撞则带截断标记返回并计 metric。六大蒸馏/生成消费方经 `create_llm_client_from_config` 统一工厂自动受益。
+  3. **kernel streaming 主循环明确排除在本切口重试范围外**——贸然重发会重复已 streamed 的内容与 tool-call 上下文。先靠第 1 段 metric 观测真实撞 cap 频率；流式重试语义必须先读 CC 源码锚定（`/Users/rocky243/Context Engineering/claude-code-org`）确认后另行小切口，不自创范式。
+- **红测**: ① 模拟 finish_reason=length → metric+log（流式与非流式双路径）；② 非流式撞 cap → 一次 64k 重试成功路径；③ 重试仍撞 → 标记返回不死循环；④ 正常 stop 零开销；⑤ 流式路径撞 cap 只计 metric 不重发。
+- **验收**: 任何调用点撞 cap 不再静默；蒸馏管线（extract/dream/summarizer/skill_distiller/进化起草）全部在重试覆盖面内；流式主循环零重发行为变更。
 
 ### A6 suffix 互挤（量级 S）
 
@@ -87,9 +91,10 @@
 - **修法**（对齐既有语义，不发明新机制）:
   1. heartbeat 策展消化的 T2 条目打 `absorbed` 标记（或以 curation cursor 界定已消化集——实施时选侵入更小者）；
   2. dream 周期把 absorbed 且 age>N 的条目归档到 `memory/archive.md`（de-index 非物删，与 T3 P3 同哲学，可逆）；
-  3. cap 兜底：T2 文件条目/字节上限触发最老 absorbed 强制归档。
+  3. cap 兜底：T2 文件条目/字节上限触发最老 absorbed 强制归档；
+  4. **引用保护**: 被 T3/soul/skill/workflow candidate 的 `source_refs`/`evidence_refs` 引用的 T2 条目**不得仅按 age/cap 机械归档**——归档前检查反向引用；被引用条目归档时必须保证证据链可追溯（archive.md 保留原 entry 标识 + 引用解析可 fallback 到 archive，或先写 archive reverse link）。provenance 链是进化 ledger 与记忆审计的地基，retention 不许切断它。
 - **改动面**: `memory/t2_store.py`、`services/heartbeat.py`（标记）、`services/auto_dream.py`（归档）、`templates/DREAM.md` SOP 文案（蒸馏器行为改 SOP 模板，不 runtime 旁路注入——heartbeat≠worker 纪律）。⚠️ 同步 `hr_agent_template/HEARTBEAT.md` 克隆模板。
-- **红测**: ① 消化后标记/界定正确；② 归档可逆且 archive 不进检索；③ 活跃未消化条目永不归档；④ cursor/幂等不破坏。
+- **红测**: ① 消化后标记/界定正确；② 归档可逆且 archive 不进检索；③ 活跃未消化条目永不归档；④ cursor/幂等不破坏；⑤ 被 source_refs 引用的条目归档后引用仍可解析到 archive。
 - **验收**: 构造超 cap T2 → 归档触发 → 活跃条目无损 + archive.md 含退役记录 + INDEX/检索不见退役条目。
 
 ### B2 subagent 背景完成唤醒父（量级 M，CC 对齐）
@@ -153,4 +158,4 @@ M5 形态对齐    C0 拍板 → C1 T3a → C2 T3b → C3 T4 ─ Runtime 形态�
 
 ---
 
-*修订记录: v0.1 2026-06-07 初稿（Claude × Codex 交叉 review 合成，§0 双向源码验证）。*
+*修订记录: v0.1 2026-06-07 初稿（Claude × Codex 交叉 review 合成，§0 双向源码验证）。v0.2 2026-06-07 拍板版——采纳 Codex 四点反馈：A2 拆元数据读取/远端执行两级语义（审批拦执行不拦发现）；A5 重试收窄到非流式无副作用路径、streaming 主循环排除并待 CC 源码锚定；B1 增引用保护（source_refs/evidence_refs 反向检查 + archive 可追溯）；A4 删除顺序钉死（rg 零引用→测试先迁→再删）。附带修正 CC 源码路径笔误。*

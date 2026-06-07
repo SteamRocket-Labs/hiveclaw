@@ -39,6 +39,7 @@
 - **红测**: ① 新鲜 state → active；② mtime 超 3×interval → stale；③ 无文件 → never_ran；④ 阈值随 Settings 联动。
 - **验收**: 把 state 文件 mtime 人为做旧，面板必须转 stale——复现 0.8 事故场景不再全绿。
 - ✅ **已落地（2026-06-07）**: 实施时把"纯定时阈值"精化为**输入-anchor 语义**——`stale` = 管线的最新输入 mtime 超出窗口仍未被 state 跟上（extractor←T0 behavior、heartbeat←T2 learnings、dream←活跃 T3 文件），静默 agent（无新输入）永不误报 stale；skill_distiller 保持两态（其真输入是 T2 内的 skill/workflow candidates，learnings mtime 会对"有学习无候选"误报——宁不判不误判）。窗口=3×节奏（heartbeat 取 Settings.HEARTBEAT_DEFAULT_INTERVAL_MINUTES、dream 取 MIN_HOURS_BETWEEN_DREAMS、extractor 24h 宽限）。前端三态着色（stale=#f59e0b 警示）+ DistillerStatus union 加 'stale'。红测 5 项全钉（含"静默不误报"反向用例 + Settings 联动）；后端 3919 绿 + 前端 170 绿 + tsc 干净。级联断线时仅最上游管线报 stale（下游输入不再增长）——面板至少一处报警即破"全绿谎言"，完美级联归因留给运行期观察。
+- ✅ **Review-fix（2026-06-07）**: Codex 复审发现前端仍裸显 `stale` / `never_ran` raw state，未满足 en/zh i18n。补组件红测断言显示 `Stale` / `Never run` 且不裸显 raw token；实现 `agent.knowledge.distillerState.{active,stale,never_ran}` 字典（en/zh）和 fallback label。验证：`cd frontend && npm run test -- AgentKnowledgeSection.test.tsx` → `3 passed`；`cd frontend && npm run build` → passed。
 
 ### A2 MCP approval 执行侧兑现（量级 M，治理最重项）
 

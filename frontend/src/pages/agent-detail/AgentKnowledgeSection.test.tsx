@@ -81,7 +81,10 @@ describe('AgentKnowledgeSection', () => {
     expect(html).toContain('Linked capabilities');
     // A1 (exists ≠ fresh): a stale pipeline renders visibly in warning color,
     // distinct from active green and never_ran tertiary.
-    expect(html).toContain('stale');
+    expect(html).toContain('Stale');
+    expect(html).toContain('Never run');
+    expect(html).not.toContain('>stale<');
+    expect(html).not.toContain('>never_ran<');
     expect(html).toContain('#f59e0b');
     // Held curation decisions surface on the overview.
     expect(html).toContain('no LLM');

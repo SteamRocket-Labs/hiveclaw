@@ -33,6 +33,12 @@ const cardStyle: React.CSSProperties = {
   background: 'var(--bg-secondary)',
 };
 
+const DISTILLER_STATE_FALLBACK: Record<string, string> = {
+  active: 'Active',
+  stale: 'Stale',
+  never_ran: 'Never run',
+};
+
 function OverviewCards({ overview }: { overview: KnowledgeOverview }) {
   const { t } = useTranslation();
   const distillers = Object.values(overview.distillers ?? {});
@@ -69,7 +75,10 @@ function OverviewCards({ overview }: { overview: KnowledgeOverview }) {
                         : 'var(--text-tertiary)',
                 }}
               >
-                {status.state}
+                {t(
+                  `agent.knowledge.distillerState.${status.state}`,
+                  DISTILLER_STATE_FALLBACK[status.state] ?? status.state,
+                )}
               </span>
             </div>
           ))}

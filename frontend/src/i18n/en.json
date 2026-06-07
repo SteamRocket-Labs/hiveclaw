@@ -464,6 +464,13 @@
       "evolutionTitle": "Evolution",
       "evolutionDesc": "Curation history, performance scorecard, and blocked approaches."
     },
+    "knowledge": {
+      "distillerState": {
+        "active": "Active",
+        "stale": "Stale",
+        "never_ran": "Never run"
+      }
+    },
     "evolution": {
       "title": "Evolution",
       "description": "How this employee grows over time — which skills it has learned, kept sharp, or retired, and the milestones along the way.",

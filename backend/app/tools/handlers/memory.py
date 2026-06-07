@@ -12,6 +12,17 @@ from app.tools.decorator import ToolMeta, tool
 # -- save_memory ---------------------------------------------------------------
 
 
+def _coerce_tenant_uuid(value: uuid.UUID | str | None) -> uuid.UUID | None:
+    if isinstance(value, uuid.UUID):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return uuid.UUID(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
 @tool(
     ToolMeta(
         name="save_memory",
@@ -88,7 +99,7 @@ from app.tools.decorator import ToolMeta, tool
         adapter="agent_args",
     )
 )
-async def save_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID | None = None) -> str:
+async def save_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID | str | None = None) -> str:
     # Closure A3: the third positional parameter makes the agent_args adapter
     # pass request.context.tenant_id — without it the immediate Hindsight sync
     # is skipped for every agent-tool write (hindsight_sync early-returns on None).
@@ -109,7 +120,7 @@ async def save_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID
         source_refs=source_refs,
         proposed_by="agent_tool",
         container_candidate=arguments.get("container_candidate"),
-        tenant_id=tenant_id,
+        tenant_id=_coerce_tenant_uuid(tenant_id),
     )
 
     if result.status == "rejected":

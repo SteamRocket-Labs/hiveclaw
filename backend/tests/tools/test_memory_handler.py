@@ -79,6 +79,57 @@ async def test_save_memory_passes_tenant_id_to_hindsight_sync(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_save_memory_adapter_string_tenant_reaches_hindsight_as_uuid(tmp_path: Path) -> None:
+    """The production agent_args adapter carries tenant_id as a string.
+
+    Hindsight backend resolution uses tenant_id.hex, so save_memory must
+    normalize the adapter value before calling append_t3_memory_candidate.
+    """
+    from app.memory import hindsight_sync
+    from app.tools.adapters import adapt_and_call
+    from app.tools.handlers.memory import save_memory
+    from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
+
+    agent_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    seen: dict = {}
+
+    async def _capture(aid, tid, *, data_root=None):
+        seen["agent_id"] = aid
+        seen["tenant_id"] = tid
+        seen["tenant_type"] = type(tid).__name__
+        return 0
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "app.config.get_settings",
+            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+        )
+        mp.setattr(hindsight_sync, "sync_t3_to_hindsight", _capture)
+
+        result = await adapt_and_call(
+            save_memory.meta,
+            save_memory,
+            ToolExecutionRequest(
+                tool_name="save_memory",
+                arguments={"content": "Adapter tenant string is normalized", "category": "feedback"},
+                context=ToolExecutionContext(
+                    agent_id=agent_id,
+                    user_id=user_id,
+                    tenant_id=str(tenant_id),
+                    workspace=tmp_path,
+                ),
+            ),
+        )
+
+    assert "Saved to long-term memory" in result
+    assert seen["agent_id"] == agent_id
+    assert seen["tenant_id"] == tenant_id
+    assert seen["tenant_type"] == "UUID"
+
+
+@pytest.mark.asyncio
 async def test_save_memory_persists_control_plane_metadata(tmp_path: Path) -> None:
     from app.memory.lifecycle_store import MemoryLifecycleStore
     from app.memory.md_store import parse_entry_record

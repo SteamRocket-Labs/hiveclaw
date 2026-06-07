@@ -20,6 +20,9 @@ from app.tools.result_envelope import render_tool_error
         display_name="List MCP Resources",
         icon="\U0001f4cb",
         pack="mcp_admin_pack",
+        read_only=True,
+        parallel_safe=True,
+        governance="safe",
         adapter="agent_args",
     )
 )
@@ -105,6 +108,9 @@ async def list_mcp_resources(agent_id: uuid.UUID, arguments: dict) -> str:
         display_name="Read MCP Resource",
         icon="\U0001f50d",
         pack="mcp_admin_pack",
+        read_only=True,
+        parallel_safe=True,
+        governance="safe",
         adapter="agent_args",
     )
 )

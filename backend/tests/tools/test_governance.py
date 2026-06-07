@@ -97,6 +97,51 @@ async def test_governance_allows_collected_safe_tool_without_registry_init():
 
 
 @pytest.mark.asyncio
+async def test_governance_allows_mcp_metadata_tools_in_public_zone():
+    """Closure A2 review-fix: approval gates execution, not discovery.
+
+    MCP metadata tools only read local imported-tool records. They must be
+    treated like other safe discovery tools so public-zone agents can see that
+    an approval-gated MCP call exists without executing it.
+    """
+    from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
+
+    async def resolve_security_zone(_agent_id):
+        return "public"
+
+    async def check_capability(*_args, **_kwargs):
+        raise AssertionError("safe MCP metadata should not hit capability check in public zone")
+
+    async def write_audit(**_kwargs):
+        raise AssertionError("safe MCP metadata should not write audit in public zone")
+
+    async def request_approval(*_args, **_kwargs):
+        raise AssertionError("safe MCP metadata should not request approval")
+
+    for tool_name, arguments in (
+        ("list_mcp_resources", {}),
+        ("read_mcp_resource", {"tool_name": "notion_search"}),
+    ):
+        message = await run_tool_governance(
+            ToolGovernanceContext(
+                agent_id=uuid4(),
+                user_id=uuid4(),
+                tenant_id=None,
+                tool_name=tool_name,
+                arguments=arguments,
+            ),
+            GovernanceDependencies(
+                resolve_security_zone=resolve_security_zone,
+                check_capability=check_capability,
+                write_audit_event=write_audit,
+                request_approval=request_approval,
+            ),
+        )
+
+        assert message is None
+
+
+@pytest.mark.asyncio
 async def test_governance_emits_capability_denied_and_audit():
     from app.services.capability_gate import CapabilityCheckResult
     from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance

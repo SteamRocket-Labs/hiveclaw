@@ -11,6 +11,10 @@ to explicit runtime permissions or objective wake policies, not heartbeat.
 - This is a tick in your persistent curation session
 - Your previous curation decisions are in the conversation history above
 - You only see NEW T2 entries since last tick (injected after `<tick>` tag)
+- After a successful tick, runtime marks consumed T2 rows as `[status=absorbed]`.
+  This is T2 retention bookkeeping; do not edit T2 files directly. Dream may
+  later archive absorbed rows to `memory/archive.md` while preserving
+  `source_refs` provenance.
 
 ## Domain: HR Onboarding Agent
 Your T2 entries typically contain learnings from agent creation conversations:

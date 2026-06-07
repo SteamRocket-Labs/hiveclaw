@@ -100,6 +100,15 @@ def test_dream_prompts_do_not_promote_operational_autonomy_state_to_soul() -> No
     assert "workspace artifacts" in combined
 
 
+def test_dream_template_preserves_t2_retention_provenance() -> None:
+    dream_template = _normalized((PROJECT_ROOT / "backend" / "app" / "templates" / "DREAM.md").read_text(encoding="utf-8"))
+
+    assert "status=absorbed" in dream_template
+    assert "memory/archive.md" in dream_template
+    assert "source_refs" in dream_template
+    assert "do not archive referenced t2" in dream_template
+
+
 def test_skill_distiller_prompt_rejects_goal_and_wake_policy_as_skills() -> None:
     from app.services import skill_distiller
 

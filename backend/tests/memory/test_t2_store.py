@@ -233,3 +233,80 @@ def test_t0_backfill_source_uses_human_bucket_weight() -> None:
     assert compute_t2_weight("feedback", "t0_backfill") == compute_t2_weight("feedback", "web")
     assert compute_t2_weight("constraint", "t0_backfill") == compute_t2_weight("constraint", "slack")
     assert compute_t2_weight("feedback", "t0_backfill") == 1.00
+
+
+def test_mark_t2_entries_absorbed_updates_status_metadata(tmp_path: Path) -> None:
+    from app.memory.t2_store import load_t2_entries, mark_t2_entries_absorbed
+
+    agent_id = uuid.uuid4()
+    learnings = tmp_path / str(agent_id) / "memory" / "learnings"
+    learnings.mkdir(parents=True)
+    (learnings / "insights.md").write_text(
+        "# Insights\n"
+        "- [2026-04-01][w=1.00][src=web][cat=feedback][status=active][entry_id=t2-a] absorbed target\n"
+        "- [2026-04-02][w=1.00][src=web][cat=feedback][status=absorbed][entry_id=t2-b] already absorbed\n",
+        encoding="utf-8",
+    )
+
+    updated = mark_t2_entries_absorbed(tmp_path, agent_id, filenames=["insights.md"], absorbed_at="2026-06-07")
+
+    body = (learnings / "insights.md").read_text(encoding="utf-8")
+    entries, _mtimes = load_t2_entries(tmp_path, agent_id)
+
+    assert updated == 1
+    assert "[status=absorbed]" in body
+    assert "[absorbed_at=2026-06-07]" in body
+    assert {entry["status"] for entry in entries} == {"absorbed"}
+
+
+def test_archive_absorbed_t2_entries_moves_oldest_to_archive(tmp_path: Path) -> None:
+    from app.memory.t2_store import archive_absorbed_t2_entries, load_t2_entries
+
+    agent_id = uuid.uuid4()
+    learnings = tmp_path / str(agent_id) / "memory" / "learnings"
+    learnings.mkdir(parents=True)
+    entries = [
+        f"- [2026-04-{i:02d}][w=0.50][src=heartbeat][cat=general][status=absorbed][entry_id=t2-{i}] entry {i}"
+        for i in range(1, 9)
+    ]
+    (learnings / "insights.md").write_text("# Insights\n" + "\n".join(entries) + "\n", encoding="utf-8")
+
+    archived = archive_absorbed_t2_entries(tmp_path, agent_id, keep_per_file=3, min_age_days=0)
+
+    active_entries, _mtimes = load_t2_entries(tmp_path, agent_id)
+    archive = (tmp_path / str(agent_id) / "memory" / "archive.md").read_text(encoding="utf-8")
+
+    assert archived == 5
+    assert [entry["content"] for entry in active_entries] == ["entry 6", "entry 7", "entry 8"]
+    assert "## T2 Retention Archive" in archive
+    assert "[from=learnings/insights.md]" in archive
+    assert "entry 1" in archive
+    assert "entry 6" not in archive
+
+
+def test_archive_absorbed_t2_entries_protects_referenced_entry(tmp_path: Path) -> None:
+    from app.memory.t2_store import archive_absorbed_t2_entries, load_t2_entries
+
+    agent_id = uuid.uuid4()
+    memory_dir = tmp_path / str(agent_id) / "memory"
+    learnings = memory_dir / "learnings"
+    learnings.mkdir(parents=True)
+    entries = [
+        f"- [2026-04-{i:02d}][w=0.50][src=heartbeat][cat=general][status=absorbed][entry_id=t2-{i}] entry {i}"
+        for i in range(1, 5)
+    ]
+    (learnings / "insights.md").write_text("# Insights\n" + "\n".join(entries) + "\n", encoding="utf-8")
+    (memory_dir / "knowledge.md").write_text(
+        "# Knowledge\n- [2026-05-01] durable fact [refs=t2:learnings/insights.md#entry:t2-1]\n",
+        encoding="utf-8",
+    )
+
+    archived = archive_absorbed_t2_entries(tmp_path, agent_id, keep_per_file=1, min_age_days=0)
+
+    active_entries, _mtimes = load_t2_entries(tmp_path, agent_id)
+    archive = (memory_dir / "archive.md").read_text(encoding="utf-8")
+
+    assert archived == 2
+    assert [entry["content"] for entry in active_entries] == ["entry 1", "entry 4"]
+    assert "entry 1" not in archive
+    assert "entry 2" in archive

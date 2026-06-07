@@ -134,9 +134,9 @@ class TestConsolidateT3:
 
 
 class TestTruncateT2:
-    def test_truncates_to_keep(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
+    def test_archives_absorbed_entries_to_keep(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
         learnings = tmp_agent_dir / str(agent_id) / "memory" / "learnings"
-        entries = [f"- [2026-04-{i:02d}] entry {i}" for i in range(1, 21)]
+        entries = [f"- [2026-04-{i:02d}][status=absorbed][entry_id=t2-{i}] entry {i}" for i in range(1, 21)]
         (learnings / "insights.md").write_text("# Insights\n" + "\n".join(entries) + "\n")
 
         with patch("app.services.auto_dream.get_settings") as mock:
@@ -145,8 +145,25 @@ class TestTruncateT2:
 
         assert removed == 15
         content = (learnings / "insights.md").read_text()
+        archive = (tmp_agent_dir / str(agent_id) / "memory" / "archive.md").read_text()
         assert "entry 20" in content  # Most recent kept
         assert "- [2026-04-01] entry 1\n" not in content  # Oldest removed
+        assert "entry 1" in archive
+        assert "t2_retention_cap" in archive
+
+    def test_active_entries_are_never_archived_by_cap(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
+        learnings = tmp_agent_dir / str(agent_id) / "memory" / "learnings"
+        entries = [f"- [2026-04-{i:02d}][status=active][entry_id=t2-{i}] entry {i}" for i in range(1, 21)]
+        (learnings / "insights.md").write_text("# Insights\n" + "\n".join(entries) + "\n")
+
+        with patch("app.services.auto_dream.get_settings") as mock:
+            mock.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
+            removed = _truncate_t2(agent_id, keep=5)
+
+        assert removed == 0
+        content = (learnings / "insights.md").read_text()
+        assert "entry 1" in content
+        assert not (tmp_agent_dir / str(agent_id) / "memory" / "archive.md").exists()
 
     def test_noop_when_under_cap(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
         learnings = tmp_agent_dir / str(agent_id) / "memory" / "learnings"

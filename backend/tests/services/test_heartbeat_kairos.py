@@ -296,3 +296,16 @@ class TestHeartbeatTemplate:
         assert "skill_candidate" in content
         assert "save_skill" not in content
         assert "Do NOT take external-facing autonomous actions" in content
+
+    def test_templates_explain_absorbed_t2_retention(self) -> None:
+        from app.services.heartbeat import _HEARTBEAT_TEMPLATE_PATH
+
+        main_template = _HEARTBEAT_TEMPLATE_PATH.read_text(encoding="utf-8")
+        hr_template = (Path(__file__).resolve().parents[3] / "backend" / "hr_agent_template" / "HEARTBEAT.md").read_text(
+            encoding="utf-8"
+        )
+
+        for content in (main_template, hr_template):
+            lowered = content.lower()
+            assert "status=absorbed" in lowered
+            assert "t2 retention" in lowered

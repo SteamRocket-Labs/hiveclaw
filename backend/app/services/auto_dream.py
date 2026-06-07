@@ -941,37 +941,24 @@ def _consolidate_t3_files(agent_id: uuid.UUID) -> dict[str, int]:
 
 
 def _truncate_t2(agent_id: uuid.UUID, keep: int = 10) -> int:
-    """Truncate T2 learnings files to keep only the most recent N entries each."""
-    learnings_dir = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "memory" / "learnings"
-    if not learnings_dir.exists():
+    """Archive absorbed T2 learnings beyond cap; never delete active evidence."""
+    from app.memory.t2_store import archive_absorbed_t2_entries
+
+    try:
+        archived = archive_absorbed_t2_entries(
+            Path(get_settings().AGENT_DATA_DIR),
+            agent_id,
+            keep_per_file=keep,
+            # Keep the historical `_truncate_t2` call as cap enforcement. Age
+            # sweeps can pass a positive threshold through the lower-level API.
+            min_age_days=0,
+        )
+        if archived:
+            logger.info("[Dream] T2 retention archived %d absorbed entries (keep=%d)", archived, keep)
+        return archived
+    except Exception as exc:
+        logger.warning("[Dream] Failed to archive absorbed T2 entries: %s", exc)
         return 0
-
-    total_removed = 0
-    for fname in ["insights.md", "errors.md", "requests.md"]:
-        fpath = learnings_dir / fname
-        if not fpath.exists():
-            continue
-        try:
-            content = fpath.read_text(encoding="utf-8", errors="replace")
-            lines = content.strip().splitlines()
-            header: list[str] = []
-            entries: list[str] = []
-            for line in lines:
-                if line.startswith("- ["):
-                    entries.append(line)
-                elif not entries:
-                    header.append(line)
-
-            if len(entries) > keep:
-                removed = len(entries) - keep
-                total_removed += removed
-                entries = entries[-keep:]
-                fpath.write_text("\n".join(header + entries) + "\n", encoding="utf-8")
-                logger.info("[Dream] T2 %s truncated: kept %d, removed %d", fname, keep, removed)
-        except Exception as exc:
-            logger.warning("[Dream] Failed to truncate T2 %s: %s", fname, exc)
-
-    return total_removed
 
 
 def _update_index_md(agent_id: uuid.UUID) -> None:

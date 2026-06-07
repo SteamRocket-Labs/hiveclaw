@@ -21,7 +21,12 @@ from loguru import logger
 from sqlalchemy import select
 
 from app.core.events import get_redis
-from app.memory.t2_store import load_incremental_t2_entries, load_t2_entries, render_t2_snapshot
+from app.memory.t2_store import (
+    load_incremental_t2_entries,
+    load_t2_entries,
+    mark_t2_entries_absorbed,
+    render_t2_snapshot,
+)
 from app.kernel.contracts import ExecutionIdentityRef
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
@@ -1653,6 +1658,30 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                     "[Heartbeat] Session cache for {} was reset during execution; not restoring stale context",
                     agent_id,
                 )
+
+            try:
+                from app.config import get_settings
+
+                data_root = Path(get_settings().AGENT_DATA_DIR)
+                absorbed = mark_t2_entries_absorbed(
+                    data_root,
+                    agent_id,
+                    filenames=list((_t2_mtimes.get(agent_id) or {}).keys()) or None,
+                )
+                if absorbed:
+                    _entries, current_mtimes = load_t2_entries(data_root, agent_id)
+                    _t2_mtimes[agent_id] = current_mtimes
+                    if _heartbeat_session_ids.get(agent_id) == session_id:
+                        _save_heartbeat_checkpoint(
+                            agent_id,
+                            session_id=session_id,
+                            tick_count=tick_count,
+                            runtime_messages=_heartbeat_contexts.get(agent_id, runtime_messages),
+                            t2_mtimes=current_mtimes,
+                        )
+                    logger.info("[Heartbeat] Marked {} T2 entries absorbed for {}", absorbed, agent_id)
+            except Exception as _t2_absorb_err:
+                logger.warning("[Heartbeat] Failed to mark T2 entries absorbed for {}: {}", agent_id, _t2_absorb_err)
 
             # Save assistant reply to Reflection Session
             async with async_session() as db2:

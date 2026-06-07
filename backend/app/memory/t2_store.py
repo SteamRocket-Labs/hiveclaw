@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import uuid
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from app.memory.lifecycle_store import record_active_memory_lifecycle
@@ -297,6 +297,7 @@ def parse_t2_entry_line(
         "feedback_source",
         "rationale_from_owner",
         "decision_ref",
+        "absorbed_at",
     ):
         if metadata.get(key):
             parsed[key] = metadata[key]
@@ -542,3 +543,238 @@ def render_t2_snapshot(entries: list[dict]) -> str:
         lines.append("")
 
     return "\n".join(lines).strip()
+
+
+# ── Retention / reversible archival ────────────────────────────
+
+
+def mark_t2_entries_absorbed(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    *,
+    filenames: list[str] | tuple[str, ...] | None = None,
+    absorbed_at: str | None = None,
+) -> int:
+    """Mark active T2 rows as absorbed after heartbeat has consumed them."""
+    root = t2_dir(data_root, agent_id)
+    if not root.exists():
+        return 0
+
+    day = absorbed_at or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    changed = 0
+    target_filenames = tuple(filenames or T2_FILE_HEADERS.keys())
+    for filename in target_filenames:
+        if filename not in T2_FILE_HEADERS:
+            continue
+        path = root / filename
+        if not path.exists():
+            continue
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        updated_lines: list[str] = []
+        file_changed = False
+        for line in lines:
+            parsed = parse_t2_entry_line(line, fallback_category=_infer_category_from_file(filename))
+            if not parsed or parsed.get("status") == "absorbed":
+                updated_lines.append(line)
+                continue
+            updated_lines.append(_rewrite_t2_entry_metadata(line, {"status": "absorbed", "absorbed_at": day}))
+            changed += 1
+            file_changed = True
+        if file_changed:
+            path.write_text("\n".join(updated_lines).rstrip() + "\n", encoding="utf-8")
+    return changed
+
+
+def archive_absorbed_t2_entries(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    *,
+    keep_per_file: int = 10,
+    min_age_days: int = 30,
+    archived_at: str | None = None,
+) -> int:
+    """Archive absorbed T2 rows into memory/archive.md without breaking refs.
+
+    Active rows are never archived. Referenced absorbed rows are also sticky:
+    T3/soul/skill/workflow documents that cite their entry id keep the evidence
+    in active T2 so provenance remains directly resolvable.
+    """
+    root = t2_dir(data_root, agent_id)
+    if not root.exists():
+        return 0
+
+    archived_total = 0
+    archive_day = archived_at or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    reference_text = _collect_t2_reference_text(data_root, agent_id)
+    for filename in T2_FILE_HEADERS:
+        path = root / filename
+        if not path.exists():
+            continue
+        original_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        entry_indices = [
+            index
+            for index, line in enumerate(original_lines)
+            if parse_t2_entry_line(line, fallback_category=_infer_category_from_file(filename))
+        ]
+        if not entry_indices:
+            continue
+
+        protected = {
+            index
+            for index in entry_indices
+            if _t2_entry_is_referenced(original_lines[index], filename=filename, reference_text=reference_text)
+        }
+        absorbed_unprotected = [
+            index
+            for index in entry_indices
+            if index not in protected
+            and _is_absorbed_t2_entry(original_lines[index], fallback_category=_infer_category_from_file(filename))
+        ]
+        archive_indices: set[int] = set()
+
+        if min_age_days > 0:
+            archive_indices.update(
+                index
+                for index in absorbed_unprotected
+                if _t2_entry_age_days(original_lines[index]) >= min_age_days
+            )
+
+        remaining_absorbed = [index for index in absorbed_unprotected if index not in archive_indices]
+        if keep_per_file >= 0 and len(remaining_absorbed) > keep_per_file:
+            archive_indices.update(remaining_absorbed[: len(remaining_absorbed) - keep_per_file])
+
+        if not archive_indices:
+            continue
+
+        archived_lines = [original_lines[index] for index in sorted(archive_indices)]
+        kept_lines = [line for index, line in enumerate(original_lines) if index not in archive_indices]
+        path.write_text("\n".join(kept_lines).rstrip() + "\n", encoding="utf-8")
+        archived_total += _append_t2_archive_rows(
+            data_root,
+            agent_id,
+            filename=filename,
+            lines=archived_lines,
+            reason="t2_retention_cap",
+            archived_at=archive_day,
+        )
+
+    return archived_total
+
+
+def _rewrite_t2_entry_metadata(line: str, updates: dict[str, str]) -> str:
+    match = _ENTRY_RE.match(line.strip())
+    if not match:
+        return line
+
+    ordered_keys: list[str] = []
+    metadata: dict[str, str] = {}
+    for meta_match in _META_RE.finditer(match.group("meta") or ""):
+        key = meta_match.group("key").strip().lower()
+        if key not in metadata:
+            ordered_keys.append(key)
+        metadata[key] = meta_match.group("value").strip()
+    for key, value in updates.items():
+        normalized_key = key.strip().lower()
+        if normalized_key not in metadata:
+            ordered_keys.append(normalized_key)
+        metadata[normalized_key] = _sanitize_meta(str(value))
+
+    meta = "".join(f"[{key}={metadata[key]}]" for key in ordered_keys if metadata.get(key))
+    return f"- [{match.group('timestamp').strip()}]{meta} {match.group('content').strip()}"
+
+
+def _is_absorbed_t2_entry(line: str, *, fallback_category: str) -> bool:
+    parsed = parse_t2_entry_line(line, fallback_category=fallback_category)
+    return bool(parsed and parsed.get("status") == "absorbed")
+
+
+def _t2_entry_age_days(line: str) -> int:
+    parsed = parse_t2_entry_line(line)
+    if not parsed:
+        return 0
+    try:
+        ts = date.fromisoformat(str(parsed.get("timestamp", ""))[:10])
+    except ValueError:
+        return 0
+    return max((datetime.now(timezone.utc).date() - ts).days, 0)
+
+
+def _collect_t2_reference_text(data_root: Path, agent_id: uuid.UUID) -> str:
+    memory_root = Path(data_root) / str(agent_id) / "memory"
+    if not memory_root.exists():
+        return ""
+    chunks: list[str] = []
+    for path in memory_root.rglob("*.md"):
+        rel_parts = path.relative_to(memory_root).parts
+        if not rel_parts or rel_parts[0] == "learnings" or path.name == "archive.md":
+            continue
+        try:
+            chunks.append(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+    return "\n".join(chunks)
+
+
+def _t2_entry_reference_markers(line: str, *, filename: str) -> set[str]:
+    parsed = parse_t2_entry_line(line, fallback_category=_infer_category_from_file(filename))
+    if not parsed:
+        return set()
+    entry_id = str(parsed.get("entry_id", "")).strip()
+    if not entry_id:
+        return set()
+    return {
+        f"t2:learnings/{filename}#entry:{entry_id}",
+        f"learnings/{filename}#entry:{entry_id}",
+        f"#entry:{entry_id}",
+    }
+
+
+def _t2_entry_is_referenced(line: str, *, filename: str, reference_text: str) -> bool:
+    if not reference_text:
+        return False
+    return any(marker in reference_text for marker in _t2_entry_reference_markers(line, filename=filename))
+
+
+def _append_t2_archive_rows(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    *,
+    filename: str,
+    lines: list[str],
+    reason: str,
+    archived_at: str,
+) -> int:
+    cleaned = [line.strip() for line in lines if line and line.strip()]
+    if not cleaned:
+        return 0
+
+    memory_root = Path(data_root) / str(agent_id) / "memory"
+    memory_root.mkdir(parents=True, exist_ok=True)
+    archive_path = memory_root / "archive.md"
+    existing = (
+        archive_path.read_text(encoding="utf-8", errors="replace")
+        if archive_path.exists()
+        else "# Memory Archive\n\nRetired entries — de-indexed from active recall, preserved as evidence.\n"
+    )
+    if "## T2 Retention Archive" not in existing:
+        existing = existing.rstrip() + "\n\n## T2 Retention Archive\n"
+
+    rows: list[str] = []
+    for line in cleaned:
+        parsed = parse_t2_entry_line(line, fallback_category=_infer_category_from_file(filename))
+        if not parsed:
+            continue
+        meta_parts = [
+            f"[from=learnings/{filename}]",
+            f"[reason={_sanitize_meta(reason)}]",
+        ]
+        if parsed.get("entry_id"):
+            meta_parts.append(f"[entry_id={_sanitize_meta(str(parsed['entry_id']))}]")
+        if parsed.get("timestamp"):
+            meta_parts.append(f"[orig_date={_sanitize_meta(str(parsed['timestamp']))}]")
+        rows.append(f"- [{archived_at}]{''.join(meta_parts)} {line}")
+
+    if not rows:
+        return 0
+    archive_path.write_text(existing.rstrip() + "\n" + "\n".join(rows) + "\n", encoding="utf-8")
+    return len(rows)

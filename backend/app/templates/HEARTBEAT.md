@@ -48,6 +48,10 @@ What this means for your output:
   (same provenance as the original user session, just processed later).
   Weight it exactly like the original session's source — the backfill path
   already maps it to the human bucket.
+- After a successful tick, runtime marks the T2 entries you consumed as
+  `[status=absorbed]`. This is T2 retention bookkeeping, not a signal to
+  rewrite the line yourself. Dream may later archive absorbed rows to
+  `memory/archive.md` while preserving `source_refs` provenance.
 </session_context>
 
 <decision_matrix>

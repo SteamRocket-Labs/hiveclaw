@@ -1,6 +1,7 @@
 # Agent 工程闭环一次性计划（Engineering Closure Plan）
 
-> 状态: **v0.2 已执行完毕（2026-06-07）**。v0.1 = 双 AI 交叉 review（Claude 三日审计线 × Codex 只读排查）合成，§0 每条裁决均经源码二次验证；v0.2 = 采纳 Codex 对计划稿的四点反馈（A2 元数据/执行两级语义、A5 重试范围保守化、B1 引用保护、A4 删除顺序钉死）后用户拍板。**执行方式 = 按 M1-M5 拆小批次，不当一次大改开干**：批次① A1/A2/A3/A4 → 批次② A5/A6 → 批次③ B1/B2 → 批次④ C，一项一 commit 红测先行，批次间独立可验收可 push。
+> 状态: **v0.3 — 批次①②④大体通过，批次③(B1/B2)返工中(2026-06-07)**。v0.1 = 双 AI 交叉 review 合成；v0.2 = 采纳 Codex 四点反馈后用户拍板执行；**v0.3 = 全部实装后做了第二轮交叉 review（Claude 深审 × Codex 复核），发现 B1/B2"测试全绿但生产空转"必须返工、C 轨道未达 CC 完成判据需降级——见 §7 返工清单**。执行方式 = 一项一 commit 红测先行，批次间独立可验收可 push。
+> ⚠️ **不可声称"全部完成"**：测试 3945 绿是真的，但 B1（引用保护对真实数据不生效）和 B2（父唤醒生产死接线）未达工程闭环；C 轨道是 T3a 阶段成果而非完整 CC 对齐。撤回"计划全部完成"结论，以 §7 为准。
 > 范围: **Agent 本身的运行时**——① Max Token / 限制机制 ② Runtime 四元能力（Subagent / Skill / MCP / Workflow）③ Memory。把全部已验证的缺陷与断点一次性补齐。
 > 完成定义（工程闭环）: 配置面承诺的语义在执行路径全部兑现；管线状态面板说真话；与 CC 的机制级差距清零或有定稿路线并执行完毕；每项红测先行、全量绿。**工程闭环 ≠ 生产实证**——生产验收（挂账 #7 五点清单）在本计划完成后放真实流量另案执行。
 > 证据基线: 行号以 2026-06-07 HEAD `02fb8322` 为准，实施前按符号重定位，勿盲信行号。
@@ -182,4 +183,52 @@ M5 形态对齐    C0 拍板 → C1 T3a → C2 T3b → C3 T4 ─ Runtime 形态�
 
 ---
 
-*修订记录: v0.1 2026-06-07 初稿（Claude × Codex 交叉 review 合成，§0 双向源码验证）。v0.2 2026-06-07 拍板版——采纳 Codex 四点反馈：A2 拆元数据读取/远端执行两级语义（审批拦执行不拦发现）；A5 重试收窄到非流式无副作用路径、streaming 主循环排除并待 CC 源码锚定；B1 增引用保护（source_refs/evidence_refs 反向检查 + archive 可追溯）；A4 删除顺序钉死（rg 零引用→测试先迁→再删）。附带修正 CC 源码路径笔误。*
+## §7 第二轮交叉 Review 返工清单（v0.3，2026-06-07）
+
+全部实装后做了第二轮 review（Claude 4 路 subagent 深审 × Codex 复核），双方独立结论高度一致。测试 3945 绿为真，但有两处"测试全绿、生产空转"——测试 pin 了生产永不走的路径/永不产出的格式。**这与本仓反复咬到的同一病根（代码存在≠生产活着）一致**。
+
+### 已澄清通过（不返工）
+- **A5/A6 PASS**：A5 流式主循环**结构性不可能被重试**（kernel 只调 `client.stream()`，retry 仅在 `_CapAwareLLMClient.complete()`；`grep .complete( engine.py`=0）；观测双路径覆盖；hard guard 无死循环。A6 真按 section 独立 trim（`prompt_builder` per-section cap），5 调用点全接。
+- **C3 PASS**：always_load 端到端，alembic 单 head。
+- **MCP 修正（34c0d064/dc6ba887）**：execution 仍受治理（`call_mcp_tool ∉ SAFE_TOOLS`），只把元数据读取标 safe——正确。
+- **c621c22a save_memory**：真 fix（原 A3 有 str/UUID `.hex` 崩溃隐患，新增 `_coerce_tenant_uuid`）。
+- 低危：`test_dream_phase6.py:279` 死断言（输入格式改了、负向断言期望串没跟改→永真，mutation test 实证），但同契约被 `test_memory_integration.py::test_t2_truncation` 的 count 断言强保护，契约未失守。返工时顺手改成 `"entry 1\n" not in truncated_t2`。
+
+### 🔴 R1 — B2 父唤醒返工（FAIL：生产死接线）
+- **实锤**：`main.py:491` 调 `start_workflow_daemon()` 零参数 → `workflow_daemon.py:64` `subagent_wake_invoker` 默认 None → `subagent_wake_consumer.py:63` `if invoke_parent is None: return []` → 父永不被唤醒；生产零 `ParentWakeInvoker` 构造。更糟：`test_workflow_daemon.py:60` `assert subagent_calls == [(None, None, 50)]` **把断线钉成契约**（返工必须翻这条）。
+- **修法（commit: `fix(subagent): wire parent wake invoker into production daemon`）**：
+  1. 新建生产 `ParentWakeInvoker`——对齐 `supervision_reminder._get_agent_reply`(:130-155) 无人值守模式：load agent→检查 runnable→load primary+fallback model→`set_agent_bot_identity(source="subagent_wake")`→`invoke_agent(AgentInvocationRequest(messages=[{"role":"user","content":"你的后台子代理 {from} 已完成：\n{content}\n复核结果并继续或收口"}], session_context=SessionContext(source="subagent_wake", channel="subagent_wake"), core_tools_only=True, ...))`。
+  2. `start_workflow_daemon` **默认构造** invoker（对齐 `executor = leaf_executor or build_resumable_workflow_leaf_executor()` 模式：`invoker = subagent_wake_invoker or build_production_parent_wake_invoker()`）→ main.py 零参数调用自动获得父唤醒，测试可注入覆盖。
+  3. **depth/budget/wake-storm guard**：consumer 加 ①per-tick per-parent dedup（同 tick 同父最多一次）②全局 wake budget cap（每 tick 最多 N 次，N≈10，独立于 50 信号扫描上限）。链式防护靠 `source="subagent_wake"` run + 既有 `DEFAULT_MAX_SUBAGENT_DEPTH=2`。
+  4. 测试：翻 `test_workflow_daemon.py:60` 的 `(None,...)` 断言为真 invoker；加"从 `start_workflow_daemon` 走真 wiring（invoker 非 None 且被调用）"测试；加 dedup+cap 测试。**禁止注入 fake 掩盖 wiring**。
+- **验收**：`pytest tests/services/test_subagent_wake_consumer.py tests/services/test_workflow_daemon.py -q`；后台 spawn→父空闲→子完成→父在 daemon 周期内被真唤醒。
+
+### 🔴 R2 — B1 T2 引用保护返工（实质 FAIL：保护对真实数据不生效）
+- **实锤**：保护匹配格式 `t2:learnings/{file}#entry:{id}`（`t2_store.py:726-728`）**无生产 writer 产出**（`auto_dream.py:997` 产 `t3:` 前缀=T3 自引用）；扫描 `memory_root=.../memory`（`:703`）只扫 memory/ 跳过 learnings/，**漏 soul.md（workspace 根）+ evolution/ ledger**；唯一通过测试用手写伪造 ref（`test_t2_store.py:299` `entry_id=t2-1`，真实是 uuid hex）。计划点名的四引用源（T3/soul/skill/workflow），三个结构性在扫描外、第四个无数据流经。
+- **修法（commit: `fix(memory): protect real T2 provenance refs before archival`）= 真接通（非降级）**：
+  1. **让蒸馏链路产出 canonical T2 ref**：heartbeat T2→T3、dream T3→soul、skill_distiller T2→candidate 在写下游记录时，把上游 T2 的 `entry_id` 以 canonical 格式（`t2:learnings/{file}#entry:{id}`）写进下游的 source_refs/evidence_refs。这是契约级改动，涉及多条 writer。
+  2. **扩扫描范围**：`_collect_t2_reference_text` 除 memory/ 外，纳入 workspace 根 `soul.md` + `evolution/` ledger（`.jsonl`）。
+  3. **红测走真实 writer 链路**（不手写伪造 ref）：真跑一次 dream/heartbeat 产出 T3+ref，再触发归档，断言被引用的 T2 条目不被 age/cap 归档（或归档后 ref 可解析到 archive）。
+- **验收**：`pytest tests/memory/test_t2_store.py tests/services/test_dream_phase6.py tests/test_memory_integration.py -q`。
+- **体量提醒**：这是三件里最大的（多 writer 契约 + 扫描扩展），建议独立一仗，给足上下文。
+
+### 🟡 R3 — C 轨道定位修正（CONCERN：未达 CC 完成判据）
+- **实锤**：deferred 工具名从不进 turn-1 prompt（只在 tool_search 返回值）；`session.__post_init__`(:150) **读回** discovered_tools（Codex 纠正 Claude 早先"没人读"措辞），但 `_kernel_get_tools`(`invoker.py:819`) `requested_names=_channel_tools` **不含 discovered_tools** → schema 不跨 invocation 恢复。C0 三决策（名字宣告载体=post-hoc 事件 / 持久化=内存+镜像 half-wired / subagent 独立发现集无测试）均由 Codex 擅自定、未经用户拍板。
+- **修法（commit: `docs(runtime): downgrade C track to partial CC alignment` + 可选补完）**：
+  1. **文档降级**：`docs/agent-engineering-closure-plan.md` §3 + `docs/execution-mode-spectrum.md` 把"C 全完成"改为"T3a conservative default landed；turn-1 name seeding + discovered_tools schema recovery 未完"。
+  2. **可选顺手补（推荐）**：`_kernel_get_tools` 把 `session_context.discovered_tools` 并入 `requested_names` 重注入 schema——最小修，把 C 从"半成品"推到"schema 真跨 invocation 存活"。补了它 C 才算真 T3a 完成。
+  3. **C0 三决策**：建议接受 Codex 保守默认作为 T3a 阶段成果，但显式记录"turn-1 name seeding"为未达 CC 判据的已知缺口（后续 T3a-补完切口）。C2 breaking 既已合则保留。
+- **验收**：`pytest tests/runtime/test_invoker.py tests/runtime/test_session_skill_lifecycle.py -q`。
+
+### 返工后全批验证
+```
+cd backend && .venv/bin/pytest tests/services/test_subagent_wake_consumer.py tests/services/test_workflow_daemon.py -q
+.venv/bin/pytest tests/memory/test_t2_store.py tests/services/test_dream_phase6.py tests/test_memory_integration.py -q
+.venv/bin/pytest tests/runtime/test_invoker.py tests/runtime/test_session_skill_lifecycle.py -q
+.venv/bin/pytest -q   # 全量
+```
+**先不 push**，三件返工全绿后一起推。R1（B2，方案已就绪可直接落）→ R3（C，小+文档）→ R2（B1，最大，独立一仗）。
+
+---
+
+*修订记录: v0.1 2026-06-07 初稿（Claude × Codex 交叉 review 合成，§0 双向源码验证）。v0.2 2026-06-07 拍板版——采纳 Codex 四点反馈。v0.3 2026-06-07 第二轮交叉 review——批次①②④大体通过，新增 §7 返工清单（R1 B2 死接线 / R2 B1 引用保护失效 / R3 C 轨道降级），撤回"全部完成"结论。*

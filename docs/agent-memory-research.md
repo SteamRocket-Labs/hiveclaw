@@ -224,7 +224,7 @@ claude-mem 的 `search → timeline → get_observations` 三步取详情、CC �
 ### E.4 修正建议（若要让"基于脑科学"真正站得住）
 
 **唯一可借的真判据是 HippoRAG 路线**：不是贴生物名，而是从神经理论推出可证伪算法。两条可落地：
-1. **检索侧（强）**：把 T3 知识做成 KG + Personalized PageRank 单步多跳（=海马体 pattern completion），替代 `retriever.py` 的打分召回——有 multi-hop benchmark 背书（+20.9% R@5）。**但这是重型方案**，与 `memory-claude-mem-borrow` 的 embedding/图谱评估合并，不在本轮规格。
+1. **检索侧（强）**：把 T3 知识做成 KG + Personalized PageRank 单步多跳（=海马体 pattern completion），替代 `retriever.py` 的打分召回——有 multi-hop benchmark 背书（+20.9% R@5）。**但这是重型方案**，当轮规格外（后由 MD-first P9 wikilink-KG+纯 PyPPR 落地；claude-mem-borrow 提案已于 2026-06-07 废除）。
 2. **巩固侧（轻）**：node specificity（局部 IDF，海马体不做全局聚合）思想用到 T2→T3 重要性加权，替代全局统计。
 
 **本轮规格的诚实定位建议**：把 Hive 记忆引擎定位为「**明文态多级蒸馏 + 巩固/遗忘原理启发的生命周期治理**」——结构受脑科学启发（§E.1 五条），但**判据是工程的、可观测的、可审计的**（符合 AI-Native L2 治理 + L3 控制中台）。不声称"神经写实"，把 HippoRAG 式 KG+PPR 列为**未来可选硬化路线**而非当前卖点。

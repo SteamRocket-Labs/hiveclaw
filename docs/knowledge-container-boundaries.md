@@ -251,7 +251,7 @@ T0 logs ──extract──▶ T2 learnings ──heartbeat──▶ T3 memory/*
 
 **S3 — INDEX.md 转正为导航层**（§8.3 P2 的具体化，Wiki 直觉的轻量落地）：
 - 从 shadow 变为 AI 可见的**主题地图**：每条目 `id / category / preview / load hint`，常驻注入取代部分全文 bullets——AI 按图索骥（即 claude-mem 的 index+get_observations 模式 / CC 的 MEMORY.md 索引+topic 文件模式）
-- `understandings.md`（subject-relation-object 三元组）保留为关系轴雏形，先让现有检索路径消费好；**完整知识图谱/embedding 召回为重型方案，与 memory-claude-mem-borrow 计划合并评估，不在本轮**
+- `understandings.md`（subject-relation-object 三元组）保留为关系轴雏形，先让现有检索路径消费好；**完整知识图谱/embedding 召回为重型方案，不在本轮（后由 MD-first P9 wikilink-KG+PPR 落地；claude-mem-borrow 提案已于 2026-06-07 废除）**
 
 ### 9.3 与 codex §8.5 的合流
 

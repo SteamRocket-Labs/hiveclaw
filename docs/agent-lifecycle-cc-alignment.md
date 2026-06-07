@@ -35,7 +35,7 @@
 
 > ⏸️ **A1 冻结（2026-06-04 用户拍板）**：Deep Research 全部内容将整体重做、管道迁移到 workflow（P14 入口壳已就位，leaf 能力下沉时一并按 AI-native 法律设计——LLM 拆维度、四问全过）。本轮不修旧 planner。其余 DR 专属 gap（worker 并行特化代码、digest 600 字上限等）同此冻结；**非 DR 专属**的 subagent/workflow 通用项（D6 fan-out token 池、D7 轻量 worker、D8 异步重入）不受影响，仍走轴 1/轴 2 排期。
 | A2 | **Proactive 自主决策** | ✅ **已修复（2026-06-04）**：preflight 从"决策者"降为"边界提供者"——DO-cleared 候选**不再由系统自动 fire signal**，而是作为决策输入进 heartbeat prompt（"Cleared — your call" + preflight 评估 + 边界），agent 在自己的 run 里判断是否值得做、怎么做；治理保持系统所有（ASK/ESCALATE 的 checkpoint 自动创建=外向动作需人审、REFUSE 边界 enforce）。markdown 头部明示"judgment is yours, within boundaries (enforced regardless)"。符合"plan 来自 agent、治理归系统"。**证据**：`services/proactive_employee_loop.py`（DO 分支 sentinel 注册+fire 删除、markdown 决策输入式重写）；tests 语义反转 DO 测试（emissions==[]/无 signal/决策框架断言），checkpoint/REFUSE 测试保留；全量 3697 passed。附带：`evals/self_evolution_bakeoff.py` 特征匹配从锁定 `timeout_seconds=1.5` 改为语义匹配（A3 调超时不再破坏证据检查） | 自主决策交给模型，代码只搭管道 |
-| A3 | **记忆激活评分** | ✅ **已修复-轻档（2026-06-04）**：实施中发现比诊断更严重——`_rerank_semantic_items` 是孤儿函数、`retrieve()` 的 `rerank_model_config` 是 dead parameter，**LLM rerank 生产路径从未运行**（激活 100% 机械）。修复=①接线：semantic 池 > 阈值（5）时 LLM rerank 真实运行于 retrieve() 路径（替换 semantic 子集，机械序为 fallback）②候选预览 150→400 chars（reranker 判断语义不是标题）③超时 1.5→3.0s ④降级 debug→warning+`memory_rerank_fallback` metric。**证据**：`memory/retriever.py`；tests/memory/test_retriever_rerank_wiring.py +2（接线/小池跳过），memory+memory_service 248 passed。重档（embedding）与 memory-claude-mem-borrow 计划合并另行 | 超越机会 |
+| A3 | **记忆激活评分** | ✅ **已修复-轻档（2026-06-04）**：实施中发现比诊断更严重——`_rerank_semantic_items` 是孤儿函数、`retrieve()` 的 `rerank_model_config` 是 dead parameter，**LLM rerank 生产路径从未运行**（激活 100% 机械）。修复=①接线：semantic 池 > 阈值（5）时 LLM rerank 真实运行于 retrieve() 路径（替换 semantic 子集，机械序为 fallback）②候选预览 150→400 chars（reranker 判断语义不是标题）③超时 1.5→3.0s ④降级 debug→warning+`memory_rerank_fallback` metric。**证据**：`memory/retriever.py`；tests/memory/test_retriever_rerank_wiring.py +2（接线/小池跳过），memory+memory_service 248 passed。重档检索后由 MD-first P9 wikilink-KG+PPR 落地（claude-mem-borrow 提案已于 2026-06-07 废除） | 超越机会 |
 | A4 | **Loop Guard 一刀切** | ✅ **已修复（2026-06-04）**：warn-before-abort——首次到阈值返回 `severity="warn"` 诊断（含模式详情 + 三条自纠指引：intentional 申明/换方法/停止重试报告错误），同 pattern 只警告一次；计数继续涨到 abort 阈值（warn×1.5：identical 5→8、failure 4→6、text 3→5、total 100→150、failed 12→18）才硬停。**证据**：`kernel/loop_guard.py` 重构（`_escalate`/`_PatternCheck`/`_WARN_GUIDANCE`），engine 4 个消费点 warn 注入 system 消息+`loop_guard_warning` 事件继续循环（`engine.py` `_inject_loop_guard_warning`）；tests/kernel/test_loop_guard.py 9 passed（含 warn→去重→abort 升级 3 个新测试），kernel+runtime 599 passed | 软约束哲学：stop hook blockingError 把"还没干完"拼回 messages 让模型继续 |
 
 > CC doc 12.2 的原话：「把大量行为决策**外包给模型的指令遵循能力**，代码只负责搭管道」。A1/A2 是把本该 LLM 做的判断写死成了规则；A4 是有了硬约束却没配软约束前置。
@@ -102,7 +102,7 @@ CC 哲学：每次拒绝都是教学机会——告诉模型为什么 + 下一�
 **第一优先：主题 A（机械替代 LLM）**——与压缩同级的法律违规：
 - ~~A1 DR planner~~ → ⏸️ 冻结：随 DR 整体重做时按 AI-native 法律设计（LLM 拆维度），本轮不动
 - A2 proactive 决策 → preflight 从"决策者"降为"边界提供者"，DO/ASK/ESCALATE 判断交给 agent（喂给它 preflight 的 5 轴评估作为输入）
-- A3 记忆激活 → 权重模型保留为初筛，加语义层（embedding 或放宽 LLM rerank 触发条件+超时）；与 memory-claude-mem-borrow 计划合并考虑
+- A3 记忆激活 → 权重模型保留为初筛，加语义层（embedding 或放宽 LLM rerank 触发条件+超时）；语义重档后由 MD-first P9 KG+PPR 落地（claude-mem-borrow 提案已于 2026-06-07 废除）
 - A4 loop guard → 先软后硬：首次触发注入诊断文本让模型自纠，N 次后才 abort
 
 **第二优先：主题 B（反馈教学化）**——纯提示词工程，低风险高收益，可一个 PR 打包：B1 拒绝消息模板 + B2 轮次警告带数据 + B3 plan 激活告知 + B4 统一自主语义段。

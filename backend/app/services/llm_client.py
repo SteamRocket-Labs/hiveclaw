@@ -209,6 +209,139 @@ class LLMClient(ABC):
         pass
 
 
+_OUTPUT_CAP_FINISH_REASONS = {"length", "max_tokens"}
+_OUTPUT_TRUNCATED_MARKER = "\n\n[Output truncated: model stopped at max output tokens after escalation.]"
+
+
+def _is_output_cap_finish_reason(finish_reason: str | None) -> bool:
+    return (finish_reason or "").strip().lower() in _OUTPUT_CAP_FINISH_REASONS
+
+
+def _record_output_cap_hit(
+    *, provider: str, model: str, finish_reason: str | None, mode: str, phase: str
+) -> None:
+    reason = (finish_reason or "unknown").strip().lower() or "unknown"
+    try:
+        from app.memory import metrics
+
+        metrics.record_llm_output_cap_hit(
+            provider=provider,
+            model=model,
+            finish_reason=reason,
+            mode=mode,
+            phase=phase,
+        )
+    except Exception as exc:  # pragma: no cover - observability must never break LLM calls
+        logger.warning("Failed to record LLM output cap hit: {}", exc)
+    logger.warning(
+        "LLM output cap hit provider={} model={} finish_reason={} mode={} phase={}",
+        provider,
+        model,
+        reason,
+        mode,
+        phase,
+    )
+
+
+class _CapAwareLLMClient(LLMClient):
+    """Wrapper that records and mitigates provider output-cap truncation."""
+
+    def __init__(self, inner: LLMClient, *, provider: str, model: str):
+        super().__init__(
+            api_key=getattr(inner, "api_key", ""),
+            base_url=getattr(inner, "base_url", None),
+            model=model,
+            timeout=getattr(inner, "timeout", 120.0),
+        )
+        self._inner = inner
+        self.provider = provider or "unknown"
+        self.model = model or getattr(inner, "model", None) or "unknown"
+
+    async def complete(
+        self,
+        messages: list[LLMMessage],
+        tools: list[dict] | None = None,
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        response = await self._inner.complete(
+            messages=messages,
+            tools=tools,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            **kwargs,
+        )
+        if not _is_output_cap_finish_reason(response.finish_reason):
+            return response
+
+        _record_output_cap_hit(
+            provider=self.provider,
+            model=self.model,
+            finish_reason=response.finish_reason,
+            mode="complete",
+            phase="initial",
+        )
+
+        if tools or (max_tokens is not None and max_tokens >= MAX_OUTPUT_TOKENS_HARD_LIMIT):
+            return response
+
+        retry_response = await self._inner.complete(
+            messages=messages,
+            tools=tools,
+            temperature=temperature,
+            max_tokens=MAX_OUTPUT_TOKENS_HARD_LIMIT,
+            **kwargs,
+        )
+        if _is_output_cap_finish_reason(retry_response.finish_reason):
+            _record_output_cap_hit(
+                provider=self.provider,
+                model=self.model,
+                finish_reason=retry_response.finish_reason,
+                mode="complete",
+                phase="retry",
+            )
+            content = retry_response.content or ""
+            if _OUTPUT_TRUNCATED_MARKER not in content:
+                retry_response.content = content.rstrip() + _OUTPUT_TRUNCATED_MARKER
+        return retry_response
+
+    async def stream(
+        self,
+        messages: list[LLMMessage],
+        tools: list[dict] | None = None,
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+        on_chunk: ChunkCallback | None = None,
+        on_thinking: ThinkingCallback | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        response = await self._inner.stream(
+            messages=messages,
+            tools=tools,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            on_chunk=on_chunk,
+            on_thinking=on_thinking,
+            **kwargs,
+        )
+        if _is_output_cap_finish_reason(response.finish_reason):
+            _record_output_cap_hit(
+                provider=self.provider,
+                model=self.model,
+                finish_reason=response.finish_reason,
+                mode="stream",
+                phase="initial",
+            )
+        return response
+
+    def _get_headers(self) -> dict[str, str]:
+        return self._inner._get_headers()
+
+    async def close(self) -> None:
+        await self._inner.close()
+
+
 # ============================================================================
 # OpenAI-Compatible Client
 # ============================================================================
@@ -2101,6 +2234,12 @@ def get_max_tokens(provider: str, model: str | None = None, max_output_tokens: i
     return MAX_TOKENS_BY_PROVIDER.get(normalize_provider(provider), 8192)
 
 
+def _with_output_cap_awareness(client: LLMClient, *, provider: str, model: str) -> LLMClient:
+    if isinstance(client, _CapAwareLLMClient):
+        return client
+    return _CapAwareLLMClient(client, provider=provider, model=model)
+
+
 def create_llm_client(
     provider: str,
     api_key: str,
@@ -2131,55 +2270,55 @@ def create_llm_client(
 
     # Create appropriate client
     if spec and spec.protocol == "anthropic":
-        return AnthropicClient(
+        return _with_output_cap_awareness(AnthropicClient(
             api_key=api_key,
             base_url=final_base_url,
             model=model,
             timeout=timeout,
-        )
+        ), provider=normalized_provider, model=model)
     elif spec and spec.protocol == "openai_responses":
-        return OpenAIResponsesClient(
+        return _with_output_cap_awareness(OpenAIResponsesClient(
             api_key=api_key,
             base_url=final_base_url,
             model=model,
             timeout=timeout,
             supports_tool_choice=spec.supports_tool_choice,
-        )
+        ), provider=normalized_provider, model=model)
     elif _requires_openai_responses_api(normalized_provider, model):
-        return OpenAIResponsesClient(
+        return _with_output_cap_awareness(OpenAIResponsesClient(
             api_key=api_key,
             base_url=final_base_url,
             model=model,
             timeout=timeout,
             supports_tool_choice=spec.supports_tool_choice if spec else True,
-        )
+        ), provider=normalized_provider, model=model)
     elif spec and spec.protocol == "gemini":
-        return GeminiClient(
+        return _with_output_cap_awareness(GeminiClient(
             api_key=api_key,
             base_url=final_base_url,
             model=model,
             timeout=timeout,
             supports_tool_choice=spec.supports_tool_choice,
-        )
+        ), provider=normalized_provider, model=model)
     elif normalized_provider in PROVIDER_CLIENTS:
         supports_tool_choice = normalized_provider in TOOL_CHOICE_PROVIDERS
-        return OpenAICompatibleClient(
+        return _with_output_cap_awareness(OpenAICompatibleClient(
             api_key=api_key,
             base_url=final_base_url,
             model=model,
             timeout=timeout,
             supports_tool_choice=supports_tool_choice,
             use_completion_tokens=spec.use_completion_tokens if spec else False,
-        )
+        ), provider=normalized_provider, model=model)
     else:
         # Default to OpenAI-compatible for unknown providers
-        return OpenAICompatibleClient(
+        return _with_output_cap_awareness(OpenAICompatibleClient(
             api_key=api_key,
             base_url=final_base_url or PROVIDER_URLS["openai"],
             model=model,
             timeout=timeout,
             supports_tool_choice=True,
-        )
+        ), provider=normalized_provider, model=model)
 
 
 # Parameters create_llm_client actually accepts — used by the config-dict factory.

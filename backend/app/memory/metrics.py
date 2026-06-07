@@ -108,6 +108,13 @@ _frozen_prefix_overrun_total: int = 0
 _autonomous_llm_calls_total: dict[tuple[str, str], int] = defaultdict(int)  # (source, outcome)
 
 
+# ── LLM output cap tracking (A5) ──────────────────────────────
+# Provider responses with finish_reason=length/max_tokens mean the model hit
+# its output ceiling. Track them centrally so non-agent background LLM paths
+# surface truncation pressure instead of failing silently.
+_llm_output_cap_hit_total: dict[tuple[str, str, str, str, str], int] = defaultdict(int)
+
+
 # ── Public API ────────────────────────────────────────────────
 
 
@@ -182,6 +189,10 @@ def snapshot() -> dict[str, Any]:
         "autonomous_llm_calls_total": {
             f"{k[0]}:{k[1]}": v for k, v in _autonomous_llm_calls_total.items()
         },
+        "llm_output_cap_hit_total": {
+            f"{k[0]}:{k[1]}:{k[2]}:{k[3]}:{k[4]}": v
+            for k, v in _llm_output_cap_hit_total.items()
+        },
     }
 
 
@@ -210,6 +221,7 @@ def reset_all() -> None:
     _frozen_prefix_warn_total = 0
     _frozen_prefix_overrun_total = 0
     _autonomous_llm_calls_total.clear()
+    _llm_output_cap_hit_total.clear()
 
 
 # ── Extraction recorders (P0-2c) ──────────────────────────────
@@ -255,6 +267,24 @@ def record_autonomous_llm_call(*, source: str, outcome: str) -> None:
     chart success rate alongside volume.
     """
     _autonomous_llm_calls_total[(source, outcome)] += 1
+
+
+def record_llm_output_cap_hit(
+    *, provider: str, model: str, finish_reason: str, mode: str, phase: str
+) -> None:
+    """Bump the provider/model output-cap counter.
+
+    `mode` is {"complete", "stream"} and `phase` is {"initial", "retry"}.
+    """
+    _llm_output_cap_hit_total[
+        (
+            provider or "unknown",
+            model or "unknown",
+            finish_reason or "unknown",
+            mode or "unknown",
+            phase or "unknown",
+        )
+    ] += 1
 
 
 def record_frozen_prefix_metering(

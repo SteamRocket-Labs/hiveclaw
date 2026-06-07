@@ -1,6 +1,6 @@
 # 运行时动态引导体系：机制 × 提示词（对标 CC attachment/reminder 层）
 
-> 状态:**v0.5 完成稿**(2026-06-06)。T-G1/T-G2/T-G3 已落地:全部 runtime reminder 经 per-invocation `ReminderScheduler` 注册,只 transient 拼入本轮 `stream_messages`,永不写回 `api_messages`/persist;`should_enable_work_ledger` 已收窄为 eligibility,频率由 `observe(tool_names)` 行为计数决定;compaction `reset()` 只重启 idle/cooldown/fire-once 时钟,**不清空已排队的 loop_guard 事件**。T-G2 已补齐 gentle/internal guard、Work Ledger persisted snapshot、round-pressure/loop_guard 防泄漏文案。T-G3 已固化为代码 catalog:`backend/app/kernel/runtime_guidance_catalog.py`(45 项,have 31/planned 4/n-a 10),每项登记 Hive surface、持久化策略和唯一入口。
+> 状态:**v0.6 T-G3.1 纠偏稿**(2026-06-07)。T-G1/T-G2 已落地且通过复核;T-G3 的 `28f236fc` catalog 有实质缺口:把 CC native attachment type 与 Hive native runtime guidance 通道混在同一个 `cc_type` 命名空间,导致"覆盖 45 个 CC attachment/reminder 类型"声明失真。按本地 CC 源码 `claude-code-org/src/utils/attachments.ts` 的 Attachment union 区间(约 295-731 行)抽取,CC native attachment type 当前为 **60 项**;旧 catalog 只真名匹配 14 项,漏裁 46 项,并混入 31 项 Hive 自有通道。T-G3.1 的目标是先文档纠偏,再工程改造成双命名空间:`CC_NATIVE_ATTACHMENT_CATALOG` 覆盖 60/60 真名,`HIVE_NATIVE_GUIDANCE_CATALOG` 保留 Hive 自有通道,测试冻结 CC 真名清单并断言差集为空。
 > 前版:**v0.1 审计定稿**(2026-06-05)。源码实证:CC `utils/attachments.ts` / `utils/messages.ts` / `constants/prompts.ts`;Hive `kernel/engine.py`。
 > 关系:`docs/execution-mode-spectrum.md` 管 CC 引导体系的前两层——暴露架构 + 静态引导(§5 七原语决策序列、工具描述互指,T2 ✅ 已落地);**本文档管第三层:运行中的动态引导(reminder 注入)**。三层一起构成完整的"关键节点给模型判断信息"的体系。
 > 流程(用户拍板,2026-06-05):**机制对齐 → 提示词对齐 → 全面 CC 对标**。本文档按此分 §5 三阶段路线。
@@ -15,7 +15,7 @@ CC 的引导体系是三层结构:
 |---|---|---|
 | 静态系统提示 | 刻意做轻:`# Using your tools` 四条(dedicated-over-Bash 映射、任务管理一句话、并行引导、Agent 一句 when-to-use),选择哲学下放 | ✅ T2 落地(决策序列比 CC 总纲重,有意 delta,见 §4 P5) |
 | 工具描述 | when-to-use / when-NOT / 互指网 | ✅ T2 对齐 |
-| **动态 reminder** | **40+ attachment 类型,事件驱动,节流注入** | ✅ T-G1/T-G2/T-G3 已完成:机制、文案/快照、45 项代码 catalog |
+| **动态 reminder** | **40+ attachment 类型,事件驱动,节流注入** | ✅ T-G1/T-G2 已完成;⚠️ T-G3.1 正在纠偏 CC native 逐项 catalog |
 
 本文档回答三问:① Hive 动态引导**机制自身**有什么缺陷(§3,不依赖 CC 视角);② 提示词与 CC 的差距(§4);③ 对齐路线(§5)。
 
@@ -115,28 +115,29 @@ CC 把动态 reminder 当**低频、事件驱动、带状态、可忽略**的旁
 
 ### T-G3 全面 CC 对标(40+ attachment 逐项 gap 盘点)
 
-> **✅ 完成(2026-06-06)** — 工程落地为代码权威源:`backend/app/kernel/runtime_guidance_catalog.py`。catalog 覆盖 45 个 CC attachment/reminder 类型,每项都有 `status`(`have`/`planned`/`n/a`)、Hive surface、`single_ingress`、`persistence_policy`、决策说明。测试 `tests/kernel/test_runtime_guidance_catalog.py` 钉住:覆盖 ≥40 且关键项存在;无重复;每项有状态/持久化/唯一入口;所有 today-runtime transient prompt 条目唯一入口必须是 `kernel/reminder_scheduler.py::ReminderScheduler`;按状态可分组供文档和 review 使用。证据:`pytest tests/kernel/test_runtime_guidance_catalog.py -q` → **4 passed**;`ruff check app/kernel/runtime_guidance_catalog.py tests/kernel/test_runtime_guidance_catalog.py` clean。
+> **⚠️ T-G3.1 纠偏中(2026-06-07)** — `28f236fc` 把 Hive native guidance 通道登记进 `cc_type`,测试只检查 `len >= 40` 与少数 required 项,没有冻结 CC native 真名清单,因此无法证明"CC 逐项对标"完成。真实源码核对结果:CC native attachment type = 60;旧 catalog = 45;真名匹配 = 14;CC 漏裁 = 46;Hive extra = 31。纠偏方案:① catalog 拆成 `CC_NATIVE_ATTACHMENT_CATALOG` 与 `HIVE_NATIVE_GUIDANCE_CATALOG`;② 测试冻结 60 项 CC 真名,断言 CC 侧覆盖差集为空且 Hive native 不污染 `cc_type`;③ 文档状态改为按双表汇总;④ `runtime_transient_prompt_entries()` 只从 CC/Hive 双表中筛选当前会实际 transient 注入的 Hive entries,继续钉唯一入口 `ReminderScheduler`。
 
-状态汇总:
+旧 catalog 的有价值部分保留为 Hive native 通道登记表,但不再冒充 CC native attachment:
+
+旧状态汇总(待 T-G3.1 改造后替换):
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| `have` | 31 | Hive 已有等价 surface,并记录唯一入口与持久化策略 |
+| `have` | 31 | Hive 已有等价 surface 或自有通道,但其中相当一部分不是 CC native 真名 |
 | `planned` | 4 | 需要独立基础设施/策略切口,不混入 runtime reminder 主线 |
 | `n/a` | 10 | CC attachment 在 Hive 中属于治理/内部 hook/记忆控制面,不应作为 prompt 注入 |
 
-代表性结论:
+T-G3.1 必须覆盖的高优先 CC native 项包括:
 
-| CC 类型/家族 | T-G3 结论 | Hive 唯一路径 |
+| CC native 类型/家族 | 为什么关键 | 目标裁决 |
 |---|---|---|
-| `todo_reminder` / `task_reminder` | `have` | `ReminderScheduler` transient + Work Ledger persisted snapshot |
-| `plan_mode` / `plan_mode_reentry` | `have` | `ReminderScheduler` transient + compaction re-arm |
-| `token_budget_warning` / `loop_guard_warning` | `have` | `ReminderScheduler` transient;LoopGuard 只产出 decision |
-| `skill_listing` / `skill_discovery` | `have` | `tool_search` / `load_skill` 的工具结果路径,不重复动态注入 |
-| `relevant_memories` | `have` | Memory Control Plane dynamic suffix |
-| `nested_memory` | `n/a` | Hive 用 tenant/owner/company governed memory scope 表达,不是 CC 式 attachment |
-| `diagnostics` / `edited_text_file` | `planned` | 依赖 LSP/file-watch substrate,独立切口 |
-| hook 系 | `have` 或 `n/a` | 内部治理/记忆 hook,不是 prompt 注入通道 |
+| `agent_listing_delta` / `deferred_tools_delta` / `mcp_instructions_delta` | cache-stable 增量宣告,是未来 T3 dynamic loading 的主机制 | `planned` 或 `have` 需明确 |
+| `compaction_reminder` / `verify_plan_reminder` / `plan_file_reference` | compaction 与 plan 交互提醒,和 T-G1/T-G2 直接相邻 | 逐项裁决 |
+| `token_usage` / `budget_usd` / `output_token_usage` / `context_efficiency` / `max_turns_reached` | budget/round pressure 家族,不能用 Hive 自造 `token_budget_warning` 冒名 | 逐项裁决 |
+| `dynamic_skill` / `invoked_skills` / `skill_listing` / `skill_discovery` | skill discovery/loading 系,关系到 pack 去 skill 化路线 | 逐项裁决 |
+| `teammate_mailbox` / `team_context` / `teammate_shutdown_batch` | CC swarm/team context,对应 Hive A2A/coordination | 逐项裁决 |
+| file/IDE 系(`file`,`directory`,`selected_lines_in_ide`,`edited_*`) | 即使 Hive 暂无 IDE substrate,也必须 `planned`/`n/a` 明确 | 逐项裁决 |
+| hook 系真名(`hook_blocking_error`,`hook_success` 等) | 旧 catalog 混入了 Hive hook event 名,需按 CC 真名重列 | 逐项裁决 |
 
 ### 红测样例(T-G1/G2)
 

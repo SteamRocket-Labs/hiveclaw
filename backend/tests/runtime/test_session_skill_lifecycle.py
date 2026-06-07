@@ -55,6 +55,16 @@ def test_independent_skills_tracked_separately() -> None:
     assert s._skill_metadata["b"]["refcount"] == 1.0
 
 
+def test_discovered_tools_are_tracked_and_mirrored_to_metadata() -> None:
+    s = SessionContext()
+
+    added = s.track_discovered_tools(["web_search", "web_fetch", "web_search"])
+
+    assert added == ["web_search", "web_fetch"]
+    assert s.discovered_tools == ["web_search", "web_fetch"]
+    assert s.metadata["discovered_tools"] == ["web_search", "web_fetch"]
+
+
 # ── Unload ────────────────────────────────────────────────────
 
 

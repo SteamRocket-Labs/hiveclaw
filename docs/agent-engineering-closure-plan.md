@@ -131,6 +131,8 @@
 
 完成判据: `tool_search` 从"技能/能力目录与 pack 激活入口"变为 CC 形态的 deferred loader——工具名字常驻宣告、schema 按需取用、skill 回归纯知识载体。
 
+- ✅ **C0/C1 已落地（2026-06-07）**: C0 三项默认拍板按保守实现：① 名字宣告载体使用 runtime event `deferred_tools_delta`；② 发现集持久化在 `SessionContext.discovered_tools`，并镜像到 `metadata["discovered_tools"]` 供 compact/recovery；③ subagent 使用独立 `SessionContext`，不继承父发现集。C1 代码：`runtime/session.py` 新增 discovery set + metadata mirror，`kernel/engine.py::_should_expand_tools()` 把 `tool_search` 纳入 schema expansion trigger，`runtime/invoker.py::_resolve_tool_expansion()` 对 `tool_search` query 命中 deferred runtime tool group 后拉取 `requested_names` schema 并记录发现集；`tools/handlers/skills.py`、`agent_tool_domains/workspace.py` 文案反转为“matching deferred tool schemas become callable”。红测覆盖 session mirror、tool_search schema delta、提示词/工具描述反转。验证：`backend/.venv/bin/pytest backend/tests/runtime/test_session_skill_lifecycle.py backend/tests/runtime/test_invoker.py::test_tool_search_records_discovered_tools_and_returns_deferred_schema backend/tests/runtime/test_t2_guidance_surface.py backend/tests/services/test_prompt_contracts.py -q` → `41 passed`；`backend/.venv/bin/ruff check backend/app/runtime/session.py backend/app/runtime/invoker.py backend/app/kernel/engine.py backend/app/tools/handlers/skills.py backend/app/services/agent_tool_domains/workspace.py backend/tests/runtime/test_session_skill_lifecycle.py backend/tests/runtime/test_invoker.py backend/tests/runtime/test_t2_guidance_surface.py backend/tests/services/test_prompt_contracts.py` → `All checks passed!`。
+
 ---
 
 ## §4 轨道 D — 明确留账不进本轮（每项有理由）

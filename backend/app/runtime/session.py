@@ -134,6 +134,9 @@ class SessionContext:
     # Post-compact restoration: track session runtime events
     recent_files: list[str] = field(default_factory=list)  # file paths read by agent
     active_skills: list[str] = field(default_factory=list)  # skill names loaded via load_skill
+    # C1/T3a: tools discovered through tool_search become callable for this
+    # session, and the list is mirrored into metadata for compaction/recovery.
+    discovered_tools: list[str] = field(default_factory=list)
     # P1-W2-7: per-skill bookkeeping (refcount + last_used_at_ts) parallel
     # to active_skills. The list is the public read surface (kept as
     # `list[str]` for backwards compat); this dict drives unload + prune.
@@ -142,6 +145,13 @@ class SessionContext:
     recent_tool_outcomes: list[dict[str, str]] = field(default_factory=list)  # [{tool, summary}]
     recent_external_refs: list[str] = field(default_factory=list)  # URLs/resources fetched
     pending_items: list[str] = field(default_factory=list)  # unfinished work items
+
+    def __post_init__(self) -> None:
+        mirrored = self.metadata.get("discovered_tools")
+        if isinstance(mirrored, list):
+            self.discovered_tools = [str(name).strip() for name in mirrored if str(name).strip()]
+        elif self.discovered_tools:
+            self.metadata["discovered_tools"] = list(self.discovered_tools)
 
     def track_file_read(self, path: str) -> None:
         """Record a file read for post-compact restoration. Keeps last 10 unique paths."""
@@ -204,6 +214,20 @@ class SessionContext:
             if name in self.active_skills:
                 self.active_skills.remove(name)
         return expired
+
+    def track_discovered_tools(self, tool_names: list[str] | tuple[str, ...]) -> list[str]:
+        """Record deferred tools made callable by tool_search. Returns newly added names."""
+        added: list[str] = []
+        seen = set(self.discovered_tools)
+        for raw_name in tool_names:
+            name = str(raw_name).strip()
+            if not name or name in seen:
+                continue
+            self.discovered_tools.append(name)
+            added.append(name)
+            seen.add(name)
+        self.metadata["discovered_tools"] = list(self.discovered_tools)
+        return added
 
     def track_file_write(self, path: str) -> None:
         """Record a file write for post-compact restoration. Keeps last 5."""

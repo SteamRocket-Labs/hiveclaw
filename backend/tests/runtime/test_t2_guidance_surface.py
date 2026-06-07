@@ -14,9 +14,8 @@ Small-cut guidance alignment, pinned in one place:
 * ``set_trigger`` documents ``config.workflow_ref`` with its criterion;
 * ``system.py`` states the small-cut exposure reality: source capabilities
   are core-resident, integration packs still activate via skills;
-* ``tool_search`` keeps its catalog semantics (search → ``load_skill``) —
-  the T2 writing constraint; the CC-style "discover = callable" reversal
-  is future T3, not this cut.
+* ``tool_search`` discovers deferred tools and makes matching schemas callable;
+  ``load_skill`` remains for explicit method/instruction loading.
 """
 
 from __future__ import annotations
@@ -126,10 +125,11 @@ def test_system_section_states_source_capabilities_resident():
     assert "load a matching skill" in text
 
 
-# ── T2 writing constraint: tool_search keeps catalog semantics ──────
+# ── T3a deferred discovery: tool_search loads matching schemas ──────
 
 
-def test_tool_search_keeps_catalog_semantics():
+def test_tool_search_loads_deferred_tool_schema():
     desc = _tool_description("tool_search")
-    assert "load_skill" in desc
-    assert "does not auto-load" in desc
+    assert "deferred" in desc.lower()
+    assert "callable" in desc.lower()
+    assert "does not auto-load" not in desc

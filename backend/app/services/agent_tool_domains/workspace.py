@@ -835,11 +835,13 @@ def _tool_search(ws: Path, query: str = "") -> str:
     ]
 
     lines = [
-        "Tool search only returns delayed capability summaries. It does not auto-load tools.",
+        "Tool search discovered deferred capabilities. Matching deferred tool schemas become callable in this session.",
     ]
     if packs:
         lines.append("")
-        lines.append("Available packs (use `load_skill <pack_name>` to activate, or call the tools directly):")
+        lines.append(
+            "Available deferred packs/tools (matching schemas are loaded by this search; use `load_skill` only for method instructions):"
+        )
         for pack in packs:
             tools = ", ".join(pack.tools)
             lines.append(

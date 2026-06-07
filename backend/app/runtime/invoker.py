@@ -59,7 +59,7 @@ from app.services.token_tracker import (
     record_token_usage,
 )
 from app.tools import ensure_workspace
-from app.tools.runtime_tool_groups import RUNTIME_TOOL_GROUPS, runtime_tool_group_for_name
+from app.tools.runtime_tool_groups import RUNTIME_TOOL_GROUPS, iter_runtime_tool_groups, runtime_tool_group_for_name
 
 logger = logging.getLogger(__name__)
 
@@ -655,6 +655,24 @@ def _declared_skill_tool_names(
     return requested
 
 
+def _deferred_tool_names_for_query(query: str) -> list[str]:
+    normalized = query.strip().lower()
+    if normalized:
+        for pack in RUNTIME_TOOL_GROUPS:
+            for tool_name in pack.tools:
+                if tool_name.lower() == normalized and tool_name not in CORE_TOOL_NAMES:
+                    return [tool_name]
+    requested: list[str] = []
+    seen: set[str] = set()
+    for pack in iter_runtime_tool_groups(query):
+        for tool_name in pack.tools:
+            if tool_name in CORE_TOOL_NAMES or tool_name in seen:
+                continue
+            requested.append(tool_name)
+            seen.add(tool_name)
+    return requested
+
+
 async def _resolve_tool_expansion(
     request: AgentInvocationRequest,
     tool_name: str,
@@ -662,6 +680,38 @@ async def _resolve_tool_expansion(
 ) -> ToolExpansionResult | list[dict] | None:
     if not request.agent_id:
         return None
+
+    if tool_name == "tool_search":
+        query = str(args.get("query", "") or "").strip()
+        requested_tool_names = _deferred_tool_names_for_query(query)
+        if not requested_tool_names:
+            return None
+        tools = await get_agent_tools_for_llm(
+            request.agent_id,
+            core_only=False,
+            requested_names=requested_tool_names,
+        )
+        expanded_tool_names = _tool_names_from_openai_tools(tools)
+        if not expanded_tool_names:
+            return None
+        if request.session_context is None:
+            request.session_context = SessionContext()
+        discovered = request.session_context.track_discovered_tools(expanded_tool_names)
+        packs = _infer_active_tool_groups(expanded_tool_names)
+        return ToolExpansionResult(
+            tools=tools,
+            active_tool_groups=packs,
+            event_payload={
+                "type": "deferred_tools_delta",
+                "packs": packs,
+                "tool_groups": packs,
+                "discovered_tools": discovered,
+                "all_discovered_tools": list(request.session_context.discovered_tools),
+                "message": f"Discovered deferred tools: {', '.join(discovered or expanded_tool_names)}",
+                "status": "info",
+                "trigger_tool": tool_name,
+            },
+        )
 
     if tool_name in {"discover_resources", "import_mcp_server"}:
         tools = await get_agent_tools_for_llm(

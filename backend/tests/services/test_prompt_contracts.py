@@ -155,7 +155,7 @@ def test_core_tool_descriptions_define_when_not_to_use_and_fallbacks() -> None:
     assert "Do NOT save one-off notes, transient state, or raw transcripts as skills" in tools["save_skill"]
     assert "Durable user corrections belong in `save_memory`" in tools["save_skill"]
     assert "operational notes and evidence belong in workspace files" in tools["save_skill"]
-    assert "This only returns summaries" in tools["tool_search"]
+    assert "matching deferred tool schemas become callable" in tools["tool_search"]
     assert "Do NOT use this as a general way to browse admin-only MCP extensions" in tools["tool_search"]
     assert "Return skill slugs" in tools["search_clawhub"]
 

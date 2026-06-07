@@ -486,6 +486,54 @@ async def test_resolve_tool_expansion_does_not_fallback_to_full_tools_when_works
 
 
 @pytest.mark.asyncio
+async def test_tool_search_records_discovered_tools_and_returns_deferred_schema(monkeypatch):
+    import app.runtime.invoker as invoker
+    from app.runtime.invoker import AgentInvocationRequest, _resolve_tool_expansion
+    from app.runtime.session import SessionContext
+
+    agent_id = uuid4()
+    session = SessionContext()
+    requested_names_seen: list[list[str] | None] = []
+
+    async def fake_get_agent_tools_for_llm(agent_id_arg, *, core_only=False, requested_names=None):
+        assert agent_id_arg == agent_id
+        assert core_only is False
+        requested_names_seen.append(list(requested_names or []))
+        return [
+            {
+                "type": "function",
+                "function": {"name": "web_search", "description": "", "parameters": {"type": "object"}},
+            }
+        ]
+
+    monkeypatch.setattr(invoker, "get_agent_tools_for_llm", fake_get_agent_tools_for_llm)
+
+    result = await _resolve_tool_expansion(
+        AgentInvocationRequest(
+            model=SimpleNamespace(
+                provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None
+            ),
+            messages=[{"role": "user", "content": "search web"}],
+            agent_name="Researcher",
+            role_description="Research agent",
+            agent_id=agent_id,
+            user_id=uuid4(),
+            session_context=session,
+        ),
+        "tool_search",
+        {"query": "web_search"},
+    )
+
+    assert result is not None
+    assert requested_names_seen == [["web_search"]]
+    assert [tool["function"]["name"] for tool in result.tools] == ["web_search"]
+    assert session.discovered_tools == ["web_search"]
+    assert session.metadata["discovered_tools"] == ["web_search"]
+    assert result.event_payload["type"] == "deferred_tools_delta"
+    assert result.event_payload["discovered_tools"] == ["web_search"]
+
+
+@pytest.mark.asyncio
 async def test_invoke_agent_emits_response_complete_and_session_close_hooks(monkeypatch):
     from app.runtime.hooks import HookEvent
     from app.runtime.invoker import AgentInvocationRequest, invoke_agent

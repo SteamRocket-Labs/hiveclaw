@@ -156,13 +156,14 @@ async def save_skill(agent_id: uuid.UUID, workspace: Path, arguments: dict) -> s
 @tool(ToolMeta(
     name="tool_search",
     description=(
-        "Search for delayed capability packs and skills that can be activated on demand.\n\n"
+        "Discover deferred capability packs, tools, and skills that can be used on demand.\n\n"
         "Usage:\n"
         "- Use this when you suspect a missing capability but do not yet know the exact skill or pack name.\n"
-        "- This only returns summaries and does not auto-load tools.\n"
+        "- After this search, matching deferred tool schemas become callable in the current session; already-loaded tools are a no-op.\n"
+        "- Use `load_skill` only when you need the skill's method/instructions, not merely to unlock tool schemas.\n"
         "- Prefer builtin tools, loaded skills, and direct web/file workflows before reaching for admin-only MCP extensions.\n"
         "- Do NOT use this as a general way to browse admin-only MCP extensions during ordinary task execution.\n"
-        "- After reading the summaries, call `load_skill` or the matching activation tool explicitly."
+        "- For MCP server installation or import, use the explicit MCP resource tools and approval flow."
     ),
     parameters={
         "type": "object",

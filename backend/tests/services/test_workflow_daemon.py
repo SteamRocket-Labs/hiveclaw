@@ -39,18 +39,25 @@ async def test_workflow_daemon_tick_resumes_pending_runs_and_pg_signals(monkeypa
 
     service = _FakeWorkflowService()
     signal_calls: list[object] = []
+    subagent_calls: list[object] = []
 
     async def fake_drain_signal_resumes(*, leaf_executor, service, session_factory=None):
         signal_calls.append((leaf_executor, service, session_factory))
         return ["signalled"]
 
+    async def fake_drain_subagent_completion_wakes(*, session_factory=None, invoke_parent=None, limit=50):
+        subagent_calls.append((session_factory, invoke_parent, limit))
+        return []
+
     monkeypatch.setattr(workflow_daemon, "drain_signal_resumes", fake_drain_signal_resumes)
+    monkeypatch.setattr(workflow_daemon, "drain_subagent_completion_wakes", fake_drain_subagent_completion_wakes)
 
     result = await workflow_daemon.workflow_daemon_tick(service=service, leaf_executor=_fake_leaf)
 
-    assert result == {"resumed_runs": 1, "signal_resumed_runs": 1}
+    assert result == {"resumed_runs": 1, "signal_resumed_runs": 1, "subagent_woken_parents": 0}
     assert service.resume_calls == 1
     assert signal_calls == [(_fake_leaf, service, None)]
+    assert subagent_calls == [(None, None, 50)]
 
 
 @pytest.mark.asyncio

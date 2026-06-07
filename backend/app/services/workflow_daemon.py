@@ -14,6 +14,7 @@ from typing import Any
 
 from app.config import get_settings
 from app.runtime.workflow_engine import LeafExecutor
+from app.services.subagent_wake_consumer import ParentWakeInvoker, drain_subagent_completion_wakes
 from app.services.workflow_launch import build_resumable_workflow_leaf_executor
 from app.services.workflow_runtime_service import WorkflowRuntimeService
 from app.services.workflow_signal_consumer import drain_signal_resumes
@@ -36,6 +37,7 @@ async def workflow_daemon_tick(
     service: WorkflowRuntimeService,
     leaf_executor: LeafExecutor,
     session_factory: Any = None,
+    subagent_wake_invoker: ParentWakeInvoker | None = None,
 ) -> dict[str, int]:
     resumed = await service.resume_pending_runs(leaf_executor=leaf_executor)
     signal_resumed = await drain_signal_resumes(
@@ -43,7 +45,15 @@ async def workflow_daemon_tick(
         service=service,
         session_factory=session_factory,
     )
-    return {"resumed_runs": len(resumed), "signal_resumed_runs": len(signal_resumed)}
+    subagent_wakes = await drain_subagent_completion_wakes(
+        session_factory=session_factory,
+        invoke_parent=subagent_wake_invoker,
+    )
+    return {
+        "resumed_runs": len(resumed),
+        "signal_resumed_runs": len(signal_resumed),
+        "subagent_woken_parents": len([wake for wake in subagent_wakes if wake.status == "woken"]),
+    }
 
 
 async def start_workflow_daemon(
@@ -51,6 +61,7 @@ async def start_workflow_daemon(
     service: WorkflowRuntimeService | None = None,
     leaf_executor: LeafExecutor | None = None,
     interval_seconds: float | None = None,
+    subagent_wake_invoker: ParentWakeInvoker | None = None,
 ) -> None:
     runtime_service = service or get_default_workflow_service()
     runtime_service.clear_drain()
@@ -61,8 +72,11 @@ async def start_workflow_daemon(
 
     try:
         while True:
-            result = await workflow_daemon_tick(service=runtime_service, leaf_executor=executor)
-            if result["resumed_runs"] or result["signal_resumed_runs"]:
+            tick_kwargs: dict[str, Any] = {"service": runtime_service, "leaf_executor": executor}
+            if subagent_wake_invoker is not None:
+                tick_kwargs["subagent_wake_invoker"] = subagent_wake_invoker
+            result = await workflow_daemon_tick(**tick_kwargs)
+            if result["resumed_runs"] or result["signal_resumed_runs"] or result["subagent_woken_parents"]:
                 logger.info("[WorkflowDaemon] tick: %s", result)
             await asyncio.sleep(max(interval, 0.1))
     except asyncio.CancelledError:

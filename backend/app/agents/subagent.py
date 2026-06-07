@@ -774,15 +774,16 @@ async def _emit_completion_signal(ctx: SubagentSpawnContext, result: SubagentRes
     """
 
     try:
-        from app.agents.coordination import coordination_runtime
+        from app.agents.coordination_wiring import gateway_scope
 
-        coordination_runtime.send_signal(
-            from_agent_id=f"subagent:{result.name}",
-            to_agent_id=str(ctx.parent_agent_id),
-            content=(result.content or result.error or "")[:500],
-            signal_type=SUBAGENT_COMPLETION_SIGNAL,
-            thread_id=ctx.trace_id or None,
-        )
+        async with gateway_scope(tenant_id=ctx.tenant_id) as gateway:
+            await gateway.send_signal(
+                from_agent_id=f"subagent:{result.name}",
+                to_agent_id=str(ctx.parent_agent_id),
+                content=(result.content or result.error or "")[:500],
+                signal_type=SUBAGENT_COMPLETION_SIGNAL,
+                thread_id=ctx.trace_id or None,
+            )
     except Exception as exc:  # best-effort notification — never crash the finished worker
         logger.warning("[Subagent] completion signal emit failed (non-fatal): %s", exc)
 

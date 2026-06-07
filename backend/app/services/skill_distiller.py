@@ -651,7 +651,10 @@ async def _draft_skill_with_llm(
                 LLMMessage(role="user", content=prompt),
             ],
             temperature=0.2,
-            max_tokens=min(getattr(model, "max_output_tokens", None) or 1400, 1400),
+            # CC auxiliary floor (8192): a distilled SKILL.md is a full document
+            # (frontmatter + method body); the old 1400 hard cap truncated any
+            # skill richer than a stub. Provider cap still clamps via min().
+            max_tokens=min(getattr(model, "max_output_tokens", None) or 8192, 8192),
         )
     except Exception as exc:  # noqa: BLE001
         record_autonomous_llm_call(source="skill_distiller", outcome="failure")

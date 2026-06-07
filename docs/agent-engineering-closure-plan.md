@@ -213,13 +213,14 @@ M5 形态对齐    C0 拍板 → C1 T3a → C2 T3b → C3 T4 ─ Runtime 形态�
 - **验收**：`pytest tests/memory/test_t2_store.py tests/services/test_dream_phase6.py tests/test_memory_integration.py -q`。
 - **体量提醒**：这是三件里最大的（多 writer 契约 + 扫描扩展），建议独立一仗，给足上下文。
 
-### 🟡 R3 — C 轨道定位修正（CONCERN：未达 CC 完成判据）
+### ✅ R3 — C 轨道定位修正（已完成 2026-06-07）
 - **实锤**：deferred 工具名从不进 turn-1 prompt（只在 tool_search 返回值）；`session.__post_init__`(:150) **读回** discovered_tools（Codex 纠正 Claude 早先"没人读"措辞），但 `_kernel_get_tools`(`invoker.py:819`) `requested_names=_channel_tools` **不含 discovered_tools** → schema 不跨 invocation 恢复。C0 三决策（名字宣告载体=post-hoc 事件 / 持久化=内存+镜像 half-wired / subagent 独立发现集无测试）均由 Codex 擅自定、未经用户拍板。
 - **修法（commit: `docs(runtime): downgrade C track to partial CC alignment` + 可选补完）**：
   1. **文档降级**：`docs/agent-engineering-closure-plan.md` §3 + `docs/execution-mode-spectrum.md` 把"C 全完成"改为"T3a conservative default landed；turn-1 name seeding + discovered_tools schema recovery 未完"。
   2. **可选顺手补（推荐）**：`_kernel_get_tools` 把 `session_context.discovered_tools` 并入 `requested_names` 重注入 schema——最小修，把 C 从"半成品"推到"schema 真跨 invocation 存活"。补了它 C 才算真 T3a 完成。
   3. **C0 三决策**：建议接受 Codex 保守默认作为 T3a 阶段成果，但显式记录"turn-1 name seeding"为未达 CC 判据的已知缺口（后续 T3a-补完切口）。C2 breaking 既已合则保留。
 - **验收**：`pytest tests/runtime/test_invoker.py tests/runtime/test_session_skill_lifecycle.py -q`。
+- ✅ **落地证据（2026-06-07）**：① **补完（推荐项已做）**——`_kernel_get_tools`（`invoker.py`）把 `request.session_context.discovered_tools` 并入 `requested_names`（与 `_channel_tools` 同模式，空则 `or None` 保持既有"全核心"语义），发现的工具 schema 现跨 invocation 重注入；`get_agent_tools_for_llm` 的 `requested_set |= CORE_TOOL_NAMES` 保证核心不丢。红测 `test_kernel_get_tools_reinjects_discovered_tool_schemas`（discovered→requested_names 含之）+ 回归 `test_kernel_get_tools_without_discovered_tools_keeps_none_requested`（无 discovered→None 不窄化）。② **文档降级**——`execution-mode-spectrum.md` §4.5 C0 块加诚实标注：C 是 T3a 保守默认，schema recovery 已补，**turn-1 name seeding 仍是已知缺口**（deferred 名只在 tool_search 返回值、不进 turn-1 prompt；不致盲但与 CC "名字常驻" 有 delta）。runtime 套件 50 绿。
 
 ### 返工后全批验证
 ```

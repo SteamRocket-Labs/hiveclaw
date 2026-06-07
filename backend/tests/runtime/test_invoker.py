@@ -1950,3 +1950,63 @@ def test_turn_route_enables_work_ledger_for_complex_multistep_turn():
     _resolve_effective_turn_route(request, routing_config=None)
 
     assert request.session_context.metadata["work_ledger_enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_kernel_get_tools_reinjects_discovered_tool_schemas(monkeypatch):
+    """R3 (closure plan §7): deferred tools made callable by tool_search in an
+    earlier turn must have their schemas re-injected on a fresh invocation, so a
+    discovered capability survives compaction / recovery — not just the in-run
+    full_toolset accumulator. _kernel_get_tools merges session.discovered_tools
+    into requested_names."""
+    from app.runtime.invoker import AgentInvocationRequest, get_agent_kernel
+    from app.runtime.session import SessionContext
+
+    captured: dict = {}
+
+    async def fake_tools(agent_id, core_only=False, requested_names=None):
+        captured["requested_names"] = requested_names
+        return [{"function": {"name": "write_file"}}]
+
+    monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", fake_tools)
+
+    kernel = get_agent_kernel(
+        AgentInvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None),
+            messages=[{"role": "user", "content": "hi"}],
+            agent_name="Researcher",
+            role_description="r",
+            session_context=SessionContext(source="web", discovered_tools=["web_search"]),
+        )
+    )
+    await kernel._deps.get_tools(uuid4(), True)
+    assert captured["requested_names"] is not None
+    assert "web_search" in captured["requested_names"]
+
+
+@pytest.mark.asyncio
+async def test_kernel_get_tools_without_discovered_tools_keeps_none_requested(monkeypatch):
+    """Regression guard: with no discovered tools and no channel tools, the
+    requested_names stays None (full core surface), not an empty-list narrowing."""
+    from app.runtime.invoker import AgentInvocationRequest, get_agent_kernel
+    from app.runtime.session import SessionContext
+
+    captured: dict = {}
+
+    async def fake_tools(agent_id, core_only=False, requested_names=None):
+        captured["requested_names"] = requested_names
+        return [{"function": {"name": "write_file"}}]
+
+    monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", fake_tools)
+
+    kernel = get_agent_kernel(
+        AgentInvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None),
+            messages=[{"role": "user", "content": "hi"}],
+            agent_name="Researcher",
+            role_description="r",
+            session_context=SessionContext(source="web"),
+        )
+    )
+    await kernel._deps.get_tools(uuid4(), True)
+    assert captured["requested_names"] is None

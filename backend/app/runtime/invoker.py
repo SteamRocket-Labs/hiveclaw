@@ -803,7 +803,7 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
             return []
         # Auto-include channel-specific tools so agents don't need to
         # manually load_skill before their channel tools become available.
-        _channel_tools: list[str] | None = None
+        _requested_names: list[str] = []
         if core_only and request.session_context:
             _source = request.session_context.source
             if _source == "feishu":
@@ -811,12 +811,18 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
 
                 _pack = runtime_tool_group_for_name("feishu_pack")
                 if _pack:
-                    _channel_tools = list(_pack.tools)
+                    _requested_names.extend(_pack.tools)
+            # R3 (closure plan §7): re-inject schemas for tools discovered via
+            # tool_search in earlier turns, so a discovered capability survives
+            # compaction / a fresh invocation. The in-run full_toolset
+            # accumulator does not persist across invocations; session.metadata
+            # carries discovered_tools and __post_init__ restores them.
+            _requested_names.extend(request.session_context.discovered_tools)
         tools = await _maybe_await(
             get_agent_tools_for_llm(
                 agent_id,
                 core_only=core_only,
-                requested_names=_channel_tools,
+                requested_names=_requested_names or None,
             )
         )
         if allowed_tool_names:

@@ -195,6 +195,10 @@ Deferred 的对象是"当前 agent 可用,但不该占 turn-1 schema"的工具�
 
 **C0 拍板已按保守默认落地**:① 名字宣告载体=`deferred_tools_delta` runtime event；② 发现集持久化=`SessionContext.discovered_tools` + metadata mirror；③ subagent 独立发现集。
 
+**⚠️ 二轮 review 诚实降级(2026-06-07,R3)**:C 轨道是 **T3a 保守默认**,不是完整 CC 对齐。两点 delta:
+- ✅ **schema 跨 invocation 恢复已补**(2026-06-07):`_kernel_get_tools` 把 `session.discovered_tools` 并入 `requested_names` 重注入 schema——此前 `SessionContext.__post_init__` 读回了 discovered_tools 但 `_kernel_get_tools` 不消费它,发现的工具 schema 不跨 invocation 存活;现已闭合(红测 `test_kernel_get_tools_reinjects_discovered_tool_schemas`)。
+- ⚠️ **turn-1 name seeding 仍是已知缺口**:deferred 工具名只在 `tool_search` 返回值出现,不进 turn-1 prompt;`deferred_tools_delta` 是 tool_search **之后**的 post-hoc 通知,非 CC 的 turn-1 种名字(§2.3)。模型若不先 `tool_search` 就不知道某 deferred 能力存在——**不致盲**(核心源能力 turn-1 常驻,集成 pack 可两步发现:搜目录→命中),但与 CC "名字常驻、schema 按需" 仍有此 delta,需后续 T3a-补完切口。
+
 ### 4.6 历史小切口:选择性去 skill 化(已被 C1/C2 收敛)
 
 该节记录 2026-06-05 的保守小切口。2026-06-07 C1/C2 已继续完成 CC 式 dynamic loading，本节不再代表当前 runtime 行为。

@@ -80,10 +80,92 @@ def _file_mtime_iso(path: Path) -> str:
         return ""
 
 
-def _distiller_status(state_path: Path, *, label: str) -> dict:
+_STALE_MULTIPLIER = 3  # state more than 3× its pipeline cadence behind the newest input → stale
+_EXTRACTOR_GRACE_SECONDS = 24 * 3600  # per-response extraction has no cadence; a day behind fresh behavior = stale
+
+
+def _newest_mtime(paths) -> float | None:
+    newest: float | None = None
+    for path in paths:
+        try:
+            ts = path.stat().st_mtime
+        except OSError:
+            continue
+        if newest is None or ts > newest:
+            newest = ts
+    return newest
+
+
+def _distiller_status(
+    state_path: Path,
+    *,
+    label: str,
+    stale_seconds: float | None = None,
+    input_anchor: float | None = None,
+) -> dict:
+    """Distiller pipeline status for the knowledge panel (closure plan A1: exists ≠ fresh).
+
+    ``stale`` means the pipeline's newest *input* mtime is more than
+    ``stale_seconds`` ahead of the state file — input keeps arriving but the
+    pipeline is not keeping up. An idle agent (no input newer than the state)
+    is never stale: a lying "stale" would be the same defect as the lying
+    "active" this replaces. Missing state stays ``never_ran``.
+    """
     if not state_path.exists():
         return {"name": label, "state": "never_ran", "last_run_at": ""}
-    return {"name": label, "state": "active", "last_run_at": _file_mtime_iso(state_path)}
+    state = "active"
+    if stale_seconds is not None and input_anchor is not None:
+        try:
+            mtime = state_path.stat().st_mtime
+        except OSError:
+            mtime = None
+        if mtime is not None and input_anchor - mtime > stale_seconds:
+            state = "stale"
+    return {"name": label, "state": state, "last_run_at": _file_mtime_iso(state_path)}
+
+
+def _build_distiller_statuses(root: Path) -> dict:
+    """Per-pipeline freshness, each judged against its own input side.
+
+    extractor consumes T0 behavior logs, heartbeat consumes T2 learnings,
+    dream consumes active T3 files. skill_distiller keeps the two-state
+    contract: its real input is skill/workflow *candidates* inside T2, so a
+    learnings-mtime anchor would false-positive on agents that learn without
+    producing candidates — never mis-report stale.
+    """
+    from app.config import get_settings
+    from app.memory.md_store import T3_FILE_SPECS
+    from app.services.auto_dream import MIN_HOURS_BETWEEN_DREAMS
+
+    mem_dir = root / "memory"
+    behavior_anchor = _newest_mtime((root / "logs").glob("*/behavior/*"))
+    learnings_anchor = _newest_mtime((mem_dir / "learnings").glob("*.md"))
+    t3_anchor = _newest_mtime(mem_dir / spec["filename"] for spec in T3_FILE_SPECS)
+
+    heartbeat_window = _STALE_MULTIPLIER * get_settings().HEARTBEAT_DEFAULT_INTERVAL_MINUTES * 60
+    dream_window = _STALE_MULTIPLIER * MIN_HOURS_BETWEEN_DREAMS * 3600
+
+    return {
+        "extractor": _distiller_status(
+            mem_dir / "learnings" / ".extract_cursor.json",
+            label="extractor",
+            stale_seconds=_EXTRACTOR_GRACE_SECONDS,
+            input_anchor=behavior_anchor,
+        ),
+        "heartbeat": _distiller_status(
+            mem_dir / ".curation_cursor.json",
+            label="heartbeat",
+            stale_seconds=heartbeat_window,
+            input_anchor=learnings_anchor,
+        ),
+        "dream": _distiller_status(
+            mem_dir / "auto_dream_state.json",
+            label="dream",
+            stale_seconds=dream_window,
+            input_anchor=t3_anchor,
+        ),
+        "skillDistiller": _distiller_status(root / "evolution" / "skill_distiller_state.json", label="skill_distiller"),
+    }
 
 
 # ── Overview ──
@@ -136,14 +218,7 @@ def build_knowledge_overview(data_root: Path, agent_id: uuid.UUID) -> dict:
             "archived": lifecycle_counts["archived"],
             "sensitiveSuppressed": sensitive_suppressed,
         },
-        "distillers": {
-            "extractor": _distiller_status(root / "memory" / "learnings" / ".extract_cursor.json", label="extractor"),
-            "heartbeat": _distiller_status(root / "memory" / ".curation_cursor.json", label="heartbeat"),
-            "dream": _distiller_status(root / "memory" / "auto_dream_state.json", label="dream"),
-            "skillDistiller": _distiller_status(
-                root / "evolution" / "skill_distiller_state.json", label="skill_distiller"
-            ),
-        },
+        "distillers": _build_distiller_statuses(root),
         "linkedCapabilities": {
             "skillsReferenced": skills_count,
             "workflowsReferenced": len(workflow_candidates),

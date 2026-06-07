@@ -58,7 +58,19 @@ function OverviewCards({ overview }: { overview: KnowledgeOverview }) {
         <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
           {distillers.map((status) => (
             <div key={status.name}>
-              {status.name}: <span style={{ color: status.state === 'active' ? '#22c55e' : 'var(--text-tertiary)' }}>{status.state}</span>
+              {status.name}:{' '}
+              <span
+                style={{
+                  color:
+                    status.state === 'active'
+                      ? '#22c55e'
+                      : status.state === 'stale'
+                        ? '#f59e0b'
+                        : 'var(--text-tertiary)',
+                }}
+              >
+                {status.state}
+              </span>
             </div>
           ))}
         </div>

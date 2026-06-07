@@ -6,7 +6,9 @@ import { get } from '../core';
 
 export interface DistillerStatus {
   name: string;
-  state: 'active' | 'never_ran' | string;
+  // 'stale' = the pipeline's input keeps arriving but its state file is not
+  // keeping up (closure plan A1: exists ≠ fresh).
+  state: 'active' | 'stale' | 'never_ran' | string;
   last_run_at: string;
 }
 

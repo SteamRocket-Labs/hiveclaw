@@ -19,7 +19,7 @@ const overviewData = {
   memory: { active: 3, stale: 0, superseded: 1, archived: 2, sensitiveSuppressed: 0 },
   distillers: {
     extractor: { name: 'extractor', state: 'active', last_run_at: '' },
-    heartbeat: { name: 'heartbeat', state: 'active', last_run_at: '' },
+    heartbeat: { name: 'heartbeat', state: 'stale', last_run_at: '' },
     dream: { name: 'dream', state: 'never_ran', last_run_at: '' },
     skillDistiller: { name: 'skill_distiller', state: 'never_ran', last_run_at: '' },
   },
@@ -79,6 +79,10 @@ describe('AgentKnowledgeSection', () => {
     expect(html).toContain('Memory');
     expect(html).toContain('Distillers');
     expect(html).toContain('Linked capabilities');
+    // A1 (exists ≠ fresh): a stale pipeline renders visibly in warning color,
+    // distinct from active green and never_ran tertiary.
+    expect(html).toContain('stale');
+    expect(html).toContain('#f59e0b');
     // Held curation decisions surface on the overview.
     expect(html).toContain('no LLM');
     // Default view is Overview, not a file browser.

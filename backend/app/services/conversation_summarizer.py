@@ -478,7 +478,9 @@ _SUMMARY_INPUT_USER_ASSISTANT_CAP = 8000  # chars per user/assistant message (wa
 _SUMMARY_INPUT_TOOL_RESULT_CAP = 12000  # chars per tool result (was 1500)
 _SUMMARY_INPUT_TOOL_ARGS_CAP = 2000  # chars per tool-call args preview (was 300)
 _SUMMARY_INPUT_WINDOW_RATIO = 0.7  # input budget as fraction of the summary model window
-_SUMMARY_MAX_OUTPUT_TOKENS = 8000  # was 2500; CC uses 20K — 8K is the safe cross-provider value
+_SUMMARY_MAX_OUTPUT_TOKENS = 20_000  # CC COMPACT_MAX_OUTPUT_TOKENS (context.ts:12).
+# Cross-provider safety is handled by _resolve_summary_max_tokens, which clamps
+# to the provider/model output cap — no need to pre-shrink the budget here.
 
 
 def _serialize_message_for_summary(msg: dict) -> list[str]:

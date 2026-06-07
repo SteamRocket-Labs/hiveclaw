@@ -501,7 +501,11 @@ async def _dream_llm_consolidate(
             # 蒸馏器核查: 3000 starved the decision JSON (promotions + rewrites +
             # dedups + reasoning over up to 5 T3 files). 8000 matches the
             # compaction-P0 output budget philosophy.
-            max_tokens=8192,  # CC-standard auxiliary-call floor
+            # Compaction-class budget (CC COMPACT_MAX_OUTPUT_TOKENS=20k): dream's
+            # output scales with the FULL T3 set (≤150 entries → merge decisions
+            # carrying kept text) — the fullest memory produces the largest dream,
+            # exactly when truncation would silently drop lifecycle decisions.
+            max_tokens=20_000,
             temperature=0.2,
         )
     except Exception as exc:  # noqa: BLE001

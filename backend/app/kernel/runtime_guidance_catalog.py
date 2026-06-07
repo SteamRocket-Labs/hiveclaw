@@ -1,17 +1,20 @@
-"""T-G3 runtime guidance alignment catalog.
+"""T-G3 runtime guidance alignment catalogs.
 
-This module is the code-owned source of truth for the CC attachment/reminder
-alignment inventory described in docs/runtime-guidance-cc-alignment.md. It does
-not execute reminders; it prevents the alignment decision from living only in
-prose by recording each CC attachment family, Hive's mapped surface, the single
-ingress that owns it, and whether the data is transient, persisted, internal, or
-not applicable.
+This module is the code-owned source of truth for
+docs/runtime-guidance-cc-alignment.md. It intentionally keeps two namespaces:
+
+* CC native attachment types copied from Claude Code's Attachment union.
+* Hive native runtime guidance channels that are not CC attachment names.
+
+The split prevents a Hive-only reminder or governance event from being counted
+as proof that a CC attachment type was reviewed.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Literal
 
 
 class AlignmentStatus(str, Enum):
@@ -21,7 +24,7 @@ class AlignmentStatus(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
-class RuntimeGuidanceCatalogEntry:
+class CCAttachmentAlignmentEntry:
     cc_type: str
     family: str
     status: str
@@ -29,12 +32,29 @@ class RuntimeGuidanceCatalogEntry:
     single_ingress: str
     persistence_policy: str
     decision: str
+    related_hive_types: tuple[str, ...] = ()
 
+
+@dataclass(frozen=True, slots=True)
+class HiveNativeGuidanceEntry:
+    hive_type: str
+    family: str
+    status: str
+    hive_surface: str
+    single_ingress: str
+    persistence_policy: str
+    decision: str
+    related_cc_types: tuple[str, ...] = ()
+
+
+RuntimeGuidanceCatalogEntry = CCAttachmentAlignmentEntry
+CatalogNamespace = Literal["cc_native", "hive_native"]
+CatalogEntry = CCAttachmentAlignmentEntry | HiveNativeGuidanceEntry
 
 _SCHEDULER = "kernel/reminder_scheduler.py::ReminderScheduler"
 
 
-def _entry(
+def _cc(
     cc_type: str,
     family: str,
     status: AlignmentStatus,
@@ -42,8 +62,9 @@ def _entry(
     single_ingress: str,
     persistence_policy: str,
     decision: str,
-) -> RuntimeGuidanceCatalogEntry:
-    return RuntimeGuidanceCatalogEntry(
+    related_hive_types: tuple[str, ...] = (),
+) -> CCAttachmentAlignmentEntry:
+    return CCAttachmentAlignmentEntry(
         cc_type=cc_type,
         family=family,
         status=status.value,
@@ -51,173 +72,374 @@ def _entry(
         single_ingress=single_ingress,
         persistence_policy=persistence_policy,
         decision=decision,
+        related_hive_types=related_hive_types,
     )
 
 
-ATTACHMENT_ALIGNMENT_CATALOG: tuple[RuntimeGuidanceCatalogEntry, ...] = (
-    _entry(
-        "todo_reminder",
-        "task",
-        AlignmentStatus.HAVE,
-        "Work Ledger reminder with persisted todo snapshot",
-        _SCHEDULER,
-        "transient_request_only",
-        "Mapped to track_todo/record_finding/read_ledger; idle10+cooldown10.",
+def _hive(
+    hive_type: str,
+    family: str,
+    status: AlignmentStatus,
+    hive_surface: str,
+    single_ingress: str,
+    persistence_policy: str,
+    decision: str,
+    related_cc_types: tuple[str, ...] = (),
+) -> HiveNativeGuidanceEntry:
+    return HiveNativeGuidanceEntry(
+        hive_type=hive_type,
+        family=family,
+        status=status.value,
+        hive_surface=hive_surface,
+        single_ingress=single_ingress,
+        persistence_policy=persistence_policy,
+        decision=decision,
+        related_cc_types=related_cc_types,
+    )
+
+
+CC_NATIVE_ATTACHMENT_CATALOG: tuple[CCAttachmentAlignmentEntry, ...] = (
+    _cc(
+        "agent_listing_delta",
+        "tool_visibility",
+        AlignmentStatus.PLANNED,
+        "Deferred subagent/source capability catalog delta",
+        "future tool visibility delta builder",
+        "future_transient_request_only",
+        "Required by the larger deferred-loading route; current core schemas are static.",
+        ("subagent_listing",),
     ),
-    _entry(
-        "task_reminder",
-        "task",
+    _cc(
+        "agent_mention",
+        "coordination",
         AlignmentStatus.HAVE,
-        "Work Ledger reminder with gentle guard",
-        _SCHEDULER,
-        "transient_request_only",
-        "Same Hive surface as todo_reminder; task writes are cognitive, not execution.",
+        "spawn_subagent/delegate_to_agent tool schemas",
+        "prompt_sections/executing_actions.py + coordination tool schemas",
+        "static_prompt_or_tool_call",
+        "Hive exposes agent collaboration through governed source-capability tools.",
+        ("subagent_listing", "agent_delegation_status"),
     ),
-    _entry(
-        "task_status",
-        "task",
+    _cc(
+        "already_read_file",
+        "workspace",
+        AlignmentStatus.HAVE,
+        "Workspace file read state",
+        "tools/handlers/filesystem.py::read_file",
+        "tool_result",
+        "Read state is explicit tool output; no separate reminder is needed.",
+        ("workspace_file_snapshot",),
+    ),
+    _cc(
+        "async_hook_response",
+        "hook",
         AlignmentStatus.NOT_APPLICABLE,
-        "Private Work Ledger/read_ledger view",
-        "services/agent_work_ledger.py",
-        "persisted_work_ledger_json",
-        "CC exposes task status as prompt attachment; Hive keeps it private unless reminder/read_ledger surfaces it.",
+        "Internal runtime hook/audit channel",
+        "runtime/hooks.py",
+        "internal_hook_event",
+        "Hive hook responses are audit/control-plane state, not model guidance attachments.",
     ),
-    _entry(
-        "plan_mode",
-        "plan",
+    _cc(
+        "auto_mode",
+        "autonomy",
+        AlignmentStatus.NOT_APPLICABLE,
+        "Heartbeat/autonomy policy",
+        "services/heartbeat.py + autonomy policy services",
+        "governed_runtime_policy",
+        "Hive autonomy is governed by tenant policy and checkpoints, not a CC auto-mode prompt state.",
+    ),
+    _cc(
+        "auto_mode_exit",
+        "autonomy",
+        AlignmentStatus.NOT_APPLICABLE,
+        "Heartbeat/autonomy policy exit",
+        "services/heartbeat.py + autonomy policy services",
+        "governed_runtime_policy",
+        "There is no CC-style auto-mode session to exit in Hive.",
+    ),
+    _cc(
+        "bagel_console",
+        "companion",
+        AlignmentStatus.NOT_APPLICABLE,
+        "No Hive companion console surface",
+        "n/a",
+        "n/a",
+        "CC companion console diagnostics do not map to Hive's agent runtime.",
+    ),
+    _cc(
+        "budget_usd",
+        "budget",
+        AlignmentStatus.PLANNED,
+        "Tenant/run budget telemetry",
+        "future budget telemetry reminder spec",
+        "future_transient_or_event",
+        "Budget enforcement exists separately; prompt-facing USD budget deltas need a dedicated cut.",
+    ),
+    _cc(
+        "command_permissions",
+        "governance",
         AlignmentStatus.HAVE,
-        "Plan Mode FULL reminder",
-        _SCHEDULER,
-        "transient_request_only",
-        "Read-only policy and approval path live in one main-loop Plan Mode runtime.",
+        "Capability gate / approval policy",
+        "services/capability_gate.py + services/approval_service.py",
+        "governed_tool_execution",
+        "Permissions are enforced at tool execution and surfaced through results/events.",
+        ("approval_required", "permission_denied"),
     ),
-    _entry(
-        "plan_mode_reentry",
-        "plan",
+    _cc(
+        "compact_file_reference",
+        "compaction",
         AlignmentStatus.HAVE,
-        "Plan Mode FULL re-arm after compaction",
-        _SCHEDULER,
-        "transient_request_only",
-        "Compaction reset re-arms fire-once plan reminder without losing queued events.",
+        "Compaction restoration context",
+        "kernel/engine.py::_build_restoration_context",
+        "transient_after_compaction",
+        "Hive rebuilds post-compaction focus from persisted state and artifacts.",
+        ("compact_reboot_context",),
     ),
-    _entry(
-        "plan_mode_exit",
-        "plan",
+    _cc(
+        "compaction_reminder",
+        "compaction",
         AlignmentStatus.HAVE,
-        "exit_plan_mode approval request/result",
-        "tools/handlers/plan_mode.py::exit_plan_mode",
-        "tool_result_and_plan_row",
-        "Plan submission persists in agent_plan_requests; no runtime reminder path needed.",
+        "Compaction reset and reboot reminders",
+        "kernel/engine.py + kernel/reminder_scheduler.py::ReminderScheduler.reset",
+        "transient_after_compaction",
+        "T-G1/T-G2 re-arms reminder timing after compaction without replaying stale prompt text.",
+        ("memory_compaction_summary", "compact_reboot_context"),
     ),
-    _entry(
+    _cc(
+        "companion_intro",
+        "companion",
+        AlignmentStatus.NOT_APPLICABLE,
+        "No Hive companion persona surface",
+        "n/a",
+        "n/a",
+        "Hive keeps model equality and does not implement CC's companion prompt feature.",
+    ),
+    _cc(
+        "context_efficiency",
+        "budget",
+        AlignmentStatus.PLANNED,
+        "Context efficiency telemetry",
+        "future token/context telemetry spec",
+        "future_transient_or_event",
+        "Round pressure exists; exact context-efficiency attachment needs token telemetry semantics.",
+        ("round_pressure",),
+    ),
+    _cc(
         "critical_system_reminder",
         "safety",
         AlignmentStatus.PLANNED,
         "Critical invariant reminder",
-        _SCHEDULER,
+        "future critical reminder scheduler spec",
         "future_transient_request_only",
-        "T-G2 added internal guards; a dedicated critical-reminder spec remains a separate policy cut.",
+        "T-G2 guards exist; a separate high-priority invariant channel still needs policy design.",
     ),
-    _entry(
-        "token_budget_warning",
-        "budget",
-        AlignmentStatus.HAVE,
-        "Round-pressure warning",
-        _SCHEDULER,
-        "transient_request_only",
-        "80% and final-2 round budget reminders carry real tool/context counts.",
-    ),
-    _entry(
-        "loop_guard_warning",
-        "safety",
-        AlignmentStatus.HAVE,
-        "Loop guard warn-before-abort diagnostic",
-        _SCHEDULER,
-        "transient_request_only",
-        "LoopGuard creates the decision; scheduler is the only prompt-ingress path.",
-    ),
-    _entry(
-        "permission_denied",
-        "governance",
-        AlignmentStatus.HAVE,
-        "Permission/approval tool result",
-        "services/approval_service.py + kernel permission events",
-        "tool_result_and_event",
-        "Governance failure is returned as tool result/event, not a periodic reminder.",
-    ),
-    _entry(
-        "approval_required",
-        "governance",
-        AlignmentStatus.HAVE,
-        "Plan gate / approval checkpoint",
-        "services/plan_mode_gate.py",
-        "persisted_plan_or_checkpoint",
-        "External-visible or irreversible actions route through gate/checkpoint records.",
-    ),
-    _entry(
-        "skill_listing",
-        "skill",
-        AlignmentStatus.HAVE,
-        "Static/deferred skill catalog",
-        "tools/handlers/skills.py::tool_search",
-        "static_prompt_or_tool_result",
-        "Hive keeps skill discovery in static guidance/tool_search rather than repeated attachments.",
-    ),
-    _entry(
-        "skill_discovery",
-        "skill",
-        AlignmentStatus.HAVE,
-        "tool_search -> load_skill flow",
-        "tools/handlers/skills.py::tool_search",
-        "tool_result",
-        "Matches Hive's current small-cut pack semantics.",
-    ),
-    _entry(
-        "skill_loaded",
-        "skill",
-        AlignmentStatus.HAVE,
-        "load_skill result",
-        "tools/handlers/skills.py::load_skill",
-        "tool_result",
-        "Loaded skill knowledge is returned through the tool result path.",
-    ),
-    _entry(
-        "mcp_tool_listing",
-        "tooling",
-        AlignmentStatus.HAVE,
-        "MCP resource/server tools",
-        "tools/handlers/mcp.py",
-        "tool_result",
-        "MCP discovery stays in tool APIs and static/deferred tool descriptions.",
-    ),
-    _entry(
-        "subagent_listing",
-        "coordination",
-        AlignmentStatus.HAVE,
-        "spawn_subagent/delegate tools",
-        "prompt_sections/executing_actions.py + tool schemas",
-        "static_prompt",
-        "Core tool visibility plus tool descriptions own subagent discoverability.",
-    ),
-    _entry(
-        "workflow_listing",
-        "workflow",
-        AlignmentStatus.HAVE,
-        "preview_workflow/start_workflow tools",
-        "prompt_sections/executing_actions.py + workflow tool schemas",
-        "static_prompt",
-        "Workflow discoverability is static/tool-schema driven; runtime admission is in workflow services.",
-    ),
-    _entry(
-        "relevant_memories",
+    _cc(
+        "current_session_memory",
         "memory",
         AlignmentStatus.HAVE,
-        "Memory Control Plane dynamic suffix",
-        "runtime/prompt_builder.py",
+        "Session memory and dynamic prompt suffix",
+        "runtime/prompt_builder.py + memory activation services",
         "dynamic_prompt_suffix",
-        "Tenant-scoped governed memory is injected through the existing memory suffix.",
+        "Current-session and long-term memory are injected through the governed memory control plane.",
     ),
-    _entry(
+    _cc(
+        "date_change",
+        "runtime",
+        AlignmentStatus.PLANNED,
+        "Date-change runtime notice",
+        "future session clock observer",
+        "future_transient_request_only",
+        "Hive can add this as a low-risk scheduler event; no current date-change attachment exists.",
+    ),
+    _cc(
+        "deferred_tools_delta",
+        "tool_visibility",
+        AlignmentStatus.PLANNED,
+        "Deferred tool visibility delta",
+        "future dynamic tool visibility catalog",
+        "future_transient_request_only",
+        "This is the main future T3 deferred-loading mechanism, not part of the small-cut route.",
+    ),
+    _cc(
+        "diagnostics",
+        "ide",
+        AlignmentStatus.PLANNED,
+        "LSP/test diagnostics attachment",
+        "future diagnostics watcher",
+        "future_transient_or_artifact",
+        "Requires IDE/LSP/file-watch substrate before prompt injection is meaningful.",
+    ),
+    _cc(
+        "directory",
+        "workspace",
+        AlignmentStatus.HAVE,
+        "Workspace directory listing",
+        "tools/handlers/filesystem.py::list_files",
+        "tool_result",
+        "Directory state is exposed through explicit filesystem tools.",
+        ("workspace_file_snapshot",),
+    ),
+    _cc(
+        "dynamic_skill",
+        "skill",
+        AlignmentStatus.HAVE,
+        "load_skill result and dynamic skill knowledge",
+        "tools/handlers/skills.py::load_skill",
+        "tool_result",
+        "Hive's current small-cut route returns skill knowledge through the tool result path.",
+        ("skill_loaded",),
+    ),
+    _cc(
+        "edited_image_file",
+        "ide",
+        AlignmentStatus.PLANNED,
+        "External image edit watcher",
+        "future workspace file-watch service",
+        "future_transient_or_artifact",
+        "Needs live editor/file-watch integration before Hive can attach edited image deltas.",
+    ),
+    _cc(
+        "edited_text_file",
+        "ide",
+        AlignmentStatus.PLANNED,
+        "External text edit watcher",
+        "future workspace file-watch service",
+        "future_transient_or_artifact",
+        "Needs live editor/file-watch integration before Hive can attach edited text deltas.",
+    ),
+    _cc(
+        "file",
+        "workspace",
+        AlignmentStatus.HAVE,
+        "Workspace file reads",
+        "tools/handlers/filesystem.py::read_file",
+        "tool_result",
+        "File content is explicit tool output rather than a hidden dynamic prompt channel.",
+        ("workspace_file_snapshot",),
+    ),
+    _cc(
+        "hook_additional_context",
+        "hook",
+        AlignmentStatus.HAVE,
+        "Tool result next_action and handler context",
+        "tool handlers returning next_action/tool result text",
+        "tool_result",
+        "Hive's equivalent context is carried in governed tool results.",
+    ),
+    _cc(
+        "hook_blocking_error",
+        "hook",
+        AlignmentStatus.HAVE,
+        "Preflight/capability blocking result",
+        "services/action_preflight.py + services/capability_gate.py",
+        "governed_tool_execution",
+        "Blocking hook behavior maps to Hive's fail-closed tool governance result.",
+        ("permission_denied",),
+    ),
+    _cc(
+        "hook_cancelled",
+        "hook",
+        AlignmentStatus.NOT_APPLICABLE,
+        "Internal cancellation event",
+        "runtime/hooks.py",
+        "internal_hook_event",
+        "Cancellation is runtime/audit state and should not become model guidance.",
+    ),
+    _cc(
+        "hook_error_during_execution",
+        "hook",
+        AlignmentStatus.HAVE,
+        "Tool execution error result",
+        "tools/service.py::ToolRuntimeService.execute",
+        "tool_result_and_event",
+        "Tool execution errors are already returned through the governed tool result path.",
+    ),
+    _cc(
+        "hook_non_blocking_error",
+        "hook",
+        AlignmentStatus.HAVE,
+        "Non-blocking tool/runtime warning",
+        "kernel/reminder_scheduler.py::ReminderScheduler.enqueue",
+        "transient_request_only",
+        "Non-blocking runtime warnings enter the prompt only through scheduler events.",
+        ("loop_guard_warning",),
+    ),
+    _cc(
+        "hook_permission_decision",
+        "hook",
+        AlignmentStatus.HAVE,
+        "Approval decision result",
+        "services/approval_service.py",
+        "tool_result_and_event",
+        "Permission decisions are explicit approval/tool events in Hive.",
+        ("approval_required", "permission_denied"),
+    ),
+    _cc(
+        "hook_stopped_continuation",
+        "hook",
+        AlignmentStatus.NOT_APPLICABLE,
+        "No CC hook-stop continuation surface",
+        "n/a",
+        "n/a",
+        "Hive does not ask hooks to author continuation prompt text.",
+    ),
+    _cc(
+        "hook_success",
+        "hook",
+        AlignmentStatus.HAVE,
+        "Tool success result and runtime event",
+        "tools/service.py::ToolRuntimeService.execute",
+        "tool_result_and_event",
+        "Successful tool state is already in the tool result/event stream.",
+    ),
+    _cc(
+        "hook_system_message",
+        "hook",
+        AlignmentStatus.NOT_APPLICABLE,
+        "Internal system hook message",
+        "runtime/hooks.py",
+        "internal_hook_event",
+        "Hive keeps hook system messages internal unless a governed tool result exposes them.",
+    ),
+    _cc(
+        "invoked_skills",
+        "skill",
+        AlignmentStatus.HAVE,
+        "Loaded skill content",
+        "tools/handlers/skills.py::load_skill",
+        "tool_result",
+        "Invoked skill knowledge is represented by load_skill output.",
+        ("skill_loaded",),
+    ),
+    _cc(
+        "max_turns_reached",
+        "budget",
+        AlignmentStatus.HAVE,
+        "Round-pressure and max-round stop",
+        "kernel/engine.py + kernel/reminder_scheduler.py::ReminderScheduler",
+        "transient_request_only_or_internal_stop",
+        "Hive warns near the round limit and enforces max rounds in the kernel.",
+        ("round_pressure",),
+    ),
+    _cc(
+        "mcp_instructions_delta",
+        "tool_visibility",
+        AlignmentStatus.PLANNED,
+        "MCP instruction delta",
+        "future MCP visibility delta builder",
+        "future_transient_request_only",
+        "MCP discovery exists; cache-stable incremental instruction deltas are future T3 work.",
+    ),
+    _cc(
+        "mcp_resource",
+        "tooling",
+        AlignmentStatus.HAVE,
+        "MCP resource tools",
+        "tools/handlers/mcp.py",
+        "tool_result",
+        "MCP resources are accessed through governed MCP tools.",
+        ("mcp_tool_listing",),
+    ),
+    _cc(
         "nested_memory",
         "memory",
         AlignmentStatus.NOT_APPLICABLE,
@@ -226,52 +448,317 @@ ATTACHMENT_ALIGNMENT_CATALOG: tuple[RuntimeGuidanceCatalogEntry, ...] = (
         "persisted_memory_control_plane",
         "Hive models nested memory as governed scopes, not a separate CC-style prompt attachment.",
     ),
-    _entry(
-        "memory_compaction_summary",
-        "memory",
-        AlignmentStatus.HAVE,
-        "Compaction summary reinjection",
-        "kernel/engine.py::_build_restoration_context",
-        "transient_after_compaction",
-        "Post-compaction restoration includes identity/focus/ledger context.",
-    ),
-    _entry(
-        "compact_reboot_context",
-        "memory",
-        AlignmentStatus.HAVE,
-        "Work Ledger reboot block",
-        "services/agent_work_ledger.py::render_work_ledger_resume_block",
-        "transient_after_compaction",
-        "Answers the five reboot questions from persisted ledger state.",
-    ),
-    _entry(
-        "diagnostics",
+    _cc(
+        "opened_file_in_ide",
         "ide",
         AlignmentStatus.PLANNED,
-        "LSP/test diagnostics attachment",
-        "future diagnostics watcher",
+        "IDE active-file state",
+        "future IDE bridge",
         "future_transient_or_artifact",
-        "Requires IDE/LSP/file-watch substrate; tracked as an independent cut.",
+        "Needs IDE bridge substrate before it can be represented accurately.",
     ),
-    _entry(
-        "edited_text_file",
-        "ide",
+    _cc(
+        "output_style",
+        "model_behavior",
+        AlignmentStatus.NOT_APPLICABLE,
+        "Model-neutral system prompt policy",
+        "prompt_sections",
+        "static_prompt",
+        "Hive's model-equality rule avoids CC-specific output-style attachment semantics.",
+    ),
+    _cc(
+        "output_token_usage",
+        "budget",
         AlignmentStatus.PLANNED,
-        "External file edit watcher",
-        "future workspace file-watch service",
-        "future_transient_or_artifact",
-        "Needs file-watch/live editor integration before prompt injection is meaningful.",
+        "Output-token budget telemetry",
+        "future token telemetry reminder spec",
+        "future_transient_or_event",
+        "Requires provider-normalized output-token counters before prompt-facing guidance.",
     ),
-    _entry(
-        "workspace_file_snapshot",
+    _cc(
+        "pdf_reference",
         "workspace",
         AlignmentStatus.HAVE,
-        "read_file/list_files tool results",
-        "tools/handlers/filesystem.py",
-        "tool_result",
-        "File state is explicit tool output; runtime reminders do not duplicate it.",
+        "PDF/file text extraction",
+        "services/text_extractor.py + workspace file tools",
+        "tool_result_or_request_message",
+        "PDFs enter Hive through file extraction or workspace tools, not repeated reminders.",
+        ("workspace_file_snapshot",),
     ),
-    _entry(
+    _cc(
+        "plan_file_reference",
+        "plan",
+        AlignmentStatus.PLANNED,
+        "Plan artifact reference",
+        "future plan artifact renderer",
+        "future_transient_or_artifact",
+        "Hive persists plan requests; exact plan-file attachment semantics need a small follow-up cut.",
+    ),
+    _cc(
+        "plan_mode",
+        "plan",
+        AlignmentStatus.HAVE,
+        "Plan Mode FULL/SPARSE reminder",
+        "kernel/reminder_scheduler.py::ReminderScheduler",
+        "transient_request_only",
+        "Read-only policy and approval path live in the main-loop Plan Mode runtime.",
+        ("plan_mode_full", "plan_mode_sparse"),
+    ),
+    _cc(
+        "plan_mode_exit",
+        "plan",
+        AlignmentStatus.HAVE,
+        "exit_plan_mode approval request/result",
+        "tools/handlers/plan_mode.py::exit_plan_mode",
+        "tool_result_and_plan_row",
+        "Plan submission persists in agent_plan_requests; no runtime reminder path needed.",
+    ),
+    _cc(
+        "plan_mode_reentry",
+        "plan",
+        AlignmentStatus.HAVE,
+        "Plan Mode re-arm after compaction",
+        "kernel/reminder_scheduler.py::ReminderScheduler.reset",
+        "transient_request_only",
+        "Compaction reset re-arms plan reminders without losing queued events.",
+        ("plan_mode_full",),
+    ),
+    _cc(
+        "queued_command",
+        "runtime",
+        AlignmentStatus.HAVE,
+        "Queued runtime task/user prompt",
+        "services/web_chat_runtime.py + kernel invocation input",
+        "request_input_or_runtime_task",
+        "Hive queues work as RuntimeTask/session input rather than a prompt attachment list.",
+    ),
+    _cc(
+        "relevant_memories",
+        "memory",
+        AlignmentStatus.HAVE,
+        "Memory Control Plane dynamic suffix",
+        "runtime/prompt_builder.py",
+        "dynamic_prompt_suffix",
+        "Tenant-scoped governed memory is selected by activation and sensitivity policy.",
+    ),
+    _cc(
+        "selected_lines_in_ide",
+        "ide",
+        AlignmentStatus.PLANNED,
+        "IDE selected-lines context",
+        "future IDE bridge",
+        "future_transient_or_artifact",
+        "Needs IDE bridge substrate before selected lines can be surfaced.",
+    ),
+    _cc(
+        "skill_discovery",
+        "skill",
+        AlignmentStatus.HAVE,
+        "tool_search -> load_skill flow",
+        "tools/handlers/skills.py::tool_search",
+        "tool_result",
+        "Matches Hive's current small-cut pack semantics.",
+    ),
+    _cc(
+        "skill_listing",
+        "skill",
+        AlignmentStatus.HAVE,
+        "Static/deferred skill catalog",
+        "tools/handlers/skills.py::tool_search",
+        "static_prompt_or_tool_result",
+        "Hive keeps skill discovery in static guidance/tool_search rather than repeated attachments.",
+    ),
+    _cc(
+        "structured_output",
+        "model_output",
+        AlignmentStatus.HAVE,
+        "Structured tool/result payloads",
+        "kernel/engine.py + tool result serialization",
+        "tool_result_or_model_output",
+        "Hive carries structured data through tool results and model output handling.",
+    ),
+    _cc(
+        "task_reminder",
+        "task",
+        AlignmentStatus.HAVE,
+        "Work Ledger reminder with persisted task snapshot",
+        "kernel/reminder_scheduler.py::ReminderScheduler",
+        "transient_request_only",
+        "Mapped to track_todo/record_finding/read_ledger; idle10+cooldown10.",
+        ("work_ledger_reminder",),
+    ),
+    _cc(
+        "task_status",
+        "task",
+        AlignmentStatus.HAVE,
+        "RuntimeTask/list_async_tasks and Work Ledger status",
+        "services/task_executor.py + services/agent_work_ledger.py",
+        "persisted_runtime_task_or_work_ledger",
+        "Task status is explicit durable state; prompt reminders only show ledger snapshots.",
+        ("async_task_status", "work_ledger_reminder"),
+    ),
+    _cc(
+        "team_context",
+        "coordination",
+        AlignmentStatus.PLANNED,
+        "Hive A2A/team coordination context",
+        "future coordination context renderer",
+        "future_transient_or_prompt_suffix",
+        "Lease/Signal/Checkpoint exist; a prompt-facing team context block needs its own contract.",
+        ("agent_delegation_status",),
+    ),
+    _cc(
+        "teammate_mailbox",
+        "coordination",
+        AlignmentStatus.PLANNED,
+        "Cross-agent mailbox/state",
+        "future coordination mailbox renderer",
+        "future_transient_or_prompt_suffix",
+        "Hive has A2A primitives but no CC-style teammate mailbox attachment yet.",
+        ("agent_delegation_status",),
+    ),
+    _cc(
+        "teammate_shutdown_batch",
+        "coordination",
+        AlignmentStatus.PLANNED,
+        "Subagent shutdown batch notice",
+        "future coordination completion renderer",
+        "future_transient_request_only",
+        "Subagent completion is persisted today; batched prompt notice is future UX/runtime work.",
+        ("agent_delegation_status",),
+    ),
+    _cc(
+        "todo_reminder",
+        "task",
+        AlignmentStatus.HAVE,
+        "Work Ledger reminder with persisted todo snapshot",
+        "kernel/reminder_scheduler.py::ReminderScheduler",
+        "transient_request_only",
+        "Mapped to track_todo/record_finding/read_ledger; idle10+cooldown10.",
+        ("work_ledger_reminder",),
+    ),
+    _cc(
+        "token_usage",
+        "budget",
+        AlignmentStatus.PLANNED,
+        "Token usage telemetry",
+        "future token telemetry reminder spec",
+        "future_transient_or_event",
+        "Round pressure exists; exact token-usage attachment needs normalized counters.",
+        ("round_pressure",),
+    ),
+    _cc(
+        "ultrathink_effort",
+        "model_behavior",
+        AlignmentStatus.NOT_APPLICABLE,
+        "No model-specific effort attachment",
+        "n/a",
+        "n/a",
+        "Hive's model-equality law does not privilege CC-specific thinking-effort hints.",
+    ),
+    _cc(
+        "verify_plan_reminder",
+        "plan",
+        AlignmentStatus.PLANNED,
+        "Plan verification reminder",
+        "future Plan Mode verification spec",
+        "future_transient_request_only",
+        "Plan Mode exists; explicit verify-plan reminder text needs a prompt-review cut.",
+    ),
+)
+
+
+HIVE_NATIVE_GUIDANCE_CATALOG: tuple[HiveNativeGuidanceEntry, ...] = (
+    _hive(
+        "work_ledger_reminder",
+        "task",
+        AlignmentStatus.HAVE,
+        "Work Ledger reminder with persisted snapshot",
+        _SCHEDULER,
+        "transient_request_only",
+        "Hive-native merged surface for CC todo_reminder/task_reminder.",
+        ("todo_reminder", "task_reminder"),
+    ),
+    _hive(
+        "plan_mode_full",
+        "plan",
+        AlignmentStatus.HAVE,
+        "Plan Mode FULL reminder",
+        _SCHEDULER,
+        "transient_request_only",
+        "First/re-armed Plan Mode reminder with read-only policy.",
+        ("plan_mode", "plan_mode_reentry"),
+    ),
+    _hive(
+        "plan_mode_sparse",
+        "plan",
+        AlignmentStatus.HAVE,
+        "Plan Mode SPARSE reminder",
+        _SCHEDULER,
+        "transient_request_only",
+        "Low-frequency follow-up Plan Mode nudge.",
+        ("plan_mode",),
+    ),
+    _hive(
+        "round_pressure",
+        "budget",
+        AlignmentStatus.HAVE,
+        "Round-pressure warning",
+        _SCHEDULER,
+        "transient_request_only",
+        "80% and final-2 round budget reminders with live tool/context counts.",
+        ("max_turns_reached", "token_usage", "context_efficiency"),
+    ),
+    _hive(
+        "loop_guard_warning",
+        "safety",
+        AlignmentStatus.HAVE,
+        "Loop guard warn-before-abort diagnostic",
+        _SCHEDULER,
+        "transient_request_only",
+        "LoopGuard produces the decision; scheduler is the only prompt ingress.",
+        ("hook_non_blocking_error",),
+    ),
+    _hive(
+        "approval_required",
+        "governance",
+        AlignmentStatus.HAVE,
+        "Plan gate / approval checkpoint",
+        "services/plan_mode_gate.py + services/approval_service.py",
+        "persisted_plan_or_checkpoint",
+        "External-visible or irreversible actions route through gate/checkpoint records.",
+        ("command_permissions", "hook_permission_decision"),
+    ),
+    _hive(
+        "permission_denied",
+        "governance",
+        AlignmentStatus.HAVE,
+        "Permission/approval tool result",
+        "services/approval_service.py + kernel permission events",
+        "tool_result_and_event",
+        "Governance failures are tool results/events, not reminders.",
+        ("command_permissions", "hook_blocking_error"),
+    ),
+    _hive(
+        "safety_policy_notice",
+        "governance",
+        AlignmentStatus.HAVE,
+        "Capability/preflight/approval policy",
+        "services/action_preflight.py + tools/service.py",
+        "governed_tool_execution",
+        "Safety is enforced at tool runtime instead of optional prompt text.",
+    ),
+    _hive(
+        "token_budget_warning",
+        "budget",
+        AlignmentStatus.HAVE,
+        "Runtime budget warning family",
+        _SCHEDULER,
+        "transient_request_only",
+        "Hive's current prompt-facing budget signal is round_pressure.",
+        ("token_usage", "budget_usd", "output_token_usage"),
+    ),
+    _hive(
         "tool_result_eviction_notice",
         "budget",
         AlignmentStatus.HAVE,
@@ -280,43 +767,54 @@ ATTACHMENT_ALIGNMENT_CATALOG: tuple[RuntimeGuidanceCatalogEntry, ...] = (
         "tool_result",
         "Evicted outputs are stored as artifacts with a tool-result pointer.",
     ),
-    _entry(
+    _hive(
         "prompt_too_long_retry_notice",
         "budget",
         AlignmentStatus.HAVE,
-        "PTL retry/compression path",
+        "Prompt-too-long retry/compression path",
         "kernel/engine.py prompt-too-long retry",
         "internal_event",
         "Retry mechanics are internal; summaries re-enter through compaction/restoration.",
     ),
-    _entry(
+    _hive(
+        "memory_compaction_summary",
+        "memory",
+        AlignmentStatus.HAVE,
+        "Compaction summary reinjection",
+        "kernel/engine.py::_build_restoration_context",
+        "transient_after_compaction",
+        "Post-compaction restoration includes identity/focus/ledger context.",
+        ("compaction_reminder",),
+    ),
+    _hive(
+        "compact_reboot_context",
+        "memory",
+        AlignmentStatus.HAVE,
+        "Work Ledger reboot block",
+        "services/agent_work_ledger.py::render_work_ledger_resume_block",
+        "transient_after_compaction",
+        "Answers reboot questions from persisted ledger state.",
+        ("compact_file_reference", "compaction_reminder"),
+    ),
+    _hive(
         "environment_context",
         "runtime",
         AlignmentStatus.HAVE,
         "Runtime/session/source context",
         "runtime/prompt_builder.py",
         "static_or_dynamic_prompt",
-        "Agent source, channel, HR/channel context live in prompt sections, not reminder spam.",
+        "Agent source, channel, HR/channel context live in prompt sections.",
     ),
-    _entry(
+    _hive(
         "model_limit_notice",
         "budget",
         AlignmentStatus.HAVE,
         "RuntimeConfig/model budget",
         "kernel/engine.py RuntimeConfig",
         "internal_policy",
-        "Budgets constrain execution; user-visible nudge is round_pressure.",
+        "Budgets constrain execution; user-visible pressure is round_pressure.",
     ),
-    _entry(
-        "safety_policy_notice",
-        "governance",
-        AlignmentStatus.HAVE,
-        "Capability/preflight/approval policy",
-        "services/action_preflight.py + tools/service.py",
-        "governed_tool_execution",
-        "Safety is enforced at tool runtime, not by optional prompt text.",
-    ),
-    _entry(
+    _hive(
         "web_fetch_domain_reminder",
         "web",
         AlignmentStatus.PLANNED,
@@ -325,7 +823,7 @@ ATTACHMENT_ALIGNMENT_CATALOG: tuple[RuntimeGuidanceCatalogEntry, ...] = (
         "future_transient_request_only",
         "Worth a separate cut after web-search quality policy is defined.",
     ),
-    _entry(
+    _hive(
         "image_attachment",
         "multimodal",
         AlignmentStatus.HAVE,
@@ -334,7 +832,17 @@ ATTACHMENT_ALIGNMENT_CATALOG: tuple[RuntimeGuidanceCatalogEntry, ...] = (
         "request_message",
         "Images are native message content, not reminders.",
     ),
-    _entry(
+    _hive(
+        "workspace_file_snapshot",
+        "workspace",
+        AlignmentStatus.HAVE,
+        "read_file/list_files tool results",
+        "tools/handlers/filesystem.py",
+        "tool_result",
+        "File state is explicit tool output; runtime reminders do not duplicate it.",
+        ("file", "directory", "already_read_file"),
+    ),
+    _hive(
         "agent_delegation_status",
         "coordination",
         AlignmentStatus.HAVE,
@@ -342,8 +850,9 @@ ATTACHMENT_ALIGNMENT_CATALOG: tuple[RuntimeGuidanceCatalogEntry, ...] = (
         "agents/orchestrator.py + agents/subagent.py",
         "persisted_coordination_and_ledger",
         "A2A progress is persisted in coordination records and optional ledger mirrors.",
+        ("agent_mention", "team_context", "teammate_mailbox"),
     ),
-    _entry(
+    _hive(
         "async_task_status",
         "runtime",
         AlignmentStatus.HAVE,
@@ -351,26 +860,57 @@ ATTACHMENT_ALIGNMENT_CATALOG: tuple[RuntimeGuidanceCatalogEntry, ...] = (
         "services/task_executor.py + tools async task handlers",
         "persisted_runtime_task",
         "Async status is explicit API/tool state, not repeated prompt attachment.",
+        ("task_status",),
     ),
-    _entry(
+    _hive(
         "deep_research_routing_reminder",
         "deep_research",
         AlignmentStatus.HAVE,
-        "DR routing reminder",
+        "Deep Research routing reminder",
         "kernel/engine.py::_maybe_inject_routing_reminder",
         "tool_result",
-        "Legacy DR-specific reminder remains isolated until DR revamp.",
+        "Legacy DR-specific guidance remains isolated until DR revamp.",
     ),
-    _entry(
-        "hook_additional_context",
-        "hook",
+    _hive(
+        "skill_loaded",
+        "skill",
         AlignmentStatus.HAVE,
-        "Tool result next_action and handler context",
-        "tool handlers returning next_action/tool result text",
+        "load_skill result",
+        "tools/handlers/skills.py::load_skill",
         "tool_result",
-        "Hive's equivalent lives in governed tool results rather than a global attachment bus.",
+        "Loaded skill knowledge is returned through the tool result path.",
+        ("dynamic_skill", "invoked_skills"),
     ),
-    _entry(
+    _hive(
+        "mcp_tool_listing",
+        "tooling",
+        AlignmentStatus.HAVE,
+        "MCP resource/server tools",
+        "tools/handlers/mcp.py",
+        "tool_result",
+        "MCP discovery stays in tool APIs and static/deferred tool descriptions.",
+        ("mcp_resource", "mcp_instructions_delta"),
+    ),
+    _hive(
+        "subagent_listing",
+        "coordination",
+        AlignmentStatus.HAVE,
+        "spawn_subagent/delegate tools",
+        "prompt_sections/executing_actions.py + tool schemas",
+        "static_prompt",
+        "Core tool visibility plus tool descriptions own subagent discoverability.",
+        ("agent_listing_delta", "agent_mention"),
+    ),
+    _hive(
+        "workflow_listing",
+        "workflow",
+        AlignmentStatus.HAVE,
+        "preview_workflow/start_workflow tools",
+        "prompt_sections/executing_actions.py + workflow tool schemas",
+        "static_prompt",
+        "Workflow discoverability is static/tool-schema driven; admission is in workflow services.",
+    ),
+    _hive(
         "hook_pre_tool_use",
         "hook",
         AlignmentStatus.NOT_APPLICABLE,
@@ -379,7 +919,7 @@ ATTACHMENT_ALIGNMENT_CATALOG: tuple[RuntimeGuidanceCatalogEntry, ...] = (
         "internal_governance_event",
         "Pre-tool hooks are enforcement/audit, not prompt reminders.",
     ),
-    _entry(
+    _hive(
         "hook_post_tool_use",
         "hook",
         AlignmentStatus.NOT_APPLICABLE,
@@ -388,7 +928,7 @@ ATTACHMENT_ALIGNMENT_CATALOG: tuple[RuntimeGuidanceCatalogEntry, ...] = (
         "internal_hook_event",
         "Memory/audit hook, intentionally not prompt injection.",
     ),
-    _entry(
+    _hive(
         "hook_notification",
         "hook",
         AlignmentStatus.NOT_APPLICABLE,
@@ -397,7 +937,7 @@ ATTACHMENT_ALIGNMENT_CATALOG: tuple[RuntimeGuidanceCatalogEntry, ...] = (
         "internal_or_external_event",
         "Delivery events are not model guidance.",
     ),
-    _entry(
+    _hive(
         "hook_stop",
         "hook",
         AlignmentStatus.NOT_APPLICABLE,
@@ -406,7 +946,7 @@ ATTACHMENT_ALIGNMENT_CATALOG: tuple[RuntimeGuidanceCatalogEntry, ...] = (
         "internal_hook_event",
         "Used for extraction/learning, not prompt injection.",
     ),
-    _entry(
+    _hive(
         "hook_subagent_stop",
         "hook",
         AlignmentStatus.NOT_APPLICABLE,
@@ -415,7 +955,7 @@ ATTACHMENT_ALIGNMENT_CATALOG: tuple[RuntimeGuidanceCatalogEntry, ...] = (
         "internal_coordination_event",
         "Subagent completion is coordination state, not a parent prompt attachment.",
     ),
-    _entry(
+    _hive(
         "hook_user_prompt_submit",
         "hook",
         AlignmentStatus.NOT_APPLICABLE,
@@ -424,7 +964,7 @@ ATTACHMENT_ALIGNMENT_CATALOG: tuple[RuntimeGuidanceCatalogEntry, ...] = (
         "request_input",
         "Hive routes prompt-submit concerns through invoker/session context.",
     ),
-    _entry(
+    _hive(
         "hook_session_start",
         "hook",
         AlignmentStatus.NOT_APPLICABLE,
@@ -433,7 +973,7 @@ ATTACHMENT_ALIGNMENT_CATALOG: tuple[RuntimeGuidanceCatalogEntry, ...] = (
         "internal_session_state",
         "Session start is state setup, not dynamic reminder.",
     ),
-    _entry(
+    _hive(
         "hook_session_end",
         "hook",
         AlignmentStatus.NOT_APPLICABLE,
@@ -442,7 +982,7 @@ ATTACHMENT_ALIGNMENT_CATALOG: tuple[RuntimeGuidanceCatalogEntry, ...] = (
         "internal_hook_event",
         "Close events feed memory consolidation, not the active prompt.",
     ),
-    _entry(
+    _hive(
         "hook_pre_compact",
         "hook",
         AlignmentStatus.HAVE,
@@ -451,7 +991,7 @@ ATTACHMENT_ALIGNMENT_CATALOG: tuple[RuntimeGuidanceCatalogEntry, ...] = (
         "internal_hook_event",
         "Extraction/audit before compaction; prompt restoration is owned by engine.",
     ),
-    _entry(
+    _hive(
         "hook_post_compact",
         "hook",
         AlignmentStatus.HAVE,
@@ -462,26 +1002,39 @@ ATTACHMENT_ALIGNMENT_CATALOG: tuple[RuntimeGuidanceCatalogEntry, ...] = (
     ),
 )
 
+ATTACHMENT_ALIGNMENT_CATALOG = CC_NATIVE_ATTACHMENT_CATALOG
 
-def runtime_transient_prompt_entries() -> tuple[RuntimeGuidanceCatalogEntry, ...]:
-    """Entries that may inject transient prompt text at runtime today."""
+
+def runtime_transient_prompt_entries() -> tuple[HiveNativeGuidanceEntry, ...]:
+    """Hive-native entries that may inject transient prompt text at runtime today."""
 
     return tuple(
         entry
-        for entry in ATTACHMENT_ALIGNMENT_CATALOG
+        for entry in HIVE_NATIVE_GUIDANCE_CATALOG
         if entry.status == AlignmentStatus.HAVE.value and entry.persistence_policy == "transient_request_only"
     )
 
 
-def catalog_by_status() -> dict[str, list[RuntimeGuidanceCatalogEntry]]:
-    grouped: dict[str, list[RuntimeGuidanceCatalogEntry]] = {status.value: [] for status in AlignmentStatus}
-    for entry in ATTACHMENT_ALIGNMENT_CATALOG:
+def catalog_by_status(namespace: CatalogNamespace = "cc_native") -> dict[str, list[CatalogEntry]]:
+    if namespace == "cc_native":
+        catalog: tuple[CatalogEntry, ...] = CC_NATIVE_ATTACHMENT_CATALOG
+    elif namespace == "hive_native":
+        catalog = HIVE_NATIVE_GUIDANCE_CATALOG
+    else:
+        raise ValueError(f"Unknown runtime guidance catalog namespace: {namespace}")
+
+    grouped: dict[str, list[CatalogEntry]] = {status.value: [] for status in AlignmentStatus}
+    for entry in catalog:
         grouped.setdefault(entry.status, []).append(entry)
     return grouped
 
 
 __all__ = [
     "ATTACHMENT_ALIGNMENT_CATALOG",
+    "CCAttachmentAlignmentEntry",
+    "CC_NATIVE_ATTACHMENT_CATALOG",
+    "HIVE_NATIVE_GUIDANCE_CATALOG",
+    "HiveNativeGuidanceEntry",
     "AlignmentStatus",
     "RuntimeGuidanceCatalogEntry",
     "catalog_by_status",

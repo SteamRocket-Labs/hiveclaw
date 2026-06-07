@@ -89,6 +89,7 @@
 - **修法**: 各自独立预算（或合并前分段保护），上限值进常量并注释来源。
 - **红测**: 双注入场景两段内容均完整；单注入行为不变。
 - **验收**: 极限长度双注入无截尾。
+- ✅ **已落地（2026-06-07）**: 红测 `test_coordinator_and_delegation_suffixes_have_independent_budgets` 先复现旧 `_effective_suffix` 合并后 delegation 长段吞掉 coordinator 段（最终 prompt 缺 `COORDINATOR_SUFFIX_START`）。实现改为 `build_dynamic_prompt_suffix(system_prompt_suffix_sections=...)`，每个 request-specific suffix 独立套 `_SYSTEM_PROMPT_SUFFIX_CHAR_CAP=5000`，kernel 初始 prompt、prompt-too-long retry、tool expansion 重建点全部分段传入。验证：`backend/.venv/bin/pytest backend/tests/kernel/test_prompt_cache_integration.py::test_coordinator_and_delegation_suffixes_have_independent_budgets -q` → `1 passed`；`backend/.venv/bin/pytest backend/tests/kernel/test_prompt_cache_integration.py backend/tests/runtime/test_prompt_builder.py -q` → `44 passed`；`backend/.venv/bin/ruff check backend/app/kernel/engine.py backend/app/runtime/prompt_builder.py backend/tests/kernel/test_prompt_cache_integration.py` → `All checks passed!`。
 
 ---
 

@@ -370,6 +370,7 @@ def build_dynamic_prompt_suffix(
     runtime_metadata_context: str = "",
     session_learning_projection: str = "",
     system_prompt_suffix: str = "",
+    system_prompt_suffix_sections: list[str] | None = None,
     budget_profile: ContextBudget | None = None,
     latest_user_query: str = "",
     memory_snapshot: str = "",
@@ -467,10 +468,15 @@ def build_dynamic_prompt_suffix(
     if env_section:
         parts.append(env_section)
 
+    suffix_sections: list[str] = []
     if system_prompt_suffix:
-        # P1-W2-2: cap user-supplied suffix so an upstream caller can't push
-        # the dynamic block past sensible round-trip cost.
-        parts.append(_trim_block(system_prompt_suffix, budget_chars=_SYSTEM_PROMPT_SUFFIX_CHAR_CAP))
+        suffix_sections.append(system_prompt_suffix)
+    suffix_sections.extend(section for section in (system_prompt_suffix_sections or []) if section)
+    for suffix_section in suffix_sections:
+        # P1-W2-2/A6: cap each request-specific suffix independently. Runtime
+        # callers may inject multiple critical suffixes (for example delegation
+        # handoff + coordinator mode); one large section must not erase another.
+        parts.append(_trim_block(suffix_section, budget_chars=_SYSTEM_PROMPT_SUFFIX_CHAR_CAP))
 
     return "\n\n".join(parts)
 

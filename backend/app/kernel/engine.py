@@ -1447,9 +1447,8 @@ class AgentKernel:
             )
 
             _is_coordinator = is_coordinator_mode(agent=runtime_config, request=request)
-            _effective_suffix = request.system_prompt_suffix or ""
-            if _is_coordinator:
-                _effective_suffix = (_effective_suffix + "\n\n" + get_coordinator_prompt()).strip()
+            _system_prompt_suffix = request.system_prompt_suffix or ""
+            _protected_system_prompt_suffixes = [get_coordinator_prompt()] if _is_coordinator else []
 
             # P0.4 Observability: prompt cache hit/miss
             logger.info(
@@ -1466,7 +1465,8 @@ class AgentKernel:
                     memory_snapshot=resolved_memory_context,
                     memory_navigation=resolved_memory_navigation_context,
                     retrieval_context=resolved_retrieval_context,
-                    system_prompt_suffix=_effective_suffix,
+                    system_prompt_suffix=_system_prompt_suffix,
+                    system_prompt_suffix_sections=_protected_system_prompt_suffixes,
                     budget_profile=budget_profile,
                     latest_user_query=latest_user_query,
                     user_name=current_user_name or "",
@@ -1498,7 +1498,8 @@ class AgentKernel:
                     memory_snapshot=resolved_memory_context,
                     memory_navigation=resolved_memory_navigation_context,
                     retrieval_context=resolved_retrieval_context,
-                    system_prompt_suffix=_effective_suffix,
+                    system_prompt_suffix=_system_prompt_suffix,
+                    system_prompt_suffix_sections=_protected_system_prompt_suffixes,
                     budget_profile=budget_profile,
                     latest_user_query=latest_user_query,
                     user_name=current_user_name or "",
@@ -1912,7 +1913,8 @@ class AgentKernel:
                                             memory_snapshot=resolved_memory_context,
                                             memory_navigation=resolved_memory_navigation_context,
                                             retrieval_context=resolved_retrieval_context,
-                                            system_prompt_suffix=_effective_suffix,
+                                            system_prompt_suffix=_system_prompt_suffix,
+                                            system_prompt_suffix_sections=_protected_system_prompt_suffixes,
                                             budget_profile=budget_profile,
                                             latest_user_query=latest_user_query,
                                             user_name=current_user_name or "",
@@ -1985,7 +1987,8 @@ class AgentKernel:
                                                 memory_snapshot=resolved_memory_context,
                                                 memory_navigation=resolved_memory_navigation_context,
                                                 retrieval_context=resolved_retrieval_context,
-                                                system_prompt_suffix=_effective_suffix,
+                                                system_prompt_suffix=_system_prompt_suffix,
+                                                system_prompt_suffix_sections=_protected_system_prompt_suffixes,
                                                 budget_profile=budget_profile,
                                                 latest_user_query=latest_user_query,
                                                 user_name=current_user_name or "",
@@ -2546,7 +2549,8 @@ class AgentKernel:
                                                     memory_snapshot=resolved_memory_context,
                                                     memory_navigation=resolved_memory_navigation_context,
                                                     retrieval_context=resolved_retrieval_context,
-                                                    system_prompt_suffix=_effective_suffix,
+                                                    system_prompt_suffix=_system_prompt_suffix,
+                                                    system_prompt_suffix_sections=_protected_system_prompt_suffixes,
                                                     budget_profile=budget_profile,
                                                     latest_user_query=latest_user_query,
                                                     user_name=current_user_name or "",

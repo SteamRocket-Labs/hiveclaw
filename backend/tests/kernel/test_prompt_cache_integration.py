@@ -270,6 +270,59 @@ async def test_tool_expansion_rebuild_preserves_dynamic_memory_and_effective_suf
 
 
 @pytest.mark.asyncio
+async def test_coordinator_and_delegation_suffixes_have_independent_budgets(monkeypatch):
+    from app.kernel.contracts import InvocationRequest, RuntimeConfig
+    from app.kernel.engine import AgentKernel, KernelDependencies
+    from app.runtime import coordinator
+
+    tenant_id = uuid4()
+    delegation_suffix = "DELEGATION_SUFFIX_START\n" + ("delegation body\n" * 700)
+    coordinator_suffix = "COORDINATOR_SUFFIX_START\n" + ("coordinator body\n" * 700)
+    monkeypatch.setattr(coordinator, "get_coordinator_prompt", lambda: coordinator_suffix)
+
+    fake_client = _FakeClient(
+        [SimpleNamespace(content="done", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3})]
+    )
+
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=tenant_id, max_tool_rounds=3),
+            resolve_current_user_name=lambda _user_id: "Rocky",
+            build_system_prompt=lambda *_args, **_kwargs: "FROZEN",
+            resolve_memory_context=lambda *_args, **_kwargs: "",
+            resolve_retrieval_context=lambda *_args, **_kwargs: "",
+            get_tools=lambda *_args, **_kwargs: [],
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda _model: fake_client,
+            execute_tool=lambda *_args, **_kwargs: "OK",
+            persist_memory=lambda **_kwargs: None,
+            record_token_usage=lambda *_args, **_kwargs: None,
+            get_max_tokens=lambda *_args, **_kwargs: 1024,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens"),
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    await kernel.handle(
+        InvocationRequest(
+            model=_make_model(),
+            messages=[{"role": "user", "content": "coordinate this work"}],
+            agent_name="Coordinator",
+            role_description="desc",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            session_context=SessionContext(session_id="s-suffix-budget", source="agent"),
+            execution_mode="coordinator",
+            system_prompt_suffix=delegation_suffix,
+        )
+    )
+
+    prompt = fake_client.calls[0]["messages"][0].content
+    assert "DELEGATION_SUFFIX_START" in prompt
+    assert "COORDINATOR_SUFFIX_START" in prompt
+
+
+@pytest.mark.asyncio
 async def test_prompt_too_long_retry_preserves_dynamic_context_blocks():
     from app.kernel.contracts import InvocationRequest, RuntimeConfig
     from app.kernel.engine import AgentKernel, KernelDependencies

@@ -481,7 +481,7 @@ def evaluate_task_readiness(inputs: TaskEvalInputs | None = None) -> dict[str, A
                     "name": "missing_skill_tools",
                     "severity": "high",
                     "detail": f"Skill-reachable tool surface is missing: {', '.join(skill_missing_tools)}.",
-                    "remediation": "Declare the missing tools on the relevant skill or pack so load_skill can activate them.",
+                    "remediation": "Use tool_search to discover missing tool schemas; keep skill metadata only as discovery hints.",
                 }
             )
         prompt_failure_details: list[dict[str, str]] = []

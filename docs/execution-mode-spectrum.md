@@ -44,7 +44,7 @@ Agent 的一切行为最终落在一次次 tool call 上。本文档回答两个
 
 ---
 
-## 3. Hive 现状全图(Fact,2026-06-05 盘点)
+## 3. Hive 现状全图(Fact,2026-06-07 C2 后)
 
 ### 3.1 暴露面三层
 
@@ -52,7 +52,7 @@ Agent 的一切行为最终落在一次次 tool call 上。本文档回答两个
 |---|---|---|
 | Core 常驻(`CORE_TOOL_NAMES` 38 个,`services/agent_tools.py:130`;T1.1 落地后) | 文件IO、execute_code、load_skill/save_skill/tool_search、memory×3、objective×4、set_trigger×4、**delegate_to_agent**、async×3、channel message、exit_plan_mode、web_fetch、get_current_time、**spawn_subagent / preview_workflow / start_workflow(T1.1 ✅,源能力原子对,双路径排除集同 commit)** | 永远 |
 | ~~条件注入~~ → Core 常驻(T1.2 ✅) | track_todo/record_finding/read_ledger 已进 `CORE_TOOL_NAMES`(38→41,享 `_always_tools` 无条件兜底,不再依赖 DB `Tool.is_default`/assignment);`should_enable_work_ledger` 保留,只控制**每轮 reminder + compaction reboot**(invoker:1022 写 metadata→engine 读),从不控制工具列表 | 永远 |
-| Pack-gated(`runtime_tool_groups.py`) | web_search、feishu/email/office/plaza、coordination_pack(目录语义保留,源能力三工具已迁 core;余 send_message_to_agent/delegate_to_agent/async×3 本就在 core,pack 仅作分组锚点)、mcp_admin | **skill 激活后才存在**——不激活则模型完全不知道(源能力已不受此门约束) |
+| Deferred/runtime groups(`runtime_tool_groups.py`) | web_search、feishu/email/office/plaza、coordination_pack、mcp_admin、deep_research/office 等重型工具组；pack 仅作目录/前端展示/治理锚点 | `tool_search` 命中后写入 session 发现集并把匹配 schema 并入当前 tools 数组；`load_skill` 只加载方法知识，不解锁工具 |
 
 ### 3.2 七原语(被混为一谈的概念,各回答不同问题)
 
@@ -71,8 +71,8 @@ Agent 的一切行为最终落在一次次 tool call 上。本文档回答两个
 ### 3.3 五层嵌套链(无一处向模型讲全)
 
 ```
-workflow definition → leaf(SubagentSpec,无 skill 字段)→ subagent 运行时(类型预设含 load_skill)
-  → 子代理自己决定加载哪个 skill(主 agent 无法预绑,只能写在 task 文本里)→ skill 激活 pack → 解锁工具
+workflow definition → leaf(SubagentSpec,无 skill 字段)→ subagent 独立 SessionContext
+  → 子代理按任务自己选择 load_skill(方法知识) 或 tool_search(发现 schema)→ 调用 discovered tool(治理仍在 call-time)
 ```
 
 ### 3.4 四个病根
@@ -80,8 +80,8 @@ workflow definition → leaf(SubagentSpec,无 skill 字段)→ subagent 运行�
 1. **轻重倒挂**:最重的 delegate_to_agent 在 core;最轻的 spawn_subagent、start_workflow 锁在 pack。Plan Mode/trigger/objective 三个原能力都在 core,**唯独轴1 轴2 两个源能力被关在 pack 里**——与"源能力"定位自相矛盾。**→ T1.1 已修(✅ 2026-06-05):三源能力进 core,防递归双路径排除集同 commit 补排。**
 2. **判据藏在看不见的地方**:spawn_subagent 的 when-to-use 写在工具描述里,但 pack-gated 工具不可见时描述也不可见。**→ T1.1 已修:可见性恢复即判据生效;T2 再补互指。**
 3. **七原语没有一张决策地图**:各引导段各说各话,任务视角的统一叙事不存在。**→ T2 已修(✅ 2026-06-05):§5 决策序列进 executing_actions"Choosing the right primitive"。**
-4. **三关注点耦死**(对照 §2.4):pack-gate 同时承担 token 优化+能力存在性;skill 同时承担知识+解锁。"agent 看不见源能力"不是设计决策,是耦合副作用。**→ 小切口部分修复:源能力+ledger 已脱钩(T1.1/T1.2);集成 pack 保留 skill 解锁(§4.6 拍板),完全解耦归 §8.3 T3。**
-5. **(v0.5 实锤)`tool_search` 与 CC 的 ToolSearch 语义根本不同**:Hive 现状(`tools/handlers/skills.py:152`)是**目录查询**——返回 pack/skill 摘要,明确 "does not auto-load tools",要求模型再调 `load_skill` 激活;CC 的 ToolSearch 是**schema 加载器**——搜到即可调用。这意味着 §4 的 tool_search 改造是语义反转,不是文案调整。
+4. **三关注点耦死已收口到 C2**(对照 §2.4):源能力/ledger 已 core 化(T1.1/T1.2)，集成 pack 不再由 skill 解锁(C2)；skill 回归知识载体，pack 回归目录/治理锚点，token 压力通过 deferred schema 处理。
+5. **`tool_search` 已完成语义反转(C1/C2)**:现状是 deferred schema loader——搜索命中后 matching schemas become callable；`load_skill` 不再参与 schema expansion。
 
 ---
 
@@ -175,12 +175,12 @@ Deferred 的对象是"当前 agent 可用,但不该占 turn-1 schema"的工具�
 | # | 接线点 | 现状 | 目标态变化 | 风险/兼容 |
 |---|---|---|---|---|
 | A | `agent_tools.py::get_agent_tools_for_llm` | core 永驻 + feishu/HR 条件注入 + DB enabled + `requested_names` 过滤 | 重构三段式:global resident + context resident(§4.1.2) + **discovered** | **全入口共用**(web/feishu/trigger/heartbeat/delegation/subagent),改动即全路径 |
-| B | 发现集状态(新建) | 不存在 | session 级 discovered_tools 集;**compaction 存活**(§4.3);载体=session metadata | 持久化位置待定;subagent 会话独立发现集 |
-| C | `handlers/skills.py::tool_search` | 目录查询,workspace adapter,"does not auto-load" | **语义反转**:搜 deferred 名册→命中写发现集→返回"已可调用";已加载=no-op | adapter 要从 workspace 换 request(需写 session 状态) |
-| D | 名字宣告(新建) | 不存在(pack 工具完全隐身) | 未发现 deferred 工具**只发名字**;载体走消息流增量(对齐 CC delta attachment 终态,跳过其 prepend 旧路径) | **cache 稳定关键点**(§2.7/§4.3):名册不得每请求重排 |
-| E | `invoker.py::_resolve_tool_expansion`(658-798) | **三触发点**:load_skill / read SKILL.md / MCP 导入→declared_tools+packs→重建 tools 数组+emit 事件 | load_skill/SKILL.md 分支**去解锁化**(只注入知识);MCP 导入分支并入发现机制 | **Breaking**:存量 skill 的"加载即获得工具"变为"名字可见+tool_search 一步发现" |
-| F | `skills/parser.py` frontmatter `packs:`→`declared_packs` | skill 资产字段,save_skill 时 `check_declared_packs_authorized` 校验 | 字段保留,语义降为**发现建议**(skill 文本可引导 tool_search);授权校验迁至调用时治理 | 存量 skill 资产零迁移(字段兼容);`api/skills.py` 编辑器同步 |
-| G | `pack_policy_service`(tenant pack 开关)+`check_declared_packs_authorized` | pack=存在性门 | pack 名保留为**治理锚点**:disabled pack 的工具不进名册、不可发现 | 治理语义从"门"变"可见性策略",tenant 管控面不缩水 |
+| B | 发现集状态(新建) | 不存在 | ✅ C1: `SessionContext.discovered_tools` + `metadata["discovered_tools"]` mirror；subagent 独立发现集 | compact/recovery 有 metadata 载体 |
+| C | `handlers/skills.py::tool_search` + `invoker.py::_resolve_tool_expansion` | 目录查询,workspace adapter,"does not auto-load" | ✅ C1:搜 deferred 名册→命中写发现集→matching schemas become callable；已加载=no-op | handler 仍返回目录文本，session/schema 变更由 invoker after-tool expansion 完成 |
+| D | 名字宣告(新建) | 不存在(pack 工具完全隐身) | ✅ C1: runtime event `deferred_tools_delta` 承载增量发现集 | **cache 稳定关键点**(§2.7/§4.3):名册不得每请求重排 |
+| E | `invoker.py::_resolve_tool_expansion`(658+) | 三触发点:load_skill / read SKILL.md / MCP 导入→declared_tools+packs→重建 tools 数组+emit 事件 | ✅ C2: load_skill/SKILL.md 分支删除；唯一普通解锁路=`tool_search` 发现；MCP import/discovery 保留专用治理路径 | **Breaking**:存量 skill 的"加载即获得工具"已改为"tool_search 一步发现" |
+| F | `skills/parser.py` frontmatter `packs:`→`declared_packs` | skill 资产字段,save_skill 时 `check_declared_packs_authorized` 校验 | ✅ C2:字段保留,语义降为**发现建议**；授权迁至调用时治理 | 存量 skill 资产零迁移(字段兼容);`api/skills.py` 编辑器同步待 C3 文案 |
+| G | `pack_policy_service`(tenant pack 开关)+`check_declared_packs_authorized` | pack=存在性门 | ✅ C2:pack 名保留为**治理锚点/目录**；`check_declared_packs_authorized` 兼容 no-op，调用时治理仍生效 | tenant 管控面不缩水；可见性策略细化归 C3/后续 |
 | H | `kernel/engine.py` ToolExpansionResult 消费+`tool_group_activation` 事件 | mid-session 换 tools 数组+事件 | 机制保留,触发源变为 tool_search 发现;事件名不变(降级观测) | `pack_service::_summarize_chat_messages`/前端 timeline 零改 |
 | I | subagent 工具面(类型白名单预设) | worker/explorer/critic 白名单,含 load_skill | 白名单不变;subagent 是否带 tool_search+独立发现集待 T3 设计 | 防递归不变量(§4.3)钉死 |
 | J | `api/packs.py`/`api/tools.py:413`/前端工具面板 | pack 目录+tenant 开关+declared_packs 注解 | 文案/语义改"目录";MCP 工具补 always_load 配置面 | Surface≠Plumbing 验收 |
@@ -188,16 +188,16 @@ Deferred 的对象是"当前 agent 可用,但不该占 turn-1 schema"的工具�
 
 ### 4.5 迁移序列(风险控制:先并行后切换,T3b 落地即收敛单一路径)
 
-1. **T1.1-T1.3(当前小切口,红测先行)**:源能力进 core 与双路径排除集必须同 commit 落地;work ledger 三工具进 core 但 reminder gate 保留;三处 schema 断线(track_todo 暴露 blocks/blockedBy;spawn_subagent/delegate_to_agent 暴露 ledger_todo_id)作为独立接线切口;
-2. **T3a(基建,加法)**:发现集状态(B)+tool_search 反转(C)+名字宣告(D)落地;**pack 解锁机制原样保留**——deferred 名册=pack 工具并集,发现与 skill 激活两路并行,功能只增不减;
-3. **T3b(切换,Breaking)**:skill 去解锁化(E)+pack 降目录(G)——唯一解锁路=发现;回退=revert T3b 单切口;
-4. **T4(前端+清理)**:J + 残留双轨代码删除,单一路径兑现。
+1. **T1.1-T1.3(已完成)**:源能力进 core 与双路径排除集同 commit；work ledger 三工具进 core 但 reminder gate 保留；三处 schema 断线已接。
+2. **T3a / C1(已完成,2026-06-07)**:发现集状态(B)+tool_search 反转(C)+名字宣告(D)落地；旧 skill unlock 路径当时并行保留。
+3. **T3b / C2(已完成,2026-06-07)**:skill 去解锁化(E)+pack 降目录(G)；唯一普通解锁路=发现；回退=revert C2 单切口。
+4. **T4 / C3(进行中/待完成)**:J + 残留双轨文案/前端/always_load 配置面清理，单一路径兑现。
 
-**待拍板(T3 动手前)**:① 名字宣告载体细节(消息流增量的事件形态);② 发现集持久化位置;③ subagent 是否带独立发现集(I)。
+**C0 拍板已按保守默认落地**:① 名字宣告载体=`deferred_tools_delta` runtime event；② 发现集持久化=`SessionContext.discovered_tools` + metadata mirror；③ subagent 独立发现集。
 
-### 4.6 更小切口:选择性去 skill 化(Selective De-Skillification)
+### 4.6 历史小切口:选择性去 skill 化(已被 C1/C2 收敛)
 
-如果当前目标是先修"agent 看不见源能力"而不是一次性完成 CC 式 dynamic loading,可以采用更小路线:
+该节记录 2026-06-05 的保守小切口。2026-06-07 C1/C2 已继续完成 CC 式 dynamic loading，本节不再代表当前 runtime 行为。
 
 > **不问哪些 skill 常驻;只问哪些 package/tool 不该再由 skill 解锁。** `load_skill` 仍常驻,skill 仍是知识载体;被重排的是工具 schema 的暴露策略。
 
@@ -205,17 +205,14 @@ Deferred 的对象是"当前 agent 可用,但不该占 turn-1 schema"的工具�
 |---|---|---|---|
 | 必须去 skill 化 **✅ T1.1** | `coordination_pack` 里的源能力:`spawn_subagent`,`preview_workflow`,`start_workflow` | 回答"谁去做/流程怎么强制执行",属于 agent runtime 原语;藏在 skill 后会让模型根本不知道可用 | 已加入 `CORE_TOOL_NAMES`;`coordination_pack` 继续作为目录/前端分组,不再控制这些源能力存在性(红测 #7 钉) |
 | 必须 core 化 **✅ T1.2** | `track_todo`,`record_finding`,`read_ledger` | 工作记忆是 agent 思考工具,不应依赖 DB default/assignment 才出现;`should_enable_work_ledger` 只管 reminder 频率 | 已加入 `CORE_TOOL_NAMES`;reminder gate 保留不动 |
-| 保留 skill 化 | `web_search/firecrawl_fetch/xcrawl_scrape`,`feishu_pack`,`email_pack`,`office_pack`,`plaza_pack`,`deep_research_pack`,`mcp_admin_pack`,`DB task tools` | 垂直集成/重型工具/账号配置/专属长任务,由 skill 指导怎么用是合理的;当前 pack 激活不立即破坏核心决策能力 | 继续通过 `load_skill` / 读 `SKILL.md` 的 declared packs 解锁;T3 前不做 breaking |
+| 已去 skill unlock 化 **✅ C2** | `web_search/firecrawl_fetch/xcrawl_scrape`,`feishu_pack`,`email_pack`,`office_pack`,`plaza_pack`,`deep_research_pack`,`mcp_admin_pack`,`DB task tools` | 垂直集成/重型工具/账号配置/专属长任务仍可由 skill 指导方法,但 schema 存在性不再由 skill 控制 | 通过 `tool_search` 发现 schema；`load_skill`/读 `SKILL.md` 不再触发 tool expansion |
 | 上下文常驻 | HR/SystemHR 工具、当前 channel 必需回复工具、少数未来 `always_load` MCP 工具 | 只有特定 profile/channel turn-1 必需 | 维持条件注入;不提升为所有 agent 全局常驻 |
 
 这条路线的实现含义:
 
 1. **T1/T2 即可先收口主要问题**:源能力和工作台账常驻,引导面讲清七原语;
-2. **保留存量 skill→pack 解锁**:普通集成 pack 仍按现状工作,避免 T3b 的 breaking。**保留侧不产生"完全失明"**——`tool_search`(目录语义)在 core,模型缺能力时可两步发现(搜目录→load_skill 激活);病根 4 在保留侧残留,但发现路径存在,这是小切口立得住的前提;
-3. **T3a/T3b 降为未来优化**:以后再做名字宣告/发现集/tool_search 反转,目的是 token/cache/能力发现体验,不是修复源能力不可见的前置条件;
-4. **验收口径更小**:只要求模型 turn-1 能看见并正确选择 subagent/workflow/ledger;不要求所有 pack 名字全程可见。
-
-T2 写作约束:小切口阶段 `tool_search` 的工具描述必须保持现状目录语义——"搜目录→`load_skill` 激活"。不要提前写成 CC 的"搜到即可调用";未来若重启 T3,只改 `tool_search` 自身行为与描述,七原语总纲不返工。
+2. **C1/C2 已替代保守双轨**:普通集成 pack 不再经 skill 解锁；`tool_search` 在 core，模型缺能力时一步发现，matching schemas become callable；
+3. **剩余工作只剩 C3 surface 清理**:前端/工具面板/MCP 文案、always_load 配置面和少量历史文案；runtime 普通解锁路径已单一化。
 
 ---
 
@@ -306,13 +303,13 @@ L2 底线(无人值守+外向是否强制 workflow/Checkpoint):v1 不绑,记观�
 2. **plan mode 天然安全,T1 零改动**:`PLAN_MODE_READONLY_TOOLS`(`plan_mode_policy.py`)是**调用时白名单**,三工具不在内→plan 期调用被拒。观察项(非 T1):CC plan mode 允许 Agent 只读探索,Hive plan 期不能 spawn explorer——归 plan mode 议题。
 3. **heartbeat/蒸馏器看见三工具 = 已知接受的变化**:heartbeat 走 `invoke_agent` 默认路径,T1 后蒸馏器可见 spawn/workflow。非新风险类别——蒸馏器现状已可见更重的 `delegate_to_agent`;约束机制=SOP 模板纪律(heartbeat≠worker 原则)。接受+观察,不加排除。
 
-### 8.3 未来路线(本轮不做,依赖关系保留)
+### 8.3 轨道 C 状态(2026-06-07)
 
 | 切口 | 内容 | 量级 | 依赖 |
 |---|---|---|---|
-| T3a | Deferred 基建(加法,pack 原样保留):发现集状态 + tool_search 语义反转 + 名字宣告(§4.4 B/C/D;§4.5 待拍板③) | 中 | 重启完整 CC 对齐时 |
-| T3b | 切换(Breaking,可单独 revert):skill 去解锁化 + pack 降目录(§4.4 E/G) | 中 | T3a |
-| T4 | 前端联动 + 双轨清理:工具面板/MCP 文案、always_load 配置面、单一路径兑现 | 中 | T3b |
+| T3a / C1 | Deferred 基建(加法):发现集状态 + tool_search 语义反转 + 名字宣告(§4.4 B/C/D) | ✅ 完成 | C0 |
+| T3b / C2 | 切换(Breaking,可单独 revert):skill 去解锁化 + pack 降目录(§4.4 E/G) | ✅ 完成 | C1 |
+| T4 / C3 | 前端联动 + 双轨清理:工具面板/MCP 文案、always_load 配置面、单一路径兑现 | 中 | C2 |
 | T5 | 感知统一(§7 WorkflowSignature 合流)+ 散文 trigger 重复检测——与暴露架构独立,挂此处仅作索引 | 大 | 独立 |
 
 > trigger 表单 workflow_ref 选择器(原 T4 项)不依赖 deferred 机制——后端 `trigger.config.workflow_ref` 与前端 `AgentAwareSection` selector/args 输入均已落地;后续维护归 workflow 文档,不占本路线。

@@ -249,10 +249,10 @@ def test_build_persisted_memory_messages_includes_runtime_events():
     )
 
 
-def test_should_expand_tools_treats_fs_read_skill_file_like_read_file():
+def test_should_expand_tools_does_not_expand_fs_read_skill_file():
     from app.kernel.engine import _should_expand_tools
 
-    assert _should_expand_tools("fs_read", {"mode": "text", "path": "skills/research/SKILL.md"}) is True
+    assert _should_expand_tools("fs_read", {"mode": "text", "path": "skills/research/SKILL.md"}) is False
 
 
 @pytest.mark.asyncio
@@ -833,7 +833,7 @@ async def test_agent_kernel_keeps_core_tools_when_load_skill_has_no_declared_exp
 
 
 @pytest.mark.asyncio
-async def test_agent_kernel_prefers_declared_tool_subset_after_load_skill():
+async def test_agent_kernel_does_not_expand_tools_after_load_skill():
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig, ToolExpansionResult
 
@@ -955,11 +955,10 @@ async def test_agent_kernel_prefers_declared_tool_subset_after_load_skill():
 
     assert result.content == "done"
     assert tool_load_calls == [True]
-    assert expansion_calls == [("load_skill", {"name": "web research"})]
+    assert expansion_calls == []
     assert fake_client.calls[0]["tools"][0]["function"]["name"] == "core_tool"
-    assert fake_client.calls[1]["tools"][0]["function"]["name"] == "web_search"
-    assert emitted_events[0]["type"] == "tool_group_activation"
-    assert emitted_events[0]["tool_groups"][0]["name"] == "web_pack"
+    assert fake_client.calls[1]["tools"][0]["function"]["name"] == "core_tool"
+    assert emitted_events == []
 
 
 @pytest.mark.asyncio

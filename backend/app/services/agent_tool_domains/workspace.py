@@ -11,7 +11,7 @@ from pathlib import Path
 from app.config import get_settings
 from app.services.managed_capability_guard import sanitize_managed_credential_guidance
 from app.skills import SkillRegistry, WorkspaceSkillLoader
-from app.tools.runtime_tool_groups import iter_runtime_tool_groups, runtime_tool_group_for_name
+from app.tools.runtime_tool_groups import iter_runtime_tool_groups
 from app.tools.result_envelope import render_tool_error
 
 logger = logging.getLogger(__name__)
@@ -310,41 +310,13 @@ async def check_declared_packs_authorized(
     agent_id: uuid.UUID | None,
     declared_packs: tuple[str, ...],
 ) -> tuple[bool, str]:
-    """Verify that every tool inside each declared_pack is callable by this agent.
+    """Backward-compatible no-op.
 
-    Returns (ok, reason). `ok=False` means at least one tool in one of the
-    declared packs is explicitly denied by capability policy for this agent,
-    which would turn the saved skill into a "zombie" (writes succeed, but
-    `load_skill` later fails to activate the pack).
-
-    Skips check when tenant_id or agent_id is missing (e.g. distiller
-    backfill with no identity) — conservative default permits writing.
+    C2 makes ``packs:`` skill metadata a discovery hint rather than a save-time
+    existence or permission gate. Actual access remains enforced by call-time
+    governance when the agent invokes a discovered tool.
     """
-    if not declared_packs:
-        return True, ""
-    if tenant_id is None or agent_id is None:
-        return True, ""
-
-    from app.database import async_session
-    from app.services.capability_gate import check_capability
-
-    try:
-        async with async_session() as db:
-            for pack_name in declared_packs:
-                spec = runtime_tool_group_for_name(pack_name)
-                if spec is None:
-                    return False, f"declared_pack '{pack_name}' does not exist"
-                for tool_name in spec.tools:
-                    res = await check_capability(db, tenant_id, agent_id, tool_name)
-                    if res.denied:
-                        return False, (
-                            f"declared_pack '{pack_name}' contains tool '{tool_name}' "
-                            f"which is denied for this agent ({res.reason})"
-                        )
-    except Exception as exc:
-        logger.warning("[workspace] pack authorization check failed: %s", exc)
-        return True, ""
-
+    del tenant_id, agent_id, declared_packs
     return True, ""
 
 
@@ -473,7 +445,7 @@ def _save_skill(
             f"- name: {skill_name}\n"
             f"- declared_tools: {', '.join(declared_tools) or '(none)'}\n"
             f"- declared_packs: {', '.join(declared_packs) or '(none)'}\n"
-            "- next step: call `load_skill` with this skill name when the workflow is needed again."
+            "- next step: call `load_skill` for the method when needed; use `tool_search` to discover any missing tool schemas."
         )
     except Exception as exc:
         return _workspace_error(tool_name, "operation_failed", f"Skill save failed: {exc}")

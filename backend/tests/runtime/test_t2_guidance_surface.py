@@ -12,8 +12,8 @@ Small-cut guidance alignment, pinned in one place:
 * tool descriptions cross-reference each other (CC discipline: selection
   philosophy lives in tool descriptions);
 * ``set_trigger`` documents ``config.workflow_ref`` with its criterion;
-* ``system.py`` states the small-cut exposure reality: source capabilities
-  are core-resident, integration packs still activate via skills;
+* ``system.py`` states the C2 exposure reality: source capabilities are
+  core-resident, integration tools are discovered through ``tool_search``;
 * ``tool_search`` discovers deferred tools and makes matching schemas callable;
   ``load_skill`` remains for explicit method/instruction loading.
 """
@@ -121,8 +121,8 @@ def test_system_section_states_source_capabilities_resident():
     text = build_system_section()
     assert "spawn_subagent" in text
     assert "no skill needed" in text
-    # integration packs keep the skill-activation path (small cut, not T3)
-    assert "load a matching skill" in text
+    assert "tool_search" in text
+    assert "load a matching skill" not in text
 
 
 # ── T3a deferred discovery: tool_search loads matching schemas ──────

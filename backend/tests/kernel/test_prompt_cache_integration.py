@@ -206,7 +206,7 @@ async def test_tool_expansion_rebuild_preserves_dynamic_memory_and_effective_suf
         [
             SimpleNamespace(
                 content="",
-                tool_calls=[{"id": "call_1", "function": {"name": "load_skill", "arguments": '{"name":"research"}'}}],
+                tool_calls=[{"id": "call_1", "function": {"name": "tool_search", "arguments": '{"query":"web_search"}'}}],
                 reasoning_content=None,
                 usage={"total_tokens": 3},
             ),
@@ -231,12 +231,12 @@ async def test_tool_expansion_rebuild_preserves_dynamic_memory_and_effective_suf
             resolve_memory_context=lambda *_args, **_kwargs: "SNAPSHOT_BLOCK",
             resolve_retrieval_context=lambda *_args, **_kwargs: "RETRIEVAL_BLOCK",
             get_tools=lambda *_args, **_kwargs: [
-                {"type": "function", "function": {"name": "load_skill", "description": "", "parameters": {}}},
+                {"type": "function", "function": {"name": "tool_search", "description": "", "parameters": {}}},
             ],
             resolve_tool_expansion=resolve_tool_expansion,
             maybe_compress_messages=lambda messages, **_kwargs: messages,
             create_client=lambda _model: fake_client,
-            execute_tool=lambda *_args, **_kwargs: "loaded",
+            execute_tool=lambda *_args, **_kwargs: "discovered",
             persist_memory=lambda **_kwargs: None,
             record_token_usage=lambda *_args, **_kwargs: None,
             get_max_tokens=lambda *_args, **_kwargs: 1024,

@@ -17,6 +17,7 @@ from app.tools.decorator import ToolMeta, tool
         "Usage:\n"
         "- Use this when the current task clearly matches a known skill in the catalog.\n"
         "- Load one relevant skill at a time, then follow its instructions.\n"
+        "- Loading a skill does not unlock tool schemas; use `tool_search` when you need a missing capability.\n"
         "- Do NOT load a skill speculatively if the task does not clearly match it.\n"
         "- Do NOT use `run_command` to inspect platform or channel credential env vars from a skill; "
         "use dedicated tools and platform channel config instead.\n"
@@ -56,7 +57,7 @@ def load_skill(workspace: Path, arguments: dict, tenant_id: str | None = None) -
         "- Only use this after an approach has succeeded repeatedly and the steps, decision rules, and verification pattern are stable.\n"
         "- Save durable, reusable instructions that will help future runs of a similar task.\n"
         "- Do NOT save one-off notes, transient state, or raw transcripts as skills. Durable user corrections belong in `save_memory` when the Memory Guide qualifies them; operational notes and evidence belong in workspace files.\n"
-        "- Include declared tools/packs only when they are truly part of the repeatable approach.\n"
+        "- Include declared tools/packs only as discovery hints for capabilities used by the repeatable approach.\n"
         "- Use `overwrite: true` only when intentionally updating an existing skill."
     ),
     parameters={
@@ -82,7 +83,7 @@ def load_skill(workspace: Path, arguments: dict, tenant_id: str | None = None) -
             "packs": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional declared capability packs used by this skill, e.g. ['web_pack'].",
+                "description": "Optional declared capability packs used as discovery hints, e.g. ['web_pack'].",
             },
             "folder_name": {
                 "type": "string",

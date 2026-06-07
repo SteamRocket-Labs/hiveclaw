@@ -416,7 +416,7 @@ async def get_agent_packs(db: AsyncSession, agent_id: uuid.UUID) -> dict:
                 **pack,
                 "summary": base.summary if base else "",
                 "source": base.source if base else "skill",
-                "activation_mode": base.activation_mode if base else "通过 skill 激活",
+                "activation_mode": base.activation_mode if base else "通过 tool_search 发现",
                 "enabled": True,
             }
         )

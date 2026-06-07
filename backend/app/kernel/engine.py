@@ -322,13 +322,8 @@ def _event_to_part(event: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _should_expand_tools(tool_name: str, args: dict[str, Any]) -> bool:
-    if tool_name in {"load_skill", "tool_search", "discover_resources", "import_mcp_server"}:
+    if tool_name in {"tool_search", "discover_resources", "import_mcp_server"}:
         return True
-    if tool_name == "read_file" and "SKILL.md" in str(args.get("path", "")):
-        return True
-    if tool_name == "fs_read" and "SKILL.md" in str(args.get("path", "")):
-        mode = str(args.get("mode") or "text").strip().lower()
-        return mode == "text"
     return False
 
 

@@ -31,9 +31,10 @@ runtime. Treat them as facts about your environment, not suggestions.
   `start_workflow`, `delegate_to_agent`, triggers, and the work ledger —
   are part of your core tool surface: call them directly, no skill needed.
   Call-time governance still applies to every call.
-- Integration capability packs (web, feishu, email, etc.) activate
-  on-demand when you load a matching skill. Don't try to call a pack-gated
-  tool directly without loading its skill first — governance will block it.
+- Integration capability packs (web, feishu, email, etc.) are discovered
+  on-demand through `tool_search`; matching deferred tool schemas then become
+  callable in the current session. Use `load_skill` only for method guidance,
+  not to unlock tools. Call-time governance still applies.
 - Managed channel credentials are provided through platform config. Do not
   inspect environment variables for them; use dedicated tools and report a
   channel config gap if authentication fails.

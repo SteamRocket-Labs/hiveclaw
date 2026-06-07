@@ -119,8 +119,8 @@ async def test_check_declared_packs_authorized_empty_packs_passes():
 
 
 @pytest.mark.asyncio
-async def test_check_declared_packs_authorized_unknown_pack_rejected(monkeypatch):
-    """Unknown pack slug must not be silently accepted — skill would be unactivatable."""
+async def test_check_declared_packs_authorized_unknown_pack_is_discovery_hint(monkeypatch):
+    """C2: declared packs are discovery hints, not save-time existence gates."""
     from app.services.agent_tool_domains import workspace as workspace_mod
 
     class _NoopSession:
@@ -137,14 +137,13 @@ async def test_check_declared_packs_authorized_unknown_pack_rejected(monkeypatch
         agent_id=uuid4(),
         declared_packs=("totally_fake_pack",),
     )
-    assert ok is False
-    assert "totally_fake_pack" in reason
-    assert "does not exist" in reason
+    assert ok is True
+    assert reason == ""
 
 
 @pytest.mark.asyncio
-async def test_check_declared_packs_authorized_denied_tool_rejected(monkeypatch):
-    """If any tool inside a declared pack is denied by capability policy, skill save must fail."""
+async def test_check_declared_packs_authorized_denied_tool_still_allows_skill_save(monkeypatch):
+    """C2: capability policy applies at tool call time, not when saving skill metadata."""
     from app.services.agent_tool_domains import workspace as workspace_mod
     from app.services.capability_gate import CapabilityCheckResult
 
@@ -156,6 +155,7 @@ async def test_check_declared_packs_authorized_denied_tool_rejected(monkeypatch)
             return False
 
     async def _fake_check_capability(db, tenant_id, agent_id, tool_name):
+        checked_tools.append(tool_name)
         if tool_name == "send_feishu_message":
             return CapabilityCheckResult(
                 allowed=False,
@@ -165,6 +165,7 @@ async def test_check_declared_packs_authorized_denied_tool_rejected(monkeypatch)
             )
         return CapabilityCheckResult(allowed=True)
 
+    checked_tools: list[str] = []
     monkeypatch.setattr("app.database.async_session", lambda: _NoopSession())
     monkeypatch.setattr(
         "app.services.capability_gate.check_capability", _fake_check_capability
@@ -175,14 +176,14 @@ async def test_check_declared_packs_authorized_denied_tool_rejected(monkeypatch)
         agent_id=uuid4(),
         declared_packs=("feishu_pack",),
     )
-    assert ok is False
-    assert "send_feishu_message" in reason
-    assert "denied" in reason.lower()
+    assert ok is True
+    assert reason == ""
+    assert checked_tools == []
 
 
 @pytest.mark.asyncio
-async def test_save_skill_handler_blocks_unauthorized_pack(monkeypatch, tmp_path):
-    """End-to-end: save_skill handler must return unauthorized_pack error when a declared_pack contains a denied tool."""
+async def test_save_skill_handler_keeps_denied_pack_as_discovery_hint(monkeypatch, tmp_path):
+    """End-to-end: save_skill persists pack hints; call-time governance still owns access."""
     from app.core.execution_context import set_tool_tenant_id
     from app.services.capability_gate import CapabilityCheckResult
     from app.tools.handlers.skills import save_skill
@@ -225,6 +226,9 @@ async def test_save_skill_handler_blocks_unauthorized_pack(monkeypatch, tmp_path
     finally:
         set_tool_tenant_id(None)
 
-    assert "unauthorized_pack" in result
+    assert "✅ Saved skill" in result
     assert "web_pack" in result
-    assert not (tmp_path / "skills" / "zombie-skill" / "SKILL.md").exists()
+    saved = tmp_path / "skills" / "zombie-skill" / "SKILL.md"
+    assert saved.exists()
+    assert "packs:" in saved.read_text(encoding="utf-8")
+    assert "web_pack" in saved.read_text(encoding="utf-8")

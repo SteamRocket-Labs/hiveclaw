@@ -12,8 +12,8 @@ better results:
 - The `fs_read` / `fs_write` / `fs_list` facades dispatch to the underlying \
 per-action tools via a `mode` parameter; pick whichever surface keeps the \
 intent clearest.
-- For internet lookup, `load_skill` for the matching research workflow first, then use `web_search`. \
-Use `web_fetch` when you already have a specific URL.
+- For internet lookup, use `tool_search` to discover `web_search` when it is not already callable; \
+use `load_skill` only when you need a research method guide. Use `web_fetch` when you already have a specific URL.
 - Call multiple tools in parallel when they are independent — don't serialize unnecessarily.
 - Break complex tasks into focused tool calls. Verify outcomes before proceeding.
 - Use `load_skill` to access full skill instructions when a task matches a skill name — \

@@ -22,14 +22,14 @@ RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = (
         name="web_pack",
         summary="网页搜索与抓取能力，用于公开信息检索与网页内容提取。",
         source="system",
-        activation_mode="通过 web research 等 skill 间接激活",
+        activation_mode="通过 tool_search 发现 schema；需要方法时另读 web research skill",
         tools=("web_search", "web_fetch", "firecrawl_fetch", "xcrawl_scrape"),
     ),
     RuntimeToolGroupSpec(
         name="feishu_pack",
         summary="飞书消息、文档、知识库、表格、Base、审批、任务与日历能力。",
         source="channel",
-        activation_mode="通过 feishu skill 或已配置飞书渠道后显式使用",
+        activation_mode="通过 tool_search 发现 schema；需要渠道方法时另读 feishu skill",
         tools=(
             "send_feishu_message",
             "feishu_user_search",
@@ -78,14 +78,14 @@ RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = (
         name="email_pack",
         summary="邮件发送、阅读与回复能力，通过 SMTP/IMAP 连接。",
         source="system",
-        activation_mode="通过 email-guide skill 间接激活",
+        activation_mode="通过 tool_search 发现 schema；需要方法时另读 email-guide skill",
         tools=("send_email", "read_emails", "reply_email"),
     ),
     RuntimeToolGroupSpec(
         name="coordination_pack",
         summary="Agent 协作与轻量 subagent 扇出能力，用于同事协作、后台任务跟进和隔离式探索。",
         source="system",
-        activation_mode="通过 delegation-guide / subagent source capability 显式使用",
+        activation_mode="通过 tool_search 发现协作工具 schema；source capability 仍可直接使用",
         tools=(
             "send_message_to_agent",
             "delegate_to_agent",
@@ -114,7 +114,7 @@ RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = (
         name="office_pack",
         summary="办公生产力能力：通过 OfficeCLI 工具链路由 DOCX、XLSX、PPTX、PDF、会议纪要、周报和 Pitch Deck。",
         source="system",
-        activation_mode="通过 Office Productivity skill 显式激活",
+        activation_mode="通过 tool_search 发现 schema；需要方法时另读 Office Productivity skill",
         tools=(
             "read_file",
             "read_document",
@@ -133,7 +133,7 @@ RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = (
         name="deep_research_pack",
         summary="专属深度研究能力：通过 Deep Research 工具链执行规划、检索、抓取、证据台账、评估和报告生成。",
         source="system",
-        activation_mode="通过 Deep Research skill 显式激活专属 deep_research_* 工具",
+        activation_mode="通过 tool_search 发现专属 deep_research_* schema；需要方法时另读 Deep Research skill",
         tools=(
             "deep_research_run",
             "deep_research_start",

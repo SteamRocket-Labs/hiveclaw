@@ -450,11 +450,8 @@ async def test_execute_tool_receives_interactive_available_for_web_chat_session(
 
 
 @pytest.mark.asyncio
-async def test_resolve_tool_expansion_does_not_fallback_to_full_tools_when_workspace_fails(monkeypatch):
+async def test_resolve_tool_expansion_ignores_load_skill_for_schema_loading(monkeypatch):
     from app.runtime.invoker import AgentInvocationRequest, _resolve_tool_expansion
-
-    async def fake_ensure_workspace(_agent_id):
-        raise RuntimeError("workspace unavailable")
 
     async def fake_get_agent_tools_for_llm(*_args, **_kwargs):
         return [
@@ -464,7 +461,6 @@ async def test_resolve_tool_expansion_does_not_fallback_to_full_tools_when_works
             }
         ]
 
-    monkeypatch.setattr("app.runtime.invoker.ensure_workspace", fake_ensure_workspace)
     monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", fake_get_agent_tools_for_llm)
 
     result = await _resolve_tool_expansion(
@@ -531,6 +527,53 @@ async def test_tool_search_records_discovered_tools_and_returns_deferred_schema(
     assert session.metadata["discovered_tools"] == ["web_search"]
     assert result.event_payload["type"] == "deferred_tools_delta"
     assert result.event_payload["discovered_tools"] == ["web_search"]
+
+
+@pytest.mark.asyncio
+async def test_load_skill_and_skill_file_reads_do_not_expand_tool_schemas(monkeypatch, tmp_path):
+    import app.runtime.invoker as invoker
+    from app.runtime.invoker import AgentInvocationRequest, _resolve_tool_expansion
+
+    skill_dir = tmp_path / "skills" / "web-research"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: web research
+description: web research guide
+tools:
+  - web_search
+packs:
+  - web_pack
+---
+# Web Research
+
+Use tool_search to discover web tools, then call the matching tool.
+""",
+        encoding="utf-8",
+    )
+    agent_id = uuid4()
+
+    async def fake_get_agent_tools_for_llm(*_args, **_kwargs):
+        return [
+            {
+                "type": "function",
+                "function": {"name": "web_search", "description": "", "parameters": {"type": "object"}},
+            }
+        ]
+
+    monkeypatch.setattr(invoker, "get_agent_tools_for_llm", fake_get_agent_tools_for_llm)
+
+    request = AgentInvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None),
+        messages=[{"role": "user", "content": "load skill"}],
+        agent_name="Researcher",
+        role_description="Research agent",
+        agent_id=agent_id,
+        user_id=uuid4(),
+    )
+
+    assert await _resolve_tool_expansion(request, "load_skill", {"name": "web research"}) is None
+    assert await _resolve_tool_expansion(request, "read_file", {"path": "skills/web-research/SKILL.md"}) is None
 
 
 @pytest.mark.asyncio

@@ -40,7 +40,6 @@ from app.runtime.context_engine import DefaultContextEngine
 from app.runtime.prompt_builder import build_frozen_prompt_prefix
 from app.runtime.session import SessionContext
 from app.runtime.session_key import build_session_key, ensure_session_key
-from app.skills import SkillParser, SkillRegistry, WorkspaceSkillLoader
 from app.services.agent_context import build_agent_context, build_agent_runtime_context
 from app.services.agent_work_ledger import should_enable_work_ledger
 from app.services.agent_tools import CORE_TOOL_NAMES, execute_tool, get_agent_tools_for_llm, get_combined_openai_tools
@@ -58,7 +57,6 @@ from app.services.token_tracker import (
     extract_usage_tokens,
     record_token_usage,
 )
-from app.tools import ensure_workspace
 from app.tools.runtime_tool_groups import RUNTIME_TOOL_GROUPS, iter_runtime_tool_groups, runtime_tool_group_for_name
 
 logger = logging.getLogger(__name__)
@@ -568,13 +566,6 @@ async def _resolve_retrieval_context(
     return "\n\n".join(parts)
 
 
-def _build_skill_registry_for_workspace(workspace: Any) -> SkillRegistry:
-    loader = WorkspaceSkillLoader()
-    registry = SkillRegistry()
-    registry.register_many(loader.load_from_workspace(workspace))
-    return registry
-
-
 def _serialize_pack(pack) -> dict[str, Any]:
     return {
         "name": pack.name,
@@ -617,42 +608,17 @@ def _infer_active_tool_groups(
             existing_names.add(pack_name)
     if packs or not requested:
         return packs
-    synthetic_name = f"skill:{(skill_name or 'custom').strip().lower().replace(' ', '_')}"
+    synthetic_name = f"discovery:{(skill_name or 'custom').strip().lower().replace(' ', '_')}"
     return [
         {
             "name": synthetic_name,
-            "summary": f"Tools activated by skill {skill_name or 'custom skill'}",
-            "source": "skill",
-            "activation_mode": "通过 load_skill 激活",
+            "summary": f"Tools discovered by {skill_name or 'tool_search'}",
+            "source": "discovery",
+            "activation_mode": "通过 tool_search 发现",
             "tools": sorted(requested),
             "skill_name": skill_name,
         }
     ]
-
-
-def _declared_skill_tool_names(
-    *,
-    declared_tools: tuple[str, ...] | list[str] | None = None,
-    declared_packs: tuple[str, ...] | list[str] | None = None,
-) -> list[str]:
-    requested: list[str] = []
-    seen: set[str] = set()
-
-    for tool_name in declared_tools or ():
-        if tool_name and tool_name not in seen:
-            requested.append(tool_name)
-            seen.add(tool_name)
-
-    for pack_name in declared_packs or ():
-        pack = runtime_tool_group_for_name(pack_name)
-        if not pack:
-            continue
-        for tool_name in pack.tools:
-            if tool_name not in seen:
-                requested.append(tool_name)
-                seen.add(tool_name)
-
-    return requested
 
 
 def _deferred_tool_names_for_query(query: str) -> list[str]:
@@ -737,112 +703,6 @@ async def _resolve_tool_expansion(
                 "tool_groups": packs,
                 "message": "Activated MCP runtime tool group.",
                 "status": "info",
-                "trigger_tool": tool_name,
-            },
-        )
-
-    try:
-        workspace = await ensure_workspace(request.agent_id)
-        registry = _build_skill_registry_for_workspace(workspace)
-    except Exception as exc:
-        # Skill expansion is opportunistic — if workspace/registry can't be built
-        # (e.g. agent has no workspace yet, FS error), fall back to no expansion
-        # rather than failing the whole tool call. Log so this is observable.
-        logger.debug(
-            "[Invoker] Skill expansion skipped — workspace/registry unavailable for agent %s: %s",
-            request.agent_id,
-            exc,
-        )
-        return None
-
-    if tool_name == "load_skill":
-        requested = str(args.get("name", "") or "").strip()
-        if not requested:
-            return None
-        try:
-            skill = registry.resolve(requested)
-        except KeyError as _ke:
-            logger.debug("[Invoker] Skill not found in registry: %s", _ke)
-            return None
-        requested_tool_names = _declared_skill_tool_names(
-            declared_tools=skill.metadata.declared_tools,
-            declared_packs=skill.metadata.declared_packs,
-        )
-        if not requested_tool_names:
-            return None
-        tools = await get_agent_tools_for_llm(
-            request.agent_id,
-            core_only=False,
-            requested_names=requested_tool_names,
-        )
-        expanded_tool_names = _tool_names_from_openai_tools(tools)
-        if not expanded_tool_names:
-            return None
-        packs = _infer_active_tool_groups(
-            expanded_tool_names,
-            skill_name=skill.metadata.name,
-            declared_pack_names=list(skill.metadata.declared_packs),
-        )
-        return ToolExpansionResult(
-            tools=tools,
-            active_tool_groups=packs,
-            event_payload={
-                "type": "tool_group_activation",
-                "packs": packs,
-                "tool_groups": packs,
-                "message": f"Activated runtime tool groups after loading skill: {skill.metadata.name}",
-                "status": "info",
-                "skill_name": skill.metadata.name,
-                "trigger_tool": tool_name,
-            },
-        )
-
-    if tool_name in {"read_file", "fs_read"}:
-        if tool_name == "fs_read":
-            mode = str(args.get("mode") or "text").strip().lower()
-            if mode != "text":
-                return None
-        skill_path_arg = str(args.get("path", "") or "").strip()
-        if "SKILL.md" not in skill_path_arg:
-            return None
-        skill_path = (workspace / skill_path_arg).resolve()
-        skills_root = (workspace / "skills").resolve()
-        if not skill_path.is_file() or not str(skill_path).startswith(str(skills_root)):
-            return None
-        parsed = SkillParser().parse_file(
-            skill_path,
-            relative_path=skill_path.relative_to(workspace).as_posix(),
-            default_name=skill_path.parent.name if skill_path.name.lower() == "skill.md" else skill_path.stem,
-        )
-        requested_tool_names = _declared_skill_tool_names(
-            declared_tools=parsed.metadata.declared_tools,
-            declared_packs=parsed.metadata.declared_packs,
-        )
-        if not requested_tool_names:
-            return None
-        tools = await get_agent_tools_for_llm(
-            request.agent_id,
-            core_only=False,
-            requested_names=requested_tool_names,
-        )
-        expanded_tool_names = _tool_names_from_openai_tools(tools)
-        if not expanded_tool_names:
-            return None
-        packs = _infer_active_tool_groups(
-            expanded_tool_names,
-            skill_name=parsed.metadata.name,
-            declared_pack_names=list(parsed.metadata.declared_packs),
-        )
-        return ToolExpansionResult(
-            tools=tools,
-            active_tool_groups=packs,
-            event_payload={
-                "type": "tool_group_activation",
-                "packs": packs,
-                "tool_groups": packs,
-                "message": f"Activated runtime tool groups from skill file: {parsed.metadata.name}",
-                "status": "info",
-                "skill_name": parsed.metadata.name,
                 "trigger_tool": tool_name,
             },
         )

@@ -107,11 +107,21 @@ class ToolGovernanceResolver:
             target = arguments.get("tool_name") if tool_name == "call_mcp_tool" else tool_name
             if not target or not isinstance(target, str):
                 return None
-            from app.models.tool import Tool
+            from app.models.tool import AgentTool, Tool
             from app.services.mcp_server_service import resolve_agent_mcp_tool_mode
 
             async with async_session() as db:
-                result = await db.execute(select(Tool).where(Tool.name == target, Tool.type == "mcp"))
+                result = await db.execute(
+                    select(Tool)
+                    .join(AgentTool, AgentTool.tool_id == Tool.id)
+                    .where(
+                        AgentTool.agent_id == agent_id,
+                        AgentTool.enabled.is_(True),
+                        Tool.name == target,
+                        Tool.type == "mcp",
+                        Tool.enabled.is_(True),
+                    )
+                )
                 tool = result.scalar_one_or_none()
                 if tool is None:
                     return None  # not an MCP tool — fall through to the capability gate

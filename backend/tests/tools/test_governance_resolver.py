@@ -188,3 +188,56 @@ async def test_resolver_mcp_mode_unwraps_target_and_fast_paths(monkeypatch):
 
     # 4. call_mcp_tool without a target name → None (validation happens handler-side)
     assert await deps.resolve_mcp_tool_mode(agent_id, "call_mcp_tool", {}) is None
+
+
+@pytest.mark.asyncio
+async def test_resolver_mcp_mode_lookup_is_scoped_to_enabled_agent_assignment(monkeypatch):
+    """Closure A2 review-fix: tool names are only tenant-unique.
+
+    The governance resolver must resolve the MCP mode for the concrete tool
+    assigned to this agent, not the first global Tool row with the same name.
+    """
+    from app.tools.governance_resolver import ToolGovernanceResolver
+
+    agent_id = uuid4()
+    mcp_tool_row = SimpleNamespace(id=uuid4(), type="mcp", name="notion_search")
+
+    class _FakeScalar:
+        def scalar_one_or_none(self):
+            return mcp_tool_row
+
+    class _FakeSession:
+        def __init__(self):
+            self.executed_statements = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def execute(self, query):
+            self.executed_statements.append(query)
+            return _FakeScalar()
+
+    async def fake_resolve_agent_mcp_tool_mode(db, aid, tool):
+        assert aid == agent_id
+        assert tool is mcp_tool_row
+        return "approval"
+
+    session = _FakeSession()
+    monkeypatch.setattr("app.tools.governance_resolver.async_session", lambda: session)
+    monkeypatch.setattr(
+        "app.services.mcp_server_service.resolve_agent_mcp_tool_mode",
+        fake_resolve_agent_mcp_tool_mode,
+    )
+
+    deps = ToolGovernanceResolver().build_dependencies()
+    assert deps.resolve_mcp_tool_mode is not None
+    assert await deps.resolve_mcp_tool_mode(agent_id, "call_mcp_tool", {"tool_name": "notion_search"}) == "approval"
+
+    sql = str(session.executed_statements[0].compile(compile_kwargs={"literal_binds": False})).lower()
+    assert "join agent_tools" in sql
+    assert "agent_tools.agent_id" in sql
+    assert "agent_tools.enabled" in sql
+    assert "tools.enabled" in sql

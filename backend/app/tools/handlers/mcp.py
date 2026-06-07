@@ -44,11 +44,16 @@ async def list_mcp_resources(agent_id: uuid.UUID, arguments: dict) -> str:
             tools = result.scalars().all()
             from app.services.mcp_server_service import resolve_agent_mcp_tool_mode
 
+            # Closure A2: approval gates EXECUTION, not discovery — deny hides
+            # the tool, approval keeps it listed with the cost visible up front.
             visible_tools = []
+            approval_names: set[str] = set()
             for tool_row in tools:
                 mode = await resolve_agent_mcp_tool_mode(db, agent_id, tool_row)
                 if mode == "deny":
                     continue
+                if mode == "approval":
+                    approval_names.add(tool_row.name)
                 visible_tools.append(tool_row)
             tools = visible_tools
             if not tools:
@@ -63,7 +68,8 @@ async def list_mcp_resources(agent_id: uuid.UUID, arguments: dict) -> str:
             for server, server_tools in by_server.items():
                 lines.append(f"### Server: {server}")
                 for t in server_tools:
-                    lines.append(f"- **{t.name}** ({t.display_name}): {t.description[:100]}")
+                    marker = " [approval required]" if t.name in approval_names else ""
+                    lines.append(f"- **{t.name}**{marker} ({t.display_name}): {t.description[:100]}")
                 lines.append("")
 
             return "\n".join(lines)
@@ -164,8 +170,17 @@ async def read_mcp_resource(agent_id: uuid.UUID, arguments: dict) -> str:
                 f"- Server: {t.mcp_server_name or t.mcp_server_url or 'unknown'}",
                 f"- MCP tool name: {t.mcp_tool_name or t.name}",
                 f"- Enabled: {t.enabled}",
-                f"- Parameters schema:\n```json\n{json.dumps(t.parameters_schema, indent=2, ensure_ascii=False)}\n```",
             ]
+            if mode == "approval":
+                # Closure A2: visibility ≠ executability — the schema stays
+                # readable, but calling this tool requires approval first.
+                info.append(
+                    "- ⚠️ Policy: calling this tool requires approval — the call will create "
+                    "an approval request and wait for a human decision."
+                )
+            info.append(
+                f"- Parameters schema:\n```json\n{json.dumps(t.parameters_schema, indent=2, ensure_ascii=False)}\n```"
+            )
             return "\n".join(info)
     except Exception as exc:
         return render_tool_error(

@@ -990,3 +990,149 @@ async def test_governance_skips_token_check_when_no_token():
     )
 
     assert message is None  # passes through
+
+
+# ── MCP server-policy gate (closure A2: approval gates execution) ──────────
+#
+# The MCP tool mode (auto / approval / deny) was resolved at execution time
+# but only deny was enforced — approval behaved exactly like auto, a silent
+# governance promise. The gate now lives in governance preflight so the
+# post-approval replay path (execute_approved skips preflight) cannot loop.
+
+
+def _mcp_gate_deps(resolve_mcp_tool_mode, request_approval=None):
+    from app.tools.governance import GovernanceDependencies
+
+    async def resolve_security_zone(_agent_id):
+        return "standard"
+
+    async def check_capability(_tenant_id, _agent_id, _tool_name):
+        return SimpleNamespace(denied=False, escalate_to_l3=False, capability=None, reason=None)
+
+    async def write_audit(**kwargs):
+        return None
+
+    async def _default_request_approval(**kwargs):
+        raise AssertionError("request_approval must not be called")
+
+    return GovernanceDependencies(
+        resolve_security_zone=resolve_security_zone,
+        check_capability=check_capability,
+        write_audit_event=write_audit,
+        request_approval=request_approval or _default_request_approval,
+        resolve_mcp_tool_mode=resolve_mcp_tool_mode,
+    )
+
+
+@pytest.mark.asyncio
+async def test_governance_mcp_approval_mode_requests_approval():
+    from app.tools.governance import ToolGovernanceContext, run_tool_governance
+
+    events = []
+    approvals = []
+
+    async def resolve_mcp_tool_mode(_agent_id, tool_name, arguments):
+        assert tool_name == "call_mcp_tool"
+        assert arguments["tool_name"] == "notion_search"
+        return "approval"
+
+    async def request_approval(*, agent_id, user_id, tool_name, arguments, capability, reason=None):
+        approvals.append({"tool_name": tool_name, "arguments": arguments, "capability": capability})
+        return {"allowed": False, "approval_id": "approval-mcp-1"}
+
+    message = await run_tool_governance(
+        ToolGovernanceContext(
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            tenant_id=str(uuid4()),
+            tool_name="call_mcp_tool",
+            arguments={"tool_name": "notion_search", "arguments": {"q": "x"}},
+        ),
+        _mcp_gate_deps(resolve_mcp_tool_mode, request_approval),
+        event_callback=events.append,
+    )
+
+    assert message is not None
+    assert "requires approval" in message
+    assert "Approval ID: approval-mcp-1" in message
+    assert "Do not retry" in message
+    # Replay needs the OUTER tool + original args in the approval details.
+    assert approvals == [
+        {
+            "tool_name": "call_mcp_tool",
+            "arguments": {"tool_name": "notion_search", "arguments": {"q": "x"}},
+            "capability": "mcp_tool_call",
+        }
+    ]
+    assert events and events[0]["status"] == "approval_required"
+
+
+@pytest.mark.asyncio
+async def test_governance_mcp_deny_mode_blocks_without_approval():
+    from app.tools.governance import ToolGovernanceContext, run_tool_governance
+
+    events = []
+
+    async def resolve_mcp_tool_mode(_agent_id, _tool_name, _arguments):
+        return "deny"
+
+    message = await run_tool_governance(
+        ToolGovernanceContext(
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            tenant_id=str(uuid4()),
+            tool_name="notion_search",
+            arguments={"q": "x"},
+        ),
+        _mcp_gate_deps(resolve_mcp_tool_mode),
+        event_callback=events.append,
+    )
+
+    assert message is not None
+    assert "denied" in message.lower() or "blocked" in message.lower()
+    assert events and events[0]["status"] == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_governance_mcp_auto_and_none_fall_through():
+    from app.tools.governance import ToolGovernanceContext, run_tool_governance
+
+    for mode in ("auto", None):
+
+        async def resolve_mcp_tool_mode(_agent_id, _tool_name, _arguments, _mode=mode):
+            return _mode
+
+        message = await run_tool_governance(
+            ToolGovernanceContext(
+                agent_id=uuid4(),
+                user_id=uuid4(),
+                tenant_id=str(uuid4()),
+                tool_name="read_file",
+                arguments={"path": "notes.md"},
+            ),
+            _mcp_gate_deps(resolve_mcp_tool_mode),
+        )
+
+        assert message is None  # falls through to the rest of governance
+
+
+@pytest.mark.asyncio
+async def test_governance_mcp_resolve_failure_fails_closed():
+    from app.tools.governance import ToolGovernanceContext, run_tool_governance
+
+    async def resolve_mcp_tool_mode(_agent_id, _tool_name, _arguments):
+        raise RuntimeError("db down")
+
+    message = await run_tool_governance(
+        ToolGovernanceContext(
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            tenant_id=str(uuid4()),
+            tool_name="call_mcp_tool",
+            arguments={"tool_name": "notion_search"},
+        ),
+        _mcp_gate_deps(resolve_mcp_tool_mode),
+    )
+
+    assert message is not None
+    assert "blocked" in message.lower()

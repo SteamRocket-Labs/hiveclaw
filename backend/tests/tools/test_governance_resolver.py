@@ -119,3 +119,72 @@ async def test_tool_governance_resolver_dependencies_wrap_services(monkeypatch):
     assert approval_calls[0][3]["tool"] == "write_file"
     assert approval_calls[0][3]["args"] == {"path": "focus.md"}
     assert approval_calls[0][3]["reason"] == "manual escalation"
+
+
+@pytest.mark.asyncio
+async def test_resolver_mcp_mode_unwraps_target_and_fast_paths(monkeypatch):
+    """Closure A2: the resolver feeds the governance MCP gate.
+
+    call_mcp_tool is the generic entry — the governed object is the target
+    tool inside its arguments; dynamic MCP tool names govern themselves;
+    a name that is not an MCP Tool row returns None without touching the
+    per-agent mode resolution (fast path for every ordinary tool call).
+    """
+    from app.tools.governance_resolver import ToolGovernanceResolver
+
+    agent_id = uuid4()
+    mcp_tool_row = SimpleNamespace(id=uuid4(), type="mcp", name="notion_search")
+    mode_calls = []
+
+    class _FakeScalar:
+        def __init__(self, value):
+            self._value = value
+
+        def scalar_one_or_none(self):
+            return self._value
+
+    class _FakeSession:
+        def __init__(self, row):
+            self._row = row
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def execute(self, _query):
+            return _FakeScalar(self._row)
+
+    async def fake_resolve_agent_mcp_tool_mode(db, aid, tool):
+        mode_calls.append((aid, tool.name))
+        return "approval"
+
+    monkeypatch.setattr(
+        "app.services.mcp_server_service.resolve_agent_mcp_tool_mode",
+        fake_resolve_agent_mcp_tool_mode,
+    )
+
+    resolver = ToolGovernanceResolver()
+
+    # 1. call_mcp_tool unwraps the target from arguments
+    monkeypatch.setattr("app.tools.governance_resolver.async_session", lambda: _FakeSession(mcp_tool_row))
+    deps = resolver.build_dependencies()
+    assert deps.resolve_mcp_tool_mode is not None
+    mode = await deps.resolve_mcp_tool_mode(agent_id, "call_mcp_tool", {"tool_name": "notion_search"})
+    assert mode == "approval"
+    assert mode_calls == [(agent_id, "notion_search")]
+
+    # 2. dynamic MCP tool name governs itself
+    mode = await deps.resolve_mcp_tool_mode(agent_id, "notion_search", {})
+    assert mode == "approval"
+
+    # 3. not an MCP Tool row → None fast path, mode resolution untouched
+    mode_calls.clear()
+    monkeypatch.setattr("app.tools.governance_resolver.async_session", lambda: _FakeSession(None))
+    deps = resolver.build_dependencies()
+    assert await deps.resolve_mcp_tool_mode(agent_id, "read_file", {"path": "x"}) is None
+    assert mode_calls == []
+
+    # 4. call_mcp_tool without a target name → None (validation happens handler-side)
+    assert await deps.resolve_mcp_tool_mode(agent_id, "call_mcp_tool", {}) is None

@@ -50,6 +50,7 @@
 - **改动面**: `services/agent_tool_domains/web_mcp.py`、`tools/governance_resolver.py` 或 approval 接线层、审批 UI 已有面则零前端改动。
 - **红测**: ① approval 模式未批准 → 不执行 + pending 返回 + 审批记录创建；② 批准后同调用放行；③ deny 仍硬断；④ auto 不受影响；⑤ 多租户隔离（A 租户审批不影响 B）。
 - **验收**: 配置 approval 的 MCP 工具在无审批时**物理上无法**触达远端 server（断言 MCPClient 未被调用）。
+- ✅ **已落地（2026-06-07）**: 接入点选 **governance preflight**（优于 handler 层）——`execute_approved` 本就跳过 preflight（"the approval decision is the governance result"），所以批准后重放**结构上不可能**再造审批死循环，这正是 Codex 建议的 Preflight 级 enforcement。实装：`GovernanceDependencies.resolve_mcp_tool_mode` 可选字段（默认 None 旧测试零破坏）+ `_run_governance_inner` zone/tenant 之后的 MCP gate（deny→teaching block；approval→复用既有 `request_approval` 管道=ApprovalRequest+⏳pending message+`approval_required` event，capability="mcp_tool_call"，details 带外层 tool+原 args→批准后 `_execute_approved_action` 通用重放直接工作；auto/None→fall through 继续 capability gate；resolve 异常→fail-closed block）；resolver 注入 `_resolve_mcp_tool_mode`（call_mcp_tool 解包 arguments.tool_name，动态 MCP 名自治，非 MCP Tool row→None fast path 一次轻查询）。元数据语义照 v0.2：`list_mcp_resources` approval 工具保持可发现+行尾 `[approval required]`（deny 隐藏不变）；`read_mcp_resource` schema 可读+附"调用需审批"声明；handler 层 deny 检查全部保留=深防（批准后管理员改 deny 仍被拦）。红测 7 项：governance×4（approval 管道含 details 重放契约/deny 不触审批/auto+None 穿透/resolve 异常 fail-closed）+resolver×1（解包+自治+fast path 四断言）+元数据×2。全量 3925 绿。
 
 ### A3 save_memory tenant_id 接线（量级 S）
 

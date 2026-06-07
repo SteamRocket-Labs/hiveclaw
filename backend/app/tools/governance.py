@@ -125,6 +125,12 @@ class GovernanceDependencies:
     check_capability: Callable[[uuid.UUID, uuid.UUID, str], Awaitable[Any] | Any]
     write_audit_event: Callable[..., Awaitable[None] | None]
     request_approval: Callable[..., Awaitable[dict] | dict]
+    # Closure A2 — MCP server-policy gate. Resolves the effective MCP mode
+    # (auto / approval / deny / None) for (agent_id, tool_name, arguments);
+    # None means "not an MCP-governed call" and falls through. Lives in
+    # preflight so the post-approval replay path (execute_approved skips
+    # governance) cannot loop back into a fresh approval request.
+    resolve_mcp_tool_mode: Callable[[uuid.UUID, str, dict], Awaitable[str | None] | str | None] | None = None
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -308,6 +314,101 @@ async def _run_governance_inner(
                 },
             )
             return message
+
+    # ── MCP server-policy gate (closure A2) ────────────────────────────
+    # approval gates EXECUTION (the remote call), not discovery: metadata
+    # tools annotate instead (handlers/mcp.py). deny blocks hard here and
+    # stays enforced handler-side as defence in depth. auto/None fall
+    # through to the capability gate below.
+    if deps.resolve_mcp_tool_mode is not None:
+        try:
+            mcp_mode = await _maybe_await(
+                deps.resolve_mcp_tool_mode(context.agent_id, context.tool_name, context.arguments)
+            )
+        except Exception as exc:
+            logger.warning(
+                "[Governance] MCP mode resolve failed for tool %s — blocking (fail-closed): %s",
+                context.tool_name,
+                exc,
+            )
+            message = f"🔒 Tool '{context.tool_name}' blocked — MCP policy check unavailable. Please retry."
+            await _emit_event(
+                event_callback,
+                {
+                    "type": "permission",
+                    "tool_name": context.tool_name,
+                    "status": "blocked",
+                    "message": message,
+                },
+            )
+            return message
+        if mcp_mode == "deny":
+            message = _teaching_block_message(
+                context.tool_name,
+                reason="this MCP tool is denied by the agent's MCP server policy",
+                next_steps=[
+                    "use a different tool that is allowed for this agent",
+                    "tell the user this MCP tool needs an operator to change its policy in advanced MCP controls",
+                ],
+            )
+            await _emit_event(
+                event_callback,
+                {
+                    "type": "permission",
+                    "tool_name": context.tool_name,
+                    "status": "blocked",
+                    "message": message,
+                },
+            )
+            return message
+        if mcp_mode == "approval":
+            try:
+                result_check = await _maybe_await(
+                    deps.request_approval(
+                        agent_id=context.agent_id,
+                        user_id=context.user_id,
+                        tool_name=context.tool_name,
+                        arguments=context.arguments,
+                        capability="mcp_tool_call",
+                        reason="MCP server policy requires approval for this tool",
+                    )
+                )
+                message = (
+                    f"⏳ Tool '{context.tool_name}' requires approval"
+                    f" [MCP server policy]. An approval request has been sent"
+                    f" (Approval ID: {result_check.get('approval_id', 'N/A')}). "
+                    "Do not retry this tool until approval is granted. Meanwhile you can: "
+                    "continue other read-only parts of the task / tell the user what is pending and why / "
+                    "record current progress so the approved action can resume cleanly."
+                )
+                await _emit_event(
+                    event_callback,
+                    {
+                        "type": "permission",
+                        "tool_name": context.tool_name,
+                        "status": "approval_required",
+                        "message": message,
+                        "approval_id": result_check.get("approval_id"),
+                        "capability": "mcp_tool_call",
+                    },
+                )
+                return message
+            except Exception as exc:
+                logger.error("[Governance] MCP approval request failed — blocking (fail-closed): %s", exc)
+                message = (
+                    f"🔒 Tool '{context.tool_name}' blocked — MCP approval request failed ({exc}). "
+                    "This may be a transient error — please retry the tool call."
+                )
+                await _emit_event(
+                    event_callback,
+                    {
+                        "type": "permission",
+                        "tool_name": context.tool_name,
+                        "status": "blocked",
+                        "message": message,
+                    },
+                )
+                return message
 
     tenant_uuid: uuid.UUID | None = None
     if context.tenant_id:

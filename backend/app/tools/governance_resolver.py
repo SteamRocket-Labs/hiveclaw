@@ -47,10 +47,16 @@ class ToolGovernanceResolver:
                     agent = result.scalar_one_or_none()
                     zone = getattr(agent, "security_zone", None)
                     if not zone:
-                        logger.warning("[Governance] Agent %s has no security_zone set — defaulting to 'restricted'", agent_id)
+                        logger.warning(
+                            "[Governance] Agent %s has no security_zone set — defaulting to 'restricted'", agent_id
+                        )
                     return zone or "restricted"
             except Exception as exc:
-                logger.error("[Governance] Failed to resolve security zone for %s: %s — defaulting to 'restricted'", agent_id, exc)
+                logger.error(
+                    "[Governance] Failed to resolve security zone for %s: %s — defaulting to 'restricted'",
+                    agent_id,
+                    exc,
+                )
                 return "restricted"
 
         async def _check_capability(tenant_id: uuid.UUID, agent_id: uuid.UUID, tool_name: str):
@@ -90,9 +96,31 @@ class ToolGovernanceResolver:
                 await db.commit()
                 return outcome
 
+        async def _resolve_mcp_tool_mode(
+            agent_id: uuid.UUID,
+            tool_name: str,
+            arguments: dict,
+        ) -> str | None:
+            # Closure A2: feed the governance MCP gate. call_mcp_tool is the
+            # generic entry — the governed object is the target tool inside
+            # its arguments; dynamic MCP tool names govern themselves.
+            target = arguments.get("tool_name") if tool_name == "call_mcp_tool" else tool_name
+            if not target or not isinstance(target, str):
+                return None
+            from app.models.tool import Tool
+            from app.services.mcp_server_service import resolve_agent_mcp_tool_mode
+
+            async with async_session() as db:
+                result = await db.execute(select(Tool).where(Tool.name == target, Tool.type == "mcp"))
+                tool = result.scalar_one_or_none()
+                if tool is None:
+                    return None  # not an MCP tool — fall through to the capability gate
+                return await resolve_agent_mcp_tool_mode(db, agent_id, tool)
+
         return GovernanceDependencies(
             resolve_security_zone=_resolve_security_zone,
             check_capability=_check_capability,
             write_audit_event=_write_audit_event,
             request_approval=_request_approval,
+            resolve_mcp_tool_mode=_resolve_mcp_tool_mode,
         )

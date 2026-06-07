@@ -349,3 +349,59 @@ def test_call_mcp_tool_is_in_capability_map() -> None:
     from app.services.capability_gate import CAPABILITY_MAP
 
     assert CAPABILITY_MAP.get("call_mcp_tool") == "agent.mcp.call"
+
+
+# ── Closure A2: approval gates execution, not discovery ──────────────
+
+
+@pytest.mark.asyncio
+async def test_read_mcp_resource_approval_mode_annotates_not_blocks(install_fake_session, monkeypatch):
+    """Metadata semantics: the schema stays readable under approval mode but
+    carries an explicit notice — visibility is not executability."""
+    row = SimpleNamespace(
+        name="weather",
+        display_name="Weather",
+        description="Weather lookup",
+        enabled=True,
+        mcp_server_url="https://mcp.example.com",
+        mcp_server_name="weather-server",
+        mcp_tool_name="get_weather",
+        parameters_schema={"type": "object"},
+    )
+    install_fake_session(row)
+
+    async def fake_mode(db, aid, tool):
+        return "approval"
+
+    monkeypatch.setattr("app.services.mcp_server_service.resolve_agent_mcp_tool_mode", fake_mode)
+
+    out = await read_mcp_resource(uuid.uuid4(), {"tool_name": "weather"})
+
+    assert "## MCP Tool: weather" in out  # still readable
+    assert "requires approval" in out  # explicitly annotated
+
+
+@pytest.mark.asyncio
+async def test_list_mcp_resources_marks_approval_tools(install_fake_session, monkeypatch):
+    from app.tools.handlers.mcp import list_mcp_resources
+
+    rows = [
+        SimpleNamespace(
+            name="weather",
+            display_name="Weather",
+            description="Weather lookup",
+            mcp_server_name="weather-server",
+            mcp_server_url="https://mcp.example.com",
+        )
+    ]
+    install_fake_session([_FakeQueryResult(scalars=rows)])
+
+    async def fake_mode(db, aid, tool):
+        return "approval"
+
+    monkeypatch.setattr("app.services.mcp_server_service.resolve_agent_mcp_tool_mode", fake_mode)
+
+    out = await list_mcp_resources(uuid.uuid4(), {})
+
+    assert "weather" in out  # approval tools stay discoverable
+    assert "[approval required]" in out  # but the cost is visible up front

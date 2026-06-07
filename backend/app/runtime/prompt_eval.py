@@ -330,16 +330,17 @@ def evaluate_runtime_prompt_contracts(inputs: PromptEvalInputs | None = None) ->
             success_detail="Tools section requires load_skill before acting on a matching skill.",
             failure_detail="Tools section no longer requires load_skill before acting on a matching skill.",
         ),
-        "web_lookup_requires_skill_activation": _CheckSpec(
+        "web_lookup_requires_tool_search_discovery": _CheckSpec(
             predicate=lambda: (
                 "web_search" in (resolved.tools_section or "")
-                and "load_skill" in (resolved.tools_section or "")
-                and "matching research workflow first" in (resolved.tools_section or "").lower()
+                and "tool_search" in (resolved.tools_section or "")
+                and "discover `web_search`" in (resolved.tools_section or "")
+                and "not already callable" in (resolved.tools_section or "").lower()
             ),
             severity="high",
-            remediation="Restore tools guidance that requires load_skill before using web_search for internet lookup.",
-            success_detail="Tools section requires skill activation before web_search.",
-            failure_detail="Tools section implies web_search is directly available instead of skill-gated.",
+            remediation="Restore tools guidance that uses tool_search to discover web_search when it is not yet callable.",
+            success_detail="Tools section routes deferred web_search availability through tool_search discovery.",
+            failure_detail="Tools section no longer explains how to discover deferred web_search.",
         ),
         "skill_patch_instead_of_duplicate_guidance": _CheckSpec(
             predicate=lambda: _heartbeat_templates_pass("skill_patch_instead_of_duplicate_guidance"),

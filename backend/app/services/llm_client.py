@@ -257,6 +257,9 @@ class _CapAwareLLMClient(LLMClient):
         self.provider = provider or "unknown"
         self.model = model or getattr(inner, "model", None) or "unknown"
 
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
     async def complete(
         self,
         messages: list[LLMMessage],

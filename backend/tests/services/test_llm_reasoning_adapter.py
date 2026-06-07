@@ -175,7 +175,8 @@ def test_openai_gpt55_routes_to_responses_and_omits_unsupported_temperature():
         **kwargs,
     )
 
-    assert isinstance(client, OpenAIResponsesClient)
+    routed_client = getattr(client, "_inner", client)
+    assert isinstance(routed_client, OpenAIResponsesClient)
     assert payload["model"] == "gpt-5.5"
     assert "input" in payload
     assert "temperature" not in payload

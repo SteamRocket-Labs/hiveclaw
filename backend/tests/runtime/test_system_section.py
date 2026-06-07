@@ -88,10 +88,13 @@ class TestToolGovernance:
         assert "capability gate" in normalized
         assert "approval flow" in normalized
 
-    def test_pack_gated_tools_require_skill(self, prompt_text: str) -> None:
+    def test_integration_packs_use_tool_search_for_deferred_schema_discovery(self, prompt_text: str) -> None:
         normalized = " ".join(prompt_text.split())
-        assert "pack-gated tool" in normalized
-        assert "governance will block it" in normalized
+        assert "Integration capability packs" in normalized
+        assert "discovered on-demand through `tool_search`" in normalized
+        assert "matching deferred tool schemas then become callable" in normalized
+        assert "not to unlock tools" in normalized
+        assert "Call-time governance still applies" in normalized
 
     def test_source_capabilities_are_core_resident(self, prompt_text: str) -> None:
         """T2 small cut: source capabilities never need a skill; call-time

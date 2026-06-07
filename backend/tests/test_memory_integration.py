@@ -371,13 +371,15 @@ class TestFullPipeline:
         assert stats["feedback.md"] == 4  # 5 identical → 1 kept, 4 removed
 
     def test_t2_truncation(self, tmp_path: Path) -> None:
-        """Phase 6: T2 truncation keeps only recent N."""
+        """Phase 6: T2 retention archives only absorbed entries beyond cap."""
         from app.services.auto_dream import _truncate_t2
 
         agent_id = uuid.uuid4()
         learnings = tmp_path / str(agent_id) / "memory" / "learnings"
         learnings.mkdir(parents=True)
-        entries = [f"- [2026-04-{i:02d}] entry {i}" for i in range(1, 21)]
+        entries = [
+            f"- [2026-04-{i:02d}][status=absorbed][absorbed_at=2026-04-20] entry {i}" for i in range(1, 21)
+        ]
         (learnings / "insights.md").write_text("# Insights\n" + "\n".join(entries) + "\n")
         with patch("app.services.auto_dream.get_settings") as mock:
             mock.return_value.AGENT_DATA_DIR = str(tmp_path)

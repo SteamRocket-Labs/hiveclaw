@@ -248,7 +248,9 @@ async def test_run_dream_consolidates_md_files_without_preexisting_semantic_stor
     )
     (memory_dir / "user.md").write_text("# User Profile\n", encoding="utf-8")
     (tmp_agent_dir / str(agent_id) / "soul.md").write_text("# Soul\n\n", encoding="utf-8")
-    t2_entries = [f"- [2026-04-{i:02d}] entry {i}" for i in range(1, 16)]
+    t2_entries = [
+        f"- [2026-04-{i:02d}][status=absorbed][absorbed_at=2026-04-20] entry {i}" for i in range(1, 16)
+    ]
     (learnings_dir / "insights.md").write_text("# Insights\n" + "\n".join(t2_entries) + "\n", encoding="utf-8")
 
     async def fake_emit_hook(*_args, **_kwargs):

@@ -147,8 +147,8 @@ class TestTruncateT2:
         content = (learnings / "insights.md").read_text()
         archive = (tmp_agent_dir / str(agent_id) / "memory" / "archive.md").read_text()
         assert "entry 20" in content  # Most recent kept
-        assert "- [2026-04-01] entry 1\n" not in content  # Oldest removed
-        assert "entry 1" in archive
+        assert "[2026-04-01]" not in content  # Oldest (entry 1) removed — date is unique per entry
+        assert "[entry_id=t2-1]" in archive  # entry 1 archived with recoverable provenance
         assert "t2_retention_cap" in archive
 
     def test_active_entries_are_never_archived_by_cap(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
@@ -276,7 +276,7 @@ async def test_run_dream_consolidates_md_files_without_preexisting_semantic_stor
     assert "User prefers concise" in soul_content
     assert "feedback.md" in index_content
     assert "entry 15" in truncated_t2
-    assert "- [2026-04-01] entry 1\n" not in truncated_t2
+    assert "[2026-04-01]" not in truncated_t2  # oldest (entry 1) truncated — date is unique per entry
 
 
 # ── DREAM.md template ──

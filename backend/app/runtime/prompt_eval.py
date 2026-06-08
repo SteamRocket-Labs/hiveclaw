@@ -334,13 +334,28 @@ def evaluate_runtime_prompt_contracts(inputs: PromptEvalInputs | None = None) ->
             predicate=lambda: (
                 "web_search" in (resolved.tools_section or "")
                 and "tool_search" in (resolved.tools_section or "")
-                and "discover `web_search`" in (resolved.tools_section or "")
+                and "discover and load" in (resolved.tools_section or "").lower()
                 and "not already callable" in (resolved.tools_section or "").lower()
             ),
             severity="high",
-            remediation="Restore tools guidance that uses tool_search to discover web_search when it is not yet callable.",
-            success_detail="Tools section routes deferred web_search availability through tool_search discovery.",
-            failure_detail="Tools section no longer explains how to discover deferred web_search.",
+            remediation="Restore tools guidance that uses tool_search to discover and load a capability (incl. web_search) when it is not yet callable.",
+            success_detail="Tools section routes deferred capability availability through tool_search discovery.",
+            failure_detail="Tools section no longer explains how to discover deferred capabilities via tool_search.",
+        ),
+        "tools_section_names_mcp_discovery": _CheckSpec(
+            predicate=lambda: (
+                "tool_search" in (resolved.tools_section or "")
+                and "mcp" in (resolved.tools_section or "").lower()
+                and "deferred" in (resolved.tools_section or "").lower()
+            ),
+            severity="high",
+            remediation=(
+                "Restore the tools-section guidance that this agent's imported MCP server tools are "
+                "discovered through tool_search (the I↔J seam — the prompt must not omit a discovery path "
+                "the runtime actually provides)."
+            ),
+            success_detail="Tools section tells the agent its imported MCP server tools are tool_search-discoverable.",
+            failure_detail="Tools section no longer names MCP server tools as tool_search-discoverable.",
         ),
         "skill_patch_instead_of_duplicate_guidance": _CheckSpec(
             predicate=lambda: _heartbeat_templates_pass("skill_patch_instead_of_duplicate_guidance"),

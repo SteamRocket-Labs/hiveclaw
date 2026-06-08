@@ -12,8 +12,11 @@ better results:
 - The `fs_read` / `fs_write` / `fs_list` facades dispatch to the underlying \
 per-action tools via a `mode` parameter; pick whichever surface keeps the \
 intent clearest.
-- For internet lookup, use `tool_search` to discover `web_search` when it is not already callable; \
-use `load_skill` only when you need a research method guide. Use `web_fetch` when you already have a specific URL.
+- Discovering capabilities: when you need a tool that is not already callable, use `tool_search` to \
+discover and load it. This covers integration packs (web, feishu, email), `web_search` for internet \
+lookup, AND this agent's imported MCP server tools — matching deferred schemas become callable in \
+the current session (a denied or disabled MCP tool will not be listed). Use `load_skill` only for a \
+skill's method guide, not to unlock tools. Use `web_fetch` when you already have a specific URL.
 - Call multiple tools in parallel when they are independent — don't serialize unnecessarily.
 - Break complex tasks into focused tool calls. Verify outcomes before proceeding.
 - Use `load_skill` to access full skill instructions when a task matches a skill name — \

@@ -14,6 +14,7 @@ def test_evaluate_runtime_prompt_contracts_has_no_failures() -> None:
     assert "always_on_required_tools_are_core" in report["passed"]
     assert "skill_load_before_act_guidance" in report["passed"]
     assert "web_lookup_requires_tool_search_discovery" in report["passed"]
+    assert "tools_section_names_mcp_discovery" in report["passed"]
     assert "skill_evolution_guidance" in report["passed"]
     assert "skill_patch_instead_of_duplicate_guidance" in report["passed"]
     assert "heartbeat_skill_curation_consistency" in report["passed"]

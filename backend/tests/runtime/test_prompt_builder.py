@@ -313,9 +313,17 @@ class TestFrozenPrefixHardCap:
         assert "## Skills" in prefix
 
     def test_tail_trim_when_base_alone_overflows(self) -> None:
-        """Base overflows on its own — last-resort tail trim with notice."""
+        """Base overflows on its own — Tier4 last-resort trim with observable notice.
+
+        I.3: when agent_context alone overflows the cap (no ## Context Material
+        to strip, no tool/task sections), the Tier4 identity-overrun path fires.
+        Core contracts: (1) size is bounded, (2) head is preserved,
+        (3) an observable marker appears (either the generic trim notice or
+        the louder identity-overrun marker introduced by I.3).
+        """
         from app.runtime.prompt_builder import (
             _FROZEN_PREFIX_CHAR_LIMIT,
+            _FROZEN_IDENTITY_OVERRUN_MARKER,
             _FROZEN_PREFIX_TRIM_NOTICE,
             build_frozen_prompt_prefix,
         )
@@ -325,8 +333,11 @@ class TestFrozenPrefixHardCap:
         prefix = build_frozen_prompt_prefix(agent_context=oversize_ctx)
 
         assert len(prefix) <= _FROZEN_PREFIX_CHAR_LIMIT
-        assert prefix.endswith(_FROZEN_PREFIX_TRIM_NOTICE)
-        # Head of agent_context must be preserved (highest-value section).
+        # Either the generic trim notice or the Tier4 identity-overrun marker must appear.
+        assert prefix.endswith(_FROZEN_PREFIX_TRIM_NOTICE) or prefix.endswith(_FROZEN_IDENTITY_OVERRUN_MARKER), (
+            "Last-resort trim must end with an observable notice"
+        )
+        # Head of agent_context must be preserved (highest-value content).
         assert prefix.startswith("soul_data")
 
     def test_metering_records_post_trim_size(self) -> None:
@@ -486,3 +497,192 @@ def test_trim_block_marker_is_observable() -> None:
 
     assert "(trimmed" in result
     assert len(result) <= 60  # marker counts against the budget
+
+
+# ── I.3 frozen budget inversion fix ────────────────────────────
+
+
+class TestFrozenBudgetInversionFix:
+    """I.3 spec: identity-protected layered trim + window-scaled cap.
+
+    These tests are RED until _enforce_frozen_prefix_budget gains the layered
+    trim (Tier0/soul untouched → Tier2/Context Material stripped → Tier3/Tools
+    trimmed → Tier4/soul last resort) and build_frozen_prompt_prefix accepts a
+    context_window_tokens kwarg that scales the cap.
+    """
+
+    def test_long_soul_survives_frozen_trim(self) -> None:
+        """Tier0 invariant: ## Identity & Mission survives when Context Material
+        and/or Tools sections are the cause of overflow.
+
+        Scenario: agent_context has a large soul block + large ## Context
+        Material block; system/tasks/tools sections bring the total above cap.
+        After enforcement the identity text must be fully present; Context
+        Material must be stripped/trimmed (Tier2) rather than the soul (Tier0),
+        proving the inversion bug is fixed.
+
+        Current BROKEN behavior: tail-trim of base_only silently strips
+        Tools/Tasks from the end while ## Context Material (mid agent_context)
+        survives. The new layered trim must do the OPPOSITE: strip Context
+        Material first, keep Tools/Tasks, never touch soul.
+        """
+        from app.runtime.prompt_builder import (
+            _CHARS_PER_TOKEN_ESTIMATE,
+            _FROZEN_PREFIX_TOKEN_LIMIT,
+            _enforce_frozen_prefix_budget,
+        )
+
+        # Build a realistic agent_context: soul at head, large Context Material in middle.
+        # Soul is small; Context Material is massive (this is the overflow culprit).
+        identity_text = "You are the chief analyst.\n" + ("identity soul content " * 50)
+        # Context Material is ~44K chars — the primary cause of overflow
+        # (cap = 16000 tokens × 3.5 = 56000 chars; we need total > 56000)
+        context_material = (
+            "## Context Material\n\n### Company Information\n"
+            + ("company boilerplate " * 2200)  # 2200 * 20 = 44000 chars
+        )
+        agent_context = f"## Identity & Mission\n\n{identity_text}\n\n{context_material}"
+
+        # System / Tasks / Tools are reasonably sized (should survive after Context Material stripped)
+        system_body = "## System\n\n" + ("system rule " * 400)   # ~4800 chars
+        tasks_body = "## Doing Tasks\n\n" + ("task instruction " * 400)  # ~6800 chars
+        tools_body = "## Using Your Tools\n\n" + ("tool guidance " * 400)  # ~6400 chars
+
+        base_parts = [agent_context, system_body, tasks_body, tools_body]
+
+        # Total chars must exceed cap so enforcement fires
+        cap_chars = int(_FROZEN_PREFIX_TOKEN_LIMIT * _CHARS_PER_TOKEN_ESTIMATE)
+        total_chars = sum(len(p) for p in base_parts)
+        assert total_chars > cap_chars, (
+            f"test invariant: total ({total_chars}) must exceed cap ({cap_chars}) to exercise trim path"
+        )
+
+        result = _enforce_frozen_prefix_budget(base_parts, "")
+
+        # Tier0 invariant: soul identity text must be intact
+        assert "You are the chief analyst." in result, "soul identity text must survive trim"
+
+        # Tier3 invariant: tool guidance must survive (currently BROKEN — gets tail-trimmed)
+        assert "## Using Your Tools" in result, (
+            "Tools section (Tier3) must survive; currently broken because tail-trim drops it "
+            "while ## Context Material (Tier2) survives — this is the inversion bug"
+        )
+
+        # Tier2: Context Material (company boilerplate) must be stripped/trimmed — it's the
+        # lower-priority section that should be sacrificed first
+        full_company = "company boilerplate " * 2000
+        assert full_company not in result, (
+            "## Context Material (Tier2) must be trimmed/stripped; "
+            "currently it survives while Tools (Tier3) is lost — inversion bug"
+        )
+
+    def test_frozen_cap_scales_with_window(self) -> None:
+        """Cap formula: max(16000, min(int(0.10 * window), 32000)) tokens.
+
+        A 256K-token window gives cap = 25600 tokens = 89600 chars.
+        A prefix that exceeds 16K tokens (56K chars) but fits in 25600 tokens
+        must survive un-trimmed when the large window is provided, but be
+        trimmed when no window is given (16K-token floor).
+        """
+        from app.runtime.prompt_builder import (
+            _CHARS_PER_TOKEN_ESTIMATE,
+            _FROZEN_PREFIX_TOKEN_LIMIT,
+            build_frozen_prompt_prefix,
+        )
+
+        # 18K tokens ≈ 63000 chars — exceeds 16K floor but fits 25.6K (256K window)
+        # Build a plausible prefix: soul + tasks + tools
+        soul_text = "## Identity & Mission\n\nYou are a senior assistant.\n" + ("soul content " * 4500)
+        # 4500 * 13 + header = ~58560 chars > 56000 chars floor cap
+
+        floor_cap_chars = int(_FROZEN_PREFIX_TOKEN_LIMIT * _CHARS_PER_TOKEN_ESTIMATE)
+        assert len(soul_text) > floor_cap_chars, (
+            f"soul_text ({len(soul_text)}) must exceed floor cap ({floor_cap_chars}) to test scaling"
+        )
+
+        # No window → 16K floor → trim fires
+        result_no_window = build_frozen_prompt_prefix(agent_context=soul_text)
+        assert len(result_no_window) <= floor_cap_chars + 200  # trimmed to floor
+
+        # Large window (256K) → cap = min(25600, 32000) = 25600 tokens = 89600 chars
+        large_window_cap_chars = int(min(int(0.10 * 256000), 32000) * _CHARS_PER_TOKEN_ESTIMATE)
+        assert len(soul_text) < large_window_cap_chars, (
+            f"soul_text ({len(soul_text)}) must fit in scaled cap ({large_window_cap_chars}) to test no-trim path"
+        )
+        result_large_window = build_frozen_prompt_prefix(
+            agent_context=soul_text,
+            context_window_tokens=256000,
+        )
+        # With 256K window the prefix fits — no trim marker should appear
+        assert "frozen prefix trimmed" not in result_large_window
+        assert "You are a senior assistant." in result_large_window
+
+    def test_soul_over_budget_is_observable(self, caplog) -> None:
+        """Tier4 last-resort: when soul alone exceeds cap, emit a LOUD trim
+        marker AND log an explicit WARNING — never silently discard identity.
+
+        'Overrun' here means the enforcement code must emit a WARNING that
+        specifically calls out that identity/soul had to be trimmed (not just
+        the generic warn-threshold log). The resulting prefix must also contain
+        a visible marker.
+        """
+        import logging
+
+        from app.runtime.prompt_builder import (
+            _CHARS_PER_TOKEN_ESTIMATE,
+            _FROZEN_PREFIX_TOKEN_LIMIT,
+            build_frozen_prompt_prefix,
+        )
+
+        # Soul that clearly exceeds the floor cap (16K tokens = 56K chars)
+        cap_chars = int(_FROZEN_PREFIX_TOKEN_LIMIT * _CHARS_PER_TOKEN_ESTIMATE)
+        massive_soul = "## Identity & Mission\n\nYou are the soul.\n" + ("soul overflow content " * 4000)
+        # ~88K chars — well over the 56K floor cap
+        assert len(massive_soul) > cap_chars, f"soul ({len(massive_soul)}) must exceed floor cap ({cap_chars})"
+
+        with caplog.at_level(logging.WARNING, logger="app.runtime.prompt_builder"):
+            result = build_frozen_prompt_prefix(agent_context=massive_soul)
+
+        # Result must be bounded (even after Tier4 trim, prefix stays under cap)
+        assert len(result) <= cap_chars + 500
+
+        # An observable loud marker SPECIFIC to soul/identity trim must appear in
+        # the output — not just the generic "frozen prefix trimmed to stay under cache budget" tail notice.
+        # The new code must emit _IDENTITY_OVERRUN_MARKER (or equivalent) when Tier4 fires.
+        _GENERIC_TRIM_NOTICE = "frozen prefix trimmed to stay under cache budget"
+        assert _GENERIC_TRIM_NOTICE not in result or (
+            "soul" in result.lower() or "identity overrun" in result.lower()
+            or "[identity" in result.lower() or "tier4" in result.lower()
+        ), (
+            "Tier4 must produce a distinct marker beyond the generic tail-trim notice"
+        )
+        # The key requirement: a soul/identity-specific loud marker exists in the output
+        has_loud_identity_marker = (
+            "identity overrun" in result.lower()
+            or "soul overrun" in result.lower()
+            or "[identity trimmed" in result.lower()
+            or "tier-4" in result.lower()
+            or "tier4" in result.lower()
+        )
+        assert has_loud_identity_marker, (
+            "Tier4 soul overrun must produce a LOUD DISTINCT marker in the output "
+            "(e.g. 'identity overrun', 'soul overrun', '[identity trimmed'), not just the generic notice. "
+            f"Got result ending: {result[-200:]!r}"
+        )
+
+        # Log must contain an explicit ERROR that calls out soul/identity being cut —
+        # the generic warn-threshold message is not enough
+        has_soul_trim_error_log = any(
+            rec.levelno >= logging.ERROR
+            and (
+                "soul" in rec.message.lower()
+                or "identity" in rec.message.lower()
+                or "tier 4" in rec.message.lower()
+                or "tier4" in rec.message.lower()
+            )
+            for rec in caplog.records
+        )
+        assert has_soul_trim_error_log, (
+            "Tier4 soul overrun must log an ERROR explicitly mentioning soul/identity trim; "
+            f"got: {[(r.levelno, r.message) for r in caplog.records]}"
+        )

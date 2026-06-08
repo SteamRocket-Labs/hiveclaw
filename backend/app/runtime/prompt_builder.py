@@ -46,13 +46,41 @@ _SYSTEM_PROMPT_SUFFIX_CHAR_CAP = 5000
 # char budget) does not silently drift if either side changes.
 _FROZEN_PREFIX_TOKEN_WARN = 12000
 _FROZEN_PREFIX_TOKEN_LIMIT = 16000
+# I.3: cap scales with context window: max(16K, min(10% of window, 32K)) tokens.
+# 16K floor preserves cache economics on small models; 32K ceiling prevents
+# the frozen prefix from consuming too much of even a 512K window.
+_FROZEN_PREFIX_TOKEN_CAP_MIN = 16000
+_FROZEN_PREFIX_TOKEN_CAP_MAX = 32000
+_FROZEN_PREFIX_TOKEN_CAP_RATIO = 0.10
 _CHARS_PER_TOKEN_ESTIMATE = 3.5
 _FROZEN_PREFIX_CHAR_LIMIT = int(_FROZEN_PREFIX_TOKEN_LIMIT * _CHARS_PER_TOKEN_ESTIMATE)
 _FROZEN_PREFIX_TRIM_NOTICE = (
     "\n\n...(frozen prefix trimmed to stay under cache budget — load extra skills via the load_skill tool)"
 )
+# I.3 Tier4: loud, distinct marker when the soul/identity section itself had to be trimmed.
+# This is intentionally MORE alarming than the generic trim notice to make
+# runaway soul growth immediately obvious in prompt logs/reviews.
+_FROZEN_IDENTITY_OVERRUN_MARKER = (
+    "\n\n[identity overrun: ## Identity & Mission was trimmed to fit the context budget — "
+    "soul.md is too large; reduce it to restore full identity fidelity]"
+)
 _FROZEN_PREFIX_SECTION_RE = re.compile(r"(?m)^#{2,3}\s+(.+?)\s*$")
 _FROZEN_PREFIX_TOP_SECTION_LIMIT = 6
+
+
+def _compute_frozen_cap_tokens(context_window_tokens: int | None) -> int:
+    """Derive the frozen-prefix token cap from the model context window.
+
+    I.3 formula: max(16K, min(10% of window, 32K)).
+    - Floor 16K: preserves cache economics on small/medium models.
+    - Ceiling 32K: keeps the frozen prefix ≤ 12.5% of even a 256K window
+      so there is headroom for conversation turns.
+    - No window → 16K floor (backward-compatible default).
+    """
+    if not context_window_tokens or context_window_tokens <= 0:
+        return _FROZEN_PREFIX_TOKEN_CAP_MIN
+    scaled = int(_FROZEN_PREFIX_TOKEN_CAP_RATIO * context_window_tokens)
+    return max(_FROZEN_PREFIX_TOKEN_CAP_MIN, min(scaled, _FROZEN_PREFIX_TOKEN_CAP_MAX))
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +195,7 @@ def build_frozen_prompt_prefix(
     agent_context: str,
     memory_snapshot: str = "",
     skill_catalog: str = "",
+    context_window_tokens: int | None = None,
 ) -> str:
     """Build the session-stable prompt prefix.
 
@@ -178,10 +207,15 @@ def build_frozen_prompt_prefix(
     `_FROZEN_PREFIX_TOKEN_WARN` logs a warning; above
     `_FROZEN_PREFIX_TOKEN_LIMIT` logs an error.
 
-    P1-W2-1: Hard cap enforced at `_FROZEN_PREFIX_TOKEN_LIMIT`. Skill catalog
-    is dropped/trimmed first (it's a progressive-disclosure index — the
-    `load_skill` tool can pull full bodies on demand). Tail-trim is the
-    last resort.
+    P1-W2-1: Hard cap enforced via identity-protected layered trim (I.3):
+      Tier1 (skill catalog) → Tier2 (## Context Material) → Tier3 (Tools/Tasks/System
+      bodies) → Tier4 (soul last-resort with loud marker + ERROR log).
+    Cap scales with model context window via `_compute_frozen_cap_tokens`.
+
+    Args:
+        context_window_tokens: Model's max_input_tokens. When provided the cap
+            scales as max(16K, min(10% of window, 32K)) tokens. Defaults to
+            the 16K floor for backward compatibility.
     """
     from app.runtime.prompt_sections import (
         build_system_section,
@@ -199,13 +233,16 @@ def build_frozen_prompt_prefix(
     ]
     del memory_snapshot  # kept for backward-compatible callers; memory lives in dynamic suffix
 
+    cap_tokens = _compute_frozen_cap_tokens(context_window_tokens)
+    cap_chars = int(cap_tokens * _CHARS_PER_TOKEN_ESTIMATE)
+
     parts = list(base_parts)
     if skill_catalog:
         parts.append(skill_catalog)
     prefix = "\n\n".join(parts)
 
-    if estimate_tokens_from_chars(len(prefix)) > _FROZEN_PREFIX_TOKEN_LIMIT:
-        prefix = _enforce_frozen_prefix_budget(base_parts, skill_catalog)
+    if estimate_tokens_from_chars(len(prefix)) > cap_tokens:
+        prefix = _enforce_frozen_prefix_budget(base_parts, skill_catalog, char_limit=cap_chars)
 
     _meter_frozen_prefix(prefix)
     return prefix
@@ -224,30 +261,70 @@ _CATALOG_TRIMMED_SUFFIX = (
 )
 
 
-def _enforce_frozen_prefix_budget(base_parts: list[str], skill_catalog: str) -> str:
-    """Hard-cap the assembled prefix to `_FROZEN_PREFIX_CHAR_LIMIT`.
+# I.3: regex to locate the ## Context Material block inside agent_context.
+# Matches from "## Context Material" through (but not including) the next ##-level
+# heading, or through end-of-string. Used by the Tier2 stripper.
+_CONTEXT_MATERIAL_BLOCK_RE = re.compile(
+    r"(?m)^(## Context Material\b.*?)(?=^##\s|\Z)",
+    re.DOTALL,
+)
+_CONTEXT_MATERIAL_OMITTED_NOTICE = (
+    "\n## Context Material\n[context material omitted to fit context budget]"
+)
 
-    Strategy (in order of preference):
-      1. Drop the skill catalog body. It's the most replaceable section
-         because `load_skill` can hydrate any skill body on demand —
-         but ALWAYS leave a signpost so the model knows skills exist (C2).
-      2. If base sections alone fit, optionally re-add a trimmed catalog
-         in the leftover budget so frequently-used skills stay visible,
-         with a trailing signpost for the skills that were cut.
-      3. If base sections alone overflow, tail-trim with a notice. This is
-         a last resort — base sections drive agent behavior and trimming
-         them risks behavior regression.
+
+def _strip_context_material(agent_context: str) -> str:
+    """Tier2 trim: replace the ## Context Material block with a minimal signpost.
+
+    Returns the agent_context string with the Context Material body replaced by
+    a one-line notice. If the block is not found the input is returned unchanged.
     """
+    match = _CONTEXT_MATERIAL_BLOCK_RE.search(agent_context)
+    if not match:
+        return agent_context
+    return agent_context[: match.start()] + _CONTEXT_MATERIAL_OMITTED_NOTICE + agent_context[match.end() :]
+
+
+def _enforce_frozen_prefix_budget(
+    base_parts: list[str],
+    skill_catalog: str,
+    *,
+    char_limit: int = _FROZEN_PREFIX_CHAR_LIMIT,
+) -> str:
+    """Hard-cap the assembled prefix to `char_limit` (default: `_FROZEN_PREFIX_CHAR_LIMIT`).
+
+    I.3 identity-protected layered trim — executed in priority order:
+
+    Tier1 (skill catalog)
+        Drop the catalog body first. `load_skill` hydrates any skill body on
+        demand, so this is the safest cut. Always leave a signpost (C2).
+
+    Tier2 (## Context Material)
+        Strip the company/org/channel boilerplate block from agent_context and
+        replace with a one-line notice. This information is less critical than
+        the tool/task rules that come after it.
+
+    Tier3 (Tools / Tasks / System section bodies)
+        Trim the tails of the system, tasks, and tools sections. These drive
+        agent behaviour, so we trim them last among the non-identity sections.
+
+    Tier4 (soul / identity — last resort)
+        If the prefix STILL overflows after Tiers 1–3, trim the soul itself
+        but emit _FROZEN_IDENTITY_OVERRUN_MARKER (a loud, distinct marker)
+        AND log an ERROR. Never silently discard identity.
+
+    The no-op path (prefix fits under cap) is unchanged from the previous
+    implementation so warm-path performance is unaffected.
+    """
+    import logging
+
     base_only = "\n\n".join(base_parts)
 
-    if len(base_only) <= _FROZEN_PREFIX_CHAR_LIMIT:
+    # ── No-op: catalog fits in the leftover budget ───────────────────────────
+    if len(base_only) <= char_limit:
         if not skill_catalog:
             return base_only
-        # Reserve room for the "\n\n" join and the "\n..." marker that
-        # `_trim_block` may append (up to 4 extra chars over its budget).
-        leftover = _FROZEN_PREFIX_CHAR_LIMIT - len(base_only) - 6
-        # Below 200 chars a trimmed catalog is just noise — but never go
-        # silently blind: leave the minimum-visibility signpost instead.
+        leftover = char_limit - len(base_only) - 6
         if leftover < 200:
             return f"{base_only}\n\n{_CATALOG_OMITTED_NOTICE}"
         trimmed = _trim_block(skill_catalog, budget_chars=max(200, leftover - len(_CATALOG_TRIMMED_SUFFIX)))
@@ -256,18 +333,51 @@ def _enforce_frozen_prefix_budget(base_parts: list[str], skill_catalog: str) -> 
         if len(trimmed) < len(skill_catalog):
             trimmed += _CATALOG_TRIMMED_SUFFIX
         result = f"{base_only}\n\n{trimmed}"
-        # Defensive hard cap — the metering contract is strict.
-        if len(result) > _FROZEN_PREFIX_CHAR_LIMIT:
-            result = result[:_FROZEN_PREFIX_CHAR_LIMIT]
+        if len(result) > char_limit:
+            result = result[:char_limit]
         return result
 
-    # Base sections themselves overflow — tail-trim with a notice. We trim
-    # `base_only` (catalog already dropped) so the most critical content
-    # at the head (agent_context → system → tasks) is preserved.
-    available = _FROZEN_PREFIX_CHAR_LIMIT - len(_FROZEN_PREFIX_TRIM_NOTICE)
-    if available <= 0:
-        return base_only[:_FROZEN_PREFIX_CHAR_LIMIT]
-    return base_only[:available].rstrip() + _FROZEN_PREFIX_TRIM_NOTICE
+    # ── Base sections overflow — layered trim ───────────────────────────────
+    # base_parts layout: [agent_context, system, tasks, tools]
+    # Catalog is already implicitly dropped (not in base_parts).
+
+    agent_context = base_parts[0] if base_parts else ""
+    tail_parts = list(base_parts[1:])  # [system, tasks, tools]
+
+    # Tier2: strip ## Context Material from agent_context
+    agent_context_t2 = _strip_context_material(agent_context)
+    candidate = "\n\n".join([agent_context_t2] + tail_parts)
+    if len(candidate) <= char_limit:
+        return candidate
+
+    # Tier3: trim tail sections (system, tasks, tools) from the END inward.
+    # We preserve their headers but trim the bodies.  Trim each from the tail
+    # so that later sections (tools) shrink before earlier ones (tasks/system).
+    # Simple approach: trim the whole assembled tail with a notice.
+    identity_chars = len(agent_context_t2)
+    tail_budget = char_limit - identity_chars - 4  # 4 = len("\n\n")
+    if tail_budget > 80:
+        trimmed_tail = _trim_block("\n\n".join(tail_parts), budget_chars=tail_budget)
+        candidate = f"{agent_context_t2}\n\n{trimmed_tail}"
+        if len(candidate) <= char_limit:
+            return candidate
+
+    # Tier4: soul itself is still too large — last resort.
+    # Trim agent_context but emit the loud identity-overrun marker so this
+    # catastrophic case is never silent.
+    logger = logging.getLogger(__name__)
+    logger.error(
+        "[PromptBuilder] Tier4 soul/identity overrun: ## Identity & Mission section alone "
+        "exceeds the frozen-prefix cap (%d chars). soul.md is too large — trim it to restore "
+        "full identity fidelity. Applying emergency identity trim.",
+        char_limit,
+    )
+    marker = _FROZEN_IDENTITY_OVERRUN_MARKER
+    available_for_soul = char_limit - len(marker) - 4
+    if available_for_soul <= 0:
+        return agent_context[:char_limit]
+    trimmed_soul = _trim_block(agent_context_t2, budget_chars=available_for_soul)
+    return trimmed_soul + marker
 
 
 def _meter_frozen_prefix(prefix: str) -> None:

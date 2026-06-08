@@ -318,6 +318,7 @@ async def _build_system_prompt(
         current_user_name = await _resolve_current_user_name(request.user_id)
     del tenant_id  # reserved for future prompt builders
     budget_profile = _resolve_context_budget(request)
+    context_window_tokens = getattr(request.model, "max_input_tokens", None) if request.model else None
     agent_context = await build_agent_context(
         agent_id=request.agent_id,
         agent_name=request.agent_name,
@@ -331,6 +332,7 @@ async def _build_system_prompt(
     )
     return build_frozen_prompt_prefix(
         agent_context=agent_context,
+        context_window_tokens=context_window_tokens,
     )
 
 

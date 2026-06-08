@@ -55,6 +55,7 @@ CAPABILITY_MAP: dict[str, str] = {
     "record_finding": "agent.task.track",
     "read_ledger": "agent.task.read",
     "exit_plan_mode": "agent.plan.modify",
+    "ask_user_question": "agent.plan.clarify",
     "list_objectives": "agent.objective.read",
     "propose_objective": "agent.objective.modify",
     "update_objective": "agent.objective.modify",
@@ -188,6 +189,8 @@ _CAPABILITY_GATE_EXEMPT_TOOLS: frozenset[str] = frozenset(
         "list_mcp_resources",
         "read_mcp_resource",
         "get_current_time",
+        # CC-align Phase B: asks the current user, no external side effect → exempt
+        "ask_user_question",
         "check_async_task",
         "list_async_tasks",
         # Work Ledger cognitive-scaffold read (切口①): read-only introspection of

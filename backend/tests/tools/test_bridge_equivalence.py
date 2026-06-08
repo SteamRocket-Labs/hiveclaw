@@ -25,6 +25,7 @@ def test_combined_openai_tools_matches_canonical_surface():
             "edit_file",
             "execute_code",
             "exit_plan_mode",
+            "ask_user_question",
             "run_command",
             "spawn_subagent",
             "preview_workflow",

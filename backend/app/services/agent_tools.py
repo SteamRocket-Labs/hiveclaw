@@ -160,6 +160,9 @@ CORE_TOOL_NAMES = {
     "list_async_tasks",
     "get_current_time",
     "exit_plan_mode",
+    # CC-align Phase B: clarification is a turn-1 capability so the agent can SEE
+    # and call it (plan mode + normal chat); subagents exclude it (no user channel).
+    "ask_user_question",
     "send_channel_message",
     "send_channel_file",
     "tool_search",
@@ -371,6 +374,7 @@ async def _agent_has_feishu_cli_access() -> bool:
 
 
 # ─── Dynamic Tool Loading from DB ──────────────────────────────
+
 
 @dataclass(frozen=True, slots=True)
 class _MCPGating:

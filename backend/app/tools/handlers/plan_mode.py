@@ -263,3 +263,80 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
         "requested_by_user_id": str(request.context.user_id),
     }
     return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+@tool(
+    ToolMeta(
+        name="ask_user_question",
+        description=(
+            "Ask the current user ONE brief clarifying question and pause for their answer. Use this "
+            "in Plan Mode (or normal chat) when a missing decision materially changes scope, risk, "
+            "cost, recipient, cadence, data source, deliverable format, or irreversible behavior — "
+            "instead of assuming a default. This is NOT approval: do not use it to ask 'is this plan "
+            "OK?' (exit_plan_mode is the approval request). After calling it, present the question to "
+            "the user and end your turn; continue only after they reply."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "The single clarifying question to ask the user."},
+                "reason": {"type": "string", "description": "Why the answer materially changes the plan."},
+                "options": {
+                    "type": "array",
+                    "description": "Optional suggested answers; each an object with label and description.",
+                    "items": {"type": "object"},
+                },
+                "allow_free_text": {
+                    "type": "boolean",
+                    "description": "Whether a free-text answer is acceptable (default true).",
+                },
+                "blocking": {
+                    "type": "boolean",
+                    "description": "Whether planning cannot proceed until answered (default true).",
+                },
+            },
+            "required": ["question"],
+        },
+        category="plan",
+        display_name="Ask User Question",
+        icon="❓",
+        read_only=True,
+        parallel_safe=False,
+        governance="safe",
+        adapter="request",
+    )
+)
+async def ask_user_question(request: ToolExecutionRequest) -> str:
+    """Pause planning to ask the current user a clarifying question (CC-align Phase B).
+
+    Read-only: it neither writes nor calls out — it surfaces a question to the
+    same user/session and signals the agent to end its turn and wait. The user's
+    reply arrives as the next message and the Plan Mode turn resumes (Plan Mode
+    stays active because exit_plan_mode was not called).
+    """
+    args = dict(request.arguments or {})
+    question = str(args.get("question") or "").strip()
+    if not question:
+        return json.dumps(
+            {
+                "status": "error",
+                "error_code": "missing_question",
+                "message": "ask_user_question requires a non-empty 'question'.",
+            },
+            ensure_ascii=False,
+        )
+    options = args.get("options") if isinstance(args.get("options"), list) else []
+    payload = {
+        "status": "awaiting_user_clarification",
+        "question": question,
+        "reason": str(args.get("reason") or "").strip(),
+        "options": options,
+        "allow_free_text": bool(args.get("allow_free_text", True)),
+        "blocking": bool(args.get("blocking", True)),
+        "next_action": (
+            "Present this question to the user verbatim — include the options if any — then END your "
+            "turn and wait. Do NOT continue planning, assume an answer, or call exit_plan_mode until "
+            "the user has replied."
+        ),
+    }
+    return json.dumps(payload, ensure_ascii=False)

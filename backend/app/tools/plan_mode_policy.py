@@ -22,6 +22,7 @@ import os
 PLAN_MODE_READONLY_TOOLS: frozenset[str] = frozenset(
     {
         "exit_plan_mode",  # the approval exit — must always remain callable
+        "ask_user_question",  # CC-align Phase B: first-class clarification (read-only, asks current user)
         "get_current_time",
         "list_files",
         "read_file",

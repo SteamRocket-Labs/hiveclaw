@@ -123,6 +123,9 @@ _SUBAGENT_BASE_EXCLUDED_TOOLS: tuple[str, ...] = (
     "check_async_task",
     "cancel_async_task",
     "list_async_tasks",
+    # CC-align Phase B: a worker has no user-interaction channel — it must return
+    # to its parent, not block on a clarification it can never receive an answer to.
+    "ask_user_question",
 )
 
 DEFAULT_MAX_SUBAGENT_DEPTH = 2  # mirrors OrchestrationPolicy.max_depth

@@ -64,9 +64,11 @@ def _build_launcher_user_prompt(plan: AgentPlanRequest, *, seed_context: dict[st
     """
     lines = [
         "You are in Plan Mode. Do NOT execute the requested work — plan it only.",
-        "Inspect read-only context as needed, design a concrete approach, then submit "
-        "the final plan by calling the exit_plan_mode tool. The exit_plan_mode card is "
-        "the approval mechanism; do not ask in prose whether the plan is OK.",
+        "Inspect read-only context as needed and design a concrete approach. If a missing decision "
+        "materially changes scope, risk, cost, deliverable, recipient, or cadence, ask the user with "
+        "ask_user_question before finalizing — do not assume a default. Then submit the final plan by "
+        "calling the exit_plan_mode tool. The exit_plan_mode card is the approval mechanism; do not "
+        "ask in prose whether the plan is OK.",
         "",
         f"Request to plan (intent_type={plan.intent_type}):",
         (plan.original_request or "").strip() or "(no explicit request text; infer from the seed context below)",

@@ -173,6 +173,15 @@ def _parse_meta(meta: str) -> dict[str, str]:
     return {match.group("key").strip().lower(): match.group("value").strip() for match in _META_RE.finditer(meta or "")}
 
 
+# access_count/last_accessed are DEAD in T2: only T3 entries get bumped (via
+# retriever activation), so inlining them here is permanent `0`/`never` noise.
+# (evidence_refs/concept/discovery_tokens/container_candidate have their own
+# dedicated render tokens below, so they're excluded from the generic loop too.)
+_T2_NON_INLINE_META_KEYS = frozenset(
+    {"evidence_refs", "concept", "discovery_tokens", "container_candidate", "access_count", "last_accessed"}
+)
+
+
 def format_t2_entry(
     *,
     category: str,
@@ -201,7 +210,7 @@ def format_t2_entry(
         f"[cat={normalized_category}]",
     ]
     for key, value in (metadata or {}).items():
-        if key and value and key not in {"evidence_refs", "concept", "discovery_tokens", "container_candidate"}:
+        if key and value and key not in _T2_NON_INLINE_META_KEYS:
             meta_parts.append(f"[{key}={value}]")
     normalized_concept = _sanitize_meta(str(concept or (metadata or {}).get("concept") or "")).strip().lower()
     if normalized_concept:
@@ -628,9 +637,7 @@ def archive_absorbed_t2_entries(
 
         if min_age_days > 0:
             archive_indices.update(
-                index
-                for index in absorbed_indices
-                if _t2_entry_age_days(original_lines[index]) >= min_age_days
+                index for index in absorbed_indices if _t2_entry_age_days(original_lines[index]) >= min_age_days
             )
 
         remaining_absorbed = [index for index in absorbed_indices if index not in archive_indices]

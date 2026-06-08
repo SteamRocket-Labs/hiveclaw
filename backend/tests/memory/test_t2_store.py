@@ -152,13 +152,16 @@ def test_append_t2_entries_applies_write_gate_before_persisting(tmp_path: Path) 
     assert "[sensitivity=PL2_pii]" in body
     assert "[status=active]" in body
     assert "[version=1]" in body
-    assert "[access_count=0]" in body
-    assert "[last_accessed=never]" in body
+    # T2 telemetry fix: access_count/last_accessed are dead in T2 (only T3 entries
+    # get bumped via retriever activation), so they are no longer inlined here.
+    # sensitivity/status/version stay inline — still meaningful for distillation.
+    assert "[access_count" not in body
+    assert "[last_accessed" not in body
     assert entries[0]["sensitivity"] == "PL2_pii"
     assert entries[0]["status"] == "active"
     assert entries[0]["version"] == "1"
-    assert entries[0]["access_count"] == "0"
-    assert entries[0]["last_accessed"] == "never"
+    assert "access_count" not in entries[0]
+    assert "last_accessed" not in entries[0]
     lifecycle = MemoryLifecycleStore(tmp_path / str(agent_id) / "memory" / "lifecycle.json")
     lifecycle_entry = lifecycle.get(entries[0]["entry_id"])
     assert lifecycle_entry.content == "Owner Alice email is <Email_1> for vendor escalation."

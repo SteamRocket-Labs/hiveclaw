@@ -31,6 +31,10 @@ from sqlalchemy import select
 logger = logging.getLogger(__name__)
 
 CONTINUE_TARGET = "continue_current_session"
+#: Deprecated handoff *target* word. Since G/H.2 the skeleton no longer seeds it
+#: (``long_task`` *intent* now seeds ``continue_current_session``); this stays
+#: registered only so already-persisted plans whose ``handoff.target == "long_task"``
+#: still resolve to the continuation handler instead of degrading to ``skipped``.
 LEGACY_LONG_TASK_TARGET = "long_task"
 
 

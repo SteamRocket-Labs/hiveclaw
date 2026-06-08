@@ -40,6 +40,25 @@ def test_register_plan_mode_handoffs_registers_continuation_and_detached_targets
     assert service._handoff_handlers["detached_runtime_task"] is detached_runtime_task_handoff
 
 
+def test_every_intent_handoff_target_has_registered_handler():
+    """G/H.3 totality guard: every seedable intent's handoff target must resolve
+    to a registered handler — no dead ``tool_action`` (or any other) target that
+    silently degrades to ``no_handler_registered`` -> ``skipped``.
+
+    Iterates the canonical ``_INTENT_HANDOFF_TARGET`` map (the single source the
+    skeleton seeds from) against the wired registry so a future intent that maps
+    to an unregistered target fails here instead of in production.
+    """
+    from app.services.plan_mode_core import _INTENT_HANDOFF_TARGET
+
+    service = PlanModeService()
+    register_plan_mode_handoffs(service)
+    registered = set(service._handoff_handlers)
+
+    for intent, target in _INTENT_HANDOFF_TARGET.items():
+        assert target in registered, f"intent {intent!r} -> handoff target {target!r} has no registered handler"
+
+
 def test_register_plan_mode_handoffs_is_idempotent():
     service = PlanModeService()
     register_plan_mode_handoffs(service)

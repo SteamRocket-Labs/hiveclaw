@@ -115,11 +115,14 @@ def test_build_plan_skeleton_autonomous_wake_seeds_cron_wake_policy():
     assert skeleton["handoff"]["target"] == "objective_trigger"
 
 
-def test_build_plan_skeleton_long_task_targets_long_task_handoff():
+def test_build_plan_skeleton_long_task_targets_continuation_handoff():
     from app.services.plan_mode_core import build_plan_skeleton
 
     skeleton = build_plan_skeleton(intent_type="long_task", title="t", original_request="r")
-    assert skeleton["handoff"]["target"] == "long_task"
+    # G/H.2: a long_task intent seeds the live-session continuation target (not the
+    # ambiguous legacy ``"long_task"`` target word). The legacy target stays
+    # *registered* for already-persisted plans (see test_plan_mode_registry).
+    assert skeleton["handoff"]["target"] == "continue_current_session"
     # A long task is not a recurring wake policy.
     assert skeleton["wake_policy"]["type"] == "none"
 

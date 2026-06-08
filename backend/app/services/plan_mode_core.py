@@ -381,12 +381,23 @@ _CAPABILITY_LABELS: dict[str, str] = {
 }
 
 #: Per-intent handoff target (§13) used to seed the skeleton.
+#:
+#: G/H.2/G/H.3 convergence: every target here resolves to a *registered* handler
+#: (see ``plan_mode_registry.register_plan_mode_handoffs``) — no dead target that
+#: silently degrades to ``no_handler_registered`` -> ``skipped``.
+#: - ``long_task`` (intent) now seeds ``continue_current_session`` rather than the
+#:   ambiguous legacy ``"long_task"`` *target* word (a confirmed long task continues
+#:   in the live session, or fails closed with a visible reason when unattended).
+#:   The legacy ``"long_task"`` *target* stays registered (compat for already-persisted
+#:   plans) but is no longer seeded here.
+#: - ``external_action`` / ``state_change`` previously seeded the dead ``"tool_action"``
+#:   target (no handler). They now seed ``continue_current_session`` too.
 _INTENT_HANDOFF_TARGET: dict[str, str] = {
     "autonomous_wake": "objective_trigger",
-    "long_task": "long_task",
+    "long_task": "continue_current_session",
     "delegation": "delegation",
-    "external_action": "tool_action",
-    "state_change": "tool_action",
+    "external_action": "continue_current_session",
+    "state_change": "continue_current_session",
 }
 
 

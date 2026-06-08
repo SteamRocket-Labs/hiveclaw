@@ -593,11 +593,12 @@ def archive_absorbed_t2_entries(
     min_age_days: int = 30,
     archived_at: str | None = None,
 ) -> int:
-    """Archive absorbed T2 rows into memory/archive.md without breaking refs.
+    """Archive absorbed T2 rows into memory/archive.md.
 
-    Active rows are never archived. Referenced absorbed rows are also sticky:
-    T3/soul/skill/workflow documents that cite their entry id keep the evidence
-    in active T2 so provenance remains directly resolvable.
+    Active rows are never archived. Absorbed rows may be archived by age/cap
+    even if downstream summaries mention them; archive rows preserve the
+    original T2 line, entry id, source file, and original timestamp so evidence
+    remains recoverable without letting consumed T2 grow forever.
     """
     root = t2_dir(data_root, agent_id)
     if not root.exists():
@@ -605,7 +606,6 @@ def archive_absorbed_t2_entries(
 
     archived_total = 0
     archive_day = archived_at or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    reference_text = _collect_t2_reference_text(data_root, agent_id)
     for filename in T2_FILE_HEADERS:
         path = root / filename
         if not path.exists():
@@ -619,27 +619,21 @@ def archive_absorbed_t2_entries(
         if not entry_indices:
             continue
 
-        protected = {
+        absorbed_indices = [
             index
             for index in entry_indices
-            if _t2_entry_is_referenced(original_lines[index], filename=filename, reference_text=reference_text)
-        }
-        absorbed_unprotected = [
-            index
-            for index in entry_indices
-            if index not in protected
-            and _is_absorbed_t2_entry(original_lines[index], fallback_category=_infer_category_from_file(filename))
+            if _is_absorbed_t2_entry(original_lines[index], fallback_category=_infer_category_from_file(filename))
         ]
         archive_indices: set[int] = set()
 
         if min_age_days > 0:
             archive_indices.update(
                 index
-                for index in absorbed_unprotected
+                for index in absorbed_indices
                 if _t2_entry_age_days(original_lines[index]) >= min_age_days
             )
 
-        remaining_absorbed = [index for index in absorbed_unprotected if index not in archive_indices]
+        remaining_absorbed = [index for index in absorbed_indices if index not in archive_indices]
         if keep_per_file >= 0 and len(remaining_absorbed) > keep_per_file:
             archive_indices.update(remaining_absorbed[: len(remaining_absorbed) - keep_per_file])
 
@@ -697,42 +691,6 @@ def _t2_entry_age_days(line: str) -> int:
     except ValueError:
         return 0
     return max((datetime.now(timezone.utc).date() - ts).days, 0)
-
-
-def _collect_t2_reference_text(data_root: Path, agent_id: uuid.UUID) -> str:
-    memory_root = Path(data_root) / str(agent_id) / "memory"
-    if not memory_root.exists():
-        return ""
-    chunks: list[str] = []
-    for path in memory_root.rglob("*.md"):
-        rel_parts = path.relative_to(memory_root).parts
-        if not rel_parts or rel_parts[0] == "learnings" or path.name == "archive.md":
-            continue
-        try:
-            chunks.append(path.read_text(encoding="utf-8", errors="replace"))
-        except OSError:
-            continue
-    return "\n".join(chunks)
-
-
-def _t2_entry_reference_markers(line: str, *, filename: str) -> set[str]:
-    parsed = parse_t2_entry_line(line, fallback_category=_infer_category_from_file(filename))
-    if not parsed:
-        return set()
-    entry_id = str(parsed.get("entry_id", "")).strip()
-    if not entry_id:
-        return set()
-    return {
-        f"t2:learnings/{filename}#entry:{entry_id}",
-        f"learnings/{filename}#entry:{entry_id}",
-        f"#entry:{entry_id}",
-    }
-
-
-def _t2_entry_is_referenced(line: str, *, filename: str, reference_text: str) -> bool:
-    if not reference_text:
-        return False
-    return any(marker in reference_text for marker in _t2_entry_reference_markers(line, filename=filename))
 
 
 def _append_t2_archive_rows(

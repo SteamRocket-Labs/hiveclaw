@@ -51,7 +51,8 @@ What this means for your output:
 - After a successful tick, runtime marks the T2 entries you consumed as
   `[status=absorbed]`. This is T2 retention bookkeeping, not a signal to
   rewrite the line yourself. Dream may later archive absorbed rows to
-  `memory/archive.md` while preserving `source_refs` provenance.
+  `memory/archive.md`; the archive keeps the original T2 line, entry id,
+  source file, and original timestamp as recoverable evidence.
 </session_context>
 
 <decision_matrix>

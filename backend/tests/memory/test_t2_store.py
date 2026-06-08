@@ -284,7 +284,7 @@ def test_archive_absorbed_t2_entries_moves_oldest_to_archive(tmp_path: Path) -> 
     assert "entry 6" not in archive
 
 
-def test_archive_absorbed_t2_entries_protects_referenced_entry(tmp_path: Path) -> None:
+def test_archive_absorbed_t2_entries_archives_referenced_absorbed_rows_with_provenance(tmp_path: Path) -> None:
     from app.memory.t2_store import archive_absorbed_t2_entries, load_t2_entries
 
     agent_id = uuid.uuid4()
@@ -306,7 +306,9 @@ def test_archive_absorbed_t2_entries_protects_referenced_entry(tmp_path: Path) -
     active_entries, _mtimes = load_t2_entries(tmp_path, agent_id)
     archive = (memory_dir / "archive.md").read_text(encoding="utf-8")
 
-    assert archived == 2
-    assert [entry["content"] for entry in active_entries] == ["entry 1", "entry 4"]
-    assert "entry 1" not in archive
+    assert archived == 3
+    assert [entry["content"] for entry in active_entries] == ["entry 4"]
+    assert "entry 1" in archive
+    assert "[entry_id=t2-1]" in archive
+    assert "[from=learnings/insights.md]" in archive
     assert "entry 2" in archive

@@ -105,8 +105,10 @@ def test_dream_template_preserves_t2_retention_provenance() -> None:
 
     assert "status=absorbed" in dream_template
     assert "memory/archive.md" in dream_template
-    assert "source_refs" in dream_template
-    assert "do not archive referenced t2" in dream_template
+    assert "original t2 line" in dream_template
+    assert "entry id" in dream_template
+    assert "recoverable" in dream_template
+    assert "do not archive referenced t2" not in dream_template
 
 
 def test_skill_distiller_prompt_rejects_goal_and_wake_policy_as_skills() -> None:

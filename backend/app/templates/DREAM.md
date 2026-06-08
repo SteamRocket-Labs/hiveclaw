@@ -18,9 +18,9 @@ structured decision work, and do not invent new prompt engineering.
 (`memory/feedback.md`, `knowledge.md`, `strategies.md`, `blocked.md`,
 `user.md`). Each entry uses the hard format `- [YYYY-MM-DD] description`.
 Heartbeat marks consumed T2 learning rows as `[status=absorbed]`; T2 retention
-may move absorbed, unreferenced rows into `memory/archive.md`. Do not archive
-referenced T2 evidence: if a T3/soul/skill/workflow candidate still points to
-the row via `source_refs`, the active T2 row must remain resolvable.
+may move absorbed rows into `memory/archive.md`. Archive rows preserve the
+original T2 line, entry id, source file, and original timestamp so consumed
+evidence stays recoverable without keeping every absorbed row active forever.
 
 **Downstream**: your output becomes the frozen prefix of every future
 agent invocation via `memory/INDEX.md` summaries and soul.md. Entries

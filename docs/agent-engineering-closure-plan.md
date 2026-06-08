@@ -1,7 +1,7 @@
 # Agent 工程闭环一次性计划（Engineering Closure Plan）
 
-> 状态: **v0.3 — 批次①②④大体通过，批次③(B1/B2)返工中(2026-06-07)**。v0.1 = 双 AI 交叉 review 合成；v0.2 = 采纳 Codex 四点反馈后用户拍板执行；**v0.3 = 全部实装后做了第二轮交叉 review（Claude 深审 × Codex 复核），发现 B1/B2"测试全绿但生产空转"必须返工、C 轨道未达 CC 完成判据需降级——见 §7 返工清单**。执行方式 = 一项一 commit 红测先行，批次间独立可验收可 push。
-> ⚠️ **不可声称"全部完成"**：测试 3945 绿是真的，但 B1（引用保护对真实数据不生效）和 B2（父唤醒生产死接线）未达工程闭环；C 轨道是 T3a 阶段成果而非完整 CC 对齐。撤回"计划全部完成"结论，以 §7 为准。
+> 状态: **v0.4 — R1/R2/R3 返工已落地(2026-06-07)**。v0.1 = 双 AI 交叉 review 合成；v0.2 = 采纳 Codex 四点反馈后用户拍板执行；v0.3 = 全部实装后做第二轮交叉 review，发现 B1/B2"测试全绿但生产空转"必须返工、C 轨道需降级；**v0.4 = R1 父唤醒生产接线、R2 T2 retention 诚实降级、R3 discovered schema recovery 全部回写证据**。执行方式 = 一项一 commit 红测先行，批次间独立可验收可 push。
+> ⚠️ **工程闭环已收口，但不可声称完整 CC 对齐**：B1/B2 生产空转缺口已返工；C 轨道是 T3a 保守默认，`tool_search` 发现后的 schema recovery 已补，但 turn-1 deferred tool name seeding 仍是已知 delta。以 §7 为准。
 > 范围: **Agent 本身的运行时**——① Max Token / 限制机制 ② Runtime 四元能力（Subagent / Skill / MCP / Workflow）③ Memory。把全部已验证的缺陷与断点一次性补齐。
 > 完成定义（工程闭环）: 配置面承诺的语义在执行路径全部兑现；管线状态面板说真话；与 CC 的机制级差距清零或有定稿路线并执行完毕；每项红测先行、全量绿。**工程闭环 ≠ 生产实证**——生产验收（挂账 #7 五点清单）在本计划完成后放真实流量另案执行。
 > 证据基线: 行号以 2026-06-07 HEAD `02fb8322` 为准，实施前按符号重定位，勿盲信行号。
@@ -103,11 +103,11 @@
   1. heartbeat 策展消化的 T2 条目打 `absorbed` 标记（或以 curation cursor 界定已消化集——实施时选侵入更小者）；
   2. dream 周期把 absorbed 且 age>N 的条目归档到 `memory/archive.md`（de-index 非物删，与 T3 P3 同哲学，可逆）；
   3. cap 兜底：T2 文件条目/字节上限触发最老 absorbed 强制归档；
-  4. **引用保护**: 被 T3/soul/skill/workflow candidate 的 `source_refs`/`evidence_refs` 引用的 T2 条目**不得仅按 age/cap 机械归档**——归档前检查反向引用；被引用条目归档时必须保证证据链可追溯（archive.md 保留原 entry 标识 + 引用解析可 fallback 到 archive，或先写 archive reverse link）。provenance 链是进化 ledger 与记忆审计的地基，retention 不许切断它。
+  4. **可逆可追溯归档**: absorbed 条目可按 age/cap 归档，即使下游摘要文本曾提及它；`memory/archive.md` 必须保留原 T2 行、`entry_id`、来源文件和原始日期。provenance 的恢复层是 archive，而不是让所有被消费 T2 永久留在 active recall。
 - **改动面**: `memory/t2_store.py`、`services/heartbeat.py`（标记）、`services/auto_dream.py`（归档）、`templates/DREAM.md` SOP 文案（蒸馏器行为改 SOP 模板，不 runtime 旁路注入——heartbeat≠worker 纪律）。⚠️ 同步 `hr_agent_template/HEARTBEAT.md` 克隆模板。
-- **红测**: ① 消化后标记/界定正确；② 归档可逆且 archive 不进检索；③ 活跃未消化条目永不归档；④ cursor/幂等不破坏；⑤ 被 source_refs 引用的条目归档后引用仍可解析到 archive。
+- **红测**: ① 消化后标记/界定正确；② 归档可逆且 archive 不进检索；③ 活跃未消化条目永不归档；④ cursor/幂等不破坏；⑤ 被下游文本提及的 absorbed 条目仍可归档，archive 保留 `entry_id` / 来源文件 / 原始 T2 行。
 - **验收**: 构造超 cap T2 → 归档触发 → 活跃条目无损 + archive.md 含退役记录 + INDEX/检索不见退役条目。
-- ✅ **已落地（2026-06-07）**: `t2_store` 新增 `mark_t2_entries_absorbed()` 与 `archive_absorbed_t2_entries()`：heartbeat 成功 tick 后标记已消费 T2 为 `[status=absorbed][absorbed_at=...]` 并刷新 mtime checkpoint；dream `_truncate_t2()` 改为只把 absorbed、未被 T3/soul/skill/workflow markdown `source_refs` 引用的旧条目移到 `memory/archive.md` 的 `## T2 Retention Archive`，活跃未消化条目永不按 cap 归档。模板同步：`backend/app/templates/HEARTBEAT.md`、真实 HR 克隆 `backend/hr_agent_template/HEARTBEAT.md`、`backend/app/templates/DREAM.md`。红测覆盖 absorbed 标记、可逆归档/de-index、source_refs 保护、active 不归档、模板 SOP。验证：`backend/.venv/bin/pytest backend/tests/memory/test_t2_store.py backend/tests/services/test_dream_phase6.py::TestTruncateT2 backend/tests/services/test_heartbeat_kairos.py::TestHeartbeatTemplate backend/tests/services/test_distillation_boundary_contracts.py -q` → `26 passed`；`backend/.venv/bin/ruff check backend/app/memory/t2_store.py backend/app/services/auto_dream.py backend/app/services/heartbeat.py backend/tests/memory/test_t2_store.py backend/tests/services/test_dream_phase6.py backend/tests/services/test_heartbeat_kairos.py backend/tests/services/test_distillation_boundary_contracts.py` → `All checks passed!`。
+- ✅ **已落地（2026-06-07）**: `t2_store` 新增 `mark_t2_entries_absorbed()` 与 `archive_absorbed_t2_entries()`：heartbeat 成功 tick 后标记已消费 T2 为 `[status=absorbed][absorbed_at=...]` 并刷新 mtime checkpoint；dream `_truncate_t2()` 把 absorbed 旧条目移到 `memory/archive.md` 的 `## T2 Retention Archive`，活跃未消化条目永不按 cap 归档。R2 复审后撤销未接通的 active-row 保护：archive 行保留原 T2 行、`entry_id`、`from=learnings/{file}`、`orig_date`，作为 provenance 恢复层。模板同步：`backend/app/templates/HEARTBEAT.md`、真实 HR 克隆 `backend/hr_agent_template/HEARTBEAT.md`、`backend/app/templates/DREAM.md`。红测覆盖 absorbed 标记、可逆归档/de-index、active 不归档、被下游文本提及的 absorbed 行仍归档且 archive 可追溯、模板 SOP。
 
 ### B2 subagent 背景完成唤醒父（量级 M，CC 对齐）
 
@@ -176,7 +176,7 @@ M5 形态对齐    C0 拍板 → C1 T3a → C2 T3b → C3 T4 ─ Runtime 形态�
 
 ### 最终验收证据（2026-06-07）
 
-- `cd backend && .venv/bin/pytest -q` → `3945 passed, 7 skipped, 4 warnings`
+- `cd backend && .venv/bin/pytest -q` → `3951 passed, 7 skipped, 4 warnings`
 - `cd frontend && npm run test` → `37 passed` test files / `171 passed` tests
 - `cd frontend && npm run build` → `tsc && vite build` passed
 - `cd backend && .venv/bin/alembic heads` → `mcp_assignment_always_load_0607 (head)`
@@ -204,14 +204,15 @@ M5 形态对齐    C0 拍板 → C1 T3a → C2 T3b → C3 T4 ─ Runtime 形态�
 - **验收**：`pytest tests/services/test_subagent_wake_consumer.py tests/services/test_workflow_daemon.py -q`；后台 spawn→父空闲→子完成→父在 daemon 周期内被真唤醒。
 - ✅ **落地证据（2026-06-07）**：① `workflow_daemon_tick` 改为 `effective_wake_invoker = subagent_wake_invoker or build_production_parent_wake_invoker()` → main.py 零参 `start_workflow_daemon()` 自动获得父唤醒（对齐 `leaf_executor or build_...()` 模式），不改 main.py。② 新建 `build_production_parent_wake_invoker()` 对齐 `supervision_reminder._get_agent_reply`：load agent→检查 runnable→resolve primary+fallback model→`set_agent_bot_identity(source="subagent_wake")`→`invoke_agent(source="subagent_wake", core_tools_only=True, 子结果入 message)`。③ guard：consumer 加 per-tick per-parent dedup（N 子完成=1 唤醒，余信号留 PG）+ 全局 `max_wakes=10` cap；失败也计入 guard 防紧循环重试。④ 翻 `test_workflow_daemon.py:60` 的 `(None,None,50)` → `(None, _sentinel_invoker, 50)`（证明 tick 默认构造真 invoker 而非 None）。⑤ 新测试不注入 fake 掩盖 wiring：dedup/cap 走真 PG，生产 invoker 用 fake session + 真 invoke_agent 边界 double 验证 request（source/content/core_tools_only/model）+ 非 runnable 跳过。测试隔离坑：drain 全局扫所有 tenant 信号（生产正确），加 autouse `_clear_completion_signals` 防测试间泄漏。全量 **3949 绿**。
 
-### 🔴 R2 — B1 T2 引用保护返工（实质 FAIL：保护对真实数据不生效）
-- **实锤**：保护匹配格式 `t2:learnings/{file}#entry:{id}`（`t2_store.py:726-728`）**无生产 writer 产出**（`auto_dream.py:997` 产 `t3:` 前缀=T3 自引用）；扫描 `memory_root=.../memory`（`:703`）只扫 memory/ 跳过 learnings/，**漏 soul.md（workspace 根）+ evolution/ ledger**；唯一通过测试用手写伪造 ref（`test_t2_store.py:299` `entry_id=t2-1`，真实是 uuid hex）。计划点名的四引用源（T3/soul/skill/workflow），三个结构性在扫描外、第四个无数据流经。
-- **修法（commit: `fix(memory): protect real T2 provenance refs before archival`）= 真接通（非降级）**：
-  1. **让蒸馏链路产出 canonical T2 ref**：heartbeat T2→T3、dream T3→soul、skill_distiller T2→candidate 在写下游记录时，把上游 T2 的 `entry_id` 以 canonical 格式（`t2:learnings/{file}#entry:{id}`）写进下游的 source_refs/evidence_refs。这是契约级改动，涉及多条 writer。
-  2. **扩扫描范围**：`_collect_t2_reference_text` 除 memory/ 外，纳入 workspace 根 `soul.md` + `evolution/` ledger（`.jsonl`）。
-  3. **红测走真实 writer 链路**（不手写伪造 ref）：真跑一次 dream/heartbeat 产出 T3+ref，再触发归档，断言被引用的 T2 条目不被 age/cap 归档（或归档后 ref 可解析到 archive）。
-- **验收**：`pytest tests/memory/test_t2_store.py tests/services/test_dream_phase6.py tests/test_memory_integration.py -q`。
-- **体量提醒**：这是三件里最大的（多 writer 契约 + 扫描扩展），建议独立一仗，给足上下文。
+### ✅ R2 — B1 T2 retention 诚实降级返工（已完成 2026-06-07）
+- **实锤**：旧保护匹配格式 `t2:learnings/{file}#entry:{id}` **无生产 writer 产出**（`auto_dream.py` 产 `t3:` 自引用）；蒸馏 snapshot 不向 LLM 暴露 T2 `entry_id`，所以 T3/soul/skill/workflow 不可能稳定产出 canonical T2 ref。旧测试用手写伪造 ref pin 住了生产不会发生的格式，导致"代码存在但语义空转"。
+- **裁决**：不真接通 active-row 保护。理由：`absorbed` 本义是已被上游 curation 消化，若让所有被消费 T2 都因下游文本提及而留在 active recall，retention 会失效；强迫 LLM 逐条标 T2 来源也违背 AI-Native L1，把自由蒸馏变成脆弱机械索引。目标不变：T2 要有生命周期，且证据可恢复、可审计。
+- **修法（commit: `fix(memory): make T2 retention archive-resolvable`）**：
+  1. 删除 `_collect_t2_reference_text` / `_t2_entry_reference_markers` / `_t2_entry_is_referenced` 死代码；`archive_absorbed_t2_entries()` 只按 `status=absorbed` + age/cap 归档。
+  2. `memory/archive.md` 成为 provenance 恢复层：每条 archive row 保留原 T2 行、`entry_id`、`from=learnings/{file}`、`orig_date`。
+  3. DREAM / HEARTBEAT 模板同步：不再承诺被下游文本提及的 T2 必须留在 active recall；改为说明 absorbed rows may move to archive and remain recoverable。
+  4. 红测翻转旧伪造 ref 用例：即使下游文本写了 `t2:learnings/insights.md#entry:t2-1`，absorbed row 仍按 cap 归档，archive 必须包含 `entry_id=t2-1` 与来源文件。
+- ✅ **落地证据（2026-06-07）**：`archive_absorbed_t2_entries()` docstring 与实现改为 absorbed-only archive；删除旧 reference scan/helper；`DREAM.md` / `HEARTBEAT.md` 模板改成 archive-resolvable provenance；`test_archive_absorbed_t2_entries_archives_referenced_absorbed_rows_with_provenance` 先翻转旧伪造 ref 契约，断言被下游文本提及的 absorbed row 仍归档且 archive 保留 `entry_id` / `from`。验证：`cd backend && .venv/bin/pytest tests/memory/test_t2_store.py::test_archive_absorbed_t2_entries_archives_referenced_absorbed_rows_with_provenance -q` → `1 passed`；`cd backend && .venv/bin/pytest tests/memory/test_t2_store.py tests/services/test_dream_phase6.py tests/test_memory_integration.py tests/services/test_distillation_boundary_contracts.py -q` → `72 passed, 3 warnings`；`cd backend && .venv/bin/ruff check app/memory/t2_store.py tests/memory/test_t2_store.py tests/services/test_distillation_boundary_contracts.py` → `All checks passed!`。
 
 ### ✅ R3 — C 轨道定位修正（已完成 2026-06-07）
 - **实锤**：deferred 工具名从不进 turn-1 prompt（只在 tool_search 返回值）；`session.__post_init__`(:150) **读回** discovered_tools（Codex 纠正 Claude 早先"没人读"措辞），但 `_kernel_get_tools`(`invoker.py:819`) `requested_names=_channel_tools` **不含 discovered_tools** → schema 不跨 invocation 恢复。C0 三决策（名字宣告载体=post-hoc 事件 / 持久化=内存+镜像 half-wired / subagent 独立发现集无测试）均由 Codex 擅自定、未经用户拍板。
@@ -233,4 +234,4 @@ cd backend && .venv/bin/pytest tests/services/test_subagent_wake_consumer.py tes
 
 ---
 
-*修订记录: v0.1 2026-06-07 初稿（Claude × Codex 交叉 review 合成，§0 双向源码验证）。v0.2 2026-06-07 拍板版——采纳 Codex 四点反馈。v0.3 2026-06-07 第二轮交叉 review——批次①②④大体通过，新增 §7 返工清单（R1 B2 死接线 / R2 B1 引用保护失效 / R3 C 轨道降级），撤回"全部完成"结论。*
+*修订记录: v0.1 2026-06-07 初稿（Claude × Codex 交叉 review 合成，§0 双向源码验证）。v0.2 2026-06-07 拍板版——采纳 Codex 四点反馈。v0.3 2026-06-07 第二轮交叉 review——批次①②④大体通过，新增 §7 返工清单（R1 B2 死接线 / R2 B1 active-row 保护失效 / R3 C 轨道降级），撤回"全部完成"结论。v0.4 2026-06-07 R1/R2/R3 返工证据回写，R2 改为 archive-resolvable provenance。*

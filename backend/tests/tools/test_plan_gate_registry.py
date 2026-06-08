@@ -27,7 +27,9 @@ def test_first_batch_tools_are_tagged_with_expected_action_kinds():
     assert tagged["set_trigger"] == "create_enabled_trigger"
     assert tagged["update_trigger"] == "create_enabled_trigger"
     assert tagged["delegate_to_agent"] == "start_delegation"
-    assert tagged["manage_tasks"] == "start_long_task"
+    # F-2: manage_tasks is retired from the agent tool face — no tool-side
+    # binding to start_long_task remains (REST/manual trigger keep the action_kind).
+    assert "manage_tasks" not in tagged
     assert "create_digital_employee" not in tagged
     assert tagged["deep_research_start"] == BRIDGE_SELF
 
@@ -52,26 +54,34 @@ def test_hard_gated_tools_resolve_to_a_real_action_kind():
     assert hard_gated_action_kind("update_trigger") is None
     assert hard_gated_action_kind("update_trigger", {"config": {"type": "cron"}}) == "create_enabled_trigger"
     assert hard_gated_action_kind("delegate_to_agent") == "start_delegation"
-    assert hard_gated_action_kind("manage_tasks") == "start_long_task"
+    # F-2: manage_tasks retired from the tool face — it no longer resolves to a gate.
+    assert hard_gated_action_kind("manage_tasks") is None
     # Every hard-gated action_kind must be a member of the canonical ACTION_KINDS.
     for resolved_action_kind in (
         hard_gated_action_kind("set_trigger"),
         hard_gated_action_kind("update_trigger", {"config": {"type": "cron"}}),
         hard_gated_action_kind("delegate_to_agent"),
-        hard_gated_action_kind("manage_tasks"),
     ):
         assert resolved_action_kind in ACTION_KINDS
 
 
-def test_manage_tasks_only_hard_gates_auto_executing_todo_create():
+def test_manage_tasks_is_retired_from_the_tool_gate():
+    """F-2: manage_tasks no longer hard-gates under any payload (tool retired).
+
+    The ``start_long_task`` action_kind itself survives in ``ACTION_KINDS`` for
+    the REST/manual-trigger plan gate, but there is no tool-side binding to it.
+    """
     from app.tools.plan_gate_registry import hard_gated_action_kind
 
-    assert hard_gated_action_kind("manage_tasks", {"action": "create", "task_type": "todo"}) == "start_long_task"
-    # Missing task_type defaults to todo in the handler, so it is also auto-executing.
-    assert hard_gated_action_kind("manage_tasks", {"action": "create"}) == "start_long_task"
-    assert hard_gated_action_kind("manage_tasks", {"action": "create", "task_type": "supervision"}) is None
-    assert hard_gated_action_kind("manage_tasks", {"action": "update_status", "status": "done"}) is None
-    assert hard_gated_action_kind("manage_tasks", {"action": "delete"}) is None
+    assert "start_long_task" in ACTION_KINDS  # action_kind preserved for REST
+    for payload in (
+        {"action": "create", "task_type": "todo"},
+        {"action": "create"},
+        {"action": "create", "task_type": "supervision"},
+        {"action": "update_status", "status": "done"},
+        {"action": "delete"},
+    ):
+        assert hard_gated_action_kind("manage_tasks", payload) is None
 
 
 def test_set_trigger_ignores_untrusted_decline_argument_and_still_hard_gates():

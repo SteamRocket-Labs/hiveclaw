@@ -46,6 +46,9 @@ def test_combined_openai_tools_matches_canonical_surface():
         "feishu_doc_delete",
         "feishu_doc_read",
         "feishu_doc_share",
+        "feishu_url_resolve",
+        "feishu_url_read",
+        "feishu_drive_file_read",
         "feishu_base_field_list",
         "feishu_base_record_list",
         "feishu_base_record_upload_attachment",
@@ -66,7 +69,6 @@ def test_combined_openai_tools_matches_canonical_surface():
         "check_async_task",
         "cancel_async_task",
         "firecrawl_fetch",
-        "get_task",
         "get_current_time",
         "list_mcp_resources",
         "list_async_tasks",
@@ -75,12 +77,10 @@ def test_combined_openai_tools_matches_canonical_surface():
         "fs_read",
         "fs_write",
         "fs_list",
-        "list_tasks",
         "list_objectives",
         "list_triggers",
         "load_memory",
         "load_skill",
-        "manage_tasks",
         "office_document_apply",
         "office_document_create",
         "office_document_dump",
@@ -143,10 +143,13 @@ def test_governance_sets_include_canonical_metadata_without_runtime_init():
     assert "search_memory" in SAFE_TOOLS
     assert "load_memory" in SAFE_TOOLS
     assert "feishu_approval_definition" in SAFE_TOOLS
-    assert "list_tasks" in SAFE_TOOLS
-    assert "get_task" in SAFE_TOOLS
+    assert "read_ledger" in SAFE_TOOLS
+    # F-2: list_tasks/get_task (safe) and manage_tasks (sensitive) were retired
+    # from the agent tool face — the agent board is Work Ledger only.
+    assert "list_tasks" not in SAFE_TOOLS
+    assert "get_task" not in SAFE_TOOLS
+    assert "manage_tasks" not in SENSITIVE_TOOLS
     assert "save_memory" in SENSITIVE_TOOLS
-    assert "manage_tasks" in SENSITIVE_TOOLS
     assert "save_skill" in SENSITIVE_TOOLS
     assert "send_feishu_message" in SENSITIVE_TOOLS
     assert "feishu_task_comment" in SENSITIVE_TOOLS

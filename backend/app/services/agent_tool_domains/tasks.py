@@ -1,6 +1,12 @@
-"""Task management domain — create/update/delete tasks with DB sync."""
+"""Task management domain — create/update/delete tasks with DB sync.
 
-import asyncio
+``_manage_tasks`` is pure CRUD (no auto-execution).  It is called by the REST
+layer (``api/tasks.py``) which triggers ``execute_task`` separately after a
+human-confirmed plan.  The agent-facing todo board was retired from this path
+in F-2 (single-board convergence); agents use ``track_todo`` / ``read_ledger``
+instead.
+"""
+
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -49,17 +55,13 @@ async def _manage_tasks(
             await db.commit()
             await db.refresh(task)
 
+            await _sync_tasks_to_file(agent_id, ws)
             if task_type == "todo":
-                # Trigger auto-execution for todo tasks
-                from app.services.task_executor import execute_task
-                asyncio.create_task(execute_task(task.id, agent_id))
-                await _sync_tasks_to_file(agent_id, ws)
-                return f"✅ Task created: {title} — auto-execution started"
+                return f"✅ Task created: {title} (id={task.id})"
             else:
                 # Supervision task — reminder engine will pick it up
                 target = args.get('supervision_target_name', 'someone')
                 schedule = args.get('remind_schedule', 'not set')
-                await _sync_tasks_to_file(agent_id, ws)
                 return f"✅ Supervision task created: '{title}' — will remind {target} on schedule ({schedule})"
 
         elif action == "update_status":

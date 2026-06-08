@@ -26,7 +26,6 @@ _STATIC_SENSITIVE_TOOLS = {
     "reply_email",
     "execute_code",
     "run_command",
-    "manage_tasks",
     "set_trigger",
     "import_mcp_server",
     "send_message_to_agent",
@@ -40,8 +39,6 @@ _STATIC_SAFE_TOOLS = {
     "firecrawl_fetch",
     "xcrawl_scrape",
     "read_document",
-    "list_tasks",
-    "get_task",
     "search_memory",
     "load_memory",
     # Work Ledger cognitive-scaffold read (切口①): read-only introspection of the
@@ -49,6 +46,10 @@ _STATIC_SAFE_TOOLS = {
     # app.services.capability_gate (the exemption comment requires this).
     "read_ledger",
 }
+
+# F-2 note: list_tasks / get_task were removed from _STATIC_SAFE_TOOLS because
+# the agent-facing DB-Task tools were retired (single-board convergence).  The
+# DB Task table and REST endpoints are unchanged; only the LLM tool face is gone.
 
 
 def _resolve_collected_governance_names() -> tuple[frozenset[str], frozenset[str]]:

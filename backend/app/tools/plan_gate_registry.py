@@ -39,7 +39,9 @@ _PLAN_GATED_TOOL_NAMES: frozenset[str] = frozenset(
         "set_trigger",
         "update_trigger",
         "delegate_to_agent",
-        "manage_tasks",
+        # manage_tasks removed (F-2): agent-facing DB-Task tool retired.
+        # start_long_task action_kind kept — REST api/tasks.py and manual trigger
+        # still use it for the plan gate on human-initiated task creation.
         "deep_research_start",
         "start_workflow",
     }
@@ -77,16 +79,6 @@ def plan_gated_tool_action_kinds() -> dict[str, str]:
         for name, (meta, _fn) in get_all_registered_tools().items()
         if meta.plan_gate_action_kind
     }
-
-
-def _manage_tasks_action_kind(arguments: dict | None) -> str | None:
-    if arguments is None:
-        return "start_long_task"
-    action = str(arguments.get("action") or "").strip()
-    if action != "create":
-        return None
-    task_type = str(arguments.get("task_type") or "todo").strip() or "todo"
-    return "start_long_task" if task_type != "supervision" else None
 
 
 def _trigger_class_from_arguments(arguments: dict | None) -> str | None:
@@ -172,8 +164,6 @@ def hard_gated_action_kind(tool_name: str, arguments: dict | None = None) -> str
         return _set_trigger_action_kind(arguments)
     if tool_name == "update_trigger" and action_kind == "create_enabled_trigger":
         return _update_trigger_action_kind(arguments)
-    if tool_name == "manage_tasks" and action_kind == "start_long_task":
-        return _manage_tasks_action_kind(arguments)
     if tool_name == "start_workflow" and action_kind == "start_workflow":
         return _start_workflow_action_kind(arguments)
     if action_kind and action_kind in ACTION_KINDS:

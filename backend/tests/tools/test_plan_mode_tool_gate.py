@@ -362,15 +362,19 @@ async def test_execute_direct_blocks_tagged_tool_without_confirmed_plan():
 
 @pytest.mark.asyncio
 async def test_execute_approved_blocks_tagged_tool_without_confirmed_plan():
-    """§9.2: execute_approved must not be a bypass for the Plan Mode gate."""
+    """§9.2: execute_approved must not be a bypass for the Plan Mode gate.
+
+    F-2: driven via delegate_to_agent (start_delegation) — manage_tasks was
+    retired from the agent tool face, so a still-gated tool proves the gate.
+    """
     context = _context()
     registry = _FakeRegistry("SHOULD_NOT_RUN")
     gate = _RecordingGate(_BLOCKED)
     service = _make_service(context=context, registry=registry, gate=gate)
 
     result = await service.execute_approved(
-        "manage_tasks",
-        {"action": "create", "title": "Recurring sweep", "task_type": "todo"},
+        "delegate_to_agent",
+        {"agent_name": "Worker", "message": "Run the recurring sweep"},
         agent_id=context.agent_id,
         approved_by_user_id=uuid4(),
         approval_id=uuid4(),
@@ -379,47 +383,38 @@ async def test_execute_approved_blocks_tagged_tool_without_confirmed_plan():
     payload = json.loads(result)
     assert payload["status"] == "needs_plan"
     assert registry.calls == []
-    assert gate.calls and gate.calls[0]["action_kind"] == "start_long_task"
+    assert gate.calls and gate.calls[0]["action_kind"] == "start_delegation"
 
 
 @pytest.mark.asyncio
-async def test_execute_approved_does_not_gate_manage_tasks_non_auto_executing_actions():
-    context = _context()
-    registry = _FakeRegistry("UPDATED")
-    gate = _RecordingGate(_BLOCKED)
-    service = _make_service(context=context, registry=registry, gate=gate)
+async def test_execute_approved_never_gates_retired_manage_tasks():
+    """F-2: manage_tasks is retired from the tool face — no payload gates it.
 
-    result = await service.execute_approved(
-        "manage_tasks",
-        {"action": "update_status", "title": "Recurring sweep", "status": "done"},
-        agent_id=context.agent_id,
-        approved_by_user_id=uuid4(),
-        approval_id=uuid4(),
-    )
-
-    assert result == "UPDATED"
-    assert len(registry.calls) == 1
-    assert gate.calls == []
-
-
-@pytest.mark.asyncio
-async def test_execute_approved_does_not_gate_manage_tasks_supervision_create():
-    context = _context()
-    registry = _FakeRegistry("SUPERVISION_CREATED")
-    gate = _RecordingGate(_BLOCKED)
-    service = _make_service(context=context, registry=registry, gate=gate)
-
-    result = await service.execute_approved(
-        "manage_tasks",
+    Replaces the old per-payload manage_tasks gating tests (todo/supervision/
+    update_status), which exercised a tool that is no longer agent-callable. The
+    gate must never be consulted for it at execute_approved, under any payload.
+    """
+    for payload in (
+        {"action": "create", "title": "Recurring sweep", "task_type": "todo"},
         {"action": "create", "title": "Remind Alice", "task_type": "supervision"},
-        agent_id=context.agent_id,
-        approved_by_user_id=uuid4(),
-        approval_id=uuid4(),
-    )
+        {"action": "update_status", "title": "Recurring sweep", "status": "done"},
+    ):
+        context = _context()
+        registry = _FakeRegistry("RAN")
+        gate = _RecordingGate(_BLOCKED)
+        service = _make_service(context=context, registry=registry, gate=gate)
 
-    assert result == "SUPERVISION_CREATED"
-    assert len(registry.calls) == 1
-    assert gate.calls == []
+        result = await service.execute_approved(
+            "manage_tasks",
+            payload,
+            agent_id=context.agent_id,
+            approved_by_user_id=uuid4(),
+            approval_id=uuid4(),
+        )
+
+        assert result == "RAN", payload
+        assert len(registry.calls) == 1, payload
+        assert gate.calls == [], payload
 
 
 @pytest.mark.asyncio

@@ -1,16 +1,24 @@
-"""Task tools — DB-backed task read/write helpers."""
+"""Task tools — DB-backed task service helpers (REST-facing only).
+
+F-2 single-board convergence: ``manage_tasks``, ``list_tasks``, and
+``get_task`` are **no longer registered as LLM-callable tools**.  The agent
+board is now Work Ledger only (``track_todo`` / ``read_ledger``).
+
+The underlying service functions ``_list_tasks_for_agent`` and
+``_get_task_for_agent`` are kept here so ``api/tasks.py`` can reuse them
+without depending on the tool-decorator machinery.  ``_manage_tasks`` lives in
+``services/agent_tool_domains/tasks.py`` and is imported by ``api/tasks.py``
+directly.
+"""
 
 from __future__ import annotations
 
 import uuid
-from pathlib import Path
 
 from sqlalchemy import select
 
 from app.database import async_session
 from app.models.task import Task, TaskLog
-from app.tools.decorator import ToolMeta, tool
-from app.tools.runtime import ToolExecutionRequest
 
 
 def _task_line(task: Task) -> str:
@@ -18,42 +26,12 @@ def _task_line(task: Task) -> str:
     return f"- {task.title} [{task.status}/{task.priority}/{task.type}] id={task.id}{due}"
 
 
-@tool(
-    ToolMeta(
-        name="list_tasks",
-        description=(
-            "List this agent's DB-backed tasks. Use this for a compact task ledger view; "
-            "use `manage_tasks` to create, update, or delete tasks."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "status": {
-                    "type": "string",
-                    "description": "Optional status filter: pending, doing, or done.",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of tasks to return (default 20, max 100).",
-                },
-            },
-        },
-        category="tasks",
-        display_name="List Tasks",
-        icon="\U0001f4cb",
-        read_only=True,
-        parallel_safe=True,
-        governance="safe",
-        adapter="agent_args",
-    )
-)
-async def list_tasks(agent_id: uuid.UUID, arguments: dict) -> str:
-    limit = arguments.get("limit", 20)
+async def _list_tasks_for_agent(agent_id: uuid.UUID, status: str = "", limit: int = 20) -> str:
+    """List DB-backed tasks for an agent.  Called by REST; not an LLM tool."""
     try:
         limit = max(1, min(int(limit), 100))
     except (TypeError, ValueError):
         limit = 20
-    status = str(arguments.get("status") or "").strip()
 
     async with async_session() as db:
         query = select(Task).where(Task.agent_id == agent_id).order_by(Task.created_at.desc()).limit(limit)
@@ -73,29 +51,8 @@ async def list_tasks(agent_id: uuid.UUID, arguments: dict) -> str:
     return "Tasks:\n" + "\n".join(_task_line(task) for task in tasks)
 
 
-@tool(
-    ToolMeta(
-        name="get_task",
-        description="Read one DB-backed task by id or title substring, including recent progress logs.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "task_id": {"type": "string", "description": "Exact task UUID."},
-                "title": {"type": "string", "description": "Task title or title substring."},
-            },
-        },
-        category="tasks",
-        display_name="Get Task",
-        icon="\U0001f50e",
-        read_only=True,
-        parallel_safe=True,
-        governance="safe",
-        adapter="agent_args",
-    )
-)
-async def get_task(agent_id: uuid.UUID, arguments: dict) -> str:
-    task_id_raw = str(arguments.get("task_id") or "").strip()
-    title = str(arguments.get("title") or "").strip()
+async def _get_task_for_agent(agent_id: uuid.UUID, task_id_raw: str = "", title: str = "") -> str:
+    """Read one DB-backed task by id or title substring.  Called by REST; not an LLM tool."""
     if not task_id_raw and not title:
         return "Provide `task_id` or `title`."
 
@@ -137,60 +94,3 @@ async def get_task(agent_id: uuid.UUID, arguments: dict) -> str:
         parts.append("- recent_logs:")
         parts.extend(f"  - {log.created_at.isoformat()}: {log.content}" for log in logs)
     return "\n".join(parts)
-
-
-@tool(
-    ToolMeta(
-        name="manage_tasks",
-        description=(
-            "Create, update, or delete DB-backed tasks for this agent. "
-            "This also syncs tasks.json. Protected tasks.json should not be edited directly."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["create", "update_status", "delete"],
-                    "description": "Task operation.",
-                },
-                "title": {"type": "string", "description": "Task title or title substring."},
-                "description": {"type": "string", "description": "Task description for create."},
-                "task_type": {
-                    "type": "string",
-                    "enum": ["todo", "supervision"],
-                    "description": "Task type for create.",
-                },
-                "priority": {
-                    "type": "string",
-                    "enum": ["low", "medium", "high", "urgent"],
-                    "description": "Priority for create.",
-                },
-                "status": {
-                    "type": "string",
-                    "enum": ["pending", "doing", "done"],
-                    "description": "New status for update_status.",
-                },
-                "supervision_target_name": {"type": "string", "description": "Supervision target display name."},
-                "supervision_channel": {"type": "string", "description": "Channel for supervision reminders."},
-                "remind_schedule": {"type": "string", "description": "Human-readable reminder schedule."},
-            },
-            "required": ["action", "title"],
-        },
-        category="tasks",
-        display_name="Manage Tasks",
-        icon="\u270f\ufe0f",
-        governance="sensitive",
-        plan_gate_action_kind="start_long_task",
-        adapter="request",
-    )
-)
-async def manage_tasks(request: ToolExecutionRequest) -> str:
-    from app.services.agent_tools import _manage_tasks
-
-    return await _manage_tasks(
-        request.context.agent_id,
-        request.context.user_id,
-        Path(request.context.workspace),
-        request.arguments,
-    )

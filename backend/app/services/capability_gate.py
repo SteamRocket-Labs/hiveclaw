@@ -42,15 +42,11 @@ CAPABILITY_MAP: dict[str, str] = {
     "office_document_dump": "workspace.file.read",
     "execute_code": "workspace.code.execute",
     "run_command": "workspace.command.execute",
-    "get_task": "agent.task.read",
-    "list_tasks": "agent.task.read",
-    "manage_tasks": "agent.task.modify",
     # Work Ledger cognitive-scaffold (切口①): keeping a private todo / finding
-    # notebook is a thought, not job execution — a distinct, low-risk capability
-    # from agent.task.modify (which governs launching an autonomous job via
-    # manage_tasks). read_ledger reads own-ledger state (agent.task.read, like
-    # get_task) and is also exempt so it works without a capability policy, like
-    # the other read-only context tools.
+    # notebook is a thought, not job execution — a distinct, low-risk capability.
+    # F-2: get_task / list_tasks / manage_tasks removed from CAPABILITY_MAP because
+    # the agent-facing DB-Task tools were retired (single-board convergence).
+    # The DB Task table, REST endpoints, and task_executor are unchanged.
     "track_todo": "agent.task.track",
     "record_finding": "agent.task.track",
     "read_ledger": "agent.task.read",

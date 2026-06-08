@@ -52,7 +52,6 @@ def test_capability_map_covers_agent_settings_controls_and_destructive_feishu_to
         "web_search": "external.web.search",
         "bing_search": "external.web.search",
         "get_current_time": "system.time.read",
-        "manage_tasks": "agent.task.modify",
         "feishu_task_create": "channel.feishu.task",
         "feishu_task_complete": "channel.feishu.task",
         "feishu_task_comment": "channel.feishu.task",
@@ -100,7 +99,9 @@ def test_capability_definitions_expose_policy_capabilities_for_frontend():
     assert "workspace.command.execute" in definitions
     assert "workspace.command.dangerous" in definitions
     assert "workspace.command.secret_exfiltration" in definitions
-    assert "agent.task.modify" in definitions
+    # F-2: agent.task.modify retired with manage_tasks; the surviving agent
+    # task-domain capability is agent.task.track (track_todo / record_finding).
+    assert "agent.task.track" in definitions
     assert "channel.feishu.document" in definitions
     assert "channel.feishu.base" in definitions
     assert "run_command" in definitions["workspace.command.execute"]

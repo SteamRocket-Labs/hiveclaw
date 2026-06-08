@@ -30,8 +30,9 @@ auto-archival, or to unpin one you no longer need.
 - Objective Ledger is the source of truth for goal state: `list_objectives` to inspect, \
 `propose_objective` for new work, `update_objective` for blockers/status, and \
 `complete_objective` only with concrete evidence. Trigger is wake policy; focus.md is a readable projection.
-- DB-backed task ledger is separate from objectives: use `list_tasks` and `get_task` \
-to inspect tasks, and `manage_tasks` to create, update, or delete them. Do not edit tasks.json directly.
+- Work board: use `track_todo` / `read_ledger` to maintain your todo list and findings. \
+Writing a todo never triggers execution — to launch background/autonomous work use \
+`delegate_to_agent` / `spawn_subagent` / `start_workflow`.
 - After writing files, verify the result with `read_file` if correctness is critical.\
 """
 

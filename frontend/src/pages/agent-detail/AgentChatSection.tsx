@@ -9,7 +9,7 @@ import ChatWorkLedgerDock from './ChatWorkLedgerDock';
 import CopyMessageButton from './CopyMessageButton';
 import DeepResearchStreamPanel from './DeepResearchStreamPanel';
 import PlanCard from './PlanCard';
-import { planApi, type PlanRequest } from '../../api/domains/plans';
+import { planApi } from '../../api/domains/plans';
 import type { ToolCallMeta } from './toolResultEnvelope';
 import {
   computeComposerHeight,
@@ -224,37 +224,14 @@ export function StructuredToolResultBody({
   }
 
   if (toolMeta.kind === 'plan_needs_confirmation') {
-    const synthesizedPlan = {
-      id: toolMeta.planId,
-      agent_id: agentId || '',
-      tenant_id: null,
-      session_id: null,
-      runtime_task_id: null,
-      requested_by_user_id: null,
-      source: 'tool_runtime',
-      intent_type: (toolMeta.planJson.intent_type as string) || 'autonomous_wake',
-      original_request: (toolMeta.planJson.title as string) || toolMeta.summary || '',
-      status: 'awaiting_confirmation',
-      plan_version: toolMeta.planVersion,
-      plan_hash: toolMeta.planHash,
-      plan_markdown_path: null,
-      plan_json: toolMeta.planJson,
-      handoff_status: null,
-      handoff_payload: null,
-      confirmed_by_user_id: null,
-      confirmed_at: null,
-      rejected_by_user_id: null,
-      rejected_at: null,
-      superseded_by_plan_id: null,
-      expires_at: null,
-      created_at: null,
-      updated_at: null,
-      metadata: {},
-    } as PlanRequest;
+    // CC-align §4.5: render the REAL plan by id (InlinePlanCard fetches it and
+    // refetches), NOT a synthetic card hardcoded to awaiting_confirmation — the
+    // synthetic one left a stale confirm button after the user confirmed, so a
+    // re-click hit the backend's 409 "cannot confirm a confirmed plan".
     return (
       <div style={{ display: 'grid', gap: '8px' }}>
-        {agentId ? (
-          <PlanCard agentId={agentId} plan={synthesizedPlan} dense />
+        {agentId && toolMeta.planId ? (
+          <InlinePlanCard agentId={agentId} planId={toolMeta.planId} />
         ) : (
           <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
             {toolMeta.summary || t('agent.plan.needsConfirmation', 'A plan needs your confirmation.')}

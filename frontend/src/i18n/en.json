@@ -418,6 +418,15 @@
       "inlineLoadFailed": "Plan card could not load. Open Aware > Plan Queue if it is still pending.",
       "noActions": "No actions available for this plan.",
       "handoffState": "Handoff: {{state}}",
+      "detailsSummary": "Plan details",
+      "handoff": {
+        "completed": "Started — executing in this conversation",
+        "queued": "Confirmed — waiting for the current run to finish",
+        "skipped": "Confirmed, but execution did not start",
+        "failed": "Confirmed, but execution failed to start",
+        "preparing": "Confirmed — preparing to start",
+        "runtimeTask": "Run: {{id}}"
+      },
       "queueTitle": "Plan Queue",
       "queueDesc": "Plans awaiting your confirmation before autonomous work can begin.",
       "queueEmpty": "No plans yet. Plans appear here when the agent proposes autonomous work.",

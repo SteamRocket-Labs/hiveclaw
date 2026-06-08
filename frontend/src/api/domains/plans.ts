@@ -37,8 +37,11 @@ export type PlanIntentType =
   | 'external_action'
   | 'state_change';
 
-/** Outcome of a confirmed plan's handoff to the execution layer (§13). */
-export type PlanHandoffStatus = 'not_started' | 'completed' | 'failed' | 'skipped';
+/** Outcome of a confirmed plan's handoff to the execution layer (§13).
+ *
+ * ``queued`` (CC-align §4.2): a current-session continuation that is confirmed but
+ * waiting for an already-active run to finish before it starts. */
+export type PlanHandoffStatus = 'not_started' | 'completed' | 'failed' | 'skipped' | 'queued';
 
 /** Risk tier surfaced on the card (§6.3 `risk_assessment.level`). */
 export type PlanRiskLevel = 'low' | 'medium' | 'high';
@@ -95,6 +98,9 @@ export interface PlanJson {
   intent_type?: PlanIntentType | string;
   objective?: string;
   motivation?: string;
+  /** Agent-authored markdown plan body (CC-align §4.1) — the card's primary
+   * surface; structured fields below are folded governance detail. */
+  plan_markdown?: string;
   steps?: PlanStep[];
   success_criteria?: string[];
   wake_policy?: PlanWakePolicy | null;

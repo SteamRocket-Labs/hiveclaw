@@ -1315,8 +1315,14 @@ describe('AgentDetail extracted sections', () => {
       />,
     );
 
-    expect(markup).toContain('Inline tool plan');
+    // CC-align §4.5: plan_needs_confirmation now renders InlinePlanCard (the REAL
+    // plan fetched by id), NOT a synthetic card built from toolMeta — so the
+    // fetched plan title shows, the stale toolMeta title does not, and the card
+    // reflects live status instead of a hardcoded awaiting_confirmation.
+    expect(markup).toContain('Daily Reddit investor monitoring plan');
+    expect(markup).not.toContain('Inline tool plan');
     expect(markup).toContain('Confirm and start');
+    expect(markup).toContain('Confirm before creating the trigger.');
   });
 
   it('renders the running task todo dock above the chat composer', () => {
@@ -2017,7 +2023,63 @@ describe('AgentDetail extracted sections', () => {
     const markup = renderToStaticMarkup(<PlanCard agentId="agent-1" plan={plan} />);
 
     expect(markup).toContain('Daily industry news brief');
-    expect(markup).toContain('Handoff: completed');
+    // CC-align §4.5/§4.6: a confirmed plan shows its real execution state via the
+    // handoff banner (here: started, executing in this conversation) — never a
+    // stale confirm/revise button.
+    expect(markup).toContain('Started — executing in this conversation');
     expect(markup).not.toContain('Request changes');
+    expect(markup).not.toContain('Confirm and start');
+  });
+
+  it('renders PlanCard handoff states: queued, skipped reason, and the markdown body', () => {
+    const base = {
+      id: 'plan-3',
+      agent_id: 'agent-1',
+      tenant_id: null,
+      session_id: 'sess-1',
+      runtime_task_id: null,
+      requested_by_user_id: 'user-1',
+      source: 'web_chat',
+      intent_type: 'long_task',
+      original_request: 'RWA weekly',
+      plan_version: 1,
+      plan_hash: 'sha256:abc',
+      plan_markdown_path: null,
+      confirmed_by_user_id: 'user-1',
+      confirmed_at: '2026-06-08T00:00:00Z',
+      rejected_by_user_id: null,
+      rejected_at: null,
+      superseded_by_plan_id: null,
+      expires_at: null,
+      created_at: null,
+      updated_at: null,
+      metadata: {},
+    };
+
+    // queued: confirmed but waiting for the active run.
+    const queued = {
+      ...base,
+      status: 'confirmed',
+      plan_json: { title: 'RWA 周报', plan_markdown: '## 思路\n聚焦三条赛道，给出投资视角。' },
+      handoff_status: 'queued',
+      handoff_payload: { reason: 'active_run_exists' },
+    } as PlanRequest;
+    const queuedMarkup = renderToStaticMarkup(<PlanCard agentId="agent-1" plan={queued} />);
+    // Markdown body is the primary surface (CC-align §4.1).
+    expect(queuedMarkup).toContain('聚焦三条赛道，给出投资视角。');
+    expect(queuedMarkup).toContain('Confirmed — waiting for the current run to finish');
+    expect(queuedMarkup).not.toContain('Confirm and start');
+
+    // skipped: visible reason, not a silent state.
+    const skipped = {
+      ...base,
+      status: 'confirmed',
+      plan_json: { title: 'RWA 周报' },
+      handoff_status: 'skipped',
+      handoff_payload: { reason: 'no_handler_registered' },
+    } as PlanRequest;
+    const skippedMarkup = renderToStaticMarkup(<PlanCard agentId="agent-1" plan={skipped} />);
+    expect(skippedMarkup).toContain('Confirmed, but execution did not start');
+    expect(skippedMarkup).toContain('no_handler_registered');
   });
 });

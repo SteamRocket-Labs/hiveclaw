@@ -1,13 +1,20 @@
 /**
  * Plan Mode card (§12.1) — the user-facing confirmation surface for a plan.
  *
- * Renders the structured `plan_json` (objective / steps / success criteria /
- * wake policy / external side effects / estimated cost / risk level) and the
- * three workflow actions: Confirm / Request changes / Reject.
+ * CC-align (docs/plan-mode-cc-alignment.md §4.1/§4.5):
+ *   - The plan body is the agent-authored `plan_json.plan_markdown` article when
+ *     present (rendered as markdown); the structured governance fields (steps,
+ *     wake policy, cost, side effects, …) fold into a collapsed "Plan details"
+ *     section instead of being flattened as the primary surface (surface ≠
+ *     plumbing). Machine-intercepted plans with no article keep the structured
+ *     render.
+ *   - The card reflects REAL plan state: empty plumbing (none/unknown/empty) is
+ *     not shown; a confirmed plan shows its handoff state (preparing / queued /
+ *     executing / failed) and never offers the confirm button again.
  *
  * Reusable across both surfaces:
- *   - chat inline (mounted by `StructuredToolResultBody` on a `needs_plan` tool
- *     result), and
+ *   - chat inline (mounted by `StructuredToolResultBody` via `InlinePlanCard`,
+ *     which fetches the real plan by id and refetches), and
  *   - the Aware/Autonomy plan queue (`PlanQueueSection`).
  *
  * Confirm binds to `plan_version` + `plan_hash` (§8.2): the user confirms the
@@ -20,6 +27,7 @@ import { useTranslation } from 'react-i18next';
 
 import { ApiError } from '../../api/core';
 import { planApi, type PlanRequest, type PlanRiskLevel } from '../../api/domains/plans';
+import MarkdownRenderer from '../../components/MarkdownRenderer';
 
 interface PlanCardProps {
   agentId: string;
@@ -43,8 +51,20 @@ function riskColor(level?: string | null): string {
   return 'var(--text-tertiary)';
 }
 
+/** True for plumbing placeholders that must not be shown as plan content
+ * (CC-align §4.5: no `none` / `unknown` / empty). */
+function isPlumbing(value: unknown): boolean {
+  if (value == null) return true;
+  if (typeof value === 'string') {
+    const v = value.trim().toLowerCase();
+    return v === '' || v === 'none' || v === 'unknown' || v === 'n/a';
+  }
+  return false;
+}
+
 function humanizeWakePolicy(wake: PlanRequest['plan_json']['wake_policy']): string | null {
   if (!wake) return null;
+  if (wake.type && isPlumbing(wake.type) && !wake.expr && wake.minutes == null && !wake.at) return null;
   if (wake.expr) {
     return `${wake.type || 'cron'} · ${wake.expr}${wake.timezone ? ` (${wake.timezone})` : ''}`;
   }
@@ -54,7 +74,13 @@ function humanizeWakePolicy(wake: PlanRequest['plan_json']['wake_policy']): stri
   if (wake.at) {
     return `once · ${wake.at}`;
   }
-  return wake.type || null;
+  return isPlumbing(wake.type) ? null : wake.type || null;
+}
+
+function humanizeCost(cost: PlanRequest['plan_json']['estimated_cost']): string | null {
+  if (!cost) return null;
+  const parts = [cost.tokens_per_run, cost.expected_duration].filter((p) => !isPlumbing(p));
+  return parts.length ? parts.join(' · ') : null;
 }
 
 function planningErrorMessages(metadata: PlanRequest['metadata']): string[] {
@@ -115,6 +141,15 @@ export async function confirmAndHandoffPlan(
   await api.handoff(agentId, plan.id);
 }
 
+const labelStyle: React.CSSProperties = {
+  fontSize: '11px',
+  fontWeight: 700,
+  color: 'var(--text-tertiary)',
+  textTransform: 'uppercase',
+  letterSpacing: '0.4px',
+  marginBottom: '4px',
+};
+
 export default function PlanCard({ agentId, plan, onChanged, dense = false }: PlanCardProps) {
   const { t } = useTranslation();
   const [busy, setBusy] = React.useState<null | 'confirm' | 'revise' | 'regenerate' | 'reject'>(null);
@@ -124,6 +159,9 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
   const isAwaiting = plan.status === 'awaiting_confirmation';
   const isPlanning = plan.status === 'planning';
   const isPlanningFailed = plan.status === 'planning_failed';
+  const isConfirmed = plan.status === 'confirmed';
+  const authoredBody = typeof planJson.plan_markdown === 'string' ? planJson.plan_markdown.trim() : '';
+  const hasAuthoredBody = authoredBody.length > 0;
   const steps = Array.isArray(planJson.steps) ? planJson.steps : [];
   const successCriteria = Array.isArray(planJson.success_criteria) ? planJson.success_criteria : [];
   const sideEffects = displayableSideEffects(planJson.external_side_effects);
@@ -131,8 +169,8 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
   const assumptions = Array.isArray(planJson.assumptions) ? planJson.assumptions : [];
   const openQuestions = Array.isArray(planJson.open_questions) ? planJson.open_questions : [];
   const wakeText = humanizeWakePolicy(planJson.wake_policy);
+  const costText = humanizeCost(planJson.estimated_cost);
   const risk = planJson.risk_assessment;
-  const cost = planJson.estimated_cost;
   const planningErrors = planningErrorMessages(plan.metadata);
 
   const runAction = async (
@@ -189,14 +227,118 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
     );
   };
 
-  const labelStyle: React.CSSProperties = {
-    fontSize: '11px',
-    fontWeight: 700,
-    color: 'var(--text-tertiary)',
-    textTransform: 'uppercase',
-    letterSpacing: '0.4px',
-    marginBottom: '4px',
-  };
+  // Structured governance detail — the canonical execution contract. Primary
+  // surface only when there is no agent-authored article; otherwise folded.
+  const governanceDetail = (
+    <div style={{ display: 'grid', gap: dense ? '10px' : '12px' }}>
+      {(planJson.objective || planJson.motivation) && (
+        <div>
+          <div style={labelStyle}>{t('agent.plan.objective', 'Objective')}</div>
+          {planJson.objective && (
+            <div style={{ fontSize: '13px', color: 'var(--text-primary)', lineHeight: 1.5 }}>{planJson.objective}</div>
+          )}
+          {planJson.motivation && (
+            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '3px', lineHeight: 1.5 }}>
+              {planJson.motivation}
+            </div>
+          )}
+        </div>
+      )}
+
+      {steps.length > 0 && (
+        <div>
+          <div style={labelStyle}>{t('agent.plan.steps', 'Steps')}</div>
+          <ol style={{ margin: 0, paddingLeft: '18px', display: 'grid', gap: '4px' }}>
+            {steps.map((step, index) => (
+              <li key={step.order ?? index} style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                {step.description}
+                {step.expected_output && (
+                  <span style={{ color: 'var(--text-tertiary)' }}> — {step.expected_output}</span>
+                )}
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+
+      {successCriteria.length > 0 && (
+        <div>
+          <div style={labelStyle}>{t('agent.plan.successCriteria', 'Success criteria')}</div>
+          <ul style={{ margin: 0, paddingLeft: '18px', display: 'grid', gap: '4px' }}>
+            {successCriteria.map((item, index) => (
+              <li key={index} style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {(wakeText || costText) && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '10px' }}>
+          {wakeText && (
+            <div>
+              <div style={labelStyle}>{t('agent.plan.wakePolicy', 'Wake policy')}</div>
+              <div style={{ fontSize: '12px', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono, monospace)' }}>{wakeText}</div>
+            </div>
+          )}
+          {costText && (
+            <div>
+              <div style={labelStyle}>{t('agent.plan.estimatedCost', 'Estimated cost')}</div>
+              <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{costText}</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {sideEffects.length > 0 && (
+        <div>
+          <div style={labelStyle}>{t('agent.plan.sideEffects', 'External side effects')}</div>
+          <ul style={{ margin: 0, paddingLeft: '18px', display: 'grid', gap: '4px' }}>
+            {sideEffects.map((effect, index) => (
+              <li key={index} style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                {effect.label}
+                {effect.requiresConfirmation && (
+                  <span style={{ color: 'var(--warning, #b45309)' }}> — {t('agent.plan.requiresConfirmation', 'requires confirmation')}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {stopConditions.length > 0 && (
+        <div>
+          <div style={labelStyle}>{t('agent.plan.stopConditions', 'Stop conditions')}</div>
+          <ul style={{ margin: 0, paddingLeft: '18px', display: 'grid', gap: '4px' }}>
+            {stopConditions.map((item, index) => (
+              <li key={index} style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5 }}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {assumptions.length > 0 && (
+        <div>
+          <div style={labelStyle}>{t('agent.plan.assumptions', 'Assumptions')}</div>
+          <ul style={{ margin: 0, paddingLeft: '18px', display: 'grid', gap: '4px' }}>
+            {assumptions.map((item, index) => (
+              <li key={index} style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5 }}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {openQuestions.length > 0 && (
+        <div>
+          <div style={labelStyle}>{t('agent.plan.openQuestions', 'Open questions')}</div>
+          <ul style={{ margin: 0, paddingLeft: '18px', display: 'grid', gap: '4px' }}>
+            {openQuestions.map((item, index) => (
+              <li key={index} style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5 }}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div
@@ -258,120 +400,27 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
         )}
       </div>
 
-      {/* Objective + motivation */}
-      {(planJson.objective || planJson.motivation) && (
-        <div>
-          <div style={labelStyle}>{t('agent.plan.objective', 'Objective')}</div>
-          {planJson.objective && (
-            <div style={{ fontSize: '13px', color: 'var(--text-primary)', lineHeight: 1.5 }}>{planJson.objective}</div>
-          )}
-          {planJson.motivation && (
-            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '3px', lineHeight: 1.5 }}>
-              {planJson.motivation}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Steps */}
-      {steps.length > 0 && (
-        <div>
-          <div style={labelStyle}>{t('agent.plan.steps', 'Steps')}</div>
-          <ol style={{ margin: 0, paddingLeft: '18px', display: 'grid', gap: '4px' }}>
-            {steps.map((step, index) => (
-              <li key={step.order ?? index} style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                {step.description}
-                {step.expected_output && (
-                  <span style={{ color: 'var(--text-tertiary)' }}> — {step.expected_output}</span>
-                )}
-              </li>
-            ))}
-          </ol>
-        </div>
-      )}
-
-      {/* Success criteria */}
-      {successCriteria.length > 0 && (
-        <div>
-          <div style={labelStyle}>{t('agent.plan.successCriteria', 'Success criteria')}</div>
-          <ul style={{ margin: 0, paddingLeft: '18px', display: 'grid', gap: '4px' }}>
-            {successCriteria.map((item, index) => (
-              <li key={index} style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>{item}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {/* Wake policy + cost in a meta row */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '10px' }}>
-        {wakeText && (
-          <div>
-            <div style={labelStyle}>{t('agent.plan.wakePolicy', 'Wake policy')}</div>
-            <div style={{ fontSize: '12px', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono, monospace)' }}>{wakeText}</div>
+      {/* Body: agent-authored article (primary) with folded governance, or the
+          structured render for machine-intercepted plans. */}
+      {hasAuthoredBody ? (
+        <>
+          <div style={{ fontSize: dense ? '13px' : '14px', color: 'var(--text-primary)', lineHeight: 1.6 }}>
+            <MarkdownRenderer content={authoredBody} />
           </div>
-        )}
-        {cost && (cost.tokens_per_run || cost.expected_duration) && (
-          <div>
-            <div style={labelStyle}>{t('agent.plan.estimatedCost', 'Estimated cost')}</div>
-            <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-              {[cost.tokens_per_run, cost.expected_duration].filter(Boolean).join(' · ')}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* External side effects */}
-      {sideEffects.length > 0 && (
-        <div>
-          <div style={labelStyle}>{t('agent.plan.sideEffects', 'External side effects')}</div>
-          <ul style={{ margin: 0, paddingLeft: '18px', display: 'grid', gap: '4px' }}>
-            {sideEffects.map((effect, index) => (
-              <li key={index} style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                {effect.label}
-                {effect.requiresConfirmation && (
-                  <span style={{ color: 'var(--warning, #b45309)' }}> — {t('agent.plan.requiresConfirmation', 'requires confirmation')}</span>
-                )}
-              </li>
-            ))}
-          </ul>
-        </div>
+          <details>
+            <summary style={{ ...labelStyle, marginBottom: 0, cursor: 'pointer' }}>
+              {t('agent.plan.detailsSummary', 'Plan details')}
+            </summary>
+            <div style={{ marginTop: '10px' }}>{governanceDetail}</div>
+          </details>
+        </>
+      ) : (
+        governanceDetail
       )}
 
-      {/* Stop conditions */}
-      {stopConditions.length > 0 && (
-        <div>
-          <div style={labelStyle}>{t('agent.plan.stopConditions', 'Stop conditions')}</div>
-          <ul style={{ margin: 0, paddingLeft: '18px', display: 'grid', gap: '4px' }}>
-            {stopConditions.map((item, index) => (
-              <li key={index} style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5 }}>{item}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {/* Assumptions — facts vs assumptions separation (§6.2 fact discipline) */}
-      {assumptions.length > 0 && (
-        <div>
-          <div style={labelStyle}>{t('agent.plan.assumptions', 'Assumptions')}</div>
-          <ul style={{ margin: 0, paddingLeft: '18px', display: 'grid', gap: '4px' }}>
-            {assumptions.map((item, index) => (
-              <li key={index} style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5 }}>{item}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {/* Open questions the agent flagged for the user during planning */}
-      {openQuestions.length > 0 && (
-        <div>
-          <div style={labelStyle}>{t('agent.plan.openQuestions', 'Open questions')}</div>
-          <ul style={{ margin: 0, paddingLeft: '18px', display: 'grid', gap: '4px' }}>
-            {openQuestions.map((item, index) => (
-              <li key={index} style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5 }}>{item}</li>
-            ))}
-          </ul>
-        </div>
-      )}
+      {/* Confirmed plans show their real handoff/execution state — never a stale
+          confirm button (CC-align §4.5/§4.6). */}
+      {isConfirmed && <HandoffBanner plan={plan} dense={dense} />}
 
       {isPlanning && (
         <div
@@ -501,13 +550,58 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
             {busy === 'regenerate' ? t('common.loading', 'Loading...') : t('agent.plan.retryGeneration', 'Retry plan generation')}
           </button>
         </div>
-      ) : isPlanning ? null : (
+      ) : isPlanning || isConfirmed ? null : (
         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-          {plan.status === 'confirmed' && plan.handoff_status
-            ? t('agent.plan.handoffState', 'Handoff: {{state}}', { state: String(plan.handoff_status).replace(/_/g, ' ') })
-            : t(`agent.plan.terminal.${plan.status}`, t('agent.plan.noActions', 'No actions available for this plan.'))}
+          {t(`agent.plan.terminal.${plan.status}`, t('agent.plan.noActions', 'No actions available for this plan.'))}
         </div>
       )}
+    </div>
+  );
+}
+
+/** Real execution state for a confirmed plan (CC-align §4.5/§4.6). */
+function HandoffBanner({ plan, dense }: { plan: PlanRequest; dense: boolean }) {
+  const { t } = useTranslation();
+  const status = plan.handoff_status;
+  const payload = (plan.handoff_payload || {}) as Record<string, unknown>;
+  const runtimeTaskId = typeof payload.runtime_task_id === 'string' ? payload.runtime_task_id : null;
+  const reason = typeof payload.error === 'string' ? payload.error : typeof payload.reason === 'string' ? payload.reason : null;
+
+  const isError = status === 'skipped' || status === 'failed';
+  const tone = isError
+    ? { color: 'var(--error, #dc2626)', bg: 'rgba(220, 100, 100, 0.1)' }
+    : status === 'completed'
+      ? { color: 'var(--success, #059669)', bg: 'var(--bg-secondary)' }
+      : { color: 'var(--text-secondary)', bg: 'var(--bg-secondary)' };
+
+  let headline: string;
+  if (status === 'completed') headline = t('agent.plan.handoff.completed', 'Started — executing in this conversation');
+  else if (status === 'queued') headline = t('agent.plan.handoff.queued', 'Confirmed — waiting for the current run to finish');
+  else if (status === 'skipped') headline = t('agent.plan.handoff.skipped', 'Confirmed, but execution did not start');
+  else if (status === 'failed') headline = t('agent.plan.handoff.failed', 'Confirmed, but execution failed to start');
+  else headline = t('agent.plan.handoff.preparing', 'Confirmed — preparing to start');
+
+  return (
+    <div
+      role={isError ? 'alert' : 'status'}
+      style={{
+        fontSize: '12px',
+        color: tone.color,
+        background: tone.bg,
+        border: '1px solid var(--border-subtle)',
+        borderRadius: '6px',
+        padding: dense ? '6px 10px' : '8px 10px',
+        display: 'grid',
+        gap: '3px',
+      }}
+    >
+      <div style={{ fontWeight: 700 }}>{headline}</div>
+      {runtimeTaskId && (
+        <div style={{ color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono, monospace)', fontSize: '11px' }}>
+          {t('agent.plan.handoff.runtimeTask', 'Run: {{id}}', { id: runtimeTaskId })}
+        </div>
+      )}
+      {isError && reason && <div style={{ color: 'var(--text-tertiary)' }}>{reason}</div>}
     </div>
   );
 }

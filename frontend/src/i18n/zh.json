@@ -418,6 +418,15 @@
       "inlineLoadFailed": "计划卡片加载失败。如果该计划仍在等待确认,请打开 Aware > 计划队列。",
       "noActions": "该计划当前没有可执行的操作。",
       "handoffState": "交接:{{state}}",
+      "detailsSummary": "计划详情",
+      "handoff": {
+        "completed": "已开始,正在当前对话执行",
+        "queued": "已确认,等待当前运行完成后执行",
+        "skipped": "已确认,但执行未能启动",
+        "failed": "已确认,但执行启动失败",
+        "preparing": "已确认,准备启动",
+        "runtimeTask": "运行任务:{{id}}"
+      },
       "queueTitle": "计划队列",
       "queueDesc": "在自主执行开始前等待你确认的计划。",
       "queueEmpty": "暂无计划。当 agent 提出自主工作时,计划会出现在这里。",

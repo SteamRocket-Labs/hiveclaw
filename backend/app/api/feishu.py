@@ -2236,10 +2236,9 @@ async def _call_agent_llm(
             plan_arguments = {"name": title[:80], "type": "cron", "config": {}, "reason": user_text}
         else:
             plan_arguments = {
-                "action": "create",
                 "title": title,
                 "description": user_text,
-                "task_type": "todo",
+                "handoff_target": "continue_current_session",
             }
         plan_service = get_plan_mode_service()
         # Cut ④: the agent authors the plan_json in a main-loop Plan Mode run

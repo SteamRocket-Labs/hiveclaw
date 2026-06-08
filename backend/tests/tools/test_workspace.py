@@ -6,6 +6,16 @@ from uuid import uuid4
 import pytest
 
 
+def test_tasks_json_protected_write_points_to_work_ledger(tmp_path):
+    from app.services.agent_tool_domains.workspace import _write_file
+
+    result = _write_file(tmp_path, "tasks.json", "[]")
+
+    assert "manage_tasks" not in result
+    assert "track_todo" in result
+    assert "read_ledger" in result
+
+
 @pytest.mark.asyncio
 async def test_ensure_workspace_creates_standard_structure_and_profile(monkeypatch, tmp_path):
     from app.tools.workspace import ensure_workspace

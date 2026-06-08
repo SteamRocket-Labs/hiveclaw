@@ -71,6 +71,12 @@ def _mcp_tool(*, name, tool_id, is_default=False):
     )
 
 
+def _mcp_tool_for_tenant(*, name, tool_id, tenant_id, is_default=False):
+    tool = _mcp_tool(name=name, tool_id=tool_id, is_default=is_default)
+    tool.tenant_id = tenant_id
+    return tool
+
+
 def _assignment(*, agent_id, server_id, enabled=True, default_tool_mode="auto"):
     return SimpleNamespace(
         id=uuid4(),
@@ -214,6 +220,44 @@ async def test_discovery_legacy_fallback_lists_default_not_nondefault(monkeypatc
     assert "danger_delete" not in names
 
 
+@pytest.mark.asyncio
+async def test_discovery_excludes_other_tenant_default_mcp(monkeypatch):
+    """A default MCP tool from another tenant must not leak into tool_search."""
+    from app.services import agent_tools as module
+
+    agent_id, tenant_id, other_tenant_id = uuid4(), uuid4(), uuid4()
+    local_default = _mcp_tool_for_tenant(
+        name="local_default_search",
+        tool_id=uuid4(),
+        tenant_id=tenant_id,
+        is_default=True,
+    )
+    foreign_default = _mcp_tool_for_tenant(
+        name="foreign_default_search",
+        tool_id=uuid4(),
+        tenant_id=other_tenant_id,
+        is_default=True,
+    )
+
+    def factory():
+        return _FakeSession(
+            [
+                _ScalarResult(SimpleNamespace(id=agent_id, tenant_id=tenant_id, agent_class="standard")),
+                _ScalarResult(None),
+                _ListResult([]),  # no MCP assignments -> legacy default fallback
+                _ListResult([local_default, foreign_default]),
+                _ListResult([]),  # no legacy AgentTool rows
+            ]
+        )
+
+    monkeypatch.setattr(module, "async_session", factory)
+    _patch_pack_open(monkeypatch, module)
+
+    names = await module.list_agent_mcp_deferred_tools(agent_id, "default")
+    assert "local_default_search" in names
+    assert "foreign_default_search" not in names
+
+
 # --- 🦴#1: discovery cannot force-enable a non-default MCP tool -------------
 
 
@@ -259,6 +303,61 @@ async def test_discovery_cannot_force_enable_nondefault_mcp(monkeypatch):
     assert "danger_delete" not in names  # discovery alone must not enable it
 
 
+@pytest.mark.asyncio
+async def test_schema_load_excludes_other_tenant_default_mcp(monkeypatch):
+    """The callable-schema path must mirror text discovery and exclude other tenants."""
+    from app.services import agent_tools as module
+
+    agent_id, tenant_id, other_tenant_id = uuid4(), uuid4(), uuid4()
+    local_default = _mcp_tool_for_tenant(
+        name="local_schema_search",
+        tool_id=uuid4(),
+        tenant_id=tenant_id,
+        is_default=True,
+    )
+    foreign_default = _mcp_tool_for_tenant(
+        name="foreign_schema_search",
+        tool_id=uuid4(),
+        tenant_id=other_tenant_id,
+        is_default=True,
+    )
+
+    async def no_feishu_channel(_agent_id):
+        return False
+
+    async def no_feishu_cli():
+        return False
+
+    async def passthrough(_agent_id, tools):
+        return tools
+
+    monkeypatch.setattr(module, "_agent_has_feishu", no_feishu_channel)
+    monkeypatch.setattr(module, "_agent_has_feishu_cli_access", no_feishu_cli)
+    monkeypatch.setattr(module, "_filter_unavailable_tools", passthrough)
+    _patch_pack_open(monkeypatch, module)
+
+    def factory():
+        return _FakeSession(
+            [
+                _ScalarResult(SimpleNamespace(id=agent_id, tenant_id=tenant_id, agent_class="standard")),
+                _ScalarResult(None),
+                _ListResult([local_default, foreign_default]),  # all_tools
+                _ListResult([]),  # no AgentTool rows
+                _ListResult([]),  # _resolve_agent_mcp_gating -> un-backfilled
+            ]
+        )
+
+    monkeypatch.setattr(module, "async_session", factory)
+
+    tools = await module.get_agent_tools_for_llm(
+        agent_id,
+        requested_names=["local_schema_search", "foreign_schema_search"],
+    )
+    names = {t["function"]["name"] for t in tools}
+    assert "local_schema_search" in names
+    assert "foreign_schema_search" not in names
+
+
 # --- 🦴#2: text and schema surfaces agree on MCP ---------------------------
 
 
@@ -286,3 +385,74 @@ async def test_tool_search_text_and_schema_agree_on_mcp(monkeypatch, tmp_path):
 
     assert "mcp_github_issue_search" in text
     assert "mcp_github_issue_search" in schema_names
+
+
+# --- dynamic MCP execution fallback: tenant + reachability -----------------
+
+
+class _RoutingSession:
+    def __init__(self, *, agent, tool, agent_tool=None, server_tools=None):
+        self.agent = agent
+        self.tool = tool
+        self.agent_tool = agent_tool
+        self.server_tools = server_tools or []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def execute(self, stmt):
+        text = str(stmt)
+        if "FROM agents" in text:
+            return _ScalarResult(self.agent)
+        if "FROM tools" in text and "agent_tools" not in text:
+            return _ScalarResult(self.tool)
+        if "FROM agent_tools" in text:
+            return _ScalarResult(self.agent_tool)
+        if "FROM mcp_server_tools" in text:
+            return _ListResult(self.server_tools)
+        return _ListResult([])
+
+
+@pytest.mark.asyncio
+async def test_dynamic_mcp_fallback_rejects_other_tenant_tool(monkeypatch):
+    """A callable MCP name must not execute a Tool row owned by another tenant."""
+    from app.services.agent_tool_domains import web_mcp
+
+    agent_id, tenant_id, other_tenant_id = uuid4(), uuid4(), uuid4()
+    foreign_tool = _mcp_tool_for_tenant(
+        name="foreign_exec_search",
+        tool_id=uuid4(),
+        tenant_id=other_tenant_id,
+        is_default=True,
+    )
+
+    monkeypatch.setattr(
+        web_mcp,
+        "async_session",
+        lambda: _RoutingSession(
+            agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id, agent_class="standard"),
+            tool=foreign_tool,
+            agent_tool=None,
+            server_tools=[],
+        ),
+    )
+
+    calls: list[tuple] = []
+
+    class _FakeMCPClient:
+        def __init__(self, *args, **kwargs):
+            calls.append(("init", args, kwargs))
+
+        async def call_tool(self, *args, **kwargs):
+            calls.append(("call", args, kwargs))
+            return "CALLED"
+
+    monkeypatch.setattr("app.services.mcp_client.MCPClient", _FakeMCPClient)
+
+    result = await web_mcp._execute_mcp_tool("foreign_exec_search", {"q": "x"}, agent_id=agent_id)
+
+    assert calls == []
+    assert "Unknown tool" in result or "not imported" in result or "denied" in result

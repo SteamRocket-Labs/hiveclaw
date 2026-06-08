@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.database import async_session
 from app.models.agent import Agent
@@ -478,6 +478,21 @@ def _mcp_tool_matches_query(query: str, tool) -> bool:
     return bool(compact and any(compact in normalize_tool_query(c) for c in candidates))
 
 
+def _tool_visible_to_agent_tenant(tool: Any, agent: Any | None) -> bool:
+    tool_tenant_id = getattr(tool, "tenant_id", None)
+    if tool_tenant_id is None:
+        return True
+    agent_tenant_id = getattr(agent, "tenant_id", None)
+    return bool(agent_tenant_id) and str(tool_tenant_id) == str(agent_tenant_id)
+
+
+def _tool_tenant_predicate(ToolModel: Any, agent: Any | None):
+    agent_tenant_id = getattr(agent, "tenant_id", None)
+    if agent_tenant_id is None:
+        return ToolModel.tenant_id.is_(None)
+    return or_(ToolModel.tenant_id.is_(None), ToolModel.tenant_id == agent_tenant_id)
+
+
 async def list_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = "") -> list[str]:
     """The single DB-aware enumerator of MCP tools an agent can DISCOVER via
     tool_search (J / 🦴#2).
@@ -503,11 +518,17 @@ async def list_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = "") ->
             agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
             pack_policies = await get_tenant_pack_policies(db, getattr(agent, "tenant_id", None))
             mcp_gating = await _resolve_agent_mcp_gating(db, agent_id)
-            mcp_tools = (await db.execute(select(Tool).where(Tool.enabled, Tool.type == "mcp"))).scalars().all()
+            mcp_tools = (
+                await db.execute(
+                    select(Tool).where(Tool.enabled, Tool.type == "mcp", _tool_tenant_predicate(Tool, agent))
+                )
+            ).scalars().all()
             agent_tools_r = await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id))
             assignments = {str(at.tool_id): at for at in agent_tools_r.scalars().all()}
 
             for t in mcp_tools:
+                if not _tool_visible_to_agent_tenant(t, agent):
+                    continue
                 if not is_tool_allowed_for_agent(t, agent):
                     continue
                 tid = str(t.id)
@@ -585,8 +606,8 @@ async def get_agent_tools_for_llm(
             )
             pack_policies = await get_tenant_pack_policies(db, getattr(agent, "tenant_id", None))
 
-            # Get all globally enabled tools
-            all_tools_r = await db.execute(select(Tool).where(Tool.enabled))
+            # Get globally enabled tools visible to this agent's tenant.
+            all_tools_r = await db.execute(select(Tool).where(Tool.enabled, _tool_tenant_predicate(Tool, agent)))
             all_tools = all_tools_r.scalars().all()
 
             # Get agent-specific assignments
@@ -600,6 +621,8 @@ async def get_agent_tools_for_llm(
             result = []
             db_tool_names = set()
             for t in all_tools:
+                if not _tool_visible_to_agent_tenant(t, agent):
+                    continue
                 if not is_tool_allowed_for_agent(t, agent):
                     continue
                 tid = str(t.id)

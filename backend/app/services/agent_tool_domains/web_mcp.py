@@ -31,6 +31,28 @@ _SKIP_WEB_FETCH_FALLBACK = "_skip_web_fetch_fallback"
 _SKIP_FIRECRAWL_FALLBACK = "_skip_firecrawl_fallback"
 
 
+def _tool_visible_to_agent_tenant(tool, agent) -> bool:
+    tool_tenant_id = getattr(tool, "tenant_id", None)
+    if tool_tenant_id is None:
+        return True
+    agent_tenant_id = getattr(agent, "tenant_id", None)
+    return bool(agent_tenant_id) and str(tool_tenant_id) == str(agent_tenant_id)
+
+
+def _result_scalars_or_one(result) -> list:
+    try:
+        values = list(result.scalars().all())
+        if values:
+            return values
+    except Exception:
+        pass
+    try:
+        value = result.scalar_one_or_none()
+    except Exception:
+        return []
+    return [value] if value is not None else []
+
+
 class _HTMLTextExtractor(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
@@ -954,30 +976,58 @@ async def _search_bing(query: str, api_key: str, max_results: int, language: str
 
 async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUID | None" = None) -> str:
     try:
+        from app.models.agent import Agent
         from app.models.tool import AgentTool, Tool
         from app.services.mcp_client import MCPClient
         from app.services.mcp_server_service import resolve_agent_mcp_tool_mode
 
         async with async_session() as db:
             result = await db.execute(select(Tool).where(Tool.name == tool_name, Tool.type == "mcp"))
-            tool = result.scalar_one_or_none()
+            candidates = _result_scalars_or_one(result)
+            agent = None
+            if agent_id and any(getattr(t, "tenant_id", None) is not None for t in candidates):
+                agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+                agent = agent_result.scalar_one_or_none()
+            visible = [t for t in candidates if _tool_visible_to_agent_tenant(t, agent)]
+            if agent is not None:
+                agent_tenant_id = getattr(agent, "tenant_id", None)
+                tool = next(
+                    (
+                        t
+                        for t in visible
+                        if getattr(t, "tenant_id", None) is not None
+                        and agent_tenant_id is not None
+                        and str(getattr(t, "tenant_id", None)) == str(agent_tenant_id)
+                    ),
+                    None,
+                )
+                if tool is None:
+                    tool = next((t for t in visible if getattr(t, "tenant_id", None) is None), None)
+            else:
+                tool = next((t for t in visible if getattr(t, "tenant_id", None) is None), None)
             agent_config = {}
             if tool and agent_id:
                 at_r = await db.execute(
                     select(AgentTool).where(AgentTool.agent_id == agent_id, AgentTool.tool_id == tool.id)
                 )
                 at = at_r.scalar_one_or_none()
-                agent_config = (at.config or {}) if at else {}
+                if at is not None and hasattr(at, "enabled") and not bool(at.enabled):
+                    return f"❌ MCP tool {tool_name} denied by this agent's tool assignment"
+                if at is None and not bool(getattr(tool, "is_default", False)):
+                    return f"Unknown tool: {tool_name}"
+                agent_config = (getattr(at, "config", None) or {}) if at else {}
                 mode = await resolve_agent_mcp_tool_mode(db, agent_id, tool)
                 if mode == "deny":
                     return f"❌ MCP tool {tool_name} denied by this agent's MCP server policy"
 
         if not tool:
             return f"Unknown tool: {tool_name}"
+        if not bool(getattr(tool, "enabled", True)):
+            return f"❌ MCP tool {tool_name} is disabled"
         if not tool.mcp_server_url:
             return f"❌ MCP tool {tool_name} has no server URL configured"
 
-        merged_config = {**(tool.config or {}), **agent_config}
+        merged_config = {**(getattr(tool, "config", None) or {}), **agent_config}
         mcp_url = tool.mcp_server_url
         mcp_name = tool.mcp_tool_name or tool_name
 

@@ -27,6 +27,17 @@ def test_plan_mode_acceptance_reply_only_matches_bare_acceptance():
     assert not is_plan_mode_acceptance_reply("进入计划模式，帮我重新规划另一个任务")
 
 
+def test_explicit_plan_mode_does_not_seed_retired_manage_tasks_tool():
+    from app.services.plan_mode_core import classify_plan_mode_entry
+
+    decision = classify_plan_mode_entry("进入计划模式，帮我规划这个调研", explicit=True)
+
+    assert decision.mode == "explicit"
+    assert decision.intent_type == "long_task"
+    assert decision.action_kind == "start_long_task"
+    assert decision.tool_name == "continue_current_session"
+
+
 def test_extract_plan_confirmation_request_matches_explicit_plan_id_and_latest():
     from app.services.plan_mode_core import extract_plan_confirmation_request
 

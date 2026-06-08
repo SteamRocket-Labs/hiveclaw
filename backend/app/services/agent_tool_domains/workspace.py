@@ -573,7 +573,10 @@ async def _read_document(
 
 
 _WRITE_PROTECTED = {
-    "tasks.json": "tasks.json is read-only. Use manage_tasks tool to manage tasks.",
+    "tasks.json": (
+        "tasks.json is a read-only DB Task snapshot. Use track_todo/read_ledger for the agent work board; "
+        "use the Tasks UI or REST task API for DB-backed task execution."
+    ),
 }
 
 # soul.md is append-only: heartbeat can add evolution notes but not overwrite identity

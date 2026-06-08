@@ -79,9 +79,13 @@ def test_delegation_args_map_to_objective_fill():
 
 def test_long_task_args_map_to_objective_fill():
     fill = tool_args_to_plan_fill(
-        tool_name="manage_tasks",
+        tool_name="continue_current_session",
         action_kind="start_long_task",
-        arguments={"action": "create", "title": "Sweep stale files", "description": "Remove old logs weekly."},
+        arguments={
+            "title": "Sweep stale files",
+            "description": "Remove old logs weekly.",
+            "handoff_target": "continue_current_session",
+        },
     )
 
     assert fill["title"] == "Sweep stale files"

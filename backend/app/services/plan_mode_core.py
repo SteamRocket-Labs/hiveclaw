@@ -194,7 +194,7 @@ def classify_plan_mode_entry(content: str, *, explicit: bool = False) -> PlanMod
             mode="explicit",
             intent_type="long_task",
             action_kind="start_long_task",
-            tool_name="manage_tasks",
+            tool_name="continue_current_session",
             title=text[:120],
             reason="explicit_plan_mode",
         )
@@ -362,6 +362,7 @@ _CAPABILITY_LABELS: dict[str, str] = {
     "deep_research_check": "Deep Research",
     "deep_research_export": "Deep Research",
     "office_document_create": "Office 交付物生成",
+    "continue_current_session": "当前会话继续执行",
     "manage_tasks": "任务跟踪",
     "set_trigger": "定时自动化",
     "update_trigger": "定时自动化",

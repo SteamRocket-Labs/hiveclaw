@@ -68,7 +68,7 @@ def test_evaluate_runtime_prompt_contracts_reports_failure_details() -> None:
     assert report["scenarios"]["delegation_worker"]["failed"] != []
     assert report["scenarios"]["memory_recall"]["failed"] != []
     assert report["scenarios"]["self_evolution"]["failed"] != []
-    assert report["scenarios"]["delegation_worker"]["checks"]["worker_return_format"]["passed"] is False
+    assert report["scenarios"]["delegation_worker"]["checks"]["worker_return_format_not_forced"]["passed"] is False
     assert report["summary"]["critical_failures"] >= 1
 
 

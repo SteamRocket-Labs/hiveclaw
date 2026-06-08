@@ -192,128 +192,35 @@ def _issue_delegation_token_for_request(
     )
 
 
-def _build_delegated_worker_prompt(profile: DelegationToolProfile) -> str:
+def _build_delegated_worker_prompt(profile: DelegationToolProfile, parent_name: str | None = None) -> str:
+    """Build a lightweight framing context for the delegated worker session.
+
+    F-1 (dispatch symmetry): the heavy ``<return_format>`` / ``<good_return_examples>``
+    / ``<bad_return_examples>`` template was removed — freezing the return shape
+    is an L1 violation (it boxes in the model's thinking product).  What remains
+    is the legitimate L2 harness context: isolation facts the worker needs to know,
+    tool/memory policy, and one descriptive framing line naming the delegating peer.
+    """
+    framing = (
+        f"你正在作为同事处理 {parent_name} 委派的工作；完成后把结论与证据返回给委派方。"
+        if parent_name
+        else "你正在处理委派方交来的工作；完成后把结论与证据返回给委派方。"
+    )
     return (
-        "<role>\n"
-        "You are a delegated worker running in an isolated child session. A parent\n"
-        "agent (or coordinator) handed you a scoped task with a specific brief.\n"
-        "Your job: execute the brief and return a structured report the parent can\n"
-        "consume. You are NOT a chat assistant — you produce work, not conversation.\n"
-        "</role>\n\n"
         "<isolation_contract>\n"
-        "- The delegated task brief is the ONLY authoritative context you have.\n"
+        "- The delegated task is the ONLY authoritative context you have.\n"
         "- The parent agent's conversation history is NOT available to you.\n"
-        "- Do not assume shared state with the parent beyond what the brief says.\n"
+        "- Do not assume shared state with the parent beyond what the task says.\n"
         "- Do not leak information about the parent's other tasks or sessions.\n"
         "- Delegation tools are disabled in worker sessions — do not try to spawn\n"
-        "  nested workers. If the task truly exceeds a single worker's scope,\n"
-        "  report it as a Blocker and let the parent re-scope.\n"
+        "  nested workers. If the task truly exceeds your scope, say so explicitly\n"
+        "  and let the parent re-scope.\n"
         "</isolation_contract>\n\n"
         "<tool_policy>\n"
         f"- {profile.tool_rule}\n"
         f"- {profile.memory_rule}\n"
         "</tool_policy>\n\n"
-        "<return_format>\n"
-        "Every reply MUST end with exactly these three sections. No prose outside\n"
-        "the sections. No filler. The parent parses this structure.\n\n"
-        "```\n"
-        "Completed:\n"
-        "- <concrete outcome — verb + object + result state>\n"
-        "- <one bullet per discrete outcome>\n"
-        "\n"
-        "Evidence:\n"
-        "- <file:line or tool-result reference for each claim above>\n"
-        "- <test/verification output where relevant>\n"
-        "\n"
-        "Blockers:\n"
-        "- <specific unresolved items, or 'none'>\n"
-        "```\n"
-        "</return_format>\n\n"
-        "<good_return_examples>\n"
-        "**Example A — implementation task**\n"
-        "```\n"
-        "Completed:\n"
-        "- Fixed token-expiry race in middleware.py:142 by moving the refresh check\n"
-        "  before the response header write\n"
-        "- Added regression test covering the expired-token path\n"
-        "\n"
-        "Evidence:\n"
-        "- Diff: backend/app/auth/middleware.py:138-148 (3 lines changed)\n"
-        "- New test: backend/tests/auth/test_middleware.py::test_expired_token_refreshes\n"
-        "- pytest run: 1 new test passed, 23 existing tests still pass\n"
-        "\n"
-        "Blockers:\n"
-        "- none\n"
-        "```\n\n"
-        "**Example B — research task**\n"
-        "```\n"
-        "Completed:\n"
-        "- Audited backend/app/auth/*.py and mapped all token-expiry handling paths\n"
-        "- Identified 2 bug candidates and 1 design smell\n"
-        "\n"
-        "Evidence:\n"
-        "- Bug 1: middleware.py:142 — refresh check runs AFTER response write,\n"
-        "  so an expired token leaks a 401 once per session\n"
-        "- Bug 2: refresh.py:87 — exception path swallows the refresh failure\n"
-        "  (bare except), masking upstream issues\n"
-        "- Design smell: token_store.py:55 — in-memory cache has no TTL, grows\n"
-        "  unboundedly in long-running workers\n"
-        "\n"
-        "Blockers:\n"
-        "- none\n"
-        "```\n\n"
-        "**Example C — task that couldn't fully complete**\n"
-        "```\n"
-        "Completed:\n"
-        "- Read the specified config files (entrypoint.sh, Dockerfile, railway.json)\n"
-        "- Drafted 80% of the deploy-flow diagram\n"
-        "\n"
-        "Evidence:\n"
-        "- Notes saved to workspace/deploy_audit.md\n"
-        "- Diagram draft: workspace/deploy_flow.mermaid (covers build + deploy,\n"
-        "  missing health-check/rollback branches)\n"
-        "\n"
-        "Blockers:\n"
-        "- Cannot access .env.production (not in workspace) — need the parent to\n"
-        "  confirm which env vars are live so the diagram is accurate\n"
-        "```\n"
-        "</good_return_examples>\n\n"
-        "<bad_return_examples>\n"
-        "DO NOT return any of these:\n\n"
-        "❌ **Empty Completed claim**\n"
-        "```\n"
-        "Completed:\n"
-        "- Task done.\n"
-        "Evidence:\n"
-        "- See above.\n"
-        "```\n"
-        "(No concrete outcome, no verifiable evidence. The parent cannot act on this.)\n\n"
-        "❌ **Prose wrapping the structured block**\n"
-        "```\n"
-        "Sure! I went ahead and worked on the task. Here's what I did:\n"
-        "Completed: ...\n"
-        "Let me know if you need anything else!\n"
-        "```\n"
-        "(The parent parses the structure; surrounding prose contaminates parsing\n"
-        "and wastes tokens.)\n\n"
-        "❌ **Fabricated evidence**\n"
-        "```\n"
-        "Completed:\n"
-        "- Fixed the bug\n"
-        "Evidence:\n"
-        "- Tests pass (I didn't actually run them)\n"
-        "```\n"
-        "(If you didn't run the tests, say 'test run skipped, needs verification'\n"
-        "in Blockers. Never claim evidence you don't have.)\n\n"
-        "❌ **Leaking parent context or other sessions**\n"
-        "```\n"
-        "Completed:\n"
-        "- Did what the user asked in the previous message\n"
-        "```\n"
-        "(You don't have access to the parent's conversation. The brief is your\n"
-        "only authoritative context. Refer to it by the task content, not by\n"
-        "pronouns that only the parent can resolve.)\n"
-        "</bad_return_examples>"
+        f"{framing}"
     )
 
 
@@ -443,6 +350,9 @@ class AgentDelegationRequest:
     # §9 P0 (切口③ 收尾): parent work-ledger todo this delegation serves.
     # Spawn stamps the child as owner; completion writes the status back.
     ledger_todo_id: str | None = None
+    # F-1 dispatch symmetry: parent display-name for worker framing context.
+    # Travels as structured metadata, never prefixed into the instruction text.
+    parent_agent_name: str | None = None
 
 
 def _delegation_coordination_key(request: AgentDelegationRequest) -> str:
@@ -512,35 +422,23 @@ def _normalize_delegation_message(message: dict[str, Any]) -> str:
     return f"{role_label}: {content}"
 
 
-def _build_delegation_brief(conversation_messages: list[dict[str, Any]]) -> str:
-    """Collapse parent transcript into a fresh child-session brief.
+def _delegation_user_message(conversation_messages: list[dict[str, Any]]) -> str:
+    """Return the parent's latest instruction verbatim as the child's first user message.
 
-    Child agents should receive a focused brief, not the parent's raw transcript.
-    This keeps tool noise and unrelated history out of the child context while
-    still preserving the latest task framing.
+    F-1 (dispatch symmetry): the instruction the parent agent wrote must reach
+    the child session byte-for-byte — no ``## Delegated Task Brief`` envelope,
+    no transcript folding, no 3-section rewrite.  The parent's intelligence
+    produced that instruction; the harness must not replace it with a template.
+
+    Only when ``conversation_messages`` is empty (edge case) do we fall back to
+    a one-line placeholder so the child session is never left with an empty turn.
     """
-    normalized = [
-        _normalize_delegation_message(message) for message in conversation_messages[-_DELEGATION_SOURCE_MAX_MESSAGES:]
-    ]
-    transcript = "\n".join(line for line in normalized if line).strip()
-    if len(transcript) > _DELEGATION_BRIEF_MAX_CHARS:
-        transcript = transcript[-_DELEGATION_BRIEF_MAX_CHARS:]
-        transcript = "...\n" + transcript.lstrip()
-
-    if not transcript:
-        transcript = "User: Complete the delegated task and report the concrete result."
-
-    return (
-        "## Delegated Task Brief\n"
-        "You are receiving a synthesized task brief from a parent agent.\n"
-        "Work only from the brief below. If context is missing, state the gap explicitly instead of inventing details.\n\n"
-        "### Parent Context Snapshot\n"
-        f"{transcript}\n\n"
-        "### Expected Return\n"
-        "- What you completed\n"
-        "- Concrete evidence or artifacts\n"
-        "- Remaining blockers or unknowns"
-    )
+    if conversation_messages:
+        last = conversation_messages[-1]
+        content = last.get("content") or ""
+        if content:
+            return content
+    return "Complete the delegated task and report the result."
 
 
 def _build_runtime_task_metadata(request: AgentDelegationRequest) -> dict[str, Any]:
@@ -657,6 +555,7 @@ async def delegate_to_agent(
     system_prompt_suffix: str = "",
     max_tool_rounds: int | None = None,
     parent_agent_id: str | uuid.UUID | None = None,
+    parent_agent_name: str | None = None,
     parent_session_id: str | None = None,
     trace_id: str | None = None,
     depth: int = 1,
@@ -676,6 +575,7 @@ async def delegate_to_agent(
         system_prompt_suffix=system_prompt_suffix,
         max_tool_rounds=max_tool_rounds,
         parent_agent_id=parent_agent_id,
+        parent_agent_name=parent_agent_name,
         parent_session_id=parent_session_id,
         trace_id=trace_id,
         depth=depth,
@@ -841,10 +741,13 @@ async def _delegate_after_cycle_check(
         except Exception as _hook_err:
             logger.debug("[Orchestrator] DELEGATION_START hook failed (non-fatal): %s", _hook_err)
 
-    delegated_brief = _build_delegation_brief(request.conversation_messages)
+    delegation_user_message = _delegation_user_message(request.conversation_messages)
     combined_suffix = "\n\n".join(
         part.strip()
-        for part in [request.system_prompt_suffix, _build_delegated_worker_prompt(tool_profile)]
+        for part in [
+            request.system_prompt_suffix,
+            _build_delegated_worker_prompt(tool_profile, parent_name=request.parent_agent_name),
+        ]
         if part and part.strip()
     )
 
@@ -897,7 +800,7 @@ async def _delegate_after_cycle_check(
 
     invocation = AgentInvocationRequest(
         model=request.target_model,
-        messages=[{"role": "user", "content": delegated_brief}],
+        messages=[{"role": "user", "content": delegation_user_message}],
         memory_messages=[],
         memory_session_id=child_session_id,
         session_context=SessionContext(
@@ -1110,6 +1013,7 @@ async def delegate_async(
     system_prompt_suffix: str = "",
     max_tool_rounds: int | None = None,
     parent_agent_id: str | uuid.UUID | None = None,
+    parent_agent_name: str | None = None,
     parent_session_id: str | None = None,
     trace_id: str | None = None,
     depth: int = 1,
@@ -1144,6 +1048,7 @@ async def delegate_async(
         system_prompt_suffix=system_prompt_suffix,
         max_tool_rounds=max_tool_rounds,
         parent_agent_id=parent_agent_id,
+        parent_agent_name=parent_agent_name,
         parent_session_id=parent_session_id,
         trace_id=real_trace_id,
         depth=depth,

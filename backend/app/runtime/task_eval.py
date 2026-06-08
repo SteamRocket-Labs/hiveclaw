@@ -97,18 +97,24 @@ _SCENARIO_SPECS: dict[str, _ScenarioSpec] = {
     "delegation_worker": _ScenarioSpec(
         query="delegate this research task to another agent and follow up later",
         required_tools=("delegate_to_agent", "check_async_task", "list_async_tasks"),
-        scenario_checks=(("delegation_worker", "worker_safe_tools"), ("delegation_worker", "worker_return_format")),
+        scenario_checks=(
+            ("delegation_worker", "worker_safe_tools"),
+            ("delegation_worker", "worker_return_format_not_forced"),
+        ),
         benchmark_cases=(
             _BenchmarkCase(
-                query="delegate a bounded research task and require a completed/evidence/blockers summary",
-                prompt_expectations=("<return_format>", "Completed:", "Evidence:", "Blockers:"),
+                query="delegate a bounded research task; the worker keeps its isolation contract and is free to shape its digest",
+                prompt_expectations=("<isolation_contract>", "<tool_policy>"),
             ),
         ),
     ),
     "delegation_profile_matrix": _ScenarioSpec(
         query="delegate a read-only review or research task to another agent",
         required_tools=("delegate_to_agent", "check_async_task", "list_async_tasks"),
-        scenario_checks=(("delegation_worker", "worker_safe_tools"), ("delegation_worker", "worker_return_format")),
+        scenario_checks=(
+            ("delegation_worker", "worker_safe_tools"),
+            ("delegation_worker", "worker_return_format_not_forced"),
+        ),
     ),
     "session_recall": _ScenarioSpec(
         query="what did we decide last time about the md-first memory system",

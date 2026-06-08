@@ -65,8 +65,9 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
     assert request.model is target_model
     assert len(request.messages) == 1
     assert request.messages[0]["role"] == "user"
-    assert "Delegated Task Brief" in request.messages[0]["content"]
-    assert "hello" in request.messages[0]["content"]
+    # F-1 dispatch symmetry: instruction passes verbatim, no envelope wrapper
+    assert request.messages[0]["content"] == "hello"
+    assert "Delegated Task Brief" not in request.messages[0]["content"]
     assert request.memory_messages == []
     assert request.memory_session_id == "session-1"
     assert request.tool_executor is tool_executor
@@ -97,13 +98,13 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
     )
     assert request.max_tool_rounds == 7
     assert "A2A_SUFFIX" in request.system_prompt_suffix
-    assert "delegated worker" in request.system_prompt_suffix.lower()
-    # PR-16 replaced the markdown "### Return format" with the `<return_format>` XML
-    # block; the Completed/Evidence/Blockers triad remains the parent-parsed contract.
-    assert "<return_format>" in request.system_prompt_suffix
-    assert "Completed:" in request.system_prompt_suffix
-    assert "Evidence:" in request.system_prompt_suffix
-    assert "Blockers:" in request.system_prompt_suffix
+    # F-1: slim worker prompt — isolation_contract + tool_policy remain; forced
+    # return template (Completed/Evidence/Blockers) was removed as an L1 violation.
+    assert "<isolation_contract>" in request.system_prompt_suffix
+    assert "<tool_policy>" in request.system_prompt_suffix
+    assert "Completed:" not in request.system_prompt_suffix
+    assert "Evidence:" not in request.system_prompt_suffix
+    assert "Blockers:" not in request.system_prompt_suffix
     assert "Do NOT read or write long-term memory" in request.system_prompt_suffix
     assert request.session_context.metadata["delegation_tool_policy"] == "worker_safe"
     assert request.session_context.metadata["delegation_memory_policy"] == "isolated_no_long_term_memory"

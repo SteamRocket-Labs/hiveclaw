@@ -1128,12 +1128,13 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
             conversation_messages=[
                 {
                     "role": "user",
-                    "content": f"[Delegated by {source_agent.name}] {message_text}",
+                    "content": message_text,
                 }
             ],
             owner_id=source_agent.creator_id,
             session_id=uuid.uuid4().hex,
             parent_agent_id=from_agent_id,
+            parent_agent_name=source_agent.name,
             parent_session_id=args.get("parent_session_id"),
             max_tool_rounds=args.get("max_tool_rounds"),
             policy=OrchestrationPolicy(timeout_seconds=120.0, tool_profile=tool_profile),

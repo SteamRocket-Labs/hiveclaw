@@ -521,20 +521,21 @@ def evaluate_runtime_prompt_contracts(inputs: PromptEvalInputs | None = None) ->
                     success_detail="Delegated worker prompt still constrains child tools to a worker-safe surface.",
                     failure_detail="Delegated worker prompt no longer mentions worker-safe tool policy.",
                 ),
-                "worker_return_format": _CheckSpec(
-                    # PR-16 replaced the markdown "### Return format" section
-                    # with an XML `<return_format>` block. The Completed /
-                    # Evidence / Blockers triad remains required.
+                "worker_return_format_not_forced": _CheckSpec(
+                    # F-1 (dispatch symmetry): the forced `<return_format>` /
+                    # Completed/Evidence/Blockers triad was REMOVED — freezing the
+                    # return shape boxes in the worker's thinking product (an L1
+                    # violation). The worker returns a free-form digest (CC-style).
+                    # The legitimate isolation contract stays. This check guards the
+                    # forced format from creeping back.
                     predicate=lambda: (
-                        ("<return_format>" in (resolved.delegation_worker_prompt or ""))
-                        and "Completed:" in (resolved.delegation_worker_prompt or "")
-                        and "Evidence:" in (resolved.delegation_worker_prompt or "")
-                        and "Blockers:" in (resolved.delegation_worker_prompt or "")
+                        "<return_format>" not in (resolved.delegation_worker_prompt or "")
+                        and "<isolation_contract>" in (resolved.delegation_worker_prompt or "")
                     ),
                     severity="medium",
-                    remediation="Restore the delegated worker return format so parent agents receive structured summaries.",
-                    success_detail="Delegated worker prompt still defines a structured return format.",
-                    failure_detail="Delegated worker prompt lost its structured return format.",
+                    remediation="Do not re-introduce a forced worker return format; keep the worker free to shape its digest (L1). Keep the isolation contract.",
+                    success_detail="Delegated worker prompt keeps the isolation contract and does NOT force a return format.",
+                    failure_detail="Delegated worker prompt re-introduced a forced return format (L1 regression) or dropped the isolation contract.",
                 ),
             }
         ),

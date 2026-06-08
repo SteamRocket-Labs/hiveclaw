@@ -1,9 +1,12 @@
-"""Tests for _build_delegated_worker_prompt (PR-16).
+"""Tests for _build_delegated_worker_prompt (F-1: dispatch symmetry slim).
 
-Delegated workers run in isolated child sessions. Their prompt must lock
-down: isolation contract, tool policy (per-profile), strict return format,
-good/bad examples. Parent parses the structured return block — regressions
-in format discipline silently break coordinator synthesis downstream.
+Delegated workers run in isolated child sessions. Their framing prompt keeps the
+legitimate L2 harness context — isolation contract + per-profile tool policy + a
+light descriptive line naming the delegating peer. F-1 REMOVED the heavy
+``<return_format>`` / good+bad return examples: freezing the return shape is an
+L1 violation (it boxes in the worker's thinking product). The worker now returns
+a free-form digest (CC-style), and the instruction itself reaches the worker
+verbatim (see test_dispatch_symmetry.py).
 """
 
 from __future__ import annotations
@@ -28,30 +31,18 @@ def research_prompt() -> str:
 
 
 class TestPromptStructure:
-    def test_xml_tags_present(self, worker_safe_prompt: str) -> None:
+    def test_keeps_isolation_and_tool_policy_tags(self, worker_safe_prompt: str) -> None:
         for tag in [
-            "<role>",
-            "</role>",
             "<isolation_contract>",
             "</isolation_contract>",
             "<tool_policy>",
             "</tool_policy>",
-            "<return_format>",
-            "</return_format>",
-            "<good_return_examples>",
-            "</good_return_examples>",
-            "<bad_return_examples>",
-            "</bad_return_examples>",
         ]:
             assert tag in worker_safe_prompt, f"missing tag: {tag}"
 
-    def test_role_declares_worker_not_chat(self, worker_safe_prompt: str) -> None:
-        assert "delegated worker" in worker_safe_prompt.lower()
-        assert "NOT a chat assistant" in worker_safe_prompt or "not a chat" in worker_safe_prompt.lower()
-
 
 class TestIsolationContract:
-    def test_declares_brief_as_only_context(self, worker_safe_prompt: str) -> None:
+    def test_declares_task_as_only_context(self, worker_safe_prompt: str) -> None:
         assert "ONLY authoritative context" in worker_safe_prompt
 
     def test_declares_parent_history_unavailable(self, worker_safe_prompt: str) -> None:
@@ -62,7 +53,6 @@ class TestIsolationContract:
             "nested workers" in worker_safe_prompt.lower()
             or "delegation tools are disabled" in worker_safe_prompt.lower()
         )
-        assert "Blocker" in worker_safe_prompt
 
     def test_forbids_context_leak(self, worker_safe_prompt: str) -> None:
         assert "leak" in worker_safe_prompt.lower()
@@ -79,50 +69,30 @@ class TestToolPolicyInjection:
         assert _DELEGATION_TOOL_PROFILES["research_readonly"].memory_rule in research_prompt
 
 
-class TestReturnFormat:
-    def test_three_sections_specified(self, worker_safe_prompt: str) -> None:
-        assert "Completed:" in worker_safe_prompt
-        assert "Evidence:" in worker_safe_prompt
-        assert "Blockers:" in worker_safe_prompt
+class TestSlimReturnNoForcedFormat:
+    """F-1: the forced 3-section return template + examples are GONE (L1 fix)."""
 
-    def test_no_prose_outside_sections_rule(self, worker_safe_prompt: str) -> None:
-        assert "No prose outside" in worker_safe_prompt or "no prose outside" in worker_safe_prompt.lower()
+    def test_no_return_format_template_or_examples(self, worker_safe_prompt: str) -> None:
+        assert "<return_format>" not in worker_safe_prompt
+        assert "<good_return_examples>" not in worker_safe_prompt
+        assert "<bad_return_examples>" not in worker_safe_prompt
 
-    def test_specifies_parent_parses_structure(self, worker_safe_prompt: str) -> None:
-        assert "parent parses" in worker_safe_prompt.lower()
-
-
-class TestGoodExamples:
-    def test_has_three_good_examples(self, worker_safe_prompt: str) -> None:
-        assert "Example A" in worker_safe_prompt
-        assert "Example B" in worker_safe_prompt
-        assert "Example C" in worker_safe_prompt
-
-    def test_examples_cover_impl_research_and_partial_completion(self, worker_safe_prompt: str) -> None:
-        lowered = worker_safe_prompt.lower()
-        assert "implementation task" in lowered
-        assert "research task" in lowered
-        assert "couldn't fully complete" in lowered or "partial" in lowered
-
-    def test_examples_include_file_line_evidence(self, worker_safe_prompt: str) -> None:
-        # Good examples must demonstrate file:line references so workers learn
-        # the expected evidence shape.
-        assert "middleware.py:142" in worker_safe_prompt or "file:line" in worker_safe_prompt
+    def test_no_forced_three_section_scaffold(self, worker_safe_prompt: str) -> None:
+        # The rigid "Completed:/Evidence:/Blockers:" return scaffold is removed —
+        # the worker is not told how to shape its return.
+        assert "Completed:" not in worker_safe_prompt
+        assert "Evidence:" not in worker_safe_prompt
 
 
-class TestBadExamples:
-    def test_covers_empty_claim(self, worker_safe_prompt: str) -> None:
-        assert "Empty Completed claim" in worker_safe_prompt or "empty completed" in worker_safe_prompt.lower()
+class TestPeerFraming:
+    def test_names_delegating_peer_when_given(self) -> None:
+        prompt = _build_delegated_worker_prompt(_DELEGATION_TOOL_PROFILES["worker_safe"], parent_name="Atlas")
+        assert "Atlas" in prompt
+        # Descriptive colleague framing, not a return-format template.
+        assert "委派" in prompt
 
-    def test_covers_prose_wrapping(self, worker_safe_prompt: str) -> None:
-        assert "Prose wrapping" in worker_safe_prompt or "prose wrapping" in worker_safe_prompt.lower()
-
-    def test_covers_fabricated_evidence(self, worker_safe_prompt: str) -> None:
-        assert "Fabricated evidence" in worker_safe_prompt or "fabricated evidence" in worker_safe_prompt.lower()
-        assert "Never claim evidence" in worker_safe_prompt
-
-    def test_covers_context_leak(self, worker_safe_prompt: str) -> None:
-        assert "Leaking parent context" in worker_safe_prompt or "leaking parent" in worker_safe_prompt.lower()
+    def test_generic_framing_without_peer_name(self, worker_safe_prompt: str) -> None:
+        assert "委派" in worker_safe_prompt
 
 
 class TestExportedSuffix:
@@ -133,4 +103,4 @@ class TestExportedSuffix:
 
     def test_suffix_is_non_empty_string(self) -> None:
         assert isinstance(_DELEGATED_WORKER_PROMPT_SUFFIX, str)
-        assert len(_DELEGATED_WORKER_PROMPT_SUFFIX) > 500
+        assert len(_DELEGATED_WORKER_PROMPT_SUFFIX) > 300

@@ -166,6 +166,26 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
         )
 
     args = dict(request.arguments or {})
+
+    # plan_markdown is the plan body (CC parity: the plan is a markdown article the
+    # user confirms, not a field form). A blank body means the agent filled fields
+    # without authoring a plan — reject so it writes the real plan, in the same turn.
+    plan_markdown = str(args.get("plan_markdown") or "").strip()
+    if not plan_markdown:
+        return json.dumps(
+            {
+                "status": "error",
+                "error_code": "missing_plan_body",
+                "message": (
+                    "plan_markdown is required and must be substantive: write the plan as a markdown "
+                    "article — your reasoning, the approach, trade-offs, and the concrete execution "
+                    "steps — not just structured fields. This article is what the user confirms. If a "
+                    "blocking decision is still open, call ask_user_question first instead of guessing."
+                ),
+            },
+            ensure_ascii=False,
+        )
+
     handoff = _handoff(args, metadata)
     intent_type = str(metadata.get("intent_type") or args.get("intent_type") or "long_task")
     if intent_type not in plan_mode_core.INTENT_TYPES:
@@ -179,6 +199,10 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
         "title": title,
         "objective": objective,
         "motivation": original_request or objective,
+        # The agent-authored plan body — the canonical 偏离① fix: it used to be
+        # collected by the schema then dropped here, so the card re-rendered from
+        # structured fields. Now it lands in plan_json (hash-covered) as the body.
+        "plan_markdown": plan_markdown,
         "steps": _steps(args.get("steps")),
         "success_criteria": _string_list(args.get("success_criteria")),
         "wake_policy": _wake_policy(args.get("wake_policy"), handoff_target=handoff["target"]),

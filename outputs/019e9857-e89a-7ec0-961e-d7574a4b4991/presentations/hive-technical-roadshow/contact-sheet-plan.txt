@@ -1,0 +1,40 @@
+Claim spine:
+1. Hive is not a chatbot wrapper; it is self-evolving digital employee infrastructure plus an enterprise control plane.
+2. The technical moat is the combination of persistent agent identity, governed memory, durable runtime, deterministic workflow, and auditable tool execution.
+3. The model remains fully capable; the harness constrains authority and side effects, not intelligence.
+4. The current repo already has a substantial platform surface: multi-tenant FastAPI/React app, 100+ tool registrations, Memory Control Plane, Office, channels, skills/MCP, subagents, Plan Mode, Workflow, and Deep Research workstreams.
+5. The next roadshow story is technical credibility: show the runtime, trust boundaries, and evidence rather than vague AI productivity claims.
+
+Slide plan:
+01 cover with dark editorial wordmark, metric rail, and thesis statement.
+02 problem reframing with three diagonal gaps: stateless chat, brittle automations, ungoverned agents.
+03 north-star architecture law with L1/L2/L3 layered bands.
+04 whole-system architecture map with concrete repo components.
+05 invocation/runtime path as a left-to-right sequence with governance branch.
+06 Memory Control Plane as pyramid plus policy side rail.
+07 self-evolution flywheel with completed phase evidence and bakeoff scenarios.
+08 Plan Mode x Workflow as two parallel foundations plus shared runtime assets.
+09 deterministic workflow engine internals: definition, admission, journal, resume, gates, trigger.
+10 enterprise trust boundary: RLS, capability, preflight, checkpoint, audit, secrets.
+11 product surfaces and integrations: App, Company Admin, Platform Admin, channels, Office, MCP/Skills.
+12 Deep Research and subagent direction: fanout, worker isolation, ledger, source contract, gated unification.
+13 live engineering evidence: current checkout counts and version/stack/test proof.
+14 closing roadmap / ask: what to demo, what is defensible, next 90 days.
+
+Macro layout families:
+- dark cover with metric rail
+- editorial wedge / problem map
+- layered policy stack
+- architecture node map
+- sequence diagram
+- pyramid plus rail
+- circular flywheel
+- comparison matrix
+- trust-boundary ring
+- product proof matrix
+- roadmap timeline
+
+Rhythm constraints:
+- No three consecutive slides with the same structure.
+- Keep copy short enough for spoken technical narration.
+- Use source footers quietly; do not crowd the slide with raw file paths unless the slide is evidence-focused.

@@ -283,3 +283,81 @@ async def test_exit_plan_mode_lands_action_artifact_into_plan_json(monkeypatch):
     assert result["status"] == "needs_plan"
     assert result["plan_json"]["action_artifact"] == artifact
     assert service.calls[0]["fill"]["action_artifact"] == artifact
+
+
+# ── CC alignment §4.1: plan_markdown is the body, not a discarded field ──
+
+
+@pytest.mark.asyncio
+async def test_exit_plan_mode_captures_plan_markdown_into_fill(monkeypatch):
+    """The agent's plan_markdown article must land in the fill/plan_json — not be
+    discarded. Canonical 偏离①: the schema required plan_markdown then the handler
+    dropped it, so the card re-rendered from structured fields."""
+    from app.services.plan_mode_runtime_context import reset_interactive_plan_mode, set_interactive_plan_mode
+    from app.tools.handlers import plan_mode as handler
+
+    service = _PlanService()
+    monkeypatch.setattr(handler, "get_plan_mode_service", lambda: service)
+
+    token = set_interactive_plan_mode(
+        {"active": True, "original_request": "RWA 周报", "intent_type": "long_task"}
+    )
+    try:
+        result = json.loads(
+            await handler.exit_plan_mode(
+                _request(
+                    {
+                        "title": "RWA 周报",
+                        "objective": "出周报",
+                        "plan_markdown": "## 思路\n聚焦三条赛道。\n\n## 执行\n1. 核验来源。",
+                        "steps": ["核验来源", "撰写周报"],
+                        "success_criteria": ["含 5-10 条带链接更新"],
+                        "stop_conditions": ["用户拒绝"],
+                    }
+                )
+            )
+        )
+    finally:
+        reset_interactive_plan_mode(token)
+
+    assert result["status"] == "needs_plan"
+    assert "聚焦三条赛道" in result["plan_json"]["plan_markdown"]
+    assert "聚焦三条赛道" in service.calls[0]["fill"]["plan_markdown"]
+
+
+@pytest.mark.asyncio
+async def test_exit_plan_mode_rejects_blank_plan_markdown(monkeypatch):
+    """A blank plan_markdown means the agent filled fields without authoring a
+    plan — reject (no plan row created) so it writes the real plan this turn."""
+    from app.services.plan_mode_runtime_context import reset_interactive_plan_mode, set_interactive_plan_mode
+    from app.tools.handlers import plan_mode as handler
+
+    service = _PlanService()
+    monkeypatch.setattr(handler, "get_plan_mode_service", lambda: service)
+
+    token = set_interactive_plan_mode(
+        {"active": True, "original_request": "x", "intent_type": "long_task"}
+    )
+    try:
+        result = json.loads(
+            await handler.exit_plan_mode(
+                _request(
+                    {
+                        "title": "t",
+                        "objective": "o",
+                        "plan_markdown": "   ",
+                        "steps": ["a"],
+                        "success_criteria": ["c"],
+                        "stop_conditions": ["s"],
+                    }
+                )
+            )
+        )
+    finally:
+        reset_interactive_plan_mode(token)
+
+    assert result["status"] == "error"
+    assert result["error_code"] == "missing_plan_body"
+    # No plan row created for an empty body — neither create nor fill path ran.
+    assert service.calls == []
+    assert service.generate_calls == []

@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-themes="engineering-whiteprint,blueprint,tokyo-night,corporate-clean,catppuccin-mocha">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hive 技术路演 · 自进化数字员工基础设施</title>
+<link rel="stylesheet" href="assets/fonts.css">
+<link rel="stylesheet" href="assets/base.css">
+<link rel="stylesheet" id="theme-link" href="assets/themes/engineering-whiteprint.css">
+<link rel="stylesheet" href="assets/animations/animations.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="tpl-presenter-mode-reveal" data-theme-base="assets/themes/">
+<div class="deck">
+
+  <section class="slide hero" data-title="Hive">
+    <div class="chrome"><span>Hive technical roadshow</span><span>2026-06-06</span></div>
+    <div class="hero-grid">
+      <div>
+        <p class="kicker">AI-native agent infrastructure</p>
+        <h1 class="h1 anim-fade-up" data-anim="fade-up">自进化数字员工基础设施<br><span class="accent">+ 企业级控制中台</span></h1>
+        <p class="lede">Hive 不是聊天机器人包装层，而是让 agent 具备身份、记忆、执行、治理和可审计演化的 runtime platform。</p>
+      </div>
+      <div class="metric-panel">
+        <div><span>version</span><b>1.7.0</b></div>
+        <div><span>@tool decorators</span><b>107</b></div>
+        <div><span>backend services</span><b>158</b></div>
+        <div><span>trust boundary</span><b>RLS + audit</b></div>
+      </div>
+    </div>
+    <div class="deck-footer"><span class="mono">source: current repo scan + README.md</span><span class="slide-number" data-current="1" data-total="14"></span></div>
+    <aside class="notes">
+      <p>开场先把定位讲清楚：<strong>Hive 不是聊天机器人，也不是一个 LangGraph 旁边的 UI</strong>。我们真正做的是一套数字员工基础设施，让 agent 有长期身份、有可治理记忆、有 durable runtime，也有企业级权限和审计。</p>
+      <p>这一页右边四个数字来自今天的当前代码扫描，不是旧文档：版本 1.7.0、107 个工具注册点、158 个后端 service，以及 RLS 加审计这条企业边界。你可以先用这几个数字建立技术可信度。</p>
+      <p>过渡到下一页时说：为什么这件事需要平台？因为企业 agent 的问题不只是模型够不够聪明，而是运行过程没有生命体征。</p>
+    </aside>
+  </section>
+
+  <section class="slide" data-title="Problem">
+    <p class="kicker">why this needs a platform</p>
+    <h2 class="h2">企业 agent 的瓶颈不是模型本身，<br>而是缺少可持续运行的生命体征。</h2>
+    <div class="problem-grid mt-l">
+      <div class="card edge-red"><span class="num">01</span><h4>状态断裂</h4><p>身份、偏好、经验都停在窗口里，不会成为可演化资产。</p><b>soul.md / T0-T3 / activation</b></div>
+      <div class="card edge-blue"><span class="num">02</span><h4>执行脆弱</h4><p>长任务依赖页面和会话，失败后难恢复，后台执行不可解释。</p><b>RuntimeTask / journal / resume</b></div>
+      <div class="card edge-green"><span class="num">03</span><h4>治理缺席</h4><p>工具、数据、公司边界和外部动作混在同一个 prompt 里。</p><b>RLS / capability / preflight</b></div>
+    </div>
+    <div class="deck-footer"><span class="mono">source: README.md lines 16-29</span><span class="slide-number" data-current="2" data-total="14"></span></div>
+    <aside class="notes">
+      <p>这一页是问题重构。你可以先说：现在大家谈 agent，经常把重点放在模型是不是够强。但在企业场景里，模型强只是起点，真正的问题是<strong>agent 不能稳定地活在组织里</strong>。</p>
+      <p>第一，状态断裂。普通 chatbot 一关窗口就什么都没了，身份和偏好都不是资产。第二，执行脆弱，长任务跑一半页面刷新，或者后台失败，用户很难知道发生了什么。第三，治理缺席，外部消息、文件写入、公司边界这些风险都被塞进 prompt 里。</p>
+      <p>所以 Hive 的切入点不是“再包一层 chat UI”，而是把身份、执行、记忆、权限这些底层能力做成平台。</p>
+    </aside>
+  </section>
+
+  <section class="slide" data-title="Design Law">
+    <p class="kicker">AI-native design law</p>
+    <h2 class="h2">释放模型能力，<br>把约束放在行动边界。</h2>
+    <div class="layer-stack mt-l">
+      <div><span>L1</span><b>Unleash the model first</b><p>总结、规划、提取、综合、判断都给 LLM 完整输入和足够输出预算。</p></div>
+      <div><span>L2</span><b>Harness constrains, never replaces</b><p>治理层限制 agent 能做什么，而不是削弱它怎么思考。</p></div>
+      <div><span>L3</span><b>Neutral enterprise control plane</b><p>模型平等，组织权限、预算、审计和协作治理在平台层统一。</p></div>
+    </div>
+    <div class="deck-footer"><span class="mono">source: AGENTS.md / AI-Native Design Law</span><span class="slide-number" data-current="3" data-total="14"></span></div>
+    <aside class="notes">
+      <p>这页是我们的设计原则。你可以用一句话讲：<strong>Hive 不用治理层替代模型思考，而是把治理层放在行动边界上</strong>。</p>
+      <p>L1 是释放模型。凡是需要智能判断的步骤，比如总结、规划、提取、综合，都应该给模型完整上下文和足够输出空间，不要靠机械规则假装智能。L2 是 harness 的位置：权限、预算、审计、审批是包在外层的，它限制 agent 能做什么，不限制 agent 怎么想。</p>
+      <p>L3 是 Hive 的平台身份：我们不是某个模型供应商的附属品，而是组织侧的控制中台。换模型也可以，治理、记忆和执行语义保持一致。</p>
+    </aside>
+  </section>
+
+  <section class="slide map-slide" data-title="System Architecture">
+    <p class="kicker">system architecture</p>
+    <h2 class="h2">同一套 runtime 承载聊天、渠道、触发、办公、workflow 和 agent 协作。</h2>
+    <div class="arch-map mt-m">
+      <div><h4>Entry surfaces</h4><p>Web chat<br>Feishu / Slack / Teams<br>Schedule / webhook<br>Office workbench</p></div>
+      <div><h4>FastAPI backend</h4><p>61 API routers<br>RuntimeTask APIs<br>Channel webhooks<br>Admin surfaces</p></div>
+      <div><h4>Agent runtime</h4><p>invoker.py<br>AgentKernel<br>LoopGuard<br>Tool budgets</p></div>
+      <div><h4>Governed tools</h4><p>ToolRuntimeService<br>ActionPreflight<br>CapabilityGate<br>107 @tool hooks</p></div>
+      <div><h4>Stores</h4><p>PostgreSQL RLS<br>Redis<br>Agent FS<br>Audit log</p></div>
+    </div>
+    <div class="runtime-band">Memory Control Plane + enterprise control plane wrap the whole path: owner/company context, RLS, audit, budgets, approvals.</div>
+    <div class="deck-footer"><span class="mono">source: README.md architecture + live repo counts</span><span class="slide-number" data-current="4" data-total="14"></span></div>
+    <aside class="notes">
+      <p>这页是整体架构图。讲法上不要逐个念框，重点是<strong>同一条 runtime 路径</strong>。不管用户从 Web chat、飞书、定时任务、webhook 还是 Office 入口进来，最终都进入后端统一处理。</p>
+      <p>FastAPI 层负责 API、webhook 和管理面；中间是 invoker 加 AgentKernel，处理模型调用、多轮工具循环、LoopGuard、压缩和工具预算；再往右是 ToolRuntimeService，所有副作用都在这里进入治理链路。</p>
+      <p>最底下这条带子很重要：Memory Control Plane 和企业控制中台包住全路径。也就是说，Hive 的差异不是有多少工具，而是这些工具全都在同一套 owner/company、tenant、审计和审批语义下运行。</p>
+    </aside>
+  </section>
+
+  <section class="slide" data-title="Invocation Path">
+    <p class="kicker">invocation path</p>
+    <h2 class="h2">每次 agent 调用都走同一个 kernel，<br>工具副作用统一过治理层。</h2>
+    <div class="flow mt-l">
+      <div><b>Entry</b><p>chat / webhook / cron / delegation</p></div>
+      <div><b>invoker.py</b><p>resolve model, tenant, tools, dynamic memory</p></div>
+      <div class="active"><b>AgentKernel</b><p>multi-round LLM loop, LoopGuard, compaction</p></div>
+      <div><b>ToolRuntime</b><p>execute() is the side-effect gate</p></div>
+      <div><b>Handlers</b><p>files, search, office, Feishu, MCP, DR</p></div>
+    </div>
+    <div class="callout-row">
+      <div><h4>Memory Control Plane</h4><p>动态注入 owner/company/goal/open-loop 相关记忆；敏感内容按访问权限剥离。</p></div>
+      <div><h4>Preflight / Checkpoint / Audit</h4><p>外部可见、敏感、不可逆或公司边界动作在工具执行前被拦截或升级。</p></div>
+    </div>
+    <div class="deck-footer"><span class="mono">source: runtime/invoker.py · kernel/engine.py · tools/service.py</span><span class="slide-number" data-current="5" data-total="14"></span></div>
+    <aside class="notes">
+      <p>这一页可以讲得稍微技术一点。Hive 的核心不在某个 prompt，而在这个 invocation path。入口可以很多，但进入 runtime 之后是同一个 kernel。</p>
+      <p>invoker 先解析模型、租户、工具和动态记忆。AgentKernel 负责多轮 LLM 工具循环，包括 LoopGuard、mid-loop compaction、工具结果 eviction 和预算控制。关键点在 ToolRuntimeService：<strong>它是所有副作用的统一入口</strong>，文件写入、发消息、Office 操作、MCP 调用都不能绕过。</p>
+      <p>下方两块说明为什么这是企业平台。左边是记忆怎么被动态激活；右边是动作怎么过 preflight、checkpoint 和 audit。这个组合决定了 Hive 可以让 agent 真正工作，而不是只在聊天框里回答。</p>
+    </aside>
+  </section>
+
+  <section class="slide" data-title="Memory Control Plane">
+    <p class="kicker">memory control plane</p>
+    <h2 class="h2">记忆不是向量库；它是 agent 身份、证据和权限共同治理的资产层。</h2>
+    <div class="memory-layout mt-m">
+      <div class="pyramid">
+        <div class="tier soul"><b>soul.md</b><span>永久身份：角色、边界、质量标准</span></div>
+        <div class="tier t3"><b>T3 semantic</b><span>Heartbeat curation: feedback / knowledge / strategies</span></div>
+        <div class="tier t2"><b>T2 learnings</b><span>extract_agent: atomic learnings with evidence</span></div>
+        <div class="tier t0"><b>T0 raw logs</b><span>session hooks: messages, tool calls, tool results</span></div>
+      </div>
+      <div class="policy-list">
+        <p><b>Principal stack</b><span>company / owner / current user / delegation context</span></p>
+        <p><b>Write safety</b><span>privacy classification, sensitivity labels, PL4 rejection</span></p>
+        <p><b>Dynamic activation</b><span>goal relevance, open-loop pressure, sensitivity access</span></p>
+        <p><b>Decision trace</b><span>why the agent acted, asked, refused, or escalated</span></p>
+        <p><b>Steward loop</b><span>low-risk preparation; external action needs checkpoint</span></p>
+      </div>
+    </div>
+    <div class="deck-footer"><span class="mono">source: README.md Memory Pyramid + backend/app/memory/*</span><span class="slide-number" data-current="6" data-total="14"></span></div>
+    <aside class="notes">
+      <p>这里要避免把 Hive 讲成“我们也有 RAG”。Hive 的记忆更像资产层。左边是 Markdown memory pyramid，T0 是原始日志，T2 是抽取后的原子学习，T3 是 Heartbeat 策展后的语义记忆，最上面 soul.md 是身份。</p>
+      <p>但真正重要的是右边：<strong>存储只是路径，控制平面决定运行时行为</strong>。谁是 owner，当前用户和公司上下文是什么，哪些记忆可以写入，哪些敏感信息要剥离，为什么 agent 做出某个动作，都需要被治理。</p>
+      <p>你可以强调一点：Memory Control Plane 让 agent 能学习，但不会把凭据、隐私、公司边界冲突直接写进长期记忆。这个是企业版自进化 agent 的基本盘。</p>
+    </aside>
+  </section>
+
+  <section class="slide dark-section" data-title="Self Evolution">
+    <p class="kicker">self-evolution flywheel</p>
+    <h2 class="h2">自我进化不是直接改长期记忆；<br>它先形成可验证、可回滚的候选资产。</h2>
+    <div class="flywheel mt-l">
+      <div>Response<br>Complete</div><div>Fast<br>Reflection</div><div>Session<br>Projection</div><div>Verification<br>Eval</div><div>Candidate /<br>Promotion</div>
+    </div>
+    <div class="evidence-panel">
+      <span>dated evidence</span>
+      <b>P0-P7</b>
+      <p>completed self-evolution substrate phases</p>
+      <strong>6 bakeoff scenarios · scores 90-96 · passed=true</strong>
+      <small>generated 2026-05-24 · deterministic repo checks</small>
+    </div>
+    <div class="deck-footer"><span class="mono">source: self-evolution-sota-plan.md · self-evolution-bakeoff-report.json</span><span class="slide-number" data-current="7" data-total="14"></span></div>
+    <aside class="notes">
+      <p>这页讲自我进化，但要讲得可信。不要说“agent 会自动进化”这种空话，要说<strong>我们把学习拆成可验证、可回滚的工程闭环</strong>。</p>
+      <p>流程是：每次 response complete 之后，fast reflection 捕捉强信号，比如用户纠正、工具失败、重复工作模式；然后形成 session projection，让下一轮立刻能用；如果要变成长期记忆或技能候选，必须有 verification eval 和 manifest。</p>
+      <p>右边是证据：P0 到 P7 已完成，bakeoff 报告里 6 个场景 passed=true，分数 90 到 96。讲的时候要说明这是 dated evidence，不是线上营销指标。它证明的是当前 repo 有完整自进化 substrate。</p>
+    </aside>
+  </section>
+
+  <section class="slide" data-title="Plan Mode x Workflow">
+    <p class="kicker">plan mode x workflow</p>
+    <h2 class="h2">两个并列底座：Plan Mode 管确认边界，Workflow 管确定性执行控制流。</h2>
+    <div class="split-foundation mt-l">
+      <div class="foundation plan"><h3>Plan Mode</h3><p>回答：能不能开始？要不要人确认？确认的计划是什么？</p><b>confirmed plan · action artifact · permission boundary</b></div>
+      <div class="join">组合<br>不混成一个概念</div>
+      <div class="foundation workflow"><h3>Workflow</h3><p>回答：开始之后怎么推进、暂停、恢复、审计？</p><b>definition · journal · quota · gate/wait · definition_hash</b></div>
+    </div>
+    <div class="shared-band">RuntimeTask · tenant boundary · budget envelope · audit · resume · checkpoints</div>
+    <div class="deck-footer"><span class="mono">source: docs/workflow-source-capability.md</span><span class="slide-number" data-current="8" data-total="14"></span></div>
+    <aside class="notes">
+      <p>这一页是最近架构讨论里很重要的定稿。讲的时候先把边界说清楚：<strong>Plan Mode 和 Workflow 是并列底座，不是互相包含</strong>。</p>
+      <p>Plan Mode 负责确认边界：能不能开始、要不要人确认、确认的计划是什么。Workflow 负责执行控制流：开始之后怎么确定性推进、怎么暂停、怎么恢复、怎么审计。两者当然可以组合，比如高风险 workflow launch 被 plan gate 拦住，但概念上不能混在一起。</p>
+      <p>底部这条共享能力是关键：RuntimeTask、tenant boundary、budget envelope、audit、resume、checkpoint。这个设计让 workflow 能成为 Hive 的 runtime 基础能力，而不是某个 deep research 或 office 功能的附属实现。</p>
+    </aside>
+  </section>
+
+  <section class="slide" data-title="Workflow Runtime">
+    <p class="kicker">deterministic workflow runtime</p>
+    <h2 class="h2">Workflow 的核心不是多一个任务功能，而是给高风险 agent 工作一条可恢复的执行轨道。</h2>
+    <div class="flow wide mt-l">
+      <div><b>definition data</b><p>sequence / fanout / condition / gate / wait</p></div>
+      <div><b>compile + admission</b><p>schema forbid extra · risk grade · capability binding</p></div>
+      <div><b>RuntimeTask</b><p>task_type=workflow · metadata mirrors tenant/hash</p></div>
+      <div><b>journal</b><p>WorkflowStep · WorkflowLeafCall · input_hash</p></div>
+      <div><b>resume / trigger</b><p>daemon drain · workflow_ref · version/hash pin</p></div>
+    </div>
+    <div class="guard-grid">
+      <div><b>No arbitrary code execution</b><p>definition 是数据，引擎解释执行</p></div>
+      <div><b>Gate irreversible steps</b><p>对外/不可逆步骤必须 checkpoint</p></div>
+      <div><b>Leaf-level replay</b><p>8 叶跑完 7 叶后恢复只补 1 叶</p></div>
+      <div><b>Feature flags</b><p>DR workflow path gated rollout</p></div>
+    </div>
+    <div class="deck-footer"><span class="mono">source: runtime/workflow_definition.py · workflow_engine.py · workflow_daemon.py</span><span class="slide-number" data-current="9" data-total="14"></span></div>
+    <aside class="notes">
+      <p>这页可以更工程化一点。Workflow 的定义不是代码，而是结构化数据：sequence、bounded fanout、condition、gate、wait。安全不来自 JSON 本身，而来自 compile 和 admission。</p>
+      <p>编译阶段会做 schema、capability、风险分级和预算预检；运行阶段落到 RuntimeTask，步骤和叶子调用都有 journal。这样 crash 之后可以 resume，而且不是整步重跑，而是 leaf-level replay。</p>
+      <p>下面四个 guard 是现场需要讲清楚的边界：没有任意代码执行；不可逆动作必须 gate；resume 是按 input_hash 和 definition_hash 复用；Deep Research 新 workflow 路径还应按 gated rollout 表达，不要讲成默认生产打开。</p>
+    </aside>
+  </section>
+
+  <section class="slide dark-section" data-title="Trust Boundary">
+    <p class="kicker">enterprise trust boundary</p>
+    <h2 class="h2">Hive 的治理不是 prompt 免责声明；它在工具执行、数据库会话和审计对象上 fail-closed。</h2>
+    <div class="trust-map mt-l">
+      <div class="center-node">ToolRuntimeService.execute()<small>single side-effect gate</small></div>
+      <div class="node n1"><b>Tenant / RLS</b><span>PostgreSQL RLS + explicit tenant context</span></div>
+      <div class="node n2"><b>Capability policy</b><span>agent policy, tenant defaults, approval escalation</span></div>
+      <div class="node n3"><b>Action preflight</b><span>external-visible, sensitive, irreversible</span></div>
+      <div class="node n4"><b>Checkpoint</b><span>human-in-the-loop metadata</span></div>
+      <div class="node n5"><b>Audit + decision trace</b><span>why acted, asked, refused, escalated</span></div>
+      <div class="node n6"><b>Secrets boundary</b><span>encrypted provider/channel credentials</span></div>
+    </div>
+    <div class="deck-footer"><span class="mono">source: tools/governance.py · action_preflight.py · capability_gate.py</span><span class="slide-number" data-current="10" data-total="14"></span></div>
+    <aside class="notes">
+      <p>这页是企业客户或投资人最关心的 trust story。你可以直接说：<strong>Hive 的治理不是在 prompt 里写“请你小心点”</strong>，而是在工具执行、数据库会话和审计对象上做 fail-closed。</p>
+      <p>中间这个 ToolRuntimeService.execute 是所有副作用的单入口。周围六个边界分别是 tenant/RLS、capability policy、action preflight、checkpoint、audit decision trace、secrets boundary。</p>
+      <p>讲的时候可以举例：如果 agent 要发外部消息、读敏感资源、执行不可逆动作，它不是靠模型自己判断，而是会被 preflight 和 capability gate 拦住，必要时生成 checkpoint 等人确认。这就是 Hive 和普通 agent 框架的区别。</p>
+    </aside>
+  </section>
+
+  <section class="slide" data-title="Product Surface">
+    <p class="kicker">product proof surface</p>
+    <h2 class="h2">这不是库，而是带 UI、渠道、办公和扩展治理的多 agent 平台。</h2>
+    <div class="surface-grid mt-l">
+      <div><h4>App</h4><p>Agent Detail<br>Agent Circle<br>Messages / Chat</p></div>
+      <div><h4>Company Admin</h4><p>users / org<br>models / memory<br>tools / quotas / audit</p></div>
+      <div><h4>Platform Admin</h4><p>companies<br>system config<br>operator controls</p></div>
+    </div>
+    <div class="integration-band">
+      <p><b>Channels</b><span>Feishu / Lark · Slack · DingTalk · WeCom · WeChat Personal · Teams · Telegram · Email</span></p>
+      <p><b>Extensions</b><span>Skills · MCP servers · Office document tools · subagents · workflows · deep research tools</span></p>
+    </div>
+    <div class="deck-footer"><span class="mono">source: README.md Product surfaces / Channels / Extension model</span><span class="slide-number" data-current="11" data-total="14"></span></div>
+    <aside class="notes">
+      <p>这一页把产品面补上。前面讲了很多 runtime 和治理，但路演时也要让对方知道：<strong>Hive 已经不是一个只有后端的 agent 框架</strong>，它有完整的产品 surface。</p>
+      <p>左边是日常使用的 App：Agent Detail、Agent Circle、Messages 和 Chat。中间是 Company Admin：组织用户、模型配置、记忆、工具、配额、审计。右边是 Platform Admin：公司和平台运营配置。</p>
+      <p>下面这条 integration band 说明 agent 可以活在真实工作环境里：飞书、Slack、钉钉、企业微信、个人微信桥、Teams、Telegram、Email；扩展面是 Skills、MCP、Office、subagents、workflow、deep research。讲完这一页，对方应该明白 Hive 是平台产品，不是 SDK。</p>
+    </aside>
+  </section>
+
+  <section class="slide" data-title="Deep Research">
+    <p class="kicker">deep research + subagents</p>
+    <h2 class="h2">Deep Research 是复杂 agent 工作的压力测试：fanout、证据、合成、质量门都要进统一 runtime。</h2>
+    <div class="three-col mt-l">
+      <div class="edge-blue"><h4>当前可见能力</h4><ul><li>deep_research_start/check/export</li><li>spawn_subagent</li><li>Work Ledger events</li><li>source / artifact contracts</li></ul></div>
+      <div class="edge-red"><h4>已识别风险</h4><ul><li>worker context 污染</li><li>final writer 拼接感</li><li>busy-poll / duplicated export</li><li>新 workflow path 默认 gated</li></ul></div>
+      <div class="edge-green"><h4>合流路径</h4><ul><li>Leaf Preset Registry</li><li>governed subagent leaves</li><li>workflow journal + artifacts</li><li>critic + report composer</li></ul></div>
+    </div>
+    <div class="warning-line">路演表达边界：可以讲“Deep Research 是统一 runtime 的高价值试点”，不要讲成“新 workflow 路径已经默认生产打开”。</div>
+    <div class="deck-footer"><span class="mono">source: deep-research-workflow-unification.md · tools/handlers/deep_research.py</span><span class="slide-number" data-current="12" data-total="14"></span></div>
+    <aside class="notes">
+      <p>这一页要讲得诚实。Deep Research 是 Hive 复杂 agent 工作的压力测试，因为它同时需要 planner、worker fanout、source ledger、synthesis、critic 和 artifact composer。</p>
+      <p>左边是当前可见能力：deep_research 工具、spawn_subagent、Work Ledger events 和 source/artifact contract。中间是我们已经识别出来的风险，比如 worker context 污染、final writer 像拼接、busy-poll、duplicated export。</p>
+      <p>右边是合流路线：把旧 Deep Research 执行链迁到 Leaf Preset Registry 和 workflow runtime，叶子执行过 governed subagent，journal 和 artifact refs 统一。最后一句提醒很重要：现场可以讲这是高价值试点和架构方向，但不要说 gated path 已经默认生产打开。</p>
+    </aside>
+  </section>
+
+  <section class="slide dark-section" data-title="Evidence">
+    <p class="kicker">current engineering evidence</p>
+    <h2 class="h2">当前 checkout 已经是完整平台体量，<br>不是原型 prompt demo。</h2>
+    <div class="bar-board mt-l">
+      <div style="--v:61"><span>API routers</span><b>61</b></div>
+      <div style="--v:41"><span>Models</span><b>41</b></div>
+      <div style="--v:158"><span>Services</span><b>158</b></div>
+      <div style="--v:64"><span>Migrations</span><b>64</b></div>
+      <div style="--v:30"><span>Frontend API domains</span><b>30</b></div>
+      <div style="--v:107"><span>@tool decorators</span><b>107</b></div>
+    </div>
+    <div class="stack-card"><b>Stack</b><p>FastAPI / Python 3.12<br>React 19 / TypeScript 5<br>PostgreSQL 15 + Redis 7<br>Docker / Railway<br>14+ LLM providers</p><small>backend 1.7.0 / frontend 1.7.0</small></div>
+    <div class="deck-footer"><span class="mono">source: live repo scan on 2026-06-05</span><span class="slide-number" data-current="13" data-total="14"></span></div>
+    <aside class="notes">
+      <p>这页是硬证据页。建议你在路演里停一下，不要讲太快。它的作用是让对方知道 Hive 不是一个 demo repo，而是已经有相当工程体量的平台。</p>
+      <p>这些数字来自今天当前 checkout：61 个 API router、41 个 model、158 个 service、64 个 migration、30 个前端 API domain adapter、107 个 @tool 注册点。右边是技术栈：FastAPI、React、PostgreSQL、Redis、Docker/Railway，以及多模型 provider。</p>
+      <p>讲法上可以补一句：这些数字不是为了炫规模，而是证明平台问题本身足够复杂，Hive 已经在身份、记忆、治理、工具、渠道、办公和 workflow 上形成了真实系统，而不是单点 prompt 技巧。</p>
+    </aside>
+  </section>
+
+  <section class="slide" data-title="Close">
+    <p class="kicker">roadshow close</p>
+    <h2 class="h2">明天现场要讲清楚：Hive 的价值在 runtime + governance，而不是又一个 agent UI。</h2>
+    <div class="close-grid mt-l">
+      <div><h4>建议演示顺序</h4><ol><li>HR Agent 对话创建数字员工，展示 soul.md 与 workspace</li><li>Web chat durable run：刷新页面不取消执行</li><li>Memory Control Plane：动态记忆 + 敏感写入 gate</li><li>Plan Mode / Workflow preview：高风险动作需要确认</li><li>Office / Feishu / MCP：生产工作入口而非玩具聊天</li></ol></div>
+      <div><h4>90 天技术路线</h4><ol><li><b>Self-evolution benchmark</b><span>把 Hermes 体感优势转成可重复 eval</span></li><li><b>Workflow v1 hardening</b><span>registered / ephemeral 全链路收口</span></li><li><b>Deep Research unification</b><span>旧 DR 执行链迁到统一 workflow runtime</span></li><li><b>Enterprise pilot boundary</b><span>RLS、审计、审批、预算、channel credentials 做试点验收</span></li></ol></div>
+    </div>
+    <p class="ask">Ask: 技术合作 / 试点 / 融资支持，把 Hive 做成企业数字员工基础设施。</p>
+    <div class="deck-footer"><span class="mono">source: synthesized from current repo + roadmap docs</span><span class="slide-number" data-current="14" data-total="14"></span></div>
+    <aside class="notes">
+      <p>收尾页不要再加新概念，回到一句话：<strong>Hive 的价值在 runtime 加 governance，不是又一个 agent UI</strong>。</p>
+      <p>如果明天有现场 demo，建议顺序按左边来。先用 HR Agent 创建数字员工，让对方看到 soul.md 和 workspace；再展示 durable web chat；然后讲 Memory Control Plane；接着展示 Plan Mode 或 Workflow preview；最后用 Office、飞书或 MCP 证明这是生产工作入口。</p>
+      <p>右边是 90 天路线：self-evolution benchmark、Workflow v1 hardening、Deep Research unification、Enterprise pilot boundary。最后的 ask 可以根据对象调整：如果是投资人，就讲融资和试点；如果是技术伙伴，就讲合作和 pilot。结束时把问题抛出去：我们要找能一起把企业数字员工基础设施做实的人。</p>
+    </aside>
+  </section>
+
+</div>
+
+<div class="key-hint">S 演讲者视图 · T 切换主题 · ← → 翻页 · F 全屏 · O 总览 · R 重置计时</div>
+<script src="assets/runtime.js"></script>
+</body>
+</html>

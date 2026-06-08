@@ -261,6 +261,7 @@ def trusted_decline_metadata(
         "title": (decision.title or content)[:120],
     }
 
+
 #: §9.0 — the only cutover exemption marker honoured by the backstop layer. A
 #: pre-existing enabled trigger may be grandfathered in compatibility mode by
 #: tagging its artifact with this reason; anything else still needs a plan.
@@ -282,6 +283,7 @@ def stamp_user_declined_plan_exemption(config: dict | None) -> dict:
     metadata["plan_exempt_reason"] = PLAN_EXEMPT_USER_DECLINED
     stamped["metadata"] = metadata
     return stamped
+
 
 #: §7 — every status a PlanRequest can hold.
 PLAN_STATUSES: tuple[str, ...] = (
@@ -444,6 +446,10 @@ def build_plan_skeleton(*, intent_type: str, title: str, original_request: str) 
         "intent_type": intent_type,
         "objective": "",
         "motivation": original_request,
+        # The agent-authored plan body (CC parity: the plan IS a markdown article,
+        # not a field form). Empty for machine-intercepted plans, which fall back
+        # to the structured render. Carried in plan_json so it is hash-covered.
+        "plan_markdown": "",
         "steps": [],
         "success_criteria": [],
         "wake_policy": wake_policy,
@@ -767,7 +773,9 @@ def _normalize_risk_assessment(value: object) -> object:
 
     original_text = str(original_level or "").strip()
     if original_text and original_text.lower() not in _RISK_LEVELS:
-        reasons.insert(0, f"Planner supplied non-standard risk level {original_text!r}; normalized to {normalized_level}.")
+        reasons.insert(
+            0, f"Planner supplied non-standard risk level {original_text!r}; normalized to {normalized_level}."
+        )
     risk["reasons"] = reasons
     return risk
 
@@ -828,6 +836,42 @@ def validate_plan_json(plan_json: dict) -> list[str]:
     return errors
 
 
+# Plan Mode meta-steps: steps describing the *planning ritual* (submitting the
+# plan card, calling exit_plan_mode, waiting for confirmation) or explicit
+# non-execution placeholders. ``steps`` must list only the real execution work
+# the user is confirming — meta-steps are the canonical 偏离 the CC alignment
+# targets (e.g. a step "本步不实施 / 提交计划卡片"). Markers are specific phrases
+# to avoid false positives on legitimate steps like "等待数据源返回".
+_META_STEP_MARKERS: tuple[str, ...] = (
+    "exit_plan_mode",
+    "exit plan mode",
+    "提交计划",
+    "提交本计划",
+    "提交该计划",
+    "提交计划卡片",
+    "等待用户确认",
+    "等待确认",
+    "wait for confirmation",
+    "wait for user confirmation",
+    "await confirmation",
+    "await user confirmation",
+    "submit the plan",
+    "submit this plan",
+    "present the plan",
+    "本步不实施",
+    "本步骤不实施",
+    "this step does not implement",
+    "no-op step",
+)
+
+
+def _step_is_meta(description: str) -> bool:
+    text = description.strip().lower()
+    if not text:
+        return False
+    return any(marker in text for marker in _META_STEP_MARKERS)
+
+
 def _validate_steps(steps: object, errors: list[str]) -> None:
     if steps is None:
         return
@@ -842,8 +886,15 @@ def _validate_steps(steps: object, errors: list[str]) -> None:
             errors.append(f"steps[{index}] missing 'order'")
         elif not isinstance(step.get("order"), int):
             errors.append(f"steps[{index}].order must be an integer")
-        if not str(step.get("description") or "").strip():
+        description = str(step.get("description") or "").strip()
+        if not description:
             errors.append(f"steps[{index}].description must be a non-empty string")
+        elif _step_is_meta(description):
+            errors.append(
+                f"steps[{index}] is a Plan Mode meta-step ({description!r}); "
+                "list only the real execution steps the user is confirming, "
+                "not the planning ritual (submitting/awaiting the plan card)"
+            )
 
 
 def _validate_str_list(value: object, field: str, errors: list[str]) -> None:
@@ -1296,7 +1347,9 @@ def render_plan_markdown(
     """Render the user-facing ``plans/{plan_id}.md`` artifact (§6.2).
 
     The leading frontmatter block mirrors the canonical DB fields (it never
-    *replaces* the DB). The body is a human-readable summary of ``plan_json``.
+    *replaces* the DB). The body is the agent-authored ``plan_markdown`` article
+    when present (CC parity: the plan IS a markdown document); machine-intercepted
+    plans with no article fall back to a structured summary of ``plan_json``.
     """
     frontmatter_lines = [
         "---",
@@ -1313,6 +1366,13 @@ def render_plan_markdown(
         f"confirmed_at: {_yaml_scalar(confirmed_at)}",
         "---",
     ]
+
+    # Agent-authored body wins (the plan is an article, not a field dump). The
+    # structured fields remain in plan_json (hash-covered, folded in the UI), so
+    # we don't re-stitch them here when the agent already wrote the plan.
+    authored = str(plan_json.get("plan_markdown") or "").strip()
+    if authored:
+        return "\n".join([*frontmatter_lines, "", authored, ""])
 
     body_lines = [
         "",

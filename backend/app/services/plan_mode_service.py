@@ -334,8 +334,11 @@ class PlanModeService:
                 await db.rollback()
                 raise
 
+        # Provenance: the plan is authored by the agent in main-loop Plan Mode
+        # (exit_plan_mode structured fill). The isolated RPC "workflow" planner was
+        # removed in cut ④, so "workflow" was a stale mislabel — this is "agent".
         planner_metadata = {
-            "author_type": "workflow",
+            "author_type": "agent",
             "planner_prompt_version": "structured_fill.v1",
         }
 

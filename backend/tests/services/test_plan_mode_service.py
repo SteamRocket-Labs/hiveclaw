@@ -206,8 +206,10 @@ async def test_generate_plan_produces_awaiting_confirmation_with_hash_and_markdo
     assert updated.plan_hash and updated.plan_hash.startswith("sha256:")
     assert updated.plan_json["objective"] == "Produce a useful daily industry brief."
     assert updated.plan_json["wake_policy"]["expr"] == "0 9 * * 1-5"
-    # Structured-fill landing provenance (single path post-cut ④).
-    assert updated.metadata_json["author_type"] == "workflow"
+    # Structured-fill landing provenance (single path post-cut ④): the plan is
+    # authored by the agent in main-loop Plan Mode — NOT the removed RPC "workflow"
+    # planner. The stale "workflow" mislabel was the canonical provenance bug.
+    assert updated.metadata_json["author_type"] == "agent"
     assert updated.metadata_json["planner_prompt_version"] == "structured_fill.v1"
     assert updated.plan_json["required_capabilities"] == ["Web 来源核验"]
     # No RPC planner ran → no planner work-ledger artifact is created.
@@ -648,7 +650,8 @@ async def test_ensure_awaiting_plan_from_fill_creates_and_dedupes_custom_long_ta
     assert first.plan_json["deep_research"]["output_format"] == "docx"
     assert first.metadata_json["intercept_signature"] == signature
     assert first.metadata_json["deep_research_plan"] is True
-    assert first.metadata_json["author_type"] == "workflow"
+    # Agent-authored via main-loop Plan Mode — not the removed RPC "workflow" planner.
+    assert first.metadata_json["author_type"] == "agent"
     assert first.metadata_json["planner_prompt_version"] == "structured_fill.v1"
     assert str(second.id) == str(first.id)
     assert len(session.rows) == rows_after_first

@@ -1,76 +1,78 @@
-# Plan Mode CC Alignment
+# Plan Mode CC/Codex Alignment — 一次性闭环方案
 
-> 状态: **v0.2 文档优先修订（2026-06-08）——待实现**。
-> 触发: Web3 研究员 RWA 周报生产实跑暴露出 plan "用不了"：它像结构化审批表，不像 agent 认真规划后的方案。
-> 范围: Hive runtime 的 Plan Mode 语义、澄清机制、`exit_plan_mode` contract、PlanCard 展示、Plan Mode prompt。本文不动 read-only gate、plan hash、confirmation、audit、handoff 这些治理硬边界。
+> 状态: **v1.0 文档优先闭环方案（2026-06-08）— 待实现**。
+>
+> 触发: Web3 研究员生产对话暴露两个同源问题：
+>
+> 1. Plan 看起来像字段堆砌，不像 agent 真正规划后的方案。
+> 2. 用户确认后没有在当前对话继续执行，反而走到 `long_task` handoff；生产中该 target 没有 handler，最终 `handoff_status=skipped`，agent 又错误地说还没确认。
+>
+> 本文目标: 一次性修掉 Plan Mode 的**规划质量、确认语义、执行续跑、UI 状态、异步边界、测试验收**。不能只补 prompt，不能只注册一个 `long_task` handler，也不能只修 PlanCard。
 
-## 0. 结论
+---
 
-Hive 应该继承 Claude Code Plan Mode 的**机制**，不继承 Claude Code 的**coding-only 产品范围**。
+## 0. 总结论
 
-要继承的机制:
+Hive 要对齐的是 Claude Code / Codex 的 **Plan Mode 运行语义**，不是它们的 coding-only 产品范围。
 
-- Agent 的规划由主循环智能产出，作为给人读的方案，而不是被填表式 schema 拖成结构化拼接。（注：RPC planner 已删，plan 当前**已经**由 agent 在主循环 `exit_plan_mode` authored——真问题不是"系统代写"，而是 schema 形态诱导填表，见 §1/§3 P0。）
-- Plan 主体是一篇用户可读的 markdown 工作方案，而不是 13 个字段拼出来的表。
-- 有关键未决问题时，agent 必须先问用户；问题解决前不应提交可确认计划。
-- `exit_plan_mode` 是审批出口，不是规划能力本身。
-- read-only 约束的是执行副作用，不应剥夺 agent 澄清需求、组织思路、维护私有 planning state 的能力。
-
-不应继承的范围:
-
-- Claude Code 说 `ExitPlanMode` 只用于需要写代码的 implementation steps，这是 Claude Code 作为 coding agent 的产品边界，不是 Hive 的设计法律。
-- Hive 是综合 co-work/control-plane 平台。Plan Mode 可用于 coding、研究、内容、运营、销售、财务、自动化、协作委派等任务。
-- Hive 的触发标准不是"是否写代码"，而是"是否需要先对齐计划/授权边界后再执行"。
-
-## 1. 生产实证
-
-用户请求:
+一次性闭环后的核心语义：
 
 ```text
-我需要做一个rwa的周报 进入计划模式计划一下
+当前会话中触发 Plan Mode
+  -> agent 在当前会话主循环里只读探索、澄清、形成观点
+  -> agent 输出以 plan_markdown 为主体的可确认计划
+  -> 用户确认 exact plan_version + plan_hash
+  -> 默认在同一个 chat session 继续执行并流式输出结果
+  -> 只有用户明确要求后台/离线/定时/委派/无人值守时，才进入 detached handoff
 ```
 
-生产侧事实:
+关键判断：
 
-- Agent: `ec03ec3e-c4e8-417d-95f7-f84215e7b9c3`（Web3研究员）
-- Session: `d02cd199-37e0-4a9b-b6d1-3b0ef81b5962`
-- Plan: `2d416566-58eb-4b40-a0d6-86d6497cf128`
-- Plan status: `awaiting_confirmation`
-- Plan metadata: `author_type="workflow"`, `planner_prompt_version="structured_fill.v1"`
-- Matching `agent_work_ledgers`: `0`
+- Plan Mode 不是表单生成器。runtime 可以持久化、hash、审计、拦截和确认，但 substantive plan 必须是 agent-authored。
+- `agent_plan_requests` 仍是治理账本；PlanCard 是确认界面；Work Ledger 是 agent 执行认知状态。三者不能混用。
+- Web Chat 本身已经是 durable async run，所以“异步能力”不等于“后台 detached task”。默认应保持 current-session continuation。
+- `long_task` 不能再作为 live chat Plan Mode 的默认 target。它要么被显式重命名为 `detached_runtime_task`，要么只作为 backward-compatible alias，且必须有 handler 和用户可见 task id。
 
-对话链路:
+---
 
-1. Agent 先用只读工具读了 `list_objectives`、`list_triggers`、`focus.md`。
-2. Agent 识别出 4 个真正应该先问用户的问题：范围、周期、重点赛道、数据深度。
-3. Agent 尝试调用 `send_channel_message` 澄清。
-4. Runtime 返回 `plan_mode_readonly_violation`。
-5. Agent 被迫把问题转成 `assumptions/open_questions`，然后调用 `exit_plan_mode`。
-6. 最终 PlanCard 出现"（执行阶段，本步不实施）"、`wake_policy=none`、`estimated_cost=unknown` 等字段。
+## 1. 源码基线：Claude Code / Codex 真实语义
 
-这证明问题不是"没有进 Plan Mode"，而是 Plan Mode 的交互和输出契约把 agent 推向了结构化填表。
+### 1.1 Claude Code
 
-**关于 `author_type="workflow"` 的澄清（源码核实）**：这是个**误导性标签**，不代表 plan 被 workflow 代写。`plan_mode_service.py:290-312` 注释明确——RPC planner（DefaultAgentPlanPlanner）已删，plan 实为 **agent 在主循环 `exit_plan_mode` authored**，`generate_plan` 只做 schema 落地/校验/hash；`author_type="workflow"` 是这个落地路径留下的烂标签。所以 P0 根因是 **exit_plan_mode 的 13 字段 schema 诱导 agent 填表**，不是"系统代写"；provenance 标签应改为 `agent_authored`（见 §7）。
+源码位置：`/Users/rocky243/Context Engineering/claude-code-org`
 
-## 2. Claude Code 对照
-
-Claude Code 的 Plan Mode 有三类机制值得借鉴:
-
-| 机制 | CC 形态 | Hive 应继承什么 |
+| 事实 | 源码锚点 | 结论 |
 |---|---|---|
-| 主循环规划 | agent 在同一对话/工具循环里探索和规划 | planning 必须由 agent 的主循环智能完成 |
-| 澄清问题 | `AskUserQuestionTool` 可在 plan mode 中问用户 | Hive 需要 first-class `ask_user_question`，不能靠 blocked messaging tool |
-| 审批出口 | `ExitPlanMode` 发起审批，不负责思考本身 | `exit_plan_mode` 只提交已经形成的计划和治理摘要 |
-| Plan 主体 | plan 写在文件/markdown 中 | Hive 第一屏应以 `plan_markdown` 为主体 |
-| 反模式 | 不用 AskUserQuestion 问"这个计划行不行" | approval 仍只能走 `exit_plan_mode` |
+| `/plan` 把当前 session 权限切到 `plan` | `src/commands/plan/plan.tsx:72-82` | Plan Mode 是当前会话的 runtime mode，不是后台任务 |
+| EnterPlanMode 要求探索、理解架构、比较方案、必要时问用户 | `src/tools/EnterPlanModeTool/prompt.ts:4-12`, `:108-124` | 计划质量来自 agent 主循环判断，不是 schema 拼装 |
+| ExitPlanMode 是用户确认出口 | `src/tools/ExitPlanModeTool/ExitPlanModeV2Tool.ts:147-193` | 审批出口和规划能力分离 |
+| 用户批准后，tool result 明确告诉模型可以开始执行 | `src/tools/ExitPlanModeTool/ExitPlanModeV2Tool.ts:481-489` | 默认语义是批准后继续执行 |
+| clear-context/fresh query 是选项，不是默认 | `src/components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.tsx:332-395`, `:425-452` | detached/fresh context 是可选执行形态 |
 
-Claude Code 的 coding-only 限制只说明它自己的任务域，不是 Hive 的触发标准。Hive 的 Plan Mode 是 domain-neutral planning and authorization phase。
+Claude Code 的 coding-only 限制不适合照搬到 Hive。Hive 是 co-work/control-plane 平台，Plan Mode 应覆盖研究、报告、运营、销售、财务、自动化、委派和代码任务。
 
-## 3. 当前偏差
+### 1.2 Codex
 
-### P0: 计划不像计划，而像结构化拼接
+源码位置：`/Users/rocky243/Context Engineering/codex/codex-rs`
 
-当前 `exit_plan_mode` 要求 agent 一次性提供:
+| 事实 | 源码锚点 | 结论 |
+|---|---|---|
+| Plan Mode 是 conversational collaboration mode | `collaboration-mode-templates/templates/plan.md:1-15` | 规划应在对话中逐步形成 |
+| Plan 必须 decision complete | `collaboration-mode-templates/templates/plan.md:1-4`, `:92-128` | 计划要让执行者无需再做关键决策 |
+| Plan Mode 允许非突变探索、禁止执行性突变 | `collaboration-mode-templates/templates/plan.md:17-40` | read-only 是副作用边界，不是思考能力降级 |
+| `request_user_input` 是 Plan Mode 澄清工具 | `core/src/tools/handlers/request_user_input.rs:54-75` | 澄清是 Plan Mode 一等能力 |
+| `update_plan` 是执行 TODO 工具，Plan Mode 中反而禁用 | `core/src/tools/handlers/plan.rs:79-82` | TODO/checklist 不等于 Plan Mode plan |
+| 确认后默认切回 Default 并执行；fresh context 是可选项 | `tui/src/chatwidget/plan_implementation.rs:9-18`, `:33-64`, `:77-104` | 默认 continuation，非默认 detached |
+
+Codex 对 Hive 的启示更直接：`<proposed_plan>` 是模型输出的正式计划，UI 特殊渲染它；`update_plan` 只是后续执行中的进度清单。
+
+---
+
+## 2. Hive 当前断点（源码核实）
+
+### 2.1 计划质量断点
+
+当前 `exit_plan_mode` 要求 agent 一次性填：
 
 ```text
 title / objective / plan_markdown / steps / success_criteria /
@@ -78,272 +80,469 @@ stop_conditions / assumptions / open_questions / risk_assessment /
 estimated_cost / wake_policy / handoff_target / handoff_payload
 ```
 
-这会把模型注意力从"想清楚怎么做"转移到"把字段填完整"。结果是:
+源码：`backend/app/tools/handlers/plan_mode.py:119-148`, `:178-195`。
+
+这会诱导模型把注意力放在“字段完整”而不是“方案有观点”。结果就是：
 
 - `plan_markdown` 沦为字段之一，而不是计划主体。
-- `steps` 混入 Plan Mode 自身的元步骤，例如"提交 Plan Mode 卡片"。
-- `open_questions` 变成免责清单，而不是真正暂停执行的问题。
-- `estimated_cost=unknown`、`wake_policy=none` 这种系统空值被展示成用户内容。
+- `steps` 混入 Plan Mode 自身元步骤，例如“提交计划卡片”。
+- `open_questions` 变成免责清单，而不是阻断确认的澄清问题。
+- `estimated_cost=unknown`、`wake_policy=none` 这类 plumbing 被展示成计划内容。
 
-目标改法:
+### 2.2 执行语义断点
 
-- Agent 首先写一篇用户可读的 `plan_markdown`。
-- 结构化字段是系统治理层从计划中抽取/校验/补全的结果，不是 agent 的主要写作目标。
-- `steps` 只能描述用户确认后真正要执行的步骤。
-- 如果存在 blocking open question，不能进入 `awaiting_confirmation`。
+当前 live Web Chat 的 Plan Mode 默认 target：
 
-### P1: 缺少 first-class ask-user 工具
-
-Plan Mode 需要一个明确的交互出口:
-
-```text
-ask_user_question
+```python
+if is_deep_research:
+    handoff_target = "deep_research"
+elif decision.action_kind == "create_enabled_trigger":
+    handoff_target = "objective_trigger"
+else:
+    handoff_target = "long_task"
 ```
 
-它不是普通外发消息，也不是 approval。它的语义是:
+源码：`backend/app/services/web_chat_runtime.py:396-402`。
 
-- 只向当前用户/当前会话提问。
-- 不产生外部副作用。
-- 可在 Plan Mode read-only 状态下调用。
-- 调用后 PlanRequest/RuntimeTask 进入 `awaiting_user_clarification`。
-- 用户回答后恢复同一个 Plan Mode state，继续规划。
+但 handoff registry 只注册：
 
-限制:
-
-- 不允许用它问"这个计划可以吗"。
-- 不允许绕过 `exit_plan_mode` 进行审批。
-- 不允许把问题发给外部联系人或其他 channel recipient。
-
-### P2: Prompt 不能再往 coding 方向引导
-
-Hive 是综合 co-work 平台，不是 coding-only assistant。Plan Mode prompt 应避免这些倾向:
-
-- 不把 implementation 默认理解成代码实现。
-- 不把 tests/CI/deploy 当成每类任务都必须有的计划结构。
-- 不把 research/content 类任务降级为"不该 Plan Mode"。
-- 不用 repository/files/code 作为默认语境。
-
-通用 Plan Mode 应覆盖:
-
-- 调研报告、周报、财务分析、运营活动、客户沟通、招聘流程、销售计划、数据分析、文档生产、代码修改、自动化触发器、agent 委派等。
-
-触发标准应是:
-
-- 用户显式要求先计划。
-- 工作多步骤、长耗时、多来源或高成本。
-- 输出格式、受众、范围、数据源、频率、交付方式存在关键不确定性。
-- 会产生外部可见动作、长期自动化、文件交付、委派、预算消耗或不可逆/敏感动作。
-- 需要用户确认边界后才能安全执行。
-
-### P3: PlanCard 暴露 plumbing
-
-`wake_policy`、`handoff_target`、`handoff_payload`、`risk_assessment`、`estimated_cost` 是 Hive 控制中台的合理治理数据，但不应平铺成第一屏内容。
-
-PlanCard 第一屏应该是:
-
-1. 标题。
-2. `plan_markdown` 主体。
-3. 用户需要确认/回答的关键事项。
-4. 主要动作: 确认、要求修改、拒绝、回答问题。
-
-高级/审计区域才显示:
-
-- 风险等级。
-- 外部副作用。
-- 成本/时间估计。
-- stop conditions。
-- wake policy。
-- handoff target。
-- plan hash / version。
-
-空值不展示:
-
-- `none`
-- `unknown`
-- empty arrays
-- empty payloads
-
-### P4: Work Ledger 缺席导致过程不可见
-
-生产实跑里 session work-ledger API 返回 404，DB 也没有 matching ledger。结果是用户只能看到最终 PlanCard，看不到 agent 如何拆解、验证、取舍。
-
-Plan Mode 需要 private planning ledger，但它不能替代 PlanCard:
-
-- Work Ledger = agent 的私有规划/执行认知状态。
-- PlanCard = 用户确认的治理合同。
-
-Plan Mode 期间至少应允许:
-
-```text
-track_todo
-record_finding
-read_ledger
+```python
+objective_trigger
+deep_research
+delegation
 ```
 
-这些工具仍是 read-only planning aids，不启动执行。
+源码：`backend/app/services/plan_mode_registry.py:22-26`。
 
-## 4. 目标语义
-
-Plan Mode 是 Hive 的 domain-neutral co-work planning phase:
-
-```text
-User asks for work that needs planning/authorization
-  -> Plan Mode active
-  -> agent explores read-only context
-  -> agent asks blocking questions if needed
-  -> agent writes substantive plan_markdown
-  -> runtime extracts/checks governance fields
-  -> exit_plan_mode submits confirmable plan
-  -> user confirms exact version/hash
-  -> only then handoff/execution starts
-```
-
-关键不变量:
-
-- Agent 负责 substantive plan。
-- Runtime 负责 classification、read-only constraints、persistence、hash、confirmation、audit、handoff。
-- 用户确认的是计划边界，不是系统字段表。
-- 有 blocking question 时不允许确认。
-- Plan Mode 不按 coding/research 分类；按规划和授权需求分类。
-
-## 5. 新 prompt 草案
-
-这段应替换当前 Plan Mode reminder/launcher 中偏 coding 或偏填表的语义:
-
-```text
-Plan Mode is active. The user has not approved execution.
-
-Do not perform the requested work yet. Do not create or enable automations,
-write deliverable files, send external messages, delegate work, modify memory,
-or trigger long-running execution. Use only read-only context tools and planning
-tools.
-
-Your job is to produce a useful, domain-appropriate work plan for the requested
-outcome. This may be coding, research, writing, analysis, operations, sales,
-finance, recruiting, customer communication, automation, or any other co-work
-task. Do not assume the task is a software implementation unless the user's
-request actually says so.
-
-First understand the user's real outcome, constraints, audience, delivery
-format, risks, cost, timing, and external side effects. Inspect current state
-only when it matters for the plan.
-
-If a missing decision materially changes scope, risk, cost, recipient, cadence,
-data source, deliverable format, or irreversible behavior, ask the user a brief
-clarifying question with ask_user_question. Do not submit a confirmable plan
-while a blocking question is unresolved.
-
-When the plan is ready, write plan_markdown as the main user-facing plan. It
-should explain the approach, sequencing, tradeoffs, verification, stopping
-conditions, and what will happen after approval in natural user language.
-
-Then call exit_plan_mode. exit_plan_mode is the approval request. Do not use
-ask_user_question or prose to ask "is this plan OK?"
-```
-
-## 6. `ask_user_question` contract
-
-Minimal schema:
+没有 handler 时，`PlanModeService` 会写：
 
 ```json
-{
-  "question": "string",
-  "reason": "string",
-  "options": [
-    {"label": "string", "description": "string"}
-  ],
-  "allow_free_text": true,
-  "blocking": true
-}
+{"reason": "no_handler_registered", "target": "long_task"}
 ```
 
-Runtime behavior:
+源码：`backend/app/services/plan_mode_service.py:713-728`。
 
-- Allowed in Plan Mode read-only policy.
-- Persists the question in plan/session metadata.
-- Emits a chat-visible question card.
-- Pauses the current Plan Mode run.
-- Stores the user answer.
-- Resumes Plan Mode with the answer injected as confirmed user input.
+所以生产里的真实情况不是“已经后台跑了但用户看不到”，而是：
 
-Non-goals:
+```text
+用户确认成功
+  -> handoff target = long_task
+  -> no handler
+  -> handoff_status = skipped
+  -> 没有 RuntimeTask / task_id
+  -> agent 无法开始，还错误地说用户没确认
+```
 
-- It is not a general external messaging tool.
-- It is not an approval tool.
-- It does not confirm a plan.
+### 2.3 UI 状态断点
 
-## 7. `exit_plan_mode` contract changes
+`AgentChatSection` 有两种 PlanCard：
 
-Keep `exit_plan_mode` as the only approval exit, but change its expectations:
+- `InlinePlanCard` 会通过 `planApi.get(agentId, planId)` 拉真实 plan，并 10 秒 refetch。源码：`frontend/src/pages/agent-detail/AgentChatSection.tsx:120-146`。
+- `plan_needs_confirmation` 工具结果路径会合成一个 `PlanRequest`，硬编码 `status: 'awaiting_confirmation'`。源码：`frontend/src/pages/agent-detail/AgentChatSection.tsx:226-258`。
 
-Required:
+这会造成用户已确认后，旧卡片仍显示确认按钮；再次点击就会命中后端正确的 409：
 
-- `title`
-- `plan_markdown`
-- `execution_summary` or equivalent short summary
+```text
+plan in status 'confirmed' cannot be confirmed
+```
 
-Derived or secondary:
+源码：`backend/app/services/plan_mode_core.py:913-960`。
 
-- `steps`
-- `success_criteria`
-- `stop_conditions`
-- `risk_assessment`
-- `estimated_cost`
-- `wake_policy`
-- `handoff`
-- `assumptions`
+---
 
-Validation rules:
+## 3. 目标语义：Plan Mode 状态机
 
-- Reject if `plan_markdown` is missing or too thin.
-- Reject if `steps` include Plan Mode meta-work such as "submit plan card", "call exit_plan_mode", "in Plan Mode inspect context".
-- Reject or pause if blocking `open_questions` exist.
-- Do not render empty governance fields.
-- Metadata should mark real provenance as `agent_main_loop` / `agent_authored`, not `workflow`, when the plan came from the main agent loop.
+### 3.1 统一状态机
 
-## 8. Implementation Order
+```text
+planning
+  -> awaiting_user_clarification  # 有 blocking question
+  -> planning                     # 用户回答后恢复
+  -> awaiting_confirmation        # agent 提交 decision-complete plan
+  -> confirmed                    # 用户确认 exact version/hash
+  -> executing_current_session    # 默认 live chat continuation
+  -> completed | failed | cancelled
+```
 
-### Phase A: Document + prompt correction
+Detached / autonomous 分支：
 
-- Rewrite this document and related Plan Mode docs around domain-neutral co-work.
-- Remove coding-only framing from Plan Mode prompt.
-- Make "blocking question first, plan after" explicit.
+```text
+confirmed
+  -> handed_off_objective_trigger
+  -> handed_off_deep_research
+  -> handed_off_delegation
+  -> handed_off_detached_runtime_task
+```
 
-### Phase B: Ask-user tool
+不变量：
 
-- Add `ask_user_question`.
-- Add Plan Mode allowlist entry.
-- Add state transition for `awaiting_user_clarification`.
-- Resume Plan Mode from user answer.
+- `awaiting_confirmation` 前不能有 unresolved blocking questions。
+- `confirmed` 不代表执行已经开始；执行开始必须体现在 `handoff_status` 或 session run 状态。
+- live chat 默认 `executing_current_session`，不是 detached `long_task`。
+- detached handoff 必须返回用户可见的 `runtime_task_id` / `objective_id` / `deep_research_id` / `delegation_id`。
 
-### Phase C: Plan quality contract
+### 3.2 执行 target 枚举
 
-- Make `plan_markdown` the primary plan artifact.
-- Add `exit_plan_mode` validation for meta-steps and blocking questions.
-- Correct provenance metadata.
-- Allow planning ledger tools during Plan Mode.
+废弃当前模糊的 `long_task` 默认语义，改为清晰枚举：
 
-### Phase D: PlanCard surface
+| target | 何时使用 | 用户体验 |
+|---|---|---|
+| `continue_current_session` | live web chat / 当前对话里确认的普通工作、报告、研究、代码任务 | 当前对话继续流式执行并给结果 |
+| `deep_research` | 确认后确实要用 Deep Research engine | 当前会话显示启动、进度、结果；不是静默后台 |
+| `objective_trigger` | 确认后要创建/启用 objective、trigger、schedule | 当前会话显示已创建对象和后续唤醒策略 |
+| `delegation` | 确认后把工作交给另一个 agent | 当前会话显示 delegation id、接收方、回收方式 |
+| `detached_runtime_task` | 用户明确要求后台跑、离线跑、跑完通知我，或无人值守确认后执行 | 必须返回 task id、ledger、取消入口 |
 
-- Render `plan_markdown` first.
-- Hide empty plumbing fields.
-- Fold governance/audit fields into advanced details.
-- Show blocking questions as questions, not as confirmable assumptions.
+兼容策略：
 
-## 9. Acceptance Criteria
+- 读旧 plan 时如果 `handoff.target == "long_task"`：
+  - 有 `session_id` 且 source 是 live chat：视为 `continue_current_session`。
+  - 没有 live session 或用户明确后台：视为 `detached_runtime_task`。
+  - 无法判定：fail closed，显示“需要选择执行方式”，不 silent skipped。
+- 新 plan 不再写 `long_task`。
 
-- RWA 周报这类非 coding 任务可以进入 Plan Mode，但会先澄清关键范围/交付/数据深度问题，或产出真正可执行的研究计划。
-- Plan 第一屏读起来像 agent 写给用户的工作方案，而不是 schema 表。
-- `open_questions` 不再是免责清单；blocking questions 会暂停确认。
-- Plan Mode prompt 不默认 coding，不要求所有任务都出现 tests/CI/deploy。
-- `exit_plan_mode` 不再接受包含 Plan Mode 元步骤的 execution steps。
-- PlanCard 不展示 `none/unknown` 空 plumbing。
-- 用户确认后，执行者能直接从计划理解要做什么、为什么、怎么验收、何时停止。
+---
 
-## 10. North Star
+## 4. 一次性闭环改造方案
 
-Plan Mode 的价值不是"先弹一张确认卡"，而是:
+这不是分阶段上线的“先修一点”。可以按内部切口开发，但必须作为一个闭环 release 验收，不允许只发其中一半。
 
-> agent 在执行前认真理解、澄清、取舍、规划；系统只负责把这份计划变成可确认、可审计、可治理的执行边界。
+### 4.1 Backend：Plan 质量 contract
 
-Hive 相对 Claude Code 的 superset 不是更复杂的表单，而是更通用的 co-work runtime 加企业级治理。Plan Mode 必须服务这个定位。
+修改面：
+
+- `backend/app/services/plan_mode_system_run.py`
+- `backend/app/kernel/reminder_scheduler.py`
+- `backend/app/tools/handlers/plan_mode.py`
+- `backend/app/services/plan_mode_core.py`
+
+要求：
+
+1. Plan Mode prompt/domain 彻底 domain-neutral：
+   - 不默认 coding。
+   - 不默认 tests/CI/deploy。
+   - 研究、报告、运营、财务、销售、委派、自动化都按同一 Plan Mode 原则处理。
+
+2. `plan_markdown` 是计划主体：
+   - `exit_plan_mode` 仍可收 structured fields，但 prompt 明确先写 plan。
+   - `steps` 只能是确认后真正执行的步骤。
+   - 禁止“调用 exit_plan_mode / 提交计划卡片 / 等待确认”这类 meta-step。
+
+3. blocking question 不能进入确认：
+   - 新增或复用 `ask_user_question`/`request_user_input` 语义。
+   - `open_questions` 分成 `blocking_questions` 和 `non_blocking_assumptions`。
+   - 有 blocking question 时 PlanRequest 进入 `awaiting_user_clarification`，不显示确认按钮。
+
+4. provenance 修正：
+   - main-loop authored plan 标记 `author_type="agent_main_loop"` 或 `agent_authored`。
+   - 不再用误导性的 `author_type="workflow"` 表示 agent 写的 plan。
+
+### 4.2 Backend：current-session continuation handoff
+
+新增或改造：
+
+- `backend/app/services/plan_mode_registry.py`
+- `backend/app/services/plan_mode_service.py`
+- `backend/app/services/web_chat_runtime.py`
+- 建议新增：`backend/app/services/plan_mode_session_handoff.py`
+
+设计：
+
+```text
+confirm plan
+  -> handoff_confirmed_plan(plan_id)
+  -> target = continue_current_session
+  -> append a session-scoped user/system message:
+       "Implement the approved plan <plan_id>..."
+  -> call/start the existing durable web_chat_turn runtime
+  -> stream chunks/tool calls/done events to same session
+  -> set handoff_status=completed only after continuation run is created
+  -> handoff_payload.runtime_task_id = <web_chat_turn task id>
+```
+
+实现注意：
+
+- 复用 `start_web_chat_run(...)` 的 durable `RuntimeTask(task_type="web_chat_turn")` 机制；源码入口：`backend/app/services/web_chat_runtime.py:161-238`。
+- 不能把 continuation 写成普通用户自由输入，必须带 confirmed plan metadata：
+  - `approved_plan_id`
+  - `approved_plan_version`
+  - `approved_plan_hash`
+  - `approved_plan_markdown`
+  - `source="plan_mode_handoff"`
+- 如果当前 session 已有 active run：
+  - 不丢任务。
+  - 返回 `handoff_status="queued"` 或 fail with typed `active_run_exists`，前端显示“当前有运行中任务，计划已确认，待排队执行”。
+  - 不得显示“还没确认”。
+- 如果没有 `session_id`：
+  - 不能用 `continue_current_session`。
+  - 转入 `needs_execution_target` 或 fallback 到 `detached_runtime_task`，但必须用户可见。
+
+### 4.3 Backend：detached runtime task 只作为显式后台
+
+修改面：
+
+- `backend/app/services/web_chat_runtime.py`
+- `backend/app/services/plan_mode_core.py`
+- `backend/app/services/plan_mode_registry.py`
+- `backend/app/services/long_task_runtime.py`
+
+要求：
+
+- 用户说“后台跑、离线跑、跑完通知我、我先关闭页面也继续”等，才写 `handoff.target="detached_runtime_task"`。
+- 该 target 必须有 handler，创建 `RuntimeTask` 并初始化 Work Ledger。
+- handler 必须返回：
+  - `runtime_task_id`
+  - `work_ledger_path` 或 API ref
+  - cancellation endpoint/ref
+  - delivery channel / completion notification policy
+- 旧 `long_task` target 只能作为兼容 alias，不能作为新 plan 默认值。
+
+### 4.4 Backend：Deep Research 不是“绕过当前对话”
+
+Deep Research 可以是执行 engine，但不能破坏用户体验：
+
+```text
+confirmed plan target = deep_research
+  -> start deep_research engine
+  -> same session emits progress/status
+  -> result artifact appears in same chat
+  -> if delivery file is produced, same chat reports attachment/ref
+```
+
+也就是说，Deep Research 可以异步实现，但不能让用户感觉“当前对话断了，任务消失到后台”。
+
+### 4.5 Frontend：PlanCard 全部读真实状态
+
+修改面：
+
+- `frontend/src/pages/agent-detail/AgentChatSection.tsx`
+- `frontend/src/pages/agent-detail/PlanCard.tsx`
+- `frontend/src/api/domains/plans.ts`
+
+要求：
+
+- 删除或降级 synthetic `PlanRequest`。
+- `toolMeta.kind === 'plan_needs_confirmation'` 时优先用 `planId` 渲染 `InlinePlanCard`，通过 API 拉真实状态。
+- `PlanCard` 根据真实状态显示：
+  - `awaiting_confirmation`: 确认 / 请求修改 / 拒绝
+  - `confirmed + handoff_status=null`: 已确认，准备启动
+  - `confirmed + handoff_status=queued`: 已确认，等待当前 run 完成
+  - `confirmed + handoff_status=completed`: 已开始，显示 runtime task / continuation status
+  - `confirmed + handoff_status=skipped`: 红色错误，不再显示确认按钮
+  - `awaiting_user_clarification`: 显示问题输入，不显示确认按钮
+- 空 plumbing 不展示：
+  - `none`
+  - `unknown`
+  - empty array/object
+  - empty handoff payload
+
+### 4.6 Agent 回答修正：确认后必须查 ledger
+
+当用户问“现在开始了吗？”时，agent 不能凭上下文猜。
+
+必须读取：
+
+- latest plan by session / plan_id
+- `status`
+- `handoff_status`
+- `handoff_payload`
+- active session run
+- runtime task id / deep research id / delegation id
+
+回答规则：
+
+| 状态 | 回答 |
+|---|---|
+| `awaiting_confirmation` | 还没确认，给确认入口 |
+| `confirmed` + no handoff | 已确认，正在准备启动 / 可重试 handoff |
+| `confirmed` + `skipped` | 已确认，但启动失败，说明 reason |
+| `confirmed` + `queued` | 已确认，排队等待当前 run 完成 |
+| `confirmed` + `completed` + runtime id | 已开始，给当前进度 |
+| active web chat run exists | 正在当前对话执行 |
+
+---
+
+## 5. 所有场景覆盖矩阵
+
+| 场景 | Plan 生成 | 默认执行 | 不允许的行为 |
+|---|---|---|---|
+| 用户在 Web Chat 显式“进入计划模式”做报告/研究/代码 | main-loop Plan Mode | `continue_current_session` | 默认 `long_task` detached |
+| 用户在 Web Chat 要“后台跑完通知我” | main-loop Plan Mode | `detached_runtime_task` | 无 task id / 无取消入口 |
+| 用户创建定时/监控 | recommend -> accepted -> Plan Mode | `objective_trigger` | 不经确认直接启用 |
+| 用户拒绝定时/监控 Plan Mode 推荐 | trusted opt-out | 可继续低风险 schedule | agent 自填 opt-out |
+| 用户委派给另一个 agent | Plan Mode hard gate | `delegation` | 当前 agent 直接移交执行权 |
+| Deep Research 报告 | main-loop Plan Mode + deep research engine | same session progress + artifact | 后台静默、无 session 结果 |
+| Feishu/IM 有人在场 | channel session Plan Mode | channel-bound continuation / confirmation | regex 直接造 plan |
+| Trigger/heartbeat 无人值守命中 gate | system plan run -> awaiting_confirmation | 用户确认后按 target 执行 | 未确认自动执行 |
+| REST/API legacy create plan | 创建 draft 或 system plan run | 等确认后执行 | API 直接写 confirmed plan |
+| 用户重复点确认 | 后端 409；前端隐藏按钮 | 显示真实状态 | 旧 synthetic 卡片继续确认 |
+| 页面断开 | web_chat_turn durable run 继续 | 回来看到同 session 状态 | detached 语义混入普通执行 |
+
+---
+
+## 6. 测试计划（实现必须先红测）
+
+文档改动本身不需要 TDD；后续代码实现必须按下面红测先行。
+
+### 6.1 Backend tests
+
+新增/修改建议：
+
+- `backend/tests/services/test_plan_mode_session_handoff.py`
+- `backend/tests/services/test_web_chat_runtime.py`
+- `backend/tests/services/test_plan_mode_service.py`
+- `backend/tests/tools/test_exit_plan_mode_tool.py`
+- `backend/tests/api/test_plan_mode_api.py`
+
+必测：
+
+1. live web chat explicit Plan Mode 默认 target 是 `continue_current_session`，不是 `long_task`。
+2. confirmed `continue_current_session` plan 会创建/排队同 session `web_chat_turn` run。
+3. created run metadata 带 `approved_plan_id/version/hash`。
+4. active run 存在时不 silent fail；返回 queued 或 typed conflict。
+5. `long_task` legacy target 有兼容处理，不再 `no_handler_registered`。
+6. blocking question 存在时不能进入 `awaiting_confirmation`。
+7. `exit_plan_mode` 拒绝 meta steps。
+8. `author_type` 对 main-loop authored plan 不再是 `workflow`。
+9. `deep_research` handoff 产生 same-session progress/status event。
+10. no session id + `continue_current_session` 必须 fail closed。
+
+命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/services/test_plan_mode_session_handoff.py \
+  tests/services/test_web_chat_runtime.py \
+  tests/services/test_plan_mode_service.py \
+  tests/tools/test_exit_plan_mode_tool.py \
+  tests/api/test_plan_mode_api.py -q
+```
+
+### 6.2 Frontend tests
+
+新增/修改建议：
+
+- `frontend/src/pages/agent-detail/AgentChatSection.test.tsx`
+- `frontend/src/pages/agent-detail/PlanCard.test.tsx`
+- `frontend/src/api/domains/plans.test.ts`
+
+必测：
+
+1. `plan_needs_confirmation` 使用 `InlinePlanCard` / API 真实 plan，不再硬编码 awaiting。
+2. confirmed plan 不显示确认按钮。
+3. skipped handoff 显示错误和 reason。
+4. queued/current-session execution 显示“已确认，等待/执行中”。
+5. awaiting clarification 显示问题输入，不显示确认。
+6. `none/unknown/empty` plumbing 不渲染。
+7. i18n en/zh 都有新增 copy。
+
+命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+npm run test -- AgentChatSection.test.tsx PlanCard.test.tsx plans.test.ts
+npm run build
+```
+
+### 6.3 Integration / production acceptance
+
+必须覆盖两个真实回归用例：
+
+1. **DeFi 新玩法报告**
+   - 用户：`进入计划模式，做一个关于 DeFi 新玩法的报告`
+   - 期望：计划有观点、范围、信息源策略、章节结构、验证/交付方式。
+   - 点击确认后：同一 chat session 开始执行，能看到进度和最终报告/附件。
+   - 不允许：`handoff_status=skipped`、`target=long_task no_handler_registered`、agent 说“还没确认”。
+
+2. **RWA 周报**
+   - 用户：`我需要做一个 RWA 的周报，进入计划模式计划一下`
+   - 期望：若周期/受众/深度不清，先问 blocking question；如果信息足够，则给出可执行计划。
+   - 不允许：把问题塞进 `open_questions` 后仍显示确认按钮。
+
+生产查询验收：
+
+```sql
+select id, status, handoff_status, handoff_payload, plan_json->'handoff' as handoff, metadata_json
+from agent_plan_requests
+where agent_id = '<agent_id>'
+order by created_at desc
+limit 5;
+```
+
+通过条件：
+
+- live chat 普通任务新 plan 不再写 `handoff.target = "long_task"`。
+- confirmed 后能看到 `handoff_status in ('completed','queued')`，且 payload 有 session/run id。
+- UI 不再允许重复确认已 confirmed plan。
+
+---
+
+## 7. 非目标和保留边界
+
+不改：
+
+- `plan_hash` / `plan_version` 绑定。
+- 真实用户确认 requirement。
+- `PlanModeGate` fail-closed。
+- ActionPreflight / capability approval / Memory Control Plane。
+- PlanCard 的确认/拒绝/请求修改基本治理动作。
+
+不做：
+
+- 不把所有普通对话都强制 Plan Mode。
+- 不把 schedule/monitor recommendation 改成一律 hard gate。
+- 不把 Work Ledger 当成用户确认 plan。
+- 不用 prompt-only 修复替代运行时状态和 handoff 修复。
+- 不把 Deep Research 当成 Plan Mode 唯一答案。
+
+---
+
+## 8. 一次性发布门槛
+
+本次修复必须作为一个闭环 release 验收。任一条不满足，不算完成：
+
+1. Plan 读起来像 agent-authored work plan，而不是字段表。
+2. blocking question 真的阻断确认。
+3. live chat 确认后默认 current-session continuation。
+4. `long_task` 不再是新 plan 默认 target。
+5. 所有 target 都有 handler 或显式 fail-closed UX。
+6. PlanCard 全部基于真实 plan 状态，不再 synthetic stale confirmation。
+7. 用户问“开始了吗”时 agent 能从 ledger/run 状态回答。
+8. backend + frontend targeted tests 通过。
+9. Railway production 验收两个真实用例通过。
+
+---
+
+## 9. North Star
+
+Plan Mode 的价值不是“多一步确认”，而是：
+
+> agent 在执行前认真理解、澄清、取舍、规划；用户确认的是稳定边界；runtime 把这份边界变成可恢复、可审计、可治理、可继续执行的工作流。
+
+Hive 相对 Claude Code / Codex 的 superset，不是更复杂的表单，也不是更早把任务丢后台，而是：
+
+```text
+current-session agent planning quality
+  + enterprise-grade confirmation/audit
+  + durable async runtime
+  + explicit detached execution only when it is truly needed
+```
+
+---
+
+## 10. Review 修正（实现采用 — 2026-06-08）
+
+主负责人 review 了本方案，独立核实了所有承重断言（`web_chat_runtime.py:402` 默认 long_task ✅、`plan_mode_registry.py:24-26` 缺 handler ✅、`plan_mode_service.py:717-728` skipped ✅、`AgentChatSection.tsx:237` 合成卡片写死 awaiting ✅），并验证了最高风险假设：`start_web_chat_run`（`web_chat_runtime.py:161-238`）只需 `db/agent/user/session/content`、与 WS 解耦（靠 `broadcast_web_chat_event` 推流）、已自带 `ActiveWebChatRunExists` 守卫 → **`continue_current_session` 续跑机制可行、低风险**。方案批准，落地采用以下 4 处修正（覆盖 §3 / §4 对应条目）：
+
+1. **不新增 plan 状态。** 不引入 `executing_current_session` / `awaiting_user_clarification` 两个 §3.1 状态。执行态用现成的 `confirmed + handoff_status(queued|completed) + handoff_payload.runtime_task_id` 表示（§4.6 回答表本就这么判）。blocking question 不靠新状态：live chat 澄清发生在 plan row 存在之前（`ask_user_question` 是 pre-plan、结束本轮的循环），所以靠 ① Phase A reminder 引导 blocking→`ask_user_question`，② `exit_plan_mode` 拒收空 `plan_markdown` / meta-step。避免动 `_TRANSITIONS`、前端 `PlanStatus` union、i18n、所有 status switch。
+
+2. **`detached_runtime_task` 先上 fail-closed 桩，不建完整基建。** 两个验收用例（DeFi 报告 / RWA 周报）都是 `continue_current_session`，detached **不在 §6.3 验收门内**。满足 §8.5「所有 target 有 handler 或显式 fail-closed」只需注册一个桩 handler（明确返回「后台执行暂未开放，将在当前会话执行」）。RuntimeTask+Work Ledger+取消端点+通知策略整套基建，等用户真要「后台跑完通知我」时做快速跟进，不绑进本次闭环。
+
+3. **provenance 用现成的 `"agent"`。** §4.1.4 提的 `agent_main_loop`/`agent_authored` 不引入第三种术语；`plan_mode_service.py:423` 现成默认就是 `"agent"`，改 `:338` 的 `"workflow"`→`"agent"` 即可。
+
+4. **续跑把计划注入 prompt，不只塞 metadata。** `start_web_chat_run` 的 `content` 硬编码 role=user，所以续跑时 `content=完整计划执行指令`（agent 的 marching orders，含 approved plan_markdown）、`display_content="✅ 计划已确认，开始执行"`（UI 干净）。metadata 仍带 `approved_plan_id/version/hash` 供审计。
+
+小项：§4.4 Deep Research 同会话进度，DR×Workflow 统一后可能已流式到会话，动手前先核实现状再算工作量。
+
+落地序：§4.1 计划质量 contract（吸收先前 Phase A/B/D 的 plan_markdown 正文 + author_type + meta-step + ledger 工具）→ §4.2 `continue_current_session` handler → §4.5 前端 `InlinePlanCard` 取代合成卡片 → §6.3 两个验收用例。

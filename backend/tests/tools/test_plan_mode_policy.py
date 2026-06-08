@@ -62,6 +62,15 @@ def test_unknown_tool_is_blocked_by_default():
     assert is_plan_mode_tool_allowed("totally_unknown_tool") is False
 
 
+def test_planning_ledger_tools_allowed_in_plan_mode():
+    # CC parity: TodoWrite is allowed in plan mode. The work ledger is the agent's
+    # private working memory (scratchpad), not an external/workspace mutation, so
+    # the agent can organize its planning while exploring read-only.
+    for name in ("track_todo", "record_finding", "read_ledger"):
+        assert is_plan_mode_tool_allowed(name) is True, name
+        assert name in PLAN_MODE_READONLY_TOOLS
+
+
 def test_exit_plan_mode_is_always_in_the_readonly_allowlist():
     # Iron law ①: exit_plan_mode (the approval exit) MUST stay in the read-only
     # allowlist, otherwise the agent could never submit a plan from Plan Mode.

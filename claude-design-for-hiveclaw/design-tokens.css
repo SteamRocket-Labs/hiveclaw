@@ -1,0 +1,100 @@
+/* ============================================================
+   Hive — Design Tokens
+   Warm near-monochrome · honey accent · Notion-clean
+   ============================================================ */
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap');
+
+:root {
+  /* ---- Type ---- */
+  --sans: "Hanken Grotesk", "Noto Sans SC", system-ui, -apple-system, sans-serif;
+  --display: "Space Grotesk", "Hanken Grotesk", "Noto Sans SC", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+
+  /* ---- Warm neutral ramp (near-monochrome) ---- */
+  --bg:          #f7f6f3;   /* page / paper */
+  --bg-sunk:     #f1efea;   /* sunken zones */
+  --surface:     #ffffff;   /* cards / panels */
+  --surface-2:   #fbfaf8;   /* subtle raised */
+  --text-1:      #26241f;   /* warm near-black */
+  --text-2:      #6c685f;   /* secondary */
+  --text-3:      #9d988c;   /* tertiary / meta */
+  --text-4:      #b9b4a8;   /* faint */
+  --border:      #eae7e0;   /* hairline */
+  --border-2:    #e0dcd2;   /* stronger */
+  --hover:       #efece6;   /* row hover fill */
+  --press:       #e8e4dc;
+
+  /* ---- Honey accent (the single hive accent) ---- */
+  --honey:       oklch(0.70 0.115 73);   /* ~#c5862a */
+  --honey-deep:  oklch(0.58 0.105 66);   /* text on soft */
+  --honey-soft:  oklch(0.945 0.035 82);  /* chip bg */
+  --honey-line:  oklch(0.88 0.06 80);
+
+  /* ---- Desaturated status ---- */
+  --ok:        oklch(0.60 0.085 152);
+  --ok-soft:   oklch(0.95 0.03 152);
+  --warn:      oklch(0.72 0.11 70);
+  --warn-soft: oklch(0.95 0.04 75);
+  --danger:    oklch(0.58 0.115 26);
+  --danger-soft: oklch(0.95 0.035 30);
+  --info:      oklch(0.60 0.065 245);
+  --info-soft: oklch(0.95 0.025 245);
+  --purple:    oklch(0.58 0.085 300);
+  --purple-soft: oklch(0.95 0.03 300);
+
+  /* ---- Radii ---- */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r:    8px;
+  --r-lg: 11px;
+  --r-xl: 16px;
+
+  /* ---- Shadows ---- */
+  --shadow-1: 0 1px 2px rgba(38,36,31,.05), 0 1px 1px rgba(38,36,31,.03);
+  --shadow-2: 0 2px 6px -1px rgba(38,36,31,.08), 0 1px 2px rgba(38,36,31,.05);
+  --shadow-pop: 0 12px 32px -8px rgba(38,36,31,.18), 0 4px 10px -4px rgba(38,36,31,.10);
+
+  /* ---- Easing ---- */
+  --ease: cubic-bezier(.22,.61,.36,1);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: var(--sans);
+  color: var(--text-1);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Hexagon mark — the hive signature */
+.hex {
+  clip-path: polygon(50% 0%, 93.3% 25%, 93.3% 75%, 50% 100%, 6.7% 75%, 6.7% 25%);
+}
+
+/* Mono label utility */
+.mono {
+  font-family: var(--mono);
+  font-feature-settings: "tnum" 1;
+}
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+::selection { background: var(--honey-soft); }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { animation: spin .8s linear infinite; }
+@keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* Thin scrollbars inside mock shells */
+.thin-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+.thin-scroll::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 8px; }
+.thin-scroll::-webkit-scrollbar-track { background: transparent; }

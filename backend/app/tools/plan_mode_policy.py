@@ -40,6 +40,13 @@ PLAN_MODE_READONLY_TOOLS: frozenset[str] = frozenset(
         "list_objectives",
         "tool_search",
         "load_skill",
+        # CC parity: TodoWrite is allowed in plan mode — the work ledger is the
+        # agent's private working memory (internal scratchpad), not an external or
+        # workspace mutation. Hive's track_todo/record_finding/read_ledger are the
+        # equivalent, so the agent can organize its planning while exploring.
+        "track_todo",
+        "record_finding",
+        "read_ledger",
     }
 )
 

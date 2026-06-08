@@ -215,6 +215,104 @@ def test_validate_plan_json_rejects_risk_level_out_of_enum():
     assert any("risk" in e for e in errors)
 
 
+# ── CC alignment §4.1: plan_markdown is the body + meta-steps rejected ──
+
+
+def test_build_plan_skeleton_includes_plan_markdown_field():
+    from app.services.plan_mode_core import build_plan_skeleton
+
+    skeleton = build_plan_skeleton(intent_type="long_task", title="t", original_request="r")
+    assert "plan_markdown" in skeleton
+    assert skeleton["plan_markdown"] == ""
+
+
+def test_validate_plan_json_rejects_plan_mode_meta_steps():
+    from app.services.plan_mode_core import build_plan_skeleton, validate_plan_json
+
+    plan = build_plan_skeleton(intent_type="long_task", title="t", original_request="r")
+    plan["objective"] = "出 RWA 周报"
+    plan["success_criteria"] = ["c"]
+    plan["stop_conditions"] = ["s"]
+    plan["steps"] = [
+        {"order": 1, "description": "调用 exit_plan_mode 提交计划卡片"},
+        {"order": 2, "description": "等待用户确认"},
+    ]
+
+    errors = validate_plan_json(plan)
+    assert any("meta-step" in e for e in errors), errors
+
+
+def test_validate_plan_json_accepts_real_execution_steps():
+    # Guard against false positives: legitimate steps that merely contain "等待"
+    # (but not "等待确认") or "submit" (but not "submit the plan") must pass.
+    from app.services.plan_mode_core import build_plan_skeleton, validate_plan_json
+
+    plan = build_plan_skeleton(intent_type="long_task", title="t", original_request="r")
+    plan["objective"] = "出 RWA 周报"
+    plan["success_criteria"] = ["c"]
+    plan["stop_conditions"] = ["s"]
+    plan["steps"] = [
+        {"order": 1, "description": "收集 RWA 赛道来源并核验，等待数据源返回后整理"},
+        {"order": 2, "description": "撰写周报草稿并 submit the report to the user"},
+    ]
+
+    assert validate_plan_json(plan) == []
+
+
+def test_render_plan_markdown_uses_agent_authored_body_when_present():
+    from uuid import uuid4
+
+    from app.services.plan_mode_core import build_plan_skeleton, render_plan_markdown
+
+    plan = build_plan_skeleton(intent_type="long_task", title="RWA 周报", original_request="r")
+    plan["objective"] = "出 RWA 周报"
+    plan["plan_markdown"] = "## 思路\n聚焦三条赛道，给出投资视角。\n\n## 执行\n1. 核验来源。"
+
+    md = render_plan_markdown(
+        plan_id=uuid4(),
+        agent_id=uuid4(),
+        tenant_id=None,
+        status="awaiting_confirmation",
+        plan_version=1,
+        plan_hash="sha256:abc",
+        intent_type="long_task",
+        created_at="2026-06-08T00:00:00+00:00",
+        plan_json=plan,
+    )
+    # The agent's article is the body verbatim — not a re-stitch of structured fields.
+    assert "聚焦三条赛道，给出投资视角。" in md
+    assert "## 执行" in md
+    # Frontmatter (canonical DB mirror) still leads the file.
+    assert "plan_hash: sha256:abc" in md
+    # Structured "## Wake policy" / "## Estimated cost" plumbing NOT stitched into
+    # the body when the agent authored a plan.
+    assert "## Wake policy" not in md
+
+
+def test_render_plan_markdown_falls_back_to_structured_when_no_body():
+    # Machine-intercepted plans have no authored article → keep the structured render.
+    from uuid import uuid4
+
+    from app.services.plan_mode_core import build_plan_skeleton, render_plan_markdown
+
+    plan = build_plan_skeleton(intent_type="long_task", title="t", original_request="r")
+    plan["objective"] = "obj"
+
+    md = render_plan_markdown(
+        plan_id=uuid4(),
+        agent_id=uuid4(),
+        tenant_id=None,
+        status="awaiting_confirmation",
+        plan_version=1,
+        plan_hash="sha256:abc",
+        intent_type="long_task",
+        created_at="2026-06-08T00:00:00+00:00",
+        plan_json=plan,
+    )
+    assert "## Objective" in md
+    assert "## Steps" in md
+
+
 def test_normalize_plan_json_for_validation_repairs_common_agent_planner_shape():
     from app.services.plan_mode_core import (
         build_plan_skeleton,

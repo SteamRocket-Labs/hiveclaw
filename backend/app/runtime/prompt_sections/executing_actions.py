@@ -9,7 +9,7 @@ Layer 4: Platform Integration — Hive-specific mechanics (memory, focus, channe
 from __future__ import annotations
 
 
-def build_executing_actions_section(execution_mode: str = "conversation") -> str:
+def build_executing_actions_section(invocation_scope: str = "conversation") -> str:
     """Build the 4-layer operating contract with mode-appropriate risk rules.
 
     Layer 1 (Core Directives) sets the action-oriented frame.
@@ -17,7 +17,7 @@ def build_executing_actions_section(execution_mode: str = "conversation") -> str
     Layer 3 (Operating Principles) covers universal principles in prose.
     Layer 4 (Platform Integration) covers Hive-specific mechanics.
     """
-    if execution_mode in {"task", "heartbeat"}:
+    if invocation_scope in {"task", "heartbeat"}:
         risk_clause = (
             "In autonomous execution modes, proceed without asking for confirmation "
             "unless a hard runtime permission gate blocks the action. If you hit such a gate, "

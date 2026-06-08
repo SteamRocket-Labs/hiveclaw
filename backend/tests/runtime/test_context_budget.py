@@ -134,7 +134,7 @@ def test_resolve_turn_model_route_keeps_primary_for_simple_general_turn_without_
         primary_model=primary_model,
         fallback_model=fallback_model,
         query="帮我润色这句话，让语气更礼貌。",
-        execution_mode="conversation",
+        invocation_scope="conversation",
         session_source="websocket",
     )
 
@@ -168,7 +168,7 @@ def test_resolve_turn_model_route_prefers_fallback_when_smart_routing_enabled():
         primary_model=primary_model,
         fallback_model=fallback_model,
         query="帮我润色这句话，让语气更礼貌。",
-        execution_mode="conversation",
+        invocation_scope="conversation",
         session_source="websocket",
         routing_config={"enabled": True},
     )
@@ -204,7 +204,7 @@ def test_resolve_turn_model_route_keeps_primary_for_coding_turn():
         primary_model=primary_model,
         fallback_model=fallback_model,
         query="请修复 auth.py 的 bug，补测试并检查回归。",
-        execution_mode="conversation",
+        invocation_scope="conversation",
         session_source="websocket",
     )
 
@@ -237,7 +237,7 @@ def test_resolve_turn_model_route_respects_explicit_disabled_routing_config():
         primary_model=primary_model,
         fallback_model=fallback_model,
         query="帮我润色这句话，让语气更礼貌。",
-        execution_mode="conversation",
+        invocation_scope="conversation",
         session_source="websocket",
         routing_config={"enabled": False},
     )

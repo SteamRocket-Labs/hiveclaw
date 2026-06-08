@@ -213,7 +213,7 @@ async def build_agent_context(
     include_runtime_metadata: bool = True,
     include_focus: bool = True,  # deprecated: focus flows via retriever Objective Projection
     budget_profile: ContextBudget | None = None,
-    execution_mode: str = "conversation",
+    invocation_scope: str = "conversation",
 ) -> str:
     """Build a rich system prompt incorporating agent's full context.
 
@@ -269,7 +269,7 @@ async def build_agent_context(
     identity_section = build_identity_section(
         agent_name=agent_name,
         role_description=role_description,
-        execution_mode=execution_mode,
+        invocation_scope=invocation_scope,
         soul_text=soul,
     )
     context_parts: list[str] = []
@@ -381,7 +381,7 @@ async def build_agent_context(
     )
 
     # Operating contract via modular section
-    operating_contract = build_executing_actions_section(execution_mode)
+    operating_contract = build_executing_actions_section(invocation_scope)
     tone_style = build_tone_style_section()
 
     if include_runtime_metadata:

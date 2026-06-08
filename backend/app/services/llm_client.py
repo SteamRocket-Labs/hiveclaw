@@ -2445,4 +2445,4 @@ def apply_prompt_cache_hints(messages: list[LLMMessage], provider: str) -> list[
     """
     from app.services.prompt_cache import apply_cache_hints
 
-    return apply_cache_hints(messages, provider, execution_mode="conversation")
+    return apply_cache_hints(messages, provider, invocation_scope="conversation")

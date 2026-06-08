@@ -226,8 +226,8 @@ def _is_clearly_cheaper_model(candidate: object | None, primary: object | None) 
     return candidate_score >= 1
 
 
-def _allows_cheap_route(*, execution_mode: str | None, session_source: str | None) -> bool:
-    if execution_mode and execution_mode.lower() in _NO_CHEAP_ROUTE_EXECUTION_MODES:
+def _allows_cheap_route(*, invocation_scope: str | None, session_source: str | None) -> bool:
+    if invocation_scope and invocation_scope.lower() in _NO_CHEAP_ROUTE_EXECUTION_MODES:
         return False
     if session_source and session_source.lower() in _NO_CHEAP_ROUTE_SESSION_SOURCES:
         return False
@@ -337,7 +337,7 @@ def resolve_turn_model_route(
     fallback_model: object | None,
     query: str,
     messages: list[dict] | None = None,
-    execution_mode: str | None = None,
+    invocation_scope: str | None = None,
     session_source: str | None = None,
     supports_vision: bool = False,
     routing_config: dict[str, object] | None = None,
@@ -363,7 +363,7 @@ def resolve_turn_model_route(
             config_source=config_source,
         )
 
-    if not _allows_cheap_route(execution_mode=execution_mode, session_source=session_source):
+    if not _allows_cheap_route(invocation_scope=invocation_scope, session_source=session_source):
         return TurnModelRoute(
             model=primary_model,
             fallback_model=fallback_model,

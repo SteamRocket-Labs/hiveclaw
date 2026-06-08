@@ -606,7 +606,7 @@ def _build_frozen_prompt_cache_key(
         "tenant_id": str(runtime_config.tenant_id or ""),
         "agent_name": request.agent_name or "",
         "role_description": request.role_description or "",
-        "execution_mode": request.execution_mode or "conversation",
+        "execution_mode": request.invocation_scope or "conversation",
         "model_provider": str(getattr(request.model, "provider", "") or ""),
         "model_name": str(getattr(request.model, "model", "") or ""),
         "workspace_signature": _frozen_prompt_workspace_signature(request.agent_id),
@@ -1405,8 +1405,8 @@ class AgentKernel:
                 # Note: final_tools not included — not yet resolved at this point
                 return _build_error_result(runtime_config.quota_message)
             runtime_execution_mode = getattr(runtime_config, "execution_mode", None)
-            if not request.execution_mode and runtime_execution_mode:
-                request.execution_mode = runtime_execution_mode
+            if not request.invocation_scope and runtime_execution_mode:
+                request.invocation_scope = runtime_execution_mode
 
             resolved_memory_context = await _maybe_await(
                 self._deps.resolve_memory_context(request, runtime_config.tenant_id)
@@ -1873,7 +1873,7 @@ class AgentKernel:
                             stream_messages = self._deps.apply_cache_hints(
                                 stream_messages,
                                 getattr(active_model, "provider", ""),
-                                request.execution_mode or "conversation",
+                                request.invocation_scope or "conversation",
                             )
 
                         try:

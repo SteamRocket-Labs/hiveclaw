@@ -1108,12 +1108,12 @@ async def test_invoke_agent_passes_execution_mode_to_kernel(monkeypatch):
             role_description="desc",
             agent_id=uuid4(),
             user_id=uuid4(),
-            execution_mode="coordinator",
+            invocation_scope="coordinator",
         )
     )
 
     assert result.content == "ok"
-    assert captured["request"].execution_mode == "coordinator"
+    assert captured["request"].invocation_scope == "coordinator"
 
 
 @pytest.mark.asyncio
@@ -1617,7 +1617,7 @@ async def test_invoke_agent_keeps_primary_model_for_task_execution(monkeypatch):
             role_description="desc",
             agent_id=uuid4(),
             user_id=uuid4(),
-            execution_mode="task",
+            invocation_scope="task",
             session_context=session_context,
         )
     )

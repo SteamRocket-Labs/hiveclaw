@@ -147,8 +147,8 @@ async def test_runtime_config_execution_mode_reaches_prompt_builder_and_tool_fil
     )
 
     def build_system_prompt(request, *_args, **_kwargs):
-        captured_modes.append(request.execution_mode)
-        return f"MODE={request.execution_mode}"
+        captured_modes.append(request.invocation_scope)
+        return f"MODE={request.invocation_scope}"
 
     kernel = AgentKernel(
         KernelDependencies(

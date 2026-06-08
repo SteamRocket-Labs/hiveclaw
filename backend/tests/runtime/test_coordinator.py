@@ -18,7 +18,7 @@ class TestCoordinatorMode:
 
     def test_active_via_request(self) -> None:
         class FakeRequest:
-            execution_mode = "coordinator"
+            invocation_scope = "coordinator"
 
         assert is_coordinator_mode(request=FakeRequest()) is True
 

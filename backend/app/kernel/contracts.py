@@ -59,7 +59,7 @@ class InvocationRequest:
     max_tool_rounds: int | None = None
     max_output_tokens: int | None = None
     eviction_dir: Path | None = None
-    execution_mode: str | None = None
+    invocation_scope: str | None = None
     delegation_token: Any | None = None
 
 

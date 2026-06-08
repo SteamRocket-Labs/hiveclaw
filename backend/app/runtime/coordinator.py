@@ -7,7 +7,7 @@ When enabled, the main agent becomes a dispatcher that:
 4. Follows the "never delegate understanding" principle
 
 Activation: set agent.execution_mode = "coordinator" in DB or
-pass execution_mode="coordinator" in InvocationRequest.
+pass invocation_scope="coordinator" in InvocationRequest.
 
 The coordinator prompt is appended to the agent's system prompt
 when coordinator mode is active.
@@ -186,7 +186,7 @@ If workers are still running, omit "Synthesis" and send just Status +
 
 def is_coordinator_mode(agent: Any = None, request: Any = None) -> bool:
     """Check if coordinator mode is active for this agent/request."""
-    if request and getattr(request, "execution_mode", None) == "coordinator":
+    if request and getattr(request, "invocation_scope", None) == "coordinator":
         return True
     if agent and getattr(agent, "execution_mode", None) == "coordinator":
         return True

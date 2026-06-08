@@ -95,7 +95,7 @@ class TestScenarioSection:
 
 class TestExecutingActionsSection:
     def test_conversational_mode_enumerates_confirmation_triggers(self) -> None:
-        out = build_executing_actions_section(execution_mode="conversation")
+        out = build_executing_actions_section(invocation_scope="conversation")
         # Must name the 5 triggering categories explicitly.
         assert "sending a message to a channel" in out
         assert "deleting or overwriting files" in out
@@ -104,13 +104,13 @@ class TestExecutingActionsSection:
         assert "changes state visible to people outside this conversation" in out
 
     def test_conversational_mode_allows_local_reads_without_confirmation(self) -> None:
-        out = build_executing_actions_section(execution_mode="conversation")
+        out = build_executing_actions_section(invocation_scope="conversation")
         assert "purely local reads" in out
         assert "do NOT need" in out
 
     def test_autonomous_mode_instructs_report_on_blocked_gate(self) -> None:
         for mode in ("task", "heartbeat"):
-            out = build_executing_actions_section(execution_mode=mode)
+            out = build_executing_actions_section(invocation_scope=mode)
             assert "proceed without asking for confirmation" in out
             assert "do not attempt workarounds" in out
 
@@ -170,7 +170,7 @@ class TestExecutingActionsPR28Deepening:
     explicit 3-strike rule, honesty good/bad examples, verification matrix."""
 
     def test_xml_sub_blocks_present_in_conversation_mode(self) -> None:
-        out = build_executing_actions_section(execution_mode="conversation")
+        out = build_executing_actions_section(invocation_scope="conversation")
         for tag in [
             "<core_directives>",
             "</core_directives>",
@@ -194,13 +194,13 @@ class TestExecutingActionsPR28Deepening:
             assert tag in out, f"missing tag: {tag}"
 
     def test_three_strike_rule_differentiates_same_vs_different_errors(self) -> None:
-        out = build_executing_actions_section(execution_mode="conversation")
+        out = build_executing_actions_section(invocation_scope="conversation")
         assert "DIFFERENT errors" in out
         assert "SAME error" in out
         assert "grinding" in out
 
     def test_honesty_has_good_bad_examples(self) -> None:
-        out = build_executing_actions_section(execution_mode="conversation")
+        out = build_executing_actions_section(invocation_scope="conversation")
         # Named bad → good rewrite pair with file:line evidence.
         assert "middleware.py:142" in out
         assert "pytest tests/auth" in out
@@ -208,7 +208,7 @@ class TestExecutingActionsPR28Deepening:
         assert "Tests not yet run" in out
 
     def test_verification_has_decision_matrix_table(self) -> None:
-        out = build_executing_actions_section(execution_mode="conversation")
+        out = build_executing_actions_section(invocation_scope="conversation")
         assert "| Action | Pre-check tool | Why |" in out
         # Specific rows
         assert "Overwrite a file" in out
@@ -217,7 +217,7 @@ class TestExecutingActionsPR28Deepening:
 
     def test_legacy_markdown_headers_preserved(self) -> None:
         # The prompt_eval contract + test_prompt_sections expect these.
-        out = build_executing_actions_section(execution_mode="conversation")
+        out = build_executing_actions_section(invocation_scope="conversation")
         for header in [
             "## Core Directives",
             "## How You Work",
@@ -233,23 +233,23 @@ class TestExecutingActionsPR28Deepening:
 
 class TestIdentitySection:
     def test_coordinator_mode_forbids_self_delegation(self) -> None:
-        out = build_identity_section("opsbot", execution_mode="coordinator")
+        out = build_identity_section("opsbot", invocation_scope="coordinator")
         assert "do NOT delegate a task back to yourself" in out
         assert "infinite loops" in out
         assert "report the gap" in out
 
     def test_coordinator_mode_forbids_direct_domain_execution(self) -> None:
-        out = build_identity_section("opsbot", execution_mode="coordinator")
+        out = build_identity_section("opsbot", invocation_scope="coordinator")
         assert "do NOT execute domain tools yourself" in out
 
     def test_task_mode_unchanged(self) -> None:
-        out = build_identity_section("opsbot", execution_mode="task")
+        out = build_identity_section("opsbot", invocation_scope="task")
         assert "executing an assigned task autonomously" in out
 
     def test_heartbeat_mode_unchanged(self) -> None:
-        out = build_identity_section("opsbot", execution_mode="heartbeat")
+        out = build_identity_section("opsbot", invocation_scope="heartbeat")
         assert "self-evolution mode" in out
 
     def test_default_identity_preserved(self) -> None:
-        out = build_identity_section("opsbot", execution_mode="conversation")
+        out = build_identity_section("opsbot", invocation_scope="conversation")
         assert "enterprise digital employee" in out

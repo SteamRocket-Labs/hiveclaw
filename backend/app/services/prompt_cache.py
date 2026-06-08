@@ -94,7 +94,7 @@ def apply_cache_hints(
     messages: list,
     provider: str,
     *,
-    execution_mode: str = "conversation",
+    invocation_scope: str = "conversation",
     supports_cache_control_override: bool | None = None,
 ) -> list:
     """Inject cache hints into LLM messages if the provider supports them.
@@ -107,7 +107,7 @@ def apply_cache_hints(
     Args:
         messages: LLMMessage list (system + user/assistant history)
         provider: raw provider string from model config
-        execution_mode: "conversation" | "heartbeat" | "trigger" | "task"
+        invocation_scope: "conversation" | "heartbeat" | "trigger" | "task"
         supports_cache_control_override: explicit opt-in/out (None = auto-detect)
     """
     use_cache_control = (
@@ -117,7 +117,7 @@ def apply_cache_hints(
     )
 
     if use_cache_control:
-        return _apply_cache_control_hints(messages, execution_mode=execution_mode)
+        return _apply_cache_control_hints(messages, invocation_scope=invocation_scope)
 
     # All other providers: passthrough. They benefit from the application-
     # level frozen prefix stability (Phase 1a-1c) without needing API markers.
@@ -127,7 +127,7 @@ def apply_cache_hints(
 def _apply_cache_control_hints(
     messages: list,
     *,
-    execution_mode: str = "conversation",
+    invocation_scope: str = "conversation",
 ) -> list:
     """Apply explicit cache_control content-block hints.
 
@@ -138,7 +138,7 @@ def _apply_cache_control_hints(
       gaps between calls; 5-min TTL would always expire; 1h costs 2.0x write
       but 0.1x reads — pays off after 2 cache hits)
     """
-    if execution_mode in ("heartbeat", "trigger", "task"):
+    if invocation_scope in ("heartbeat", "trigger", "task"):
         cache_control = {"type": "ephemeral", "ttl": "1h"}
     else:
         cache_control = {"type": "ephemeral"}

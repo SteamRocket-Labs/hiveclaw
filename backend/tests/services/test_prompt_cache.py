@@ -49,17 +49,17 @@ class TestHintInjection:
         )
 
     def test_anthropic_conversation_5min(self):
-        result = apply_cache_hints([self._system_msg()], "anthropic", execution_mode="conversation")
+        result = apply_cache_hints([self._system_msg()], "anthropic", invocation_scope="conversation")
         cc = result[0].content[0]["cache_control"]
         assert cc == {"type": "ephemeral"}
 
     def test_anthropic_heartbeat_1h(self):
-        result = apply_cache_hints([self._system_msg()], "anthropic", execution_mode="heartbeat")
+        result = apply_cache_hints([self._system_msg()], "anthropic", invocation_scope="heartbeat")
         cc = result[0].content[0]["cache_control"]
         assert cc == {"type": "ephemeral", "ttl": "1h"}
 
     def test_anthropic_trigger_1h(self):
-        result = apply_cache_hints([self._system_msg()], "anthropic", execution_mode="trigger")
+        result = apply_cache_hints([self._system_msg()], "anthropic", invocation_scope="trigger")
         assert result[0].content[0]["cache_control"]["ttl"] == "1h"
 
     def test_splits_at_boundary(self):

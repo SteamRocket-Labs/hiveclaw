@@ -30,7 +30,7 @@ _DEFAULT_IDENTITY = (
 def build_identity_section(
     agent_name: str,
     role_description: str = "",
-    execution_mode: str = "conversation",
+    invocation_scope: str = "conversation",
     soul_text: str = "",
 ) -> str:
     """Build the identity & mission section.
@@ -38,10 +38,10 @@ def build_identity_section(
     Args:
         agent_name: Agent display name.
         role_description: Agent's assigned role description.
-        execution_mode: conversation | coordinator | task | heartbeat.
+        invocation_scope: conversation | coordinator | task | heartbeat.
         soul_text: Personality text from soul.md (already stripped of heading).
     """
-    template = _IDENTITY_BY_MODE.get(execution_mode, _DEFAULT_IDENTITY)
+    template = _IDENTITY_BY_MODE.get(invocation_scope, _DEFAULT_IDENTITY)
     identity = template.format(agent_name=agent_name)
 
     parts = ["## Identity & Mission", identity]

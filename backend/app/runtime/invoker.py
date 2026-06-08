@@ -139,7 +139,7 @@ class AgentInvocationRequest:
     excluded_tool_names: tuple[str, ...] = ()
     expand_tools: bool = True
     max_tool_rounds: int | None = None
-    execution_mode: str | None = None
+    invocation_scope: str | None = None
     smart_model_routing: dict[str, Any] | None = None
     delegation_token: Any | None = None
     # RC11: when True the kernel exposes ZERO tools to the LLM (see get_agent_kernel).
@@ -295,12 +295,12 @@ def _apply_vision_transform(api_messages: list[LLMMessage], supports_vision: boo
 
 
 def _apply_cache_hints(
-    api_messages: list[LLMMessage], provider: str, execution_mode: str = "conversation"
+    api_messages: list[LLMMessage], provider: str, invocation_scope: str = "conversation"
 ) -> list[LLMMessage]:
     """Apply provider-specific prompt cache hints (Anthropic, OpenAI, DeepSeek, Gemini, etc.)."""
     from app.services.prompt_cache import apply_cache_hints
 
-    return apply_cache_hints(api_messages, provider, execution_mode=execution_mode)
+    return apply_cache_hints(api_messages, provider, invocation_scope=invocation_scope)
 
 
 async def _build_system_prompt(
@@ -328,7 +328,7 @@ async def _build_system_prompt(
         include_runtime_metadata=False,
         include_focus=False,
         budget_profile=budget_profile,
-        execution_mode=request.execution_mode or "conversation",
+        invocation_scope=request.invocation_scope or "conversation",
     )
     return build_frozen_prompt_prefix(
         agent_context=agent_context,
@@ -939,7 +939,7 @@ def _resolve_effective_turn_route(
         fallback_model=request.fallback_model,
         query=_last_user_query(request.messages),
         messages=request.messages,
-        execution_mode=request.execution_mode,
+        invocation_scope=request.invocation_scope,
         session_source=request.session_context.source if request.session_context else None,
         supports_vision=request.supports_vision,
         routing_config=routing_config,
@@ -971,6 +971,20 @@ def _resolve_effective_turn_route(
         "supports_vision": route.supports_vision,
         "metadata": route_metadata,
     }
+
+
+def _invocation_scope_for(request: "AgentInvocationRequest") -> str | None:
+    """Return the effective invocation scope for cache-hints / identity / budget calls.
+
+    The value comes directly from the request's invocation_scope field.  The kernel
+    fills that field from agent.execution_mode (via RuntimeConfig) when the caller
+    has not set it explicitly — so by the time apply_cache_hints / build_identity_section
+    / resolve_turn_model_route are called the field already carries the right scope
+    (e.g. "coordinator" for a coordinator agent).  This helper is the single place that
+    documents that derivation; behavior is intentionally unchanged from the old
+    request.execution_mode reads.
+    """
+    return request.invocation_scope
 
 
 async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult:
@@ -1031,7 +1045,7 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
         max_tool_rounds=request.max_tool_rounds,
         max_output_tokens=request.max_output_tokens,
         eviction_dir=_resolve_eviction_dir(request.agent_id),
-        execution_mode=request.execution_mode,
+        invocation_scope=request.invocation_scope,
         delegation_token=request.delegation_token,
     )
 
@@ -1051,7 +1065,7 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
                 if effective_fallback_model
                 else None,
                 "turn_route_reason": turn_route_metadata["reason"],
-                "execution_mode": request.execution_mode,
+                "execution_mode": request.invocation_scope,
             },
         )
     except Exception as _start_err:

@@ -50,7 +50,7 @@ async def test_build_agent_context_limits_confirmation_rule_to_conversation_mode
         "Ops Agent",
         include_runtime_metadata=False,
         include_focus=False,
-        execution_mode="conversation",
+        invocation_scope="conversation",
     )
 
     sessions = [_FakeSession([[]]), _FakeSession([None])]
@@ -61,7 +61,7 @@ async def test_build_agent_context_limits_confirmation_rule_to_conversation_mode
         "Ops Agent",
         include_runtime_metadata=False,
         include_focus=False,
-        execution_mode="task",
+        invocation_scope="task",
     )
 
     # PR-22 quantified the confirmation rule with explicit trigger categories
@@ -89,7 +89,7 @@ async def test_build_agent_context_limits_confirmation_rule_to_heartbeat_mode(mo
         "Ops Agent",
         include_runtime_metadata=False,
         include_focus=False,
-        execution_mode="heartbeat",
+        invocation_scope="heartbeat",
     )
 
     assert "Confirm with the user BEFORE" not in heartbeat_prompt
@@ -113,7 +113,7 @@ async def test_build_agent_context_keeps_confirmation_rule_for_coordinator_mode(
         "Ops Agent",
         include_runtime_metadata=False,
         include_focus=False,
-        execution_mode="coordinator",
+        invocation_scope="coordinator",
     )
 
     assert "Confirm with the user BEFORE" in coordinator_prompt

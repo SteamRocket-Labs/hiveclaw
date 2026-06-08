@@ -130,8 +130,8 @@ async def test_kernel_rebuilds_frozen_prefix_when_prompt_cache_key_changes():
 
     async def build_system_prompt(request, tenant_id, memory_context, current_user_name):
         del tenant_id, memory_context, current_user_name
-        build_calls.append(f"{request.agent_id}:{request.execution_mode or 'conversation'}")
-        return f"FROZEN::{request.agent_name}::{request.execution_mode or 'conversation'}"
+        build_calls.append(f"{request.agent_id}:{request.invocation_scope or 'conversation'}")
+        return f"FROZEN::{request.agent_name}::{request.invocation_scope or 'conversation'}"
 
     fake_client = _FakeClient(
         [
@@ -182,7 +182,7 @@ async def test_kernel_rebuilds_frozen_prefix_when_prompt_cache_key_changes():
             agent_id=second_agent_id,
             user_id=uuid4(),
             session_context=session_ctx,
-            execution_mode="coordinator",
+            invocation_scope="coordinator",
         )
     )
 
@@ -254,7 +254,7 @@ async def test_tool_expansion_rebuild_preserves_dynamic_memory_and_effective_suf
             agent_id=uuid4(),
             user_id=uuid4(),
             session_context=SessionContext(session_id="s-2", source="chat"),
-            execution_mode="coordinator",
+            invocation_scope="coordinator",
         )
     )
 
@@ -312,7 +312,7 @@ async def test_coordinator_and_delegation_suffixes_have_independent_budgets(monk
             agent_id=uuid4(),
             user_id=uuid4(),
             session_context=SessionContext(session_id="s-suffix-budget", source="agent"),
-            execution_mode="coordinator",
+            invocation_scope="coordinator",
             system_prompt_suffix=delegation_suffix,
         )
     )

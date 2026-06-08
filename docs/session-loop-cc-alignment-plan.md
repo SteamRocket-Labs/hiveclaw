@@ -1,12 +1,16 @@
 # Session Loop 对标 CC — 完整方案（6 决策点一次解决）
 
-> 状态：**🏁 方案设计完成（2026-06-08），6 决策点全拍，待实现**。诊断底稿见 `docs/session-loop-cc-alignment.md`（病灶 A-J）。三条线详细设计：`plan-mode-axis-design.md`(A/E/G-H) / `multi-agent-mainline-F-design.md`(F) / `prompt-tools-design.md`(I/J)。
+> 状态：**🏁🏁 全部实装完成（2026-06-08），6 决策点全部落地、12 提交全绿、3556 passed**。诊断底稿见 `docs/session-loop-cc-alignment.md`（病灶 A-J）。三条线详细设计：`plan-mode-axis-design.md`(A/E/G-H) / `multi-agent-mainline-F-design.md`(F) / `prompt-tools-design.md`(I/J)。
 >
 > **▶ RESUME（compact 后从这里继续）**：进入实现，按落地顺序 **G/H.2+3 → E → I+J → A → F → G/H.1**，每组一个完整 PR、红测先行、真 PG（Testcontainers）、零 MVP 债。分支 `feat/session-loop-cc-alignment`（基线 = main 上飞书 Drive `8c5dbf77` + Plan-mode MD-first `491e6e8d` 两个遗留工作提交）。
 >
 > **进度**：✅ G/H.2+3（`b00ffcb5`）。✅ E（`7a8a4b27`：真 PG 回读 confirmed plan + 真实 fire 路径接线证明）。✅ J（`cc985adb`：MCP 进 tool_search，`list_agent_mcp_deferred_tools` 唯一枚举器，🦴#1 升权修复 + 🦴#2 text/schema 一致，6 测试）。✅ I（`ed619c4b`：tools.py MCP discovery seam + prompt_eval tripwire `tools_section_names_mcp_discovery` + frozen budget 倒置修复 identity-protected 分层 trim + cap 随 window scale，114 测试绿）。✅ A（`1e621a70`：删 `_LONG_TASK_RE`+auto 分支+auto 枚举，新 `plan_mode_guidance.py` suggest-only interactive-gated，feishu/web_chat 消费方收敛；**偏离设计稿=未加 request_plan_mode 工具**，遵循用户原话"Agent 判断本身不触发进入 Plan Mode、唯一进入=用户显式"——agent 在回复 suggest 由用户决定）。
 >
-> **⏸️ CHECKPOINT（4/6 站完成）**：剩 **F + G/H.1**。**F = 最大一站**（~15 后端文件 + 前端 + ~15 测试），三子任务：①派发对称（orchestrator `_build_delegation_brief` 三段式信封 `## Delegated Task Brief`→逐字透传 + `_build_delegated_worker_prompt` 删 ~120 行强制返回模板 + messaging 去 `[Delegated by]` 前缀 + `parent_agent_name` 旁路；**核心不变量=派发指令由主 agent 智能生成非模板**）②单一看板（退役 agent-facing `manage_tasks`/`list_tasks`/`get_task`，`track_todo`+Work Ledger JSON 唯一看板，DB Task 表保留供 supervision/REST/task_executor）③**DB Task status 归一迁移 = 决策门**：路 B（`ALTER TYPE` doing→in_progress/done→completed，PG 在线 DDL 不可事务回滚 = owner 法律的不可逆迁移须 dry-run+确认门）vs 路 A（边界翻译无迁移）——**需用户拍板窗口可用性**。**G/H.1**：`execution_mode`→`invocation_scope` 改名（`invoker.py:229` 必加 `_invocation_scope_for` 解耦映射），面最广与 F 冲突，最后单独做。
+✅ **F**（multi-agent 集大成，路 A 免迁移）：F-1 派发对称 `55be76ce`（orchestrator `_build_delegation_brief` 三段式信封→`_delegation_user_message` 逐字透传 + worker prompt 删 ~120 行强制返回模板 + messaging 去 `[Delegated by]` 前缀 + `parent_agent_name` 旁路；核心不变量=派发指令主 agent 智能生成非模板；235 tests/agents 绿）；F-2 单一看板 `3bd60631`（退役 agent-facing manage_tasks/list_tasks/get_task，track_todo+Work Ledger 唯一看板，create≠execute，DB Task 表/REST/supervision 路 A 未动）；I/J 回归债 fixup `adba11e1`。F 全程亲自验证+清两 subagent 测试债（1264 passed）。
+>
+✅ **G/H.1**（`dfea173e` + 清理 `296d47d6`，用户选「安全改名·保行为」）：`request.execution_mode`(概念 b 调用作用域)→`invocation_scope` 机械改名贯穿调用链；**coordinator 双用语义原封保留**（`request.invocation_scope=="coordinator"` 与 `agent.execution_mode=="coordinator"` 并行）；**概念 a 未动**（`agent.execution_mode` DB列/schemas/api + `RuntimeConfig.execution_mode` 导管）；零行为变化、无断言改动。
+>
+> **🏁🏁 全部 6 站收官（2026-06-08）**：12 提交全绿，**最终全面回归 3556 passed / 2 skipped / 0 failed**（tests/agents+tools+runtime+kernel+templates+services+api+deep_research）。分支 `feat/session-loop-cc-alignment` 待 push/PR（用户未指示前不 push）。三处 subagent 测试债（budget/F-1/F-2/G/H.1）均经我亲自验证+清理（"绿测试≠完成"）。
 >
 > 交付纪律（仓库 CLAUDE.md「一次改完·禁 MVP·零债」）：每个决策点的设计必须**完整 scope up front**——测试、边界、错误路径、schema 迁移、legacy 回填、生产清理、可观测，全部一次到位。
 

@@ -35,7 +35,11 @@ from app.tools import (
     ToolRuntimeService,
     run_tool_governance,
 )
-from app.tools.runtime_tool_groups import make_mcp_server_pack_name, static_runtime_tool_group_names_for_tool
+from app.tools.runtime_tool_groups import (
+    make_mcp_server_pack_name,
+    normalize_tool_query,
+    static_runtime_tool_group_names_for_tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -454,6 +458,84 @@ async def _resolve_agent_mcp_gating(db, agent_id: uuid.UUID) -> _MCPGating | Non
     return _MCPGating(reachable_by_tool_id=gating, always_load_tool_names=always_load_tool_names)
 
 
+def _mcp_tool_matches_query(query: str, tool) -> bool:
+    """Match a tool_search query against an MCP tool's name / server / underlying
+    tool name (fuzzy via :func:`normalize_tool_query`). An empty query matches
+    everything (list all reachable)."""
+    normalized = query.strip().lower()
+    if not normalized:
+        return True
+    candidates = [
+        tool.name or "",
+        getattr(tool, "mcp_server_name", "") or "",
+        getattr(tool, "mcp_tool_name", "") or "",
+        tool.description or "",
+    ]
+    blob = " ".join(candidates).lower()
+    if normalized in blob:
+        return True
+    compact = normalize_tool_query(normalized)
+    return bool(compact and any(compact in normalize_tool_query(c) for c in candidates))
+
+
+async def list_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = "") -> list[str]:
+    """The single DB-aware enumerator of MCP tools an agent can DISCOVER via
+    tool_search (J / 🦴#2).
+
+    BOTH the text result (``workspace._tool_search``) and the schema injection
+    (``invoker._deferred_tool_names_for_query``) route through here, so "what the
+    model is told exists" == "what actually loads".
+
+    Governance listing gate: only REACHABLE MCP tools are listed — denied tools
+    and tools on disabled servers/packs never appear (CC parity: denied == not
+    reachable). For un-backfilled agents (no MCP assignment rows → ``mcp_gating``
+    is None) it falls back to the legacy ``is_default`` / ``AgentTool.enabled``
+    decision, so a NON-default MCP tool can never be surfaced — the choke point
+    that, with the matching tightening in :func:`get_agent_tools_for_llm`, closes
+    the discovery force-enable escalation (§J #1).
+    """
+    from app.models.tool import AgentTool, Tool
+
+    matched: list[str] = []
+    seen: set[str] = set()
+    try:
+        async with async_session() as db:
+            agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
+            pack_policies = await get_tenant_pack_policies(db, getattr(agent, "tenant_id", None))
+            mcp_gating = await _resolve_agent_mcp_gating(db, agent_id)
+            mcp_tools = (await db.execute(select(Tool).where(Tool.enabled, Tool.type == "mcp"))).scalars().all()
+            agent_tools_r = await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id))
+            assignments = {str(at.tool_id): at for at in agent_tools_r.scalars().all()}
+
+            for t in mcp_tools:
+                if not is_tool_allowed_for_agent(t, agent):
+                    continue
+                tid = str(t.id)
+                # Reachability (listing gate): backfilled agents use assignment +
+                # override gating; un-backfilled fall back to legacy is_default /
+                # AgentTool.enabled — a non-default unassigned MCP tool is never listed.
+                if mcp_gating is not None and tid in mcp_gating.reachable_by_tool_id:
+                    reachable = mcp_gating.reachable_by_tool_id[tid]
+                else:
+                    at = assignments.get(tid)
+                    reachable = at.enabled if at else bool(t.is_default)
+                if not reachable:
+                    continue
+                # The server's pack must be enabled (same gate the schema-load path applies).
+                pack_name = make_mcp_server_pack_name(t.mcp_server_name, t.mcp_server_url)
+                if not is_pack_enabled(pack_policies, pack_name):
+                    continue
+                if not _mcp_tool_matches_query(query, t):
+                    continue
+                if t.name in seen:
+                    continue
+                seen.add(t.name)
+                matched.append(t.name)
+    except Exception as e:
+        logger.warning(f"[Tools] list_agent_mcp_deferred_tools failed: {e}")
+    return matched
+
+
 async def get_agent_tools_for_llm(
     agent_id: uuid.UUID,
     core_only: bool = False,
@@ -522,7 +604,17 @@ async def get_agent_tools_for_llm(
                     continue
                 tid = str(t.id)
                 at = assignments.get(tid)
-                enabled = at.enabled if at else (t.is_default or t.name in explicit_requested_set)
+                if at is not None:
+                    enabled = at.enabled
+                elif t.type == "mcp":
+                    # 🦴 J #1: tool_search discovery puts reachable MCP names into
+                    # explicit_requested_set; that must NOT alone force-enable a
+                    # NON-default MCP tool (privilege escalation for un-backfilled
+                    # agents). Un-gated MCP tools fall back to is_default only;
+                    # reachability is decided below when the agent IS backfilled.
+                    enabled = bool(t.is_default)
+                else:
+                    enabled = t.is_default or t.name in explicit_requested_set
                 # MCP tools: when the agent has new-table data, assignment+overrides
                 # decide reachability (§8.5). Un-backfilled agents (mcp_gating is None,
                 # or tool absent from gating) keep the legacy decision above.

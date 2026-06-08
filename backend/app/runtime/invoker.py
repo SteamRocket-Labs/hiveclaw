@@ -42,7 +42,13 @@ from app.runtime.session import SessionContext
 from app.runtime.session_key import build_session_key, ensure_session_key
 from app.services.agent_context import build_agent_context, build_agent_runtime_context
 from app.services.agent_work_ledger import should_enable_work_ledger
-from app.services.agent_tools import CORE_TOOL_NAMES, execute_tool, get_agent_tools_for_llm, get_combined_openai_tools
+from app.services.agent_tools import (
+    CORE_TOOL_NAMES,
+    execute_tool,
+    get_agent_tools_for_llm,
+    get_combined_openai_tools,
+    list_agent_mcp_deferred_tools,
+)
 from app.services.feature_flags import is_enabled as is_feature_enabled
 from app.services.knowledge_inject import fetch_relevant_knowledge
 from app.services.llm_utils import LLMMessage, create_llm_client, get_max_tokens
@@ -626,7 +632,7 @@ def _infer_active_tool_groups(
     ]
 
 
-def _deferred_tool_names_for_query(query: str) -> list[str]:
+async def _deferred_tool_names_for_query(agent_id: uuid.UUID, query: str) -> list[str]:
     normalized = query.strip().lower()
     compact = normalize_tool_query(normalized)
     if normalized:
@@ -644,6 +650,15 @@ def _deferred_tool_names_for_query(query: str) -> list[str]:
                 continue
             requested.append(tool_name)
             seen.add(tool_name)
+    # J: imported MCP server tools are deferred too — append the agent-reachable
+    # ones (governed listing) so tool_search discovers MCP exactly as it does the
+    # static packs. The shared enumerator keeps this schema path consistent with
+    # the text result the model reads (🦴#2).
+    for mcp_name in await list_agent_mcp_deferred_tools(agent_id, query):
+        if mcp_name in CORE_TOOL_NAMES or mcp_name in seen:
+            continue
+        requested.append(mcp_name)
+        seen.add(mcp_name)
     return requested
 
 
@@ -657,7 +672,7 @@ async def _resolve_tool_expansion(
 
     if tool_name == "tool_search":
         query = str(args.get("query", "") or "").strip()
-        requested_tool_names = _deferred_tool_names_for_query(query)
+        requested_tool_names = await _deferred_tool_names_for_query(request.agent_id, query)
         if not requested_tool_names:
             return None
         tools = await get_agent_tools_for_llm(

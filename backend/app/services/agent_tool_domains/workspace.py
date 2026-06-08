@@ -793,7 +793,7 @@ def _grep_search(ws: Path, pattern: str, root: str = "", max_results: int = 50, 
     return "\n".join(lines)
 
 
-def _tool_search(ws: Path, query: str = "") -> str:
+async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | None = None) -> str:
     packs = iter_runtime_tool_groups(query)
     registry = _build_skill_registry(ws)
     normalized = query.strip().lower()
@@ -805,6 +805,19 @@ def _tool_search(ws: Path, query: str = "") -> str:
         or normalized in skill.metadata.description.lower()
         or any(normalized in tool.lower() for tool in skill.metadata.declared_tools)
     ]
+
+    # J: list the agent-reachable MCP tools too, via the shared DB-aware enumerator,
+    # so the text the model reads matches what the schema path actually loads (🦴#2).
+    # agent_id falls back to the workspace dir name (AGENT_DATA_DIR/<agent_id>).
+    mcp_tool_names: list[str] = []
+    resolved_agent_id = agent_id if agent_id is not None else ws.name
+    if resolved_agent_id:
+        try:
+            from app.services.agent_tools import list_agent_mcp_deferred_tools
+
+            mcp_tool_names = await list_agent_mcp_deferred_tools(uuid.UUID(str(resolved_agent_id)), query)
+        except Exception:
+            mcp_tool_names = []
 
     lines = [
         "Tool search discovered deferred capabilities. Matching deferred tool schemas become callable in this session.",
@@ -819,6 +832,10 @@ def _tool_search(ws: Path, query: str = "") -> str:
             lines.append(
                 f"- {pack.name}: {pack.summary} | tools: {tools}"
             )
+    if mcp_tool_names:
+        lines.append("")
+        lines.append("Matching MCP tools (imported server tools — schemas become callable after this search):")
+        lines.append(f"- {', '.join(mcp_tool_names)}")
     if matching_skills:
         lines.append("")
         lines.append("Matching skills:")

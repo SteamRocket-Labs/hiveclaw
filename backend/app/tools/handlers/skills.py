@@ -159,12 +159,13 @@ async def save_skill(agent_id: uuid.UUID, workspace: Path, arguments: dict) -> s
     description=(
         "Discover deferred capability packs, tools, and skills that can be used on demand.\n\n"
         "Usage:\n"
-        "- Use this when you suspect a missing capability but do not yet know the exact skill or pack name.\n"
-        "- After this search, matching deferred tool schemas become callable in the current session; already-loaded tools are a no-op.\n"
+        "- Use this when you suspect a missing capability but do not yet know the exact skill, pack, or tool name.\n"
+        "- After this search, matching deferred tool schemas — including this agent's imported MCP server tools — "
+        "become callable in the current session; already-loaded tools are a no-op.\n"
         "- Use `load_skill` only when you need the skill's method/instructions, not merely to unlock tool schemas.\n"
-        "- Prefer builtin tools, loaded skills, and direct web/file workflows before reaching for admin-only MCP extensions.\n"
-        "- Do NOT use this as a general way to browse admin-only MCP extensions during ordinary task execution.\n"
-        "- For MCP server installation or import, use the explicit MCP resource tools and approval flow."
+        "- Prefer builtin tools, loaded skills, and direct web/file workflows first; reach for an imported MCP tool "
+        "when the task genuinely needs it.\n"
+        "- For installing or importing a NEW MCP server, use the explicit MCP resource tools and approval flow."
     ),
     parameters={
         "type": "object",
@@ -180,11 +181,11 @@ async def save_skill(agent_id: uuid.UUID, workspace: Path, arguments: dict) -> s
     icon="\U0001f50d",
     read_only=True,
     parallel_safe=False,
-    adapter="workspace_args",
+    adapter="agent_workspace_args",
 ))
-def tool_search(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+async def tool_search(agent_id: uuid.UUID, workspace: Path, arguments: dict) -> str:
     from app.services.agent_tool_domains.workspace import _tool_search
-    return _tool_search(workspace, arguments.get("query", ""))
+    return await _tool_search(workspace, arguments.get("query", ""), agent_id=agent_id)
 
 
 # -- pin_skill ----------------------------------------------------------------

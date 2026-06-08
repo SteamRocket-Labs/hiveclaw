@@ -108,6 +108,10 @@ def _base_metadata(
         "sensitivity": _sanitize_meta_value(sensitivity),
         "status": _sanitize_meta_value(status),
         "version": _sanitize_meta_value(str(version)),
+        # access_count/last_accessed seed the sidecar record's initial telemetry.
+        # D1 keeps them OUT of T3 `.md` prose via append_t3_entry's filter; the
+        # sidecar's own integer fields (bumped on recall) are the live source of
+        # truth. (write_gate is shared with the T2 path, so the seed stays here.)
         "access_count": "0",
         "last_accessed": "never",
     }

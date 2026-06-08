@@ -28,7 +28,7 @@ def test_rebuild_index_writes_entry_manifest_with_stable_ids(tmp_path: Path) -> 
     manifest = build_t3_entry_manifest(tmp_path, agent_id)
 
     assert "## Entry Manifest" in index
-    assert "| ID | File | Category | Date | Load | Preview |" in index
+    assert "| ID | File | Category | Date | Load | Heat | Summary |" in index
     assert "feedback-entry-1" in index
     assert "Railway deploys require external health verification" in index
     assert [entry.entry_id for entry in manifest if entry.category == "feedback"] == ["feedback-entry-1"]

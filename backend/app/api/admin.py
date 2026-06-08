@@ -772,3 +772,29 @@ async def backfill_agent_t2(
         tenant_id=agent_row.tenant_id,
         agent_name=agent_row.name or "Agent",
     )
+
+
+@router.post("/agents/{agent_id}/backfill-prose")
+async def backfill_agent_prose(
+    agent_id: uuid.UUID,
+    dry_run: bool = Query(True),
+    _admin: User = Depends(require_role("platform_admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """D2: strip inline metadata from this agent's T3 `.md` files down to clean
+    `[date][entry_id] content`, migrating sensitivity/status/version + telemetry
+    into the lifecycle sidecar and archiving the originals.
+
+    Defaults to ``dry_run=true`` — it touches the production data volume, so the
+    owner previews the diff first (safety gate, not an MVP stage).
+    """
+    from pathlib import Path
+
+    from app.config import get_settings
+    from app.memory.t3_store import backfill_t3_prose
+
+    agent_row = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
+    if not agent_row:
+        raise HTTPException(status_code=404, detail="agent not found")
+
+    return backfill_t3_prose(Path(get_settings().AGENT_DATA_DIR), agent_id, dry_run=dry_run)

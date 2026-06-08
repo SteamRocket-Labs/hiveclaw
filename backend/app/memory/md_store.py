@@ -9,7 +9,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.memory.lifecycle_store import record_active_memory_lifecycle
+from app.memory.lifecycle_store import (
+    read_access_telemetry,
+    read_sidecar_metadata,
+    record_active_memory_lifecycle,
+)
 
 
 T3_FILE_SPECS = (
@@ -262,6 +266,12 @@ def find_similar_t3_entries(
     return [fact for _sim, fact in hits[:limit]]
 
 
+# D2: T3 prose carries only [date][entry_id]. entry_id is the join key; every
+# other field — sensitivity/status/version/refs and the D1 access telemetry —
+# lives in the lifecycle sidecar (record metadata dict + dedicated int fields).
+_PROSE_INLINE_META_KEYS = ("entry_id",)
+
+
 def append_t3_entry(
     data_root: Path,
     agent_id: uuid.UUID,
@@ -283,7 +293,11 @@ def append_t3_entry(
             return path
 
     date_label = timestamp or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    meta_text = "".join(f"[{key}={value}]" for key, value in (metadata or {}).items() if key and value)
+    meta_text = "".join(
+        f"[{key}={value}]"
+        for key, value in (metadata or {}).items()
+        if key and value and key in _PROSE_INLINE_META_KEYS
+    )
     entry = f"- [{date_label}]{meta_text} {content.strip()}"
     updated = existing.rstrip()
     if updated:
@@ -437,14 +451,19 @@ def rebuild_index(data_root: Path, agent_id: uuid.UUID) -> Path:
             f"| {spec['filename']} | {', '.join(spec['categories'])} | {len(entries)} | {last_updated} | {spec['load']} |"
         )
 
+    # D7: INDEX is a lightweight nav (id/path/short summary/heat), not a
+    # full-content mirror. The manifest's 160-char preview is re-truncated to a
+    # short summary here and a Heat column (from D1 sidecar telemetry via
+    # compute_entry_heat) is added — rendering only; the in-memory manifest is
+    # unchanged.
     manifest = build_t3_entry_manifest(data_root, agent_id)
     lines.extend(
         [
             "",
             "## Entry Manifest",
             "",
-            "| ID | File | Category | Date | Load | Preview |",
-            "|----|------|----------|------|------|---------|",
+            "| ID | File | Category | Date | Load | Heat | Summary |",
+            "|----|------|----------|------|------|------|---------|",
         ]
     )
     for entry in manifest:
@@ -457,7 +476,8 @@ def rebuild_index(data_root: Path, agent_id: uuid.UUID) -> Path:
                     _escape_table_cell(entry.category),
                     _escape_table_cell(entry.timestamp or "-"),
                     _escape_table_cell(entry.load),
-                    _escape_table_cell(entry.preview),
+                    _escape_table_cell(str(compute_entry_heat(entry.metadata))),
+                    _escape_table_cell(_entry_preview(entry.preview, max_chars=60)),
                 ]
             )
             + " |"
@@ -470,6 +490,12 @@ def rebuild_index(data_root: Path, agent_id: uuid.UUID) -> Path:
 
 def build_t3_entry_manifest(data_root: Path, agent_id: uuid.UUID) -> list[T3MemoryEntry]:
     mem_dir = ensure_t3_layout(data_root, agent_id)
+    # D1/D2: telemetry + all other metadata are joined from the sidecar by
+    # entry_id, not parsed from prose (prose is bare [date][entry_id] after D2).
+    # Join order below: prose < sidecar metadata < telemetry — telemetry's
+    # dedicated int fields win over any stale access_count in the metadata dict.
+    telemetry = read_access_telemetry(data_root, agent_id)
+    sidecar_meta = read_sidecar_metadata(data_root, agent_id)
     entries: list[T3MemoryEntry] = []
     for spec in T3_FILE_SPECS:
         path = mem_dir / spec["filename"]
@@ -489,7 +515,12 @@ def build_t3_entry_manifest(data_root: Path, agent_id: uuid.UUID) -> list[T3Memo
                     content=record.content,
                     category=spec["shadow_category"],
                     timestamp=timestamp,
-                    metadata={**record.metadata, "entry_id": entry_id},
+                    metadata={
+                        **record.metadata,
+                        **sidecar_meta.get(entry_id, {}),
+                        "entry_id": entry_id,
+                        **telemetry.get(entry_id, {}),
+                    },
                     source=source,
                     filename=spec["filename"],
                     load=spec["load"],

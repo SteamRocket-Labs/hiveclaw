@@ -60,6 +60,16 @@ async def test_ensure_workspace_creates_standard_structure_and_profile(monkeypat
     assert (enterprise_dir / "company_profile.md").exists()
     assert sync_calls == [(agent_id, workspace)]
 
+    # D10: reflections.md is a pre-spec scaffold stub. The §7 canonical T3 file
+    # set never included it, and no writer/reader exists. A fresh workspace must
+    # not materialize it anywhere — neither as a file nor as a directory.
+    for reflections_path in (
+        workspace / "reflections.md",
+        workspace / "memory" / "reflections.md",
+        workspace / "evolution" / "reflections.md",
+    ):
+        assert not reflections_path.exists(), f"dead stub created: {reflections_path}"
+
 
 def test_migrate_all_workspaces_handles_legacy_memory_file(monkeypatch, tmp_path):
     """Legacy migration runs at startup via migrate_all_workspaces, not per-call."""

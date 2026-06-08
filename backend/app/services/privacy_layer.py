@@ -52,7 +52,10 @@ class PrivacyStore:
 
 class PrivacyLayer:
     _EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
-    _PHONE_RE = re.compile(r"\b(?:\+?\d[\d\s().-]{7,}\d)\b")
+    # ``(?!:)`` keeps a digit run from ending on the ``:`` of a clock (HH:MM): without it a
+    # "YYYY-MM-DD HH" prefix matched as a >=10-digit phone, corrupting "2026-06-04 17:00" into
+    # "<Phone>:00" (D9). Real phones (incl. ``+86 138 1234 5678``) are unaffected.
+    _PHONE_RE = re.compile(r"\b(?:\+?\d[\d\s().-]{7,}\d)(?!:)\b")
     _CREDENTIAL_PATTERNS = (
         re.compile(r"\b(?:api[_-]?key|secret|token|password|credential)\s*[:=]\s*[A-Za-z0-9_\-./+=]{12,}\b", re.I),
         re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b"),

@@ -101,7 +101,7 @@ def test_apply_dream_decisions_runs_under_lock(agent_workspace, monkeypatch) -> 
     monkeypatch.setattr(
         auto_dream,
         "_apply_dream_decisions_unlocked",
-        lambda _agent_id, _decision: {"soul_added": 0, "spied": True},
+        lambda _agent_id, _decision, **_kw: {"soul_added": 0, "spied": True},
     )
 
     result = auto_dream._apply_dream_decisions(agent_id, {"soul_promotions": []})
@@ -121,7 +121,7 @@ async def test_concurrent_apply_calls_serialize(agent_workspace, monkeypatch) ->
     agent_id, _ = agent_workspace
     order: list[str] = []
 
-    def slow_apply(_agent_id, _decision):
+    def slow_apply(_agent_id, _decision, **_kw):
         order.append("start")
         # Hold the lock for a beat so the second call has to wait.
         import time

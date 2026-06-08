@@ -36,15 +36,19 @@ async def test_append_accepted_entry_has_id_lifecycle_and_index(tmp_path: Path) 
     assert result.status == "accepted"
     assert result.entry_id
 
-    # Entry landed in the right T3 file with its entry_id stamped.
+    # Entry landed in the right T3 file. D2: prose carries only [date][entry_id];
+    # proposed_by and every other field live in the lifecycle sidecar.
     body = (tmp_path / str(agent_id) / "memory" / "feedback.md").read_text(encoding="utf-8")
     assert "User requires plain text responses" in body
     assert f"[entry_id={result.entry_id}]" in body
-    assert "[proposed_by=heartbeat]" in body
+    assert "[proposed_by=" not in body
+    assert "[sensitivity=" not in body
 
-    # Lifecycle record exists for the entry id.
+    # Lifecycle record exists for the entry id and carries the migrated metadata.
     lifecycle = json.loads((tmp_path / str(agent_id) / "memory" / "lifecycle.json").read_text(encoding="utf-8"))
-    assert any(record["id"] == result.entry_id and record["status"] == "active" for record in lifecycle)
+    record = next(r for r in lifecycle if r["id"] == result.entry_id)
+    assert record["status"] == "active"
+    assert record["metadata"].get("proposed_by") == "heartbeat"
 
     # INDEX.md was rebuilt and lists the entry.
     index_body = (tmp_path / str(agent_id) / "memory" / "INDEX.md").read_text(encoding="utf-8")
@@ -112,8 +116,12 @@ async def test_append_preserves_container_candidate_marker(tmp_path: Path) -> No
     )
 
     assert result.status == "accepted"
+    # D2: container marker lives in the sidecar metadata, not inlined in prose.
     body = (tmp_path / str(agent_id) / "memory" / "strategies.md").read_text(encoding="utf-8")
-    assert "[container=skill_candidate]" in body
+    assert "[container=" not in body
+    lifecycle = json.loads((tmp_path / str(agent_id) / "memory" / "lifecycle.json").read_text(encoding="utf-8"))
+    record = next(r for r in lifecycle if r["id"] == result.entry_id)
+    assert record["metadata"].get("container") == "skill_candidate"
 
 
 @pytest.mark.asyncio

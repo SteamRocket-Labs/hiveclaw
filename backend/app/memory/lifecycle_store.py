@@ -134,6 +134,64 @@ class MemoryLifecycleStore:
             self._flush()
         return discarded
 
+    def bump_access(self, entry_id: str, *, now: datetime | None = None) -> bool:
+        """Increment access telemetry for one entry (D1: telemetry lives here).
+
+        Returns True when the entry exists and was bumped; False when there is
+        no record for `entry_id`. This is the only writer of `access_count` /
+        `last_accessed` after D1 — the markdown prose is never restamped.
+        """
+        entry = self._entries.get(entry_id)
+        if entry is None:
+            return False
+        when = (now or datetime.now(UTC)).astimezone(UTC)
+        entry.access_count += 1
+        entry.last_accessed = when
+        entry.updated_at = when
+        self._flush()
+        return True
+
+    def telemetry_map(self) -> dict[str, dict[str, str]]:
+        """Project `{entry_id: {access_count, last_accessed}}` for read-side join."""
+        out: dict[str, dict[str, str]] = {}
+        for entry_id, entry in self._entries.items():
+            out[entry_id] = {
+                "access_count": str(entry.access_count),
+                "last_accessed": entry.last_accessed.isoformat() if entry.last_accessed else "never",
+            }
+        return out
+
+    def metadata_map(self) -> dict[str, dict[str, str]]:
+        """Project `{entry_id: metadata}` for D2 read-side join.
+
+        Excludes telemetry keys (`access_count`/`last_accessed`) — those are
+        owned by the dedicated int fields via :meth:`telemetry_map`, so the join
+        never resurrects a stale `access_count=0` from the metadata dict.
+        """
+        out: dict[str, dict[str, str]] = {}
+        for entry_id, entry in self._entries.items():
+            out[entry_id] = {
+                key: value for key, value in entry.metadata.items() if key not in ("access_count", "last_accessed")
+            }
+        return out
+
+    def upsert_active(self, entry_id: str, *, content: str, metadata: dict[str, str]) -> MemoryLifecycleEntry:
+        """Ensure an ACTIVE record for `entry_id` carries the given metadata (D2).
+
+        Backfill migrates inline `.md` metadata into the sidecar without loss —
+        critically `sensitivity`, so access control never silently downgrades.
+        Creates the record if missing; merges metadata into an existing one.
+        """
+        entry = self._entries.get(entry_id)
+        if entry is None:
+            return self.create_active(content, entry_id=entry_id, metadata=metadata)
+        entry.metadata.update({str(key): str(value) for key, value in metadata.items() if value})
+        if content and not entry.content:
+            entry.content = content
+        entry.updated_at = datetime.now(UTC)
+        self._flush()
+        return entry
+
     def get(self, entry_id: str) -> MemoryLifecycleEntry:
         return self._entries[entry_id]
 
@@ -204,6 +262,42 @@ def record_active_memory_lifecycle(
         entry_id=metadata.get("entry_id") or None,
         metadata={str(key): str(value) for key, value in metadata.items()},
     )
+
+
+def bump_access_telemetry(
+    data_root: Path,
+    agent_id: uuid.UUID | str,
+    *,
+    entry_id: str,
+    now: datetime | None = None,
+) -> bool:
+    """Bump access telemetry for one entry in the agent's lifecycle sidecar."""
+    store = MemoryLifecycleStore(lifecycle_path(data_root, agent_id))
+    return store.bump_access(entry_id, now=now)
+
+
+def read_access_telemetry(data_root: Path, agent_id: uuid.UUID | str) -> dict[str, dict[str, str]]:
+    """Read `{entry_id: {access_count, last_accessed}}` from the lifecycle sidecar.
+
+    Empty dict when the sidecar does not exist yet — read-side callers then fall
+    back to each entry's own zero defaults.
+    """
+    path = lifecycle_path(data_root, agent_id)
+    if not path.exists():
+        return {}
+    return MemoryLifecycleStore(path).telemetry_map()
+
+
+def read_sidecar_metadata(data_root: Path, agent_id: uuid.UUID | str) -> dict[str, dict[str, str]]:
+    """Read `{entry_id: metadata}` from the lifecycle sidecar (D2 read-side join).
+
+    Empty dict when the sidecar does not exist yet — callers then fall back to
+    whatever inline metadata the prose still carries.
+    """
+    path = lifecycle_path(data_root, agent_id)
+    if not path.exists():
+        return {}
+    return MemoryLifecycleStore(path).metadata_map()
 
 
 def _serialize_entry(entry: MemoryLifecycleEntry) -> dict[str, Any]:

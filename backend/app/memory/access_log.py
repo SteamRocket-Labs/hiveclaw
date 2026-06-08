@@ -1,22 +1,21 @@
-"""Access-count writeback for retriever hits (Phase 3 residual / Phase 13).
+"""Access-count writeback for retriever hits (D1: telemetry → sidecar).
 
-Every prompt-included memory entry should accumulate evidence of its own
-relevance: `access_count` and `last_accessed` are two of the inputs the
-retention formula (§6.3) uses. Up to Phase 12 those fields were only
-incremented in-memory after retrieval; this module persists the bump
-back to the entry's markdown line so the retention picture survives
-restarts and so dream/auto-tune can read it.
+Every prompt-included memory entry accumulates evidence of its own relevance:
+`access_count` and `last_accessed` feed the retention/heat formula (§6.3). Those
+two fields are **pure telemetry** and belong in the lifecycle sidecar
+(`lifecycle.json`), not in the markdown prose. Up to purity-debt D1 this module
+stamped them back into the `.md` line on every read — the canonical "telemetry
+drifting prose" pollution — rewriting the file on every prompt activation. It
+now bumps the sidecar record and leaves the prose byte-for-byte untouched.
 """
 
 from __future__ import annotations
 
-import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
-_ACCESS_COUNT_RE = re.compile(r"\[access_count=(?P<count>\d+)\]")
-_LAST_ACCESSED_RE = re.compile(r"\[last_accessed=[^\]]+\]")
+from app.memory.lifecycle_store import bump_access_telemetry
 
 
 def bump_access(
@@ -27,41 +26,13 @@ def bump_access(
     entry_id: str,
     now: datetime | None = None,
 ) -> bool:
-    """Increment `access_count` and update `last_accessed` for a single entry.
+    """Increment `access_count` / refresh `last_accessed` in the lifecycle sidecar.
 
-    Returns True when the entry was found and rewritten; False on missing
-    file, missing entry_id, or malformed line (no `access_count=` token).
+    Returns True when a sidecar record exists for `entry_id` and was bumped;
+    False when no sidecar record exists (orphan prose line, or sidecar absent).
+    `file_relpath` is retained for caller/audit compatibility but is no longer
+    used to locate the entry — the sidecar is keyed by `entry_id`.
     """
 
-    path = Path(data_root) / str(agent_id) / file_relpath
-    if not path.exists():
-        return False
-
-    when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    timestamp = when.isoformat()
-
-    text = path.read_text(encoding="utf-8")
-    needle = f"[entry_id={entry_id}]"
-    lines = text.splitlines(keepends=True)
-    updated = False
-    for index, line in enumerate(lines):
-        if needle not in line:
-            continue
-        count_match = _ACCESS_COUNT_RE.search(line)
-        if count_match is None:
-            return False
-        new_count = int(count_match.group("count")) + 1
-        rewritten = _ACCESS_COUNT_RE.sub(f"[access_count={new_count}]", line, count=1)
-        if _LAST_ACCESSED_RE.search(rewritten):
-            rewritten = _LAST_ACCESSED_RE.sub(f"[last_accessed={timestamp}]", rewritten, count=1)
-        else:
-            rewritten = rewritten.rstrip("\n") + f" [last_accessed={timestamp}]\n"
-        lines[index] = rewritten
-        updated = True
-        break
-
-    if not updated:
-        return False
-
-    path.write_text("".join(lines), encoding="utf-8")
-    return True
+    del file_relpath  # join key is entry_id; prose path no longer touched
+    return bump_access_telemetry(data_root, agent_id, entry_id=entry_id, now=now)

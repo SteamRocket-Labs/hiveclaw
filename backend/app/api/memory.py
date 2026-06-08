@@ -1,6 +1,5 @@
 """Memory configuration API — manage tenant memory/summarization settings."""
 
-import json
 import logging
 import uuid
 from dataclasses import asdict
@@ -194,22 +193,16 @@ async def get_agent_memory(
     from app.core.permissions import check_agent_access
     await check_agent_access(db, current_user, agent_id)
 
+    # D8: read from the T3 markdown source of truth, not the retired `memory.json`
+    # shadow store. The SQLite/JSON shadow store was decommissioned and is no
+    # longer written, so this endpoint had been returning permanently-empty facts.
     from pathlib import Path
+
     from app.config import get_settings
+    from app.memory.md_store import parse_t3_facts
 
     settings = get_settings()
-    memory_file = Path(settings.AGENT_DATA_DIR) / str(agent_id) / "memory" / "memory.json"
-
-    if not memory_file.exists():
-        return {"facts": []}
-
-    try:
-        facts = json.loads(memory_file.read_text())
-        if not isinstance(facts, list):
-            facts = []
-        return {"facts": facts}
-    except (json.JSONDecodeError, OSError):
-        return {"facts": []}
+    return {"facts": parse_t3_facts(Path(settings.AGENT_DATA_DIR), agent_id)}
 
 
 @router.get("/sessions/{session_id}/summary")

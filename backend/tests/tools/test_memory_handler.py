@@ -159,16 +159,21 @@ async def test_save_memory_persists_control_plane_metadata(tmp_path: Path) -> No
     assert result.startswith("Saved to long-term memory [user]")
     assert "alice@example.com" not in body
     assert "<Email_1>" in body
-    assert record.metadata["sensitivity"] == "PL2_pii"
-    assert record.metadata["status"] == "active"
-    assert record.metadata["version"] == "1"
-    assert record.metadata["access_count"] == "0"
-    assert record.metadata["last_accessed"] == "never"
+    # D2: prose carries only [date][entry_id]; sensitivity/status/version + the
+    # D1 telemetry all live in the lifecycle sidecar, never inlined into prose.
+    assert "[sensitivity=" not in entry_line
+    assert "[status=" not in entry_line
+    assert "[version=" not in entry_line
+    assert "[access_count" not in entry_line
+    assert "[last_accessed" not in entry_line
     assert record.metadata["entry_id"]
     lifecycle = MemoryLifecycleStore(tmp_path / str(agent_id) / "memory" / "lifecycle.json")
     lifecycle_entry = lifecycle.get(record.metadata["entry_id"])
+    assert lifecycle_entry.metadata.get("sensitivity") == "PL2_pii"
     assert lifecycle_entry.content == "Owner Alice email is <Email_1> for vendor escalation."
     assert lifecycle_entry.status == "active"
+    assert lifecycle_entry.access_count == 0
+    assert lifecycle_entry.last_accessed is None
 
 
 @pytest.mark.asyncio

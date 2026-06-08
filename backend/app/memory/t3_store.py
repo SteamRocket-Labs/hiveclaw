@@ -16,6 +16,7 @@ workspace tool layer, so no caller can bypass this gate.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -46,12 +47,36 @@ _MAX_CONTENT_CHARS = 2000
 # Retirement reasons that record a SUPERSEDED edge; everything else archives.
 _SUPERSEDE_REASONS = frozenset({"superseded", "dedup_superseded", "contradiction_resolved"})
 
+# D5: episodic-observation lane gate (agent_tool lane only). Routine scan/poll
+# logs ("14 expos in window, no change") are runtime evidence — the extractor
+# routes these to its `artifact_only` lane via an LLM judge, but the agent_tool
+# write path bypasses that judge, so episodic logs pile into durable strategies.md.
+# This mechanical backstop refuses the clearest episodic logs. It deliberately
+# requires BOTH a routine-observation verb AND a null/count observation so a real
+# reusable strategy ("scan three times daily works best") is never a false
+# positive — mechanical steps back off rather than corrupt (D9 lesson, AI-Native L1).
+_EPISODIC_OBSERVATION_VERB = re.compile(r"(scan|poll|monitor|sweep|crawl|扫描|轮询|巡检|监控)", re.IGNORECASE)
+_EPISODIC_NULL_OR_COUNT = re.compile(
+    r"(no\s+change|unchanged|nothing\s+new|no\s+new\b|无变化|无更新|没有变化|没有更新|"
+    r"\d+\s*(?:个|项|条|家|expos?|items?|results?|sites?)\b[^。.\n]{0,16}(?:无|没有|unchanged|no\s+change))",
+    re.IGNORECASE,
+)
+
+
+def looks_episodic_observation(content: str) -> bool:
+    """High-confidence episodic scan log: a routine-observation verb AND a
+    null/count observation. Conservative by design — single signals pass."""
+    text = (content or "").strip()
+    if not text:
+        return False
+    return bool(_EPISODIC_OBSERVATION_VERB.search(text) and _EPISODIC_NULL_OR_COUNT.search(text))
+
 
 @dataclass(slots=True)
 class T3AppendResult:
     """Outcome of a governed T3 append attempt."""
 
-    status: str  # accepted | rejected | duplicate
+    status: str  # accepted | rejected | duplicate | episodic
     category: str
     entry_id: str = ""
     path: str = ""
@@ -108,6 +133,23 @@ async def append_t3_memory_candidate(
             status="rejected",
             category=decision.category,
             reason=decision.reason,
+            sensitivity=decision.sensitivity,
+        )
+
+    # 1b. D5 lane gate (agent_tool only): episodic scan/observation logs are
+    #     runtime evidence, not durable memory. extractor/heartbeat/dream are
+    #     exempt — they ran the LLM lane judge upstream.
+    if (proposed_by or "").strip().lower() == "agent_tool" and looks_episodic_observation(decision.content):
+        logger.info("[T3Store] episodic write refused for agent=%s: %r", agent_id, decision.content[:80])
+        return T3AppendResult(
+            status="episodic",
+            category=decision.category,
+            reason=(
+                "This reads as an episodic observation (routine scan / 'no change' log). "
+                "It belongs in your session log (workspace/T0), not durable memory. "
+                "If there's a reusable rule behind it, save that instead "
+                "(e.g. 'this scan cadence catches changes fastest')."
+            ),
             sensitivity=decision.sensitivity,
         )
 
@@ -238,6 +280,102 @@ def archive_t3_lines(
     updated = existing.rstrip() + "\n" + "\n".join(rows) + "\n"
     archive_path.write_text(updated, encoding="utf-8")
     return len(rows)
+
+
+def _archive_backfill_originals(data_root: Path, agent_id: uuid.UUID, originals: list[str]) -> None:
+    """Append pre-backfill dirty lines to archive.md as reversible evidence.
+
+    Unlike :func:`archive_t3_lines` this does NOT retire the entries — they stay
+    active in clean prose; only the original inline-metadata text is preserved so
+    the D2 strip is auditable and reversible.
+    """
+    if not originals:
+        return
+    mem_dir = memory_dir(data_root, agent_id)
+    mem_dir.mkdir(parents=True, exist_ok=True)
+    archive_path = mem_dir / "archive.md"
+    existing = (
+        archive_path.read_text(encoding="utf-8", errors="replace")
+        if archive_path.exists()
+        else "# Memory Archive\n\nRetired entries — de-indexed from active recall, preserved as evidence.\n\n"
+    )
+    if "## D2 Prose Backfill" not in existing:
+        existing = (
+            existing.rstrip()
+            + "\n\n## D2 Prose Backfill\n\n"
+            + "Original inline-metadata lines (entries stay ACTIVE in clean prose; kept as reversible evidence).\n"
+        )
+    archive_path.write_text(existing.rstrip() + "\n" + "\n".join(originals) + "\n", encoding="utf-8")
+
+
+def backfill_t3_prose(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    *,
+    dry_run: bool = True,
+) -> dict:
+    """D2: rewrite existing T3 ``.md`` lines to clean ``[date][entry_id] content``.
+
+    Every other inline field (sensitivity/status/version/refs + D1 telemetry) is
+    migrated into the lifecycle sidecar FIRST — so access control never loses a
+    PL2/PL3 marker — then the original dirty line is archived (reversible) and
+    the prose rewritten. ``dry_run=True`` reports the diff without touching disk.
+    Already-clean ``[date][entry_id]`` lines are a no-op (idempotent).
+    """
+    from app.memory.md_store import T3_FILE_SPECS
+
+    report: dict = {"dry_run": dry_run, "files_changed": 0, "entries_migrated": 0, "diff": []}
+    mem_dir = memory_dir(data_root, agent_id)
+    if not mem_dir.exists():
+        return report
+
+    store = MemoryLifecycleStore(lifecycle_path(data_root, agent_id))
+    originals: list[str] = []
+
+    for spec in T3_FILE_SPECS:
+        path = mem_dir / spec["filename"]
+        if not path.exists():
+            continue
+        out_lines: list[str] = []
+        file_changed = False
+        for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw.rstrip()
+            if not line.startswith("- ["):
+                out_lines.append(raw)
+                continue
+            record = parse_entry_record(line)
+            if not record.content:
+                out_lines.append(raw)
+                continue
+            extra = {key: value for key, value in record.metadata.items() if key != "entry_id"}
+            if not extra and record.metadata.get("entry_id"):
+                out_lines.append(raw)  # already clean prose — no-op
+                continue
+            entry_id = record.metadata.get("entry_id") or _stable_entry_id(spec["filename"], record.content)
+            report["entries_migrated"] += 1
+            report["diff"].append(f"{spec['filename']}: [{entry_id}] strip {sorted(extra)}")
+            date = record.timestamp or ""
+            clean = (
+                f"- [{date}][entry_id={entry_id}] {record.content}"
+                if date
+                else f"- [entry_id={entry_id}] {record.content}"
+            )
+            out_lines.append(clean)
+            file_changed = True
+            if not dry_run:
+                # Migrate the full inline metadata into the sidecar BEFORE the
+                # strip lands — sensitivity must survive so access control holds.
+                store.upsert_active(entry_id, content=record.content, metadata=record.metadata)
+                originals.append(line)
+        if file_changed:
+            report["files_changed"] += 1
+            if not dry_run:
+                path.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
+
+    if not dry_run and report["entries_migrated"]:
+        _archive_backfill_originals(data_root, agent_id, originals)
+        rebuild_index(data_root, agent_id)
+    return report
 
 
 def retire_t3_entries(

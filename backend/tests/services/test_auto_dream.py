@@ -414,6 +414,155 @@ class TestApplyDreamDecisions:
         assert len(flags) == 1
 
 
+class TestDreamFrozenMissionGate:
+    """D6 (docs/agent-memory-purity-spec.md): the dream contradiction gate must
+    compare soul promotions against the soul's FROZEN Mission/charter, not only
+    against other T3 entries.
+
+    Production symptom: an agent whose frozen Mission says "scan three times
+    daily + proactively push" accumulated a dream-promoted Learned Behavior
+    "disable three-times scanning, switch to once weekly on Friday" — a direct
+    self-contradiction. Spec §5 (dream does not bypass owner/charter gates) +
+    §4.6 (soul = identity). Judging contradiction is an intelligent step →
+    AI-Native L1: the LLM judge is the primary path; mechanical overlap is only
+    an observable fallback when the judge is unavailable.
+    """
+
+    _MISSION_SOUL = (
+        "# Soul — Radar\n\n"
+        "## Identity & Mission\n"
+        "- **Name**: Radar\n"
+        "- **Role**: Scan the exhibition floor three times daily and proactively "
+        "push fresh leads to the owner.\n\n"
+        "## Frozen Owner Agency Charter\n"
+        "**Full Authority**\n"
+        "- Run the three-times-daily scan and prepare lead briefs.\n\n"
+        "_These charter sections are frozen._\n"
+    )
+
+    def _scaffold(self, tmp_path: Path) -> uuid.UUID:
+        agent_id = uuid.uuid4()
+        agent_dir = tmp_path / str(agent_id)
+        (agent_dir / "memory").mkdir(parents=True)
+        (agent_dir / "soul.md").write_text(self._MISSION_SOUL, encoding="utf-8")
+        return agent_id
+
+    def _promotion(self, content: str) -> dict:
+        return {
+            "soul_promotions": [
+                {
+                    "content": content,
+                    "source_file": "strategies.md",
+                    "source_refs": [
+                        "t3:memory/strategies.md#entry:a",
+                        "t3:memory/strategies.md#entry:b",
+                    ],
+                    "evidence": "system_observed",
+                    "section": "Learned Behaviors",
+                    "reason": "observed twice",
+                }
+            ]
+        }
+
+    def test_promotion_contradicting_frozen_mission_is_held(self, tmp_path: Path) -> None:
+        from app.services.auto_dream import _apply_dream_decisions_unlocked
+
+        agent_id = self._scaffold(tmp_path)
+        # Injected LLM judge = AI-Native L1 primary path. It sees the frozen
+        # charter text + the candidate and returns a structured verdict.
+        seen: dict[str, str] = {}
+
+        def judge(frozen_charter: str, content: str) -> dict:
+            seen["frozen_charter"] = frozen_charter
+            seen["content"] = content
+            return {"contradicts": True, "reason": "candidate disables the mandated three-times-daily scan"}
+
+        decision = self._promotion("Disable the three-times-daily scan; scan only once per week on Friday.")
+        with patch("app.services.auto_dream.get_settings") as mock_settings:
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
+            report = _apply_dream_decisions_unlocked(agent_id, decision, contradiction_judge=judge)
+
+        # The judge must have received the FROZEN Mission/charter, not T3.
+        assert "three times daily" in seen["frozen_charter"].lower()
+        assert "Frozen Owner Agency Charter" in seen["frozen_charter"]
+        # Contradicting candidate must NOT land in soul.
+        soul = (tmp_path / str(agent_id) / "soul.md").read_text(encoding="utf-8")
+        assert "once per week on Friday" not in soul
+        assert report["soul_added"] == 0
+        assert report["soul_contradicted_frozen"] == 1
+
+    def test_aligned_promotion_passes_frozen_mission_gate(self, tmp_path: Path) -> None:
+        from app.services.auto_dream import _apply_dream_decisions_unlocked
+
+        agent_id = self._scaffold(tmp_path)
+
+        def judge(frozen_charter: str, content: str) -> dict:
+            return {"contradicts": False, "reason": "aligns with proactive lead delivery"}
+
+        decision = self._promotion("Always include a one-line summary at the top of each lead brief.")
+        with patch("app.services.auto_dream.get_settings") as mock_settings:
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
+            report = _apply_dream_decisions_unlocked(agent_id, decision, contradiction_judge=judge)
+
+        soul = (tmp_path / str(agent_id) / "soul.md").read_text(encoding="utf-8")
+        assert "- Always include a one-line summary at the top of each lead brief." in soul
+        assert report["soul_added"] == 1
+        assert report["soul_contradicted_frozen"] == 0
+
+    def test_mechanical_fallback_blocks_negated_mission_when_judge_unavailable(self, tmp_path: Path) -> None:
+        # No judge injected → mechanical overlap backstop (observable fallback,
+        # never the primary path). A candidate that negates a frozen mission
+        # token ("disable ... three-times ... scan") must still be caught.
+        from app.services.auto_dream import _apply_dream_decisions_unlocked
+
+        agent_id = self._scaffold(tmp_path)
+        decision = self._promotion("Disable the three-times-daily scan; only scan once weekly on Friday.")
+        with patch("app.services.auto_dream.get_settings") as mock_settings:
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
+            report = _apply_dream_decisions_unlocked(agent_id, decision, contradiction_judge=None)
+
+        soul = (tmp_path / str(agent_id) / "soul.md").read_text(encoding="utf-8")
+        assert "once weekly on Friday" not in soul
+        assert report["soul_added"] == 0
+        assert report["soul_contradicted_frozen"] == 1
+
+    @pytest.mark.asyncio
+    async def test_production_llm_judge_is_built_and_applied(self, tmp_path: Path) -> None:
+        # Proves the AI-Native L1 path is wired: _build_frozen_mission_judge runs
+        # the per-item LLM judge in the async layer, and the resulting verdict is
+        # what _apply_dream_decisions enforces — not the mechanical fallback.
+        from app.services.auto_dream import _apply_dream_decisions, _build_frozen_mission_judge
+
+        agent_id = self._scaffold(tmp_path)
+        tenant_id = uuid.uuid4()
+        decision = self._promotion("Switch the cadence to monthly reviews only.")
+        judged: list[tuple[str, str]] = []
+
+        async def fake_judge(model_config, frozen_charter, content):
+            judged.append((frozen_charter, content))
+            return {"contradicts": True, "reason": "monthly cadence conflicts with three-times-daily mission"}
+
+        with (
+            patch("app.services.auto_dream.get_settings") as mock_settings,
+            patch(
+                "app.services.memory_service._get_summary_model_config",
+                return_value={"provider": "x", "model": "y"},
+            ),
+            patch("app.services.auto_dream._judge_frozen_mission_contradiction", new=fake_judge),
+        ):
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
+            judge = await _build_frozen_mission_judge(agent_id, tenant_id, decision)
+            assert judge is not None, "production judge should be built when a summary model exists"
+            report = _apply_dream_decisions(agent_id, decision, contradiction_judge=judge)
+
+        # The per-item LLM judge saw the frozen charter + candidate (L1 visibility).
+        assert judged and "three times daily" in judged[0][0].lower()
+        assert judged[0][1] == "Switch the cadence to monthly reviews only."
+        soul = (tmp_path / str(agent_id) / "soul.md").read_text(encoding="utf-8")
+        assert "monthly reviews only" not in soul
+        assert report["soul_contradicted_frozen"] == 1
+
+
 class TestConsolidateRespectsPreservation:
     def test_protected_entries_survive_cap(self, tmp_path: Path) -> None:
         agent_id = uuid.uuid4()

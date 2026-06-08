@@ -22,7 +22,7 @@ import re as _re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from app.config import get_settings
 
@@ -547,6 +547,127 @@ async def _dream_llm_consolidate(
     return decision
 
 
+_FROZEN_MISSION_JUDGE_SYSTEM_PROMPT = """\
+You are the dream identity guard. You decide whether a single proposed
+Learned-Behavior promotion CONTRADICTS an agent's FROZEN Mission/charter.
+
+The frozen Mission/charter is the agent's permanent identity. It cannot be
+silently overturned by a learned behavior. A contradiction is when the
+candidate would REVERSE, DISABLE, or directly conflict with a frozen directive
+(e.g. frozen "scan three times daily" vs candidate "scan only once a week").
+A mere refinement, addition, or unrelated behavior is NOT a contradiction.
+
+Return EXACTLY one JSON object, no prose, no code fences:
+{"contradicts": true|false, "reason": "<one short sentence>"}
+"""
+
+
+async def _judge_frozen_mission_contradiction(
+    model_config: dict,
+    frozen_charter: str,
+    content: str,
+) -> dict | None:
+    """One focused LLM call: does `content` contradict the frozen charter?
+
+    AI-Native L1 primary path for the D6 gate. Returns the parsed verdict dict
+    or None on any failure (caller then leaves the mechanical fallback to run).
+    """
+    from app.services.llm_client import LLMMessage, create_llm_client_from_config
+
+    user_prompt = (
+        "<frozen_mission_charter>\n"
+        f"{frozen_charter}\n"
+        "</frozen_mission_charter>\n\n"
+        "<candidate_learned_behavior>\n"
+        f"{content}\n"
+        "</candidate_learned_behavior>\n\n"
+        "Does the candidate contradict the frozen Mission/charter? Answer as JSON."
+    )
+    client = None
+    try:
+        client = create_llm_client_from_config(model_config)
+        response = await client.stream(
+            messages=[
+                LLMMessage(role="system", content=_FROZEN_MISSION_JUDGE_SYSTEM_PROMPT),
+                LLMMessage(role="user", content=user_prompt),
+            ],
+            max_tokens=400,
+            temperature=0.0,
+        )
+    except Exception as exc:  # noqa: BLE001 — fall back to mechanical heuristic
+        logger.info("[Dream] Frozen-Mission judge LLM call failed: %s", exc)
+        return None
+    finally:
+        if client is not None and hasattr(client, "close"):
+            try:
+                await client.close()
+            except Exception as close_err:  # noqa: BLE001
+                logger.debug("[Dream] Frozen-Mission judge client close failed: %s", close_err)
+    raw = getattr(response, "content", None) or str(response)
+    verdict = _parse_dream_decision(raw)
+    if not isinstance(verdict, dict) or "contradicts" not in verdict:
+        return None
+    return {"contradicts": bool(verdict.get("contradicts")), "reason": str(verdict.get("reason") or "").strip()}
+
+
+async def _build_frozen_mission_judge(
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID | None,
+    decision: dict,
+) -> Callable[[str, str], dict | None] | None:
+    """Pre-compute frozen-Mission contradiction verdicts for every soul promotion.
+
+    Runs the async LLM judge in this async context, then hands the sync
+    `_apply_dream_decisions` path a pure lookup closure — so the LLM-first
+    decision happens here while the writeback stays synchronous. Returns None
+    when no summary model is available (apply then uses the mechanical fallback).
+    """
+    if not tenant_id:
+        return None
+    promotions = [p for p in (decision.get("soul_promotions") or []) if isinstance(p, dict)]
+    contents = [str(p.get("content") or "").strip() for p in promotions]
+    contents = [c for c in contents if c]
+    if not contents:
+        return None
+
+    soul_path = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "soul.md"
+    frozen_charter = ""
+    try:
+        if soul_path.exists():
+            frozen_charter = _extract_frozen_charter(soul_path.read_text(encoding="utf-8", errors="replace"))
+    except OSError as exc:
+        logger.warning("[Dream] Frozen-Mission judge could not read soul for %s: %s", agent_id, exc)
+    if not frozen_charter.strip():
+        return None
+
+    try:
+        from app.services.memory_service import _get_summary_model_config
+
+        model_config = await _get_summary_model_config(tenant_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("[Dream] Frozen-Mission judge: no summary model for %s: %s", agent_id, exc)
+        return None
+    if not model_config:
+        return None
+
+    verdicts: dict[str, dict] = {}
+    for content in contents:
+        verdict = await _judge_frozen_mission_contradiction(model_config, frozen_charter, content)
+        if verdict is not None:
+            verdicts[content] = verdict
+
+    if not verdicts:
+        return None  # judge produced nothing usable → let mechanical fallback run
+
+    def _judge(_charter: str, content: str) -> dict | None:
+        # Pre-computed verdict; unseen content (judge's own LLM call failed for
+        # that item) returns None = abstain, so the per-item mechanical fallback
+        # still fires instead of silently passing it through.
+        return verdicts.get(content.strip())
+
+    return _judge
+
+
 async def _write_dream_audit_event(
     *,
     agent_id: uuid.UUID,
@@ -634,22 +755,170 @@ def _write_preservation_flags(agent_id: uuid.UUID, flags: list[dict]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _apply_dream_decisions(agent_id: uuid.UUID, decision: dict) -> dict:
+# D6 (docs/agent-memory-purity-spec.md): soul's frozen identity sections.
+# A promotion that contradicts any of these is bypassing the owner/charter gate
+# (spec §5) and corrupting identity (§4.6). The dream gate compares each soul
+# promotion candidate against this frozen substrate, not only against T3.
+_FROZEN_SOUL_SECTIONS = (
+    "## Identity & Mission",
+    "## Frozen Company Charter",
+    "## Frozen Owner Agency Charter",
+)
+
+
+def _extract_frozen_charter(soul_text: str) -> str:
+    """Slice the frozen Mission/charter sections out of soul.md.
+
+    These are the identity-core sections dream may NOT silently overturn. Each
+    section runs from its `## ` header to the next top-level `## ` header (or
+    EOF). Returns the concatenated frozen text, or "" when none are present.
+    """
+    if not soul_text:
+        return ""
+    lines = soul_text.splitlines()
+    chunks: list[str] = []
+    capturing = False
+    for line in lines:
+        is_h2 = line.startswith("## ")
+        if is_h2:
+            capturing = line.strip() in _FROZEN_SOUL_SECTIONS
+        if capturing:
+            chunks.append(line)
+    return "\n".join(chunks).strip()
+
+
+# Negation verbs that flip a frozen directive into its opposite. Used only by the
+# mechanical fallback below — the LLM judge is the primary path.
+_CONTRADICTION_NEGATORS = (
+    "disable",
+    "stop",
+    "no longer",
+    "don't",
+    "do not",
+    "never",
+    "cease",
+    "halt",
+    "drop the",
+    "skip the",
+    "instead of",
+    "禁用",
+    "停止",
+    "不再",
+    "改为",
+    "取消",
+)
+_CONTRADICTION_STOPWORDS = frozenset(
+    {
+        "the",
+        "and",
+        "for",
+        "with",
+        "that",
+        "this",
+        "from",
+        "into",
+        "your",
+        "their",
+        "than",
+        "then",
+        "each",
+        "every",
+        "scan",  # too generic on its own — needs a qualifier token to count
+        "push",
+    }
+)
+
+
+def _mechanical_contradiction_fallback(frozen_charter: str, content: str) -> bool:
+    """Observable backstop when the LLM judge is unavailable (AI-Native L1: this
+    is NEVER the primary path). Flags a candidate as contradicting when it both
+    (a) carries a negation verb and (b) overlaps a salient frozen-charter token.
+
+    Deliberately conservative — false negatives (let a borderline candidate
+    through) are preferred over false positives that would silently suppress a
+    legitimate promotion. The LLM judge is what catches the nuanced cases.
+    """
+    if not frozen_charter or not content:
+        return False
+    content_lower = content.lower()
+    if not any(neg in content_lower for neg in _CONTRADICTION_NEGATORS):
+        return False
+    frozen_tokens = {
+        tok
+        for tok in _re.findall(r"[a-z0-9\-]{4,}|[一-鿿]{2,}", frozen_charter.lower())
+        if tok not in _CONTRADICTION_STOPWORDS
+    }
+    content_tokens = {
+        tok for tok in _re.findall(r"[a-z0-9\-]{4,}|[一-鿿]{2,}", content_lower) if tok not in _CONTRADICTION_STOPWORDS
+    }
+    # A negation that lands on a frozen-charter subject = likely contradiction.
+    return bool(frozen_tokens & content_tokens)
+
+
+def _promotion_contradicts_frozen(
+    frozen_charter: str,
+    content: str,
+    contradiction_judge: Callable[[str, str], dict | None] | None,
+) -> tuple[bool, str]:
+    """Decide whether a soul promotion contradicts the frozen Mission/charter.
+
+    AI-Native L1: the injected LLM `contradiction_judge` is the primary path —
+    it reads the full frozen charter + the candidate and returns a structured
+    verdict. The mechanical overlap heuristic runs ONLY as an observable
+    fallback when no judge is wired or the judge itself errors.
+    """
+    if not frozen_charter.strip():
+        return False, ""
+    if contradiction_judge is not None:
+        try:
+            verdict = contradiction_judge(frozen_charter, content)
+        except Exception as exc:  # noqa: BLE001 — judge failure falls back, never blocks
+            logger.info("[Dream] Frozen-Mission judge failed; using mechanical fallback: %s", exc)
+            verdict = None
+        # A concrete verdict is authoritative; `None` means the judge abstained
+        # for this item (e.g. its own LLM call failed) → fall through to the
+        # mechanical backstop rather than silently treating it as "no conflict".
+        if verdict is not None:
+            if verdict.get("contradicts"):
+                reason = str(verdict.get("reason") or "contradicts frozen Mission/charter").strip()
+                return True, reason
+            return False, ""
+    if _mechanical_contradiction_fallback(frozen_charter, content):
+        return True, "mechanical fallback: negation overlaps frozen charter token (judge unavailable)"
+    return False, ""
+
+
+def _apply_dream_decisions(
+    agent_id: uuid.UUID,
+    decision: dict,
+    *,
+    contradiction_judge: Callable[[str, str], dict | None] | None = None,
+) -> dict:
     """Execute a parsed dream decision: rewrite soul + T3 + preservation sidecar.
 
     P1-W2-10: held under `_dream_writeback_lock` so concurrent dream invocations
     (heartbeat-fired vs trigger-end-fired) can't interleave their MD writes.
+
+    `contradiction_judge` (D6) gates soul promotions against the frozen
+    Mission/charter; when None, production wires the LLM judge and unit tests
+    inject a stub.
     """
     with _dream_writeback_lock(agent_id):
-        return _apply_dream_decisions_unlocked(agent_id, decision)
+        return _apply_dream_decisions_unlocked(agent_id, decision, contradiction_judge=contradiction_judge)
 
 
-def _apply_dream_decisions_unlocked(agent_id: uuid.UUID, decision: dict) -> dict:
+def _apply_dream_decisions_unlocked(
+    agent_id: uuid.UUID,
+    decision: dict,
+    *,
+    contradiction_judge: Callable[[str, str], dict | None] | None = None,
+) -> dict:
     """Inner body — kept lock-free so unit tests can drive it directly."""
     report = {
         "soul_added": 0,
         "memory_candidates_recorded": 0,
         "memory_candidates_held": 0,
+        "soul_contradicted_frozen": 0,
         "t3_merges_applied": 0,
         "contradictions_resolved": 0,
         "preservation_flags_added": 0,
@@ -658,6 +927,13 @@ def _apply_dream_decisions_unlocked(agent_id: uuid.UUID, decision: dict) -> dict
     # --- soul promotions: group by section, one write per section ---
     soul_path = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "soul.md"
     workspace = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
+    # D6: read frozen Mission/charter once so each promotion can be gated against it.
+    frozen_charter = ""
+    try:
+        if soul_path.exists():
+            frozen_charter = _extract_frozen_charter(soul_path.read_text(encoding="utf-8", errors="replace"))
+    except OSError as exc:
+        logger.warning("[Dream] Could not read soul for frozen-charter gate (%s): %s", agent_id, exc)
     grouped_promotions: dict[str, list[str]] = {}
     for promo in decision.get("soul_promotions") or []:
         if not isinstance(promo, dict):
@@ -690,7 +966,27 @@ def _apply_dream_decisions_unlocked(agent_id: uuid.UUID, decision: dict) -> dict
                 )
                 report["memory_candidates_recorded"] += 1
                 promotion_decision = decide_memory_promotion(candidate)
-                if promotion_decision["decision"] == "promote":
+                # D6 veto: even an evidence-passing promotion is held if it
+                # contradicts the frozen Mission/charter (spec §5/§4.6). This is
+                # the contradiction gate that previously only compared T3-vs-T3.
+                contradicts, contra_reason = _promotion_contradicts_frozen(frozen_charter, content, contradiction_judge)
+                if contradicts:
+                    report["memory_candidates_held"] += 1
+                    report["soul_contradicted_frozen"] += 1
+                    record_memory_promotion_decision(
+                        workspace,
+                        candidate_id=candidate["candidate_id"],
+                        decision="hold",
+                        reason=f"contradicts frozen Mission/charter: {contra_reason}",
+                        rollback_ref=None,
+                        metadata={"section": section, "gate": "frozen_mission"},
+                    )
+                    logger.info(
+                        "[Dream] Held soul promotion for %s — contradicts frozen Mission/charter: %s",
+                        agent_id,
+                        contra_reason,
+                    )
+                elif promotion_decision["decision"] == "promote":
                     rollback_ref = f"soul.md@before-dream:{datetime.now(timezone.utc).isoformat()}"
                     record_memory_promotion_decision(
                         workspace,
@@ -1377,8 +1673,12 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
     dream_reasoning = ""
     if llm_decision is not None:
         dream_reasoning = str(llm_decision.get("reasoning", "")).strip()
+        # D6: LLM-first frozen-Mission contradiction gate. Pre-judge every soul
+        # promotion here (async) so the synchronous writeback applies the
+        # verdicts; mechanical overlap stays a per-item fallback only.
+        frozen_mission_judge = await _build_frozen_mission_judge(agent_id, tenant_id, llm_decision)
         try:
-            llm_apply_report = _apply_dream_decisions(agent_id, llm_decision)
+            llm_apply_report = _apply_dream_decisions(agent_id, llm_decision, contradiction_judge=frozen_mission_judge)
             logger.info(
                 "[Dream] LLM consolidation for %s applied: %s",
                 agent_id,

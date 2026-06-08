@@ -38,7 +38,12 @@ def _coerce_tenant_uuid(value: uuid.UUID | str | None) -> uuid.UUID | None:
             "- External system references, URLs, tool names (category: reference)\n"
             "- User role, knowledge, working style (category: user)\n\n"
             "Each fact should be a single, concise statement (under 200 chars is ideal).\n"
-            "Do NOT store transient task state, raw tool output, or debugging logs.\n"
+            "Do NOT store episodic observations — routine scan/poll results, "
+            "'no change' logs, one-off event records, or transient task state. Those "
+            "belong in your session log (workspace/T0), not durable memory; save the "
+            "durable rule behind them instead (not 'today's scan found no changes' but "
+            "'this scan cadence catches changes fastest'). "
+            "Do NOT store raw tool output or debugging logs.\n"
             "When the fact is promotion-lane evidence (a proven reusable method, an identity-level "
             "rule), pass container_candidate so the promotion lanes can find it later."
         ),
@@ -122,6 +127,9 @@ async def save_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID
         container_candidate=arguments.get("container_candidate"),
         tenant_id=_coerce_tenant_uuid(tenant_id),
     )
+
+    if result.status == "episodic":
+        return f"[Skipped] {result.reason}"
 
     if result.status == "rejected":
         return f"[Rejected] {result.sensitivity}: {result.reason}"

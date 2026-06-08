@@ -28,6 +28,8 @@ from typing import Any
 
 from sqlalchemy import select
 
+from app.services.plan_mode_core import build_plan_execution_instruction
+
 logger = logging.getLogger(__name__)
 
 CONTINUE_TARGET = "continue_current_session"
@@ -73,20 +75,20 @@ async def _load_session(db: Any, session_id: Any) -> Any | None:
 def _plan_execution_prompt(plan: Any) -> str:
     """The continuation run's prompt — the agent's marching orders.
 
-    Amendment ④: inject the approved plan into the prompt (not just metadata), so
-    the agent executes THIS plan. The plan_markdown body is the substance; objective
-    is the fallback for machine-intercepted plans that have no authored article.
+    Amendment ④ / E: delegates to the shared
+    :func:`build_plan_execution_instruction` so the live-continuation and
+    scheduled-trigger paths render from one source (no wording drift). The
+    plan_markdown body is the substance; objective / original_request are the
+    fallbacks for machine-intercepted plans with no authored article.
     """
     plan_json = plan.plan_json or {}
-    body = str(plan_json.get("plan_markdown") or "").strip()
-    if not body:
-        body = str(plan_json.get("objective") or plan.original_request or "（计划正文为空，按目标执行）").strip()
-    return (
-        f"你的计划已获用户确认（plan_id={plan.id}，version={plan.plan_version}），现在开始执行。\n\n"
-        f"# 已确认的计划\n\n{body}\n\n"
-        "请直接按上面的计划执行，并把成果交付到当前这个对话里。不要重新进入计划模式，"
-        "也不要再次请求确认——用户已经确认过了。如果执行中遇到必须由用户决定的阻断点，"
-        "用 ask_user_question 询问；其余按计划自主完成。"
+    return build_plan_execution_instruction(
+        plan_id=plan.id,
+        plan_version=plan.plan_version,
+        plan_markdown=str(plan_json.get("plan_markdown") or ""),
+        objective=str(plan_json.get("objective") or ""),
+        original_request=str(plan.original_request or ""),
+        source="live",
     )
 
 

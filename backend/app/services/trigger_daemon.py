@@ -17,6 +17,7 @@ import json as _json
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from croniter import croniter
@@ -27,6 +28,7 @@ from app.core.events import get_redis
 from app.database import async_session
 from app.models.trigger import AgentTrigger
 from app.models.agent import Agent
+from app.services.plan_mode_core import build_plan_execution_instruction
 from app.services.focus_state import normalize_focus_task_id
 from app.services.runtime_task_service import create_runtime_task_record, update_runtime_task_record
 from app.services.trigger_reconciler import reconcile_all_completed_focus_triggers
@@ -883,6 +885,88 @@ async def _record_trigger_failure_state(agent_id: uuid.UUID, triggers: list[Agen
 
 # ── Agent Invocation ────────────────────────────────────────────────
 
+
+async def _load_confirmed_plan_for_trigger(db: Any, trigger: AgentTrigger, agent_id: uuid.UUID) -> Any | None:
+    """E: load the confirmed plan a plan-born trigger fires for.
+
+    The trigger carries ``config.plan_id`` (set at handoff — the load-bearing
+    backstop contract). Fire-time reads the plan row fresh: single source of
+    truth, no config bloat, and the plan body cannot go stale. Fails closed
+    (returns ``None`` → wake by reason/focus exactly as before) when there is no
+    ``plan_id``, the plan is missing, not ``confirmed``, or belongs to a
+    different agent.
+    """
+    config = getattr(trigger, "config", None) or {}
+    plan_id_raw = str(config.get("plan_id") or "").strip()
+    if not plan_id_raw:
+        return None
+    try:
+        plan_uuid = uuid.UUID(plan_id_raw)
+    except (TypeError, ValueError):
+        logger.warning("[TriggerDaemon] trigger {} has invalid plan_id {!r} — waking without plan", trigger.name, plan_id_raw)
+        return None
+
+    from app.models.plan_request import AgentPlanRequest
+
+    plan = (await db.execute(select(AgentPlanRequest).where(AgentPlanRequest.id == plan_uuid))).scalar_one_or_none()
+    if plan is None:
+        logger.warning("[TriggerDaemon] trigger {} plan_id {} not found — waking without plan", trigger.name, plan_id_raw)
+        return None
+    if plan.status != "confirmed":
+        logger.info(
+            "[TriggerDaemon] trigger {} plan {} status={} (not confirmed) — waking without plan",
+            trigger.name,
+            plan_id_raw,
+            plan.status,
+        )
+        return None
+    if str(plan.agent_id) != str(agent_id):
+        logger.warning(
+            "[TriggerDaemon] trigger {} plan {} belongs to agent {} not {} — waking without plan",
+            trigger.name,
+            plan_id_raw,
+            plan.agent_id,
+            agent_id,
+        )
+        return None
+    return plan
+
+
+async def _build_confirmed_plan_context(db: Any, triggers: list[AgentTrigger], agent_id: uuid.UUID) -> str:
+    """E: render the confirmed-plan marching orders for the plan-born triggers in
+    this fire batch (deduped by plan id).
+
+    Returns ``""`` when no fired trigger carries a confirmed plan — the ordinary
+    reason/focus wake is then unchanged. The body is rendered by the shared
+    :func:`build_plan_execution_instruction`, so a trigger wake executes the same
+    confirmed plan the live chat would, with no wording drift.
+    """
+    seen: set[str] = set()
+    blocks: list[str] = []
+    for trigger in triggers:
+        plan = await _load_confirmed_plan_for_trigger(db, trigger, agent_id)
+        if plan is None:
+            continue
+        key = str(plan.id)
+        if key in seen:
+            continue
+        seen.add(key)
+        plan_json = plan.plan_json or {}
+        blocks.append(
+            build_plan_execution_instruction(
+                plan_id=plan.id,
+                plan_version=plan.plan_version,
+                plan_markdown=str(plan_json.get("plan_markdown") or ""),
+                objective=str(plan_json.get("objective") or ""),
+                original_request=str(plan.original_request or ""),
+                source="trigger",
+            )
+        )
+    if not blocks:
+        return ""
+    return "\n\n===== 已确认的计划（本次唤醒按此执行）=====\n" + "\n\n".join(blocks)
+
+
 async def _invoke_agent_for_triggers(
     agent_id: uuid.UUID,
     triggers: list[AgentTrigger],
@@ -1036,12 +1120,17 @@ async def _invoke_agent_for_triggers(
             except Exception as _focus_err:
                 logger.debug("[TriggerDaemon] Failed to read focus.md for trigger context: {}", _focus_err)
 
+            # E: a plan-born trigger fires for a user-confirmed plan — inject the
+            # approved plan body as marching orders (read fresh from the plan row).
+            confirmed_plan_context = await _build_confirmed_plan_context(db, triggers, agent_id)
+
             trigger_context = (
                 "===== Trigger Awakening Context =====\n"
                 f"Source: trigger ({'multiple triggers fired simultaneously' if len(triggers) > 1 else 'single trigger fired'})\n\n"
                 + "\n---\n".join(context_parts)
                 + focus_context
                 + (f"\n\nExplicit Context From configured refs:\n{explicit_context}" if explicit_context else "")
+                + confirmed_plan_context
                 + "\n\nObjective Ledger is the source of truth. If you complete or block work, "
                 "use objective tools such as complete_objective or update_objective with concrete evidence. "
                 "Trigger is wake policy; focus.md is a readable projection, not a file to manually edit for state."

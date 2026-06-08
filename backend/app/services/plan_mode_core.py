@@ -477,6 +477,49 @@ def build_plan_skeleton(*, intent_type: str, title: str, original_request: str) 
     }
 
 
+def build_plan_execution_instruction(
+    *,
+    plan_id: UUID | str,
+    plan_version: int | str,
+    plan_markdown: str = "",
+    objective: str = "",
+    original_request: str = "",
+    source: str = "live",
+) -> str:
+    """Render the confirmed-plan marching orders (E).
+
+    The single source both the live-session continuation handoff and the
+    scheduled-trigger wake render from, so the "execute this confirmed plan"
+    instruction cannot drift between paths. ``plan_markdown`` (the agent-authored
+    article) is the substance; ``objective`` then ``original_request`` are the
+    fallbacks for machine-intercepted plans with no authored body.
+
+    ``source`` only varies the closing delivery clause — ``"live"`` continues in
+    the current chat; ``"trigger"`` executes a scheduled autonomous wake.
+    """
+    body = (plan_markdown or "").strip()
+    if not body:
+        body = (objective or "").strip() or (original_request or "").strip() or "（计划正文为空，按目标执行）"
+    if source == "trigger":
+        delivery = (
+            "这是一次定时唤醒：请直接按上面已确认的计划执行本次任务，并用 objective 工具"
+            "（complete_objective / update_objective）带证据记录进展。不要重新进入计划模式，"
+            "也不要再次请求确认——用户已经确认过了。如果遇到必须由用户决定的阻断点，按计划的"
+            "停止条件停下并留下说明。"
+        )
+    else:
+        delivery = (
+            "请直接按上面的计划执行，并把成果交付到当前这个对话里。不要重新进入计划模式，"
+            "也不要再次请求确认——用户已经确认过了。如果执行中遇到必须由用户决定的阻断点，"
+            "用 ask_user_question 询问；其余按计划自主完成。"
+        )
+    return (
+        f"你的计划已获用户确认（plan_id={plan_id}，version={plan_version}），现在开始执行。\n\n"
+        f"# 已确认的计划\n\n{body}\n\n"
+        f"{delivery}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Intercept-then-create mapping (§9.2) — tool args -> plan_json ``fill``.
 #

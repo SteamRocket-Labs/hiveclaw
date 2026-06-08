@@ -446,6 +446,14 @@
         "expired": "This plan expired before confirmation."
       }
     },
+    "clarification": {
+      "badge": "Needs your input",
+      "multiSelect": "Select all that apply",
+      "other": "Other",
+      "otherPlaceholder": "Type your own answer…",
+      "submit": "Submit answer",
+      "sent": "Your answer was sent."
+    },
     "soul": {
       "title": "Soul — Personality & Instructions",
       "editButton": "Edit",

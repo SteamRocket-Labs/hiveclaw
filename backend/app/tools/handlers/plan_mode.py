@@ -269,33 +269,55 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
     ToolMeta(
         name="ask_user_question",
         description=(
-            "Ask the current user ONE brief clarifying question and pause for their answer. Use this "
-            "in Plan Mode (or normal chat) when a missing decision materially changes scope, risk, "
-            "cost, recipient, cadence, data source, deliverable format, or irreversible behavior — "
-            "instead of assuming a default. This is NOT approval: do not use it to ask 'is this plan "
-            "OK?' (exit_plan_mode is the approval request). After calling it, present the question to "
-            "the user and end your turn; continue only after they reply."
+            "Ask the current user 1-4 brief multiple-choice questions and pause for their answer. Use "
+            "this in Plan Mode (or normal chat) when a missing decision materially changes scope, "
+            "risk, cost, recipient, cadence, data source, deliverable format, or irreversible "
+            "behavior — instead of assuming a default. Each question has 2-4 distinct options "
+            "(label + description); the user can always pick 'Other' to type a free answer, and "
+            "multiSelect questions allow multiple picks. This is NOT approval: do not use it to ask "
+            "'is this plan OK?' (exit_plan_mode is the approval request). After calling it, end your "
+            "turn; the user's answers arrive as the next message."
         ),
         parameters={
             "type": "object",
             "properties": {
-                "question": {"type": "string", "description": "The single clarifying question to ask the user."},
-                "reason": {"type": "string", "description": "Why the answer materially changes the plan."},
-                "options": {
+                "questions": {
                     "type": "array",
-                    "description": "Optional suggested answers; each an object with label and description.",
-                    "items": {"type": "object"},
-                },
-                "allow_free_text": {
-                    "type": "boolean",
-                    "description": "Whether a free-text answer is acceptable (default true).",
+                    "description": "1-4 multiple-choice questions to ask the user.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "question": {
+                                "type": "string",
+                                "description": "The complete question, clear and specific, ending with '?'.",
+                            },
+                            "header": {
+                                "type": "string",
+                                "description": "Very short chip label (≤12 chars), e.g. 'Scope', 'Tracks', 'Cadence'.",
+                            },
+                            "options": {
+                                "type": "array",
+                                "description": (
+                                    "2-4 distinct choices; each an object with label (1-5 words) and "
+                                    "description (trade-offs). 'Other' free-text is offered automatically — "
+                                    "do not add it yourself."
+                                ),
+                                "items": {"type": "object"},
+                            },
+                            "multiSelect": {
+                                "type": "boolean",
+                                "description": "Allow selecting multiple options (default false).",
+                            },
+                        },
+                        "required": ["question", "options"],
+                    },
                 },
                 "blocking": {
                     "type": "boolean",
                     "description": "Whether planning cannot proceed until answered (default true).",
                 },
             },
-            "required": ["question"],
+            "required": ["questions"],
         },
         category="plan",
         display_name="Ask User Question",
@@ -307,36 +329,69 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
     )
 )
 async def ask_user_question(request: ToolExecutionRequest) -> str:
-    """Pause planning to ask the current user a clarifying question (CC-align Phase B).
+    """Pause planning to ask the current user multiple-choice question(s) (CC-align Phase B).
 
-    Read-only: it neither writes nor calls out — it surfaces a question to the
+    Read-only: it neither writes nor calls out — it surfaces the questions to the
     same user/session and signals the agent to end its turn and wait. The user's
-    reply arrives as the next message and the Plan Mode turn resumes (Plan Mode
-    stays active because exit_plan_mode was not called).
+    answers arrive as the next message and the Plan Mode turn resumes (Plan Mode
+    stays active because exit_plan_mode was not called). Mirrors CC's
+    AskUserQuestion shape: questions[1-4] each with header + options(label,
+    description) + multiSelect; 'Other' free-text is always available client-side.
     """
     args = dict(request.arguments or {})
-    question = str(args.get("question") or "").strip()
-    if not question:
+    raw_questions = args.get("questions")
+    # Back-compat: accept a single {question, options, multiSelect} shorthand.
+    if not isinstance(raw_questions, list) or not raw_questions:
+        single = str(args.get("question") or "").strip()
+        if single:
+            raw_questions = [
+                {"question": single, "options": args.get("options"), "multiSelect": args.get("multiSelect")}
+            ]
+
+    normalized: list[dict[str, Any]] = []
+    questions_list = raw_questions if isinstance(raw_questions, list) else []
+    for entry in questions_list[:4]:  # CC: max 4 questions
+        if not isinstance(entry, dict):
+            continue
+        text = str(entry.get("question") or "").strip()
+        if not text:
+            continue
+        options: list[dict[str, str]] = []
+        raw_options = entry.get("options") if isinstance(entry.get("options"), list) else []
+        for opt in raw_options:
+            if isinstance(opt, dict) and str(opt.get("label") or "").strip():
+                options.append(
+                    {"label": str(opt["label"]).strip(), "description": str(opt.get("description") or "").strip()}
+                )
+            elif isinstance(opt, str) and opt.strip():
+                options.append({"label": opt.strip(), "description": ""})
+        normalized.append(
+            {
+                "question": text,
+                "header": str(entry.get("header") or "").strip()[:12],
+                "options": options,
+                "multiSelect": bool(entry.get("multiSelect", False)),
+            }
+        )
+
+    if not normalized:
         return json.dumps(
             {
                 "status": "error",
                 "error_code": "missing_question",
-                "message": "ask_user_question requires a non-empty 'question'.",
+                "message": "ask_user_question requires a non-empty 'questions' list (each with a question and options).",
             },
             ensure_ascii=False,
         )
-    options = args.get("options") if isinstance(args.get("options"), list) else []
+
     payload = {
         "status": "awaiting_user_clarification",
-        "question": question,
-        "reason": str(args.get("reason") or "").strip(),
-        "options": options,
-        "allow_free_text": bool(args.get("allow_free_text", True)),
+        "questions": normalized,
         "blocking": bool(args.get("blocking", True)),
         "next_action": (
-            "Present this question to the user verbatim — include the options if any — then END your "
-            "turn and wait. Do NOT continue planning, assume an answer, or call exit_plan_mode until "
-            "the user has replied."
+            "END your turn now — the question card is shown to the user. They pick options (or 'Other' "
+            "free text); their answers arrive as the next message. Do NOT assume answers or call "
+            "exit_plan_mode until they reply."
         ),
     }
     return json.dumps(payload, ensure_ascii=False)

@@ -63,35 +63,65 @@ def test_ask_user_question_excluded_from_subagents():
 
 
 @pytest.mark.asyncio
-async def test_ask_user_question_returns_clarification_envelope(tmp_path: Path):
+async def test_ask_user_question_returns_cc_shaped_envelope(tmp_path: Path):
+    """CC-shaped: questions[] each with header + options(label/description) + multiSelect."""
     from app.tools.handlers.plan_mode import ask_user_question
 
     result = await ask_user_question(
         _request(
             tmp_path,
             {
-                "question": "Which asset tracks should the RWA report focus on?",
-                "reason": "Track choice changes scope and data sources.",
-                "options": [{"label": "US Treasuries", "description": "Ondo/Backed/..."}],
+                "questions": [
+                    {
+                        "question": "Which asset tracks should the RWA report focus on?",
+                        "header": "Tracks",
+                        "options": [
+                            {"label": "US Treasuries", "description": "Ondo/Backed/Mountain"},
+                            {"label": "Pre-IPO equity", "description": "Securitize/xStocks"},
+                        ],
+                        "multiSelect": True,
+                    }
+                ],
                 "blocking": True,
             },
         )
     )
     payload = json.loads(result)
     assert payload["status"] == "awaiting_user_clarification"
-    assert payload["question"] == "Which asset tracks should the RWA report focus on?"
-    assert payload["options"][0]["label"] == "US Treasuries"
+    q = payload["questions"][0]
+    assert q["question"] == "Which asset tracks should the RWA report focus on?"
+    assert q["header"] == "Tracks"
+    assert q["options"][0]["label"] == "US Treasuries"
+    assert q["options"][1]["description"] == "Securitize/xStocks"
+    assert q["multiSelect"] is True
     assert payload["blocking"] is True
-    # The agent must present the question and stop — not assume an answer.
+    # The agent must end its turn and wait — not assume an answer.
     assert "end your turn" in payload["next_action"].lower()
     assert "exit_plan_mode" in payload["next_action"]
 
 
 @pytest.mark.asyncio
-async def test_ask_user_question_rejects_empty_question(tmp_path: Path):
+async def test_ask_user_question_accepts_single_question_shorthand(tmp_path: Path):
+    """Back-compat: a single {question, options} normalizes into questions[0]."""
     from app.tools.handlers.plan_mode import ask_user_question
 
-    result = await ask_user_question(_request(tmp_path, {"question": "   "}))
+    result = await ask_user_question(
+        _request(
+            tmp_path,
+            {"question": "Confirm the report cadence?", "options": [{"label": "Weekly", "description": "Mon AM"}]},
+        )
+    )
     payload = json.loads(result)
-    assert payload["status"] == "error"
-    assert payload["error_code"] == "missing_question"
+    assert payload["questions"][0]["question"] == "Confirm the report cadence?"
+    assert payload["questions"][0]["options"][0]["label"] == "Weekly"
+
+
+@pytest.mark.asyncio
+async def test_ask_user_question_rejects_empty(tmp_path: Path):
+    from app.tools.handlers.plan_mode import ask_user_question
+
+    for arguments in ({"questions": []}, {"question": "   "}):
+        result = await ask_user_question(_request(tmp_path, arguments))
+        payload = json.loads(result)
+        assert payload["status"] == "error"
+        assert payload["error_code"] == "missing_question"

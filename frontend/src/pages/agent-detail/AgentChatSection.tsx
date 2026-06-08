@@ -4,6 +4,7 @@ import { IconChecklist } from '@tabler/icons-react';
 import { useQuery } from '@tanstack/react-query';
 
 import MarkdownRenderer from '../../components/MarkdownRenderer';
+import AskUserQuestionCard from './AskUserQuestionCard';
 import ChatWorkLedgerDock from './ChatWorkLedgerDock';
 import CopyMessageButton from './CopyMessageButton';
 import DeepResearchStreamPanel from './DeepResearchStreamPanel';
@@ -73,6 +74,8 @@ interface AgentChatSectionProps {
   onSetChatInput: (value: string) => void;
   onHandlePaste: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void;
   onSendChatMsg: () => void;
+  /** Sends an explicit message (not from the composer) — used by inline cards. */
+  onSendMessage?: (text: string) => void | Promise<unknown>;
   planModeRequested?: boolean;
   onTogglePlanMode?: () => void;
   isStreaming: boolean;
@@ -85,6 +88,12 @@ interface StructuredToolResultBodyProps {
   toolResult?: string;
   toolRawResult?: string;
   agentId?: string;
+  /**
+   * Sends a new user chat message. Threaded from the component that owns the
+   * send handler (AgentDetail → AgentChatSection). Used by the clarification
+   * card to post the user's answer so the agent's turn resumes.
+   */
+  onSendMessage?: (text: string) => void | Promise<unknown>;
 }
 
 const _LIVE_DEEP_RESEARCH_STATUSES = new Set(['running', 'pending', 'in_progress']);
@@ -179,12 +188,39 @@ export function StructuredToolResultBody({
   toolResult,
   toolRawResult,
   agentId,
+  onSendMessage,
 }: StructuredToolResultBodyProps) {
   const { t } = useTranslation();
   const rawText = typeof toolRawResult === 'string' && toolRawResult.trim() ? toolRawResult : '';
 
   if (!toolMeta) {
     return toolResult ? <RawToolResultBlock text={toolResult} /> : null;
+  }
+
+  if (toolMeta.kind === 'user_clarification') {
+    if (!onSendMessage) {
+      // No send path available (e.g. read-only history view) — fall back to a
+      // static rendering with the questions but no interactive submit.
+      return (
+        <AskUserQuestionCard
+          questions={toolMeta.questions}
+          blocking={toolMeta.blocking}
+          nextAction={toolMeta.nextAction}
+          onSubmit={() => undefined}
+          submitted
+          dense
+        />
+      );
+    }
+    return (
+      <AskUserQuestionCard
+        questions={toolMeta.questions}
+        blocking={toolMeta.blocking}
+        nextAction={toolMeta.nextAction}
+        onSubmit={(answerText) => onSendMessage(answerText)}
+        dense
+      />
+    );
   }
 
   if (toolMeta.kind === 'plan_needs_confirmation') {
@@ -397,6 +433,7 @@ export default function AgentChatSection({
   onSetChatInput,
   onHandlePaste,
   onSendChatMsg,
+  onSendMessage,
   planModeRequested = false,
   onTogglePlanMode,
   isStreaming,
@@ -768,6 +805,7 @@ export default function AgentChatSection({
               toolResult={msg.toolResult}
               toolRawResult={msg.toolRawResult}
               agentId={agent?.id}
+              onSendMessage={onSendMessage}
             />
           </div>
         )}
@@ -783,6 +821,7 @@ export default function AgentChatSection({
         toolResult={msg.toolResult}
         toolRawResult={msg.toolRawResult}
         agentId={agent?.id}
+        onSendMessage={onSendMessage}
       />
     </div>
   );
@@ -835,7 +874,10 @@ export default function AgentChatSection({
     }
     if (message.role === 'tool_call') {
       if (!showInternalTrace) {
-        if (message.toolMeta?.kind === 'plan_needs_confirmation') {
+        if (
+          message.toolMeta?.kind === 'plan_needs_confirmation' ||
+          message.toolMeta?.kind === 'user_clarification'
+        ) {
           return renderInlinePlanToolCall(message, index);
         }
         return null;

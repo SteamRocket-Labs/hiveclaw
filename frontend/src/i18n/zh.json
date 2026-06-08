@@ -446,6 +446,14 @@
         "expired": "该计划在确认前已过期。"
       }
     },
+    "clarification": {
+      "badge": "需要你的确认",
+      "multiSelect": "可多选",
+      "other": "其他",
+      "otherPlaceholder": "输入你自己的答案…",
+      "submit": "提交答复",
+      "sent": "你的答复已发送。"
+    },
     "soul": {
       "title": "Soul — 人格与行为指令",
       "editButton": "编辑",

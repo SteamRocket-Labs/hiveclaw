@@ -52,11 +52,31 @@ export interface PlanNeedsConfirmationToolMeta {
   planJson: Record<string, unknown>;
 }
 
+export interface ClarificationOption {
+  label: string;
+  description: string;
+}
+
+export interface ClarificationQuestion {
+  question: string;
+  header: string;
+  options: ClarificationOption[];
+  multiSelect: boolean;
+}
+
+export interface UserClarificationToolMeta {
+  kind: 'user_clarification';
+  questions: ClarificationQuestion[];
+  blocking: boolean;
+  nextAction: string | null;
+}
+
 export type ToolCallMeta =
   | HrPreviewToolResult
   | CreateEmployeeSuccessToolMeta
   | DeepResearchToolMeta
-  | PlanNeedsConfirmationToolMeta;
+  | PlanNeedsConfirmationToolMeta
+  | UserClarificationToolMeta;
 
 export interface NormalizedToolCallResult {
   displayResult: string;
@@ -243,6 +263,72 @@ function buildPlanNeedsConfirmationDisplayResult(meta: PlanNeedsConfirmationTool
   return meta.summary || 'Plan created — confirm before this autonomous work can begin.';
 }
 
+function parseClarificationOptions(value: unknown): ClarificationOption[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return [];
+    }
+    const record = entry as Record<string, unknown>;
+    const label = typeof record.label === 'string' ? record.label.trim() : '';
+    if (!label) {
+      return [];
+    }
+    const description = typeof record.description === 'string' ? record.description.trim() : '';
+    return [{ label, description }];
+  });
+}
+
+function parseClarificationQuestions(value: unknown): ClarificationQuestion[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return [];
+    }
+    const record = entry as Record<string, unknown>;
+    const question = typeof record.question === 'string' ? record.question.trim() : '';
+    if (!question) {
+      return [];
+    }
+    return [
+      {
+        question,
+        header: typeof record.header === 'string' ? record.header.trim() : '',
+        options: parseClarificationOptions(record.options),
+        multiSelect: record.multiSelect === true || record.multi_select === true,
+      },
+    ];
+  });
+}
+
+function parseUserClarificationResult(rawResult: unknown): UserClarificationToolMeta | null {
+  const parsed = parseStructuredToolPayload(rawResult);
+  if (parsed?.status !== 'awaiting_user_clarification') {
+    return null;
+  }
+  const questions = parseClarificationQuestions(parsed.questions);
+  if (questions.length === 0) {
+    return null;
+  }
+  return {
+    kind: 'user_clarification',
+    questions,
+    blocking: parsed.blocking !== false,
+    nextAction: typeof parsed.next_action === 'string' ? parsed.next_action : null,
+  };
+}
+
+function buildUserClarificationDisplayResult(meta: UserClarificationToolMeta): string {
+  if (meta.questions.length === 1) {
+    return meta.questions[0].question;
+  }
+  return `The agent needs your input on ${meta.questions.length} questions.`;
+}
+
 export function normalizeToolCallResult(toolName: string | undefined, rawResult: unknown): NormalizedToolCallResult {
   const raw = coerceToolResultToString(rawResult);
 
@@ -253,6 +339,16 @@ export function normalizeToolCallResult(toolName: string | undefined, rawResult:
       createdAgentId: null,
       raw,
       toolMeta: planNeedsConfirmation,
+    };
+  }
+
+  const userClarification = parseUserClarificationResult(rawResult);
+  if (userClarification) {
+    return {
+      displayResult: buildUserClarificationDisplayResult(userClarification),
+      createdAgentId: null,
+      raw,
+      toolMeta: userClarification,
     };
   }
 

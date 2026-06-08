@@ -202,4 +202,96 @@ describe('parseCreateEmployeeToolResult', () => {
       planJson: { title: 'Industry scan' },
     });
   });
+
+  it('normalizes an awaiting_user_clarification tool result into clarification metadata regardless of tool name', () => {
+    const normalized = normalizeToolCallResult(
+      'ask_user_question',
+      JSON.stringify({
+        status: 'awaiting_user_clarification',
+        questions: [
+          {
+            question: 'Which asset tracks should the RWA report focus on?',
+            header: 'Tracks',
+            options: [
+              { label: 'US Treasuries', description: 'Ondo/Backed/Mountain' },
+              { label: 'Pre-IPO equity', description: 'Securitize/xStocks' },
+            ],
+            multiSelect: true,
+          },
+          {
+            question: 'How often should it run?',
+            header: 'Cadence',
+            options: [{ label: 'Weekly', description: '' }],
+            multiSelect: false,
+          },
+        ],
+        blocking: true,
+        next_action: 'END your turn now — the question card is shown to the user.',
+      }),
+    );
+
+    expect(normalized.displayResult).toBe('The agent needs your input on 2 questions.');
+    expect(normalized.createdAgentId).toBeNull();
+    expect(normalized.toolMeta).toEqual({
+      kind: 'user_clarification',
+      blocking: true,
+      nextAction: 'END your turn now — the question card is shown to the user.',
+      questions: [
+        {
+          question: 'Which asset tracks should the RWA report focus on?',
+          header: 'Tracks',
+          options: [
+            { label: 'US Treasuries', description: 'Ondo/Backed/Mountain' },
+            { label: 'Pre-IPO equity', description: 'Securitize/xStocks' },
+          ],
+          multiSelect: true,
+        },
+        {
+          question: 'How often should it run?',
+          header: 'Cadence',
+          options: [{ label: 'Weekly', description: '' }],
+          multiSelect: false,
+        },
+      ],
+    });
+  });
+
+  it('uses the single question text as the display result for a one-question clarification', () => {
+    const normalized = normalizeToolCallResult(
+      'some_other_tool',
+      JSON.stringify({
+        status: 'awaiting_user_clarification',
+        questions: [
+          {
+            question: 'What is the report deadline?',
+            header: '',
+            options: [],
+            multiSelect: false,
+          },
+        ],
+      }),
+    );
+
+    expect(normalized.displayResult).toBe('What is the report deadline?');
+    expect(normalized.toolMeta).toMatchObject({
+      kind: 'user_clarification',
+      blocking: true,
+      nextAction: null,
+    });
+    expect((normalized.toolMeta as { questions: unknown[] }).questions).toHaveLength(1);
+  });
+
+  it('returns no clarification meta when the questions array is empty or malformed', () => {
+    const empty = normalizeToolCallResult(
+      'ask_user_question',
+      JSON.stringify({ status: 'awaiting_user_clarification', questions: [] }),
+    );
+    expect(empty.toolMeta).toBeNull();
+
+    const malformed = normalizeToolCallResult(
+      'ask_user_question',
+      JSON.stringify({ status: 'awaiting_user_clarification', questions: [{ header: 'No question text' }] }),
+    );
+    expect(malformed.toolMeta).toBeNull();
+  });
 });

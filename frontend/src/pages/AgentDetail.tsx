@@ -936,6 +936,43 @@ function AgentDetailInner() {
         }
     };
 
+    // Sends an explicit text message (not from the composer). Used by inline
+    // chat cards (e.g. the ask_user_question clarification card) to post the
+    // user's answer so the agent's blocked turn resumes. Reuses the same
+    // startSessionRun path as sendChatMsg — the answer reaches the backend as a
+    // normal user message.
+    const sendChatMessageText = async (text: string) => {
+        const userMsg = text.trim();
+        if (!id || !activeSession?.id || !userMsg) return;
+        const activeRuntimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
+        if (activeRunStateRef.current[activeRuntimeKey]) return;
+
+        setIsWaiting(true);
+        setIsStreaming(false);
+        setTransportNotice(null);
+        setSessionUiState(activeRuntimeKey, { isWaiting: true, isStreaming: false });
+        setChatMessagesSessionId(String(activeSession.id));
+        setChatMessages(prev => [...prev, parseChatMsg({
+            role: 'user',
+            content: userMsg,
+            timestamp: new Date().toISOString(),
+        })]);
+        try {
+            const run = await chatApi.startSessionRun(id, String(activeSession.id), {
+                content: userMsg,
+                display_content: userMsg,
+            });
+            setActiveRunState(activeRuntimeKey, { runId: run.run_id, status: run.status || 'running' });
+        } catch (err: any) {
+            setIsWaiting(false);
+            setIsStreaming(false);
+            setSessionUiState(activeRuntimeKey, { isWaiting: false, isStreaming: false });
+            const msg = err?.message || t('agent.chat.runStartFailed', 'Failed to start run');
+            setChatMessages(prev => [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })]);
+            throw err;
+        }
+    };
+
     const handleChatFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const files = Array.from(e.target.files || []);
         if (!files.length) return;
@@ -1512,6 +1549,7 @@ function AgentDetailInner() {
                             onSetChatInput={setChatInput}
                             onHandlePaste={handlePaste}
                             onSendChatMsg={sendChatMsg}
+                            onSendMessage={sendChatMessageText}
                             isStreaming={isStreaming}
                             onAbortGeneration={() => {
                                 if (!id || !activeSession?.id) return;

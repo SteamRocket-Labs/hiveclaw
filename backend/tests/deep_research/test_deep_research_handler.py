@@ -178,6 +178,30 @@ async def test_stream_deep_research_artifacts_emits_typed_events_until_final(tmp
 
 
 @pytest.mark.asyncio
+async def test_stream_deep_research_artifacts_reads_workflow_run_artifacts(tmp_path):
+    """Workflow Deep Research writes artifacts under workflow_runs; the stream
+    must not stay on the empty legacy long_tasks path."""
+    from app.tools.handlers.deep_research import stream_deep_research_artifacts
+
+    task_id = "workflow-run-123"
+    artifact_dir = tmp_path / "runtime_artifacts" / "workflow_runs" / task_id / "deep_research"
+    _seed_failed_run(artifact_dir)
+
+    events: list[dict] = []
+    async for event in stream_deep_research_artifacts(
+        tmp_path, task_id, poll_interval_seconds=0.0
+    ):
+        events.append(event)
+        if event["event"] == "final":
+            break
+
+    event_types = [e["event"] for e in events]
+    assert "report" in event_types
+    assert event_types[-1] == "final"
+    assert all(e["task_id"] == task_id for e in events)
+
+
+@pytest.mark.asyncio
 async def test_stream_deep_research_artifacts_supports_cursor_resume(tmp_path):
     """T3-4: callers can resume past previously-emitted records via cursors."""
     from app.tools.handlers.deep_research import _deep_research_dir, stream_deep_research_artifacts

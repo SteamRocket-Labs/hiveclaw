@@ -476,6 +476,35 @@ async def test_activate_interactive_plan_mode_writes_typed_state_and_keeps_dict_
 
 
 @pytest.mark.asyncio
+async def test_activate_interactive_plan_mode_provisions_markdown_plan_file(tmp_path, monkeypatch):
+    """MD-first Plan Mode should create the session plan file up front so the
+    agent can write the plan body there instead of discovering a missing
+    workspace/plans directory and falling back to long JSON arguments."""
+    import app.services.web_chat_runtime as runtime
+    from app.runtime.session import SessionContext
+
+    agent_id = uuid4()
+    monkeypatch.setattr(runtime, "get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    session_context = SessionContext()
+
+    result = await runtime._maybe_handle_plan_mode_entry(
+        agent_id=agent_id,
+        user_id=uuid4(),
+        tenant_id=None,
+        session_id="session-1",
+        runtime_task_id=uuid4(),
+        content="进入计划模式，做一个关于跨链桥的报告",
+        plan_mode_requested=True,
+        runtime_session_context=session_context,
+    )
+
+    assert result is None
+    plan_path = tmp_path / str(agent_id) / "workspace" / "plans" / "session-1.plan.md"
+    assert plan_path.is_file()
+    assert plan_path.read_text(encoding="utf-8") == ""
+
+
+@pytest.mark.asyncio
 async def test_maybe_handle_plan_mode_entry_activates_deep_research_interactive_plan(monkeypatch):
     import app.services.web_chat_runtime as runtime
 

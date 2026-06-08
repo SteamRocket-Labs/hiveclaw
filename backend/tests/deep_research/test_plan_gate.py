@@ -80,7 +80,9 @@ async def test_run_without_plan_confirmed_returns_needs_plan(tmp_path, monkeypat
     assert payload["status"] == "needs_plan"
     assert payload["clarifying_questions"]
     assert payload["worker_topics"]
-    assert "lanes" in payload["plan"]
+    assert "plan" not in payload
+    assert "plan_json" not in payload
+    assert payload["plan_markdown"]
     assert payload["plan_id"]
 
 
@@ -144,13 +146,19 @@ async def test_start_without_plan_confirmed_returns_confirmable_plan_card_payloa
             "worker_topics": ["official evidence"],
         },
     }
+    plan_markdown_path = tmp_path / "plans" / f"{plan_id}.md"
+    plan_markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    plan_markdown_path.write_text(
+        "# Deep Research Markdown Plan\n\n- Confirm the RWA research lanes before execution.\n",
+        encoding="utf-8",
+    )
     plan = SimpleNamespace(
         id=plan_id,
         status="awaiting_confirmation",
         plan_version=3,
         plan_hash=plan_mode_core.compute_plan_hash(plan_json),
         plan_json=plan_json,
-        plan_markdown_path=str(tmp_path / "plans" / f"{plan_id}.md"),
+        plan_markdown_path=str(plan_markdown_path),
     )
 
     class FakePlanService:
@@ -180,8 +188,9 @@ async def test_start_without_plan_confirmed_returns_confirmable_plan_card_payloa
     assert payload["plan_id"] == str(plan_id)
     assert payload["plan_version"] == 3
     assert payload["plan_hash"] == plan.plan_hash
-    assert payload["plan_json"]["handoff"]["target"] == "deep_research"
-    assert payload["plan_json"]["deep_research"]["output_format"] == "docx"
+    assert payload["plan_markdown_path"] == str(plan_markdown_path)
+    assert payload["plan_markdown"].startswith("# Deep Research Markdown Plan")
+    assert "plan_json" not in payload
     assert payload["worker_topics"] == ["official evidence"]
     assert fake_plan_service.calls, "Deep Research needs_plan must materialize a real Plan Mode ledger row"
     assert fake_plan_service.calls[0]["intent_type"] == "long_task"

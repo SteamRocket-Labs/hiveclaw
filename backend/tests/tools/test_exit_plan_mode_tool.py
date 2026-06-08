@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
 
-def _request(arguments: dict):
+def _request(arguments: dict, *, workspace: str | Path = "/tmp"):
     from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
 
     return ToolExecutionRequest(
@@ -17,7 +18,7 @@ def _request(arguments: dict):
             agent_id=uuid4(),
             user_id=uuid4(),
             tenant_id=None,
-            workspace="/tmp",
+            workspace=Path(workspace),
             session_id="session-plan",
         ),
     )
@@ -323,6 +324,62 @@ async def test_exit_plan_mode_captures_plan_markdown_into_fill(monkeypatch):
     assert result["status"] == "needs_plan"
     assert "聚焦三条赛道" in result["plan_json"]["plan_markdown"]
     assert "聚焦三条赛道" in service.calls[0]["fill"]["plan_markdown"]
+
+
+@pytest.mark.asyncio
+async def test_exit_plan_mode_reads_markdown_from_provisioned_plan_file(tmp_path, monkeypatch):
+    """MD-first submission: the long user-facing plan may live in the exact
+    Plan Mode plan file instead of being serialized through JSON tool args.
+    This avoids long Markdown escaping failures while keeping the governed
+    plan_json hash-covered after submission."""
+    from app.services.plan_mode_runtime_context import reset_interactive_plan_mode, set_interactive_plan_mode
+    from app.tools.handlers import plan_mode as handler
+
+    service = _PlanService()
+    monkeypatch.setattr(handler, "get_plan_mode_service", lambda: service)
+
+    plan_file = "workspace/plans/session-plan.plan.md"
+    absolute_plan_file = tmp_path / plan_file
+    absolute_plan_file.parent.mkdir(parents=True)
+    absolute_plan_file.write_text(
+        "# 跨链桥技术架构报告计划\n\n"
+        "## 目标\n"
+        "先确认技术路径、项目架构、安全模型、跨链消息标准和趋势五个维度。\n\n"
+        "## 执行顺序\n"
+        "1. 只读核验来源。\n"
+        "2. 写 Markdown 报告。\n",
+        encoding="utf-8",
+    )
+
+    token = set_interactive_plan_mode(
+        {
+            "active": True,
+            "original_request": "进入计划模式，做一个关于跨链桥的报告",
+            "intent_type": "long_task",
+            "plan_file_path": plan_file,
+        }
+    )
+    try:
+        result = json.loads(
+            await handler.exit_plan_mode(
+                _request(
+                    {
+                        "title": "跨链桥报告计划",
+                        "objective": "产出技术架构型跨链桥报告。",
+                        "steps": ["确认范围", "核验来源", "撰写报告"],
+                        "success_criteria": ["PlanCard 展示 Markdown 计划", "报告完成后有来源 ledger"],
+                        "stop_conditions": ["用户拒绝计划"],
+                    },
+                    workspace=tmp_path,
+                )
+            )
+        )
+    finally:
+        reset_interactive_plan_mode(token)
+
+    assert result["status"] == "needs_plan"
+    assert "跨链桥技术架构报告计划" in result["plan_json"]["plan_markdown"]
+    assert "只读核验来源" in service.calls[0]["fill"]["plan_markdown"]
 
 
 @pytest.mark.asyncio

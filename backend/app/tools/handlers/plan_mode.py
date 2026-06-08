@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from pathlib import Path
 from typing import Any
 
 from app.services import plan_mode_core
@@ -122,6 +123,34 @@ def _plan_uuid(value: Any) -> uuid.UUID | None:
         return None
 
 
+def _read_provisioned_plan_markdown(request: ToolExecutionRequest, metadata: dict[str, Any]) -> str:
+    """Read the MD-first plan body from the exact runtime-provisioned plan file.
+
+    The model may mention a path in tool args, but the trusted source is the
+    runtime PlanMode metadata. This keeps the Plan Mode write/read permission at
+    one exact file and avoids turning exit_plan_mode into an arbitrary file read.
+    """
+    plan_file_path = str(metadata.get("plan_file_path") or "").strip()
+    if not plan_file_path:
+        return ""
+    candidate = Path(plan_file_path)
+    if candidate.is_absolute() or any(part == ".." for part in candidate.parts):
+        return ""
+    workspace = Path(request.context.workspace)
+    absolute_path = (workspace / candidate).resolve()
+    try:
+        workspace_root = workspace.resolve()
+        absolute_path.relative_to(workspace_root)
+    except ValueError:
+        return ""
+    if not absolute_path.is_file():
+        return ""
+    try:
+        return absolute_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 @tool(
     ToolMeta(
         name="exit_plan_mode",
@@ -135,6 +164,13 @@ def _plan_uuid(value: Any) -> uuid.UUID | None:
                 "title": {"type": "string", "description": "Short user-facing plan title."},
                 "objective": {"type": "string", "description": "What the confirmed work will accomplish."},
                 "plan_markdown": {"type": "string", "description": "Concise markdown plan preview for the user."},
+                "plan_markdown_path": {
+                    "type": "string",
+                    "description": (
+                        "Optional echo of the runtime-provisioned plan file path. The runtime only trusts the "
+                        "exact path already stored in Plan Mode metadata."
+                    ),
+                },
                 "steps": {
                     "type": "array",
                     "description": "Ordered plan steps. Strings or objects with description/expected_output are accepted.",
@@ -150,7 +186,7 @@ def _plan_uuid(value: Any) -> uuid.UUID | None:
                 "handoff_target": {"type": "string"},
                 "handoff_payload": {"type": "object"},
             },
-            "required": ["title", "objective", "plan_markdown", "steps", "success_criteria", "stop_conditions"],
+            "required": ["title", "objective", "steps", "success_criteria", "stop_conditions"],
         },
         category="plan",
         display_name="Exit Plan Mode",
@@ -177,6 +213,8 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
     # user confirms, not a field form). A blank body means the agent filled fields
     # without authoring a plan — reject so it writes the real plan, in the same turn.
     plan_markdown = str(args.get("plan_markdown") or "").strip()
+    if not plan_markdown:
+        plan_markdown = _read_provisioned_plan_markdown(request, metadata)
     if not plan_markdown:
         return json.dumps(
             {

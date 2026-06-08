@@ -142,7 +142,7 @@ describe('ChatWorkLedgerDock', () => {
     expect(sessionCall?.retry).toBe(3);
   });
 
-  it('keeps a live pending dock stable when the ledger is not created yet', () => {
+  it('does not keep a live pending dock when the ledger is not created yet', () => {
     queryHarness.sessionError = true;
     queryHarness.runtimeError = true;
 
@@ -155,9 +155,8 @@ describe('ChatWorkLedgerDock', () => {
       />,
     );
 
-    expect(markup).toContain('data-testid="chat-work-ledger-dock"');
-    expect(markup).toContain('Loading work state...');
-    expect(markup).not.toContain('Work ledger is not available yet.');
+    expect(markup).not.toContain('data-testid="chat-work-ledger-dock"');
+    expect(markup).not.toContain('Loading work state...');
   });
 
   it('renders only the Claude Code style task list in the persistent dock', () => {

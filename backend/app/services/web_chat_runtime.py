@@ -5,6 +5,7 @@ import json
 import re
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
@@ -12,6 +13,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.core.permissions import is_agent_expired
 from app.kernel.contracts import ExecutionIdentityRef
 from app.models.agent import Agent
@@ -388,9 +390,31 @@ def _simulation_title(content: str) -> str:
     return content[:80] if content else ""
 
 
+def _provision_interactive_plan_file(agent_id: uuid.UUID, plan_file_path: str | None) -> None:
+    if not plan_file_path:
+        return
+    rel_path = Path(plan_file_path)
+    if rel_path.is_absolute() or any(part == ".." for part in rel_path.parts):
+        logger.warning("[WebChatRun] Refusing unsafe Plan Mode plan file path: {}", plan_file_path)
+        return
+    workspace_root = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
+    absolute_path = (workspace_root / rel_path).resolve()
+    try:
+        absolute_path.relative_to(workspace_root.resolve())
+    except ValueError:
+        logger.warning("[WebChatRun] Refusing escaping Plan Mode plan file path: {}", plan_file_path)
+        return
+    try:
+        absolute_path.parent.mkdir(parents=True, exist_ok=True)
+        absolute_path.touch(exist_ok=True)
+    except OSError as exc:
+        logger.warning("[WebChatRun] Failed to provision Plan Mode plan file {}: {}", plan_file_path, exc)
+
+
 def _activate_interactive_plan_mode(
     runtime_session_context: Any | None,
     *,
+    agent_id: uuid.UUID,
     original_request: str,
     decision: plan_mode_core.PlanModeEntryDecision,
     session_id: str | None,
@@ -407,6 +431,8 @@ def _activate_interactive_plan_mode(
         # after confirmation (not a detached long_task). Detached background
         # execution is opt-in (see plan_mode_session_handoff + the detached stub).
         handoff_target = "continue_current_session"
+    plan_file_path = f"workspace/plans/{session_id}.plan.md" if session_id else None
+    _provision_interactive_plan_file(agent_id, plan_file_path)
     state = PlanModeState(
         active=True,
         original_request=original_request,
@@ -417,7 +443,7 @@ def _activate_interactive_plan_mode(
         handoff_target=handoff_target,
         deep_research=is_deep_research,
         deep_research_args=_deep_research_chat_arguments(original_request) if is_deep_research else {},
-        plan_file_path=f"workspace/plans/{session_id}.plan.md" if session_id else None,
+        plan_file_path=plan_file_path,
         source="web_chat",
     )
     metadata = state.to_metadata()
@@ -594,6 +620,7 @@ async def _maybe_handle_plan_mode_entry(
 
     _activate_interactive_plan_mode(
         runtime_session_context,
+        agent_id=agent_id,
         original_request=content,
         decision=decision,
         session_id=session_id,

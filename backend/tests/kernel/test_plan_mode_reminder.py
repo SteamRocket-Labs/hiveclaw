@@ -52,6 +52,17 @@ def test_full_reminder_is_domain_neutral_and_clarification_first():
     assert "motivation, ordered steps" not in full
 
 
+def test_full_reminder_scopes_workspace_reads_to_relevant_context():
+    """Plan Mode may read workspace context, but it must not default to browsing
+    old artifacts. The reminder should teach need-scoped reads and provenance so
+    historical reports/JSON do not silently become the current plan input."""
+    full = _PLAN_MODE_REMINDER_FULL
+    assert "Do not browse the workspace root" in full
+    assert "historical artifact" in full
+    assert "need-scoped" in full
+    assert "reference" in full
+
+
 def test_sparse_reminder_routes_clarification_and_plan_body():
     sparse = _PLAN_MODE_REMINDER_SPARSE
     assert "ask_user_question" in sparse

@@ -215,6 +215,38 @@ async def test_deep_research_export_writes_workspace_visible_markdown(
 
 
 @pytest.mark.asyncio
+async def test_deep_research_export_reads_workflow_run_artifacts(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.tools.handlers.deep_research import deep_research_export
+
+    run_id = str(uuid.uuid4())
+    artifact_dir = tmp_path / "runtime_artifacts" / "workflow_runs" / run_id / "deep_research"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "report.md").write_text("# Workflow report\n", encoding="utf-8")
+    (artifact_dir / "sources.jsonl").write_text('{"source_id":"src_1"}\n', encoding="utf-8")
+    (artifact_dir / "final.json").write_text('{"status":"completed"}', encoding="utf-8")
+
+    async def fake_get_runtime_task_record(_task_id: str):
+        return {"task_id": run_id, "task_type": "workflow", "status": "completed", "parent_agent_id": None}
+
+    monkeypatch.setattr("app.tools.handlers.deep_research.get_runtime_task_record", fake_get_runtime_task_record)
+
+    req = _request(tmp_path)
+    req.arguments.update({"task_id": run_id, "format": "markdown"})
+
+    payload = json.loads(await deep_research_export(req))
+
+    assert payload["ok"] is True
+    assert payload["artifact_path"] == f"runtime_artifacts/workflow_runs/{run_id}/deep_research/report.md"
+    assert payload["path"] == f"workspace/deep_research_reports/{run_id}/report.md"
+    assert (tmp_path / "workspace" / "deep_research_reports" / run_id / "report.md").read_text(
+        encoding="utf-8"
+    ) == "# Workflow report\n"
+
+
+@pytest.mark.asyncio
 async def test_deep_research_export_writes_office_docx_without_replacing_markdown(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

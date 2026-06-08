@@ -266,6 +266,34 @@ def test_agent_session_work_ledger_endpoint_returns_latest_session_ledger(monkey
     assert captured["session_id"] == session_id
 
 
+def test_agent_session_work_ledger_endpoint_returns_empty_view_before_ledger_exists(monkeypatch):
+    agent_id = uuid4()
+    session_id = uuid4()
+    user = SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4(), username="member")
+    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user.id)
+    db = _SessionDB(session)
+
+    async def fake_session_work_ledger(*, db, agent_id, session_id):
+        return None
+
+    monkeypatch.setattr(autonomy_api, "read_latest_session_work_ledger_view", fake_session_work_ledger)
+    client, _user = _client(monkeypatch, db=db, user=user, access_level="read")
+
+    response = client.get(f"/agents/{agent_id}/sessions/{session_id}/work-ledger")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == {
+        "schema": "agent_work_ledger_view.v1",
+        "session_id": str(session_id),
+        "runtime_task_id": None,
+        "status": "empty",
+        "current_phase": None,
+        "todo_items": [],
+        "counts": {"todos_total": 0, "todos_complete": 0, "todos_open": 0},
+    }
+
+
 def test_agent_session_work_ledger_endpoint_rejects_cross_user_session_without_manage(monkeypatch):
     agent_id = uuid4()
     session_id = uuid4()

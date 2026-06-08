@@ -168,5 +168,13 @@ async def get_agent_session_work_ledger(
     )
     ledger = await read_latest_session_work_ledger_view(db=db, agent_id=agent_id, session_id=session_id)
     if ledger is None:
-        raise HTTPException(status_code=404, detail="Session work ledger not found")
+        return {
+            "schema": "agent_work_ledger_view.v1",
+            "session_id": str(session_id),
+            "runtime_task_id": None,
+            "status": "empty",
+            "current_phase": None,
+            "todo_items": [],
+            "counts": {"todos_total": 0, "todos_complete": 0, "todos_open": 0},
+        }
     return ledger

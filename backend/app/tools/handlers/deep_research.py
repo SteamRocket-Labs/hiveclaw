@@ -148,20 +148,59 @@ def _needs_plan_payload(preview: dict[str, Any], *, plan: Any | None = None) -> 
             payload["clarifying_questions"] = (
                 deep_research_plan.get("clarifying_questions") or payload.get("clarifying_questions") or []
             )
+        payload.pop("plan", None)
+        plan_markdown = _plan_markdown_for_payload(plan)
         payload.update(
             {
                 "plan_id": str(plan.id),
                 "plan_version": plan.plan_version,
                 "plan_hash": plan.plan_hash,
                 "plan_markdown_path": plan.plan_markdown_path,
-                "plan_json": plan_json,
+                "plan_markdown": plan_markdown,
                 "summary": (
-                    "A Deep Research plan has been created. Show this plan card to the user and wait for explicit "
-                    "confirmation before starting the research run."
+                    "A Deep Research Markdown plan has been created. Show the plan_markdown / plan_markdown_path "
+                    "to the user and wait for explicit confirmation before starting the research run."
                 ),
             }
         )
     return payload
+
+
+def _plan_markdown_for_payload(plan: Any) -> str:
+    path_value = str(getattr(plan, "plan_markdown_path", "") or "").strip()
+    if path_value:
+        path = Path(path_value)
+        try:
+            if path.exists() and path.is_file():
+                text = path.read_text(encoding="utf-8").strip()
+                if text:
+                    return text
+        except OSError:
+            logger.warning("[DeepResearch] failed to read plan markdown at %s", path_value)
+
+    plan_json = getattr(plan, "plan_json", None) or {}
+    if not isinstance(plan_json, dict):
+        return ""
+    try:
+        from app.services import plan_mode_core
+
+        created_at = getattr(plan, "created_at", None)
+        return plan_mode_core.render_plan_markdown(
+            plan_id=getattr(plan, "id", ""),
+            agent_id=getattr(plan, "agent_id", ""),
+            tenant_id=getattr(plan, "tenant_id", None),
+            status=str(getattr(plan, "status", "awaiting_confirmation") or "awaiting_confirmation"),
+            plan_version=int(getattr(plan, "plan_version", 1) or 1),
+            plan_hash=str(getattr(plan, "plan_hash", "") or ""),
+            intent_type=str(getattr(plan, "intent_type", plan_json.get("intent_type") or "long_task") or "long_task"),
+            created_at=created_at.isoformat() if created_at else "",
+            plan_json=plan_json,
+            confirmed_by=getattr(plan, "confirmed_by_user_id", None),
+            confirmed_at=None,
+        ).strip()
+    except Exception:
+        logger.warning("[DeepResearch] failed to render fallback plan markdown for plan=%s", getattr(plan, "id", None))
+        return str(plan_json.get("plan_markdown") or plan_json.get("objective") or plan_json.get("title") or "").strip()
 
 
 @tool(
@@ -332,9 +371,12 @@ async def deep_research_check(request: ToolExecutionRequest) -> str:
     if record and record.get("task_type") == "workflow":
         # DR-4: workflow-shaped Deep Research run — artifacts live under the
         # run-scoped workflow root, progress mirrors the run status.
-        from app.services.deep_research.leaf_presets import run_artifact_dir
-
-        artifact_dir = run_artifact_dir(request.context.agent_id, task_id)
+        artifact_dir = _resolve_deep_research_artifact_dir(
+            request.context.workspace,
+            task_id,
+            agent_id=request.context.agent_id,
+            prefer_workflow=True,
+        )
         payload = _read_artifact_dir_payload(request.context.workspace, task_id, artifact_dir)
         if not payload.get("status"):
             payload["status"] = record.get("status")
@@ -408,7 +450,12 @@ async def deep_research_export(request: ToolExecutionRequest) -> str:
     record = await get_runtime_task_record(task_id)
     if record and record.get("parent_agent_id") not in {None, str(request.context.agent_id)}:
         return _json({"ok": False, "error": "forbidden"})
-    artifact_dir = _deep_research_dir(request.context.workspace, task_id)
+    artifact_dir = _resolve_deep_research_artifact_dir(
+        request.context.workspace,
+        task_id,
+        agent_id=request.context.agent_id,
+        prefer_workflow=bool(record and record.get("task_type") == "workflow"),
+    )
     final_path = artifact_dir / "final.json"
     report_path = artifact_dir / "report.md"
     artifact_target = _materialize_requested_output_format(request.context.workspace, artifact_dir, export_format)
@@ -513,7 +560,7 @@ def _schedule_deep_research_workflow_background(
 
 
 def _read_deep_research_artifact(workspace: Path, task_id: str) -> dict[str, Any]:
-    return _read_artifact_dir_payload(workspace, task_id, _deep_research_dir(workspace, task_id))
+    return _read_artifact_dir_payload(workspace, task_id, _resolve_deep_research_artifact_dir(workspace, task_id))
 
 
 def _read_artifact_dir_payload(workspace: Path, task_id: str, artifact_dir: Path) -> dict[str, Any]:
@@ -579,6 +626,73 @@ def _read_artifact_dir_payload(workspace: Path, task_id: str, artifact_dir: Path
 
 def _deep_research_dir(workspace: Path, task_id: uuid.UUID | str) -> Path:
     return workspace / "runtime_artifacts" / "long_tasks" / str(task_id).replace("-", "") / "deep_research"
+
+
+def _workflow_deep_research_dir(workspace: Path, task_id: uuid.UUID | str) -> Path:
+    return workspace / "runtime_artifacts" / "workflow_runs" / str(task_id) / "deep_research"
+
+
+_ARTIFACT_SIGNAL_FILES = (
+    "final.json",
+    "report.md",
+    "sources.jsonl",
+    "claims.jsonl",
+    "source_notes.jsonl",
+    "lane_summaries.jsonl",
+)
+
+
+def _artifact_dir_has_material(path: Path) -> bool:
+    return any((path / file_name).exists() for file_name in _ARTIFACT_SIGNAL_FILES)
+
+
+def _run_artifact_dir_for_agent(agent_id: uuid.UUID | str | None, task_id: uuid.UUID | str) -> Path | None:
+    if not agent_id:
+        return None
+    try:
+        from app.services.deep_research.leaf_presets import run_artifact_dir
+
+        return run_artifact_dir(agent_id, task_id)
+    except Exception:
+        logger.warning("[DeepResearch] failed to resolve workflow artifact dir for agent=%s run=%s", agent_id, task_id)
+        return None
+
+
+def _resolve_deep_research_artifact_dir(
+    workspace: Path,
+    task_id: uuid.UUID | str,
+    *,
+    agent_id: uuid.UUID | str | None = None,
+    prefer_workflow: bool = False,
+) -> Path:
+    """Resolve Deep Research artifacts across the workflow and legacy layouts.
+
+    Workflow runs write under ``runtime_artifacts/workflow_runs/{run}/deep_research``.
+    Legacy synchronous runs wrote under ``runtime_artifacts/long_tasks/{run}/deep_research``.
+    """
+    candidates: list[Path | None] = []
+    if prefer_workflow:
+        candidates.append(_run_artifact_dir_for_agent(agent_id, task_id))
+        candidates.append(_workflow_deep_research_dir(workspace, task_id))
+        candidates.append(_deep_research_dir(workspace, task_id))
+    else:
+        candidates.append(_workflow_deep_research_dir(workspace, task_id))
+        candidates.append(_deep_research_dir(workspace, task_id))
+        candidates.append(_run_artifact_dir_for_agent(agent_id, task_id))
+
+    seen: set[str] = set()
+    resolved_candidates: list[Path] = []
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        resolved_candidates.append(candidate)
+        if _artifact_dir_has_material(candidate):
+            return candidate
+    return resolved_candidates[0] if resolved_candidates else _deep_research_dir(workspace, task_id)
 
 
 def _workspace_export_dir(workspace: Path, run_id: uuid.UUID | str) -> Path:
@@ -829,7 +943,7 @@ async def stream_deep_research_artifacts(
     import time as _time_mod
     from datetime import datetime, timezone
 
-    artifact_dir = _deep_research_dir(workspace, task_id)
+    artifact_dir = _resolve_deep_research_artifact_dir(workspace, task_id)
     cursors = dict(cursors or {})
     started_at = (_now or _time_mod.monotonic)()
     final_emitted = False

@@ -86,21 +86,19 @@ export default function ChatWorkLedgerDock({
   });
   const data = preferRuntimeLedger ? runtimeQuery.data : (sessionData ?? runtimeQuery.data);
   const isLoading = sessionQuery.isLoading || (runtimeQueryEnabled && runtimeQuery.isLoading);
-  const missingLiveLedger = live && Boolean(sessionId || runtimeTaskKey) && !data && !isLoading;
   const todoItems = data?.todo_items ?? [];
-  const displayItems =
-    todoItems.length > 0 || (!isLoading && !missingLiveLedger)
-      ? todoItems
-      : [
-          {
-            id: 'work-ledger-loading',
-            title: t('agent.chat.workLedger.loading', 'Loading work state...'),
-            status: 'pending',
-            required: false,
-          },
-        ];
+  const displayItems = isLoading
+    ? [
+        {
+          id: 'work-ledger-loading',
+          title: t('agent.chat.workLedger.loading', 'Loading work state...'),
+          status: 'pending',
+          required: false,
+        },
+      ]
+    : todoItems;
 
-  if ((!data && !isLoading && !missingLiveLedger) || displayItems.length === 0) {
+  if ((!data && !isLoading) || displayItems.length === 0) {
     return null;
   }
 

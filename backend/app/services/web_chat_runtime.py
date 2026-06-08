@@ -572,9 +572,11 @@ async def _maybe_handle_plan_mode_entry(
 ) -> str | None:
     """Handle the UX-layer Plan Mode entry before normal agent execution.
 
-    Schedule/monitor intents recommend Plan Mode and stop. Explicit Plan Mode
-    selection or long-task intents materialise an awaiting plan. The execution
-    safety gate remains in the tool/runtime layer.
+    Schedule/monitor intents RECOMMEND Plan Mode and stop (a suggestion). Only an
+    explicit Plan Mode selection materialises an awaiting plan — the agent's own
+    judgment never auto-enters (A: entry is always user-explicit; the agent
+    suggests via prompt guidance). The execution safety gate remains in the
+    tool/runtime layer.
     """
     decision = plan_mode_core.classify_plan_mode_entry(content, explicit=plan_mode_requested)
     if decision.mode in {"none", "declined"}:

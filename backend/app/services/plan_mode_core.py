@@ -72,10 +72,13 @@ class PlanModeEntryDecision:
 
     ``mode`` is one of:
     - ``none``: normal chat execution.
-    - ``recommend``: stop before execution and ask whether to enter Plan Mode.
-    - ``auto``: create an awaiting plan immediately.
+    - ``recommend``: stop before execution and ask whether to enter Plan Mode
+      (a suggestion — it never enters on its own).
     - ``explicit``: the user/frontend explicitly selected Plan Mode.
     - ``declined``: the user explicitly declined a Plan Mode recommendation.
+
+    There is deliberately no ``auto`` mode: the agent's judgment must never trigger
+    Plan Mode entry (A — user correction). Entry is always user-explicit.
 
     This classifier is intentionally **not** the security boundary. Tool/runtime
     backstops still protect execution. Its job is to keep the normal UX from
@@ -119,12 +122,6 @@ _SCHEDULE_RE = re.compile(
     r"schedule|cron|daily|weekly|monthly|monitor|watch)",
     re.IGNORECASE,
 )
-_LONG_TASK_RE = re.compile(
-    r"(长任务|长期任务|完整调研|深度研究|出报告|生成报告|调研.*报告|研究.*报告|"
-    r"deep\s*research|comprehensive\s+research|full\s+research)",
-    re.IGNORECASE,
-)
-
 PLAN_MODE_RECOMMENDATION_MARKER = "建议先进入计划模式，确认执行频率、范围、成本、停止条件和通知方式"
 PLAN_MODE_TRUSTED_DECLINE_SESSION_KEY = "plan_mode_trusted_user_decline"
 
@@ -164,11 +161,13 @@ def extract_plan_confirmation_request(content: str) -> PlanConfirmationRequest |
 def classify_plan_mode_entry(content: str, *, explicit: bool = False) -> PlanModeEntryDecision:
     """Classify a user turn into Plan Mode UX behavior.
 
-    This is the "recommend vs auto-enter" layer:
+    This is the "suggest, never trigger" layer (A — user correction: the agent's
+    judgment must NEVER auto-enter Plan Mode; entry is always user-explicit):
     - explicit frontend/user Plan Mode selection enters Plan Mode;
     - explicit textual decline lets the normal agent continue with an auditable opt-out;
-    - long-task wording enters Plan Mode automatically;
-    - schedule/monitor wording recommends Plan Mode first;
+    - schedule/monitor wording RECOMMENDS Plan Mode first (a suggestion — it does
+      not enter); the agent's own "should we plan?" judgment is taught in the prompt
+      (plan_mode_guidance), surfaced as a suggestion in its reply, never an auto-entry;
     - everything else stays normal.
     """
     text = str(content or "").strip()
@@ -180,7 +179,6 @@ def classify_plan_mode_entry(content: str, *, explicit: bool = False) -> PlanMod
 
     has_explicit = explicit or bool(_EXPLICIT_PLAN_MODE_RE.search(text))
     has_schedule = bool(_SCHEDULE_RE.search(text))
-    has_long_task = bool(_LONG_TASK_RE.search(text))
 
     if has_explicit:
         if has_schedule:
@@ -209,16 +207,6 @@ def classify_plan_mode_entry(content: str, *, explicit: bool = False) -> PlanMod
             tool_name="set_trigger",
             title=text[:120],
             reason="schedule_or_monitor_intent",
-        )
-
-    if has_long_task:
-        return PlanModeEntryDecision(
-            mode="auto",
-            intent_type="long_task",
-            action_kind="start_long_task",
-            tool_name="manage_tasks",
-            title=text[:120],
-            reason="long_task_intent",
         )
 
     return PlanModeEntryDecision(mode="none")

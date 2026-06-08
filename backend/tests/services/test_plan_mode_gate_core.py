@@ -369,15 +369,16 @@ def test_classify_plan_mode_entry_recommends_for_schedule_intent():
     assert decision.tool_name == "set_trigger"
 
 
-def test_classify_plan_mode_entry_auto_enters_for_long_task_intent():
+def test_classify_plan_mode_entry_long_task_text_does_not_auto_enter():
+    """A (user correction): the agent's judgment must NOT trigger Plan Mode entry.
+    Pure long-task wording no longer auto-activates — entry stays user-explicit
+    (the agent SUGGESTS via prompt guidance; the user decides). The pre-LLM
+    long-task regex auto-trigger is removed."""
     from app.services.plan_mode_core import classify_plan_mode_entry
 
     decision = classify_plan_mode_entry("完整调研这个行业并输出报告")
 
-    assert decision.mode == "auto"
-    assert decision.intent_type == "long_task"
-    assert decision.action_kind == "start_long_task"
-    assert decision.tool_name == "manage_tasks"
+    assert decision.mode == "none"
 
 
 def test_classify_plan_mode_entry_recommends_when_schedule_and_long_task_overlap():

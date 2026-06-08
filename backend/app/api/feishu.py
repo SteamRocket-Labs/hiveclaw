@@ -2223,7 +2223,7 @@ async def _call_agent_llm(
         user_text = getattr(accepted_recommendation, "original_request", None) or user_text
 
     if (
-        plan_entry_decision.mode in {"auto", "explicit"}
+        plan_entry_decision.mode == "explicit"
         and plan_entry_decision.action_kind
         and plan_entry_decision.tool_name
     ):

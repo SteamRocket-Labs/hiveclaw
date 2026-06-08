@@ -36,6 +36,7 @@ from .tasks import build_tasks_section
 from .tone_style import build_tone_style_section
 from .tools import build_tools_section
 from .triggers import build_triggers_section
+from .plan_mode_guidance import build_plan_mode_guidance_section
 
 __all__ = [
     # Frozen prefix
@@ -50,6 +51,7 @@ __all__ = [
     # Dynamic suffix
     "build_memory_section",
     "build_memory_navigation_section",
+    "build_plan_mode_guidance_section",
     "build_scenario_section",
     "build_active_tool_groups_section",
     "build_knowledge_section",

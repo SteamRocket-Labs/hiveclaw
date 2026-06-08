@@ -509,6 +509,16 @@ def build_dynamic_prompt_suffix(
     if source in _AUTONOMOUS_SOURCES:
         parts.append(_AUTONOMOUS_WORK_SECTION.format(source=source))
 
+    # § When to Suggest Planning First (A) — interactive surfaces only. The agent
+    # may suggest Plan Mode in its reply; it never auto-enters (entry is the user's).
+    from app.runtime.prompt_sections.plan_mode_guidance import (
+        build_plan_mode_guidance_section,
+        should_show_plan_mode_guidance,
+    )
+
+    if should_show_plan_mode_guidance(source, channel):
+        parts.append(build_plan_mode_guidance_section())
+
     memory_budget_chars = getattr(budget_profile, "memory_budget_chars", _DEFAULT_MEMORY_SNAPSHOT_BUDGET)
 
     # § Memory (4-layer pyramid + current T3 snapshot) — body capped to 60%

@@ -64,30 +64,17 @@ async def test_channel_llm_recommends_plan_mode_for_schedule_intent():
 
 
 @pytest.mark.asyncio
-async def test_channel_llm_auto_creates_plan_for_long_task(monkeypatch):
-    """Cut ④: Feishu classification authors the plan via a main-loop Plan Mode run
-    (launch_system_plan_run fills a draft) — the single plan path. The classified
-    action is carried as seed context for the agent to plan from."""
+async def test_channel_llm_does_not_auto_enter_plan_mode_for_long_task(monkeypatch):
+    """A (user correction): pure long-task wording must NOT auto-enter Plan Mode in
+    a channel either. The agent's judgment never triggers entry — the turn falls
+    through to normal execution (here the no-model notice, since the test agent has
+    no LLM configured) and no plan is auto-authored."""
     from app.api.feishu import _call_agent_llm
 
-    draft = SimpleNamespace(id=uuid4())
-    authored = SimpleNamespace(id=draft.id, status="awaiting_confirmation")
     launched: list = []
 
-    class _PlanService:
-        async def create_plan_request(self, **kwargs):
-            self.create_kwargs = kwargs
-            return draft
-
-        async def get_plan(self, plan_id):
-            assert plan_id == draft.id
-            return authored
-
-    plan_service = _PlanService()
-    monkeypatch.setattr("app.services.plan_mode_service.get_plan_mode_service", lambda: plan_service)
-
     async def fake_launch(plan, *, seed_context=None):
-        launched.append({"plan_id": plan.id, "seed_context": seed_context})
+        launched.append(plan)
         return plan
 
     monkeypatch.setattr("app.services.plan_mode_system_run.launch_system_plan_run", fake_launch)
@@ -97,13 +84,8 @@ async def test_channel_llm_auto_creates_plan_for_long_task(monkeypatch):
 
     reply = await _call_agent_llm(db, agent.id, "完整调研这个行业并出报告")
 
-    assert "已进入计划模式" in reply
-    assert len(launched) == 1
-    assert launched[0]["plan_id"] == draft.id
-    assert launched[0]["seed_context"]["action_kind"] == "start_long_task"
-    assert launched[0]["seed_context"]["tool_name"] == "manage_tasks"
-    assert plan_service.create_kwargs["intent_type"] == "long_task"
-    assert plan_service.create_kwargs["original_request"] == "完整调研这个行业并出报告"
+    assert "已进入计划模式" not in reply  # long-task text no longer auto-enters
+    assert launched == []  # no plan auto-authored
     assert db.execute_calls == 1
 
 

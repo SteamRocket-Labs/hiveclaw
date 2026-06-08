@@ -58,7 +58,7 @@ async def test_continuation_starts_current_session_run_with_plan_in_prompt(monke
 
     async def fake_start(**kwargs):
         captured.update(kwargs)
-        return {"id": "run-123", "status": "running"}
+        return {"run_id": "run-123", "status": "running"}
 
     _stub_entities(monkeypatch)
     monkeypatch.setattr("app.services.web_chat_runtime.start_web_chat_run", fake_start)
@@ -85,7 +85,7 @@ async def test_continuation_queues_when_a_run_is_already_active(monkeypatch):
     from app.services.web_chat_runtime import ActiveWebChatRunExists
 
     async def fake_start(**kwargs):
-        raise ActiveWebChatRunExists({"id": "active-9"})
+        raise ActiveWebChatRunExists({"run_id": "active-9"})
 
     _stub_entities(monkeypatch)
     monkeypatch.setattr("app.services.web_chat_runtime.start_web_chat_run", fake_start)

@@ -699,6 +699,7 @@ async def _resume_queued_plan_handoffs(
     *,
     agent_id: uuid.UUID,
     session_id: str | uuid.UUID,
+    completed_run_id: str | uuid.UUID | None = None,
     limit: int = 1,
 ) -> list[str]:
     """Resume confirmed Plan Mode handoffs queued behind an active web-chat run.
@@ -708,12 +709,15 @@ async def _resume_queued_plan_handoffs(
     run reaches a terminal state, this hook asks PlanModeService to hand off the
     oldest queued plan for the same agent/session. The handler will either start a
     new same-session run or keep the plan queued if another run won the race.
+    When ``completed_run_id`` is provided, only handoffs queued behind that exact
+    run are resumed; stale queued plans must not be revived by unrelated later
+    turns in the same session.
     """
     from app.models.plan_request import AgentPlanRequest
     from app.services.plan_mode_service import get_plan_mode_service
 
     async with _async_session() as db:
-        result = await db.execute(
+        stmt = (
             select(AgentPlanRequest.id)
             .where(
                 AgentPlanRequest.agent_id == agent_id,
@@ -724,6 +728,11 @@ async def _resume_queued_plan_handoffs(
             .order_by(AgentPlanRequest.updated_at.asc(), AgentPlanRequest.created_at.asc())
             .limit(limit)
         )
+        if completed_run_id is not None:
+            stmt = stmt.where(
+                AgentPlanRequest.handoff_payload["active_run_id"].as_string() == str(completed_run_id)
+            )
+        result = await db.execute(stmt)
         plan_ids = list(result.scalars().all())
 
     resumed: list[str] = []
@@ -1009,7 +1018,11 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         _CANCEL_EVENTS.pop(run_key, None)
         if terminal_agent_id is not None and terminal_session_id:
             try:
-                await _resume_queued_plan_handoffs(agent_id=terminal_agent_id, session_id=terminal_session_id)
+                await _resume_queued_plan_handoffs(
+                    agent_id=terminal_agent_id,
+                    session_id=terminal_session_id,
+                    completed_run_id=run_key,
+                )
             except Exception as exc:  # noqa: BLE001 - terminal cleanup must not mask run outcome
                 logger.warning(
                     "[WebChatRun] queued Plan Mode handoff cleanup failed: run_id={} error={}",

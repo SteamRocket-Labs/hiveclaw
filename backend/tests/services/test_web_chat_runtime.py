@@ -221,10 +221,12 @@ async def test_resume_queued_plan_handoffs_restarts_oldest_confirmed_plan(monkey
     the active run is no longer active.
     """
     import app.services.web_chat_runtime as runtime
+    from sqlalchemy.dialects import postgresql
 
     agent_id = uuid4()
     session_id = "sess-1"
     plan_id = uuid4()
+    active_run_id = uuid4().hex
 
     class _QueuedResult:
         def scalars(self):
@@ -232,6 +234,10 @@ async def test_resume_queued_plan_handoffs_restarts_oldest_confirmed_plan(monkey
 
     class _QueuedDB:
         async def execute(self, _stmt):
+            compiled = _stmt.compile(dialect=postgresql.dialect())
+            assert "handoff_payload" in str(compiled)
+            assert "active_run_id" in {str(value) for value in compiled.params.values()}
+            assert active_run_id in {str(value) for value in compiled.params.values()}
             return _QueuedResult()
 
     class _SessionFactory:
@@ -251,7 +257,11 @@ async def test_resume_queued_plan_handoffs_restarts_oldest_confirmed_plan(monkey
     monkeypatch.setattr(runtime, "_async_session", lambda: _SessionFactory())
     monkeypatch.setattr("app.services.plan_mode_service.get_plan_mode_service", lambda: _Service())
 
-    resumed = await runtime._resume_queued_plan_handoffs(agent_id=agent_id, session_id=session_id)
+    resumed = await runtime._resume_queued_plan_handoffs(
+        agent_id=agent_id,
+        session_id=session_id,
+        completed_run_id=active_run_id,
+    )
 
     assert calls == [plan_id]
     assert resumed == [str(plan_id)]
@@ -303,7 +313,7 @@ async def test_execute_web_chat_run_resumes_queued_plan_handoffs_on_terminal_exi
 
     await runtime.execute_web_chat_run(run_id)
 
-    assert resumed == [{"agent_id": agent_id, "session_id": session_id}]
+    assert resumed == [{"agent_id": agent_id, "session_id": session_id, "completed_run_id": run_id.hex}]
 
 
 # ---------------------------------------------------------------------------

@@ -39,6 +39,13 @@ class SessionHandoffError(Exception):
     ``handoff_status="failed"`` with the reason — never a silent success."""
 
 
+def _runtime_run_id(payload: dict[str, Any] | None) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("run_id") or payload.get("id")
+    return str(value) if value else None
+
+
 # Split-out loaders so tests can stub them without faking a DB engine (mirrors the
 # ``_load_agent`` seam in ``plan_mode_handoff.py``).
 async def _load_agent(db: Any, agent_id: Any) -> Any | None:
@@ -138,7 +145,7 @@ async def continue_current_session_handoff(db: Any, plan: Any) -> dict[str, Any]
         )
     except ActiveWebChatRunExists as exc:
         active_run = getattr(exc, "run", None) or {}
-        active_id = active_run.get("id") if isinstance(active_run, dict) else None
+        active_id = _runtime_run_id(active_run)
         logger.info(
             "plan_continue_session_queued",
             extra={"plan_id": str(plan.id), "session_id": str(session_id), "active_run_id": active_id},
@@ -150,7 +157,7 @@ async def continue_current_session_handoff(db: Any, plan: Any) -> dict[str, Any]
             "active_run_id": active_id,
         }
 
-    run_id = run.get("id") if isinstance(run, dict) else None
+    run_id = _runtime_run_id(run)
     logger.info(
         "plan_continue_session_started",
         extra={"plan_id": str(plan.id), "session_id": str(session_id), "runtime_task_id": run_id},

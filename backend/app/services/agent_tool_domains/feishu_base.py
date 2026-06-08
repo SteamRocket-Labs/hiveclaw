@@ -21,6 +21,7 @@ FEISHU_API = "https://open.feishu.cn/open-apis"
 
 # ── Render helpers (unchanged) ───────────────────────────────────────
 
+
 def _render_base_tables(base_token: str, items: list[dict], *, total: int | None = None) -> str:
     lines = [f"🗂️ **Feishu Base tables** (`{base_token}`)"]
     if total is not None:
@@ -33,6 +34,50 @@ def _render_base_tables(base_token: str, items: list[dict], *, total: int | None
     return "\n".join(lines)
 
 
+def _first_nonempty_string(value: dict, keys: tuple[str, ...]) -> str:
+    for key in keys:
+        item = value.get(key)
+        if isinstance(item, str) and item.strip():
+            return item.strip()
+    return ""
+
+
+def _format_base_link_value(text: str, link: str) -> str:
+    if text and text != link:
+        return f"{text} <{link}>"
+    return link
+
+
+def _looks_like_text_segments(items: list) -> bool:
+    return bool(items) and all(
+        isinstance(item, dict) and "type" in item and ("text" in item or "link" in item or "url" in item)
+        for item in items
+    )
+
+
+def _format_base_field_value(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return str(value)
+    if isinstance(value, list):
+        separator = "" if _looks_like_text_segments(value) else "; "
+        return separator.join(_format_base_field_value(item) for item in value)
+    if isinstance(value, dict):
+        link = _first_nonempty_string(value, ("link", "url", "href"))
+        text = _first_nonempty_string(value, ("text", "name", "title", "file_name"))
+        if link:
+            return _format_base_link_value(text, link)
+        if text:
+            return text
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
 def _render_base_records(table_id: str, items: list[dict], *, total: int | None = None) -> str:
     lines = [f"📋 **Feishu Base records** (`{table_id}`)"]
     if total is not None:
@@ -41,7 +86,13 @@ def _render_base_records(table_id: str, items: list[dict], *, total: int | None 
         lines.append("当前表下没有记录。")
         return "\n".join(lines)
     for item in items:
-        lines.append(f"- `{item.get('record_id', '')}` {json.dumps(item.get('fields', {}), ensure_ascii=False)}")
+        lines.append(f"- `{item.get('record_id', '')}`")
+        fields = item.get("fields", {})
+        if isinstance(fields, dict) and fields:
+            for field_name, field_value in fields.items():
+                lines.append(f"  - {field_name}: {_format_base_field_value(field_value)}")
+        elif fields:
+            lines.append(f"  - Fields: {_format_base_field_value(fields)}")
     return "\n".join(lines)
 
 
@@ -122,6 +173,7 @@ def _render_base_record_delete(table_id: str, record_id: str) -> str:
 
 # ── Shared helpers ───────────────────────────────────────────────────
 
+
 def _render_invalid_input(message: str, *, tool_name: str, actionable_hint: str | None = None) -> str:
     return render_tool_error(
         tool_name=tool_name,
@@ -154,6 +206,7 @@ def _not_configured_error(tool_name: str) -> str:
 
 # ── CLI fallback helpers (kept for backward compat) ──────────────────
 
+
 async def _run_feishu_base_shortcut(args: list[str]) -> dict:
     settings = get_settings()
     cli_bin = getattr(settings, "FEISHU_CLI_BIN", "lark-cli") or "lark-cli"
@@ -178,6 +231,7 @@ async def _run_feishu_base_shortcut(args: list[str]) -> dict:
 
 
 # ── OpenAPI implementations ──────────────────────────────────────────
+
 
 async def _base_api_get(token: str, path: str, params: dict | None = None) -> dict:
     """GET request to Feishu Bitable API with standard error handling."""
@@ -236,6 +290,7 @@ async def _base_api_delete(token: str, path: str) -> dict:
 
 # ── Public entry points (OpenAPI first, CLI fallback) ────────────────
 
+
 async def _feishu_base_table_list(agent_id, arguments: dict) -> str:
     base_token = str(arguments.get("base_token") or "").strip()
     if not base_token:
@@ -249,7 +304,9 @@ async def _feishu_base_table_list(agent_id, arguments: dict) -> str:
         _, token = creds
         try:
             data = await _base_api_get(token, f"/bitable/v1/apps/{base_token}/tables", {"page_size": limit})
-            items = [{"table_id": t.get("table_id", ""), "table_name": t.get("name", "")} for t in data.get("items", [])]
+            items = [
+                {"table_id": t.get("table_id", ""), "table_name": t.get("name", "")} for t in data.get("items", [])
+            ]
             return _render_base_tables(base_token, items, total=data.get("total"))
         except Exception as exc:
             logger.warning("[FeishuBase] OpenAPI table_list failed, trying CLI: %s", exc)
@@ -322,8 +379,18 @@ async def _feishu_base_field_list(agent_id, arguments: dict) -> str:
 
     offset = max(0, int(arguments.get("offset", 0)))
     payload = await _run_feishu_base_shortcut(
-        ["base", "+field-list", "--base-token", base_token, "--table-id", table_id,
-         "--offset", str(offset), "--limit", str(limit)]
+        [
+            "base",
+            "+field-list",
+            "--base-token",
+            base_token,
+            "--table-id",
+            table_id,
+            "--offset",
+            str(offset),
+            "--limit",
+            str(limit),
+        ]
     )
     return _render_base_fields(table_id, payload.get("items", []), total=payload.get("total"))
 
@@ -356,9 +423,7 @@ async def _feishu_base_field_create(agent_id, arguments: dict) -> str:
     creds = await _get_feishu_token(agent_id)
     if creds:
         _, token = creds
-        data = await _base_api_post(
-            token, f"/bitable/v1/apps/{base_token}/tables/{table_id}/fields", body
-        )
+        data = await _base_api_post(token, f"/bitable/v1/apps/{base_token}/tables/{table_id}/fields", body)
         field = data.get("field", data)
         return _render_base_field_create(table_id, field)
 
@@ -380,12 +445,10 @@ async def _feishu_base_record_list(agent_id, arguments: dict) -> str:
     if creds:
         _, token = creds
         try:
-            params: dict = {"page_size": limit}
+            params: dict = {"page_size": limit, "text_field_as_array": True}
             if view_id:
                 params["view_id"] = view_id
-            data = await _base_api_get(
-                token, f"/bitable/v1/apps/{base_token}/tables/{table_id}/records", params
-            )
+            data = await _base_api_get(token, f"/bitable/v1/apps/{base_token}/tables/{table_id}/records", params)
             return _render_base_records(table_id, data.get("items", []), total=data.get("total"))
         except Exception as exc:
             logger.warning("[FeishuBase] OpenAPI record_list failed, trying CLI: %s", exc)
@@ -394,8 +457,18 @@ async def _feishu_base_record_list(agent_id, arguments: dict) -> str:
         return _not_configured_error("feishu_base_record_list")
 
     offset = max(0, int(arguments.get("offset", 0)))
-    command = ["base", "+record-list", "--base-token", base_token, "--table-id", table_id,
-               "--offset", str(offset), "--limit", str(limit)]
+    command = [
+        "base",
+        "+record-list",
+        "--base-token",
+        base_token,
+        "--table-id",
+        table_id,
+        "--offset",
+        str(offset),
+        "--limit",
+        str(limit),
+    ]
     if view_id:
         command.extend(["--view-id", view_id])
     payload = await _run_feishu_base_shortcut(command)
@@ -470,7 +543,8 @@ async def _feishu_base_record_upload_attachment(agent_id, arguments: dict) -> st
         return _render_invalid_input("Missing required argument 'field_id'.", tool_name=tn)
     if not file_path:
         return _render_invalid_input(
-            "Missing required argument 'file_path'.", tool_name=tn,
+            "Missing required argument 'file_path'.",
+            tool_name=tn,
             actionable_hint="Pass a workspace-relative file path, for example 'workspace/report.pdf'.",
         )
 
@@ -480,9 +554,11 @@ async def _feishu_base_record_upload_attachment(agent_id, arguments: dict) -> st
         return _render_invalid_input(str(exc), tool_name=tn)
     if not absolute_file.exists():
         return render_tool_error(
-            tool_name=tn, error_class="not_found",
+            tool_name=tn,
+            error_class="not_found",
             message=f"Workspace file not found: {file_path}",
-            provider="feishu_openapi", retryable=False,
+            provider="feishu_openapi",
+            retryable=False,
             actionable_hint="Write the file into the agent workspace before uploading it to Feishu Base.",
         )
 
@@ -520,10 +596,13 @@ async def _feishu_base_record_upload_attachment(agent_id, arguments: dict) -> st
                 f"/bitable/v1/apps/{base_token}/tables/{table_id}/records/{record_id}",
                 {"fields": {field_id: [{"file_token": file_token, "name": display_name}]}},
             )
-            return _render_base_attachment_upload(table_id, {
-                "record": {"record_id": record_id},
-                "attachment": {"file_token": file_token, "name": display_name},
-            })
+            return _render_base_attachment_upload(
+                table_id,
+                {
+                    "record": {"record_id": record_id},
+                    "attachment": {"file_token": file_token, "name": display_name},
+                },
+            )
         except Exception as exc:
             logger.warning("[FeishuBase] OpenAPI attachment upload failed, trying CLI: %s", exc)
 
@@ -532,10 +611,18 @@ async def _feishu_base_record_upload_attachment(agent_id, arguments: dict) -> st
         return _not_configured_error(tn)
 
     command = [
-        "base", "+record-upload-attachment",
-        "--base-token", base_token, "--table-id", table_id,
-        "--record-id", record_id, "--field-id", field_id,
-        "--file", str(absolute_file),
+        "base",
+        "+record-upload-attachment",
+        "--base-token",
+        base_token,
+        "--table-id",
+        table_id,
+        "--record-id",
+        record_id,
+        "--field-id",
+        field_id,
+        "--file",
+        str(absolute_file),
     ]
     if display_name != absolute_file.name:
         command.extend(["--name", display_name])

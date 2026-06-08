@@ -312,6 +312,9 @@ class ToolRuntimeService:
             "read_document": 60.0,
             "send_feishu_message": 45.0,
             "feishu_doc_read": 45.0,
+            "feishu_url_resolve": 45.0,
+            "feishu_url_read": 90.0,
+            "feishu_drive_file_read": 90.0,
             "feishu_wiki_read": 45.0,
         }
         timeout_seconds = _TOOL_TIMEOUTS.get(tool_name, 30.0)

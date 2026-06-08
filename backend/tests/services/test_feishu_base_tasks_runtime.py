@@ -51,14 +51,20 @@ async def test_feishu_base_table_list_prefers_cli_when_available(monkeypatch: py
             "--format",
             "json",
         ]
-        return 0, json.dumps({
-            "items": [
-                {"table_id": "tbl_1", "table_name": "销售日报"},
-                {"table_id": "tbl_2", "table_name": "客户跟进"},
-            ],
-            "count": 2,
-            "total": 2,
-        }), ""
+        return (
+            0,
+            json.dumps(
+                {
+                    "items": [
+                        {"table_id": "tbl_1", "table_name": "销售日报"},
+                        {"table_id": "tbl_2", "table_name": "客户跟进"},
+                    ],
+                    "count": 2,
+                    "total": 2,
+                }
+            ),
+            "",
+        )
 
     monkeypatch.setattr(feishu_base, "_feishu_cli_available", fake_cli_available)
     monkeypatch.setattr(feishu_base, "_run_feishu_cli_command", fake_run_feishu_cli_command)
@@ -93,13 +99,19 @@ async def test_feishu_base_record_list_prefers_cli_when_available(monkeypatch: p
             "--format",
             "json",
         ]
-        return 0, json.dumps({
-            "items": [
-                {"record_id": "rec_1", "fields": {"姓名": "张三", "状态": "已完成"}},
-            ],
-            "count": 1,
-            "total": 1,
-        }), ""
+        return (
+            0,
+            json.dumps(
+                {
+                    "items": [
+                        {"record_id": "rec_1", "fields": {"姓名": "张三", "状态": "已完成"}},
+                    ],
+                    "count": 1,
+                    "total": 1,
+                }
+            ),
+            "",
+        )
 
     monkeypatch.setattr(feishu_base, "_feishu_cli_available", fake_cli_available)
     monkeypatch.setattr(feishu_base, "_run_feishu_cli_command", fake_run_feishu_cli_command)
@@ -112,6 +124,57 @@ async def test_feishu_base_record_list_prefers_cli_when_available(monkeypatch: p
     assert "rec_1" in result
     assert "张三" in result
     assert "<tool_error>" not in result
+
+
+@pytest.mark.asyncio
+async def test_feishu_base_record_list_requests_text_segments_and_renders_links(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.agent_tool_domains import feishu_base
+
+    async def fake_get_feishu_token(_agent_id):
+        return "tenant", "tenant-token"
+
+    async def fake_base_api_get(token: str, path: str, params: dict | None = None) -> dict:
+        assert token == "tenant-token"
+        assert path == "/bitable/v1/apps/app-token/tables/tbl_1/records"
+        assert params == {"page_size": 100, "text_field_as_array": True}
+        return {
+            "items": [
+                {
+                    "record_id": "rec_bp",
+                    "fields": {
+                        "项目简称": [{"type": "text", "text": "HuiPat 多光子显微成像仪"}],
+                        "是否有BP": [
+                            {
+                                "type": "url",
+                                "text": "HuiPath BP(1).pdf",
+                                "link": "https://b0hmj3e3npg.feishu.cn/file/BP123",
+                            }
+                        ],
+                        "官网": {
+                            "text": "公司官网",
+                            "link": "https://example.com",
+                        },
+                    },
+                }
+            ],
+            "total": 1,
+        }
+
+    monkeypatch.setattr(feishu_base, "_get_feishu_token", fake_get_feishu_token)
+    monkeypatch.setattr(feishu_base, "_base_api_get", fake_base_api_get)
+
+    result = await feishu_base._feishu_base_record_list(
+        "agent-1",
+        {"base_token": "app-token", "table_id": "tbl_1"},
+    )
+
+    assert "rec_bp" in result
+    assert "项目简称: HuiPat 多光子显微成像仪" in result
+    assert "是否有BP: HuiPath BP(1).pdf <https://b0hmj3e3npg.feishu.cn/file/BP123>" in result
+    assert "官网: 公司官网 <https://example.com>" in result
+    assert '"link"' not in result
 
 
 @pytest.mark.asyncio
@@ -133,12 +196,23 @@ async def test_feishu_task_list_uses_user_identity(monkeypatch: pytest.MonkeyPat
             "--format",
             "json",
         ]
-        return 0, json.dumps({
-            "items": [
-                {"guid": "task_1", "summary": "日报整理", "url": "https://task", "due_at": "2026-04-02T10:00:00Z"},
-            ],
-            "has_more": False,
-        }), ""
+        return (
+            0,
+            json.dumps(
+                {
+                    "items": [
+                        {
+                            "guid": "task_1",
+                            "summary": "日报整理",
+                            "url": "https://task",
+                            "due_at": "2026-04-02T10:00:00Z",
+                        },
+                    ],
+                    "has_more": False,
+                }
+            ),
+            "",
+        )
 
     monkeypatch.setattr(feishu_tasks, "_feishu_cli_available", fake_cli_available)
     monkeypatch.setattr(feishu_tasks, "_run_feishu_cli_command", fake_run_feishu_cli_command)
@@ -195,10 +269,16 @@ async def test_feishu_task_create_uses_user_identity_and_returns_created_task(mo
             "--format",
             "json",
         ]
-        return 0, json.dumps({
-            "guid": "task_new_1",
-            "url": "https://applink.larkoffice.com/client/todo/detail?guid=task_new_1",
-        }), ""
+        return (
+            0,
+            json.dumps(
+                {
+                    "guid": "task_new_1",
+                    "url": "https://applink.larkoffice.com/client/todo/detail?guid=task_new_1",
+                }
+            ),
+            "",
+        )
 
     monkeypatch.setattr(feishu_tasks, "_feishu_cli_available", fake_cli_available)
     monkeypatch.setattr(feishu_tasks, "_run_feishu_cli_command", fake_run_feishu_cli_command)
@@ -259,10 +339,16 @@ async def test_feishu_base_record_upsert_supports_update(monkeypatch: pytest.Mon
             "--format",
             "json",
         ]
-        return 0, json.dumps({
-            "record": {"record_id": "rec_1", "fields": {"姓名": "张三", "状态": "已完成"}},
-            "updated": True,
-        }), ""
+        return (
+            0,
+            json.dumps(
+                {
+                    "record": {"record_id": "rec_1", "fields": {"姓名": "张三", "状态": "已完成"}},
+                    "updated": True,
+                }
+            ),
+            "",
+        )
 
     monkeypatch.setattr(feishu_base, "_feishu_cli_available", fake_cli_available)
     monkeypatch.setattr(feishu_base, "_run_feishu_cli_command", fake_run_feishu_cli_command)
@@ -324,13 +410,19 @@ async def test_feishu_base_field_list_prefers_cli_when_available(monkeypatch: py
             "--format",
             "json",
         ]
-        return 0, json.dumps({
-            "items": [
-                {"field_id": "fld_1", "field_name": "状态", "type": 3},
-                {"field_id": "fld_2", "field_name": "负责人", "type": 11},
-            ],
-            "total": 2,
-        }), ""
+        return (
+            0,
+            json.dumps(
+                {
+                    "items": [
+                        {"field_id": "fld_1", "field_name": "状态", "type": 3},
+                        {"field_id": "fld_2", "field_name": "负责人", "type": 11},
+                    ],
+                    "total": 2,
+                }
+            ),
+            "",
+        )
 
     monkeypatch.setattr(feishu_base, "_feishu_cli_available", fake_cli_available)
     monkeypatch.setattr(feishu_base, "_run_feishu_cli_command", fake_run_feishu_cli_command)
@@ -364,11 +456,17 @@ async def test_feishu_task_complete_marks_task_done(monkeypatch: pytest.MonkeyPa
             "--format",
             "json",
         ]
-        return 0, json.dumps({
-            "guid": "task_1",
-            "url": "https://applink.larkoffice.com/client/todo/detail?guid=task_1",
-            "summary": "日报整理",
-        }), ""
+        return (
+            0,
+            json.dumps(
+                {
+                    "guid": "task_1",
+                    "url": "https://applink.larkoffice.com/client/todo/detail?guid=task_1",
+                    "summary": "日报整理",
+                }
+            ),
+            "",
+        )
 
     monkeypatch.setattr(feishu_tasks, "_feishu_cli_available", fake_cli_available)
     monkeypatch.setattr(feishu_tasks, "_run_feishu_cli_command", fake_run_feishu_cli_command)
@@ -459,7 +557,9 @@ async def test_feishu_task_comment_uses_current_openapi_comment_endpoint(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_feishu_base_record_upload_attachment_uses_workspace_file(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+async def test_feishu_base_record_upload_attachment_uses_workspace_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
     from app.services.agent_tool_domains import feishu_base
 
     agent_id = "agent-1"
@@ -492,15 +592,24 @@ async def test_feishu_base_record_upload_attachment_uses_workspace_file(monkeypa
             "--format",
             "json",
         ]
-        return 0, json.dumps({
-            "record": {"record_id": "rec_1"},
-            "attachment": {"file_token": "file_1", "name": "Q1-final.pdf"},
-            "updated": True,
-        }), ""
+        return (
+            0,
+            json.dumps(
+                {
+                    "record": {"record_id": "rec_1"},
+                    "attachment": {"file_token": "file_1", "name": "Q1-final.pdf"},
+                    "updated": True,
+                }
+            ),
+            "",
+        )
 
     monkeypatch.setattr(feishu_base, "_feishu_cli_available", fake_cli_available)
     monkeypatch.setattr(feishu_base, "_run_feishu_cli_command", fake_run_feishu_cli_command)
-    monkeypatch.setattr("app.services.agent_tool_domains.feishu_base.get_settings", lambda: type("S", (), {"AGENT_DATA_DIR": str(workspace_root)})())
+    monkeypatch.setattr(
+        "app.services.agent_tool_domains.feishu_base.get_settings",
+        lambda: type("S", (), {"AGENT_DATA_DIR": str(workspace_root)})(),
+    )
 
     result = await feishu_base._feishu_base_record_upload_attachment(
         agent_id,

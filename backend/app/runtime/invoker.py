@@ -57,7 +57,12 @@ from app.services.token_tracker import (
     extract_usage_tokens,
     record_token_usage,
 )
-from app.tools.runtime_tool_groups import RUNTIME_TOOL_GROUPS, iter_runtime_tool_groups, runtime_tool_group_for_name
+from app.tools.runtime_tool_groups import (
+    RUNTIME_TOOL_GROUPS,
+    iter_runtime_tool_groups,
+    normalize_tool_query,
+    runtime_tool_group_for_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -623,10 +628,13 @@ def _infer_active_tool_groups(
 
 def _deferred_tool_names_for_query(query: str) -> list[str]:
     normalized = query.strip().lower()
+    compact = normalize_tool_query(normalized)
     if normalized:
         for pack in RUNTIME_TOOL_GROUPS:
             for tool_name in pack.tools:
-                if tool_name.lower() == normalized and tool_name not in CORE_TOOL_NAMES:
+                if (
+                    tool_name.lower() == normalized or normalize_tool_query(tool_name) == compact
+                ) and tool_name not in CORE_TOOL_NAMES:
                     return [tool_name]
     requested: list[str] = []
     seen: set[str] = set()

@@ -204,6 +204,9 @@ _FEISHU_TOOL_NAMES = {
     "feishu_user_search",
     "feishu_wiki_list",
     "feishu_doc_read",
+    "feishu_url_resolve",
+    "feishu_url_read",
+    "feishu_drive_file_read",
     "feishu_doc_delete",
     "feishu_sheet_info",
     "feishu_sheet_read",
@@ -234,6 +237,9 @@ _FEISHU_TOOL_NAMES = {
 _FEISHU_OFFICE_TOOL_NAMES = {
     "feishu_wiki_list",
     "feishu_doc_read",
+    "feishu_url_resolve",
+    "feishu_url_read",
+    "feishu_drive_file_read",
     "feishu_base_app_create",
     "feishu_sheet_info",
     "feishu_sheet_read",
@@ -825,6 +831,11 @@ from app.services.agent_tool_domains.feishu_docs import (  # noqa: E402
     _markdown_to_feishu_blocks as _markdown_to_feishu_blocks,
     _feishu_doc_append as _feishu_doc_append,
     _feishu_doc_delete as _feishu_doc_delete,
+)
+from app.services.agent_tool_domains.feishu_drive import (  # noqa: E402
+    _feishu_url_resolve as _feishu_url_resolve,
+    _feishu_url_read as _feishu_url_read,
+    _feishu_drive_file_read as _feishu_drive_file_read,
 )
 from app.services.agent_tool_domains.feishu_sheets import (  # noqa: E402
     _feishu_sheet_info as _feishu_sheet_info,

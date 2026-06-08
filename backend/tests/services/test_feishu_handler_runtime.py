@@ -52,6 +52,72 @@ async def test_feishu_sheet_info_handler_allows_cli_without_channel(monkeypatch:
 
 
 @pytest.mark.asyncio
+async def test_feishu_url_resolve_handler_uses_cli_only_access(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.tools.handlers import feishu as feishu_handler
+
+    async def fake_check_feishu_office_access(_agent_id: uuid.UUID) -> bool:
+        return True
+
+    async def fake_url_resolve(agent_id: uuid.UUID, arguments: dict) -> str:
+        assert arguments == {"url": "https://example.feishu.cn/wiki/wiki-node"}
+        return f"resolved:{agent_id}"
+
+    monkeypatch.setattr(feishu_handler, "_check_feishu_office_access", fake_check_feishu_office_access)
+    monkeypatch.setattr("app.services.agent_tools._feishu_url_resolve", fake_url_resolve, raising=False)
+
+    result = await feishu_handler.feishu_url_resolve(
+        uuid.uuid4(),
+        {"url": "https://example.feishu.cn/wiki/wiki-node"},
+    )
+
+    assert result.startswith("resolved:")
+
+
+@pytest.mark.asyncio
+async def test_feishu_url_read_handler_uses_cli_only_access(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.tools.handlers import feishu as feishu_handler
+
+    async def fake_check_feishu_office_access(_agent_id: uuid.UUID) -> bool:
+        return True
+
+    async def fake_url_read(agent_id: uuid.UUID, arguments: dict) -> str:
+        assert arguments == {"url": "https://example.feishu.cn/docx/doc-token", "max_chars": 2000}
+        return f"url-read:{agent_id}"
+
+    monkeypatch.setattr(feishu_handler, "_check_feishu_office_access", fake_check_feishu_office_access)
+    monkeypatch.setattr("app.services.agent_tools._feishu_url_read", fake_url_read, raising=False)
+
+    result = await feishu_handler.feishu_url_read(
+        uuid.uuid4(),
+        {"url": "https://example.feishu.cn/docx/doc-token", "max_chars": 2000},
+    )
+
+    assert result.startswith("url-read:")
+
+
+@pytest.mark.asyncio
+async def test_feishu_drive_file_read_handler_uses_cli_only_access(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.tools.handlers import feishu as feishu_handler
+
+    async def fake_check_feishu_office_access(_agent_id: uuid.UUID) -> bool:
+        return True
+
+    async def fake_drive_file_read(agent_id: uuid.UUID, arguments: dict) -> str:
+        assert arguments == {"file_token": "file-token", "file_name": "deck.pptx"}
+        return f"drive-file:{agent_id}"
+
+    monkeypatch.setattr(feishu_handler, "_check_feishu_office_access", fake_check_feishu_office_access)
+    monkeypatch.setattr("app.services.agent_tools._feishu_drive_file_read", fake_drive_file_read, raising=False)
+
+    result = await feishu_handler.feishu_drive_file_read(
+        uuid.uuid4(),
+        {"file_token": "file-token", "file_name": "deck.pptx"},
+    )
+
+    assert result.startswith("drive-file:")
+
+
+@pytest.mark.asyncio
 async def test_feishu_task_create_handler_uses_cli_only_access(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.tools.handlers import feishu as feishu_handler
 

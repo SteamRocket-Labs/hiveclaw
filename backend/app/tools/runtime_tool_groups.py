@@ -35,6 +35,9 @@ RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = (
             "feishu_user_search",
             "feishu_wiki_list",
             "feishu_doc_read",
+            "feishu_url_resolve",
+            "feishu_url_read",
+            "feishu_drive_file_read",
             "feishu_doc_create",
             "feishu_doc_append",
             "feishu_doc_share",
@@ -166,6 +169,21 @@ _ADMIN_PACK_QUERY_KEYWORDS = (
 )
 
 
+def normalize_tool_query(value: str) -> str:
+    return re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", value.strip().lower())
+
+
+def _matches_runtime_query(query: str, candidate: str) -> bool:
+    normalized = query.strip().lower()
+    if not normalized:
+        return True
+    candidate_lower = candidate.lower()
+    if normalized in candidate_lower:
+        return True
+    compact_query = normalize_tool_query(normalized)
+    return bool(compact_query and compact_query in normalize_tool_query(candidate_lower))
+
+
 def _query_targets_admin_pack(query: str) -> bool:
     normalized = query.strip().lower()
     if not normalized:
@@ -181,9 +199,9 @@ def iter_runtime_tool_groups(query: str = "") -> tuple[RuntimeToolGroupSpec, ...
         pack
         for pack in RUNTIME_TOOL_GROUPS
         if (pack.source != "mcp" or _query_targets_admin_pack(normalized))
-        if normalized in pack.name.lower()
-        or normalized in pack.summary.lower()
-        or any(normalized in tool.lower() for tool in pack.tools)
+        if _matches_runtime_query(normalized, pack.name)
+        or _matches_runtime_query(normalized, pack.summary)
+        or any(_matches_runtime_query(normalized, tool) for tool in pack.tools)
     )
 
 

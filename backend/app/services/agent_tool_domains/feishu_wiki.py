@@ -74,6 +74,29 @@ def _format_empty_wiki_listing(target_kind: str, target_id: str) -> str:
     )
 
 
+def _wiki_node_read_hint(page: dict) -> str:
+    node_token = page.get("node_token", "")
+    obj_token = page.get("obj_token", "")
+    obj_type = (page.get("obj_type") or "").lower()
+    if obj_type in ("doc", "docx", ""):
+        return f'feishu_doc_read(document_token="{node_token}")'
+    if obj_type == "sheet":
+        return (
+            f'feishu_sheet_info(spreadsheet_token="{obj_token}")，'
+            f'再用 feishu_sheet_read(spreadsheet_token="{obj_token}", ...)'
+        )
+    if obj_type == "bitable":
+        return (
+            f'feishu_base_table_list(base_token="{obj_token}")，'
+            f'再用 feishu_base_record_list(base_token="{obj_token}", ...)'
+        )
+    if obj_type == "file":
+        return f'feishu_drive_file_read(file_token="{obj_token}", file_name="{page.get("title", "")}")'
+    if obj_type == "folder":
+        return f'feishu_wiki_list(node_token="{node_token}")'
+    return f"根据 obj_type `{obj_type}` 使用对应 Feishu 工具，obj_token=`{obj_token}`"
+
+
 def _format_wiki_pages(target_kind: str, target_id: str, pages: list[dict]) -> str:
     if target_kind == "知识库空间":
         lines = [f"📂 知识库空间 `{target_id}` 的可见页面（共 {len(pages)} 个）：\n"]
@@ -83,15 +106,22 @@ def _format_wiki_pages(target_kind: str, target_id: str, pages: list[dict]) -> s
     for page in pages:
         indent = "  " * page["depth"]
         child_hint = " _(有子页面)_" if page["has_child"] else ""
+        obj_type = page.get("obj_type") or "unknown"
         lines.append(
             f"{indent}• **{page['title']}**{child_hint}\n"
             f"{indent}  node_token: `{page['node_token']}`\n"
-            f"{indent}  obj_token: `{page['obj_token']}`"
+            f"{indent}  obj_token: `{page['obj_token']}`\n"
+            f"{indent}  obj_type: `{obj_type}`\n"
+            f"{indent}  read: {_wiki_node_read_hint(page)}"
         )
 
     lines.append(
-        "\n💡 用 `feishu_doc_read(document_token=\"<node_token>\")` 读取每个页面的内容。"
-        "\n   对有子页面的条目，再次调用 `feishu_wiki_list(node_token=\"...\")` 继续展开。"
+        "\n💡 读取内容时先看 `obj_type`：doc/docx 用 `feishu_doc_read`，"
+        "sheet 用 `feishu_sheet_info/read`，bitable 用 `feishu_base_table_list/record_list`，"
+        "file/Office/PDF/PPT/Excel 附件用 `feishu_drive_file_read`。"
+        '\n   对有子页面的条目，再次调用 `feishu_wiki_list(node_token="...")` 继续展开；'
+        '要看当前页面同目录页面，调用 `feishu_wiki_list(node_token="...", scope="siblings")`。'
+        "\n   如果拿到的是完整 Feishu URL，优先用 `feishu_url_read(url=\"...\")` 让工具自动解析并读取。"
     )
     return "\n".join(lines)
 
@@ -100,6 +130,7 @@ async def _feishu_wiki_get_node(token_str: str, auth_token: str) -> dict | None:
     """Call wiki get_node API to resolve a wiki node token → {obj_token, space_id, has_child, title}.
     Returns None if the token is not a wiki node."""
     import httpx
+
     async with httpx.AsyncClient(timeout=5) as client:
         r = await client.get(
             "https://open.feishu.cn/open-apis/wiki/v2/spaces/get_node",
@@ -112,7 +143,9 @@ async def _feishu_wiki_get_node(token_str: str, auth_token: str) -> dict | None:
     node = d.get("data", {}).get("node", {})
     return {
         "obj_token": node.get("obj_token", ""),
+        "obj_type": node.get("obj_type", ""),
         "space_id": node.get("origin_space_id", node.get("space_id", "")),
+        "parent_node_token": node.get("parent_node_token", ""),
         "has_child": node.get("has_child", False),
         "title": node.get("title", ""),
         "node_token": node.get("node_token", token_str),
@@ -130,7 +163,9 @@ async def _feishu_wiki_get_node_via_cli(token_str: str) -> dict | None:
     node = data.get("data", {}).get("node", {})
     return {
         "obj_token": node.get("obj_token", ""),
+        "obj_type": node.get("obj_type", ""),
         "space_id": node.get("origin_space_id", node.get("space_id", "")),
+        "parent_node_token": node.get("parent_node_token", ""),
         "has_child": node.get("has_child", False),
         "title": node.get("title", ""),
         "node_token": node.get("node_token", token_str),
@@ -143,6 +178,7 @@ async def _feishu_wiki_list_via_openapi(agent_id: uuid.UUID, arguments: dict) ->
 
     node_token, space_id = _parse_wiki_locator(arguments)
     recursive = bool(arguments.get("recursive", False))
+    scope = str(arguments.get("scope") or "children").strip().lower()
 
     if not node_token and not space_id:
         return "❌ Missing required argument 'node_token' or 'space_id'"
@@ -153,6 +189,7 @@ async def _feishu_wiki_list_via_openapi(agent_id: uuid.UUID, arguments: dict) ->
     _, token = creds
     headers = {"Authorization": f"Bearer {token}"}
 
+    parent_token = node_token or None
     if node_token:
         node_info = await _feishu_wiki_get_node(node_token, token)
         if not node_info:
@@ -164,43 +201,59 @@ async def _feishu_wiki_list_via_openapi(agent_id: uuid.UUID, arguments: dict) ->
         space_id = node_info["space_id"]
         if not space_id:
             return "❌ 无法获取知识库 space_id，请检查 token 是否正确。"
+        if scope == "siblings":
+            candidate_parent = node_info.get("parent_node_token") or None
+            parent_token = None if candidate_parent == node_token else candidate_parent
+        elif scope == "space":
+            parent_token = None
 
-    target_kind = "Wiki 页面" if node_token else "知识库空间"
+    target_kind = "同目录页面" if scope == "siblings" and node_token else "Wiki 页面" if node_token else "知识库空间"
     target_id = node_token or space_id
 
     async def _list_children(parent_token: str | None, depth: int) -> tuple[list[dict], dict | None]:
         """Return flat list of {title, node_token, obj_token, has_child, depth}."""
-        params = {"page_size": 50}
-        if parent_token:
-            params["parent_node_token"] = parent_token
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(
-                f"https://open.feishu.cn/open-apis/wiki/v2/spaces/{space_id}/nodes",
-                headers=headers,
-                params=params,
-            )
-        data = resp.json()
-        if data.get("code") != 0:
-            return [], data
-        items = data.get("data", {}).get("items", [])
         result = []
-        for item in items:
-            entry = {
-                "title": item.get("title", "(无标题)"),
-                "node_token": item.get("node_token", ""),
-                "obj_token": item.get("obj_token", ""),
-                "has_child": item.get("has_child", False),
-                "depth": depth,
-            }
-            result.append(entry)
-            if recursive and entry["has_child"] and depth < 2:
-                children, error = await _list_children(entry["node_token"], depth + 1)
-                if error:
-                    return result, error
-                result.extend(children)
+        page_token = ""
+        async with httpx.AsyncClient(timeout=15) as client:
+            for _ in range(20):
+                params = {"page_size": 50}
+                if parent_token:
+                    params["parent_node_token"] = parent_token
+                if page_token:
+                    params["page_token"] = page_token
+                resp = await client.get(
+                    f"https://open.feishu.cn/open-apis/wiki/v2/spaces/{space_id}/nodes",
+                    headers=headers,
+                    params=params,
+                )
+                data = resp.json()
+                if data.get("code") != 0:
+                    return result, data
+                payload = data.get("data", {})
+                items = payload.get("items", [])
+                for item in items:
+                    entry = {
+                        "title": item.get("title", "(无标题)"),
+                        "node_token": item.get("node_token", ""),
+                        "obj_token": item.get("obj_token", ""),
+                        "obj_type": item.get("obj_type", ""),
+                        "has_child": item.get("has_child", False),
+                        "depth": depth,
+                    }
+                    result.append(entry)
+                    if recursive and entry["has_child"] and depth < 2:
+                        children, error = await _list_children(entry["node_token"], depth + 1)
+                        if error:
+                            return result, error
+                        result.extend(children)
+                if not payload.get("has_more"):
+                    break
+                page_token = payload.get("page_token") or ""
+                if not page_token:
+                    break
         return result, None
 
-    pages, error = await _list_children(node_token or None, 0)
+    pages, error = await _list_children(parent_token, 0)
     if error:
         return _format_wiki_list_error(target_kind, target_id, error)
     if not pages:
@@ -214,39 +267,52 @@ async def _feishu_wiki_list(agent_id: uuid.UUID, arguments: dict) -> str:
 
     node_token, space_id = _parse_wiki_locator(arguments)
     recursive = bool(arguments.get("recursive", False))
+    scope = str(arguments.get("scope") or "children").strip().lower()
     if not node_token and not space_id:
         return "❌ Missing required argument 'node_token' or 'space_id'"
 
     async def _list_children_cli(space_id: str, parent_token: str | None, depth: int) -> tuple[list[dict], dict | None]:
-        params = {"page_size": 50}
-        if parent_token:
-            params["parent_node_token"] = parent_token
-        data = await _feishu_cli_api_request(
-            "GET",
-            f"/open-apis/wiki/v2/spaces/{space_id}/nodes",
-            params=params,
-        )
-        if data.get("code") != 0:
-            return [], data
-        items = data.get("data", {}).get("items", [])
         result = []
-        for item in items:
-            entry = {
-                "title": item.get("title", "(无标题)"),
-                "node_token": item.get("node_token", ""),
-                "obj_token": item.get("obj_token", ""),
-                "has_child": item.get("has_child", False),
-                "depth": depth,
-            }
-            result.append(entry)
-            if recursive and entry["has_child"] and depth < 2:
-                children, error = await _list_children_cli(space_id, entry["node_token"], depth + 1)
-                if error:
-                    return result, error
-                result.extend(children)
+        page_token = ""
+        for _ in range(20):
+            params = {"page_size": 50}
+            if parent_token:
+                params["parent_node_token"] = parent_token
+            if page_token:
+                params["page_token"] = page_token
+            data = await _feishu_cli_api_request(
+                "GET",
+                f"/open-apis/wiki/v2/spaces/{space_id}/nodes",
+                params=params,
+            )
+            if data.get("code") != 0:
+                return result, data
+            payload = data.get("data", {})
+            items = payload.get("items", [])
+            for item in items:
+                entry = {
+                    "title": item.get("title", "(无标题)"),
+                    "node_token": item.get("node_token", ""),
+                    "obj_token": item.get("obj_token", ""),
+                    "obj_type": item.get("obj_type", ""),
+                    "has_child": item.get("has_child", False),
+                    "depth": depth,
+                }
+                result.append(entry)
+                if recursive and entry["has_child"] and depth < 2:
+                    children, error = await _list_children_cli(space_id, entry["node_token"], depth + 1)
+                    if error:
+                        return result, error
+                    result.extend(children)
+            if not payload.get("has_more"):
+                break
+            page_token = payload.get("page_token") or ""
+            if not page_token:
+                break
         return result, None
 
     try:
+        parent_token = node_token or None
         if node_token:
             node_info = await _feishu_wiki_get_node_via_cli(node_token)
             if not node_info:
@@ -256,10 +322,17 @@ async def _feishu_wiki_list(agent_id: uuid.UUID, arguments: dict) -> str:
                     "而非普通文档 URL。"
                 )
             space_id = node_info["space_id"]
+            if scope == "siblings":
+                candidate_parent = node_info.get("parent_node_token") or None
+                parent_token = None if candidate_parent == node_token else candidate_parent
+            elif scope == "space":
+                parent_token = None
 
-        target_kind = "Wiki 页面" if node_token else "知识库空间"
+        target_kind = (
+            "同目录页面" if scope == "siblings" and node_token else "Wiki 页面" if node_token else "知识库空间"
+        )
         target_id = node_token or space_id
-        pages, error = await _list_children_cli(space_id, node_token or None, 0)
+        pages, error = await _list_children_cli(space_id, parent_token, 0)
         if error:
             return _format_wiki_list_error(target_kind, target_id, error)
         if not pages:

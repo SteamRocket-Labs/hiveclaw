@@ -17,6 +17,49 @@ from app.tools.result_envelope import render_tool_error, render_tool_fallback
 logger = logging.getLogger(__name__)
 
 
+def _wiki_non_doc_hint(node_info: dict, routed_result: str) -> str:
+    obj_type = (node_info.get("obj_type") or "").lower()
+    obj_token = node_info.get("obj_token", "")
+    title = node_info.get("title") or node_info.get("node_token") or "Wiki node"
+    if obj_type == "sheet":
+        return f"📊 Wiki 页面挂载的是电子表格：**{title}**\nspreadsheet_token: `{obj_token}`\n\n{routed_result}"
+    if obj_type == "bitable":
+        return f"🧮 Wiki 页面挂载的是多维表格：**{title}**\nbase_token: `{obj_token}`\n\n{routed_result}"
+    if obj_type == "file":
+        return f"📎 Wiki 页面挂载的是文件：**{title}**\nfile_token: `{obj_token}`\n\n{routed_result}"
+    return (
+        f"ℹ️ Wiki 页面挂载的不是文档类型，而是 `{obj_type or 'unknown'}`。\n"
+        f"obj_token: `{obj_token}`\n"
+        "请先用 `feishu_url_resolve` 查看建议工具，或用 `feishu_url_read` 自动路由读取。"
+    )
+
+
+async def _route_wiki_non_doc_node(agent_id: uuid.UUID, node_info: dict) -> str | None:
+    obj_type = (node_info.get("obj_type") or "").lower()
+    obj_token = node_info.get("obj_token", "")
+    if not obj_token or obj_type in ("", "doc", "docx"):
+        return None
+    if obj_type == "sheet":
+        from app.services.agent_tool_domains.feishu_sheets import _feishu_sheet_info
+
+        routed_result = await _feishu_sheet_info(agent_id, {"spreadsheet_token": obj_token})
+        return _wiki_non_doc_hint(node_info, routed_result)
+    if obj_type == "bitable":
+        from app.services.agent_tool_domains.feishu_base import _feishu_base_table_list
+
+        routed_result = await _feishu_base_table_list(agent_id, {"base_token": obj_token})
+        return _wiki_non_doc_hint(node_info, routed_result)
+    if obj_type == "file":
+        from app.services.agent_tool_domains.feishu_drive import _feishu_drive_file_read
+
+        routed_result = await _feishu_drive_file_read(
+            agent_id,
+            {"file_token": obj_token, "file_name": node_info.get("title") or "", "max_chars": 6000},
+        )
+        return _wiki_non_doc_hint(node_info, routed_result)
+    return _wiki_non_doc_hint(node_info, "")
+
+
 def _safe_feishu_json(resp: httpx.Response, op: str) -> dict:
     """Parse a Feishu OpenAPI response body as JSON with a graceful fallback.
 
@@ -53,6 +96,11 @@ async def _feishu_doc_read_via_openapi(agent_id: uuid.UUID, arguments: dict) -> 
     document_token = arguments.get("document_token", "").strip()
     if not document_token:
         return "❌ Missing required argument 'document_token'"
+    from app.services.agent_tool_domains.feishu_drive import _parse_feishu_url
+
+    parsed_target = _parse_feishu_url(document_token)
+    if parsed_target and parsed_target.kind in ("doc", "docx", "wiki"):
+        document_token = parsed_target.token
     max_chars = min(int(arguments.get("max_chars", 6000)), 20000)
 
     creds = await _get_feishu_token(agent_id)
@@ -65,6 +113,9 @@ async def _feishu_doc_read_via_openapi(agent_id: uuid.UUID, arguments: dict) -> 
     wiki_hint = ""
     node_info = await _feishu_wiki_get_node(document_token, token)
     if node_info and node_info.get("obj_token"):
+        routed = await _route_wiki_non_doc_node(agent_id, node_info)
+        if routed:
+            return routed
         read_token = node_info["obj_token"]
         if node_info.get("has_child"):
             wiki_hint = (
@@ -99,6 +150,11 @@ async def _feishu_doc_read(agent_id: uuid.UUID, arguments: dict) -> str:
     document_token = arguments.get("document_token", "").strip()
     if not document_token:
         return "❌ Missing required argument 'document_token'"
+    from app.services.agent_tool_domains.feishu_drive import _parse_feishu_url
+
+    parsed_target = _parse_feishu_url(document_token)
+    if parsed_target and parsed_target.kind in ("doc", "docx", "wiki"):
+        document_token = parsed_target.token
     max_chars = min(int(arguments.get("max_chars", 6000)), 20000)
 
     if not await _feishu_cli_available():
@@ -112,6 +168,9 @@ async def _feishu_doc_read(agent_id: uuid.UUID, arguments: dict) -> str:
         except FeishuCliError:
             node_info = None
         if node_info and node_info.get("obj_token"):
+            routed = await _route_wiki_non_doc_node(agent_id, node_info)
+            if routed:
+                return routed
             read_token = node_info["obj_token"]
             if node_info.get("has_child"):
                 wiki_hint = (

@@ -64,6 +64,10 @@ def test_system_skill_templates_reference_supported_runtime_contracts():
     assert "feishu_base_field_list" in feishu_skill
     assert "feishu_base_record_upsert" in feishu_skill
     assert "feishu_base_record_upload_attachment" in feishu_skill
+    assert "feishu_url_resolve" in feishu_skill
+    assert "feishu_url_read" in feishu_skill
+    assert "feishu_drive_file_read" in feishu_skill
+    assert "text <url>" in feishu_skill
     assert "feishu_sheet_info" in feishu_skill
     assert "feishu_sheet_read" in feishu_skill
     assert "feishu_task_comment" in feishu_skill

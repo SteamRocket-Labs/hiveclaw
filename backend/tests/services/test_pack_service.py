@@ -89,6 +89,14 @@ def test_iter_runtime_tool_groups_returns_mcp_admin_pack_for_explicit_admin_quer
     assert "mcp_admin_pack" in names
 
 
+def test_iter_runtime_tool_groups_matches_compact_deep_research_aliases():
+    exact_tool_aliases = {pack.name for pack in iter_runtime_tool_groups("deepresearchrun")}
+    spaced_pack_aliases = {pack.name for pack in iter_runtime_tool_groups("deep research")}
+
+    assert "deep_research_pack" in exact_tool_aliases
+    assert "deep_research_pack" in spaced_pack_aliases
+
+
 def test_plaza_pack_only_contains_real_shared_feed_tools():
     catalog = get_pack_catalog()
     plaza = next(p for p in catalog if p["name"] == "plaza_pack")

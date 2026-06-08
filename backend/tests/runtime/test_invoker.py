@@ -530,6 +530,50 @@ async def test_tool_search_records_discovered_tools_and_returns_deferred_schema(
 
 
 @pytest.mark.asyncio
+async def test_tool_search_records_compact_deep_research_tool_alias(monkeypatch):
+    import app.runtime.invoker as invoker
+    from app.runtime.invoker import AgentInvocationRequest, _resolve_tool_expansion
+    from app.runtime.session import SessionContext
+
+    agent_id = uuid4()
+    session = SessionContext()
+    requested_names_seen: list[list[str] | None] = []
+
+    async def fake_get_agent_tools_for_llm(agent_id_arg, *, core_only=False, requested_names=None):
+        assert agent_id_arg == agent_id
+        assert core_only is False
+        requested_names_seen.append(list(requested_names or []))
+        return [
+            {
+                "type": "function",
+                "function": {"name": "deep_research_run", "description": "", "parameters": {"type": "object"}},
+            }
+        ]
+
+    monkeypatch.setattr(invoker, "get_agent_tools_for_llm", fake_get_agent_tools_for_llm)
+
+    result = await _resolve_tool_expansion(
+        AgentInvocationRequest(
+            model=SimpleNamespace(
+                provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None
+            ),
+            messages=[{"role": "user", "content": "use deepresearchrun"}],
+            agent_name="Researcher",
+            role_description="Research agent",
+            agent_id=agent_id,
+            user_id=uuid4(),
+            session_context=session,
+        ),
+        "tool_search",
+        {"query": "deepresearchrun"},
+    )
+
+    assert result is not None
+    assert requested_names_seen == [["deep_research_run"]]
+    assert session.discovered_tools == ["deep_research_run"]
+
+
+@pytest.mark.asyncio
 async def test_load_skill_and_skill_file_reads_do_not_expand_tool_schemas(monkeypatch, tmp_path):
     import app.runtime.invoker as invoker
     from app.runtime.invoker import AgentInvocationRequest, _resolve_tool_expansion

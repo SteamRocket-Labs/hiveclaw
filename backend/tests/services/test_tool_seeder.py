@@ -15,6 +15,9 @@ def test_builtin_tool_seed_list_includes_new_kernel_primitives():
         "feishu_approval_definition",
         "feishu_approval_query",
         "feishu_approval_get",
+        "feishu_url_resolve",
+        "feishu_url_read",
+        "feishu_drive_file_read",
     }.issubset(names)
 
 

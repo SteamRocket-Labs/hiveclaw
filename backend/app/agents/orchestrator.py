@@ -48,8 +48,6 @@ _DELEGATION_BASE_EXCLUDED_TOOLS = (
     "cancel_async_task",
     "list_async_tasks",
 )
-_DELEGATION_BRIEF_MAX_CHARS = 4_000
-_DELEGATION_SOURCE_MAX_MESSAGES = 8
 
 
 @dataclass(slots=True, frozen=True)
@@ -406,20 +404,6 @@ class AgentDelegationResult:
         import json
 
         return json.dumps(self.to_dict(), ensure_ascii=False)
-
-
-def _normalize_delegation_message(message: dict[str, Any]) -> str:
-    role = str(message.get("role") or "unknown").strip().lower()
-    content = str(message.get("content") or "").strip()
-    if not content:
-        return ""
-    role_label = {
-        "user": "User",
-        "assistant": "Assistant",
-        "system": "System",
-        "tool": "Tool",
-    }.get(role, role.title() or "Message")
-    return f"{role_label}: {content}"
 
 
 def _delegation_user_message(conversation_messages: list[dict[str, Any]]) -> str:

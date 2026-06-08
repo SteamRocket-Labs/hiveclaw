@@ -973,20 +973,6 @@ def _resolve_effective_turn_route(
     }
 
 
-def _invocation_scope_for(request: "AgentInvocationRequest") -> str | None:
-    """Return the effective invocation scope for cache-hints / identity / budget calls.
-
-    The value comes directly from the request's invocation_scope field.  The kernel
-    fills that field from agent.execution_mode (via RuntimeConfig) when the caller
-    has not set it explicitly — so by the time apply_cache_hints / build_identity_section
-    / resolve_turn_model_route are called the field already carries the right scope
-    (e.g. "coordinator" for a coordinator agent).  This helper is the single place that
-    documents that derivation; behavior is intentionally unchanged from the old
-    request.execution_mode reads.
-    """
-    return request.invocation_scope
-
-
 async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult:
     _normalize_invocation_session_context(request)
 

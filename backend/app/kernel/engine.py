@@ -896,6 +896,26 @@ def _parse_interactive_plan_signal(result_str: str) -> dict[str, Any] | None:
     return seed if isinstance(seed, dict) else {}
 
 
+def _tool_result_requests_user_clarification(tool_name: str, result_str: str) -> bool:
+    """True when a blocking interaction card is the intended terminal output.
+
+    The ask_user_question handler already emits the card payload through the
+    tool event stream. The kernel must stop after that payload instead of
+    letting the model continue in the same run, otherwise the card appears
+    while the active run still blocks the user's answer.
+    """
+
+    if tool_name != "ask_user_question":
+        return False
+    try:
+        data = json.loads(result_str)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    return data.get("status") == "awaiting_user_clarification" and data.get("blocking", True) is not False
+
+
 def _is_live_interactive_chat(session_context: Any | None) -> bool:
     """True for a live interactive chat session — the only place a tool-intercept
     may flip into interactive Plan Mode. Delegates to the shared boundary in
@@ -1597,6 +1617,17 @@ class AgentKernel:
                     tokens_used=accumulated_tokens,
                     final_tools=tools_for_llm,
                     parts=collected_parts + [{"type": "text", "text": message}],
+                )
+
+            async def _pause_for_user_clarification() -> InvocationResult:
+                if request.agent_id and accumulated_tokens > 0:
+                    await _maybe_await(self._deps.record_token_usage(request.agent_id, accumulated_tokens))
+                await self._persist_before_exit(request, runtime_config, "", api_messages)
+                return InvocationResult(
+                    content="",
+                    tokens_used=accumulated_tokens,
+                    final_tools=tools_for_llm,
+                    parts=collected_parts,
                 )
 
             async def _inject_loop_guard_warning(decision: LoopGuardDecision) -> None:
@@ -2415,6 +2446,8 @@ class AgentKernel:
                                 api_messages=api_messages,
                             )
                             api_messages.append(LLMMessage(role="tool", tool_call_id=tc["id"], content=_content))
+                            if _tool_result_requests_user_clarification(tool_name, str(result)):
+                                return await _pause_for_user_clarification()
                     else:
                         # --- Sequential execution (original logic) ---
                         for tc, tool_name, args in parsed_tool_calls:
@@ -2621,6 +2654,8 @@ class AgentKernel:
                                 api_messages=api_messages,
                             )
                             api_messages.append(LLMMessage(role="tool", tool_call_id=tc["id"], content=_content))
+                            if _tool_result_requests_user_clarification(tool_name, str(result)):
+                                return await _pause_for_user_clarification()
 
                     # ── L1: Time-based microcompact — clear old tool results ──
                     # Clear tool results older than 60min, always keep the 5 most recent.

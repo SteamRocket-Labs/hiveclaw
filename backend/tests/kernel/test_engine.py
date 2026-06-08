@@ -428,6 +428,105 @@ async def test_agent_kernel_handles_tool_round_and_collects_parts():
 
 
 @pytest.mark.asyncio
+async def test_agent_kernel_stops_after_blocking_ask_user_question_result():
+    from app.kernel.contracts import InvocationRequest
+    from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
+
+    model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1",
+        api_key="test-key",
+        base_url=None,
+        max_output_tokens=None,
+    )
+    clarification_result = (
+        '{"status":"awaiting_user_clarification","blocking":true,'
+        '"questions":[{"question":"Pick one?","options":[{"label":"A"},{"label":"B"}]}]}'
+    )
+    tool_events: list[dict] = []
+    persisted_payloads: list[dict] = []
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_clarify",
+                        "function": {
+                            "name": "ask_user_question",
+                            "arguments": (
+                                '{"questions":[{"question":"Pick one?",'
+                                '"options":[{"label":"A"},{"label":"B"}]}]}'
+                            ),
+                        },
+                    }
+                ],
+                reasoning_content=None,
+                usage={"total_tokens": 4},
+            ),
+            SimpleNamespace(
+                content="this second model turn must not run",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 4},
+            ),
+        ]
+    )
+
+    async def execute_tool(tool_name, args, request, emit_event):
+        del args, request, emit_event
+        assert tool_name == "ask_user_question"
+        return clarification_result
+
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=5),
+            resolve_current_user_name=lambda _user_id: "Rocky",
+            build_system_prompt=lambda request, tenant_id, memory_context, current_user_name: "PROMPT",
+            resolve_memory_context=lambda request, tenant_id: "",
+            get_tools=lambda _agent_id, _core_only: [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "ask_user_question",
+                        "description": "",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda _model: fake_client,
+            execute_tool=execute_tool,
+            persist_memory=lambda **kwargs: persisted_payloads.append(kwargs),
+            record_token_usage=lambda *_args, **_kwargs: None,
+            get_max_tokens=lambda *_args, **_kwargs: 2048,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens") if usage else None,
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=model,
+            messages=[{"role": "user", "content": "ask me before choosing"}],
+            agent_name="Planner",
+            role_description="Planning agent",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            on_tool_call=lambda payload: tool_events.append(payload),
+        )
+    )
+
+    assert len(fake_client.calls) == 1
+    assert result.content == ""
+    assert "this second model turn must not run" not in [part.get("text") for part in result.parts]
+    assert tool_events[-1]["name"] == "ask_user_question"
+    assert tool_events[-1]["status"] == "done"
+    assert tool_events[-1]["result"] == clarification_result
+    assert persisted_payloads
+
+
+@pytest.mark.asyncio
 async def test_agent_kernel_splits_concatenated_tool_arguments_into_separate_calls():
     """Tier 1-4: concatenated DeepSeek-V4 style args `{"a":1}{"b":2}` must be split into
     two executable tool_calls (rather than dropped to `{}`). Both calls execute and the

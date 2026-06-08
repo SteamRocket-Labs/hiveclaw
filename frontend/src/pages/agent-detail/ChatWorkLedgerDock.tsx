@@ -61,7 +61,10 @@ export default function ChatWorkLedgerDock({
     queryFn: () => autonomyApi.getSessionWorkLedger(agentId, sessionId as string),
     enabled: Boolean(agentId && sessionId),
     refetchInterval: live ? 3000 : false,
-    retry: false,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: live,
+    staleTime: 0,
+    retry: live ? 3 : false,
   });
   const runtimeTaskKey = runtimeTaskId ? String(runtimeTaskId) : '';
   const sessionData = sessionQuery.data;
@@ -76,7 +79,10 @@ export default function ChatWorkLedgerDock({
     queryFn: () => autonomyApi.getRuntimeWorkLedger(agentId, runtimeTaskId as string),
     enabled: runtimeQueryEnabled,
     refetchInterval: live ? 3000 : false,
-    retry: false,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: live,
+    staleTime: 0,
+    retry: live ? 3 : false,
   });
   const data = preferRuntimeLedger ? runtimeQuery.data : (sessionData ?? runtimeQuery.data);
   const isLoading = sessionQuery.isLoading || (runtimeQueryEnabled && runtimeQuery.isLoading);

@@ -22,6 +22,7 @@ import AgentStatusSection from './agent-detail/AgentStatusSection';
 import AgentWorkspaceSection from './agent-detail/AgentWorkspaceSection';
 import {
     CHAT_SOCKET_KEEPALIVE_INTERVAL_MS,
+    applySessionActiveRunState,
     buildChatSocketKeepaliveMessage,
     buildRuntimeSummary,
     getRuntimeEventMessage,
@@ -30,6 +31,8 @@ import {
     normalizeStoredChatMessage,
     type AgentChatMessage,
     type ChatRuntimeSummary,
+    type SessionRunState,
+    type SessionUiState,
 } from './agent-detail/chatRuntime';
 import RelationshipEditor from './agent-detail/RelationshipEditor';
 import ToolsManager from './agent-detail/ToolsManager';
@@ -183,28 +186,28 @@ function AgentDetailInner() {
     const keepaliveTimerRef = useRef<Record<SessionRuntimeKey, ReturnType<typeof setInterval> | null>>({});
     const reconnectDisabledRef = useRef<Record<SessionRuntimeKey, boolean>>({});
     const reconnectAttemptsRef = useRef<Record<SessionRuntimeKey, number>>({});
-    const sessionUiStateRef = useRef<Record<SessionRuntimeKey, { isWaiting: boolean; isStreaming: boolean }>>({});
-    const activeRunStateRef = useRef<Record<SessionRuntimeKey, { runId: string; status: string }>>({});
+    const sessionUiStateRef = useRef<Record<SessionRuntimeKey, SessionUiState>>({});
+    const activeRunStateRef = useRef<Record<SessionRuntimeKey, SessionRunState>>({});
     const activeSessionIdRef = useRef<string | null>(null);
     const currentAgentIdRef = useRef<string | undefined>(id);
     const sessionMsgAbortRef = useRef<AbortController | null>(null);
     const sessionLoadSeqRef = useRef(0);
-    const [activeRunStateBySession, setActiveRunStateBySession] = useState<Record<SessionRuntimeKey, { runId: string; status: string }>>({});
+    const [activeRunStateBySession, setActiveRunStateBySession] = useState<Record<SessionRuntimeKey, SessionRunState>>({});
 
     const buildSessionRuntimeKey = (agentId: string, sessionId: string) => `${agentId}:${sessionId}`;
     const isLiveRun = (run?: SessionRun | null) => !!run && ['pending', 'running'].includes(String(run.status || '').toLowerCase());
 
-    const setActiveRunState = (key: SessionRuntimeKey, run: { runId: string; status: string } | null) => {
-        if (run) {
-            activeRunStateRef.current = { ...activeRunStateRef.current, [key]: run };
-            setActiveRunStateBySession(prev => ({ ...prev, [key]: run }));
-            setSessionUiState(key, { isWaiting: true, isStreaming: false });
-            return;
-        }
-        const next = { ...activeRunStateRef.current };
-        delete next[key];
-        activeRunStateRef.current = next;
-        setActiveRunStateBySession(next);
+    const invalidateSessionRuntimeQueries = (agentId: string, sessionId: string, includeActiveRun = true) => {
+        if (includeActiveRun) void queryClient.invalidateQueries({ queryKey: ['chat-active-run', agentId, sessionId] });
+        void queryClient.invalidateQueries({ queryKey: ['chat-runtime-summary', agentId, sessionId] });
+        void queryClient.invalidateQueries({ queryKey: ['chat-session-work-ledger', agentId, sessionId] });
+    };
+
+    const setActiveRunState = (key: SessionRuntimeKey, run: SessionRunState | null) => {
+        const next = applySessionActiveRunState(activeRunStateRef.current, sessionUiStateRef.current, key, run);
+        activeRunStateRef.current = next.activeRuns;
+        sessionUiStateRef.current = next.uiStates;
+        setActiveRunStateBySession(next.activeRuns);
     };
 
     const clearReconnectTimer = (key: SessionRuntimeKey) => {
@@ -647,6 +650,7 @@ function AgentDetailInner() {
             const isActiveRuntime = currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId;
             if (d.type === 'run_started' && d.run_id) {
                 setActiveRunState(key, { runId: String(d.run_id), status: d.status || 'running' });
+                invalidateSessionRuntimeQueries(agentId, sessionId);
                 if (isActiveRuntime) {
                     setIsWaiting(true);
                     setIsStreaming(false);
@@ -655,7 +659,7 @@ function AgentDetailInner() {
             }
             if (d.type === 'run_cancelled') {
                 setActiveRunState(key, null);
-                setSessionUiState(key, { isWaiting: false, isStreaming: false });
+                invalidateSessionRuntimeQueries(agentId, sessionId);
                 if (isActiveRuntime) {
                     setIsWaiting(false);
                     setIsStreaming(false);
@@ -670,7 +674,11 @@ function AgentDetailInner() {
                     isWaiting: false,
                     isStreaming: endStreaming ? false : nextStreaming,
                 });
-                if (endStreaming) setActiveRunState(key, null);
+                if (d.type === 'tool_call') invalidateSessionRuntimeQueries(agentId, sessionId, false);
+                if (endStreaming) {
+                    setActiveRunState(key, null);
+                    invalidateSessionRuntimeQueries(agentId, sessionId);
+                }
             }
             if (!isActiveRuntime) {
                 if (['done', 'error', 'quota_exceeded', 'trigger_notification'].includes(d.type)) {
@@ -927,6 +935,7 @@ function AgentDetailInner() {
             });
             setPlanModeRequested(false);
             setActiveRunState(activeRuntimeKey, { runId: run.run_id, status: run.status || 'running' });
+            invalidateSessionRuntimeQueries(id, String(activeSession.id));
         } catch (err: any) {
             setIsWaiting(false);
             setIsStreaming(false);
@@ -963,6 +972,7 @@ function AgentDetailInner() {
                 display_content: userMsg,
             });
             setActiveRunState(activeRuntimeKey, { runId: run.run_id, status: run.status || 'running' });
+            invalidateSessionRuntimeQueries(id, String(activeSession.id));
         } catch (err: any) {
             setIsWaiting(false);
             setIsStreaming(false);
@@ -1092,11 +1102,16 @@ function AgentDetailInner() {
             setIsStreaming(false);
             return;
         }
-        if (activeRunStateRef.current[key]) {
+        const staleRuntimeState = Boolean(
+            activeRunStateRef.current[key]
+            || sessionUiStateRef.current[key]?.isWaiting
+            || sessionUiStateRef.current[key]?.isStreaming
+        );
+        if (staleRuntimeState) {
             setActiveRunState(key, null);
-            setSessionUiState(key, { isWaiting: false, isStreaming: false });
             setIsWaiting(false);
             setIsStreaming(false);
+            invalidateSessionRuntimeQueries(id, String(activeSession.id), false);
             selectSession(activeSession);
             fetchMySessions(true, id);
         }

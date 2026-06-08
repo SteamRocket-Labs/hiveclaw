@@ -8,6 +8,7 @@ import {
   getCompactionDisplayContent,
   getRuntimeEventMessage,
   getTransportNotice,
+  applySessionActiveRunState,
   normalizeStoredChatMessage,
 } from './chatRuntime';
 
@@ -16,6 +17,30 @@ describe('chatRuntime helpers', () => {
     expect(CHAT_SOCKET_KEEPALIVE_INTERVAL_MS).toBeGreaterThan(0);
     expect(CHAT_SOCKET_KEEPALIVE_INTERVAL_MS).toBeLessThanOrEqual(30_000);
     expect(buildChatSocketKeepaliveMessage()).toEqual({ type: 'ping' });
+  });
+
+  it('clears stale waiting state when the backend reports no active run', () => {
+    const result = applySessionActiveRunState(
+      { 'agent-1:session-1': { runId: 'run-1', status: 'running' } },
+      { 'agent-1:session-1': { isWaiting: true, isStreaming: false } },
+      'agent-1:session-1',
+      null,
+    );
+
+    expect(result.activeRuns).toEqual({});
+    expect(result.uiStates).toEqual({});
+  });
+
+  it('marks a session waiting when an active run is observed', () => {
+    const result = applySessionActiveRunState(
+      {},
+      {},
+      'agent-1:session-1',
+      { runId: 'run-1', status: 'running' },
+    );
+
+    expect(result.activeRuns).toEqual({ 'agent-1:session-1': { runId: 'run-1', status: 'running' } });
+    expect(result.uiStates).toEqual({ 'agent-1:session-1': { isWaiting: true, isStreaming: false } });
   });
 
   it('maps compaction runtime events into event messages', () => {

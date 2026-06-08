@@ -10,6 +10,10 @@ const queryHarness = vi.hoisted(() => ({
     queryKey: unknown[];
     enabled?: boolean;
     refetchInterval?: false | number | ((...args: unknown[]) => unknown);
+    refetchOnMount?: unknown;
+    refetchOnWindowFocus?: unknown;
+    staleTime?: unknown;
+    retry?: unknown;
   }>,
   sessionData: undefined as RuntimeWorkLedgerView | undefined,
   runtimeData: undefined as RuntimeWorkLedgerView | undefined,
@@ -28,6 +32,10 @@ vi.mock('@tanstack/react-query', () => ({
     queryKey: unknown[];
     enabled?: boolean;
     refetchInterval?: false | number | ((...args: unknown[]) => unknown);
+    refetchOnMount?: unknown;
+    refetchOnWindowFocus?: unknown;
+    staleTime?: unknown;
+    retry?: unknown;
   }) => {
     queryHarness.calls.push(options);
     if (options.enabled === false) {
@@ -117,6 +125,21 @@ describe('ChatWorkLedgerDock', () => {
     const sessionCall = queryHarness.calls.find((call) => String(call.queryKey[0]) === 'chat-session-work-ledger');
     expect(sessionCall?.enabled).toBe(true);
     expect(sessionCall?.refetchInterval).toBe(false);
+    expect(sessionCall?.refetchOnMount).toBe('always');
+    expect(sessionCall?.retry).toBe(false);
+  });
+
+  it('retries and refreshes live session work ledgers without waiting for a page reload', () => {
+    queryHarness.sessionData = ledger('task-current', 'Live todo');
+
+    renderToStaticMarkup(<ChatWorkLedgerDock agentId="agent-1" sessionId="session-1" live />);
+
+    const sessionCall = queryHarness.calls.find((call) => String(call.queryKey[0]) === 'chat-session-work-ledger');
+    expect(sessionCall?.refetchInterval).toBe(3000);
+    expect(sessionCall?.refetchOnMount).toBe('always');
+    expect(sessionCall?.refetchOnWindowFocus).toBe(true);
+    expect(sessionCall?.staleTime).toBe(0);
+    expect(sessionCall?.retry).toBe(3);
   });
 
   it('keeps a live pending dock stable when the ledger is not created yet', () => {

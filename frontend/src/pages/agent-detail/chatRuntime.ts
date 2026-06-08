@@ -53,6 +53,35 @@ export interface AgentChatMessage {
 
 export type ChatRuntimeSummary = SessionRuntimeSummary;
 
+export interface SessionRunState {
+  runId: string;
+  status: string;
+}
+
+export interface SessionUiState {
+  isWaiting: boolean;
+  isStreaming: boolean;
+}
+
+export function applySessionActiveRunState(
+  activeRuns: Record<string, SessionRunState>,
+  uiStates: Record<string, SessionUiState>,
+  key: string,
+  run: SessionRunState | null,
+): { activeRuns: Record<string, SessionRunState>; uiStates: Record<string, SessionUiState> } {
+  if (run) {
+    return {
+      activeRuns: { ...activeRuns, [key]: run },
+      uiStates: { ...uiStates, [key]: { isWaiting: true, isStreaming: false } },
+    };
+  }
+  const nextActiveRuns = { ...activeRuns };
+  const nextUiStates = { ...uiStates };
+  delete nextActiveRuns[key];
+  delete nextUiStates[key];
+  return { activeRuns: nextActiveRuns, uiStates: nextUiStates };
+}
+
 export function buildChatSocketKeepaliveMessage(): { type: 'ping' } {
   return { type: 'ping' };
 }

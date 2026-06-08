@@ -1,111 +1,349 @@
-# Plan Mode 对标 CC（Plan Mode CC Alignment）
+# Plan Mode CC Alignment
 
-> 状态: **v0.1 诊断 + 修复方向草案（2026-06-07）——待拍板**。由生产实证触发（Web3 研究员"RWA 周报"plan 用户实锤"用不了，不是 CC 的 plan mode"）。
-> 范围: Hive runtime 的 **Plan Mode**——`exit_plan_mode` 工具 schema、plan-mode launcher prompt、plan 卡片渲染、澄清机制。不动 plan-mode 的 read-only gate / 持久化 / 审计（那些是 Hive 合理治理 delta，已对齐 `feedback_plan_from_agent_system_governs`）。
-> 证据基线: CC 源码 `/Users/rocky243/Context Engineering/claude-code-org/src/tools/{EnterPlanModeTool,ExitPlanModeTool,AskUserQuestionTool}`；Hive `backend/app/tools/handlers/plan_mode.py` + `backend/app/services/plan_mode_system_run.py`。行号以 2026-06-07 为准。
-> North Star: Plan Mode 是 Hive runtime 一等能力（`[[project_hive_plan_mode]]`）。**Hive = CC superset**：先对齐 CC 基线（plan 文件主体 + AskUserQuestion 澄清 + 场景门控），再叠 Hive 的治理/自治 delta。裁决镜头 = AI-Native 法律（L1 plan 来自 agent 智能、L3 治理是 Hive delta 但 surface 不暴露 plumbing）+ `[[feedback_surface_not_plumbing]]`。
+> 状态: **v0.2 文档优先修订（2026-06-08）——待实现**。
+> 触发: Web3 研究员 RWA 周报生产实跑暴露出 plan "用不了"：它像结构化审批表，不像 agent 认真规划后的方案。
+> 范围: Hive runtime 的 Plan Mode 语义、澄清机制、`exit_plan_mode` contract、PlanCard 展示、Plan Mode prompt。本文不动 read-only gate、plan hash、confirmation、audit、handoff 这些治理硬边界。
 
----
+## 0. 结论
 
-## §0 触发：生产实证
+Hive 应该继承 Claude Code Plan Mode 的**机制**，不继承 Claude Code 的**coding-only 产品范围**。
 
-用户对 Web3 研究员说"我需要做一个 RWA 的周报，进入计划模式计划一下"。agent 进入 plan mode，产出一张 plan 卡片：8 个平铺 section（目标 / 执行步骤 / 成功标准 / 唤醒策略 / 预估成本 / 停止条件 / 假设 / 待澄清问题），其中：
-- 执行步骤每条标注"（执行阶段，本步不实施）"；
-- agent 在卡片前明说"Plan Mode 锁住了 read-only，问不了你，我直接按最常见、可解释的默认值出 plan"；
-- 列了 4 个"待澄清问题" + 一批"假设"，但都没问用户；
-- "唤醒策略 none"、"预估成本 unknown · unknown" 等内部字段直接摊给用户。
+要继承的机制:
 
-用户判断："这个 plan 用不了 …… 你是按照 CC 的 planmode 来的吗 完全用不了啊。" — 经源码对照，**判断成立**。
+- Agent 的规划由主循环智能产出，作为给人读的方案，而不是被填表式 schema 拖成结构化拼接。（注：RPC planner 已删，plan 当前**已经**由 agent 在主循环 `exit_plan_mode` authored——真问题不是"系统代写"，而是 schema 形态诱导填表，见 §1/§3 P0。）
+- Plan 主体是一篇用户可读的 markdown 工作方案，而不是 13 个字段拼出来的表。
+- 有关键未决问题时，agent 必须先问用户；问题解决前不应提交可确认计划。
+- `exit_plan_mode` 是审批出口，不是规划能力本身。
+- read-only 约束的是执行副作用，不应剥夺 agent 澄清需求、组织思路、维护私有 planning state 的能力。
 
----
+不应继承的范围:
 
-## §1 CC Plan Mode 真实形态（源码实证）
+- Claude Code 说 `ExitPlanMode` 只用于需要写代码的 implementation steps，这是 Claude Code 作为 coding agent 的产品边界，不是 Hive 的设计法律。
+- Hive 是综合 co-work/control-plane 平台。Plan Mode 可用于 coding、研究、内容、运营、销售、财务、自动化、协作委派等任务。
+- Hive 的触发标准不是"是否写代码"，而是"是否需要先对齐计划/授权边界后再执行"。
 
-CC 的 plan mode 是一条「探索 → 澄清 → 写 plan 文件 → 请求审批 → 执行」的流水，三个工具协作：
+## 1. 生产实证
 
-| 阶段 | 工具 / 机制 | 关键语义（源码原话） |
+用户请求:
+
+```text
+我需要做一个rwa的周报 进入计划模式计划一下
+```
+
+生产侧事实:
+
+- Agent: `ec03ec3e-c4e8-417d-95f7-f84215e7b9c3`（Web3研究员）
+- Session: `d02cd199-37e0-4a9b-b6d1-3b0ef81b5962`
+- Plan: `2d416566-58eb-4b40-a0d6-86d6497cf128`
+- Plan status: `awaiting_confirmation`
+- Plan metadata: `author_type="workflow"`, `planner_prompt_version="structured_fill.v1"`
+- Matching `agent_work_ledgers`: `0`
+
+对话链路:
+
+1. Agent 先用只读工具读了 `list_objectives`、`list_triggers`、`focus.md`。
+2. Agent 识别出 4 个真正应该先问用户的问题：范围、周期、重点赛道、数据深度。
+3. Agent 尝试调用 `send_channel_message` 澄清。
+4. Runtime 返回 `plan_mode_readonly_violation`。
+5. Agent 被迫把问题转成 `assumptions/open_questions`，然后调用 `exit_plan_mode`。
+6. 最终 PlanCard 出现"（执行阶段，本步不实施）"、`wake_policy=none`、`estimated_cost=unknown` 等字段。
+
+这证明问题不是"没有进 Plan Mode"，而是 Plan Mode 的交互和输出契约把 agent 推向了结构化填表。
+
+**关于 `author_type="workflow"` 的澄清（源码核实）**：这是个**误导性标签**，不代表 plan 被 workflow 代写。`plan_mode_service.py:290-312` 注释明确——RPC planner（DefaultAgentPlanPlanner）已删，plan 实为 **agent 在主循环 `exit_plan_mode` authored**，`generate_plan` 只做 schema 落地/校验/hash；`author_type="workflow"` 是这个落地路径留下的烂标签。所以 P0 根因是 **exit_plan_mode 的 13 字段 schema 诱导 agent 填表**，不是"系统代写"；provenance 标签应改为 `agent_authored`（见 §7）。
+
+## 2. Claude Code 对照
+
+Claude Code 的 Plan Mode 有三类机制值得借鉴:
+
+| 机制 | CC 形态 | Hive 应继承什么 |
 |---|---|---|
-| 进入 | `EnterPlanModeTool` | "DO NOT write or edit any files except **the plan file**" / "This is a read-only exploration and planning phase"（`EnterPlanModeTool.ts:107,118`）——read-only 约束的是**外部副作用**，**唯独允许写 plan 文件** |
-| 澄清 | `AskUserQuestionTool` | plan mode 期间 agent **可以问用户**。`ExitPlanMode/prompt.ts`："If you have unresolved questions about requirements or approach, use **AskUserQuestion first (in earlier phases)**" |
-| 提交 | `ExitPlanModeV2Tool` | **plan 内容写在文件里，工具不接受 plan 作参数**——"This tool does NOT take the plan content as a parameter - it will read the plan from the file you wrote"（`prompt.ts`）。schema 唯一语义参数是 `allowedPrompts`（实施所需的权限类别）（`ExitPlanModeV2Tool.ts:77-90`） |
-| 边界 | `ExitPlanMode/prompt.ts` | "Only use this tool when the task requires planning the **implementation steps of a task that requires writing code**. For research tasks where you're gathering information, searching files, reading files … **do NOT use this tool**" |
-| 反模式 | 同上 | "Do NOT use AskUserQuestion to ask 'Is this plan okay?' … ExitPlanMode inherently requests user approval" |
+| 主循环规划 | agent 在同一对话/工具循环里探索和规划 | planning 必须由 agent 的主循环智能完成 |
+| 澄清问题 | `AskUserQuestionTool` 可在 plan mode 中问用户 | Hive 需要 first-class `ask_user_question`，不能靠 blocked messaging tool |
+| 审批出口 | `ExitPlanMode` 发起审批，不负责思考本身 | `exit_plan_mode` 只提交已经形成的计划和治理摘要 |
+| Plan 主体 | plan 写在文件/markdown 中 | Hive 第一屏应以 `plan_markdown` 为主体 |
+| 反模式 | 不用 AskUserQuestion 问"这个计划行不行" | approval 仍只能走 `exit_plan_mode` |
 
-**提炼 CC 三条铁律**：
-1. **plan 是 agent 自由写的 markdown 文件**（一份散文计划），ExitPlanMode 只发"写完了、请审批"的信号 + 申请权限——plan 主体是给人读的文章，不是 schema 字段。
-2. **有未决问题 → 先 AskUserQuestion 问用户 → 对齐后再 exit**——plan mode 的核心价值是"出 plan 前先和人对齐"。
-3. **只用于"要写代码的实施任务"**——research / 查资料 / 读文件类任务**不该**走 exit_plan_mode。
+Claude Code 的 coding-only 限制只说明它自己的任务域，不是 Hive 的触发标准。Hive 的 Plan Mode 是 domain-neutral planning and authorization phase。
 
----
+## 3. 当前偏差
 
-## §2 Hive 现状（逐项 file:line）
+### P0: 计划不像计划，而像结构化拼接
 
-| 维度 | Hive 现状 | 证据 |
-|---|---|---|
-| plan 提交 | `exit_plan_mode` schema 有 **13 个字段**：`title/objective/plan_markdown/steps/success_criteria/stop_conditions/assumptions/open_questions/risk_assessment/estimated_cost/wake_policy/handoff_target/handoff_payload`；required 6 个 | `tools/handlers/plan_mode.py:126-147` |
-| plan 主体 | **有 `plan_markdown`**（描述 "Concise markdown plan preview"）——对应 CC 的 plan 文件，但它只是 13 字段之一 | `plan_mode.py:130` |
-| 卡片渲染 | 前端把结构化字段**全部平铺**成 section（目标/步骤/成功标准/唤醒策略/成本/停止条件/假设/待澄清），`plan_markdown` 未作主体 | §0 生产卡片实证 |
-| 澄清机制 | **Hive 无 `AskUserQuestion` / 任何 ask-user 工具**（`grep` 全空）→ agent 在 plan mode 里**物理上无法问用户** | `grep ask_user_question\|AskUserQuestion app/tools/` = 空 |
-| launcher 引导 | 只教 "submit by exit_plan_mode … do not ask in prose whether the plan is OK"——对齐了 CC 的反模式，**但漏了 CC 的"有问题先 AskUserQuestion"**（因为没这工具） | `services/plan_mode_system_run.py:66-69` |
-| 场景门控 | 任意 intent 都可进 plan mode 出 exit_plan_mode 重卡片，无 "research 任务不该用" 的门控 | `plan_mode_system_run.py` + `plan_mode_gate.py` |
+当前 `exit_plan_mode` 要求 agent 一次性提供:
 
----
+```text
+title / objective / plan_markdown / steps / success_criteria /
+stop_conditions / assumptions / open_questions / risk_assessment /
+estimated_cost / wake_policy / handoff_target / handoff_payload
+```
 
-## §3 三处偏离 + delta 性质分类
+这会把模型注意力从"想清楚怎么做"转移到"把字段填完整"。结果是:
 
-不是所有差异都是 bug。Hive 是自治数字员工 + 控制中台，比 CC（交互式编码助手）多出治理/自治维度——关键是区分**合理 delta**、**plumbing 暴露违例**、**真缺失**。
+- `plan_markdown` 沦为字段之一，而不是计划主体。
+- `steps` 混入 Plan Mode 自身的元步骤，例如"提交 Plan Mode 卡片"。
+- `open_questions` 变成免责清单，而不是真正暂停执行的问题。
+- `estimated_cost=unknown`、`wake_policy=none` 这种系统空值被展示成用户内容。
 
-### 偏离① 形态错 —— plan 主体被降级，治理字段平铺暴露（plumbing 违例）
-- **CC 基线**：plan = 一篇 markdown 文章（plan 文件），用户读文章。
-- **Hive 现状**：`plan_markdown` 沦为 13 字段之一，前端把 `steps/success_criteria/stop_conditions/assumptions/open_questions/risk_assessment/estimated_cost/wake_policy/handoff_*` 全部平铺。
-- **delta 分类**：
-  - `wake_policy / handoff_target / handoff_payload / risk_assessment / estimated_cost / stop_conditions` = **Hive 合理治理/自治 delta**（CC 无，因 CC 不做无人值守调度）——作为**系统数据**正当，但**原样平铺给用户 = 违反 `surface≠plumbing`**（UI 不得把 API 1:1 翻成控件裸露原始形态）。
-  - `wake_strategy: none`、`estimated_cost: unknown·unknown`、步骤"（本步不实施）" = 内部机制/空值直接漏给用户 = 最刺眼的 plumbing 暴露。
-- **判定**：违例（形态），非字段本身的错。
+目标改法:
 
-### 偏离②（根因/最致命）缺 AskUserQuestion —— agent 无法澄清，只能自说自话（真缺失）
-- **CC 基线**：有未决问题 → AskUserQuestion 问 → 对齐 → exit。
-- **Hive 现状**：无 ask-user 工具 → agent "问不了你，按默认值出 plan" → 把未决项塞进 `open_questions`/`assumptions` 当**免责清单**。
-- **后果**：plan mode 的核心价值（出 plan 前对齐）落空——用户拿到一份塞满未对齐假设的 plan，那些"待澄清问题"既确认不了、agent 又已替用户拍了默认值。**这就是"用不了"的根本原因**。
-- **判定**：真缺失。`open_questions`/`assumptions` 字段在补上 AskUserQuestion 后，才能从"免责清单"回归"问之前的澄清来源 / 问之后仍存的已知假设"。
+- Agent 首先写一篇用户可读的 `plan_markdown`。
+- 结构化字段是系统治理层从计划中抽取/校验/补全的结果，不是 agent 的主要写作目标。
+- `steps` 只能描述用户确认后真正要执行的步骤。
+- 如果存在 blocking open question，不能进入 `awaiting_confirmation`。
 
-### 偏离③ 场景错 —— research 任务被强制重型化（门控缺失）
-- **CC 基线**：exit_plan_mode 只用于"要写代码的实施任务"；research 不该用。
-- **Hive 现状**："做 RWA 周报"（research/内容产出）也走了重型 exit_plan_mode 卡片。
-- **delta 考量**：Hive 的 plan mode 定位比 CC 宽（定时任务/objective/long task/delegation 皆可叠加其上，见 `[[project_hive_plan_mode]]`）——所以**不能照搬 CC "只限写代码"**。但"任意任务都强制重卡片"是另一个极端。合理中线 = **按任务性质决定 plan 的轻重**（research 类轻量化或直接执行，实施/高风险类才上完整确认卡片）。
-- **判定**：门控缺失（需 Hive 自己的判据，非照搬 CC）。
+### P1: 缺少 first-class ask-user 工具
 
----
+Plan Mode 需要一个明确的交互出口:
 
-## §4 修复方向（待拍板）
+```text
+ask_user_question
+```
 
-> 顺序按根因：P1 补根因工具 → P2 形态归正 → P3 场景门控。每项遵循"CC 基线 + Hive delta"，红测先行。
+它不是普通外发消息，也不是 approval。它的语义是:
 
-### P1 — 补 `ask_user_question` 工具，plan mode 澄清回归对齐（根因）
-- 新增 `ask_user_question` 工具（对齐 CC AskUserQuestionTool：question + header + options + multiSelect），在 plan mode（及普通对话）可用；治理上它是**问用户、不产生外部副作用**的读侧交互，与 read-only gate 不冲突。
-- launcher prompt 补 CC 那条："有未决的关键问题先用 ask_user_question 澄清，对齐后再 exit_plan_mode"。
-- `open_questions`/`assumptions` 语义归正：澄清后仍存的才进 plan 作"已知假设"，不再当"问不了你所以我猜"的免责清单。
-- ⚠️ 这是通用能力（不止 plan mode 用）——`[[project_runtime_guidance_cc_alignment]]` 的 catalog 里 `AskUserQuestion` 是 CC native attachment，本项与之合流。
+- 只向当前用户/当前会话提问。
+- 不产生外部副作用。
+- 可在 Plan Mode read-only 状态下调用。
+- 调用后 PlanRequest/RuntimeTask 进入 `awaiting_user_clarification`。
+- 用户回答后恢复同一个 Plan Mode state，继续规划。
 
-### P2 — plan 卡片以 `plan_markdown` 为主体，治理字段收进折叠（surface≠plumbing）
-- 第一屏 = `plan_markdown`（agent 写给人的散文计划）+ objective + steps（用户语言）。
-- `wake_policy / estimated_cost / risk_assessment / handoff_* / stop_conditions` 收进"技术详情/高级"折叠区，空值/none 不渲染。
-- 验收（`[[feedback_surface_not_plumbing]]` 两问）：第一屏是用户语言吗？主操作是"看懂计划→确认/调整"这个用户真实动作吗？
+限制:
 
-### P3 — 按任务性质门控 plan 的轻重（Hive 判据，非照搬 CC）
-- research/内容产出类（如周报）：轻量 plan（散文要点 + 一句确认）或直接执行；不强制 13 字段重卡片。
-- 实施/外部动作/高风险/不可逆类：完整确认卡片 + 治理字段。
-- 判据落在 intent_type / 任务分类，而非工具层硬编码"只限写代码"。
+- 不允许用它问"这个计划可以吗"。
+- 不允许绕过 `exit_plan_mode` 进行审批。
+- 不允许把问题发给外部联系人或其他 channel recipient。
 
----
+### P2: Prompt 不能再往 coding 方向引导
 
-## §5 待拍板项
-1. P1 ask_user_question 是否本轮做（根因，建议做）；与 runtime-guidance catalog 的 AskUserQuestion 合流口径。
-2. P2 折叠哪些字段、第一屏放什么（需结合前端 plan 卡片现状）。
-3. P3 门控判据：用 intent_type 还是新增任务性质分类；research 类默认轻量 plan 还是直接执行。
+Hive 是综合 co-work 平台，不是 coding-only assistant。Plan Mode prompt 应避免这些倾向:
 
----
+- 不把 implementation 默认理解成代码实现。
+- 不把 tests/CI/deploy 当成每类任务都必须有的计划结构。
+- 不把 research/content 类任务降级为"不该 Plan Mode"。
+- 不用 repository/files/code 作为默认语境。
 
-*North Star 裁决句*：plan 的**内容**来自 agent 的智能（L1，不机械约束其思考）；plan 的**治理字段**（wake/cost/risk/handoff）是 Hive 相对 CC 的合理 delta（L3 控制中台），但**作为系统数据存在、不作为 plumbing 平铺给用户**；缺失的 AskUserQuestion 是 CC 基线能力，必须补齐——**先对齐 CC 基线（plan 主体 + 澄清 + 场景门控），再谈 Hive delta**。
+通用 Plan Mode 应覆盖:
 
-*修订记录: v0.1 2026-06-07 初稿（生产 RWA plan 实证触发，CC 源码三工具对照 + Hive file:line + delta 性质分类）。*
+- 调研报告、周报、财务分析、运营活动、客户沟通、招聘流程、销售计划、数据分析、文档生产、代码修改、自动化触发器、agent 委派等。
+
+触发标准应是:
+
+- 用户显式要求先计划。
+- 工作多步骤、长耗时、多来源或高成本。
+- 输出格式、受众、范围、数据源、频率、交付方式存在关键不确定性。
+- 会产生外部可见动作、长期自动化、文件交付、委派、预算消耗或不可逆/敏感动作。
+- 需要用户确认边界后才能安全执行。
+
+### P3: PlanCard 暴露 plumbing
+
+`wake_policy`、`handoff_target`、`handoff_payload`、`risk_assessment`、`estimated_cost` 是 Hive 控制中台的合理治理数据，但不应平铺成第一屏内容。
+
+PlanCard 第一屏应该是:
+
+1. 标题。
+2. `plan_markdown` 主体。
+3. 用户需要确认/回答的关键事项。
+4. 主要动作: 确认、要求修改、拒绝、回答问题。
+
+高级/审计区域才显示:
+
+- 风险等级。
+- 外部副作用。
+- 成本/时间估计。
+- stop conditions。
+- wake policy。
+- handoff target。
+- plan hash / version。
+
+空值不展示:
+
+- `none`
+- `unknown`
+- empty arrays
+- empty payloads
+
+### P4: Work Ledger 缺席导致过程不可见
+
+生产实跑里 session work-ledger API 返回 404，DB 也没有 matching ledger。结果是用户只能看到最终 PlanCard，看不到 agent 如何拆解、验证、取舍。
+
+Plan Mode 需要 private planning ledger，但它不能替代 PlanCard:
+
+- Work Ledger = agent 的私有规划/执行认知状态。
+- PlanCard = 用户确认的治理合同。
+
+Plan Mode 期间至少应允许:
+
+```text
+track_todo
+record_finding
+read_ledger
+```
+
+这些工具仍是 read-only planning aids，不启动执行。
+
+## 4. 目标语义
+
+Plan Mode 是 Hive 的 domain-neutral co-work planning phase:
+
+```text
+User asks for work that needs planning/authorization
+  -> Plan Mode active
+  -> agent explores read-only context
+  -> agent asks blocking questions if needed
+  -> agent writes substantive plan_markdown
+  -> runtime extracts/checks governance fields
+  -> exit_plan_mode submits confirmable plan
+  -> user confirms exact version/hash
+  -> only then handoff/execution starts
+```
+
+关键不变量:
+
+- Agent 负责 substantive plan。
+- Runtime 负责 classification、read-only constraints、persistence、hash、confirmation、audit、handoff。
+- 用户确认的是计划边界，不是系统字段表。
+- 有 blocking question 时不允许确认。
+- Plan Mode 不按 coding/research 分类；按规划和授权需求分类。
+
+## 5. 新 prompt 草案
+
+这段应替换当前 Plan Mode reminder/launcher 中偏 coding 或偏填表的语义:
+
+```text
+Plan Mode is active. The user has not approved execution.
+
+Do not perform the requested work yet. Do not create or enable automations,
+write deliverable files, send external messages, delegate work, modify memory,
+or trigger long-running execution. Use only read-only context tools and planning
+tools.
+
+Your job is to produce a useful, domain-appropriate work plan for the requested
+outcome. This may be coding, research, writing, analysis, operations, sales,
+finance, recruiting, customer communication, automation, or any other co-work
+task. Do not assume the task is a software implementation unless the user's
+request actually says so.
+
+First understand the user's real outcome, constraints, audience, delivery
+format, risks, cost, timing, and external side effects. Inspect current state
+only when it matters for the plan.
+
+If a missing decision materially changes scope, risk, cost, recipient, cadence,
+data source, deliverable format, or irreversible behavior, ask the user a brief
+clarifying question with ask_user_question. Do not submit a confirmable plan
+while a blocking question is unresolved.
+
+When the plan is ready, write plan_markdown as the main user-facing plan. It
+should explain the approach, sequencing, tradeoffs, verification, stopping
+conditions, and what will happen after approval in natural user language.
+
+Then call exit_plan_mode. exit_plan_mode is the approval request. Do not use
+ask_user_question or prose to ask "is this plan OK?"
+```
+
+## 6. `ask_user_question` contract
+
+Minimal schema:
+
+```json
+{
+  "question": "string",
+  "reason": "string",
+  "options": [
+    {"label": "string", "description": "string"}
+  ],
+  "allow_free_text": true,
+  "blocking": true
+}
+```
+
+Runtime behavior:
+
+- Allowed in Plan Mode read-only policy.
+- Persists the question in plan/session metadata.
+- Emits a chat-visible question card.
+- Pauses the current Plan Mode run.
+- Stores the user answer.
+- Resumes Plan Mode with the answer injected as confirmed user input.
+
+Non-goals:
+
+- It is not a general external messaging tool.
+- It is not an approval tool.
+- It does not confirm a plan.
+
+## 7. `exit_plan_mode` contract changes
+
+Keep `exit_plan_mode` as the only approval exit, but change its expectations:
+
+Required:
+
+- `title`
+- `plan_markdown`
+- `execution_summary` or equivalent short summary
+
+Derived or secondary:
+
+- `steps`
+- `success_criteria`
+- `stop_conditions`
+- `risk_assessment`
+- `estimated_cost`
+- `wake_policy`
+- `handoff`
+- `assumptions`
+
+Validation rules:
+
+- Reject if `plan_markdown` is missing or too thin.
+- Reject if `steps` include Plan Mode meta-work such as "submit plan card", "call exit_plan_mode", "in Plan Mode inspect context".
+- Reject or pause if blocking `open_questions` exist.
+- Do not render empty governance fields.
+- Metadata should mark real provenance as `agent_main_loop` / `agent_authored`, not `workflow`, when the plan came from the main agent loop.
+
+## 8. Implementation Order
+
+### Phase A: Document + prompt correction
+
+- Rewrite this document and related Plan Mode docs around domain-neutral co-work.
+- Remove coding-only framing from Plan Mode prompt.
+- Make "blocking question first, plan after" explicit.
+
+### Phase B: Ask-user tool
+
+- Add `ask_user_question`.
+- Add Plan Mode allowlist entry.
+- Add state transition for `awaiting_user_clarification`.
+- Resume Plan Mode from user answer.
+
+### Phase C: Plan quality contract
+
+- Make `plan_markdown` the primary plan artifact.
+- Add `exit_plan_mode` validation for meta-steps and blocking questions.
+- Correct provenance metadata.
+- Allow planning ledger tools during Plan Mode.
+
+### Phase D: PlanCard surface
+
+- Render `plan_markdown` first.
+- Hide empty plumbing fields.
+- Fold governance/audit fields into advanced details.
+- Show blocking questions as questions, not as confirmable assumptions.
+
+## 9. Acceptance Criteria
+
+- RWA 周报这类非 coding 任务可以进入 Plan Mode，但会先澄清关键范围/交付/数据深度问题，或产出真正可执行的研究计划。
+- Plan 第一屏读起来像 agent 写给用户的工作方案，而不是 schema 表。
+- `open_questions` 不再是免责清单；blocking questions 会暂停确认。
+- Plan Mode prompt 不默认 coding，不要求所有任务都出现 tests/CI/deploy。
+- `exit_plan_mode` 不再接受包含 Plan Mode 元步骤的 execution steps。
+- PlanCard 不展示 `none/unknown` 空 plumbing。
+- 用户确认后，执行者能直接从计划理解要做什么、为什么、怎么验收、何时停止。
+
+## 10. North Star
+
+Plan Mode 的价值不是"先弹一张确认卡"，而是:
+
+> agent 在执行前认真理解、澄清、取舍、规划；系统只负责把这份计划变成可确认、可审计、可治理的执行边界。
+
+Hive 相对 Claude Code 的 superset 不是更复杂的表单，而是更通用的 co-work runtime 加企业级治理。Plan Mode 必须服务这个定位。

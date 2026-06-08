@@ -35,6 +35,29 @@ def test_sparse_reminder_is_shorter_but_keeps_exit_and_readonly():
     assert len(sparse) < len(_PLAN_MODE_REMINDER_FULL)
 
 
+def test_full_reminder_is_domain_neutral_and_clarification_first():
+    """Plan-mode CC alignment Phase A: the reminder must be domain-neutral (not
+    coding-default), route blocking clarifications to ask_user_question, and make
+    plan_markdown the plan body — not a field-filling checklist."""
+    full = _PLAN_MODE_REMINDER_FULL
+    lower = full.lower()
+    # domain-neutral: research/non-coding tasks are first-class, no coding default
+    assert "research" in lower
+    assert "software" in lower  # the "do not assume ... software" guard
+    # clarification is a first-class tool, not prose-or-assume
+    assert "ask_user_question" in full
+    # plan_markdown is the user-facing plan body
+    assert "plan_markdown" in full
+    # no longer dumps the field-filling checklist as the main job
+    assert "motivation, ordered steps" not in full
+
+
+def test_sparse_reminder_routes_clarification_and_plan_body():
+    sparse = _PLAN_MODE_REMINDER_SPARSE
+    assert "ask_user_question" in sparse
+    assert "plan_markdown" in sparse
+
+
 # ── B3: explicit activation notice (docs/agent-lifecycle-cc-alignment.md 主题 B) ──
 
 

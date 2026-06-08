@@ -418,6 +418,39 @@ def test_confirm_success_returns_confirmed_payload(monkeypatch):
     assert captured["plan_hash"] == "sha256:abc"
 
 
+def test_confirm_and_handoff_success_returns_handoff_payload(monkeypatch):
+    agent_id = uuid4()
+    captured = {}
+
+    class _Service:
+        async def get_plan(self, _plan_id):
+            return _plan_namespace(agent_id=agent_id)
+
+        async def confirm_and_handoff_plan(self, **kwargs):
+            captured.update(kwargs)
+            plan = _plan_namespace(agent_id=agent_id, status="confirmed")
+            plan.handoff_status = "completed"
+            plan.handoff_payload = {"runtime_task_id": "run-123", "execution": "current_session"}
+            return plan
+
+    client, user, _ = _client(monkeypatch, service=_Service())
+    plan_id = uuid4()
+    resp = client.post(
+        f"/agents/{agent_id}/plans/{plan_id}/confirm-and-handoff",
+        json={"plan_version": 1, "plan_hash": "sha256:abc", "reason": "Looks good"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["status"] == "confirmed"
+    assert body["handoff_status"] == "completed"
+    assert body["handoff_payload"]["runtime_task_id"] == "run-123"
+    assert captured["confirming_user_id"] == user.id
+    assert captured["plan_version"] == 1
+    assert captured["plan_hash"] == "sha256:abc"
+
+
 def test_confirm_version_mismatch_maps_to_409(monkeypatch):
     agent_id = uuid4()
 

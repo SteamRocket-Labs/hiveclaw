@@ -695,16 +695,70 @@ async def _load_runtime_context(
         return runtime_task, agent, user, primary_model, fallback_model, history_messages
 
 
+async def _resume_queued_plan_handoffs(
+    *,
+    agent_id: uuid.UUID,
+    session_id: str | uuid.UUID,
+    limit: int = 1,
+) -> list[str]:
+    """Resume confirmed Plan Mode handoffs queued behind an active web-chat run.
+
+    ``continue_current_session_handoff`` returns ``handoff_status='queued'`` when a
+    run is active. That status must not be merely presentational: when the active
+    run reaches a terminal state, this hook asks PlanModeService to hand off the
+    oldest queued plan for the same agent/session. The handler will either start a
+    new same-session run or keep the plan queued if another run won the race.
+    """
+    from app.models.plan_request import AgentPlanRequest
+    from app.services.plan_mode_service import get_plan_mode_service
+
+    async with _async_session() as db:
+        result = await db.execute(
+            select(AgentPlanRequest.id)
+            .where(
+                AgentPlanRequest.agent_id == agent_id,
+                AgentPlanRequest.session_id == str(session_id),
+                AgentPlanRequest.status == "confirmed",
+                AgentPlanRequest.handoff_status == "queued",
+            )
+            .order_by(AgentPlanRequest.updated_at.asc(), AgentPlanRequest.created_at.asc())
+            .limit(limit)
+        )
+        plan_ids = list(result.scalars().all())
+
+    resumed: list[str] = []
+    if not plan_ids:
+        return resumed
+
+    service = get_plan_mode_service()
+    for plan_id in plan_ids:
+        try:
+            plan = await service.handoff_confirmed_plan(plan_id=plan_id)
+        except Exception as exc:  # noqa: BLE001 - recovery must not fail the completed run
+            logger.warning(
+                "[WebChatRun] queued Plan Mode handoff resume failed: plan_id={} error={}",
+                plan_id,
+                exc,
+            )
+            continue
+        resumed.append(str(getattr(plan, "id", plan_id)))
+    return resumed
+
+
 async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio.Event | None = None) -> None:
     run_uuid = _run_id(run_id)
     run_key = run_uuid.hex
     cancel_event = cancel_event or _CANCEL_EVENTS.setdefault(run_key, asyncio.Event())
     streamed_chunks: list[str] = []
     thinking_content: list[str] = []
+    terminal_agent_id: uuid.UUID | None = None
+    terminal_session_id: str | None = None
 
     try:
         runtime_task, agent, user, llm_model, fallback_model, history_messages = await _load_runtime_context(run_uuid)
         session_id = str(runtime_task.parent_session_id)
+        terminal_agent_id = agent.id
+        terminal_session_id = session_id
         conversation = conversation_from_history_messages(history_messages)
         prompt = runtime_task.prompt or ""
         metadata = runtime_task.metadata_json if isinstance(runtime_task.metadata_json, dict) else {}
@@ -953,6 +1007,15 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             pass
     finally:
         _CANCEL_EVENTS.pop(run_key, None)
+        if terminal_agent_id is not None and terminal_session_id:
+            try:
+                await _resume_queued_plan_handoffs(agent_id=terminal_agent_id, session_id=terminal_session_id)
+            except Exception as exc:  # noqa: BLE001 - terminal cleanup must not mask run outcome
+                logger.warning(
+                    "[WebChatRun] queued Plan Mode handoff cleanup failed: run_id={} error={}",
+                    run_key,
+                    exc,
+                )
 
 
 # Kept as an overridable module global for tests and for parity with other services.

@@ -124,7 +124,7 @@ function displayableSideEffects(value: unknown): DisplaySideEffect[] {
   });
 }
 
-type PlanConfirmationApi = Pick<typeof planApi, 'confirm' | 'handoff'>;
+type PlanConfirmationApi = Pick<typeof planApi, 'confirmAndHandoff'>;
 
 export async function confirmAndHandoffPlan(
   agentId: string,
@@ -134,11 +134,10 @@ export async function confirmAndHandoffPlan(
   if (plan.plan_hash == null) {
     throw new Error('missing_plan_hash');
   }
-  await api.confirm(agentId, plan.id, {
+  await api.confirmAndHandoff(agentId, plan.id, {
     plan_version: plan.plan_version,
     plan_hash: plan.plan_hash,
   });
-  await api.handoff(agentId, plan.id);
 }
 
 const labelStyle: React.CSSProperties = {

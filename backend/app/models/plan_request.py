@@ -63,7 +63,7 @@ class AgentPlanRequest(Base):
     plan_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
     handoff_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    # not_started | completed | failed | skipped
+    # not_started | queued | completed | failed | skipped
     handoff_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
     confirmed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(

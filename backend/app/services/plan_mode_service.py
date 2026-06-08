@@ -619,6 +619,31 @@ class PlanModeService:
                 raise
         return plan
 
+    async def confirm_and_handoff_plan(
+        self,
+        *,
+        plan_id: UUID,
+        confirming_user_id: UUID | None,
+        plan_version: int,
+        plan_hash: str,
+        reason: str | None = None,
+    ) -> AgentPlanRequest:
+        """Confirm a plan and immediately hand it to execution from the backend.
+
+        Web chat uses this one service operation so the browser never has to bridge
+        a fragile ``confirm`` success followed by a separate ``handoff`` request.
+        Legacy callers can still use the split methods when they intentionally
+        need confirmation without execution.
+        """
+        confirmed = await self.confirm_plan(
+            plan_id=plan_id,
+            confirming_user_id=confirming_user_id,
+            plan_version=plan_version,
+            plan_hash=plan_hash,
+            reason=reason,
+        )
+        return await self.handoff_confirmed_plan(plan_id=confirmed.id)
+
     @staticmethod
     def _raise_confirmation_error(check: core.ConfirmationCheck) -> None:
         code = check.error_code or "not_confirmable"

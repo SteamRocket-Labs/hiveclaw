@@ -212,6 +212,100 @@ async def test_start_web_chat_run_rejects_duplicate_active_run():
     assert db.commits == 0
 
 
+@pytest.mark.asyncio
+async def test_resume_queued_plan_handoffs_restarts_oldest_confirmed_plan(monkeypatch):
+    """A queued Plan Mode handoff must be resumable after the current run exits.
+
+    Returning ``handoff_status='queued'`` from the handoff handler is only honest
+    if the web-chat runtime has a recovery hook that calls the handoff again once
+    the active run is no longer active.
+    """
+    import app.services.web_chat_runtime as runtime
+
+    agent_id = uuid4()
+    session_id = "sess-1"
+    plan_id = uuid4()
+
+    class _QueuedResult:
+        def scalars(self):
+            return SimpleNamespace(all=lambda: [plan_id])
+
+    class _QueuedDB:
+        async def execute(self, _stmt):
+            return _QueuedResult()
+
+    class _SessionFactory:
+        async def __aenter__(self):
+            return _QueuedDB()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    calls = []
+
+    class _Service:
+        async def handoff_confirmed_plan(self, *, plan_id):
+            calls.append(plan_id)
+            return SimpleNamespace(id=plan_id, handoff_status="completed")
+
+    monkeypatch.setattr(runtime, "_async_session", lambda: _SessionFactory())
+    monkeypatch.setattr("app.services.plan_mode_service.get_plan_mode_service", lambda: _Service())
+
+    resumed = await runtime._resume_queued_plan_handoffs(agent_id=agent_id, session_id=session_id)
+
+    assert calls == [plan_id]
+    assert resumed == [str(plan_id)]
+
+
+@pytest.mark.asyncio
+async def test_execute_web_chat_run_resumes_queued_plan_handoffs_on_terminal_exit(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = "sess-1"
+    runtime_task = SimpleNamespace(
+        id=run_id,
+        parent_agent_id=agent_id,
+        parent_session_id=session_id,
+        prompt="hello",
+        metadata_json={"user_id": str(user_id), "session_id": session_id},
+    )
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Agent",
+        role_description="",
+        primary_model_id=None,
+        fallback_model_id=None,
+        tenant_id=uuid4(),
+        agent_type="standard",
+    )
+    user = SimpleNamespace(id=user_id)
+    resumed = []
+
+    async def fake_load_context(_run_uuid):
+        return runtime_task, agent, user, None, None, []
+
+    async def fake_resume(**kwargs):
+        resumed.append(kwargs)
+        return ["plan-1"]
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "_load_runtime_context", fake_load_context)
+    monkeypatch.setattr(runtime, "_maybe_handle_plan_mode_entry", noop_async)
+    monkeypatch.setattr(runtime, "_persist_assistant_message", noop_async)
+    monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", noop_async)
+    monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", fake_resume)
+
+    await runtime.execute_web_chat_run(run_id)
+
+    assert resumed == [{"agent_id": agent_id, "session_id": session_id}]
+
+
 # ---------------------------------------------------------------------------
 # Auto-sync gate (§9.0 task auto-sync / §9.2): a regex-detected "create a task"
 # must NOT silently background-execute; without a confirmed plan it creates an

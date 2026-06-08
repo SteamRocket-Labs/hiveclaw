@@ -817,6 +817,40 @@ async def test_handoff_records_failure_without_corrupting_confirmed(patched_serv
     assert "downstream create failed" in (result.handoff_payload or {}).get("error", "")
 
 
+@pytest.mark.asyncio
+async def test_confirm_and_handoff_plan_confirms_then_runs_handoff(patched_service):
+    """Web confirm must not leave a client-side split-brain gap between
+    ``confirmed`` and execution handoff. The backend service provides one
+    confirm-and-start operation; the legacy confirm/handoff methods remain for
+    non-web callers that intentionally need the split."""
+    service, session, _, _planner = patched_service
+    plan, _requester = await _make_awaiting(service)
+    confirmer = uuid4()
+    calls = {"handoff": 0}
+
+    def handler(db, plan_row):
+        assert db is session
+        assert plan_row.status == "confirmed"
+        calls["handoff"] += 1
+        return {"runtime_task_id": "run-123", "execution": "current_session"}
+
+    service.register_handoff_handler("objective_trigger", handler)
+
+    result = await service.confirm_and_handoff_plan(
+        plan_id=plan.id,
+        confirming_user_id=confirmer,
+        plan_version=plan.plan_version,
+        plan_hash=plan.plan_hash,
+        reason="Looks good",
+    )
+
+    assert result.status == "confirmed"
+    assert result.confirmed_by_user_id == confirmer
+    assert result.handoff_status == "completed"
+    assert result.handoff_payload["runtime_task_id"] == "run-123"
+    assert calls["handoff"] == 1
+
+
 # ---------------------------------------------------------------------------
 # read helpers (API support)
 # ---------------------------------------------------------------------------

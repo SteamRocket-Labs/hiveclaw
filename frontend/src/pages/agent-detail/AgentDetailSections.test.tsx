@@ -1969,26 +1969,18 @@ describe('AgentDetail extracted sections', () => {
       updated_at: null,
       metadata: {},
     } as PlanRequest;
-    const calls: string[] = [];
     const api = {
-      confirm: vi.fn(async () => {
-        calls.push('confirm');
-        return { ok: true, status: 'confirmed', plan_id: 'plan-1', handoff_status: 'not_started' };
-      }),
-      handoff: vi.fn(async () => {
-        calls.push('handoff');
+      confirmAndHandoff: vi.fn(async () => {
         return { ok: true, status: 'confirmed', plan_id: 'plan-1', handoff_status: 'completed', handoff_payload: {} };
       }),
     };
 
     await confirmAndHandoffPlan('agent-1', plan, api);
 
-    expect(api.confirm).toHaveBeenCalledWith('agent-1', 'plan-1', {
+    expect(api.confirmAndHandoff).toHaveBeenCalledWith('agent-1', 'plan-1', {
       plan_version: 3,
       plan_hash: 'sha256:abc123',
     });
-    expect(api.handoff).toHaveBeenCalledWith('agent-1', 'plan-1');
-    expect(calls).toEqual(['confirm', 'handoff']);
   });
 
   it('renders PlanCard without actions once a plan is confirmed', () => {

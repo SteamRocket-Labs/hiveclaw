@@ -546,3 +546,11 @@ current-session agent planning quality
 小项：§4.4 Deep Research 同会话进度，DR×Workflow 统一后可能已流式到会话，动手前先核实现状再算工作量。
 
 落地序：§4.1 计划质量 contract（吸收先前 Phase A/B/D 的 plan_markdown 正文 + author_type + meta-step + ledger 工具）→ §4.2 `continue_current_session` handler → §4.5 前端 `InlinePlanCard` 取代合成卡片 → §6.3 两个验收用例。
+
+### 10.1 Review 后闭环补丁（2026-06-08）
+
+二次 review 发现两个残余缺口：Web 卡片仍是浏览器端 `confirm` 后再调 `handoff` 两段 HTTP，且 `handoff_status="queued"` 只是展示状态、没有恢复执行机制。最终补丁采用：
+
+1. **Web 端确认走后端单接口。** 新增 `POST /agents/{agent_id}/plans/{plan_id}/confirm-and-handoff`，服务层提供 `PlanModeService.confirm_and_handoff_plan()`，Web `PlanCard` 的确认按钮只调这一条接口；旧 `confirm` / `handoff` 保留给 Feishu 等需要分层语义的入口。
+2. **`queued` 必须可恢复执行。** `continue_current_session` 遇到 active run 时仍返回 `queued`，但 `web_chat_runtime.execute_web_chat_run()` 在 terminal cleanup 中调用 queued resume hook：查找同 agent/session 最早的 `confirmed + handoff_status=queued` plan，再调用 `handoff_confirmed_plan()`。每次完成只恢复 1 条，下一条由续跑完成后继续拉起，避免并发挤爆当前 session。
+3. **验收钉子。** 后端测试覆盖 service 单操作、REST 单接口、queued resume helper、run terminal cleanup hook；前端测试覆盖 API adapter 与 `confirmAndHandoffPlan()` 不再拆成两次请求。

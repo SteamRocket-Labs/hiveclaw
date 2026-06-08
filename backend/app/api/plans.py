@@ -489,6 +489,43 @@ async def confirm_plan(
     return PlanConfirmOut(ok=True, status=plan.status, plan_id=str(plan.id), handoff_status=plan.handoff_status)
 
 
+@router.post("/{agent_id}/plans/{plan_id}/confirm-and-handoff", response_model=PlanHandoffOut)
+async def confirm_and_handoff_plan(
+    agent_id: uuid.UUID,
+    plan_id: uuid.UUID,
+    payload: PlanConfirmIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Confirm a specific plan version and start its handoff in one backend call.
+
+    This is the Web PlanCard happy path: avoid a browser-side split where
+    ``confirm`` succeeds but the follow-up ``handoff`` request is lost.
+    """
+    await check_agent_access(db, current_user, agent_id)
+    service = get_plan_mode_service()
+    await _load_plan_for_agent(service, agent_id=agent_id, plan_id=plan_id)
+    try:
+        plan = await service.confirm_and_handoff_plan(
+            plan_id=plan_id,
+            confirming_user_id=getattr(current_user, "id", None),
+            plan_version=payload.plan_version,
+            plan_hash=payload.plan_hash,
+            reason=payload.reason,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except PlanConflictError as exc:
+        raise HTTPException(status_code=409, detail={"error": exc.error_code, "message": exc.message}) from exc
+    return PlanHandoffOut(
+        ok=True,
+        status=plan.status,
+        plan_id=str(plan.id),
+        handoff_status=plan.handoff_status,
+        handoff_payload=plan.handoff_payload,
+    )
+
+
 @router.post("/{agent_id}/plans/{plan_id}/reject", response_model=PlanOut)
 async def reject_plan(
     agent_id: uuid.UUID,

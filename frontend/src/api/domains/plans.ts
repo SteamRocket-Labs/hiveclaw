@@ -9,6 +9,7 @@
  *   POST   /agents/{agentId}/plans/{planId}/revise  supersede + regenerate
  *   POST   /agents/{agentId}/plans/{planId}/regenerate retry same failed draft
  *   POST   /agents/{agentId}/plans/{planId}/confirm confirm (version + hash bound)
+ *   POST   /agents/{agentId}/plans/{planId}/confirm-and-handoff confirm + start
  *   POST   /agents/{agentId}/plans/{planId}/reject  reject
  *   POST   /agents/{agentId}/plans/{planId}/handoff hand off to execution
  *
@@ -230,6 +231,8 @@ export const planApi = {
     post<PlanRequest>(`/agents/${agentId}/plans/${planId}/regenerate`, data),
   confirm: (agentId: string, planId: string, data: PlanConfirmInput) =>
     post<PlanConfirmResult>(`/agents/${agentId}/plans/${planId}/confirm`, data),
+  confirmAndHandoff: (agentId: string, planId: string, data: PlanConfirmInput) =>
+    post<PlanHandoffResult>(`/agents/${agentId}/plans/${planId}/confirm-and-handoff`, data),
   reject: (agentId: string, planId: string, data: PlanDecisionInput = {}) =>
     post<PlanRequest>(`/agents/${agentId}/plans/${planId}/reject`, data),
   handoff: (agentId: string, planId: string) =>

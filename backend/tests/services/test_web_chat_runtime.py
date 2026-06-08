@@ -331,6 +331,10 @@ async def test_maybe_handle_plan_mode_entry_activates_interactive_mode_when_expl
     assert session_context.metadata["plan_mode"]["original_request"] == "帮我完整调研这个行业"
     assert session_context.metadata["plan_mode"]["intent_type"] == "long_task"
     assert session_context.metadata["plan_mode"]["action_kind"] == "start_long_task"
+    # CC-align §4.2: a normal live-chat plan defaults to continuing in THIS session
+    # after confirmation — NOT the old detached ``long_task`` (which had no handler
+    # and resolved to skipped). intent_type stays long_task; only the target moved.
+    assert session_context.metadata["plan_mode"]["handoff_target"] == "continue_current_session"
 
 
 @pytest.mark.asyncio

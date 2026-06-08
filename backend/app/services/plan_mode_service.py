@@ -748,11 +748,16 @@ class PlanModeService:
             )
             return
 
-        plan.handoff_status = "completed"
+        # A handler may signal a non-terminal outcome (e.g. the current-session
+        # continuation returns "queued" when a run is already active). Default to
+        # "completed" so existing handlers are unchanged.
+        resolved_status = str(payload.pop("handoff_status", "") or "completed")
+        stamp_key = "completed_at" if resolved_status == "completed" else "updated_at"
+        plan.handoff_status = resolved_status
         plan.handoff_payload = {
             **payload,
             "target": target,
-            "completed_at": _now().isoformat(),
+            stamp_key: _now().isoformat(),
         }
 
     # -- reads (API support) ---------------------------------------------

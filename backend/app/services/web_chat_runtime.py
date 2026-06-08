@@ -168,6 +168,7 @@ async def start_web_chat_run(
     display_content: str = "",
     file_name: str = "",
     plan_mode_requested: bool = False,
+    extra_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if is_agent_expired(agent):
         raise HTTPException(status_code=403, detail="Agent has expired")
@@ -222,6 +223,9 @@ async def start_web_chat_run(
             "source": "web",
             "cancelled_by_user": False,
             "plan_mode_requested": bool(plan_mode_requested),
+            # Plan Mode continuation provenance (approved_plan_id/version/hash,
+            # source="plan_mode_handoff"); empty for normal user turns.
+            **(extra_metadata or {}),
         },
     )
     db.add(runtime_task)
@@ -399,7 +403,10 @@ def _activate_interactive_plan_mode(
     elif decision.action_kind == "create_enabled_trigger":
         handoff_target = "objective_trigger"
     else:
-        handoff_target = "long_task"
+        # CC parity: live chat Plan Mode defaults to continuing in THIS session
+        # after confirmation (not a detached long_task). Detached background
+        # execution is opt-in (see plan_mode_session_handoff + the detached stub).
+        handoff_target = "continue_current_session"
     state = PlanModeState(
         active=True,
         original_request=original_request,

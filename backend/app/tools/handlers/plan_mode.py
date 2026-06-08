@@ -80,7 +80,13 @@ def _wake_policy(value: Any, *, handoff_target: str) -> dict[str, Any]:
 
 
 def _handoff(args: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
-    target = str(args.get("handoff_target") or metadata.get("handoff_target") or "long_task").strip() or "long_task"
+    # CC parity default: live chat plans continue in the current session unless an
+    # explicit target (deep_research / objective_trigger / delegation / detached)
+    # was set on the args or carried in the plan-mode metadata.
+    target = (
+        str(args.get("handoff_target") or metadata.get("handoff_target") or "continue_current_session").strip()
+        or "continue_current_session"
+    )
     payload = args.get("handoff_payload") if isinstance(args.get("handoff_payload"), dict) else {}
     if target == "deep_research":
         payload = {**dict(metadata.get("deep_research_args") or {}), **dict(payload or {})}

@@ -11,9 +11,11 @@ from __future__ import annotations
 
 from app.services.deep_research.plan_mode import deep_research_handoff_handler
 from app.services.plan_mode_delegation_handoff import delegation_handoff_handler
+from app.services.plan_mode_detached_handoff import detached_runtime_task_handoff
 from app.services.plan_mode_handoff import objective_trigger_handoff_handler
 from app.services.plan_mode_registry import register_plan_mode_handoffs
 from app.services.plan_mode_service import PlanModeService
+from app.services.plan_mode_session_handoff import continue_current_session_handoff
 
 
 def test_register_plan_mode_handoffs_registers_objective_trigger():
@@ -24,6 +26,18 @@ def test_register_plan_mode_handoffs_registers_objective_trigger():
     assert service._handoff_handlers["objective_trigger"] is objective_trigger_handoff_handler
     assert service._handoff_handlers["deep_research"] is deep_research_handoff_handler
     assert service._handoff_handlers["delegation"] is delegation_handoff_handler
+
+
+def test_register_plan_mode_handoffs_registers_continuation_and_detached_targets():
+    # CC-align §4.2/§4.3: every target must resolve to a handler — no more silent
+    # ``no_handler_registered`` -> ``skipped``. The legacy ``long_task`` target is
+    # routed to the same continuation handler (compat).
+    service = PlanModeService()
+    register_plan_mode_handoffs(service)
+
+    assert service._handoff_handlers["continue_current_session"] is continue_current_session_handoff
+    assert service._handoff_handlers["long_task"] is continue_current_session_handoff
+    assert service._handoff_handlers["detached_runtime_task"] is detached_runtime_task_handoff
 
 
 def test_register_plan_mode_handoffs_is_idempotent():

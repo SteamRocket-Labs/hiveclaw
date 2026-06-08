@@ -83,7 +83,7 @@ async def test_non_standalone_request_still_builds_host_prompt(monkeypatch):
         return "HOST CONTEXT"
 
     monkeypatch.setattr(invoker, "build_agent_context", fake_build_agent_context)
-    monkeypatch.setattr(invoker, "build_frozen_prompt_prefix", lambda agent_context: agent_context)
+    monkeypatch.setattr(invoker, "build_frozen_prompt_prefix", lambda agent_context, **kwargs: agent_context)
 
     request = _standalone_request("")
     prompt = await invoker._build_system_prompt(request, uuid4(), "", current_user_name="rocky")

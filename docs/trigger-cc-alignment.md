@@ -79,7 +79,26 @@ Owner 判断(2026-06-08):**「Plan Mode、Task、Subagent 全部过一遍,特别
 
 **C7 净效果**:subagent fork 回归 CC 二元(none=fresh 干净 worker / all=full-context fork),自创的 brief 中间档(压缩父消息)消除。fanout_subagents 维持 DR 内部细节(不进工具目录、不提升一等)。**进化闭环按 owner 2026-06-08 拍板保留全套(Goal-1 delta,不动)**。Subagent 轴对齐 CC 完成。
 
+| # | 内容 | 关键改动 | 证据 |
+|---|------|---------|------|
+| 8 | **存量生产数据 dry-run 脚本 + 收尾**(§7 step5-6) | `exec_align_legacy_data_dryrun.py`:只读清单(objective_task 类 trigger + supervision Task 行 + 检测 agent_objectives 表残留)+`--apply` 门控(默认关、先写 JSON 备份、交互确认、禁用 trigger 可逆/删 supervision 行);**不擅自动生产数据**=交付纪律唯一例外(dry-run+确认门),owner 在 Railway 跑+审+确认 | 最终全量 3974 绿;`py_compile` OK;`import app.main` OK |
+
+**C8 净效果 + 存量数据安全性**:schema 残留(objective 表+supervision 列)由迁移在 deploy 时清;数据残留(旧 objective_task trigger / supervision Task 行)**已 fail-closed 惰性**(objective_task trigger 无 plan_id 被 plan-gate 挡=blocked 不跑;supervision Task 无 executor 分支=不执行),清理是卫生非安全。dry-run 脚本供 owner 审后清。
+
 ---
+
+## 🏁 全部完成(2026-06-09,8 commits 在 main 逐步推进,未 push)
+
+| commit | 块 | 一句话 |
+|--------|----|----|
+| `240aa239` `9b9c5439` `6bd3dee7` | Plan Mode intent(#1-3) | 砍 2 孤儿 intent · long_task 重命名归位(治理锚) · handoff 直连 trigger 解开 objective |
+| `3f26d90a` `d4c9f226` | objective+focus 退役(#4) | 后端整删 11 源+11 测试+迁移 · 前端删 objectiveApi/UI · 真 bug 修(死工具指令) |
+| `4dbbc680` | trigger 三桶+事件驱动 v1(#5) | `trigger_bucket()` 三桶 · 事件驱动喂真实事件(补 poll 缺口) |
+| `e95009fc` | Task 单板(#6) | supervision 退役(孤儿死代码) · 业务 Task 核实为 Goal-2 保留 · should_enable/required 已对齐 |
+| `8f0200c1` | Subagent(#7) | ForkLevel 砍 brief 回 CC 二元 · fanout 保 DR 内部 · 进化闭环保留 |
+| (本提交) | 存量 dry-run+收尾(#8) | 只读清单脚本+`--apply` 门控 · owner 审后清生产数据 |
+
+**总账**:四块(Plan/触发/Task/Subagent)全部对标 CC 过一遍。砍掉的自创杂物=objective 子系统(整子系统)+focus.md 投射+2 孤儿 plan intent+supervision 类型+ForkLevel brief 档+死 action_kind。保留的有意 delta=plan 治理信封/状态机/hash(Goal-2)+业务 Task 人派活(Goal-2)+record_finding(Goal-1)+subagent 进化闭环(Goal-1)+spawn 治理(Goal-2)。每块逐 commit 红测先行+全量绿(终 3974)+文档带证据。CC 范式落地:执行/自动化 = 一个 `invoke_agent` call,触发只是"何时/用什么 prompt 发起它"。
 
 ## 1. 病灶:CC 范式 vs Hive 跑偏(evidence)
 

@@ -35,8 +35,6 @@ INTENT_TYPES: tuple[str, ...] = (
     "autonomous_wake",
     "long_task",
     "delegation",
-    "external_action",
-    "state_change",
 )
 
 #: §9.0 / §9.2 — the "open autonomous behavior" actions the PlanModeGate
@@ -379,14 +377,13 @@ _CAPABILITY_LABELS: dict[str, str] = {
 #:   in the live session, or fails closed with a visible reason when unattended).
 #:   The legacy ``"long_task"`` *target* stays registered (compat for already-persisted
 #:   plans) but is no longer seeded here.
-#: - ``external_action`` / ``state_change`` previously seeded the dead ``"tool_action"``
-#:   target (no handler). They now seed ``continue_current_session`` too.
+#:
+#: Exec/automation CC-alignment (2026-06-08): ``external_action`` / ``state_change``
+#: were orphan intents (no ``ACTION_KIND`` mapped onto them, no producer) — removed.
 _INTENT_HANDOFF_TARGET: dict[str, str] = {
     "autonomous_wake": "objective_trigger",
     "long_task": "continue_current_session",
     "delegation": "delegation",
-    "external_action": "continue_current_session",
-    "state_change": "continue_current_session",
 }
 
 

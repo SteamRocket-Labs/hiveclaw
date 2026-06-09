@@ -33,7 +33,18 @@ Owner 判断(2026-06-08):**「Plan Mode、Task、Subagent 全部过一遍,特别
 | **① 触发** | 触发 = 往 agent 输入流喂一个 prompt;无类型系统(`trigger_type` 零命中) | 5 类型平铺 + objective 自带唤醒 + focus.md + reconciler | **砍** objective/focus/reconciler;**收敛** 5 类型→三桶 |
 | **② Plan Mode** | plan 确认 = 权限模式切换 + 同 loop 继续;零 intent/action 分类(全零命中) | INTENT_TYPES(5)+ ACTION_KINDS(6)+ 状态机 + 信封 | **砍** 孤儿 intent + long_task;**收敛** intent taxonomy→continue-same-loop;**保留** 治理信封 |
 | **③ Task** | TodoWrite + Task 板,create≠execute,owner/blocks/blockedBy | **两套**:Work Ledger(已对齐✅)+ 业务 DB Task(第二套) | **砍** supervision type;**收敛** 业务 DB Task 第二套;**保留** record_finding |
-| **④ Subagent** | Task/Agent 工具,body 替换,memory 自写 + 通用 nightly,**从不改 definition** | spawn/delegate 两轴,12 项已对齐✅ + 进化闭环 | **收敛** fanout/ForkLevel;**保留(张力)** 进化闭环 = Goal 1 self-evolution,待 owner 拍 |
+| **④ Subagent** | Task/Agent 工具,body 替换,memory 自写 + 通用 nightly,**从不改 definition** | spawn/delegate 两轴,12 项已对齐✅ + 进化闭环 | **收敛** fanout/ForkLevel;**保留** 进化闭环 = Goal 1 self-evolution(owner 已拍) |
+
+---
+
+## 0.3 实施进度(在 main 上逐 commit 推进,2026-06-08)
+
+> owner 拍板:直接在 main 改、每部分一个 commit、每步更新本文带证据。main 本地推进,未 push。long_task 区分两层:plan intent(本线收敛)vs `long_task_runtime.py`(deep research 异步基建,**不动**)。
+
+| # | 内容 | 关键改动 | 证据 |
+|---|------|---------|------|
+| 0 | 设计文档 v1 落地 | 四块审计 + 砍/收敛/保留三分框架 | `cd50356d` |
+| 1 | 砍 `external_action` / `state_change` 孤儿 plan intent | `INTENT_TYPES` 5→3;`_INTENT_HANDOFF_TARGET` 去 2 条;`plan_request` 注释 | red-first(`test_intent_types` 先红)→535 plan/intent/handoff/dr 测试绿 |
 
 ---
 
@@ -134,8 +145,8 @@ reconciler 的 4 个客户先安置后删:
 
 | 项 | loc | 处置 | 理由 |
 |----|-----|------|------|
-| `external_action` intent | core.py:38 | **砍** | 孤儿,无 producer,死词汇 |
-| `state_change` intent | core.py:39 | **砍** | 孤儿,无 producer,死词汇 |
+| `external_action` intent | core.py:38 | **✅ 砍 (#1)** | 孤儿,无 producer,死词汇 |
+| `state_change` intent | core.py:39 | **✅ 砍 (#1)** | 孤儿,无 producer,死词汇 |
 | `long_task` intent | core.py:36 | **砍** | handoff 就是 continue-same-loop,标签无意义;CC 零命中;判据是风险不是长短 |
 | `start_workflow → long_task` | core.py:65 | **收敛** | 按风险直接 gate(`plan_gate_registry.py:127-151` 已 grade by risk),去掉 long_task 中间层 |
 | `activate_objective_wake` / `enable_autonomous_wake` | core.py:49-50 | **砍** | 随 objective/trigger 退役;后者近似重复 `create_enabled_trigger` |

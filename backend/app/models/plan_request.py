@@ -49,7 +49,7 @@ class AgentPlanRequest(Base):
 
     # web_chat | trigger_api | tool_runtime | objective | channel | system
     source: Mapped[str] = mapped_column(String(30), nullable=False, default="web_chat")
-    # autonomous_wake | long_task | delegation | external_action | state_change
+    # autonomous_wake | long_task | delegation
     intent_type: Mapped[str] = mapped_column(String(30), nullable=False)
     original_request: Mapped[str] = mapped_column(Text, nullable=False, default="")
 

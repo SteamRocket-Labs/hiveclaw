@@ -640,7 +640,7 @@ def test_render_plan_markdown_is_parseable_frontmatter():
     """Frontmatter block must be a clean leading --- ... --- region."""
     from app.services.plan_mode_core import build_plan_skeleton, compute_plan_hash, render_plan_markdown
 
-    plan = build_plan_skeleton(intent_type="external_action", title="t", original_request="r")
+    plan = build_plan_skeleton(intent_type="delegation", title="t", original_request="r")
     plan["objective"] = "obj"
     md = render_plan_markdown(
         plan_id=uuid4(),
@@ -649,7 +649,7 @@ def test_render_plan_markdown_is_parseable_frontmatter():
         status="awaiting_confirmation",
         plan_version=3,
         plan_hash=compute_plan_hash(plan),
-        intent_type="external_action",
+        intent_type="delegation",
         created_at="2026-05-29T09:00:00+00:00",
         plan_json=plan,
     )
@@ -666,8 +666,6 @@ def test_intent_types_are_the_documented_set():
         "autonomous_wake",
         "long_task",
         "delegation",
-        "external_action",
-        "state_change",
     }
 
 
@@ -690,5 +688,5 @@ def test_json_module_import_guard():
     """Sanity: canonical json must be valid JSON (round-trips)."""
     from app.services.plan_mode_core import build_plan_skeleton, canonical_plan_json
 
-    plan = build_plan_skeleton(intent_type="state_change", title="t", original_request="r")
+    plan = build_plan_skeleton(intent_type="delegation", title="t", original_request="r")
     assert json.loads(canonical_plan_json(plan))["schema"] == "hive_plan.v1"

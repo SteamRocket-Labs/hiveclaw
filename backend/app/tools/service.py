@@ -305,6 +305,11 @@ class ToolRuntimeService:
             "execute_code": 120.0,
             "run_command": 120.0,
             "create_digital_employee": 120.0,
+            # Synchronous A2A: wraps the target's full LLM turn (incl. its own tool
+            # calls like feishu_wiki_list) + the reply write-back. Must exceed the
+            # inner OrchestrationPolicy timeout (120s) so the write-back isn't
+            # cancelled mid-flight (the "timed out, no final reply persisted" bug).
+            "send_message_to_agent": 180.0,
             "web_fetch": 60.0,
             "web_search": 60.0,
             "firecrawl_fetch": 60.0,

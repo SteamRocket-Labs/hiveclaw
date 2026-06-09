@@ -124,6 +124,7 @@ def test_is_interactive_plan_eligible_unifies_the_live_chat_boundary():
     assert is_interactive_plan_eligible(SessionContext(source="web_chat")) is True
     assert is_interactive_plan_eligible(SessionContext(source="chat")) is True
     assert is_interactive_plan_eligible(SessionContext(source="feishu", channel="feishu")) is True
+    assert is_interactive_plan_eligible(SessionContext(source="wechat_personal", channel="wechat_personal")) is True
     assert is_interactive_plan_eligible(SessionContext(source="web", channel=None)) is True
     assert is_interactive_plan_eligible(SessionContext(source="trigger")) is False
     assert is_interactive_plan_eligible(SessionContext(source="heartbeat", channel=None)) is False

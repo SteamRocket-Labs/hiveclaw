@@ -592,6 +592,7 @@ async def telegram_webhook(
             session_id=str(session.id),
             session_source="telegram",
             session_channel="telegram",
+            allow_bare_plan_confirmation=True,
         )
     except Exception as e:
         logger.error("[Telegram] LLM error for %s: %s", agent_id, e)

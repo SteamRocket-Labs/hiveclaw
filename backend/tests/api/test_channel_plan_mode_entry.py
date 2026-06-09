@@ -226,6 +226,79 @@ async def test_channel_llm_confirms_latest_awaiting_plan_from_text_and_handoffs(
 
 
 @pytest.mark.asyncio
+async def test_channel_llm_confirms_bare_wechat_ack_when_session_bound_and_enabled(monkeypatch):
+    from app.api.feishu import _call_agent_llm
+
+    user_id = uuid4()
+    plan = SimpleNamespace(
+        id=uuid4(),
+        agent_id=uuid4(),
+        session_id="wechat-session",
+        status="awaiting_confirmation",
+        plan_version=4,
+        plan_hash="sha256:def",
+        handoff_status=None,
+        handoff_payload=None,
+    )
+
+    class _PlanService:
+        def __init__(self):
+            self.confirm_calls = []
+            self.handoff_calls = []
+
+        async def find_latest_awaiting_plan_for_session(self, **kwargs):
+            assert kwargs["agent_id"] == plan.agent_id
+            assert kwargs["session_id"] == "wechat-session"
+            return plan
+
+        async def confirm_plan(self, **kwargs):
+            self.confirm_calls.append(kwargs)
+            plan.status = "confirmed"
+            plan.confirmed_by_user_id = kwargs["confirming_user_id"]
+            return plan
+
+        async def handoff_confirmed_plan(self, **kwargs):
+            self.handoff_calls.append(kwargs)
+            plan.handoff_status = "completed"
+            plan.handoff_payload = {"runtime_task_id": "rt-2"}
+            return plan
+
+    async def fail_call_llm(*_args, **_kwargs):
+        raise AssertionError("LLM should not be invoked for a trusted bare WeChat plan confirmation")
+
+    plan_service = _PlanService()
+    monkeypatch.setattr("app.services.plan_mode_service.get_plan_mode_service", lambda: plan_service)
+    monkeypatch.setattr("app.api.websocket.call_llm", fail_call_llm)
+    agent = _agent(id=plan.agent_id)
+    db = _QueuedDB([agent])
+
+    reply = await _call_agent_llm(
+        db,
+        agent.id,
+        "确认",
+        user_id=user_id,
+        session_id="wechat-session",
+        session_source="wechat_personal",
+        session_channel="wechat_personal",
+        allow_bare_plan_confirmation=True,
+    )
+
+    assert "已确认计划" in reply
+    assert "已启动执行" in reply
+    assert plan_service.confirm_calls == [
+        {
+            "plan_id": plan.id,
+            "confirming_user_id": user_id,
+            "plan_version": 4,
+            "plan_hash": "sha256:def",
+            "reason": "confirmed via wechat_personal text",
+        }
+    ]
+    assert plan_service.handoff_calls == [{"plan_id": plan.id}]
+    assert db.execute_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_channel_llm_decline_without_prior_recommendation_does_not_set_trusted_opt_out(monkeypatch):
     from app.api.feishu import _call_agent_llm
 

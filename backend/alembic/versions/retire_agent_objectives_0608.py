@@ -33,6 +33,29 @@ def upgrade() -> None:
     if not _table_exists():
         return
     conn = op.get_bind()
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS retired_agent_objectives_0608 (
+                id UUID PRIMARY KEY,
+                agent_id UUID,
+                tenant_id UUID,
+                archived_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                row_data JSONB NOT NULL
+            )
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            INSERT INTO retired_agent_objectives_0608 (id, agent_id, tenant_id, row_data)
+            SELECT id, agent_id, tenant_id, to_jsonb(agent_objectives.*)
+            FROM agent_objectives
+            ON CONFLICT (id) DO NOTHING
+            """
+        )
+    )
     # Drop the RLS policy before the table (DROP TABLE would drop it too, but be explicit + idempotent).
     conn.execute(text("DROP POLICY IF EXISTS tenant_isolation_agent_objectives ON agent_objectives"))
     conn.execute(text("DROP TABLE IF EXISTS agent_objectives CASCADE"))

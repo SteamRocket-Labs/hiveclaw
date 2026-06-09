@@ -259,10 +259,22 @@ class SessionContext:
 
 
 # Live interactive user channels eligible for tool-intercept → interactive Plan
-# Mode. Real runtime web-chat sessions use source="web"; Feishu channel messages
-# use source/channel="feishu". Unattended paths (trigger/heartbeat) get their own
-# eligibility below.
-_INTERACTIVE_PLAN_CHAT_SURFACES = frozenset({"web", "web_chat", "chat", "feishu"})
+# Mode. Real runtime web-chat sessions use source="web"; IM channel messages use
+# their channel slug as source/channel. Unattended paths (trigger/heartbeat) get
+# their own eligibility below.
+_INTERACTIVE_PLAN_CHAT_SURFACES = frozenset({
+    "web",
+    "web_chat",
+    "chat",
+    "feishu",
+    "wechat_personal",
+    "wecom",
+    "telegram",
+    "dingtalk",
+    "slack",
+    "discord",
+    "teams",
+})
 
 # Unattended agent runs eligible for tool-intercept → main-loop Plan Mode
 # (path-unification §5.3 / cut ②, made unconditional in cut ④). These are

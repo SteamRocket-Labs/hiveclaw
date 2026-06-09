@@ -407,7 +407,17 @@ async def slack_event_webhook(
 
     # Call LLM
     from app.api.feishu import _call_agent_llm
-    reply_text = await _call_agent_llm(db, agent_id, user_text, history=history)
+    reply_text = await _call_agent_llm(
+        db,
+        agent_id,
+        user_text,
+        history=history,
+        user_id=platform_user_id,
+        session_id=session_conv_id,
+        session_source="slack",
+        session_channel="slack",
+        allow_bare_plan_confirmation=True,
+    )
     _cfs_s.reset(_cfs_s_token)
     logger.info(f"[Slack] LLM reply: {reply_text[:80]}")
 

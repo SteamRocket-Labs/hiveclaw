@@ -211,8 +211,10 @@ async def process_dingtalk_message(
         reply_text = await _call_agent_llm(
             db, agent_id, user_text,
             history=history, user_id=platform_user_id,
+            session_id=session_conv_id,
             session_source="dingtalk",
             session_channel="dingtalk",
+            allow_bare_plan_confirmation=True,
         )
         logger.info(f"[DingTalk] LLM reply: {reply_text[:100]}")
 

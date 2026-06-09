@@ -7,12 +7,13 @@ supervision columns are dropped). This script covers the DATA-level residue on a
 already-running deployment — it is the "dry-run + confirmation" gate the Delivery
 Discipline requires for production data (the one exception to one-pass delivery).
 
-Residue and why it is already SAFE (inert), not urgent:
-  * Triggers with ``config.trigger_class == 'objective_task'`` — the daemon no
-    longer special-cases this class; without a ``config.plan_id`` they now
-    fail-closed at the plan-gate backstop (blocked, never run). Cleanup is hygiene.
-  * Tasks with ``type == 'supervision'`` — execute_task only handles ``todo`` now,
-    so these never execute. Cleanup is hygiene.
+Residue and why cleanup matters:
+  * Triggers with ``config.trigger_class == 'objective_task'`` — the objective
+    gate is gone; without ``config.plan_id`` they fail-closed at the plan-gate
+    backstop. Cleanup disables them so the UI no longer shows retired wake rows.
+  * Tasks with ``type == 'supervision'`` — the migration archives and deletes
+    them before the ORM enum becomes todo-only. This script still reports any
+    residue if run before/after deploy.
   * ``focus.md`` files under AGENT_DATA_DIR — no longer projected into any prompt;
     they are ordinary workspace scratch files now (left in place by default).
 
@@ -47,8 +48,21 @@ ORDER BY agent_id
 _SUPERVISION_TASK_SQL = """
 SELECT id, agent_id, title, status
 FROM tasks
-WHERE type = 'supervision'
+WHERE type::text = 'supervision'
 ORDER BY agent_id
+"""
+
+_OBJECTIVE_ROWS_SQL = """
+SELECT id, agent_id, tenant_id, objective_key, description, status, source, success_criteria, metadata_json
+FROM agent_objectives
+ORDER BY agent_id, priority DESC, created_at
+"""
+
+_ACTIVE_OBJECTIVE_ROWS_SQL = """
+SELECT id, agent_id, tenant_id, objective_key, description, status, source, success_criteria, metadata_json
+FROM agent_objectives
+WHERE status IN ('open', 'active', 'running', 'blocked')
+ORDER BY agent_id, priority DESC, created_at
 """
 
 
@@ -65,10 +79,17 @@ async def _inventory(conn) -> dict:
     table_check = (
         await conn.execute(text("SELECT 1 FROM information_schema.tables WHERE table_name = 'agent_objectives'"))
     ).scalar()
+    objective_rows = []
+    active_objective_rows = []
+    if table_check:
+        objective_rows = await _fetch(conn, _OBJECTIVE_ROWS_SQL)
+        active_objective_rows = await _fetch(conn, _ACTIVE_OBJECTIVE_ROWS_SQL)
     return {
         "objective_task_triggers": objective_triggers,
         "supervision_tasks": supervision_tasks,
         "agent_objectives_table_still_present": bool(table_check),
+        "agent_objectives_rows": objective_rows,
+        "agent_objectives_active_rows": active_objective_rows,
     }
 
 
@@ -88,6 +109,16 @@ def _print_inventory(inv: dict) -> None:
         print(f"  ... and {len(tasks) - 20} more")
     if inv["agent_objectives_table_still_present"]:
         print("WARNING: agent_objectives table still present — apply migrations (retire_agent_objectives_0608) first.")
+        print(f"agent_objectives rows to be archived by migration: {len(inv['agent_objectives_rows'])}")
+        print(f"active/open/running/blocked objective rows: {len(inv['agent_objectives_active_rows'])}")
+        for objective in inv["agent_objectives_active_rows"][:20]:
+            print(
+                "  - objective "
+                f"{objective['id']} agent={objective['agent_id']} key={objective['objective_key']!r} "
+                f"status={objective['status']}"
+            )
+        if len(inv["agent_objectives_active_rows"]) > 20:
+            print(f"  ... and {len(inv['agent_objectives_active_rows']) - 20} more")
     print("=========================================================")
 
 
@@ -109,7 +140,7 @@ async def _apply(conn) -> None:
             )
         )
     ).rowcount
-    deleted = (await conn.execute(text("DELETE FROM tasks WHERE type = 'supervision'"))).rowcount
+    deleted = (await conn.execute(text("DELETE FROM tasks WHERE type::text = 'supervision'"))).rowcount
     await conn.commit()
     print(f"applied: disabled {disabled} objective_task trigger(s), deleted {deleted} supervision task(s)")
 

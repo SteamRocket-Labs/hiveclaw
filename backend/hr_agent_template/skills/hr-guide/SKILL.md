@@ -21,10 +21,9 @@ capabilities, or unnecessary pack installs. Never call
 `create_digital_employee` speculatively.
 
 Architectural invariant:
-- Objective Ledger is the source of truth for goals.
 - Trigger is wake policy, not the goal itself.
-- focus.md is a readable projection of current objectives.
-- Scheduled user work should be passed in `triggers` during creation so the backend creates an `objective_task` wake policy tied to the objective.
+- First work is carried by `first_tasks`, `focus_content`, and the boot trigger.
+- Scheduled user work should be passed in `triggers` during creation so the backend creates standalone `scheduled_job` wake policies.
 </role>
 
 <when_to_use>
@@ -126,7 +125,7 @@ create_digital_employee(
 )
 ```
 
-Do not create a separate post-creation trigger for recurring work that was already known during hiring. Put it in the `triggers` parameter so the backend binds it to the Objective Ledger as an `objective_task` wake policy.
+Do not create a separate post-creation trigger for recurring work that was already known during hiring. Put it in the `triggers` parameter so the backend creates a standalone `scheduled_job` wake policy.
 
 </workflows>
 
@@ -195,9 +194,9 @@ preview_agent_blueprint(..., clawhub_slugs=[s1, s2, s3, s4, s5, s6])
 - ❌ **Skip `read_file("relationships.md")` before creating** → you may duplicate an existing agent role and confuse the team.
 - ❌ **Search with long natural-language queries** (`"I need something that helps with competitive analysis for SaaS"`) → `search_clawhub` is keyword-based. Use `"competitive analysis SaaS"`.
 - ❌ **Pass `clawhub_slugs` fabricated from memory** → only pass slugs that appeared in a real `search_clawhub` tool result. Invented slugs will fail silently at install time.
-- ❌ **Create an agent without a first objective** → the new employee wakes up with no Objective Ledger goal, no projected objective row, no user context, and defaults to no-op heartbeat forever. Always seed the first objective during creation.
-- ❌ **Treat trigger as the target** → Trigger is wake policy. The business goal belongs in Objective Ledger and is projected to focus.md.
-- ❌ **Add known recurring work only after creation** → if the user already asked for a schedule, pass it through `triggers` during `create_digital_employee` so it becomes an `objective_task` wake policy.
+- ❌ **Create an agent without first work** → the new employee wakes up with no concrete instruction and defaults to no-op heartbeat. Always seed the first task during creation.
+- ❌ **Treat trigger as the target** → Trigger is wake policy. The business instruction belongs in the trigger `reason`, and evidence belongs in the work ledger.
+- ❌ **Add known recurring work only after creation** → if the user already asked for a schedule, pass it through `triggers` during `create_digital_employee` so it becomes a `scheduled_job` wake policy.
 
 </anti_patterns>
 
@@ -207,5 +206,5 @@ preview_agent_blueprint(..., clawhub_slugs=[s1, s2, s3, s4, s5, s6])
 - Every `create_digital_employee` call is preceded by: mission clarification with five questions, `relationships.md` check, `preview_agent_blueprint`, and explicit user confirmation.
 - `search_clawhub` is only called when the mission clearly requires a domain-specific installable skill; queries are keyword form, not sentences.
 - `clawhub_slugs` passed to `create_digital_employee` never exceed 3 items and always originate from a real `search_clawhub` tool result.
-- After creation, the new agent has a concrete first objective in Objective Ledger and any recurring user work has an `objective_task` wake policy before the HR session ends.
+- After creation, the new agent has concrete first work and any recurring user work has a `scheduled_job` wake policy before the HR session ends.
 </success_criteria>

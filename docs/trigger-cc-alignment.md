@@ -52,7 +52,7 @@ Owner 判断(2026-06-08):**「Plan Mode、Task、Subagent 全部过一遍,特别
 
 | # | 内容 | 关键改动 | 证据 |
 |---|------|---------|------|
-| 4 | **objective 子系统退役 + focus.md 投射停**(§7 step2 合并;二者技术不可分=focus.md 是 objective 投射) | 整删 11 源文件(model/service/wake_reconciler/intake/evaluator/approval/lifecycle/api/agent_tool_domains/handlers/autonomy_repair_plan)+11 测试文件;**抽出** `trigger_failure_policy.py`(trigger backoff 从 objective_lifecycle 剥离,无 objective 依赖);`focus_state.py` 瘦成纯 slug normalizer;`autonomy_overview/audit` reduce 到 trigger+runtime-only;trigger_daemon/preflight 去 objective_task 类+session keying+reconcile 调用;memory `retriever._retrieve_working`(focus.md→prompt 主投射)+assembler WORKING 段删除;kernel restoration/reminder/prompt_sections/coordinator/hr/extract/dream/summarizer/distiller 去 objective+focus 文本;migration `retire_agent_objectives_0608`(drop RLS+table,幂等);**真 bug 修**=plan 定时执行指令原叫死工具 `complete_objective/update_objective`→改 `track_todo/record_finding`;砍死 action_kind `activate_objective_wake`(保留 live 的 `enable_autonomous_wake`) | **全量 3978 passed / 0 failed / 7 skip**;`grep AgentObjective app/`=CLEAN(仅 plan handoff 文档串);ruff 全过;3990→3978 测试(删 11 objective 测试文件) |
+| 4 | **objective 子系统退役 + focus.md 投射停**(§7 step2 合并;二者技术不可分=focus.md 是 objective 投射) | 整删 11 源文件(model/service/wake_reconciler/intake/evaluator/approval/lifecycle/api/agent_tool_domains/handlers/autonomy_repair_plan)+11 测试文件;**抽出** `trigger_failure_policy.py`(trigger backoff 从 objective_lifecycle 剥离,无 objective 依赖);`focus_state.py` 瘦成纯 slug normalizer;`autonomy_overview/audit` reduce 到 trigger+runtime-only;trigger_daemon/preflight 将遗留 `objective_task` 按 autonomous 处理(无 confirmed plan fail-closed)+去 session keying/reconcile 调用;memory `retriever._retrieve_working`(focus.md→prompt 主投射)+assembler WORKING 段删除;kernel restoration/reminder/prompt_sections/coordinator/hr/extract/dream/summarizer/distiller 去 objective+focus 文本;migration `retire_agent_objectives_0608`(先归档到 `retired_agent_objectives_0608`,再 drop RLS+table,幂等);**真 bug 修**=plan 定时执行指令原叫死工具 `complete_objective/update_objective`→改 `track_todo/record_finding`;砍死 action_kind `activate_objective_wake`(保留 live 的 `enable_autonomous_wake`) | **全量 3978 passed / 0 failed / 7 skip**;`grep AgentObjective app/`=CLEAN(仅 plan handoff 文档串);ruff 全过;3990→3978 测试(删 11 objective 测试文件) |
 
 **C4 净效果**:objective 概念在后端**彻底消失**——无 model/表/工具/API/prompt 投射/trigger 耦合。agent 的"当前在做什么"状态记录归位到 CC 对齐的 Work Ledger(track_todo/record_finding)。focus.md 降为普通 workspace scratch(不再自动投射进 prompt);`focus_ref` 列保留为 trigger 被动字段(不 drop,无迁移)。前端 objective 面已配对退役(`d4c9f226`:删 objectiveApi+AgentAware objectives 段+设置死工具开关,保留 PlanCard plan objective 字段;build+vitest 195 绿)。
 
@@ -81,9 +81,9 @@ Owner 判断(2026-06-08):**「Plan Mode、Task、Subagent 全部过一遍,特别
 
 | # | 内容 | 关键改动 | 证据 |
 |---|------|---------|------|
-| 8 | **存量生产数据 dry-run 脚本 + 收尾**(§7 step5-6) | `exec_align_legacy_data_dryrun.py`:只读清单(objective_task 类 trigger + supervision Task 行 + 检测 agent_objectives 表残留)+`--apply` 门控(默认关、先写 JSON 备份、交互确认、禁用 trigger 可逆/删 supervision 行);**不擅自动生产数据**=交付纪律唯一例外(dry-run+确认门),owner 在 Railway 跑+审+确认 | 最终全量 3974 绿;`py_compile` OK;`import app.main` OK |
+| 8 | **存量生产数据 dry-run 脚本 + 收尾**(§7 step5-6) | `exec_align_legacy_data_dryrun.py`:只读清单(objective_task 类 trigger + supervision Task 行 + agent_objectives 行级清单/active 清单)+`--apply` 门控(默认关、先写 JSON 备份、交互确认、禁用 trigger 可逆/删 supervision 行);迁移自身也先归档 objective/supervision 旧行再 drop/delete;**不擅自动生产数据**=交付纪律唯一例外(dry-run+确认门),owner 在 Railway 跑+审+确认 | 最终全量 3974 绿;`py_compile` OK;`import app.main` OK |
 
-**C8 净效果 + 存量数据安全性**:schema 残留(objective 表+supervision 列)由迁移在 deploy 时清;数据残留(旧 objective_task trigger / supervision Task 行)**已 fail-closed 惰性**(objective_task trigger 无 plan_id 被 plan-gate 挡=blocked 不跑;supervision Task 无 executor 分支=不执行),清理是卫生非安全。dry-run 脚本供 owner 审后清。
+**C8 净效果 + 存量数据安全性**:schema 残留(objective 表+supervision 列)由迁移在 deploy 时清;迁移先把 `agent_objectives` 归档到 `retired_agent_objectives_0608`,把 `type='supervision'` 任务归档到 `retired_supervision_tasks_0608` 并删除旧 enum 行,避免 ORM 读取崩;旧 `objective_task` trigger 无 plan_id 被 plan-gate fail-closed,但仍建议 dry-run 审后禁用。
 
 ---
 

@@ -27,7 +27,7 @@ perform it. Writing to memory without these rules corrupts the pipeline.
 
 <do_not_use_when>
 - The information will be in T0 logs automatically (every conversation, tool call, delegation is logged without your intervention).
-- The fact is a transient task detail, intermediate tool output, or debug note — goal state belongs in Objective Ledger and working notes belong in workspace files, not memory.
+- The fact is a transient task detail, intermediate tool output, or debug note — goal state belongs in the work ledger and working notes belong in workspace files, not memory.
 - You are about to write code patterns, file paths, or debugging steps — those live in the workspace.
 - You already called `save_memory` for the same fact in this session (it is idempotent at character level, but repeated calls still waste turns).
 - You want to update `memory/learnings/`, `evolution/`, or `logs/` directly — forbidden. The automated pipeline owns these paths.
@@ -130,7 +130,7 @@ User: "以后别再用 delete_file 自动清理工作区了，我上次丢了三
     content="禁止自动用 delete_file 清理 workspace — 曾丢失用户 3 小时工作 (2026-04-15)",
     subject="workspace-hygiene"
   )
-→ Also update or complete the relevant Objective Ledger row if this correction changes active work.
+→ Also update the relevant work ledger item or workspace artifact if this correction changes active work.
 ```
 
 ### B — Recalling Past Work Before Starting a Task

@@ -523,7 +523,17 @@ async def teams_event_webhook(
 
         # Call LLM
         try:
-            reply_text = await _call_agent_llm(db, agent_id, user_text, history=history)
+            reply_text = await _call_agent_llm(
+                db,
+                agent_id,
+                user_text,
+                history=history,
+                user_id=platform_user_id,
+                session_id=session_conv_id,
+                session_source="teams",
+                session_channel="teams",
+                allow_bare_plan_confirmation=True,
+            )
             _cfs_s.reset(_cfs_s_token)
             logger.info(f"Teams: LLM reply generated: {reply_text[:80]}")
         except Exception as e:

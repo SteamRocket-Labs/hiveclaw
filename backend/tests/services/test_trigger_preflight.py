@@ -197,15 +197,13 @@ async def test_reactive_on_message_trigger_is_not_plan_gated():
 
 
 @pytest.mark.asyncio
-async def test_objective_task_trigger_is_not_double_gated_by_plan():
-    """objective_task triggers keep their existing objective-approval gate; the
-    plan classifier must not additionally block them on plan_id. With an active,
-    approved objective and no objective bound (None), preflight passes."""
+async def test_retired_objective_task_trigger_without_plan_is_blocked():
+    """objective_task is a retired legacy class. There is no objective approval
+    gate left, so a scheduled legacy trigger without confirmed plan provenance
+    must fail closed instead of silently waking the agent."""
     from app.services.trigger_preflight import evaluate_trigger_preflight
 
     agent = _agent()
-    # objective_task with no resolvable objective → existing logic `continue`s;
-    # the plan gate must not block it for lacking config.plan_id.
     trigger = _trigger(trigger_type="cron", config={"trigger_class": "objective_task"})
     db = _PlanLookupSession(plans=[])
 
@@ -213,7 +211,8 @@ async def test_objective_task_trigger_is_not_double_gated_by_plan():
         db, agent=agent, model=_model(), triggers=[trigger], now=datetime.now(timezone.utc)
     )
 
-    assert result.ok is True
+    assert result.ok is False
+    assert result.skip_reason == "plan_required"
 
 
 @pytest.mark.asyncio

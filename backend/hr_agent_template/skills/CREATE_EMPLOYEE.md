@@ -63,11 +63,10 @@ route capabilities with "builtin-first" discipline, and preview before create.
 5. Create the agent only after confirmation
 
 Creation invariant:
-- Objective Ledger is the source of truth for goals.
 - Trigger is wake policy, not the goal itself.
-- focus.md is a readable projection.
-- Recurring user work must become an Objective Ledger row plus an `objective_task` wake policy.
-- Standalone scheduled jobs without an objective must be explicitly treated as `scheduled_job`.
+- The agent's first work is carried by `first_tasks`, `focus_content`, and the boot trigger.
+- Recurring user work must be passed as standalone `scheduled_job` triggers.
+- Evidence and progress belong in the agent work ledger and workspace artifacts.
 
 ### Step 1 — Build the blueprint
 
@@ -84,7 +83,7 @@ Collect just enough information to fill:
 - `permission_scope`
 - `triggers`
 
-If the user is unsure, decide sensible defaults and continue. This step is about mission / users / outputs / boundaries / first objective, not tooling trivia. `focus_content` and inferred `first_tasks` seed the Objective Ledger; `triggers` define wake policy for recurring objectives.
+If the user is unsure, decide sensible defaults and continue. This step is about mission / users / outputs / boundaries / first objective, not tooling trivia. `focus_content` and inferred `first_tasks` seed the boot work; `triggers` define wake policy for recurring work.
 
 ### Step 2 — Route capabilities correctly
 
@@ -236,8 +235,8 @@ When summarizing the plan, keep it short and decision-oriented:
 - ❌ **Hide setup debt** (silent "needs manual config later") → user should know up front. Always surface in preview under "Manual setup still required".
 - ❌ **Invent blueprint fields** not listed above → `preview_agent_blueprint` rejects unknown fields or silently drops them, and the resulting agent misses pieces.
 - ❌ **Use generic defaults** like `role_description: "Digital assistant"` without any domain specificity → produces a weak soul. If the user is vague, ask one more clarifying question OR infer rich defaults from surrounding context.
-- ❌ **Treat trigger as the goal** → trigger is only wake policy. The goal must be in the Objective Ledger and visible through focus.md projection.
-- ❌ **Mention recurring work only in focus_content** → recurring work must be passed in `triggers` so backend can create an `objective_task` wake policy tied to the objective.
+- ❌ **Treat trigger as the goal** → trigger is only wake policy. Put the business instruction in `reason`, and tell the new agent to record evidence in its work ledger.
+- ❌ **Mention recurring work only in focus_content** → recurring work must be passed in `triggers` so the backend creates a standalone `scheduled_job` wake policy.
 
 </anti_patterns>
 
@@ -249,5 +248,5 @@ When summarizing the plan, keep it short and decision-oriented:
 - Every setup-debt item (missing channel config, missing MCP OAuth, etc.) is surfaced in the preview under "Manual setup still required".
 - Interview completes in ≤3 rounds with the user for a typical role.
 - No speculative installs of integrations the user didn't mark as mandatory.
-- Every recurring user task is represented as an Objective Ledger goal plus an `objective_task` wake policy, not as orphan focus text.
+- Every recurring user task is represented as a standalone `scheduled_job` trigger with a concrete `reason`, not as orphan focus text.
 </success_criteria>

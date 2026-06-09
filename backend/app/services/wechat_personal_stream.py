@@ -531,6 +531,7 @@ async def _process_wechat_message(
                 session_id=session_conv_id,
                 session_source="wechat_personal",
                 session_channel="wechat_personal",
+                allow_bare_plan_confirmation=True,
             )
         finally:
             _cdt.reset(_cdt_token)

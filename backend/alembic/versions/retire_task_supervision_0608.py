@@ -33,8 +33,39 @@ _SUPERVISION_COLUMNS = (
 )
 
 
+def _table_exists(table_name: str) -> bool:
+    conn = op.get_bind()
+    result = conn.execute(text("SELECT 1 FROM information_schema.tables WHERE table_name = :table_name"), {"table_name": table_name})
+    return result.scalar() is not None
+
+
 def upgrade() -> None:
     conn = op.get_bind()
+    if _table_exists("tasks"):
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS retired_supervision_tasks_0608 (
+                    id UUID PRIMARY KEY,
+                    agent_id UUID,
+                    archived_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    row_data JSONB NOT NULL
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO retired_supervision_tasks_0608 (id, agent_id, row_data)
+                SELECT id, agent_id, to_jsonb(tasks.*)
+                FROM tasks
+                WHERE type::text = 'supervision'
+                ON CONFLICT (id) DO NOTHING
+                """
+            )
+        )
+        conn.execute(text("DELETE FROM tasks WHERE type::text = 'supervision'"))
     for column in _SUPERVISION_COLUMNS:
         conn.execute(text(f"ALTER TABLE tasks DROP COLUMN IF EXISTS {column}"))
 

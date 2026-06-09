@@ -348,12 +348,13 @@ def test_trigger_is_autonomous_false_for_platform_internal_classes():
     assert trigger_is_autonomous(trigger_type="interval", trigger_class="system_maintenance") is False
 
 
-def test_trigger_is_autonomous_false_for_objective_task_class():
-    """objective_task is governed by its bound objective's own preflight gate /
-    config.plan_id, so the type-level classifier must not double-gate it."""
+def test_trigger_is_autonomous_true_for_retired_objective_task_class():
+    """objective_task no longer has its own objective approval gate. Legacy
+    scheduled rows must be treated as autonomous and blocked unless they carry
+    confirmed plan provenance."""
     from app.services.plan_mode_core import trigger_is_autonomous
 
-    assert trigger_is_autonomous(trigger_type="cron", trigger_class="objective_task") is False
+    assert trigger_is_autonomous(trigger_type="cron", trigger_class="objective_task") is True
 
 
 def test_classify_plan_mode_entry_recommends_for_schedule_intent():

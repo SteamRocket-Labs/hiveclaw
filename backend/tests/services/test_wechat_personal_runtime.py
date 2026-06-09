@@ -132,6 +132,7 @@ async def test_process_wechat_message_sets_sender_scoped_identity_and_session_co
     assert captured["llm_kwargs"]["session_id"] == str(session_id)
     assert captured["llm_kwargs"]["session_source"] == "wechat_personal"
     assert captured["llm_kwargs"]["session_channel"] == "wechat_personal"
+    assert captured["llm_kwargs"]["allow_bare_plan_confirmation"] is True
     assert captured["execution_identity"].identity_type == "delegated_user"
     assert captured["execution_identity"].identity_id == platform_user_id
     assert captured["execution_identity"].label == "WeChat wxid_abc via wechat_personal"

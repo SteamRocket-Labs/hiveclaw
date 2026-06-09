@@ -222,7 +222,6 @@ _NON_TOOL_IDENTIFIERS: set[str] = {
     "fire_on",
     "blocked_pattern",
     "trigger_class",
-    "objective_task",
     "scheduled_job",
     "event_wait",
     "system_maintenance",

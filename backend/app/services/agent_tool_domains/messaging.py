@@ -833,7 +833,7 @@ async def _invoke_agent_message_runtime(
     participant_id: uuid.UUID | None,
 ) -> str:
     """Run the target agent reply through the shared runtime kernel."""
-    from app.agents.orchestrator import delegate_to_agent
+    from app.agents.orchestrator import OrchestrationPolicy, delegate_to_agent
 
     return await delegate_to_agent(
         target=target,
@@ -854,6 +854,10 @@ async def _invoke_agent_message_runtime(
         system_prompt_suffix=A2A_SYSTEM_PROMPT_SUFFIX,
         max_tool_rounds=getattr(target, "max_tool_rounds", None) or 200,
         interaction_type="agent_message",
+        # A2A is a real multi-tool turn (the target may call feishu_wiki_list etc.);
+        # the default 30s OrchestrationPolicy cancels before the final reply is
+        # synthesised + written back. Give it a turn budget under the 180s outer cap.
+        policy=OrchestrationPolicy(timeout_seconds=120.0),
     )
 
 

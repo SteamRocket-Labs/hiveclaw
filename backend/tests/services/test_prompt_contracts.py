@@ -331,7 +331,7 @@ def test_hr_templates_use_blueprint_flow_instead_of_five_round_protocol() -> Non
     assert "Phase A" in hr_soul
 
 
-def test_hr_templates_align_with_objective_ledger_and_wake_policy() -> None:
+def test_hr_templates_do_not_reference_retired_objective_ledger() -> None:
     project_root = Path(__file__).resolve().parents[3]
     hr_create_employee = (project_root / "backend" / "hr_agent_template" / "skills" / "CREATE_EMPLOYEE.md").read_text(
         encoding="utf-8"
@@ -344,16 +344,22 @@ def test_hr_templates_align_with_objective_ledger_and_wake_policy() -> None:
 
     combined = "\n".join([hr_create_employee, hr_guide, hr_soul, hr_focus])
 
-    assert "Objective Ledger" in combined
     assert "Trigger is wake policy" in combined
-    assert "focus.md is a readable projection" in combined
-    assert "objective_task" in combined
     assert "scheduled_job" in combined
-    assert "ONLY way an agent can do autonomous work" not in combined
-    assert "set up the agent's first trigger" not in combined
+    banned_phrases = [
+        "Objective Ledger",
+        "focus.md is a readable projection",
+        "objective_task",
+        "list_objectives",
+        "complete_objective",
+        "update_objective",
+        "source of truth for goals",
+    ]
+    for phrase in banned_phrases:
+        assert phrase not in combined
 
 
-def test_agent_autonomy_prompt_surfaces_share_objective_wake_contract() -> None:
+def test_agent_autonomy_prompt_surfaces_do_not_reference_retired_objective_contract() -> None:
     project_root = Path(__file__).resolve().parents[3]
     prompt_surface_paths = [
         "backend/app/runtime/prompt_sections/executing_actions.py",
@@ -374,14 +380,18 @@ def test_agent_autonomy_prompt_surfaces_share_objective_wake_contract() -> None:
     ]
     combined = "\n".join((project_root / path).read_text(encoding="utf-8") for path in prompt_surface_paths)
 
-    assert "Objective Ledger is the source of truth" in combined
     assert "Trigger is wake policy" in combined
-    assert "focus.md is a readable projection" in combined
-    assert "objective_task" in combined
     assert "scheduled_job" in combined
     assert "event_wait" in combined
 
     banned_phrases = [
+        "Objective Ledger",
+        "objective_task",
+        "list_objectives",
+        "complete_objective",
+        "update_objective",
+        "Use objective tools",
+        "focus.md is a readable projection",
         "focus.md             — Readable projection of your objective ledger (YOU own canonical task rows)",
         "**T1** (focus.md): current task list, volatile",
         "ephemeral task details (those belong in focus.md)",

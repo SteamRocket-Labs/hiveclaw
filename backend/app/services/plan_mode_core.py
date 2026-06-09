@@ -113,6 +113,10 @@ _LATEST_PLAN_CONFIRM_RE = re.compile(
     r"^\s*(确认|同意|批准|开始|执行|confirm|approve|start).{0,10}(上一个|这个|该|当前|latest|current).{0,8}(计划|plan)\s*[。.!！]?\s*$",
     re.IGNORECASE,
 )
+_BARE_PLAN_CONFIRM_RE = re.compile(
+    r"^\s*(确认|确认执行|同意|批准|开始|开始执行|执行|可以|confirm|approve|approved|start|go)\s*[。.!！]?\s*$",
+    re.IGNORECASE,
+)
 _SCHEDULE_RE = re.compile(
     r"(每天|每周|每月|每小时|定时|定期|到时候|提醒我|监控|盯着|盯一下|有变化|"
     r"schedule|cron|daily|weekly|monthly|monitor|watch)",
@@ -152,6 +156,16 @@ def extract_plan_confirmation_request(content: str) -> PlanConfirmationRequest |
     if _LATEST_PLAN_CONFIRM_RE.search(text):
         return PlanConfirmationRequest(latest=True)
     return None
+
+
+def is_bare_plan_confirmation_reply(content: str) -> bool:
+    """Return true for short acknowledgements that can confirm a session-bound plan.
+
+    This helper is intentionally separate from
+    :func:`extract_plan_confirmation_request`: callers may only use it when the
+    trust boundary is already narrowed to a concrete chat session.
+    """
+    return bool(_BARE_PLAN_CONFIRM_RE.search(str(content or "").strip()))
 
 
 def classify_plan_mode_entry(content: str, *, explicit: bool = False) -> PlanModeEntryDecision:
@@ -1188,16 +1202,12 @@ def trigger_is_autonomous(*, trigger_type: str | None, trigger_class: str | None
     the daemon backstop leaves them to their existing gates / cutover handling
     rather than demanding a plan.
 
-    Note the ``objective_task`` class is *not* listed here: an objective_task
-    trigger's autonomy is governed by its bound objective (it already has a
-    dedicated preflight gate), and a plan-born objective_task carries
-    ``config.plan_id`` which the gate validates directly. Classifying it here
-    too would double-gate it.
+    ``objective_task`` is a retired legacy class. There is no objective approval
+    gate left, so scheduled legacy rows must be treated as autonomous and fail
+    closed unless they carry confirmed plan provenance.
     """
     cls = str(trigger_class or "").strip()
     if cls in PLATFORM_INTERNAL_TRIGGER_CLASSES:
-        return False
-    if cls == "objective_task":
         return False
     return str(trigger_type or "").strip() in AUTONOMOUS_TRIGGER_TYPES
 

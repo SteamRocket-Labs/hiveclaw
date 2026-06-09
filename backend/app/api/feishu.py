@@ -37,12 +37,20 @@ async def _try_confirm_channel_plan_from_text(
     user_text: str,
     session_id: str | None,
     session_source: str,
+    allow_bare_latest: bool = False,
 ) -> str | None:
     """Confirm and hand off a Plan Mode plan from trusted channel text."""
     from app.services import plan_mode_core, plan_mode_service
     from app.services.plan_mode_service import PlanConflictError
 
     confirmation = plan_mode_core.extract_plan_confirmation_request(user_text)
+    if (
+        confirmation is None
+        and allow_bare_latest
+        and session_id
+        and plan_mode_core.is_bare_plan_confirmation_reply(user_text)
+    ):
+        confirmation = plan_mode_core.PlanConfirmationRequest(latest=True)
     if confirmation is None:
         return None
     if user_id is None:
@@ -1629,6 +1637,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     session_id=session_conv_id,
                     session_source="feishu",
                     session_channel="feishu",
+                    allow_bare_plan_confirmation=True,
                 )
             except Exception as _llm_err:
                 logger.error(f"[Feishu] LLM invocation failed for agent {agent_id}: {_llm_err}")
@@ -2006,6 +2015,7 @@ async def _handle_feishu_file(
                     session_id=session_conv_id,
                     session_source="feishu",
                     session_channel="feishu",
+                    allow_bare_plan_confirmation=True,
                 )
             finally:
                 _cdt_img.reset(_cdt_img_token)
@@ -2131,6 +2141,7 @@ async def _call_agent_llm(
     session_id: str | None = None,
     session_source: str = "feishu",
     session_channel: str = "feishu",
+    allow_bare_plan_confirmation: bool = False,
 ) -> str:
     """Call the agent's configured LLM model with conversation history.
 
@@ -2157,6 +2168,7 @@ async def _call_agent_llm(
         user_text=user_text,
         session_id=session_id,
         session_source=session_source,
+        allow_bare_latest=allow_bare_plan_confirmation,
     )
     if plan_confirmation_reply is not None:
         return plan_confirmation_reply

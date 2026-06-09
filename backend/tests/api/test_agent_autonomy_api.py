@@ -68,9 +68,8 @@ def test_agent_autonomy_overview_is_agent_scoped_and_readable_by_member(monkeypa
         return {
             "agent_id": str(agent.id),
             "lookback_hours": lookback_hours,
-            "totals": {"objectives": 1, "triggers": 1, "recent_attempts": 0, "findings": 0},
-            "objectives": [{"id": "objective-1", "description": "Send report", "status": "active"}],
-            "triggers": [{"id": "trigger-1", "display_kind": "objective_task", "attention_state": "active"}],
+            "totals": {"triggers": 1, "recent_attempts": 0, "findings": 0},
+            "triggers": [{"id": "trigger-1", "display_kind": "scheduled_job", "attention_state": "active"}],
             "recent_attempts": [],
             "findings": [],
         }
@@ -83,7 +82,7 @@ def test_agent_autonomy_overview_is_agent_scoped_and_readable_by_member(monkeypa
     assert response.status_code == 200
     payload = response.json()
     assert payload["agent_id"] == str(agent_id)
-    assert payload["triggers"][0]["display_kind"] == "objective_task"
+    assert payload["triggers"][0]["display_kind"] == "scheduled_job"
     assert captured["lookback_hours"] == 6
     assert captured["include_diagnostics"] is False
 

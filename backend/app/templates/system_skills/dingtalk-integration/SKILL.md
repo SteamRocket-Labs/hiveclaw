@@ -12,7 +12,7 @@ conversation bridge** — you reply in the current conversation and the
 channel handler delivers it back. You do NOT have proactive DingTalk tools
 to look up users or send outbound messages to DingTalk by ID.
 
-Objective Ledger is the source of truth. Trigger is wake policy. focus.md is a readable projection.
+Trigger is wake policy. Work ledger and workspace artifacts hold progress and evidence.
 Simple reminders in the current DingTalk thread are standalone `scheduled_job` wake policies.
 </role>
 

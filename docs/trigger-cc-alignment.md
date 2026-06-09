@@ -46,6 +46,9 @@ Owner 判断(2026-06-08):**「Plan Mode、Task、Subagent 全部过一遍,特别
 | 0 | 设计文档 v1 落地 | 四块审计 + 砍/收敛/保留三分框架 | `cd50356d` |
 | 1 | 砍 `external_action` / `state_change` 孤儿 plan intent | `INTENT_TYPES` 5→3;`_INTENT_HANDOFF_TARGET` 去 2 条;`plan_request` 注释 | red-first(`test_intent_types` 先红)→535 plan/intent/handoff/dr 测试绿 |
 | 2 | **重命名归位** plan intent `long_task` → `in_session_execution`(owner 拍 A) | `INTENT_TYPES`/`_ACTION_INTENT`/`_INTENT_HANDOFF_TARGET` + handlers/deep_research/web_chat;alembic data migration backfill 存量;**保留** legacy target word + `long_task_runtime` + `start_long_task` action_kind 名 | 全量 4057 绿;migration head 测试更新;保留 intent-match Goal-2 治理 |
+| 3 | **plan handoff 解开 objective**:`objective_trigger` → `scheduled_trigger` 直连 | `plan_mode_handoff.py` 整重写=从 plan `wake_policy` **直接建 `scheduled_job` cron trigger**(盖 `config.plan_id` backstop,零 AgentObjective);`autonomous_wake` intent 重指 `scheduled_trigger`;**detached 桩补成真 once**(§7 step1:`force_once` 复用同机器);registry/web_chat/handlers/plan_mode `create_objective` 字段去除;plan_mode_handoff 自此**脱离 objective 爆炸半径** | red-first(handoff/e2e 重写)→ 130 plan-mode 测试绿 + web_chat/gate 84 绿;e2e 断言 `session.objectives == []` |
+
+**C3 净效果**:plan 确认后只剩三条干净 handoff —— `continue_current_session`(当前会话)/ `scheduled_trigger`(周期 cron,从 plan 直建)/ `detached→once`(后台一次),全部不经 objective。下一步 objective 子系统可整体退役(已无 plan 客户)。
 
 ---
 

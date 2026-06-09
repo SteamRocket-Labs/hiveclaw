@@ -9,9 +9,9 @@ blocked trigger, with no mocks of the components under test:
     create_plan_request   (draft)
       -> generate_plan     (awaiting_confirmation, real hash + markdown)
       -> confirm_plan       (confirmed, version+hash bound, non-self user)
-      -> handoff_confirmed_plan (objective_trigger handler creates
-                                 active AgentObjective + enabled AgentTrigger,
-                                 both stamped with the plan provenance)
+      -> handoff_confirmed_plan (scheduled_trigger handler creates an enabled
+                                 AgentTrigger directly — no objective layer —
+                                 stamped with the plan provenance)
       -> evaluate_trigger_preflight(that trigger) -> ALLOWED
 
 plus the safety invariants the loop must never violate:
@@ -269,10 +269,10 @@ async def _drive_to_awaiting(service, *, agent, requester):
 async def test_full_loop_confirmed_plan_yields_passing_trigger(e2e):
     """create -> generate -> confirm -> handoff -> preflight ALLOW.
 
-    Proves the canonical §17 closed loop: a confirmed plan produces an active
-    objective (``metadata.plan_id``) + an enabled trigger (``config.plan_id``),
-    and that very trigger then clears ``evaluate_trigger_preflight`` *because*
-    it carries a confirmed plan id.
+    Proves the canonical §17 closed loop: a confirmed plan produces an enabled
+    trigger (``config.plan_id``) directly — no intermediate objective (that
+    concept was retired) — and that very trigger then clears
+    ``evaluate_trigger_preflight`` *because* it carries a confirmed plan id.
     """
     from app.services.trigger_preflight import evaluate_trigger_preflight
 
@@ -294,28 +294,25 @@ async def test_full_loop_confirmed_plan_yields_passing_trigger(e2e):
     assert confirmed.confirmed_by_user_id == confirmer
     assert confirmed.handoff_status == "not_started"
 
-    # -- handoff to the real objective_trigger handler ----------------------
+    # -- handoff to the real scheduled_trigger handler ----------------------
     handed = await service.handoff_confirmed_plan(plan_id=plan.id)
     assert handed.status == "confirmed"  # status never mutated by handoff (§13)
     assert handed.handoff_status == "completed"
-    objective_id = handed.handoff_payload["created_objective_id"]
     trigger_id = handed.handoff_payload["created_trigger_id"]
-    assert objective_id and trigger_id
+    assert trigger_id
+    assert "created_objective_id" not in handed.handoff_payload  # no objective layer
 
-    # The active objective carries the plan provenance.
-    objective = next(o for o in session.objectives if str(o.id) == objective_id)
-    assert objective.status == "active"
-    assert objective.metadata_json["plan_id"] == str(plan.id)
-    assert objective.metadata_json["plan_version"] == plan.plan_version
-    assert objective.metadata_json["plan_hash"] == plan.plan_hash
-
-    # The enabled trigger carries the load-bearing config.plan_id contract.
+    # The enabled trigger carries the load-bearing config.plan_id contract,
+    # created directly from the plan with no objective row.
+    assert session.objectives == []
     trigger = next(t for t in session.triggers if str(t.id) == trigger_id)
     assert trigger.is_enabled is True
+    assert trigger.type == "cron"
     assert trigger.config["plan_id"] == str(plan.id)
     assert trigger.config["plan_version"] == plan.plan_version
     assert trigger.config["plan_hash"] == plan.plan_hash
-    assert trigger.config["objective_id"] == objective_id
+    assert trigger.config["trigger_class"] == "scheduled_job"
+    assert "objective_id" not in trigger.config
 
     # -- preflight on the produced trigger: ALLOWED (it has a confirmed plan) --
     model = SimpleNamespace(id=agent.primary_model_id)

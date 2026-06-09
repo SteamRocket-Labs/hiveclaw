@@ -154,13 +154,23 @@ async def test_run_handoff_honors_handler_queued_status():
 
 
 @pytest.mark.asyncio
-async def test_detached_target_fails_closed_with_visible_reason():
-    # Amendment ②: detached background is a fail-closed stub, NOT silent skipped.
-    from app.services.plan_mode_detached_handoff import (
-        DetachedRuntimeNotAvailable,
-        detached_runtime_task_handoff,
-    )
+async def test_detached_target_creates_once_background_trigger(monkeypatch):
+    # Exec/automation CC-align §7: detached background = one ``once`` trigger via
+    # the shared scheduled-trigger machinery (force_once), NOT a fail-closed stub.
+    import app.services.plan_mode_detached_handoff as detached
+
+    captured: dict = {}
+
+    async def fake_scheduled(plan, *, db=None, force_once=False):
+        captured["force_once"] = force_once
+        captured["db"] = db
+        return {"created_trigger_id": "t-1"}
+
+    monkeypatch.setattr(detached, "handoff_scheduled_trigger", fake_scheduled)
 
     plan = SimpleNamespace(id=uuid4())
-    with pytest.raises(DetachedRuntimeNotAvailable):
-        await detached_runtime_task_handoff(db=None, plan=plan)
+    payload = await detached.detached_runtime_task_handoff(db="session", plan=plan)
+
+    assert captured["force_once"] is True
+    assert captured["db"] == "session"
+    assert payload["created_trigger_id"] == "t-1"

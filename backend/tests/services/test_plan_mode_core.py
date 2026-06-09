@@ -123,7 +123,11 @@ def test_build_plan_skeleton_autonomous_wake_seeds_cron_wake_policy():
         original_request="r",
     )
     assert skeleton["wake_policy"]["type"] == "cron"
-    assert skeleton["handoff"]["target"] == "objective_trigger"
+    assert skeleton["handoff"]["target"] == "scheduled_trigger"
+    # Exec/automation CC-align: a recurring plan creates a trigger directly,
+    # with no intermediate objective row.
+    assert "create_objective" not in skeleton["handoff"]
+    assert skeleton["handoff"]["create_trigger"] is True
 
 
 def test_build_plan_skeleton_long_task_targets_continuation_handoff():

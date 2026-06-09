@@ -1,57 +1,54 @@
-"""Plan Mode ``objective_trigger`` handoff — confirmed plan -> objective + wake.
+"""Plan Mode ``scheduled_trigger`` handoff — confirmed plan -> enabled cron trigger.
 
-This is the first concrete handoff target (``docs/plan-mode-design.md`` §13 /
-Phase 4). A *confirmed* ``objective_trigger`` plan is the only thing that may
-create an enabled autonomous wake policy, and this module is where that
-creation happens. It plugs into :class:`PlanModeService` via
-:func:`register_objective_trigger_handoff` — the service awaits
-:func:`objective_trigger_handoff_handler` after a successful confirmation.
+Exec/automation CC-alignment (2026-06-08): a confirmed *recurring* plan
+(``intent_type=autonomous_wake``) sets up a schedule. Claude Code has no
+``objective`` concept — a schedule is just a trigger. So this handoff creates an
+:class:`AgentTrigger` **directly** from the plan's ``wake_policy``; the old
+intermediate ``AgentObjective`` row (and the ``objective_trigger`` target) is gone.
+
+It plugs into :class:`PlanModeService` via :func:`register_scheduled_trigger_handoff`
+— the service awaits :func:`scheduled_trigger_handoff_handler` after a successful
+confirmation.
 
 Design:
 
-* **Reuse, don't reinvent.** Objective resolution goes through the existing
-  :func:`ensure_objective_for_trigger`; wake-policy -> trigger translation goes
-  through :func:`build_objective_trigger_payload`. This module only adds the
-  Plan-Mode-specific provenance (objective ``metadata.plan_id`` and, critically,
-  trigger ``config.plan_id``) on top of those helpers.
-* **The ``config.plan_id`` contract is load-bearing.** The trigger-daemon
-  backstop (task #4) treats an autonomous trigger as legitimate iff it can prove
-  it came from a confirmed plan. The proof is ``config.plan_id`` pointing at a
-  ``confirmed`` :class:`AgentPlanRequest`. Without it the backstop would
-  quarantine the trigger this handoff just created.
-* **Atomic + idempotent.** Objective + trigger are written in a single
-  transaction owned by :class:`PlanModeService`. Re-running for the same plan
-  updates the existing trigger instead of creating a duplicate (handoff
-  idempotency, §13).
-* **Fail loud.** Invalid plan state or a missing agent raises
-  :class:`HandoffError`; :class:`PlanModeService` catches it and records
-  ``handoff_status="failed"`` without mutating ``status`` (§13). No partial
-  silent success.
+* **The ``config.plan_id`` contract is load-bearing.** The trigger-daemon backstop
+  (``trigger_preflight._plan_gate_block_for_triggers``) treats an autonomous
+  trigger as legitimate iff it can prove it came from a confirmed plan. The proof
+  is ``config.plan_id`` pointing at a ``confirmed`` :class:`AgentPlanRequest`.
+  Without it the backstop would quarantine the trigger this handoff just created.
+* **No objective.** The trigger is created with ``config.trigger_class="scheduled_job"``
+  (the non-objective autonomous class), keyed by ``config.plan_id`` so re-running
+  the handoff for the same plan updates the existing trigger instead of duplicating.
+* **Atomic + idempotent.** The trigger is written in a single transaction owned by
+  :class:`PlanModeService`. Re-running for the same plan updates the existing
+  trigger (matched on ``config.plan_id``) instead of creating a duplicate.
+* **Fail loud.** Invalid plan state or a missing agent raises :class:`HandoffError`;
+  :class:`PlanModeService` catches it and records ``handoff_status="failed"``
+  without mutating ``status`` (§13). No partial silent success.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
 
 from app.database import async_session
 from app.models.agent import Agent
-from app.models.objective import AgentObjective
 from app.models.trigger import AgentTrigger
-from app.services.focus_state import normalize_focus_task_id
-from app.services.objective_service import ensure_objective_for_trigger
-from app.services.objective_wake_reconciler import (
-    _existing_trigger_for_name,
-    build_objective_trigger_payload,
-    objective_has_enabled_wake,
-)
 
 logger = logging.getLogger(__name__)
 
-HANDOFF_TARGET = "objective_trigger"
+HANDOFF_TARGET = "scheduled_trigger"
+
+#: Schedule types a confirmed plan may set up. Mirrors the daemon's
+#: time-driven bucket (cron/interval/once); anything else falls back to ``cron``.
+_SCHEDULED_TRIGGER_TYPES = frozenset({"cron", "interval", "once"})
 
 
 class HandoffError(Exception):
@@ -65,71 +62,87 @@ async def _load_agent(db: Any, agent_id: uuid.UUID | str) -> Agent | None:
     return result.scalar_one_or_none()
 
 
-def _plan_provenance(plan: Any) -> dict[str, Any]:
-    return {
-        "plan_id": str(plan.id),
-        "plan_version": plan.plan_version,
-        "plan_hash": plan.plan_hash,
-    }
-
-
-def _objective_description(plan: Any) -> str:
+def _plan_title(plan: Any) -> str:
     plan_json = plan.plan_json or {}
-    return str(plan_json.get("objective") or plan_json.get("title") or plan.original_request or "Planned objective")
+    return str(plan_json.get("title") or plan.original_request or "Planned task").strip()
 
 
-def _plan_focus_ref(plan: Any) -> str:
-    """Stable focus key for a plan-born objective.
+def _trigger_name(plan: Any) -> str:
+    """Stable, human-readable trigger name. Idempotency keys off ``config.plan_id``,
+    not the name, so the slug only needs to be readable."""
+    slug = re.sub(r"[^a-z0-9]+", "_", _plan_title(plan).lower()).strip("_")
+    base = slug or "plan"
+    return f"plan_{base}"[:100]
 
-    A plan-driven objective has no focus.md checklist ref and no pre-existing
-    objective id, so :func:`ensure_objective_for_trigger` would otherwise refuse
-    to create one. We derive a deterministic key from the plan title (falling
-    back to the plan id) so the objective + its trigger are consistently keyed
-    and the handoff is idempotent across re-runs.
+
+def _trigger_payload_from_plan(plan: Any, *, force_once: bool = False, now: datetime | None = None) -> dict[str, Any]:
+    """Translate the confirmed plan's ``wake_policy`` into a trigger payload.
+
+    Accepts both shapes the codebase produces: ``wake_policy.config`` (nested) and
+    top-level schedule keys (``expr`` / ``at`` / ``minutes``) on ``wake_policy``
+    itself (the :func:`build_plan_skeleton` shape).
+
+    ``force_once`` makes the trigger a one-shot background task regardless of the
+    plan's ``wake_policy`` — this is how a *detached* ("run it and notify me")
+    confirmed plan becomes a single ``once`` trigger the daemon fires in the
+    background.
     """
     plan_json = plan.plan_json or {}
-    basis = str(plan_json.get("title") or "").strip()
-    key = normalize_focus_task_id(basis) if basis else ""
-    if key in ("", "task"):
-        key = normalize_focus_task_id(f"plan_{plan.id}")
-    return key
-
-
-def _objective_for_wake_payload(objective: AgentObjective, plan: Any) -> AgentObjective:
-    """Project the wake_policy from the plan onto the objective metadata so the
-    shared :func:`build_objective_trigger_payload` produces the right trigger
-    type/config. We do not mutate the persisted objective beyond stamping
-    provenance + wake_policy; ``build_objective_trigger_payload`` only reads."""
-    plan_json = plan.plan_json or {}
     wake_policy = dict(plan_json.get("wake_policy") or {})
-    metadata = dict(objective.metadata_json or {})
-    metadata.update(_plan_provenance(plan))
-    if wake_policy:
-        metadata["wake_policy"] = wake_policy
-    objective.metadata_json = metadata
-    return objective
+
+    trigger_type = "once" if force_once else str(wake_policy.get("type") or "cron")
+    if trigger_type not in _SCHEDULED_TRIGGER_TYPES:
+        trigger_type = "cron"
+
+    config: dict[str, Any] = dict(wake_policy.get("config") or {})
+    # Promote top-level schedule keys (skeleton shape) into config.
+    for key in ("expr", "at", "minutes", "interval_min", "delay_seconds"):
+        if key in wake_policy and key not in config:
+            config[key] = wake_policy[key]
+    if wake_policy.get("timezone") and "timezone" not in config:
+        config["timezone"] = wake_policy["timezone"]
+
+    # A ``once`` schedule needs a concrete fire time.
+    if trigger_type == "once" and not config.get("at"):
+        delay = int(config.pop("delay_seconds", 0) or 0) or 30
+        config["at"] = ((now or datetime.now(timezone.utc)) + timedelta(seconds=delay)).isoformat()
+
+    config["trigger_class"] = "scheduled_job"
+    config["plan_id"] = str(plan.id)  # load-bearing backstop contract
+    config["plan_version"] = plan.plan_version
+    config["plan_hash"] = plan.plan_hash
+
+    reason = (
+        f"Confirmed plan: {_plan_title(plan)}\n"
+        f"Plan ID: {plan.id}\n"
+        "Execute the confirmed plan when this trigger fires. The full confirmed plan "
+        "is injected as context via its plan_id."
+    )
+    return {"name": _trigger_name(plan), "type": trigger_type, "config": config, "reason": reason}
 
 
-async def handoff_objective_trigger(plan: Any, *, db: Any | None = None) -> dict[str, Any]:
-    """Create/activate the objective + enabled trigger for a confirmed plan.
+async def handoff_scheduled_trigger(plan: Any, *, db: Any | None = None, force_once: bool = False) -> dict[str, Any]:
+    """Create/update the enabled trigger for a confirmed plan.
 
-    Returns the audit payload recorded on ``handoff_payload`` (created ids).
+    ``force_once`` turns it into a one-shot background task (the *detached* path).
+
+    Returns the audit payload recorded on ``handoff_payload`` (created trigger id).
 
     Raises:
         HandoffError: if the plan is not ``confirmed`` or its agent is missing.
     """
     if getattr(plan, "status", None) != "confirmed":
         raise HandoffError(
-            f"objective_trigger handoff requires a confirmed plan (status={getattr(plan, 'status', None)!r})"
+            f"scheduled_trigger handoff requires a confirmed plan (status={getattr(plan, 'status', None)!r})"
         )
 
     if db is not None:
-        objective, trigger = await _handoff_objective_trigger_in_session(db, plan)
-        return _handoff_payload(plan, objective, trigger)
+        trigger = await _handoff_scheduled_trigger_in_session(db, plan, force_once=force_once)
+        return _handoff_payload(plan, trigger)
 
     async with async_session() as owned_db:
         try:
-            objective, trigger = await _handoff_objective_trigger_in_session(owned_db, plan)
+            trigger = await _handoff_scheduled_trigger_in_session(owned_db, plan, force_once=force_once)
             await owned_db.commit()
         except HandoffError:
             await owned_db.rollback()
@@ -137,76 +150,48 @@ async def handoff_objective_trigger(plan: Any, *, db: Any | None = None) -> dict
         except Exception as exc:  # noqa: BLE001 - re-raised as typed error, not swallowed
             await owned_db.rollback()
             logger.warning(
-                "plan_objective_trigger_handoff_failed",
+                "plan_scheduled_trigger_handoff_failed",
                 extra={"plan_id": str(plan.id), "error": str(exc)},
             )
-            raise HandoffError(f"objective_trigger handoff failed: {exc}") from exc
-        return _handoff_payload(plan, objective, trigger)
+            raise HandoffError(f"scheduled_trigger handoff failed: {exc}") from exc
+        return _handoff_payload(plan, trigger)
 
 
-async def _handoff_objective_trigger_in_session(db: Any, plan: Any) -> tuple[AgentObjective, AgentTrigger]:
+async def _handoff_scheduled_trigger_in_session(db: Any, plan: Any, *, force_once: bool = False) -> AgentTrigger:
     agent = await _load_agent(db, plan.agent_id)
     if agent is None:
         raise HandoffError(f"agent {plan.agent_id} not found for plan {plan.id}")
 
-    objective = await ensure_objective_for_trigger(
-        db,
-        agent,
-        focus_ref=_plan_focus_ref(plan),
-        description=_objective_description(plan),
-        objective_id=None,
-    )
-    if objective is None:
-        raise HandoffError(f"could not resolve an objective for plan {plan.id}")
-
-    # Stamp provenance + wake_policy and promote to active.
-    _objective_for_wake_payload(objective, plan)
-    objective.status = "active"
-    objective.blocked_reason = None
-    await db.flush()  # ensure objective.id is assigned
-
-    trigger = await _ensure_enabled_trigger(db, agent, objective, plan)
-    return objective, trigger
+    trigger = await _ensure_enabled_trigger(db, agent, plan, force_once=force_once)
+    return trigger
 
 
-def _handoff_payload(plan: Any, objective: AgentObjective, trigger: AgentTrigger) -> dict[str, Any]:
-    payload = {
-        "created_objective_id": str(objective.id),
-        "created_trigger_id": str(trigger.id),
-    }
+def _handoff_payload(plan: Any, trigger: AgentTrigger) -> dict[str, Any]:
+    payload = {"created_trigger_id": str(trigger.id)}
     logger.info(
-        "plan_objective_trigger_handoff_completed",
+        "plan_scheduled_trigger_handoff_completed",
         extra={"plan_id": str(plan.id), **payload},
     )
     return payload
 
 
-async def _ensure_enabled_trigger(db: Any, agent: Any, objective: AgentObjective, plan: Any) -> AgentTrigger:
-    """Create (or update + re-enable) the objective's wake trigger.
+async def _ensure_enabled_trigger(db: Any, agent: Any, plan: Any, *, force_once: bool = False) -> AgentTrigger:
+    """Create (or update + re-enable) the plan's wake trigger.
 
-    Idempotent: if an enabled wake already exists for this objective, or a
-    trigger with the canonical name exists, it is updated in place rather than
-    duplicated. Either way the trigger ends enabled with ``config.plan_id`` set.
+    Idempotent on ``config.plan_id``: re-running for the same plan updates the
+    existing trigger in place rather than duplicating. Either way the trigger ends
+    enabled with ``config.plan_id`` set.
     """
-    payload = build_objective_trigger_payload(objective)
-    config = dict(payload["config"])
-    config["plan_id"] = str(plan.id)  # load-bearing backstop contract
-    config["plan_version"] = plan.plan_version
-    config["plan_hash"] = plan.plan_hash
+    payload = _trigger_payload_from_plan(plan, force_once=force_once)
 
     trigger_result = await db.execute(select(AgentTrigger).where(AgentTrigger.agent_id == agent.id))
     triggers = list(trigger_result.scalars().all())
-
-    existing = _existing_trigger_for_name(triggers, agent_id=agent.id, name=payload["name"])
-    if existing is None and objective_has_enabled_wake(objective, triggers):
-        # An enabled wake already exists under a different name; find and reuse it.
-        existing = _find_objective_trigger(triggers, objective)
+    existing = _find_plan_trigger(triggers, plan)
 
     if existing is not None:
         existing.type = payload["type"]
-        existing.config = config
+        existing.config = payload["config"]
         existing.reason = payload["reason"]
-        existing.focus_ref = payload["focus_ref"]
         existing.is_enabled = True
         await db.flush()
         return existing
@@ -215,9 +200,8 @@ async def _ensure_enabled_trigger(db: Any, agent: Any, objective: AgentObjective
         agent_id=agent.id,
         name=payload["name"],
         type=payload["type"],
-        config=config,
+        config=payload["config"],
         reason=payload["reason"],
-        focus_ref=payload["focus_ref"],
         is_enabled=True,
     )
     db.add(trigger)
@@ -225,11 +209,11 @@ async def _ensure_enabled_trigger(db: Any, agent: Any, objective: AgentObjective
     return trigger
 
 
-def _find_objective_trigger(triggers: list[AgentTrigger], objective: AgentObjective) -> AgentTrigger | None:
-    objective_id = str(objective.id)
+def _find_plan_trigger(triggers: list[AgentTrigger], plan: Any) -> AgentTrigger | None:
+    plan_id = str(plan.id)
     for trigger in triggers:
         config = getattr(trigger, "config", None) or {}
-        if str(config.get("objective_id") or "") == objective_id:
+        if str(config.get("plan_id") or "") == plan_id:
             return trigger
     return None
 
@@ -239,16 +223,16 @@ def _find_objective_trigger(triggers: list[AgentTrigger], objective: AgentObject
 # ---------------------------------------------------------------------------
 
 
-async def objective_trigger_handoff_handler(db: Any, plan: Any) -> dict[str, Any]:
+async def scheduled_trigger_handoff_handler(db: Any, plan: Any) -> dict[str, Any]:
     """Async handoff handler registered with :class:`PlanModeService`.
 
-    The service passes its live DB session so objective/trigger creation and
-    the plan's ``handoff_status`` update commit or roll back together.
+    The service passes its live DB session so trigger creation and the plan's
+    ``handoff_status`` update commit or roll back together.
     """
-    return await handoff_objective_trigger(plan, db=db)
+    return await handoff_scheduled_trigger(plan, db=db)
 
 
-def register_objective_trigger_handoff(service: Any) -> None:
-    """Register :func:`objective_trigger_handoff_handler` on a
-    :class:`PlanModeService` instance for the ``objective_trigger`` target."""
-    service.register_handoff_handler(HANDOFF_TARGET, objective_trigger_handoff_handler)
+def register_scheduled_trigger_handoff(service: Any) -> None:
+    """Register :func:`scheduled_trigger_handoff_handler` on a
+    :class:`PlanModeService` instance for the ``scheduled_trigger`` target."""
+    service.register_handoff_handler(HANDOFF_TARGET, scheduled_trigger_handoff_handler)

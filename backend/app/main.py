@@ -252,8 +252,8 @@ async def lifespan(app: FastAPI):
         logger.warning(f"[startup] Objective ledger sync failed (non-fatal): {e}")
 
     # Register concrete Plan Mode handoff handlers onto the REST API's shared
-    # service so a confirmed objective_trigger plan actually creates the
-    # objective + enabled trigger (instead of resolving to "skipped").
+    # service so a confirmed scheduled_trigger plan actually creates its enabled
+    # trigger (instead of resolving to "skipped").
     try:
         from app.api.plans import get_plan_mode_service
         from app.services.plan_mode_registry import register_plan_mode_handoffs

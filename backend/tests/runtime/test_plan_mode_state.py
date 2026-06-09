@@ -164,7 +164,7 @@ def test_from_metadata_round_trips_core_fields():
         action_kind="create_enabled_trigger",
         tool_name="set_trigger",
         reason="explicit_request",
-        handoff_target="objective_trigger",
+        handoff_target="scheduled_trigger",
         deep_research=False,
     )
     restored = PlanModeState.from_metadata(original.to_metadata())
@@ -174,7 +174,7 @@ def test_from_metadata_round_trips_core_fields():
     assert restored.action_kind == "create_enabled_trigger"
     assert restored.tool_name == "set_trigger"
     assert restored.reason == "explicit_request"
-    assert restored.handoff_target == "objective_trigger"
+    assert restored.handoff_target == "scheduled_trigger"
     assert restored.deep_research is False
 
 

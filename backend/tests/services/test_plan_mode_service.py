@@ -781,7 +781,7 @@ async def test_handoff_is_idempotent_after_completion(patched_service):
         calls["n"] += 1
         return {"created_objective_id": str(uuid4()), "created_trigger_id": str(uuid4())}
 
-    service.register_handoff_handler("objective_trigger", handler)
+    service.register_handoff_handler("scheduled_trigger", handler)
 
     first = await service.handoff_confirmed_plan(plan_id=confirmed.id)
     assert first.handoff_status == "completed"
@@ -808,7 +808,7 @@ async def test_handoff_records_failure_without_corrupting_confirmed(patched_serv
         assert db is session
         raise RuntimeError("downstream create failed")
 
-    service.register_handoff_handler("objective_trigger", boom)
+    service.register_handoff_handler("scheduled_trigger", boom)
 
     result = await service.handoff_confirmed_plan(plan_id=confirmed.id)
 
@@ -834,7 +834,7 @@ async def test_confirm_and_handoff_plan_confirms_then_runs_handoff(patched_servi
         calls["handoff"] += 1
         return {"runtime_task_id": "run-123", "execution": "current_session"}
 
-    service.register_handoff_handler("objective_trigger", handler)
+    service.register_handoff_handler("scheduled_trigger", handler)
 
     result = await service.confirm_and_handoff_plan(
         plan_id=plan.id,

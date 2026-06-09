@@ -381,7 +381,7 @@ _CAPABILITY_LABELS: dict[str, str] = {
 #: Exec/automation CC-alignment (2026-06-08): ``external_action`` / ``state_change``
 #: were orphan intents (no ``ACTION_KIND`` mapped onto them, no producer) — removed.
 _INTENT_HANDOFF_TARGET: dict[str, str] = {
-    "autonomous_wake": "objective_trigger",
+    "autonomous_wake": "scheduled_trigger",
     "in_session_execution": "continue_current_session",
     "delegation": "delegation",
 }
@@ -457,7 +457,6 @@ def build_plan_skeleton(*, intent_type: str, title: str, original_request: str) 
         "stop_conditions": [],
         "handoff": {
             "target": _INTENT_HANDOFF_TARGET[intent_type],
-            "create_objective": is_recurring_wake,
             "create_trigger": is_recurring_wake,
         },
     }

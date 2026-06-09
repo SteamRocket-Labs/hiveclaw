@@ -75,14 +75,14 @@ def _estimated_cost(value: Any) -> dict[str, Any]:
 def _wake_policy(value: Any, *, handoff_target: str) -> dict[str, Any]:
     if isinstance(value, dict) and value.get("type"):
         return dict(value)
-    if handoff_target == "objective_trigger":
+    if handoff_target == "scheduled_trigger":
         return {"type": "manual"}
     return {"type": "none"}
 
 
 def _handoff(args: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
     # CC parity default: live chat plans continue in the current session unless an
-    # explicit target (deep_research / objective_trigger / delegation / detached)
+    # explicit target (deep_research / scheduled_trigger / delegation / detached)
     # was set on the args or carried in the plan-mode metadata.
     target = (
         str(args.get("handoff_target") or metadata.get("handoff_target") or "continue_current_session").strip()
@@ -93,8 +93,7 @@ def _handoff(args: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
         payload = {**dict(metadata.get("deep_research_args") or {}), **dict(payload or {})}
     return {
         "target": target,
-        "create_objective": target == "objective_trigger",
-        "create_trigger": target == "objective_trigger",
+        "create_trigger": target == "scheduled_trigger",
         "payload": payload,
     }
 

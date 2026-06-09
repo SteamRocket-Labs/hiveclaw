@@ -425,7 +425,7 @@ def _activate_interactive_plan_mode(
     if is_deep_research:
         handoff_target = "deep_research"
     elif decision.action_kind == "create_enabled_trigger":
-        handoff_target = "objective_trigger"
+        handoff_target = "scheduled_trigger"
     else:
         # CC parity: live chat Plan Mode defaults to continuing in THIS session
         # after confirmation (not a detached long_task). Detached background
@@ -758,9 +758,7 @@ async def _resume_queued_plan_handoffs(
             .limit(limit)
         )
         if completed_run_id is not None:
-            stmt = stmt.where(
-                AgentPlanRequest.handoff_payload["active_run_id"].as_string() == str(completed_run_id)
-            )
+            stmt = stmt.where(AgentPlanRequest.handoff_payload["active_run_id"].as_string() == str(completed_run_id))
         result = await db.execute(stmt)
         plan_ids = list(result.scalars().all())
 

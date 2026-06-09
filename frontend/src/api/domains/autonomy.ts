@@ -7,7 +7,6 @@ export interface AutonomyQuery {
 export interface RuntimeTaskQuery {
   taskType?: string;
   triggerId?: string;
-  objectiveId?: string;
   status?: string;
   limit?: number;
   diagnostics?: boolean;
@@ -100,7 +99,6 @@ export const autonomyApi = {
     get<any[]>(withParams(`/agents/${agentId}/runtime-tasks`, {
       task_type: query.taskType,
       trigger_id: query.triggerId,
-      objective_id: query.objectiveId,
       status: query.status,
       limit: query.limit,
       diagnostics: query.diagnostics,

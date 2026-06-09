@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-describe('autonomy/objective API adapters', () => {
+describe('autonomy API adapters', () => {
   beforeEach(() => {
     vi.resetModules();
   });
@@ -15,17 +15,12 @@ describe('autonomy/objective API adapters', () => {
       return {
         ...actual,
         get: vi.fn(),
-        post: vi.fn(),
-        patch: vi.fn(),
       };
     });
 
     const { autonomyApi } = await import('./autonomy');
-    const { objectiveApi } = await import('./objectives');
-    const { get, post, patch } = await import('../core');
+    const { get } = await import('../core');
     vi.mocked(get).mockResolvedValue({} as never);
-    vi.mocked(post).mockResolvedValue({} as never);
-    vi.mocked(patch).mockResolvedValue({} as never);
 
     await autonomyApi.getOverview('agent-1', { lookbackHours: 12 });
     await autonomyApi.getDiagnostics('agent-1', { lookbackHours: 6 });
@@ -33,8 +28,6 @@ describe('autonomy/objective API adapters', () => {
     await autonomyApi.getRuntimeArtifact('agent-1', 'task-1');
     await autonomyApi.getRuntimeWorkLedger('agent-1', 'task-1');
     await autonomyApi.getSessionWorkLedger('agent-1', 'session-1');
-    await objectiveApi.approve('agent-1', 'objective-1', { reason: 'approved' });
-    await objectiveApi.update('agent-1', 'objective-1', { status: 'completed', completion_evidence: 'workspace/report.md' });
 
     expect(get).toHaveBeenNthCalledWith(1, '/agents/agent-1/autonomy/overview?lookback_hours=12');
     expect(get).toHaveBeenNthCalledWith(2, '/agents/agent-1/autonomy/diagnostics?lookback_hours=6');
@@ -45,10 +38,5 @@ describe('autonomy/objective API adapters', () => {
     expect(get).toHaveBeenNthCalledWith(4, '/agents/agent-1/runtime-artifacts/task-1');
     expect(get).toHaveBeenNthCalledWith(5, '/agents/agent-1/runtime-work-ledgers/task-1');
     expect(get).toHaveBeenNthCalledWith(6, '/agents/agent-1/sessions/session-1/work-ledger');
-    expect(post).toHaveBeenCalledWith('/agents/agent-1/objectives/objective-1/approve', { reason: 'approved' });
-    expect(patch).toHaveBeenCalledWith('/agents/agent-1/objectives/objective-1', {
-      status: 'completed',
-      completion_evidence: 'workspace/report.md',
-    });
   });
 });

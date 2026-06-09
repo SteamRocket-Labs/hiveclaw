@@ -5,7 +5,6 @@ import { useTranslation } from 'react-i18next';
 import { chatApi } from '../../api/domains/chat';
 import { triggerApi } from '../../api/domains/triggers';
 import { autonomyApi } from '../../api/domains/autonomy';
-import { objectiveApi } from '../../api/domains/objectives';
 import { listWorkflowDefinitions, type WorkflowDefinitionRecord } from '../../api/domains/workflows';
 import { StructuredToolResultBody } from './AgentChatSection';
 import TeamMemorySummaryCard from './TeamMemorySummaryCard';
@@ -43,7 +42,6 @@ const SECTION_PAGE_SIZE = 5;
 
 export type WakeFormState = {
   mode: string;
-  objectiveId: string;
   name: string;
   reason: string;
   scheduleType: string;
@@ -96,7 +94,6 @@ export function buildWakePolicyPayload(
     if (wakeForm.scheduleType === 'interval') config.minutes = wakeForm.intervalMinutes;
     if (wakeForm.scheduleType === 'once') config.at = wakeForm.onceAt;
   }
-  if (wakeForm.mode === 'objective_task' && wakeForm.objectiveId) config.objective_id = wakeForm.objectiveId;
   if (wakeForm.workflowDefinitionKey && !selectedWorkflow) {
     throw new StaleWorkflowRefError();
   }
@@ -114,7 +111,6 @@ export function buildWakePolicyPayload(
     type,
     config,
     reason: wakeForm.reason || wakeForm.name || 'Autonomous wake policy',
-    objective_id: wakeForm.mode === 'objective_task' ? wakeForm.objectiveId || undefined : undefined,
     max_fires: wakeForm.mode === 'event_wait' ? wakeForm.maxFires : undefined,
     expires_at: wakeForm.expiresAt || undefined,
   };
@@ -151,7 +147,6 @@ export default function AgentAwareSection({
   const [showCreateWake, setShowCreateWake] = React.useState(false);
   const [wakeForm, setWakeForm] = React.useState<WakeFormState>({
     mode: 'scheduled_job',
-    objectiveId: '',
     name: '',
     reason: '',
     scheduleType: 'cron',
@@ -302,7 +297,6 @@ export default function AgentAwareSection({
 
   const kindLabel = (value?: string | null) => {
     const key = String(value || '');
-    if (key === 'objective_task') return t('agent.aware.kindObjective', 'Objective task');
     if (key === 'scheduled_job') return t('agent.aware.kindScheduled', 'Scheduled job');
     if (key === 'event_wait') return t('agent.aware.kindEventWait', 'Waiting event');
     if (key === 'system_maintenance') return t('agent.aware.kindMaintenance', 'System maintenance');
@@ -331,23 +325,6 @@ export default function AgentAwareSection({
       {statusLabel(state)}
     </span>
   );
-
-  const approveObjective = async (objective: any) => {
-    await objectiveApi.approve(agentId, objective.id, { reason: 'Approved from autonomy console' });
-    await refreshAutonomy();
-  };
-
-  const rejectObjective = async (objective: any) => {
-    await objectiveApi.reject(agentId, objective.id, { reason: 'Rejected from autonomy console' });
-    await refreshAutonomy();
-  };
-
-  const markObjectiveComplete = async (objective: any) => {
-    const evidence = window.prompt(t('agent.aware.completionEvidencePrompt', 'Completion evidence'));
-    if (!evidence) return;
-    await objectiveApi.update(agentId, objective.id, { status: 'completed', completion_evidence: evidence });
-    await refreshAutonomy();
-  };
 
   const pauseOrResumeTrigger = async (trigger: any, enabled: boolean) => {
     await triggerApi.update(agentId, trigger.id, { is_enabled: enabled });
@@ -387,24 +364,14 @@ export default function AgentAwareSection({
 
   const renderCreateWakeForm = () => {
     if (!showCreateWake) return null;
-    const objectives = autonomyOverview?.objectives || [];
     const activeWorkflowDefinitions = workflowDefinitions.filter((record) => record.status === 'active');
     return (
       <div style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '12px', marginTop: '10px', background: 'var(--bg-primary)' }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px' }}>
           <select className="form-input" value={wakeForm.mode} onChange={(event) => setWakeForm({ ...wakeForm, mode: event.target.value })}>
             <option value="scheduled_job">{t('agent.aware.kindScheduled', 'Scheduled job')}</option>
-            <option value="objective_task">{t('agent.aware.kindObjective', 'Objective task')}</option>
             <option value="event_wait">{t('agent.aware.kindEventWait', 'Waiting event')}</option>
           </select>
-          {wakeForm.mode === 'objective_task' && (
-            <select className="form-input" value={wakeForm.objectiveId} onChange={(event) => setWakeForm({ ...wakeForm, objectiveId: event.target.value })}>
-              <option value="">{t('agent.aware.selectObjective', 'Select objective')}</option>
-              {objectives.map((objective: any) => (
-                <option key={objective.id} value={objective.id}>{objective.description}</option>
-              ))}
-            </select>
-          )}
           {wakeForm.mode !== 'event_wait' && (
             <select className="form-input" value={wakeForm.scheduleType} onChange={(event) => setWakeForm({ ...wakeForm, scheduleType: event.target.value })}>
               <option value="cron">cron</option>
@@ -466,7 +433,6 @@ export default function AgentAwareSection({
 
   const renderAutonomyOverview = () => {
     if (!autonomyOverview) return null;
-    const objectives = autonomyOverview.objectives || [];
     const triggers = autonomyOverview.triggers || [];
     const attempts = autonomyOverview.recent_attempts || [];
     const findings = autonomyOverview.findings || [];
@@ -476,7 +442,7 @@ export default function AgentAwareSection({
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'center', marginBottom: '12px' }}>
             <div>
               <h4 style={{ margin: 0, fontSize: '14px', fontWeight: 600 }}>{t('agent.aware.autonomyTitle', 'Autonomy Control')}</h4>
-              <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('agent.aware.autonomyDesc', 'Objectives, wake policies, attempts, and results.')}</span>
+              <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('agent.aware.autonomyDesc', 'Wake policies, attempts, and results.')}</span>
             </div>
             <button className="btn btn-primary" onClick={() => setShowCreateWake(true)}>{t('agent.aware.newWake', 'New wake')}</button>
           </div>
@@ -492,43 +458,6 @@ export default function AgentAwareSection({
             </div>
           )}
           {renderCreateWakeForm()}
-        </div>
-
-        <div className="card" style={{ marginBottom: '16px', padding: '16px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-            <h4 style={{ margin: 0, fontSize: '14px', fontWeight: 600 }}>{t('agent.aware.objectives', 'Objectives')}</h4>
-            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{objectives.length}</span>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {objectives.length === 0 && <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('agent.aware.focusEmpty')}</div>}
-            {objectives.map((objective: any) => (
-              <div key={objective.id} style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '10px 12px', background: 'var(--bg-primary)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'flex-start' }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>{objective.description}</div>
-                    {objective.success_criteria && <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '3px' }}>{objective.success_criteria}</div>}
-                    {objective.blocked_reason && <div style={{ fontSize: '12px', color: 'var(--error)', marginTop: '3px' }}>{objective.blocked_reason}</div>}
-                    {objective.completion_evidence && <div style={{ fontSize: '12px', color: 'var(--success)', marginTop: '3px' }}>{t('agent.aware.evidence', 'Evidence')}: {objective.completion_evidence}</div>}
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                    {statusBadge(objective.status)}
-                    {statusBadge(objective.wake_state)}
-                  </div>
-                </div>
-                <div style={{ display: 'flex', gap: '6px', marginTop: '8px', flexWrap: 'wrap' }}>
-                  {objective.requires_approval && (
-                    <>
-                      <button className="btn btn-ghost" style={{ fontSize: '11px', padding: '4px 8px' }} onClick={() => approveObjective(objective)}>{t('agent.aware.approve', 'Approve')}</button>
-                      <button className="btn btn-ghost" style={{ fontSize: '11px', padding: '4px 8px', color: 'var(--error)' }} onClick={() => rejectObjective(objective)}>{t('agent.aware.reject', 'Reject')}</button>
-                    </>
-                  )}
-                  {objective.status !== 'completed' && !objective.requires_approval && (
-                    <button className="btn btn-ghost" style={{ fontSize: '11px', padding: '4px 8px' }} onClick={() => markObjectiveComplete(objective)}>{t('agent.aware.completeWithEvidence', 'Complete with evidence')}</button>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
         </div>
 
         <div className="card" style={{ marginBottom: '16px', padding: '16px' }}>

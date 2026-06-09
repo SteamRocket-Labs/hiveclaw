@@ -16,7 +16,6 @@ export { channelApi } from './channels';
 export { scheduleApi } from './schedules';
 export { triggerApi } from './triggers';
 export { autonomyApi } from './autonomy';
-export { objectiveApi } from './objectives';
 export { planApi } from './plans';
 export { relationshipsApi } from './relationships';
 export { usersApi } from './users';

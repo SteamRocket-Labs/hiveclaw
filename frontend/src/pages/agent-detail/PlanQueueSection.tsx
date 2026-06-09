@@ -6,7 +6,7 @@
  *   - Confirmed / handoff pending
  *   - Rejected / expired / superseded
  *
- * Existing Objectives + Wake Policies show the world *after* execution; this
+ * Existing Wake Policies / Triggers show the world *after* execution; this
  * queue shows the world *before* it. Self-fetching (like AgentApprovalsSection)
  * so the parent only mounts <PlanQueueSection agentId=… /> with no extra wiring.
  */

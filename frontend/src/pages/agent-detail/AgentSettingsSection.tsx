@@ -123,22 +123,6 @@ const KNOWN_CAPABILITY_ACTIONS: CapabilityActionMeta[] = [
     fallbackDesc: 'Create, update, or complete tasks',
   },
   {
-    key: 'read_objectives',
-    capability: 'agent.objective.read',
-    labelKey: 'readObjectives',
-    descKey: 'readObjectivesDesc',
-    fallbackLabel: 'Read Objectives',
-    fallbackDesc: 'View durable objective records',
-  },
-  {
-    key: 'manage_objectives',
-    capability: 'agent.objective.modify',
-    labelKey: 'manageObjectives',
-    descKey: 'manageObjectivesDesc',
-    fallbackLabel: 'Objectives',
-    fallbackDesc: 'Create, update, or complete durable objectives',
-  },
-  {
     key: 'read_memory',
     capability: 'agent.memory.read',
     labelKey: 'readMemory',
@@ -700,7 +684,7 @@ export default function AgentSettingsSection({
     try {
       const reason = t(
         'agent.settings.patrol.triggerReason',
-        'Run scheduled patrols for objectives, messages, trigger state, and Agent Circle context.',
+        'Run scheduled patrols for messages, trigger state, and Agent Circle context.',
       );
       let planRecommendationId: string | undefined;
       const needsPlanModeOptOut = patrolForm.enabled;

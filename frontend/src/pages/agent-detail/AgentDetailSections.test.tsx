@@ -585,25 +585,7 @@ describe('AgentDetail extracted sections', () => {
         autonomyOverview={{
           agent_id: 'agent-1',
           lookback_hours: 24,
-          totals: { objectives: 2, triggers: 2, recent_attempts: 1, findings: 1 },
-          objectives: [
-            {
-              id: 'objective-internal-id',
-              description: 'Send investor update',
-              status: 'proposed',
-              wake_state: 'no_wake_policy',
-              requires_approval: true,
-              success_criteria: 'Sent with confirmation',
-            },
-            {
-              id: 'objective-active-id',
-              description: 'Monitor launch health',
-              status: 'active',
-              wake_state: 'has_wake_policy',
-              requires_approval: false,
-              completion_evidence: 'workspace/report.md',
-            },
-          ],
+          totals: { triggers: 2, recent_attempts: 1, findings: 1 },
           triggers: [
             {
               id: 'trigger-internal-id',
@@ -635,9 +617,9 @@ describe('AgentDetail extracted sections', () => {
           findings: [
             {
               severity: 'warning',
-              category: 'objective_waiting_approval',
-              message: 'Objective is waiting for approval.',
-              recommendation: 'Approve or reject it.',
+              category: 'trigger_backoff_active',
+              message: 'A trigger is waiting to retry after a recent failure.',
+              recommendation: 'Review the failure and retry.',
             },
           ],
         }}
@@ -659,15 +641,11 @@ describe('AgentDetail extracted sections', () => {
       />,
     );
 
-    expect(markup).toContain('Send investor update');
-    expect(markup).toContain('proposed');
-    expect(markup).toContain('Approve');
     expect(markup).toContain('Daily launch report');
     expect(markup).toContain('Waiting to retry after a recent failure.');
     expect(markup).toContain('Provider quota exceeded');
     expect(markup).not.toContain('trigger-internal-id');
     expect(markup).not.toContain('runtime-internal-id');
-    expect(markup).not.toContain('objective-internal-id');
     expect(markup).not.toContain('runtime_artifacts/triggers');
     expect(markup).not.toContain('legacy: this raw projection should be secondary');
   });
@@ -689,7 +667,6 @@ describe('AgentDetail extracted sections', () => {
     const payload = buildWakePolicyPayload(
       {
         mode: 'scheduled_job',
-        objectiveId: '',
         name: 'daily report trigger',
         reason: 'Run the pinned workflow',
         scheduleType: 'cron',
@@ -727,7 +704,6 @@ describe('AgentDetail extracted sections', () => {
       buildWakePolicyPayload(
         {
           mode: 'scheduled_job',
-          objectiveId: '',
           name: 'bad args',
           reason: '',
           scheduleType: 'cron',
@@ -762,7 +738,6 @@ describe('AgentDetail extracted sections', () => {
       buildWakePolicyPayload(
         {
           mode: 'scheduled_job',
-          objectiveId: '',
           name: 'stale ref',
           reason: '',
           scheduleType: 'cron',
@@ -783,7 +758,6 @@ describe('AgentDetail extracted sections', () => {
   it('distinguishes a stale workflow selection from invalid args JSON', () => {
     const base = {
       mode: 'scheduled_job',
-      objectiveId: '',
       name: 'distinguish errors',
       reason: '',
       scheduleType: 'cron',
@@ -891,7 +865,6 @@ describe('AgentDetail extracted sections', () => {
           { capability: 'workspace.file.delete', tools: ['delete_file'] },
           { capability: 'workspace.command.execute', tools: ['run_command'] },
           { capability: 'workspace.command.secret_exfiltration', tools: ['run_command'] },
-          { capability: 'agent.objective.modify', tools: ['propose_objective', 'update_objective', 'complete_objective'] },
           { capability: 'unknown.future.capability', tools: ['future_tool'] },
         ]}
         capabilityPolicyLoading={false}
@@ -951,7 +924,6 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('>Restricted<');
     expect(markup).toContain('Run Shell Commands');
     expect(markup).toContain('Secret/Environment Reads');
-    expect(markup).toContain('Objectives');
     expect(markup).toContain('unknown.future.capability');
     expect(markup).toContain('future_tool');
     expect(markup).toContain('value="approval" selected=""');

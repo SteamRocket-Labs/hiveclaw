@@ -33,7 +33,7 @@ PLAN_SCHEMA = "hive_plan.v1"
 #: §6 / §5.1 — the intents that mandate a plan.
 INTENT_TYPES: tuple[str, ...] = (
     "autonomous_wake",
-    "long_task",
+    "in_session_execution",
     "delegation",
 )
 
@@ -50,17 +50,17 @@ ACTION_KINDS: tuple[str, ...] = (
 )
 
 #: action_kind -> intent_type. Trigger/wake creation and objective activation
-#: are all recurring autonomous wakes; long tasks and delegations carry their
-#: own intents (§5.1 / §6).
+#: are all recurring autonomous wakes; in-session execution and delegations carry
+#: their own intents (§5.1 / §6).
 _ACTION_INTENT: dict[str, str] = {
     "create_enabled_trigger": "autonomous_wake",
     "enable_autonomous_wake": "autonomous_wake",
     "activate_objective_wake": "autonomous_wake",
-    "start_long_task": "long_task",
+    "start_long_task": "in_session_execution",
     "start_delegation": "delegation",
     # §9 P4: high-risk ephemeral workflow launches confirm through Plan Mode
     # (§10 decision 3 — graded by risk, not by ephemeral/registered).
-    "start_workflow": "long_task",
+    "start_workflow": "in_session_execution",
 }
 
 
@@ -190,7 +190,7 @@ def classify_plan_mode_entry(content: str, *, explicit: bool = False) -> PlanMod
             )
         return PlanModeEntryDecision(
             mode="explicit",
-            intent_type="long_task",
+            intent_type="in_session_execution",
             action_kind="start_long_task",
             tool_name="continue_current_session",
             title=text[:120],
@@ -372,8 +372,8 @@ _CAPABILITY_LABELS: dict[str, str] = {
 #: G/H.2/G/H.3 convergence: every target here resolves to a *registered* handler
 #: (see ``plan_mode_registry.register_plan_mode_handoffs``) — no dead target that
 #: silently degrades to ``no_handler_registered`` -> ``skipped``.
-#: - ``long_task`` (intent) now seeds ``continue_current_session`` rather than the
-#:   ambiguous legacy ``"long_task"`` *target* word (a confirmed long task continues
+#: - ``in_session_execution`` (intent, formerly ``long_task``) seeds ``continue_current_session``
+#:   rather than the ambiguous legacy ``"long_task"`` *target* word (a confirmed run continues
 #:   in the live session, or fails closed with a visible reason when unattended).
 #:   The legacy ``"long_task"`` *target* stays registered (compat for already-persisted
 #:   plans) but is no longer seeded here.
@@ -382,7 +382,7 @@ _CAPABILITY_LABELS: dict[str, str] = {
 #: were orphan intents (no ``ACTION_KIND`` mapped onto them, no producer) — removed.
 _INTENT_HANDOFF_TARGET: dict[str, str] = {
     "autonomous_wake": "objective_trigger",
-    "long_task": "continue_current_session",
+    "in_session_execution": "continue_current_session",
     "delegation": "delegation",
 }
 

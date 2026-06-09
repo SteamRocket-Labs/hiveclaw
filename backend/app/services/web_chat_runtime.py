@@ -436,7 +436,7 @@ def _activate_interactive_plan_mode(
     state = PlanModeState(
         active=True,
         original_request=original_request,
-        intent_type=decision.intent_type or "long_task",
+        intent_type=decision.intent_type or "in_session_execution",
         action_kind=decision.action_kind,
         tool_name=decision.tool_name,
         reason=decision.reason,

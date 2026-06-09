@@ -38,7 +38,7 @@ def test_to_metadata_matches_legacy_dict_shape_for_non_deep_research():
     state = PlanModeState(
         active=True,
         original_request="帮我完整调研这个行业",
-        intent_type="long_task",
+        intent_type="in_session_execution",
         action_kind="start_long_task",
         tool_name="start_long_task",
         reason="explicit_request",
@@ -48,7 +48,7 @@ def test_to_metadata_matches_legacy_dict_shape_for_non_deep_research():
     assert data == {
         "active": True,
         "original_request": "帮我完整调研这个行业",
-        "intent_type": "long_task",
+        "intent_type": "in_session_execution",
         "action_kind": "start_long_task",
         "tool_name": "start_long_task",
         "reason": "explicit_request",
@@ -64,7 +64,7 @@ def test_to_metadata_includes_deep_research_payload_when_set():
     state = PlanModeState(
         active=True,
         original_request="使用 deepresearch做一个web3的全景报告",
-        intent_type="long_task",
+        intent_type="in_session_execution",
         action_kind="start_long_task",
         tool_name="start_long_task",
         reason="deep_research_request",

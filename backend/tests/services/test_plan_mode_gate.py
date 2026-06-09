@@ -104,7 +104,7 @@ def _make_confirmed_long_task_plan(session, *, agent_id, version=1, plan_hash="s
         agent_id=agent_id,
         requested_by_user_id=uuid4(),
         source="web_chat",
-        intent_type="long_task",
+        intent_type="in_session_execution",
         original_request="Run a long research task",
         status="confirmed",
         plan_version=version,
@@ -180,7 +180,7 @@ async def test_check_allows_when_confirmed_plan_action_artifact_matches(patched_
         agent_id=agent_id,
         version=1,
         plan_hash="sha256:abc",
-        intent_type="long_task",
+        intent_type="in_session_execution",
         metadata_json={
             "confirmed_action_artifact": {
                 "definition_hash": "wf-hash-1",
@@ -208,7 +208,7 @@ async def test_check_needs_plan_when_action_artifact_missing_from_confirmed_plan
     gate, session = patched_gate
     agent_id = uuid4()
     plan = _make_confirmed_plan(session, agent_id=agent_id, version=1, plan_hash="sha256:abc")
-    plan.intent_type = "long_task"
+    plan.intent_type = "in_session_execution"
 
     decision = await gate.check(
         session,
@@ -233,7 +233,7 @@ async def test_check_needs_plan_when_action_artifact_mismatches_confirmed_plan(p
         agent_id=agent_id,
         version=1,
         plan_hash="sha256:abc",
-        intent_type="long_task",
+        intent_type="in_session_execution",
         metadata_json={"confirmed_action_artifact": {"definition_hash": "wf-hash-1"}},
     )
 
@@ -561,7 +561,7 @@ async def test_check_allows_artifact_recorded_in_plan_json(patched_gate):
         agent_id=agent_id,
         version=1,
         plan_hash="sha256:abc",
-        intent_type="long_task",
+        intent_type="in_session_execution",
         plan_json={"schema": "hive_plan.v1", "title": "外发周报", "action_artifact": artifact},
     )
 

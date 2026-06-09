@@ -77,7 +77,7 @@ async def _add_plan(
             tenant_id=tenant_id,
             agent_id=agent_id,
             source="web_chat",
-            intent_type="long_task",
+            intent_type="in_session_execution",
             original_request=original_request,
             status=status,
             plan_version=2,

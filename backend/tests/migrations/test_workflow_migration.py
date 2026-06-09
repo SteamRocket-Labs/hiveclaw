@@ -55,7 +55,7 @@ def test_alembic_single_head_is_current_closure_head():
     assert result.returncode == 0, result.stderr[-500:]
     heads = [line for line in result.stdout.strip().splitlines() if line.strip()]
     assert len(heads) == 1, f"expected single head, got: {heads}"
-    assert "mcp_assignment_always_load_0607" in heads[0]
+    assert "rename_long_task_intent_0608" in heads[0]
 
 
 async def _assert_workflow_tables_forced_rls(database_url: str) -> None:

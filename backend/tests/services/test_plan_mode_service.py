@@ -239,7 +239,7 @@ async def test_generate_plan_marks_planning_failed_on_invalid_fill(patched_servi
         agent_id=agent_id,
         requested_by_user_id=uuid4(),
         original_request="x",
-        intent_type="long_task",
+        intent_type="in_session_execution",
     )
 
     # objective left blank + malformed step -> schema invalid
@@ -268,7 +268,7 @@ async def test_generate_plan_repairs_common_agent_output_shape_before_validation
         agent_id=agent_id,
         requested_by_user_id=uuid4(),
         original_request="使用 deepresearch做一个web3的全景报告",
-        intent_type="long_task",
+        intent_type="in_session_execution",
     )
 
     # A fill with bare steps (no order) + a non-canonical risk level still
@@ -319,7 +319,7 @@ async def test_revise_plan_supersedes_old_and_bumps_version(patched_service):
         agent_id=agent_id,
         requested_by_user_id=uuid4(),
         original_request="x",
-        intent_type="long_task",
+        intent_type="in_session_execution",
     )
     v1 = await service.generate_plan(
         plan_id=draft.id,
@@ -365,7 +365,7 @@ async def test_supersede_to_draft_creates_fresh_draft_without_generating(patched
         agent_id=agent_id,
         requested_by_user_id=uuid4(),
         original_request="原始请求",
-        intent_type="long_task",
+        intent_type="in_session_execution",
     )
     v1 = await service.generate_plan(
         plan_id=draft.id,
@@ -626,7 +626,7 @@ async def test_ensure_awaiting_plan_from_fill_creates_and_dedupes_custom_long_ta
 
     first = await service.ensure_awaiting_plan_from_fill(
         agent_id=agent_id,
-        intent_type="long_task",
+        intent_type="in_session_execution",
         signature=signature,
         fill=fill,
         original_request="Research RWA launchpads",
@@ -636,7 +636,7 @@ async def test_ensure_awaiting_plan_from_fill_creates_and_dedupes_custom_long_ta
     rows_after_first = len(session.rows)
     second = await service.ensure_awaiting_plan_from_fill(
         agent_id=agent_id,
-        intent_type="long_task",
+        intent_type="in_session_execution",
         signature=signature,
         fill={**fill, "title": "Should not create duplicate"},
         original_request="Research RWA launchpads",
@@ -645,7 +645,7 @@ async def test_ensure_awaiting_plan_from_fill_creates_and_dedupes_custom_long_ta
     )
 
     assert first.status == "awaiting_confirmation"
-    assert first.intent_type == "long_task"
+    assert first.intent_type == "in_session_execution"
     assert first.plan_json["handoff"]["target"] == "deep_research"
     assert first.plan_json["deep_research"]["output_format"] == "docx"
     assert first.metadata_json["intercept_signature"] == signature
@@ -705,7 +705,7 @@ async def test_ensure_awaiting_plan_from_fill_rejects_internal_tool_script_plan(
 
     plan = await service.ensure_awaiting_plan_from_fill(
         agent_id=uuid4(),
-        intent_type="long_task",
+        intent_type="in_session_execution",
         signature="deep-research:web3",
         fill=fill,
         original_request="使用 deepresearch做一个web3的全景报告",
@@ -890,10 +890,10 @@ async def test_list_plans_for_agent_filters_by_agent(patched_service):
     agent_a = uuid4()
     agent_b = uuid4()
     await service.create_plan_request(
-        agent_id=agent_a, requested_by_user_id=uuid4(), original_request="x", intent_type="long_task"
+        agent_id=agent_a, requested_by_user_id=uuid4(), original_request="x", intent_type="in_session_execution"
     )
     await service.create_plan_request(
-        agent_id=agent_b, requested_by_user_id=uuid4(), original_request="y", intent_type="long_task"
+        agent_id=agent_b, requested_by_user_id=uuid4(), original_request="y", intent_type="in_session_execution"
     )
 
     rows = await service.list_plans_for_agent(agent_a)

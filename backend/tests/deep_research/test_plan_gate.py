@@ -30,7 +30,7 @@ def _patch_fake_plan_service(monkeypatch, handler, tmp_path: Path):
     plan_json = {
         "schema": plan_mode_core.PLAN_SCHEMA,
         "title": "Deep Research plan",
-        "intent_type": "long_task",
+        "intent_type": "in_session_execution",
         "objective": "Run approved Deep Research.",
         "motivation": "User requested Deep Research.",
         "steps": [{"order": 1, "description": "Confirm plan."}],
@@ -118,7 +118,7 @@ async def test_start_without_plan_confirmed_returns_confirmable_plan_card_payloa
     plan_json = {
         "schema": plan_mode_core.PLAN_SCHEMA,
         "title": "Deep Research: RWA launchpad opportunity",
-        "intent_type": "long_task",
+        "intent_type": "in_session_execution",
         "objective": "Research the RWA launchpad opportunity.",
         "motivation": "User asked for source-ledger-backed Deep Research.",
         "steps": [{"order": 1, "description": "Confirm the research plan with the user."}],
@@ -193,7 +193,7 @@ async def test_start_without_plan_confirmed_returns_confirmable_plan_card_payloa
     assert "plan_json" not in payload
     assert payload["worker_topics"] == ["official evidence"]
     assert fake_plan_service.calls, "Deep Research needs_plan must materialize a real Plan Mode ledger row"
-    assert fake_plan_service.calls[0]["intent_type"] == "long_task"
+    assert fake_plan_service.calls[0]["intent_type"] == "in_session_execution"
     assert fake_plan_service.calls[0]["fill"]["handoff"]["target"] == "deep_research"
     assert fake_plan_service.calls[0]["fill"]["handoff"]["payload"]["plan_confirmed"] is True
 

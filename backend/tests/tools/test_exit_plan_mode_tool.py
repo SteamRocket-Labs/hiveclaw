@@ -54,7 +54,7 @@ class _PlanService:
         plan_json = {
             **fill,
             "schema": plan_mode_core.PLAN_SCHEMA,
-            "intent_type": "long_task",
+            "intent_type": "in_session_execution",
         }
         # plan_id stays stable — the draft the launcher pre-created is filled.
         return SimpleNamespace(
@@ -101,7 +101,7 @@ async def test_exit_plan_mode_creates_needs_plan_payload_from_active_context(mon
     token = set_interactive_plan_mode(
         {
             "original_request": "使用 deepresearch做一个web3的全景报告",
-            "intent_type": "long_task",
+            "intent_type": "in_session_execution",
             "handoff_target": "deep_research",
             "deep_research": True,
             "deep_research_args": {"question": "使用 deepresearch做一个web3的全景报告", "depth": "full"},
@@ -138,7 +138,7 @@ async def test_exit_plan_mode_creates_needs_plan_payload_from_active_context(mon
     assert result["plan_json"]["handoff"]["payload"]["question"] == "使用 deepresearch做一个web3的全景报告"
     assert service.calls
     call = service.calls[0]
-    assert call["intent_type"] == "long_task"
+    assert call["intent_type"] == "in_session_execution"
     assert str(call["requested_by_user_id"]) == result["requested_by_user_id"]
     assert call["metadata_json"]["interactive_plan_mode"] is True
     # No pre-armed plan_id → "create new" branch only; generate_plan untouched.
@@ -165,7 +165,7 @@ async def test_exit_plan_mode_fills_existing_draft_when_plan_id_armed(monkeypatc
             "active": True,
             "plan_id": armed_plan_id,
             "original_request": "每天 9 点给我发 RWA 日报",
-            "intent_type": "long_task",
+            "intent_type": "in_session_execution",
         }
     )
     try:
@@ -213,7 +213,7 @@ async def test_exit_plan_mode_creates_new_when_plan_id_malformed(monkeypatch):
             "active": True,
             "plan_id": "not-a-uuid",
             "original_request": "帮我盯住这个仓位",
-            "intent_type": "long_task",
+            "intent_type": "in_session_execution",
         }
     )
     try:
@@ -257,7 +257,7 @@ async def test_exit_plan_mode_lands_action_artifact_into_plan_json(monkeypatch):
         {
             "active": True,
             "original_request": "把周报发给客户",
-            "intent_type": "long_task",
+            "intent_type": "in_session_execution",
             "action_kind": "start_workflow",
             "tool_name": "start_workflow",
             "action_artifact": artifact,
@@ -301,7 +301,7 @@ async def test_exit_plan_mode_captures_plan_markdown_into_fill(monkeypatch):
     monkeypatch.setattr(handler, "get_plan_mode_service", lambda: service)
 
     token = set_interactive_plan_mode(
-        {"active": True, "original_request": "RWA 周报", "intent_type": "long_task"}
+        {"active": True, "original_request": "RWA 周报", "intent_type": "in_session_execution"}
     )
     try:
         result = json.loads(
@@ -355,7 +355,7 @@ async def test_exit_plan_mode_reads_markdown_from_provisioned_plan_file(tmp_path
         {
             "active": True,
             "original_request": "进入计划模式，做一个关于跨链桥的报告",
-            "intent_type": "long_task",
+            "intent_type": "in_session_execution",
             "plan_file_path": plan_file,
         }
     )
@@ -392,9 +392,7 @@ async def test_exit_plan_mode_rejects_blank_plan_markdown(monkeypatch):
     service = _PlanService()
     monkeypatch.setattr(handler, "get_plan_mode_service", lambda: service)
 
-    token = set_interactive_plan_mode(
-        {"active": True, "original_request": "x", "intent_type": "long_task"}
-    )
+    token = set_interactive_plan_mode({"active": True, "original_request": "x", "intent_type": "in_session_execution"})
     try:
         result = json.loads(
             await handler.exit_plan_mode(

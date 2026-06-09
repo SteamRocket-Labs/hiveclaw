@@ -433,7 +433,7 @@ async def test_maybe_handle_plan_mode_entry_activates_interactive_mode_when_expl
     assert result is None
     assert session_context.metadata["plan_mode"]["active"] is True
     assert session_context.metadata["plan_mode"]["original_request"] == "帮我完整调研这个行业"
-    assert session_context.metadata["plan_mode"]["intent_type"] == "long_task"
+    assert session_context.metadata["plan_mode"]["intent_type"] == "in_session_execution"
     assert session_context.metadata["plan_mode"]["action_kind"] == "start_long_task"
     # CC-align §4.2: a normal live-chat plan defaults to continuing in THIS session
     # after confirmation — NOT the old detached ``long_task`` (which had no handler
@@ -465,7 +465,7 @@ async def test_activate_interactive_plan_mode_writes_typed_state_and_keeps_dict_
     # Typed source of truth populated.
     assert session_context.plan_mode.active is True
     assert session_context.plan_mode.original_request == "帮我完整调研这个行业"
-    assert session_context.plan_mode.intent_type == "long_task"
+    assert session_context.plan_mode.intent_type == "in_session_execution"
     # Legacy dict mirror stays consistent with the typed state.
     assert session_context.metadata["plan_mode"] == session_context.plan_mode.to_metadata()
     # Runtime-only injection bookkeeping never leaks into the mirror.

@@ -45,6 +45,7 @@ Owner 判断(2026-06-08):**「Plan Mode、Task、Subagent 全部过一遍,特别
 |---|------|---------|------|
 | 0 | 设计文档 v1 落地 | 四块审计 + 砍/收敛/保留三分框架 | `cd50356d` |
 | 1 | 砍 `external_action` / `state_change` 孤儿 plan intent | `INTENT_TYPES` 5→3;`_INTENT_HANDOFF_TARGET` 去 2 条;`plan_request` 注释 | red-first(`test_intent_types` 先红)→535 plan/intent/handoff/dr 测试绿 |
+| 2 | **重命名归位** plan intent `long_task` → `in_session_execution`(owner 拍 A) | `INTENT_TYPES`/`_ACTION_INTENT`/`_INTENT_HANDOFF_TARGET` + handlers/deep_research/web_chat;alembic data migration backfill 存量;**保留** legacy target word + `long_task_runtime` + `start_long_task` action_kind 名 | 全量 4057 绿;migration head 测试更新;保留 intent-match Goal-2 治理 |
 
 ---
 
@@ -147,8 +148,8 @@ reconciler 的 4 个客户先安置后删:
 |----|-----|------|------|
 | `external_action` intent | core.py:38 | **✅ 砍 (#1)** | 孤儿,无 producer,死词汇 |
 | `state_change` intent | core.py:39 | **✅ 砍 (#1)** | 孤儿,无 producer,死词汇 |
-| `long_task` intent | core.py:36 | **砍** | handoff 就是 continue-same-loop,标签无意义;CC 零命中;判据是风险不是长短 |
-| `start_workflow → long_task` | core.py:65 | **收敛** | 按风险直接 gate(`plan_gate_registry.py:127-151` 已 grade by risk),去掉 long_task 中间层 |
+| `long_task` intent | core.py:36 | **✅ 重命名归位 (#2)** | 深入代码修正:非死标签,是 start_workflow/start_long_task 的 intent-match 治理锚 + handoff 锚;owner 拍 A=重命名 `in_session_execution`(诚实语义,保留 intent-match Goal-2 delta),非纯砍 |
+| `start_workflow → long_task` | core.py:65 | **✅ 随 #2 重命名** | `_ACTION_INTENT` → `in_session_execution`;gate 仍按 risk grade(`plan_gate_registry.py:127-151`) |
 | `activate_objective_wake` / `enable_autonomous_wake` | core.py:49-50 | **砍** | 随 objective/trigger 退役;后者近似重复 `create_enabled_trigger` |
 | `objective_trigger` handoff | core.py:385 | **砍** | 随 objective 退役;CC 只翻权限继续 loop |
 | `wake_policy`(嵌在 plan_json) | core.py:438-441 | **收敛** | schedule 归 trigger,不归 plan 信封 |

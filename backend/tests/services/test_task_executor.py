@@ -70,7 +70,7 @@ async def test_execute_task_delegates_to_runtime_invoker(monkeypatch):
     plan = SimpleNamespace(
         id=plan_id,
         agent_id=agent_id,
-        intent_type="long_task",
+        intent_type="in_session_execution",
         status="confirmed",
         plan_version=1,
         plan_hash="sha256:task",
@@ -229,7 +229,7 @@ async def test_execute_task_persists_reflection_session_and_tool_calls(monkeypat
     plan = SimpleNamespace(
         id=plan_id,
         agent_id=agent_id,
-        intent_type="long_task",
+        intent_type="in_session_execution",
         status="confirmed",
         plan_version=1,
         plan_hash="sha256:task",

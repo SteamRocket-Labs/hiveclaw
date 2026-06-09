@@ -41,7 +41,7 @@ def test_action_kinds_are_the_documented_set():
         ("create_enabled_trigger", "autonomous_wake"),
         ("enable_autonomous_wake", "autonomous_wake"),
         ("activate_objective_wake", "autonomous_wake"),
-        ("start_long_task", "long_task"),
+        ("start_long_task", "in_session_execution"),
         ("start_delegation", "delegation"),
     ],
 )
@@ -398,5 +398,5 @@ def test_classify_plan_mode_entry_explicit_frontend_selection_enters_plan_mode()
     decision = classify_plan_mode_entry("帮我做一件事", explicit=True)
 
     assert decision.mode == "explicit"
-    assert decision.intent_type == "long_task"
+    assert decision.intent_type == "in_session_execution"
     assert decision.action_kind == "start_long_task"

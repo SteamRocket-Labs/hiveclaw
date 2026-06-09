@@ -107,7 +107,7 @@ async def _materialize_plan_card_payload(
     signature = deep_research_plan_signature(research_request, worker_topics=worker_topics)
     plan = await get_plan_mode_service().ensure_awaiting_plan_from_fill(
         agent_id=tool_request.context.agent_id,
-        intent_type="long_task",
+        intent_type="in_session_execution",
         signature=signature,
         fill=fill,
         original_request=research_request.question,
@@ -192,7 +192,7 @@ def _plan_markdown_for_payload(plan: Any) -> str:
             status=str(getattr(plan, "status", "awaiting_confirmation") or "awaiting_confirmation"),
             plan_version=int(getattr(plan, "plan_version", 1) or 1),
             plan_hash=str(getattr(plan, "plan_hash", "") or ""),
-            intent_type=str(getattr(plan, "intent_type", plan_json.get("intent_type") or "long_task") or "long_task"),
+            intent_type=str(getattr(plan, "intent_type", plan_json.get("intent_type") or "in_session_execution") or "in_session_execution"),
             created_at=created_at.isoformat() if created_at else "",
             plan_json=plan_json,
             confirmed_by=getattr(plan, "confirmed_by_user_id", None),

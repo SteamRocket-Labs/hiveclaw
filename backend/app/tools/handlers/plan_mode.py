@@ -231,9 +231,9 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
         )
 
     handoff = _handoff(args, metadata)
-    intent_type = str(metadata.get("intent_type") or args.get("intent_type") or "long_task")
+    intent_type = str(metadata.get("intent_type") or args.get("intent_type") or "in_session_execution")
     if intent_type not in plan_mode_core.INTENT_TYPES:
-        intent_type = "long_task"
+        intent_type = "in_session_execution"
     original_request = str(
         metadata.get("original_request") or args.get("original_request") or args.get("objective") or ""
     )

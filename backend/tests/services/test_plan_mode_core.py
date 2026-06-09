@@ -33,7 +33,7 @@ def test_explicit_plan_mode_does_not_seed_retired_manage_tasks_tool():
     decision = classify_plan_mode_entry("进入计划模式，帮我规划这个调研", explicit=True)
 
     assert decision.mode == "explicit"
-    assert decision.intent_type == "long_task"
+    assert decision.intent_type == "in_session_execution"
     assert decision.action_kind == "start_long_task"
     assert decision.tool_name == "continue_current_session"
 
@@ -129,7 +129,7 @@ def test_build_plan_skeleton_autonomous_wake_seeds_cron_wake_policy():
 def test_build_plan_skeleton_long_task_targets_continuation_handoff():
     from app.services.plan_mode_core import build_plan_skeleton
 
-    skeleton = build_plan_skeleton(intent_type="long_task", title="t", original_request="r")
+    skeleton = build_plan_skeleton(intent_type="in_session_execution", title="t", original_request="r")
     # G/H.2: a long_task intent seeds the live-session continuation target (not the
     # ambiguous legacy ``"long_task"`` target word). The legacy target stays
     # *registered* for already-persisted plans (see test_plan_mode_registry).
@@ -187,7 +187,7 @@ def test_validate_plan_json_accepts_well_formed_plan():
 def test_validate_plan_json_rejects_wrong_schema_tag():
     from app.services.plan_mode_core import build_plan_skeleton, validate_plan_json
 
-    plan = build_plan_skeleton(intent_type="long_task", title="t", original_request="r")
+    plan = build_plan_skeleton(intent_type="in_session_execution", title="t", original_request="r")
     plan["schema"] = "something.else"
 
     errors = validate_plan_json(plan)
@@ -205,7 +205,7 @@ def test_validate_plan_json_rejects_missing_required_fields():
 def test_validate_plan_json_rejects_malformed_step():
     from app.services.plan_mode_core import build_plan_skeleton, validate_plan_json
 
-    plan = build_plan_skeleton(intent_type="long_task", title="t", original_request="r")
+    plan = build_plan_skeleton(intent_type="in_session_execution", title="t", original_request="r")
     plan["objective"] = "obj"
     plan["steps"] = [{"description": "missing order"}]  # no `order`
     plan["success_criteria"] = ["c"]
@@ -218,7 +218,7 @@ def test_validate_plan_json_rejects_malformed_step():
 def test_validate_plan_json_rejects_risk_level_out_of_enum():
     from app.services.plan_mode_core import build_plan_skeleton, validate_plan_json
 
-    plan = build_plan_skeleton(intent_type="long_task", title="t", original_request="r")
+    plan = build_plan_skeleton(intent_type="in_session_execution", title="t", original_request="r")
     plan["objective"] = "obj"
     plan["steps"] = [{"order": 1, "description": "d"}]
     plan["success_criteria"] = ["c"]
@@ -235,7 +235,7 @@ def test_validate_plan_json_rejects_risk_level_out_of_enum():
 def test_build_plan_skeleton_includes_plan_markdown_field():
     from app.services.plan_mode_core import build_plan_skeleton
 
-    skeleton = build_plan_skeleton(intent_type="long_task", title="t", original_request="r")
+    skeleton = build_plan_skeleton(intent_type="in_session_execution", title="t", original_request="r")
     assert "plan_markdown" in skeleton
     assert skeleton["plan_markdown"] == ""
 
@@ -243,7 +243,7 @@ def test_build_plan_skeleton_includes_plan_markdown_field():
 def test_validate_plan_json_rejects_plan_mode_meta_steps():
     from app.services.plan_mode_core import build_plan_skeleton, validate_plan_json
 
-    plan = build_plan_skeleton(intent_type="long_task", title="t", original_request="r")
+    plan = build_plan_skeleton(intent_type="in_session_execution", title="t", original_request="r")
     plan["objective"] = "出 RWA 周报"
     plan["success_criteria"] = ["c"]
     plan["stop_conditions"] = ["s"]
@@ -261,7 +261,7 @@ def test_validate_plan_json_accepts_real_execution_steps():
     # (but not "等待确认") or "submit" (but not "submit the plan") must pass.
     from app.services.plan_mode_core import build_plan_skeleton, validate_plan_json
 
-    plan = build_plan_skeleton(intent_type="long_task", title="t", original_request="r")
+    plan = build_plan_skeleton(intent_type="in_session_execution", title="t", original_request="r")
     plan["objective"] = "出 RWA 周报"
     plan["success_criteria"] = ["c"]
     plan["stop_conditions"] = ["s"]
@@ -278,7 +278,7 @@ def test_render_plan_markdown_uses_agent_authored_body_when_present():
 
     from app.services.plan_mode_core import build_plan_skeleton, render_plan_markdown
 
-    plan = build_plan_skeleton(intent_type="long_task", title="RWA 周报", original_request="r")
+    plan = build_plan_skeleton(intent_type="in_session_execution", title="RWA 周报", original_request="r")
     plan["objective"] = "出 RWA 周报"
     plan["plan_markdown"] = "## 思路\n聚焦三条赛道，给出投资视角。\n\n## 执行\n1. 核验来源。"
 
@@ -289,7 +289,7 @@ def test_render_plan_markdown_uses_agent_authored_body_when_present():
         status="awaiting_confirmation",
         plan_version=1,
         plan_hash="sha256:abc",
-        intent_type="long_task",
+        intent_type="in_session_execution",
         created_at="2026-06-08T00:00:00+00:00",
         plan_json=plan,
     )
@@ -309,7 +309,7 @@ def test_render_plan_markdown_falls_back_to_structured_when_no_body():
 
     from app.services.plan_mode_core import build_plan_skeleton, render_plan_markdown
 
-    plan = build_plan_skeleton(intent_type="long_task", title="t", original_request="r")
+    plan = build_plan_skeleton(intent_type="in_session_execution", title="t", original_request="r")
     plan["objective"] = "obj"
 
     md = render_plan_markdown(
@@ -319,7 +319,7 @@ def test_render_plan_markdown_falls_back_to_structured_when_no_body():
         status="awaiting_confirmation",
         plan_version=1,
         plan_hash="sha256:abc",
-        intent_type="long_task",
+        intent_type="in_session_execution",
         created_at="2026-06-08T00:00:00+00:00",
         plan_json=plan,
     )
@@ -334,7 +334,7 @@ def test_normalize_plan_json_for_validation_repairs_common_agent_planner_shape()
         validate_plan_json,
     )
 
-    plan = build_plan_skeleton(intent_type="long_task", title="Web3 full report", original_request="r")
+    plan = build_plan_skeleton(intent_type="in_session_execution", title="Web3 full report", original_request="r")
     plan["objective"] = "Produce a structured Web3 panorama report."
     plan["steps"] = [
         {"description": "Frame the research scope."},
@@ -556,7 +556,7 @@ def test_render_plan_markdown_frontmatter_mirrors_db_fields():
 def test_render_plan_markdown_body_lists_steps_and_success_criteria():
     from app.services.plan_mode_core import build_plan_skeleton, compute_plan_hash, render_plan_markdown
 
-    plan = build_plan_skeleton(intent_type="long_task", title="Research", original_request="r")
+    plan = build_plan_skeleton(intent_type="in_session_execution", title="Research", original_request="r")
     plan["objective"] = "Investigate the sector."
     plan["steps"] = [{"order": 1, "description": "Gather sources", "expected_output": "list"}]
     plan["success_criteria"] = ["Report cites 10+ sources."]
@@ -568,7 +568,7 @@ def test_render_plan_markdown_body_lists_steps_and_success_criteria():
         status="awaiting_confirmation",
         plan_version=1,
         plan_hash=compute_plan_hash(plan),
-        intent_type="long_task",
+        intent_type="in_session_execution",
         created_at="2026-05-29T09:00:00+00:00",
         plan_json=plan,
     )
@@ -664,7 +664,7 @@ def test_intent_types_are_the_documented_set():
 
     assert set(INTENT_TYPES) == {
         "autonomous_wake",
-        "long_task",
+        "in_session_execution",
         "delegation",
     }
 

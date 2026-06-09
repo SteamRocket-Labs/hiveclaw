@@ -76,7 +76,7 @@ def _draft_plan(agent, **over):
         "session_id": "sess-1",
         "runtime_task_id": None,
         "requested_by_user_id": uuid4(),
-        "intent_type": "long_task",
+        "intent_type": "in_session_execution",
         "original_request": "每天 9 点给我发 RWA 日报",
         "status": "draft",
     }

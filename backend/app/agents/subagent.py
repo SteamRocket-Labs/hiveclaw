@@ -131,11 +131,13 @@ _SUBAGENT_BASE_EXCLUDED_TOOLS: tuple[str, ...] = (
 DEFAULT_MAX_SUBAGENT_DEPTH = 2  # mirrors OrchestrationPolicy.max_depth
 DEFAULT_SUBAGENT_TOOL_ROUNDS = 8  # mirrors the deep-research worker default
 DEFAULT_SUBAGENT_CONCURRENCY = 4  # platform fan-out default
-_BRIEF_MAX_MESSAGES = 8  # mirrors _DELEGATION_SOURCE_MAX_MESSAGES
-_BRIEF_MAX_CHARS = 4000  # mirrors _DELEGATION_BRIEF_MAX_CHARS
 _SOURCE_CAPTURE_TOOLS: frozenset[str] = frozenset({"web_fetch", "firecrawl_fetch", "xcrawl_scrape", "read_webpage"})
 
-ForkLevel = Literal["none", "brief", "all"]
+#: Exec/automation CC-alignment (§5.2): fork is deliberately binary, matching CC's
+#: fresh (subagent_type present) vs full-fork (omitted). The old ``brief`` middle
+#: level (a compressed parent digest) was a self-invented intermediate the LLM
+#: spawn tool never exposed — removed; legacy ``brief`` definitions coerce to ``all``.
+ForkLevel = Literal["none", "all"]
 SubagentStatus = Literal["completed", "failed", "timed_out", "depth_limited"]
 
 # Built-in type → default tool preset. Unknown types get no preset (empty allow-list).
@@ -336,7 +338,7 @@ class SubagentSpawnContext:
     memory_store: Any | None = None
     memory_distiller: MemoryDistiller | None = None
     parent_session_id: str | None = None
-    parent_messages: list[dict] = field(default_factory=list)  # source for fork=brief/all
+    parent_messages: list[dict] = field(default_factory=list)  # source for fork=all
 
 
 @dataclass(slots=True)
@@ -361,7 +363,7 @@ class SubagentJob:
 
     spec: SubagentSpec
     task: str
-    context_brief: str | None = None  # parent context for fork=brief/all
+    context_brief: str | None = None  # explicit parent-context override for fork=all
 
 
 @dataclass(slots=True)
@@ -543,28 +545,6 @@ async def _record_memory_from_result(ctx: SubagentSpawnContext, job: SubagentJob
         logger.warning("[Subagent] evolution nomination failed (non-fatal): name=%s err=%s", spec.name, exc)
 
 
-def _build_brief_from_messages(messages: list[dict]) -> str:
-    """Compress the parent's recent messages into a bounded brief.
-
-    Mirrors ``orchestrator._build_delegation_brief``: keep the last
-    ``_BRIEF_MAX_MESSAGES`` turns, char-cap to ``_BRIEF_MAX_CHARS`` from the tail.
-    """
-
-    if not messages:
-        return ""
-    lines: list[str] = []
-    for msg in messages[-_BRIEF_MAX_MESSAGES:]:
-        role = str(msg.get("role", "") or "user").strip().capitalize()
-        content = msg.get("content", "")
-        if not isinstance(content, str):
-            content = str(content)
-        lines.append(f"{role}: {content}")
-    brief = "\n".join(lines)
-    if len(brief) > _BRIEF_MAX_CHARS:
-        brief = "...\n" + brief[-_BRIEF_MAX_CHARS:]
-    return brief
-
-
 def _build_subagent_messages(
     task: str,
     *,
@@ -572,26 +552,19 @@ def _build_subagent_messages(
     context_brief: str | None = None,
     parent_messages: list[dict] | None = None,
 ) -> list[dict]:
-    """Assemble the child's opening messages per fork level.
+    """Assemble the child's opening messages per fork level (CC-binary).
 
-    * ``none`` — task only (cleanest, the explorer default).
-    * ``brief`` — a bounded single-message brief, then the task. An explicit
-      ``context_brief`` wins; otherwise one is compressed from ``parent_messages``.
-    * ``all`` — the parent's recent messages verbatim, then the task (an explicit
-      ``context_brief`` still takes precedence when given).
+    * ``none`` — task only (cleanest, the explorer default; a fresh worker).
+    * ``all`` — full-context fork: the parent's recent messages verbatim (or an
+      explicit ``context_brief`` when given), then the task.
     """
 
     messages: list[dict] = []
-    if fork != "none":
+    if fork == "all":
         if context_brief:
             messages.append({"role": "user", "content": context_brief})
         elif parent_messages:
-            if fork == "all":
-                messages.extend(parent_messages)
-            else:
-                brief = _build_brief_from_messages(parent_messages)
-                if brief:
-                    messages.append({"role": "user", "content": brief})
+            messages.extend(parent_messages)
     messages.append({"role": "user", "content": task})
     return messages
 

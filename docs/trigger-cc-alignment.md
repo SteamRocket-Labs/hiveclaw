@@ -73,6 +73,12 @@ Owner 判断(2026-06-08):**「Plan Mode、Task、Subagent 全部过一遍,特别
 - **T-D6 required 完成门 = 无需改**(核实):map 实证 validate_completion 产出 audit finding 不 hard-block=已 advisory(守 sensor-vs-blocker 法)。
 - **T-D4 record_finding / T-D5 RuntimeTask.task_type = 保留**(Goal-1 认知脚手架 / 执行机器账本)。
 
+| # | 内容 | 关键改动 | 证据 |
+|---|------|---------|------|
+| 7 | **Subagent 收敛**(§5.2):ForkLevel 砍 `brief`→二元 | `ForkLevel` `(none,brief,all)`→`(none,all)`(CC 二元 fresh/full-fork);删 `_build_brief_from_messages`+`_BRIEF_MAX_*` 常量;`_build_subagent_messages` 去 brief 压缩分支(all=父消息逐字 or 显式 context_brief);`_VALID_ISOLATION`→`(none,all)`+`_coerce_isolation` 旧 brief→all 向后兼容;**S-D2 fanout_subagents 核实非 LLM 工具=保留 DR 内部**(无需改) | 全量 3974 绿;`brief` 无 producer(spawn 工具不暴露 fork 参数,印证审计) |
+
+**C7 净效果**:subagent fork 回归 CC 二元(none=fresh 干净 worker / all=full-context fork),自创的 brief 中间档(压缩父消息)消除。fanout_subagents 维持 DR 内部细节(不进工具目录、不提升一等)。**进化闭环按 owner 2026-06-08 拍板保留全套(Goal-1 delta,不动)**。Subagent 轴对齐 CC 完成。
+
 ---
 
 ## 1. 病灶:CC 范式 vs Hive 跑偏(evidence)

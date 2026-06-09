@@ -35,7 +35,7 @@ from app.agents.subagent import (
 logger = logging.getLogger(__name__)
 
 _FRONTMATTER_DELIM = "---"
-_VALID_ISOLATION = ("none", "brief", "all")
+_VALID_ISOLATION = ("none", "all")
 _SAFE_SUBAGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 # Definition scopes (§12.4): one resolution chain, agent-level wins on name
@@ -68,9 +68,15 @@ def _tenant_subagent_root(tenant_id: object, *, kind: str, agent_data_dir: Path 
 
 
 def _coerce_isolation(value: object) -> ForkLevel:
-    """Validate an isolation value from frontmatter."""
+    """Validate an isolation value from frontmatter.
+
+    Fork is binary (CC-alignment §5.2). The retired ``brief`` middle level coerces
+    to ``all`` for already-stored definitions (it wanted parent context — give the
+    full fork rather than dropping context to ``none``)."""
 
     raw = str(value or "none")
+    if raw == "brief":
+        return "all"
     if raw in _VALID_ISOLATION:
         return cast("ForkLevel", raw)
     raise ValueError(f"invalid isolation {raw!r}: expected one of {_VALID_ISOLATION}")

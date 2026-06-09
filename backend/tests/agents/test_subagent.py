@@ -172,17 +172,9 @@ async def test_spawn_unknown_type_has_no_baseline():
 # --- message assembly (fork) ------------------------------------------------
 
 
-def test_build_messages_fork_none_ignores_brief():
+def test_build_messages_fork_none_ignores_context_override():
     msgs = _build_subagent_messages("task", fork="none", context_brief="BRIEF")
     assert msgs == [{"role": "user", "content": "task"}]
-
-
-def test_build_messages_fork_brief_prepends():
-    msgs = _build_subagent_messages("task", fork="brief", context_brief="BRIEF")
-    assert msgs == [
-        {"role": "user", "content": "BRIEF"},
-        {"role": "user", "content": "task"},
-    ]
 
 
 def test_build_messages_fork_all_prepends():
@@ -191,11 +183,6 @@ def test_build_messages_fork_all_prepends():
         {"role": "user", "content": "HISTORY"},
         {"role": "user", "content": "task"},
     ]
-
-
-def test_build_messages_brief_without_context_is_task_only():
-    msgs = _build_subagent_messages("task", fork="brief", context_brief=None)
-    assert msgs == [{"role": "user", "content": "task"}]
 
 
 # --- _spawn_one -------------------------------------------------------------

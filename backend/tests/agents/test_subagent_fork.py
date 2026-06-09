@@ -1,4 +1,8 @@
-"""Tests for cut ③: worker/critic type presets + fork three-way (none/brief/all)."""
+"""Tests for worker/critic type presets + the binary fork (none/all).
+
+Exec/automation CC-alignment §5.2: fork is binary (CC fresh vs full-fork); the
+old ``brief`` middle level was removed and legacy definitions coerce to ``all``.
+"""
 
 from __future__ import annotations
 
@@ -13,11 +17,11 @@ from app.agents.subagent import (
     SubagentJob,
     SubagentSpawnContext,
     SubagentSpec,
-    _build_brief_from_messages,
     _build_subagent_messages,
     _spawn_one,
     resolve_subagent_tools,
 )
+from app.agents.subagent_definition import _coerce_isolation
 
 
 def _ctx(**overrides) -> SubagentSpawnContext:
@@ -55,40 +59,12 @@ def test_unknown_type_has_no_preset():
     assert allowed == ()
 
 
-# --- brief construction -----------------------------------------------------
-
-
-def test_build_brief_from_messages_formats_roles():
-    brief = _build_brief_from_messages([{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}])
-    assert "User: hello" in brief
-    assert "Assistant: hi" in brief
-
-
-def test_build_brief_keeps_last_n_and_truncates():
-    msgs = [{"role": "user", "content": f"m{i}-" + "x" * 1000} for i in range(20)]
-    brief = _build_brief_from_messages(msgs)
-    assert len(brief) <= 4000 + 4  # cap + leading "...\n"
-    assert brief.startswith("...")
-
-
-def test_build_brief_empty():
-    assert _build_brief_from_messages([]) == ""
-
-
-# --- fork three-way ---------------------------------------------------------
+# --- binary fork ------------------------------------------------------------
 
 
 def test_fork_none_is_task_only():
     msgs = _build_subagent_messages("task", fork="none", parent_messages=[{"role": "user", "content": "ctx"}])
     assert msgs == [{"role": "user", "content": "task"}]
-
-
-def test_fork_brief_auto_compresses_parent():
-    parent = [{"role": "user", "content": "earlier question"}]
-    msgs = _build_subagent_messages("task", fork="brief", parent_messages=parent)
-    assert len(msgs) == 2
-    assert "earlier question" in msgs[0]["content"]
-    assert msgs[1] == {"role": "user", "content": "task"}
 
 
 def test_fork_all_extends_parent_verbatim():
@@ -104,10 +80,10 @@ def test_fork_all_extends_parent_verbatim():
     ]
 
 
-def test_explicit_brief_wins_over_parent_messages():
+def test_explicit_context_brief_wins_over_parent_messages_for_all():
     msgs = _build_subagent_messages(
         "task",
-        fork="brief",
+        fork="all",
         context_brief="EXPLICIT",
         parent_messages=[{"role": "user", "content": "ignored"}],
     )
@@ -115,11 +91,18 @@ def test_explicit_brief_wins_over_parent_messages():
     assert "ignored" not in msgs[0]["content"]
 
 
+def test_legacy_brief_isolation_coerces_to_all():
+    # A stored definition with the retired ``brief`` level upgrades to full context.
+    assert _coerce_isolation("brief") == "all"
+    assert _coerce_isolation("none") == "none"
+    assert _coerce_isolation("all") == "all"
+
+
 # --- integration: _spawn_one threads ctx.parent_messages --------------------
 
 
 @pytest.mark.asyncio
-async def test_spawn_threads_parent_messages_into_brief():
+async def test_spawn_threads_parent_messages_verbatim_for_all():
     captured: list = []
 
     async def invoke(request):
@@ -128,9 +111,9 @@ async def test_spawn_threads_parent_messages_into_brief():
 
     ctx = _ctx(parent_messages=[{"role": "user", "content": "prior context"}])
     job = SubagentJob(spec=SubagentSpec(name="w", type=SUBAGENT_TYPE_WORKER), task="do")
-    await _spawn_one(ctx, job, fork="brief", invoke=invoke)
+    await _spawn_one(ctx, job, fork="all", invoke=invoke)
     req = captured[0]
-    # brief auto-built from ctx.parent_messages, prepended before the task
+    # parent messages prepended verbatim before the task (full-context fork)
     assert len(req.messages) == 2
-    assert "prior context" in req.messages[0]["content"]
+    assert req.messages[0] == {"role": "user", "content": "prior context"}
     assert req.messages[1] == {"role": "user", "content": "do"}

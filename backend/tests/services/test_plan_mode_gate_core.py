@@ -30,7 +30,6 @@ def test_action_kinds_are_the_documented_set():
         "enable_autonomous_wake",
         "start_long_task",
         "start_delegation",
-        "activate_objective_wake",
         "start_workflow",
     }
 
@@ -40,7 +39,6 @@ def test_action_kinds_are_the_documented_set():
     [
         ("create_enabled_trigger", "autonomous_wake"),
         ("enable_autonomous_wake", "autonomous_wake"),
-        ("activate_objective_wake", "autonomous_wake"),
         ("start_long_task", "in_session_execution"),
         ("start_delegation", "delegation"),
     ],

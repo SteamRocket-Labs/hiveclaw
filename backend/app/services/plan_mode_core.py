@@ -45,17 +45,15 @@ ACTION_KINDS: tuple[str, ...] = (
     "enable_autonomous_wake",
     "start_long_task",
     "start_delegation",
-    "activate_objective_wake",
     "start_workflow",
 )
 
-#: action_kind -> intent_type. Trigger/wake creation and objective activation
-#: are all recurring autonomous wakes; in-session execution and delegations carry
-#: their own intents (§5.1 / §6).
+#: action_kind -> intent_type. Trigger/wake creation maps to a recurring
+#: autonomous wake; in-session execution and delegations carry their own intents
+#: (§5.1 / §6). (``activate_objective_wake`` was removed with the objective subsystem.)
 _ACTION_INTENT: dict[str, str] = {
     "create_enabled_trigger": "autonomous_wake",
     "enable_autonomous_wake": "autonomous_wake",
-    "activate_objective_wake": "autonomous_wake",
     "start_long_task": "in_session_execution",
     "start_delegation": "delegation",
     # §9 P4: high-risk ephemeral workflow launches confirm through Plan Mode
@@ -487,8 +485,8 @@ def build_plan_execution_instruction(
         body = (objective or "").strip() or (original_request or "").strip() or "（计划正文为空，按目标执行）"
     if source == "trigger":
         delivery = (
-            "这是一次定时唤醒：请直接按上面已确认的计划执行本次任务，并用 objective 工具"
-            "（complete_objective / update_objective）带证据记录进展。不要重新进入计划模式，"
+            "这是一次定时唤醒：请直接按上面已确认的计划执行本次任务，并用 work ledger 工具"
+            "（track_todo / record_finding）带证据记录进展。不要重新进入计划模式，"
             "也不要再次请求确认——用户已经确认过了。如果遇到必须由用户决定的阻断点，按计划的"
             "停止条件停下并留下说明。"
         )

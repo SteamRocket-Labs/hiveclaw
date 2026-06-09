@@ -1,58 +1,17 @@
 from __future__ import annotations
 
-from app.services.agent_manager import _render_focus_from_blueprint
-from app.services.focus_state import extract_completed_focus_refs, parse_focus_tasks
+from app.services.focus_state import normalize_focus_task_id
 
 
-def test_render_focus_from_blueprint_uses_canonical_checklist_ids() -> None:
-    content = _render_focus_from_blueprint(
-        focus_content="Follow up on onboarding tasks",
-        first_tasks=[
-            "confirm_slots :: confirm the attendee's available meeting slots",
-            "send_invite :: send the calendar invite after confirmation",
-        ],
-    )
-
-    assert "## Tasks" in content
-    assert "- [ ] confirm_slots :: confirm the attendee's available meeting slots" in content
-    assert "- [ ] send_invite :: send the calendar invite after confirmation" in content
-    assert "## First 3 Tasks" not in content
+def test_normalize_focus_task_id_slugifies_and_lowercases() -> None:
+    assert normalize_focus_task_id("Daily News Check") == "daily_news_check"
+    assert normalize_focus_task_id("send-invite!") == "send_invite"
 
 
-def test_render_focus_from_blueprint_falls_back_to_stable_default_ids() -> None:
-    content = _render_focus_from_blueprint(
-        focus_content="Stabilize trigger follow-up flow",
-        first_tasks=["Review existing trigger contracts"],
-    )
-
-    assert "- [ ] task_1 :: Review existing trigger contracts" in content
+def test_normalize_focus_task_id_collapses_runs_and_trims() -> None:
+    assert normalize_focus_task_id("  __Confirm   Slots__  ") == "confirm_slots"
 
 
-def test_extract_completed_focus_refs_reads_task_ids() -> None:
-    focus_text = """
-# Focus
-
-## Tasks
-- [x] confirm_slots :: confirm the attendee's available meeting slots
-- [ ] send_invite :: send the calendar invite after confirmation
-""".strip()
-
-    completed = extract_completed_focus_refs(focus_text)
-
-    assert completed == {"confirm_slots"}
-
-
-def test_parse_focus_tasks_returns_canonical_entries() -> None:
-    focus_text = """
-# Focus
-
-## Tasks
-- [x] confirm_slots :: confirm the attendee's available meeting slots
-- [ ] send_invite :: send the calendar invite after confirmation
-""".strip()
-
-    tasks = parse_focus_tasks(focus_text)
-
-    assert [task.task_id for task in tasks] == ["confirm_slots", "send_invite"]
-    assert tasks[0].completed is True
-    assert tasks[1].completed is False
+def test_normalize_focus_task_id_falls_back_to_task_for_empty() -> None:
+    assert normalize_focus_task_id("") == "task"
+    assert normalize_focus_task_id("***") == "task"

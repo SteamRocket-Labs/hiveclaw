@@ -50,6 +50,12 @@ Owner 判断(2026-06-08):**「Plan Mode、Task、Subagent 全部过一遍,特别
 
 **C3 净效果**:plan 确认后只剩三条干净 handoff —— `continue_current_session`(当前会话)/ `scheduled_trigger`(周期 cron,从 plan 直建)/ `detached→once`(后台一次),全部不经 objective。下一步 objective 子系统可整体退役(已无 plan 客户)。
 
+| # | 内容 | 关键改动 | 证据 |
+|---|------|---------|------|
+| 4 | **objective 子系统退役 + focus.md 投射停**(§7 step2 合并;二者技术不可分=focus.md 是 objective 投射) | 整删 11 源文件(model/service/wake_reconciler/intake/evaluator/approval/lifecycle/api/agent_tool_domains/handlers/autonomy_repair_plan)+11 测试文件;**抽出** `trigger_failure_policy.py`(trigger backoff 从 objective_lifecycle 剥离,无 objective 依赖);`focus_state.py` 瘦成纯 slug normalizer;`autonomy_overview/audit` reduce 到 trigger+runtime-only;trigger_daemon/preflight 去 objective_task 类+session keying+reconcile 调用;memory `retriever._retrieve_working`(focus.md→prompt 主投射)+assembler WORKING 段删除;kernel restoration/reminder/prompt_sections/coordinator/hr/extract/dream/summarizer/distiller 去 objective+focus 文本;migration `retire_agent_objectives_0608`(drop RLS+table,幂等);**真 bug 修**=plan 定时执行指令原叫死工具 `complete_objective/update_objective`→改 `track_todo/record_finding`;砍死 action_kind `activate_objective_wake`(保留 live 的 `enable_autonomous_wake`) | **全量 3978 passed / 0 failed / 7 skip**;`grep AgentObjective app/`=CLEAN(仅 plan handoff 文档串);ruff 全过;3990→3978 测试(删 11 objective 测试文件) |
+
+**C4 净效果**:objective 概念在后端**彻底消失**——无 model/表/工具/API/prompt 投射/trigger 耦合。agent 的"当前在做什么"状态记录归位到 CC 对齐的 Work Ledger(track_todo/record_finding)。focus.md 降为普通 workspace scratch(不再自动投射进 prompt);`focus_ref` 列保留为 trigger 被动字段(不 drop,无迁移)。前端 objective 面待配对 commit 退役(api/domains/objectives.ts + AgentAware objectives 段 + 设置页死工具开关)。
+
 ---
 
 ## 1. 病灶:CC 范式 vs Hive 跑偏(evidence)

@@ -42,16 +42,12 @@ from app.tools.decorator import ToolMeta, tool
             },
             "focus_ref": {
                 "type": "string",
-                "description": "Optional: objective projection key in focus.md for compatibility (use the checklist identifier, e.g. 'daily_news_check'). Prefer config.objective_id for new objective_task wake policies.",
+                "description": "Optional free-form label binding this trigger to a focus.md checklist identifier (e.g. 'daily_news_check').",
             },
             "trigger_class": {
                 "type": "string",
-                "enum": ["objective_task", "scheduled_job", "event_wait", "system_maintenance"],
-                "description": "Optional classification. If focus_ref or objective_id is provided and this is omitted, it defaults to objective_task.",
-            },
-            "objective_id": {
-                "type": "string",
-                "description": "Optional future objective ledger id. Use with trigger_class='objective_task' when no focus_ref exists yet.",
+                "enum": ["scheduled_job", "event_wait", "system_maintenance"],
+                "description": "Optional classification. Defaults from the trigger type (cron/once/interval → scheduled_job; poll/on_message/webhook → event_wait).",
             },
             "max_fires": {
                 "type": "integer",
@@ -111,12 +107,8 @@ async def set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
             },
             "trigger_class": {
                 "type": "string",
-                "enum": ["objective_task", "scheduled_job", "event_wait", "system_maintenance"],
-                "description": "Optional classification. If focus_ref or objective_id is provided and this is omitted, it defaults to objective_task.",
-            },
-            "objective_id": {
-                "type": "string",
-                "description": "Optional future objective ledger id for objective_task triggers.",
+                "enum": ["scheduled_job", "event_wait", "system_maintenance"],
+                "description": "Optional classification. Defaults from the trigger type (cron/once/interval → scheduled_job; poll/on_message/webhook → event_wait).",
             },
             "max_fires": {"type": "integer"},
             "expires_at": {"type": "string"},

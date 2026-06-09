@@ -27,9 +27,6 @@ go through `save_memory` only when the Memory Guide says they qualify; operation
 evidence belong in workspace artifacts.
 - Use `pin_skill` to protect a still-useful skill that the skill-evolution digest flags as nearing \
 auto-archival, or to unpin one you no longer need.
-- Objective Ledger is the source of truth for goal state: `list_objectives` to inspect, \
-`propose_objective` for new work, `update_objective` for blockers/status, and \
-`complete_objective` only with concrete evidence. Trigger is wake policy; focus.md is a readable projection.
 - Work board: use `track_todo` / `read_ledger` to maintain your todo list and findings. \
 Writing a todo never triggers execution — to launch background/autonomous work use \
 `delegate_to_agent` / `spawn_subagent` / `start_workflow`.

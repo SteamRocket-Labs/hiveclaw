@@ -16,10 +16,7 @@ from app.memory.types import MemoryItem, MemoryKind, parse_utc_timestamp
 _FRESHNESS_WARNING_DAYS = 7
 
 # Display order and section headers for each memory kind.
-# MemoryKind.WORKING is currently populated from focus.md for compatibility,
-# but focus.md is only the readable projection of the Objective Ledger.
 _SECTION_ORDER: list[tuple[MemoryKind, str]] = [
-    (MemoryKind.WORKING, "[Objective Projection]"),
     (MemoryKind.EPISODIC, "[Episodic Memory]"),
     (MemoryKind.SEMANTIC, "[Semantic Memory]"),
     (MemoryKind.EXTERNAL, "[External Memory]"),
@@ -95,16 +92,12 @@ class MemoryAssembler:
             lines: list[str] = [header]
             header_len = len(header) + 1
             for item in kind_items:
-                freshness = _freshness_suffix(item) if kind != MemoryKind.WORKING else ""
-                activation = _activation_suffix(item) if kind != MemoryKind.WORKING else ""
+                freshness = _freshness_suffix(item)
+                activation = _activation_suffix(item)
                 # B-06 fix: render category prefix for non-general types so LLM sees memory taxonomy
                 _cat = item.metadata.get("category", "")
-                _cat_prefix = f"[{_cat}] " if _cat and _cat != "general" and kind != MemoryKind.WORKING else ""
-                line = (
-                    f"- {_cat_prefix}{item.content}{activation}{freshness}"
-                    if kind != MemoryKind.WORKING
-                    else item.content
-                )
+                _cat_prefix = f"[{_cat}] " if _cat and _cat != "general" else ""
+                line = f"- {_cat_prefix}{item.content}{activation}{freshness}"
                 line_len = len(line) + 1  # +1 for newline
                 if total_chars + line_len > budget_chars:
                     break

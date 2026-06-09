@@ -37,18 +37,18 @@ class _SequenceSession:
 
 
 @pytest.mark.asyncio
-async def test_list_triggers_includes_orphan_blocked_and_stale_diagnostics(monkeypatch):
+async def test_list_triggers_includes_no_model_diagnostic(monkeypatch):
     from app.services.agent_tool_domains import triggers as trigger_domain
 
     agent_id = uuid4()
     trigger = SimpleNamespace(
         id=uuid4(),
         agent_id=agent_id,
-        name="done_task_trigger",
+        name="scheduled_trigger",
         type="cron",
-        config={"expr": "0 9 * * *"},
-        reason="Run done task",
-        focus_ref="done_task",
+        config={"expr": "0 9 * * *", "trigger_class": "scheduled_job"},
+        reason="Run scheduled job",
+        focus_ref="scheduled_job",
         is_enabled=True,
         fire_count=3,
     )
@@ -65,17 +65,8 @@ async def test_list_triggers_includes_orphan_blocked_and_stale_diagnostics(monke
     ])
 
     monkeypatch.setattr(trigger_domain, "async_session", lambda: session)
-    monkeypatch.setattr(
-        "app.services.autonomous_audit._read_focus_text",
-        lambda _agent_id: (
-            "# Focus\n\n## Tasks\n- [x] done_task :: Done task\n- [ ] orphan_task :: Missing trigger\n",
-            None,
-        ),
-    )
 
     result = await trigger_domain._handle_list_triggers(agent_id)
 
     assert "Trigger Diagnostics" in result
-    assert "orphan_focus_task" in result
-    assert "completed_focus_trigger_active" in result
     assert "agent_no_model_blocking_autonomy" in result

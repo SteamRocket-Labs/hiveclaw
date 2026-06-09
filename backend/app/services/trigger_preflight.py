@@ -11,12 +11,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.llm import LLMModel
-from app.models.objective import AgentObjective
 from app.services import plan_mode_core
-from app.services.focus_state import normalize_focus_task_id
 from app.services.plan_mode_gate import get_plan_mode_gate
-
-ACTIVE_OBJECTIVE_STATUSES = {"active", "open", "running"}
 
 
 @dataclass(slots=True)
@@ -134,32 +130,6 @@ async def select_trigger_model(
     return model, {"model_id": str(primary_model_id), "model_source": "agent_primary"}, None
 
 
-async def _load_objective_for_trigger(db: AsyncSession, agent_id: uuid.UUID, trigger: Any) -> Any | None:
-    cfg = _config(trigger)
-    objective_id = str(cfg.get("objective_id") or "").strip()
-    if objective_id:
-        try:
-            result = await db.execute(
-                select(AgentObjective).where(
-                    AgentObjective.id == uuid.UUID(objective_id),
-                    AgentObjective.agent_id == agent_id,
-                )
-            )
-            return result.scalar_one_or_none()
-        except ValueError:
-            return None
-    focus_ref = str(getattr(trigger, "focus_ref", "") or "").strip()
-    if focus_ref:
-        result = await db.execute(
-            select(AgentObjective).where(
-                AgentObjective.agent_id == agent_id,
-                AgentObjective.objective_key == normalize_focus_task_id(focus_ref),
-            )
-        )
-        return result.scalar_one_or_none()
-    return None
-
-
 async def _plan_gate_block_for_triggers(
     db: AsyncSession,
     *,
@@ -169,8 +139,8 @@ async def _plan_gate_block_for_triggers(
     """Plan Mode fail-closed backstop (§9.0) for autonomous triggers.
 
     For each enabled *autonomous* trigger (cron/interval/once/poll, excluding
-    platform-internal classes and objective_task — which keep their own gates),
-    require proof it came from a confirmed plan (``config.plan_id`` -> a
+    platform-internal classes), require proof it came from a confirmed plan
+    (``config.plan_id`` -> a
     ``confirmed`` AgentPlanRequest) or carries a cutover exemption
     (``config.metadata.plan_exempt_reason``). The shared :class:`PlanModeGate`
     makes the decision so this backstop and the early-intercept layer answer
@@ -259,30 +229,9 @@ async def evaluate_trigger_preflight(
                     "event_wait trigger requires max_fires or expires_at.",
                     {"trigger_name": getattr(trigger, "name", None)},
                 )
-        if trigger_class(trigger) == "objective_task":
-            objective = await _load_objective_for_trigger(db, getattr(agent, "id"), trigger)
-            if not objective:
-                continue
-            metadata = dict(getattr(objective, "metadata_json", None) or {})
-            status = str(getattr(objective, "status", "") or "").lower()
-            if metadata.get("requires_approval") or status == "proposed":
-                return TriggerPreflightResult(
-                    False,
-                    "objective_requires_approval",
-                    f"Objective '{getattr(objective, 'objective_key', '')}' is not approved for autonomous wake.",
-                    {"objective_id": str(getattr(objective, "id", "")), "objective_status": status},
-                )
-            if status not in ACTIVE_OBJECTIVE_STATUSES:
-                return TriggerPreflightResult(
-                    False,
-                    "objective_not_active",
-                    f"Objective '{getattr(objective, 'objective_key', '')}' status is {status}.",
-                    {"objective_id": str(getattr(objective, "id", "")), "objective_status": status},
-                )
 
     # Plan Mode fail-closed backstop (§9.0): block autonomous triggers lacking a
-    # confirmed plan / cutover exemption. Runs after the objective gate above so
-    # the more specific objective_task gate wins first.
+    # confirmed plan / cutover exemption.
     plan_block = await _plan_gate_block_for_triggers(db, agent=agent, triggers=triggers)
     if plan_block is not None:
         return plan_block

@@ -45,8 +45,7 @@ class TestPromptStructure:
         assert "Upstream" in prompt_text
         assert "Downstream" in prompt_text
         assert "Completed/Evidence/Blockers" in prompt_text
-        assert "Objective Ledger is the source of truth" in prompt_text
-        assert "Trigger is wake policy" in prompt_text
+        assert "wake policy" in prompt_text.lower()
 
 
 class TestDecisionMatrix:
@@ -110,12 +109,6 @@ class TestAllowedToolsAlignment:
         # COORDINATOR_ALLOWED_TOOLS so the LLM's mental model matches runtime.
         for tool_name in COORDINATOR_ALLOWED_TOOLS:
             assert tool_name in prompt_text, f"allowed tool not in prompt: {tool_name}"
-
-    def test_objective_tools_are_coordination_tools_not_domain_tools(self, prompt_text: str) -> None:
-        assert "list_objectives" in prompt_text
-        assert "update_objective" in prompt_text
-        assert "complete_objective" in prompt_text
-        assert "coordination state" in prompt_text.lower()
 
     def test_prompt_rejects_domain_tools_by_name(self, prompt_text: str) -> None:
         # Must name at least two domain tools as unavailable so the LLM

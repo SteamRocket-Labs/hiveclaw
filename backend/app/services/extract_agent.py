@@ -77,20 +77,15 @@ What this means for your output:
 </pipeline_context>
 
 <autonomy_boundary>
-Objective Ledger is the source of truth for goals.
-Trigger is wake policy, not the goal itself.
-focus.md is a readable projection of the current objective state.
+A trigger is wake policy, not the goal itself.
 
-Do not extract active objectives, trigger schedules, focus.md projection rows,
-Runtime Task / Attempt ids, objective_id, trigger_id, or external_conv_id
-values as durable memory. Those are operational state and belong in the
-Objective Ledger, Wake Policy, RuntimeTask/Attempt ledger, or session
-artifact. Extract only the reusable design lesson, for example:
-"User confirmed Objective Ledger is the source of truth for goals."
-Do not extract trigger schedules as memory unless the durable lesson is about
-how wake policies should be designed or governed.
-Do not extract runtime task instance state unless it is evidence for a
-reusable design or reliability lesson.
+Do not extract trigger schedules, Runtime Task / Attempt ids, trigger_id, or
+external_conv_id values as durable memory. Those are operational state and
+belong in the Wake Policy, RuntimeTask/Attempt ledger, or session artifact.
+Extract only the reusable design lesson. Do not extract trigger schedules as
+memory unless the durable lesson is about how wake policies should be designed
+or governed. Do not extract runtime task instance state unless it is evidence
+for a reusable design or reliability lesson.
 </autonomy_boundary>
 
 <extraction_types>
@@ -224,7 +219,7 @@ Derivable or ephemeral — extracting these wastes memory:
 - Code patterns, file paths, project structure (workspace has it)
 - Git history / who-changed-what (`git log` has it)
 - Debugging steps or fix recipes (the fix is in the code; commit has context)
-- Ephemeral in-progress state (operational state belongs in the Objective Ledger; evidence belongs in workspace artifacts)
+- Ephemeral in-progress state (in-flight work belongs in the work ledger; evidence belongs in workspace artifacts)
 - Info already in system prompt or skills (don't duplicate)
 - Raw tool arguments or full JSON payloads (extract *meaning*, not bytes)
 </what_to_skip>
@@ -333,9 +328,8 @@ _FEEDBACK_POLARITY = {
     "unclear": "neutral",
 }
 _AUTONOMY_INSTANCE_STATE_RE = re.compile(
-    r"(\bobjective_id\s*[:=]|\btrigger_id\s*[:=]|\bruntime_task_id\s*[:=]|\battempt_id\s*[:=]|"
-    r"\bexternal_conv_id\s*[:=]|\blast_fired_at\s*[:=]|\[OBJECTIVE_STATUS:|\[OBJECTIVE_EVIDENCE:|"
-    r"\bobjective:[0-9a-f]{8})",
+    r"(\btrigger_id\s*[:=]|\bruntime_task_id\s*[:=]|\battempt_id\s*[:=]|"
+    r"\bexternal_conv_id\s*[:=]|\blast_fired_at\s*[:=])",
     re.IGNORECASE,
 )
 
@@ -387,7 +381,7 @@ def _infer_concept(category: str, content: str) -> str:
 
 
 def _is_operational_autonomy_instance_state(content: str) -> bool:
-    """Return True for runtime/objective instance state that must not become memory."""
+    """Return True for runtime instance state that must not become memory."""
     return bool(_AUTONOMY_INSTANCE_STATE_RE.search(content or ""))
 
 

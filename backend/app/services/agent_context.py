@@ -211,7 +211,7 @@ async def build_agent_context(
     *,
     include_memory_file: bool = True,  # deprecated: memory flows via 4-layer retriever
     include_runtime_metadata: bool = True,
-    include_focus: bool = True,  # deprecated: focus flows via retriever Objective Projection
+    include_focus: bool = True,  # deprecated: no longer projected into the prompt
     budget_profile: ContextBudget | None = None,
     invocation_scope: str = "conversation",
 ) -> str:
@@ -222,10 +222,10 @@ async def build_agent_context(
     - skills/ → skill names + summaries
     - relationships.md → relationship descriptions
 
-    NOTE: canonical memory files and focus.md are NOT loaded here. They flow through the
-    4-layer retrieval pipeline (MemoryRetriever), which reads focus.md as Objective Projection
-    and canonical T3 markdown files as Semantic Memory. Loading them here as well would
-    cause double-injection into the prompt.
+    NOTE: canonical memory files are NOT loaded here. They flow through the
+    4-layer retrieval pipeline (MemoryRetriever), which reads canonical T3
+    markdown files as Semantic Memory. Loading them here as well would cause
+    double-injection into the prompt.
     """
     tool_ws = TOOL_WORKSPACE / str(agent_id)
     data_ws = PERSISTENT_DATA / str(agent_id)

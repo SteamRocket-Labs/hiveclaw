@@ -71,42 +71,6 @@ def test_event_wait_requires_ttl_or_max_fires():
 
 
 @pytest.mark.asyncio
-async def test_preflight_blocks_objective_waiting_for_approval():
-    from app.services.trigger_preflight import evaluate_trigger_preflight
-
-    objective_id = uuid4()
-    objective = SimpleNamespace(
-        id=objective_id,
-        status="proposed",
-        metadata_json={"requires_approval": True},
-        objective_key="send_report",
-    )
-    db = _SequenceDB([objective])
-    trigger = SimpleNamespace(
-        id=uuid4(),
-        name="send_report",
-        type="once",
-        config={"trigger_class": "objective_task", "objective_id": str(objective_id)},
-        focus_ref=None,
-        max_fires=None,
-        expires_at=None,
-        reply_context=None,
-    )
-
-    result = await evaluate_trigger_preflight(
-        db,
-        agent=SimpleNamespace(id=uuid4(), tenant_id=uuid4(), primary_model_id=uuid4(), status="active"),
-        model=SimpleNamespace(id=uuid4()),
-        triggers=[trigger],
-        now=datetime.now(timezone.utc),
-    )
-
-    assert result.ok is False
-    assert result.skip_reason == "objective_requires_approval"
-    assert result.metadata["objective_id"] == str(objective_id)
-
-
-@pytest.mark.asyncio
 async def test_preflight_blocks_backoff_until_future():
     from app.services.trigger_preflight import evaluate_trigger_preflight
 

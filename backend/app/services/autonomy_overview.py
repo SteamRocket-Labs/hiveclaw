@@ -18,12 +18,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models.objective import AgentObjective
 from app.models.runtime_task import RuntimeTask
 from app.models.trigger import AgentTrigger
-from app.services.focus_state import normalize_focus_task_id
 
-ACTIVE_OBJECTIVE_STATUSES = {"active", "open", "running"}
 EVENT_WAIT_TRIGGER_TYPES = {"poll", "on_message", "webhook"}
 SCHEDULED_TRIGGER_TYPES = {"cron", "once", "interval"}
 
@@ -51,62 +48,16 @@ def _config(trigger: Any) -> dict[str, Any]:
     return dict(getattr(trigger, "config", None) or {})
 
 
-def _metadata(value: Any) -> dict[str, Any]:
-    return dict(getattr(value, "metadata_json", None) or {})
-
-
 def _trigger_class(trigger: Any) -> str:
     cfg = _config(trigger)
     raw = str(cfg.get("trigger_class") or "").strip()
     if raw:
         return raw
-    if getattr(trigger, "focus_ref", None) or cfg.get("objective_id"):
-        return "objective_task"
     if getattr(trigger, "type", None) in EVENT_WAIT_TRIGGER_TYPES:
         return "event_wait"
     if getattr(trigger, "type", None) in SCHEDULED_TRIGGER_TYPES:
         return "scheduled_job"
     return "system_maintenance"
-
-
-def _objective_id_from_trigger(trigger: Any) -> str | None:
-    raw = str(_config(trigger).get("objective_id") or "").strip()
-    return raw or None
-
-
-def _objective_key_from_trigger(trigger: Any) -> str | None:
-    focus_ref = str(getattr(trigger, "focus_ref", "") or "").strip()
-    return normalize_focus_task_id(focus_ref) if focus_ref else None
-
-
-def _objective_out(objective: Any | None) -> dict[str, Any] | None:
-    if objective is None:
-        return None
-    return {
-        "id": str(getattr(objective, "id", "")),
-        "objective_key": getattr(objective, "objective_key", None),
-        "description": getattr(objective, "description", None),
-        "status": getattr(objective, "status", None),
-        "priority": getattr(objective, "priority", 0),
-        "success_criteria": getattr(objective, "success_criteria", None),
-        "blocked_reason": getattr(objective, "blocked_reason", None),
-        "completed_at": _dt(getattr(objective, "completed_at", None)),
-    }
-
-
-def _find_bound_objective(
-    trigger: Any,
-    *,
-    objectives_by_id: dict[str, Any],
-    objectives_by_key: dict[str, Any],
-) -> Any | None:
-    objective_id = _objective_id_from_trigger(trigger)
-    if objective_id and objective_id in objectives_by_id:
-        return objectives_by_id[objective_id]
-    objective_key = _objective_key_from_trigger(trigger)
-    if objective_key and objective_key in objectives_by_key:
-        return objectives_by_key[objective_key]
-    return None
 
 
 def _schedule_text(trigger: Any) -> str:
@@ -136,8 +87,6 @@ def _skip_reason_to_text(reason: str | None) -> str | None:
         "invalid_model_pin": "The trigger has an invalid model override.",
         "conflicting_model_pin": "Multiple triggers in this run requested different models.",
         "agent_not_runnable": "The agent is not in a runnable state.",
-        "objective_requires_approval": "The objective needs approval before autonomous execution.",
-        "objective_not_active": "The linked objective is not active.",
         "trigger_backoff_active": "The trigger is waiting after a recent failure.",
         "event_wait_missing_lifecycle": "The event wait is missing a max fires limit or expiry.",
         "duplicate_in_flight": "Another run is already in progress.",
@@ -149,24 +98,16 @@ def _attempt_metadata(task: Any) -> dict[str, Any]:
     return dict(getattr(task, "metadata_json", None) or {})
 
 
-def _attempt_matches_trigger(task: Any, trigger: Any, objective: Any | None = None) -> bool:
+def _attempt_matches_trigger(task: Any, trigger: Any) -> bool:
     metadata = _attempt_metadata(task)
     trigger_id = str(getattr(trigger, "id", ""))
     if trigger_id and trigger_id in {str(item) for item in metadata.get("trigger_ids", [])}:
         return True
-    objective_id = str(getattr(objective, "id", "")) if objective is not None else _objective_id_from_trigger(trigger)
-    if objective_id and objective_id in {str(item) for item in metadata.get("objective_ids", [])}:
-        return True
-    focus_ref = str(getattr(trigger, "focus_ref", "") or "")
-    if focus_ref and normalize_focus_task_id(focus_ref) in {
-        normalize_focus_task_id(str(item)) for item in metadata.get("focus_refs", [])
-    }:
-        return True
     return False
 
 
-def _latest_attempt_for_trigger(trigger: Any, objective: Any | None, attempts: list[Any]) -> Any | None:
-    matching = [task for task in attempts if _attempt_matches_trigger(task, trigger, objective)]
+def _latest_attempt_for_trigger(trigger: Any, attempts: list[Any]) -> Any | None:
+    matching = [task for task in attempts if _attempt_matches_trigger(task, trigger)]
     if not matching:
         return None
     return sorted(matching, key=lambda task: getattr(task, "created_at", None) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)[0]
@@ -192,8 +133,6 @@ def build_runtime_task_view(task: Any, *, include_diagnostics: bool = False) -> 
             "runtime_task_id": str(getattr(task, "id", "")),
             "skip_reason": skip_reason,
             "trigger_ids": metadata.get("trigger_ids", []),
-            "objective_ids": metadata.get("objective_ids", []),
-            "focus_refs": metadata.get("focus_refs", []),
             "session_id": getattr(task, "child_session_id", None),
         }
     return view
@@ -217,24 +156,18 @@ def _attention_from_last_attempt(task: Any | None) -> tuple[str | None, str | No
 def build_trigger_view(
     trigger: Any,
     *,
-    objectives_by_id: dict[str, Any] | None = None,
-    objectives_by_key: dict[str, Any] | None = None,
     attempts: list[Any] | None = None,
     include_diagnostics: bool = False,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
-    objectives_by_id = objectives_by_id or {}
-    objectives_by_key = objectives_by_key or {}
     attempts = attempts or []
     cfg = _config(trigger)
     display_kind = _trigger_class(trigger)
-    objective = _find_bound_objective(trigger, objectives_by_id=objectives_by_id, objectives_by_key=objectives_by_key)
-    latest_attempt = _latest_attempt_for_trigger(trigger, objective, attempts)
+    latest_attempt = _latest_attempt_for_trigger(trigger, attempts)
 
     display_title = (
-        getattr(objective, "description", None)
-        or str(getattr(trigger, "reason", "") or "").strip()
+        str(getattr(trigger, "reason", "") or "").strip()
         or str(getattr(trigger, "name", "") or "").strip()
         or display_kind
     )
@@ -246,8 +179,6 @@ def build_trigger_view(
     backoff_until = _parse_datetime(cfg.get("backoff_until"))
     max_fires = getattr(trigger, "max_fires", None) or cfg.get("max_fires")
     fire_count = int(getattr(trigger, "fire_count", 0) or 0)
-    objective_status = str(getattr(objective, "status", "") or "").lower() if objective is not None else ""
-    objective_meta = _metadata(objective) if objective is not None else {}
 
     if not bool(getattr(trigger, "is_enabled", True)):
         attention_state = "paused"
@@ -259,18 +190,6 @@ def build_trigger_view(
     elif max_fires is not None and fire_count >= int(max_fires):
         attention_state = "max_fires_reached"
         attention_reason = "This wake policy reached its run limit."
-    elif objective is not None and (objective_meta.get("requires_approval") or objective_status == "proposed"):
-        attention_state = "waiting_approval"
-        attention_reason = "The objective needs approval before autonomous execution."
-        next_action = "approve_or_reject_objective"
-    elif objective is not None and objective_status == "blocked":
-        attention_state = "blocked"
-        attention_reason = getattr(objective, "blocked_reason", None) or "The objective is blocked."
-        next_action = "resolve_blocker"
-    elif objective is not None and objective_meta.get("stale"):
-        attention_state = "stale"
-        attention_reason = "The objective exceeded its expected freshness window."
-        next_action = "review_stale_objective"
     elif backoff_until and now < backoff_until:
         attention_state = "backoff_active"
         attention_reason = f"Waiting to retry after a recent failure until {backoff_until.isoformat()}."
@@ -290,7 +209,6 @@ def build_trigger_view(
         "attention_state": attention_state,
         "attention_reason": attention_reason,
         "next_action": next_action,
-        "linked_objective": _objective_out(objective),
         "last_attempt": build_runtime_task_view(latest_attempt, include_diagnostics=include_diagnostics)
         if latest_attempt is not None
         else None,
@@ -301,7 +219,6 @@ def build_trigger_view(
     if include_diagnostics:
         view["diagnostics"] = {
             "trigger_class": display_kind,
-            "objective_id": _objective_id_from_trigger(trigger),
             "focus_ref": getattr(trigger, "focus_ref", None),
             "lifecycle_state": attention_state,
             "blocked_reason": attention_reason,
@@ -318,60 +235,6 @@ def build_trigger_view(
     return view
 
 
-def build_objective_view(
-    objective: Any,
-    *,
-    triggers: list[Any],
-    attempts: list[Any],
-    include_diagnostics: bool = False,
-) -> dict[str, Any]:
-    objective_id = str(getattr(objective, "id", ""))
-    key = normalize_focus_task_id(str(getattr(objective, "objective_key", "") or ""))
-    bound_triggers = [
-        trigger
-        for trigger in triggers
-        if _objective_id_from_trigger(trigger) == objective_id or (_objective_key_from_trigger(trigger) == key and key)
-    ]
-    metadata = _metadata(objective)
-    wake_state = "has_wake_policy" if any(getattr(trigger, "is_enabled", False) for trigger in bound_triggers) else "no_wake_policy"
-    matching_attempts = [
-        task
-        for task in attempts
-        if objective_id in {str(item) for item in _attempt_metadata(task).get("objective_ids", [])}
-        or key in {normalize_focus_task_id(str(item)) for item in _attempt_metadata(task).get("focus_refs", [])}
-    ]
-    latest_attempt = (
-        sorted(matching_attempts, key=lambda task: getattr(task, "created_at", None) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)[0]
-        if matching_attempts
-        else None
-    )
-    view = {
-        "id": objective_id,
-        "objective_key": getattr(objective, "objective_key", None),
-        "description": getattr(objective, "description", None),
-        "status": getattr(objective, "status", None),
-        "priority": getattr(objective, "priority", 0),
-        "success_criteria": getattr(objective, "success_criteria", None),
-        "blocked_reason": getattr(objective, "blocked_reason", None),
-        "wake_state": wake_state,
-        "requires_approval": bool(metadata.get("requires_approval")) or getattr(objective, "status", None) == "proposed",
-        "completion_evidence": metadata.get("completion_evidence") or metadata.get("objective_evidence"),
-        "last_attempt": build_runtime_task_view(latest_attempt, include_diagnostics=include_diagnostics)
-        if latest_attempt is not None
-        else None,
-        "created_at": _dt(getattr(objective, "created_at", None)),
-        "updated_at": _dt(getattr(objective, "updated_at", None)),
-        "completed_at": _dt(getattr(objective, "completed_at", None)),
-    }
-    if include_diagnostics:
-        view["diagnostics"] = {
-            "objective_id": objective_id,
-            "metadata_keys": sorted(metadata.keys()),
-            "bound_trigger_ids": [str(getattr(trigger, "id", "")) for trigger in bound_triggers],
-        }
-    return view
-
-
 def _finding(severity: str, category: str, message: str, recommendation: str, **evidence: Any) -> dict[str, Any]:
     return {
         "severity": severity,
@@ -382,49 +245,10 @@ def _finding(severity: str, category: str, message: str, recommendation: str, **
     }
 
 
-def build_agent_findings(objectives: list[Any], triggers: list[Any], attempts: list[Any]) -> list[dict[str, Any]]:
+def build_agent_findings(triggers: list[Any], attempts: list[Any]) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
-    objectives_by_id = {str(getattr(objective, "id", "")): objective for objective in objectives}
-    objectives_by_key = {
-        normalize_focus_task_id(str(getattr(objective, "objective_key", "") or "")): objective
-        for objective in objectives
-    }
-    for objective in objectives:
-        status = str(getattr(objective, "status", "") or "").lower()
-        metadata = _metadata(objective)
-        if metadata.get("requires_approval") or status == "proposed":
-            findings.append(_finding(
-                "warning",
-                "objective_waiting_approval",
-                f"Objective '{getattr(objective, 'description', '')}' is waiting for approval.",
-                "Approve or reject the objective before expecting autonomous execution.",
-                objective_id=str(getattr(objective, "id", "")),
-            ))
-        if status in ACTIVE_OBJECTIVE_STATUSES:
-            key = normalize_focus_task_id(str(getattr(objective, "objective_key", "") or ""))
-            has_wake = any(
-                bool(getattr(trigger, "is_enabled", False))
-                and (
-                    _objective_id_from_trigger(trigger) == str(getattr(objective, "id", ""))
-                    or (_objective_key_from_trigger(trigger) == key and key)
-                )
-                for trigger in triggers
-            )
-            if not has_wake:
-                findings.append(_finding(
-                    "error",
-                    "active_objective_without_wake",
-                    f"Active objective '{getattr(objective, 'description', '')}' has no enabled wake policy.",
-                    "Create or restore an objective wake policy.",
-                    objective_id=str(getattr(objective, "id", "")),
-                ))
     for trigger in triggers:
-        view = build_trigger_view(
-            trigger,
-            objectives_by_id=objectives_by_id,
-            objectives_by_key=objectives_by_key,
-            attempts=attempts,
-        )
+        view = build_trigger_view(trigger, attempts=attempts)
         if view["attention_state"] in {"missing_model", "failed_recently", "backoff_active"}:
             findings.append(_finding(
                 "warning",
@@ -470,44 +294,23 @@ async def build_agent_autonomy_overview(
     include_diagnostics: bool = False,
 ) -> dict[str, Any]:
     agent_id = getattr(agent, "id")
-    objective_result = await db.execute(
-        select(AgentObjective).where(AgentObjective.agent_id == agent_id).order_by(AgentObjective.priority.desc())
-    )
-    objectives = list(objective_result.scalars().all())
     trigger_result = await db.execute(
         select(AgentTrigger).where(AgentTrigger.agent_id == agent_id).order_by(AgentTrigger.created_at.desc())
     )
     triggers = list(trigger_result.scalars().all())
     attempts = await _query_agent_runtime_tasks(db, agent_id=agent_id, lookback_hours=lookback_hours, limit=100)
-    objectives_by_id = {str(getattr(objective, "id", "")): objective for objective in objectives}
-    objectives_by_key = {
-        normalize_focus_task_id(str(getattr(objective, "objective_key", "") or "")): objective
-        for objective in objectives
-    }
-    findings = build_agent_findings(objectives, triggers, attempts)
+    findings = build_agent_findings(triggers, attempts)
     return {
         "agent_id": str(agent_id),
         "lookback_hours": lookback_hours,
         "totals": {
-            "objectives": len(objectives),
             "triggers": len(triggers),
             "recent_attempts": len(attempts),
             "findings": len(findings),
         },
-        "objectives": [
-            build_objective_view(
-                objective,
-                triggers=triggers,
-                attempts=attempts,
-                include_diagnostics=include_diagnostics,
-            )
-            for objective in objectives
-        ],
         "triggers": [
             build_trigger_view(
                 trigger,
-                objectives_by_id=objectives_by_id,
-                objectives_by_key=objectives_by_key,
                 attempts=attempts,
                 include_diagnostics=include_diagnostics,
             )
@@ -527,7 +330,6 @@ async def list_agent_runtime_task_views(
     agent_id: uuid.UUID,
     task_type: str | None = None,
     trigger_id: str | None = None,
-    objective_id: str | None = None,
     status: str | None = None,
     limit: int = 50,
     include_diagnostics: bool = False,
@@ -544,8 +346,6 @@ async def list_agent_runtime_task_views(
     for task in tasks:
         metadata = _attempt_metadata(task)
         if trigger_id and trigger_id not in {str(item) for item in metadata.get("trigger_ids", [])}:
-            continue
-        if objective_id and objective_id not in {str(item) for item in metadata.get("objective_ids", [])}:
             continue
         filtered.append(task)
         if len(filtered) >= limit:

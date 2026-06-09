@@ -27,7 +27,6 @@ HANDLER_MODULES: tuple[str, ...] = (
     "app.tools.handlers.tasks",
     "app.tools.handlers.triggers",
     "app.tools.handlers.workflow",
-    "app.tools.handlers.objectives",
     "app.tools.handlers.plan_mode",
     "app.tools.handlers.communication",
     "app.tools.handlers.feishu",

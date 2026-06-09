@@ -28,7 +28,7 @@ def _model() -> SimpleNamespace:
 
 
 @pytest.mark.asyncio
-async def test_tool_round_warnings_preserve_objective_wake_policy_boundary() -> None:
+async def test_tool_round_warnings_record_state_in_work_ledger() -> None:
     from app.kernel.contracts import InvocationRequest, RuntimeConfig
     from app.kernel.engine import AgentKernel, KernelDependencies
 
@@ -101,8 +101,9 @@ async def test_tool_round_warnings_preserve_objective_wake_policy_boundary() -> 
     ]
     joined = "\n".join(system_reminders)
 
-    assert "Objective Ledger is the source of truth" in joined
-    assert "Trigger is wake policy" in joined
+    # State-recording responsibility is the CC Work Ledger (objectives retired).
+    assert "work ledger" in joined.lower()
+    assert "Objective Ledger" not in joined  # retired concept must not reappear
     assert "focus.md" not in joined
     assert "set_trigger" not in joined
 

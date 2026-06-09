@@ -7,13 +7,13 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 APP_ROOT = BACKEND_ROOT / "app"
 
 
-def test_memory_and_objective_layers_stay_separate() -> None:
+def test_memory_service_has_no_objective_subsystem_references() -> None:
+    # The AgentObjective subsystem was retired; memory_service must not resurrect it.
     memory_service = (APP_ROOT / "services/memory_service.py").read_text(encoding="utf-8")
-    objective_intake = (APP_ROOT / "services/objective_intake.py").read_text(encoding="utf-8")
 
     assert "AgentObjective" not in memory_service
     assert "objective_intake" not in memory_service
-    assert "memory_service" not in objective_intake
+    assert "objective_service" not in memory_service
 
 
 def test_runtime_invoker_is_the_prompt_memory_ingress() -> None:

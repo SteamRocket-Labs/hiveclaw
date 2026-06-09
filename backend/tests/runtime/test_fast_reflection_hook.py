@@ -41,7 +41,7 @@ def test_memory_hook_plan_registers_fast_reflection_handler() -> None:
 
     plan = export_memory_hook_plan()
 
-    assert len(_MEMORY_HOOK_REGISTRATIONS) == 14
+    assert len(_MEMORY_HOOK_REGISTRATIONS) == 13
     assert any(
         item["event"] == HookEvent.RESPONSE_COMPLETE.value
         and item["key"] == "memory.response_complete.fast_reflection"

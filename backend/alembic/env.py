@@ -48,7 +48,6 @@ from app.models.refresh_token import RefreshToken  # noqa: F401
 from app.models.guard_policy import GuardPolicy  # noqa: F401
 from app.models.tenant_channel_config import TenantChannelConfig  # noqa: F401
 from app.models.runtime_task import RuntimeTask  # noqa: F401
-from app.models.objective import AgentObjective  # noqa: F401
 from app.models.plan_request import AgentPlanRequest  # noqa: F401
 from app.models.plan_recommendation import AgentPlanRecommendation  # noqa: F401
 from app.models.mcp_server import (  # noqa: F401

@@ -1047,24 +1047,20 @@ def _build_restoration_context(
             _resolved_ws = _candidate
             break
 
-    # ── 1+2: Soul + Focus ──
+    # ── 1: Soul (durable identity) ──
     if _resolved_ws:
-        for rel_path, label in [("soul.md", "Agent Identity"), ("focus.md", "Objective Projection")]:
-            fpath = _resolved_ws / rel_path
-            if not fpath.exists():
-                continue
+        fpath = _resolved_ws / "soul.md"
+        if fpath.exists():
             try:
                 content = fpath.read_text(encoding="utf-8", errors="replace").strip()
-                if not content:
-                    continue
-                if len(content) > _per_file_cap:
-                    content = content[:_per_file_cap] + "\n...(truncated)"
-                if total + len(content) > _restore_budget:
-                    break
-                parts.append(f"### {label}\n{content}")
-                total += len(content)
+                if content:
+                    if len(content) > _per_file_cap:
+                        content = content[:_per_file_cap] + "\n...(truncated)"
+                    if total + len(content) <= _restore_budget:
+                        parts.append(f"### Agent Identity\n{content}")
+                        total += len(content)
             except Exception:
-                continue
+                pass
 
     # ── 2.1: Work Ledger reboot (cognitive scaffold 切口②) ──
     # On complex turns the agent maintains a general Work Ledger as working
@@ -2776,7 +2772,7 @@ class AgentKernel:
                             )
                         )
                         if len(compressed) < len(conv_dicts):
-                            # Post-compaction restoration: re-inject identity + objective projection
+                            # Post-compaction restoration: re-inject identity + work ledger
                             _restored = ""
                             if request.agent_id:
                                 try:

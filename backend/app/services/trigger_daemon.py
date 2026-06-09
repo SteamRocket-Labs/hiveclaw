@@ -29,11 +29,7 @@ from app.database import async_session
 from app.models.trigger import AgentTrigger
 from app.models.agent import Agent
 from app.services.plan_mode_core import build_plan_execution_instruction
-from app.services.focus_state import normalize_focus_task_id
 from app.services.runtime_task_service import create_runtime_task_record, update_runtime_task_record
-from app.services.trigger_reconciler import reconcile_all_completed_focus_triggers
-from app.services.objective_wake_reconciler import reconcile_all_objective_wake_policies
-from app.services.objective_lifecycle import reconcile_all_objective_lifecycle
 from app.services.trigger_preflight import (
     collect_trigger_runtime_options,
     evaluate_trigger_preflight,
@@ -55,39 +51,10 @@ _last_invoke: dict[uuid.UUID, datetime] = {}
 _fire_history: dict[uuid.UUID, list[datetime]] = {}
 
 
-def _trigger_objective_session_key(trigger: AgentTrigger) -> str | None:
-    """Return the stable session key for objective_task triggers."""
-    config = getattr(trigger, "config", None) or {}
-    trigger_class = str(config.get("trigger_class") or "").strip()
-    objective_id = str(config.get("objective_id") or "").strip()
-    focus_ref = str(getattr(trigger, "focus_ref", None) or "").strip()
-
-    if trigger_class and trigger_class != "objective_task":
-        return None
-
-    if not trigger_class and not (objective_id or focus_ref):
-        return None
-
-    if objective_id:
-        return f"objective:{objective_id}"
-
-    if focus_ref:
-        return f"objective:focus:{normalize_focus_task_id(focus_ref)}"
-
-    return None
-
-
-def _objective_session_title(objective_session_key: str, trigger_names: list[str]) -> str:
-    key_label = objective_session_key.removeprefix("objective:")
-    trigger_label = ", ".join(name for name in trigger_names if name) or key_label
-    return f"Objective: {key_label} ({trigger_label})"
-
-
 async def _create_trigger_runtime_task(
     agent_id: uuid.UUID,
     triggers: list[AgentTrigger],
     *,
-    objective_session_key: str | None = None,
     metadata_json: dict | None = None,
 ) -> str | None:
     """Create a best-effort RuntimeTask ledger row for a fired trigger batch."""
@@ -102,17 +69,6 @@ async def _create_trigger_runtime_task(
             str((getattr(trigger, "config", None) or {}).get("trigger_class") or "")
             for trigger in triggers
             if (getattr(trigger, "config", None) or {}).get("trigger_class")
-        ],
-        "objective_session_key": objective_session_key,
-        "objective_ids": [
-            str((getattr(trigger, "config", None) or {}).get("objective_id"))
-            for trigger in triggers
-            if (getattr(trigger, "config", None) or {}).get("objective_id")
-        ],
-        "focus_refs": [
-            str(getattr(trigger, "focus_ref", ""))
-            for trigger in triggers
-            if getattr(trigger, "focus_ref", None)
         ],
     }
     metadata.update(metadata_json or {})
@@ -839,7 +795,7 @@ async def _preflight_trigger_group(
 async def _record_trigger_success_state(trigger_ids: list[uuid.UUID]) -> None:
     if not trigger_ids:
         return
-    from app.services.objective_lifecycle import reset_trigger_failure_policy
+    from app.services.trigger_failure_policy import reset_trigger_failure_policy
 
     async with async_session() as db:
         changed = False
@@ -853,10 +809,7 @@ async def _record_trigger_success_state(trigger_ids: list[uuid.UUID]) -> None:
 
 
 async def _record_trigger_failure_state(agent_id: uuid.UUID, triggers: list[AgentTrigger], error: str) -> dict:
-    from app.services.objective_lifecycle import (
-        apply_trigger_failure_policy,
-        create_recovery_objective_for_trigger_failure,
-    )
+    from app.services.trigger_failure_policy import apply_trigger_failure_policy
 
     metadata: dict = {"failure_backoff": []}
     async with async_session() as db:
@@ -871,14 +824,6 @@ async def _record_trigger_failure_state(agent_id: uuid.UUID, triggers: list[Agen
                 "trigger_name": trigger.name,
                 **failure_meta,
             })
-            recovery = await create_recovery_objective_for_trigger_failure(
-                db,
-                agent_id=agent_id,
-                trigger=trigger,
-                error=error,
-            )
-            if recovery is not None:
-                metadata["recovery_objective_id"] = str(getattr(recovery, "id", ""))
         await db.commit()
     return metadata
 
@@ -972,7 +917,6 @@ async def _invoke_agent_for_triggers(
     triggers: list[AgentTrigger],
     *,
     runtime_task_id: str | None = None,
-    objective_session_key: str | None = None,
 ):
     """Invoke an agent with context from one or more fired triggers.
 
@@ -1089,8 +1033,6 @@ async def _invoke_agent_for_triggers(
                 context_parts.append(part)
                 trigger_names.append(t.name)
 
-            # G3: Inject focus.md as Objective Ledger projection for compact trigger context.
-            focus_context = ""
             explicit_context = ""
             if runtime_options.get("context_from"):
                 explicit_context = await load_context_from(
@@ -1098,27 +1040,6 @@ async def _invoke_agent_for_triggers(
                     agent_id=agent_id,
                     context_refs=list(runtime_options.get("context_from") or []),
                 )
-            try:
-                from app.services.objective_service import sync_agent_focus_file_to_objectives
-
-                await sync_agent_focus_file_to_objectives(db, agent, write_projection=False, commit=False)
-            except Exception as _objective_sync_err:
-                logger.debug("[TriggerDaemon] Failed to sync objective ledger before trigger context: {}", _objective_sync_err)
-            try:
-                from app.config import get_settings as _get_settings
-                _settings = _get_settings()
-                for _base in [
-                    Path(_settings.AGENT_DATA_DIR) / str(agent_id),
-                    Path("/tmp/hive_workspaces") / str(agent_id),
-                ]:
-                    _focus_path = _base / "focus.md"
-                    if _focus_path.exists():
-                        _focus_text = _focus_path.read_text(encoding="utf-8")[:1500]
-                        if _focus_text.strip() and _focus_text.strip() not in ("# Focus", "# Agenda"):
-                            focus_context = f"\n\nObjective Projection (focus.md, readable context only):\n{_focus_text}"
-                        break
-            except Exception as _focus_err:
-                logger.debug("[TriggerDaemon] Failed to read focus.md for trigger context: {}", _focus_err)
 
             # E: a plan-born trigger fires for a user-confirmed plan — inject the
             # approved plan body as marching orders (read fresh from the plan row).
@@ -1128,70 +1049,33 @@ async def _invoke_agent_for_triggers(
                 "===== Trigger Awakening Context =====\n"
                 f"Source: trigger ({'multiple triggers fired simultaneously' if len(triggers) > 1 else 'single trigger fired'})\n\n"
                 + "\n---\n".join(context_parts)
-                + focus_context
                 + (f"\n\nExplicit Context From configured refs:\n{explicit_context}" if explicit_context else "")
                 + confirmed_plan_context
-                + "\n\nObjective Ledger is the source of truth. If you complete or block work, "
-                "use objective tools such as complete_objective or update_objective with concrete evidence. "
-                "Trigger is wake policy; focus.md is a readable projection, not a file to manually edit for state."
+                + "\n\nExecute this trigger now. If you finish or get blocked, record the outcome "
+                "with concrete evidence in your work ledger and memory."
                 "\n==========================="
             )
 
-            # Create or reuse Reflection Session.
-            # Objective tasks get a stable session so each objective has durable continuity.
-            title = (
-                _objective_session_title(objective_session_key, trigger_names)
-                if objective_session_key
-                else f"🤖 Reflection: {', '.join(trigger_names)}"
-            )
+            # Create a fresh Reflection Session for this wake.
+            title = f"🤖 Reflection: {', '.join(trigger_names)}"
             # Find agent's participant
             result = await db.execute(
                 select(Participant).where(Participant.type == "agent", Participant.ref_id == agent_id)
             )
             agent_participant = result.scalar_one_or_none()
 
-            session = None
-            if objective_session_key:
-                result = await db.execute(
-                    select(ChatSession).where(
-                        ChatSession.agent_id == agent_id,
-                        ChatSession.external_conv_id == objective_session_key,
-                    )
-                )
-                session = result.scalar_one_or_none()
-
-            if not session:
-                session = ChatSession(
-                    agent_id=agent_id,
-                    user_id=agent.creator_id,
-                    participant_id=agent_participant.id if agent_participant else None,
-                    source_channel="trigger",
-                    external_conv_id=objective_session_key,
-                    title=title[:200],
-                )
-                db.add(session)
-                await db.flush()
+            session = ChatSession(
+                agent_id=agent_id,
+                user_id=agent.creator_id,
+                participant_id=agent_participant.id if agent_participant else None,
+                source_channel="trigger",
+                title=title[:200],
+            )
+            db.add(session)
+            await db.flush()
             session_id = session.id
 
-            prior_messages = []
-            if objective_session_key:
-                result = await db.execute(
-                    select(ChatMessage)
-                    .where(
-                        ChatMessage.agent_id == agent_id,
-                        ChatMessage.conversation_id == str(session_id),
-                        ChatMessage.role.in_(("user", "assistant")),
-                    )
-                    .order_by(ChatMessage.created_at.asc())
-                    .limit(12)
-                )
-                prior_messages = [
-                    {"role": message.role, "content": message.content}
-                    for message in result.scalars().all()
-                    if getattr(message, "content", None)
-                ]
-
-            memory_messages = [*prior_messages, {"role": "user", "content": trigger_context}]
+            memory_messages = [{"role": "user", "content": trigger_context}]
             messages = list(memory_messages)
 
             # Store trigger context as a message in the session
@@ -1390,7 +1274,6 @@ async def _invoke_agent_for_triggers(
                     **runtime_options,
                     "outcome": trigger_outcome,
                     "score": trigger_score,
-                    "objective_session_key": objective_session_key,
                     "session_id": str(session_id),
                 },
             )
@@ -1412,27 +1295,9 @@ async def _invoke_agent_for_triggers(
                 **runtime_options,
                 "outcome": trigger_outcome,
                 "score": trigger_score,
-                "objective_session_key": objective_session_key,
                 "output_artifact": output_artifact,
             },
         )
-
-        try:
-            from app.services.objective_evaluator import evaluate_trigger_attempt_by_session_key
-
-            async with async_session() as db:
-                await evaluate_trigger_attempt_by_session_key(
-                    db,
-                    agent_id=agent_id,
-                    objective_session_key=objective_session_key,
-                    result_summary=final_reply or "",
-                    metadata_json={
-                        "outcome": trigger_outcome,
-                        "score": trigger_score,
-                    },
-                )
-        except Exception as _objective_eval_err:
-            logger.debug("[TriggerDaemon] Objective evaluation failed (non-fatal): {}", _objective_eval_err)
 
         logger.info(f"⚡ Triggers fired for {agent.name}: {[t.name for t in triggers]}")
 
@@ -1480,19 +1345,6 @@ async def _tick():
     """One daemon tick: evaluate all triggers, group by agent, invoke."""
     now = datetime.now(timezone.utc)
 
-    try:
-        await reconcile_all_completed_focus_triggers()
-    except Exception as exc:
-        logger.debug("[TriggerDaemon] Completed-focus trigger reconciler failed (non-fatal): {}", exc)
-    try:
-        await reconcile_all_objective_wake_policies()
-    except Exception as exc:
-        logger.debug("[TriggerDaemon] Objective wake reconciler failed (non-fatal): {}", exc)
-    try:
-        await reconcile_all_objective_lifecycle()
-    except Exception as exc:
-        logger.debug("[TriggerDaemon] Objective lifecycle reconciler failed (non-fatal): {}", exc)
-
     async with async_session() as db:
         result = await db.execute(
             select(AgentTrigger).where(AgentTrigger.is_enabled)
@@ -1504,10 +1356,9 @@ async def _tick():
         return
 
 
-    # Evaluate and group fired triggers by agent + objective session.
-    # Objective-task triggers must not collapse into one invocation when they
-    # represent different goals, because each objective has its own continuity.
-    fired_by_group: dict[tuple[uuid.UUID, str | None], list[AgentTrigger]] = {}
+    # Evaluate and group fired triggers by agent. A schedule is just a trigger,
+    # so all of an agent's fired triggers collapse into one wake invocation.
+    fired_by_group: dict[uuid.UUID, list[AgentTrigger]] = {}
     for trigger in all_triggers:
         # Auto-disable expired triggers
         if trigger.expires_at and now >= trigger.expires_at:
@@ -1527,14 +1378,13 @@ async def _tick():
             if not await _acquire_trigger_fire_lease(trigger.id, event_key):
                 logger.debug("[TriggerDaemon] Duplicate fire lease rejected for {} ({})", trigger.name, event_key)
                 continue
-            objective_session_key = _trigger_objective_session_key(trigger)
-            fired_by_group.setdefault((trigger.agent_id, objective_session_key), []).append(trigger)
+            fired_by_group.setdefault(trigger.agent_id, []).append(trigger)
         except Exception as e:
             logger.warning(f"Error evaluating trigger {trigger.name}: {e}")
 
     # Invoke each agent for the trigger events that acquired a fire lease.
     # Per-agent try/except so one agent's failure doesn't block others (C-08)
-    for (agent_id, objective_session_key), agent_triggers in fired_by_group.items():
+    for agent_id, agent_triggers in fired_by_group.items():
         try:
             preflight_ok, skip_reason, skip_summary, preflight_metadata = await _preflight_trigger_group(
                 agent_id,
@@ -1544,7 +1394,6 @@ async def _tick():
             runtime_task_id = await _create_trigger_runtime_task(
                 agent_id,
                 agent_triggers,
-                objective_session_key=objective_session_key,
                 metadata_json=preflight_metadata,
             )
             if not preflight_ok:
@@ -1589,7 +1438,6 @@ async def _tick():
                     agent_id,
                     agent_triggers,
                     runtime_task_id=runtime_task_id,
-                    objective_session_key=objective_session_key,
                 )
             )
         except Exception as _agent_err:

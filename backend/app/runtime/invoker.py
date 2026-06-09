@@ -99,7 +99,6 @@ def _normalize_invocation_session_context(request: AgentInvocationRequest) -> No
         source=request.session_context.source,
         channel=request.session_context.channel,
         external_conv_id=metadata.get("external_conv_id") or request.session_context.session_id,
-        objective_id=metadata.get("objective_id") or metadata.get("focus_ref"),
         runtime_task_id=metadata.get("runtime_task_id") or metadata.get("task_id"),
         trace_id=metadata.get("trace_id"),
     )

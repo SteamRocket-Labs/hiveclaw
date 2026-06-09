@@ -40,7 +40,6 @@ from uuid import uuid4
 import pytest
 
 from app.models.agent import Agent
-from app.models.objective import AgentObjective
 from app.models.plan_request import AgentPlanRequest
 from app.models.trigger import AgentTrigger
 
@@ -117,18 +116,17 @@ def _matches_where(stmt, row) -> bool:
 
 
 class _E2ESession:
-    """One shared store for plans, objectives, triggers and agents.
+    """One shared store for plans, triggers and agents.
 
     ``PlanModeService`` / ``PlanModeGate`` look plans up by the ``_plan_lookup_id``
     / ``_plan_lookup_agent_id`` hints they stamp on the statement; the handoff
-    handler queries ``Agent`` / ``AgentObjective`` / ``AgentTrigger`` by entity +
-    WHERE. We answer all of those off the same lists so state created by the
-    handoff is the very same state the preflight later reads.
+    handler queries ``Agent`` / ``AgentTrigger`` by entity + WHERE. We answer all
+    of those off the same lists so state created by the handoff is the very same
+    state the preflight later reads.
     """
 
-    def __init__(self, *, plans=None, objectives=None, triggers=None, agents=None):
+    def __init__(self, *, plans=None, triggers=None, agents=None):
         self.plans = list(plans or [])
-        self.objectives = list(objectives or [])
         self.triggers = list(triggers or [])
         self.agents = list(agents or [])
         self.added: list[object] = []
@@ -151,8 +149,6 @@ class _E2ESession:
         self.added.append(value)
         if isinstance(value, AgentPlanRequest):
             self.plans.append(value)
-        elif isinstance(value, AgentObjective):
-            self.objectives.append(value)
         elif isinstance(value, AgentTrigger):
             self.triggers.append(value)
         elif isinstance(value, Agent):
@@ -181,8 +177,6 @@ class _E2ESession:
         entity = _statement_entity(stmt)
         if entity is Agent:
             rows = self.agents
-        elif entity is AgentObjective:
-            rows = self.objectives
         elif entity is AgentTrigger:
             rows = self.triggers
         elif entity is AgentPlanRequest:
@@ -304,7 +298,6 @@ async def test_full_loop_confirmed_plan_yields_passing_trigger(e2e):
 
     # The enabled trigger carries the load-bearing config.plan_id contract,
     # created directly from the plan with no objective row.
-    assert session.objectives == []
     trigger = next(t for t in session.triggers if str(t.id) == trigger_id)
     assert trigger.is_enabled is True
     assert trigger.type == "cron"
@@ -446,5 +439,4 @@ async def test_rejected_plan_produces_no_enabled_artifact(e2e):
     assert exc_info.value.error_code == "not_confirmed"
 
     # Nothing autonomous was created.
-    assert [o for o in session.objectives] == []
     assert [t for t in session.triggers] == []

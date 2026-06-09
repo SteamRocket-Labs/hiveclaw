@@ -123,15 +123,15 @@ def _build_round_pressure_warning(
     if final:
         return (
             f"🚨 {_INTERNAL_REMINDER_GUARD} Only {max_rounds - round_i} rounds remaining. {stats} "
-            "Objective Ledger is the source of truth: record current status/blockers with evidence, "
+            "Record current status/blockers with evidence in your work ledger, "
             "preserve artifacts, and stop cleanly if unfinished. "
-            "Trigger is wake policy; do not create a trigger unless a real objective needs a future attempt."
+            "A trigger is wake policy; do not create a trigger unless real future work needs a later attempt."
         )
     return (
         f"⚠️ {_INTERNAL_REMINDER_GUARD} {stats} "
-        "If the current task is not yet complete, update Objective Ledger with blockers/status "
-        "and preserve concrete evidence in workspace artifacts. Trigger is wake policy, not the goal; "
-        "only create or update a wake policy when an existing objective needs a future attempt."
+        "If the current task is not yet complete, record blockers/status in your work ledger "
+        "and preserve concrete evidence in workspace artifacts. A trigger is wake policy, not the goal; "
+        "only create or update a wake policy when real future work needs a later attempt."
     )
 
 

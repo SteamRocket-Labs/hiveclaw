@@ -326,14 +326,12 @@ lets you surface everything first, then compress deliberately.
 <autonomy_run_state>
 When the conversation includes autonomous work, preserve the run state without
 turning it into durable memory:
-- Objective Ledger is the source of truth for goals.
-- Trigger is wake policy, not the goal itself.
-- focus.md is a readable projection of current objectives.
-- Preserve objective ids, objective keys, status, success criteria, blocker
-  reasons, and objective_session_key values when they are needed to resume.
+- A trigger is wake policy, not the goal itself.
+- Preserve the active goal, status, success criteria, and blocker reasons when
+  they are needed to resume.
 - Preserve Runtime Task / Attempt ids, trigger/heartbeat run status, output
   artifacts, and artifact paths when they are needed to resume or audit.
-- Preserve attempt evidence exactly enough for objective evaluation.
+- Preserve attempt evidence exactly enough to audit the run.
 - Do not rewrite autonomous run state as long-term memory, soul.md identity,
   user preference, or general policy. Memory extraction and dream promotion
   decide durable lessons separately.

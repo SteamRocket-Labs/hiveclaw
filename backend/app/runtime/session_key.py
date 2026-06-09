@@ -16,7 +16,6 @@ class SessionKey:
     agent_id: str | None
     tenant_id: str | None = None
     external_conv_id: str | None = None
-    objective_id: str | None = None
     runtime_task_id: str | None = None
     trace_id: str | None = None
 
@@ -40,7 +39,6 @@ def build_session_key(
     channel: str | None = None,
     tenant_id=None,
     external_conv_id: str | None = None,
-    objective_id: str | None = None,
     runtime_task_id: str | None = None,
     trace_id: str | None = None,
 ) -> SessionKey:
@@ -49,13 +47,10 @@ def build_session_key(
     normalized_agent_id = _string_or_none(agent_id)
     normalized_tenant_id = _string_or_none(tenant_id)
     normalized_external = _string_or_none(external_conv_id)
-    normalized_objective = _string_or_none(objective_id)
     normalized_runtime_task = _string_or_none(runtime_task_id)
     normalized_trace = _string_or_none(trace_id)
 
-    if normalized_objective:
-        stable_id = f"objective:{normalized_objective}"
-    elif normalized_runtime_task:
+    if normalized_runtime_task:
         stable_id = f"{normalized_source}:{normalized_channel}:runtime:{normalized_runtime_task}"
     elif normalized_external:
         stable_id = f"{normalized_source}:{normalized_channel}:{normalized_external}"
@@ -71,7 +66,6 @@ def build_session_key(
         agent_id=normalized_agent_id,
         tenant_id=normalized_tenant_id,
         external_conv_id=normalized_external,
-        objective_id=normalized_objective,
         runtime_task_id=normalized_runtime_task,
         trace_id=normalized_trace,
     )
@@ -79,8 +73,6 @@ def build_session_key(
 
 def ensure_session_key(session_context: SessionContext, key: SessionKey) -> SessionContext:
     session_context.session_id = session_context.session_id or key.stable_id
-    if key.objective_id:
-        session_context.session_id = key.stable_id
     metadata = session_context.metadata if isinstance(session_context.metadata, dict) else {}
     metadata["session_key"] = key.to_dict()
     session_context.metadata = metadata

@@ -45,7 +45,6 @@ def write_long_task_plan_artifact(
     *,
     agent_id: uuid.UUID,
     runtime_task_id: uuid.UUID,
-    objective_id: str | None,
     spec: str,
     acceptance_criteria: list[str],
     verification_commands: list[str],
@@ -58,7 +57,6 @@ def write_long_task_plan_artifact(
     payload = {
         "schema": "long_task_plan.v1",
         "runtime_task_id": runtime_task_id.hex,
-        "objective_id": objective_id,
         "spec": spec.strip(),
         "acceptance_criteria": [item.strip() for item in acceptance_criteria if item.strip()],
         "verification_commands": [item.strip() for item in verification_commands if item.strip()],
@@ -246,7 +244,6 @@ async def record_long_task_plan(
     *,
     agent_id: uuid.UUID,
     runtime_task_id: uuid.UUID,
-    objective_id: str | None,
     spec: str,
     acceptance_criteria: list[str],
     verification_commands: list[str],
@@ -256,7 +253,6 @@ async def record_long_task_plan(
     artifact = write_long_task_plan_artifact(
         agent_id=agent_id,
         runtime_task_id=runtime_task_id,
-        objective_id=objective_id,
         spec=spec,
         acceptance_criteria=acceptance_criteria,
         verification_commands=verification_commands,

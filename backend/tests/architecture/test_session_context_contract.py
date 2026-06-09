@@ -18,7 +18,6 @@ def test_runtime_entrypoints_pass_session_context_to_invoker() -> None:
     assert "_get_or_create_heartbeat_session_ctx" in heartbeat
     assert "session_context=_get_or_create_heartbeat_session_ctx" in heartbeat
     assert 'source_channel="trigger"' in trigger_daemon
-    assert "external_conv_id=objective_session_key" in trigger_daemon
     assert 'source="task"' in task_executor
 
 

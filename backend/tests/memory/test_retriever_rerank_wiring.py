@@ -28,7 +28,6 @@ async def test_retrieve_invokes_rerank_when_semantic_pool_contested(monkeypatch,
     monkeypatch.setattr(retriever_mod, "_rerank_semantic_items", fake_rerank)
 
     retriever = MemoryRetriever(data_root=tmp_path)
-    monkeypatch.setattr(retriever, "_retrieve_working", lambda _aid: [])
     monkeypatch.setattr(retriever, "_retrieve_t3_direct", lambda _aid, query="": [])
     monkeypatch.setattr(retriever, "_retrieve_understandings", lambda _aid, query="": list(semantic_items))
 
@@ -69,7 +68,6 @@ async def test_retrieve_skips_rerank_for_small_pool(monkeypatch, tmp_path) -> No
 
     retriever = MemoryRetriever(data_root=tmp_path)
     small = [MemoryItem(kind=MemoryKind.SEMANTIC, content="only fact", score=0.5)]
-    monkeypatch.setattr(retriever, "_retrieve_working", lambda _aid: [])
     monkeypatch.setattr(retriever, "_retrieve_t3_direct", lambda _aid, query="": [])
     monkeypatch.setattr(retriever, "_retrieve_understandings", lambda _aid, query="": small)
 

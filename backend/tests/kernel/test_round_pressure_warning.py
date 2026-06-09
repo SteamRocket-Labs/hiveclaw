@@ -20,7 +20,7 @@ def test_round_pressure_warning_carries_real_data() -> None:
     assert "87" in text  # tool calls so far
     assert "3" in text  # failures
     assert "145,000" in text  # context size estimate
-    assert "Objective Ledger" in text  # existing guidance preserved
+    assert "work ledger" in text.lower()  # state-recording guidance (CC Work Ledger)
 
 
 def test_round_pressure_final_warning_states_two_rounds_left() -> None:
@@ -37,5 +37,5 @@ def test_round_pressure_final_warning_states_two_rounds_left() -> None:
 
     assert "2" in text and "remaining" in text.lower()
     assert "120" in text
-    assert "Objective Ledger" in text
+    assert "work ledger" in text.lower()
     assert "stop cleanly" in text  # wind-down guidance preserved

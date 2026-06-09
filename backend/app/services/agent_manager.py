@@ -16,7 +16,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models.agent import Agent
 from app.models.llm import LLMModel
-from app.services.focus_state import render_focus_tasks as _shared_render_focus_tasks
 
 settings = get_settings()
 
@@ -46,10 +45,6 @@ def _list_from_blueprint(value: object) -> list[str]:
     return []
 
 
-def _render_focus_tasks(task_items: list[str], fallback: list[str]) -> tuple[str, list[tuple[str, str]]]:
-    return _shared_render_focus_tasks(task_items, fallback)
-
-
 def _render_agent_soul_from_blueprint(
     *,
     agent_name: str,
@@ -64,8 +59,7 @@ def _render_agent_soul_from_blueprint(
 
     Soul is the top of the 4-layer memory pyramid (T0→T2→T3→soul).
     Only permanent identity belongs here. Operational details (current goals,
-    wake policies, capabilities) go to the Objective Ledger, focus projection,
-    or runtime prompt sections.
+    wake policies, capabilities) live in triggers or runtime prompt sections.
     """
     blueprint = blueprint or {}
     personality_lines = _lines_from_text(personality)
@@ -216,93 +210,7 @@ def _render_agent_soul_from_blueprint(
         "- **Dream** consolidates memory and promotes key insights to this soul",
         "- User corrections and confirmed patterns are the highest-value signals",
         "",
-        "_Operational details live outside soul.md: Objective Ledger is the source of truth, Trigger is wake policy, and focus.md is a readable projection._",
-    ]
-    return "\n".join(parts).rstrip() + "\n"
-
-
-def _render_focus_from_blueprint(
-    *,
-    focus_content: str = "",
-    first_tasks: list[str] | None = None,
-    heartbeat_topics: str = "",
-    primary_users: list[str] | None = None,
-    core_outputs: list[str] | None = None,
-    ready_now: list[str] | None = None,
-    deferred_capabilities: list[str] | None = None,
-    manual_steps: list[str] | None = None,
-    triggers: list[dict] | None = None,
-) -> str:
-    """Render focus.md — readable projection of the agent's current objectives.
-
-    Objective Ledger is canonical. This projection is volatile and helps humans
-    inspect current objectives, setup debt, wake policies, and first success checks.
-    """
-    focus_lines = _lines_from_text(focus_content)
-    task_items = first_tasks or focus_lines[:3]
-    heartbeat_lines = _lines_from_text(heartbeat_topics)
-    trigger_lines = [
-        f"{str(trigger.get('name', 'unnamed')).strip()} ({str(trigger.get('type', 'manual')).strip()})"
-        for trigger in (triggers or [])
-        if isinstance(trigger, dict) and str(trigger.get("name", "")).strip()
-    ]
-    success_checks = []
-    if core_outputs:
-        success_checks.append(f"产出首个可审阅结果：{core_outputs[0]}")
-    rendered_tasks, normalized_tasks = _render_focus_tasks(
-        task_items,
-        fallback=[
-            "task_1 :: Read soul.md and restate the mission, users, and output contract in your own words.",
-            "task_2 :: Run the first objective using current builtin/default capabilities before requesting more tooling.",
-            "task_3 :: If a real capability gap blocks delivery, document the blocker clearly and evolve through the approved install path.",
-        ],
-    )
-    if normalized_tasks:
-        success_checks.append(f"完成并验证首个任务：{normalized_tasks[0][1]}")
-
-    parts = [
-        "# Focus",
-        "",
-        "## Initial Mission",
-        (
-            focus_lines[0]
-            if focus_lines
-            else "Understand the mission, verify capabilities, and deliver a first visible outcome."
-        ),
-        "",
-        "## Who This Agent Serves",
-        _markdown_bullets(primary_users or [], fallback=["The creator and their immediate team."]),
-        "",
-        "## Expected Outputs",
-        _markdown_bullets(core_outputs or [], fallback=["One visible deliverable tied to the mission."]),
-        "",
-        "## Tasks",
-        rendered_tasks,
-        "",
-        "## Starting Capabilities Available Now",
-        _markdown_bullets(ready_now or [], fallback=["No explicit ready-now capability list recorded yet."]),
-        "",
-        "## Capability Gaps To Validate",
-        _markdown_bullets(
-            deferred_capabilities or [],
-            fallback=[
-                "No deferred capability candidates recorded yet — prove the first version with builtin/default capabilities first."
-            ],
-        ),
-        "",
-        "## Human Setup Still Required",
-        _markdown_bullets(manual_steps or [], fallback=["No manual setup blockers recorded."]),
-        "",
-        "## Planned Wake Policies",
-        _markdown_bullets(trigger_lines, fallback=["No wake policies planned yet."]),
-        "",
-        "## Heartbeat Exploration Topics",
-        _markdown_bullets(heartbeat_lines, fallback=["No exploration topics declared yet."]),
-        "",
-        "## First Success Check",
-        _markdown_bullets(
-            success_checks, fallback=["Deliver one concrete output and verify the handoff path end-to-end."]
-        ),
+        "_Operational details live outside soul.md: triggers are wake policy, and your work ledger tracks in-flight work._",
     ]
     return "\n".join(parts).rstrip() + "\n"
 
@@ -430,30 +338,11 @@ class AgentManager:
                 rel_lines.append("_暂无关系信息。_")
             rel_path.write_text("\n".join(rel_lines), encoding="utf-8")
 
-        if blueprint:
-            focus_path = agent_dir / "focus.md"
-            focus_path.write_text(
-                _render_focus_from_blueprint(
-                    focus_content=str(blueprint.get("focus_content", "")),
-                    first_tasks=[str(t) for t in blueprint.get("first_tasks", []) if str(t).strip()],
-                    heartbeat_topics=str(blueprint.get("heartbeat_topics", "")),
-                    primary_users=[str(u) for u in blueprint.get("primary_users", []) if str(u).strip()],
-                    core_outputs=[str(o) for o in blueprint.get("core_outputs", []) if str(o).strip()],
-                    ready_now=[str(item) for item in blueprint.get("ready_now", []) if str(item).strip()],
-                    deferred_capabilities=[
-                        str(item) for item in blueprint.get("deferred_capabilities", []) if str(item).strip()
-                    ],
-                    manual_steps=[str(step) for step in blueprint.get("manual_steps", []) if str(step).strip()],
-                    triggers=[t for t in blueprint.get("triggers", []) if isinstance(t, dict)],
-                ),
-                encoding="utf-8",
-            )
-        try:
-            from app.services.objective_service import sync_agent_focus_file_to_objectives
-
-            await sync_agent_focus_file_to_objectives(db, agent, write_projection=True, commit=False)
-        except Exception as objective_err:
-            logger.warning("[AgentManager] Objective ledger bootstrap failed for %s: %s", agent.id, objective_err)
+        focus_path = agent_dir / "focus.md"
+        if not focus_path.exists():
+            # focus.md is an ordinary workspace scratch file (no longer projected
+            # into the prompt). Seed an empty header so the file exists.
+            focus_path.write_text("# Focus\n", encoding="utf-8")
 
         # Customize state.json
         state_path = agent_dir / "state.json"

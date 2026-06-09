@@ -16,8 +16,8 @@ def build_triggers_section(triggers: list[dict], *, budget_chars: int = 3000) ->
     lines = [
         "## Active Triggers",
         "",
-        "Active triggers are wake policies, not goals. Objective Ledger is the source of truth; "
-        "Trigger is wake policy; focus.md is a readable projection. Inspect objectives before acting.",
+        "Active triggers are wake policies, not goals. A trigger fires you on a schedule or "
+        "event; what you do once awake is up to you.",
     ]
     chars_used = 0
     for i, t in enumerate(triggers):
@@ -29,12 +29,9 @@ def build_triggers_section(triggers: list[dict], *, budget_chars: int = 3000) ->
         reason_str = (t.get("reason", "") or "")[:500]
         focus_ref = str(t.get("focus_ref") or "").strip()
         trigger_class = str(config_dict.get("trigger_class") or t.get("trigger_class") or "").strip()
-        objective_id = str(config_dict.get("objective_id") or t.get("objective_id") or "").strip()
         binding_parts = []
         if trigger_class:
             binding_parts.append(f"trigger_class: {trigger_class}")
-        if objective_id:
-            binding_parts.append(f"objective_id: {objective_id}")
         if focus_ref:
             binding_parts.append(f"focus_ref: {focus_ref}")
         binding = ", ".join(binding_parts) if binding_parts else "unclassified wake policy"

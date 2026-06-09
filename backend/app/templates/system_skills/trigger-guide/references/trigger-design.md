@@ -1,8 +1,8 @@
 # Trigger Design Reference
 
-Triggers are wake policies, not the source of truth for goals. Use objective
-state or workspace artifacts for durable task state, and triggers only to wake
-the agent later.
+Triggers are wake policies, not the goal itself. Use your work ledger or
+workspace artifacts for durable task state, and triggers only to wake the
+agent later.
 
 ## Type Selection
 
@@ -24,5 +24,5 @@ criteria, and what to do if the task is obsolete.
 
 - Check for existing equivalent triggers first.
 - Avoid duplicate recurring triggers.
-- Cancel triggers when their objective is complete.
+- Cancel triggers when their work is complete.
 - Use absolute timestamps with timezone when scheduling.

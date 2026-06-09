@@ -209,7 +209,7 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
         if not lpath.exists():
             lpath.write_text(learnings_seed, encoding="utf-8")
 
-    # Pre-create focus.md (Objective Ledger projection compatibility file)
+    # Pre-create focus.md (ordinary workspace scratch file; not projected into the prompt)
     focus_path = ws / "focus.md"
     if not focus_path.exists():
         focus_path.write_text("# Focus\n\n## Tasks\n", encoding="utf-8")
@@ -280,7 +280,7 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
         except Exception:
             hb_content = (
                 "# Heartbeat\n\n"
-                "Inspect the Objective Ledger and its focus.md projection, take one evidence-backed useful action, "
+                "Review your recent work and memory, take one evidence-backed useful action, "
                 "then reply HEARTBEAT_OK if nothing needed.\n"
             )
         (ws / "HEARTBEAT.md").write_text(hb_content, encoding="utf-8")

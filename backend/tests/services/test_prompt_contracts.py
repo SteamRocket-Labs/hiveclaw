@@ -416,16 +416,13 @@ def test_runtime_prompt_surfaces_do_not_reintroduce_legacy_focus_truth_source() 
     ]
     combined = "\n".join((project_root / path).read_text(encoding="utf-8") for path in prompt_surface_paths)
 
-    required_phrases = [
+    # The AgentObjective subsystem and the focus.md "Objective Projection" were
+    # retired. Runtime prompt surfaces must NOT reintroduce the legacy
+    # objective-ledger-as-truth-source framing.
+    banned_phrases = [
         "Objective Ledger is the source of truth",
-        "Trigger is wake policy",
         "focus.md is a readable projection",
         "Objective Projection",
-    ]
-    for phrase in required_phrases:
-        assert phrase in combined
-
-    banned_phrases = [
         "One-off notes, transient state, and raw transcripts belong in memory",
         "these belong in focus.md, not memory",
         "Ephemeral in-progress state (belongs in focus.md)",

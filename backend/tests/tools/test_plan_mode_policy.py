@@ -33,7 +33,6 @@ def test_readonly_and_planning_aid_tools_allowed():
         "search_memory",
         "load_memory",
         "list_triggers",
-        "list_objectives",
         "get_current_time",
         "tool_search",
         "load_skill",

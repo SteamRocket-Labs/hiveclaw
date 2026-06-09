@@ -18,36 +18,33 @@ class TestAssembleGroupsByKind:
     def test_all_sections_present(self) -> None:
         items = [
             _make_item(MemoryKind.SEMANTIC, "User prefers dark mode"),
-            _make_item(MemoryKind.WORKING, "Current focus: deploy v2"),
             _make_item(MemoryKind.EPISODIC, "Previously discussed auth flow"),
             _make_item(MemoryKind.EXTERNAL, "Viking: project architecture doc"),
         ]
         assembler = MemoryAssembler()
         result = assembler.assemble(items)
 
-        assert "[Objective Projection]" in result
+        assert "[Objective Projection]" not in result
         assert "[Working Memory]" not in result
         assert "[Episodic Memory]" in result
         assert "[Semantic Memory]" in result
         assert "[External Memory]" in result
 
     def test_section_order(self) -> None:
-        """Objective projection -> Episodic -> Semantic -> External."""
+        """Episodic -> Semantic -> External."""
         items = [
             _make_item(MemoryKind.EXTERNAL, "external fact"),
             _make_item(MemoryKind.SEMANTIC, "semantic fact"),
-            _make_item(MemoryKind.WORKING, "working focus"),
             _make_item(MemoryKind.EPISODIC, "episodic summary"),
         ]
         assembler = MemoryAssembler()
         result = assembler.assemble(items)
 
-        working_pos = result.index("[Objective Projection]")
         episodic_pos = result.index("[Episodic Memory]")
         semantic_pos = result.index("[Semantic Memory]")
         external_pos = result.index("[External Memory]")
 
-        assert working_pos < episodic_pos < semantic_pos < external_pos
+        assert episodic_pos < semantic_pos < external_pos
 
     def test_empty_items(self) -> None:
         assembler = MemoryAssembler()
@@ -63,15 +60,6 @@ class TestAssembleGroupsByKind:
         assert "- fact one" in result
         assert "- fact two" in result
         assert "[Objective Projection]" not in result
-
-    def test_working_memory_no_bullet(self) -> None:
-        """Working memory content is rendered without bullet prefix."""
-        items = [_make_item(MemoryKind.WORKING, "Current focus: ship feature")]
-        assembler = MemoryAssembler()
-        result = assembler.assemble(items)
-
-        assert "Current focus: ship feature" in result
-        assert "- Current focus" not in result
 
     def test_higher_score_items_render_first_within_section(self) -> None:
         items = [
@@ -96,23 +84,23 @@ class TestAssembleBudgetTrim:
         assert "[Semantic Memory]" in result
 
     def test_small_budget_still_produces_output(self) -> None:
-        items = [_make_item(MemoryKind.WORKING, "short")]
+        items = [_make_item(MemoryKind.EPISODIC, "short")]
         assembler = MemoryAssembler()
         result = assembler.assemble(items, budget_chars=50)
 
-        assert "[Objective Projection]" in result
+        assert "[Episodic Memory]" in result
         assert "short" in result
 
     def test_budget_prioritizes_earlier_sections(self) -> None:
-        """When budget is tight, working memory (first) gets included over external (last)."""
+        """When budget is tight, episodic memory (first) gets included over external (last)."""
         items = [
-            _make_item(MemoryKind.WORKING, "A" * 100),
+            _make_item(MemoryKind.EPISODIC, "A" * 100),
             _make_item(MemoryKind.EXTERNAL, "B" * 100),
         ]
         assembler = MemoryAssembler()
         result = assembler.assemble(items, budget_chars=120)
 
-        assert "[Objective Projection]" in result
+        assert "[Episodic Memory]" in result
         # External may be trimmed out due to budget
         assert "B" * 100 not in result
 
@@ -240,13 +228,6 @@ class TestAssembleFreshnessIntegration:
     def test_fresh_semantic_no_warning_in_output(self) -> None:
         now = datetime.now(UTC).isoformat()
         items = [_make_item(MemoryKind.SEMANTIC, "new fact", timestamp=now)]
-        assembler = MemoryAssembler()
-        result = assembler.assemble(items)
-        assert "verify before acting" not in result
-
-    def test_working_memory_never_gets_warning(self) -> None:
-        old = (datetime.now(UTC) - timedelta(days=30)).isoformat()
-        items = [_make_item(MemoryKind.WORKING, "focus", timestamp=old)]
         assembler = MemoryAssembler()
         result = assembler.assemble(items)
         assert "verify before acting" not in result

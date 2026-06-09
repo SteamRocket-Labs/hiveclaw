@@ -84,12 +84,13 @@ class TestMemorySection:
     def test_has_header(self) -> None:
         assert "## Your Memory System" in build_memory_section()
 
-    def test_has_4_layers(self) -> None:
+    def test_has_md_pyramid_layers(self) -> None:
         section = build_memory_section()
         assert "**T0**" in section
-        assert "**T1**" in section
         assert "**T2**" in section
         assert "**T3**" in section
+        # The objective/focus-projection "T1" layer was retired.
+        assert "**T1**" not in section
 
     def test_snapshot_injected(self) -> None:
         section = build_memory_section("feedback: user prefers concise")
@@ -118,20 +119,18 @@ class TestTriggersSection:
                     "type": "cron",
                     "config": {
                         "expr": "0 9 * * *",
-                        "trigger_class": "objective_task",
-                        "objective_id": "obj-123",
+                        "trigger_class": "scheduled_job",
                     },
-                    "reason": "Produce the daily brief and call complete_objective with the artifact path.",
+                    "reason": "Produce the daily brief and save the artifact path.",
                     "focus_ref": "daily_brief",
                 }
             ]
         )
 
         assert "wake policies, not goals" in section
-        assert "trigger_class: objective_task" in section
-        assert "objective_id: obj-123" in section
+        assert "trigger_class: scheduled_job" in section
         assert "focus_ref: daily_brief" in section
-        assert "complete_objective" in section
+        assert "objective_id" not in section
 
 
 class TestEnvironmentSection:

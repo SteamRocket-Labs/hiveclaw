@@ -34,8 +34,6 @@ def test_trigger_view_default_hides_internal_fields_and_surfaces_backoff():
 
     view = build_trigger_view(
         trigger,
-        objectives_by_id={},
-        objectives_by_key={},
         attempts=[],
         include_diagnostics=False,
         now=datetime.now(timezone.utc),
@@ -54,26 +52,11 @@ def test_trigger_view_default_hides_internal_fields_and_surfaces_backoff():
 def test_trigger_view_diagnostics_are_explicitly_separated():
     from app.services.autonomy_overview import build_trigger_view
 
-    objective_id = uuid4()
-    objective = SimpleNamespace(
-        id=objective_id,
-        objective_key="send_report",
-        description="Send report to the team",
-        status="proposed",
-        priority=1,
-        source="conversation",
-        success_criteria="Message sent with confirmation",
-        blocked_reason=None,
-        metadata_json={"requires_approval": True},
-        created_at=None,
-        updated_at=None,
-        completed_at=None,
-    )
     trigger = SimpleNamespace(
         id=uuid4(),
         name="send_report_wake",
         type="once",
-        config={"trigger_class": "objective_task", "objective_id": str(objective_id)},
+        config={"trigger_class": "scheduled_job", "failure_count": 0},
         reason="Follow up on the requested report",
         focus_ref="send_report",
         is_enabled=True,
@@ -87,19 +70,17 @@ def test_trigger_view_diagnostics_are_explicitly_separated():
 
     view = build_trigger_view(
         trigger,
-        objectives_by_id={str(objective_id): objective},
-        objectives_by_key={"send_report": objective},
         attempts=[],
         include_diagnostics=True,
     )
 
-    assert view["display_kind"] == "objective_task"
-    assert view["display_title"] == "Send report to the team"
-    assert view["attention_state"] == "waiting_approval"
-    assert view["next_action"] == "approve_or_reject_objective"
-    assert view["linked_objective"]["id"] == str(objective_id)
-    assert view["diagnostics"]["trigger_class"] == "objective_task"
-    assert view["diagnostics"]["objective_id"] == str(objective_id)
+    assert view["display_kind"] == "scheduled_job"
+    assert view["display_title"] == "Follow up on the requested report"
+    # Internal config is only exposed under the explicit diagnostics block.
+    assert "config" not in view
+    assert view["diagnostics"]["trigger_class"] == "scheduled_job"
+    assert view["diagnostics"]["focus_ref"] == "send_report"
+    assert "objective_id" not in view["diagnostics"]
     assert view["diagnostics"]["focus_ref"] == "send_report"
 
 
@@ -114,7 +95,6 @@ def test_runtime_task_view_maps_internal_skip_reason_to_user_reason():
         metadata_json={
             "skip_reason": "no_model",
             "trigger_ids": ["trigger-1"],
-            "objective_ids": ["objective-1"],
             "output_artifact": {"path": "runtime_artifacts/triggers/run.json"},
         },
         created_at=datetime.now(timezone.utc),

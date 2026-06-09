@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 MAX_TRIGGERS_PER_AGENT = 20
 VALID_TRIGGER_TYPES = {"cron", "once", "interval", "poll", "on_message", "webhook"}
-VALID_TRIGGER_CLASSES = {"objective_task", "scheduled_job", "event_wait", "system_maintenance"}
+VALID_TRIGGER_CLASSES = {"scheduled_job", "event_wait", "system_maintenance"}
 EVENT_WAIT_TRIGGER_TYPES = {"poll", "on_message", "webhook"}
 SCHEDULED_TRIGGER_TYPES = {"cron", "once", "interval"}
 
@@ -208,12 +208,9 @@ def _resolve_trigger_class(
         or config.get("trigger_kind")
         or config.get("kind")
     )
-    objective_id = str(arguments.get("objective_id") or config.get("objective_id") or "").strip()
     trigger_class = str(raw_class or "").strip()
     if not trigger_class:
-        if focus_ref or objective_id:
-            trigger_class = "objective_task"
-        elif trigger_type in EVENT_WAIT_TRIGGER_TYPES:
+        if trigger_type in EVENT_WAIT_TRIGGER_TYPES:
             trigger_class = "event_wait"
         elif trigger_type in SCHEDULED_TRIGGER_TYPES:
             trigger_class = "scheduled_job"
@@ -224,19 +221,10 @@ def _resolve_trigger_class(
             tool_name,
             "bad_arguments",
             f"Invalid trigger_class '{trigger_class}'. Valid values: {', '.join(sorted(VALID_TRIGGER_CLASSES))}.",
-            actionable_hint="Use objective_task, scheduled_job, event_wait, or system_maintenance.",
+            actionable_hint="Use scheduled_job, event_wait, or system_maintenance.",
         )
 
-    if trigger_class == "objective_task" and not (focus_ref or objective_id):
-        return None, _trigger_error(
-            tool_name,
-            "bad_arguments",
-            "trigger_class='objective_task' requires focus_ref or config.objective_id.",
-            actionable_hint="Bind the objective trigger to a focus.md checklist id via focus_ref, or pass config.objective_id once the objective ledger exists.",
-        )
     config["trigger_class"] = trigger_class
-    if objective_id:
-        config["objective_id"] = objective_id
     return trigger_class, None
 
 
@@ -273,27 +261,6 @@ def _validate_trigger_lifecycle_policy(tool_name: str, trigger_type: str, config
         "event_wait trigger requires max_fires or expires_at to prevent indefinite waiting.",
         actionable_hint="Pass max_fires=1 for one reply/event, or expires_at as an ISO timestamp.",
     )
-
-
-async def _bind_objective_for_trigger(db, agent, config: dict, focus_ref: str | None, reason: str) -> bool:
-    if str(config.get("trigger_class") or "").strip() != "objective_task":
-        return False
-    from app.services.objective_service import ensure_objective_for_trigger
-
-    objective = await ensure_objective_for_trigger(
-        db,
-        agent,
-        focus_ref=str(focus_ref).strip() if focus_ref else None,
-        description=reason,
-        objective_id=str(config.get("objective_id") or "").strip() or None,
-    )
-    if not objective:
-        return False
-    objective_id = str(objective.id)
-    if config.get("objective_id") == objective_id:
-        return False
-    config["objective_id"] = objective_id
-    return True
 
 
 async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
@@ -415,13 +382,6 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                         "not_configured",
                         "reply_to_current_sender requires a live channel conversation with a persisted reply target.",
                     )
-                await _bind_objective_for_trigger(
-                    db,
-                    _agent_obj or type("AgentRef", (), {"id": agent_id, "tenant_id": None})(),
-                    config,
-                    focus_ref,
-                    reason,
-                )
                 existing.type = ttype
                 existing.config = config
                 existing.reason = reason
@@ -447,14 +407,6 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                     "not_configured",
                     "reply_to_current_sender requires a live channel conversation with a persisted reply target.",
                 )
-            await _bind_objective_for_trigger(
-                db,
-                _agent_obj or type("AgentRef", (), {"id": agent_id, "tenant_id": None})(),
-                config,
-                focus_ref,
-                reason,
-            )
-
             trigger = AgentTrigger(
                 agent_id=agent_id,
                 name=name,
@@ -519,7 +471,6 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
         and new_reason is None
         and new_focus_ref is None
         and arguments.get("trigger_class") is None
-        and arguments.get("objective_id") is None
         and arguments.get("max_fires") is None
         and arguments.get("expires_at") is None
         and arguments.get("cooldown_seconds") is None
@@ -552,8 +503,6 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                 final_config = dict(new_config)
             if arguments.get("trigger_class") is not None:
                 final_config["trigger_class"] = arguments.get("trigger_class")
-            if arguments.get("objective_id") is not None:
-                final_config["objective_id"] = arguments.get("objective_id")
             if new_focus_ref is not None:
                 final_focus_ref = str(new_focus_ref).strip() or None
             final_config = stamp_confirmed_plan_provenance(
@@ -577,25 +526,9 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
             if lifecycle_error:
                 return lifecycle_error
 
-            objective_bound = False
-            if _trigger_class == "objective_task":
-                from app.models.agent import Agent as _AgentModel
-
-                agent_result = await db.execute(select(_AgentModel).where(_AgentModel.id == agent_id))
-                agent_obj = agent_result.scalar_one_or_none()
-                objective_bound = await _bind_objective_for_trigger(
-                    db,
-                    agent_obj or type("AgentRef", (), {"id": agent_id, "tenant_id": None})(),
-                    final_config,
-                    final_focus_ref,
-                    new_reason or trigger.reason,
-                )
-
             if (
                 new_config is not None
                 or arguments.get("trigger_class") is not None
-                or arguments.get("objective_id") is not None
-                or objective_bound
             ):
                 old_config = trigger.config
                 trigger.config = final_config
@@ -709,36 +642,32 @@ async def _handle_list_triggers(agent_id: uuid.UUID) -> str:
             lines.append(f"| {t.name} | {t.type} | {config_str} | {reason_str} | {status} | {t.fire_count} |")
 
         if agent is not None:
-            focus_text, focus_error = autonomous_audit._read_focus_text(agent_id)
             report = autonomous_audit.audit_agent_autonomy_snapshot(
                 agent=agent,
-                focus_text=focus_text,
                 triggers=list(triggers),
-                focus_read_error=focus_error,
             )
             findings = report.get("findings", [])
             if findings:
                 lines.extend([
                     "",
                     "## Trigger Diagnostics",
-                    "| Severity | Category | Focus | Trigger | Recommendation |",
-                    "|----------|----------|-------|---------|----------------|",
+                    "| Severity | Category | Trigger | Recommendation |",
+                    "|----------|----------|---------|----------------|",
                 ])
                 trigger_names_by_id = {str(t.id): t.name for t in triggers}
                 for finding in findings[:20]:
                     trigger_id = finding.get("trigger_id")
                     trigger_name = trigger_names_by_id.get(str(trigger_id), "") if trigger_id else ""
                     lines.append(
-                        "| {severity} | {category} | {focus_ref} | {trigger} | {recommendation} |".format(
+                        "| {severity} | {category} | {trigger} | {recommendation} |".format(
                             severity=finding.get("severity", ""),
                             category=finding.get("category", ""),
-                            focus_ref=finding.get("focus_ref") or "",
                             trigger=trigger_name,
                             recommendation=str(finding.get("recommendation", "")).replace("|", "/")[:160],
                         )
                     )
                 if len(findings) > 20:
-                    lines.append(f"| info | truncated | | | {len(findings) - 20} more diagnostics omitted |")
+                    lines.append(f"| info | truncated | | {len(findings) - 20} more diagnostics omitted |")
 
         return "\n".join(lines)
 

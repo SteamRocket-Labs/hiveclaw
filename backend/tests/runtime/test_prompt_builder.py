@@ -428,7 +428,7 @@ def test_dynamic_suffix_injects_autonomous_section_for_trigger() -> None:
     assert "Autonomous Work" in suffix
     assert "no live user" in suffix.lower()
     assert "bias toward action" in suffix.lower()  # CC: prefer doing over asking
-    assert "objective ledger" in suffix.lower()  # state recording responsibility
+    assert "work ledger" in suffix.lower()  # state recording responsibility (CC Work Ledger, not objectives)
     assert "do not invent work" in suffix.lower()  # pacing: clean exit over busy-loop
 
 

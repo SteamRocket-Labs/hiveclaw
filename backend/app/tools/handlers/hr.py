@@ -167,9 +167,9 @@ basin to cluster around. You are setting the agent's gravitational center.
 **What belongs in soul.md**: durable identity, role mission, personality as
 observable behaviors, hard boundaries, user/output contracts, quality standards.
 
-**What does NOT belong** (these go to the objective ledger / focus projection, which is volatile):
-current tasks, tool configs, trigger schedules, capability lists, dates,
-temporary priorities, current events.
+**What does NOT belong** (these are volatile and live in triggers or the agent's
+work ledger): current tasks, tool configs, trigger schedules, capability lists,
+dates, temporary priorities, current events.
 </pipeline_context>
 
 <raw_inputs>
@@ -236,7 +236,7 @@ Think: what goes wrong if this agent is careless?
 - GOOD: ["Every analytical conclusion must be traceable to at least one data source",
   "Recommendations must include actionable next steps and risk flags"]
 
-**first_tasks** — exactly 3 concrete first assignments (go to the objective ledger, not soul).
+**first_tasks** — exactly 3 concrete first assignments (drive the boot trigger, not soul).
 Each task must start with builtin/default capabilities when possible.
 - BAD: ["Read soul.md", "Check capabilities", "Do something useful"]
 - GOOD (research role):
@@ -1081,11 +1081,11 @@ def _build_create_employee_result(
                 },
                 "focus_content": {
                     "type": "string",
-                    "description": "Initial objective/focus projection content — what should the agent work on first? Written as a task list or agenda in markdown.",
+                    "description": "What should the agent work on first? Written as a task list or agenda in markdown.",
                 },
                 "heartbeat_topics": {
                     "type": "string",
-                    "description": "Role-specific exploration topics, written into the initial objective/focus projection. E.g. 'Focus on AI/VC funding news, semiconductor breakthroughs, and founder movements.'",
+                    "description": "Role-specific exploration topics for the agent's heartbeat. E.g. 'Focus on AI/VC funding news, semiconductor breakthroughs, and founder movements.'",
                 },
             },
             "required": ["name"],
@@ -1385,31 +1385,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
 
             agent_dir = agent_manager._agent_dir(agent.id)
 
-            # P4: HR-confirmed first tasks are active objectives, not merely
-            # focus.md projection rows. Keep the objective ledger as source of truth.
-            from app.models.objective import AgentObjective
             from app.services.focus_state import normalize_focus_task_id as _normalize_focus_task_id
-            from app.services import objective_intake as _objective_intake
-            from app.services.objective_wake_reconciler import build_objective_trigger_payload
-
-            _objective_rows = await db.execute(select(AgentObjective).where(AgentObjective.agent_id == agent.id))
-            _initial_objectives = list(_objective_rows.scalars().all())
-            for _objective in _initial_objectives:
-                if _objective.status not in {"completed", "rejected"}:
-                    _objective.status = "active"
-                _objective.source = "hr_blueprint"
-                _meta = dict(_objective.metadata_json or {})
-                _meta.update(
-                    {
-                        "intake_source": "hr_blueprint",
-                        "autonomy_class": "confirmed_hr_blueprint",
-                        "plan_exempt_reason": plan_mode_core.PLAN_EXEMPT_CONFIRMED_HR_BLUEPRINT,
-                        "risk_level": "low",
-                        "confidence": 1.0,
-                        "requires_approval": False,
-                    }
-                )
-                _objective.metadata_json = _meta
 
             # Create triggers (scheduled tasks)
             if triggers:
@@ -1452,28 +1428,11 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                     _trigger_name = str(trig.get("name", "task") or "task").strip()
                     _trigger_reason = str(trig.get("reason", "") or "").strip()
                     _trigger_key = _normalize_focus_task_id(_trigger_name)
-                    _trigger_objective = await _objective_intake.upsert_objective_candidate(
-                        db,
-                        agent,
-                        _objective_intake.ObjectiveCandidate(
-                            agent_id=agent.id,
-                            tenant_id=effective_tenant_id,
-                            description=_trigger_reason or _trigger_name,
-                            source="hr_blueprint",
-                            autonomy_class="confirmed_hr_blueprint",
-                            risk_level="low",
-                            confidence=1.0,
-                            evidence={"trigger": trig},
-                            objective_key=_trigger_key,
-                            success_criteria=_trigger_reason or None,
-                            priority=5,
-                            wake_policy={"type": trig_type, "config": raw_config},
-                        ),
-                        commit=False,
-                    )
                     raw_config = dict(raw_config)
-                    raw_config["trigger_class"] = "objective_task"
-                    raw_config["objective_id"] = str(_trigger_objective.id)
+                    raw_config.setdefault(
+                        "trigger_class",
+                        "event_wait" if trig_type in {"poll", "on_message", "webhook"} else "scheduled_job",
+                    )
                     raw_config = _stamp_hr_blueprint_trigger_exemption(raw_config)
                     db.add(
                         AgentTrigger(
@@ -1487,9 +1446,8 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                     )
                 await db.flush()
 
-            # Kick-start: create ONE trigger for the first active objective.
-            # After completing it, the agent must call complete_objective with evidence;
-            # the objective wake reconciler handles follow-up wake policies.
+            # Kick-start: create ONE 'once' boot trigger so the new agent wakes
+            # shortly after creation and starts its first task.
             _first_tasks = _refined.get("first_tasks", [])
             _boot_task = next((str(t).strip() for t in _first_tasks if str(t).strip()), "")
             if not _boot_task:
@@ -1497,50 +1455,22 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
             if _boot_task:
                 from app.models.trigger import AgentTrigger
 
-                _first_key = "task_1"
-                _first_objective = next(
-                    (
-                        obj
-                        for obj in _initial_objectives
-                        if _normalize_focus_task_id(str(getattr(obj, "objective_key", ""))) == _first_key
-                    ),
-                    _initial_objectives[0] if _initial_objectives else None,
+                _fire_at = (_dt.now(_tz.utc) + __import__("datetime").timedelta(seconds=30)).isoformat()
+                db.add(
+                    AgentTrigger(
+                        agent_id=agent.id,
+                        name="focus_boot",
+                        type="once",
+                        config=_stamp_hr_blueprint_trigger_exemption(
+                            {"at": _fire_at, "trigger_class": "scheduled_job"}
+                        ),
+                        reason=(
+                            f"Read soul.md for your full mission. Start with this first task: {_boot_task}\n\n"
+                            "Record progress and evidence in your work ledger as you go."
+                        ),
+                        focus_ref="task_1",
+                    )
                 )
-                if _first_objective is not None:
-                    _boot_payload = build_objective_trigger_payload(_first_objective)
-                    _boot_payload["name"] = "focus_boot"
-                    _boot_payload["reason"] = (
-                        f"Read the objective ledger and focus projection for your full mission. "
-                        f"Start with this first task: {_boot_task}\n\n"
-                        "When genuinely complete, call complete_objective with concrete evidence."
-                    )
-                    _boot_payload["config"] = _stamp_hr_blueprint_trigger_exemption(_boot_payload["config"])
-                    db.add(
-                        AgentTrigger(
-                            agent_id=agent.id,
-                            name=_boot_payload["name"],
-                            type=_boot_payload["type"],
-                            config=_boot_payload["config"],
-                            reason=_boot_payload["reason"],
-                            focus_ref=_boot_payload["focus_ref"],
-                        )
-                    )
-                else:
-                    _fire_at = (_dt.now(_tz.utc) + __import__("datetime").timedelta(seconds=30)).isoformat()
-                    db.add(
-                        AgentTrigger(
-                            agent_id=agent.id,
-                            name="focus_boot",
-                            type="once",
-                            config=_stamp_hr_blueprint_trigger_exemption(
-                                {"at": _fire_at, "trigger_class": "scheduled_job"}
-                            ),
-                            reason=(
-                                f"Inspect the Objective Ledger and focus.md projection for your mission. Start with this first task: {_boot_task}\n\n"
-                                "After completing it, update the objective ledger with evidence."
-                            ),
-                        )
-                    )
                 await db.flush()
                 logger.info("[HR] Created boot trigger for agent %s: %s", agent.id, _boot_task[:80])
 

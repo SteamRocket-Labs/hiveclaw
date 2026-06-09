@@ -54,7 +54,7 @@ def list_files(workspace: Path, arguments: dict, tenant_id: str | None = None) -
         description=(
             "Read file contents from the workspace.\n\n"
             "Usage:\n"
-            "- Common files: soul.md (personality), memory/feedback.md or memory/knowledge.md (memory), focus.md (objective projection), "
+            "- Common files: soul.md (personality), memory/feedback.md or memory/knowledge.md (memory), focus.md (task scratch file), "
             "tasks.json (tasks), skills/*.md (skill files), enterprise_info/ (shared company info)\n"
             "- For large files, the output may be truncated. Check if the result ends with a truncation marker.\n"
             "- You can read office documents (PDF, Word, Excel) via the separate `read_document` tool.\n"

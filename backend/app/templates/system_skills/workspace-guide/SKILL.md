@@ -1,6 +1,6 @@
 ---
 name: Workspace Guide
-description: "Use when Codex needs to inspect, create, edit, or deliver workspace files while respecting managed-memory boundaries, file ownership, and artifact handoff rules."
+description: "Use when you need to inspect, create, edit, or deliver workspace files while respecting managed-memory boundaries, file ownership, and artifact handoff rules."
 tools:
   - read_document
   - read_file
@@ -18,16 +18,16 @@ is_system: true
 # Workspace Guide
 
 <role>
-Use this skill when you need to read or write files in your workspace,
-inspect your objective ledger or focus projection, or deliver results through a channel. The
-workspace is where your long-lived work lives — chat history disappears
-after the session ends, but files in `workspace/`, `focus.md`, and
-`memory/` persist and can be shared, referenced, and built upon.
+Use this skill when you need to read or write files in your workspace, or
+deliver results through a channel. The workspace is where your long-lived work
+lives — chat history disappears after the session ends, but files in
+`workspace/`, `focus.md`, and `memory/` persist and can be shared, referenced,
+and built upon.
 </role>
 
 <when_to_use>
 - You need to discover, read, write, or edit files under your agent workspace
-- You need to inspect the objective ledger or its `focus.md` projection
+- You need to track your in-flight tasks in the `focus.md` scratch file
 - You need to deliver a file to the current channel's user
 - You want to confirm workspace structure before creating new files
 - You need to inspect enterprise-wide shared content under `enterprise_info/`
@@ -47,7 +47,7 @@ after the session ends, but files in `workspace/`, `focus.md`, and
 
 ```
 soul.md              — Your permanent identity (read-only, updated by dream)
-focus.md             — Readable projection of your objective ledger (not the source of truth)
+focus.md             — Scratch file for your current tasks (not auto-projected)
 HEARTBEAT.md         — Heartbeat curation protocol
 relationships.md     — Your colleague list
 
@@ -110,9 +110,10 @@ Always use tools for file operations — tool results are the source of truth:
 ### Reading before writing
 Verify before asserting: `read_file` before claiming a file's contents, `glob_search` or `list_files` before writing to check for existing paths.
 
-### Objective projection
-Objective Ledger is the source of truth. Trigger is wake policy. focus.md is a readable projection.
-Use objective tools for state changes; read focus.md only as compact human-readable context.
+### focus.md scratch file
+`focus.md` is an ordinary workspace scratch file for jotting your current
+tasks. It is NOT auto-projected into your prompt and is NOT a source of truth —
+treat it like any other note you keep for yourself.
 
 Format:
 ```markdown
@@ -127,9 +128,8 @@ Current mission statement
 ```
 
 **Self-direction rules:**
-- When you discover new work → call `propose_objective`; create a trigger only when this is an active objective or explicit scheduled job.
-- When you complete a task → call `complete_objective` with concrete evidence and cancel obsolete triggers.
-- When waking up from a trigger → call `list_objectives` and read `focus.md` only as compact context.
+- When you discover follow-up work → create a trigger as a wake policy and classify it (`scheduled_job` / `event_wait` / `system_maintenance`).
+- When you complete a task → record the outcome with concrete evidence in your work ledger and cancel obsolete triggers.
 
 ### File delivery
 
@@ -167,21 +167,15 @@ send_channel_file(file_path="workspace/market-research-2026-04-16.md")
 ```
 Output: `已保存到 workspace/market-research-2026-04-16.md 并通过当前对话渠道发给你。`
 
-### Example B — Create an objective when new work arrives
+### Example B — Schedule a future deliverable
 
 Input: `下周帮我出一份季度总结`
 
 Correct flow:
 ```
-list_objectives()
-propose_objective(
-  objective_key="q2_summary",
-  description="出 Q2 季度总结，下周五前",
-  autonomy_class="explicit_user_request",
-  risk_level="low",
-  evidence={"request": "user asked for Q2 summary"}
-)
-# Then load Trigger Management Guide and set a once wake policy with trigger_class="objective_task" and focus_ref="q2_summary"
+list_triggers()  # check for an existing equivalent wake policy
+# Then load the Trigger Management Guide and set a `once` wake policy with
+# trigger_class="scheduled_job" and focus_ref="q2_summary"
 ```
 
 ### Example C — Do NOT write to managed directories
@@ -199,7 +193,7 @@ Correct response: `memory/learnings/ 是由记忆管道自动管理的，手动�
 - ❌ **Write directly to `memory/learnings/`, `evolution/`, or `logs/`** → the automated memory pipeline manages these. Writing causes conflicts and data corruption. Use `save_memory` for explicit user-level preferences or write to `workspace/` for general notes.
 - ❌ **Claim a file exists without verifying via `read_file` or `glob_search`** → the tool result is the source of truth; don't assert based on what you wrote earlier in the session (might have failed silently).
 - ❌ **Use absolute paths** like `/data/agents/xxx` for channel file delivery → `send_channel_file` expects workspace-relative paths (`workspace/xxx`). Absolute paths either fail or leak internal infrastructure.
-- ❌ **Edit `focus.md` as if it were the source of truth** → it is a projection. Use objective tools, then create/bind triggers for active follow-up.
+- ❌ **Treat `focus.md` as a source of truth** → it is a personal scratch file, not auto-projected. Durable state belongs in your work ledger or workspace artifacts; create triggers for active follow-up.
 - ❌ **Overwrite an existing file without reading it first** → you may clobber prior work. Read before write, or use `edit_file` for a scoped update.
 - ❌ **Forward a message without attribution** → target user can't tell who really asked. Always name the requester ("A asked me to...").
 - ❌ **Invent tool names for operations the workspace doesn't support** → e.g. a fabricated `delete_*` or `move_*` tool when your current toolset doesn't include one. Use what's there; if no tool exists, ask the user or the admin.
@@ -211,7 +205,7 @@ Correct response: `memory/learnings/ 是由记忆管道自动管理的，手动�
 <success_criteria>
 - Every file claim (exists, contains X, was updated) is backed by a `read_file` or `glob_search` result in this session.
 - Paths delivered via `send_channel_file` are workspace-relative and verified to exist first.
-- Objective ledger is updated when work arrives or completes; no active objectives without wake policy unless explicitly manual/no-wake.
+- Follow-up work is captured as a classified trigger; completed work is recorded with evidence in the work ledger.
 - Automatically-managed directories (`memory/learnings/`, `evolution/`, `logs/`) are never written to by this agent directly.
 - Messages forwarded on behalf of someone else always name the original requester.
 </success_criteria>

@@ -125,13 +125,12 @@ def test_agent_runtime_tasks_endpoint_passes_filters(monkeypatch):
     agent_id = uuid4()
     captured = {}
 
-    async def fake_runtime_tasks(*, db, agent_id, task_type, trigger_id, objective_id, status, limit, include_diagnostics):
+    async def fake_runtime_tasks(*, db, agent_id, task_type, trigger_id, status, limit, include_diagnostics):
         captured.update(
             {
                 "agent_id": agent_id,
                 "task_type": task_type,
                 "trigger_id": trigger_id,
-                "objective_id": objective_id,
                 "status": status,
                 "limit": limit,
                 "include_diagnostics": include_diagnostics,

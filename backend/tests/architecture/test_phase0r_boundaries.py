@@ -83,16 +83,15 @@ def test_agent_tools_exposes_only_public_approved_execution_boundary() -> None:
     assert "_execute_tool_direct" not in source
 
 
-def test_objective_ledger_is_focus_projection_source() -> None:
-    objective_model = (APP_ROOT / "models/objective.py").read_text(encoding="utf-8")
-    objective_service = (APP_ROOT / "services/objective_service.py").read_text(encoding="utf-8")
+def test_focus_state_is_only_a_slug_normalizer() -> None:
+    # The AgentObjective subsystem and the focus.md projection were retired;
+    # focus_state.py keeps only the slug helper that trigger code still uses.
     focus_state = (APP_ROOT / "services/focus_state.py").read_text(encoding="utf-8")
 
-    assert '__tablename__ = "agent_objectives"' in objective_model
-    assert "AUTO-GENERATED FROM agent_objectives" in objective_service
-    assert "def render_focus_projection" in objective_service
-    assert "def sync_focus_text_to_objectives" in objective_service
+    assert "def normalize_focus_task_id" in focus_state
     assert "from app.models.objective import AgentObjective" not in focus_state
+    assert "def render_focus_tasks" not in focus_state
+    assert "def parse_focus_tasks" not in focus_state
 
 
 def test_trigger_and_heartbeat_runs_are_attempt_ledger_entries() -> None:
@@ -105,14 +104,11 @@ def test_trigger_and_heartbeat_runs_are_attempt_ledger_entries() -> None:
     assert "RuntimeTask" in heartbeat
 
 
-def test_objective_sessions_are_stable_and_distinct_from_scheduled_jobs() -> None:
+def test_trigger_sessions_are_created_per_wake() -> None:
     trigger_daemon = (APP_ROOT / "services/trigger_daemon.py").read_text(encoding="utf-8")
     heartbeat = (APP_ROOT / "services/heartbeat.py").read_text(encoding="utf-8")
     runtime_invoker = (APP_ROOT / "runtime/invoker.py").read_text(encoding="utf-8")
 
-    assert "def _trigger_objective_session_key" in trigger_daemon
-    assert 'return f"objective:{objective_id}"' in trigger_daemon
-    assert "external_conv_id=objective_session_key" in trigger_daemon
     assert 'source_channel="trigger"' in trigger_daemon
     assert "_get_or_create_heartbeat_session_ctx" in heartbeat
     assert "session_context: SessionContext | None = None" in runtime_invoker

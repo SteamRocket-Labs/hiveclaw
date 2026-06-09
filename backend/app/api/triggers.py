@@ -55,7 +55,6 @@ class TriggerResponse(BaseModel):
     attention_state: str | None = None
     attention_reason: str | None = None
     next_action: str | None = None
-    linked_objective: dict | None = None
     last_attempt: dict | None = None
     last_artifact: dict | None = None
     diagnostics: dict | None = None
@@ -68,7 +67,6 @@ class TriggerCreate(BaseModel):
     reason: str
     focus_ref: str | None = None
     trigger_class: str | None = None
-    objective_id: str | None = None
     max_fires: int | None = None
     cooldown_seconds: int | None = None
     expires_at: str | None = None
@@ -86,7 +84,6 @@ class TriggerUpdate(BaseModel):
     is_enabled: bool | None = None
     focus_ref: str | None = None
     trigger_class: str | None = None
-    objective_id: str | None = None
     max_fires: int | None = None
     cooldown_seconds: int | None = None
     expires_at: str | None = None
@@ -120,7 +117,6 @@ def _trigger_response(trigger: AgentTrigger, *, diagnostics: bool = False, view:
         attention_state=view.get("attention_state"),
         attention_reason=view.get("attention_reason"),
         next_action=view.get("next_action"),
-        linked_objective=view.get("linked_objective"),
         last_attempt=view.get("last_attempt"),
         last_artifact=view.get("last_artifact"),
         diagnostics=view.get("diagnostics") if diagnostics else None,
@@ -197,14 +193,12 @@ async def create_trigger(
     config = dict(body.config or {})
     if body.trigger_class is not None:
         config["trigger_class"] = body.trigger_class
-    if body.objective_id is not None:
-        config["objective_id"] = body.objective_id
     focus_ref = body.focus_ref.strip() if body.focus_ref else None
 
     _raise_trigger_validation_error(_validate_trigger_config("create_trigger", trigger_type, config))
     _trigger_class, error = _resolve_trigger_class(
         "create_trigger",
-        {"trigger_class": body.trigger_class, "objective_id": body.objective_id},
+        {"trigger_class": body.trigger_class},
         config,
         focus_ref,
         trigger_type=trigger_type,
@@ -365,15 +359,12 @@ async def update_trigger(
         from datetime import datetime
 
         trigger.expires_at = datetime.fromisoformat(body.expires_at)
-    if body.trigger_class is not None or body.objective_id is not None:
+    if body.trigger_class is not None:
         config = dict(trigger.config or {})
-        if body.trigger_class is not None:
-            config["trigger_class"] = body.trigger_class
-        if body.objective_id is not None:
-            config["objective_id"] = body.objective_id
+        config["trigger_class"] = body.trigger_class
         _trigger_class, error = _resolve_trigger_class(
             "update_trigger",
-            {"trigger_class": body.trigger_class, "objective_id": body.objective_id},
+            {"trigger_class": body.trigger_class},
             config,
             trigger.focus_ref,
             trigger_type=trigger.type,

@@ -4,20 +4,15 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
 from app.models.agent import Agent
 from app.models.chat_session import ChatSession
-from app.models.objective import AgentObjective
 from app.models.runtime_task import RuntimeTask
 from app.models.trigger import AgentTrigger
-from app.services import objective_service
-from app.services.focus_state import normalize_focus_task_id, parse_focus_tasks
 from app.services.heartbeat_policy import MANAGED_HEARTBEAT_ENABLED
 
 _SCHEDULED_TRIGGER_TYPES = {"cron", "once", "interval"}
@@ -36,7 +31,6 @@ def _finding(
     message: str,
     recommendation: str,
     trigger_id: Any = None,
-    focus_ref: str | None = None,
     evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
@@ -44,7 +38,6 @@ def _finding(
         "category": category,
         "agent_id": str(agent_id),
         "trigger_id": _as_str(trigger_id),
-        "focus_ref": focus_ref,
         "message": message,
         "evidence": evidence or {},
         "recommendation": recommendation,
@@ -63,174 +56,24 @@ def _enabled_triggers(triggers: list[Any]) -> list[Any]:
     return [trigger for trigger in triggers if bool(getattr(trigger, "is_enabled", False))]
 
 
-def _detect_noncanonical_focus_items(focus_text: str) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-    in_tasks_section = False
-    for line_no, line in enumerate(focus_text.splitlines(), 1):
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.startswith("##"):
-            header = stripped.lstrip("#").strip().lower()
-            in_tasks_section = "task" in header or "focus" in header
-            continue
-        if not in_tasks_section and not stripped.startswith(("- [", "* [")):
-            continue
-        if parse_focus_tasks(stripped):
-            continue
-        looks_like_task = (
-            stripped.startswith(("- [", "* ["))
-            or (in_tasks_section and stripped.startswith(("- ", "* ")))
-            or (in_tasks_section and stripped[:1].isdigit())
-        )
-        if looks_like_task:
-            items.append({"line_no": line_no, "line": stripped})
-    return items
-
-
 def audit_agent_autonomy_snapshot(
     *,
     agent: Any,
-    focus_text: str | None,
     triggers: list[Any],
-    objectives: list[Any] | None = None,
     trigger_session_count: int = 0,
     heartbeat_session_count: int = 0,
     trigger_runtime_count: int = 0,
     heartbeat_runtime_count: int = 0,
-    focus_read_error: str | None = None,
 ) -> dict[str, Any]:
     """Audit one agent snapshot without reading or mutating external state."""
     agent_id = getattr(agent, "id")
     agent_name = getattr(agent, "name", "")
     tenant_id = getattr(agent, "tenant_id", None)
     enabled = _enabled_triggers(triggers)
-    objectives = list(objectives or [])
     findings: list[dict[str, Any]] = []
-
-    if focus_read_error:
-        findings.append(_finding(
-            severity="warning",
-            category="focus_read_error",
-            agent_id=agent_id,
-            message=f"Could not read focus.md for agent {agent_name or agent_id}.",
-            evidence={"error": focus_read_error},
-            recommendation="Verify the agent workspace volume and focus.md permissions.",
-        ))
-
-    focus_tasks = parse_focus_tasks(focus_text or "")
-    focus_by_id = {task.task_id: task for task in focus_tasks}
-    active_focus_ids = {task.task_id for task in focus_tasks if not task.completed}
-    completed_focus_ids = {task.task_id for task in focus_tasks if task.completed}
-    enabled_focus_refs = {
-        normalize_focus_task_id(ref)
-        for trigger in enabled
-        if (ref := _trigger_focus_ref(trigger)) is not None
-    }
-    enabled_objective_ids = {
-        str((getattr(trigger, "config", None) or {}).get("objective_id"))
-        for trigger in enabled
-        if (getattr(trigger, "config", None) or {}).get("objective_id")
-    }
-
-    for objective in objectives:
-        objective_id = str(getattr(objective, "id", "") or "")
-        objective_key = normalize_focus_task_id(str(getattr(objective, "objective_key", "") or ""))
-        status = str(getattr(objective, "status", "") or "open")
-        metadata = dict(getattr(objective, "metadata_json", None) or {})
-        has_wake = objective_id in enabled_objective_ids or objective_key in enabled_focus_refs
-        if status == "proposed":
-            findings.append(_finding(
-                severity="info",
-                category="proposed_objective_pending",
-                agent_id=agent_id,
-                focus_ref=objective_key,
-                message=f"Objective '{objective_key}' is proposed and not yet active.",
-                evidence={
-                    "objective_id": objective_id,
-                    "autonomy_class": metadata.get("autonomy_class"),
-                    "requires_approval": metadata.get("requires_approval"),
-                },
-                recommendation="Confirm, reject, or keep it proposed; do not create an autonomous trigger until it is active.",
-            ))
-        if status in {"active", "open", "running"} and not has_wake and not metadata.get("manual_no_wake"):
-            findings.append(_finding(
-                severity="error",
-                category="active_objective_without_wake_policy",
-                agent_id=agent_id,
-                focus_ref=objective_key,
-                message=f"Active objective '{objective_key}' has no enabled objective_task wake policy.",
-                evidence={"objective_id": objective_id, "status": status},
-                recommendation="Run the objective wake reconciler or create an objective_task trigger bound to this objective.",
-            ))
-        if status == "blocked":
-            findings.append(_finding(
-                severity="warning",
-                category="blocked_objective",
-                agent_id=agent_id,
-                focus_ref=objective_key,
-                message=f"Objective '{objective_key}' is blocked.",
-                evidence={"objective_id": objective_id, "blocked_reason": getattr(objective, "blocked_reason", None)},
-                recommendation="Resolve the blocker, create a recovery objective, or reject/snooze the objective.",
-            ))
-        if metadata.get("stale"):
-            findings.append(_finding(
-                severity="warning",
-                category="stale_objective",
-                agent_id=agent_id,
-                focus_ref=objective_key,
-                message=f"Objective '{objective_key}' is marked stale.",
-                evidence={"objective_id": objective_id, "stale": metadata.get("stale")},
-                recommendation="Revalidate, snooze, block, or complete the stale objective with evidence.",
-            ))
-
-    for task in focus_tasks:
-        if not task.completed and task.task_id not in enabled_focus_refs:
-            findings.append(_finding(
-                severity="error",
-                category="orphan_focus_task",
-                agent_id=agent_id,
-                focus_ref=task.task_id,
-                message=f"Unfinished focus task '{task.task_id}' has no enabled trigger bound to it.",
-                evidence={"task": task.raw_line},
-                recommendation="Create or bind an enabled trigger with focus_ref matching this task, or mark the task as manual/no-wake in the future objective ledger.",
-            ))
-
-    for item in _detect_noncanonical_focus_items(focus_text or ""):
-        findings.append(_finding(
-            severity="warning",
-            category="noncanonical_focus_item",
-            agent_id=agent_id,
-            message="focus.md contains a task-like line that the canonical parser will ignore.",
-            evidence=item,
-            recommendation="Rewrite the line as '- [ ] task_id :: description' so the trigger audit can track it.",
-        ))
 
     for trigger in enabled:
         raw_ref = _trigger_focus_ref(trigger)
-        normalized_ref = normalize_focus_task_id(raw_ref) if raw_ref else None
-        if normalized_ref and normalized_ref not in focus_by_id:
-            findings.append(_finding(
-                severity="error",
-                category="trigger_focus_ref_missing",
-                agent_id=agent_id,
-                trigger_id=getattr(trigger, "id", None),
-                focus_ref=normalized_ref,
-                message=f"Enabled trigger '{getattr(trigger, 'name', '')}' references missing focus_ref '{raw_ref}'.",
-                evidence={"trigger_name": getattr(trigger, "name", None), "raw_focus_ref": raw_ref},
-                recommendation="Create the matching focus.md task or update/cancel the trigger.",
-            ))
-        if normalized_ref and normalized_ref in completed_focus_ids:
-            findings.append(_finding(
-                severity="error",
-                category="completed_focus_trigger_active",
-                agent_id=agent_id,
-                trigger_id=getattr(trigger, "id", None),
-                focus_ref=normalized_ref,
-                message=f"Enabled trigger '{getattr(trigger, 'name', '')}' is still bound to completed focus task '{normalized_ref}'.",
-                evidence={"trigger_name": getattr(trigger, "name", None)},
-                recommendation="Disable the trigger or reopen the focus task if it still needs work.",
-            ))
         trigger_config = getattr(trigger, "config", None) or {}
         trigger_class = str(trigger_config.get("trigger_class") or "").strip()
         if getattr(trigger, "type", None) in _SCHEDULED_TRIGGER_TYPES and not raw_ref and trigger_class != "scheduled_job":
@@ -241,7 +84,7 @@ def audit_agent_autonomy_snapshot(
                 trigger_id=getattr(trigger, "id", None),
                 message=f"Scheduled trigger '{getattr(trigger, 'name', '')}' has no focus_ref.",
                 evidence={"trigger_name": getattr(trigger, "name", None), "trigger_type": getattr(trigger, "type", None)},
-                recommendation="If this is task work, bind it to an objective; if it is a standalone scheduled job, mark trigger_class='scheduled_job'.",
+                recommendation="If this is a standalone scheduled job, mark trigger_class='scheduled_job'.",
             ))
         if trigger_class == "event_wait" and not getattr(trigger, "max_fires", None) and not getattr(trigger, "expires_at", None):
             findings.append(_finding(
@@ -294,9 +137,6 @@ def audit_agent_autonomy_snapshot(
         "findings": findings,
         "counts": {
             "enabled_triggers": len(enabled),
-            "focus_tasks": len(focus_tasks),
-            "active_focus_tasks": len(active_focus_ids),
-            "completed_focus_tasks": len(completed_focus_ids),
             "trigger_sessions": trigger_session_count,
             "heartbeat_sessions": heartbeat_session_count,
             "trigger_runtime_tasks": trigger_runtime_count,
@@ -332,25 +172,6 @@ def build_autonomous_audit_payload(
         "findings": findings,
         "agents": agent_reports,
     }
-
-
-def _focus_path_candidates(agent_id: uuid.UUID) -> list[Path]:
-    settings = get_settings()
-    candidates = [Path(settings.AGENT_DATA_DIR) / str(agent_id) / "focus.md"]
-    fallback = Path("/tmp/hive_workspaces") / str(agent_id) / "focus.md"
-    if fallback not in candidates:
-        candidates.append(fallback)
-    return candidates
-
-
-def _read_focus_text(agent_id: uuid.UUID) -> tuple[str | None, str | None]:
-    for path in _focus_path_candidates(agent_id):
-        try:
-            if path.exists():
-                return path.read_text(encoding="utf-8"), None
-        except Exception as exc:
-            return None, f"{path}: {exc}"
-    return None, None
 
 
 def _count_sessions_by_agent(sessions: list[ChatSession]) -> dict[uuid.UUID, dict[str, int]]:
@@ -393,7 +214,7 @@ async def build_autonomous_audit_report(
     agent_id: uuid.UUID | None = None,
     lookback_hours: int = 24,
 ) -> dict[str, Any]:
-    """Build a read-only autonomous continuity report from DB + focus.md snapshots."""
+    """Build a read-only autonomous continuity report from DB snapshots."""
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(hours=lookback_hours)
 
@@ -415,11 +236,6 @@ async def build_autonomous_audit_report(
     for trigger in trigger_result.scalars().all():
         triggers_by_agent.setdefault(trigger.agent_id, []).append(trigger)
 
-    objective_result = await db.execute(select(AgentObjective).where(AgentObjective.agent_id.in_(agent_ids)))
-    objectives_by_agent: dict[uuid.UUID, list[AgentObjective]] = {aid: [] for aid in agent_ids}
-    for objective in objective_result.scalars().all():
-        objectives_by_agent.setdefault(objective.agent_id, []).append(objective)
-
     session_result = await db.execute(
         select(ChatSession).where(
             ChatSession.agent_id.in_(agent_ids),
@@ -439,22 +255,15 @@ async def build_autonomous_audit_report(
 
     agent_reports: list[dict[str, Any]] = []
     for agent in agents:
-        focus_text, focus_error = _read_focus_text(agent.id)
-        if objectives_by_agent.get(agent.id):
-            focus_text = objective_service.render_focus_projection(objectives_by_agent[agent.id])
-            focus_error = None
         per_agent_sessions = session_counts.get(agent.id, {})
         per_agent_runtime = runtime_counts.get(agent.id, {})
         agent_reports.append(audit_agent_autonomy_snapshot(
             agent=agent,
-            focus_text=focus_text,
             triggers=triggers_by_agent.get(agent.id, []),
-            objectives=objectives_by_agent.get(agent.id, []),
             trigger_session_count=per_agent_sessions.get("trigger", 0),
             heartbeat_session_count=per_agent_sessions.get("heartbeat", 0),
             trigger_runtime_count=per_agent_runtime.get("trigger", 0),
             heartbeat_runtime_count=per_agent_runtime.get("heartbeat", 0),
-            focus_read_error=focus_error,
         ))
 
     return build_autonomous_audit_payload(

@@ -13,7 +13,6 @@ def test_session_key_contract_exists() -> None:
     assert "class SessionKey" in source
     assert "build_session_key" in source
     assert "ensure_session_key" in source
-    assert "objective:" in source
     assert "runtime_task_id" in source
 
 

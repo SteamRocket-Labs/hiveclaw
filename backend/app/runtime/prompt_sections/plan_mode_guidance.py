@@ -26,7 +26,7 @@ Suggest planning first when the task is:
 - Irreversible or externally visible (sends, deletes, schedules, payments, posts).
 - Ambiguous in scope or success criteria — confirming the shape first avoids wasted work.
 - High-cost (long-running research, large generation) where a wrong direction is expensive.
-- A standing/recurring automation (a trigger or objective) whose cadence, recipients,
+- A standing/recurring automation (a trigger) whose cadence, recipients,
   and stop conditions the user should approve up front.
 
 Do NOT suggest planning for:

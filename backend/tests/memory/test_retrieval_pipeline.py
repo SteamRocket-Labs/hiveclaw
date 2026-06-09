@@ -66,12 +66,12 @@ def _activation_context(*, current_user_id: str = "owner-1", owner_id: str = "ow
 
 
 @pytest.mark.asyncio
-async def test_retrieve_returns_working_and_t3_direct_layers(
+async def test_retrieve_returns_t3_direct_layer(
     data_root: Path,
     agent_id: uuid.UUID,
     retriever: MemoryRetriever,
 ) -> None:
-    """Working memory is first, followed by T3 md-backed semantic items."""
+    """T3 md-backed semantic items are returned; focus.md is no longer projected."""
     _setup_focus(data_root, agent_id, "Current focus: ship memory engine P1")
     _setup_t3_file(data_root, agent_id, "feedback.md", "# Feedback\n- [2026-04-06] User prefers concise output\n")
     _setup_t3_file(data_root, agent_id, "knowledge.md", "# Knowledge\n- [2026-04-06] Project uses FastAPI and React\n")
@@ -83,8 +83,8 @@ async def test_retrieve_returns_working_and_t3_direct_layers(
     episodic_items = [i for i in items if i.kind == MemoryKind.EPISODIC]
     external_items = [i for i in items if i.kind == MemoryKind.EXTERNAL]
 
-    assert len(working_items) == 1
-    assert "ship memory engine P1" in working_items[0].content
+    # focus.md is a plain scratch file now — it is never projected into memory.
+    assert working_items == []
     assert len(semantic_items) == 2
     assert semantic_items[0].source == "memory/feedback.md"
     assert semantic_items[1].source == "memory/knowledge.md"
@@ -92,9 +92,6 @@ async def test_retrieve_returns_working_and_t3_direct_layers(
     assert "[knowledge]" in semantic_items[1].content
     assert episodic_items == []
     assert external_items == []
-
-    kinds = [i.kind for i in items]
-    assert kinds.index(MemoryKind.WORKING) < kinds.index(MemoryKind.SEMANTIC)
 
 
 @pytest.mark.asyncio

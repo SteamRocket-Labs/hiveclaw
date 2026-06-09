@@ -433,7 +433,7 @@ def _get_default_heartbeat_instruction() -> str:
         return _HEARTBEAT_TEMPLATE_PATH.read_text(encoding="utf-8").strip()
     except Exception:
         return (
-            "[Heartbeat] Inspect Objective Ledger and its focus.md projection, do one evidence-backed useful thing, "
+            "[Heartbeat] Review your recent work and memory, do one evidence-backed useful thing, "
             "reply HEARTBEAT_OK if nothing needed."
         )
 
@@ -844,7 +844,7 @@ async def _build_evolution_context(
             parts.append(
                 "\n---\n## Bootstrap Exhausted (10 failures)\n"
                 "Bootstrap has failed repeatedly. Stop attempting bootstrap actions.\n"
-                "Proceed directly with normal heartbeat: inspect Objective Ledger and its focus.md projection, then do one small evidence-backed task.\n"
+                "Proceed directly with normal heartbeat: review your recent work and memory, then do one small evidence-backed task.\n"
                 "Output: [OUTCOME:noop] [SCORE:1]"
             )
         elif total_failures >= 3:
@@ -855,7 +855,7 @@ async def _build_evolution_context(
                 "Your previous bootstrap attempts failed. Evolution files have been\n"
                 "auto-seeded with initial values. Skip bootstrapping and proceed with\n"
                 "the normal 4-phase heartbeat protocol.\n"
-                "Focus on ONE simple action: inspect Objective Ledger and its focus.md projection, then do something small with evidence.\n"
+                "Focus on ONE simple action: review your recent work and memory, then do something small with evidence.\n"
                 "Output: [OUTCOME:action_taken] [SCORE:3]"
             )
         else:
@@ -864,10 +864,8 @@ async def _build_evolution_context(
                 "You have very little activity history. This is normal for a new agent.\n"
                 "Instead of the normal heartbeat protocol, do these bootstrapping steps:\n"
                 "1. **Read soul.md** — understand your identity and role\n"
-                "2. **Inspect Objective Ledger and focus.md projection** — check if initial objectives were set during creation\n"
-                "3. **List and read your skills/** — understand your capabilities\n"
-                "4. **If there is no active objective**: propose an initial objective based on your role from soul.md\n"
-                "5. **Write to evolution/lineage.md** with your bootstrap observations\n"
+                "2. **List and read your skills/** — understand your capabilities\n"
+                "3. **Write to evolution/lineage.md** with your bootstrap observations\n"
                 "6. Output: [OUTCOME:action_taken] [SCORE:3]\n\n"
                 "After bootstrapping, future heartbeats will follow the normal 4-phase protocol."
             )
@@ -1887,12 +1885,6 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
             # (cold_start agents need validation even on failure/noop)
             _validate_bootstrap_completion(agent_id)
 
-            # G2: Auto-cancel triggers whose focus_ref items are completed in focus.md
-            try:
-                await _auto_cancel_completed_triggers(agent_id)
-            except Exception as _ac_err:
-                logger.debug("[Heartbeat] Auto-cancel triggers failed (non-fatal): {}", _ac_err)
-
             score_str = f" score={heartbeat_score}" if heartbeat_score is not None else ""
             logger.info(f"💓 Heartbeat for {agent.name}: {outcome_type}{score_str} — {summary}")
             await _update_heartbeat_runtime_task(
@@ -1955,13 +1947,6 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
     finally:
         if lease_held:
             await _release_heartbeat_lease_async(agent_id)
-
-
-async def _auto_cancel_completed_triggers(agent_id: uuid.UUID) -> None:
-    """Backward-compatible wrapper around the trigger reconciler."""
-    from app.services.trigger_reconciler import reconcile_completed_focus_triggers
-
-    await reconcile_completed_focus_triggers(agent_id)
 
 
 async def _heartbeat_tick():

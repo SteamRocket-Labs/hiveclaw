@@ -20,9 +20,9 @@ The skill covers three decisions: which tool to use, how to write the
 instruction so the worker actually succeeds, and how to follow up so the
 task doesn't fall off the radar.
 
-Objective Ledger is the source of truth. Trigger is wake policy. focus.md is a readable projection.
-If delegated work belongs to an objective, bind follow-up triggers as `objective_task`; otherwise
-use `scheduled_job` for standalone checks.
+A trigger is wake policy, not the goal itself. Classify follow-up triggers as
+`scheduled_job` for standalone checks (or `event_wait` for `on_message` /
+`poll` / `webhook` waits).
 </role>
 
 <when_to_use>
@@ -86,13 +86,13 @@ Option A: Poll manually
 
 Option B: Set a timed check (preferred for long tasks)
     → set_trigger(type="once", config={"at": "<ISO timestamp>"},
-        trigger_class="objective_task" if this belongs to an objective else "scheduled_job",
-        reason="check_async_task(task_id=xxx). If completed, read result and update/complete the objective with evidence.
+        trigger_class="scheduled_job",
+        reason="check_async_task(task_id=xxx). If completed, read result and record the outcome with evidence in your work ledger.
                 If still running, set another once trigger 15 min later.")
 
 When done:
     → Process the result
-    → Update or complete the objective ledger if relevant
+    → Record the outcome with evidence in your work ledger
     → cancel_async_task(task_id) if no longer needed
 ```
 
@@ -101,7 +101,7 @@ When done:
 For tasks that take more than a few minutes, pair delegation with a once trigger:
 
 1. `delegate_to_agent(...)` → get task_id
-2. `set_trigger(type="once", config={"at": "<ISO timestamp>"}, trigger_class="objective_task" if bound to an objective else "scheduled_job", reason="Check task_id=xxx result. If done, process and call complete_objective with evidence. If running, set another check in 15m. If failed, notify user.")`
+2. `set_trigger(type="once", config={"at": "<ISO timestamp>"}, trigger_class="scheduled_job", reason="Check task_id=xxx result. If done, process and record the outcome with evidence in your work ledger. If running, set another check in 15m. If failed, notify user.")`
 3. Continue your own work — the trigger will wake you up to check
 
 This avoids blocking your current conversation waiting for a worker.

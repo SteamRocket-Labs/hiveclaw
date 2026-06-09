@@ -15,7 +15,6 @@ def test_validate_long_task_run_passes_for_complete_artifacts(tmp_path):
     write_long_task_plan_artifact(
         agent_id=agent_id,
         runtime_task_id=runtime_task_id,
-        objective_id="obj-1",
         spec="Ship a long investigation",
         acceptance_criteria=["report exists", "tests pass"],
         verification_commands=["pytest tests/services/test_long_task_validation.py"],
@@ -90,7 +89,6 @@ def test_validate_long_task_run_fails_terminal_completion_with_pending_work_ledg
     write_long_task_plan_artifact(
         agent_id=agent_id,
         runtime_task_id=runtime_task_id,
-        objective_id="obj-1",
         spec="Ship a long investigation",
         acceptance_criteria=["report exists"],
         verification_commands=["pytest"],
@@ -137,7 +135,6 @@ def test_validate_long_task_run_requires_reason_for_cancel_or_missed_policy(tmp_
     write_long_task_plan_artifact(
         agent_id=agent_id,
         runtime_task_id=runtime_task_id,
-        objective_id="obj-1",
         spec="Run a cancellable task",
         acceptance_criteria=["reason recorded"],
         verification_commands=["pytest"],
@@ -188,7 +185,6 @@ async def test_record_long_task_validation_updates_runtime_task_metadata(monkeyp
     write_long_task_plan_artifact(
         agent_id=agent_id,
         runtime_task_id=runtime_task_id,
-        objective_id="obj-1",
         spec="Validate update",
         acceptance_criteria=["metadata updated"],
         verification_commands=["pytest"],

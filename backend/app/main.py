@@ -45,7 +45,6 @@ from app.api.oidc import router as oidc_router
 from app.api.onboarding import router as onboarding_router
 from app.api.office import router as office_router
 from app.api.mcp_servers import router as mcp_servers_router
-from app.api.objectives import router as objectives_router
 from app.api.organization import router as org_router
 from app.api.packs import router as packs_router
 from app.api.plans import router as plans_router
@@ -208,7 +207,6 @@ async def lifespan(app: FastAPI):
         import app.models.refresh_token  # noqa
         import app.models.guard_policy  # noqa
         import app.models.tenant_channel_config  # noqa
-        import app.models.objective  # noqa
         import app.models.plan_request  # noqa
         import app.models.work_ledger  # noqa
         import app.models.mcp_server  # noqa
@@ -237,19 +235,6 @@ async def lifespan(app: FastAPI):
         migrate_all_workspaces()
     except Exception as e:
         logger.warning(f"[startup] workspace migration failed (non-fatal): {e}")
-
-    # P3: Backfill canonical focus.md tasks into the durable objective ledger,
-    # then rewrite focus.md as the ledger projection.
-    try:
-        from app.database import async_session as _objective_session
-        from app.services.objective_service import sync_all_focus_files_to_objectives
-
-        async with _objective_session() as _db:
-            objective_report = await sync_all_focus_files_to_objectives(_db)
-            if objective_report.get("created") or objective_report.get("updated"):
-                logger.info("[startup] Objective ledger sync: {}", objective_report)
-    except Exception as e:
-        logger.warning(f"[startup] Objective ledger sync failed (non-fatal): {e}")
 
     # Register concrete Plan Mode handoff handlers onto the REST API's shared
     # service so a confirmed scheduled_trigger plan actually creates its enabled
@@ -604,7 +589,6 @@ _api_routers = [
     onboarding_router,
     packs_router,
     mcp_servers_router,
-    objectives_router,
     plans_router,
     office_router,
     autonomy_router,

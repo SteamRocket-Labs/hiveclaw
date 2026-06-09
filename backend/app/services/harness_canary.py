@@ -88,7 +88,6 @@ def _write_h4_canary(
     plan = write_long_task_plan_artifact(
         agent_id=agent_id,
         runtime_task_id=runtime_task_id,
-        objective_id=None,
         spec=(
             "Harness canary: verify that this agent can leave a RuntimeTask-backed "
             "long-task plan, progress trail, resume context, and validation report."

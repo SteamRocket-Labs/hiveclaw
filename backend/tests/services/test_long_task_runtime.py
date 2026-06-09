@@ -18,7 +18,6 @@ def test_long_task_runtime_writes_plan_progress_and_resume_context(tmp_path):
     plan = write_long_task_plan_artifact(
         agent_id=agent_id,
         runtime_task_id=runtime_task_id,
-        objective_id="obj-1",
         spec="Ship the weekly report",
         acceptance_criteria=["report.md exists", "pytest passes"],
         verification_commands=["pytest tests/services/test_report.py"],
@@ -66,7 +65,6 @@ async def test_record_long_task_plan_updates_runtime_task_metadata(monkeypatch, 
     artifact = await long_task_runtime.record_long_task_plan(
         agent_id=agent_id,
         runtime_task_id=runtime_task_id,
-        objective_id="obj-1",
         spec="Run a long investigation",
         acceptance_criteria=["evidence captured"],
         verification_commands=["pytest"],

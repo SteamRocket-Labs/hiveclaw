@@ -39,7 +39,6 @@ def test_harness_validation_report_detects_complete_h4_h5_evidence(tmp_path):
     write_long_task_plan_artifact(
         agent_id=agent_id,
         runtime_task_id=runtime_task_id,
-        objective_id="obj-1",
         spec="Run a long research task",
         acceptance_criteria=["report exists"],
         verification_commands=["pytest tests/services/test_harness_validation_report.py"],
@@ -130,7 +129,6 @@ def test_harness_validation_report_flags_missing_reports_and_failed_evolution(tm
     write_long_task_plan_artifact(
         agent_id=agent_id,
         runtime_task_id=runtime_task_id,
-        objective_id="obj-2",
         spec="Run ops task",
         acceptance_criteria=["evidence exists"],
         verification_commands=["pytest"],

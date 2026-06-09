@@ -37,7 +37,6 @@ PLAN_MODE_READONLY_TOOLS: frozenset[str] = frozenset(
         "search_memory",
         "load_memory",
         "list_triggers",
-        "list_objectives",
         "tool_search",
         "load_skill",
         # CC parity: TodoWrite is allowed in plan mode — the work ledger is the

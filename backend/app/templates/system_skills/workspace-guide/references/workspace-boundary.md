@@ -14,7 +14,7 @@ state. Automatically managed system directories have stricter ownership.
 
 - `memory/learnings/`, `logs/`, and `evolution/` are managed by platform services.
 - `soul.md` is not a normal editable document.
-- `focus.md` is a projection, not the source of truth for objectives.
+- `focus.md` is a personal scratch file, not a source of truth.
 
 ## File Delivery
 

@@ -222,11 +222,13 @@ async def test_check_new_agent_messages_from_user_name_has_no_latest_message_fal
         reply_context=None,
     )
     fallback_message = SimpleNamespace(content="latest unrelated message")
-    session = _SequenceSession([
-        _ScalarResult(SimpleNamespace(id=agent_id, tenant_id=tenant_id)),
-        _ScalarResult(None),
-        _ScalarResult(fallback_message),
-    ])
+    session = _SequenceSession(
+        [
+            _ScalarResult(SimpleNamespace(id=agent_id, tenant_id=tenant_id)),
+            _ScalarResult(None),
+            _ScalarResult(fallback_message),
+        ]
+    )
 
     monkeypatch.setattr(trigger_daemon, "async_session", lambda: session)
 
@@ -258,12 +260,14 @@ async def test_check_new_agent_messages_from_agent_name_rejects_ambiguous_agent_
     ]
     participant_id = uuid4()
     matched_message = SimpleNamespace(content="status update")
-    session = _SequenceSession([
-        _ScalarResult(SimpleNamespace(id=agent_id, tenant_id=tenant_id)),
-        _ScalarsResult(ambiguous_agents),
-        _ScalarResult(participant_id),
-        _ScalarResult(matched_message),
-    ])
+    session = _SequenceSession(
+        [
+            _ScalarResult(SimpleNamespace(id=agent_id, tenant_id=tenant_id)),
+            _ScalarsResult(ambiguous_agents),
+            _ScalarResult(participant_id),
+            _ScalarResult(matched_message),
+        ]
+    )
 
     monkeypatch.setattr(trigger_daemon, "async_session", lambda: session)
 
@@ -523,3 +527,71 @@ async def test_preflight_group_allows_autonomous_trigger_with_confirmed_plan(mon
 
     assert ok is True
     assert skip_reason is None
+
+
+# ── Exec/automation §2: three-bucket classification + event-driven v1 framing ──
+
+
+def test_trigger_bucket_classifies_into_three_buckets():
+    from app.services.agent_tool_domains.triggers import trigger_bucket
+
+    assert trigger_bucket("cron") == "cron"
+    assert trigger_bucket("interval") == "cron"  # recurring time-driven → cron bucket
+    assert trigger_bucket("once") == "once"
+    assert trigger_bucket("poll") == "event_driven"
+    assert trigger_bucket("on_message") == "event_driven"
+    assert trigger_bucket("webhook") == "event_driven"
+
+
+def _ctx_trigger(**overrides):
+    values = {
+        "name": "t1",
+        "type": "cron",
+        "reason": "r",
+        "focus_ref": None,
+        "config": {},
+        "reply_context": None,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def test_build_trigger_context_frames_scheduled_run():
+    from app.services.trigger_daemon import _build_trigger_context
+
+    ctx, names = _build_trigger_context([_ctx_trigger(type="cron", name="daily")])
+    assert "Scheduled trigger: daily (cron)" in ctx
+    assert names == ["daily"]
+
+
+def test_build_trigger_context_frames_event_driven_with_poll_change():
+    # event-driven v1: the detected poll change must reach the agent, not just "a trigger fired".
+    from app.services.trigger_daemon import _build_trigger_context
+
+    trigger = _ctx_trigger(
+        type="poll",
+        name="price_watch",
+        config={"_last_event": "Polled https://x → value changed from '1' to '2'"},
+    )
+    ctx, _ = _build_trigger_context([trigger])
+    assert "Event from trigger: price_watch (poll)" in ctx
+    assert "value changed from '1' to '2'" in ctx
+
+
+def test_build_trigger_context_injects_on_message_and_webhook_payloads():
+    from app.services.trigger_daemon import _build_trigger_context
+
+    msg = _ctx_trigger(type="on_message", config={"_matched_message": "deploy failed", "_matched_from": "ci"})
+    hook = _ctx_trigger(type="webhook", config={"_webhook_payload": '{"event":"push"}'})
+    ctx, _ = _build_trigger_context([msg, hook])
+    assert "deploy failed" in ctx
+    assert '{"event":"push"}' in ctx
+
+
+def test_build_trigger_context_omits_retired_focus_ref():
+    # focus.md projection is retired — the trigger context must not surface focus_ref.
+    from app.services.trigger_daemon import _build_trigger_context
+
+    ctx, _ = _build_trigger_context([_ctx_trigger(type="cron", focus_ref="some_task")])
+    assert "Related Focus" not in ctx
+    assert "some_task" not in ctx

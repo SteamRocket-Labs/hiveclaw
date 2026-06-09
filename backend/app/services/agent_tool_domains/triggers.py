@@ -27,6 +27,27 @@ VALID_TRIGGER_CLASSES = {"scheduled_job", "event_wait", "system_maintenance"}
 EVENT_WAIT_TRIGGER_TYPES = {"poll", "on_message", "webhook"}
 SCHEDULED_TRIGGER_TYPES = {"cron", "once", "interval"}
 
+#: Exec/automation CC-alignment (docs/trigger-cc-alignment.md §2): the three
+#: driving-semantic buckets every wire-level ``type`` collapses into. The 6 type
+#: strings are just the schedule/detection mechanisms; these three are the
+#: semantics that decide *how* a fired trigger reaches the agent:
+#:   - ``cron``: unconditional recurring time-driven run (cron, interval) → fires a complete call
+#:   - ``once``: one-shot delayed background task → fires a complete call once
+#:   - ``event_driven``: external condition/event source (poll, on_message, webhook) →
+#:     lightweight detection emits an event the agent digests in its own loop
+TRIGGER_BUCKET_CRON = "cron"
+TRIGGER_BUCKET_ONCE = "once"
+TRIGGER_BUCKET_EVENT_DRIVEN = "event_driven"
+
+
+def trigger_bucket(trigger_type: str) -> str:
+    """Classify a wire-level trigger ``type`` into its driving-semantic bucket (§2)."""
+    if trigger_type in EVENT_WAIT_TRIGGER_TYPES:
+        return TRIGGER_BUCKET_EVENT_DRIVEN
+    if trigger_type == "once":
+        return TRIGGER_BUCKET_ONCE
+    return TRIGGER_BUCKET_CRON
+
 
 def _capture_reply_context() -> dict | None:
     """Capture current channel context for trigger reply delivery.
@@ -179,12 +200,14 @@ def _validate_trigger_config(tool_name: str, trigger_type: str, config: dict) ->
                     f"Invalid from_agent_id: '{from_agent_id}'",
                     actionable_hint="Pass a valid UUID string for config.from_agent_id.",
                 )
-        if not any([
-            config.get("from_agent_name"),
-            from_agent_id,
-            config.get("from_user_name"),
-            from_user_identity,
-        ]):
+        if not any(
+            [
+                config.get("from_agent_name"),
+                from_agent_id,
+                config.get("from_user_name"),
+                from_user_identity,
+            ]
+        ):
             return _trigger_error(
                 tool_name,
                 "bad_arguments",
@@ -311,13 +334,18 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
             from app.models.audit import ChatMessage
             from app.models.chat_session import ChatSession
             from sqlalchemy import cast as sa_cast, String as SaString
+
             async with async_session() as _snap_db:
-                _snap_q = select(ChatMessage.created_at).join(
-                    ChatSession, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString)
-                ).where(
-                    ChatSession.agent_id == agent_id,
-                    ChatMessage.created_at.isnot(None),
-                ).order_by(ChatMessage.created_at.desc()).limit(1)
+                _snap_q = (
+                    select(ChatMessage.created_at)
+                    .join(ChatSession, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString))
+                    .where(
+                        ChatSession.agent_id == agent_id,
+                        ChatMessage.created_at.isnot(None),
+                    )
+                    .order_by(ChatMessage.created_at.desc())
+                    .limit(1)
+                )
                 _snap_r = await _snap_db.execute(_snap_q)
                 _latest_ts = _snap_r.scalar_one_or_none()
                 if _latest_ts:
@@ -340,14 +368,18 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
         async with async_session() as db:
             # Load agent to get per-agent trigger limit
             from app.models.agent import Agent as _AgentModel
+
             _a_result = await db.execute(select(_AgentModel).where(_AgentModel.id == agent_id))
             _agent_obj = _a_result.scalar_one_or_none()
             agent_max_triggers = (_agent_obj.max_triggers if _agent_obj else None) or MAX_TRIGGERS_PER_AGENT
 
             # Check max triggers
             from sqlalchemy import func as sa_func
+
             result = await db.execute(
-                select(sa_func.count()).select_from(AgentTrigger).where(
+                select(sa_func.count())
+                .select_from(AgentTrigger)
+                .where(
                     AgentTrigger.agent_id == agent_id,
                     AgentTrigger.is_enabled,
                 )
@@ -391,9 +423,10 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                 if arguments.get("expires_at") or config.get("expires_at"):
                     existing.expires_at = _parse_expires_at(arguments.get("expires_at") or config.get("expires_at"))
                 if arguments.get("cooldown_seconds") is not None or config.get("cooldown_seconds") is not None:
-                    existing.cooldown_seconds = _coerce_int(
-                        arguments.get("cooldown_seconds") or config.get("cooldown_seconds")
-                    ) or existing.cooldown_seconds
+                    existing.cooldown_seconds = (
+                        _coerce_int(arguments.get("cooldown_seconds") or config.get("cooldown_seconds"))
+                        or existing.cooldown_seconds
+                    )
                 existing.reply_context = _capture_reply_context()
                 # Keep fire_count and last_fired_at — they are cumulative stats
                 await db.commit()
@@ -429,17 +462,25 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
         # Activity log
         try:
             from app.services.audit_logger import write_audit_log
-            await write_audit_log("trigger_created", {
-                "name": name, "type": ttype, "reason": reason[:100],
-            }, agent_id=agent_id)
+
+            await write_audit_log(
+                "trigger_created",
+                {
+                    "name": name,
+                    "type": ttype,
+                    "reason": reason[:100],
+                },
+                agent_id=agent_id,
+            )
         except Exception as e:
             logger.debug("Suppressed: %s", e)
         if ttype == "webhook":
             from app.config import get_settings
+
             settings = get_settings()
-            base = getattr(settings, 'PUBLIC_URL', '') or ''
+            base = getattr(settings, "PUBLIC_URL", "") or ""
             if not base:
-                base = 'https://try.hive.ai'  # fallback
+                base = "https://try.hive.ai"  # fallback
             webhook_url = f"{base.rstrip('/')}/api/webhooks/t/{config['token']}"
             return f"✅ Webhook trigger '{name}' created.\n\nWebhook URL: {webhook_url}\n\nTell the user to configure this URL in their external service (e.g. GitHub, Grafana). When the service sends a POST to this URL, you will be woken up with the payload as context."
 
@@ -522,14 +563,13 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
             )
             if binding_error:
                 return binding_error
-            lifecycle_error = _validate_trigger_lifecycle_policy("update_trigger", trigger.type, final_config, arguments)
+            lifecycle_error = _validate_trigger_lifecycle_policy(
+                "update_trigger", trigger.type, final_config, arguments
+            )
             if lifecycle_error:
                 return lifecycle_error
 
-            if (
-                new_config is not None
-                or arguments.get("trigger_class") is not None
-            ):
+            if new_config is not None or arguments.get("trigger_class") is not None:
                 old_config = trigger.config
                 trigger.config = final_config
                 changes.append(f"config: {old_config} → {final_config}")
@@ -537,7 +577,9 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                 trigger.max_fires = _coerce_int(arguments.get("max_fires"))
                 changes.append(f"max_fires: {trigger.max_fires}")
             if arguments.get("expires_at") is not None:
-                trigger.expires_at = _parse_expires_at(arguments.get("expires_at")) if arguments.get("expires_at") else None
+                trigger.expires_at = (
+                    _parse_expires_at(arguments.get("expires_at")) if arguments.get("expires_at") else None
+                )
                 changes.append(f"expires_at: {trigger.expires_at.isoformat() if trigger.expires_at else '(cleared)'}")
             if arguments.get("cooldown_seconds") is not None:
                 trigger.cooldown_seconds = _coerce_int(arguments.get("cooldown_seconds")) or trigger.cooldown_seconds
@@ -561,9 +603,15 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
 
         try:
             from app.services.audit_logger import write_audit_log
-            await write_audit_log("trigger_updated", {
-                "name": name, "changes": "; ".join(changes),
-            }, agent_id=agent_id)
+
+            await write_audit_log(
+                "trigger_updated",
+                {
+                    "name": name,
+                    "changes": "; ".join(changes),
+                },
+                agent_id=agent_id,
+            )
         except Exception as e:
             logger.debug("Suppressed: %s", e)
 
@@ -600,6 +648,7 @@ async def _handle_cancel_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
 
         try:
             from app.services.audit_logger import write_audit_log
+
             await write_audit_log("trigger_cancelled", {"name": name}, agent_id=agent_id)
         except Exception as e:
             logger.debug("Suppressed: %s", e)
@@ -619,9 +668,11 @@ async def _handle_list_triggers(agent_id: uuid.UUID) -> str:
     try:
         async with async_session() as db:
             result = await db.execute(
-                select(AgentTrigger).where(
+                select(AgentTrigger)
+                .where(
                     AgentTrigger.agent_id == agent_id,
-                ).order_by(AgentTrigger.created_at.desc())
+                )
+                .order_by(AgentTrigger.created_at.desc())
             )
             triggers = result.scalars().all()
             agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
@@ -631,10 +682,12 @@ async def _handle_list_triggers(agent_id: uuid.UUID) -> str:
         if not triggers:
             lines.append("No triggers found. Use set_trigger to create one.")
         else:
-            lines.extend([
-                "| Name | Type | Config | Reason | Status | Fires |",
-                "|------|------|--------|--------|--------|-------|",
-            ])
+            lines.extend(
+                [
+                    "| Name | Type | Config | Reason | Status | Fires |",
+                    "|------|------|--------|--------|--------|-------|",
+                ]
+            )
         for t in triggers:
             status = "✅ active" if t.is_enabled else "⏸ disabled"
             config_str = str(t.config)[:50]
@@ -648,12 +701,14 @@ async def _handle_list_triggers(agent_id: uuid.UUID) -> str:
             )
             findings = report.get("findings", [])
             if findings:
-                lines.extend([
-                    "",
-                    "## Trigger Diagnostics",
-                    "| Severity | Category | Trigger | Recommendation |",
-                    "|----------|----------|---------|----------------|",
-                ])
+                lines.extend(
+                    [
+                        "",
+                        "## Trigger Diagnostics",
+                        "| Severity | Category | Trigger | Recommendation |",
+                        "|----------|----------|---------|----------------|",
+                    ]
+                )
                 trigger_names_by_id = {str(t.id): t.name for t in triggers}
                 for finding in findings[:20]:
                     trigger_id = finding.get("trigger_id")

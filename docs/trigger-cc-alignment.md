@@ -54,7 +54,13 @@ Owner 判断(2026-06-08):**「Plan Mode、Task、Subagent 全部过一遍,特别
 |---|------|---------|------|
 | 4 | **objective 子系统退役 + focus.md 投射停**(§7 step2 合并;二者技术不可分=focus.md 是 objective 投射) | 整删 11 源文件(model/service/wake_reconciler/intake/evaluator/approval/lifecycle/api/agent_tool_domains/handlers/autonomy_repair_plan)+11 测试文件;**抽出** `trigger_failure_policy.py`(trigger backoff 从 objective_lifecycle 剥离,无 objective 依赖);`focus_state.py` 瘦成纯 slug normalizer;`autonomy_overview/audit` reduce 到 trigger+runtime-only;trigger_daemon/preflight 去 objective_task 类+session keying+reconcile 调用;memory `retriever._retrieve_working`(focus.md→prompt 主投射)+assembler WORKING 段删除;kernel restoration/reminder/prompt_sections/coordinator/hr/extract/dream/summarizer/distiller 去 objective+focus 文本;migration `retire_agent_objectives_0608`(drop RLS+table,幂等);**真 bug 修**=plan 定时执行指令原叫死工具 `complete_objective/update_objective`→改 `track_todo/record_finding`;砍死 action_kind `activate_objective_wake`(保留 live 的 `enable_autonomous_wake`) | **全量 3978 passed / 0 failed / 7 skip**;`grep AgentObjective app/`=CLEAN(仅 plan handoff 文档串);ruff 全过;3990→3978 测试(删 11 objective 测试文件) |
 
-**C4 净效果**:objective 概念在后端**彻底消失**——无 model/表/工具/API/prompt 投射/trigger 耦合。agent 的"当前在做什么"状态记录归位到 CC 对齐的 Work Ledger(track_todo/record_finding)。focus.md 降为普通 workspace scratch(不再自动投射进 prompt);`focus_ref` 列保留为 trigger 被动字段(不 drop,无迁移)。前端 objective 面待配对 commit 退役(api/domains/objectives.ts + AgentAware objectives 段 + 设置页死工具开关)。
+**C4 净效果**:objective 概念在后端**彻底消失**——无 model/表/工具/API/prompt 投射/trigger 耦合。agent 的"当前在做什么"状态记录归位到 CC 对齐的 Work Ledger(track_todo/record_finding)。focus.md 降为普通 workspace scratch(不再自动投射进 prompt);`focus_ref` 列保留为 trigger 被动字段(不 drop,无迁移)。前端 objective 面已配对退役(`d4c9f226`:删 objectiveApi+AgentAware objectives 段+设置死工具开关,保留 PlanCard plan objective 字段;build+vitest 195 绿)。
+
+| # | 内容 | 关键改动 | 证据 |
+|---|------|---------|------|
+| 5 | **触发三桶收口 + 事件驱动 v1** | `trigger_bucket()` 分类器=三桶 source of truth(cron+interval→`cron`/once→`once`/poll·on_message·webhook→`event_driven`);daemon context 抽成纯函数 `_build_trigger_context`(可单测)+三桶框架:**事件驱动 trigger 显式"Event from trigger"+喂事件 payload**(scheduled 则"Scheduled trigger");**真缺口补**=poll 检测到的变化(`_last_event` old→new)现在喂给 agent(此前只 on_message/webhook 喂,poll 静默);删 trigger context 里 retired `focus_ref`「Related Focus」注入;v1=直接 invoke_agent(prompt=事件,§8 开放点2 owner 倾向),非 v2 Signal 持久层 | 全量 3983 绿;6 新红测先行(bucket 分类/event 框架/poll 注入/无 focus_ref) |
+
+**C5 净效果**:6 类 trigger 收口为三桶语义(cron 无条件周期/once 后台一次/event_driven 检测→喂事件→agent)。检测(`_evaluate_trigger`)与执行(`_invoke_agent_for_triggers`)已分离(C4 去 objective 耦合后天然成立),事件驱动现在把**真实事件**(poll 变化/消息/webhook payload)喂给 agent 而非"某 trigger 触发了"。CC 对齐:trigger 只是"何时/用什么 prompt 起一个 call"。
 
 ---
 

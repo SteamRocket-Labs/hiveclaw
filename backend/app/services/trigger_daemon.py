@@ -41,7 +41,7 @@ TICK_INTERVAL = 15  # seconds
 DEDUP_WINDOW = 120  # seconds — same agent won't be invoked twice within this window
 MAX_AGENT_CHAIN_DEPTH = 5  # A→B→A→B→A max depth before stopping
 MIN_POLL_INTERVAL_MINUTES = 5  # align with tenant/agent min_poll_interval_floor defaults
-MAX_FIRES_PER_HOUR = 6   # hard cap: ~10 min minimum interval between fires
+MAX_FIRES_PER_HOUR = 6  # hard cap: ~10 min minimum interval between fires
 _TRIGGER_FIRE_LEASE_TTL_SECONDS = 600
 
 # Track last invocation time per agent to enforce dedup window
@@ -125,14 +125,17 @@ async def _skip_trigger_runtime_task(
         metadata_json=metadata,
     )
 
+
 # M-16: Persist dedup state to survive process restarts
 # Use AGENT_DATA_DIR if available, otherwise a restricted temp path
 def _get_dedup_path() -> Path:
     try:
         from app.config import get_settings
+
         return Path(get_settings().AGENT_DATA_DIR) / ".trigger_dedup.json"
     except Exception:
         return Path("/tmp/.hive_trigger_dedup.json")
+
 
 _DEDUP_FILE = _get_dedup_path()
 
@@ -150,6 +153,7 @@ def _load_dedup_state() -> None:
 def _save_dedup_state() -> None:
     import os
     import tempfile
+
     try:
         data = {str(k): v.isoformat() for k, v in _last_invoke.items()}
         _DEDUP_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -171,12 +175,14 @@ def _save_dedup_state() -> None:
     except Exception as exc:
         logger.debug("[TriggerDaemon] Failed to save dedup state: {}", exc)
 
+
 # Webhook rate limiter: token -> list of timestamps
 _webhook_hits: dict[str, list[float]] = {}
-WEBHOOK_RATE_LIMIT = 5   # max hits per minute per token
+WEBHOOK_RATE_LIMIT = 5  # max hits per minute per token
 
 
 # ── Reply target recovery for pre-unified triggers ──────────────────
+
 
 async def _recover_reply_target_from_session(
     agent_id: uuid.UUID,
@@ -217,9 +223,7 @@ async def _recover_reply_target_from_session(
             for trigger in triggers:
                 if getattr(trigger, "reply_context", None) is None:
                     try:
-                        trigger_r = await db.execute(
-                            select(AgentTrigger).where(AgentTrigger.id == trigger.id)
-                        )
+                        trigger_r = await db.execute(select(AgentTrigger).where(AgentTrigger.id == trigger.id))
                         t_obj = trigger_r.scalar_one_or_none()
                         if t_obj:
                             t_obj.reply_context = target
@@ -288,7 +292,9 @@ async def backfill_null_reply_contexts() -> dict:
                     patched += 1
                     logger.info(
                         "[TriggerDaemon] Backfilled reply_context for trigger '{}' (agent {}): channel={}",
-                        t.name, aid, target.get("channel"),
+                        t.name,
+                        aid,
+                        target.get("channel"),
                     )
 
             await db.commit()
@@ -299,6 +305,7 @@ async def backfill_null_reply_contexts() -> dict:
 
 
 # ── SSRF Protection ─────────────────────────────────────────────────
+
 
 def _is_private_url(url: str) -> bool:
     """Block private/internal URLs to prevent SSRF attacks."""
@@ -314,6 +321,7 @@ def _is_private_url(url: str) -> bool:
 
         # Try to resolve hostname and check IP
         import socket
+
         try:
             infos = socket.getaddrinfo(hostname, None)
             for info in infos:
@@ -352,6 +360,7 @@ def _is_trigger_in_active_hours(active_hours: str, now: datetime, tz_name: str =
 
 
 # ── Trigger Evaluation ──────────────────────────────────────────────
+
 
 async def _evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
     """Return True if this trigger should fire right now."""
@@ -403,8 +412,10 @@ async def _evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
             tz_name = cfg.get("timezone")
             if not tz_name:
                 from app.services.timezone_utils import get_agent_timezone
+
                 tz_name = await get_agent_timezone(trigger.agent_id)
             from zoneinfo import ZoneInfo
+
             try:
                 tz = ZoneInfo(tz_name)
             except (KeyError, Exception):
@@ -458,11 +469,12 @@ async def _evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
 
 async def _poll_check(trigger: AgentTrigger) -> bool:
     """HTTP poll: fetch URL, extract value via json_path, detect change.
-    
+
     Persists _last_value into the trigger's config JSONB so it survives
     across process restarts.
     """
     import httpx
+
     cfg = trigger.config or {}
     url = cfg.get("url")
     if not url:
@@ -488,6 +500,8 @@ async def _poll_check(trigger: AgentTrigger) -> bool:
 
         if fire_on == "match":
             should_fire = current_str == str(cfg.get("match_value", ""))
+            if should_fire:
+                cfg["_last_event"] = f"Polled {url} → value matched: {current_str[:500]}"
         else:  # "change"
             last_value = cfg.get("_last_value")
             # First poll — don't fire, just record baseline
@@ -495,17 +509,20 @@ async def _poll_check(trigger: AgentTrigger) -> bool:
                 should_fire = False
             else:
                 should_fire = current_str != last_value
+                if should_fire:
+                    # Record what changed so the agent digests the actual event
+                    # (event-driven v1: emit the event, not just "a trigger fired").
+                    cfg["_last_event"] = (
+                        f"Polled {url} → value changed from '{str(last_value)[:200]}' to '{current_str[:200]}'"
+                    )
 
         # Persist _last_value to DB so it survives restarts
         cfg["_last_value"] = current_str
         try:
             from sqlalchemy import update
+
             async with async_session() as db:
-                await db.execute(
-                    update(AgentTrigger)
-                    .where(AgentTrigger.id == trigger.id)
-                    .values(config=cfg)
-                )
+                await db.execute(update(AgentTrigger).where(AgentTrigger.id == trigger.id).values(config=cfg))
                 await db.commit()
         except Exception as e:
             logger.warning(f"Failed to persist poll _last_value for {trigger.name}: {e}")
@@ -535,11 +552,11 @@ def _extract_json_path(data, path: str):
 
 async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
     """Check if there are new messages matching this trigger.
-    
+
     Supports two modes:
     - from_agent_name: check for agent-to-agent messages
     - from_user_name: check for human user messages (Feishu/Slack/Discord)
-    
+
     Stores the actual message content in trigger.config['_matched_message']
     so the invocation context can include it.
     """
@@ -585,10 +602,14 @@ async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
                 from app.services.channel_delivery_service import ChannelDeliveryService
                 from app.services.pending_reply_service import sender_identity_from_external_conv_id
 
-                sender_identity = sender_identity_from_external_conv_id(getattr(session_obj, "external_conv_id", "") or "")
+                sender_identity = sender_identity_from_external_conv_id(
+                    getattr(session_obj, "external_conv_id", "") or ""
+                )
                 if sender_identity:
                     return sender_identity
-                return ChannelDeliveryService.identity_from_delivery_target(getattr(session_obj, "delivery_target_json", None))
+                return ChannelDeliveryService.identity_from_delivery_target(
+                    getattr(session_obj, "delivery_target_json", None)
+                )
 
             agent_r = await db.execute(select(AgentModel).where(AgentModel.id == trigger.agent_id))
             current_agent = agent_r.scalar_one_or_none()
@@ -600,27 +621,34 @@ async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
                 if not session_id:
                     return False
                 result = await db.execute(
-                    select(ChatMessage).where(
+                    select(ChatMessage)
+                    .where(
                         ChatMessage.agent_id == trigger.agent_id,
                         ChatMessage.conversation_id == session_id,
                         ChatMessage.role == "user",
                         ChatMessage.created_at > since,
-                    ).order_by(ChatMessage.created_at.desc()).limit(1)
+                    )
+                    .order_by(ChatMessage.created_at.desc())
+                    .limit(1)
                 )
                 msg = result.scalar_one_or_none()
                 if not msg:
                     return False
-                return _record_match(msg, reply_ctx.get("user_label") or reply_ctx.get("sender_identity") or "current_sender")
+                return _record_match(
+                    msg, reply_ctx.get("user_label") or reply_ctx.get("sender_identity") or "current_sender"
+                )
 
             if from_user_identity:
                 result = await db.execute(
-                    select(ChatMessage, ChatSession).join(
-                        ChatSession, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString)
-                    ).where(
+                    select(ChatMessage, ChatSession)
+                    .join(ChatSession, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString))
+                    .where(
                         ChatSession.agent_id == trigger.agent_id,
                         ChatMessage.role == "user",
                         ChatMessage.created_at > since,
-                    ).order_by(ChatMessage.created_at.desc()).limit(20)
+                    )
+                    .order_by(ChatMessage.created_at.desc())
+                    .limit(20)
                 )
                 for msg, session_obj in result.all():
                     if from_channel and getattr(session_obj, "source_channel", "") != from_channel:
@@ -675,14 +703,16 @@ async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
                     return False
 
                 result = await db.execute(
-                    select(ChatMessage).join(
-                        ChatSession, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString)
-                    ).where(
+                    select(ChatMessage)
+                    .join(ChatSession, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString))
+                    .where(
                         ChatSession.agent_id == trigger.agent_id,
                         ChatMessage.participant_id == from_participant,
                         ChatMessage.created_at > since,
                         ChatMessage.role == "assistant",
-                    ).order_by(ChatMessage.created_at.desc()).limit(1)
+                    )
+                    .order_by(ChatMessage.created_at.desc())
+                    .limit(1)
                 )
                 msg = result.scalar_one_or_none()
                 if not msg:
@@ -691,27 +721,31 @@ async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
 
             if from_user_name:
                 user_r = await db.execute(
-                    select(User).where(
+                    select(User)
+                    .where(
                         User.tenant_id == current_tenant_id,
                         or_(
                             User.display_name.ilike(f"%{from_user_name}%"),
                             User.username.ilike(f"%{from_user_name}%"),
-                        )
-                    ).limit(1)
+                        ),
+                    )
+                    .limit(1)
                 )
                 target_user = user_r.scalars().first()
                 if not target_user:
                     return False
 
                 result = await db.execute(
-                    select(ChatMessage).join(
-                        ChatSession, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString)
-                    ).where(
+                    select(ChatMessage)
+                    .join(ChatSession, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString))
+                    .where(
                         ChatSession.agent_id == trigger.agent_id,
                         ChatSession.user_id == target_user.id,
                         ChatMessage.role == "user",
                         ChatMessage.created_at > since,
-                    ).order_by(ChatMessage.created_at.desc()).limit(1)
+                    )
+                    .order_by(ChatMessage.created_at.desc())
+                    .limit(1)
                 )
                 msg = result.scalar_one_or_none()
                 if not msg:
@@ -743,7 +777,9 @@ def _default_trigger_event_key(trigger: AgentTrigger, now: datetime, evaluation:
         return f"poll:{trigger.id}:{hashlib.sha256(current_value.encode('utf-8')).hexdigest()[:16]}"
     if trigger.type == "webhook":
         payload = str(cfg.get("_webhook_payload") or "")
-        payload_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16] if payload else now.strftime("%Y%m%d%H%M%S")
+        payload_hash = (
+            hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16] if payload else now.strftime("%Y%m%d%H%M%S")
+        )
         return f"webhook:{trigger.id}:{cfg.get('_webhook_event_key') or payload_hash}"
     return f"{trigger.type}:{trigger.id}:{now.strftime('%Y%m%d%H%M%S')}"
 
@@ -819,11 +855,13 @@ async def _record_trigger_failure_state(agent_id: uuid.UUID, triggers: list[Agen
             if not trigger:
                 continue
             failure_meta = apply_trigger_failure_policy(trigger, error=error)
-            metadata["failure_backoff"].append({
-                "trigger_id": str(trigger.id),
-                "trigger_name": trigger.name,
-                **failure_meta,
-            })
+            metadata["failure_backoff"].append(
+                {
+                    "trigger_id": str(trigger.id),
+                    "trigger_name": trigger.name,
+                    **failure_meta,
+                }
+            )
         await db.commit()
     return metadata
 
@@ -848,14 +886,18 @@ async def _load_confirmed_plan_for_trigger(db: Any, trigger: AgentTrigger, agent
     try:
         plan_uuid = uuid.UUID(plan_id_raw)
     except (TypeError, ValueError):
-        logger.warning("[TriggerDaemon] trigger {} has invalid plan_id {!r} — waking without plan", trigger.name, plan_id_raw)
+        logger.warning(
+            "[TriggerDaemon] trigger {} has invalid plan_id {!r} — waking without plan", trigger.name, plan_id_raw
+        )
         return None
 
     from app.models.plan_request import AgentPlanRequest
 
     plan = (await db.execute(select(AgentPlanRequest).where(AgentPlanRequest.id == plan_uuid))).scalar_one_or_none()
     if plan is None:
-        logger.warning("[TriggerDaemon] trigger {} plan_id {} not found — waking without plan", trigger.name, plan_id_raw)
+        logger.warning(
+            "[TriggerDaemon] trigger {} plan_id {} not found — waking without plan", trigger.name, plan_id_raw
+        )
         return None
     if plan.status != "confirmed":
         logger.info(
@@ -910,6 +952,82 @@ async def _build_confirmed_plan_context(db: Any, triggers: list[AgentTrigger], a
     if not blocks:
         return ""
     return "\n\n===== 已确认的计划（本次唤醒按此执行）=====\n" + "\n\n".join(blocks)
+
+
+def _format_trigger_event(trigger: AgentTrigger, cfg: dict) -> str:
+    """The event payload for an event-driven trigger (poll/on_message/webhook).
+
+    Exec/automation §2 — event-driven v1: the fired trigger must hand the agent
+    the *actual event*, not just "a trigger fired". Returns "" for triggers with
+    no captured event (e.g. a poll that fired with no recorded change)."""
+    t = trigger.type
+    if t == "on_message" and cfg.get("_matched_message"):
+        return f'Message from {cfg.get("_matched_from", "?")}:\n"{cfg["_matched_message"][:500]}"'
+    if t == "webhook" and cfg.get("_webhook_payload"):
+        payload_str = str(cfg["_webhook_payload"])
+        if len(payload_str) > 2000:
+            payload_str = payload_str[:2000] + "... (truncated)"
+        return f"Webhook payload:\n{payload_str}"
+    if t == "poll":
+        # The change description recorded by _poll_check (falls back to last value).
+        event = cfg.get("_last_event") or (f"Polled value: {cfg.get('_last_value')}" if cfg.get("_last_value") else "")
+        return str(event)
+    return ""
+
+
+def _build_trigger_context(
+    triggers: list[AgentTrigger],
+    *,
+    explicit_context: str = "",
+    confirmed_plan_context: str = "",
+) -> tuple[str, list[str]]:
+    """Build the wake context fed to the agent as one user message (pure/testable).
+
+    Three-bucket framing (exec/automation §2): event-driven triggers
+    (poll/on_message/webhook) are presented as an *event to react to* with the
+    event payload inline; scheduled triggers (cron/once/interval) are a plain
+    scheduled run. Returns ``(context, trigger_names)``.
+    """
+    from app.services.agent_tool_domains.triggers import TRIGGER_BUCKET_EVENT_DRIVEN, trigger_bucket
+
+    context_parts: list[str] = []
+    trigger_names: list[str] = []
+    for t in triggers:
+        cfg = t.config or {}
+        if trigger_bucket(t.type) == TRIGGER_BUCKET_EVENT_DRIVEN:
+            part = f"Event from trigger: {t.name} ({t.type})\nReason: {t.reason}"
+            event = _format_trigger_event(t, cfg)
+            if event:
+                part += f"\n{event}"
+        else:
+            part = f"Scheduled trigger: {t.name} ({t.type})\nReason: {t.reason}"
+
+        # Reply channel context if the trigger was created from a channel.
+        reply_ctx = getattr(t, "reply_context", None) or {}
+        if reply_ctx.get("channel"):
+            ch = reply_ctx["channel"]
+            user_label = reply_ctx.get("user_label", "the requesting user")
+            part += (
+                f"\nReply Channel: {ch}"
+                f"\nReply To: {user_label}"
+                "\n→ MUST use send_channel_message / send_channel_file for this reply target."
+            )
+
+        context_parts.append(part)
+        trigger_names.append(t.name)
+
+    multiple = len(triggers) > 1
+    trigger_context = (
+        "===== Trigger Awakening Context =====\n"
+        f"Source: trigger ({'multiple triggers fired simultaneously' if multiple else 'single trigger fired'})\n\n"
+        + "\n---\n".join(context_parts)
+        + (f"\n\nExplicit Context From configured refs:\n{explicit_context}" if explicit_context else "")
+        + confirmed_plan_context
+        + "\n\nExecute this trigger now. If you finish or get blocked, record the outcome "
+        "with concrete evidence in your work ledger and memory."
+        "\n==========================="
+    )
+    return trigger_context, trigger_names
 
 
 async def _invoke_agent_for_triggers(
@@ -987,6 +1105,7 @@ async def _invoke_agent_for_triggers(
 
             # Set execution identity — autonomous agent action
             from app.core.execution_context import set_agent_bot_identity
+
             set_agent_bot_identity(agent_id, agent.name, source="trigger")
 
             # Load LLM model. P5 supports per-job model pinning via trigger.config.model_id.
@@ -1002,37 +1121,6 @@ async def _invoke_agent_for_triggers(
                 return
             runtime_options = collect_trigger_runtime_options(triggers)
 
-            # Build trigger context
-            context_parts = []
-            trigger_names = []
-            for t in triggers:
-                part = f"Trigger: {t.name} ({t.type})\nReason: {t.reason}"
-                if t.focus_ref:
-                    part += f"\nRelated Focus: {t.focus_ref}"
-                # Include matched message for on_message triggers
-                cfg = t.config or {}
-                if t.type == "on_message" and cfg.get("_matched_message"):
-                    part += f"\nMessage from {cfg.get('_matched_from', '?')}:\n\"{cfg['_matched_message'][:500]}\""
-                # Include webhook payload
-                if t.type == "webhook" and cfg.get("_webhook_payload"):
-                    payload_str = cfg["_webhook_payload"]
-                    if len(payload_str) > 2000:
-                        payload_str = payload_str[:2000] + "... (truncated)"
-                    part += f"\nWebhook Payload:\n{payload_str}"
-                # Inject reply channel context if the trigger was created from a channel
-                reply_ctx = getattr(t, "reply_context", None) or {}
-                if reply_ctx.get("channel"):
-                    ch = reply_ctx["channel"]
-                    user_label = reply_ctx.get("user_label", "the requesting user")
-                    part += (
-                        f"\nReply Channel: {ch}"
-                        f"\nReply To: {user_label}"
-                        "\n→ MUST use send_channel_message / send_channel_file for this reply target."
-                    )
-
-                context_parts.append(part)
-                trigger_names.append(t.name)
-
             explicit_context = ""
             if runtime_options.get("context_from"):
                 explicit_context = await load_context_from(
@@ -1045,15 +1133,11 @@ async def _invoke_agent_for_triggers(
             # approved plan body as marching orders (read fresh from the plan row).
             confirmed_plan_context = await _build_confirmed_plan_context(db, triggers, agent_id)
 
-            trigger_context = (
-                "===== Trigger Awakening Context =====\n"
-                f"Source: trigger ({'multiple triggers fired simultaneously' if len(triggers) > 1 else 'single trigger fired'})\n\n"
-                + "\n---\n".join(context_parts)
-                + (f"\n\nExplicit Context From configured refs:\n{explicit_context}" if explicit_context else "")
-                + confirmed_plan_context
-                + "\n\nExecute this trigger now. If you finish or get blocked, record the outcome "
-                "with concrete evidence in your work ledger and memory."
-                "\n==========================="
+            # Three-bucket framing + event payload (exec/automation §2) — pure helper.
+            trigger_context, trigger_names = _build_trigger_context(
+                triggers,
+                explicit_context=explicit_context,
+                confirmed_plan_context=confirmed_plan_context,
             )
 
             # Create a fresh Reflection Session for this wake.
@@ -1079,14 +1163,16 @@ async def _invoke_agent_for_triggers(
             messages = list(memory_messages)
 
             # Store trigger context as a message in the session
-            db.add(ChatMessage(
-                agent_id=agent_id,
-                conversation_id=str(session_id),
-                role="user",
-                content=trigger_context,
-                user_id=agent.creator_id,
-                participant_id=agent_participant.id if agent_participant else None,
-            ))
+            db.add(
+                ChatMessage(
+                    agent_id=agent_id,
+                    conversation_id=str(session_id),
+                    role="user",
+                    content=trigger_context,
+                    user_id=agent.creator_id,
+                    participant_id=agent_participant.id if agent_participant else None,
+                )
+            )
             session.last_message_at = datetime.now(timezone.utc)
             await db.commit()
             # Cache participant ID for callbacks
@@ -1104,20 +1190,26 @@ async def _invoke_agent_for_triggers(
                 async with async_session() as _tc_db:
                     if data["status"] == "done":
                         result_str = str(data.get("result", ""))[:2000]
-                        _tc_db.add(ChatMessage(
-                            agent_id=agent_id,
-                            conversation_id=str(session_id),
-                            role="tool_call",
-                            content=_json.dumps({
-                                "name": data["name"],
-                                "args": data.get("args"),
-                                "status": "done",
-                                "result": result_str,
-                                "reasoning_content": data.get("reasoning_content"),
-                            }, ensure_ascii=False, default=str),
-                            user_id=agent.creator_id,
-                            participant_id=agent_participant_id,
-                        ))
+                        _tc_db.add(
+                            ChatMessage(
+                                agent_id=agent_id,
+                                conversation_id=str(session_id),
+                                role="tool_call",
+                                content=_json.dumps(
+                                    {
+                                        "name": data["name"],
+                                        "args": data.get("args"),
+                                        "status": "done",
+                                        "result": result_str,
+                                        "reasoning_content": data.get("reasoning_content"),
+                                    },
+                                    ensure_ascii=False,
+                                    default=str,
+                                ),
+                                user_id=agent.creator_id,
+                                participant_id=agent_participant_id,
+                            )
+                        )
                     await _tc_db.commit()
             except Exception as e:
                 logger.warning(f"Failed to persist tool call for trigger session: {e}")
@@ -1194,14 +1286,16 @@ async def _invoke_agent_for_triggers(
             )
             agent_participant = result.scalar_one_or_none()
 
-            db.add(ChatMessage(
-                agent_id=agent_id,
-                conversation_id=str(session_id),
-                role="assistant",
-                content=reply or "".join(collected_content),
-                user_id=agent.creator_id,
-                participant_id=agent_participant.id if agent_participant else None,
-            ))
+            db.add(
+                ChatMessage(
+                    agent_id=agent_id,
+                    conversation_id=str(session_id),
+                    role="assistant",
+                    content=reply or "".join(collected_content),
+                    user_id=agent.creator_id,
+                    participant_id=agent_participant.id if agent_participant else None,
+                )
+            )
 
             # NOTE: trigger state (last_fired_at, fire_count, auto-disable)
             # is already updated in _tick() BEFORE this task was launched,
@@ -1222,6 +1316,7 @@ async def _invoke_agent_for_triggers(
                 _parse_heartbeat_outcome,
                 _update_evolution_files,
             )
+
             trigger_outcome, trigger_score = _parse_heartbeat_outcome(final_reply)
             trigger_summary = final_reply[:80] if final_reply else "empty"
 
@@ -1237,7 +1332,9 @@ async def _invoke_agent_for_triggers(
             )
             logger.debug(
                 "[TriggerDaemon] Evolution feedback for {}: {} score={}",
-                agent_id, trigger_outcome, trigger_score,
+                agent_id,
+                trigger_outcome,
+                trigger_score,
             )
         except Exception as _evo_err:
             logger.debug("[TriggerDaemon] Evolution feedback failed (non-fatal): {}", _evo_err)
@@ -1245,6 +1342,7 @@ async def _invoke_agent_for_triggers(
         # Count trigger execution as a session for auto-dream gate
         try:
             from app.services.auto_dream import record_session_end, should_dream, run_dream
+
             record_session_end(agent_id)
             if should_dream(agent_id) and agent.tenant_id:
                 asyncio.create_task(run_dream(agent_id, agent.tenant_id))
@@ -1253,10 +1351,14 @@ async def _invoke_agent_for_triggers(
             logger.debug("[TriggerDaemon] Auto-dream check failed: {}", _dream_err)
 
         # Audit log
-        await write_audit_log("trigger_fired", {
-            "agent_name": agent.name,
-            "triggers": [{"name": t.name, "type": t.type} for t in triggers],
-        }, agent_id=agent_id)
+        await write_audit_log(
+            "trigger_fired",
+            {
+                "agent_name": agent.name,
+                "triggers": [{"name": t.name, "type": t.type} for t in triggers],
+            },
+            agent_id=agent_id,
+        )
 
         output_artifact = None
         try:
@@ -1341,20 +1443,18 @@ async def _invoke_agent_for_triggers(
 
 # ── Main Tick Loop ──────────────────────────────────────────────────
 
+
 async def _tick():
     """One daemon tick: evaluate all triggers, group by agent, invoke."""
     now = datetime.now(timezone.utc)
 
     async with async_session() as db:
-        result = await db.execute(
-            select(AgentTrigger).where(AgentTrigger.is_enabled)
-        )
+        result = await db.execute(select(AgentTrigger).where(AgentTrigger.is_enabled))
         all_triggers = result.scalars().all()
 
     if not all_triggers:
         logger.debug("[TriggerDaemon] No enabled triggers — tick skipped")
         return
-
 
     # Evaluate and group fired triggers by agent. A schedule is just a trigger,
     # so all of an agent's fired triggers collapse into one wake invocation.
@@ -1409,9 +1509,7 @@ async def _tick():
             try:
                 async with async_session() as db:
                     for t in agent_triggers:
-                        result = await db.execute(
-                            select(AgentTrigger).where(AgentTrigger.id == t.id)
-                        )
+                        result = await db.execute(select(AgentTrigger).where(AgentTrigger.id == t.id))
                         trigger = result.scalar_one_or_none()
                         if trigger:
                             trigger.last_fired_at = now
@@ -1459,6 +1557,7 @@ async def start_trigger_daemon():
         except Exception as e:
             logger.error(f"Trigger Daemon error: {e}")
             import traceback
+
             traceback.print_exc()
 
         await asyncio.sleep(TICK_INTERVAL)

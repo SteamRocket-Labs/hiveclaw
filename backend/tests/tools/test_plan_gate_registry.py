@@ -77,7 +77,6 @@ def test_manage_tasks_is_retired_from_the_tool_gate():
     for payload in (
         {"action": "create", "task_type": "todo"},
         {"action": "create"},
-        {"action": "create", "task_type": "supervision"},
         {"action": "update_status", "status": "done"},
         {"action": "delete"},
     ):

@@ -232,9 +232,8 @@ def build_production_parent_wake_invoker() -> ParentWakeInvoker:
 
     Re-invokes the parent agent so it consumes its completed background
     subagents' results, instead of waiting for its own next run / heartbeat
-    backfill. Mirrors the unattended-invoke pattern of
-    ``supervision_reminder._get_agent_reply``: load the agent, confirm it is
-    runnable, resolve its model, then call ``invoke_agent`` under an agent_bot
+    backfill. Follows the unattended-invoke pattern: load the agent, confirm it
+    is runnable, resolve its model, then call ``invoke_agent`` under an agent_bot
     identity with a dedicated ``subagent_wake`` source so the run is auditable
     and distinct from user/trigger turns.
     """

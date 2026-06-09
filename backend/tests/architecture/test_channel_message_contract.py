@@ -52,13 +52,12 @@ def test_agent_pair_session_creation_uses_shared_service() -> None:
     service_source = (APP_ROOT / "services" / "agent_pair_session.py").read_text(encoding="utf-8")
     gateway_source = (APP_ROOT / "api" / "gateway.py").read_text(encoding="utf-8")
     messaging_source = (APP_ROOT / "services" / "agent_tool_domains" / "messaging.py").read_text(encoding="utf-8")
-    reminder_source = (APP_ROOT / "services" / "supervision_reminder.py").read_text(encoding="utf-8")
 
     assert "def find_or_create_agent_pair_session(" in service_source
     assert "def get_or_create_agent_participant_id(" in service_source
     assert "def session_conversation_id(" in service_source
 
-    for source in (gateway_source, messaging_source, reminder_source):
+    for source in (gateway_source, messaging_source):
         assert "find_or_create_agent_pair_session" in source
         assert "get_or_create_agent_participant_id" in source
         assert "session_agent_id = min(" not in source

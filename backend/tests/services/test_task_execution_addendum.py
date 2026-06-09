@@ -1,7 +1,7 @@
 """Tests for TASK_EXECUTION_ADDENDUM (PR-17).
 
 This addendum is appended to the system prompt whenever a background task
-runs autonomously (todo/supervision). It shapes how the agent decomposes,
+runs autonomously. It shapes how the agent decomposes,
 recovers from failures, decides when to stop, and formats its final report.
 Parent tooling consumes the structured report, so format drift here silently
 breaks downstream reporting.

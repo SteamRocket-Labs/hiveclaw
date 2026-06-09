@@ -23,7 +23,7 @@ async def write_audit_log(
     called from background tasks where not all models may be loaded.
 
     Args:
-        action: Short action string, e.g. "supervision_tick", "schedule_execute".
+        action: Short action string, e.g. "trigger_fire", "schedule_execute".
         details: JSON-serialisable dict with extra info.
         agent_id: Optional agent UUID.
         user_id: Optional user UUID.

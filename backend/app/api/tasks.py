@@ -78,19 +78,17 @@ async def create_task(
 ):
     """Create a new task for an agent."""
     await check_agent_access(db, current_user, agent_id)
-    # Plan Mode early intercept (§9.3): a `todo` task auto-executes in the
-    # background (execute_task), so it needs a confirmed plan. Non-todo tasks
-    # (e.g. supervision reminders) do not auto-run and keep their contract.
-    if data.type == "todo":
-        await enforce_plan_gate(
-            db,
-            agent_id=agent_id,
-            action_kind="start_long_task",
-            gate=get_plan_mode_gate(),
-            confirmed_plan_id=data.confirmed_plan_id,
-            confirmed_plan_version=data.confirmed_plan_version,
-            confirmed_plan_hash=data.confirmed_plan_hash,
-        )
+    # Plan Mode early intercept (§9.3): a todo task auto-executes in the
+    # background (execute_task), so it needs a confirmed plan.
+    await enforce_plan_gate(
+        db,
+        agent_id=agent_id,
+        action_kind="start_long_task",
+        gate=get_plan_mode_gate(),
+        confirmed_plan_id=data.confirmed_plan_id,
+        confirmed_plan_version=data.confirmed_plan_version,
+        confirmed_plan_hash=data.confirmed_plan_hash,
+    )
     task = Task(
         agent_id=agent_id,
         title=data.title,
@@ -99,9 +97,6 @@ async def create_task(
         priority=data.priority,
         due_date=data.due_date,
         created_by=current_user.id,
-        supervision_target_name=data.supervision_target_name,
-        supervision_channel=data.supervision_channel,
-        remind_schedule=data.remind_schedule,
         plan_id=uuid.UUID(data.confirmed_plan_id) if data.confirmed_plan_id else None,
         plan_version=data.confirmed_plan_version,
         plan_hash=data.confirmed_plan_hash,
@@ -114,11 +109,11 @@ async def create_task(
     # Commit so the background executor can see the task in its own session
     await db.commit()
 
-    # Fire background execution for todo tasks
-    if data.type == "todo":
-        import asyncio
-        from app.services.task_executor import execute_task
-        asyncio.create_task(execute_task(task.id, agent_id))
+    # Fire background execution
+    import asyncio
+    from app.services.task_executor import execute_task
+
+    asyncio.create_task(execute_task(task.id, agent_id))
 
     return task_out
 
@@ -153,9 +148,7 @@ async def get_task_logs(
 ):
     """Get progress logs for a task."""
     await check_agent_access(db, current_user, agent_id)
-    result = await db.execute(
-        select(TaskLog).where(TaskLog.task_id == task_id).order_by(TaskLog.created_at.asc())
-    )
+    result = await db.execute(select(TaskLog).where(TaskLog.task_id == task_id).order_by(TaskLog.created_at.asc()))
     return [TaskLogOut.model_validate(log_item) for log_item in result.scalars().all()]
 
 
@@ -183,8 +176,9 @@ async def trigger_task(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Manually trigger a supervision task execution (for testing)."""
+    """Manually trigger a task execution (for testing)."""
     from app.core.permissions import is_agent_expired
+
     agent, _access = await check_agent_access(db, current_user, agent_id)
     if is_agent_expired(agent):
         raise HTTPException(status_code=403, detail="Agent has expired")
@@ -194,23 +188,22 @@ async def trigger_task(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    # Plan Mode early intercept (§9.3): a manual todo trigger fires the background
-    # execute_task loop. Supervision tasks are reminder checks and stay outside
-    # Plan Mode unless they become todo auto-execution.
+    # Plan Mode early intercept (§9.3): a manual trigger fires the background
+    # execute_task loop, so it needs a confirmed plan.
     trigger_in = data or TaskTriggerIn()
-    if str(getattr(task, "type", "todo") or "todo").strip() == "todo":
-        await enforce_plan_gate(
-            db,
-            agent_id=agent_id,
-            action_kind="start_long_task",
-            gate=get_plan_mode_gate(),
-            confirmed_plan_id=trigger_in.confirmed_plan_id,
-            confirmed_plan_version=trigger_in.confirmed_plan_version,
-            confirmed_plan_hash=trigger_in.confirmed_plan_hash,
-        )
+    await enforce_plan_gate(
+        db,
+        agent_id=agent_id,
+        action_kind="start_long_task",
+        gate=get_plan_mode_gate(),
+        confirmed_plan_id=trigger_in.confirmed_plan_id,
+        confirmed_plan_version=trigger_in.confirmed_plan_version,
+        confirmed_plan_hash=trigger_in.confirmed_plan_hash,
+    )
 
     import asyncio
     from app.services.task_executor import execute_task
+
     asyncio.create_task(execute_task(task.id, agent_id))
 
     return {"status": "triggered", "task_id": str(task_id)}

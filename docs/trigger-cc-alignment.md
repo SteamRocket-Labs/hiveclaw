@@ -62,6 +62,17 @@ Owner 判断(2026-06-08):**「Plan Mode、Task、Subagent 全部过一遍,特别
 
 **C5 净效果**:6 类 trigger 收口为三桶语义(cron 无条件周期/once 后台一次/event_driven 检测→喂事件→agent)。检测(`_evaluate_trigger`)与执行(`_invoke_agent_for_triggers`)已分离(C4 去 objective 耦合后天然成立),事件驱动现在把**真实事件**(poll 变化/消息/webhook payload)喂给 agent 而非"某 trigger 触发了"。CC 对齐:trigger 只是"何时/用什么 prompt 起一个 call"。
 
+| # | 内容 | 关键改动 | 证据 |
+|---|------|---------|------|
+| 6 | **Task 单板收敛 = supervision 退役**(唯一真砍;§4 其余项核实后无需改) | 删孤儿 `supervision_reminder.py`(387 行,`start_supervision_reminder` **main.py 从不启动**=死代码);`Task.type` enum `(todo,supervision)`→`(todo)`;drop 4 列 supervision_target_user_id/name/channel/remind_schedule;task_executor 去 supervision 分支(execute_task 只剩 todo:doing→invoke_agent→done);api/tasks 去 supervision 跳过(所有 task create/trigger 现统一 plan-gated todo);agent_tool_domains/tasks 去 supervision 子分支;migration `retire_task_supervision_0608`(drop 4 列,幂等) | 全量绿(head pin 更新后);supervision residue app+tests=0 |
+
+**C6 净效果 + §4 处置核实**(审计 §4 三分按真实代码校准):
+- **T-D2 supervision = 砍**(已做):提醒/唤醒概念塞进 task 类型枚举,且 runner 是孤儿死代码。归位:周期提醒用 §2 trigger 桶。
+- **T-D1 业务 DB Task 第二套 = 保留(Goal-2 delta,非砍)**:审计原列"收敛",但 [[project_hive_north_star]] Goal 2 明确把"任务管理"列为控制中台能力——业务 Task 是**人给 agent 派活**(human/REST-facing),与 Work Ledger(agent 私有工作记忆,agent-facing)是**不同层非重复**;按优先级 rule 0(Goal-Alignment First)约束冲突目标时保目标。收敛**已在历史完成**:manage_tasks 退役(agent 不双写)+execute_task 漏斗进统一 invoke_agent runtime。
+- **T-D7 should_enable_work_ledger = 无需改**(核实):docstring+map 实证它**只 gate nudge 注入时机**(简单回合零开销),**不 gate 工具可用性**(track_todo/record_finding 始终注册、lazy-create)。审计"机械门决定可用性"前提不准;这其实是 CC 对齐的(工具常驻+prompt 教用法+简单回合不 nag)。
+- **T-D6 required 完成门 = 无需改**(核实):map 实证 validate_completion 产出 audit finding 不 hard-block=已 advisory(守 sensor-vs-blocker 法)。
+- **T-D4 record_finding / T-D5 RuntimeTask.task_type = 保留**(Goal-1 认知脚手架 / 执行机器账本)。
+
 ---
 
 ## 1. 病灶:CC 范式 vs Hive 跑偏(evidence)

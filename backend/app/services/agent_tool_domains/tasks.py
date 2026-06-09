@@ -44,9 +44,6 @@ async def _manage_tasks(
                 priority=args.get("priority", "medium"),
                 created_by=user_id,
                 status="pending",
-                supervision_target_name=args.get("supervision_target_name"),
-                supervision_channel=args.get("supervision_channel", "feishu"),
-                remind_schedule=args.get("remind_schedule"),
                 plan_id=uuid.UUID(str(args["confirmed_plan_id"])) if args.get("confirmed_plan_id") else None,
                 plan_version=args.get("confirmed_plan_version"),
                 plan_hash=args.get("confirmed_plan_hash"),
@@ -56,18 +53,10 @@ async def _manage_tasks(
             await db.refresh(task)
 
             await _sync_tasks_to_file(agent_id, ws)
-            if task_type == "todo":
-                return f"✅ Task created: {title} (id={task.id})"
-            else:
-                # Supervision task — reminder engine will pick it up
-                target = args.get('supervision_target_name', 'someone')
-                schedule = args.get('remind_schedule', 'not set')
-                return f"✅ Supervision task created: '{title}' — will remind {target} on schedule ({schedule})"
+            return f"✅ Task created: {title} (id={task.id})"
 
         elif action == "update_status":
-            result = await db.execute(
-                select(Task).where(Task.agent_id == agent_id, Task.title.ilike(f"%{title}%"))
-            )
+            result = await db.execute(select(Task).where(Task.agent_id == agent_id, Task.title.ilike(f"%{title}%")))
             task = result.scalars().first()
             if not task:
                 return f"No task found matching '{title}'"
@@ -81,9 +70,8 @@ async def _manage_tasks(
 
         elif action == "delete":
             from sqlalchemy import delete as sa_delete
-            result = await db.execute(
-                select(Task).where(Task.agent_id == agent_id, Task.title.ilike(f"%{title}%"))
-            )
+
+            result = await db.execute(select(Task).where(Task.agent_id == agent_id, Task.title.ilike(f"%{title}%")))
             task = result.scalars().first()
             if not task:
                 return f"No task found matching '{title}'"

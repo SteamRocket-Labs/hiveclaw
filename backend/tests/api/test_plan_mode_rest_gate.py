@@ -887,27 +887,6 @@ def test_create_todo_task_without_plan_returns_409(monkeypatch):
     assert gate.calls[0]["action_kind"] == "start_long_task"
 
 
-def test_create_non_todo_task_is_not_gated(monkeypatch):
-    """A plain (non-todo) task does not auto-execute -> not gated."""
-    import app.api.tasks as mod
-
-    db = _QueuedDB()
-    app, _user, allow_access = _make_client(mod, db=db)
-    monkeypatch.setattr(mod, "check_agent_access", allow_access)
-    monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: (_ for _ in ()).throw(AssertionError("not gated")))
-    monkeypatch.setattr(mod, "_enrich_task_out", _fake_enrich_task_out)
-
-    client = TestClient(app)
-    agent_id = uuid4()
-    resp = client.post(
-        f"/agents/{agent_id}/tasks/",
-        json={"title": "note", "description": "remember", "type": "supervision"},
-    )
-
-    assert resp.status_code == 201
-    assert db.added and db.committed is True
-
-
 def test_create_todo_task_with_confirmed_plan_passes(monkeypatch):
     import app.api.tasks as mod
 

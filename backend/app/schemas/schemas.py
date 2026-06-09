@@ -9,6 +9,7 @@ from pydantic import BaseModel, EmailStr, Field
 
 # ─── Auth ───────────────────────────────────────────────
 
+
 class UserRegister(BaseModel):
     username: str = Field(min_length=3, max_length=100)
     email: EmailStr
@@ -74,6 +75,7 @@ class SmartModelRoutingConfig(BaseModel):
     max_simple_chars: int = Field(default=160, ge=32, le=500)
     max_simple_words: int = Field(default=28, ge=4, le=80)
 
+
 class AgentCreate(BaseModel):
     name: str = Field(min_length=2, max_length=100, description="Agent name, 2-100 characters")
     role_description: str = Field(default="", max_length=500, description="Role description, max 500 characters")
@@ -99,6 +101,7 @@ class AgentCreate(BaseModel):
     smart_model_routing: SmartModelRoutingConfig | None = None
     # Skills to copy into agent workspace
     skill_ids: list[uuid.UUID] = []
+
 
 class AgentOut(BaseModel):
     id: uuid.UUID
@@ -137,6 +140,7 @@ class AgentOut(BaseModel):
 
     model_config = {"from_attributes": True}
 
+
 class AgentUpdate(BaseModel):
     name: str | None = None
     role_description: str | None = None
@@ -158,6 +162,7 @@ class AgentUpdate(BaseModel):
 
 class AgentStatusOut(BaseModel):
     """Agent status from state.json."""
+
     agent_id: uuid.UUID
     name: str
     status: str
@@ -169,16 +174,13 @@ class AgentStatusOut(BaseModel):
 
 # ─── Task ───────────────────────────────────────────────
 
+
 class TaskCreate(BaseModel):
     title: str = Field(min_length=1, max_length=500)
     description: str | None = None
-    type: str = "todo"  # todo | supervision
+    type: str = "todo"  # todo
     priority: str = "medium"
     due_date: datetime | None = None
-    # Supervision fields
-    supervision_target_name: str | None = None
-    supervision_channel: str | None = None
-    remind_schedule: str | None = None
     # Plan Mode (§9.3): a confirmed plan authorising an auto-executing todo task.
     confirmed_plan_id: str | None = None
     confirmed_plan_version: int | None = None
@@ -201,9 +203,6 @@ class TaskOut(BaseModel):
     plan_version: int | None = None
     plan_hash: str | None = None
     plan_exempt_reason: str | None = None
-    supervision_target_name: str | None = None
-    supervision_channel: str | None = None
-    remind_schedule: str | None = None
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None = None
@@ -217,8 +216,6 @@ class TaskUpdate(BaseModel):
     status: str | None = None
     priority: str | None = None
     due_date: datetime | None = None
-    supervision_target_name: str | None = None
-    remind_schedule: str | None = None
 
 
 class TaskLogCreate(BaseModel):
@@ -235,6 +232,7 @@ class TaskLogOut(BaseModel):
 
 
 # ─── Department ─────────────────────────────────────────
+
 
 class DepartmentCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
@@ -260,6 +258,7 @@ class DepartmentTree(DepartmentOut):
 
 # ─── LLM ────────────────────────────────────────────────
 
+
 class LLMModelCreate(BaseModel):
     provider: str
     model: str
@@ -279,6 +278,7 @@ class LLMModelCreate(BaseModel):
     preserve_reasoning: bool | None = None
     text_verbosity: str | None = None
     provider_options: dict | None = None
+
 
 class LLMModelUpdate(BaseModel):
     provider: str | None = None
@@ -329,6 +329,7 @@ class LLMModelOut(BaseModel):
 
 # ─── Channel Config ─────────────────────────────────────
 
+
 class ChannelConfigCreate(BaseModel):
     channel_type: str = "feishu"
     app_id: str
@@ -369,7 +370,15 @@ class ChannelConfigOut(BaseModel):
         data["verification_token"] = _mask_secret(self.verification_token)
         if data.get("extra_config"):
             safe_extra = dict(data["extra_config"])
-            for key in ("app_secret", "bot_token", "signing_secret", "client_secret", "api_key", "bot_secret", "ilink_bot_token"):
+            for key in (
+                "app_secret",
+                "bot_token",
+                "signing_secret",
+                "client_secret",
+                "api_key",
+                "bot_secret",
+                "ilink_bot_token",
+            ):
                 if key in safe_extra:
                     safe_extra[key] = _mask_secret(safe_extra[key])
             data["extra_config"] = safe_extra
@@ -377,6 +386,7 @@ class ChannelConfigOut(BaseModel):
 
 
 # ─── Approval ───────────────────────────────────────────
+
 
 class ApprovalRequestOut(BaseModel):
     id: uuid.UUID
@@ -398,6 +408,7 @@ class ApprovalAction(BaseModel):
 
 # ─── Enterprise Info ────────────────────────────────────
 
+
 class EnterpriseInfoUpdate(BaseModel):
     content: dict
     visible_roles: list[str] = []
@@ -415,6 +426,7 @@ class EnterpriseInfoOut(BaseModel):
 
 
 # ─── Chat ───────────────────────────────────────────────
+
 
 class ChatMessageOut(BaseModel):
     id: uuid.UUID
@@ -434,6 +446,7 @@ class ChatSend(BaseModel):
 
 # ─── Audit Log ──────────────────────────────────────────
 
+
 class AuditLogOut(BaseModel):
     id: uuid.UUID
     user_id: uuid.UUID | None = None
@@ -448,6 +461,7 @@ class AuditLogOut(BaseModel):
 
 # ─── Generic ────────────────────────────────────────────
 
+
 class PaginatedResponse(BaseModel):
     items: list
     total: int
@@ -461,6 +475,7 @@ class HealthResponse(BaseModel):
 
 
 # ─── Gateway (OpenClaw) ─────────────────────────────────
+
 
 class GatewayHistoryItem(BaseModel):
     role: str  # "user" or "assistant"
@@ -486,7 +501,6 @@ class GatewayMessageOut(BaseModel):
     content: str
     created_at: datetime
     history: list[GatewayHistoryItem] = []
-
 
 
 class GatewayPollResponse(BaseModel):

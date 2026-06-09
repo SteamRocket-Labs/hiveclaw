@@ -1,7 +1,7 @@
 """Trigger Daemon — evaluates all agent triggers in a single background loop.
 
-Replaces the separate heartbeat, scheduler, and supervision reminder services
-with a unified trigger evaluation engine. Runs as an asyncio background task.
+Replaces the separate heartbeat and scheduler services with a unified trigger
+evaluation engine. Runs as an asyncio background task.
 
 Every 15 seconds:
   1. Load all enabled triggers from DB

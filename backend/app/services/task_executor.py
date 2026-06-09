@@ -189,19 +189,9 @@ hand-waved inside Outcome.)
 
 
 def _build_task_user_prompt(
-    task_type: str,
     task_title: str,
     task_description: str,
-    supervision_target: str,
 ) -> str:
-    if task_type == "supervision":
-        user_prompt = f"[督办任务] {task_title}"
-        if task_description:
-            user_prompt += f"\n任务描述: {task_description}"
-        if supervision_target:
-            user_prompt += f"\n督办对象: {supervision_target}"
-        return user_prompt + "\n\n请执行此督办任务：联系督办对象，了解进展，并汇报结果。"
-
     user_prompt = f"[任务执行] {task_title}"
     if task_description:
         user_prompt += f"\n任务描述: {task_description}"
@@ -240,9 +230,7 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
     Uses the same context as chat dialog: build_agent_context for system prompt,
     agent tools for tool-calling, and a multi-round tool loop.
 
-    Flow:
-      - todo tasks: pending → doing → done
-      - supervision tasks: pending → doing → pending (stays active, just logs result)
+    Flow: pending → doing → done.
     """
     logger.info(f"[TaskExec] Starting task {task_id} for agent {agent_id}")
 
@@ -274,14 +262,11 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
         await db.commit()
         task_title = task.title
         task_description = task.description or ""
-        task_type = task.type  # 'todo' or 'supervision'
-        supervision_target = task.supervision_target_name or ""
+        task_type = task.type  # 'todo'
 
     user_prompt = _build_task_user_prompt(
-        task_type,
         task_title,
         task_description,
-        supervision_target,
     )
     runtime_messages = [{"role": "user", "content": user_prompt}]
 
@@ -291,15 +276,11 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
         agent = agent_result.scalar_one_or_none()
         if not agent:
             await _log_error(task_id, "数字员工未找到")
-            if task_type == "supervision":
-                await _restore_supervision_status(task_id)
             return
 
         model_id = agent.primary_model_id or agent.fallback_model_id
         if not model_id:
             await _log_error(task_id, f"{agent.name} 未配置 LLM 模型，无法执行任务")
-            if task_type == "supervision":
-                await _restore_supervision_status(task_id)
             return
 
         model_result = await db.execute(
@@ -315,8 +296,6 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
             fallback_model = fb_result.scalar_one_or_none()
         if not model:
             await _log_error(task_id, "配置的模型不存在")
-            if task_type == "supervision":
-                await _restore_supervision_status(task_id)
             return
 
         agent_name = agent.name
@@ -415,8 +394,6 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
         error_msg = str(e) or repr(e)
         logger.error(f"[TaskExec] Error: {error_msg}")
         await _log_error(task_id, f"执行出错: {error_msg[:150]}")
-        if task_type == "supervision":
-            await _restore_supervision_status(task_id)
         return
 
     # Step 5: Save result and update status
@@ -434,16 +411,11 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
                     participant_id=agent_participant_id,
                 )
             )
-            if task_type == "supervision":
-                # Supervision tasks stay active; just log the result
-                task.status = "pending"
-                db.add(TaskLog(task_id=task_id, content=f"✅ 督办执行完成\n\n{reply}"))
-            else:
-                task.status = "done"
-                task.completed_at = datetime.now(timezone.utc)
-                db.add(TaskLog(task_id=task_id, content=f"✅ 任务完成\n\n{reply}"))
+            task.status = "done"
+            task.completed_at = datetime.now(timezone.utc)
+            db.add(TaskLog(task_id=task_id, content=f"✅ 任务完成\n\n{reply}"))
             await db.commit()
-            logger.info(f"[TaskExec] Task {task_id} {'logged' if task_type == 'supervision' else 'completed'}!")
+            logger.info(f"[TaskExec] Task {task_id} completed!")
 
     # Log activity
     from app.services.activity_logger import log_activity
@@ -451,7 +423,7 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
     await log_activity(
         agent_id,
         "task_updated",
-        f"{'督办' if task_type == 'supervision' else '任务'}执行: {task_title[:60]}",
+        f"任务执行: {task_title[:60]}",
         detail={"task_id": str(task_id), "task_type": task_type, "title": task_title, "reply": reply[:500]},
         related_id=task_id,
     )
@@ -463,13 +435,3 @@ async def _log_error(task_id: uuid.UUID, message: str) -> None:
     async with async_session() as db:
         db.add(TaskLog(task_id=task_id, content=f"❌ {message}"))
         await db.commit()
-
-
-async def _restore_supervision_status(task_id: uuid.UUID) -> None:
-    """Restore supervision task status back to pending after a failed execution."""
-    async with async_session() as db:
-        result = await db.execute(select(Task).where(Task.id == task_id))
-        task = result.scalar_one_or_none()
-        if task and task.status == "doing":
-            task.status = "pending"
-            await db.commit()

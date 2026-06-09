@@ -390,13 +390,13 @@ async def test_execute_approved_blocks_tagged_tool_without_confirmed_plan():
 async def test_execute_approved_never_gates_retired_manage_tasks():
     """F-2: manage_tasks is retired from the tool face — no payload gates it.
 
-    Replaces the old per-payload manage_tasks gating tests (todo/supervision/
-    update_status), which exercised a tool that is no longer agent-callable. The
-    gate must never be consulted for it at execute_approved, under any payload.
+    Replaces the old per-payload manage_tasks gating tests (todo/update_status),
+    which exercised a tool that is no longer agent-callable. The gate must never
+    be consulted for it at execute_approved, under any payload.
     """
     for payload in (
         {"action": "create", "title": "Recurring sweep", "task_type": "todo"},
-        {"action": "create", "title": "Remind Alice", "task_type": "supervision"},
+        {"action": "create", "title": "Untyped task"},
         {"action": "update_status", "title": "Recurring sweep", "status": "done"},
     ):
         context = _context()

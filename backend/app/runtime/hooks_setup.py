@@ -392,12 +392,18 @@ async def _capture_pending_reply(ctx: HookContext) -> None:
                 # No fallback to agent_name — that's the bot, not the human originator
 
     try:
-        from app.database import async_session
+        from app.database import tenant_scoped_session
         from app.models.chat_session import ChatSession
         from app.services.pending_reply_service import sender_identity_from_session
+        from app.services.tenant_resolver import resolve_tenant_for_agent
         from sqlalchemy import select
 
-        async with async_session() as db:
+        # POST_TOOL_USE may fire from a daemon/background path with no request GUC.
+        # Resolve the owning tenant so the SELECT and the pending_reply_contexts
+        # INSERT survive the stage-3 non-owner role flip (a bare session
+        # fail-closes → silently drops the captured reply context).
+        tenant_id = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tenant_id) as db:
             if ctx.session_id:
                 try:
                     session_result = await db.execute(
@@ -417,6 +423,7 @@ async def _capture_pending_reply(ctx: HookContext) -> None:
             await capture_pending_reply(
                 db,
                 agent_id=agent_id,
+                tenant_id=tenant_id,
                 tool_name=ctx.tool_name or "",
                 tool_args=ctx.tool_args or {},
                 messages=messages,

@@ -223,7 +223,11 @@ class FeishuWSManager:
         """Persist Feishu websocket health so bad credentials do not restart forever."""
         now = datetime.now(timezone.utc)
         try:
-            async with async_session() as db:
+            # Daemon/stream context — no request GUC. Resolve the owning tenant so
+            # the SELECT+UPDATE works after the stage-3 non-owner role flip
+            # (a bare session fail-closes and would silently stop persisting health).
+            tid = await resolve_tenant_for_agent(agent_id)
+            async with tenant_scoped_session(tid) as db:
                 result = await db.execute(
                     select(ChannelConfig).where(
                         ChannelConfig.agent_id == agent_id,

@@ -4,8 +4,9 @@ import uuid
 
 from loguru import logger
 
-from app.database import async_session
+from app.database import tenant_scoped_session
 from app.models.activity_log import AgentActivityLog
+from app.services.tenant_resolver import resolve_tenant_for_agent
 
 _ACTION_TYPE_FALLBACKS = {
     "llm_error": "error",
@@ -33,9 +34,15 @@ async def _insert_activity(
 ) -> None:
     db = None
     try:
-        async with async_session() as db:
+        # RLS 阶段2b: agent_activity_logs now bears a USING-only policy. A bare
+        # session writes tenant_id=NULL (globally visible) and, under the
+        # non-owner role, the INSERT itself fails closed. Pin the GUC to the
+        # agent's tenant and stamp the row so isolation holds on read.
+        tenant_id = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tenant_id) as db:
             db.add(AgentActivityLog(
                 agent_id=agent_id,
+                tenant_id=tenant_id,
                 action_type=action_type,
                 summary=summary[:500] if summary else "",
                 detail_json=detail,

@@ -58,6 +58,29 @@ RLS_TENANT_TABLES: tuple[str, ...] = (
     "tenant_channel_configs",
     "tenant_settings",
     "tenant_tool_configs",
+    # Stage-2b (RLS enforcement migration, alembic rls_stage2b_agent_scoped_0610):
+    # agent-scoped tables that carried agent_id but NO tenant_id column — they
+    # would leak cross-tenant under the non-owner role flip. The migration adds a
+    # nullable tenant_id column + index; this list applies the policy on the
+    # bootstrap (create_all) path. Keep in sync with _STAGE2B_TABLES.
+    "agent_activity_logs",
+    "agent_agent_relationships",
+    "agent_capability_installs",
+    "agent_permissions",
+    "agent_relationships",
+    "agent_schedules",
+    "agent_tools",
+    "agent_triggers",
+    "approval_requests",
+    "audit_logs",
+    "channel_configs",
+    "chat_messages",
+    "chat_sessions",
+    "gateway_messages",
+    "pending_reply_contexts",
+    "runtime_tasks",
+    "task_logs",
+    "tasks",
 )
 
 # Tables that additionally get FORCE ROW LEVEL SECURITY: the production

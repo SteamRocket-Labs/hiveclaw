@@ -22,7 +22,7 @@ from typing import Any, Awaitable, Callable
 
 from sqlalchemy import or_, select
 
-from app.database import async_session, tenant_scoped_session
+from app.database import tenant_scoped_session
 from app.models.agent import Agent
 from app.config import get_settings
 from app.services.channel_delivery_service import ChannelDeliveryService, channel_delivery_target
@@ -353,7 +353,11 @@ async def _agent_has_feishu(agent_id: uuid.UUID) -> bool:
     try:
         from app.models.channel_config import ChannelConfig
 
-        async with async_session() as db:
+        # RLS 阶段2b: channel_configs now bears a USING-only policy. Pin the GUC
+        # to the agent's tenant so this read survives the non-owner role; a bare
+        # session would fail closed and wrongly report "no feishu".
+        tid = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tid) as db:
             r = await db.execute(
                 select(ChannelConfig).where(
                     ChannelConfig.agent_id == agent_id,

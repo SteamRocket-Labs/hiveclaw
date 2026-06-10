@@ -1,9 +1,36 @@
 from __future__ import annotations
 
+import contextlib
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+
+
+def _patch_tenant_scoped_session(monkeypatch, session, *, tenant_id=None):
+    """RLS 阶段2b: capability_install_service resolves the agent's tenant and
+    opens a ``tenant_scoped_session`` instead of a bare ``async_session``. Route
+    the scoped session to the test's fake session and stub tenant resolution.
+    Returns the resolved tenant_id so the caller can assert the INSERTed row
+    carries it."""
+    resolved_tenant = tenant_id or uuid4()
+
+    @contextlib.asynccontextmanager
+    async def _fake_tenant_scoped_session(*_a, **_k):
+        yield session
+
+    async def _fake_resolve_tenant_for_agent(*_a, **_k):
+        return resolved_tenant
+
+    monkeypatch.setattr(
+        "app.services.capability_install_service.tenant_scoped_session",
+        _fake_tenant_scoped_session,
+    )
+    monkeypatch.setattr(
+        "app.services.capability_install_service.resolve_tenant_for_agent",
+        _fake_resolve_tenant_for_agent,
+    )
+    return resolved_tenant
 
 
 def test_build_capability_install_plan_dedupes_requested_capabilities() -> None:
@@ -97,7 +124,7 @@ async def test_record_capability_install_creates_new_row(monkeypatch):
     from app.services.capability_install_service import record_capability_install
 
     fake_session = _CapabilitySession([None])
-    monkeypatch.setattr("app.services.capability_install_service.async_session", lambda: fake_session)
+    tenant_id = _patch_tenant_scoped_session(monkeypatch, fake_session)
 
     created = await record_capability_install(
         agent_id=uuid4(),
@@ -109,6 +136,8 @@ async def test_record_capability_install_creates_new_row(monkeypatch):
 
     assert created["created"] is True
     assert len(fake_session.added) == 1
+    # RLS 阶段2b: the new install row must carry the resolved tenant_id.
+    assert fake_session.added[0].tenant_id == tenant_id
     assert fake_session.commit_calls == 1
 
 
@@ -124,7 +153,7 @@ async def test_record_capability_install_updates_existing_row(monkeypatch):
         metadata_json={"source": "hr_agent"},
     )
     fake_session = _CapabilitySession([existing])
-    monkeypatch.setattr("app.services.capability_install_service.async_session", lambda: fake_session)
+    _patch_tenant_scoped_session(monkeypatch, fake_session)
 
     updated = await record_capability_install(
         agent_id=uuid4(),
@@ -147,7 +176,7 @@ async def test_record_capability_install_rolls_back_on_commit_error(monkeypatch)
     from app.services.capability_install_service import record_capability_install
 
     fake_session = _CapabilitySession([None], fail_on_commit=True)
-    monkeypatch.setattr("app.services.capability_install_service.async_session", lambda: fake_session)
+    _patch_tenant_scoped_session(monkeypatch, fake_session)
 
     with pytest.raises(RuntimeError, match="db commit failed"):
         await record_capability_install(
@@ -165,7 +194,7 @@ async def test_list_capability_installs_rolls_back_on_execute_error(monkeypatch)
     from app.services.capability_install_service import list_capability_installs
 
     fake_session = _CapabilitySession(fail_on_execute=True)
-    monkeypatch.setattr("app.services.capability_install_service.async_session", lambda: fake_session)
+    _patch_tenant_scoped_session(monkeypatch, fake_session)
 
     with pytest.raises(RuntimeError, match="db execute failed"):
         await list_capability_installs(agent_id=uuid4())

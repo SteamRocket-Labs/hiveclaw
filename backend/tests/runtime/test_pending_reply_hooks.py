@@ -28,6 +28,10 @@ class _FakeDB:
         return False
 
     async def execute(self, _stmt):
+        # tenant_scoped_session emits `SET LOCAL app.current_tenant_id` before the
+        # business query; the GUC statement must not be mistaken for the session row.
+        if "app.current_tenant_id" in str(_stmt):
+            return _ScalarResult(None)
         return _ScalarResult(self._session_obj)
 
     async def commit(self):
@@ -45,6 +49,9 @@ async def test_capture_pending_reply_uses_session_delivery_target_for_originator
     fake_db = _FakeDB(session_obj)
     captured: dict[str, object] = {}
 
+    agent_uuid = uuid4()
+    tenant_uuid = uuid4()
+
     async def fake_capture_pending_reply(
         db,
         *,
@@ -54,8 +61,10 @@ async def test_capture_pending_reply_uses_session_delivery_target_for_originator
         messages,
         originator_name,
         originator_identity,
+        tenant_id=None,
     ):
         captured["agent_id"] = agent_id
+        captured["tenant_id"] = tenant_id
         captured["tool_name"] = tool_name
         captured["tool_args"] = tool_args
         captured["messages"] = messages
@@ -63,7 +72,11 @@ async def test_capture_pending_reply_uses_session_delivery_target_for_originator
         captured["originator_identity"] = originator_identity
         return None
 
-    monkeypatch.setattr("app.database.async_session", lambda: fake_db)
+    async def fake_resolve_tenant_for_agent(_agent_id, **_kwargs):
+        return tenant_uuid
+
+    monkeypatch.setattr("app.database.tenant_scoped_session", lambda *a, **k: fake_db)
+    monkeypatch.setattr("app.services.tenant_resolver.resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
     monkeypatch.setattr(
         "app.services.pending_reply_service.extract_recipient_info",
         lambda _tool_name, _tool_args: {"channel": "feishu", "identity": "feishu:u_target", "name": "目标用户"},
@@ -72,7 +85,7 @@ async def test_capture_pending_reply_uses_session_delivery_target_for_originator
 
     ctx = HookContext(
         event=HookEvent.POST_TOOL_USE,
-        agent_id=uuid4(),
+        agent_id=agent_uuid,
         session_id=str(uuid4()),
         tool_name="send_feishu_message",
         tool_args={"message": "hello"},
@@ -84,4 +97,6 @@ async def test_capture_pending_reply_uses_session_delivery_target_for_originator
 
     assert captured["originator_name"] == "Alice"
     assert captured["originator_identity"] == "web:alice"
+    # tenant resolved from the agent and threaded into the INSERT path (stage-2b)
+    assert captured["tenant_id"] == tenant_uuid
     assert fake_db.commits == 1

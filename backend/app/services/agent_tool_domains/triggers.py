@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 from sqlalchemy import select
 
-from app.database import async_session, tenant_scoped_session
+from app.database import tenant_scoped_session
 from app.services.plan_mode_core import (
     stamp_confirmed_plan_provenance,
     stamp_user_declined_plan_exemption,
@@ -336,7 +336,11 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
             from app.models.chat_session import ChatSession
             from sqlalchemy import cast as sa_cast, String as SaString
 
-            async with async_session() as _snap_db:
+            # RLS 阶段2b: chat_messages JOIN chat_sessions — both USING-only.
+            # Pin the GUC to the agent's tenant so the snapshot survives the
+            # non-owner role (a bare session would fail closed → no _since_ts).
+            _snap_tid = await resolve_tenant_for_agent(agent_id)
+            async with tenant_scoped_session(_snap_tid) as _snap_db:
                 _snap_q = (
                     select(ChatMessage.created_at)
                     .join(ChatSession, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString))
@@ -444,8 +448,11 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                     "not_configured",
                     "reply_to_current_sender requires a live channel conversation with a persisted reply target.",
                 )
+            # RLS 阶段2b: agent_triggers is USING-only — stamp tenant_id so the
+            # new trigger isn't globally visible under the non-owner role.
             trigger = AgentTrigger(
                 agent_id=agent_id,
+                tenant_id=tid,
                 name=name,
                 type=ttype,
                 config=config,
@@ -527,7 +534,11 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
         )
 
     try:
-        async with async_session() as db:
+        # RLS 阶段2b: agent_triggers is USING-only. Pin the GUC to the agent's
+        # tenant so the SELECT+UPDATE survive the non-owner role (a bare session
+        # would fail closed → "trigger not found").
+        tid = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tid) as db:
             result = await db.execute(
                 select(AgentTrigger).where(
                     AgentTrigger.agent_id == agent_id,
@@ -634,7 +645,10 @@ async def _handle_cancel_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
         return _trigger_error("cancel_trigger", "bad_arguments", "Missing required argument 'name'.")
 
     try:
-        async with async_session() as db:
+        # RLS 阶段2b: agent_triggers is USING-only. Pin the GUC to the agent's
+        # tenant so the SELECT+UPDATE survive the non-owner role.
+        tid = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tid) as db:
             result = await db.execute(
                 select(AgentTrigger).where(
                     AgentTrigger.agent_id == agent_id,

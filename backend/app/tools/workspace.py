@@ -11,7 +11,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from app.config import get_settings
-from app.database import async_session, enter_rls_bypass
+from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.memory.legacy_migration import migrate_legacy_memory_tree
 from app.memory.md_store import ensure_t3_layout, rebuild_index
 from app.memory.t2_store import ensure_t2_layout
@@ -323,8 +323,14 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
 
 async def _sync_tasks_to_file(agent_id: uuid.UUID, ws: Path) -> None:
     """Sync tasks from DB to tasks.json in workspace."""
+    from app.services.tenant_resolver import resolve_tenant_for_agent
+
     try:
-        async with async_session() as db:
+        # RLS 阶段2b: tasks now bears a USING-only policy. Pin the GUC to the
+        # agent's tenant so this read survives the non-owner role; a bare
+        # session would fail closed and write an empty tasks.json.
+        tenant_id = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tenant_id) as db:
             result = await db.execute(select(Task).where(Task.agent_id == agent_id).order_by(Task.created_at.desc()))
             tasks = result.scalars().all()
 

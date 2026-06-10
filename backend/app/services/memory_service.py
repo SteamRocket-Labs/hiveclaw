@@ -19,7 +19,7 @@ from typing import Awaitable, Callable
 from sqlalchemy import select
 
 from app.config import get_settings
-from app.database import async_session, tenant_scoped_session
+from app.database import tenant_scoped_session
 from app.memory.activation import ActivationContext
 from app.memory import MemoryAssembler, MemoryRetriever
 from app.models.agent import Agent
@@ -548,7 +548,7 @@ async def persist_runtime_memory(
         try:
             summary = await _generate_session_summary(messages, tenant_id)
             if summary and session_id:
-                await _save_session_summary(session_id, summary)
+                await _save_session_summary(session_id, summary, tenant_id)
 
             config = await _get_memory_config(tenant_id)
             if config.get("extract_to_viking", False) and summary:
@@ -784,14 +784,14 @@ def _parse_session_uuid(session_id: str | None) -> uuid.UUID | None:
         return None
 
 
-async def _save_session_summary(session_id: str, summary: str) -> None:
+async def _save_session_summary(session_id: str, summary: str, tenant_id: uuid.UUID) -> None:
     session_uuid = _parse_session_uuid(session_id)
     if not session_uuid:
         return
 
     safe_summary = summary.replace("\x00", "")
 
-    async with async_session() as db:
+    async with tenant_scoped_session(tenant_id) as db:
         result = await db.execute(select(ChatSession).where(ChatSession.id == session_uuid))
         session = result.scalar_one_or_none()
         if session:

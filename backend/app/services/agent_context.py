@@ -147,11 +147,16 @@ async def _build_runtime_metadata_sections(
     )
 
     try:
-        from app.database import async_session
+        from app.database import tenant_scoped_session
         from app.models.trigger import AgentTrigger
+        from app.services.tenant_resolver import resolve_tenant_for_agent
         from sqlalchemy import select as sa_select
 
-        async with async_session() as db:
+        # RLS 阶段2b: agent_triggers now bears a USING-only policy. Pin the GUC
+        # to the agent's tenant so this read survives the non-owner role; a bare
+        # session would fail closed and silently drop the triggers section.
+        _trigger_tenant_id = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(_trigger_tenant_id) as db:
             result = await db.execute(
                 sa_select(AgentTrigger).where(
                     AgentTrigger.agent_id == agent_id,

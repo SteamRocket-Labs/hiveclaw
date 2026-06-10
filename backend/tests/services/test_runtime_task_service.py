@@ -5,6 +5,26 @@ from uuid import uuid4
 import pytest
 
 
+def _route_runtime_accessors(monkeypatch, fake_session, *, tenant_id=None):
+    """Route the stage-2b RLS accessors onto the test's fake session.
+
+    runtime_task_service migrated off bare ``async_session`` onto
+    ``tenant_scoped_session`` (RLS-GUC pinned) / ``enter_rls_bypass`` (audited
+    single-row) and the ``resolve_tenant_for_agent`` bypass read. Tests that
+    mocked only ``async_session`` must also redirect these so the accessor sites
+    use the fake session instead of opening a real connection.
+    """
+    monkeypatch.setattr("app.services.runtime_task_service.async_session", lambda: fake_session)
+    monkeypatch.setattr(
+        "app.services.runtime_task_service.tenant_scoped_session", lambda *a, **k: fake_session
+    )
+
+    async def _fake_resolve_tenant(_agent_id, *_a, **_k):
+        return tenant_id
+
+    monkeypatch.setattr("app.services.runtime_task_service.resolve_tenant_for_agent", _fake_resolve_tenant)
+
+
 class _FailingSession:
     def __init__(self, *, fail_on: str):
         self.fail_on = fail_on
@@ -21,6 +41,11 @@ class _FailingSession:
         self.added.append(value)
 
     async def execute(self, _query):
+        # RLS GUC statements (SET LOCAL app.current_tenant_id = ...) emitted by
+        # tenant_scoped_session / enter_rls_bypass must not trip the failure path
+        # nor the "should not be called" guard — they are infra, not the query.
+        if "app.current_tenant_id" in str(_query):
+            return None
         if self.fail_on == "execute":
             raise RuntimeError("db execute failed")
         raise AssertionError("execute should not be called in this test")
@@ -102,7 +127,7 @@ async def test_create_runtime_task_record_rolls_back_on_commit_error(monkeypatch
     from app.services.runtime_task_service import create_runtime_task_record
 
     fake_session = _FailingSession(fail_on="commit")
-    monkeypatch.setattr("app.services.runtime_task_service.async_session", lambda: fake_session)
+    _route_runtime_accessors(monkeypatch, fake_session)
 
     with pytest.raises(RuntimeError, match="db commit failed"):
         await create_runtime_task_record(task_id=uuid4().hex)
@@ -115,7 +140,7 @@ async def test_get_runtime_task_record_rolls_back_on_execute_error(monkeypatch):
     from app.services.runtime_task_service import get_runtime_task_record
 
     fake_session = _FailingSession(fail_on="execute")
-    monkeypatch.setattr("app.services.runtime_task_service.async_session", lambda: fake_session)
+    _route_runtime_accessors(monkeypatch, fake_session)
 
     with pytest.raises(RuntimeError, match="db execute failed"):
         await get_runtime_task_record(uuid4().hex)
@@ -128,7 +153,7 @@ async def test_list_runtime_task_records_rolls_back_on_execute_error(monkeypatch
     from app.services.runtime_task_service import list_runtime_task_records
 
     fake_session = _FailingSession(fail_on="execute")
-    monkeypatch.setattr("app.services.runtime_task_service.async_session", lambda: fake_session)
+    _route_runtime_accessors(monkeypatch, fake_session, tenant_id=uuid4())
 
     with pytest.raises(RuntimeError, match="db execute failed"):
         await list_runtime_task_records(parent_agent_id=uuid4())

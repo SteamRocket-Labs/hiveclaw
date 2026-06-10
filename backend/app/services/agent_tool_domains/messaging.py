@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select
 
-from app.database import async_session, tenant_scoped_session
+from app.database import tenant_scoped_session
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.tools.result_envelope import render_tool_error
 
@@ -719,6 +719,7 @@ async def _send_web_message(agent_id: uuid.UUID, args: dict) -> str:
             if not session:
                 session = ChatSession(
                     agent_id=agent_id,
+                    tenant_id=_agent_tenant,
                     user_id=target_user.id,
                     title=f"[Agent Message] {_dt.now(_tz.utc).strftime('%m-%d %H:%M')}",
                     source_channel="web",
@@ -728,10 +729,12 @@ async def _send_web_message(agent_id: uuid.UUID, args: dict) -> str:
                 await db.flush()
             await apply_web_session_contract(db, session=session, agent_id=agent_id, user=target_user)
 
-            # Save the message
+            # Save the message. RLS 阶段2b: chat_messages is USING-only — stamp
+            # tenant_id so the row isn't globally visible (chat_sessions too).
             db.add(
                 ChatMessage(
                     agent_id=agent_id,
+                    tenant_id=_agent_tenant,
                     user_id=target_user.id,
                     role="assistant",
                     content=message_text,
@@ -781,10 +784,16 @@ async def _persist_agent_tool_call(
     from app.models.audit import ChatMessage
 
     try:
-        async with async_session() as db:
+        # RLS 阶段2b: chat_messages now bears a USING-only policy. Scope to the
+        # session agent's tenant and stamp tenant_id — a bare session would
+        # write a NULL (globally visible) row and fail closed under the
+        # non-owner role.
+        tid = await resolve_tenant_for_agent(session_agent_id)
+        async with tenant_scoped_session(tid) as db:
             db.add(
                 ChatMessage(
                     agent_id=session_agent_id,
+                    tenant_id=tid,
                     user_id=owner_id,
                     role="tool_call",
                     content=json.dumps(
@@ -950,9 +959,12 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                     conversation_id=session_id,
                 )
                 db.add(gw_msg)
+                # RLS 阶段2b: chat_messages is USING-only — stamp tenant_id so
+                # the row isn't globally visible under the non-owner role.
                 db.add(
                     ChatMessage(
                         agent_id=chat_session.agent_id,
+                        tenant_id=tid,
                         user_id=owner_id,
                         role="user",
                         content=message_text,
@@ -1043,11 +1055,13 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
             # Add the new message from source
             conversation_messages.append({"role": "user", "content": f"[From {source_name}] {message_text}"})
 
-            # Save source message
+            # Save source message. RLS 阶段2b: chat_messages is USING-only —
+            # stamp tenant_id so the row isn't globally visible.
             owner_id = source_agent.creator_id if source_agent else from_agent_id
             db.add(
                 ChatMessage(
                     agent_id=session_agent_id,
+                    tenant_id=tid,
                     user_id=owner_id,
                     role="user",
                     content=message_text,
@@ -1072,11 +1086,15 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
             if not target_reply:
                 return f"⚠️ {target.name} did not respond (LLM returned empty)"
 
-            # Save target reply
-            async with async_session() as db2:
+            # Save target reply. Re-open a fresh tenant-scoped session (`db`
+            # above may be detached after the long runtime invoke) and stamp
+            # tenant_id — RLS 阶段2b chat_messages is USING-only, so a NULL
+            # tenant_id would be globally visible.
+            async with tenant_scoped_session(tid) as db2:
                 db2.add(
                     ChatMessage(
                         agent_id=session_agent_id,
+                        tenant_id=tid,
                         user_id=owner_id,
                         role="assistant",
                         content=target_reply,

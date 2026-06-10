@@ -258,7 +258,8 @@ class TestSendText:
         from app.models.chat_session import ChatSession
 
         agent_id = uuid4()
-        target_user = SimpleNamespace(id=uuid4(), username="alice", display_name="Alice")
+        tenant_id = uuid4()
+        target_user = SimpleNamespace(id=uuid4(), username="alice", display_name="Alice", tenant_id=tenant_id)
         existing_session = ChatSession(
             id=uuid4(),
             agent_id=agent_id,
@@ -311,6 +312,13 @@ class TestSendText:
             }
         ]
         assert db.commits == 1
+        # RLS 阶段2b: the persisted web ChatMessage must carry the recipient's
+        # tenant_id — a NULL would be globally visible under the USING-only policy.
+        from app.models.audit import ChatMessage
+
+        persisted = [obj for obj in db.added if isinstance(obj, ChatMessage)]
+        assert len(persisted) == 1
+        assert persisted[0].tenant_id == tenant_id
 
 
 class TestSendFile:

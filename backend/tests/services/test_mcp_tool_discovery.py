@@ -136,7 +136,10 @@ async def test_discovery_lists_reachable_mcp_tool(monkeypatch):
             ]
         )
 
-    monkeypatch.setattr(module, "async_session", factory)
+    # RLS 阶段2b: the bare async_session import was removed from agent_tools; this
+    # test routes its fake DB through it via _patch_pack_open's tenant_scoped_session
+    # shim, so create the attribute (raising=False) for that shim to read.
+    monkeypatch.setattr(module, "async_session", factory, raising=False)
     _patch_pack_open(monkeypatch, module)
 
     names = await module.list_agent_mcp_deferred_tools(agent_id, "issue")
@@ -169,7 +172,10 @@ async def test_discovery_excludes_denied_tool(monkeypatch):
             ]
         )
 
-    monkeypatch.setattr(module, "async_session", factory)
+    # RLS 阶段2b: the bare async_session import was removed from agent_tools; this
+    # test routes its fake DB through it via _patch_pack_open's tenant_scoped_session
+    # shim, so create the attribute (raising=False) for that shim to read.
+    monkeypatch.setattr(module, "async_session", factory, raising=False)
     _patch_pack_open(monkeypatch, module)
 
     names = await module.list_agent_mcp_deferred_tools(agent_id, "")
@@ -197,7 +203,10 @@ async def test_discovery_excludes_disabled_server(monkeypatch):
             ]
         )
 
-    monkeypatch.setattr(module, "async_session", factory)
+    # RLS 阶段2b: the bare async_session import was removed from agent_tools; this
+    # test routes its fake DB through it via _patch_pack_open's tenant_scoped_session
+    # shim, so create the attribute (raising=False) for that shim to read.
+    monkeypatch.setattr(module, "async_session", factory, raising=False)
     _patch_pack_open(monkeypatch, module)
 
     names = await module.list_agent_mcp_deferred_tools(agent_id, "")
@@ -225,7 +234,10 @@ async def test_discovery_legacy_fallback_lists_default_not_nondefault(monkeypatc
             ]
         )
 
-    monkeypatch.setattr(module, "async_session", factory)
+    # RLS 阶段2b: the bare async_session import was removed from agent_tools; this
+    # test routes its fake DB through it via _patch_pack_open's tenant_scoped_session
+    # shim, so create the attribute (raising=False) for that shim to read.
+    monkeypatch.setattr(module, "async_session", factory, raising=False)
     _patch_pack_open(monkeypatch, module)
 
     names = await module.list_agent_mcp_deferred_tools(agent_id, "")
@@ -263,7 +275,10 @@ async def test_discovery_excludes_other_tenant_default_mcp(monkeypatch):
             ]
         )
 
-    monkeypatch.setattr(module, "async_session", factory)
+    # RLS 阶段2b: the bare async_session import was removed from agent_tools; this
+    # test routes its fake DB through it via _patch_pack_open's tenant_scoped_session
+    # shim, so create the attribute (raising=False) for that shim to read.
+    monkeypatch.setattr(module, "async_session", factory, raising=False)
     _patch_pack_open(monkeypatch, module)
 
     names = await module.list_agent_mcp_deferred_tools(agent_id, "default")
@@ -309,7 +324,8 @@ async def test_discovery_cannot_force_enable_nondefault_mcp(monkeypatch):
             ]
         )
 
-    monkeypatch.setattr(module, "async_session", factory)
+    # RLS 阶段2b: async_session import removed; routed via _patch_pack_open shim.
+    monkeypatch.setattr(module, "async_session", factory, raising=False)
 
     tools = await module.get_agent_tools_for_llm(agent_id, requested_names=["danger_delete"])
     names = {t["function"]["name"] for t in tools}
@@ -360,7 +376,8 @@ async def test_schema_load_excludes_other_tenant_default_mcp(monkeypatch):
             ]
         )
 
-    monkeypatch.setattr(module, "async_session", factory)
+    # RLS 阶段2b: async_session import removed; routed via _patch_pack_open shim.
+    monkeypatch.setattr(module, "async_session", factory, raising=False)
 
     tools = await module.get_agent_tools_for_llm(
         agent_id,

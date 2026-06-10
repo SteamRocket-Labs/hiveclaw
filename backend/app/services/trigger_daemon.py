@@ -199,7 +199,8 @@ async def _recover_reply_target_from_session(
     from app.models.chat_session import ChatSession
 
     try:
-        async with async_session() as db:
+        tid = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tid) as db:
             result = await db.execute(
                 select(ChatSession)
                 .where(
@@ -525,7 +526,8 @@ async def _poll_check(trigger: AgentTrigger) -> bool:
         try:
             from sqlalchemy import update
 
-            async with async_session() as db:
+            tid = await resolve_tenant_for_agent(trigger.agent_id)
+            async with tenant_scoped_session(tid) as db:
                 await db.execute(update(AgentTrigger).where(AgentTrigger.id == trigger.id).values(config=cfg))
                 await db.commit()
         except Exception as e:
@@ -834,12 +836,13 @@ async def _preflight_trigger_group(
         return False, "preflight_failed", f"Trigger preflight failed: {str(exc)[:500]}", {"error": str(exc)[:1000]}
 
 
-async def _record_trigger_success_state(trigger_ids: list[uuid.UUID]) -> None:
+async def _record_trigger_success_state(agent_id: uuid.UUID, trigger_ids: list[uuid.UUID]) -> None:
     if not trigger_ids:
         return
     from app.services.trigger_failure_policy import reset_trigger_failure_policy
 
-    async with async_session() as db:
+    tid = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tid) as db:
         changed = False
         for trigger_id in trigger_ids:
             result = await db.execute(select(AgentTrigger).where(AgentTrigger.id == trigger_id))
@@ -854,7 +857,8 @@ async def _record_trigger_failure_state(agent_id: uuid.UUID, triggers: list[Agen
     from app.services.trigger_failure_policy import apply_trigger_failure_policy
 
     metadata: dict = {"failure_backoff": []}
-    async with async_session() as db:
+    tid = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tid) as db:
         for detached in triggers:
             result = await db.execute(select(AgentTrigger).where(AgentTrigger.id == getattr(detached, "id", None)))
             trigger = result.scalar_one_or_none()
@@ -1157,6 +1161,7 @@ async def _invoke_agent_for_triggers(
 
             session = ChatSession(
                 agent_id=agent_id,
+                tenant_id=tid,
                 user_id=agent.creator_id,
                 participant_id=agent_participant.id if agent_participant else None,
                 source_channel="trigger",
@@ -1173,6 +1178,7 @@ async def _invoke_agent_for_triggers(
             db.add(
                 ChatMessage(
                     agent_id=agent_id,
+                    tenant_id=tid,
                     conversation_id=str(session_id),
                     role="user",
                     content=trigger_context,
@@ -1182,8 +1188,11 @@ async def _invoke_agent_for_triggers(
             )
             session.last_message_at = datetime.now(timezone.utc)
             await db.commit()
-            # Cache participant ID for callbacks
+            # Cache participant ID + tenant for callbacks (they run after this
+            # scoped session closes; stage-2b ChatMessage INSERTs must set
+            # tenant_id and run under a tenant-scoped session).
             agent_participant_id = agent_participant.id if agent_participant else None
+            agent_tenant_id = tid
 
         # Call LLM (outside the DB session to avoid long transactions)
         collected_content = []
@@ -1194,12 +1203,13 @@ async def _invoke_agent_for_triggers(
         # Persist tool calls into Reflection Session for Reflections visibility
         async def on_tool_call(data):
             try:
-                async with async_session() as _tc_db:
+                async with tenant_scoped_session(agent_tenant_id) as _tc_db:
                     if data["status"] == "done":
                         result_str = str(data.get("result", ""))[:2000]
                         _tc_db.add(
                             ChatMessage(
                                 agent_id=agent_id,
+                                tenant_id=agent_tenant_id,
                                 conversation_id=str(session_id),
                                 role="tool_call",
                                 content=_json.dumps(
@@ -1293,7 +1303,7 @@ async def _invoke_agent_for_triggers(
                 channel_delivery_target.reset(_delivery_token)
 
         # Save assistant reply to Reflection session
-        async with async_session() as db:
+        async with tenant_scoped_session(agent_tenant_id) as db:
             result = await db.execute(
                 select(Participant).where(Participant.type == "agent", Participant.ref_id == agent_id)
             )
@@ -1302,6 +1312,7 @@ async def _invoke_agent_for_triggers(
             db.add(
                 ChatMessage(
                     agent_id=agent_id,
+                    tenant_id=agent_tenant_id,
                     conversation_id=str(session_id),
                     role="assistant",
                     content=reply or "".join(collected_content),
@@ -1396,7 +1407,7 @@ async def _invoke_agent_for_triggers(
             logger.debug("[TriggerDaemon] Trigger output artifact failed (non-fatal): {}", _artifact_err)
 
         try:
-            await _record_trigger_success_state([getattr(trigger, "id") for trigger in triggers])
+            await _record_trigger_success_state(agent_id, [getattr(trigger, "id") for trigger in triggers])
         except Exception as _success_state_err:
             logger.debug("[TriggerDaemon] Trigger success state reset failed (non-fatal): {}", _success_state_err)
 
@@ -1476,9 +1487,10 @@ async def _tick():
     # so all of an agent's fired triggers collapse into one wake invocation.
     fired_by_group: dict[uuid.UUID, list[AgentTrigger]] = {}
     for trigger in all_triggers:
-        # Auto-disable expired triggers
+        # Auto-disable expired triggers — single-agent write, scope to its tenant.
         if trigger.expires_at and now >= trigger.expires_at:
-            async with async_session() as db:
+            tid = await resolve_tenant_for_agent(trigger.agent_id)
+            async with tenant_scoped_session(tid) as db:
                 result = await db.execute(select(AgentTrigger).where(AgentTrigger.id == trigger.id))
                 t = result.scalar_one_or_none()
                 if t:
@@ -1522,8 +1534,10 @@ async def _tick():
                 continue
 
             # ── Immediately update trigger state BEFORE launching async task ──
+            # All triggers in this group belong to one agent → scope to its tenant.
             try:
-                async with async_session() as db:
+                fire_state_tid = await resolve_tenant_for_agent(agent_id)
+                async with tenant_scoped_session(fire_state_tid) as db:
                     for t in agent_triggers:
                         result = await db.execute(select(AgentTrigger).where(AgentTrigger.id == t.id))
                         trigger = result.scalar_one_or_none()

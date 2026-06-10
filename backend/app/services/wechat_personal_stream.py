@@ -426,7 +426,11 @@ class WeChatPersonalStreamManager:
     async def _mark_disconnected(self, agent_id: uuid.UUID) -> None:
         """Mark channel as disconnected in DB when session expires."""
         try:
-            async with async_session() as db:
+            # Stream context — no request GUC. Resolve the owning tenant so the
+            # SELECT+UPDATE survives the stage-3 non-owner role flip (a bare
+            # session fail-closes and would silently skip the disconnect mark).
+            tid = await resolve_tenant_for_agent(agent_id)
+            async with tenant_scoped_session(tid) as db:
                 result = await db.execute(
                     select(ChannelConfig).where(
                         ChannelConfig.agent_id == agent_id,

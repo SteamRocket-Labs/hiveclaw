@@ -162,7 +162,10 @@ async def test_send_feishu_message_backfills_successful_identity_into_tool_args(
         "message": "你好天怡，周二下午两点有空吗？",
     }
 
-    monkeypatch.setattr(messaging, "async_session", lambda: _AsyncSessionContext(db))
+    # RLS 阶段2b: the bare async_session import was removed from messaging; this
+    # test routes its fake DB through it via the _patch_messaging_rls fixture, so
+    # create the attribute (raising=False) for the fixture's _scoped to read.
+    monkeypatch.setattr(messaging, "async_session", lambda: _AsyncSessionContext(db), raising=False)
 
     async def _fake_resolve_delivery_target(*_args, **_kwargs):
         return "ou_app_scoped", "open_id"
@@ -224,7 +227,10 @@ async def test_send_feishu_message_continues_after_prior_session_identity_http_4
         "message": "你好天怡，周二下午两点有空吗？",
     }
 
-    monkeypatch.setattr(messaging, "async_session", lambda: _AsyncSessionContext(db))
+    # RLS 阶段2b: the bare async_session import was removed from messaging; this
+    # test routes its fake DB through it via the _patch_messaging_rls fixture, so
+    # create the attribute (raising=False) for the fixture's _scoped to read.
+    monkeypatch.setattr(messaging, "async_session", lambda: _AsyncSessionContext(db), raising=False)
 
     async def _fake_resolve_delivery_target(*_args, **_kwargs):
         return "ou_stale_session_id", "open_id"
@@ -309,7 +315,10 @@ async def test_send_feishu_message_org_sync_fallback_saves_history_without_argum
         "message": "你好天怡，周二下午两点有空吗？",
     }
 
-    monkeypatch.setattr(messaging, "async_session", lambda: _AsyncSessionContext(db))
+    # RLS 阶段2b: the bare async_session import was removed from messaging; this
+    # test routes its fake DB through it via the _patch_messaging_rls fixture, so
+    # create the attribute (raising=False) for the fixture's _scoped to read.
+    monkeypatch.setattr(messaging, "async_session", lambda: _AsyncSessionContext(db), raising=False)
 
     async def _fake_resolve_feishu_user(*_args, **_kwargs):
         return resolved_user
@@ -381,7 +390,10 @@ async def test_send_feishu_message_open_id_success_still_backfills_stable_user_i
         "message": "你好天怡，周二下午两点有空吗？",
     }
 
-    monkeypatch.setattr(messaging, "async_session", lambda: _AsyncSessionContext(db))
+    # RLS 阶段2b: the bare async_session import was removed from messaging; this
+    # test routes its fake DB through it via the _patch_messaging_rls fixture, so
+    # create the attribute (raising=False) for the fixture's _scoped to read.
+    monkeypatch.setattr(messaging, "async_session", lambda: _AsyncSessionContext(db), raising=False)
 
     async def _fake_resolve_feishu_user(*_args, **_kwargs):
         return resolved_user
@@ -449,7 +461,10 @@ async def test_send_feishu_message_direct_open_id_success_backfills_canonical_us
         "message": "你好天怡，周二下午两点有空吗？",
     }
 
-    monkeypatch.setattr(messaging, "async_session", lambda: _AsyncSessionContext(db))
+    # RLS 阶段2b: the bare async_session import was removed from messaging; this
+    # test routes its fake DB through it via the _patch_messaging_rls fixture, so
+    # create the attribute (raising=False) for the fixture's _scoped to read.
+    monkeypatch.setattr(messaging, "async_session", lambda: _AsyncSessionContext(db), raising=False)
 
     async def _fake_resolve_feishu_user(*_args, **_kwargs):
         return resolved_user

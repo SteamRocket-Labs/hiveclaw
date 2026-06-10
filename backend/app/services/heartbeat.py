@@ -1352,7 +1352,6 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
     import json as _json
 
     try:
-        from app.database import async_session
         from app.models.agent import Agent
         from app.models.audit import ChatMessage
         from app.models.chat_session import ChatSession
@@ -1600,10 +1599,11 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
                 if data.get("status") != "done":
                     return
                 try:
-                    async with async_session() as _tc_db:
+                    async with tenant_scoped_session(tenant_id) as _tc_db:
                         _tc_db.add(
                             ChatMessage(
                                 agent_id=agent_id,
+                                tenant_id=tenant_id,
                                 conversation_id=str(session_id),
                                 role="tool_call",
                                 content=_json.dumps(
@@ -1694,10 +1694,11 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
                 logger.warning("[Heartbeat] Failed to mark T2 entries absorbed for {}: {}", agent_id, _t2_absorb_err)
 
             # Save assistant reply to Reflection Session
-            async with async_session() as db2:
+            async with tenant_scoped_session(tenant_id) as db2:
                 db2.add(
                     ChatMessage(
                         agent_id=agent_id,
+                        tenant_id=tenant_id,
                         conversation_id=str(session_id),
                         role="assistant",
                         content=reply or "",

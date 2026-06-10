@@ -8,8 +8,9 @@ from typing import Any
 
 from sqlalchemy import select
 
-from app.database import async_session
+from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.runtime_task import RuntimeTask
+from app.services.tenant_resolver import resolve_tenant_for_agent
 
 
 def _coerce_task_id(task_id: str | uuid.UUID) -> uuid.UUID | None:
@@ -61,7 +62,12 @@ async def create_runtime_task_record(
         raise ValueError(f"Invalid runtime task id: {task_id!r}")
 
     started_at = datetime.now(timezone.utc) if status == "running" else None
-    async with async_session() as db:
+    # Stage-2b: runtime_tasks now carries a tenant_id (RLS). Derive it from the
+    # parent agent so the INSERT lands inside the agent's tenant — without it the
+    # row is NULL and (post role-flip) globally visible. No parent_agent → None
+    # (orphan, surfaced honestly the same way the backfill leaves orphans NULL).
+    tenant_id = await resolve_tenant_for_agent(parent_agent_id)
+    async with tenant_scoped_session(tenant_id) as db:
         try:
             db.add(RuntimeTask(
                 id=runtime_task_id,
@@ -77,6 +83,7 @@ async def create_runtime_task_record(
                 depth=depth,
                 metadata_json=metadata_json,
                 started_at=started_at,
+                tenant_id=tenant_id,
             ))
             await db.commit()
         except Exception:
@@ -90,7 +97,10 @@ async def update_runtime_task_record(task_id: str, **fields: Any) -> bool:
     if runtime_task_id is None:
         return False
 
-    async with async_session() as db:
+    # By-PK single-row update: scope the smallest sanctioned surface. A bare
+    # session fail-closes post role-flip; an audited single-row BYPASS touches
+    # exactly this runtime_task row (no cross-tenant scan).
+    async with async_session() as db, enter_rls_bypass(db, reason="runtime-task status update"):
         try:
             result = await db.execute(select(RuntimeTask).where(RuntimeTask.id == runtime_task_id))
             task = result.scalar_one_or_none()
@@ -129,7 +139,8 @@ async def get_runtime_task_record(task_id: str) -> dict[str, Any] | None:
     if runtime_task_id is None:
         return None
 
-    async with async_session() as db:
+    # By-PK single-row read → audited single-row BYPASS (see update above).
+    async with async_session() as db, enter_rls_bypass(db, reason="runtime-task status read"):
         try:
             result = await db.execute(select(RuntimeTask).where(RuntimeTask.id == runtime_task_id))
             task = result.scalar_one_or_none()
@@ -146,7 +157,12 @@ async def list_runtime_task_records(
     parent_agent_id: uuid.UUID | None = None,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
-    async with async_session() as db:
+    # Listing a single agent's runtime tasks → scope to that agent's tenant.
+    # When no parent_agent is given (cross-agent listing) the tenant is unknown;
+    # resolve_tenant_for_agent(None) → None pins an empty GUC (fail-closed),
+    # which is the correct safe default for an unscoped list.
+    tenant_id = await resolve_tenant_for_agent(parent_agent_id)
+    async with tenant_scoped_session(tenant_id) as db:
         try:
             stmt = select(RuntimeTask).order_by(RuntimeTask.created_at.desc()).limit(limit)
             if parent_agent_id is not None:
@@ -164,7 +180,12 @@ async def list_active_runtime_task_records(
     statuses: tuple[str, ...] = ("pending", "running"),
     limit: int = 50,
 ) -> list[dict[str, Any]]:
-    async with async_session() as db:
+    # Restart-safe resume scan is intentionally cross-tenant (enumerate every
+    # tenant's still-active tasks at startup) → audited BYPASS, not fail-closed.
+    async with (
+        async_session() as db,
+        enter_rls_bypass(db, reason="restart-safe async-delegation resume scan"),
+    ):
         try:
             stmt = (
                 select(RuntimeTask)
@@ -192,7 +213,11 @@ async def reconcile_orphaned_runtime_tasks(*, exclude_task_ids: set[str] | None 
         for task_id in (exclude_task_ids or set())
         if (runtime_task_id := _coerce_task_id(task_id)) is not None
     }
-    async with async_session() as db:
+    # Startup reconcile sweeps every tenant's stuck "running" rows → audited BYPASS.
+    async with (
+        async_session() as db,
+        enter_rls_bypass(db, reason="startup orphaned runtime-task reconcile"),
+    ):
         try:
             result = await db.execute(select(RuntimeTask).where(RuntimeTask.status == "running"))
             tasks = result.scalars().all()

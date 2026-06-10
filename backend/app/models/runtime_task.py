@@ -11,7 +11,7 @@ agent execution machinery.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -37,6 +37,8 @@ class RuntimeTask(Base):
         UUID(as_uuid=True), nullable=True, index=True,
     )
     child_agent_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # Tenant scope (RLS): backfilled from parent_agent_id → agents.tenant_id (nullable).
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), index=True)
 
     # Lifecycle
     status: Mapped[str] = mapped_column(

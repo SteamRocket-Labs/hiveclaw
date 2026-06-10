@@ -71,7 +71,16 @@ async def test_update_trigger_rejects_invalid_replacement_config(monkeypatch):
         reason="send summary",
     )
     db = _QueuedDB([_ScalarResult(existing)])
-    monkeypatch.setattr(trigger_domain, "async_session", lambda: _AsyncSessionContext(db))
+    # RLS 阶段2b: _handle_update_trigger now resolves the agent's tenant and
+    # opens a tenant-scoped session (the bare async_session binding was removed).
+    monkeypatch.setattr(
+        trigger_domain, "tenant_scoped_session", lambda *_a, **_k: _AsyncSessionContext(db)
+    )
+
+    async def _resolve(*_a, **_k):
+        return uuid4()
+
+    monkeypatch.setattr(trigger_domain, "resolve_tenant_for_agent", _resolve)
 
     result = await trigger_domain._handle_update_trigger(
         existing.agent_id,

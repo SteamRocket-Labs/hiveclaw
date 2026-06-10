@@ -444,9 +444,14 @@ class ChannelDeliveryService:
                     .limit(1)
                 )
                 session = session_result.scalar_one_or_none()
+                # RLS 阶段2b: chat_sessions + chat_messages are USING-only — stamp
+                # tenant_id so these delivery rows aren't globally visible under
+                # the non-owner role. The recipient shares the agent's tenant.
+                _web_tenant_id = target_user.tenant_id
                 if not session:
                     session = ChatSession(
                         agent_id=agent_id,
+                        tenant_id=_web_tenant_id,
                         user_id=target_user.id,
                         title=f"[Web Message] {username}",
                         source_channel="web",
@@ -457,6 +462,7 @@ class ChannelDeliveryService:
                 db.add(
                     ChatMessage(
                         agent_id=agent_id,
+                        tenant_id=_web_tenant_id,
                         user_id=target_user.id,
                         role="assistant",
                         content=text,

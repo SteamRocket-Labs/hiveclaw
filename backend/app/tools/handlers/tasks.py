@@ -17,8 +17,9 @@ import uuid
 
 from sqlalchemy import select
 
-from app.database import async_session
+from app.database import tenant_scoped_session
 from app.models.task import Task, TaskLog
+from app.services.tenant_resolver import resolve_tenant_for_agent
 
 
 def _task_line(task: Task) -> str:
@@ -33,7 +34,11 @@ async def _list_tasks_for_agent(agent_id: uuid.UUID, status: str = "", limit: in
     except (TypeError, ValueError):
         limit = 20
 
-    async with async_session() as db:
+    # RLS 阶段2b: tasks now bears a USING-only policy. Pin the GUC to the
+    # agent's tenant so this read survives the non-owner role (a bare session
+    # would fail closed and report "no tasks").
+    tenant_id = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tenant_id) as db:
         query = select(Task).where(Task.agent_id == agent_id).order_by(Task.created_at.desc()).limit(limit)
         if status:
             query = (
@@ -56,7 +61,10 @@ async def _get_task_for_agent(agent_id: uuid.UUID, task_id_raw: str = "", title:
     if not task_id_raw and not title:
         return "Provide `task_id` or `title`."
 
-    async with async_session() as db:
+    # RLS 阶段2b: tasks + task_logs now bear USING-only policies. Scope the
+    # read to the agent's tenant so it survives the non-owner role.
+    tenant_id = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tenant_id) as db:
         if task_id_raw:
             try:
                 task_id = uuid.UUID(task_id_raw)

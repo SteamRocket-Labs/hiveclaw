@@ -14,8 +14,9 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from app.database import async_session
+from app.database import tenant_scoped_session
 from app.models.task import Task
+from app.services.tenant_resolver import resolve_tenant_for_agent
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +34,16 @@ async def _manage_tasks(
     action = args["action"]
     title = args["title"]
 
-    async with async_session() as db:
+    # RLS 阶段2b: tasks + task_logs are USING-only. Pin the GUC to the agent's
+    # tenant so SELECT/UPDATE/DELETE survive the non-owner role and stamp
+    # tenant_id on new tasks — a NULL would be globally visible.
+    tenant_id = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tenant_id) as db:
         if action == "create":
             task_type = args.get("task_type", "todo")
             task = Task(
                 agent_id=agent_id,
+                tenant_id=tenant_id,
                 title=title,
                 description=args.get("description"),
                 type=task_type,

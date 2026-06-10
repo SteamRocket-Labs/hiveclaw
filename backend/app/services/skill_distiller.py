@@ -20,7 +20,8 @@ from typing import Any
 
 from sqlalchemy import select
 
-from app.database import async_session
+from app.database import tenant_scoped_session
+from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 from app.services.agent_tool_domains.workspace import _normalize_skill_folder_name, _render_skill_markdown, _save_skill
@@ -431,7 +432,11 @@ async def _load_internal_session_evidence(
     cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
     evidence: list[SessionWorkflowEvidence] = []
 
-    async with async_session() as db:
+    # Distiller runs in a daemon context with no request GUC. Resolve the owning
+    # tenant so the chat_sessions/chat_messages reads survive the stage-3
+    # non-owner role flip (a bare session fail-closes → empty evidence).
+    tid = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tid) as db:
         sessions = (
             (
                 await db.execute(

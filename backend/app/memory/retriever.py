@@ -558,13 +558,19 @@ class MemoryRetriever:
     ) -> list[MemoryItem]:
         items: list[MemoryItem] = []
         try:
-            from app.database import async_session
+            from app.database import tenant_scoped_session
             from app.models.chat_session import ChatSession
+            from app.services.tenant_resolver import resolve_tenant_for_agent
             from sqlalchemy import select
 
             session_uuid = _parse_session_uuid(session_id)
 
-            async with async_session() as db:
+            # Retriever may run inside a daemon/background path with no request
+            # GUC. Resolve the owning tenant so these chat_sessions summary reads
+            # survive the stage-3 non-owner role flip (a bare session fail-closes
+            # → empty episodic memory).
+            tid = await resolve_tenant_for_agent(agent_id)
+            async with tenant_scoped_session(tid) as db:
                 # Current session summary
                 if session_uuid:
                     result = await db.execute(

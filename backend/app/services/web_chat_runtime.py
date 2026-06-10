@@ -319,10 +319,14 @@ async def _persist_assistant_message(
     content: str,
     thinking: str | None,
 ) -> None:
-    async with _async_session() as db:
+    from app.services.tenant_resolver import resolve_tenant_for_agent
+
+    tenant_id = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tenant_id) as db:
         db.add(
             ChatMessage(
                 agent_id=agent_id,
+                tenant_id=tenant_id,
                 user_id=user_id,
                 role="assistant",
                 content=content,
@@ -344,10 +348,14 @@ async def _persist_tool_call(
     raw_str = str(raw_result)
     if len(raw_str) > 50000:
         raw_str = raw_str[:50000] + "\n\n[... truncated]"
-    async with _async_session() as db:
+    from app.services.tenant_resolver import resolve_tenant_for_agent
+
+    tenant_id = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tenant_id) as db:
         db.add(
             ChatMessage(
                 agent_id=agent_id,
+                tenant_id=tenant_id,
                 user_id=user_id,
                 role="tool_call",
                 content=json.dumps(
@@ -373,10 +381,14 @@ async def _persist_runtime_event(
     session_id: str,
     data: dict[str, Any],
 ) -> None:
-    async with _async_session() as db:
+    from app.services.tenant_resolver import resolve_tenant_for_agent
+
+    tenant_id = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tenant_id) as db:
         db.add(
             ChatMessage(
                 agent_id=agent_id,
+                tenant_id=tenant_id,
                 user_id=user_id,
                 role="system",
                 content=json.dumps(data, ensure_ascii=False),
@@ -505,8 +517,10 @@ async def _accept_latest_plan_mode_recommendation(
     if user_id is None or not session_id:
         return None
     from app.services.plan_mode_recommendation_service import accept_latest_recommendation_for_user
+    from app.services.tenant_resolver import resolve_tenant_for_agent
 
-    async with _async_session() as db:
+    tenant_id = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tenant_id) as db:
         recommendation = await accept_latest_recommendation_for_user(
             db,
             agent_id=agent_id,
@@ -582,7 +596,9 @@ async def _update_runtime_task(
     result_summary: str | None = None,
     metadata_json: dict[str, Any] | None = None,
 ) -> None:
-    async with _async_session() as db:
+    async with _async_session() as db, enter_rls_bypass(
+        db, reason=f"durable web-run status update for run {run_uuid}"
+    ):
         result = await db.execute(select(RuntimeTask).where(RuntimeTask.id == run_uuid))
         task = result.scalar_one_or_none()
         if task is None:
@@ -744,7 +760,10 @@ async def _deliver_run_result_to_channel(agent_id: uuid.UUID, session_id: Any, t
     if not text or is_llm_error_message(text):
         return
     try:
-        async with _async_session() as db:
+        from app.services.tenant_resolver import resolve_tenant_for_agent
+
+        tenant_id = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tenant_id) as db:
             session = (
                 await db.execute(select(ChatSession).where(ChatSession.id == uuid.UUID(str(session_id))))
             ).scalar_one_or_none()
@@ -777,10 +796,11 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         metadata = runtime_task.metadata_json if isinstance(runtime_task.metadata_json, dict) else {}
 
         if getattr(agent, "agent_type", None) == "openclaw":
-            async with _async_session() as db:
+            async with tenant_scoped_session(agent.tenant_id) as db:
                 db.add(
                     GatewayMessage(
                         agent_id=agent.id,
+                        tenant_id=agent.tenant_id,
                         sender_user_id=user.id,
                         conversation_id=session_id,
                         content=prompt,
@@ -860,7 +880,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
 
         pending_reply_suffix = ""
         try:
-            async with _async_session() as pending_db:
+            async with tenant_scoped_session(agent.tenant_id) as pending_db:
                 pending_reply_suffix = await _claim_pending_reply_suffix_for_session(
                     pending_db,
                     agent_id=agent.id,
@@ -878,7 +898,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             try:
                 from app.services.plan_mode_recommendation_service import decline_latest_recommendation_for_user
 
-                async with _async_session() as recommendation_db:
+                async with tenant_scoped_session(agent.tenant_id) as recommendation_db:
                     recommendation = await decline_latest_recommendation_for_user(
                         recommendation_db,
                         agent_id=agent.id,

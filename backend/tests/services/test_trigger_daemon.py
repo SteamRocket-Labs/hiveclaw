@@ -365,6 +365,14 @@ async def test_tick_does_not_apply_agent_level_dedup_window(monkeypatch):
         return SimpleNamespace()
 
     monkeypatch.setattr(trigger_daemon, "async_session", fake_async_session)
+    # Stage-2b: the per-agent fire-state update is now tenant-scoped — route it
+    # to the same session queue and stub the tenant resolution (no DB hit).
+    monkeypatch.setattr(trigger_daemon, "tenant_scoped_session", lambda *a, **k: fake_async_session())
+
+    async def _fake_resolve_tenant(_agent_id, *_a, **_k):
+        return None
+
+    monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", _fake_resolve_tenant)
     monkeypatch.setattr(trigger_daemon, "_evaluate_trigger", fake_evaluate_trigger)
     monkeypatch.setattr(trigger_daemon, "create_runtime_task_record", fake_create_runtime_task_record)
     monkeypatch.setattr(trigger_daemon.asyncio, "create_task", fake_create_task)
@@ -427,6 +435,14 @@ async def test_tick_creates_trigger_runtime_task_before_invocation(monkeypatch):
         return SimpleNamespace()
 
     monkeypatch.setattr(trigger_daemon, "async_session", fake_async_session)
+    # Stage-2b: the per-agent fire-state update is now tenant-scoped — route it
+    # to the same session queue and stub the tenant resolution (no DB hit).
+    monkeypatch.setattr(trigger_daemon, "tenant_scoped_session", lambda *a, **k: fake_async_session())
+
+    async def _fake_resolve_tenant(_agent_id, *_a, **_k):
+        return None
+
+    monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", _fake_resolve_tenant)
     monkeypatch.setattr(trigger_daemon, "_evaluate_trigger", fake_evaluate_trigger)
     monkeypatch.setattr(trigger_daemon, "create_runtime_task_record", fake_create_runtime_task_record)
     monkeypatch.setattr(trigger_daemon.asyncio, "create_task", fake_create_task)

@@ -201,6 +201,7 @@ async def capture_pending_reply(
     messages: list[dict],
     originator_name: str = "",
     originator_identity: str = "",
+    tenant_id: uuid.UUID | None = None,
 ) -> PendingReplyContext | None:
     """Capture pending reply context after a successful outbound message.
 
@@ -229,6 +230,7 @@ async def capture_pending_reply(
     now = datetime.now(timezone.utc)
     record = PendingReplyContext(
         agent_id=agent_id,
+        tenant_id=tenant_id,
         recipient_channel=recipient["channel"],
         recipient_identity=recipient["identity"],
         outbound_message=message_text[:2000],

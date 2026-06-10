@@ -19,6 +19,7 @@ class AgentSchedule(Base):
     agent_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), index=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     instruction: Mapped[str] = mapped_column(Text, nullable=False)
     cron_expr: Mapped[str] = mapped_column(String(100), nullable=False)  # e.g. "0 9 * * *"

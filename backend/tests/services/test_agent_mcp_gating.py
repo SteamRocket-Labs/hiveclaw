@@ -102,12 +102,11 @@ def _patch_environment(monkeypatch, module, session_factory):
     async def passthrough_available_tools(_agent_id, tools):
         return tools
 
-    monkeypatch.setattr(module, "async_session", session_factory)
-
-    # RLS 阶段1: get_agent_tools_for_llm now resolves the agent's tenant and
-    # opens a tenant-scoped session. Route tenant_scoped_session through the same
-    # fake factory (no real SET LOCAL, so the queued result sequence is intact)
-    # and stub the tenant resolver. agent_tools imports both at module level.
+    # RLS 阶段1/2b: get_agent_tools_for_llm resolves the agent's tenant and
+    # opens a tenant-scoped session (the bare async_session binding was removed).
+    # Route tenant_scoped_session through the same fake factory (no real SET
+    # LOCAL, so the queued result sequence is intact) and stub the tenant
+    # resolver. agent_tools imports both at module level.
     async def _resolve(*_a, **_k):
         return uuid4()
 

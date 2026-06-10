@@ -7,8 +7,9 @@ from typing import Any
 
 from sqlalchemy import select
 
-from app.database import async_session
+from app.database import tenant_scoped_session
 from app.models.capability_install import AgentCapabilityInstall
+from app.services.tenant_resolver import resolve_tenant_for_agent
 
 
 def normalize_capability_install_key(kind: str, source_key: str) -> str:
@@ -113,7 +114,11 @@ async def record_capability_install(
 ) -> dict[str, Any]:
     """Create or update one per-agent capability install record."""
     normalized_key = normalize_capability_install_key(kind, source_key)
-    async with async_session() as db:
+    # RLS 阶段2b: agent_capability_installs now bears a USING-only policy. Pin
+    # the GUC to the agent's tenant (so the SELECT/INSERT survive the non-owner
+    # role) and stamp tenant_id on new rows — a NULL would be globally visible.
+    tenant_id = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tenant_id) as db:
         try:
             result = await db.execute(
                 select(AgentCapabilityInstall).where(
@@ -127,6 +132,7 @@ async def record_capability_install(
             if existing is None:
                 existing = AgentCapabilityInstall(
                     agent_id=agent_id,
+                    tenant_id=tenant_id,
                     kind=kind,
                     source_key=source_key,
                     normalized_key=normalized_key,
@@ -181,7 +187,10 @@ async def record_capability_install_plan(
 
 
 async def list_capability_installs(*, agent_id: uuid.UUID) -> list[dict[str, Any]]:
-    async with async_session() as db:
+    # RLS 阶段2b: scope the read to the agent's tenant so the rows stay visible
+    # under the non-owner role (a bare session would fail closed).
+    tenant_id = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tenant_id) as db:
         try:
             result = await db.execute(
                 select(AgentCapabilityInstall)

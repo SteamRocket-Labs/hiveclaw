@@ -1,10 +1,46 @@
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+
+
+def _patch_fake_tenant_session(monkeypatch, session_factory, *, tenant_id=None):
+    """RLS 阶段2b/stage-1: ``get_agent_tools_for_llm`` (and ``_agent_has_feishu``)
+    resolve the agent's tenant and open a ``tenant_scoped_session``. Route the
+    scoped session to the test's fake session factory and stub tenant
+    resolution so no real DB / bypass read happens."""
+    resolved_tenant = tenant_id or uuid4()
+
+    @contextlib.asynccontextmanager
+    async def _fake_tenant_scoped_session(*_a, **_k):
+        yield session_factory()
+
+    async def _fake_resolve_tenant_for_agent(*_a, **_k):
+        return resolved_tenant
+
+    monkeypatch.setattr("app.services.agent_tools.tenant_scoped_session", _fake_tenant_scoped_session)
+    monkeypatch.setattr("app.services.agent_tools.resolve_tenant_for_agent", _fake_resolve_tenant_for_agent)
+    return resolved_tenant
+
+
+def _patch_broken_tenant_session(monkeypatch):
+    """Simulate a DB failure deterministically: the tenant-scoped session raises
+    on entry (instead of relying on a real PG being unreachable)."""
+
+    @contextlib.asynccontextmanager
+    async def _broken_tenant_scoped_session(*_a, **_k):
+        raise RuntimeError("db down")
+        yield  # pragma: no cover
+
+    async def _fake_resolve_tenant_for_agent(*_a, **_k):
+        return uuid4()
+
+    monkeypatch.setattr("app.services.agent_tools.tenant_scoped_session", _broken_tenant_scoped_session)
+    monkeypatch.setattr("app.services.agent_tools.resolve_tenant_for_agent", _fake_resolve_tenant_for_agent)
 
 
 class _ListResult:
@@ -152,17 +188,7 @@ async def test_execute_approved_tool_registry_miss_uses_mcp_passthrough(monkeypa
 async def test_get_agent_tools_for_llm_db_failure_falls_back_to_combined_tools(monkeypatch):
     from app.services import agent_tools as agent_tools_module
 
-    class BrokenSession:
-        async def __aenter__(self):
-            raise RuntimeError("db down")
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-    def broken_async_session():
-        return BrokenSession()
-
-    monkeypatch.setattr(agent_tools_module, "async_session", broken_async_session)
+    _patch_broken_tenant_session(monkeypatch)
     monkeypatch.setattr(agent_tools_module, "_always_core_tools", None)
     monkeypatch.setattr(agent_tools_module, "_feishu_tools", None)
 
@@ -178,17 +204,7 @@ async def test_get_agent_tools_for_llm_db_failure_falls_back_to_combined_tools(m
 async def test_get_agent_tools_for_llm_core_only_matches_first_round_surface(monkeypatch):
     from app.services import agent_tools as agent_tools_module
 
-    class BrokenSession:
-        async def __aenter__(self):
-            raise RuntimeError("db down")
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-    def broken_async_session():
-        return BrokenSession()
-
-    monkeypatch.setattr(agent_tools_module, "async_session", broken_async_session)
+    _patch_broken_tenant_session(monkeypatch)
 
     tools = await agent_tools_module.get_agent_tools_for_llm(uuid4(), core_only=True)
     names = {tool["function"]["name"] for tool in tools}
@@ -206,23 +222,13 @@ async def test_get_agent_tools_for_llm_core_only_matches_first_round_surface(mon
 async def test_get_agent_tools_for_llm_db_failure_still_filters_feishu_access(monkeypatch):
     from app.services import agent_tools as agent_tools_module
 
-    class BrokenSession:
-        async def __aenter__(self):
-            raise RuntimeError("db down")
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-    def broken_async_session():
-        return BrokenSession()
-
     async def no_feishu_channel(_agent_id):
         return False
 
     async def no_feishu_cli_access():
         return False
 
-    monkeypatch.setattr(agent_tools_module, "async_session", broken_async_session)
+    _patch_broken_tenant_session(monkeypatch)
     monkeypatch.setattr(agent_tools_module, "_agent_has_feishu", no_feishu_channel)
     monkeypatch.setattr(agent_tools_module, "_agent_has_feishu_cli_access", no_feishu_cli_access)
 
@@ -267,7 +273,7 @@ async def test_get_agent_tools_for_llm_requested_skill_tool_can_expand_non_defau
     async def no_feishu_cli_access():
         return False
 
-    monkeypatch.setattr(agent_tools_module, "async_session", fake_async_session)
+    _patch_fake_tenant_session(monkeypatch, fake_async_session, tenant_id=tenant_id)
     monkeypatch.setattr(agent_tools_module, "_agent_has_feishu", no_feishu_channel)
     monkeypatch.setattr(agent_tools_module, "_agent_has_feishu_cli_access", no_feishu_cli_access)
 
@@ -323,7 +329,7 @@ async def test_get_agent_tools_for_llm_hides_hr_only_assignment_from_regular_age
     async def passthrough_available_tools(_agent_id, tools):
         return tools
 
-    monkeypatch.setattr(agent_tools_module, "async_session", fake_async_session)
+    _patch_fake_tenant_session(monkeypatch, fake_async_session, tenant_id=tenant_id)
     monkeypatch.setattr(agent_tools_module, "_agent_has_feishu", no_feishu_channel)
     monkeypatch.setattr(agent_tools_module, "_agent_has_feishu_cli_access", no_feishu_cli_access)
     monkeypatch.setattr(agent_tools_module, "_filter_unavailable_tools", passthrough_available_tools)
@@ -338,16 +344,6 @@ async def test_get_agent_tools_for_llm_hides_hr_only_assignment_from_regular_age
 @pytest.mark.asyncio
 async def test_get_agent_tools_for_llm_hides_unavailable_external_providers(monkeypatch):
     from app.services import agent_tools as agent_tools_module
-
-    class BrokenSession:
-        async def __aenter__(self):
-            raise RuntimeError("db down")
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-    def broken_async_session():
-        return BrokenSession()
 
     async def no_exa_key() -> str:
         return ""
@@ -364,7 +360,7 @@ async def test_get_agent_tools_for_llm_hides_unavailable_external_providers(monk
     async def no_modelscope_token() -> str:
         return ""
 
-    monkeypatch.setattr(agent_tools_module, "async_session", broken_async_session)
+    _patch_broken_tenant_session(monkeypatch)
     monkeypatch.setattr(agent_tools_module, "_get_exa_api_key", no_exa_key)
     monkeypatch.setattr(agent_tools_module, "_get_firecrawl_api_key", no_firecrawl_key)
     monkeypatch.setattr(agent_tools_module, "_get_xcrawl_api_key", no_xcrawl_key)

@@ -317,7 +317,7 @@ async def test_persist_runtime_memory_persists_summary_without_direct_semantic_w
     async def fake_get_memory_config(_tenant_id):
         return {}
 
-    monkeypatch.setattr("app.services.memory_service.async_session", lambda: fake_session)
+    monkeypatch.setattr("app.services.memory_service.tenant_scoped_session", lambda *a, **k: fake_session)
     monkeypatch.setattr("app.services.memory_service._generate_session_summary", fake_generate_session_summary)
     monkeypatch.setattr("app.services.memory_service._update_agent_memory", fake_update_agent_memory, raising=False)
     monkeypatch.setattr("app.services.memory_service._get_memory_config", fake_get_memory_config)
@@ -354,7 +354,7 @@ async def test_persist_runtime_memory_strips_null_bytes_from_summary(monkeypatch
     async def fake_get_memory_config(_tenant_id):
         return {}
 
-    monkeypatch.setattr("app.services.memory_service.async_session", lambda: fake_session)
+    monkeypatch.setattr("app.services.memory_service.tenant_scoped_session", lambda *a, **k: fake_session)
     monkeypatch.setattr("app.services.memory_service._generate_session_summary", fake_generate_session_summary)
     monkeypatch.setattr("app.services.memory_service._get_memory_config", fake_get_memory_config)
 

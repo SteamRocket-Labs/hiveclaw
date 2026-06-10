@@ -371,6 +371,15 @@ async def test_plan_mode_accepts_latest_recommendation_and_activates_interactive
     )
     recommendation_db = _RecommendationSession(recommendation)
     monkeypatch.setattr(runtime, "_async_session", lambda: recommendation_db)
+    # RLS 阶段2a/2b: _accept_latest_plan_mode_recommendation resolves the agent's
+    # tenant and opens a tenant-scoped session. Route it through the same fake DB
+    # and stub the resolver so no real DB / bypass read happens.
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda *_a, **_k: recommendation_db)
+
+    async def _fake_resolve(*_a, **_k):
+        return uuid4()
+
+    monkeypatch.setattr("app.services.tenant_resolver.resolve_tenant_for_agent", _fake_resolve)
 
     session_context = SimpleNamespace(metadata={})
     response = await runtime._maybe_handle_plan_mode_entry(
@@ -595,6 +604,15 @@ async def test_deliver_run_result_pushes_to_im_channel(monkeypatch):
             return SimpleNamespace(scalar_one_or_none=lambda: session)
 
     monkeypatch.setattr(runtime, "_async_session", lambda: _DB())
+    # RLS 阶段2b: _deliver_run_result_to_channel resolves the agent's tenant and
+    # opens a tenant-scoped session. Route it through the same fake DB and stub
+    # the resolver so no real DB / bypass read happens.
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda *_a, **_k: _DB())
+
+    async def _fake_resolve(*_a, **_k):
+        return uuid4()
+
+    monkeypatch.setattr("app.services.tenant_resolver.resolve_tenant_for_agent", _fake_resolve)
 
     sent = {}
 
@@ -628,6 +646,15 @@ async def test_deliver_run_result_skips_web_session(monkeypatch):
             return SimpleNamespace(scalar_one_or_none=lambda: session)
 
     monkeypatch.setattr(runtime, "_async_session", lambda: _DB())
+    # RLS 阶段2b: route the tenant-scoped session through the same fake DB and
+    # stub the resolver so this exercises the real no-target branch (not an
+    # accidental pass via a real-DB-down exception).
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda *_a, **_k: _DB())
+
+    async def _fake_resolve(*_a, **_k):
+        return uuid4()
+
+    monkeypatch.setattr("app.services.tenant_resolver.resolve_tenant_for_agent", _fake_resolve)
 
     calls = {"n": 0}
 

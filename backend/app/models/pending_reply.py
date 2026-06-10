@@ -29,6 +29,7 @@ class PendingReplyContext(Base):
     agent_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False,
     )
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), index=True)
 
     # Recipient identification (normalized: "feishu:{user_id}", "web:{username}", etc.)
     recipient_channel: Mapped[str] = mapped_column(String(30), nullable=False)

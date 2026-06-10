@@ -1,8 +1,33 @@
 from __future__ import annotations
 
+import contextlib
 import uuid
 
 import pytest
+
+
+def _patch_tenant_scoped_session(monkeypatch, session_supplier, *, tenant_id=None):
+    """RLS 阶段2b: activity_logger now resolves the agent's tenant and opens a
+    ``tenant_scoped_session`` instead of a bare ``async_session``. Route the
+    scoped session to the test's fake session factory and stub tenant
+    resolution so no real DB / bypass read happens. Returns the tenant_id the
+    stub resolves to, so the caller can assert the INSERTed row carries it."""
+    resolved_tenant = tenant_id or uuid.uuid4()
+
+    @contextlib.asynccontextmanager
+    async def _fake_tenant_scoped_session(*_a, **_k):
+        yield session_supplier()
+
+    async def _fake_resolve_tenant_for_agent(*_a, **_k):
+        return resolved_tenant
+
+    monkeypatch.setattr(
+        "app.services.activity_logger.tenant_scoped_session", _fake_tenant_scoped_session
+    )
+    monkeypatch.setattr(
+        "app.services.activity_logger.resolve_tenant_for_agent", _fake_resolve_tenant_for_agent
+    )
+    return resolved_tenant
 
 
 def test_activity_action_enum_includes_tool_runtime_approval_events():
@@ -53,7 +78,7 @@ async def test_log_activity_rolls_back_on_commit_error(monkeypatch):
     from app.services.activity_logger import log_activity
 
     fake_session = _FailingSession(fail_on_commit=True)
-    monkeypatch.setattr("app.services.activity_logger.async_session", lambda: fake_session)
+    _patch_tenant_scoped_session(monkeypatch, lambda: fake_session)
 
     await log_activity(
         agent_id=uuid.uuid4(),
@@ -70,7 +95,7 @@ async def test_log_activity_commits_successfully(monkeypatch):
     from app.services.activity_logger import log_activity
 
     fake_session = _FailingSession(fail_on_commit=False)
-    monkeypatch.setattr("app.services.activity_logger.async_session", lambda: fake_session)
+    tenant_id = _patch_tenant_scoped_session(monkeypatch, lambda: fake_session)
 
     await log_activity(
         agent_id=uuid.uuid4(),
@@ -80,6 +105,9 @@ async def test_log_activity_commits_successfully(monkeypatch):
     )
 
     assert len(fake_session.added) == 1
+    # RLS 阶段2b: the INSERTed activity row must carry the resolved tenant_id —
+    # a NULL would be globally visible under the USING-only policy.
+    assert fake_session.added[0].tenant_id == tenant_id
     assert fake_session.rollback_calls == 0
 
 
@@ -90,7 +118,7 @@ async def test_log_activity_falls_back_when_runtime_enum_value_is_missing(monkey
     first_session = _EnumDriftSession(fail_on_commit=True)
     second_session = _FailingSession(fail_on_commit=False)
     sessions = iter([first_session, second_session])
-    monkeypatch.setattr("app.services.activity_logger.async_session", lambda: next(sessions))
+    _patch_tenant_scoped_session(monkeypatch, lambda: next(sessions))
 
     await log_activity(
         agent_id=uuid.uuid4(),
@@ -113,7 +141,7 @@ async def test_log_activity_falls_back_when_llm_error_enum_value_is_missing(monk
     first_session = _LlmErrorEnumDriftSession(fail_on_commit=True)
     second_session = _FailingSession(fail_on_commit=False)
     sessions = iter([first_session, second_session])
-    monkeypatch.setattr("app.services.activity_logger.async_session", lambda: next(sessions))
+    _patch_tenant_scoped_session(monkeypatch, lambda: next(sessions))
 
     await log_activity(
         agent_id=uuid.uuid4(),

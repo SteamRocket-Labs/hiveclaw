@@ -21,6 +21,9 @@ class _ListResult:
     def scalars(self):
         return SimpleNamespace(all=lambda: self._values)
 
+    def all(self):
+        return self._values
+
 
 class _FakeDB:
     def __init__(self, results):
@@ -71,6 +74,7 @@ async def test_org_admin_delete_own_tenant_detaches_users_and_requires_setup():
         _ScalarResult(target_tenant),
         _ListResult([running_agent]),
         _ListResult([current_user, member]),
+        _ListResult([]),  # scrub_tenant_tool_secrets: no tool-config overrides
     ])
 
     result = await tenants_api.delete_tenant(
@@ -124,6 +128,7 @@ async def test_platform_admin_delete_tenant_returns_fallback_and_rehomes_platfor
         _ScalarResult(fallback_tenant),
         _ListResult([running_agent]),
         _ListResult([current_user, another_platform_admin, member]),
+        _ListResult([]),  # scrub_tenant_tool_secrets: no tool-config overrides
     ])
 
     result = await tenants_api.delete_tenant(

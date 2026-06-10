@@ -244,3 +244,22 @@ class TestToolConfigSecretEncryption:
 
         out = decrypt_tool_config_secrets({"exa_api_key": "legacy-plaintext"}, self._SCHEMA)
         assert out["exa_api_key"] == "legacy-plaintext"
+
+
+class TestClearSecretFields:
+    """Offboarding scrub blanks secrets, keeps everything else."""
+
+    _SCHEMA = {"fields": [{"key": "exa_api_key", "type": "password"}, {"key": "search_engine", "type": "select"}]}
+
+    def test_clears_secret_keeps_nonsecret(self) -> None:
+        from app.services.tool_config_service import clear_secret_fields
+
+        out = clear_secret_fields({"exa_api_key": "REAL", "search_engine": "auto"}, self._SCHEMA)
+        assert out["exa_api_key"] == ""  # secret blanked
+        assert out["search_engine"] == "auto"  # non-secret kept
+
+    def test_noop_when_no_secret_set(self) -> None:
+        from app.services.tool_config_service import clear_secret_fields
+
+        out = clear_secret_fields({"search_engine": "auto"}, self._SCHEMA)
+        assert out == {"search_engine": "auto"}

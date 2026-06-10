@@ -315,6 +315,11 @@ async def delete_tenant(
         if user.role != "platform_admin":
             user.role = "member"
 
+    # Offboarding scrub: never leave a deactivated tenant's API keys in the DB.
+    from app.services.tool_config_service import scrub_tenant_tool_secrets
+
+    await scrub_tenant_tool_secrets(db, tenant_id)
+
     tenant.is_active = False
     await db.flush()
 

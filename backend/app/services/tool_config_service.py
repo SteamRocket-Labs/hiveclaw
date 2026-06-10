@@ -291,3 +291,34 @@ async def resolve_tool_config_for_tenant_display(
         effective_enabled = ttc.enabled
 
     return base_config, effective_enabled
+
+
+def clear_secret_fields(config: dict | None, config_schema: dict | None) -> dict:
+    """Blank out every secret (password-typed) field — tenant offboarding scrub."""
+    if not isinstance(config, dict):
+        return {}
+    out = dict(config)
+    for key in _secret_field_keys(config_schema):
+        if out.get(key):
+            out[key] = ""
+    return out
+
+
+async def scrub_tenant_tool_secrets(db: AsyncSession, tenant_id: uuid.UUID) -> int:
+    """Clear secret fields from a tenant's tool-config overrides on offboarding.
+
+    Returns the number of ``TenantToolConfig`` rows mutated. Soft-deleting a
+    tenant must not leave its API keys (even encrypted) sitting in the database.
+    """
+    rows = await db.execute(
+        select(TenantToolConfig, Tool.config_schema)
+        .join(Tool, Tool.id == TenantToolConfig.tool_id)
+        .where(TenantToolConfig.tenant_id == tenant_id)
+    )
+    cleared = 0
+    for ttc, schema in rows.all():
+        new_config = clear_secret_fields(ttc.config, schema)
+        if new_config != (ttc.config or {}):
+            ttc.config = new_config
+            cleared += 1
+    return cleared

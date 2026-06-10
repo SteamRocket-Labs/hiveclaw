@@ -618,7 +618,8 @@ async def _get_memory_config(tenant_id: uuid.UUID) -> dict:
             )
             value = result.scalar_one_or_none()
             return value if isinstance(value, dict) else {}
-    except Exception:
+    except Exception as exc:
+        logger.warning("[Memory] tenant memory_config load failed for %s, using defaults: %s", tenant_id, exc)
         return {}
 
 

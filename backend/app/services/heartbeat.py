@@ -431,7 +431,10 @@ def _get_default_heartbeat_instruction() -> str:
     """Read default heartbeat instruction from templates/HEARTBEAT.md (single source of truth)."""
     try:
         return _HEARTBEAT_TEMPLATE_PATH.read_text(encoding="utf-8").strip()
-    except Exception:
+    except Exception as exc:
+        # Template-read failure is a packaging bug — the whole T2→T3 curation SOP
+        # silently degrades to a one-liner stub while the distiller keeps running.
+        logger.error("[Heartbeat] HEARTBEAT.md template read failed, using stub SOP: {}", exc)
         return (
             "[Heartbeat] Review your recent work and memory, do one evidence-backed useful thing, "
             "reply HEARTBEAT_OK if nothing needed."
@@ -765,7 +768,7 @@ async def _build_evolution_context(
             if proactive_plan.markdown:
                 parts.append(proactive_plan.markdown)
         except Exception as exc:
-            logger.debug("[Heartbeat] proactive steward context skipped for {}: {}", agent_id, exc)
+            logger.warning("[Heartbeat] proactive steward context skipped for {}: {}", agent_id, exc)
 
         # 4. Skill creation hint — detect repeated tool-use patterns worth codifying
         _SKILL_THRESHOLD = 3  # same tool combo used 3+ times → suggest skill

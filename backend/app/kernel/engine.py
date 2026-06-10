@@ -743,7 +743,8 @@ def _maybe_hard_reject_web_search(
     calls without invoking deep_research_*; otherwise None (let the call through)."""
     try:
         from app.services.deep_research.routing_reminder import should_hard_reject_web_search
-    except Exception:
+    except Exception as exc:
+        logger.warning("[Kernel] web_search routing guard unavailable (tier disabled): %s", exc)
         return None
 
     available_names: list[str] = []
@@ -1059,8 +1060,8 @@ def _build_restoration_context(
                     if total + len(content) <= _restore_budget:
                         parts.append(f"### Agent Identity\n{content}")
                         total += len(content)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("[Kernel] post-compaction soul.md restore failed: %s", exc)
 
     # ── 2.1: Work Ledger reboot (cognitive scaffold 切口②) ──
     # On complex turns the agent maintains a general Work Ledger as working
@@ -1116,7 +1117,8 @@ def _build_restoration_context(
                     break
                 parts.append(f"### {label}\n{content}")
                 total += len(content)
-            except Exception:
+            except Exception as exc:
+                logger.warning("[Kernel] post-compaction restore failed for %s: %s", label, exc)
                 continue
 
     # ── 2.5: T3 high-priority memory files (feedback + blocked) ──
@@ -1141,7 +1143,8 @@ def _build_restoration_context(
                     break
                 parts.append(f"### {label}\n{content}")
                 total += len(content)
-            except Exception:
+            except Exception as exc:
+                logger.warning("[Kernel] post-compaction restore failed for %s: %s", label, exc)
                 continue
 
     # ── 3: Recently-read files ──
@@ -1161,7 +1164,8 @@ def _build_restoration_context(
                         content = content[:_file_budget]
                         parts.append(f"### Recent File: {_fp.name}\n```\n{content}\n```")
                         total += len(content)
-            except Exception:
+            except Exception as exc:
+                logger.warning("[Kernel] post-compaction recent-file restore failed: %s", exc)
                 continue
 
     # ── 4: Recent tool outcomes ── (P0.5)

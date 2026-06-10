@@ -33,6 +33,18 @@
 
 **待生产执行清单（owner-gated）**：① `python -m app.scripts.scrub_global_tool_secrets --apply --confirm`（清存量泄漏 key，根治 runtime fallback）；② 设 `SECRETS_MASTER_KEY` 后存量 key 仍为明文，重保存一次即加密（或后续补一次性 re-encrypt 脚本）。
 
+### ✅ Phase 2 — 交互边缘去机械化（Goal 1 体感，5 commits）
+
+| 子项 | commit | 证据 |
+|------|--------|------|
+| 2-1 砍 `_SCHEDULE_RE` pre-LLM 劫持（P0-5） | `722428d7` | classify schedule 文本→none 不再 recommend；web+8 IM 删 canned 模板拦截，agent 用提示词自行建议；保留 recommendation API/accept 路径；净删 131 行；pin 测试更新为 fall-through |
+| 2-2 IM 历史去 10 条帽（P1） | `4deb2256` | feishu `history[-10:]`→全量（已窗口感知 limit）；42 渠道测试无回归 |
+| 2-3 trigger 传 session_source（P1-1） | `536d6817` | trigger_daemon call_llm 传 source/channel=trigger；修无人值守 plan lane 死路 + T0 bucket 污染；测试钉死 captured session_source |
+| 2-4 裸确认无 plan fall-through（P0-6） | `bdc3e3b2` | bare「可以」无 plan→fall through 给 agent；显式确认无 plan 保留提示；对照测试 |
+| 2-5 IM 续跑结果回投（P1-2） | `a2478352` | execute_web_chat_run 完成投递回原渠道（web 跳过）；fail-soft 带日志；IM 投递 + web 跳过双测试 |
+
+**剩余 L1 机械项（audit-l1 识别，归后续 phase）**：① kernel 60min 时间微压缩（零压力清工具结果）+ 撞 max_tokens 不 escalate 重试 + web_search Tier-2 关键词硬拒 → **归 Phase 3**（均在 engine.py/routing，与可观测性同改）；② 隐私 phone 正则改写记忆内容 → **归 Phase 4**（需 LLM 分类，跨记忆系统）；③ rerank 3s 超时 / 上传 8000 截断 / delegation 5000 suffix 帽 / 反思 6 关键词 / T2 提取 2500 截断 → 较小 L1，最终报告列明取舍。
+
 ---
 
 ## 1. P0 — 立即处理

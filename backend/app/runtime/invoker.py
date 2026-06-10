@@ -18,7 +18,7 @@ from typing import Any, Awaitable, Callable
 from sqlalchemy import select
 
 from app.config import get_settings
-from app.database import async_session
+from app.database import async_session, enter_rls_bypass
 from app.kernel import (
     AgentKernel,
     ExecutionIdentityRef,
@@ -205,7 +205,7 @@ async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
         )
 
     try:
-        async with async_session() as db:
+        async with async_session() as db, enter_rls_bypass(db, reason=f"runtime config bootstrap for agent {agent_id}"):
             result = await db.execute(select(Agent).where(Agent.id == agent_id))
             agent = result.scalar_one_or_none()
             if not agent:
@@ -253,7 +253,7 @@ async def _resolve_current_user_name(user_id: uuid.UUID | None) -> str | None:
         return None
 
     try:
-        async with async_session() as db:
+        async with async_session() as db, enter_rls_bypass(db, reason=f"display-name bootstrap for user {user_id}"):
             result = await db.execute(select(User).where(User.id == user_id))
             user = result.scalar_one_or_none()
             if user:
@@ -918,7 +918,7 @@ async def _resolve_agent_smart_model_routing(agent_id: uuid.UUID | None) -> dict
         return None
 
     try:
-        async with async_session() as db:
+        async with async_session() as db, enter_rls_bypass(db, reason=f"smart-routing bootstrap for agent {agent_id}"):
             result = await db.execute(select(Agent).where(Agent.id == agent_id))
             agent = result.scalar_one_or_none()
             if agent and isinstance(getattr(agent, "smart_model_routing", None), dict):

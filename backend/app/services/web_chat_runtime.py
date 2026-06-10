@@ -602,7 +602,7 @@ async def _update_runtime_task(
 async def _load_runtime_context(
     run_uuid: uuid.UUID,
 ) -> tuple[RuntimeTask, Agent, User, LLMModel | None, LLMModel | None, list[ChatMessage]]:
-    async with _async_session() as db:
+    async with _async_session() as db, enter_rls_bypass(db, reason=f"durable web-run bootstrap for run {run_uuid}"):
         task_result = await db.execute(select(RuntimeTask).where(RuntimeTask.id == run_uuid))
         runtime_task = task_result.scalar_one_or_none()
         if runtime_task is None:
@@ -1033,4 +1033,4 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
 
 
 # Kept as an overridable module global for tests and for parity with other services.
-from app.database import async_session as _async_session  # noqa: E402
+from app.database import async_session as _async_session, enter_rls_bypass  # noqa: E402

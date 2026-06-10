@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select
 
-from app.database import async_session
+from app.database import async_session, enter_rls_bypass
 
 
 class QuotaExceeded(Exception):
@@ -29,7 +29,7 @@ async def check_user_token_quota(user_id: uuid.UUID) -> None:
     """
     from app.models.user import User
 
-    async with async_session() as db:
+    async with async_session() as db, enter_rls_bypass(db, reason=f"token quota check for user {user_id}"):
         result = await db.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
         if not user:

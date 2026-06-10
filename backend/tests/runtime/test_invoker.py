@@ -808,6 +808,10 @@ async def test_resolve_runtime_config_defaults_skill_candidate_loop_to_true_when
             return False
 
         async def execute(self, _stmt):
+            # enter_rls_bypass issues SET LOCAL app.current_tenant_id before the
+            # real query — the GUC statement must not consume a business result.
+            if "app.current_tenant_id" in str(_stmt):
+                return _FakeScalarResult(None)
             return self._results.pop(0)
 
     async def fake_is_feature_enabled(*args, **kwargs):

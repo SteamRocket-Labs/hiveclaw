@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.core.policy import write_audit_event
-from app.database import async_session
+from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.agent import Agent
 from app.services.approval_service import approval_service
 from app.services.capability_gate import check_capability
@@ -42,7 +42,10 @@ class ToolGovernanceResolver:
     def build_dependencies(self) -> GovernanceDependencies:
         async def _resolve_security_zone(agent_id: uuid.UUID) -> str:
             try:
-                async with async_session() as db:
+                async with (
+                    async_session() as db,
+                    enter_rls_bypass(db, reason=f"security-zone resolution for agent {agent_id}"),
+                ):
                     result = await db.execute(select(Agent).where(Agent.id == agent_id))
                     agent = result.scalar_one_or_none()
                     zone = getattr(agent, "security_zone", None)
@@ -60,7 +63,7 @@ class ToolGovernanceResolver:
                 return "restricted"
 
         async def _check_capability(tenant_id: uuid.UUID, agent_id: uuid.UUID, tool_name: str):
-            async with async_session() as db:
+            async with tenant_scoped_session(tenant_id) as db:
                 return await check_capability(db, tenant_id, agent_id, tool_name)
 
         async def _write_audit_event(**kwargs) -> None:
@@ -77,7 +80,7 @@ class ToolGovernanceResolver:
             capability: str,
             reason: str | None = None,
         ) -> dict:
-            async with async_session() as db:
+            async with async_session() as db, enter_rls_bypass(db, reason=f"approval request for agent {agent_id}"):
                 result = await db.execute(select(Agent).where(Agent.id == agent_id))
                 agent = result.scalar_one_or_none()
                 if not agent:
@@ -110,7 +113,10 @@ class ToolGovernanceResolver:
             from app.models.tool import AgentTool, Tool
             from app.services.mcp_server_service import resolve_agent_mcp_tool_mode
 
-            async with async_session() as db:
+            async with (
+                async_session() as db,
+                enter_rls_bypass(db, reason=f"MCP tool-mode resolution for agent {agent_id}"),
+            ):
                 result = await db.execute(
                     select(Tool)
                     .join(AgentTool, AgentTool.tool_id == Tool.id)

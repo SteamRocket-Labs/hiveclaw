@@ -89,6 +89,7 @@ async def test_tool_governance_resolver_dependencies_wrap_services(monkeypatch):
 
     fake_session = _FakeSession()
     monkeypatch.setattr("app.tools.governance_resolver.async_session", lambda: fake_session)
+    monkeypatch.setattr("app.tools.governance_resolver.tenant_scoped_session", lambda *a, **k: fake_session)
     monkeypatch.setattr("app.tools.governance_resolver.check_capability", fake_check_capability)
     monkeypatch.setattr("app.tools.governance_resolver.write_audit_event", fake_write_audit_event)
     monkeypatch.setattr("app.tools.governance_resolver.approval_service", _FakeApprovalService())
@@ -236,7 +237,14 @@ async def test_resolver_mcp_mode_lookup_is_scoped_to_enabled_agent_assignment(mo
     assert deps.resolve_mcp_tool_mode is not None
     assert await deps.resolve_mcp_tool_mode(agent_id, "call_mcp_tool", {"tool_name": "notion_search"}) == "approval"
 
-    sql = str(session.executed_statements[0].compile(compile_kwargs={"literal_binds": False})).lower()
+    # enter_rls_bypass also records SET LOCAL app.current_tenant_id statements —
+    # pick the business query, not the GUC set.
+    business_sql = [
+        str(s.compile(compile_kwargs={"literal_binds": False})).lower()
+        for s in session.executed_statements
+        if "app.current_tenant_id" not in str(s).lower()
+    ]
+    sql = business_sql[0]
     assert "join agent_tools" in sql
     assert "agent_tools.agent_id" in sql
     assert "agent_tools.enabled" in sql

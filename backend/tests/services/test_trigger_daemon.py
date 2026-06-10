@@ -57,12 +57,37 @@ class _SequenceSession:
         return False
 
     async def execute(self, _stmt):
+        # RLS GUC statements (SET LOCAL app.current_tenant_id = ...) emitted by
+        # tenant_scoped_session / enter_rls_bypass before the business query must
+        # not consume a result from the configured sequence.
+        if "app.current_tenant_id" in str(_stmt):
+            return _ScalarResult(None)
         if not self._execute_results:
             raise AssertionError("Unexpected execute() call")
         return self._execute_results.pop(0)
 
     async def commit(self):
         self.commits += 1
+
+
+def _route_scoped_session(monkeypatch, trigger_daemon, session_provider, *, tenant_id=None):
+    """Route tenant_scoped_session + resolve_tenant_for_agent to the test's fake.
+
+    Group-A RLS migration moved daemon accessors onto ``tenant_scoped_session``
+    (RLS-GUC aware) and the ``resolve_tenant_for_agent`` bypass read. Tests that
+    previously mocked only ``async_session`` must also mock these so the scoped
+    sites use the fake session instead of the real engine.
+    """
+    if not callable(session_provider):
+        session = session_provider
+        session_provider = lambda *a, **k: session  # noqa: E731
+
+    monkeypatch.setattr(trigger_daemon, "tenant_scoped_session", lambda *a, **k: session_provider())
+
+    async def _fake_resolve_tenant(_agent_id, *_a, **_k):
+        return tenant_id
+
+    monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", _fake_resolve_tenant)
 
 
 def _disable_completed_focus_reconciler(monkeypatch, trigger_daemon):
@@ -231,6 +256,7 @@ async def test_check_new_agent_messages_from_user_name_has_no_latest_message_fal
     )
 
     monkeypatch.setattr(trigger_daemon, "async_session", lambda: session)
+    _route_scoped_session(monkeypatch, trigger_daemon, session, tenant_id=tenant_id)
 
     matched = await trigger_daemon._check_new_agent_messages(trigger)
 
@@ -270,6 +296,7 @@ async def test_check_new_agent_messages_from_agent_name_rejects_ambiguous_agent_
     )
 
     monkeypatch.setattr(trigger_daemon, "async_session", lambda: session)
+    _route_scoped_session(monkeypatch, trigger_daemon, session, tenant_id=tenant_id)
 
     matched = await trigger_daemon._check_new_agent_messages(trigger)
 
@@ -437,6 +464,7 @@ async def test_invoke_trigger_marks_runtime_task_skipped_when_agent_has_no_model
         return True
 
     monkeypatch.setattr(trigger_daemon, "async_session", lambda: session)
+    _route_scoped_session(monkeypatch, trigger_daemon, session, tenant_id=agent.tenant_id)
     monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update_runtime_task_record)
 
     await trigger_daemon._invoke_agent_for_triggers(agent_id, [trigger], runtime_task_id="runtime-task-1")
@@ -470,6 +498,7 @@ async def test_preflight_group_blocks_autonomous_trigger_without_confirmed_plan(
     # One session, sequenced: Agent lookup -> model pin lookup -> plan lookup (none).
     session = _SequenceSession([_ScalarResult(agent), _ScalarResult(model), _ScalarResult(None)])
     monkeypatch.setattr(trigger_daemon, "async_session", lambda: session)
+    _route_scoped_session(monkeypatch, trigger_daemon, session, tenant_id=agent.tenant_id)
 
     ok, skip_reason, _summary, metadata = await trigger_daemon._preflight_trigger_group(
         agent_id, [trigger], datetime.now(timezone.utc)
@@ -520,6 +549,7 @@ async def test_preflight_group_allows_autonomous_trigger_with_confirmed_plan(mon
     model = SimpleNamespace(id=model_id, tenant_id=agent.tenant_id)
     session = _SequenceSession([_ScalarResult(agent), _ScalarResult(model), _ScalarResult(plan)])
     monkeypatch.setattr(trigger_daemon, "async_session", lambda: session)
+    _route_scoped_session(monkeypatch, trigger_daemon, session, tenant_id=agent.tenant_id)
 
     ok, skip_reason, _summary, _metadata = await trigger_daemon._preflight_trigger_group(
         agent_id, [trigger], datetime.now(timezone.utc)

@@ -34,6 +34,11 @@ class _FakeSession:
         return False
 
     async def execute(self, _query):
+        # RLS GUC statements (SET LOCAL app.current_tenant_id = ...) are emitted
+        # by tenant_scoped_session / enter_rls_bypass before the business query.
+        # They must not consume a result from the configured sequence.
+        if "app.current_tenant_id" in str(_query):
+            return _FakeScalarResult(None)
         self.queries.append(_query)
         if not self._execute_values:
             return _FakeScalarResult(None)
@@ -449,7 +454,7 @@ async def test_heartbeat_tick_uses_platform_managed_cadence(monkeypatch):
     async def fake_try_acquire(_agent_id, *, now=None):
         return True
 
-    async def fake_execute_heartbeat(_agent_id, lease_acquired=False):
+    async def fake_execute_heartbeat(_agent_id, *, tenant_id=None, lease_acquired=False):
         return None
 
     def fake_create_task(coro, *args, **kwargs):
@@ -521,7 +526,7 @@ async def test_execute_heartbeat_uses_correct_settings(monkeypatch):
 
     monkeypatch.setattr("app.core.execution_context.set_agent_bot_identity", lambda *a, **kw: None)
 
-    await _execute_heartbeat(agent_id)
+    await _execute_heartbeat(agent_id, tenant_id=tenant_id)
 
     request = captured["request"]
 
@@ -565,7 +570,7 @@ async def test_execute_heartbeat_marks_runtime_task_skipped_when_no_model(monkey
     monkeypatch.setattr(heartbeat, "update_runtime_task_record", fake_update_runtime_task_record)
     monkeypatch.setattr("app.core.execution_context.set_agent_bot_identity", lambda *a, **kw: None)
 
-    await heartbeat._execute_heartbeat(agent_id, lease_acquired=True)
+    await heartbeat._execute_heartbeat(agent_id, tenant_id=agent.tenant_id, lease_acquired=True)
 
     assert created[0]["task_type"] == "heartbeat"
     assert created[0]["status"] == "running"
@@ -624,7 +629,7 @@ async def test_execute_heartbeat_does_not_resurrect_session_state_after_reset(mo
     heartbeat._heartbeat_tick_counts.pop(agent_id, None)
     heartbeat._heartbeat_session_ctxs.pop(agent_id, None)
 
-    await heartbeat._execute_heartbeat(agent_id, lease_acquired=True)
+    await heartbeat._execute_heartbeat(agent_id, tenant_id=tenant_id, lease_acquired=True)
 
     assert agent_id not in heartbeat._heartbeat_contexts
     assert agent_id not in heartbeat._heartbeat_session_ids
@@ -680,7 +685,7 @@ async def test_execute_heartbeat_recovers_from_incomplete_persistent_session(mon
     heartbeat._heartbeat_tick_counts[agent_id] = 3
     heartbeat._heartbeat_session_ctxs.pop(agent_id, None)
 
-    await heartbeat._execute_heartbeat(agent_id, lease_acquired=True)
+    await heartbeat._execute_heartbeat(agent_id, tenant_id=tenant_id, lease_acquired=True)
 
     assert captured["request"].messages[0]["content"].startswith("HB")
     assert agent_id in heartbeat._heartbeat_contexts

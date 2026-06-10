@@ -7,14 +7,16 @@ from typing import Any, Dict
 import uuid
 
 from loguru import logger
+
 try:
     import lark_oapi as lark
     import lark_oapi.ws as ws
     import lark_oapi.ws.client as _lark_ws_client
+
     _HAS_LARK = True
 except ImportError:
     lark = None  # type: ignore
-    ws = None    # type: ignore
+    ws = None  # type: ignore
     _lark_ws_client = None  # type: ignore
     _HAS_LARK = False
 
@@ -29,8 +31,9 @@ if _HAS_LARK:
 else:
     _PROXY_PATCH_AVAILABLE = False
 
-from app.database import async_session
+from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.channel_config import ChannelConfig
+from app.services.tenant_resolver import resolve_tenant_for_agent
 from sqlalchemy import select
 
 
@@ -267,14 +270,20 @@ class FeishuWSManager:
                         body_dict = {}
                         if hasattr(data, "header"):
                             header_obj = data.header
-                            body_dict["header"] = vars(header_obj) if hasattr(header_obj, "__dict__") else {
-                                "event_type": getattr(header_obj, "event_type", "im.message.receive_v1"),
-                                "event_id": getattr(header_obj, "event_id", ""),
-                                "create_time": getattr(header_obj, "create_time", "")
-                            }
+                            body_dict["header"] = (
+                                vars(header_obj)
+                                if hasattr(header_obj, "__dict__")
+                                else {
+                                    "event_type": getattr(header_obj, "event_type", "im.message.receive_v1"),
+                                    "event_id": getattr(header_obj, "event_id", ""),
+                                    "create_time": getattr(header_obj, "create_time", ""),
+                                }
+                            )
                             # Ensure event_type is present as it's required downstream
                             if "event_type" not in body_dict["header"]:
-                                body_dict["header"]["event_type"] = getattr(header_obj, "event_type", "im.message.receive_v1")
+                                body_dict["header"]["event_type"] = getattr(
+                                    header_obj, "event_type", "im.message.receive_v1"
+                                )
                         else:
                             body_dict["header"] = {"event_type": "im.message.receive_v1"}
 
@@ -285,9 +294,11 @@ class FeishuWSManager:
                                 body_dict["event"] = json.loads(data.content)
                             except json.JSONDecodeError:
                                 body_dict["event"] = {"content": data.content}
-                        
+
                         if not hasattr(data, "header") and not hasattr(data, "event"):
-                            logger.warning(f"[Feishu WS] Unexpected event data type with no recognizable fields: {type(data)}")
+                            logger.warning(
+                                f"[Feishu WS] Unexpected event data type with no recognizable fields: {type(data)}"
+                            )
                             return
                 else:
                     body_dict = json.loads(raw_body.decode("utf-8"))
@@ -350,13 +361,19 @@ class FeishuWSManager:
                     body_dict = {}
                     if hasattr(data, "header"):
                         header_obj = data.header
-                        body_dict["header"] = vars(header_obj) if hasattr(header_obj, "__dict__") else {
-                            "event_type": getattr(header_obj, "event_type", "im.message.receive_v1"),
-                            "event_id": getattr(header_obj, "event_id", ""),
-                            "create_time": getattr(header_obj, "create_time", "")
-                        }
+                        body_dict["header"] = (
+                            vars(header_obj)
+                            if hasattr(header_obj, "__dict__")
+                            else {
+                                "event_type": getattr(header_obj, "event_type", "im.message.receive_v1"),
+                                "event_id": getattr(header_obj, "event_id", ""),
+                                "create_time": getattr(header_obj, "create_time", ""),
+                            }
+                        )
                         if "event_type" not in body_dict["header"]:
-                            body_dict["header"]["event_type"] = getattr(header_obj, "event_type", "im.message.receive_v1")
+                            body_dict["header"]["event_type"] = getattr(
+                                header_obj, "event_type", "im.message.receive_v1"
+                            )
                     else:
                         body_dict["header"] = {"event_type": "im.message.receive_v1"}
 
@@ -367,9 +384,11 @@ class FeishuWSManager:
                             body_dict["event"] = json.loads(data.content)
                         except json.JSONDecodeError:
                             body_dict["event"] = {"content": data.content}
-                    
+
                     if not hasattr(data, "header") and not hasattr(data, "event"):
-                        logger.warning(f"[Feishu WS] Unexpected event data type with no recognizable fields: {type(data)}")
+                        logger.warning(
+                            f"[Feishu WS] Unexpected event data type with no recognizable fields: {type(data)}"
+                        )
                         return
             else:
                 body_dict = json.loads(raw_body.decode("utf-8"))
@@ -380,13 +399,12 @@ class FeishuWSManager:
             # Import here to avoid circular dependencies
             from app.api.feishu import process_feishu_event
 
-            async with async_session() as db:
+            tid = await resolve_tenant_for_agent(agent_id)
+            async with tenant_scoped_session(tid) as db:
                 await process_feishu_event(agent_id, body_dict, db)
 
         except Exception as e:
-            logger.opt(exception=True).error(
-                f"[Feishu WS] Error processing event for {agent_id}: {e}"
-            )
+            logger.opt(exception=True).error(f"[Feishu WS] Error processing event for {agent_id}: {e}")
 
     async def _async_handle_card_action(self, agent_id: uuid.UUID, data: Dict[str, Any]) -> None:
         """Handle card.action.trigger events from Feishu WebSocket."""
@@ -409,11 +427,13 @@ class FeishuWSManager:
 
             # Forward to the card callback handler
             from app.api.feishu import feishu_card_callback
+
             class _CardRequest:
                 async def json(self):
                     return body_dict.get("event", body_dict)
 
-            async with async_session() as db:
+            tid = await resolve_tenant_for_agent(agent_id)
+            async with tenant_scoped_session(tid) as db:
                 await feishu_card_callback(_CardRequest(), db)
 
         except Exception as e:
@@ -555,7 +575,10 @@ class FeishuWSManager:
             logger.info("[Feishu WS] lark-oapi not installed, skipping Feishu WS initialization")
             return
         logger.info("[Feishu WS] Initializing all active Feishu channels...")
-        async with async_session() as db:
+        async with (
+            async_session() as db,
+            enter_rls_bypass(db, reason="feishu start_all — enumerate all configured channels across tenants"),
+        ):
             result = await db.execute(
                 select(ChannelConfig).where(
                     ChannelConfig.is_configured,
@@ -569,18 +592,13 @@ class FeishuWSManager:
             mode = extra.get("connection_mode", "webhook")
             if mode == "websocket":
                 if config.app_id and config.app_secret:
-                    await self.start_client(
-                        config.agent_id, config.app_id, config.app_secret, stop_existing=False
-                    )
+                    await self.start_client(config.agent_id, config.app_id, config.app_secret, stop_existing=False)
                 else:
                     logger.warning(f"[Feishu WS] Skipping agent {config.agent_id}: missing credentials")
 
     def status(self) -> dict:
         """Return status of all active WS tasks."""
-        return {
-            str(aid): not self._tasks[aid].done()
-            for aid in self._tasks
-        }
+        return {str(aid): not self._tasks[aid].done() for aid in self._tasks}
 
 
 feishu_ws_manager = FeishuWSManager()

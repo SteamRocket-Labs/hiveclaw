@@ -21,6 +21,7 @@ from loguru import logger
 from sqlalchemy import select
 
 from app.core.events import get_redis
+from app.database import enter_rls_bypass, tenant_scoped_session
 from app.memory.t2_store import (
     load_incremental_t2_entries,
     load_t2_entries,
@@ -33,6 +34,7 @@ from app.runtime.session import SessionContext
 from app.services.agent_tools import execute_tool
 from app.services.heartbeat_policy import managed_heartbeat_interval_minutes
 from app.services.runtime_task_service import create_runtime_task_record, update_runtime_task_record
+from app.services.tenant_resolver import resolve_tenant_for_agent
 
 # Single source of truth: app/templates/HEARTBEAT.md
 # No hardcoded instruction here — read from template file at runtime.
@@ -814,8 +816,8 @@ async def _build_evolution_context(
                     "If the workflow around them is genuinely reusable, record it as a candidate "
                     "signal — you curate evidence; the skill distillation lane decides promotion:\n"
                     "1. FIRST call `tool_search` and `load_skill` to confirm no existing skill already covers this workflow\n"
-                    "2. If none covers it, call `save_memory` with category=\"strategy\", "
-                    "container_candidate=\"skill_candidate\", and a self-contained description of the "
+                    '2. If none covers it, call `save_memory` with category="strategy", '
+                    'container_candidate="skill_candidate", and a self-contained description of the '
                     "workflow (tools in sequence, when to use it, how to verify success)\n"
                     "3. Include `source_refs` pointing at the sessions/evidence where the workflow repeated\n"
                     "4. A good candidate captures the *workflow* (multiple tools in sequence), not a single tool or one-off note\n"
@@ -1237,9 +1239,9 @@ def _build_heartbeat_tool_executor(agent_id: uuid.UUID, creator_id: uuid.UUID):
             # skill creation runs through the SkillDistiller candidate lane.
             return (
                 "[BLOCKED] Heartbeat does not write skills directly. Record the evidence as a "
-                "candidate signal instead: save_memory(category=\"strategy\", "
-                "container_candidate=\"skill_candidate\", content=\"<the reusable workflow, "
-                "self-contained>\", source_refs=[...]). The skill distillation lane consumes it."
+                'candidate signal instead: save_memory(category="strategy", '
+                'container_candidate="skill_candidate", content="<the reusable workflow, '
+                'self-contained>", source_refs=[...]). The skill distillation lane consumes it.'
             )
 
         if tool_name == "plaza_create_post":
@@ -1256,13 +1258,12 @@ def _build_heartbeat_tool_executor(agent_id: uuid.UUID, creator_id: uuid.UUID):
     return _executor
 
 
-async def _touch_last_heartbeat(agent_id: uuid.UUID) -> None:
+async def _touch_last_heartbeat(agent_id: uuid.UUID, tenant_id: uuid.UUID | None = None) -> None:
     """Update last_heartbeat_at even on early return to prevent infinite re-triggering."""
     try:
-        from app.database import async_session as _async_session
         from app.models.agent import Agent as _Agent
 
-        async with _async_session() as _db:
+        async with tenant_scoped_session(tenant_id) as _db:
             _result = await _db.execute(select(_Agent).where(_Agent.id == agent_id))
             _agent = _result.scalar_one_or_none()
             if _agent:
@@ -1317,12 +1318,20 @@ def _maybe_run_skill_curator(workspace: Path) -> dict | None:
         return None
 
 
-async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = False):
+async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None = None, lease_acquired: bool = False):
     """Execute a single heartbeat for an agent.
 
     Creates a Reflection Session (like trigger_daemon) so tool calls and
     the final reply are persisted and visible in the UI.
+
+    ``tenant_id`` is threaded from ``_heartbeat_tick`` (which already filtered
+    on it) so every session here can pin the RLS GUC — under enforced
+    (non-owner) RLS a bare session would fail-closed even on the agent's own
+    rows. Falls back to an audited bypass read when omitted (e.g. an isolated
+    re-invocation without the tick's tenant in scope).
     """
+    if tenant_id is None:
+        tenant_id = await resolve_tenant_for_agent(agent_id)
     runtime_task_id: str | None = None
     heartbeat_session_id: str | None = None
     lease_held = lease_acquired
@@ -1350,12 +1359,12 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
         from app.models.llm import LLMModel
         from app.models.participant import Participant
 
-        async with async_session() as db:
+        async with tenant_scoped_session(tenant_id) as db:
             result = await db.execute(select(Agent).where(Agent.id == agent_id))
             agent = result.scalar_one_or_none()
             if not agent:
                 logger.warning(f"[Heartbeat] Agent {agent_id} not found in DB — skipping")
-                await _touch_last_heartbeat(agent_id)
+                await _touch_last_heartbeat(agent_id, tenant_id)
                 await _skip_heartbeat_runtime_task(
                     runtime_task_id,
                     skip_reason="agent_not_found",
@@ -1370,7 +1379,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
 
             if not (agent.primary_model_id or agent.fallback_model_id):
                 logger.warning(f"[Heartbeat] Agent {agent.name} ({agent_id}) has no model configured — skipping")
-                await _touch_last_heartbeat(agent_id)
+                await _touch_last_heartbeat(agent_id, tenant_id)
                 await _skip_heartbeat_runtime_task(
                     runtime_task_id,
                     skip_reason="no_model",
@@ -1419,7 +1428,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
 
             if not model:
                 logger.warning(f"[Heartbeat] Model for agent {agent.name} ({agent_id}) not found — skipping")
-                await _touch_last_heartbeat(agent_id)
+                await _touch_last_heartbeat(agent_id, tenant_id)
                 await _skip_heartbeat_runtime_task(
                     runtime_task_id,
                     skip_reason="model_not_found",
@@ -1545,7 +1554,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
                     # Idle protection: no new T2 entries → skip this tick
                     logger.info("[Heartbeat] Skip tick #{} for {}: no new T2 entries", tick_count, agent.name)
                     await _release_heartbeat_lease_async(agent_id)
-                    await _touch_last_heartbeat(agent_id)
+                    await _touch_last_heartbeat(agent_id, tenant_id)
                     return
 
                 session_id = _heartbeat_session_ids[agent_id]
@@ -1704,7 +1713,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
             # Update last_heartbeat_at BEFORE activity logging (optimistic lock)
             # to prevent timestamp storm: if execution/logging takes long, the agent
             # won't be re-triggered because the timestamp is already advanced.
-            async with async_session() as db3:
+            async with tenant_scoped_session(tenant_id) as db3:
                 a_result = await db3.execute(select(Agent).where(Agent.id == agent_id))
                 a = a_result.scalar_one_or_none()
                 if a:
@@ -1904,9 +1913,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, lease_acquired: bool = Fals
         # CRITICAL: Update last_heartbeat_at even on failure to prevent
         # every-minute storm (if timestamp stays None, agent is always eligible)
         try:
-            from app.database import async_session as _async_session
-
-            async with _async_session() as _db:
+            async with tenant_scoped_session(tenant_id) as _db:
                 from app.models.agent import Agent as _Agent
 
                 _result = await _db.execute(select(_Agent).where(_Agent.id == agent_id))
@@ -1961,7 +1968,10 @@ async def _heartbeat_tick():
     now = datetime.now(timezone.utc)
 
     try:
-        async with async_session() as db:
+        async with (
+            async_session() as db,
+            enter_rls_bypass(db, reason="heartbeat tick — enumerate all running/idle agents across tenants"),
+        ):
             result = await db.execute(
                 select(Agent).where(
                     Agent.status.in_(["running", "idle"]),
@@ -1991,7 +2001,7 @@ async def _heartbeat_tick():
                     continue
                 logger.info(f"💓 Triggering heartbeat for {agent.name}")
                 await write_audit_log("heartbeat_fire", {"agent_name": agent.name}, agent_id=agent.id)
-                asyncio.create_task(_execute_heartbeat(agent.id, lease_acquired=True))
+                asyncio.create_task(_execute_heartbeat(agent.id, tenant_id=agent.tenant_id, lease_acquired=True))
                 triggered += 1
 
             logger.info(
@@ -2019,12 +2029,11 @@ async def _heartbeat_tick():
 
 async def _sync_one_tenant(tenant_id: uuid.UUID) -> None:
     """Run sync_all_for_tenant in an isolated session with one retry."""
-    from app.database import async_session
     from app.services.workspace_sync import sync_all_for_tenant
 
     for attempt in range(2):
         try:
-            async with async_session() as sync_db:
+            async with tenant_scoped_session(tenant_id) as sync_db:
                 await sync_all_for_tenant(sync_db, tenant_id)
             return
         except Exception as sync_err:
@@ -2037,11 +2046,11 @@ async def _sync_one_tenant(tenant_id: uuid.UUID) -> None:
 
 async def _sync_one_agent(agent_id: uuid.UUID) -> None:
     """Re-render relationships.md for a single agent."""
-    from app.database import async_session
     from app.services.workspace_sync import sync_agent_relationships
 
     try:
-        async with async_session() as sync_db:
+        tid = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tid) as sync_db:
             await sync_agent_relationships(sync_db, agent_id)
     except Exception as sync_err:
         logger.warning(f"Agent relationships sync failed for {agent_id}: {sync_err}")
@@ -2070,7 +2079,10 @@ async def _workspace_full_sweep() -> None:
     from app.models.agent import Agent
 
     try:
-        async with async_session() as db:
+        async with (
+            async_session() as db,
+            enter_rls_bypass(db, reason="workspace full sweep — enumerate active tenants across all agents"),
+        ):
             tenant_result = await db.execute(
                 select(Agent.tenant_id)
                 .where(

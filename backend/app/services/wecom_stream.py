@@ -11,8 +11,9 @@ from typing import Dict
 from loguru import logger
 from sqlalchemy import select
 
-from app.database import async_session
+from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.channel_config import ChannelConfig
+from app.services.tenant_resolver import resolve_tenant_for_agent
 
 
 class WeComStreamManager:
@@ -57,18 +58,19 @@ class WeComStreamManager:
             from wecom_aibot_sdk import WSClient, generate_req_id
         except ImportError:
             logger.warning(
-                "[WeCom Stream] wecom-aibot-sdk-python not installed. "
-                "Install with: pip install wecom-aibot-sdk-python"
+                "[WeCom Stream] wecom-aibot-sdk-python not installed. Install with: pip install wecom-aibot-sdk-python"
             )
             return
 
         try:
-            client = WSClient({
-                "bot_id": bot_id,
-                "secret": bot_secret,
-                "max_reconnect_attempts": -1,  # infinite reconnect
-                "heartbeat_interval": 30000,   # 30s heartbeat
-            })
+            client = WSClient(
+                {
+                    "bot_id": bot_id,
+                    "secret": bot_secret,
+                    "max_reconnect_attempts": -1,  # infinite reconnect
+                    "heartbeat_interval": 30000,  # 30s heartbeat
+                }
+            )
             self._clients[agent_id] = client
 
             # ── Message handler: text ──
@@ -85,9 +87,7 @@ class WeComStreamManager:
                     chat_id = body.get("chatid", "")
                     chat_type = body.get("chat_type", "single")
 
-                    logger.info(
-                        f"[WeCom Stream] Text from {sender_id}: {user_text[:80]}"
-                    )
+                    logger.info(f"[WeCom Stream] Text from {sender_id}: {user_text[:80]}")
 
                     # Process message and get reply
                     reply_text = await _process_wecom_stream_message(
@@ -106,11 +106,13 @@ class WeComStreamManager:
                 except Exception as e:
                     logger.error(f"[WeCom Stream] Error handling text message: {e}")
                     import traceback
+
                     traceback.print_exc()
                     try:
                         stream_id = generate_req_id("stream")
                         await client.reply_stream(
-                            frame, stream_id,
+                            frame,
+                            stream_id,
                             f"Processing error: {str(e)[:100]}",
                             finish=True,
                         )
@@ -126,7 +128,8 @@ class WeComStreamManager:
                     logger.info(f"[WeCom Stream] Image message from {sender_id} (not yet handled)")
                     stream_id = generate_req_id("stream")
                     await client.reply_stream(
-                        frame, stream_id,
+                        frame,
+                        stream_id,
                         "Received your image. Image processing is not yet supported.",
                         finish=True,
                     )
@@ -142,7 +145,8 @@ class WeComStreamManager:
                     logger.info(f"[WeCom Stream] File message from {sender_id} (not yet handled)")
                     stream_id = generate_req_id("stream")
                     await client.reply_stream(
-                        frame, stream_id,
+                        frame,
+                        stream_id,
                         "Received your file. File processing is not yet supported.",
                         finish=True,
                     )
@@ -154,14 +158,19 @@ class WeComStreamManager:
                 try:
                     # Look up agent's welcome message
                     from app.models.agent import Agent as AgentModel
-                    async with async_session() as db:
+
+                    tid = await resolve_tenant_for_agent(agent_id)
+                    async with tenant_scoped_session(tid) as db:
                         r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
                         agent = r.scalar_one_or_none()
                         welcome = (agent.welcome_message if agent else None) or "Hello! How can I help you?"
-                    await client.reply_welcome(frame, {
-                        "msgtype": "text",
-                        "text": {"content": welcome},
-                    })
+                    await client.reply_welcome(
+                        frame,
+                        {
+                            "msgtype": "text",
+                            "text": {"content": welcome},
+                        },
+                    )
                     logger.info(f"[WeCom Stream] Sent welcome message for agent {agent_id}")
                 except Exception as e:
                     logger.error(f"[WeCom Stream] Error sending welcome: {e}")
@@ -192,6 +201,7 @@ class WeComStreamManager:
         except Exception as e:
             logger.error(f"[WeCom Stream] Client error for {agent_id}: {e}")
             import traceback
+
             traceback.print_exc()
         finally:
             self._clients.pop(agent_id, None)
@@ -213,7 +223,10 @@ class WeComStreamManager:
     async def start_all(self):
         """Start WebSocket clients for all configured WeCom agents with bot credentials."""
         logger.info("[WeCom Stream] Initializing all active WeCom AI Bot channels...")
-        async with async_session() as db:
+        async with (
+            async_session() as db,
+            enter_rls_bypass(db, reason="wecom start_all — enumerate all configured channels across tenants"),
+        ):
             result = await db.execute(
                 select(ChannelConfig).where(
                     ChannelConfig.is_configured,
@@ -229,7 +242,9 @@ class WeComStreamManager:
             bot_secret = extra.get("bot_secret", "")
             if bot_id and bot_secret:
                 await self.start_client(
-                    config.agent_id, bot_id, bot_secret,
+                    config.agent_id,
+                    bot_id,
+                    bot_secret,
                     stop_existing=False,
                 )
                 started += 1
@@ -238,13 +253,11 @@ class WeComStreamManager:
 
     def status(self) -> dict:
         """Return status of all active WebSocket clients."""
-        return {
-            str(aid): not self._tasks[aid].done()
-            for aid in self._tasks
-        }
+        return {str(aid): not self._tasks[aid].done() for aid in self._tasks}
 
 
 # ── Message processing helper ──
+
 
 async def _process_wecom_stream_message(
     agent_id: uuid.UUID,
@@ -256,7 +269,6 @@ async def _process_wecom_stream_message(
     """Process a WeCom message through the LLM pipeline and return the reply text."""
     from datetime import datetime, timezone
     from sqlalchemy import select as _select
-    from app.database import async_session
     from app.models.agent import Agent as AgentModel
     from app.models.audit import ChatMessage
     from app.models.user import User as UserModel
@@ -266,7 +278,8 @@ async def _process_wecom_stream_message(
     from app.api.feishu import _call_agent_llm
     import uuid as _uuid
 
-    async with async_session() as db:
+    tid = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tid) as db:
         # Load agent
         agent_r = await db.execute(_select(AgentModel).where(AgentModel.id == agent_id))
         agent_obj = agent_r.scalar_one_or_none()
@@ -274,6 +287,7 @@ async def _process_wecom_stream_message(
             logger.warning(f"[WeCom Stream] Agent {agent_id} not found")
             return "Agent not found"
         from app.services.memory_service import compute_history_limit_for_agent
+
         _hist_limit = await compute_history_limit_for_agent(agent_id)
 
         # Conversation ID: differentiate single chat vs group chat
@@ -337,11 +351,15 @@ async def _process_wecom_stream_message(
         history = [{"role": m.role, "content": m.content} for m in reversed(history_r.scalars().all())]
 
         # Save user message
-        db.add(ChatMessage(
-            agent_id=agent_id, user_id=platform_user_id,
-            role="user", content=user_text,
-            conversation_id=session_conv_id,
-        ))
+        db.add(
+            ChatMessage(
+                agent_id=agent_id,
+                user_id=platform_user_id,
+                role="user",
+                content=user_text,
+                conversation_id=session_conv_id,
+            )
+        )
         sess.last_message_at = datetime.now(timezone.utc)
         await db.commit()
 
@@ -364,18 +382,24 @@ async def _process_wecom_stream_message(
         logger.info(f"[WeCom Stream] LLM reply: {reply_text[:100]}")
 
         # Save assistant reply
-        db.add(ChatMessage(
-            agent_id=agent_id, user_id=platform_user_id,
-            role="assistant", content=reply_text,
-            conversation_id=session_conv_id,
-        ))
+        db.add(
+            ChatMessage(
+                agent_id=agent_id,
+                user_id=platform_user_id,
+                role="assistant",
+                content=reply_text,
+                conversation_id=session_conv_id,
+            )
+        )
         sess.last_message_at = datetime.now(timezone.utc)
         await db.commit()
 
         # Log activity
         from app.services.activity_logger import log_activity
+
         await log_activity(
-            agent_id, "chat_reply",
+            agent_id,
+            "chat_reply",
             f"Replied to WeCom message: {reply_text[:80]}",
             detail={"channel": "wecom", "user_text": user_text[:200], "reply": reply_text[:500]},
         )

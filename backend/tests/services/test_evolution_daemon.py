@@ -86,6 +86,11 @@ async def test_heartbeat_loop_invokes_tick_and_cleanup_per_iteration(monkeypatch
         async def __aexit__(self, *exc):
             return False
 
+        async def execute(self, *_a, **_k):
+            # Absorb the RLS GUC statement (SET LOCAL app.current_tenant_id = ...)
+            # emitted by enter_rls_bypass before the cleanup runs.
+            return None
+
         async def commit(self):
             return None
 
@@ -136,6 +141,11 @@ async def test_heartbeat_tick_failure_does_not_break_cleanup(monkeypatch) -> Non
         async def __aexit__(self, *exc):
             return False
 
+        async def execute(self, *_a, **_k):
+            # Absorb the RLS GUC statement (SET LOCAL app.current_tenant_id = ...)
+            # emitted by enter_rls_bypass before the cleanup runs.
+            return None
+
         async def commit(self):
             return None
 
@@ -169,12 +179,9 @@ def test_trigger_daemon_no_longer_starts_heartbeat_or_workspace() -> None:
     Source-level grep — cheap, doesn't boot the daemon, and stays accurate
     even when wider refactors land.
     """
-    src = Path(
-        Path(__file__).parent.parent.parent
-        / "app"
-        / "services"
-        / "trigger_daemon.py"
-    ).read_text(encoding="utf-8")
+    src = Path(Path(__file__).parent.parent.parent / "app" / "services" / "trigger_daemon.py").read_text(
+        encoding="utf-8"
+    )
 
     # The lifespan symbols live in evolution_daemon now.
     assert "_workspace_sync_loop" not in src

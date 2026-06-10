@@ -32,7 +32,7 @@ async def _heartbeat_loop() -> None:
     take the loop down. Pending-reply cleanup is piggybacked on the same
     cadence (it has no independent timer).
     """
-    from app.database import async_session
+    from app.database import async_session, enter_rls_bypass
     from app.services.heartbeat import _heartbeat_tick
     from app.services.pending_reply_service import cleanup_expired_replies
 
@@ -43,7 +43,10 @@ async def _heartbeat_loop() -> None:
             logger.error(f"[EvolutionDaemon] heartbeat tick error: {e}")
 
         try:
-            async with async_session() as db:
+            async with (
+                async_session() as db,
+                enter_rls_bypass(db, reason="pending-reply expiry sweep — expire stale contexts across all tenants"),
+            ):
                 await cleanup_expired_replies(db)
                 await db.commit()
         except Exception as e:

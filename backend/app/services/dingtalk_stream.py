@@ -12,7 +12,7 @@ from typing import Dict
 from loguru import logger
 from sqlalchemy import select
 
-from app.database import async_session
+from app.database import async_session, enter_rls_bypass
 from app.models.channel_config import ChannelConfig
 
 
@@ -99,9 +99,7 @@ class DingTalkStreamManager:
                         conversation_type = incoming.conversation_type or "1"
                         session_webhook = incoming.session_webhook or ""
 
-                        logger.info(
-                            f"[DingTalk Stream] Message from {sender_staff_id}: {user_text[:80]}"
-                        )
+                        logger.info(f"[DingTalk Stream] Message from {sender_staff_id}: {user_text[:80]}")
 
                         # Dispatch to the main FastAPI event loop for DB + LLM processing
                         from app.api.dingtalk import process_dingtalk_message
@@ -124,6 +122,7 @@ class DingTalkStreamManager:
                             except Exception as e:
                                 logger.error(f"[DingTalk Stream] LLM processing error: {e}")
                                 import traceback
+
                                 traceback.print_exc()
                         else:
                             logger.warning("[DingTalk Stream] Main loop not available for dispatch")
@@ -132,6 +131,7 @@ class DingTalkStreamManager:
                     except Exception as e:
                         logger.error(f"[DingTalk Stream] Error in message handler: {e}")
                         import traceback
+
                         traceback.print_exc()
                         return dingtalk_stream.AckMessage.STATUS_SYSTEM_EXCEPTION, str(e)
 
@@ -148,12 +148,12 @@ class DingTalkStreamManager:
 
         except ImportError:
             logger.warning(
-                "[DingTalk Stream] dingtalk-stream package not installed. "
-                "Install with: pip install dingtalk-stream"
+                "[DingTalk Stream] dingtalk-stream package not installed. Install with: pip install dingtalk-stream"
             )
         except Exception as e:
             logger.error(f"[DingTalk Stream] Client error for {agent_id}: {e}")
             import traceback
+
             traceback.print_exc()
         finally:
             self._threads.pop(agent_id, None)
@@ -172,7 +172,10 @@ class DingTalkStreamManager:
     async def start_all(self):
         """Start Stream clients for all configured DingTalk agents."""
         logger.info("[DingTalk Stream] Initializing all active DingTalk channels...")
-        async with async_session() as db:
+        async with (
+            async_session() as db,
+            enter_rls_bypass(db, reason="dingtalk start_all — enumerate all configured channels across tenants"),
+        ):
             result = await db.execute(
                 select(ChannelConfig).where(
                     ChannelConfig.is_configured,
@@ -186,20 +189,17 @@ class DingTalkStreamManager:
         for config in configs:
             if config.app_id and config.app_secret:
                 await self.start_client(
-                    config.agent_id, config.app_id, config.app_secret,
+                    config.agent_id,
+                    config.app_id,
+                    config.app_secret,
                     stop_existing=False,
                 )
             else:
-                logger.warning(
-                    f"[DingTalk Stream] Skipping agent {config.agent_id}: missing credentials"
-                )
+                logger.warning(f"[DingTalk Stream] Skipping agent {config.agent_id}: missing credentials")
 
     def status(self) -> dict:
         """Return status of all active Stream clients."""
-        return {
-            str(aid): self._threads[aid].is_alive()
-            for aid in self._threads
-        }
+        return {str(aid): self._threads[aid].is_alive() for aid in self._threads}
 
 
 dingtalk_stream_manager = DingTalkStreamManager()

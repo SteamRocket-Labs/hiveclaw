@@ -25,10 +25,11 @@ from loguru import logger
 from sqlalchemy import select
 
 from app.core.events import get_redis
-from app.database import async_session
+from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.trigger import AgentTrigger
 from app.models.agent import Agent
 from app.services.plan_mode_core import build_plan_execution_instruction
+from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.runtime_task_service import create_runtime_task_record, update_runtime_task_record
 from app.services.trigger_preflight import (
     collect_trigger_runtime_options,
@@ -251,7 +252,10 @@ async def backfill_null_reply_contexts() -> dict:
     patched = 0
     skipped = 0
     try:
-        async with async_session() as db:
+        async with (
+            async_session() as db,
+            enter_rls_bypass(db, reason="trigger reply_context backfill — enumerate all tenants' enabled triggers"),
+        ):
             # All enabled triggers with NULL reply_context
             null_triggers = await db.execute(
                 select(AgentTrigger).where(
@@ -584,7 +588,8 @@ async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
                 since = trigger.created_at
 
     try:
-        async with async_session() as db:
+        tid = await resolve_tenant_for_agent(trigger.agent_id)
+        async with tenant_scoped_session(tid) as db:
             from sqlalchemy import cast as sa_cast, String as SaString, or_
             from app.models.agent import Agent as AgentModel
             from app.models.participant import Participant
@@ -807,7 +812,8 @@ async def _preflight_trigger_group(
 ) -> tuple[bool, str | None, str, dict]:
     """Run P5 wake gate before mutating trigger fire counters."""
     try:
-        async with async_session() as db:
+        tid = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tid) as db:
             result = await db.execute(select(Agent).where(Agent.id == agent_id))
             agent = result.scalar_one_or_none()
             if not agent:
@@ -1082,7 +1088,8 @@ async def _invoke_agent_for_triggers(
     triggers = react_triggers
 
     try:
-        async with async_session() as db:
+        tid = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tid) as db:
             # Load agent
             result = await db.execute(select(Agent).where(Agent.id == agent_id))
             agent = result.scalar_one_or_none()
@@ -1454,7 +1461,10 @@ async def _tick():
     """One daemon tick: evaluate all triggers, group by agent, invoke."""
     now = datetime.now(timezone.utc)
 
-    async with async_session() as db:
+    async with (
+        async_session() as db,
+        enter_rls_bypass(db, reason="trigger daemon tick — enumerate all enabled triggers across tenants"),
+    ):
         result = await db.execute(select(AgentTrigger).where(AgentTrigger.is_enabled))
         all_triggers = result.scalars().all()
 

@@ -182,9 +182,7 @@ async def test_invoke_agent_for_triggers_injects_confirmed_plan_into_first_messa
 
     # The daemon uses the trigger objects it is handed (it does not re-query them);
     # an in-memory row with the plan_id is exactly what _tick would pass.
-    trig = AgentTrigger(
-        agent_id=agent_id, name="weekly", type="interval", config={"plan_id": str(pid)}, focus_ref=None
-    )
+    trig = AgentTrigger(agent_id=agent_id, name="weekly", type="interval", config={"plan_id": str(pid)}, focus_ref=None)
 
     # Mock only the true external boundaries; the trigger-context assembly + the
     # message commit run for real against the test DB.
@@ -202,7 +200,19 @@ async def test_invoke_agent_for_triggers_injects_confirmed_plan_into_first_messa
     async def _noop(*args, **kwargs):
         return None
 
+    # Group-A RLS migration: _invoke_agent_for_triggers now opens a
+    # tenant_scoped_session and resolves the tenant via resolve_tenant_for_agent.
+    # Route both to the test's owner sessionmaker / known tenant so the real DB
+    # path still runs against the Testcontainers PG.
+    def _scoped_to_owner(tid=None, **_kwargs):
+        return tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker)
+
+    async def _resolve_to_tenant(_agent_id, *_a, **_k):
+        return tenant_id
+
     monkeypatch.setattr(trigger_daemon, "async_session", owner_sessionmaker)
+    monkeypatch.setattr(trigger_daemon, "tenant_scoped_session", _scoped_to_owner)
+    monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", _resolve_to_tenant)
     monkeypatch.setattr(trigger_daemon, "select_trigger_model", _fake_select_model)
     monkeypatch.setattr(trigger_daemon, "_update_trigger_runtime_task", _noop)
     monkeypatch.setattr(audit_logger, "write_audit_log", _noop)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import AsyncGenerator
 from contextvars import ContextVar
 
@@ -79,7 +80,7 @@ from collections.abc import AsyncIterator  # noqa: E402
 
 @contextlib.asynccontextmanager
 async def tenant_scoped_session(
-    tenant_id: str | None = None,
+    tenant_id: str | uuid.UUID | None = None,
     *,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> AsyncIterator[AsyncSession]:

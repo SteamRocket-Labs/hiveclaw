@@ -1211,9 +1211,7 @@ def _consolidate_t3_files(agent_id: uuid.UUID) -> dict[str, int]:
             new_content = "\n".join(header_lines + deduped) + "\n"
             _write_t3_file(agent_id, fname, new_content)
             if dedup_dropped:
-                archive_t3_lines(
-                    data_root, agent_id, filename=fname, lines=dedup_dropped, reason="dedup_superseded"
-                )
+                archive_t3_lines(data_root, agent_id, filename=fname, lines=dedup_dropped, reason="dedup_superseded")
             if cap_evicted:
                 archive_t3_lines(data_root, agent_id, filename=fname, lines=cap_evicted, reason="cap_eviction")
             logger.info(
@@ -1646,11 +1644,11 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
     # Resolve agent name once so both the LLM prompt and downstream logs share it.
     agent_name = "Agent"
     try:
-        from app.database import async_session
+        from app.database import tenant_scoped_session
         from app.models.agent import Agent as _AgentModel
         from sqlalchemy import select as _select
 
-        async with async_session() as _db:
+        async with tenant_scoped_session(tenant_id) as _db:
             _res = await _db.execute(_select(_AgentModel).where(_AgentModel.id == agent_id))
             _row = _res.scalar_one_or_none()
             if _row and _row.name:
@@ -1734,7 +1732,7 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
     t0_audit = audit_t0_logs(agent_id, recent_days=30)
     t0_backfill = {"sessions_scanned": 0, "written": 0, "skipped_existing": 0, "skipped_empty": 0}
     if t0_audit["recent_files"] == 0:
-        t0_backfill = await backfill_recent_chat_logs(agent_id, recent_days=30, limit_sessions=20)
+        t0_backfill = await backfill_recent_chat_logs(agent_id, recent_days=30, limit_sessions=20, tenant_id=tenant_id)
         t0_audit = audit_t0_logs(agent_id, recent_days=30)
 
     # Reset heartbeat tick counter (dream completes the cycle)
@@ -1900,9 +1898,7 @@ def _cleanup_focus(agent_id: uuid.UUID) -> None:
         return
 
     completed_task_lines = {
-        line.strip()
-        for line in content.splitlines()
-        if _COMPLETED_CHECKBOX_PATTERN.match(line.strip())
+        line.strip() for line in content.splitlines() if _COMPLETED_CHECKBOX_PATTERN.match(line.strip())
     }
 
     lines = content.splitlines()

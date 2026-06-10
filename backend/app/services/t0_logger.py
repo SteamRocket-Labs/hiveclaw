@@ -35,7 +35,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.config import get_settings
-from app.database import async_session
+from app.database import tenant_scoped_session
 from app.memory.form_lint import lint_memory_form
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
@@ -806,7 +806,11 @@ def _extract_existing_session_ids(files: Iterable[Path]) -> set[str]:
 
 
 async def backfill_recent_chat_logs(
-    agent_id: uuid.UUID, recent_days: int = 30, limit_sessions: int = 20
+    agent_id: uuid.UUID,
+    recent_days: int = 30,
+    limit_sessions: int = 20,
+    *,
+    tenant_id: uuid.UUID | None = None,
 ) -> dict[str, int]:
     """Backfill recent chat sessions into T0 logs when raw files are missing."""
     logs_dir = _agent_logs_dir(agent_id)
@@ -824,7 +828,7 @@ async def backfill_recent_chat_logs(
     )
 
     try:
-        async with async_session() as db:
+        async with tenant_scoped_session(tenant_id) as db:
             sessions = (await db.execute(session_stmt)).scalars().all()
             written = 0
             skipped_existing = 0

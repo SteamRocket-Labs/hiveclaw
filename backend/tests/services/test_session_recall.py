@@ -69,7 +69,7 @@ async def test_search_session_history_groups_matches_into_recall_hits(monkeypatc
         ),
     ]
 
-    monkeypatch.setattr("app.services.session_recall.async_session", lambda: _FakeSession(rows))
+    monkeypatch.setattr("app.services.session_recall.tenant_scoped_session", lambda *a, **k: _FakeSession(rows))
 
     hits = await search_session_history(agent_id, "memory", limit=5, snippet_limit=2)
 
@@ -92,7 +92,7 @@ async def test_search_session_history_returns_empty_when_no_match(monkeypatch) -
     from app.services.session_recall import search_session_history
 
     agent_id = uuid.uuid4()
-    monkeypatch.setattr("app.services.session_recall.async_session", lambda: _FakeSession([]))
+    monkeypatch.setattr("app.services.session_recall.tenant_scoped_session", lambda *a, **k: _FakeSession([]))
 
     hits = await search_session_history(agent_id, "memory", limit=5)
 
@@ -128,10 +128,10 @@ tools: []
         encoding="utf-8",
     )
 
-    def _unexpected_session():
+    def _unexpected_session(*_a, **_k):
         raise AssertionError("T0 chat logs should satisfy recall without touching DB")
 
-    monkeypatch.setattr("app.services.session_recall.async_session", _unexpected_session)
+    monkeypatch.setattr("app.services.session_recall.tenant_scoped_session", _unexpected_session)
     monkeypatch.setattr(
         "app.services.session_recall.get_settings",
         lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
@@ -224,7 +224,9 @@ async def test_search_session_history_db_summary_keeps_adjacent_resolution(monke
         ),
     ]
 
-    monkeypatch.setattr("app.services.session_recall.async_session", lambda: _FakeSession([rows, transcript_rows]))
+    monkeypatch.setattr(
+        "app.services.session_recall.tenant_scoped_session", lambda *a, **k: _FakeSession([rows, transcript_rows])
+    )
     monkeypatch.setattr(
         "app.services.session_recall.get_settings",
         lambda: SimpleNamespace(AGENT_DATA_DIR="/tmp/nonexistent-session-recall"),
@@ -332,7 +334,9 @@ async def test_search_session_history_uses_tenant_aware_summary_enrichment(monke
         hits[0]["summary"] = "模型聚焦摘要：我们把 priority matrix 整理成了决策摘要。"
         return hits
 
-    monkeypatch.setattr("app.services.session_recall.async_session", lambda: _FakeSession([rows, transcript_rows]))
+    monkeypatch.setattr(
+        "app.services.session_recall.tenant_scoped_session", lambda *a, **k: _FakeSession([rows, transcript_rows])
+    )
     monkeypatch.setattr(
         "app.services.session_recall.get_settings",
         lambda: SimpleNamespace(AGENT_DATA_DIR="/tmp/nonexistent-session-recall"),

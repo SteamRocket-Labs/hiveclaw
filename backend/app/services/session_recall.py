@@ -11,7 +11,7 @@ from pathlib import Path
 from sqlalchemy import String as SaString, cast as sa_cast, or_, select
 
 from app.config import get_settings
-from app.database import async_session
+from app.database import tenant_scoped_session
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 
@@ -373,8 +373,7 @@ async def _summarize_recall_hits(
                     evidence_block = f"{evidence_block}\nTranscript window:\n{transcript_window}".strip()
                 if evidence_lines:
                     evidence_block = (
-                        f"{evidence_block}\nKey evidence:\n"
-                        + "\n".join(f"- {line}" for line in evidence_lines if line)
+                        f"{evidence_block}\nKey evidence:\n" + "\n".join(f"- {line}" for line in evidence_lines if line)
                     ).strip()
                 if not evidence_block:
                     continue
@@ -557,6 +556,7 @@ async def _search_session_history_db(
     *,
     limit: int,
     snippet_limit: int,
+    tenant_id: uuid.UUID | None = None,
 ) -> list[dict]:
     needle = (query or "").strip()
     if not needle:
@@ -590,7 +590,7 @@ async def _search_session_history_db(
         .limit(fetch_limit)
     )
 
-    async with async_session() as db:
+    async with tenant_scoped_session(tenant_id) as db:
         rows = (await db.execute(stmt)).all()
         if not rows:
             return []
@@ -695,5 +695,6 @@ async def search_session_history(
         needle,
         limit=limit,
         snippet_limit=snippet_limit,
+        tenant_id=tenant_id,
     )
     return await _summarize_recall_hits(needle, db_hits, tenant_id)

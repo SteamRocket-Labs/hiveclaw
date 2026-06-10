@@ -21,9 +21,10 @@ from pathlib import Path
 from loguru import logger
 from sqlalchemy import select
 
-from app.database import async_session
+from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.config import get_settings
 from app.models.channel_config import ChannelConfig
+from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.wechat_ilink_client import (
     ERROR_BACKOFF_SECONDS,
     ILinkClient,
@@ -67,7 +68,12 @@ class WeChatPersonalStreamManager:
     async def start_all(self) -> None:
         """Load all connected wechat_personal channels and start their poll loops."""
         try:
-            async with async_session() as db:
+            async with (
+                async_session() as db,
+                enter_rls_bypass(
+                    db, reason="wechat_personal start_all — enumerate all connected channels across tenants"
+                ),
+            ):
                 result = await db.execute(
                     select(ChannelConfig).where(
                         ChannelConfig.channel_type == "wechat_personal",
@@ -161,7 +167,9 @@ class WeChatPersonalStreamManager:
                     consecutive_errors = 0
 
                 except ILinkSessionExpiredError:
-                    logger.warning(f"[WeChatPersonal Stream] Session expired for agent {agent_id}, marking disconnected")
+                    logger.warning(
+                        f"[WeChatPersonal Stream] Session expired for agent {agent_id}, marking disconnected"
+                    )
                     await self._mark_disconnected(agent_id)
                     return
 
@@ -218,7 +226,9 @@ class WeChatPersonalStreamManager:
         if msg.image_media:
             try:
                 image_data = await ILinkClient(base_url).download_media(msg.image_media)
-                image_path = _persist_inbound_media(agent_id, None, image_data, f"wechat_image_{uuid.uuid4().hex[:8]}.jpg")
+                image_path = _persist_inbound_media(
+                    agent_id, None, image_data, f"wechat_image_{uuid.uuid4().hex[:8]}.jpg"
+                )
                 image_desc = (
                     f"[用户发送了一张图片，已保存到工作区 `{image_path}`，{len(image_data)} 字节。"
                     f"如果需要处理内容，请直接读取该路径。]"
@@ -233,13 +243,17 @@ class WeChatPersonalStreamManager:
         if msg.file_media and msg.file_name:
             try:
                 file_data = await ILinkClient(base_url).download_media(msg.file_media)
-                file_path = _persist_inbound_media(agent_id, msg.file_name, file_data, f"wechat_file_{uuid.uuid4().hex[:8]}")
+                file_path = _persist_inbound_media(
+                    agent_id, msg.file_name, file_data, f"wechat_file_{uuid.uuid4().hex[:8]}"
+                )
                 file_desc = (
                     f"[用户发送了文件: {msg.file_name}，已保存到工作区 `{file_path}`，{len(file_data)} 字节。"
                     f"如果需要处理内容，请直接读取该路径。]"
                 )
                 user_text = f"{user_text}\n{file_desc}" if user_text else file_desc
-                logger.info(f"[WeChatPersonal Stream] File from {from_user[:12]}...: {msg.file_name} ({len(file_data)}B)")
+                logger.info(
+                    f"[WeChatPersonal Stream] File from {from_user[:12]}...: {msg.file_name} ({len(file_data)}B)"
+                )
             except Exception as e:
                 logger.error(f"[WeChatPersonal Stream] File download failed: {e}")
                 user_text = user_text or f"[用户发送了文件: {msg.file_name}，下载失败]"
@@ -248,7 +262,9 @@ class WeChatPersonalStreamManager:
         if msg.video_media:
             try:
                 video_data = await ILinkClient(base_url).download_media(msg.video_media)
-                video_path = _persist_inbound_media(agent_id, None, video_data, f"wechat_video_{uuid.uuid4().hex[:8]}.mp4")
+                video_path = _persist_inbound_media(
+                    agent_id, None, video_data, f"wechat_video_{uuid.uuid4().hex[:8]}.mp4"
+                )
                 video_desc = f"[用户发送了一段视频，已保存到工作区 `{video_path}`。如需处理内容，请直接读取该路径。]"
             except Exception as e:
                 logger.error(f"[WeChatPersonal Stream] Video download failed: {e}")
@@ -274,6 +290,7 @@ class WeChatPersonalStreamManager:
         # Fetch and cache typing ticket on first contact
         try:
             from app.services.wechat_personal_service import get_typing_ticket
+
             ticket = await get_typing_ticket(agent_id, from_user)
             if not ticket:
                 config = await ILinkClient(base_url).get_config(bot_token, from_user)
@@ -337,7 +354,9 @@ class WeChatPersonalStreamManager:
             # Upload file to iLink CDN
             try:
                 file_data = fp.read_bytes()
-                logger.info(f"[WeChatPersonal Stream] Uploading {fp.name} ({len(file_data)} bytes, type={media_type})...")
+                logger.info(
+                    f"[WeChatPersonal Stream] Uploading {fp.name} ({len(file_data)} bytes, type={media_type})..."
+                )
                 upload = await client.upload_media(
                     bot_token=bot_token,
                     to_user_id=from_user,
@@ -383,7 +402,7 @@ class WeChatPersonalStreamManager:
         if len(reply_text) <= TEXT_MESSAGE_MAX_LEN:
             chunks = [reply_text]
         else:
-            chunks = [reply_text[i:i + TEXT_MESSAGE_MAX_LEN] for i in range(0, len(reply_text), TEXT_MESSAGE_MAX_LEN)]
+            chunks = [reply_text[i : i + TEXT_MESSAGE_MAX_LEN] for i in range(0, len(reply_text), TEXT_MESSAGE_MAX_LEN)]
 
         for chunk in chunks:
             try:
@@ -425,6 +444,7 @@ class WeChatPersonalStreamManager:
 
 # ── Message processing (follows wecom_stream.py pattern) ─
 
+
 async def _process_wechat_message(
     agent_id: uuid.UUID,
     sender_id: str,
@@ -440,13 +460,13 @@ async def _process_wechat_message(
 
     from app.api.feishu import _call_agent_llm
     from app.core.security import hash_password
-    from app.database import async_session
     from app.models.agent import Agent as AgentModel
     from app.models.audit import ChatMessage
     from app.models.user import User as UserModel
     from app.services.channel_session import find_or_create_channel_session
 
-    async with async_session() as db:
+    tid = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tid) as db:
         # Load agent
         agent_r = await db.execute(_select(AgentModel).where(AgentModel.id == agent_id))
         agent_obj = agent_r.scalar_one_or_none()
@@ -455,6 +475,7 @@ async def _process_wechat_message(
             return "Agent not found"
 
         from app.services.memory_service import compute_history_limit_for_agent
+
         hist_limit = await compute_history_limit_for_agent(agent_id)
 
         # Conversation ID
@@ -512,11 +533,15 @@ async def _process_wechat_message(
         history = [{"role": m.role, "content": m.content} for m in reversed(history_r.scalars().all())]
 
         # Save user message
-        db.add(ChatMessage(
-            agent_id=agent_id, user_id=platform_user_id,
-            role="user", content=user_text,
-            conversation_id=session_conv_id,
-        ))
+        db.add(
+            ChatMessage(
+                agent_id=agent_id,
+                user_id=platform_user_id,
+                role="user",
+                content=user_text,
+                conversation_id=session_conv_id,
+            )
+        )
         sess.last_message_at = datetime.now(timezone.utc)
         await db.commit()
 
@@ -526,8 +551,11 @@ async def _process_wechat_message(
         try:
             # Call LLM (P1-4: pass correct channel attribution)
             reply_text = await _call_agent_llm(
-                db, agent_id, user_text,
-                history=history, user_id=platform_user_id,
+                db,
+                agent_id,
+                user_text,
+                history=history,
+                user_id=platform_user_id,
                 session_id=session_conv_id,
                 session_source="wechat_personal",
                 session_channel="wechat_personal",
@@ -538,18 +566,24 @@ async def _process_wechat_message(
         logger.info(f"[WeChatPersonal Stream] LLM reply: {reply_text[:100]}")
 
         # Save assistant reply
-        db.add(ChatMessage(
-            agent_id=agent_id, user_id=platform_user_id,
-            role="assistant", content=reply_text,
-            conversation_id=session_conv_id,
-        ))
+        db.add(
+            ChatMessage(
+                agent_id=agent_id,
+                user_id=platform_user_id,
+                role="assistant",
+                content=reply_text,
+                conversation_id=session_conv_id,
+            )
+        )
         sess.last_message_at = datetime.now(timezone.utc)
         await db.commit()
 
         # Log activity
         from app.services.activity_logger import log_activity
+
         await log_activity(
-            agent_id, "chat_reply",
+            agent_id,
+            "chat_reply",
             f"Replied to WeChat message: {reply_text[:80]}",
             detail={"channel": "wechat_personal", "user_text": user_text[:200], "reply": reply_text[:500]},
         )

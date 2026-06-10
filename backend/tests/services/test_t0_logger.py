@@ -160,8 +160,14 @@ class TestFormatTriggerLog:
     def test_basic_trigger(self) -> None:
         result = _format_trigger_log(
             [{"role": "assistant", "content": "Done"}],
-            {"trigger_name": "daily-standup", "trigger_type": "cron", "status": "success", "duration_ms": 5000,
-             "instruction": "Check tasks", "result": "3 tasks updated"},
+            {
+                "trigger_name": "daily-standup",
+                "trigger_type": "cron",
+                "status": "success",
+                "duration_ms": 5000,
+                "instruction": "Check tasks",
+                "result": "3 tasks updated",
+            },
         )
         assert "type: trigger" in result
         assert "trigger_name: daily-standup" in result
@@ -176,8 +182,13 @@ class TestFormatDelegationLog:
     def test_basic_delegation(self) -> None:
         result = _format_delegation_log(
             [{"role": "assistant", "content": "Researched"}],
-            {"from_agent": "PM", "to_agent": "Researcher", "task": "Find competitors", "status": "success",
-             "result": "Found 5"},
+            {
+                "from_agent": "PM",
+                "to_agent": "Researcher",
+                "task": "Find competitors",
+                "status": "success",
+                "result": "Found 5",
+            },
         )
         assert "type: delegation" in result
         assert "from: PM" in result
@@ -189,8 +200,14 @@ class TestFormatHeartbeatLog:
     def test_basic_heartbeat(self) -> None:
         result = _format_heartbeat_log(
             [],
-            {"tick": 3, "new_t2": 2, "distilled": 1, "score": 7,
-             "new_t2_entries": ["feedback: user likes X"], "action": "none"},
+            {
+                "tick": 3,
+                "new_t2": 2,
+                "distilled": 1,
+                "score": 7,
+                "new_t2_entries": ["feedback: user likes X"],
+                "action": "none",
+            },
         )
         assert "type: heartbeat" in result
         assert "tick: 3" in result
@@ -202,9 +219,14 @@ class TestFormatDreamLog:
     def test_basic_dream(self) -> None:
         result = _format_dream_log(
             [],
-            {"t3_processed": 5, "deduped": 3, "promoted_to_soul": 1,
-             "dedup_summary": "Merged 3 feedback entries", "soul_promotions": ["Core value: quality"],
-             "cleanup_summary": "T2 truncated to 10"},
+            {
+                "t3_processed": 5,
+                "deduped": 3,
+                "promoted_to_soul": 1,
+                "dedup_summary": "Merged 3 feedback entries",
+                "soul_promotions": ["Core value: quality"],
+                "cleanup_summary": "T2 truncated to 10",
+            },
         )
         assert "type: dream" in result
         assert "t3_processed: 5" in result
@@ -361,7 +383,9 @@ class _BackfillSession:
 
 
 @pytest.mark.asyncio
-async def test_backfill_recent_chat_logs_creates_t0_files(agent_id: uuid.UUID, tmp_agent_dir: Path, monkeypatch) -> None:
+async def test_backfill_recent_chat_logs_creates_t0_files(
+    agent_id: uuid.UUID, tmp_agent_dir: Path, monkeypatch
+) -> None:
     session_id = uuid.uuid4()
     user_id = uuid.uuid4()
     session = type(
@@ -399,7 +423,9 @@ async def test_backfill_recent_chat_logs_creates_t0_files(agent_id: uuid.UUID, t
         )(),
     ]
 
-    monkeypatch.setattr("app.services.t0_logger.async_session", lambda: _BackfillSession([session], messages), raising=False)
+    monkeypatch.setattr(
+        "app.services.t0_logger.tenant_scoped_session", lambda *a, **k: _BackfillSession([session], messages)
+    )
     with patch("app.services.t0_logger.get_settings") as mock_settings:
         mock_settings.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
         report = await backfill_recent_chat_logs(agent_id, recent_days=30, limit_sessions=10)
@@ -471,9 +497,7 @@ class TestWriteT0LogSubdirs:
 
 
 class TestAuditSplitCounts:
-    def test_audit_counts_behavior_and_system_separately(
-        self, agent_id: uuid.UUID, tmp_agent_dir: Path
-    ) -> None:
+    def test_audit_counts_behavior_and_system_separately(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
         logs_dir = tmp_agent_dir / str(agent_id) / "logs"
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         (logs_dir / today / "behavior").mkdir(parents=True)
@@ -492,9 +516,7 @@ class TestAuditSplitCounts:
         assert report["total_files"] == 3
         assert report["healthy"] is True
 
-    def test_audit_counts_legacy_flat_files(
-        self, agent_id: uuid.UUID, tmp_agent_dir: Path
-    ) -> None:
+    def test_audit_counts_legacy_flat_files(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
         logs_dir = tmp_agent_dir / str(agent_id) / "logs"
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         (logs_dir / today).mkdir(parents=True)
@@ -510,9 +532,7 @@ class TestAuditSplitCounts:
 
 
 class TestMigrateT0Layout:
-    def test_moves_behavior_and_system_files(
-        self, agent_id: uuid.UUID, tmp_agent_dir: Path
-    ) -> None:
+    def test_moves_behavior_and_system_files(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
         logs_dir = tmp_agent_dir / str(agent_id) / "logs" / "2026-04-10"
         logs_dir.mkdir(parents=True)
         (logs_dir / "chat-0900-aaaa.md").write_text("c", encoding="utf-8")
@@ -534,9 +554,7 @@ class TestMigrateT0Layout:
         marker = tmp_agent_dir / str(agent_id) / ".t0_layout_v2"
         assert marker.exists()
 
-    def test_idempotent_via_marker(
-        self, agent_id: uuid.UUID, tmp_agent_dir: Path
-    ) -> None:
+    def test_idempotent_via_marker(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
         logs_dir = tmp_agent_dir / str(agent_id) / "logs" / "2026-04-10"
         logs_dir.mkdir(parents=True)
         marker = tmp_agent_dir / str(agent_id) / ".t0_layout_v2"
@@ -552,9 +570,7 @@ class TestMigrateT0Layout:
         assert (logs_dir / "chat-0900-aaaa.md").exists()
         assert not (logs_dir / "behavior").exists()
 
-    def test_skips_unknown_prefixes(
-        self, agent_id: uuid.UUID, tmp_agent_dir: Path
-    ) -> None:
+    def test_skips_unknown_prefixes(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
         logs_dir = tmp_agent_dir / str(agent_id) / "logs" / "2026-04-10"
         logs_dir.mkdir(parents=True)
         (logs_dir / "weird-0900-aaaa.md").write_text("?", encoding="utf-8")
@@ -569,9 +585,7 @@ class TestMigrateT0Layout:
         assert (logs_dir / "behavior" / "chat-1000-bbbb.md").exists()
         assert (logs_dir / "weird-0900-aaaa.md").exists()  # untouched
 
-    def test_handles_missing_logs_dir(
-        self, agent_id: uuid.UUID, tmp_agent_dir: Path
-    ) -> None:
+    def test_handles_missing_logs_dir(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
         with patch("app.services.t0_logger.get_settings") as mock_settings:
             mock_settings.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
             report = migrate_t0_layout(agent_id)
@@ -591,9 +605,7 @@ class TestChatLogIncludesToolResults:
             {
                 "role": "assistant",
                 "content": "looking up...",
-                "tool_calls": [
-                    {"id": "call_1", "function": {"name": "web_search", "arguments": '{"q":"hive"}'}}
-                ],
+                "tool_calls": [{"id": "call_1", "function": {"name": "web_search", "arguments": '{"q":"hive"}'}}],
             },
             {"role": "tool", "tool_call_id": "call_1", "content": "found 3 results: A, B, C"},
         ]
@@ -608,9 +620,7 @@ class TestChatLogIncludesToolResults:
             {
                 "role": "assistant",
                 "content": "",
-                "tool_calls": [
-                    {"id": "c1", "function": {"name": "search", "arguments": f'{{"q":"{long_query}"}}'}}
-                ],
+                "tool_calls": [{"id": "c1", "function": {"name": "search", "arguments": f'{{"q":"{long_query}"}}'}}],
             },
         ]
         result = _format_chat_log(messages, {})
@@ -737,9 +747,7 @@ class TestTriggerDelegationToolChain:
             },
             {"role": "tool", "tool_call_id": "c1", "content": "[Error] backend down"},
         ]
-        result = _format_trigger_log(
-            messages, {"trigger_name": "x", "instruction": "y", "result": "fail"}
-        )
+        result = _format_trigger_log(messages, {"trigger_name": "x", "instruction": "y", "result": "fail"})
         assert "## Errors" in result
         assert "backend down" in result
 
@@ -934,9 +942,7 @@ class TestArtifactSpillover:
             {"role": "tool", "tool_call_id": "c1", "content": "tiny result"},
         ]
         with self._patch_settings(tmp_agent_dir):
-            path = write_t0_log(
-                agent_id, behavior_type="chat", messages=messages, metadata={"session_id": "s1"}
-            )
+            path = write_t0_log(agent_id, behavior_type="chat", messages=messages, metadata={"session_id": "s1"})
         assert path is not None
         body = path.read_text(encoding="utf-8")
         assert "tiny result" in body
@@ -955,9 +961,7 @@ class TestArtifactSpillover:
             {"role": "tool", "tool_call_id": "call_big", "content": big},
         ]
         with self._patch_settings(tmp_agent_dir):
-            path = write_t0_log(
-                agent_id, behavior_type="chat", messages=messages, metadata={"session_id": "sess-big"}
-            )
+            path = write_t0_log(agent_id, behavior_type="chat", messages=messages, metadata={"session_id": "sess-big"})
         assert path is not None
         body = path.read_text(encoding="utf-8")
 
@@ -994,9 +998,7 @@ class TestArtifactSpillover:
             {"role": "tool", "tool_call_id": "c1", "content": at_limit},
         ]
         with self._patch_settings(tmp_agent_dir):
-            path = write_t0_log(
-                agent_id, behavior_type="chat", messages=messages, metadata={"session_id": "s2"}
-            )
+            path = write_t0_log(agent_id, behavior_type="chat", messages=messages, metadata={"session_id": "s2"})
         assert path is not None
         assert not (path.parent.parent / "artifacts").exists()
 
@@ -1007,16 +1009,12 @@ class TestArtifactSpillover:
             {
                 "role": "assistant",
                 "content": "",
-                "tool_calls": [
-                    {"id": "weird/id with spaces", "function": {"name": "x:y/z", "arguments": "{}"}}
-                ],
+                "tool_calls": [{"id": "weird/id with spaces", "function": {"name": "x:y/z", "arguments": "{}"}}],
             },
             {"role": "tool", "tool_call_id": "weird/id with spaces", "content": big},
         ]
         with self._patch_settings(tmp_agent_dir):
-            path = write_t0_log(
-                agent_id, behavior_type="chat", messages=messages, metadata={"session_id": "s3"}
-            )
+            path = write_t0_log(agent_id, behavior_type="chat", messages=messages, metadata={"session_id": "s3"})
         assert path is not None
         artifacts_dir = path.parent.parent / "artifacts"
         files = list(artifacts_dir.glob("*.json"))
@@ -1072,9 +1070,7 @@ class TestReplayResolvesArtifact:
         assert len(tool_msgs) == 1
         assert tool_msgs[0]["content"] == big
 
-    def test_replay_handles_missing_artifact_gracefully(
-        self, tmp_path: Path, agent_id: uuid.UUID
-    ) -> None:
+    def test_replay_handles_missing_artifact_gracefully(self, tmp_path: Path, agent_id: uuid.UUID) -> None:
         from app.services.extract_agent import replay_messages_from_t0
 
         date_dir = tmp_path / str(agent_id) / "logs" / "2026-04-15"

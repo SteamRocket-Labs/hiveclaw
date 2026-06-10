@@ -45,6 +45,16 @@
 
 **剩余 L1 机械项（audit-l1 识别，归后续 phase）**：① kernel 60min 时间微压缩（零压力清工具结果）+ 撞 max_tokens 不 escalate 重试 + web_search Tier-2 关键词硬拒 → **归 Phase 3**（均在 engine.py/routing，与可观测性同改）；② 隐私 phone 正则改写记忆内容 → **归 Phase 4**（需 LLM 分类，跨记忆系统）；③ rerank 3s 超时 / 上传 8000 截断 / delegation 5000 suffix 帽 / 反思 6 关键词 / T2 提取 2500 截断 → 较小 L1，最终报告列明取舍。
 
+### ✅ Phase 3 — 可观测性 + schema 权威 + kernel L1（3 commits）
+
+| 子项 | commit | 证据 |
+|------|--------|------|
+| 3-1 核心管线吞错可观测 | `adcf2281` | 7 处静默 fail-soft 加 WARNING/ERROR：kernel 压缩后重建(soul/T3/recent file)、DR-routing import、heartbeat SOP 降级(error 级)、proactive(debug→warn)、memory_config；44 测试无回归 |
+| 3-2 schema 权威（P0-4） | `99a87ede` | 5 patch-only 列补幂等 alembic migration（oidc_*、execution_identity_*）；与 entrypoint patch 收敛单一来源；single-head 测试更新 |
+| 3-3 kernel 微压缩低压豁免（audit-l1 #5） | `f07b71a0` | <50% 窗口利用率不再按时间销毁工具结果（heartbeat KAIROS/DR 长会话保留证据）；纯函数 gap 测试钉死边界 |
+
+**Phase 3 范围判断（诚实）**：① max_tokens 撞顶 escalate 重试（CC 升 64K）= 重试逻辑较大改动，归后续 CC 细化；② web_search Tier-2 关键词硬拒**移除** = 行为改变需评估测试影响，本 phase 仅给 import 失败加 log（F13），完整移除归后续；③ entrypoint `alembic upgrade head` 失败转 fatal = 运维决策（需先一次性 stamp 验证），owner-gated 不在代码层贸然改（避免锁死启动）。
+
 ---
 
 ## 1. P0 — 立即处理

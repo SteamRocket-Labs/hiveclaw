@@ -2305,7 +2305,11 @@ async def _call_agent_llm(
     # Build conversation messages (without system prompt — call_llm adds it)
     messages: list[dict] = []
     if history:
-        messages.extend(history[-10:])
+        # history is already window-scaled by compute_history_limit_for_agent at
+        # each channel's load site; do NOT re-truncate to a fixed 10 (that made IM
+        # agents amnesiac past ~5 exchanges regardless of model window). Kernel
+        # compaction handles any residual pressure.
+        messages.extend(history)
     messages.append({"role": "user", "content": user_text})
 
     # ── Pending reply context injection ──

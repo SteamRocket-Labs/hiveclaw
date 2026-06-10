@@ -63,6 +63,24 @@
 
 **Phase 4 剩余（诚实记录）**：① D2/D8 生产清洗（backfill_t3_prose + archive 退役）= **代码已完成待 owner 执行**（admin.py dry-run 默认 + `POST /api/admin/agents/{id}/backfill-t2`，非本次新写）；② T2 active 行 curation 停摆时无界 + curation hold 无聚合告警 = 中等改动，归后续；③ 隐私 phone 正则改写记忆内容（audit-l1）= 需 LLM 分类替代正则（跨记忆系统大改），归后续。
 
+### ✅ Phase 5 — 提示词舰队修（2 commits，含 subagent 协作 + 我 review）
+
+| 子项 | commit | 证据 |
+|------|--------|------|
+| 5-1 Codex×20 去 vendor 名（L3） | `f063704a` | 20 SKILL.md description「Use when Codex」→「Use when you」；零 Codex 残留；parser 测试绿 |
+| 5-2 节奏数字 6 处 + objective 残留 4 处 | `2d368d64`(A) | 45min/4h→~2h/~daily 匹配 config；objective→wake-policy/work-ledger；**逮到 subagent 漏的 2 个 pin 测试**（test_system_section/test_dream_template）并修（[[feedback_green_tests_dont_mean_done]] 实证） |
+
+**Phase 5 剩余（记录）**：save_memory escape-hatch 措辞统一 / 两套 3-failure 规则 / 静态 section 去重 / HR HEARTBEAT 克隆 / soul 写权限三说法 = 需判断的较大重写，归后续。
+
+### ✅ Phase 6 — 孤儿与残留裁决（2 commits，含 subagent 协作 + 我 review）
+
+| 子项 | commit | 证据 |
+|------|--------|------|
+| 6-1 孤儿模块删除 | `2d368d64`(B) | grep 实证零生产 importer 后删 5 模块+5 测试：db_legacy_feishu/gateway（出生即孤儿）、policy_replay+replay_corpus（302 行死链）、retention（死 heat 公式）；1599 行删除 |
+| 6-2 fanout 死代码 + 前端 retired-concept | `43fd2739` | 删 fanout_subagents 函数（DR 走 workflow 引擎；deny-list 字符串保留）；前端去 supervision 类型/字段/i18n + 死审计 filter（后端零 emitter）+ create_objective handoff 字段；后端 1143 绿 + 前端 tsc 0 |
+
+**裁决记录**：① CLAUDE.md「activation policy changes must pass replay guard」声明随 policy_replay 删除已 stale（proactive_employee_loop 也提及）——建议 owner 清理文档声明；② activation.py:66-69 读 `retention_score`（retention.py 删后无人写）= dormant 但非死代码（generic `_float_meta>0` guard，缺失即 no-op），保留未动；③ INDEX.md 写无读 / PromotionRouter 仅测试 import = 未在本轮删（前者有写副作用需评估，后者待集中路由设计）；④ execution_mode 半改名缝、hooks 3/15 无订阅者 = 已知设计项，未动。
+
 ---
 
 ## 1. P0 — 立即处理

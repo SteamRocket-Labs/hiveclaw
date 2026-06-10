@@ -25,6 +25,18 @@ engine = create_async_engine(
 
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
+# Owner-role engine for schema/DDL work (create_all, RLS policies, GRANTs).
+# Pre-cutover SCHEMA_DATABASE_URL is unset → reuse the app engine (no second
+# pool). After the stage-3 role flip the app engine connects as the non-owner
+# app_rls role (NOSUPERUSER — cannot run DDL), so schema ops route through this
+# owner connection instead.
+_schema_url = settings.SCHEMA_DATABASE_URL or settings.DATABASE_URL
+schema_engine = (
+    engine
+    if _schema_url == settings.DATABASE_URL
+    else create_async_engine(_schema_url, echo=settings.DEBUG, pool_size=2, max_overflow=2)
+)
+
 # Context variable to carry the current tenant_id through the request lifecycle.
 # Set by get_db() from request.state.tenant_id (populated by TenantMiddleware).
 _current_tenant_id: ContextVar[str | None] = ContextVar("_current_tenant_id", default=None)

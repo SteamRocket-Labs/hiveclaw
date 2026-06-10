@@ -17,9 +17,15 @@ if command -v git >/dev/null 2>&1; then
     git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
 fi
 
+# Stage-3 RLS role flip: schema work (create_all, migrations, RLS policies,
+# GRANTs) MUST run as the table owner — the non-owner app_rls runtime role
+# (NOSUPERUSER) cannot run DDL. SCHEMA_DATABASE_URL holds the owner URL; before
+# the cutover it is unset and everything uses DATABASE_URL (no behavior change).
+SCHEMA_URL="${SCHEMA_DATABASE_URL:-$DATABASE_URL}"
+
 echo "[entrypoint] Step 1: Creating/verifying database tables..."
 
-python << 'PYEOF'
+DATABASE_URL="$SCHEMA_URL" python << 'PYEOF'
 import asyncio, sys
 
 async def main():
@@ -145,12 +151,15 @@ asyncio.run(main())
 PYEOF
 
 echo "[entrypoint] Step 2: Running alembic migrations..."
-# Run all migrations to ensure database schema is up to date
-alembic upgrade head || echo "[entrypoint] WARNING: alembic migration failed (non-fatal, app may still work)"
+# Run all migrations to ensure database schema is up to date (owner connection)
+DATABASE_URL="$SCHEMA_URL" alembic upgrade head || echo "[entrypoint] WARNING: alembic migration failed (non-fatal, app may still work)"
 
 echo "[entrypoint] Step 2.5: Running data migrations..."
-# Safely migrate old AgentSchedules to the new AgentTriggers system
-python -m app.scripts.migrate_schedules_to_triggers
+# Safely migrate old AgentSchedules to the new AgentTriggers system (owner connection)
+DATABASE_URL="$SCHEMA_URL" python -m app.scripts.migrate_schedules_to_triggers
+
+echo "[entrypoint] Step 2.6: Granting the non-owner RLS role (stage-3 prep; no-op until the role exists)..."
+DATABASE_URL="$SCHEMA_URL" python -m app.scripts.grant_rls_app_role || echo "[entrypoint] WARNING: grant_rls_app_role failed (non-fatal)"
 
 # Step 2.7: Auto-authenticate lark-cli if Feishu app credentials are available
 if [ -n "$FEISHU_APP_ID" ] && [ -n "$FEISHU_APP_SECRET" ] && command -v lark-cli >/dev/null 2>&1; then

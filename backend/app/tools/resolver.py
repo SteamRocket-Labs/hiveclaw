@@ -34,7 +34,13 @@ class ToolRuntimeResolver:
             if tenant:
                 tenant_id = str(tenant)
         except Exception as exc:
-            logger.debug("Failed to resolve tenant_id for tool execution: %s", exc)
+            # Cutover hardening (stage-3): after the role flip a resolve failure
+            # here leaves the tool running with an empty tenant GUC — every
+            # governed query then fail-closes. Surface it loudly (was a silent
+            # debug line) instead of swallowing the make-or-break signal.
+            logger.warning(
+                "[Governance] tenant resolution failed for tool execution (agent=%s): %s", agent_id, exc
+            )
 
         workspace = await ensure_workspace(agent_id, tenant_id=tenant_id)
         return ToolExecutionContext(

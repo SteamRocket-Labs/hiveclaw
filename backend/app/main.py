@@ -176,7 +176,7 @@ async def lifespan(app: FastAPI):
 
     # ── Step 0c: Ensure all DB tables exist (idempotent, safe to run on every startup) ──
     try:
-        from app.database import Base, engine
+        from app.database import Base, schema_engine
 
         # Import all models so Base.metadata is fully populated
         import app.models.user  # noqa
@@ -214,7 +214,10 @@ async def lifespan(app: FastAPI):
         import app.models.workflow  # noqa  (§9 P1: workflow journal + definition tables)
         import app.models.coordination  # noqa  (§9 P11: PG-backed Signal/Lease/Checkpoint persistence)
 
-        async with engine.begin() as conn:
+        # Schema bootstrap runs on the owner connection (schema_engine): after the
+        # stage-3 role flip the app engine is the non-owner app_rls role, which
+        # cannot create_all / apply policies. Pre-cutover schema_engine IS engine.
+        async with schema_engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             from app.db_bootstrap import apply_rls_policies
 

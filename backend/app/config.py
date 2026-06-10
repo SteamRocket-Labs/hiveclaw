@@ -57,6 +57,12 @@ class Settings(BaseSettings):
 
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://hive:hive@localhost:5432/hive"
+    # Owner-role connection for schema work (create_all, migrations, RLS policies,
+    # GRANTs). After the stage-3 RLS role flip, DATABASE_URL points at the
+    # non-owner app_rls role (NOSUPERUSER — cannot run DDL/policies/GRANT), so
+    # schema steps route through this owner URL instead. Unset = same as
+    # DATABASE_URL (pre-cutover: both are the table owner, no behavior change).
+    SCHEMA_DATABASE_URL: str | None = None
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"

@@ -30,9 +30,9 @@ you demote or rewrite are gone for good — be careful.
 promote wake policies, Runtime Task / Attempt ids, trigger ids, or output
 artifact pointers into soul.md. Those are operational state, not identity.
 
-**Cadence**: you run every ~4h + after 3 session ends. Between runs the
-agent accumulates hours of conversational drift. One dream cycle per
-agent-day is typical.
+**Cadence**: you run about once a day (24h minimum), gated on ~3 session ends
+of accumulated activity. Between runs the agent accumulates hours of
+conversational drift. One dream cycle per agent-day is typical.
 </pipeline_context>
 
 ## Phase 1: ORIENT (2-3 tool calls)

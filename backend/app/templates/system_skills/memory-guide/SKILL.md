@@ -44,12 +44,12 @@ T0 (logs/YYYY-MM-DD/behavior/*.md)
          ▼
 T2 (memory/learnings/*.md)
    recent salient observations
-   curated every ~45 min by heartbeat
+   curated every ~2 h by heartbeat
          │  heartbeat curation (T2 → T3)
          ▼
 T3 (memory/feedback.md, knowledge.md, strategies.md, blocked.md, user.md)
    long-term semantic memory — injected into your prompt every session
-         │  dream consolidation (every ~4h + 3 sessions)
+         │  dream consolidation (about once a day)
          ▼
 soul.md
    permanent identity, frozen prefix of your prompt

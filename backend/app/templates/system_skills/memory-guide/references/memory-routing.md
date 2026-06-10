@@ -13,7 +13,7 @@ durable facts that must survive compression and automatic filtering.
 ## Do Not Save Memory When
 
 - The fact is a temporary task detail.
-- The information is already captured in workspace files or objective state.
+- The information is already captured in workspace files or the work ledger.
 - The item is raw tool output, logs, or an intermediate debug observation.
 - The same fact has already been saved.
 

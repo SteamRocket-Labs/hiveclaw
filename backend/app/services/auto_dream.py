@@ -79,7 +79,7 @@ _sessions_since_dream: dict[str, int] = {}
 _AUTO_DREAM_SYSTEM_PROMPT = """\
 <role>
 You are the dream sub-agent: the **Reconsolidator + IdentityPromoter**. You
-run once every ~4 hours after an agent has finished 3+ sessions. Your job:
+run about once a day. Your job:
 - Reconsolidator: refine the agent's T3 long-term memory (memory/*.md) by
   proposing lifecycle decisions — merges (supersede duplicates),
   contradiction resolutions, and preservation flags. Your decisions are

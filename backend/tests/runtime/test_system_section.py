@@ -114,8 +114,9 @@ class TestToolGovernance:
 class TestMemoryIntegration:
     def test_pyramid_timing_documented(self, prompt_text: str) -> None:
         # All three cadences must be stated so the agent has an accurate mental model.
-        assert "45 min" in prompt_text
-        assert "4 h" in prompt_text or "4h" in prompt_text.lower()
+        # Cadences match config: heartbeat ~2h, dream ~daily (were stale 45 min / 4 h).
+        assert "2 h" in prompt_text
+        assert "once a day" in prompt_text or "daily" in prompt_text
         assert "after each response" in prompt_text.lower()
 
     def test_save_memory_escape_hatch_rule(self, prompt_text: str) -> None:

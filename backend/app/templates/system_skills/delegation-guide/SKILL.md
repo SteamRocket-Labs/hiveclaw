@@ -185,7 +185,7 @@ You get the reply in the current round and relay it to the user.
 - Every `delegate_to_agent` call is paired with a follow-up mechanism (manual check or once trigger) before you move on.
 - Every delegation instruction names Goal, Constraints, Evidence, Output location.
 - You verify with `check_async_task` before claiming the delegated work is done.
-- Objective ledger is updated when delegated work produces follow-on tasks or completions.
+- Work ledger is updated when delegated work produces follow-on tasks or completions.
 - Board: use `track_todo` to record dispatched todos and pass the ledger_todo_id when calling `delegate_to_agent` or `spawn_subagent` to link the delegation back to the board entry.
 </success_criteria>
 

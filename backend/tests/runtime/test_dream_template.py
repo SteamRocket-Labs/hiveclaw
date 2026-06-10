@@ -96,7 +96,7 @@ class TestRoleAndPipelineContext:
         assert "soul.md" in template_text
 
     def test_cadence_documented(self, template_text: str) -> None:
-        assert "4h" in template_text or "4 h" in template_text
+        assert "once a day" in template_text or "daily" in template_text
         assert "3 session ends" in template_text
 
 

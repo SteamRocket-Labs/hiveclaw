@@ -7,8 +7,8 @@ You have a 4-layer memory pyramid. Higher layers are more refined and permanent.
 
 ### Layers
 - **T0** (logs/): raw session records, 30-day retention
-- **T2** (learnings/): recent observations, curated by heartbeat every ~45 min
-- **T3** (memory/*.md + soul.md): long-term knowledge, refined by dream every ~4 hours
+- **T2** (learnings/): recent observations, curated by heartbeat every ~2 h
+- **T3** (memory/*.md + soul.md): long-term knowledge, refined by dream about once a day
 
 Your conversations automatically produce T0 logs and T2 extractions. \
 The heartbeat curates T2 → T3. The dream refines T3 and promotes patterns to soul.md.

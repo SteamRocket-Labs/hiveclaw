@@ -273,7 +273,6 @@
       "boundaries": "Boundaries",
       "lastActive": "Last Active",
       "tasksInProgress": "In Progress",
-      "supervisions": "Follow-ups",
       "createdBy": "👨‍💼 Created by"
     },
     "profile": {
@@ -299,7 +298,6 @@
     "tasks": {
       "todo": "To Do",
       "doing": "In Progress",
-      "supervision": "Follow-up",
       "done": "Done",
       "newTask": "New Task",
       "taskTitle": "Task Title",
@@ -311,9 +309,6 @@
       "scheduleDesc": "Schedule description (optional)",
       "noTasks": "No tasks yet",
       "typeTask": "Task",
-      "typeSupervision": "Follow-up",
-      "supervisionTitle": "What to follow up on...",
-      "supervisionConfig": "Follow-up Settings",
       "targetPerson": "Person to follow up with",
       "remindSchedule": "Reminder Frequency",
       "daily": "Daily",
@@ -1147,7 +1142,6 @@
   "task": {
     "todo": "To Do",
     "doing": "In Progress",
-    "supervision": "Follow-up",
     "done": "Done",
     "createTask": "New Task",
     "priority": {

@@ -24,7 +24,6 @@ from app.agents.subagent import (
     _build_subagent_messages,
     _spawn_one,
     explorer_spec,
-    fanout_subagents,
     resolve_subagent_tools,
 )
 
@@ -394,84 +393,6 @@ async def test_spawn_injects_memory_and_records_distilled_how(tmp_path, monkeypa
     assert "Subagent Memory" in captured[0].standalone_system_prompt
     assert "Prefer official docs." in captured[0].standalone_system_prompt
     assert "Avoid thin snippets." in memory_store.load("e")
-
-
-# --- fanout_subagents -------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_fanout_empty_returns_empty():
-    assert await fanout_subagents(_ctx(), [], invoke=_ok_invoke()) == []
-
-
-@pytest.mark.asyncio
-async def test_fanout_preserves_order():
-    async def invoke(request):
-        task = request.messages[-1]["content"]
-        await asyncio.sleep(0.001 * (5 - int(task)))  # later tasks finish sooner
-        return SimpleNamespace(content=task, tokens_used=1)
-
-    jobs = [SubagentJob(spec=explorer_spec(f"e{i}"), task=str(i)) for i in range(5)]
-    results = await fanout_subagents(_ctx(), jobs, max_concurrency=5, invoke=invoke)
-    assert [r.content for r in results] == ["0", "1", "2", "3", "4"]
-
-
-@pytest.mark.asyncio
-async def test_fanout_respects_concurrency():
-    active = 0
-    peak = 0
-
-    async def invoke(request):
-        nonlocal active, peak
-        active += 1
-        peak = max(peak, active)
-        await asyncio.sleep(0.01)
-        active -= 1
-        return SimpleNamespace(content="x", tokens_used=1)
-
-    jobs = [SubagentJob(spec=explorer_spec(f"e{i}"), task="t") for i in range(8)]
-    results = await fanout_subagents(_ctx(), jobs, max_concurrency=3, invoke=invoke)
-    assert len(results) == 8
-    assert all(r.ok for r in results)
-    assert peak <= 3  # semaphore caps concurrency
-
-
-@pytest.mark.asyncio
-async def test_fanout_isolates_partial_failure():
-    async def invoke(request):
-        if request.messages[-1]["content"] == "fail":
-            raise RuntimeError("nope")
-        return SimpleNamespace(content="ok", tokens_used=1)
-
-    jobs = [
-        SubagentJob(spec=explorer_spec("a"), task="ok-1"),
-        SubagentJob(spec=explorer_spec("b"), task="fail"),
-        SubagentJob(spec=explorer_spec("c"), task="ok-2"),
-    ]
-    results = await fanout_subagents(_ctx(), jobs, invoke=invoke)
-    assert [r.status for r in results] == ["completed", "failed", "completed"]
-
-
-@pytest.mark.asyncio
-async def test_fanout_abort_stops_remaining():
-    ran: list[str] = []
-
-    async def invoke(request):
-        task = request.messages[-1]["content"]
-        ran.append(task)
-        if task == "fail":
-            raise RuntimeError("nope")
-        await asyncio.sleep(0.01)
-        return SimpleNamespace(content="ok", tokens_used=1)
-
-    jobs = [SubagentJob(spec=explorer_spec("x"), task="fail")]
-    jobs += [SubagentJob(spec=explorer_spec(f"y{i}"), task=f"ok{i}") for i in range(5)]
-
-    results = await fanout_subagents(_ctx(), jobs, max_concurrency=1, on_partial_failure="abort", invoke=invoke)
-    assert results[0].status == "failed"
-    aborted = [r for r in results[1:] if r.error and "aborted" in r.error]
-    assert len(aborted) >= 1  # later lanes short-circuit once a sibling fails
-    assert len(ran) < 6  # not every follower actually invoked the kernel
 
 
 @pytest.mark.asyncio

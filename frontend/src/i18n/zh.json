@@ -273,7 +273,6 @@
       "boundaries": "行为边界",
       "lastActive": "最后活跃",
       "tasksInProgress": "进行中",
-      "supervisions": "跟进事项",
       "createdBy": "👨‍💼 创建者"
     },
     "profile": {
@@ -299,7 +298,6 @@
     "tasks": {
       "todo": "待办",
       "doing": "进行中",
-      "supervision": "跟进",
       "done": "已完成",
       "newTask": "新建任务",
       "taskTitle": "任务标题",
@@ -311,9 +309,6 @@
       "scheduleDesc": "调度说明（可选）",
       "noTasks": "暂无任务",
       "typeTask": "任务",
-      "typeSupervision": "跟进",
-      "supervisionTitle": "需要跟进的事项...",
-      "supervisionConfig": "跟进设置",
       "targetPerson": "跟进对象",
       "remindSchedule": "提醒频率",
       "daily": "每天",
@@ -1174,7 +1169,6 @@
   "task": {
     "todo": "待办",
     "doing": "进行中",
-    "supervision": "跟进",
     "done": "已完成",
     "createTask": "新建任务",
     "priority": {

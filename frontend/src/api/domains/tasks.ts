@@ -8,7 +8,7 @@ import type { Task } from '../../types';
 export interface TaskCreateParams {
   title: string;
   description?: string;
-  type?: 'todo' | 'supervision';
+  type?: 'todo';
   priority?: 'low' | 'medium' | 'high' | 'urgent';
   assignee?: string;
   due_date?: string;

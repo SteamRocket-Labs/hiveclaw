@@ -2,7 +2,7 @@
 
 Docs: ``docs/subagent-source-capability.md`` §5.1/5.2/5.4, v3 main line.
 Implements the source-capability runtime: contracts, internal spawn,
-``fanout_subagents``, built-in worker types, persistent-definition loading hooks,
+built-in worker types, persistent-definition loading hooks,
 and optional tenant-scoped subagent memory injection/writeback.
 
 Design notes
@@ -130,7 +130,6 @@ _SUBAGENT_BASE_EXCLUDED_TOOLS: tuple[str, ...] = (
 
 DEFAULT_MAX_SUBAGENT_DEPTH = 2  # mirrors OrchestrationPolicy.max_depth
 DEFAULT_SUBAGENT_TOOL_ROUNDS = 8  # mirrors the deep-research worker default
-DEFAULT_SUBAGENT_CONCURRENCY = 4  # platform fan-out default
 _SOURCE_CAPTURE_TOOLS: frozenset[str] = frozenset({"web_fetch", "firecrawl_fetch", "xcrawl_scrape", "read_webpage"})
 
 #: Exec/automation CC-alignment (§5.2): fork is deliberately binary, matching CC's
@@ -931,54 +930,3 @@ async def spawn_subagent_from_definition(
         ledger_todo_id=ledger_todo_id,
         invoke=invoke,
     )
-
-
-async def fanout_subagents(
-    ctx: SubagentSpawnContext,
-    jobs: list[SubagentJob],
-    *,
-    max_concurrency: int = DEFAULT_SUBAGENT_CONCURRENCY,
-    per_agent_budget: SubagentBudget | None = None,
-    fork: ForkLevel = "none",
-    on_partial_failure: Literal["isolate", "abort"] = "isolate",
-    invoke: InvokeAgent = invoke_agent,
-) -> list[SubagentResult]:
-    """Spawn N lightweight workers in parallel under a structured per-agent budget.
-
-    Replaces deep-research's private ``_run_worker_fanout`` (``asyncio.gather`` +
-    a bare ``Semaphore`` + hand-rolled RC/F quotas) with a platform primitive:
-    the budget lives in the contract, results are conclusion-only, and a single
-    lane's failure is isolated — or aborts the batch when
-    ``on_partial_failure="abort"``.
-
-    Results preserve the order of ``jobs``.
-    """
-
-    if not jobs:
-        return []
-
-    budget = per_agent_budget or SubagentBudget()
-    semaphore = asyncio.Semaphore(max(1, max_concurrency))
-    abort_event = asyncio.Event()
-
-    def _aborted(job: SubagentJob) -> SubagentResult:
-        return SubagentResult(
-            name=job.spec.name,
-            type=job.spec.type,
-            status="failed",
-            error="aborted: a sibling subagent failed (on_partial_failure=abort)",
-        )
-
-    async def run_one(job: SubagentJob) -> SubagentResult:
-        if abort_event.is_set():
-            return _aborted(job)
-        async with semaphore:
-            if abort_event.is_set():
-                return _aborted(job)
-            result = await _spawn_one(ctx, job, fork=fork, budget=budget, invoke=invoke)
-            if on_partial_failure == "abort" and not result.ok:
-                abort_event.set()
-            return result
-
-    results = await asyncio.gather(*(run_one(job) for job in jobs))
-    return list(results)

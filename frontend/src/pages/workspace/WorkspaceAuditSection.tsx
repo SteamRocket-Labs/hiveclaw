@@ -20,9 +20,6 @@ interface WorkspaceAuditLog {
 }
 
 const BACKGROUND_ACTIONS = [
-  'supervision_tick',
-  'supervision_fire',
-  'supervision_error',
   'schedule_tick',
   'schedule_fire',
   'schedule_error',

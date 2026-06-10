@@ -34,16 +34,11 @@ def test_channel_message_contract_is_centralized() -> None:
 def test_gateway_session_identifier_contract_is_centralized() -> None:
     gateway_source = (APP_ROOT / "api" / "gateway.py").read_text(encoding="utf-8")
     service_source = (APP_ROOT / "services" / "agent_pair_session.py").read_text(encoding="utf-8")
-    gateway_migration_source = (APP_ROOT / "db_legacy_gateway_conversation_migration.py").read_text(encoding="utf-8")
-    feishu_migration_source = (APP_ROOT / "db_legacy_feishu_session_migration.py").read_text(encoding="utf-8")
 
     assert "from app.session_identifiers import" in service_source
     assert "build_agent_pair_session_id" in service_source
     assert "build_legacy_gateway_conversation_ids" in service_source
     assert "from app.services.agent_pair_session import" in gateway_source
-    assert "parse_legacy_gateway_conversation_id" in gateway_migration_source
-    assert "build_legacy_gateway_conversation_ids" in gateway_migration_source
-    assert "build_feishu_p2p_conv_id" in feishu_migration_source
     assert 'f"gw_agent_' not in gateway_source
     assert "uuid5(" not in gateway_source
 

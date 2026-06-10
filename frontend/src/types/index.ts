@@ -50,15 +50,13 @@ export interface Task {
     agent_id: string;
     title: string;
     description?: string;
-    type: 'todo' | 'supervision';
+    type: 'todo';
     status: 'pending' | 'doing' | 'done' | 'paused';
     priority: 'low' | 'medium' | 'high' | 'urgent';
     assignee: string;
     created_by: string;
     creator_username?: string;
     due_date?: string;
-    supervision_target_name?: string;
-    supervision_channel?: string;
     remind_schedule?: string;
     created_at: string;
     updated_at: string;

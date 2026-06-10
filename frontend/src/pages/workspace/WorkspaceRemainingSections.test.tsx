@@ -47,7 +47,7 @@ vi.mock('@tanstack/react-query', () => ({
         data: [
           {
             id: 'audit-1',
-            action: 'supervision_tick',
+            action: 'schedule_tick',
             created_at: '2026-03-27T09:00:00Z',
             agent_id: 'agent-12345678',
             details: { job: 'nightly' },
@@ -121,7 +121,7 @@ describe('Workspace remaining sections', () => {
     );
 
     expect(approvalsMarkup).toContain('deploy_run');
-    expect(auditMarkup).toContain('supervision_tick');
+    expect(auditMarkup).toContain('schedule_tick');
     expect(auditMarkup).toContain('records:1');
   });
 

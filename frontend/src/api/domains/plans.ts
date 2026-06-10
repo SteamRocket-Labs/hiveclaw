@@ -87,7 +87,6 @@ export interface PlanEstimatedCost {
 
 export interface PlanHandoffSpec {
   target?: string;
-  create_objective?: boolean;
   create_trigger?: boolean;
   [key: string]: unknown;
 }

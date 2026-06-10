@@ -357,15 +357,15 @@ def test_trigger_is_autonomous_true_for_retired_objective_task_class():
     assert trigger_is_autonomous(trigger_type="cron", trigger_class="objective_task") is True
 
 
-def test_classify_plan_mode_entry_recommends_for_schedule_intent():
+def test_classify_plan_mode_entry_does_not_recommend_for_schedule_intent():
+    """P0-5: schedule wording no longer pre-empts via a 'recommend' mode. classify
+    stays 'none' so the turn reaches the model; the agent suggests Plan Mode in
+    its own reply (prompt guidance)."""
     from app.services.plan_mode_core import classify_plan_mode_entry
 
     decision = classify_plan_mode_entry("每天 9 点帮我整理新闻")
 
-    assert decision.mode == "recommend"
-    assert decision.intent_type == "autonomous_wake"
-    assert decision.action_kind == "create_enabled_trigger"
-    assert decision.tool_name == "set_trigger"
+    assert decision.mode == "none"
 
 
 def test_classify_plan_mode_entry_long_task_text_does_not_auto_enter():
@@ -380,15 +380,13 @@ def test_classify_plan_mode_entry_long_task_text_does_not_auto_enter():
     assert decision.mode == "none"
 
 
-def test_classify_plan_mode_entry_recommends_when_schedule_and_long_task_overlap():
+def test_classify_plan_mode_entry_schedule_and_long_task_overlap_stays_none():
+    """Even with schedule + long-task wording, no pre-LLM recommend (P0-5)."""
     from app.services.plan_mode_core import classify_plan_mode_entry
 
     decision = classify_plan_mode_entry("每天调研这个行业并输出报告")
 
-    assert decision.mode == "recommend"
-    assert decision.intent_type == "autonomous_wake"
-    assert decision.action_kind == "create_enabled_trigger"
-    assert decision.tool_name == "set_trigger"
+    assert decision.mode == "none"
 
 
 def test_classify_plan_mode_entry_explicit_frontend_selection_enters_plan_mode():

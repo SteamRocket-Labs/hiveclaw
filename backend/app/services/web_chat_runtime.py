@@ -496,47 +496,6 @@ def _deep_research_chat_arguments(content: str) -> dict[str, Any]:
     }
 
 
-def _plan_mode_recommendation_message(decision: plan_mode_core.PlanModeEntryDecision) -> str:
-    subject = decision.title or "这个请求"
-    return (
-        f"这个请求看起来会创建未来自动执行或持续监控：{subject}\n\n"
-        f"{plan_mode_core.PLAN_MODE_RECOMMENDATION_MARKER}。"
-        "如果你同意，请回复“进入计划模式”；如果你要跳过，请明确回复“不用计划模式，直接创建”。"
-    )
-
-
-async def _record_plan_mode_recommendation(
-    *,
-    agent_id: uuid.UUID,
-    user_id: uuid.UUID | None,
-    tenant_id: uuid.UUID | None,
-    session_id: str | None,
-    runtime_task_id: uuid.UUID | None,
-    content: str,
-    decision: plan_mode_core.PlanModeEntryDecision,
-) -> None:
-    if user_id is None or not session_id:
-        return
-    from app.services.plan_mode_recommendation_service import create_plan_recommendation
-
-    async with _async_session() as db:
-        await create_plan_recommendation(
-            db,
-            agent_id=agent_id,
-            recommended_to_user_id=user_id,
-            tenant_id=tenant_id,
-            session_id=session_id,
-            runtime_task_id=runtime_task_id,
-            source="web_chat",
-            original_request=content,
-            title=decision.title or content[:120],
-            intent_type=decision.intent_type or "autonomous_wake",
-            action_kind=decision.action_kind or "create_enabled_trigger",
-            tool_name=decision.tool_name or "set_trigger",
-        )
-        await db.commit()
-
-
 async def _accept_latest_plan_mode_recommendation(
     *,
     agent_id: uuid.UUID,
@@ -563,9 +522,7 @@ async def _maybe_handle_plan_mode_entry(
     *,
     agent_id: uuid.UUID,
     user_id: uuid.UUID | None,
-    tenant_id: uuid.UUID | None,
     session_id: str | None,
-    runtime_task_id: uuid.UUID | None,
     content: str,
     plan_mode_requested: bool = False,
     runtime_session_context: Any | None = None,
@@ -581,18 +538,6 @@ async def _maybe_handle_plan_mode_entry(
     decision = plan_mode_core.classify_plan_mode_entry(content, explicit=plan_mode_requested)
     if decision.mode in {"none", "declined"}:
         return None
-
-    if decision.mode == "recommend":
-        await _record_plan_mode_recommendation(
-            agent_id=agent_id,
-            user_id=user_id,
-            tenant_id=tenant_id,
-            session_id=session_id,
-            runtime_task_id=runtime_task_id,
-            content=content,
-            decision=decision,
-        )
-        return _plan_mode_recommendation_message(decision)
 
     accepted_recommendation = None
     if decision.mode == "explicit" and plan_mode_core.is_plan_mode_acceptance_reply(content):
@@ -828,9 +773,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         plan_mode_response = await _maybe_handle_plan_mode_entry(
             agent_id=agent.id,
             user_id=getattr(user, "id", None),
-            tenant_id=getattr(agent, "tenant_id", None),
             session_id=session_id,
-            runtime_task_id=run_uuid,
             content=prompt,
             plan_mode_requested=bool(metadata.get("plan_mode_requested")),
             runtime_session_context=runtime_session_context,

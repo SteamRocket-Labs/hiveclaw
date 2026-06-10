@@ -209,16 +209,10 @@ def classify_plan_mode_entry(content: str, *, explicit: bool = False) -> PlanMod
             reason="explicit_plan_mode",
         )
 
-    if has_schedule:
-        return PlanModeEntryDecision(
-            mode="recommend",
-            intent_type="autonomous_wake",
-            action_kind="create_enabled_trigger",
-            tool_name="set_trigger",
-            title=text[:120],
-            reason="schedule_or_monitor_intent",
-        )
-
+    # Schedule/monitor wording no longer pre-empts the turn (P0-5): a pre-LLM
+    # regex must never answer for the model. The agent decides whether to
+    # suggest Plan Mode in its own reply (plan_mode_guidance prompt); explicit
+    # entry above still materialises a plan.
     return PlanModeEntryDecision(mode="none")
 
 

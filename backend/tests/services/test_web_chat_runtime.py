@@ -347,11 +347,9 @@ async def test_plan_mode_accepts_latest_recommendation_and_activates_interactive
 
     agent_id = uuid4()
     user_id = uuid4()
-    tenant_id = uuid4()
     recommendation = SimpleNamespace(
         id=uuid4(),
         agent_id=agent_id,
-        tenant_id=tenant_id,
         session_id="sess-accept",
         runtime_task_id=uuid4(),
         recommended_to_user_id=user_id,
@@ -371,9 +369,7 @@ async def test_plan_mode_accepts_latest_recommendation_and_activates_interactive
     response = await runtime._maybe_handle_plan_mode_entry(
         agent_id=agent_id,
         user_id=user_id,
-        tenant_id=tenant_id,
         session_id="sess-accept",
-        runtime_task_id=uuid4(),
         content="进入计划模式",
         runtime_session_context=session_context,
     )
@@ -389,28 +385,21 @@ async def test_plan_mode_accepts_latest_recommendation_and_activates_interactive
 
 
 @pytest.mark.asyncio
-async def test_maybe_handle_plan_mode_entry_recommends_schedule_without_creating_plan(monkeypatch):
+async def test_maybe_handle_plan_mode_entry_does_not_pre_empt_schedule_intent():
+    """P0-5: schedule wording no longer pre-empts the turn with a canned template.
+    classify returns 'none' and the entry handler falls through (returns None) so
+    the agent handles the message and suggests Plan Mode in its own reply."""
     import app.services.web_chat_runtime as runtime
-
-    async def _noop_recommendation(**_kwargs):
-        return None
-
-    monkeypatch.setattr(runtime, "_record_plan_mode_recommendation", _noop_recommendation)
 
     result = await runtime._maybe_handle_plan_mode_entry(
         agent_id=uuid4(),
         user_id=uuid4(),
-        tenant_id=None,
         session_id="session-1",
-        runtime_task_id=uuid4(),
         content="每天 9 点帮我整理新闻",
         plan_mode_requested=False,
     )
 
-    assert result is not None
-    assert "建议" in result
-    assert "计划模式" in result
-    assert "不用计划模式" in result
+    assert result is None  # no canned recommendation; falls through to the agent
 
 
 @pytest.mark.asyncio
@@ -422,9 +411,7 @@ async def test_maybe_handle_plan_mode_entry_activates_interactive_mode_when_expl
     result = await runtime._maybe_handle_plan_mode_entry(
         agent_id=uuid4(),
         user_id=uuid4(),
-        tenant_id=None,
         session_id="session-1",
-        runtime_task_id=uuid4(),
         content="帮我完整调研这个行业",
         plan_mode_requested=True,
         runtime_session_context=session_context,
@@ -453,9 +440,7 @@ async def test_activate_interactive_plan_mode_writes_typed_state_and_keeps_dict_
     result = await runtime._maybe_handle_plan_mode_entry(
         agent_id=uuid4(),
         user_id=uuid4(),
-        tenant_id=None,
         session_id="session-1",
-        runtime_task_id=uuid4(),
         content="帮我完整调研这个行业",
         plan_mode_requested=True,
         runtime_session_context=session_context,
@@ -490,9 +475,7 @@ async def test_activate_interactive_plan_mode_provisions_markdown_plan_file(tmp_
     result = await runtime._maybe_handle_plan_mode_entry(
         agent_id=agent_id,
         user_id=uuid4(),
-        tenant_id=None,
         session_id="session-1",
-        runtime_task_id=uuid4(),
         content="进入计划模式，做一个关于跨链桥的报告",
         plan_mode_requested=True,
         runtime_session_context=session_context,
@@ -515,9 +498,7 @@ async def test_maybe_handle_plan_mode_entry_activates_deep_research_interactive_
     result = await runtime._maybe_handle_plan_mode_entry(
         agent_id=uuid4(),
         user_id=uuid4(),
-        tenant_id=None,
         session_id="session-1",
-        runtime_task_id=uuid4(),
         content="使用 deepresearch做一个web3的全景报告",
         plan_mode_requested=True,
         runtime_session_context=session_context,
@@ -545,9 +526,7 @@ async def test_maybe_handle_plan_mode_entry_does_not_auto_enter_for_deep_researc
     result = await runtime._maybe_handle_plan_mode_entry(
         agent_id=uuid4(),
         user_id=uuid4(),
-        tenant_id=None,
         session_id="session-1",
-        runtime_task_id=uuid4(),
         content="使用 deepresearch做一个web3的全景报告",
         plan_mode_requested=False,
         runtime_session_context=session_context,

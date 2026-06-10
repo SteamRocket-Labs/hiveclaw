@@ -50,7 +50,11 @@ def _agent(**overrides):
 
 
 @pytest.mark.asyncio
-async def test_channel_llm_recommends_plan_mode_for_schedule_intent():
+async def test_channel_does_not_pre_empt_turn_for_schedule_intent():
+    """P0-5: schedule/monitor wording must NOT be hijacked by a pre-LLM regex
+    that answers with a canned template. The turn falls through to normal agent
+    execution; the agent decides whether to suggest Plan Mode in its own reply
+    (plan_mode_guidance prompt)."""
     from app.api.feishu import _call_agent_llm
 
     agent = _agent()
@@ -58,9 +62,9 @@ async def test_channel_llm_recommends_plan_mode_for_schedule_intent():
 
     reply = await _call_agent_llm(db, agent.id, "每天 9 点提醒我看 X 上的帖子")
 
-    assert "建议先进入计划模式" in reply
-    assert "不用计划模式，直接创建" in reply
-    assert db.execute_calls == 1
+    assert "建议先进入计划模式" not in reply  # no canned pre-LLM hijack
+    assert "已进入计划模式" not in reply  # not auto-entered either
+    assert db.execute_calls == 1  # only the agent lookup; fell through to normal path
 
 
 @pytest.mark.asyncio

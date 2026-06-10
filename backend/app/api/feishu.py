@@ -2176,30 +2176,6 @@ async def _call_agent_llm(
     from app.services import plan_mode_core
 
     plan_entry_decision = plan_mode_core.classify_plan_mode_entry(user_text)
-    if plan_entry_decision.mode == "recommend":
-        from app.services.plan_mode_recommendation_service import create_plan_recommendation
-
-        recommendation = await create_plan_recommendation(
-            db,
-            agent_id=agent_id,
-            recommended_to_user_id=user_id,
-            tenant_id=getattr(agent, "tenant_id", None),
-            session_id=session_id,
-            source=session_source,
-            original_request=user_text,
-            title=plan_entry_decision.title or user_text[:120],
-            intent_type=plan_entry_decision.intent_type or "autonomous_wake",
-            action_kind=plan_entry_decision.action_kind or "create_enabled_trigger",
-            tool_name=plan_entry_decision.tool_name or "set_trigger",
-        )
-        if recommendation is not None and hasattr(db, "commit"):
-            await db.commit()
-        subject = plan_entry_decision.title or "这个请求"
-        return (
-            f"这个请求看起来会创建未来自动执行或持续监控：{subject}\n\n"
-            f"{plan_mode_core.PLAN_MODE_RECOMMENDATION_MARKER}。"
-            "如果你同意，请回复“进入计划模式”；如果你要跳过，请明确回复“不用计划模式，直接创建”。"
-        )
     accepted_recommendation = None
     if (
         plan_entry_decision.mode == "explicit"

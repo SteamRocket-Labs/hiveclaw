@@ -23,7 +23,12 @@ from app.services.agent_tool_assignment_service import ensure_agent_tool_assignm
 from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token_status
 from app.services.email_service import test_connection as test_email_connection
 from app.services.mcp_client import MCPClient
-from app.services.tool_config_service import resolve_tool_config_for_tenant_display, update_tenant_tool_config
+from app.services.tool_config_service import (
+    mask_tool_config_secrets,
+    merge_tool_config_secrets,
+    resolve_tool_config_for_tenant_display,
+    update_tenant_tool_config,
+)
 from app.services.tool_visibility import is_tool_allowed_for_agent
 
 router = APIRouter(tags=["tools"])
@@ -342,7 +347,9 @@ def _serialize_tool(tool: Tool, *, enabled: bool | None = None, config: dict | N
         "category": tool.category,
         "icon": tool.icon,
         "parameters_schema": tool.parameters_schema or {},
-        "config": config if config is not None else (tool.config or {}),
+        "config": mask_tool_config_secrets(
+            config if config is not None else (tool.config or {}), tool.config_schema or {}
+        ),
         "config_schema": tool.config_schema or {},
         "mcp_server_url": tool.mcp_server_url,
         "mcp_server_name": tool.mcp_server_name,
@@ -434,8 +441,8 @@ def _serialize_agent_tool_row(tool: Tool, agent_tool: AgentTool | None) -> dict:
         ),
         "agent_tool_id": str(agent_tool.id) if agent_tool else None,
         "source": agent_tool.source if agent_tool else "system",
-        "global_config": tool.config or {},
-        "agent_config": agent_config or {},
+        "global_config": mask_tool_config_secrets(tool.config or {}, tool.config_schema or {}),
+        "agent_config": mask_tool_config_secrets(agent_config or {}, tool.config_schema or {}),
     }
 
 
@@ -665,27 +672,29 @@ async def update_global_tool(
     if tool.tenant_id is None:
         # Builtin tool (shared across tenants): write to TenantToolConfig, never modify Tool.config.
         # This applies to ALL users including platform_admin — each tenant's config is isolated.
-        await update_tenant_tool_config(
+        ttc = await update_tenant_tool_config(
             db,
             current_user.tenant_id,
             tool.id,
             config=data.config,
             enabled=data.enabled,
+            config_schema=tool.config_schema or {},
         )
-        # Also propagate to per-agent assignments for immediate effect
+        # Propagate the reconciled (unmasked) config to per-agent assignments so
+        # a masked round-trip never writes the sentinel into agent_tools.
         await _upsert_tenant_tool_assignments(
             db,
             current_user.tenant_id,
             tool,
             enabled=data.enabled,
-            config=data.config,
+            config=(ttc.config if data.config is not None else None),
         )
     else:
         # Tenant-scoped tool (e.g. MCP): owning tenant can modify directly
         if data.enabled is not None:
             tool.enabled = data.enabled
         if data.config is not None:
-            tool.config = data.config
+            tool.config = merge_tool_config_secrets(data.config, tool.config or {}, tool.config_schema or {})
 
     await db.commit()
     return await _serialize_tool_for_tenant(db, tool, current_user.tenant_id)

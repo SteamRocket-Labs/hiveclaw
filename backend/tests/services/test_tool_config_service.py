@@ -75,3 +75,108 @@ class TestContextVarIsolation:
 
         set_tool_tenant_id(None)
         assert get_tool_tenant_id() is None
+
+
+class TestMaskToolConfigSecrets:
+    """Secret fields must never be echoed back; masked round-trips must not wipe keys."""
+
+    _SCHEMA = {
+        "fields": [
+            {"key": "search_engine", "type": "select"},
+            {"key": "exa_api_key", "type": "password"},
+            {"key": "tavily_api_key", "type": "password"},
+        ]
+    }
+
+    def test_mask_replaces_nonempty_secret_with_sentinel(self) -> None:
+        from app.services.tool_config_service import MASKED_SECRET_SENTINEL, mask_tool_config_secrets
+
+        masked = mask_tool_config_secrets(
+            {"search_engine": "auto", "exa_api_key": "exa-REAL-KEY"}, self._SCHEMA
+        )
+        assert masked["exa_api_key"] == MASKED_SECRET_SENTINEL
+        assert "exa-REAL-KEY" not in masked.values()  # plaintext never echoed
+        assert masked["search_engine"] == "auto"  # non-secret untouched
+
+    def test_mask_leaves_empty_secret_empty(self) -> None:
+        from app.services.tool_config_service import mask_tool_config_secrets
+
+        masked = mask_tool_config_secrets({"exa_api_key": ""}, self._SCHEMA)
+        assert masked["exa_api_key"] == ""  # "unset" stays distinguishable from "set"
+
+    def test_mask_without_schema_is_noop(self) -> None:
+        from app.services.tool_config_service import mask_tool_config_secrets
+
+        cfg = {"exa_api_key": "k"}
+        assert mask_tool_config_secrets(cfg, None) == cfg
+
+    def test_merge_sentinel_keeps_stored_secret(self) -> None:
+        from app.services.tool_config_service import MASKED_SECRET_SENTINEL, merge_tool_config_secrets
+
+        merged = merge_tool_config_secrets(
+            {"exa_api_key": MASKED_SECRET_SENTINEL, "search_engine": "tavily"},
+            {"exa_api_key": "exa-REAL-KEY"},
+            self._SCHEMA,
+        )
+        assert merged["exa_api_key"] == "exa-REAL-KEY"  # not overwritten by the mask
+        assert merged["search_engine"] == "tavily"  # non-secret edit still applied
+
+    def test_merge_new_value_updates_secret(self) -> None:
+        from app.services.tool_config_service import merge_tool_config_secrets
+
+        merged = merge_tool_config_secrets(
+            {"exa_api_key": "exa-NEW"}, {"exa_api_key": "exa-OLD"}, self._SCHEMA
+        )
+        assert merged["exa_api_key"] == "exa-NEW"
+
+    def test_merge_empty_string_clears_secret(self) -> None:
+        from app.services.tool_config_service import merge_tool_config_secrets
+
+        merged = merge_tool_config_secrets(
+            {"exa_api_key": ""}, {"exa_api_key": "exa-OLD"}, self._SCHEMA
+        )
+        assert merged["exa_api_key"] == ""  # explicit clear is honored
+
+    def test_merge_absent_key_keeps_stored(self) -> None:
+        from app.services.tool_config_service import merge_tool_config_secrets
+
+        merged = merge_tool_config_secrets(
+            {"search_engine": "auto"}, {"exa_api_key": "exa-OLD"}, self._SCHEMA
+        )
+        assert merged["exa_api_key"] == "exa-OLD"  # partial payload must not wipe a key
+
+    def test_merge_sentinel_with_no_stored_drops_key(self) -> None:
+        """A new tenant echoing the inherited mask must not persist the sentinel."""
+        from app.services.tool_config_service import MASKED_SECRET_SENTINEL, merge_tool_config_secrets
+
+        merged = merge_tool_config_secrets({"exa_api_key": MASKED_SECRET_SENTINEL}, {}, self._SCHEMA)
+        assert "exa_api_key" not in merged  # no sentinel, no inherited key
+
+    def test_serialize_tool_masks_secret_at_api_boundary(self) -> None:
+        """The serialization choke point used by GET /tools must emit the sentinel."""
+        from types import SimpleNamespace
+
+        from app.api.tools import _serialize_tool
+        from app.services.tool_config_service import MASKED_SECRET_SENTINEL
+
+        tool = SimpleNamespace(
+            id=uuid.uuid4(),
+            name="web_search",
+            display_name="x",
+            description="",
+            type="builtin",
+            category="search",
+            icon="🔧",
+            parameters_schema={},
+            config={"exa_api_key": "exa-REAL", "search_engine": "auto"},
+            config_schema={"fields": [{"key": "exa_api_key", "type": "password"}]},
+            mcp_server_url=None,
+            mcp_server_name=None,
+            mcp_tool_name=None,
+            enabled=True,
+            is_default=False,
+            tenant_id=None,
+        )
+        out = _serialize_tool(tool)  # type: ignore[arg-type]  # SimpleNamespace duck-types Tool
+        assert out["config"]["exa_api_key"] == MASKED_SECRET_SENTINEL
+        assert "exa-REAL" not in str(out["config"])  # no plaintext anywhere in the payload

@@ -22,6 +22,65 @@ from app.models.tool import AgentTool, Tool
 
 logger = logging.getLogger(__name__)
 
+# Sentinel returned to clients in place of a stored secret value. The API must
+# never echo a stored API key back — a freshly created tenant that inherits a
+# platform-default builtin tool would otherwise receive the previous tenant's
+# key verbatim (cross-tenant secret leak).
+MASKED_SECRET_SENTINEL = "__HIVE_SECRET_SET__"
+
+
+def _secret_field_keys(config_schema: dict | None) -> set[str]:
+    """Return config keys whose schema field type is ``password`` (i.e. secrets)."""
+    if not isinstance(config_schema, dict):
+        return set()
+    fields = config_schema.get("fields")
+    if not isinstance(fields, list):
+        return set()
+    return {
+        str(field["key"])
+        for field in fields
+        if isinstance(field, dict) and field.get("type") == "password" and field.get("key")
+    }
+
+
+def mask_tool_config_secrets(config: dict | None, config_schema: dict | None) -> dict:
+    """Replace non-empty secret values with :data:`MASKED_SECRET_SENTINEL`.
+
+    Empty secrets stay empty so the UI can still tell "unset" from "set".
+    Non-secret fields pass through unchanged.
+    """
+    if not isinstance(config, dict):
+        return {}
+    masked = dict(config)
+    for key in _secret_field_keys(config_schema):
+        value = masked.get(key)
+        if isinstance(value, str) and value:
+            masked[key] = MASKED_SECRET_SENTINEL
+    return masked
+
+
+def merge_tool_config_secrets(
+    incoming: dict | None,
+    stored: dict | None,
+    config_schema: dict | None,
+) -> dict:
+    """Restore stored secret values for fields the client left masked.
+
+    Write-back companion to :func:`mask_tool_config_secrets`. For each secret
+    field: a sentinel value or an absent key keeps the stored value (the user
+    did not edit it); an empty string clears it; any other value updates it.
+    Non-secret fields pass through from ``incoming`` unchanged.
+    """
+    incoming = dict(incoming) if isinstance(incoming, dict) else {}
+    stored = stored if isinstance(stored, dict) else {}
+    for key in _secret_field_keys(config_schema):
+        if key not in incoming or incoming.get(key) == MASKED_SECRET_SENTINEL:
+            if key in stored:
+                incoming[key] = stored[key]
+            else:
+                incoming.pop(key, None)
+    return incoming
+
 
 async def resolve_tool_config(
     tool_name: str,
@@ -129,10 +188,18 @@ async def update_tenant_tool_config(
     *,
     config: dict | None = None,
     enabled: bool | None = None,
+    config_schema: dict | None = None,
 ) -> TenantToolConfig:
-    """Create or update tenant-level tool config."""
+    """Create or update tenant-level tool config.
+
+    When ``config_schema`` is given, masked secret fields in ``config`` are
+    reconciled against the currently stored values so a UI round-trip that
+    echoes the :data:`MASKED_SECRET_SENTINEL` never overwrites a real key.
+    """
     ttc = await get_or_create_tenant_tool_config(db, tenant_id, tool_id)
     if config is not None:
+        if config_schema is not None:
+            config = merge_tool_config_secrets(config, ttc.config, config_schema)
         ttc.config = config
     if enabled is not None:
         ttc.enabled = enabled

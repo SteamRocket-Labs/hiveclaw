@@ -1,0 +1,53 @@
+"""Tests for the RLS coverage classifier (functional core)."""
+
+from __future__ import annotations
+
+from app.scripts.audit_rls_coverage import RlsCoverageReport, TableRls, analyze_rls_coverage
+
+
+def test_unprotected_when_rls_not_enabled() -> None:
+    report = analyze_rls_coverage([TableRls("tasks", True, False, False)], app_role_is_owner=True)
+    assert report.unprotected == ["tasks"]
+    assert report.inert == [] and report.enforced == []
+
+
+def test_inert_when_enabled_not_forced_and_owner() -> None:
+    """An owner-connected app with ENABLE-but-not-FORCE is bypassed — the P0-2 case."""
+    report = analyze_rls_coverage([TableRls("agents", True, True, False)], app_role_is_owner=True)
+    assert report.inert == ["agents"]
+    assert report.enforced == []
+
+
+def test_enforced_when_forced() -> None:
+    report = analyze_rls_coverage(
+        [TableRls("workflow_definitions", True, True, True)], app_role_is_owner=True
+    )
+    assert report.enforced == ["workflow_definitions"]
+
+
+def test_enforced_when_app_role_not_owner() -> None:
+    """If the app is not the table owner, plain ENABLE already binds it."""
+    report = analyze_rls_coverage([TableRls("agents", True, True, False)], app_role_is_owner=False)
+    assert report.enforced == ["agents"]
+    assert report.inert == []
+
+
+def test_non_tenant_table_ignored() -> None:
+    report = analyze_rls_coverage([TableRls("alembic_version", False, False, False)], app_role_is_owner=True)
+    assert report == RlsCoverageReport([], [], [])
+
+
+def test_mixed_fleet_is_bucketed_and_sorted() -> None:
+    report = analyze_rls_coverage(
+        [
+            TableRls("tasks", True, False, False),
+            TableRls("chat_sessions", True, False, False),
+            TableRls("agents", True, True, False),
+            TableRls("coordination_leases", True, True, True),
+            TableRls("non_tenant", False, False, False),
+        ],
+        app_role_is_owner=True,
+    )
+    assert report.unprotected == ["chat_sessions", "tasks"]  # sorted
+    assert report.inert == ["agents"]
+    assert report.enforced == ["coordination_leases"]

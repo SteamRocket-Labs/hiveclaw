@@ -1274,6 +1274,12 @@ async def _invoke_agent_for_triggers(
                 allowed_tool_names=runtime_options.get("allowed_tool_names") or (),
                 excluded_tool_names=runtime_options.get("excluded_tool_names") or (),
                 system_prompt_suffix=system_prompt_suffix,
+                # P1-1: trigger runs must NOT masquerade as live web chat. The
+                # source drives the unattended Plan Mode lane and the T0 bucket
+                # (trigger-*.md, not chat-*.md) — defaulting to "web" mis-routed
+                # both and polluted T2 source weights.
+                session_source="trigger",
+                session_channel="trigger",
             )
         finally:
             if _delivery_token is not None:

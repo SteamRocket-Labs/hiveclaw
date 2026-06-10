@@ -193,7 +193,10 @@ async def test_invoke_agent_for_triggers_injects_confirmed_plan_into_first_messa
     async def _fake_select_model(db, agent, triggers):
         return fake_model, {}, None
 
+    captured: dict = {}
+
     async def _fake_call_llm(**kwargs):
+        captured.update(kwargs)
         return "ok"
 
     async def _noop(*args, **kwargs):
@@ -218,3 +221,7 @@ async def test_invoke_agent_for_triggers_injects_confirmed_plan_into_first_messa
             .all()
         )
     assert any("Ship the weekly funding digest." in (m.content or "") for m in user_messages)
+    # P1-1: the trigger run must identify as source=trigger (not the "web" default),
+    # which drives the unattended Plan Mode lane and the trigger-*.md T0 bucket.
+    assert captured.get("session_source") == "trigger"
+    assert captured.get("session_channel") == "trigger"

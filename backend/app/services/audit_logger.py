@@ -29,11 +29,19 @@ async def write_audit_log(
         user_id: Optional user UUID.
     """
     try:
+        # RLS stage-2b: audit_logs is now policied (USING-only). Derive tenant_id
+        # from the agent so the row is tenant-scoped after the non-owner role flip;
+        # a NULL (system-level event, agent_id=None) stays operator-only-by-intent.
+        tenant_id = None
+        if agent_id is not None:
+            from app.services.tenant_resolver import resolve_tenant_for_agent
+
+            tenant_id = await resolve_tenant_for_agent(agent_id)
         async with async_session() as db:
             await db.execute(
                 text(
-                    "INSERT INTO audit_logs (id, action, details, agent_id, user_id, created_at) "
-                    "VALUES (:id, :action, :details, :agent_id, :user_id, :created_at)"
+                    "INSERT INTO audit_logs (id, action, details, agent_id, user_id, tenant_id, created_at) "
+                    "VALUES (:id, :action, :details, :agent_id, :user_id, :tenant_id, :created_at)"
                 ),
                 {
                     "id": uuid.uuid4(),
@@ -41,6 +49,7 @@ async def write_audit_log(
                     "details": json.dumps(details or {}, ensure_ascii=False, default=str),
                     "agent_id": agent_id,
                     "user_id": user_id,
+                    "tenant_id": tenant_id,
                     "created_at": datetime.now(timezone.utc),
                 },
             )

@@ -67,7 +67,10 @@ class ToolGovernanceResolver:
                 return await check_capability(db, tenant_id, agent_id, tool_name)
 
         async def _write_audit_event(**kwargs) -> None:
-            async with async_session() as db:
+            # RLS: security_audit_events is policied (stage-2a). Scope to the
+            # event's tenant so the event-hash SELECT + INSERT survive the
+            # non-owner role flip (a bare session fail-closes the hash-chain read).
+            async with tenant_scoped_session(kwargs.get("tenant_id")) as db:
                 await write_audit_event(db, **kwargs)
                 await db.commit()
 

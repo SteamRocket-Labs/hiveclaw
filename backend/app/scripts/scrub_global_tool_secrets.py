@@ -34,6 +34,7 @@ from app.models.tool import Tool
 from app.models.user import User
 from app.services.tool_config_service import (
     MASKED_SECRET_SENTINEL,
+    _encrypt_secret,
     _secret_field_keys,
     get_or_create_tenant_tool_config,
 )
@@ -130,7 +131,8 @@ async def scrub(*, apply: bool, confirm: bool) -> int:
                 continue
             ttc = await get_or_create_tenant_tool_config(db, uuid.UUID(platform_tid), tool.id)
             new_ttc_config = dict(ttc.config or {})
-            new_ttc_config.setdefault(action.secret_key, value)  # never clobber an existing tenant key
+            # Encrypt on relocation; never clobber an existing tenant key.
+            new_ttc_config.setdefault(action.secret_key, _encrypt_secret(value))
             ttc.config = new_ttc_config
             # JSON columns need a fresh dict for SQLAlchemy to detect the change.
             new_global = dict(tool.config or {})

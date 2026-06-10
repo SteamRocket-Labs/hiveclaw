@@ -24,6 +24,7 @@ from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token_sta
 from app.services.email_service import test_connection as test_email_connection
 from app.services.mcp_client import MCPClient
 from app.services.tool_config_service import (
+    encrypt_tool_config_secrets,
     mask_tool_config_secrets,
     merge_tool_config_secrets,
     resolve_tool_config_for_tenant_display,
@@ -694,7 +695,8 @@ async def update_global_tool(
         if data.enabled is not None:
             tool.enabled = data.enabled
         if data.config is not None:
-            tool.config = merge_tool_config_secrets(data.config, tool.config or {}, tool.config_schema or {})
+            merged = merge_tool_config_secrets(data.config, tool.config or {}, tool.config_schema or {})
+            tool.config = encrypt_tool_config_secrets(merged, tool.config_schema or {})
 
     await db.commit()
     return await _serialize_tool_for_tenant(db, tool, current_user.tenant_id)

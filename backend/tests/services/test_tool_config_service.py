@@ -180,3 +180,67 @@ class TestMaskToolConfigSecrets:
         out = _serialize_tool(tool)  # type: ignore[arg-type]  # SimpleNamespace duck-types Tool
         assert out["config"]["exa_api_key"] == MASKED_SECRET_SENTINEL
         assert "exa-REAL" not in str(out["config"])  # no plaintext anywhere in the payload
+
+
+class TestToolConfigSecretEncryption:
+    """Secrets encrypt at rest (tagged) and decrypt for runtime; legacy plaintext stays compatible."""
+
+    _SCHEMA = {"fields": [{"key": "exa_api_key", "type": "password"}, {"key": "search_engine", "type": "select"}]}
+
+    class _ReversingProvider:
+        """Ciphertext differs from input, so the encryption tag kicks in."""
+
+        def encrypt(self, value: str) -> str:
+            return value[::-1]
+
+        def decrypt(self, value: str) -> str:
+            return value[::-1]
+
+    def test_encrypt_tags_and_decrypt_restores(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "app.services.secrets_provider.get_secrets_provider", lambda: self._ReversingProvider()
+        )
+        from app.services.tool_config_service import (
+            _ENCRYPTED_SECRET_PREFIX,
+            decrypt_tool_config_secrets,
+            encrypt_tool_config_secrets,
+        )
+
+        enc = encrypt_tool_config_secrets({"exa_api_key": "exa-REAL", "search_engine": "auto"}, self._SCHEMA)
+        assert enc["exa_api_key"].startswith(_ENCRYPTED_SECRET_PREFIX)
+        assert "exa-REAL" not in enc["exa_api_key"]  # plaintext not stored at rest
+        assert enc["search_engine"] == "auto"  # non-secret untouched
+        dec = decrypt_tool_config_secrets(enc, self._SCHEMA)
+        assert dec["exa_api_key"] == "exa-REAL"  # round-trips back for runtime use
+
+    def test_noop_provider_stores_plaintext_without_tag(self, monkeypatch) -> None:
+        """No master key => plaintext preserved, no tag (zero regression)."""
+
+        class _NoOp:
+            def encrypt(self, value: str) -> str:
+                return value
+
+            def decrypt(self, value: str) -> str:
+                return value
+
+        monkeypatch.setattr("app.services.secrets_provider.get_secrets_provider", lambda: _NoOp())
+        from app.services.tool_config_service import encrypt_tool_config_secrets
+
+        enc = encrypt_tool_config_secrets({"exa_api_key": "exa-REAL"}, self._SCHEMA)
+        assert enc["exa_api_key"] == "exa-REAL"  # untagged plaintext, no migration risk
+
+    def test_decrypt_passthrough_for_legacy_plaintext(self, monkeypatch) -> None:
+        """Untagged legacy values must never reach provider.decrypt (would raise under a real key)."""
+
+        class _Boom:
+            def encrypt(self, value: str) -> str:
+                return value
+
+            def decrypt(self, value: str) -> str:
+                raise AssertionError("untagged plaintext must not be decrypted")
+
+        monkeypatch.setattr("app.services.secrets_provider.get_secrets_provider", lambda: _Boom())
+        from app.services.tool_config_service import decrypt_tool_config_secrets
+
+        out = decrypt_tool_config_secrets({"exa_api_key": "legacy-plaintext"}, self._SCHEMA)
+        assert out["exa_api_key"] == "legacy-plaintext"

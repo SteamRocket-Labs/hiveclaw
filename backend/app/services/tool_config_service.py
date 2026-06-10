@@ -82,6 +82,61 @@ def merge_tool_config_secrets(
     return incoming
 
 
+_ENCRYPTED_SECRET_PREFIX = "enc:v1:"
+
+
+def _encrypt_secret(value: str) -> str:
+    """Encrypt one secret value, tagging the ciphertext so reads can tell it
+    from legacy plaintext. A no-op provider (no ``SECRETS_MASTER_KEY``) returns
+    the value unchanged; we then store plaintext WITHOUT the tag, preserving
+    current behavior with zero migration risk.
+    """
+    if not isinstance(value, str) or not value or value.startswith(_ENCRYPTED_SECRET_PREFIX):
+        return value
+    from app.services.secrets_provider import get_secrets_provider
+
+    ciphertext = get_secrets_provider().encrypt(value)
+    if ciphertext == value:  # no-op provider (dev / no master key)
+        return value
+    return _ENCRYPTED_SECRET_PREFIX + ciphertext
+
+
+def _decrypt_secret(value: str) -> str:
+    """Inverse of :func:`_encrypt_secret`. Untagged (legacy plaintext) values are
+    returned as-is and never fed to the provider — so a configured master key
+    does not blow up on pre-encryption rows.
+    """
+    if not isinstance(value, str) or not value.startswith(_ENCRYPTED_SECRET_PREFIX):
+        return value
+    from app.services.secrets_provider import get_secrets_provider
+
+    return get_secrets_provider().decrypt(value[len(_ENCRYPTED_SECRET_PREFIX) :])
+
+
+def encrypt_tool_config_secrets(config: dict | None, config_schema: dict | None) -> dict:
+    """Encrypt secret (password-typed) fields before persisting tool config."""
+    if not isinstance(config, dict):
+        return {}
+    out = dict(config)
+    for key in _secret_field_keys(config_schema):
+        value = out.get(key)
+        if isinstance(value, str) and value:
+            out[key] = _encrypt_secret(value)
+    return out
+
+
+def decrypt_tool_config_secrets(config: dict | None, config_schema: dict | None) -> dict:
+    """Decrypt secret fields after reading tool config for runtime use."""
+    if not isinstance(config, dict):
+        return {}
+    out = dict(config)
+    for key in _secret_field_keys(config_schema):
+        value = out.get(key)
+        if isinstance(value, str) and value:
+            out[key] = _decrypt_secret(value)
+    return out
+
+
 async def resolve_tool_config(
     tool_name: str,
     tenant_id: uuid.UUID | None = None,
@@ -148,7 +203,7 @@ async def resolve_tool_config(
             if agent_config:
                 base_config.update(agent_config)
 
-        return base_config
+        return decrypt_tool_config_secrets(base_config, tool.config_schema)
     finally:
         if should_close:
             await db.close()
@@ -200,6 +255,7 @@ async def update_tenant_tool_config(
     if config is not None:
         if config_schema is not None:
             config = merge_tool_config_secrets(config, ttc.config, config_schema)
+            config = encrypt_tool_config_secrets(config, config_schema)
         ttc.config = config
     if enabled is not None:
         ttc.enabled = enabled

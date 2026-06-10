@@ -5,18 +5,22 @@ import httpx
 from loguru import logger
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
-from app.database import async_session
-from app.models.agent import Agent
+from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.tool import Tool, AgentTool
 from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment
+from app.services.tenant_resolver import resolve_tenant_for_agent
 
 
 async def _resolve_agent_tenant_id(agent_id: uuid.UUID) -> uuid.UUID | None:
-    """Look up the tenant_id for an agent. Returns None if not found."""
+    """Look up the tenant_id for an agent. Returns None if not found.
+
+    Delegates to the sanctioned ``resolve_tenant_for_agent`` helper (DD-A): a
+    single-row, audited ``enter_rls_bypass`` PK read of ``agents``. Reading the
+    policied ``agents`` table to learn an agent's own tenant fail-closes under
+    enforced RLS otherwise (chicken-and-egg).
+    """
     try:
-        async with async_session() as db:
-            r = await db.execute(select(Agent.tenant_id).where(Agent.id == agent_id))
-            return r.scalar_one_or_none()
+        return await resolve_tenant_for_agent(agent_id)
     except Exception as exc:
         logger.warning(f"[ResourceDiscovery] Failed to resolve tenant_id for agent {agent_id}: {exc}")
         return None
@@ -32,21 +36,35 @@ async def _get_smithery_api_key(agent_id: uuid.UUID | None = None) -> str:
     """Read Smithery API key.
 
     Priority: 1) per-agent AgentTool config, 2) system-level tool config.
+
+    The system-level fallback reads the policied ``tools`` table; the
+    ``discover_resources``/``import_mcp_server`` config rows are global
+    (tenant_id NULL). With an agent in scope we pin its tenant GUC (NULL-tenant
+    global rows stay visible under the policy); without one we audit-bypass for
+    the global config read so it does not fail-close under enforced RLS.
     """
     try:
-        async with async_session() as db:
-            # 1) Per-agent: check AgentTool configs for any MCP tool with a smithery_api_key
-            if agent_id:
+        if agent_id:
+            agent_tenant = await resolve_tenant_for_agent(agent_id)
+            async with tenant_scoped_session(agent_tenant) as db:
+                # 1) Per-agent: check AgentTool configs for any MCP tool with a smithery_api_key
                 at_r = await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id))
                 for at in at_r.scalars().all():
                     if at.config and at.config.get("smithery_api_key"):
                         return at.config["smithery_api_key"]
-            # 2) System-level fallback
-            for tool_name in ("discover_resources", "import_mcp_server"):
-                r = await db.execute(select(Tool).where(Tool.name == tool_name))
-                tool = r.scalar_one_or_none()
-                if tool and tool.config and tool.config.get("smithery_api_key"):
-                    return tool.config["smithery_api_key"]
+                # 2) System-level fallback (global tenant_id NULL config rows)
+                for tool_name in ("discover_resources", "import_mcp_server"):
+                    r = await db.execute(select(Tool).where(Tool.name == tool_name))
+                    tool = r.scalar_one_or_none()
+                    if tool and tool.config and tool.config.get("smithery_api_key"):
+                        return tool.config["smithery_api_key"]
+        else:
+            async with async_session() as db, enter_rls_bypass(db, reason="global Smithery API key config read"):
+                for tool_name in ("discover_resources", "import_mcp_server"):
+                    r = await db.execute(select(Tool).where(Tool.name == tool_name))
+                    tool = r.scalar_one_or_none()
+                    if tool and tool.config and tool.config.get("smithery_api_key"):
+                        return tool.config["smithery_api_key"]
     except Exception as exc:
         logger.debug(f"[ResourceDiscovery] Could not read Smithery API key: {exc}")
     return ""
@@ -87,9 +105,14 @@ async def _search_smithery_api(query: str, max_results: int, api_key: str) -> li
 
 
 async def _get_modelscope_api_token() -> str:
-    """Read ModelScope API token from discover_resources tool config."""
+    """Read ModelScope API token from discover_resources tool config.
+
+    These are global platform tool config rows (tenant_id NULL) on the policied
+    ``tools`` table — audit-bypass so the read does not fail-close under enforced
+    RLS with no tenant in scope.
+    """
     try:
-        async with async_session() as db:
+        async with async_session() as db, enter_rls_bypass(db, reason="global ModelScope API token config read"):
             for tool_name in ("discover_resources", "import_mcp_server"):
                 r = await db.execute(select(Tool).where(Tool.name == tool_name))
                 tool = r.scalar_one_or_none()
@@ -286,7 +309,7 @@ async def import_mcp_from_smithery(
     # Write key back to discover_resources / import_mcp_server AgentTool configs
     # so it shows up in the Config dialog
     try:
-        async with async_session() as db:
+        async with tenant_scoped_session(agent_tenant_id) as db:
             for tool_name in ("discover_resources", "import_mcp_server"):
                 r = await db.execute(select(Tool).where(Tool.name == tool_name))
                 tool = r.scalar_one_or_none()
@@ -319,7 +342,7 @@ async def import_mcp_from_smithery(
     # (e.g., "github" vs "@anthropic/github" both produce server_name "GitHub")
     clean_id_check = server_id.replace("/", "_").replace("@", "")
     try:
-        async with async_session() as db:
+        async with tenant_scoped_session(agent_tenant_id) as db:
             from sqlalchemy import or_
 
             tenant_filter = Tool.tenant_id == agent_tenant_id if agent_tenant_id else Tool.tenant_id.is_(None)
@@ -450,7 +473,7 @@ async def import_mcp_from_smithery(
     # Merge smithery_config + user config for AgentTool
     agent_tool_config = {**smithery_config, **config}
 
-    async with async_session() as db:
+    async with tenant_scoped_session(agent_tenant_id) as db:
         imported_tools = []
 
         # Helper: ensure AgentTool link exists and save config
@@ -648,7 +671,7 @@ async def import_mcp_direct(
     if api_key:
         agent_tool_config["api_key"] = api_key
 
-    async with async_session() as db:
+    async with tenant_scoped_session(agent_tenant_id) as db:
         imported_tools = []
 
         async def _ensure_agent_tool(tool_id: uuid.UUID):
@@ -797,7 +820,7 @@ async def seed_atlassian_rovo_tools(api_key: str) -> None:
 
     logger.info(f"[AtlassianRovo] Discovered {len(tools_discovered)} tools")
 
-    async with async_session() as db:
+    async with async_session() as db, enter_rls_bypass(db, reason="global Atlassian Rovo tool seeding"):
         upserted = 0
         for mcp_tool in tools_discovered:
             raw_name = mcp_tool.get("name", "")
@@ -861,7 +884,7 @@ async def refresh_atlassian_rovo_api_key(api_key: str) -> None:
 
     Called when the user updates the API key via the config UI.
     """
-    async with async_session() as db:
+    async with async_session() as db, enter_rls_bypass(db, reason="global Atlassian Rovo key refresh"):
         from sqlalchemy import update as _update
 
         await db.execute(

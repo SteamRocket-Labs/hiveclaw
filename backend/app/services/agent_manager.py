@@ -379,10 +379,10 @@ class AgentManager:
     async def _resolve_fallback_model_string(self, agent: Agent) -> str:
         """Resolve a model string from the tenant's first available LLM — no hardcoded provider."""
         try:
-            from app.database import async_session as _async_session
+            from app.database import tenant_scoped_session
             from app.models.llm import LLMModel as LLMModelDB
 
-            async with _async_session() as db:
+            async with tenant_scoped_session(agent.tenant_id) as db:
                 result = await db.execute(
                     select(LLMModelDB)
                     .where(

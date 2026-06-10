@@ -103,6 +103,16 @@ def _patch_environment(monkeypatch, module, session_factory):
         return tools
 
     monkeypatch.setattr(module, "async_session", session_factory)
+
+    # RLS 阶段1: get_agent_tools_for_llm now resolves the agent's tenant and
+    # opens a tenant-scoped session. Route tenant_scoped_session through the same
+    # fake factory (no real SET LOCAL, so the queued result sequence is intact)
+    # and stub the tenant resolver. agent_tools imports both at module level.
+    async def _resolve(*_a, **_k):
+        return uuid4()
+
+    monkeypatch.setattr(module, "tenant_scoped_session", lambda *_a, **_k: session_factory(), raising=False)
+    monkeypatch.setattr(module, "resolve_tenant_for_agent", _resolve, raising=False)
     monkeypatch.setattr(module, "_agent_has_feishu", no_feishu_channel)
     monkeypatch.setattr(module, "_agent_has_feishu_cli_access", no_feishu_cli_access)
     monkeypatch.setattr(module, "_filter_unavailable_tools", passthrough_available_tools)
@@ -273,9 +283,7 @@ async def test_always_load_mcp_assignment_keeps_tool_in_core_only_surface(monkey
                 _ScalarResult(None),
                 _ListResult([t_mcp]),
                 _ListResult([]),
-                _ListResult(
-                    [_make_assignment(agent_id=agent_id, server_id=server_a, enabled=True, always_load=True)]
-                ),
+                _ListResult([_make_assignment(agent_id=agent_id, server_id=server_a, enabled=True, always_load=True)]),
                 _ListResult([_make_server_tool(server_id=server_a, tool_id=t_mcp.id, tool_name="issue_search")]),
                 _ListResult([]),
             ]

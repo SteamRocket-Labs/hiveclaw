@@ -339,10 +339,12 @@ async def _auto_approve_enabled(agent_id: object) -> bool:
 
     from sqlalchemy import select
 
-    from app.database import async_session
+    from app.database import tenant_scoped_session
     from app.models.agent import Agent
+    from app.services.tenant_resolver import resolve_tenant_for_agent
 
-    async with async_session() as db:
+    tenant_id = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tenant_id) as db:
         agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
         return bool(agent is not None and agent.subagent_evolution_auto_approve)
 
@@ -352,11 +354,13 @@ async def _notify_owner(agent_id: object, spec_name: str, proposal_id: str, *, a
 
     from sqlalchemy import select
 
-    from app.database import async_session
+    from app.database import tenant_scoped_session
     from app.models.agent import Agent
     from app.services.notification_service import send_notification
+    from app.services.tenant_resolver import resolve_tenant_for_agent
 
-    async with async_session() as db:
+    tenant_id = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tenant_id) as db:
         agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
         if agent is None:
             return

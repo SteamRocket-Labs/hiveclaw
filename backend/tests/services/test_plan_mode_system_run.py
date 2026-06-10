@@ -45,6 +45,10 @@ class _ResolveSession:
         return False
 
     async def execute(self, _stmt):
+        # tenant_scoped_session emits a `SET LOCAL app.current_tenant_id` before
+        # the business queries — it must not advance the agent/model call counter.
+        if "app.current_tenant_id" in str(_stmt):
+            return _ScalarOneResult(None)
         self._calls += 1
         if self._calls == 1:
             return _ScalarOneResult(self._agent)
@@ -87,7 +91,13 @@ def _draft_plan(agent, **over):
 def _patch_resolve(monkeypatch, session):
     from app.services import plan_mode_system_run as mod
 
-    monkeypatch.setattr(mod, "async_session", lambda: session)
+    # _resolve_agent_models now resolves the tenant via an audited bypass read,
+    # then pins a tenant_scoped_session for the agent/model lookups.
+    async def _fake_resolve_tenant(_agent_id, **_kwargs):
+        return None
+
+    monkeypatch.setattr(mod, "resolve_tenant_for_agent", _fake_resolve_tenant)
+    monkeypatch.setattr(mod, "tenant_scoped_session", lambda *a, **k: session)
 
 
 @pytest.mark.asyncio

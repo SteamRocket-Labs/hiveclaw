@@ -108,7 +108,9 @@ def test_get_skill_route_requires_authentication(monkeypatch):
 
     app = FastAPI()
     app.include_router(skills_api.router)
-    monkeypatch.setattr(skills_api, "async_session", lambda: _AsyncSessionContext(_QueuedDB([_ScalarResult(None)])))
+    monkeypatch.setattr(
+        skills_api, "tenant_scoped_session", lambda *a, **k: _AsyncSessionContext(_QueuedDB([_ScalarResult(None)]))
+    )
 
     client = TestClient(app)
     response = client.get(f"/skills/{uuid.uuid4()}")

@@ -40,12 +40,19 @@ async def record_token_usage(agent_id: uuid.UUID, tokens: int, user_id: uuid.UUI
         return
 
     try:
-        from app.database import async_session
+        from app.database import tenant_scoped_session
         from app.models.agent import Agent
         from app.models.user import User
+        from app.services.tenant_resolver import resolve_tenant_for_agent
         from sqlalchemy import select
 
-        async with async_session() as db:
+        # Independent session (avoids the caller's tx) with no tenant in scope:
+        # under enforced RLS a bare session sees neither the agent nor user row,
+        # so the billing/quota counters would silently stop. Resolve the owning
+        # tenant from the agent and pin the GUC — agent and its owner user share
+        # the same tenant.
+        tenant_id = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tenant_id) as db:
             # Agent stats (tracking only)
             result = await db.execute(select(Agent).where(Agent.id == agent_id))
             agent = result.scalar_one_or_none()

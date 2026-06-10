@@ -12,7 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import decode_access_token
 from app.core.permissions import check_agent_access, is_agent_expired
 from app.core.security import get_current_user
-from app.database import async_session, get_db
+from app.database import get_db, tenant_scoped_session
+from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.kernel.contracts import ExecutionIdentityRef
 from app.models.audit import ChatMessage
 from app.models.llm import LLMModel
@@ -72,9 +73,7 @@ class ConnectionManager:
                     except Exception:
                         dead.append((ws, _sid))
                 for d in dead:
-                    self.active_connections[agent_id] = [
-                        c for c in self.active_connections[agent_id] if c != d
-                    ]
+                    self.active_connections[agent_id] = [c for c in self.active_connections[agent_id] if c != d]
 
     async def get_active_session_ids(self, agent_id: str) -> list[str]:
         """Return distinct session IDs for all active WS connections of an agent."""
@@ -149,7 +148,9 @@ async def _has_active_web_chat_run(agent_id: uuid.UUID, session_id: str | uuid.U
     if not session_id:
         return False
     try:
-        async with async_session() as run_db:
+        # WS path has no middleware GUC — scope by the agent's tenant.
+        tenant_id = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tenant_id) as run_db:
             active_run = await get_active_web_chat_run(
                 db=run_db,
                 agent_id=agent_id,
@@ -345,7 +346,12 @@ async def websocket_chat(
     history_messages = []
 
     try:
-        async with async_session() as db:
+        # WS path has NO TenantMiddleware → request ContextVar is unset. Resolve
+        # the tenant from the path agent_id (narrow audited bypass single-row read)
+        # so the whole bootstrap block runs under the agent's tenant GUC. A
+        # cross-tenant user is rejected by check_agent_access regardless.
+        _ws_tenant_id = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(_ws_tenant_id) as db:
             logger.info(f"[WS] Looking up user {user_id}")
             result = await db.execute(select(User).where(User.id == user_id))
             user = result.scalar_one_or_none()
@@ -357,13 +363,19 @@ async def websocket_chat(
 
             # Set execution identity for audit trail
             from app.core.execution_context import set_delegated_user_identity
+
             set_delegated_user_identity(user.id, user.display_name or user.username, channel="web")
 
             logger.info(f"[WS] Checking agent access for {agent_id}")
             agent, _ = await check_agent_access(db, user, agent_id)
             # Check agent expiry
             if is_agent_expired(agent):
-                await websocket.send_json({"type": "error", "content": "This Agent has expired and is off duty. Please contact your admin to extend its service."})
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "content": "This Agent has expired and is off duty. Please contact your admin to extend its service.",
+                    }
+                )
                 await websocket.close(code=4003)
                 return
             agent_name = agent.name
@@ -382,7 +394,9 @@ async def websocket_chat(
             # Load fallback model (tenant-scoped)
             if agent.fallback_model_id:
                 fb_result = await db.execute(
-                    select(LLMModel).where(LLMModel.id == agent.fallback_model_id, LLMModel.tenant_id == agent.tenant_id)
+                    select(LLMModel).where(
+                        LLMModel.id == agent.fallback_model_id, LLMModel.tenant_id == agent.tenant_id
+                    )
                 )
                 fallback_llm_model = fb_result.scalar_one_or_none()
                 if fallback_llm_model:
@@ -416,6 +430,7 @@ async def websocket_chat(
             from app.models.chat_session import ChatSession
             from sqlalchemy import select as _sel
             from datetime import datetime as _dt, timezone as _tz
+
             conv_id = session_id
             _active_session = None
             if conv_id:
@@ -448,7 +463,8 @@ async def websocket_chat(
                     # Create a default session
                     now = _dt.now(_tz.utc)
                     _new_session = ChatSession(
-                        agent_id=agent_id, user_id=user_id,
+                        agent_id=agent_id,
+                        user_id=user_id,
                         title=f"Session {now.strftime('%m-%d %H:%M')}",
                         source_channel="web",
                         created_at=now,
@@ -467,6 +483,7 @@ async def websocket_chat(
             try:
                 # Dynamic history limit based on model context window
                 from app.services.memory_service import compute_history_limit
+
                 _hist_limit = compute_history_limit(
                     llm_model.provider if llm_model else "openai",
                     llm_model.model if llm_model else "",
@@ -485,6 +502,7 @@ async def websocket_chat(
     except Exception as e:
         logger.error(f"[WS] Setup error: {type(e).__name__}: {e}")
         import traceback
+
         traceback.print_exc()
         await websocket.send_json({"type": "error", "content": "Setup failed"})
         await websocket.close(code=4002)  # Config error — client should NOT retry
@@ -509,6 +527,7 @@ async def websocket_chat(
         # Phase 1: After IDLE seconds of no input → SESSION_IDLE hook (T0 log + session summary)
         # Phase 2: After WS_IDLE_TIMEOUT seconds total → SESSION_CLOSE + disconnect
         import asyncio as _aio_idle
+
         _DREAM_IDLE_SECONDS = _get_ws_idle_dream_seconds()
         _idle_timeout = _get_ws_idle_timeout_seconds()
         _idle_dreamed = False
@@ -516,7 +535,11 @@ async def websocket_chat(
         while True:
             logger.info(f"[WS] Waiting for message from {agent_name}...")
             # Pick timeout: dream threshold first, then full idle close
-            _wait_timeout = _DREAM_IDLE_SECONDS if (not _idle_dreamed and _DREAM_IDLE_SECONDS > 0 and len(conversation) > 1) else _idle_timeout
+            _wait_timeout = (
+                _DREAM_IDLE_SECONDS
+                if (not _idle_dreamed and _DREAM_IDLE_SECONDS > 0 and len(conversation) > 1)
+                else _idle_timeout
+            )
             try:
                 data = await _aio_idle.wait_for(websocket.receive_json(), timeout=_wait_timeout)
             except _aio_idle.TimeoutError:
@@ -578,7 +601,9 @@ async def websocket_chat(
                         )
                     except Exception as _close_err:
                         logger.debug("[WS] SESSION_CLOSE hook failed (non-fatal): {}", _close_err)
-                    await websocket.send_json({"type": "info", "content": "Connection closed due to inactivity. Reconnect to continue."})
+                    await websocket.send_json(
+                        {"type": "info", "content": "Connection closed due to inactivity. Reconnect to continue."}
+                    )
                     await websocket.close(code=1000)
                     return
             if await _handle_websocket_control_message(websocket, data):
@@ -591,7 +616,7 @@ async def websocket_chat(
             if data.get("type") == "abort":
                 try:
                     run_id = data.get("run_id")
-                    async with async_session() as run_db:
+                    async with tenant_scoped_session(agent.tenant_id) as run_db:
                         active_run = None
                         if not run_id:
                             active_run = await get_active_web_chat_run(
@@ -622,7 +647,7 @@ async def websocket_chat(
             # lifecycle. This keeps closing/reloading the page from cancelling
             # the underlying agent run; the socket only subscribes to events.
             try:
-                async with async_session() as run_db:
+                async with tenant_scoped_session(agent.tenant_id) as run_db:
                     session_result = await run_db.execute(
                         select(ChatSession).where(
                             ChatSession.id == uuid.UUID(str(conv_id)),
@@ -657,6 +682,7 @@ async def websocket_chat(
     except Exception as e:
         logger.error(f"[WS] Error in message loop: {type(e).__name__}: {e}")
         import traceback
+
         traceback.print_exc()
         await manager.disconnect(agent_id_str, websocket)
         try:

@@ -64,6 +64,7 @@ async def _send_wecom_text_message(
             raise ValueError(f"wecom send failed: {payload}")
         return payload
 
+
 def _pad(text: bytes) -> bytes:
     """PKCS7 padding for AES-CBC."""
     BLOCK_SIZE = 32
@@ -83,14 +84,15 @@ def _decrypt_msg(encrypt_key: str, encrypted_text: str) -> tuple[str, str]:
     Returns (decrypted_xml, corp_id)
     """
     from Crypto.Cipher import AES
+
     aes_key = base64.b64decode(encrypt_key + "=")
     iv = aes_key[:16]
     cipher = AES.new(aes_key, AES.MODE_CBC, iv)
     decrypted = _unpad(cipher.decrypt(base64.b64decode(encrypted_text)))
     # Skip 16 random bytes, then 4 bytes msg_length (network order)
     msg_len = struct.unpack("!I", decrypted[16:20])[0]
-    msg_content = decrypted[20:20 + msg_len].decode("utf-8")
-    corp_id = decrypted[20 + msg_len:].decode("utf-8")
+    msg_content = decrypted[20 : 20 + msg_len].decode("utf-8")
+    corp_id = decrypted[20 + msg_len :].decode("utf-8")
     return msg_content, corp_id
 
 
@@ -98,6 +100,7 @@ def _encrypt_msg(encrypt_key: str, reply_msg: str, corp_id: str) -> str:
     """Encrypt a reply message for WeCom."""
     from Crypto.Cipher import AES
     import os
+
     aes_key = base64.b64decode(encrypt_key + "=")
     iv = aes_key[:16]
     msg_bytes = reply_msg.encode("utf-8")
@@ -114,6 +117,7 @@ def _verify_signature(token: str, timestamp: str, nonce: str, encrypt: str) -> s
 
 
 # ─── Config CRUD ────────────────────────────────────────
+
 
 @router.post("/agents/{agent_id}/wecom-channel", response_model=ChannelConfigOut, status_code=201)
 async def configure_wecom_channel(
@@ -161,7 +165,7 @@ async def configure_wecom_channel(
     if not has_ws_mode and not has_webhook_mode:
         raise HTTPException(
             status_code=422,
-            detail="Either bot_id+bot_secret (WebSocket) or corp_id+secret+token+encoding_aes_key (Webhook) required"
+            detail="Either bot_id+bot_secret (WebSocket) or corp_id+secret+token+encoding_aes_key (Webhook) required",
         )
     if has_webhook_mode and not wecom_agent_id:
         raise HTTPException(status_code=422, detail="wecom_agent_id is required for WeCom webhook mode")
@@ -201,9 +205,8 @@ async def configure_wecom_channel(
         try:
             from app.services.wecom_stream import wecom_stream_manager
             import asyncio
-            asyncio.create_task(
-                wecom_stream_manager.start_client(agent_id, bot_id, bot_secret)
-            )
+
+            asyncio.create_task(wecom_stream_manager.start_client(agent_id, bot_id, bot_secret))
             logger.info(f"[WeCom] WebSocket client start triggered for agent {agent_id}")
         except Exception as e:
             logger.error(f"[WeCom] Failed to start WebSocket client: {e}")
@@ -238,6 +241,7 @@ async def get_wecom_webhook_url(
 ):
     import os
     from app.models.system_settings import SystemSetting
+
     public_base = ""
     result = await db.execute(select(SystemSetting).where(SystemSetting.key == "platform"))
     setting = result.scalar_one_or_none()
@@ -391,9 +395,8 @@ async def wecom_event_webhook(
 
         # Process in background task
         import asyncio
-        asyncio.create_task(
-            _process_wecom_text(db, agent_id, config, from_user, user_text)
-        )
+
+        asyncio.create_task(_process_wecom_text(db, agent_id, config, from_user, user_text))
 
     elif msg_type in ("image", "file"):
         # TODO: Handle image/file messages in future
@@ -413,7 +416,8 @@ async def _process_wecom_text(
     import httpx
     from datetime import datetime, timezone
     from sqlalchemy import select as _select
-    from app.database import async_session
+    from app.database import tenant_scoped_session
+    from app.services.tenant_resolver import resolve_tenant_for_agent
     from app.models.agent import Agent as AgentModel
     from app.models.audit import ChatMessage
     from app.models.user import User as UserModel
@@ -422,7 +426,10 @@ async def _process_wecom_text(
     from app.services.channel_delivery_service import channel_delivery_target as _cdt
     from app.api.feishu import _call_agent_llm
 
-    async with async_session() as db:
+    # Webhook bg path has no TenantMiddleware GUC. Resolve the tenant from the
+    # path agent_id (narrow audited bypass single-row read) and pin the session.
+    _wecom_tenant_id = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(_wecom_tenant_id) as db:
         # Load agent
         agent_r = await db.execute(_select(AgentModel).where(AgentModel.id == agent_id))
         agent_obj = agent_r.scalar_one_or_none()
@@ -430,6 +437,7 @@ async def _process_wecom_text(
             logger.warning(f"[WeCom] Agent {agent_id} not found")
             return
         from app.services.memory_service import compute_history_limit_for_agent
+
         _hist_limit = await compute_history_limit_for_agent(agent_id)
 
         conv_id = f"wecom_p2p_{from_user}"
@@ -461,6 +469,7 @@ async def _process_wecom_text(
 
         if not platform_user:
             import uuid as _uuid
+
             platform_user = UserModel(
                 username=wc_username,
                 email=f"{wc_username}@wecom.local",
@@ -508,11 +517,15 @@ async def _process_wecom_text(
         history = [{"role": m.role, "content": m.content} for m in reversed(history_r.scalars().all())]
 
         # Save user message
-        db.add(ChatMessage(
-            agent_id=agent_id, user_id=platform_user_id,
-            role="user", content=user_text,
-            conversation_id=session_conv_id,
-        ))
+        db.add(
+            ChatMessage(
+                agent_id=agent_id,
+                user_id=platform_user_id,
+                role="user",
+                content=user_text,
+                conversation_id=session_conv_id,
+            )
+        )
         sess.last_message_at = datetime.now(timezone.utc)
         await db.commit()
 
@@ -535,11 +548,15 @@ async def _process_wecom_text(
         logger.info(f"[WeCom] LLM reply: {reply_text[:100]}")
 
         # Save assistant reply
-        db.add(ChatMessage(
-            agent_id=agent_id, user_id=platform_user_id,
-            role="assistant", content=reply_text,
-            conversation_id=session_conv_id,
-        ))
+        db.add(
+            ChatMessage(
+                agent_id=agent_id,
+                user_id=platform_user_id,
+                role="assistant",
+                content=reply_text,
+                conversation_id=session_conv_id,
+            )
+        )
         sess.last_message_at = datetime.now(timezone.utc)
         await db.commit()
 
@@ -557,8 +574,10 @@ async def _process_wecom_text(
 
         # Log activity
         from app.services.activity_logger import log_activity
+
         await log_activity(
-            agent_id, "chat_reply",
+            agent_id,
+            "chat_reply",
             f"Replied to WeCom message: {reply_text[:80]}",
             detail={"channel": "wecom", "user_text": user_text[:200], "reply": reply_text[:500]},
         )

@@ -29,6 +29,10 @@ class _ReuseSession:
         return False
 
     async def execute(self, _stmt):
+        # tenant_scoped_session emits a `SET LOCAL app.current_tenant_id` before
+        # the business query — it must not consume a value from the sequence.
+        if "app.current_tenant_id" in str(_stmt):
+            return _ScalarResult(None)
         value = self._values.pop(0) if self._values else None
         return _ScalarResult(value)
 
@@ -51,7 +55,7 @@ async def test_reuse_existing_skill_for_agent_copies_registry_files(tmp_path, mo
         ],
     )
     session = _ReuseSession([skill])
-    monkeypatch.setattr(reuse_service, "async_session", lambda: session)
+    monkeypatch.setattr(reuse_service, "tenant_scoped_session", lambda *a, **k: session)
     monkeypatch.setattr(reuse_service, "get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     result = await reuse_service.reuse_existing_skill_for_agent(
@@ -75,7 +79,7 @@ async def test_reuse_existing_mcp_server_for_agent_reassigns_existing_tools(monk
     tool_one = SimpleNamespace(id=uuid4(), display_name="GitHub: repo_read")
     tool_two = SimpleNamespace(id=uuid4(), display_name="GitHub: issue_search")
     session = _ReuseSession([[tool_one, tool_two]])
-    monkeypatch.setattr(reuse_service, "async_session", lambda: session)
+    monkeypatch.setattr(reuse_service, "tenant_scoped_session", lambda *a, **k: session)
 
     calls = []
 

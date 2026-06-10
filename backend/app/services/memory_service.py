@@ -19,7 +19,7 @@ from typing import Awaitable, Callable
 from sqlalchemy import select
 
 from app.config import get_settings
-from app.database import async_session
+from app.database import async_session, tenant_scoped_session
 from app.memory.activation import ActivationContext
 from app.memory import MemoryAssembler, MemoryRetriever
 from app.models.agent import Agent
@@ -180,7 +180,7 @@ async def _resolve_accountability_context(
     current_user_name: str | None,
 ) -> AgentAccountabilityContext | None:
     try:
-        async with async_session() as db:
+        async with tenant_scoped_session(tenant_id) as db:
             agent_result = await db.execute(select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id))
             agent = agent_result.scalar_one_or_none()
 
@@ -294,8 +294,10 @@ async def compute_history_limit_for_agent(agent_id: uuid.UUID) -> int:
     try:
         from app.models.agent import Agent
         from app.models.llm import LLMModel
+        from app.services.tenant_resolver import resolve_tenant_for_agent
 
-        async with async_session() as db:
+        tenant_id = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tenant_id) as db:
             agent_r = await db.execute(select(Agent).where(Agent.id == agent_id))
             agent = agent_r.scalar_one_or_none()
             if agent and agent.primary_model_id:
@@ -609,7 +611,7 @@ def _get_input_context_limit(provider: str, model_name: str, override: int | Non
 async def _get_memory_config(tenant_id: uuid.UUID) -> dict:
     """Load memory configuration from TenantSetting(key='memory_config')."""
     try:
-        async with async_session() as db:
+        async with tenant_scoped_session(tenant_id) as db:
             result = await db.execute(
                 select(TenantSetting.value).where(
                     TenantSetting.tenant_id == tenant_id,
@@ -686,7 +688,7 @@ async def _get_default_model_config(db, tenant_id: uuid.UUID) -> dict | None:
 
 async def _get_memory_model_config(tenant_id: uuid.UUID, configured_model_id: object, purpose: str) -> dict | None:
     try:
-        async with async_session() as db:
+        async with tenant_scoped_session(tenant_id) as db:
             if configured_model_id:
                 model_config = await _get_enabled_model_config_by_id(db, tenant_id, configured_model_id)
                 if model_config:
@@ -733,7 +735,7 @@ async def _get_summary_model_config(
     config = await _get_memory_config(tenant_id)
     configured_id = config.get("summary_model_id")
     try:
-        async with async_session() as db:
+        async with tenant_scoped_session(tenant_id) as db:
             if configured_id:
                 model_config = await _get_enabled_model_config_by_id(db, tenant_id, configured_id)
                 if model_config:

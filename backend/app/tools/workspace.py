@@ -11,7 +11,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from app.config import get_settings
-from app.database import async_session
+from app.database import async_session, enter_rls_bypass
 from app.memory.legacy_migration import migrate_legacy_memory_tree
 from app.memory.md_store import ensure_t3_layout, rebuild_index
 from app.memory.t2_store import ensure_t2_layout
@@ -237,7 +237,14 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
         agent_name = str(agent_id)[:8]
         role_desc = "digital assistant"
         try:
-            async with async_session() as db:
+            # soul.md bootstrap reads the whole agent row by PK to seed name/role.
+            # Workspace creation runs both on the tool-resolve path and the
+            # heartbeat daemon; an audited single-row bypass is the sanctioned
+            # chicken-and-egg breaker under enforced RLS (RLS 阶段1).
+            async with (
+                async_session() as db,
+                enter_rls_bypass(db, reason=f"workspace soul.md bootstrap for agent {agent_id}"),
+            ):
                 result = await db.execute(select(Agent).where(Agent.id == agent_id))
                 agent = result.scalar_one_or_none()
                 if agent:
@@ -318,21 +325,21 @@ async def _sync_tasks_to_file(agent_id: uuid.UUID, ws: Path) -> None:
     """Sync tasks from DB to tasks.json in workspace."""
     try:
         async with async_session() as db:
-            result = await db.execute(
-                select(Task).where(Task.agent_id == agent_id).order_by(Task.created_at.desc())
-            )
+            result = await db.execute(select(Task).where(Task.agent_id == agent_id).order_by(Task.created_at.desc()))
             tasks = result.scalars().all()
 
         task_list = []
         for task in tasks:
-            task_list.append({
-                "title": task.title,
-                "status": task.status,
-                "priority": task.priority,
-                "description": task.description or "",
-                "created_at": task.created_at.isoformat() if task.created_at else "",
-                "completed_at": task.completed_at.isoformat() if task.completed_at else "",
-            })
+            task_list.append(
+                {
+                    "title": task.title,
+                    "status": task.status,
+                    "priority": task.priority,
+                    "description": task.description or "",
+                    "created_at": task.created_at.isoformat() if task.created_at else "",
+                    "completed_at": task.completed_at.isoformat() if task.completed_at else "",
+                }
+            )
 
         (ws / "tasks.json").write_text(
             json.dumps(task_list, ensure_ascii=False, indent=2),

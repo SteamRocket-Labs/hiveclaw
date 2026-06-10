@@ -6,12 +6,13 @@ It converts all existing agent_schedules into agent_triggers with type='cron'.
 Usage:
     python -m app.scripts.migrate_schedules_to_triggers
 """
+
 import asyncio
 
 from loguru import logger
 from sqlalchemy import select
 
-from app.database import async_session
+from app.database import async_session, enter_rls_bypass
 from app.models.agent import Agent  # noqa: F401 — needed for FK resolution
 from app.models.schedule import AgentSchedule
 from app.models.trigger import AgentTrigger
@@ -19,7 +20,13 @@ from app.models.trigger import AgentTrigger
 
 async def migrate():
     """Convert all AgentSchedule records to AgentTrigger(type='cron')."""
-    async with async_session() as db:
+    # One-time ops migration across every agent's schedules — needs cross-tenant
+    # visibility, so run under an explicit audited bypass.
+    async with (
+        async_session() as db,
+        enter_rls_bypass(db, reason="one-time schedule→trigger migration across all agents") as bdb,
+    ):
+        db = bdb
         result = await db.execute(
             select(
                 AgentSchedule.id,

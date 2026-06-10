@@ -5,7 +5,8 @@ import uuid
 
 from sqlalchemy import select
 
-from app.database import async_session
+from app.database import tenant_scoped_session
+from app.services.tenant_resolver import resolve_tenant_for_agent
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,11 @@ async def _get_feishu_app_credentials(agent_id: uuid.UUID) -> tuple[str, str] | 
     from app.models.channel_config import ChannelConfig
     from app.models.tenant_channel_config import TenantChannelConfig
 
-    async with async_session() as db:
+    # RLS 阶段1: reads the policy-bearing `agents` row (plus the agent's channel
+    # config and tenant bot config) — scope to the agent's tenant (audited
+    # single-row bypass to resolve it).
+    tid = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tid) as db:
         result = await db.execute(
             select(ChannelConfig).where(
                 ChannelConfig.agent_id == agent_id,
@@ -145,6 +150,7 @@ async def _get_agent_calendar_id(token: str) -> tuple[str | None, str | None]:
     Returns (calendar_id, None) on success, or (None, human_readable_error) on failure.
     """
     import httpx
+
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
             "https://open.feishu.cn/open-apis/calendar/v4/calendars/primary",
@@ -175,6 +181,7 @@ async def _get_agent_calendar_id(token: str) -> tuple[str | None, str | None]:
 async def _feishu_resolve_open_id(token: str, email: str) -> str | None:
     """Resolve a user's open_id from their email."""
     import httpx
+
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
             "https://open.feishu.cn/open-apis/contact/v3/users/batch_get_id",
@@ -214,6 +221,7 @@ def _iso_to_ts(iso_str: str) -> float:
     # Fallback: dateutil handles almost everything LLMs produce
     try:
         from dateutil import parser as _dp
+
         d = _dp.parse(stripped)
         if d.tzinfo is None:
             d = d.replace(tzinfo=_tz.utc)

@@ -36,7 +36,8 @@ from uuid import UUID
 
 from sqlalchemy import select
 
-from app.database import async_session
+from app.database import tenant_scoped_session
+from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.kernel import ExecutionIdentityRef
 from app.models.agent import Agent
 from app.models.llm import LLMModel
@@ -89,7 +90,8 @@ def _build_launcher_user_prompt(plan: AgentPlanRequest, *, seed_context: dict[st
 
 async def _resolve_agent_models(agent_id: UUID) -> tuple[LLMModel | None, LLMModel | None, Agent | None]:
     """Resolve (primary, fallback, agent) tenant-scoped for the plan-mode run."""
-    async with async_session() as db:
+    tenant_id = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tenant_id) as db:
         agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
         agent = agent_result.scalar_one_or_none()
         if agent is None:

@@ -142,6 +142,7 @@ async def list_llm_models(
 
     # Get default model ID from TenantSetting
     from app.models.tenant_setting import TenantSetting
+
     default_model_id = None
     ts_result = await db.execute(
         select(TenantSetting.value).where(
@@ -153,11 +154,7 @@ async def list_llm_models(
     if isinstance(ts_val, dict):
         default_model_id = ts_val.get("model_id")
 
-    query = (
-        select(LLMModel)
-        .where(LLMModel.tenant_id == target_tenant_id)
-        .order_by(LLMModel.created_at.desc())
-    )
+    query = select(LLMModel).where(LLMModel.tenant_id == target_tenant_id).order_by(LLMModel.created_at.desc())
     result = await db.execute(query)
     models = []
     first_model_id = None
@@ -172,7 +169,7 @@ async def list_llm_models(
     # If no default set, first created model is default
     effective_default = default_model_id or first_model_id
     for out in models:
-        out.is_default = (str(out.id) == effective_default)
+        out.is_default = str(out.id) == effective_default
 
     return models
 
@@ -191,13 +188,12 @@ async def set_default_model(
         raise HTTPException(status_code=400, detail="model_id required")
 
     # Verify model exists and belongs to tenant
-    m = await db.execute(
-        select(LLMModel).where(LLMModel.id == model_id, LLMModel.tenant_id == target_tenant_id)
-    )
+    m = await db.execute(select(LLMModel).where(LLMModel.id == model_id, LLMModel.tenant_id == target_tenant_id))
     if not m.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Model not found")
 
     from app.models.tenant_setting import TenantSetting
+
     existing = await db.execute(
         select(TenantSetting).where(
             TenantSetting.tenant_id == target_tenant_id,
@@ -277,9 +273,7 @@ async def remove_llm_model(
 ):
     """Remove an LLM model from the pool (tenant-scoped)."""
     target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
-    result = await db.execute(
-        select(LLMModel).where(LLMModel.id == model_id, LLMModel.tenant_id == target_tenant_id)
-    )
+    result = await db.execute(select(LLMModel).where(LLMModel.id == model_id, LLMModel.tenant_id == target_tenant_id))
     model = result.scalar_one_or_none()
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
@@ -348,9 +342,7 @@ async def update_llm_model(
 ):
     """Update an existing LLM model in the pool (admin, tenant-scoped)."""
     target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
-    result = await db.execute(
-        select(LLMModel).where(LLMModel.id == model_id, LLMModel.tenant_id == target_tenant_id)
-    )
+    result = await db.execute(select(LLMModel).where(LLMModel.id == model_id, LLMModel.tenant_id == target_tenant_id))
     model = result.scalar_one_or_none()
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
@@ -438,9 +430,7 @@ async def list_enterprise_info(
     """List all enterprise information entries."""
     target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
     result = await db.execute(
-        select(EnterpriseInfo)
-        .where(EnterpriseInfo.tenant_id == target_tenant_id)
-        .order_by(EnterpriseInfo.info_type)
+        select(EnterpriseInfo).where(EnterpriseInfo.tenant_id == target_tenant_id).order_by(EnterpriseInfo.info_type)
     )
     infos = [e for e in result.scalars().all() if getattr(e, "tenant_id", None) == target_tenant_id]
     return [EnterpriseInfoOut.model_validate(e) for e in infos]
@@ -465,6 +455,7 @@ async def update_enterprise_info(
     try:
         from app.services.workspace_sync import sync_company_profile
         from app.services.workspace_sync_dirty import mark_tenant_dirty
+
         await sync_company_profile(db, target_tenant_id)
         mark_tenant_dirty(target_tenant_id)
     except Exception as sync_err:
@@ -1068,8 +1059,9 @@ async def trigger_org_sync(
     # Sync org structure to workspace files + broadcast dirty mark to peers
     from app.services.workspace_sync import sync_org_structure
     from app.services.workspace_sync_dirty import mark_tenant_dirty
-    from app.database import async_session
-    async with async_session() as db:
+    from app.database import tenant_scoped_session
+
+    async with tenant_scoped_session(target_tenant_id) as db:
         await sync_org_structure(db, target_tenant_id)
     mark_tenant_dirty(target_tenant_id)
 
@@ -1133,6 +1125,7 @@ async def list_invitation_codes(
     """List invitation codes for the current user's company."""
     _require_tenant_admin(current_user)
     from sqlalchemy import func as sqla_func
+
     target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
 
     base_filter = InvitationCode.tenant_id == target_tenant_id

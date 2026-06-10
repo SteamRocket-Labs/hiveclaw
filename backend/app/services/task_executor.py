@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 from loguru import logger
 from sqlalchemy import select
 
-from app.database import async_session
+from app.database import tenant_scoped_session
+from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.kernel.contracts import ExecutionIdentityRef
 from app.models.agent import Agent
 from app.models.audit import ChatMessage
@@ -234,8 +235,14 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
     """
     logger.info(f"[TaskExec] Starting task {task_id} for agent {agent_id}")
 
+    # Detached background task (asyncio.create_task from api/tasks.py): the HTTP
+    # request's tenant ContextVar is gone by the time this runs, yet step 2 reads
+    # agents/llm_models (RLS-policied) and the whole flow must pin one tenant. Resolve
+    # the owning tenant once via an audited bypass read, then pin every session below.
+    tenant_id = await resolve_tenant_for_agent(agent_id)
+
     # Step 1: Mark as doing
-    async with async_session() as db:
+    async with tenant_scoped_session(tenant_id) as db:
         result = await db.execute(select(Task).where(Task.id == task_id))
         task = result.scalar_one_or_none()
         if not task:
@@ -271,16 +278,16 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
     runtime_messages = [{"role": "user", "content": user_prompt}]
 
     # Step 2: Load agent + model
-    async with async_session() as db:
+    async with tenant_scoped_session(tenant_id) as db:
         agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
         agent = agent_result.scalar_one_or_none()
         if not agent:
-            await _log_error(task_id, "数字员工未找到")
+            await _log_error(task_id, "数字员工未找到", tenant_id=tenant_id)
             return
 
         model_id = agent.primary_model_id or agent.fallback_model_id
         if not model_id:
-            await _log_error(task_id, f"{agent.name} 未配置 LLM 模型，无法执行任务")
+            await _log_error(task_id, f"{agent.name} 未配置 LLM 模型，无法执行任务", tenant_id=tenant_id)
             return
 
         model_result = await db.execute(
@@ -295,7 +302,7 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
             )
             fallback_model = fb_result.scalar_one_or_none()
         if not model:
-            await _log_error(task_id, "配置的模型不存在")
+            await _log_error(task_id, "配置的模型不存在", tenant_id=tenant_id)
             return
 
         agent_name = agent.name
@@ -336,7 +343,7 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
         async def _on_tool_call(data: dict) -> None:
             if data.get("status") != "done":
                 return
-            async with async_session() as tc_db:
+            async with tenant_scoped_session(tenant_id) as tc_db:
                 tc_db.add(
                     ChatMessage(
                         agent_id=agent_id,
@@ -393,11 +400,11 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
     except Exception as e:
         error_msg = str(e) or repr(e)
         logger.error(f"[TaskExec] Error: {error_msg}")
-        await _log_error(task_id, f"执行出错: {error_msg[:150]}")
+        await _log_error(task_id, f"执行出错: {error_msg[:150]}", tenant_id=tenant_id)
         return
 
     # Step 5: Save result and update status
-    async with async_session() as db:
+    async with tenant_scoped_session(tenant_id) as db:
         result = await db.execute(select(Task).where(Task.id == task_id))
         task = result.scalar_one_or_none()
         if task:
@@ -429,9 +436,9 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
     )
 
 
-async def _log_error(task_id: uuid.UUID, message: str) -> None:
+async def _log_error(task_id: uuid.UUID, message: str, *, tenant_id: uuid.UUID | None = None) -> None:
     """Add an error log to the task."""
     logger.error(f"[TaskExec] Error for {task_id}: {message}")
-    async with async_session() as db:
+    async with tenant_scoped_session(tenant_id) as db:
         db.add(TaskLog(task_id=task_id, content=f"❌ {message}"))
         await db.commit()

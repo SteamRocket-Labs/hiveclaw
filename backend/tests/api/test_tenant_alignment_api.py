@@ -96,28 +96,32 @@ async def test_enterprise_info_list_scopes_to_selected_tenant():
 
     own_tenant_id = uuid4()
     target_tenant_id = uuid4()
-    db = _FakeDB([
-        _ListResult([
-            SimpleNamespace(
-                id=uuid4(),
-                tenant_id=own_tenant_id,
-                info_type="company_profile",
-                content={"name": "Own"},
-                version=1,
-                visible_roles=[],
-                updated_at=datetime.now(timezone.utc),
-            ),
-            SimpleNamespace(
-                id=uuid4(),
-                tenant_id=target_tenant_id,
-                info_type="company_profile",
-                content={"name": "Target"},
-                version=2,
-                visible_roles=[],
-                updated_at=datetime.now(timezone.utc),
-            ),
-        ])
-    ])
+    db = _FakeDB(
+        [
+            _ListResult(
+                [
+                    SimpleNamespace(
+                        id=uuid4(),
+                        tenant_id=own_tenant_id,
+                        info_type="company_profile",
+                        content={"name": "Own"},
+                        version=1,
+                        visible_roles=[],
+                        updated_at=datetime.now(timezone.utc),
+                    ),
+                    SimpleNamespace(
+                        id=uuid4(),
+                        tenant_id=target_tenant_id,
+                        info_type="company_profile",
+                        content={"name": "Target"},
+                        version=2,
+                        visible_roles=[],
+                        updated_at=datetime.now(timezone.utc),
+                    ),
+                ]
+            )
+        ]
+    )
 
     result = await enterprise_api.list_enterprise_info(
         tenant_id=str(target_tenant_id),
@@ -135,14 +139,18 @@ async def test_feishu_org_sync_setting_scopes_to_selected_tenant():
 
     own_tenant_id = uuid4()
     target_tenant_id = uuid4()
-    db = _FakeDB([
-        _ScalarResult(SimpleNamespace(
-            tenant_id=target_tenant_id,
-            key="feishu_org_sync",
-            value={"app_id": "tenant-b-app"},
-            updated_at=datetime.now(timezone.utc),
-        ))
-    ])
+    db = _FakeDB(
+        [
+            _ScalarResult(
+                SimpleNamespace(
+                    tenant_id=target_tenant_id,
+                    key="feishu_org_sync",
+                    value={"app_id": "tenant-b-app"},
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+        ]
+    )
 
     result = await enterprise_api.get_system_setting(
         key="feishu_org_sync",
@@ -169,8 +177,16 @@ async def test_org_sync_route_uses_selected_tenant(monkeypatch):
     async def fake_sync_org_structure(db, tenant_id):
         captured["workspace_sync_tenant_id"] = tenant_id
 
+    class _FakeSessionContext:
+        async def __aenter__(self):
+            return "db"
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
     monkeypatch.setattr("app.services.org_sync_service.org_sync_service.full_sync", fake_full_sync)
     monkeypatch.setattr("app.services.workspace_sync.sync_org_structure", fake_sync_org_structure)
+    monkeypatch.setattr("app.database.tenant_scoped_session", lambda *a, **k: _FakeSessionContext())
 
     result = await enterprise_api.trigger_org_sync(
         tenant_id=str(target_tenant_id),
@@ -187,28 +203,32 @@ async def test_enterprise_org_departments_default_to_current_tenant():
     import app.api.enterprise as enterprise_api
 
     current_tenant_id = uuid4()
-    db = _FakeDB([
-        _ListResult([
-            SimpleNamespace(
-                id=uuid4(),
-                tenant_id=current_tenant_id,
-                feishu_id="dept-a",
-                name="Dept A",
-                parent_id=None,
-                path="Dept A",
-                member_count=2,
-            ),
-            SimpleNamespace(
-                id=uuid4(),
-                tenant_id=uuid4(),
-                feishu_id="dept-b",
-                name="Dept B",
-                parent_id=None,
-                path="Dept B",
-                member_count=1,
-            ),
-        ])
-    ])
+    db = _FakeDB(
+        [
+            _ListResult(
+                [
+                    SimpleNamespace(
+                        id=uuid4(),
+                        tenant_id=current_tenant_id,
+                        feishu_id="dept-a",
+                        name="Dept A",
+                        parent_id=None,
+                        path="Dept A",
+                        member_count=2,
+                    ),
+                    SimpleNamespace(
+                        id=uuid4(),
+                        tenant_id=uuid4(),
+                        feishu_id="dept-b",
+                        name="Dept B",
+                        parent_id=None,
+                        path="Dept B",
+                        member_count=1,
+                    ),
+                ]
+            )
+        ]
+    )
 
     result = await enterprise_api.list_org_departments(
         current_user=SimpleNamespace(role="org_admin", tenant_id=current_tenant_id),
@@ -224,28 +244,32 @@ async def test_enterprise_org_members_default_to_current_tenant():
     import app.api.enterprise as enterprise_api
 
     current_tenant_id = uuid4()
-    db = _FakeDB([
-        _ListResult([
-            SimpleNamespace(
-                id=uuid4(),
-                tenant_id=current_tenant_id,
-                name="Alice",
-                email="alice@example.com",
-                title="PM",
-                department_path="Dept A",
-                avatar_url=None,
-            ),
-            SimpleNamespace(
-                id=uuid4(),
-                tenant_id=uuid4(),
-                name="Bob",
-                email="bob@example.com",
-                title="HR",
-                department_path="Dept B",
-                avatar_url=None,
-            ),
-        ])
-    ])
+    db = _FakeDB(
+        [
+            _ListResult(
+                [
+                    SimpleNamespace(
+                        id=uuid4(),
+                        tenant_id=current_tenant_id,
+                        name="Alice",
+                        email="alice@example.com",
+                        title="PM",
+                        department_path="Dept A",
+                        avatar_url=None,
+                    ),
+                    SimpleNamespace(
+                        id=uuid4(),
+                        tenant_id=uuid4(),
+                        name="Bob",
+                        email="bob@example.com",
+                        title="HR",
+                        department_path="Dept B",
+                        avatar_url=None,
+                    ),
+                ]
+            )
+        ]
+    )
 
     result = await enterprise_api.list_org_members(
         current_user=SimpleNamespace(role="org_admin", tenant_id=current_tenant_id),
@@ -281,29 +305,33 @@ async def test_legacy_org_department_tree_supports_selected_tenant():
 
     own_tenant_id = uuid4()
     target_tenant_id = uuid4()
-    db = _FakeDB([
-        _ListResult([
-            SimpleNamespace(
-                id=uuid4(),
-                tenant_id=own_tenant_id,
-                name="Own Root",
-                parent_id=None,
-                manager_id=None,
-                sort_order=0,
-                created_at=datetime.now(timezone.utc),
+    db = _FakeDB(
+        [
+            _ListResult(
+                [
+                    SimpleNamespace(
+                        id=uuid4(),
+                        tenant_id=own_tenant_id,
+                        name="Own Root",
+                        parent_id=None,
+                        manager_id=None,
+                        sort_order=0,
+                        created_at=datetime.now(timezone.utc),
+                    ),
+                    SimpleNamespace(
+                        id=uuid4(),
+                        tenant_id=target_tenant_id,
+                        name="Target Root",
+                        parent_id=None,
+                        manager_id=None,
+                        sort_order=0,
+                        created_at=datetime.now(timezone.utc),
+                    ),
+                ]
             ),
-            SimpleNamespace(
-                id=uuid4(),
-                tenant_id=target_tenant_id,
-                name="Target Root",
-                parent_id=None,
-                manager_id=None,
-                sort_order=0,
-                created_at=datetime.now(timezone.utc),
-            ),
-        ]),
-        _ScalarResult(0),
-    ])
+            _ScalarResult(0),
+        ]
+    )
 
     result = await organization_api.get_department_tree(
         tenant_id=str(target_tenant_id),

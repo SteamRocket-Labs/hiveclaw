@@ -33,7 +33,7 @@ from typing import Any
 from loguru import logger
 from sqlalchemy import select
 
-from app.database import async_session
+from app.database import async_session, enter_rls_bypass
 from app.models.trigger import AgentTrigger
 from app.services import plan_mode_core
 
@@ -88,11 +88,17 @@ async def mark_existing_triggers_plan_exempt(
     Returns:
         ``{"checked", "stamped", "skipped", "agent_id"}`` accounting.
     """
-    async with async_session() as db:
+    # Operator cutover deliberately spans every tenant (agent_id=None grandfathers
+    # all enabled triggers across the deployment), so it cannot run under a single
+    # tenant's GUC — open an audited cross-tenant bypass.
+    async with (
+        async_session() as db,
+        enter_rls_bypass(db, reason="plan-mode cutover grandfather (cross-tenant trigger exemption)") as bypass_db,
+    ):
         stmt = select(AgentTrigger).where(AgentTrigger.is_enabled.is_(True))
         if agent_id is not None:
             stmt = stmt.where(AgentTrigger.agent_id == agent_id)
-        result = await db.execute(stmt)
+        result = await bypass_db.execute(stmt)
         triggers = list(result.scalars().all())
 
         stamped = 0
@@ -101,7 +107,7 @@ async def mark_existing_triggers_plan_exempt(
                 stamped += 1
 
         if commit and stamped:
-            await db.commit()
+            await bypass_db.commit()
 
     report = {
         "agent_id": str(agent_id) if agent_id is not None else None,

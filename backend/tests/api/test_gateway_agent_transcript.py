@@ -72,9 +72,9 @@ class _AsyncSessionFactory:
     def __init__(self, dbs: list[_FakeDB]) -> None:
         self._dbs = list(dbs)
 
-    def __call__(self):
+    def __call__(self, *args, **kwargs):
         if not self._dbs:
-            raise AssertionError("Unexpected async_session() call")
+            raise AssertionError("Unexpected session call")
         return _AsyncSessionContext(self._dbs.pop(0))
 
 
@@ -139,6 +139,7 @@ async def test_gateway_report_result_persists_openclaw_agent_reply_to_chat_trans
         agent_type="openclaw",
         creator_id=uuid4(),
         openclaw_last_seen=None,
+        tenant_id=uuid4(),
     )
     sender_agent = SimpleNamespace(
         id=uuid4(),
@@ -170,7 +171,7 @@ async def test_gateway_report_result_persists_openclaw_agent_reply_to_chat_trans
     monkeypatch.setattr(gateway_mod, "_get_agent_by_key", fake_get_agent_by_key)
     monkeypatch.setattr(gateway_mod, "find_or_create_agent_pair_session", fake_find_or_create_agent_pair_session)
     monkeypatch.setattr(gateway_mod, "session_conversation_id", lambda _session: "agent-pair-conv")
-    monkeypatch.setattr(gateway_mod, "async_session", lambda: _AsyncSessionContext(reply_db))
+    monkeypatch.setattr(gateway_mod, "tenant_scoped_session", lambda *a, **k: _AsyncSessionContext(reply_db))
 
     result = await gateway_mod.report_result(
         GatewayReportRequest(message_id=queued_message.id, result="Here is the release summary."),
@@ -230,15 +231,17 @@ async def test_gateway_poll_history_prefers_participant_display_names(monkeypatc
             created_at=datetime.now(timezone.utc),
         ),
     ]
-    db = _FakeDB([
-        [queued_message],
-        "Source OpenClaw",
-        history_messages,
-        source_participant.display_name,
-        target_participant.display_name,
-        [],
-        [],
-    ])
+    db = _FakeDB(
+        [
+            [queued_message],
+            "Source OpenClaw",
+            history_messages,
+            source_participant.display_name,
+            target_participant.display_name,
+            [],
+            [],
+        ]
+    )
 
     async def fake_get_agent_by_key(_api_key, _db):
         return current_agent
@@ -275,7 +278,7 @@ async def test_send_to_agent_background_persists_participant_ids_for_native_agen
 
     monkeypatch.setattr(gateway_mod, "find_or_create_agent_pair_session", fake_find_or_create_agent_pair_session)
     monkeypatch.setattr(gateway_mod, "session_conversation_id", lambda _session: "agent-pair-conv")
-    monkeypatch.setattr(gateway_mod, "async_session", _AsyncSessionFactory([first_db, second_db]))
+    monkeypatch.setattr(gateway_mod, "tenant_scoped_session", _AsyncSessionFactory([first_db, second_db]))
     monkeypatch.setattr(websocket_mod, "call_llm", fake_call_llm)
 
     await gateway_mod._send_to_agent_background(

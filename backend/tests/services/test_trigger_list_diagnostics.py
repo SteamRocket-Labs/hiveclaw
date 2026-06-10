@@ -59,12 +59,22 @@ async def test_list_triggers_includes_no_model_diagnostic(monkeypatch):
         heartbeat_enabled=True,
         primary_model_id=None,
     )
-    session = _SequenceSession([
-        _ScalarsResult([trigger]),
-        _ScalarsResult([agent]),
-    ])
+    session = _SequenceSession(
+        [
+            _ScalarsResult([trigger]),
+            _ScalarsResult([agent]),
+        ]
+    )
 
-    monkeypatch.setattr(trigger_domain, "async_session", lambda: session)
+    # RLS 阶段1: _handle_list_triggers now resolves the agent's tenant and opens
+    # a tenant-scoped session. Yield the fake session (no real SET LOCAL, so the
+    # result sequence is unchanged) and stub the tenant resolver. triggers.py
+    # imports both at module level.
+    async def _resolve(*_a, **_k):
+        return agent.tenant_id
+
+    monkeypatch.setattr(trigger_domain, "tenant_scoped_session", lambda *_a, **_k: session, raising=False)
+    monkeypatch.setattr(trigger_domain, "resolve_tenant_for_agent", _resolve, raising=False)
 
     result = await trigger_domain._handle_list_triggers(agent_id)
 

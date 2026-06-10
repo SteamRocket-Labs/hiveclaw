@@ -47,7 +47,7 @@ async def test_save_skill_to_db_can_return_existing_skill(monkeypatch):
     tenant_id = str(uuid4())
     existing = SimpleNamespace(id=uuid4(), name="Market Research", folder_name="market-research-agent")
     session = _SkillSession([existing])
-    monkeypatch.setattr(skills_api, "async_session", lambda: session)
+    monkeypatch.setattr(skills_api, "tenant_scoped_session", lambda *a, **k: session)
 
     result = await skills_api._save_skill_to_db(
         folder_name="market-research-agent",

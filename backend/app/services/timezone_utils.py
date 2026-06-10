@@ -6,7 +6,7 @@ from datetime import datetime
 
 from sqlalchemy import select
 
-from app.database import async_session
+from app.database import tenant_scoped_session
 
 
 # Common timezones for frontend dropdown
@@ -39,8 +39,10 @@ async def get_agent_timezone(agent_id: uuid.UUID) -> str:
     """
     from app.models.agent import Agent
     from app.models.tenant import Tenant
+    from app.services.tenant_resolver import resolve_tenant_for_agent
 
-    async with async_session() as db:
+    tenant_id = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tenant_id) as db:
         result = await db.execute(select(Agent).where(Agent.id == agent_id))
         agent = result.scalar_one_or_none()
         if not agent:
@@ -67,7 +69,7 @@ def get_agent_timezone_sync(agent, tenant=None) -> str:
     """
     if agent.timezone:
         return agent.timezone
-    if tenant and hasattr(tenant, 'timezone') and tenant.timezone:
+    if tenant and hasattr(tenant, "timezone") and tenant.timezone:
         return tenant.timezone
     return "UTC"
 

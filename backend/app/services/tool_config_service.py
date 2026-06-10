@@ -16,7 +16,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import async_session
+from app.database import tenant_scoped_session
 from app.models.tenant_tool_config import TenantToolConfig
 from app.models.tool import AgentTool, Tool
 
@@ -149,64 +149,66 @@ async def resolve_tool_config(
     If tenant_id is not provided but agent_id is, resolves tenant_id from agent.
     Merges: Tool.config → TenantToolConfig.config → AgentTool.config (if agent_id given).
     """
-    should_close = db is None
     if db is None:
-        db = async_session()
+        # No caller session: open a GUC-pinned one so the Tool/Agent reads survive
+        # under enforced (non-owner) RLS. tenant_id may be None here (only agent_id
+        # given) — resolve the owning tenant first so the GUC is pinned before the
+        # agents read below, which is itself RLS-policied. The caller-`db` path is
+        # already inside a governed session and is left untouched (Note K).
+        effective_tenant = tenant_id
+        if not effective_tenant and agent_id:
+            from app.services.tenant_resolver import resolve_tenant_for_agent
 
-    try:
-        # 1. Get base tool
-        result = await db.execute(
-            select(Tool).where(Tool.name == tool_name, Tool.tenant_id.is_(None)).limit(1)
-        )
-        tool = result.scalar_one_or_none()
+            effective_tenant = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(effective_tenant) as scoped_db:
+            return await resolve_tool_config(tool_name, tenant_id, agent_id=agent_id, db=scoped_db)
+
+    # 1. Get base tool
+    result = await db.execute(select(Tool).where(Tool.name == tool_name, Tool.tenant_id.is_(None)).limit(1))
+    tool = result.scalar_one_or_none()
+    if not tool:
+        # Try tenant-scoped tool
+        if tenant_id:
+            result = await db.execute(select(Tool).where(Tool.name == tool_name, Tool.tenant_id == tenant_id).limit(1))
+            tool = result.scalar_one_or_none()
         if not tool:
-            # Try tenant-scoped tool
-            if tenant_id:
-                result = await db.execute(
-                    select(Tool).where(Tool.name == tool_name, Tool.tenant_id == tenant_id).limit(1)
-                )
-                tool = result.scalar_one_or_none()
-            if not tool:
-                return {}
+            return {}
 
-        base_config = dict(tool.config or {})
+    base_config = dict(tool.config or {})
 
-        # 2. Resolve tenant_id from agent if needed
-        effective_tenant_id = tenant_id
-        if not effective_tenant_id and agent_id:
-            from app.models.agent import Agent
+    # 2. Resolve tenant_id from agent if needed
+    effective_tenant_id = tenant_id
+    if not effective_tenant_id and agent_id:
+        from app.models.agent import Agent
 
-            agent_r = await db.execute(select(Agent.tenant_id).where(Agent.id == agent_id))
-            effective_tenant_id = agent_r.scalar_one_or_none()
+        agent_r = await db.execute(select(Agent.tenant_id).where(Agent.id == agent_id))
+        effective_tenant_id = agent_r.scalar_one_or_none()
 
-        # 3. Merge tenant-level override
-        if effective_tenant_id:
-            ttc_r = await db.execute(
-                select(TenantToolConfig).where(
-                    TenantToolConfig.tenant_id == effective_tenant_id,
-                    TenantToolConfig.tool_id == tool.id,
-                )
+    # 3. Merge tenant-level override
+    if effective_tenant_id:
+        ttc_r = await db.execute(
+            select(TenantToolConfig).where(
+                TenantToolConfig.tenant_id == effective_tenant_id,
+                TenantToolConfig.tool_id == tool.id,
             )
-            ttc = ttc_r.scalar_one_or_none()
-            if ttc and ttc.config:
-                base_config.update(ttc.config)
+        )
+        ttc = ttc_r.scalar_one_or_none()
+        if ttc and ttc.config:
+            base_config.update(ttc.config)
 
-        # 4. Merge agent-level override (if requested)
-        if agent_id:
-            at_r = await db.execute(
-                select(AgentTool.config).where(
-                    AgentTool.agent_id == agent_id,
-                    AgentTool.tool_id == tool.id,
-                )
+    # 4. Merge agent-level override (if requested)
+    if agent_id:
+        at_r = await db.execute(
+            select(AgentTool.config).where(
+                AgentTool.agent_id == agent_id,
+                AgentTool.tool_id == tool.id,
             )
-            agent_config = at_r.scalar_one_or_none()
-            if agent_config:
-                base_config.update(agent_config)
+        )
+        agent_config = at_r.scalar_one_or_none()
+        if agent_config:
+            base_config.update(agent_config)
 
-        return decrypt_tool_config_secrets(base_config, tool.config_schema)
-    finally:
-        if should_close:
-            await db.close()
+    return decrypt_tool_config_secrets(base_config, tool.config_schema)
 
 
 async def get_or_create_tenant_tool_config(

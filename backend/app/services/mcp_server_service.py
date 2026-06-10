@@ -745,11 +745,18 @@ async def import_mcp_for_agent_and_register(
     that import, preserving agent-scoped install semantics instead of assigning
     the server to every tenant agent.
     """
-    from app.database import async_session
+    from app.database import async_session, enter_rls_bypass, tenant_scoped_session
     from app.services.resource_discovery import import_mcp_direct, import_mcp_from_smithery
 
     config = dict(config or {})
-    async with async_session() as db:
+    # Bootstrap the agent's tenant from the policied ``agents`` table by PK.
+    # Audit-bypass (DD-A): reading an agent's own tenant fail-closes under
+    # enforced RLS otherwise (chicken-and-egg). Reads the whole agent row, so we
+    # wrap the existing query directly rather than the single-column helper.
+    async with (
+        async_session() as db,
+        enter_rls_bypass(db, reason=f"MCP import agent-tenant bootstrap for agent {agent_id}"),
+    ):
         agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
         agent = agent_result.scalar_one_or_none()
         if agent is None or not agent.tenant_id:
@@ -764,7 +771,7 @@ async def import_mcp_for_agent_and_register(
             raise ValueError("server_id or mcp_url is required")
         message = await import_mcp_from_smithery(server_id, agent_id, config or None, reauthorize=reauthorize)
 
-    async with async_session() as db:
+    async with tenant_scoped_session(tenant_id) as db:
         query = (
             select(Tool.mcp_server_name, Tool.mcp_server_url)
             .join(AgentTool, AgentTool.tool_id == Tool.id)

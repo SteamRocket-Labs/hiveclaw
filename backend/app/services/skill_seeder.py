@@ -6,7 +6,7 @@ from pathlib import Path
 from loguru import logger
 from sqlalchemy import select
 
-from app.database import async_session
+from app.database import async_session, enter_rls_bypass
 from app.models.skill import Skill, SkillFile
 from app.skills.retired import RETIRED_BUILTIN_SKILL_FOLDERS
 
@@ -92,9 +92,7 @@ def _load_pack_skill_dicts() -> list[dict]:
                 except UnicodeDecodeError:
                     logger.warning(f"[SkillSeeder] SKILL.md not UTF-8: {skill_md}")
                     continue
-                name, description = _extract_skill_frontmatter(
-                    skill_md_content, fallback=folder_name
-                )
+                name, description = _extract_skill_frontmatter(skill_md_content, fallback=folder_name)
 
                 files: list[dict] = []
                 for f in skill_dir.rglob("*"):
@@ -123,9 +121,7 @@ def _load_pack_skill_dicts() -> list[dict]:
                     }
                 )
                 seen_folders.add(folder_name)
-                logger.info(
-                    f"[SkillSeeder] Discovered pack skill: {manifest.name}/{folder_name} ({len(files)} files)"
-                )
+                logger.info(f"[SkillSeeder] Discovered pack skill: {manifest.name}/{folder_name} ({len(files)} files)")
 
     return skill_dicts
 
@@ -635,7 +631,16 @@ async def cleanup_retired_builtin_skills() -> dict:
     removed_skill_rows: list[str] = []
     cleaned_agent_dirs: dict[str, list[str]] = {}
 
-    async with async_session() as db:
+    # Startup maintenance: scrubs retired builtin skills from every agent across
+    # all tenants — the unfiltered Agent scan needs cross-tenant visibility, so
+    # it runs under an explicit audited bypass.
+    async with (
+        async_session() as db,
+        enter_rls_bypass(
+            db, reason="startup maintenance: remove retired builtin skills across all agent workspaces"
+        ) as bdb,
+    ):
+        db = bdb
         result = await db.execute(
             select(Skill).where(
                 Skill.is_builtin == True,  # noqa: E712
@@ -689,12 +694,17 @@ async def push_default_skills_to_existing_agents():
     from sqlalchemy.orm import selectinload
     from app.services.agent_manager import agent_manager
 
-    async with async_session() as db:
+    # Startup: pushes default skills into every agent across all tenants — the
+    # unfiltered Agent scan needs cross-tenant visibility, so run under an
+    # explicit audited bypass.
+    async with (
+        async_session() as db,
+        enter_rls_bypass(db, reason="startup: push default skills to every existing agent across tenants") as bdb,
+    ):
+        db = bdb
         # Load all is_default skills with their files
         default_skills_r = await db.execute(
-            select(Skill)
-            .where(Skill.is_default, Skill.tenant_id.is_(None))
-            .options(selectinload(Skill.files))
+            select(Skill).where(Skill.is_default, Skill.tenant_id.is_(None)).options(selectinload(Skill.files))
         )
         default_skills = default_skills_r.scalars().all()
         if not default_skills:

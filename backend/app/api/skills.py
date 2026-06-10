@@ -13,7 +13,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.database import async_session, get_db
+from app.database import get_db, tenant_scoped_session
 from app.models.skill import Skill, SkillFile
 from app.core.security import require_role, get_current_user
 from app.models.user import User
@@ -35,7 +35,8 @@ async def _get_tenant_setting(tenant_id: str | None, key: str) -> str:
         try:
             from app.models.tenant_setting import TenantSetting
             import uuid as _uid
-            async with async_session() as db:
+
+            async with tenant_scoped_session(tenant_id) as db:
                 result = await db.execute(
                     select(TenantSetting).where(
                         TenantSetting.tenant_id == _uid.UUID(tenant_id),
@@ -97,12 +98,25 @@ class UrlImportIn(BaseModel):
 def classify_portability(content: str) -> int:
     """Classify skill portability: 1=pure prompt, 2=CLI/API, 3=OpenClaw native."""
     openclaw_markers = [
-        "bash pty:", "process action:", "Clawdbot", "exec tool",
-        "openclaw.json", "imessage tool", "slack tool",
+        "bash pty:",
+        "process action:",
+        "Clawdbot",
+        "exec tool",
+        "openclaw.json",
+        "imessage tool",
+        "slack tool",
     ]
     cli_markers = [
-        "requires:", "bins:", 'env:', "OPENAI_API_KEY", "GITHUB_TOKEN",
-        "python3", "brew ", "pip install", "npm install", "curl ",
+        "requires:",
+        "bins:",
+        "env:",
+        "OPENAI_API_KEY",
+        "GITHUB_TOKEN",
+        "python3",
+        "brew ",
+        "pip install",
+        "npm install",
+        "curl ",
     ]
     lower = content.lower()
     for kw in openclaw_markers:
@@ -117,6 +131,7 @@ def classify_portability(content: str) -> int:
 def _parse_skill_md_frontmatter(content: str) -> dict:
     """Extract YAML frontmatter from SKILL.md content."""
     import yaml
+
     match = re.match(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
     if not match:
         return {}
@@ -143,15 +158,11 @@ def _guard_skill_files_or_raise(files: list[dict], *, source: str) -> SkillGuard
 def _parse_github_url(url: str) -> dict | None:
     """Parse a GitHub URL into owner/repo/branch/path components."""
     # https://github.com/{owner}/{repo}/tree/{branch}/{path}
-    m = re.match(
-        r"https?://github\.com/([^/]+)/([^/]+)/tree/([^/]+)/(.*?)/?$", url
-    )
+    m = re.match(r"https?://github\.com/([^/]+)/([^/]+)/tree/([^/]+)/(.*?)/?$", url)
     if m:
         return {"owner": m.group(1), "repo": m.group(2), "branch": m.group(3), "path": m.group(4)}
     # https://github.com/{owner}/{repo}/{path} (assume main branch)
-    m = re.match(
-        r"https?://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$", url
-    )
+    m = re.match(r"https?://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$", url)
     if m:
         return {"owner": m.group(1), "repo": m.group(2), "branch": "main", "path": ""}
     return None
@@ -171,10 +182,9 @@ def _skill_visible_to_user(skill: Skill, current_user: User) -> bool:
     """Check whether the caller can read a specific skill."""
     if current_user.role == "platform_admin":
         if current_user.tenant_id:
-            return (
-                (skill.tenant_id is None and bool(getattr(skill, "is_builtin", False)))
-                or str(skill.tenant_id) == str(current_user.tenant_id)
-            )
+            return (skill.tenant_id is None and bool(getattr(skill, "is_builtin", False))) or str(
+                skill.tenant_id
+            ) == str(current_user.tenant_id)
         return True
     if skill.tenant_id is None:
         return bool(getattr(skill, "is_builtin", False))
@@ -234,7 +244,10 @@ async def _ensure_custom_skill_available(
 
 
 async def _fetch_github_directory(
-    owner: str, repo: str, path: str, branch: str = "main",
+    owner: str,
+    repo: str,
+    path: str,
+    branch: str = "main",
     token: str = "",
 ) -> list[dict]:
     """Recursively fetch all files from a GitHub directory via API.
@@ -267,16 +280,14 @@ async def _fetch_github_directory(
 
         # Early guard: if at top level, check that SKILL.md exists
         if depth == 0:
-            has_skill_md = any(
-                i["name"].upper() == "SKILL.MD" and i["type"] == "file"
-                for i in items
-            )
+            has_skill_md = any(i["name"].upper() == "SKILL.MD" and i["type"] == "file" for i in items)
             dir_count = sum(1 for i in items if i["type"] == "dir")
             if not has_skill_md:
                 if dir_count > 5:
                     raise HTTPException(
-                        400, f"This directory contains {dir_count} subdirectories but no SKILL.md. "
-                             "Please provide the URL to a specific skill directory."
+                        400,
+                        f"This directory contains {dir_count} subdirectories but no SKILL.md. "
+                        "Please provide the URL to a specific skill directory.",
                     )
                 raise HTTPException(400, "No SKILL.md found at the root of this directory — not a valid skill package.")
 
@@ -309,8 +320,12 @@ async def _fetch_github_directory(
 
 
 async def _save_skill_to_db(
-    folder_name: str, name: str, description: str,
-    category: str, icon: str, files: list[dict],
+    folder_name: str,
+    name: str,
+    description: str,
+    category: str,
+    icon: str,
+    files: list[dict],
     source_url: str | None = None,
     tenant_id: str | None = None,
     on_conflict: str = "error",
@@ -318,7 +333,7 @@ async def _save_skill_to_db(
     """Create a Skill + SkillFile records in the database."""
     import uuid as _uuid
 
-    async with async_session() as db:
+    async with tenant_scoped_session(tenant_id) as db:
         tenant_uuid = _uuid.UUID(tenant_id) if tenant_id else None
         if tenant_uuid is None:
             raise HTTPException(400, "No tenant associated")
@@ -349,8 +364,8 @@ async def _save_skill_to_db(
                     "status": "already_installed",
                 }
             raise HTTPException(
-                409, f"A skill with folder name '{folder_name}' already exists. "
-                     "Delete it first or use a different name."
+                409,
+                f"A skill with folder name '{folder_name}' already exists. Delete it first or use a different name.",
             )
 
         skill = Skill(
@@ -378,7 +393,7 @@ async def _find_existing_skill_by_folder_name(folder_name: str, tenant_id: str |
     """Return an existing skill by folder name within the current scope."""
     import uuid as _uuid
 
-    async with async_session() as db:
+    async with tenant_scoped_session(tenant_id) as db:
         tenant_uuid = _uuid.UUID(tenant_id) if tenant_id else None
         if tenant_uuid:
             result = await db.execute(
@@ -512,8 +527,7 @@ async def install_from_clawhub(body: ClawhubInstallIn, current_user: User = Depe
     except HTTPException as e:
         if e.status_code == 404:
             raise HTTPException(
-                404, f"Skill files not found in GitHub archive at {github_path}. "
-                     "Try importing via URL instead."
+                404, f"Skill files not found in GitHub archive at {github_path}. Try importing via URL instead."
             )
         raise
 
@@ -568,7 +582,9 @@ async def import_from_url(body: UrlImportIn, current_user: User = Depends(get_cu
     token = await _get_github_token(tenant_id)
     parsed = _parse_github_url(body.url)
     if not parsed:
-        raise HTTPException(400, "Invalid GitHub URL. Expected format: https://github.com/{owner}/{repo}/tree/{branch}/{path}")
+        raise HTTPException(
+            400, "Invalid GitHub URL. Expected format: https://github.com/{owner}/{repo}/tree/{branch}/{path}"
+        )
 
     owner, repo, branch, path = parsed["owner"], parsed["repo"], parsed["branch"], parsed["path"]
 
@@ -663,13 +679,14 @@ async def preview_url_import(body: UrlImportIn, current_user: User = Depends(get
 @router.get("/")
 async def list_skills(current_user: User = Depends(get_current_user)):
     """List global skills scoped by tenant (builtin + tenant-specific)."""
-    async with async_session() as db:
+    async with tenant_scoped_session(current_user.tenant_id) as db:
         query = select(Skill).options(selectinload(Skill.files)).order_by(Skill.name)
         scope_clause = _skill_scope_clause(current_user)
         if scope_clause is not None:
             query = query.where(scope_clause)
         result = await db.execute(query)
         skills = result.scalars().all()
+
         def _skill_declared_metadata(skill: Skill) -> tuple[list[str], list[str]]:
             skill_md = next((f.content for f in skill.files if f.path.upper() == "SKILL.MD"), "")
             frontmatter = _parse_skill_md_frontmatter(skill_md)
@@ -679,6 +696,7 @@ async def list_skills(current_user: User = Depends(get_current_user)):
                 [str(tool) for tool in declared_tools if tool],
                 [str(pack) for pack in declared_packs if pack],
             )
+
         return [
             {
                 "id": str(s.id),
@@ -704,9 +722,7 @@ async def get_skill(
     db: AsyncSession = Depends(get_db),
 ):
     """Get a skill with its files."""
-    result = await db.execute(
-        select(Skill).where(Skill.id == skill_id).options(selectinload(Skill.files))
-    )
+    result = await db.execute(select(Skill).where(Skill.id == skill_id).options(selectinload(Skill.files)))
     skill = result.scalar_one_or_none()
     if not skill or not _skill_visible_to_user(skill, current_user):
         raise HTTPException(404, "Skill not found")
@@ -722,10 +738,7 @@ async def get_skill(
         "is_builtin": skill.is_builtin,
         "declared_tools": [str(tool) for tool in (frontmatter.get("tools") or []) if tool],
         "declared_packs": [str(pack) for pack in (frontmatter.get("packs") or []) if pack],
-        "files": [
-            {"path": f.path, "content": f.content}
-            for f in skill.files
-        ],
+        "files": [{"path": f.path, "content": f.content} for f in skill.files],
     }
 
 
@@ -746,7 +759,7 @@ async def create_skill(
         ]
     )
     _guard_skill_files_or_raise(files_for_guard, source="admin_create")
-    async with async_session() as db:
+    async with tenant_scoped_session(current_user.tenant_id) as db:
         tenant_id = _current_tenant_or_400(current_user)
         await _ensure_custom_skill_available(
             db,
@@ -768,11 +781,13 @@ async def create_skill(
 
         if not body.files:
             # Auto-create a SKILL.md template
-            db.add(SkillFile(
-                skill_id=skill.id,
-                path="SKILL.md",
-                content=f"---\nname: {body.name}\ndescription: {body.description}\n---\n\n# {body.name}\n\n## Overview\n{body.description}\n",
-            ))
+            db.add(
+                SkillFile(
+                    skill_id=skill.id,
+                    path="SKILL.md",
+                    content=f"---\nname: {body.name}\ndescription: {body.description}\n---\n\n# {body.name}\n\n## Overview\n{body.description}\n",
+                )
+            )
         else:
             for f in body.files:
                 db.add(SkillFile(skill_id=skill.id, path=f.path, content=f.content))
@@ -801,10 +816,8 @@ async def update_skill(
             [{"path": f.path, "content": f.content} for f in body.files],
             source=f"admin_update:{skill_id}",
         )
-    async with async_session() as db:
-        result = await db.execute(
-            select(Skill).where(Skill.id == skill_id).options(selectinload(Skill.files))
-        )
+    async with tenant_scoped_session(current_user.tenant_id) as db:
+        result = await db.execute(select(Skill).where(Skill.id == skill_id).options(selectinload(Skill.files)))
         skill = result.scalar_one_or_none()
         if not skill or not _skill_visible_to_user(skill, current_user):
             raise HTTPException(404, "Skill not found")
@@ -845,7 +858,7 @@ async def delete_skill(
     current_user: User = Depends(require_role("platform_admin")),
 ):
     """Delete a skill (not builtin)."""
-    async with async_session() as db:
+    async with tenant_scoped_session(current_user.tenant_id) as db:
         result = await db.execute(select(Skill).where(Skill.id == skill_id))
         skill = result.scalar_one_or_none()
         if not skill or not _skill_visible_to_user(skill, current_user):
@@ -868,7 +881,8 @@ class SkillSettingsIn(BaseModel):
 async def _upsert_tenant_setting(tenant_id, key: str, value: str):
     """Helper to upsert a tenant setting."""
     from app.models.tenant_setting import TenantSetting
-    async with async_session() as db:
+
+    async with tenant_scoped_session(tenant_id) as db:
         result = await db.execute(
             select(TenantSetting).where(
                 TenantSetting.tenant_id == tenant_id,
@@ -879,11 +893,13 @@ async def _upsert_tenant_setting(tenant_id, key: str, value: str):
         if existing:
             existing.value = {"token": value}
         else:
-            db.add(TenantSetting(
-                tenant_id=tenant_id,
-                key=key,
-                value={"token": value},
-            ))
+            db.add(
+                TenantSetting(
+                    tenant_id=tenant_id,
+                    key=key,
+                    value={"token": value},
+                )
+            )
         await db.commit()
 
 
@@ -932,7 +948,7 @@ async def set_skill_token(
 @router.get("/browse/list")
 async def browse_list(path: str = "", current_user: User = Depends(get_current_user)):
     """List skill folders (root) or files/subdirs within a skill folder."""
-    async with async_session() as db:
+    async with tenant_scoped_session(current_user.tenant_id) as db:
         if not path or path == "/":
             # Root: list all skill folders (scoped by tenant)
             query = select(Skill).order_by(Skill.name)
@@ -941,10 +957,7 @@ async def browse_list(path: str = "", current_user: User = Depends(get_current_u
                 query = query.where(scope_clause)
             result = await db.execute(query)
             skills = result.scalars().all()
-            return [
-                {"name": s.folder_name, "path": s.folder_name, "is_dir": True, "size": 0}
-                for s in skills
-            ]
+            return [{"name": s.folder_name, "path": s.folder_name, "is_dir": True, "size": 0} for s in skills]
 
         # Inside a skill folder — resolve the skill and relative subpath
         clean = path.strip("/")
@@ -960,7 +973,7 @@ async def browse_list(path: str = "", current_user: User = Depends(get_current_u
             return []
 
         # Calculate the relative prefix within the skill (empty = skill root)
-        sub = clean[len(folder):].strip("/")  # e.g. "" or "scripts" or "scripts/sub"
+        sub = clean[len(folder) :].strip("/")  # e.g. "" or "scripts" or "scripts/sub"
 
         items = []
         seen_dirs: set[str] = set()
@@ -969,7 +982,7 @@ async def browse_list(path: str = "", current_user: User = Depends(get_current_u
                 # Only files that start with this sub prefix
                 if not f.path.startswith(sub + "/"):
                     continue
-                remainder = f.path[len(sub) + 1:]  # strip "scripts/" prefix
+                remainder = f.path[len(sub) + 1 :]  # strip "scripts/" prefix
             else:
                 remainder = f.path
 
@@ -995,7 +1008,7 @@ async def browse_read(path: str, current_user: User = Depends(get_current_user))
     if len(parts) < 2:
         raise HTTPException(400, "Path must include folder and file")
     folder, file_path = parts
-    async with async_session() as db:
+    async with tenant_scoped_session(current_user.tenant_id) as db:
         skill_q = select(Skill).where(Skill.folder_name == folder).options(selectinload(Skill.files))
         scope_clause = _skill_scope_clause(current_user)
         if scope_clause is not None:
@@ -1022,7 +1035,7 @@ async def browse_write(body: BrowseWriteIn, current_user: User = Depends(require
     if len(parts) < 2:
         raise HTTPException(400, "Path must include folder and file")
     folder, file_path = parts
-    async with async_session() as db:
+    async with tenant_scoped_session(current_user.tenant_id) as db:
         skill_q = select(Skill).where(Skill.folder_name == folder).options(selectinload(Skill.files))
         scope_clause = _skill_scope_clause(current_user)
         if scope_clause is not None:
@@ -1071,7 +1084,7 @@ async def browse_delete(path: str, current_user: User = Depends(require_role("pl
     """Delete a file or an entire skill folder."""
     parts = path.strip("/").split("/", 1)
     folder = parts[0]
-    async with async_session() as db:
+    async with tenant_scoped_session(current_user.tenant_id) as db:
         skill_q = select(Skill).where(Skill.folder_name == folder).options(selectinload(Skill.files))
         scope_clause = _skill_scope_clause(current_user)
         if scope_clause is not None:

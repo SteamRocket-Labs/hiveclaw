@@ -26,6 +26,7 @@ ATLASSIAN_MCP_URL = "https://mcp.atlassian.com/v1/mcp"
 
 # ─── Config CRUD ────────────────────────────────────────
 
+
 @router.post("/agents/{agent_id}/atlassian-channel", status_code=201)
 async def configure_atlassian_channel(
     agent_id: uuid.UUID,
@@ -62,6 +63,7 @@ async def configure_atlassian_channel(
         await db.commit()
         # Sync tools for this agent in background
         import asyncio
+
         asyncio.create_task(_sync_atlassian_tools_for_agent(agent_id, api_key))
         return _serialize(existing)
 
@@ -78,6 +80,7 @@ async def configure_atlassian_channel(
     await db.refresh(config)
     # Sync tools for this agent in background
     import asyncio
+
     asyncio.create_task(_sync_atlassian_tools_for_agent(agent_id, api_key))
     return _serialize(config)
 
@@ -99,6 +102,7 @@ async def get_atlassian_channel(
     if not config:
         raise HTTPException(status_code=404, detail="Atlassian not configured")
     from app.schemas.schemas import ChannelConfigOut
+
     return ChannelConfigOut.model_validate(config).to_safe()
 
 
@@ -143,6 +147,7 @@ async def test_atlassian_channel(
         raise HTTPException(status_code=400, detail="Atlassian not configured")
 
     from app.services.mcp_client import MCPClient
+
     try:
         client = MCPClient(ATLASSIAN_MCP_URL, api_key=config.app_secret)
         tools = await client.list_tools()
@@ -157,6 +162,7 @@ async def test_atlassian_channel(
 
 
 # ─── Internal helper ────────────────────────────────────
+
 
 def _serialize(config: ChannelConfig) -> dict:
     return {
@@ -173,6 +179,7 @@ def _serialize(config: ChannelConfig) -> dict:
 
 # ─── Utility for internal use ──────────────────────────
 
+
 async def _sync_atlassian_tools_for_agent(agent_id: uuid.UUID, api_key: str) -> None:
     """Connect to Atlassian Rovo MCP and ensure all tools are seeded + assigned to this agent.
 
@@ -181,7 +188,8 @@ async def _sync_atlassian_tools_for_agent(agent_id: uuid.UUID, api_key: str) -> 
     """
     from app.services.mcp_client import MCPClient
     from app.models.tool import Tool
-    from app.database import async_session
+    from app.database import tenant_scoped_session
+    from app.services.tenant_resolver import resolve_tenant_for_agent
     from sqlalchemy import select as sa_select
 
     logger.info(f"[AtlassianChannel] Syncing tools for agent {agent_id} ...")
@@ -198,7 +206,9 @@ async def _sync_atlassian_tools_for_agent(agent_id: uuid.UUID, api_key: str) -> 
 
     logger.info(f"[AtlassianChannel] Found {len(tools_discovered)} tools, assigning to agent {agent_id}")
 
-    async with async_session() as db:
+    # Channel setup bg task has no request GUC — pin to the agent's tenant.
+    _tenant_id = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(_tenant_id) as db:
         assigned = 0
         for mcp_tool in tools_discovered:
             raw_name = mcp_tool.get("name", "")
@@ -264,7 +274,8 @@ async def _sync_atlassian_tools_for_agent(agent_id: uuid.UUID, api_key: str) -> 
 
 async def get_atlassian_api_key_for_agent(agent_id: uuid.UUID, db=None) -> str | None:
     """Return the configured Atlassian API key for the given agent, or None."""
-    from app.database import async_session
+    from app.database import tenant_scoped_session
+    from app.services.tenant_resolver import resolve_tenant_for_agent
 
     async def _fetch(session):
         result = await session.execute(
@@ -279,5 +290,7 @@ async def get_atlassian_api_key_for_agent(agent_id: uuid.UUID, db=None) -> str |
 
     if db is not None:
         return await _fetch(db)
-    async with async_session() as session:
+    # No caller-supplied GUC session — pin to the agent's tenant.
+    tenant_id = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tenant_id) as session:
         return await _fetch(session)

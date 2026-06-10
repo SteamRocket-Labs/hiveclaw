@@ -7,7 +7,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from app.database import async_session
+from app.database import async_session, enter_rls_bypass
 from app.models.agent import Agent, AgentPermission
 from app.models.org import AgentAgentRelationship
 from app.models.skill import Skill
@@ -101,19 +101,24 @@ async def seed_default_agents():
     """
     from app.models.system_settings import SystemSetting
 
-    async with async_session() as db:
+    # First-startup seeder: resolves the platform admin and checks for the
+    # default agents by name — both scans are tenant-blind, so the cross-tenant
+    # visibility is made explicit and audited.
+    async with (
+        async_session() as db,
+        enter_rls_bypass(
+            db, reason="first-startup default-agent seeding: resolve platform admin + seed Morty/Meeseeks"
+        ) as bdb,
+    ):
+        db = bdb
         # Persistent marker — survives agent hard-delete
-        marker = await db.execute(
-            select(SystemSetting).where(SystemSetting.key == "default_agents_seeded")
-        )
+        marker = await db.execute(select(SystemSetting).where(SystemSetting.key == "default_agents_seeded"))
         if marker.scalar_one_or_none():
             logger.info("[AgentSeeder] Default agents already seeded (marker found), skipping")
             return
 
         # Also check by name for backwards compat (pre-marker installs)
-        existing = await db.execute(
-            select(Agent).where(Agent.name.in_(["Morty", "Meeseeks"]))
-        )
+        existing = await db.execute(select(Agent).where(Agent.name.in_(["Morty", "Meeseeks"])))
         if existing.scalars().first():
             # Agents exist from before the marker was introduced — plant the marker now
             db.add(SystemSetting(key="default_agents_seeded", value={"seeded": True}))
@@ -122,9 +127,7 @@ async def seed_default_agents():
             return
 
         # Get platform admin as creator
-        admin_result = await db.execute(
-            select(User).where(User.role == "platform_admin").limit(1)
-        )
+        admin_result = await db.execute(select(User).where(User.role == "platform_admin").limit(1))
         admin = admin_result.scalar_one_or_none()
         if not admin:
             logger.warning("[AgentSeeder] No platform admin found, skipping default agents")
@@ -156,8 +159,11 @@ async def seed_default_agents():
 
         # ── Participant identities ──
         from app.models.participant import Participant
+
         db.add(Participant(type="agent", ref_id=morty.id, display_name=morty.name, avatar_url=morty.avatar_url))
-        db.add(Participant(type="agent", ref_id=meeseeks.id, display_name=meeseeks.name, avatar_url=meeseeks.avatar_url))
+        db.add(
+            Participant(type="agent", ref_id=meeseeks.id, display_name=meeseeks.name, avatar_url=meeseeks.avatar_url)
+        )
         await db.flush()
 
         # ── Permissions (company-wide, manage) ──
@@ -187,11 +193,14 @@ async def seed_default_agents():
 
             # Heartbeat — copy from central template
             hb_template = Path(__file__).parent.parent / "templates" / "HEARTBEAT.md"
-            hb_content = hb_template.read_text(encoding="utf-8") if hb_template.exists() else "# Heartbeat Instructions\n"
+            hb_content = (
+                hb_template.read_text(encoding="utf-8") if hb_template.exists() else "# Heartbeat Instructions\n"
+            )
             (agent_dir / "HEARTBEAT.md").write_text(hb_content, encoding="utf-8")
 
             # Bootstrap evolution directory for self-evolution heartbeat engine
             from app.tools.workspace import _bootstrap_evolution_files
+
             (agent_dir / "evolution").mkdir(exist_ok=True)
             _bootstrap_evolution_files(agent_dir)
 
@@ -199,9 +208,7 @@ async def seed_default_agents():
             (agent_dir / "tasks.json").write_text("[]", encoding="utf-8")
 
         # ── Assign skills ──
-        all_skills_result = await db.execute(
-            select(Skill).options(selectinload(Skill.files))
-        )
+        all_skills_result = await db.execute(select(Skill).options(selectinload(Skill.files)))
         all_skills = {s.folder_name: s for s in all_skills_result.scalars().all()}
 
         for agent, skill_folders in [(morty, MORTY_SKILLS), (meeseeks, MEESEEKS_SKILLS)]:
@@ -226,9 +233,7 @@ async def seed_default_agents():
                     file_path.write_text(sf.content, encoding="utf-8")
 
         # ── Assign all default tools ──
-        default_tools_result = await db.execute(
-            select(Tool).where(Tool.is_default)
-        )
+        default_tools_result = await db.execute(select(Tool).where(Tool.is_default))
         default_tools = default_tools_result.scalars().all()
 
         for agent in [morty, meeseeks]:
@@ -241,18 +246,22 @@ async def seed_default_agents():
                 )
 
         # ── Mutual relationships ──
-        db.add(AgentAgentRelationship(
-            agent_id=morty.id,
-            target_agent_id=meeseeks.id,
-            relation="collaborator",
-            description="Expert task executor who breaks down complex tasks into structured plans and executes them systematically. Delegate multi-step tasks to him.",
-        ))
-        db.add(AgentAgentRelationship(
-            agent_id=meeseeks.id,
-            target_agent_id=morty.id,
-            relation="collaborator",
-            description="Research expert with strong learning ability. Ask him for information retrieval, web research, data analysis, and knowledge synthesis.",
-        ))
+        db.add(
+            AgentAgentRelationship(
+                agent_id=morty.id,
+                target_agent_id=meeseeks.id,
+                relation="collaborator",
+                description="Expert task executor who breaks down complex tasks into structured plans and executes them systematically. Delegate multi-step tasks to him.",
+            )
+        )
+        db.add(
+            AgentAgentRelationship(
+                agent_id=meeseeks.id,
+                target_agent_id=morty.id,
+                relation="collaborator",
+                description="Research expert with strong learning ability. Ask him for information retrieval, web research, data analysis, and knowledge synthesis.",
+            )
+        )
 
         # ── Write relationships.md for each ──
         morty_dir = Path(settings.AGENT_DATA_DIR) / str(morty.id)

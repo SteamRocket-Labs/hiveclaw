@@ -131,6 +131,12 @@ def _agent(plan):
     return SimpleNamespace(id=plan.agent_id, tenant_id=plan.tenant_id)
 
 
+async def _fake_resolve_tenant(_agent_id, **_kwargs):
+    # The bare branch now resolves the plan's tenant via an audited bypass read
+    # before pinning the session; stub it so unit tests never touch a real DB.
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -144,7 +150,8 @@ async def test_handoff_creates_enabled_trigger_with_plan_id_and_no_objective(mon
     agent = _agent(plan)
     session = _HandoffSession()
 
-    monkeypatch.setattr(mod, "async_session", lambda: session)
+    monkeypatch.setattr(mod, "resolve_tenant_for_agent", _fake_resolve_tenant)
+    monkeypatch.setattr(mod, "tenant_scoped_session", lambda *a, **k: session)
 
     async def fake_load_agent(_db, agent_id):
         assert str(agent_id) == str(plan.agent_id)
@@ -188,7 +195,11 @@ async def test_handoff_can_run_inside_caller_transaction_without_own_commit(monk
     agent = _agent(plan)
     session = _HandoffSession()
 
-    monkeypatch.setattr(mod, "async_session", lambda: (_ for _ in ()).throw(AssertionError("must use caller session")))
+    monkeypatch.setattr(
+        mod,
+        "tenant_scoped_session",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must use caller session")),
+    )
 
     async def fake_load_agent(db, agent_id):
         assert db is session
@@ -213,7 +224,8 @@ async def test_handoff_is_idempotent_on_plan_id(monkeypatch):
     plan = _confirmed_wake_plan()
     agent = _agent(plan)
     session = _HandoffSession()
-    monkeypatch.setattr(mod, "async_session", lambda: session)
+    monkeypatch.setattr(mod, "resolve_tenant_for_agent", _fake_resolve_tenant)
+    monkeypatch.setattr(mod, "tenant_scoped_session", lambda *a, **k: session)
 
     async def fake_load_agent(_db, _agent_id):
         return agent
@@ -272,7 +284,8 @@ async def test_handoff_raises_when_agent_missing(monkeypatch):
 
     plan = _confirmed_wake_plan()
     session = _HandoffSession()
-    monkeypatch.setattr(mod, "async_session", lambda: session)
+    monkeypatch.setattr(mod, "resolve_tenant_for_agent", _fake_resolve_tenant)
+    monkeypatch.setattr(mod, "tenant_scoped_session", lambda *a, **k: session)
 
     async def fake_load_agent(_db, _agent_id):
         return None
@@ -291,7 +304,8 @@ async def test_handoff_rejects_non_confirmed_plan(monkeypatch):
     plan = _confirmed_wake_plan()
     plan.status = "awaiting_confirmation"
     session = _HandoffSession()
-    monkeypatch.setattr(mod, "async_session", lambda: session)
+    monkeypatch.setattr(mod, "resolve_tenant_for_agent", _fake_resolve_tenant)
+    monkeypatch.setattr(mod, "tenant_scoped_session", lambda *a, **k: session)
 
     with pytest.raises(mod.HandoffError):
         await mod.handoff_scheduled_trigger(plan)
@@ -307,7 +321,8 @@ async def test_registered_handler_uses_plan_mode_service_session(monkeypatch):
     plan = _confirmed_wake_plan()
     agent = _agent(plan)
     session = _HandoffSession()
-    monkeypatch.setattr(mod, "async_session", lambda: session)
+    monkeypatch.setattr(mod, "resolve_tenant_for_agent", _fake_resolve_tenant)
+    monkeypatch.setattr(mod, "tenant_scoped_session", lambda *a, **k: session)
 
     async def fake_load_agent(_db, _agent_id):
         return agent

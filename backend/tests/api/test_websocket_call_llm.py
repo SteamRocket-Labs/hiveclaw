@@ -12,9 +12,11 @@ from app.runtime.session import SessionContext
 def test_history_rehydration_maps_stored_thinking_to_reasoning_content():
     from app.api.websocket import _conversation_from_history_messages
 
-    entries = _conversation_from_history_messages([
-        SimpleNamespace(role="assistant", content="之前的回答", thinking="hidden reasoning"),
-    ])
+    entries = _conversation_from_history_messages(
+        [
+            SimpleNamespace(role="assistant", content="之前的回答", thinking="hidden reasoning"),
+        ]
+    )
 
     assert entries == [
         {
@@ -28,11 +30,15 @@ def test_history_rehydration_maps_stored_thinking_to_reasoning_content():
 def test_history_rehydration_skips_llm_error_assistant_rows():
     from app.api.websocket import _conversation_from_history_messages
 
-    entries = _conversation_from_history_messages([
-        SimpleNamespace(role="user", content="请继续", thinking=None),
-        SimpleNamespace(role="assistant", content="[LLM Error] AI 模型额度已耗尽，请联系管理员检查模型额度。", thinking=None),
-        SimpleNamespace(role="assistant", content="之前真实完成的结果", thinking=None),
-    ])
+    entries = _conversation_from_history_messages(
+        [
+            SimpleNamespace(role="user", content="请继续", thinking=None),
+            SimpleNamespace(
+                role="assistant", content="[LLM Error] AI 模型额度已耗尽，请联系管理员检查模型额度。", thinking=None
+            ),
+            SimpleNamespace(role="assistant", content="之前真实完成的结果", thinking=None),
+        ]
+    )
 
     assert entries == [
         {"role": "user", "content": "请继续"},
@@ -83,7 +89,11 @@ async def test_websocket_idle_timeout_defers_when_session_run_is_active(monkeypa
         captured.update(kwargs)
         return {"run_id": "run-1", "status": "running"}
 
-    monkeypatch.setattr(websocket_api, "async_session", lambda: FakeSessionContext())
+    async def fake_resolve_tenant_for_agent(_agent_id, **_kwargs):
+        return uuid4()
+
+    monkeypatch.setattr(websocket_api, "tenant_scoped_session", lambda *a, **k: FakeSessionContext())
+    monkeypatch.setattr(websocket_api, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
     monkeypatch.setattr(websocket_api, "get_active_web_chat_run", fake_get_active_web_chat_run)
 
     assert await websocket_api._has_active_web_chat_run(agent_id, session_id) is True

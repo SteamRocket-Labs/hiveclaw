@@ -283,10 +283,12 @@ async def build_agent_context(
 
         async with _ctx_session() as _ctx_db:
             _cfgs = await _ctx_db.execute(
-                sa_select(ChannelConfig).where(
+                sa_select(ChannelConfig)
+                .where(
                     ChannelConfig.agent_id == agent_id,
                     ChannelConfig.is_configured,
-                ).order_by(ChannelConfig.channel_type)
+                )
+                .order_by(ChannelConfig.channel_type)
             )
             _configured_channels = [c.channel_type for c in _cfgs.scalars().all()]
     except Exception as exc:
@@ -302,16 +304,16 @@ async def build_agent_context(
 
     # --- Company Intro (from system settings) ---
     try:
-        from app.database import async_session
-        from app.models.agent import Agent as _AgentModel
+        from app.database import tenant_scoped_session
         from app.models.system_settings import SystemSetting
+        from app.services.tenant_resolver import resolve_tenant_for_agent
         from sqlalchemy import select as sa_select
 
-        async with async_session() as db:
-            # Resolve agent's tenant_id
-            _ag_r = await db.execute(sa_select(_AgentModel.tenant_id).where(_AgentModel.id == agent_id))
-            _agent_tenant_id = _ag_r.scalar_one_or_none()
-
+        # Pin the GUC to the agent's tenant so the agents/tenant_settings reads
+        # below survive under enforced (non-owner) RLS; without it the agent row
+        # is invisible and the company intro silently vanishes from the prompt.
+        _agent_tenant_id = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(_agent_tenant_id) as db:
             company_intro = ""
 
             # Priority 1: tenant_settings table (new)

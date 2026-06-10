@@ -28,6 +28,10 @@ class _FakeSession:
         return False
 
     async def execute(self, _query):
+        # tenant_scoped_session emits a `SET LOCAL app.current_tenant_id` before
+        # the business query — it must not consume a prepared result.
+        if "app.current_tenant_id" in str(_query):
+            return _FakeScalarResult(None)
         if not self._execute_values:
             raise AssertionError("No fake execute result prepared")
         return _FakeScalarResult(self._execute_values.pop(0))
@@ -42,6 +46,13 @@ class _FakeSession:
 
     async def flush(self):
         self.flushes += 1
+
+
+async def _fake_resolve_tenant(_agent_id, **_kwargs):
+    # execute_task resolves the owning tenant via an audited bypass read (its own
+    # session) before pinning the work sessions; stub it so the detached-task flow
+    # never touches a real DB in these unit tests.
+    return uuid4()
 
 
 @pytest.mark.asyncio
@@ -109,7 +120,8 @@ async def test_execute_task_delegates_to_runtime_invoker(monkeypatch):
     async def fake_log_activity(*args, **kwargs):
         activity_calls.append((args, kwargs))
 
-    monkeypatch.setattr("app.services.task_executor.async_session", lambda: sessions.pop(0))
+    monkeypatch.setattr("app.services.task_executor.resolve_tenant_for_agent", _fake_resolve_tenant)
+    monkeypatch.setattr("app.services.task_executor.tenant_scoped_session", lambda *a, **k: sessions.pop(0))
     monkeypatch.setattr("app.services.task_executor.TaskLog", lambda **kwargs: SimpleNamespace(**kwargs))
     monkeypatch.setattr("app.services.task_executor.invoke_agent", fake_invoke_agent)
     monkeypatch.setattr("app.services.activity_logger.log_activity", fake_log_activity)
@@ -167,7 +179,8 @@ async def test_execute_task_blocks_without_confirmed_plan(monkeypatch):
         plan_exempt_reason=None,
     )
     setup_session = _FakeSession([task])
-    monkeypatch.setattr("app.services.task_executor.async_session", lambda: setup_session)
+    monkeypatch.setattr("app.services.task_executor.resolve_tenant_for_agent", _fake_resolve_tenant)
+    monkeypatch.setattr("app.services.task_executor.tenant_scoped_session", lambda *a, **k: setup_session)
     monkeypatch.setattr("app.services.task_executor.TaskLog", lambda **kwargs: SimpleNamespace(**kwargs))
 
     async def fake_invoke_agent(_request):  # pragma: no cover - must not run
@@ -251,7 +264,8 @@ async def test_execute_task_persists_reflection_session_and_tool_calls(monkeypat
         )
         return SimpleNamespace(content="任务已完成，已整理竞品动态。")
 
-    monkeypatch.setattr("app.services.task_executor.async_session", lambda: sessions.pop(0))
+    monkeypatch.setattr("app.services.task_executor.resolve_tenant_for_agent", _fake_resolve_tenant)
+    monkeypatch.setattr("app.services.task_executor.tenant_scoped_session", lambda *a, **k: sessions.pop(0))
     monkeypatch.setattr("app.services.task_executor.TaskLog", lambda **kwargs: SimpleNamespace(**kwargs))
     monkeypatch.setattr("app.services.task_executor.invoke_agent", fake_invoke_agent)
 

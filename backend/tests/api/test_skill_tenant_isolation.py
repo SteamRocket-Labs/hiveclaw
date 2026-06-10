@@ -106,7 +106,7 @@ async def test_create_skill_scopes_custom_skill_to_current_tenant(monkeypatch):
     session = _CreateSkillSession()
     tenant_id = uuid4()
 
-    monkeypatch.setattr(skills_api, "async_session", lambda: _AsyncSessionContext(session))
+    monkeypatch.setattr(skills_api, "tenant_scoped_session", lambda *a, **k: _AsyncSessionContext(session))
     monkeypatch.setattr(skills_api, "_guard_skill_files_or_raise", lambda *_args, **_kwargs: None)
 
     result = await skills_api.create_skill(
@@ -141,7 +141,7 @@ async def test_create_skill_rejects_builtin_folder_collision(monkeypatch):
     )
     session = _CreateSkillSession(results=[_ScalarResult(global_builtin)])
 
-    monkeypatch.setattr(skills_api, "async_session", lambda: _AsyncSessionContext(session))
+    monkeypatch.setattr(skills_api, "tenant_scoped_session", lambda *a, **k: _AsyncSessionContext(session))
     monkeypatch.setattr(skills_api, "_guard_skill_files_or_raise", lambda *_args, **_kwargs: None)
 
     with pytest.raises(HTTPException) as exc:
@@ -180,7 +180,7 @@ async def test_update_skill_rejects_foreign_tenant_skill(monkeypatch):
     )
     session = _QueuedDB([_ScalarResult(foreign_skill)])
 
-    monkeypatch.setattr(skills_api, "async_session", lambda: _AsyncSessionContext(session))
+    monkeypatch.setattr(skills_api, "tenant_scoped_session", lambda *a, **k: _AsyncSessionContext(session))
 
     with pytest.raises(HTTPException) as exc:
         await skills_api.update_skill(
@@ -212,7 +212,7 @@ async def test_update_skill_rejects_builtin_skill(monkeypatch):
     )
     session = _QueuedDB([_ScalarResult(builtin_skill)])
 
-    monkeypatch.setattr(skills_api, "async_session", lambda: _AsyncSessionContext(session))
+    monkeypatch.setattr(skills_api, "tenant_scoped_session", lambda *a, **k: _AsyncSessionContext(session))
 
     with pytest.raises(HTTPException) as exc:
         await skills_api.update_skill(
@@ -242,7 +242,7 @@ async def test_browse_write_rejects_builtin_skill_file_mutation(monkeypatch):
     )
     session = _QueuedDB([_ScalarResult(builtin_skill)])
 
-    monkeypatch.setattr(skills_api, "async_session", lambda: _AsyncSessionContext(session))
+    monkeypatch.setattr(skills_api, "tenant_scoped_session", lambda *a, **k: _AsyncSessionContext(session))
 
     with pytest.raises(HTTPException) as exc:
         await skills_api.browse_write(
@@ -271,7 +271,7 @@ async def test_browse_delete_rejects_builtin_skill_file_delete(monkeypatch):
     )
     session = _QueuedDB([_ScalarResult(builtin_skill)])
 
-    monkeypatch.setattr(skills_api, "async_session", lambda: _AsyncSessionContext(session))
+    monkeypatch.setattr(skills_api, "tenant_scoped_session", lambda *a, **k: _AsyncSessionContext(session))
 
     with pytest.raises(HTTPException) as exc:
         await skills_api.browse_delete(

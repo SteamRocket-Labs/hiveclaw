@@ -95,11 +95,13 @@ async def test_process_wecom_text_sets_delivery_target_session_and_execution_ide
     agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
     platform_user = SimpleNamespace(id=platform_user_id, username="wecom_zhangsan", display_name="张三")
     captured: dict[str, object] = {}
-    db = _SequenceSession([
-        _ScalarResult(agent),
-        _ScalarResult(platform_user),
-        _RowsResult([]),
-    ])
+    db = _SequenceSession(
+        [
+            _ScalarResult(agent),
+            _ScalarResult(platform_user),
+            _RowsResult([]),
+        ]
+    )
 
     async def fake_find_or_create_channel_session(*, delivery_target=None, external_conv_id=None, **_kwargs):
         captured["external_conv_id"] = external_conv_id
@@ -121,9 +123,17 @@ async def test_process_wecom_text_sets_delivery_target_session_and_execution_ide
     async def fake_compute_history_limit_for_agent(_agent_id):
         return 10
 
-    monkeypatch.setattr("app.database.async_session", lambda: db)
-    monkeypatch.setattr("app.services.memory_service.compute_history_limit_for_agent", fake_compute_history_limit_for_agent)
-    monkeypatch.setattr("app.services.channel_session.find_or_create_channel_session", fake_find_or_create_channel_session)
+    async def _fake_resolve_tenant_for_agent(_agent_id, **_kwargs):
+        return tenant_id
+
+    monkeypatch.setattr("app.database.tenant_scoped_session", lambda *a, **k: db)
+    monkeypatch.setattr("app.services.tenant_resolver.resolve_tenant_for_agent", _fake_resolve_tenant_for_agent)
+    monkeypatch.setattr(
+        "app.services.memory_service.compute_history_limit_for_agent", fake_compute_history_limit_for_agent
+    )
+    monkeypatch.setattr(
+        "app.services.channel_session.find_or_create_channel_session", fake_find_or_create_channel_session
+    )
     monkeypatch.setattr("app.api.feishu._call_agent_llm", fake_call_agent_llm)
     monkeypatch.setattr(wecom_api, "_send_wecom_text_message", fake_send_wecom_text_message)
     monkeypatch.setattr("httpx.AsyncClient", lambda timeout=5: _FakeHttpClient())

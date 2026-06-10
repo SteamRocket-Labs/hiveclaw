@@ -1800,9 +1800,15 @@ async def _handle_feishu_file(
     from app.models.audit import ChatMessage
     from app.models.agent import Agent as AgentModel
     from app.services.channel_session import find_or_create_channel_session
-    from app.database import async_session as _async_session
+    from app.database import tenant_scoped_session as _tenant_scoped_session
+    from app.services.tenant_resolver import resolve_tenant_for_agent
     from datetime import datetime as _dt, timezone as _tz
     from sqlalchemy import select as _select
+
+    # Webhook bg path has no TenantMiddleware GUC. Resolve the tenant once from
+    # the path agent_id (narrow audited bypass single-row read) and pin every
+    # session below to it so Agent/User/ChatMessage writes stay tenant-scoped.
+    _feishu_tenant_id = await resolve_tenant_for_agent(agent_id)
 
     msg_type = message.get("message_type", "file")
     message_id = message.get("message_id", "")
@@ -1859,7 +1865,7 @@ async def _handle_feishu_file(
         return
 
     # Resolve platform user and session using a fresh db session
-    async with _async_session() as db:
+    async with _tenant_scoped_session(_feishu_tenant_id) as db:
         agent_r = await db.execute(_select(AgentModel).where(AgentModel.id == agent_id))
         agent_obj = agent_r.scalar_one_or_none()
         sender_profile = await _resolve_feishu_sender_profile(
@@ -2011,7 +2017,7 @@ async def _handle_feishu_file(
         from app.services.channel_delivery_service import channel_delivery_target as _cdt_img
 
         _cdt_img_token = _cdt_img.set(delivery_target)
-        async with _async_session() as _db_img:
+        async with _tenant_scoped_session(_feishu_tenant_id) as _db_img:
             try:
                 reply_text = await _call_agent_llm(
                     _db_img,
@@ -2054,7 +2060,7 @@ async def _handle_feishu_file(
                 logger.error(f"[Feishu] Failed to send image reply: {_e_fb}")
 
         # Save assistant reply in DB
-        async with _async_session() as _db_save:
+        async with _tenant_scoped_session(_feishu_tenant_id) as _db_save:
             _db_save.add(
                 ChatMessage(
                     agent_id=agent_id,
@@ -2103,7 +2109,7 @@ async def _handle_feishu_file(
         logger.error(f"[Feishu] Failed to send ack: {e}")
 
     # Store ack in DB
-    async with _async_session() as db2:
+    async with _tenant_scoped_session(_feishu_tenant_id) as db2:
         db2.add(
             ChatMessage(
                 agent_id=agent_id,
@@ -2218,11 +2224,7 @@ async def _call_agent_llm(
         )
         user_text = getattr(accepted_recommendation, "original_request", None) or user_text
 
-    if (
-        plan_entry_decision.mode == "explicit"
-        and plan_entry_decision.action_kind
-        and plan_entry_decision.tool_name
-    ):
+    if plan_entry_decision.mode == "explicit" and plan_entry_decision.action_kind and plan_entry_decision.tool_name:
         from app.services import plan_mode_core
         from app.services.plan_mode_service import get_plan_mode_service
         from app.services.plan_mode_system_run import launch_system_plan_run

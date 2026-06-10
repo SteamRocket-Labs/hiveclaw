@@ -29,11 +29,14 @@ from app.tools.result_envelope import render_tool_error
 async def list_mcp_resources(agent_id: uuid.UUID, arguments: dict) -> str:
     from sqlalchemy import select
 
-    from app.database import async_session
+    from app.database import tenant_scoped_session
     from app.models.tool import AgentTool, Tool
+    from app.services.tenant_resolver import resolve_tenant_for_agent
 
     try:
-        async with async_session() as db:
+        # RLS 阶段1: scope the `tools` (policy-bearing) read to the agent's tenant.
+        tid = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tid) as db:
             result = await db.execute(
                 select(Tool)
                 .join(AgentTool, AgentTool.tool_id == Tool.id)
@@ -119,8 +122,9 @@ async def read_mcp_resource(agent_id: uuid.UUID, arguments: dict) -> str:
 
     from sqlalchemy import select
 
-    from app.database import async_session
+    from app.database import tenant_scoped_session
     from app.models.tool import AgentTool, Tool
+    from app.services.tenant_resolver import resolve_tenant_for_agent
 
     tool_name = arguments.get("tool_name", "")
     if not tool_name:
@@ -134,7 +138,9 @@ async def read_mcp_resource(agent_id: uuid.UUID, arguments: dict) -> str:
         )
 
     try:
-        async with async_session() as db:
+        # RLS 阶段1: scope the `tools` (policy-bearing) read to the agent's tenant.
+        tid = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tid) as db:
             result = await db.execute(
                 select(Tool)
                 .join(AgentTool, AgentTool.tool_id == Tool.id)
@@ -277,9 +283,10 @@ async def import_mcp_server(agent_id: uuid.UUID, arguments: dict) -> str:
 async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
     from sqlalchemy import select
 
-    from app.database import async_session
+    from app.database import tenant_scoped_session
     from app.models.tool import AgentTool, Tool
     from app.services.mcp_client import MCPClient
+    from app.services.tenant_resolver import resolve_tenant_for_agent
 
     tool_name = arguments.get("tool_name", "")
     tool_args = arguments.get("arguments") or {}
@@ -304,7 +311,9 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
             actionable_hint="Re-read the schema via read_mcp_resource and rebuild the arguments dict.",
         )
 
-    async with async_session() as db:
+    # RLS 阶段1: scope the `tools` (policy-bearing) read to the agent's tenant.
+    tid = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tid) as db:
         result = await db.execute(
             select(Tool)
             .join(AgentTool, AgentTool.tool_id == Tool.id)

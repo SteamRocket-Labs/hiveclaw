@@ -230,7 +230,7 @@ async def test_spawn_and_delegate_same_user_message_for_same_instruction(monkeyp
     """Same instruction string: spawn content and delegate child first-user-message
     are byte-identical after the fix."""
     from app.agents.orchestrator import delegate_to_agent
-    from app.agents.subagent import SubagentHandle, SubagentResult, SubagentSpawnContext, explorer_spec, spawn_subagent
+    from app.agents.subagent import SubagentSpawnContext, explorer_spec, spawn_subagent
 
     owner_id = uuid.uuid4()
 

@@ -26,6 +26,10 @@ class _FakeSession:
         return False
 
     async def execute(self, _query):
+        # tenant_scoped_session emits a `SET LOCAL app.current_tenant_id` before
+        # the business query — it must not consume a prepared result.
+        if "app.current_tenant_id" in str(_query):
+            return _FakeScalarResult(None)
         if not self._execute_values:
             raise AssertionError("No fake execute result prepared")
         return _FakeScalarResult(self._execute_values.pop(0))
@@ -51,7 +55,7 @@ async def test_get_summary_model_config_falls_back_to_tenant_default_model(monke
     )
     fake_session = _FakeSession([{}, {"model_id": str(model_id)}, fake_model])
 
-    monkeypatch.setattr(memory_service, "async_session", lambda: fake_session)
+    monkeypatch.setattr(memory_service, "tenant_scoped_session", lambda *a, **k: fake_session)
 
     config = await memory_service._get_summary_model_config(tenant_id)
 
@@ -81,7 +85,7 @@ async def test_get_summary_model_config_prefers_main_conversation_model(monkeypa
     )
     # execute order: memory_config (empty) → main-model lookup (hit)
     fake_session = _FakeSession([{}, fake_main_model])
-    monkeypatch.setattr(memory_service, "async_session", lambda: fake_session)
+    monkeypatch.setattr(memory_service, "tenant_scoped_session", lambda *a, **k: fake_session)
 
     config = await memory_service._get_summary_model_config(
         tenant_id, main_provider="anthropic", main_model="claude-opus-4-8"
@@ -113,7 +117,7 @@ async def test_get_summary_model_config_explicit_choice_beats_main_model(monkeyp
     )
     # execute order: memory_config (has summary_model_id) → model-by-id lookup (hit)
     fake_session = _FakeSession([{"summary_model_id": str(summary_model_id)}, fake_summary_model])
-    monkeypatch.setattr(memory_service, "async_session", lambda: fake_session)
+    monkeypatch.setattr(memory_service, "tenant_scoped_session", lambda *a, **k: fake_session)
 
     config = await memory_service._get_summary_model_config(
         tenant_id, main_provider="anthropic", main_model="claude-opus-4-8"
@@ -276,7 +280,7 @@ async def test_get_rerank_model_config_falls_back_to_tenant_default_model(monkey
     )
     fake_session = _FakeSession([{}, {"model_id": str(model_id)}, fake_model])
 
-    monkeypatch.setattr(memory_service, "async_session", lambda: fake_session)
+    monkeypatch.setattr(memory_service, "tenant_scoped_session", lambda *a, **k: fake_session)
 
     config = await memory_service._get_rerank_model_config(tenant_id)
 

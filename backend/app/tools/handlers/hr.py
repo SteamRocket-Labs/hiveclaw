@@ -1147,12 +1147,13 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
 
     from sqlalchemy import select
 
-    from app.database import async_session
+    from app.database import tenant_scoped_session
     from app.models.agent import Agent, AgentPermission
     from app.models.participant import Participant
     from app.models.skill import Skill
     from app.models.user import User
     from app.services.agent_manager import agent_manager
+    from app.services.tenant_resolver import resolve_tenant_for_agent
     from app.services.capability_install_service import (
         build_capability_install_plan,
         record_capability_install,
@@ -1164,7 +1165,14 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
     )
 
     try:
-        async with async_session() as db:
+        # RLS 阶段1: agent creation reads/writes many policy-bearing tables
+        # (users, agents, skills, llm_models, tenant_settings, tenants). Scope
+        # the whole flow to the requesting tenant. The context tenant_id is the
+        # primary source; when absent, fall back to the calling HR agent's
+        # tenant via the audited single-row bypass (same tenant as the user for
+        # self-service creation), so the User read below is still scoped.
+        _scope_tenant_id = tenant_id or await resolve_tenant_for_agent(request.context.agent_id)
+        async with tenant_scoped_session(_scope_tenant_id) as db:
             # Look up the calling user
             user_result = await db.execute(select(User).where(User.id == user_id))
             user = user_result.scalar_one_or_none()

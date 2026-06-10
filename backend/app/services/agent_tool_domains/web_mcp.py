@@ -11,7 +11,8 @@ import httpx
 from sqlalchemy import select
 
 from app.config import get_settings
-from app.database import async_session
+from app.database import async_session, tenant_scoped_session
+from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.tools.result_envelope import classify_http_status, render_tool_error, render_tool_fallback
 
 logger = logging.getLogger(__name__)
@@ -183,8 +184,13 @@ async def _get_tool_config(tool_name: str) -> dict:
     try:
         from app.models.tool import Tool
 
+        # RLS 阶段1 / Finding #1: this is the GLOBAL (admin-set) tool-config
+        # fallback. Pin `tenant_id IS NULL` so a same-named tenant-owned tool can
+        # never leak its config (api_key/private_key) here. Under enforced RLS a
+        # bare session already fails closed to NULL-tenant rows — the explicit
+        # predicate makes the global-config intent unambiguous either way.
         async with async_session() as db:
-            result = await db.execute(select(Tool).where(Tool.name == tool_name))
+            result = await db.execute(select(Tool).where(Tool.name == tool_name, Tool.tenant_id.is_(None)))
             tool = result.scalar_one_or_none()
             return getattr(tool, "config", None) or {}
     except Exception as e:
@@ -981,7 +987,13 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
         from app.services.mcp_client import MCPClient
         from app.services.mcp_server_service import resolve_agent_mcp_tool_mode
 
-        async with async_session() as db:
+        # RLS 阶段1: reads `agents`/`tools` (policy-bearing) then filters
+        # global-vs-own-tenant candidates in Python. Scope to the agent's tenant
+        # (audited single-row bypass to resolve it); under RLS the scoped read
+        # still sees NULL-tenant globals + this tenant's rows — exactly the
+        # candidate set the Python filter below expects.
+        tid = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tid) as db:
             result = await db.execute(select(Tool).where(Tool.name == tool_name, Tool.type == "mcp"))
             candidates = _result_scalars_or_one(result)
             agent = None
@@ -1077,8 +1089,12 @@ async def _execute_via_smithery_connect(
         try:
             from app.models.tool import Tool
 
+            # RLS 阶段1 / Finding #1: GLOBAL Smithery connect config — pin
+            # `tenant_id IS NULL` so a same-named tenant tool can't leak its
+            # namespace/connection. Bare session fails closed to NULL-tenant
+            # rows under RLS, matching this explicit global-config predicate.
             async with async_session() as db:
-                r = await db.execute(select(Tool).where(Tool.name == "discover_resources"))
+                r = await db.execute(select(Tool).where(Tool.name == "discover_resources", Tool.tenant_id.is_(None)))
                 disc_tool = r.scalar_one_or_none()
                 if disc_tool and disc_tool.config:
                     namespace = namespace or disc_tool.config.get("smithery_namespace")
@@ -1204,7 +1220,11 @@ async def _smithery_auto_recover(
         }
         if agent_id:
             try:
-                async with async_session() as db:
+                # RLS 阶段1: reads the policy-bearing `tools` rows by URL and
+                # rewrites this agent's AgentTool config — scope to the agent's
+                # tenant (audited single-row bypass to resolve it).
+                tid = await resolve_tenant_for_agent(agent_id)
+                async with tenant_scoped_session(tid) as db:
                     r = await db.execute(select(Tool).where(Tool.mcp_server_url == mcp_url, Tool.type == "mcp"))
                     for tool in r.scalars().all():
                         at_r = await db.execute(

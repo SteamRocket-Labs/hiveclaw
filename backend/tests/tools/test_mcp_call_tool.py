@@ -54,6 +54,11 @@ class _FakeSession:
         self.executed_statements: list = []
 
     async def execute(self, stmt):
+        # RLS 阶段1: tenant_scoped_session issues `SET LOCAL app.current_tenant_id`
+        # before the business query. Don't let the GUC statement consume a
+        # pre-loaded result or pollute executed_statements assertions.
+        if "app.current_tenant_id" in str(stmt):
+            return _FakeQueryResult(None, scalars=[])
         self.executed_statements.append(stmt)
         if self._results:
             result = self._results.pop(0)
@@ -80,6 +85,36 @@ def install_fake_session(monkeypatch):
         session = _FakeSession(row)
         monkeypatch.setattr("app.database.async_session", lambda: session)
         monkeypatch.setattr("app.services.agent_tool_domains.web_mcp.async_session", lambda: session)
+
+        # RLS 阶段1: the migrated mcp handlers resolve tenant then open a
+        # tenant-scoped session. Route both through the same fake DB so the
+        # business-query result sequence is unchanged.
+        import contextlib
+
+        @contextlib.asynccontextmanager
+        async def _fake_tenant_scoped_session(*_a, **_k):
+            yield session
+
+        async def _fake_resolve_tenant_for_agent(*_a, **_k):
+            return uuid.uuid4()
+
+        monkeypatch.setattr("app.database.tenant_scoped_session", _fake_tenant_scoped_session)
+        monkeypatch.setattr(
+            "app.services.tenant_resolver.resolve_tenant_for_agent",
+            _fake_resolve_tenant_for_agent,
+        )
+        # web_mcp imports both symbols at module level, so the source-module
+        # patches above don't rebind its already-imported names — patch them
+        # on the web_mcp module directly. (mcp.py imports them inside the
+        # functions, so it picks up the source-module patches.)
+        monkeypatch.setattr(
+            "app.services.agent_tool_domains.web_mcp.tenant_scoped_session",
+            _fake_tenant_scoped_session,
+        )
+        monkeypatch.setattr(
+            "app.services.agent_tool_domains.web_mcp.resolve_tenant_for_agent",
+            _fake_resolve_tenant_for_agent,
+        )
         return session
 
     return _install

@@ -33,7 +33,7 @@ from app.agents.subagent_definition import (
     validate_subagent_name,
 )
 from app.agents.subagent_memory import make_llm_how_distiller, memory_store_for_agent, memory_store_for_tenant
-from app.database import async_session
+from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.agent import Agent
 from app.models.llm import LLMModel
 from app.tools.decorator import ToolMeta, tool
@@ -49,7 +49,13 @@ async def _resolve_parent_runtime(
 ) -> tuple[Any | None, Any | None, Any | None]:
     """Resolve the calling agent's primary/fallback model (mirrors worker._resolve_models)."""
 
-    async with async_session() as db:
+    # RLS 阶段1: bootstrap read of the whole agent row by PK to learn its tenant
+    # and model ids; an audited single-row bypass breaks the chicken-and-egg
+    # (we hold only agent_id, and `agents` fails closed under a non-owner role).
+    async with (
+        async_session() as db,
+        enter_rls_bypass(db, reason=f"subagent parent-runtime resolution for agent {agent_id}"),
+    ):
         agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
         if agent is None:
             return None, None, None
@@ -82,7 +88,10 @@ async def _resolve_model_override(model_name: str, tenant_id: uuid.UUID | None) 
     value = str(model_name or "").strip()
     if not value:
         return None
-    async with async_session() as db:
+    # RLS 阶段1: `llm_models` is policy-bearing — scope by the tenant arg the
+    # caller already holds (subagent definition's tenant). None pins an empty
+    # GUC (fail-closed) which is the same safe default as get_db().
+    async with tenant_scoped_session(tenant_id) as db:
         base_filters = [LLMModel.enabled.is_(True)]
         if tenant_id is not None:
             base_filters.append(LLMModel.tenant_id == tenant_id)

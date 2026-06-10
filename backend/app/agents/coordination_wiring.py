@@ -30,7 +30,7 @@ from app.agents.coordination_gateway import (
 )
 from app.agents.coordination_repository import CoordinationRepository
 from app.config import get_settings
-from app.database import async_session
+from app.database import tenant_scoped_session
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +80,10 @@ async def gateway_scope(
     Decision order:
       1. `explicit_gateway` wins — caller already knows what it wants.
       2. `COORDINATION_BACKEND=postgres` + tenant_id present → open a
-         fresh `async_session()` and yield a `CoordinationRepository`.
-         The session is committed on clean exit, rolled back on error.
+         fresh `tenant_scoped_session(tenant_uuid)` (coordination_* are FORCE
+         RLS tables — even owner is blocked without the GUC pinned) and yield a
+         `CoordinationRepository`. The session is committed on clean exit,
+         rolled back on error.
       3. Otherwise → in-process gateway (no session opened).
 
     Always returns a `CoordinationGateway` so call sites do not need to
@@ -114,7 +116,7 @@ async def gateway_scope(
     else:
         tenant_uuid = tenant_id
 
-    async with async_session() as session:
+    async with tenant_scoped_session(tenant_uuid) as session:
         try:
             yield CoordinationRepository(session, tenant_id=tenant_uuid)
             await session.commit()

@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
-from app.database import async_session
+from app.database import tenant_scoped_session
 from app.models.skill import Skill
 from app.models.tool import Tool
 from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment
@@ -27,7 +27,7 @@ async def reuse_existing_skill_for_agent(
     folder_name: str,
 ) -> dict | None:
     """Copy an existing registry skill into the agent workspace if already available."""
-    async with async_session() as db:
+    async with tenant_scoped_session(tenant_id) as db:
         result = await db.execute(
             select(Skill)
             .where(
@@ -93,7 +93,7 @@ async def reuse_existing_mcp_server_for_agent(
     config: dict | None = None,
 ) -> dict | None:
     """Reuse existing tenant MCP tools for a newly created agent."""
-    async with async_session() as db:
+    async with tenant_scoped_session(tenant_id) as db:
         tools = await _query_existing_mcp_tools(db, tenant_id=tenant_id, server_id=server_id)
         if not tools:
             return None

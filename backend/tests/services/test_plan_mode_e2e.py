@@ -216,9 +216,15 @@ def e2e(monkeypatch, tmp_path):
     )
     session = _E2ESession(agents=[agent])
 
+    async def _fake_resolve_tenant(_agent_id, **_kwargs):
+        # The handoff bare branch now resolves the plan's tenant via an audited
+        # bypass read before pinning a tenant_scoped_session.
+        return agent.tenant_id
+
     monkeypatch.setattr(service_mod, "async_session", lambda: session)
     monkeypatch.setattr(service_mod, "_agent_data_dir", lambda: tmp_path)
-    monkeypatch.setattr(handoff_mod, "async_session", lambda: session)
+    monkeypatch.setattr(handoff_mod, "resolve_tenant_for_agent", _fake_resolve_tenant)
+    monkeypatch.setattr(handoff_mod, "tenant_scoped_session", lambda *a, **k: session)
     monkeypatch.setattr(gate_mod, "async_session", lambda: session)
 
     service = service_mod.PlanModeService()

@@ -11,7 +11,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import async_session
+from app.database import tenant_scoped_session
 from app.models.org import OrgDepartment, OrgMember
 from app.models.tenant_setting import TenantSetting
 from app.models.user import User
@@ -42,10 +42,13 @@ class OrgSyncService:
         Returns (token_string, raw_response_dict).
         """
         async with httpx.AsyncClient() as client:
-            resp = await client.post(FEISHU_APP_TOKEN_URL, json={
-                "app_id": app_id,
-                "app_secret": app_secret,
-            })
+            resp = await client.post(
+                FEISHU_APP_TOKEN_URL,
+                json={
+                    "app_id": app_id,
+                    "app_secret": app_secret,
+                },
+            )
             data = resp.json()
             logger.info(f"[OrgSync] Token response: code={data.get('code')}, msg={data.get('msg')}")
             token = data.get("tenant_access_token") or data.get("app_access_token") or ""
@@ -69,7 +72,9 @@ class OrgSyncService:
                 logger.info(f"[OrgSync] GET {url} params={params}")
                 resp = await client.get(url, params=params, headers={"Authorization": f"Bearer {token}"})
                 data = resp.json()
-                logger.info(f"[OrgSync] Dept response: code={data.get('code')}, msg={data.get('msg')}, items={len(data.get('data', {}).get('items', []))}")
+                logger.info(
+                    f"[OrgSync] Dept response: code={data.get('code')}, msg={data.get('msg')}, items={len(data.get('data', {}).get('items', []))}"
+                )
 
                 if data.get("code") != 0:
                     logger.error(f"[OrgSync] Dept API error: {data}")
@@ -106,7 +111,9 @@ class OrgSyncService:
                     params["page_token"] = page_token
                 resp = await client.get(url, params=params, headers={"Authorization": f"Bearer {token}"})
                 data = resp.json()
-                logger.info(f"[OrgSync] Simple dept response (parent={parent_id}): code={data.get('code')}, items={len(data.get('data', {}).get('items', []))}")
+                logger.info(
+                    f"[OrgSync] Simple dept response (parent={parent_id}): code={data.get('code')}, items={len(data.get('data', {}).get('items', []))}"
+                )
 
                 if data.get("code") != 0:
                     logger.error(f"[OrgSync] Simple dept error: {data}")
@@ -150,7 +157,9 @@ class OrgSyncService:
                     headers={"Authorization": f"Bearer {token}"},
                 )
                 data = resp.json()
-                logger.info(f"[OrgSync] Users response (dept={dept_id}): code={data.get('code')}, items={len(data.get('data', {}).get('items', []))}")
+                logger.info(
+                    f"[OrgSync] Users response (dept={dept_id}): code={data.get('code')}, items={len(data.get('data', {}).get('items', []))}"
+                )
 
                 if data.get("code") != 0:
                     logger.error(f"[OrgSync] Users API error: {data}")
@@ -168,7 +177,7 @@ class OrgSyncService:
 
     async def full_sync(self, tenant_id: uuid.UUID) -> dict:
         """Run a full org sync from Feishu. Returns stats."""
-        async with async_session() as db:
+        async with tenant_scoped_session(tenant_id) as db:
             config = await self._get_feishu_config(db, tenant_id)
             if not config:
                 return {"error": "未配置飞书组织架构同步信息"}
@@ -229,9 +238,7 @@ class OrgSyncService:
 
                 # Build feishu_id -> db_id + parent mapping
                 dept_map = {}
-                all_result = await db.execute(
-                    select(OrgDepartment).where(OrgDepartment.tenant_id == tenant_id)
-                )
+                all_result = await db.execute(select(OrgDepartment).where(OrgDepartment.tenant_id == tenant_id))
                 for dept in all_result.scalars().all():
                     if dept.feishu_id:
                         dept_map[dept.feishu_id] = dept
@@ -246,15 +253,14 @@ class OrgSyncService:
                 await db.flush()
             except Exception as e:
                 import traceback
+
                 traceback.print_exc()
                 logger.error(f"[OrgSync] Department sync failed: {e}")
                 return {"error": f"部门同步失败: {str(e)[:200]}"}
 
             # --- Sync members ---
             try:
-                all_dept_result = await db.execute(
-                    select(OrgDepartment).where(OrgDepartment.tenant_id == tenant_id)
-                )
+                all_dept_result = await db.execute(select(OrgDepartment).where(OrgDepartment.tenant_id == tenant_id))
                 departments = all_dept_result.scalars().all()
                 provider = await feishu_auth_provider._ensure_provider(db, tenant_id)
 
@@ -263,15 +269,21 @@ class OrgSyncService:
                         continue
                     users = await self._fetch_department_users(token, dept.feishu_id)
                     if users:
-                        logger.info(f"[OrgSync] dept={dept.name} got {len(users)} users, first user keys={list(users[0].keys())}, open_id={users[0].get('open_id','')!r}, user_id={users[0].get('user_id','')!r}")
+                        logger.info(
+                            f"[OrgSync] dept={dept.name} got {len(users)} users, first user keys={list(users[0].keys())}, open_id={users[0].get('open_id', '')!r}, user_id={users[0].get('user_id', '')!r}"
+                        )
                     for u in users:
                         open_id = u.get("open_id", "")
                         user_id = u.get("user_id", "")
                         if not open_id and not user_id:
-                            logger.warning(f"[OrgSync] Skipping user with no open_id and no user_id: {u.get('name','?')}")
+                            logger.warning(
+                                f"[OrgSync] Skipping user with no open_id and no user_id: {u.get('name', '?')}"
+                            )
                             continue
                         if not user_id:
-                            logger.warning(f"[OrgSync] User {u.get('name','?')} has no user_id — App may lack contact:user.employee_id:readonly permission")
+                            logger.warning(
+                                f"[OrgSync] User {u.get('name', '?')} has no user_id — App may lack contact:user.employee_id:readonly permission"
+                            )
 
                         # Find existing member: prefer user_id (tenant-stable), fallback open_id
                         member = None
@@ -355,7 +367,12 @@ class OrgSyncService:
                             platform_user = pu_result.scalar_one_or_none()
                         # Fallback: match by real email (most reliable cross-app identifier)
                         member_email = u.get("email", "")
-                        if not platform_user and member_email and "@" in member_email and not member_email.endswith("@feishu.local"):
+                        if (
+                            not platform_user
+                            and member_email
+                            and "@" in member_email
+                            and not member_email.endswith("@feishu.local")
+                        ):
                             pu_result = await db.execute(
                                 select(User).where(
                                     User.tenant_id == tenant_id,
@@ -415,6 +432,7 @@ class OrgSyncService:
                         )
             except Exception as e:
                 import traceback
+
                 traceback.print_exc()
                 logger.error(f"[OrgSync] Member sync failed: {e}")
                 return {"error": f"成员同步失败: {str(e)[:200]}", "departments": dept_count}
@@ -432,7 +450,12 @@ class OrgSyncService:
 
             await db.commit()
 
-            stats = {"departments": dept_count, "members": member_count, "users_created": user_count, "synced_at": now.isoformat()}
+            stats = {
+                "departments": dept_count,
+                "members": member_count,
+                "users_created": user_count,
+                "synced_at": now.isoformat(),
+            }
             logger.info(f"[OrgSync] Complete: {stats}")
             return stats
 

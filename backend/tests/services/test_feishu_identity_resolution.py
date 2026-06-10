@@ -59,6 +59,26 @@ class _AsyncSessionContext:
         return False
 
 
+@pytest.fixture(autouse=True)
+def _patch_messaging_rls(monkeypatch):
+    """RLS 阶段1: _send_feishu_message now resolves the agent's tenant and opens
+    a tenant-scoped session. Each test already patches ``messaging.async_session``
+    to yield its fake ``_DB``; route ``tenant_scoped_session`` through that same
+    factory (ignoring the tenant arg) and stub ``resolve_tenant_for_agent`` so it
+    never touches a real DB. messaging.py imports both at module level, so patch
+    them on the messaging module directly."""
+    from app.services.agent_tool_domains import messaging
+
+    def _scoped(*_a, **_k):
+        return messaging.async_session()
+
+    async def _resolve(*_a, **_k):
+        return uuid4()
+
+    monkeypatch.setattr(messaging, "tenant_scoped_session", _scoped, raising=False)
+    monkeypatch.setattr(messaging, "resolve_tenant_for_agent", _resolve, raising=False)
+
+
 def test_load_feishu_contacts_reads_agent_workspace_cache(monkeypatch, tmp_path):
     from app.services import feishu_contacts_cache as cache_service
 

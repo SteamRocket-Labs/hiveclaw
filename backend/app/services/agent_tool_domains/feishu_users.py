@@ -52,7 +52,7 @@ def _fuzzy_score(query: str, name: str) -> float:
 
 def _format_user_result(users: list[dict], query: str, source: str) -> str:
     """Format a list of user dicts into a readable result string."""
-    lines = [f"Found {len(users)} user(s) matching \"{query}\" ({source}):\n"]
+    lines = [f'Found {len(users)} user(s) matching "{query}" ({source}):\n']
     for u in users:
         display_name = u.get("name") or u.get("display_name", "")
         en_name = u.get("en_name", "")
@@ -107,27 +107,28 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
         return _format_user_result([u for _, u in scored_cache[:5]], name, "cache")
 
     # ── Resolve agent tenant_id ──────────────────────────────────────────────
-    _tenant_id = None
-    try:
-        from app.database import async_session as _async_session
-        from sqlalchemy import select as _sa_select
-        from app.models.agent import Agent as _Agent
-        async with _async_session() as _db:
-            _agent_r = await _db.execute(_sa_select(_Agent.tenant_id).where(_Agent.id == agent_id))
-            _tenant_id = _agent_r.scalar_one_or_none()
-    except Exception as e:
-        logger.debug("Suppressed tenant lookup: %s", e)
+    # RLS 阶段1 + Finding #2: resolve the agent's tenant via the audited
+    # single-row bypass. If it can't be resolved we MUST fail closed — the
+    # OrgMember/User fuzzy searches below would otherwise run unscoped and
+    # enumerate the directory across ALL tenants (a real isolation leak the
+    # old try/except silently produced on soft failure).
+    from app.services.tenant_resolver import resolve_tenant_for_agent
+
+    _tenant_id = await resolve_tenant_for_agent(agent_id)
+    if not _tenant_id:
+        return (
+            f'❌ No user matching "{name}" found — the agent\'s tenant could not be resolved, '
+            "so the directory search was skipped. Provide the Feishu open_id or work email directly."
+        )
 
     # ── 2. OrgMember table — fuzzy scored ────────────────────────────────────
     try:
-        from app.database import async_session as _async_session
+        from app.database import tenant_scoped_session as _tenant_scoped_session
         from sqlalchemy import select as _sa_select
         from app.models.org import OrgMember as _OrgMember
 
-        _om_query = _sa_select(_OrgMember)
-        if _tenant_id:
-            _om_query = _om_query.where(_OrgMember.tenant_id == _tenant_id)
-        async with _async_session() as _db:
+        _om_query = _sa_select(_OrgMember).where(_OrgMember.tenant_id == _tenant_id)
+        async with _tenant_scoped_session(_tenant_id) as _db:
             _r = await _db.execute(_om_query)
             _all_members = _r.scalars().all()
 
@@ -138,13 +139,18 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
                 _fuzzy_score(name, getattr(_om, "en_name", "") or ""),
             )
             if best >= 0.3:
-                scored_members.append((best, {
-                    "name": _om.name,
-                    "feishu_user_id": _om.feishu_user_id,
-                    "open_id": _om.feishu_open_id,
-                    "email": getattr(_om, "email", ""),
-                    "department_path": getattr(_om, "department_path", ""),
-                }))
+                scored_members.append(
+                    (
+                        best,
+                        {
+                            "name": _om.name,
+                            "feishu_user_id": _om.feishu_user_id,
+                            "open_id": _om.feishu_open_id,
+                            "email": getattr(_om, "email", ""),
+                            "department_path": getattr(_om, "department_path", ""),
+                        },
+                    )
+                )
 
         if scored_members:
             scored_members.sort(key=lambda x: x[0], reverse=True)
@@ -154,14 +160,12 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
 
     # ── 3. Platform User table ───────────────────────────────────────────────
     try:
-        from app.database import async_session as _async_session
+        from app.database import tenant_scoped_session as _tenant_scoped_session
         from sqlalchemy import select as _sa_select
         from app.models.user import User as _User
 
-        _user_query = _sa_select(_User)
-        if _tenant_id:
-            _user_query = _user_query.where(_User.tenant_id == _tenant_id)
-        async with _async_session() as _db:
+        _user_query = _sa_select(_User).where(_User.tenant_id == _tenant_id)
+        async with _tenant_scoped_session(_tenant_id) as _db:
             _r = await _db.execute(_user_query)
             _all_users = _r.scalars().all()
 
@@ -173,12 +177,17 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
                 continue
             best = _fuzzy_score(name, _pu.display_name or "")
             if best >= 0.3:
-                scored_users.append((best, {
-                    "name": _pu.display_name,
-                    "user_id": _uid or "",
-                    "open_id": _oid or "",
-                    "email": getattr(_pu, "email", "") or "",
-                }))
+                scored_users.append(
+                    (
+                        best,
+                        {
+                            "name": _pu.display_name,
+                            "user_id": _uid or "",
+                            "open_id": _oid or "",
+                            "email": getattr(_pu, "email", "") or "",
+                        },
+                    )
+                )
 
         if scored_users:
             scored_users.sort(key=lambda x: x[0], reverse=True)
@@ -188,7 +197,7 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
 
     total = len(_cached_users)
     return (
-        f"❌ No user matching \"{name}\" found (searched {total} cached + directory + users).\n\n"
+        f'❌ No user matching "{name}" found (searched {total} cached + directory + users).\n\n'
         "Suggestions:\n"
         "- Try a shorter query (family name or given name only)\n"
         "- Provide the Feishu open_id or work email directly"

@@ -38,7 +38,8 @@ from typing import Any
 
 from sqlalchemy import select
 
-from app.database import async_session
+from app.database import tenant_scoped_session
+from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.models.agent import Agent
 from app.models.trigger import AgentTrigger
 
@@ -140,7 +141,11 @@ async def handoff_scheduled_trigger(plan: Any, *, db: Any | None = None, force_o
         trigger = await _handoff_scheduled_trigger_in_session(db, plan, force_once=force_once)
         return _handoff_payload(plan, trigger)
 
-    async with async_session() as owned_db:
+    # Bare branch (no caller session): reads the agent (RLS-policied) to author
+    # its wake trigger, so pin the GUC to the plan's tenant — under enforced
+    # (non-owner) RLS the agent row is otherwise invisible and the handoff fails.
+    tenant_id = await resolve_tenant_for_agent(getattr(plan, "agent_id", None))
+    async with tenant_scoped_session(tenant_id) as owned_db:
         try:
             trigger = await _handoff_scheduled_trigger_in_session(owned_db, plan, force_once=force_once)
             await owned_db.commit()

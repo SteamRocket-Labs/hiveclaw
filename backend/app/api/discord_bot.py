@@ -23,6 +23,7 @@ DISCORD_MSG_LIMIT = 2000  # Discord message char limit
 
 # ─── Config CRUD ────────────────────────────────────────
 
+
 @router.post("/agents/{agent_id}/discord-channel", response_model=ChannelConfigOut, status_code=201)
 async def configure_discord_channel(
     agent_id: uuid.UUID,
@@ -101,6 +102,7 @@ async def get_discord_channel(
 async def get_discord_webhook_url(agent_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
     import os
     from app.models.system_settings import SystemSetting
+
     public_base = ""
     result = await db.execute(select(SystemSetting).where(SystemSetting.key == "platform"))
     setting = result.scalar_one_or_none()
@@ -136,10 +138,12 @@ async def delete_discord_channel(
 
 # ─── Slash Command Registration ─────────────────────────
 
+
 async def _register_slash_commands(application_id: str, bot_token: str) -> dict:
     """Register /ask global slash command with Discord API."""
     import httpx
     import os
+
     command = {
         "name": "ask",
         "description": "Ask the AI agent a question",
@@ -147,7 +151,7 @@ async def _register_slash_commands(application_id: str, bot_token: str) -> dict:
             {
                 "name": "message",
                 "description": "Your question or message to the agent",
-                "type": 3,   # STRING
+                "type": 3,  # STRING
                 "required": True,
             }
         ],
@@ -164,6 +168,7 @@ async def _register_slash_commands(application_id: str, bot_token: str) -> dict:
 
 
 # ─── Interactions Webhook ───────────────────────────────
+
 
 def _verify_discord_signature(public_key: str, body: bytes, headers: dict) -> bool:
     """Verify Discord ed25519 signature."""
@@ -185,7 +190,8 @@ def _verify_discord_signature(public_key: str, body: bytes, headers: dict) -> bo
 async def _send_discord_followup(application_id: str, bot_token: str, interaction_token: str, text: str) -> None:
     """Send follow-up message(s) to Discord Interactions, chunked at 2000 chars."""
     import httpx
-    chunks = [text[i:i + DISCORD_MSG_LIMIT] for i in range(0, len(text), DISCORD_MSG_LIMIT)]
+
+    chunks = [text[i : i + DISCORD_MSG_LIMIT] for i in range(0, len(text), DISCORD_MSG_LIMIT)]
     proxy = os.environ.get("DISCORD_PROXY") or os.environ.get("HTTPS_PROXY") or None
     async with httpx.AsyncClient(timeout=10, proxy=proxy) as client:
         for i, chunk in enumerate(chunks):
@@ -232,6 +238,7 @@ async def discord_interaction_webhook(
 
     import json
     import asyncio
+
     body = json.loads(body_bytes)
     interaction_type = body.get("type", 0)
 
@@ -267,25 +274,33 @@ async def discord_interaction_webhook(
             from app.models.agent import Agent as AgentModel
             from app.api.feishu import _call_agent_llm
             from app.services.channel_session import find_or_create_channel_session
-            from app.database import async_session
+            from app.database import tenant_scoped_session
+            from app.services.tenant_resolver import resolve_tenant_for_agent
             from datetime import datetime, timezone
 
-            async with async_session() as bg_db:
+            # Webhook bg path has no TenantMiddleware GUC. Resolve the tenant from
+            # the path agent_id (narrow audited bypass single-row read) and pin it.
+            _discord_tenant_id = await resolve_tenant_for_agent(agent_id)
+            async with tenant_scoped_session(_discord_tenant_id) as bg_db:
                 # Load agent
                 agent_r = await bg_db.execute(select(AgentModel).where(AgentModel.id == agent_id))
                 agent_obj = agent_r.scalar_one_or_none()
                 from app.services.memory_service import compute_history_limit_for_agent
+
                 _hist_limit = await compute_history_limit_for_agent(agent_id)
 
                 # Find-or-create platform user for this Discord sender
                 from app.models.user import User as _User
                 from app.core.security import hash_password as _hp
                 import uuid as _uuid
+
                 _username = f"discord_{sender_id}"
                 _u_r = await bg_db.execute(select(_User).where(_User.username == _username))
                 _platform_user = _u_r.scalar_one_or_none()
                 if not _platform_user:
-                    _discord_username = body.get("member", {}).get("user", {}).get("username") or body.get("user", {}).get("username", "")
+                    _discord_username = body.get("member", {}).get("user", {}).get("username") or body.get(
+                        "user", {}
+                    ).get("username", "")
                     _display = _discord_username or f"Discord User {sender_id[:8]}"
                     _platform_user = _User(
                         username=_username,
@@ -320,7 +335,15 @@ async def discord_interaction_webhook(
                 history = [{"role": m.role, "content": m.content} for m in reversed(history_r.scalars().all())]
 
                 # Save user message
-                bg_db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user", content=user_text, conversation_id=session_conv_id))
+                bg_db.add(
+                    ChatMessage(
+                        agent_id=agent_id,
+                        user_id=platform_user_id,
+                        role="user",
+                        content=user_text,
+                        conversation_id=session_conv_id,
+                    )
+                )
                 sess.last_message_at = datetime.now(timezone.utc)
                 await bg_db.commit()
 
@@ -339,16 +362,27 @@ async def discord_interaction_webhook(
                 logger.info(f"[Discord] LLM reply: {reply_text[:80]}")
 
                 # Save reply
-                bg_db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant", content=reply_text, conversation_id=session_conv_id))
+                bg_db.add(
+                    ChatMessage(
+                        agent_id=agent_id,
+                        user_id=platform_user_id,
+                        role="assistant",
+                        content=reply_text,
+                        conversation_id=session_conv_id,
+                    )
+                )
                 sess.last_message_at = datetime.now(timezone.utc)
                 await bg_db.commit()
 
                 # Bot token stored in config — read from DB to avoid detached ORM issues
                 from sqlalchemy import select as _sel
-                cfg_r = await bg_db.execute(_sel(ChannelConfig).where(
-                    ChannelConfig.agent_id == agent_id,
-                    ChannelConfig.channel_type == "discord",
-                ))
+
+                cfg_r = await bg_db.execute(
+                    _sel(ChannelConfig).where(
+                        ChannelConfig.agent_id == agent_id,
+                        ChannelConfig.channel_type == "discord",
+                    )
+                )
                 cfg = cfg_r.scalar_one_or_none()
                 bot_token_bg = cfg.app_secret if cfg else ""
                 app_id_bg = cfg.app_id if cfg else ""

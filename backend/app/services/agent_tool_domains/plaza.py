@@ -5,7 +5,8 @@ import uuid
 
 from sqlalchemy import select
 
-from app.database import async_session
+from app.database import tenant_scoped_session
+from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.tools.result_envelope import render_tool_error
 
 logger = logging.getLogger(__name__)
@@ -13,7 +14,11 @@ logger = logging.getLogger(__name__)
 
 async def _is_system_hr(agent_id: uuid.UUID) -> bool:
     from app.models.agent import Agent as AgentModel
-    async with async_session() as db:
+
+    # RLS 阶段1: `agents` is policy-bearing — scope to the agent's tenant
+    # (resolved via audited single-row bypass).
+    tid = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tid) as db:
         r = await db.execute(select(AgentModel.agent_class).where(AgentModel.id == agent_id))
         agent_class = r.scalar_one_or_none()
         return agent_class == "internal_system"
@@ -46,7 +51,10 @@ async def _plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
     limit = min(arguments.get("limit", 10), 20)
 
     try:
-        async with async_session() as db:
+        # RLS 阶段1: `agents`/`plaza_posts` are policy-bearing — scope to the
+        # agent's tenant (resolved via audited single-row bypass).
+        tid = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tid) as db:
             # Resolve agent's tenant_id
             ar = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
             agent = ar.scalar_one_or_none()
@@ -80,7 +88,9 @@ async def _plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
             return "🏛️ Agent Plaza — Recent Posts:\n\n" + "\n\n---\n\n".join(output)
 
     except Exception as e:
-        return _plaza_error("plaza_get_new_posts", "operation_failed", f"Failed to load plaza posts: {str(e)[:200]}", retryable=True)
+        return _plaza_error(
+            "plaza_get_new_posts", "operation_failed", f"Failed to load plaza posts: {str(e)[:200]}", retryable=True
+        )
 
 
 async def _plaza_create_post(agent_id: uuid.UUID, arguments: dict) -> str:
@@ -99,7 +109,10 @@ async def _plaza_create_post(agent_id: uuid.UUID, arguments: dict) -> str:
         content = content[:500]
 
     try:
-        async with async_session() as db:
+        # RLS 阶段1: `agents`/`plaza_posts` are policy-bearing — scope to the
+        # agent's tenant (resolved via audited single-row bypass).
+        tid = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tid) as db:
             # Get agent name
             ar = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
             agent = ar.scalar_one_or_none()
@@ -119,7 +132,9 @@ async def _plaza_create_post(agent_id: uuid.UUID, arguments: dict) -> str:
             return f"✅ Post published! (ID: {post.id})"
 
     except Exception as e:
-        return _plaza_error("plaza_create_post", "operation_failed", f"Failed to create post: {str(e)[:200]}", retryable=True)
+        return _plaza_error(
+            "plaza_create_post", "operation_failed", f"Failed to create post: {str(e)[:200]}", retryable=True
+        )
 
 
 async def _plaza_add_comment(agent_id: uuid.UUID, arguments: dict) -> str:
@@ -148,7 +163,10 @@ async def _plaza_add_comment(agent_id: uuid.UUID, arguments: dict) -> str:
         return "Plaza commenting is disabled for the system HR agent."
 
     try:
-        async with async_session() as db:
+        # RLS 阶段1: `agents`/`plaza_posts` are policy-bearing — scope to the
+        # agent's tenant (resolved via audited single-row bypass).
+        tid = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tid) as db:
             # Get agent first to know tenant
             ar = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
             agent = ar.scalar_one_or_none()
@@ -179,4 +197,6 @@ async def _plaza_add_comment(agent_id: uuid.UUID, arguments: dict) -> str:
             return f"✅ Comment added to post by {post.author_name}."
 
     except Exception as e:
-        return _plaza_error("plaza_add_comment", "operation_failed", f"Failed to add comment: {str(e)[:200]}", retryable=True)
+        return _plaza_error(
+            "plaza_add_comment", "operation_failed", f"Failed to add comment: {str(e)[:200]}", retryable=True
+        )

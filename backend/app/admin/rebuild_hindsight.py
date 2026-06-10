@@ -20,7 +20,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from app.config import get_settings
-from app.database import async_session
+from app.database import tenant_scoped_session
 from app.memory.hindsight_sync import _CURSOR_FILENAME, sync_t3_to_hindsight
 from app.models.agent import Agent
 
@@ -35,9 +35,10 @@ def _reset_cursor(data_root: Path, agent_id: uuid.UUID) -> None:
 
 
 async def _agents_in_tenant(
-    tenant_id: uuid.UUID, agent_id: uuid.UUID | None,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID | None,
 ) -> list[uuid.UUID]:
-    async with async_session() as db:
+    async with tenant_scoped_session(tenant_id) as db:
         stmt = select(Agent.id).where(Agent.tenant_id == tenant_id)
         if agent_id is not None:
             stmt = stmt.where(Agent.id == agent_id)
@@ -60,17 +61,17 @@ async def rebuild(tenant_id: uuid.UUID, agent_id: uuid.UUID | None) -> int:
         total_items += synced
     logger.info(
         "Rebuild complete: tenant=%s agents=%d items=%d",
-        tenant_id, len(agent_ids), total_items,
+        tenant_id,
+        len(agent_ids),
+        total_items,
     )
     return total_items
 
 
 def _parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Rebuild Hindsight bank from T3 MD.")
-    ap.add_argument("--tenant-id", required=True, type=uuid.UUID,
-                    help="Tenant UUID whose banks to rebuild.")
-    ap.add_argument("--agent-id", type=uuid.UUID, default=None,
-                    help="Optional single-agent scope.")
+    ap.add_argument("--tenant-id", required=True, type=uuid.UUID, help="Tenant UUID whose banks to rebuild.")
+    ap.add_argument("--agent-id", type=uuid.UUID, default=None, help="Optional single-agent scope.")
     ap.add_argument("--verbose", "-v", action="store_true")
     return ap.parse_args()
 

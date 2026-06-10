@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select
 
-from app.database import async_session
+from app.database import async_session, tenant_scoped_session
+from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.tools.result_envelope import render_tool_error
 
 logger = logging.getLogger(__name__)
@@ -119,7 +120,11 @@ async def _resolve_target_agent_runtime(
     from app.models.agent import Agent
     from app.models.llm import LLMModel
 
-    async with async_session() as db:
+    # RLS 阶段1: agents/llm_models are policy-bearing — scope to the source
+    # agent's tenant (resolved via audited single-row bypass). Cross-tenant A2A
+    # is already forbidden by the explicit tenant filters below.
+    tid = await resolve_tenant_for_agent(from_agent_id)
+    async with tenant_scoped_session(tid) as db:
         src_result = await db.execute(select(Agent).where(Agent.id == from_agent_id))
         source_agent = src_result.scalar_one_or_none()
         if not source_agent:
@@ -216,7 +221,10 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
         from app.services.feishu_service import feishu_service
         from sqlalchemy.orm import selectinload
 
-        async with async_session() as db:
+        # RLS 阶段1: agents/users/org_members are policy-bearing — scope to the
+        # agent's tenant (resolved via audited single-row bypass).
+        tid = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tid) as db:
 
             async def _safe_send_text_message(
                 app_id: str,
@@ -664,7 +672,10 @@ async def _send_web_message(agent_id: uuid.UUID, args: dict) -> str:
         from app.services.web_session_contract import apply_web_session_contract
         from datetime import datetime as _dt, timezone as _tz
 
-        async with async_session() as db:
+        # RLS 阶段1: users (policy-bearing) read — scope to the agent's tenant
+        # (resolved via audited single-row bypass).
+        tid = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tid) as db:
             # Resolve agent tenant for scoped query
             from app.models.agent import Agent as _AgentModel
 
@@ -881,7 +892,11 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
             session_conversation_id,
         )
 
-        async with async_session() as db:
+        # RLS 阶段1: agents/llm_models are policy-bearing — scope to the source
+        # agent's tenant (resolved via audited single-row bypass). Target lookup
+        # is already tenant-filtered below.
+        tid = await resolve_tenant_for_agent(from_agent_id)
+        async with tenant_scoped_session(tid) as db:
             # Look up source agent
             src_result = await db.execute(select(Agent).where(Agent.id == from_agent_id))
             source_agent = src_result.scalar_one_or_none()

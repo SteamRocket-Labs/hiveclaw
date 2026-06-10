@@ -2,7 +2,7 @@
 
 from loguru import logger
 from sqlalchemy import select
-from app.database import async_session
+from app.database import async_session, enter_rls_bypass
 from app.models.agent import AgentTemplate
 
 
@@ -130,7 +130,15 @@ DEFAULT_TEMPLATES = [
 
 async def seed_agent_templates():
     """Insert default agent templates if they don't exist. Update stale ones."""
-    async with async_session() as db:
+    # Startup seeder: before deleting a stale builtin template it ref-counts
+    # agents across every tenant. Under enforced RLS a tenant-blind count would
+    # undercount and wrongly delete an in-use template, so the cross-tenant
+    # ref-count runs under an explicit audited bypass.
+    async with (
+        async_session() as db,
+        enter_rls_bypass(db, reason="builtin template seed: ref-count agents across tenants before delete") as bdb,
+    ):
+        db = bdb
         with db.no_autoflush:
             # Remove old builtin templates that are no longer in our list
             # BUT skip templates that are still referenced by agents
@@ -138,16 +146,12 @@ async def seed_agent_templates():
             from sqlalchemy import func
 
             current_names = {t["name"] for t in DEFAULT_TEMPLATES}
-            result = await db.execute(
-                select(AgentTemplate).where(AgentTemplate.is_builtin)
-            )
+            result = await db.execute(select(AgentTemplate).where(AgentTemplate.is_builtin))
             existing_builtins = result.scalars().all()
             for old in existing_builtins:
                 if old.name not in current_names:
                     # Check if any agents still reference this template
-                    ref_count = await db.execute(
-                        select(func.count(Agent.id)).where(Agent.template_id == old.id)
-                    )
+                    ref_count = await db.execute(select(func.count(Agent.id)).where(Agent.template_id == old.id))
                     if ref_count.scalar() == 0:
                         await db.delete(old)
                         logger.info(f"[TemplateSeeder] Removed old template: {old.name}")
@@ -171,15 +175,17 @@ async def seed_agent_templates():
                     existing.soul_template = tmpl["soul_template"]
                     existing.default_skills = tmpl["default_skills"]
                 else:
-                    db.add(AgentTemplate(
-                        name=tmpl["name"],
-                        description=tmpl["description"],
-                        icon=tmpl["icon"],
-                        category=tmpl["category"],
-                        is_builtin=True,
-                        soul_template=tmpl["soul_template"],
-                        default_skills=tmpl["default_skills"],
-                    ))
+                    db.add(
+                        AgentTemplate(
+                            name=tmpl["name"],
+                            description=tmpl["description"],
+                            icon=tmpl["icon"],
+                            category=tmpl["category"],
+                            is_builtin=True,
+                            soul_template=tmpl["soul_template"],
+                            default_skills=tmpl["default_skills"],
+                        )
+                    )
                     logger.info(f"[TemplateSeeder] Created template: {tmpl['name']}")
             await db.commit()
             logger.info("[TemplateSeeder] Agent templates seeded")

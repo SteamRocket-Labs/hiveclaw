@@ -163,15 +163,40 @@ async def _backfill_org_members(db, configs: dict[uuid.UUID | None, tuple[str, s
 async def main():
     # Import models so SQLAlchemy resolves metadata before async work starts.
     from app.models import (  # noqa: F401
-        activity_log, agent, audit, channel_config, chat_session,
-        gateway_message, identity, invitation_code, llm, notification, org,
-        participant, plaza, schedule, skill, system_settings, task,
-        tenant, tenant_setting, tool, trigger, user,
+        activity_log,
+        agent,
+        audit,
+        channel_config,
+        chat_session,
+        gateway_message,
+        identity,
+        invitation_code,
+        llm,
+        notification,
+        org,
+        participant,
+        plaza,
+        schedule,
+        skill,
+        system_settings,
+        task,
+        tenant,
+        tenant_setting,
+        tool,
+        trigger,
+        user,
     )
-    from app.database import async_session
+    from app.database import async_session, enter_rls_bypass
     from app.services.feishu_identity_maintenance import reconcile_feishu_identity_state
 
-    async with async_session() as db:
+    # Ops maintenance across every tenant's Feishu identities (backfill + merge
+    # users / normalize sessions) — needs cross-tenant visibility, so run under
+    # an explicit audited bypass.
+    async with (
+        async_session() as db,
+        enter_rls_bypass(db, reason="feishu identity maintenance: backfill+merge users across all tenants") as bdb,
+    ):
+        db = bdb
         configs = await _load_tenant_feishu_configs(db)
         if not configs:
             logger.warning("No tenant/global Feishu credentials found. Nothing to backfill.")

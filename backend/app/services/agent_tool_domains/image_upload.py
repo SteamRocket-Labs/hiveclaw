@@ -34,9 +34,13 @@ async def _upload_image(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
     url_endpoint = ""
     try:
         from app.models.tool import Tool, AgentTool
+
         async with async_session() as db:
-            # Global config
-            r = await db.execute(select(Tool).where(Tool.name == "upload_image"))
+            # Global config. RLS 阶段1 / Finding #1: pin `tenant_id IS NULL` so a
+            # same-named tenant-owned `upload_image` tool can never leak its
+            # private_key here. The per-agent override below is scoped by
+            # agent_id and stays the tenant-specific path.
+            r = await db.execute(select(Tool).where(Tool.name == "upload_image", Tool.tenant_id.is_(None)))
             tool = r.scalar_one_or_none()
             if tool and tool.config:
                 private_key = tool.config.get("private_key", "")
@@ -87,6 +91,7 @@ async def _upload_image(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
         form_data["file"] = url
         if not file_name:
             from urllib.parse import urlparse
+
             file_name = urlparse(url).path.split("/")[-1] or "image.jpg"
 
     if not file_name:

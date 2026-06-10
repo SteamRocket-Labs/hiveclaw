@@ -23,6 +23,7 @@ router = APIRouter(tags=["dingtalk"])
 
 # ─── Config CRUD ────────────────────────────────────────
 
+
 @router.post("/agents/{agent_id}/dingtalk-channel", response_model=ChannelConfigOut, status_code=201)
 async def configure_dingtalk_channel(
     agent_id: uuid.UUID,
@@ -54,6 +55,7 @@ async def configure_dingtalk_channel(
         # Restart Stream client
         from app.services.dingtalk_stream import dingtalk_stream_manager
         import asyncio
+
         asyncio.create_task(dingtalk_stream_manager.start_client(agent_id, app_key, app_secret))
         return ChannelConfigOut.model_validate(existing)
 
@@ -70,6 +72,7 @@ async def configure_dingtalk_channel(
     # Start Stream client
     from app.services.dingtalk_stream import dingtalk_stream_manager
     import asyncio
+
     asyncio.create_task(dingtalk_stream_manager.start_client(agent_id, app_key, app_secret))
 
     return ChannelConfigOut.model_validate(config)
@@ -117,10 +120,12 @@ async def delete_dingtalk_channel(
     # Stop Stream client
     from app.services.dingtalk_stream import dingtalk_stream_manager
     import asyncio
+
     asyncio.create_task(dingtalk_stream_manager.stop_client(agent_id))
 
 
 # ─── Message Processing (called by Stream callback) ────
+
 
 async def process_dingtalk_message(
     agent_id: uuid.UUID,
@@ -134,7 +139,8 @@ async def process_dingtalk_message(
     import httpx
     from datetime import datetime, timezone
     from sqlalchemy import select as _select
-    from app.database import async_session
+    from app.database import tenant_scoped_session
+    from app.services.tenant_resolver import resolve_tenant_for_agent
     from app.models.agent import Agent as AgentModel
     from app.models.audit import ChatMessage
     from app.models.user import User as UserModel
@@ -142,7 +148,10 @@ async def process_dingtalk_message(
     from app.services.channel_session import find_or_create_channel_session
     from app.api.feishu import _call_agent_llm
 
-    async with async_session() as db:
+    # Webhook bg path has no TenantMiddleware GUC. Resolve the tenant from the
+    # path agent_id (narrow audited bypass single-row read) and pin the session.
+    _dingtalk_tenant_id = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(_dingtalk_tenant_id) as db:
         # Load agent
         agent_r = await db.execute(_select(AgentModel).where(AgentModel.id == agent_id))
         agent_obj = agent_r.scalar_one_or_none()
@@ -150,6 +159,7 @@ async def process_dingtalk_message(
             logger.warning(f"[DingTalk] Agent {agent_id} not found")
             return
         from app.services.memory_service import compute_history_limit_for_agent
+
         _hist_limit = await compute_history_limit_for_agent(agent_id)
 
         # Determine conv_id for session isolation
@@ -166,6 +176,7 @@ async def process_dingtalk_message(
         platform_user = u_r.scalar_one_or_none()
         if not platform_user:
             import uuid as _uuid
+
             platform_user = UserModel(
                 username=dt_username,
                 email=f"{dt_username}@dingtalk.local",
@@ -199,18 +210,25 @@ async def process_dingtalk_message(
         history = [{"role": m.role, "content": m.content} for m in reversed(history_r.scalars().all())]
 
         # Save user message
-        db.add(ChatMessage(
-            agent_id=agent_id, user_id=platform_user_id,
-            role="user", content=user_text,
-            conversation_id=session_conv_id,
-        ))
+        db.add(
+            ChatMessage(
+                agent_id=agent_id,
+                user_id=platform_user_id,
+                role="user",
+                content=user_text,
+                conversation_id=session_conv_id,
+            )
+        )
         sess.last_message_at = datetime.now(timezone.utc)
         await db.commit()
 
         # Call LLM
         reply_text = await _call_agent_llm(
-            db, agent_id, user_text,
-            history=history, user_id=platform_user_id,
+            db,
+            agent_id,
+            user_text,
+            history=history,
+            user_id=platform_user_id,
             session_id=session_conv_id,
             session_source="dingtalk",
             session_channel="dingtalk",
@@ -221,38 +239,50 @@ async def process_dingtalk_message(
         # Reply via session webhook (markdown)
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                await client.post(session_webhook, json={
-                    "msgtype": "markdown",
-                    "markdown": {
-                        "title": agent_obj.name or "AI Reply",
-                        "text": reply_text,
+                await client.post(
+                    session_webhook,
+                    json={
+                        "msgtype": "markdown",
+                        "markdown": {
+                            "title": agent_obj.name or "AI Reply",
+                            "text": reply_text,
+                        },
                     },
-                })
+                )
         except Exception as e:
             logger.error(f"[DingTalk] Failed to reply via webhook: {e}")
             # Fallback: try plain text
             try:
                 async with httpx.AsyncClient(timeout=10) as client:
-                    await client.post(session_webhook, json={
-                        "msgtype": "text",
-                        "text": {"content": reply_text},
-                    })
+                    await client.post(
+                        session_webhook,
+                        json={
+                            "msgtype": "text",
+                            "text": {"content": reply_text},
+                        },
+                    )
             except Exception as e2:
                 logger.error(f"[DingTalk] Fallback text reply also failed: {e2}")
 
         # Save assistant reply
-        db.add(ChatMessage(
-            agent_id=agent_id, user_id=platform_user_id,
-            role="assistant", content=reply_text,
-            conversation_id=session_conv_id,
-        ))
+        db.add(
+            ChatMessage(
+                agent_id=agent_id,
+                user_id=platform_user_id,
+                role="assistant",
+                content=reply_text,
+                conversation_id=session_conv_id,
+            )
+        )
         sess.last_message_at = datetime.now(timezone.utc)
         await db.commit()
 
         # Log activity
         from app.services.activity_logger import log_activity
+
         await log_activity(
-            agent_id, "chat_reply",
+            agent_id,
+            "chat_reply",
             f"Replied to DingTalk message: {reply_text[:80]}",
             detail={"channel": "dingtalk", "user_text": user_text[:200], "reply": reply_text[:500]},
         )

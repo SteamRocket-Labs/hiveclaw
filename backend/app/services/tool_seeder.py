@@ -5,7 +5,7 @@ from __future__ import annotations
 from loguru import logger
 from sqlalchemy import select
 
-from app.database import async_session
+from app.database import async_session, enter_rls_bypass
 from app.models.tool import Tool
 from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment
 from app.services.tool_visibility import HR_ONLY_TOOL_NAMES
@@ -32,7 +32,17 @@ async def seed_builtin_tools():
     """Insert or update builtin tools in the database."""
     from app.models.agent import Agent
 
-    async with async_session() as db:
+    # Startup seeder: writes global (NULL-tenant) builtin Tool rows AND scans
+    # agents across every tenant to auto-assign newly added builtins. Both are
+    # legitimately cross-tenant, so the cross-tenant visibility is made explicit
+    # and audited rather than relying on the owner-role bypass.
+    async with (
+        async_session() as db,
+        enter_rls_bypass(
+            db, reason="startup builtin-tool seeding: upsert global tools + auto-assign to all agents"
+        ) as bdb,
+    ):
+        db = bdb
         new_tool_ids = []
         for t in BUILTIN_TOOLS:
             result = await db.execute(select(Tool).where(Tool.name == t["name"]))
@@ -220,8 +230,11 @@ async def seed_atlassian_rovo_config():
 
 async def get_atlassian_api_key() -> str:
     """Read the Atlassian API key from the platform config tool."""
+    # Global config tool lives as a NULL-tenant row — pin the filter explicitly
+    # so a bare session reads the platform row (NULL-tenant rows pass RLS) and
+    # never a same-named tenant row.
     async with async_session() as db:
-        result = await db.execute(select(Tool).where(Tool.name == "atlassian_rovo"))
+        result = await db.execute(select(Tool).where(Tool.name == "atlassian_rovo", Tool.tenant_id.is_(None)))
         tool = result.scalar_one_or_none()
         if tool and tool.config:
             return tool.config.get("api_key", "")

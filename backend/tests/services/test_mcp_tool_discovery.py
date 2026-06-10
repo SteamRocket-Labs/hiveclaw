@@ -99,6 +99,19 @@ def _override(*, agent_id, server_id, tool_name, mode):
 def _patch_pack_open(monkeypatch, module):
     monkeypatch.setattr(module, "is_pack_enabled", lambda _policies, _pack: True)
 
+    # RLS 阶段1: list_agent_mcp_deferred_tools / get_agent_tools_for_llm now
+    # resolve the agent's tenant and open a tenant-scoped session. Route
+    # tenant_scoped_session through whatever ``async_session`` factory the test
+    # already installed (no real SET LOCAL → the queued result sequence is
+    # intact) and stub the tenant resolver. agent_tools imports both at module
+    # level. Called after the per-test ``async_session`` patch, so capture it
+    # lazily at call time.
+    async def _resolve(*_a, **_k):
+        return uuid4()
+
+    monkeypatch.setattr(module, "tenant_scoped_session", lambda *_a, **_k: module.async_session(), raising=False)
+    monkeypatch.setattr(module, "resolve_tenant_for_agent", _resolve, raising=False)
+
 
 # --- list_agent_mcp_deferred_tools: the listing gate ----------------------
 
@@ -429,16 +442,25 @@ async def test_dynamic_mcp_fallback_rejects_other_tenant_tool(monkeypatch):
         is_default=True,
     )
 
-    monkeypatch.setattr(
-        web_mcp,
-        "async_session",
-        lambda: _RoutingSession(
+    def _routing_session(*_a, **_k):
+        return _RoutingSession(
             agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id, agent_class="standard"),
             tool=foreign_tool,
             agent_tool=None,
             server_tools=[],
-        ),
-    )
+        )
+
+    monkeypatch.setattr(web_mcp, "async_session", _routing_session)
+
+    # RLS 阶段1: _execute_mcp_tool resolves the agent's tenant then opens a
+    # tenant-scoped session. Route tenant_scoped_session through the same fake
+    # routing session and stub the resolver (web_mcp imports both at module
+    # level). The Python-side cross-tenant rejection under test is unchanged.
+    async def _resolve(*_a, **_k):
+        return tenant_id
+
+    monkeypatch.setattr(web_mcp, "tenant_scoped_session", _routing_session, raising=False)
+    monkeypatch.setattr(web_mcp, "resolve_tenant_for_agent", _resolve, raising=False)
 
     calls: list[tuple] = []
 

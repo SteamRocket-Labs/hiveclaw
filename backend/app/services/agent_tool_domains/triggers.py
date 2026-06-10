@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 from sqlalchemy import select
 
-from app.database import async_session
+from app.database import async_session, tenant_scoped_session
 from app.services.plan_mode_core import (
     stamp_confirmed_plan_provenance,
     stamp_user_declined_plan_exemption,
@@ -17,6 +17,7 @@ from app.services.plan_mode_runtime_context import (
     trusted_plan_mode_user_decline_metadata,
     trusted_plan_mode_user_declined,
 )
+from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.tools.result_envelope import render_tool_error
 
 logger = logging.getLogger(__name__)
@@ -365,7 +366,10 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
     config = _stamp_user_declined_plan_mode(config)
 
     try:
-        async with async_session() as db:
+        # RLS 阶段1: reads the policy-bearing `agents` row for the trigger limit;
+        # scope to the agent's tenant (resolved via audited single-row bypass).
+        tid = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tid) as db:
             # Load agent to get per-agent trigger limit
             from app.models.agent import Agent as _AgentModel
 
@@ -666,7 +670,10 @@ async def _handle_list_triggers(agent_id: uuid.UUID) -> str:
     from app.models.trigger import AgentTrigger
 
     try:
-        async with async_session() as db:
+        # RLS 阶段1: reads the policy-bearing `agents` row for the autonomy
+        # snapshot; scope to the agent's tenant (audited single-row bypass).
+        tid = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tid) as db:
             result = await db.execute(
                 select(AgentTrigger)
                 .where(

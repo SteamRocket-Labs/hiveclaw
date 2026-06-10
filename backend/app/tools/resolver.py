@@ -5,11 +5,8 @@ from __future__ import annotations
 import logging
 import uuid
 
-from sqlalchemy import select
-
 from app.core.execution_context import get_execution_identity
-from app.database import async_session
-from app.models.agent import Agent
+from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.tools.runtime import ToolExecutionContext
 from app.tools.workspace import ensure_workspace
 
@@ -26,13 +23,16 @@ class ToolRuntimeResolver:
         user_id: uuid.UUID,
         session_id: str | None = None,
     ) -> ToolExecutionContext:
+        # Tool-execution tenant chokepoint (RLS 阶段1). We hold only ``agent_id``
+        # but need its tenant to scope every downstream governed query — and a
+        # bare read of ``agents`` fails closed once the app connects as a
+        # non-owner role. ``resolve_tenant_for_agent`` is the sanctioned narrow
+        # ``enter_rls_bypass`` lookup (single agent row by PK, audited).
         tenant_id = None
         try:
-            async with async_session() as db:
-                result = await db.execute(select(Agent.tenant_id).where(Agent.id == agent_id))
-                tenant = result.scalar_one_or_none()
-                if tenant:
-                    tenant_id = str(tenant)
+            tenant = await resolve_tenant_for_agent(agent_id)
+            if tenant:
+                tenant_id = str(tenant)
         except Exception as exc:
             logger.debug("Failed to resolve tenant_id for tool execution: %s", exc)
 

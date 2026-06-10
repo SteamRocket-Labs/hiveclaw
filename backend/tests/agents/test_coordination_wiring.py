@@ -108,7 +108,9 @@ class TestGatewayScope:
 
         tenant_id = uuid.uuid4()
         with patch("app.agents.coordination_wiring.get_settings", return_value=_settings_with_backend("postgres")):
-            with patch("app.agents.coordination_wiring.async_session", return_value=_FakeSessionCM()):
+            # coordination_* are FORCE RLS tables — gateway_scope now opens a
+            # tenant_scoped_session(tenant_uuid) instead of a bare async_session().
+            with patch("app.agents.coordination_wiring.tenant_scoped_session", return_value=_FakeSessionCM()):
                 async with gateway_scope(tenant_id=tenant_id) as gw:
                     assert isinstance(gw, CoordinationRepository)
         assert commits == [True]
@@ -131,6 +133,6 @@ class TestGatewayScope:
                 pass
 
         with patch("app.agents.coordination_wiring.get_settings", return_value=_settings_with_backend("postgres")):
-            with patch("app.agents.coordination_wiring.async_session", return_value=_FakeSessionCM()):
+            with patch("app.agents.coordination_wiring.tenant_scoped_session", return_value=_FakeSessionCM()):
                 async with gateway_scope(tenant_id=str(tenant_id)) as gw:
                     assert isinstance(gw, CoordinationRepository)

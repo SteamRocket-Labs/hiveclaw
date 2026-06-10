@@ -22,11 +22,12 @@ from typing import Any, Awaitable, Callable
 
 from sqlalchemy import or_, select
 
-from app.database import async_session
+from app.database import async_session, tenant_scoped_session
 from app.models.agent import Agent
 from app.config import get_settings
 from app.services.channel_delivery_service import ChannelDeliveryService, channel_delivery_target
 from app.services.pack_policy_service import get_tenant_pack_policies, is_pack_enabled
+from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.tool_visibility import HR_ONLY_TOOL_NAMES, is_hr_agent, is_tool_allowed_for_agent
 from app.tools import (
     ToolExecutionRegistry,
@@ -510,15 +511,22 @@ async def list_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = "") ->
     matched: list[str] = []
     seen: set[str] = set()
     try:
-        async with async_session() as db:
+        # RLS 阶段1: `tools`/`agents` are policy-bearing — resolve the agent's
+        # tenant first (audited single-row bypass), then scope the whole read.
+        tid = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tid) as db:
             agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
             pack_policies = await get_tenant_pack_policies(db, getattr(agent, "tenant_id", None))
             mcp_gating = await _resolve_agent_mcp_gating(db, agent_id)
             mcp_tools = (
-                await db.execute(
-                    select(Tool).where(Tool.enabled, Tool.type == "mcp", _tool_tenant_predicate(Tool, agent))
+                (
+                    await db.execute(
+                        select(Tool).where(Tool.enabled, Tool.type == "mcp", _tool_tenant_predicate(Tool, agent))
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             agent_tools_r = await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id))
             assignments = {str(at.tool_id): at for at in agent_tools_r.scalars().all()}
 
@@ -582,7 +590,10 @@ async def get_agent_tools_for_llm(
     try:
         from app.models.tool import Tool, AgentTool
 
-        async with async_session() as db:
+        # RLS 阶段1: `tools`/`agents` are policy-bearing — resolve the agent's
+        # tenant first (audited single-row bypass), then scope the whole read.
+        tid = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tid) as db:
             agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
             agent = agent_result.scalar_one_or_none()
             hr_agent = is_hr_agent(agent)
@@ -799,7 +810,10 @@ async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> 
     reply_target = channel_delivery_target.get()
     if reply_target is not None:
         try:
-            async with async_session() as db:
+            # RLS 阶段1: delivery reads users/agents (policy-bearing) — scope to
+            # the agent's tenant (audited single-row bypass to resolve it).
+            tid = await resolve_tenant_for_agent(agent_id)
+            async with tenant_scoped_session(tid) as db:
                 result = await ChannelDeliveryService.send_file(
                     db=db,
                     agent_id=agent_id,
@@ -852,7 +866,10 @@ async def _send_channel_message(agent_id: uuid.UUID, arguments: dict) -> str:
     if reply_target is None:
         return "❌ No current channel delivery target is available."
 
-    async with async_session() as db:
+    # RLS 阶段1: delivery reads users/agents (policy-bearing) — scope to the
+    # agent's tenant (audited single-row bypass to resolve it).
+    tid = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tid) as db:
         result = await ChannelDeliveryService.send_text(
             db=db,
             agent_id=agent_id,

@@ -112,6 +112,26 @@ class _PlanSession:
         return _ScalarsResult(list(self.rows))
 
 
+def _patch_plan_session(monkeypatch, mod, session) -> None:
+    """Route the service's GUC-scoped session + tenant resolvers to the fake.
+
+    RLS stage-2a moved ``PlanModeService`` off the bare ``async_session`` onto
+    ``tenant_scoped_session`` plus ``resolve_tenant_for_{plan,agent}`` (the
+    audited single-row breakers). The fake ``_PlanSession`` already behaves as an
+    async context manager and ignores the harmless GUC ``SET LOCAL`` statements,
+    so we hand it back for any tenant id and stub the resolvers to a constant —
+    the fake keys rows by id/agent_id, not by tenant.
+    """
+    monkeypatch.setattr(mod, "tenant_scoped_session", lambda *a, **k: session)
+    _const_tenant = uuid4()
+
+    async def _fake_resolve(*_a, **_k):
+        return _const_tenant
+
+    monkeypatch.setattr(mod, "resolve_tenant_for_plan", _fake_resolve)
+    monkeypatch.setattr(mod, "resolve_tenant_for_agent", _fake_resolve)
+
+
 @pytest.fixture()
 def patched_service(monkeypatch, tmp_path):
     """Return (service, session, tmp_path, None) with async_session + AGENT_DATA_DIR
@@ -121,7 +141,7 @@ def patched_service(monkeypatch, tmp_path):
     from app.services import plan_mode_service as mod
 
     session = _PlanSession()
-    monkeypatch.setattr(mod, "async_session", lambda: session)
+    _patch_plan_session(monkeypatch, mod, session)
     monkeypatch.setattr(mod, "_agent_data_dir", lambda: tmp_path)
 
     service = mod.PlanModeService()
@@ -260,7 +280,7 @@ async def test_generate_plan_repairs_common_agent_output_shape_before_validation
     from app.services import plan_mode_service as mod
 
     session = _PlanSession()
-    monkeypatch.setattr(mod, "async_session", lambda: session)
+    _patch_plan_session(monkeypatch, mod, session)
     monkeypatch.setattr(mod, "_agent_data_dir", lambda: tmp_path)
     service = mod.PlanModeService()
     agent_id = uuid4()
@@ -662,7 +682,7 @@ async def test_ensure_awaiting_plan_from_fill_rejects_internal_tool_script_plan(
     from app.services import plan_mode_service as mod
 
     session = _PlanSession()
-    monkeypatch.setattr(mod, "async_session", lambda: session)
+    _patch_plan_session(monkeypatch, mod, session)
     monkeypatch.setattr(mod, "_agent_data_dir", lambda: tmp_path)
     service = mod.PlanModeService()
     fill = {

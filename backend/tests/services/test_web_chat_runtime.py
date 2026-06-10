@@ -254,7 +254,14 @@ async def test_resume_queued_plan_handoffs_restarts_oldest_confirmed_plan(monkey
             calls.append(plan_id)
             return SimpleNamespace(id=plan_id, handoff_status="completed")
 
-    monkeypatch.setattr(runtime, "_async_session", lambda: _SessionFactory())
+    # RLS stage-2a: the scan now runs under tenant_scoped_session after resolving
+    # the agent's tenant (audited bypass). Route both to fakes — the assertions on
+    # the queued-handoff statement are unchanged.
+    async def _fake_resolve_tenant(*_a, **_k):
+        return uuid4()
+
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda *a, **k: _SessionFactory())
+    monkeypatch.setattr("app.services.tenant_resolver.resolve_tenant_for_agent", _fake_resolve_tenant)
     monkeypatch.setattr("app.services.plan_mode_service.get_plan_mode_service", lambda: _Service())
 
     resumed = await runtime._resume_queued_plan_handoffs(
@@ -596,9 +603,7 @@ async def test_deliver_run_result_pushes_to_im_channel(monkeypatch):
         sent["text"] = text
         return SimpleNamespace()
 
-    monkeypatch.setattr(
-        "app.services.channel_delivery_service.ChannelDeliveryService.send_text", fake_send_text
-    )
+    monkeypatch.setattr("app.services.channel_delivery_service.ChannelDeliveryService.send_text", fake_send_text)
 
     await runtime._deliver_run_result_to_channel(uuid4(), uuid4(), "执行完成")
     assert sent["reply_target"] == target
@@ -629,9 +634,7 @@ async def test_deliver_run_result_skips_web_session(monkeypatch):
     async def fake_send_text(**_kwargs):
         calls["n"] += 1
 
-    monkeypatch.setattr(
-        "app.services.channel_delivery_service.ChannelDeliveryService.send_text", fake_send_text
-    )
+    monkeypatch.setattr("app.services.channel_delivery_service.ChannelDeliveryService.send_text", fake_send_text)
 
     await runtime._deliver_run_result_to_channel(uuid4(), uuid4(), "执行完成")
     assert calls["n"] == 0  # web session → no channel delivery

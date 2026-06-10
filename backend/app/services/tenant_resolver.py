@@ -44,3 +44,30 @@ async def resolve_tenant_for_agent(
         async with enter_rls_bypass(db, reason=f"tenant resolution for agent {agent_id}") as bypass_db:
             result = await bypass_db.execute(select(Agent.tenant_id).where(Agent.id == agent_id))
             return result.scalar_one_or_none()
+
+
+async def resolve_tenant_for_plan(
+    plan_id: uuid.UUID | str | None,
+    *,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+) -> uuid.UUID | None:
+    """Return the tenant_id owning ``plan_id`` (agent_plan_requests), or None.
+
+    Stage-2a sibling of :func:`resolve_tenant_for_agent`. ``agent_plan_requests``
+    gained an RLS policy in stage-2a, so a ``PlanModeService`` method that holds
+    only a ``plan_id`` must learn the owning tenant before it can open a
+    ``tenant_scoped_session`` — but reading the plan row to learn that tenant
+    itself fail-closes under enforced (non-owner) RLS. A single-row, audited
+    ``enter_rls_bypass`` read by primary key is the sanctioned breaker: it
+    touches exactly one plan row and writes an audit line, so it cannot become a
+    silent cross-tenant convenience hatch.
+    """
+    if not plan_id:
+        return None
+    from app.models.plan_request import AgentPlanRequest
+
+    factory = session_factory or async_session
+    async with factory() as db:
+        async with enter_rls_bypass(db, reason=f"tenant resolution for plan {plan_id}") as bypass_db:
+            result = await bypass_db.execute(select(AgentPlanRequest.tenant_id).where(AgentPlanRequest.id == plan_id))
+            return result.scalar_one_or_none()

@@ -33,9 +33,10 @@ from uuid import UUID
 from sqlalchemy import select
 
 from app.config import get_settings
-from app.database import async_session
+from app.database import tenant_scoped_session
 from app.models.plan_request import AgentPlanRequest
 from app.services import plan_mode_core as core
+from app.services.tenant_resolver import resolve_tenant_for_agent, resolve_tenant_for_plan
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +156,11 @@ class PlanModeService:
         if intent_type not in core.INTENT_TYPES:
             raise ValueError(f"unknown intent_type {intent_type!r}; expected one of {core.INTENT_TYPES}")
 
-        async with async_session() as db:
+        # RLS stage-2a: agent_plan_requests is policied. Pin the GUC to the
+        # owning tenant so the INSERT passes the row's WITH-CHECK. ``tenant_id``
+        # may be None (channel/global drafts) → pins '' and inserts a NULL-tenant
+        # row, which the policy's ``tenant_id IS NULL`` clause permits.
+        async with tenant_scoped_session(tenant_id) as db:
             try:
                 plan = AgentPlanRequest(
                     tenant_id=tenant_id,
@@ -320,7 +325,10 @@ class PlanModeService:
         # now that planning is agent-authored; drop it so it never leaks into the
         # validated plan_json.
         seed_plan.pop("_planner_intercepted_tool", None)
-        async with async_session() as db:
+        # RLS stage-2a: resolve the owning tenant once (audited single-row bypass)
+        # so both load/mutate transactions below are scoped under enforced RLS.
+        _tenant_id = await resolve_tenant_for_plan(plan_id)
+        async with tenant_scoped_session(_tenant_id) as db:
             try:
                 plan = await self._load(db, plan_id)
                 if plan is None:
@@ -342,7 +350,7 @@ class PlanModeService:
             "planner_prompt_version": "structured_fill.v1",
         }
 
-        async with async_session() as db:
+        async with tenant_scoped_session(_tenant_id) as db:
             try:
                 plan = await self._load(db, plan_id)
                 if plan is None:
@@ -501,7 +509,10 @@ class PlanModeService:
             LookupError: if ``plan_id`` does not exist.
         """
         new_plan: AgentPlanRequest | None = None
-        async with async_session() as db:
+        # RLS stage-2a: the new draft inherits ``old.tenant_id``; pin the GUC to
+        # that tenant so both the load and the INSERT pass the policy.
+        _tenant_id = await resolve_tenant_for_plan(plan_id)
+        async with tenant_scoped_session(_tenant_id) as db:
             try:
                 old = await self._load(db, plan_id)
                 if old is None:
@@ -582,7 +593,8 @@ class PlanModeService:
             PermissionError: when no authenticated confirming user is present.
             PlanConflictError: on status/version/hash conflict.
         """
-        async with async_session() as db:
+        _tenant_id = await resolve_tenant_for_plan(plan_id)
+        async with tenant_scoped_session(_tenant_id) as db:
             try:
                 plan = await self._load(db, plan_id)
                 if plan is None:
@@ -667,7 +679,8 @@ class PlanModeService:
             LookupError: if ``plan_id`` does not exist.
             PlanConflictError: if the plan is not in ``awaiting_confirmation``.
         """
-        async with async_session() as db:
+        _tenant_id = await resolve_tenant_for_plan(plan_id)
+        async with tenant_scoped_session(_tenant_id) as db:
             try:
                 plan = await self._load(db, plan_id)
                 if plan is None:
@@ -713,7 +726,8 @@ class PlanModeService:
             LookupError: if ``plan_id`` does not exist.
             PlanConflictError: if the plan is not ``confirmed``.
         """
-        async with async_session() as db:
+        _tenant_id = await resolve_tenant_for_plan(plan_id)
+        async with tenant_scoped_session(_tenant_id) as db:
             try:
                 plan = await self._load(db, plan_id)
                 if plan is None:
@@ -788,7 +802,8 @@ class PlanModeService:
     # -- reads (API support) ---------------------------------------------
 
     async def get_plan(self, plan_id: UUID) -> AgentPlanRequest | None:
-        async with async_session() as db:
+        _tenant_id = await resolve_tenant_for_plan(plan_id)
+        async with tenant_scoped_session(_tenant_id) as db:
             try:
                 return await self._load(db, plan_id)
             except Exception:
@@ -796,7 +811,11 @@ class PlanModeService:
                 raise
 
     async def list_plans_for_agent(self, agent_id: UUID, *, limit: int = 50) -> list[AgentPlanRequest]:
-        async with async_session() as db:
+        # RLS stage-2a: scope by the agent's tenant (the list query has no
+        # plan_id to resolve from). resolve_tenant_for_agent is the audited
+        # single-row breaker for the agents read under enforced RLS.
+        _tenant_id = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(_tenant_id) as db:
             try:
                 stmt = (
                     select(AgentPlanRequest)

@@ -14,9 +14,10 @@ import uuid
 from sqlalchemy import select, text
 
 from app.models.agent import Agent
+from app.models.plan_request import AgentPlanRequest
 from app.models.tenant import Tenant
 from app.models.user import User
-from app.services.tenant_resolver import resolve_tenant_for_agent
+from app.services.tenant_resolver import resolve_tenant_for_agent, resolve_tenant_for_plan
 
 
 async def _seed_agent(owner_sessionmaker) -> tuple[uuid.UUID, uuid.UUID]:
@@ -62,3 +63,46 @@ async def test_bare_nonowner_read_fails_closed_without_bypass(owner_sessionmaker
 
 async def test_returns_none_for_missing_agent_id():
     assert await resolve_tenant_for_agent(None) is None
+
+
+async def _seed_plan(owner_sessionmaker) -> tuple[uuid.UUID, uuid.UUID]:
+    """Insert tenant→user→agent→plan as the owner role (bypasses RLS for setup)."""
+    agent_id, tenant_id = await _seed_agent(owner_sessionmaker)
+    plan_id = uuid.uuid4()
+    async with owner_sessionmaker() as s:
+        s.add(
+            AgentPlanRequest(
+                id=plan_id,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                intent_type="autonomous_wake",
+                status="confirmed",
+            )
+        )
+        await s.commit()
+    return plan_id, tenant_id
+
+
+async def test_resolves_plan_tenant_under_nonowner_role(owner_sessionmaker, app_user_sessionmaker):
+    """The audited bypass lookup reads agent_plan_requests.tenant_id as the
+    non-owner role — what lets a plan_id-only PlanModeService method scope itself
+    after the stage-2a policy lands on the table."""
+    plan_id, tenant_id = await _seed_plan(owner_sessionmaker)
+    resolved = await resolve_tenant_for_plan(plan_id, session_factory=app_user_sessionmaker)
+    assert str(resolved) == str(tenant_id)
+
+
+async def test_bare_nonowner_plan_read_fails_closed_without_bypass(owner_sessionmaker, app_user_sessionmaker):
+    """Contrast: a plain read of the policied agent_plan_requests as the non-owner
+    role with empty GUC sees nothing — the gap resolve_tenant_for_plan closes."""
+    plan_id, _ = await _seed_plan(owner_sessionmaker)
+    async with app_user_sessionmaker() as s:
+        await s.execute(text("SET LOCAL app.current_tenant_id = ''"))
+        row = (
+            await s.execute(select(AgentPlanRequest.tenant_id).where(AgentPlanRequest.id == plan_id))
+        ).scalar_one_or_none()
+    assert row is None
+
+
+async def test_returns_none_for_missing_plan_id():
+    assert await resolve_tenant_for_plan(None) is None

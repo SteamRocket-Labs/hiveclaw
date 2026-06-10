@@ -689,8 +689,14 @@ async def _resume_queued_plan_handoffs(
     """
     from app.models.plan_request import AgentPlanRequest
     from app.services.plan_mode_service import get_plan_mode_service
+    from app.services.tenant_resolver import resolve_tenant_for_agent
 
-    async with _async_session() as db:
+    # RLS stage-2a: agent_plan_requests is policied. Scope the queued-handoff
+    # scan to the agent's tenant (audited single-row resolve) so it survives the
+    # non-owner role flip; the handoff itself runs through PlanModeService, which
+    # re-scopes per plan.
+    _tenant_id = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(_tenant_id) as db:
         stmt = (
             select(AgentPlanRequest.id)
             .where(
@@ -1033,4 +1039,4 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
 
 
 # Kept as an overridable module global for tests and for parity with other services.
-from app.database import async_session as _async_session, enter_rls_bypass  # noqa: E402
+from app.database import async_session as _async_session, enter_rls_bypass, tenant_scoped_session  # noqa: E402

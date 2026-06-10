@@ -221,7 +221,12 @@ def e2e(monkeypatch, tmp_path):
         # bypass read before pinning a tenant_scoped_session.
         return agent.tenant_id
 
-    monkeypatch.setattr(service_mod, "async_session", lambda: session)
+    # RLS stage-2a: PlanModeService now scopes via tenant_scoped_session +
+    # resolve_tenant_for_{plan,agent} instead of a bare async_session. Route both
+    # resolvers and the scoped session to the same shared in-memory store.
+    monkeypatch.setattr(service_mod, "tenant_scoped_session", lambda *a, **k: session)
+    monkeypatch.setattr(service_mod, "resolve_tenant_for_plan", _fake_resolve_tenant)
+    monkeypatch.setattr(service_mod, "resolve_tenant_for_agent", _fake_resolve_tenant)
     monkeypatch.setattr(service_mod, "_agent_data_dir", lambda: tmp_path)
     monkeypatch.setattr(handoff_mod, "resolve_tenant_for_agent", _fake_resolve_tenant)
     monkeypatch.setattr(handoff_mod, "tenant_scoped_session", lambda *a, **k: session)

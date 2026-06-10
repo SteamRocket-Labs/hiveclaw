@@ -55,6 +55,14 @@
 
 **Phase 3 范围判断（诚实）**：① max_tokens 撞顶 escalate 重试（CC 升 64K）= 重试逻辑较大改动，归后续 CC 细化；② web_search Tier-2 关键词硬拒**移除** = 行为改变需评估测试影响，本 phase 仅给 import 失败加 log（F13），完整移除归后续；③ entrypoint `alembic upgrade head` 失败转 fatal = 运维决策（需先一次性 stamp 验证），owner-gated 不在代码层贸然改（避免锁死启动）。
 
+### ✅ Phase 4 — 记忆收尾（dream merge 核心，1 commit + 剩余记录）
+
+| 子项 | commit | 证据 |
+|------|--------|------|
+| 4-1 dream merge 写合成 keep（P1） | `f25794f6` | retire_t3_entries 删除 drop 后，若合成 canonical keep 不在保留行则追加；修「合并即消灭规则」——唯一让记忆主动变糟的活跃机制；合成-keep + verbatim-keep 双测试，59 绿 |
+
+**Phase 4 剩余（诚实记录）**：① D2/D8 生产清洗（backfill_t3_prose + archive 退役）= **代码已完成待 owner 执行**（admin.py dry-run 默认 + `POST /api/admin/agents/{id}/backfill-t2`，非本次新写）；② T2 active 行 curation 停摆时无界 + curation hold 无聚合告警 = 中等改动，归后续；③ 隐私 phone 正则改写记忆内容（audit-l1）= 需 LLM 分类替代正则（跨记忆系统大改），归后续。
+
 ---
 
 ## 1. P0 — 立即处理

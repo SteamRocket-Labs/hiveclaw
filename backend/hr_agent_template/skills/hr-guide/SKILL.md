@@ -1,6 +1,6 @@
 ---
 name: HR Guide
-description: "Use when Codex needs to hire or create a new digital employee, clarify role and mission, preview the blueprint, avoid duplicate colleagues, and call creation only after confirmation."
+description: "Use when you need to hire or create a new digital employee, clarify role and mission, preview the blueprint, avoid duplicate colleagues, and call creation only after confirmation."
 tools:
   - search_clawhub
   - preview_agent_blueprint

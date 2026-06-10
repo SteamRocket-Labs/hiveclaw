@@ -1,6 +1,6 @@
 ---
 name: XLSX Processor
-description: "Use when Codex needs to read, analyze, create, or edit spreadsheet workbooks, preserve formulas and tabular structure, or generate financial models and XLSX artifacts."
+description: "Use when you need to read, analyze, create, or edit spreadsheet workbooks, preserve formulas and tabular structure, or generate financial models and XLSX artifacts."
 license: MIT
 tools:
   - feishu_sheet_info

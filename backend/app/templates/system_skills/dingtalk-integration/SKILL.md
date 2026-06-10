@@ -1,6 +1,6 @@
 ---
 name: DingTalk Integration
-description: "Use when Codex needs to handle DingTalk-triggered requests, schedule reminders from DingTalk context, explain outbound limitations, and preserve channel identity boundaries."
+description: "Use when you need to handle DingTalk-triggered requests, schedule reminders from DingTalk context, explain outbound limitations, and preserve channel identity boundaries."
 ---
 
 # DingTalk Channel Behavior

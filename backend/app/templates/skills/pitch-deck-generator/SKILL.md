@@ -1,6 +1,6 @@
 ---
 name: Pitch Deck Generator
-description: "Use when Codex needs to create investor, board, or sales pitch deck outlines and slide artifacts from a company brief, product narrative, fundraising context, or strategic memo."
+description: "Use when you need to create investor, board, or sales pitch deck outlines and slide artifacts from a company brief, product narrative, fundraising context, or strategic memo."
 license: Proprietary
 tools:
   - read_file

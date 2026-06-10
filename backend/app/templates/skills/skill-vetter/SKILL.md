@@ -1,6 +1,6 @@
 ---
 name: Skill Vetter
-description: "Use when Codex needs to security-review a third-party skill before installation, inspect source files, classify permission and exfiltration risks, and produce an explicit install or reject recommendation."
+description: "Use when you need to security-review a third-party skill before installation, inspect source files, classify permission and exfiltration risks, and produce an explicit install or reject recommendation."
 tools:
   - web_search
   - web_fetch

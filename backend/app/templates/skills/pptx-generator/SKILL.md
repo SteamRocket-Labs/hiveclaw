@@ -1,6 +1,6 @@
 ---
 name: PPTX Generator
-description: "Use when Codex needs to create, inspect, or edit PowerPoint presentations, preserve slide structure, generate investor decks, or build a reusable PPTX artifact from source notes."
+description: "Use when you need to create, inspect, or edit PowerPoint presentations, preserve slide structure, generate investor decks, or build a reusable PPTX artifact from source notes."
 license: MIT
 tools:
   - read_file

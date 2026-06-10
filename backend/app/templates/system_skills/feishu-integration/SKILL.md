@@ -1,6 +1,6 @@
 ---
 name: Feishu Integration
-description: "Use when Codex needs to perform real Feishu or Lark work, including messaging, docs, wiki, sheets, Base, approvals, tasks, and calendar actions through configured platform tools."
+description: "Use when you need to perform real Feishu or Lark work, including messaging, docs, wiki, sheets, Base, approvals, tasks, and calendar actions through configured platform tools."
 tools:
   - send_feishu_message
   - feishu_user_search

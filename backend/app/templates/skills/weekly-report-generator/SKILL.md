@@ -1,6 +1,6 @@
 ---
 name: Weekly Report Generator
-description: "Use when Codex needs to turn project notes, work logs, task updates, or operational evidence into a weekly report with accomplishments, blockers, risks, metrics, and next steps."
+description: "Use when you need to turn project notes, work logs, task updates, or operational evidence into a weekly report with accomplishments, blockers, risks, metrics, and next steps."
 license: Proprietary
 tools:
   - read_file

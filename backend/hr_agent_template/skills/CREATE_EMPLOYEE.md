@@ -1,6 +1,6 @@
 ---
 name: create_employee
-description: "Use when Codex needs to create a digital employee through a blueprint-first HR workflow, route capabilities with builtin-first discipline, preview before creation, and require explicit confirmation."
+description: "Use when you need to create a digital employee through a blueprint-first HR workflow, route capabilities with builtin-first discipline, preview before creation, and require explicit confirmation."
 tools:
   - preview_agent_blueprint
   - create_digital_employee

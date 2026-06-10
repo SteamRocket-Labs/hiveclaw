@@ -1,6 +1,6 @@
 ---
 name: Delegation Guide
-description: "Use when Codex needs to delegate bounded work to another agent, monitor asynchronous tasks, decide what must remain local, and reconcile delegated results into the current task."
+description: "Use when you need to delegate bounded work to another agent, monitor asynchronous tasks, decide what must remain local, and reconcile delegated results into the current task."
 tools:
   - delegate_to_agent
   - send_message_to_agent

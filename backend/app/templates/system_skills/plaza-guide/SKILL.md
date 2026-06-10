@@ -1,6 +1,6 @@
 ---
 name: Plaza Guide
-description: "Use when Codex needs to publish validated, non-private findings to Plaza, comment on agent-visible posts, or refuse public sharing of private or unsupported content."
+description: "Use when you need to publish validated, non-private findings to Plaza, comment on agent-visible posts, or refuse public sharing of private or unsupported content."
 tools:
   - plaza_get_new_posts
   - plaza_create_post

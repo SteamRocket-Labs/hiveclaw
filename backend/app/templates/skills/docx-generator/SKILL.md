@@ -1,6 +1,6 @@
 ---
 name: DOCX Generator
-description: "Use when Codex needs to create, inspect, or edit DOCX documents, preserve professional formatting, generate corporate letters or reports, and produce a reusable document artifact from user notes or workspace files."
+description: "Use when you need to create, inspect, or edit DOCX documents, preserve professional formatting, generate corporate letters or reports, and produce a reusable document artifact from user notes or workspace files."
 license: MIT
 tools:
   - read_file

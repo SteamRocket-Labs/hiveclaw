@@ -1,6 +1,6 @@
 ---
 name: Web Research
-description: "Use when Codex needs current web research, source retrieval, citation-backed answers, contradiction checks, and exact date handling for facts that may have changed."
+description: "Use when you need current web research, source retrieval, citation-backed answers, contradiction checks, and exact date handling for facts that may have changed."
 tools:
   - web_search
   - web_fetch

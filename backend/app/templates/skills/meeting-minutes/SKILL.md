@@ -1,6 +1,6 @@
 ---
 name: Meeting Minutes
-description: "Use when Codex needs to convert meeting notes, transcripts, or rough discussion fragments into concise minutes with decisions, action items, owners, risks, open questions, and follow-up artifacts."
+description: "Use when you need to convert meeting notes, transcripts, or rough discussion fragments into concise minutes with decisions, action items, owners, risks, open questions, and follow-up artifacts."
 license: Proprietary
 tools:
   - read_file

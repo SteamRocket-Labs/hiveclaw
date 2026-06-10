@@ -1,6 +1,6 @@
 ---
 name: PDF Generator
-description: "Use when Codex needs to create print-ready PDF reports, fill PDF forms, render source-attributed documents, or produce a PDF artifact from structured markdown and workspace inputs."
+description: "Use when you need to create print-ready PDF reports, fill PDF forms, render source-attributed documents, or produce a PDF artifact from structured markdown and workspace inputs."
 license: MIT
 tools:
   - read_file

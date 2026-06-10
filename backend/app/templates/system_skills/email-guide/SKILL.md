@@ -1,6 +1,6 @@
 ---
 name: Email Guide
-description: "Use when Codex needs to read email threads, draft replies, send email artifacts, or handle mailbox workflows through configured email tools with explicit recipient and privacy checks."
+description: "Use when you need to read email threads, draft replies, send email artifacts, or handle mailbox workflows through configured email tools with explicit recipient and privacy checks."
 tools:
   - send_email
   - read_emails

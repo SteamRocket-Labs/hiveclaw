@@ -1,6 +1,6 @@
 ---
 name: Find Skills
-description: "Use when Codex needs to discover, compare, and recommend installable skills from trusted catalogs or repositories, especially when the user asks for capabilities not already covered by installed skills."
+description: "Use when you need to discover, compare, and recommend installable skills from trusted catalogs or repositories, especially when the user asks for capabilities not already covered by installed skills."
 tools:
   - execute_code
   - web_search

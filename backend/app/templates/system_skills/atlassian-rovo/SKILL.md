@@ -1,6 +1,6 @@
 ---
 name: Atlassian Rovo
-description: "Use when Codex needs to operate a configured Atlassian Rovo integration for Jira or Confluence tasks, verify runtime tool availability, and avoid unsupported authenticated web scraping fallbacks."
+description: "Use when you need to operate a configured Atlassian Rovo integration for Jira or Confluence tasks, verify runtime tool availability, and avoid unsupported authenticated web scraping fallbacks."
 ---
 
 # Atlassian Rovo Tools

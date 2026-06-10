@@ -1,6 +1,6 @@
 ---
 name: Memory Guide
-description: "Use when Codex needs to decide whether information should become durable memory, save explicit user preferences, avoid transient memory pollution, and route memory updates safely."
+description: "Use when you need to decide whether information should become durable memory, save explicit user preferences, avoid transient memory pollution, and route memory updates safely."
 tools:
   - save_memory
   - search_memory

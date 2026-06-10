@@ -1,6 +1,6 @@
 ---
 name: Messaging Guide
-description: "Use when Codex needs to send files or messages through the current requester channel, choose between human messaging and agent delegation, and preserve delivery identity."
+description: "Use when you need to send files or messages through the current requester channel, choose between human messaging and agent delegation, and preserve delivery identity."
 tools:
   - send_web_message
   - send_channel_message

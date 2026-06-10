@@ -771,6 +771,14 @@ def _grep_search(ws: Path, pattern: str, root: str = "", max_results: int = 50, 
             return _workspace_error(tool_name, "operation_failed", f"Grep search failed: {e}", retryable=True)
     else:
         try:
+            compiled = re.compile(pattern)
+        except re.error as regex_err:
+            return _workspace_error(
+                tool_name,
+                "bad_arguments",
+                f"Invalid regex pattern: {regex_err}",
+            )
+        try:
             for path in sorted(search_root.rglob("*")):
                 if len(matches) >= max_results:
                     break
@@ -779,7 +787,7 @@ def _grep_search(ws: Path, pattern: str, root: str = "", max_results: int = 50, 
                 try:
                     with path.open("r", encoding="utf-8", errors="replace") as handle:
                         for idx, line in enumerate(handle, start=1):
-                            if pattern in line:
+                            if compiled.search(line):
                                 matches.append(f"{path.relative_to(ws).as_posix()}:{idx}:{line.strip()}")
                                 if len(matches) >= max_results:
                                     break

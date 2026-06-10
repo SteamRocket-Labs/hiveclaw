@@ -57,6 +57,20 @@ from app.models.mcp_server import (  # noqa: F401
     MCPServerTool,
 )
 
+# Belt-and-suspenders: auto-import every model module so Base.metadata is
+# complete for create_all/bootstrap. The manual list above historically missed
+# several models (work_ledger, capability_policy, tenant_settings,
+# tenant_tool_config, resource_permission, security_audit_event,
+# charter_proposal), leaving their tables unbuilt + unpolicied on fresh
+# deployments — the RLS stage-2a isolation gap. This guarantees completeness.
+import importlib as _importlib  # noqa: E402
+import pkgutil as _pkgutil  # noqa: E402
+
+import app.models as _models_pkg  # noqa: E402
+
+for _m in _pkgutil.iter_modules(_models_pkg.__path__):
+    _importlib.import_module(f"app.models.{_m.name}")
+
 config = context.config
 settings = get_settings()
 

@@ -55,6 +55,8 @@ class AgentWorkLedger(Base):
     __table_args__ = (
         Index("ix_agent_work_ledgers_agent_status", "agent_id", "status"),
         Index("ix_agent_work_ledgers_tenant_status", "tenant_id", "status"),
-        Index("ix_agent_work_ledgers_plan_id", "plan_id"),
-        Index("ix_agent_work_ledgers_runtime_task_id", "runtime_task_id"),
+        # plan_id and runtime_task_id already get single-column indexes from
+        # index=True on their columns above; redefining them here created a
+        # duplicate same-named index (DuplicateTable on a fresh create_all).
+        # Exposed when RLS stage-2a made env.py import every model.
     )

@@ -34,6 +34,30 @@ RLS_TENANT_TABLES: tuple[str, ...] = (
     "org_departments",
     "org_members",
     "config_revisions",
+    # Stage-2a (RLS enforcement migration, alembic rls_stage2a_tenant_policies_0610):
+    # tenant-scoped tables that carried tenant_id but had NO policy — they would
+    # leak cross-tenant under the non-owner role flip. Policy-only (column exists).
+    "agent_mcp_server_assignments",
+    "agent_mcp_tool_overrides",
+    "agent_plan_recommendations",
+    "agent_plan_requests",
+    "agent_templates",
+    "agent_work_ledgers",
+    "capability_policies",
+    "charter_proposals",
+    "departments",
+    "enterprise_info",
+    "guard_policies",
+    "identity_providers",
+    "invitation_codes",
+    "mcp_server_tools",
+    "mcp_servers",
+    "resource_permissions",
+    "security_audit_events",
+    "sso_scan_sessions",
+    "tenant_channel_configs",
+    "tenant_settings",
+    "tenant_tool_configs",
 )
 
 # Tables that additionally get FORCE ROW LEVEL SECURITY: the production

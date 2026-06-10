@@ -422,6 +422,15 @@ def retire_t3_entries(
     if not dropped_lines:
         return 0
 
+    # Guard the consolidated rule: the dream prompt teaches a SYNTHESIZED keep
+    # line (e.g. "...emoji in responses (3rd confirmation)") that may not exist
+    # verbatim in the file. If no kept line already carries it, append it —
+    # otherwise dropping every variant erases the merged rule entirely and the
+    # supersession edge points at a line that was never written.
+    if keep_marker and not any(keep_marker in ln for ln in kept_lines):
+        keep_line = superseded_by.strip()
+        kept_lines.append(keep_line if keep_line.startswith("-") else f"- {keep_line}")
+
     path.write_text("\n".join(kept_lines) + "\n", encoding="utf-8")
     archived = archive_t3_lines(
         data_root,

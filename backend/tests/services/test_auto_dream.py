@@ -347,6 +347,43 @@ class TestApplyDreamDecisions:
         assert "wants concise answers" not in new_content
         assert report["t3_merges_applied"] == 1
 
+    def test_t3_merge_writes_synthesized_keep_when_absent(self, tmp_path: Path) -> None:
+        """Regression: the dream prompt teaches a SYNTHESIZED keep line that may not
+        exist verbatim. Dropping all variants must not erase the rule — the canonical
+        keep is written so the consolidated rule survives (audit-memory finding 1)."""
+        agent_id = self._scaffold(tmp_path)
+        feedback_path = tmp_path / str(agent_id) / "memory" / "feedback.md"
+        feedback_path.write_text(
+            "# Feedback\n\n"
+            "- [2026-04-10] User rejected emoji in responses\n"
+            "- [2026-04-12] User rejected adding emojis to answer\n"
+            "- [2026-04-14] User corrected agent's emoji use again\n",
+            encoding="utf-8",
+        )
+        decision = {
+            "t3_merges": [
+                {
+                    "file": "feedback.md",
+                    # Synthesized canonical keep — NOT present verbatim in the file.
+                    "keep": "- [2026-04-14] User rejected emoji in responses (3rd confirmation)",
+                    "drop": [
+                        "User rejected emoji in responses",
+                        "User rejected adding emojis to answer",
+                        "User corrected agent's emoji use again",
+                    ],
+                    "reason": "3 restatements; keep merged context",
+                }
+            ]
+        }
+        with patch("app.services.auto_dream.get_settings") as mock_settings:
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
+            report = _apply_dream_decisions(agent_id, decision)
+
+        new_content = feedback_path.read_text(encoding="utf-8")
+        # The synthesized canonical rule survived (was written, not erased).
+        assert "User rejected emoji in responses (3rd confirmation)" in new_content
+        assert report["t3_merges_applied"] == 1
+
     def test_contradictions_kept_new_drops_old(self, tmp_path: Path) -> None:
         agent_id = self._scaffold(tmp_path)
         feedback_path = tmp_path / str(agent_id) / "memory" / "feedback.md"

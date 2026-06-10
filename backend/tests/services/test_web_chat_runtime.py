@@ -566,3 +566,72 @@ async def test_execute_web_chat_run_keeps_cancelled_exception_as_killed(monkeypa
             },
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_deliver_run_result_pushes_to_im_channel(monkeypatch):
+    """P1-2: a run whose session carries a delivery target pushes the final text
+    back to that IM channel (the in-session plan-continuation case)."""
+    import app.services.web_chat_runtime as runtime
+
+    target = {"channel": "feishu", "chat_id": "oc_x"}
+    session = SimpleNamespace(delivery_target_json=target)
+
+    class _DB:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return False
+
+        async def execute(self, _stmt):
+            return SimpleNamespace(scalar_one_or_none=lambda: session)
+
+    monkeypatch.setattr(runtime, "_async_session", lambda: _DB())
+
+    sent = {}
+
+    async def fake_send_text(*, db, agent_id, reply_target, text, **_kwargs):
+        sent["reply_target"] = reply_target
+        sent["text"] = text
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        "app.services.channel_delivery_service.ChannelDeliveryService.send_text", fake_send_text
+    )
+
+    await runtime._deliver_run_result_to_channel(uuid4(), uuid4(), "执行完成")
+    assert sent["reply_target"] == target
+    assert sent["text"] == "执行完成"
+
+
+@pytest.mark.asyncio
+async def test_deliver_run_result_skips_web_session(monkeypatch):
+    """A web-origin session has no delivery target → no channel delivery."""
+    import app.services.web_chat_runtime as runtime
+
+    session = SimpleNamespace(delivery_target_json=None)
+
+    class _DB:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return False
+
+        async def execute(self, _stmt):
+            return SimpleNamespace(scalar_one_or_none=lambda: session)
+
+    monkeypatch.setattr(runtime, "_async_session", lambda: _DB())
+
+    calls = {"n": 0}
+
+    async def fake_send_text(**_kwargs):
+        calls["n"] += 1
+
+    monkeypatch.setattr(
+        "app.services.channel_delivery_service.ChannelDeliveryService.send_text", fake_send_text
+    )
+
+    await runtime._deliver_run_result_to_channel(uuid4(), uuid4(), "执行完成")
+    assert calls["n"] == 0  # web session → no channel delivery

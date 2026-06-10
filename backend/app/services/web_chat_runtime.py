@@ -726,6 +726,32 @@ async def _resume_queued_plan_handoffs(
     return resumed
 
 
+async def _deliver_run_result_to_channel(agent_id: uuid.UUID, session_id: Any, text: str) -> None:
+    """Push a durable run's final assistant text back to its origin IM channel.
+
+    Web-origin sessions have no ``delivery_target_json`` and are skipped, so this
+    only fires for runs whose session came from a channel (e.g. an IM Plan Mode
+    confirmation that continues in-session — P1-2: results used to land in the web
+    UI/DB only, leaving the IM user in silence after "已启动执行"). Fail-soft: a
+    delivery error must not fail the run, but it is logged, never swallowed.
+    """
+    if not text or is_llm_error_message(text):
+        return
+    try:
+        async with _async_session() as db:
+            session = (
+                await db.execute(select(ChatSession).where(ChatSession.id == uuid.UUID(str(session_id))))
+            ).scalar_one_or_none()
+            target = getattr(session, "delivery_target_json", None) if session else None
+            if not target:
+                return
+            from app.services.channel_delivery_service import ChannelDeliveryService
+
+            await ChannelDeliveryService.send_text(db=db, agent_id=agent_id, reply_target=target, text=text)
+    except Exception as exc:
+        logger.warning("[WebChatRun] channel delivery of run result failed (non-fatal): {}", exc)
+
+
 async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio.Event | None = None) -> None:
     run_uuid = _run_id(run_id)
     run_key = run_uuid.hex
@@ -961,6 +987,11 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             metadata_json=metadata_update,
         )
         await broadcast_web_chat_event(agent.id, session_id, build_done_event(assistant_response, thinking=thinking))
+        if status == "completed":
+            # P1-2: deliver the result back to the origin IM channel (no-op for
+            # web sessions). Without this, an IM plan confirmation that continues
+            # in-session streamed only to the web UI — the IM user heard nothing.
+            await _deliver_run_result_to_channel(agent.id, session_id, assistant_response)
     except Exception as exc:
         logger.exception("[WebChatRun] Run {} failed", run_uuid.hex)
         was_cancelled = cancel_event.is_set()

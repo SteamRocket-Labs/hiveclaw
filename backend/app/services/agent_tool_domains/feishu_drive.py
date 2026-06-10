@@ -368,6 +368,21 @@ async def _feishu_url_read(agent_id: uuid.UUID | str, arguments: dict) -> str:
             }
             if view_id:
                 record_args["view_id"] = view_id
+            if arguments.get("offset") is not None:
+                record_args["offset"] = arguments.get("offset")
+            if arguments.get("page_token"):
+                record_args["page_token"] = arguments.get("page_token")
+            for key in (
+                "fetch_all",
+                "max_records",
+                "field_names",
+                "fields",
+                "filter_field",
+                "filter_op",
+                "filter_value",
+            ):
+                if arguments.get(key) is not None:
+                    record_args[key] = arguments.get(key)
             return await _feishu_base_record_list(agent_id, record_args)
 
         from app.services.agent_tool_domains.feishu_base import _feishu_base_table_list

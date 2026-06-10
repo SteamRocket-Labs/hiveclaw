@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
+import re
 from pathlib import Path
 
 import httpx
@@ -78,10 +79,32 @@ def _format_base_field_value(value) -> str:
     return str(value)
 
 
-def _render_base_records(table_id: str, items: list[dict], *, total: int | None = None) -> str:
+def _render_base_records(
+    table_id: str,
+    items: list[dict],
+    *,
+    total: int | None = None,
+    has_more: bool | None = None,
+    next_page_token: str | None = None,
+    next_offset: int | None = None,
+    field_names: list[str] | None = None,
+    scanned_count: int | None = None,
+    matched_count: int | None = None,
+) -> str:
     lines = [f"📋 **Feishu Base records** (`{table_id}`)"]
     if total is not None:
         lines.append(f"总数：{total}")
+    if scanned_count is not None:
+        total_text = str(total) if total is not None else "?"
+        lines.append(f"已扫描：{scanned_count}/{total_text}")
+    if matched_count is not None:
+        lines.append(f"筛选命中：{matched_count}")
+    lines.append(f"本页返回：{len(items)}")
+    if has_more:
+        if next_page_token:
+            lines.append(f"下一页 page_token：`{next_page_token}`")
+        if next_offset is not None:
+            lines.append(f"下一页 offset：{next_offset}")
     if not items:
         lines.append("当前表下没有记录。")
         return "\n".join(lines)
@@ -89,11 +112,128 @@ def _render_base_records(table_id: str, items: list[dict], *, total: int | None 
         lines.append(f"- `{item.get('record_id', '')}`")
         fields = item.get("fields", {})
         if isinstance(fields, dict) and fields:
-            for field_name, field_value in fields.items():
+            if field_names:
+                rendered_fields = {field_name: fields.get(field_name) for field_name in field_names}
+            else:
+                rendered_fields = fields
+            for field_name, field_value in rendered_fields.items():
                 lines.append(f"  - {field_name}: {_format_base_field_value(field_value)}")
         elif fields:
             lines.append(f"  - Fields: {_format_base_field_value(fields)}")
     return "\n".join(lines)
+
+
+def _payload_has_more(payload: dict, *, returned_count: int, offset: int = 0) -> bool:
+    if payload.get("has_more"):
+        return True
+    total = payload.get("total")
+    return isinstance(total, int) and offset + returned_count < total
+
+
+def _base_record_list_params(*, page_size: int, view_id: str = "", page_token: str = "") -> dict:
+    params: dict = {"page_size": page_size, "text_field_as_array": True}
+    if view_id:
+        params["view_id"] = view_id
+    if page_token:
+        params["page_token"] = page_token
+    return params
+
+
+def _truthy(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int | float):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on", "all"}
+    return False
+
+
+def _normalize_field_names(value) -> list[str] | None:
+    if not value:
+        return None
+    if isinstance(value, str):
+        fields = [part.strip() for part in re.split(r"[,，\n]", value)]
+    elif isinstance(value, list):
+        fields = [str(part).strip() for part in value]
+    else:
+        fields = [str(value).strip()]
+    normalized = [field for field in fields if field]
+    return normalized or None
+
+
+def _project_record_fields(item: dict, field_names: list[str] | None) -> dict:
+    if not field_names:
+        return item
+    fields = item.get("fields")
+    if not isinstance(fields, dict):
+        return item
+    projected = {field_name: fields.get(field_name) for field_name in field_names}
+    return {**item, "fields": projected}
+
+
+def _parse_number(value) -> float | None:
+    text = _format_base_field_value(value).strip()
+    if not text:
+        return None
+    text = text.replace(",", "").replace("，", "").replace("−", "-").replace("﹣", "-").replace("－", "-")
+    multiplier = 1.0
+    if text.endswith("亿"):
+        multiplier = 100_000_000.0
+        text = text[:-1]
+    elif text.endswith("万"):
+        multiplier = 10_000.0
+        text = text[:-1]
+    match = re.fullmatch(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)", text.strip())
+    if not match:
+        return None
+    return float(text) * multiplier
+
+
+def _record_matches_filter(item: dict, *, field_name: str, op: str, expected) -> bool:
+    fields = item.get("fields")
+    if not isinstance(fields, dict):
+        return False
+    actual = fields.get(field_name)
+    actual_text = _format_base_field_value(actual).strip()
+    normalized_op = (op or "").strip().lower()
+
+    if normalized_op in {"empty", "is_empty"}:
+        return not actual_text
+    if normalized_op in {"not_empty", "is_not_empty"}:
+        return bool(actual_text)
+    if normalized_op in {"contains", "not_contains"}:
+        expected_text = _format_base_field_value(expected)
+        contains = expected_text in actual_text
+        return contains if normalized_op == "contains" else not contains
+    if normalized_op in {"=", "==", "eq", "!=", "ne"}:
+        expected_text = _format_base_field_value(expected).strip()
+        equal = actual_text == expected_text
+        return equal if normalized_op in {"=", "==", "eq"} else not equal
+
+    actual_num = _parse_number(actual)
+    expected_num = _parse_number(expected)
+    if actual_num is None or expected_num is None:
+        return False
+    if normalized_op in {"<", "lt"}:
+        return actual_num < expected_num
+    if normalized_op in {"<=", "lte"}:
+        return actual_num <= expected_num
+    if normalized_op in {">", "gt"}:
+        return actual_num > expected_num
+    if normalized_op in {">=", "gte"}:
+        return actual_num >= expected_num
+    return False
+
+
+def _filter_records(items: list[dict], *, field_name: str, op: str, expected) -> list[dict]:
+    if not field_name or not op:
+        return items
+    return [
+        item
+        for item in items
+        if _record_matches_filter(item, field_name=field_name, op=op, expected=expected)
+    ]
 
 
 def _render_base_upsert(table_id: str, payload: dict) -> str:
@@ -440,23 +580,158 @@ async def _feishu_base_record_list(agent_id, arguments: dict) -> str:
 
     limit = min(max(1, int(arguments.get("limit", 100))), 200)
     view_id = str(arguments.get("view_id") or "").strip()
+    page_token = str(arguments.get("page_token") or "").strip()
+    offset = max(0, int(arguments.get("offset", 0)))
+    field_names = _normalize_field_names(arguments.get("field_names") or arguments.get("fields"))
+    filter_field = str(arguments.get("filter_field") or "").strip()
+    filter_op = str(arguments.get("filter_op") or "").strip()
+    filter_value = arguments.get("filter_value")
+    has_filter = bool(filter_field and filter_op)
+    fetch_all = _truthy(arguments.get("fetch_all")) or has_filter
+    max_records = min(max(1, int(arguments.get("max_records", 1000))), 5000)
 
     creds = await _get_feishu_token(agent_id)
     if creds:
         _, token = creds
         try:
-            params: dict = {"page_size": limit, "text_field_as_array": True}
-            if view_id:
-                params["view_id"] = view_id
-            data = await _base_api_get(token, f"/bitable/v1/apps/{base_token}/tables/{table_id}/records", params)
-            return _render_base_records(table_id, data.get("items", []), total=data.get("total"))
+            path = f"/bitable/v1/apps/{base_token}/tables/{table_id}/records"
+            if fetch_all:
+                collected: list[dict] = []
+                next_page = page_token
+                total: int | None = None
+                has_more = False
+                for _ in range(100):
+                    remaining = max_records - len(collected)
+                    if remaining <= 0:
+                        has_more = True
+                        break
+                    data = await _base_api_get(
+                        token,
+                        path,
+                        _base_record_list_params(
+                            page_size=min(200, remaining),
+                            view_id=view_id,
+                            page_token=next_page,
+                        ),
+                    )
+                    page_items = data.get("items", [])
+                    if not isinstance(page_items, list):
+                        page_items = []
+                    collected.extend(page_items)
+                    if isinstance(data.get("total"), int):
+                        total = data["total"]
+                    has_more = bool(data.get("has_more"))
+                    next_page = str(data.get("page_token") or "").strip()
+                    if not has_more or not next_page:
+                        break
+
+                scanned_items = collected[offset:] if offset else collected
+                filtered_items = _filter_records(
+                    scanned_items,
+                    field_name=filter_field,
+                    op=filter_op,
+                    expected=filter_value,
+                )
+                display_items = [_project_record_fields(item, field_names) for item in filtered_items]
+                return _render_base_records(
+                    table_id,
+                    display_items,
+                    total=total,
+                    has_more=has_more,
+                    next_page_token=next_page if has_more and next_page else None,
+                    field_names=field_names,
+                    scanned_count=len(scanned_items),
+                    matched_count=len(filtered_items) if has_filter else None,
+                )
+
+            if offset and not page_token:
+                collected: list[dict] = []
+                consumed = 0
+                next_page = ""
+                total: int | None = None
+                has_more = False
+                for _ in range(100):
+                    data = await _base_api_get(
+                        token,
+                        path,
+                        _base_record_list_params(page_size=200, view_id=view_id, page_token=next_page),
+                    )
+                    page_items = data.get("items", [])
+                    if not isinstance(page_items, list):
+                        page_items = []
+                    if isinstance(data.get("total"), int):
+                        total = data["total"]
+                    page_end = consumed + len(page_items)
+                    if page_end > offset and len(collected) < limit:
+                        start = max(offset - consumed, 0)
+                        remaining = limit - len(collected)
+                        collected.extend(page_items[start : start + remaining])
+                        if len(collected) >= limit:
+                            has_more = start + remaining < len(page_items) or _payload_has_more(
+                                data, returned_count=page_end, offset=0
+                            )
+                            break
+                    consumed = page_end
+                    has_more = _payload_has_more(data, returned_count=consumed, offset=0)
+                    if not has_more:
+                        break
+                    next_page = str(data.get("page_token") or "").strip()
+                    if not next_page:
+                        break
+                filtered_items = _filter_records(
+                    collected[:limit],
+                    field_name=filter_field,
+                    op=filter_op,
+                    expected=filter_value,
+                )
+                display_items = [_project_record_fields(item, field_names) for item in filtered_items]
+                return _render_base_records(
+                    table_id,
+                    display_items,
+                    total=total,
+                    has_more=has_more,
+                    next_offset=offset + len(collected) if has_more else None,
+                    field_names=field_names,
+                    scanned_count=len(collected),
+                    matched_count=len(filtered_items) if has_filter else None,
+                )
+
+            data = await _base_api_get(
+                token,
+                path,
+                _base_record_list_params(page_size=limit, view_id=view_id, page_token=page_token),
+            )
+            items = data.get("items", [])
+            if not isinstance(items, list):
+                items = []
+            has_more = bool(data.get("has_more")) if page_token else _payload_has_more(
+                data, returned_count=len(items), offset=offset
+            )
+            next_page_token = str(data.get("page_token") or "").strip() if has_more else ""
+            filtered_items = _filter_records(
+                items,
+                field_name=filter_field,
+                op=filter_op,
+                expected=filter_value,
+            )
+            display_items = [_project_record_fields(item, field_names) for item in filtered_items]
+            return _render_base_records(
+                table_id,
+                display_items,
+                total=data.get("total"),
+                has_more=has_more,
+                next_page_token=next_page_token or None,
+                next_offset=offset + len(items) if has_more and not next_page_token else None,
+                field_names=field_names,
+                scanned_count=len(items) if has_filter else None,
+                matched_count=len(filtered_items) if has_filter else None,
+            )
         except Exception as exc:
             logger.warning("[FeishuBase] OpenAPI record_list failed, trying CLI: %s", exc)
 
     if not await _feishu_cli_available():
         return _not_configured_error("feishu_base_record_list")
 
-    offset = max(0, int(arguments.get("offset", 0)))
     command = [
         "base",
         "+record-list",
@@ -472,7 +747,19 @@ async def _feishu_base_record_list(agent_id, arguments: dict) -> str:
     if view_id:
         command.extend(["--view-id", view_id])
     payload = await _run_feishu_base_shortcut(command)
-    return _render_base_records(table_id, payload.get("items", []), total=payload.get("total"))
+    items = payload.get("items", [])
+    if not isinstance(items, list):
+        items = []
+    filtered_items = _filter_records(items, field_name=filter_field, op=filter_op, expected=filter_value)
+    display_items = [_project_record_fields(item, field_names) for item in filtered_items]
+    return _render_base_records(
+        table_id,
+        display_items,
+        total=payload.get("total"),
+        field_names=field_names,
+        scanned_count=len(items) if has_filter else None,
+        matched_count=len(filtered_items) if has_filter else None,
+    )
 
 
 async def _feishu_base_record_upsert(agent_id, arguments: dict) -> str:

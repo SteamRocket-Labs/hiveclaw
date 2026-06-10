@@ -68,6 +68,12 @@ async def test_feishu_url_read_routes_base_url_to_records_when_table_id_is_suppl
             "view_id": "viw_1",
             "limit": 50,
             "max_chars": 2000,
+            "fetch_all": True,
+            "max_records": 1000,
+            "field_names": ["项目名称", "净利润"],
+            "filter_field": "净利润",
+            "filter_op": "<",
+            "filter_value": "0",
         }
         return "BASE RECORDS WITH URL FIELDS"
 
@@ -81,6 +87,12 @@ async def test_feishu_url_read_routes_base_url_to_records_when_table_id_is_suppl
             "view_id": "viw_1",
             "limit": 50,
             "max_chars": 2000,
+            "fetch_all": True,
+            "max_records": 1000,
+            "field_names": ["项目名称", "净利润"],
+            "filter_field": "净利润",
+            "filter_op": "<",
+            "filter_value": "0",
         },
     )
 

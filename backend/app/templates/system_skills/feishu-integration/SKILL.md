@@ -120,7 +120,7 @@ these tools, not just describe them.
 | `feishu_base_table_list` | List tables in a Base | `base_token`, optional `offset`, `limit` (max 100) |
 | `feishu_base_field_list` | List field definitions | `base_token`, `table_id`, optional `offset`, `limit` (max 200) |
 | `feishu_base_field_create` | Create a new field (column) | `base_token`, `table_id`, `field_name`, `type` (1=Text, 2=Number, 3=SingleSelect, 4=MultiSelect, 5=Date, 7=Checkbox, 11=Person, 13=Phone, 15=URL, 17=Attachment, 18=Link, 20=Formula, 21=DuplexLink, 22=Location, 23=GroupChat, 1001=CreatedTime, 1002=ModifiedTime, 1003=Creator, 1004=Modifier), optional `property` (object, for Select type options config) |
-| `feishu_base_record_list` | Query records; text fields with embedded URL segments are rendered as `text <url>` when Feishu returns them | `base_token`, `table_id`, optional `view_id`, `offset`, `limit` (max 200) |
+| `feishu_base_record_list` | Query records; text fields with embedded URL segments are rendered as `text <url>` when Feishu returns them; can scan all pages and filter client-side | `base_token`, `table_id`, optional `view_id`, pagination token, `offset` (compat), `limit` (max 200), fetch_all, max_records, field_names, filter_field, filter_op, filter_value |
 | `feishu_base_record_upsert` | Create/update a record | `base_token`, `table_id`, `fields` (field-name to value mapping), optional `record_id` (omit to create) |
 | `feishu_base_record_delete` | Delete a record (confirm first!) | `base_token`, `table_id`, `record_id` |
 | `feishu_base_record_upload_attachment` | Upload attachment to a record | `base_token`, `table_id`, `record_id`, `field_id`, `file_path`, optional `name` |
@@ -182,7 +182,7 @@ these tools, not just describe them.
 2. `feishu_base_table_list` -> discover tables
 3. `feishu_base_field_list` -> understand field structure (names, types, writable vs read-only)
 4. `feishu_base_field_create` -> add new columns when needed
-5. `feishu_base_record_list` -> query data (use `view_id` to filter by a specific view); if a text field visually looks clickable in Feishu, inspect the rendered `text <url>` segments before concluding the link is unavailable
+5. `feishu_base_record_list` -> query data (use `view_id` to filter by a specific view); for analytical questions such as "净利润 < 0", prefer one controlled full-table call with fetch_all=true, field_names=["项目名称","报告期（年）","报告期（期数）","实际/预测","净利润","净利润（亿元）"], filter_field="净利润", filter_op="<", filter_value="0"; if the result includes a next-page token and you are not using fetch_all, keep calling with that pagination token until no next token is returned; if a text field visually looks clickable in Feishu, inspect the rendered `text <url>` segments before concluding the link is unavailable
 6. If a record field returns `text <url>`, immediately call `feishu_url_read(url="<url>")` for the relevant links. Do not answer from the URL text alone when the user asks for the document behind it.
 7. For Base URLs themselves, use `feishu_url_read(url="<base url>", table_id="<table id>")` when you need records; use `feishu_base_table_list` first when table_id is unknown.
 8. `feishu_base_record_upsert` -> write/update after confirming writable field names via `feishu_base_field_list`

@@ -178,6 +178,190 @@ async def test_feishu_base_record_list_requests_text_segments_and_renders_links(
 
 
 @pytest.mark.asyncio
+async def test_feishu_base_record_list_openapi_accepts_page_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.agent_tool_domains import feishu_base
+
+    async def fake_get_feishu_token(_agent_id):
+        return "tenant", "tenant-token"
+
+    async def fake_base_api_get(token: str, path: str, params: dict | None = None) -> dict:
+        assert token == "tenant-token"
+        assert path == "/bitable/v1/apps/app-token/tables/tbl_1/records"
+        assert params == {
+            "page_size": 50,
+            "text_field_as_array": True,
+            "page_token": "next-page",
+        }
+        return {
+            "items": [{"record_id": "rec_2", "fields": {"公司": "后页企业"}}],
+            "total": 398,
+            "has_more": False,
+        }
+
+    monkeypatch.setattr(feishu_base, "_get_feishu_token", fake_get_feishu_token)
+    monkeypatch.setattr(feishu_base, "_base_api_get", fake_base_api_get)
+
+    result = await feishu_base._feishu_base_record_list(
+        "agent-1",
+        {
+            "base_token": "app-token",
+            "table_id": "tbl_1",
+            "limit": 50,
+            "page_token": "next-page",
+        },
+    )
+
+    assert "rec_2" in result
+    assert "后页企业" in result
+    assert "总数：398" in result
+
+
+@pytest.mark.asyncio
+async def test_feishu_base_record_list_openapi_emulates_offset_with_page_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.agent_tool_domains import feishu_base
+
+    seen_params: list[dict] = []
+
+    async def fake_get_feishu_token(_agent_id):
+        return "tenant", "tenant-token"
+
+    async def fake_base_api_get(token: str, path: str, params: dict | None = None) -> dict:
+        assert token == "tenant-token"
+        assert path == "/bitable/v1/apps/app-token/tables/tbl_1/records"
+        seen_params.append(dict(params or {}))
+        if len(seen_params) == 1:
+            return {
+                "items": [{"record_id": f"rec_{idx}", "fields": {"公司": f"前页{idx}"}} for idx in range(200)],
+                "total": 398,
+                "has_more": True,
+                "page_token": "second-page",
+            }
+        return {
+            "items": [
+                {"record_id": "rec_200", "fields": {"公司": "共模半导体", "净利润": "-2,000万"}},
+                {"record_id": "rec_201", "fields": {"公司": "竹间智能", "净利润": "-3,998万"}},
+                *[
+                    {"record_id": f"rec_{idx}", "fields": {"公司": f"后页{idx}"}}
+                    for idx in range(202, 398)
+                ],
+            ],
+            "total": 398,
+            "has_more": False,
+        }
+
+    monkeypatch.setattr(feishu_base, "_get_feishu_token", fake_get_feishu_token)
+    monkeypatch.setattr(feishu_base, "_base_api_get", fake_base_api_get)
+
+    result = await feishu_base._feishu_base_record_list(
+        "agent-1",
+        {
+            "base_token": "app-token",
+            "table_id": "tbl_1",
+            "offset": 200,
+            "limit": 200,
+        },
+    )
+
+    assert seen_params == [
+        {"page_size": 200, "text_field_as_array": True},
+        {"page_size": 200, "text_field_as_array": True, "page_token": "second-page"},
+    ]
+    assert "共模半导体" in result
+    assert "竹间智能" in result
+    assert "前页0" not in result
+    assert "下一页 offset" not in result
+
+
+@pytest.mark.asyncio
+async def test_feishu_base_record_list_fetch_all_filters_negative_numeric_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.agent_tool_domains import feishu_base
+
+    seen_params: list[dict] = []
+
+    async def fake_get_feishu_token(_agent_id):
+        return "tenant", "tenant-token"
+
+    async def fake_base_api_get(token: str, path: str, params: dict | None = None) -> dict:
+        assert token == "tenant-token"
+        assert path == "/bitable/v1/apps/app-token/tables/tbl_1/records"
+        seen_params.append(dict(params or {}))
+        if len(seen_params) == 1:
+            return {
+                "items": [
+                    {
+                        "record_id": "rec_positive",
+                        "fields": {
+                            "项目名称": "正利润企业",
+                            "净利润": 300000000,
+                            "净利润（亿元）": 3,
+                            "报告期（年）": "2023",
+                        },
+                    }
+                ],
+                "total": 3,
+                "has_more": True,
+                "page_token": "second-page",
+            }
+        return {
+            "items": [
+                {
+                    "record_id": "rec_negative",
+                    "fields": {
+                        "项目名称": "共模半导体-B轮",
+                        "净利润": -20000000,
+                        "净利润（亿元）": -0.2,
+                        "报告期（年）": "2023",
+                    },
+                },
+                {
+                    "record_id": "rec_empty",
+                    "fields": {
+                        "项目名称": "空值企业",
+                        "净利润": "",
+                        "净利润（亿元）": 0,
+                        "报告期（年）": "2023",
+                    },
+                },
+            ],
+            "total": 3,
+            "has_more": False,
+        }
+
+    monkeypatch.setattr(feishu_base, "_get_feishu_token", fake_get_feishu_token)
+    monkeypatch.setattr(feishu_base, "_base_api_get", fake_base_api_get)
+
+    result = await feishu_base._feishu_base_record_list(
+        "agent-1",
+        {
+            "base_token": "app-token",
+            "table_id": "tbl_1",
+            "fetch_all": True,
+            "field_names": ["项目名称", "报告期（年）", "净利润", "净利润（亿元）"],
+            "filter_field": "净利润",
+            "filter_op": "<",
+            "filter_value": 0,
+        },
+    )
+
+    assert seen_params == [
+        {"page_size": 200, "text_field_as_array": True},
+        {"page_size": 200, "text_field_as_array": True, "page_token": "second-page"},
+    ]
+    assert "已扫描：3/3" in result
+    assert "筛选命中：1" in result
+    assert "共模半导体-B轮" in result
+    assert "净利润: -20000000" in result
+    assert "正利润企业" not in result
+    assert "空值企业" not in result
+
+
+@pytest.mark.asyncio
 async def test_feishu_task_list_uses_user_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.services.agent_tool_domains import feishu_tasks
 

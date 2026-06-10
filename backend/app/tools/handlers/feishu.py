@@ -205,6 +205,43 @@ async def feishu_url_resolve(agent_id: uuid.UUID, arguments: dict) -> str:
                     "type": "string",
                     "description": "Optional Base view ID for record reads.",
                 },
+                "limit": {
+                    "type": "integer",
+                    "description": "Optional Base record page size. Default 100, max 200.",
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Optional backwards-compatible Base record offset.",
+                },
+                "page_token": {
+                    "type": "string",
+                    "description": "Optional Base record pagination token returned by a previous read.",
+                },
+                "fetch_all": {
+                    "type": "boolean",
+                    "description": "For Base record reads, scan all pages up to max_records. Use with filters for full-table analysis.",
+                },
+                "max_records": {
+                    "type": "integer",
+                    "description": "For Base fetch_all reads, maximum records to scan. Default 1000, max 5000.",
+                },
+                "field_names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "For Base record reads, optional field-name projection to keep only needed columns.",
+                },
+                "filter_field": {
+                    "type": "string",
+                    "description": "For Base record reads, exact field name to filter, e.g. '净利润'.",
+                },
+                "filter_op": {
+                    "type": "string",
+                    "description": "For Base record reads: <, <=, >, >=, =, !=, contains, not_contains, empty, not_empty.",
+                },
+                "filter_value": {
+                    "type": "string",
+                    "description": "For Base record reads, comparison value. Numeric operators parse number strings including 万/亿.",
+                },
                 "range": {
                     "type": "string",
                     "description": "Optional sheet range when reading a sheet URL.",
@@ -510,11 +547,40 @@ async def feishu_base_table_list(agent_id: uuid.UUID, arguments: dict) -> str:
                 },
                 "offset": {
                     "type": "integer",
-                    "description": "Optional pagination offset. Default 0.",
+                    "description": "Optional backwards-compatible pagination offset. Prefer page_token when the result returns one.",
+                },
+                "page_token": {
+                    "type": "string",
+                    "description": "Optional pagination token returned by the previous result.",
                 },
                 "limit": {
                     "type": "integer",
                     "description": "Optional page size. Default 100, max 200.",
+                },
+                "fetch_all": {
+                    "type": "boolean",
+                    "description": "Scan all pages up to max_records. Use this with filters for full-table analysis.",
+                },
+                "max_records": {
+                    "type": "integer",
+                    "description": "Maximum records to scan when fetch_all is true or a filter is supplied. Default 1000, max 5000.",
+                },
+                "field_names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional field-name projection to keep only needed columns.",
+                },
+                "filter_field": {
+                    "type": "string",
+                    "description": "Exact field name to filter, e.g. '净利润'.",
+                },
+                "filter_op": {
+                    "type": "string",
+                    "description": "Filter operator: <, <=, >, >=, =, !=, contains, not_contains, empty, not_empty.",
+                },
+                "filter_value": {
+                    "type": "string",
+                    "description": "Comparison value. Numeric operators parse number strings including 万/亿.",
                 },
             },
             "required": ["base_token", "table_id"],

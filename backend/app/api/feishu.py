@@ -44,6 +44,7 @@ async def _try_confirm_channel_plan_from_text(
     from app.services.plan_mode_service import PlanConflictError
 
     confirmation = plan_mode_core.extract_plan_confirmation_request(user_text)
+    is_bare_confirmation = False
     if (
         confirmation is None
         and allow_bare_latest
@@ -51,6 +52,7 @@ async def _try_confirm_channel_plan_from_text(
         and plan_mode_core.is_bare_plan_confirmation_reply(user_text)
     ):
         confirmation = plan_mode_core.PlanConfirmationRequest(latest=True)
+        is_bare_confirmation = True
     if confirmation is None:
         return None
     if user_id is None:
@@ -76,6 +78,12 @@ async def _try_confirm_channel_plan_from_text(
         plan = await service.find_latest_awaiting_plan_for_session(agent_id=agent_id, session_id=session_id)
 
     if plan is None:
+        if is_bare_confirmation:
+            # P0-6: a bare "可以/开始/go" with no awaiting plan is almost always a
+            # normal acknowledgement to the agent, not a plan confirmation. Never
+            # swallow the turn with a template — fall through so the agent sees
+            # and answers the message.
+            return None
         return "没有找到当前会话待确认的计划。请带上 plan_id，或到 Web 端计划卡片确认。"
     if getattr(plan, "status", None) != "awaiting_confirmation":
         return f"计划无需重复确认：当前状态为 {getattr(plan, 'status', 'unknown')}。"

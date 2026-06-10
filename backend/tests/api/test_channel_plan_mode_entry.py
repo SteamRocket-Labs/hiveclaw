@@ -379,3 +379,63 @@ async def test_channel_llm_decline_after_recommendation_sets_trusted_runtime_opt
         recommendation.id
     )
     assert recommendation.status == "declined"
+
+
+@pytest.mark.asyncio
+async def test_channel_bare_ack_with_no_awaiting_plan_falls_through(monkeypatch):
+    """P0-6: a bare '可以' with no awaiting plan must NOT be swallowed by the
+    '没有找到当前会话待确认的计划' template — it falls through so the agent sees and
+    answers the message (here the no-model notice, since the test agent has none)."""
+    from app.api.feishu import _call_agent_llm
+
+    class _NoPlanService:
+        async def find_latest_awaiting_plan_for_session(self, **kwargs):
+            return None
+
+    monkeypatch.setattr("app.services.plan_mode_service.get_plan_mode_service", lambda: _NoPlanService())
+
+    agent = _agent()
+    db = _QueuedDB([agent])
+
+    reply = await _call_agent_llm(
+        db,
+        agent.id,
+        "可以",
+        user_id=uuid4(),
+        session_id="sess-1",
+        session_source="feishu",
+        session_channel="feishu",
+        allow_bare_plan_confirmation=True,
+    )
+
+    assert "没有找到" not in reply  # not swallowed by the template
+    assert "待确认的计划" not in reply
+
+
+@pytest.mark.asyncio
+async def test_channel_explicit_latest_confirmation_with_no_plan_keeps_notice(monkeypatch):
+    """An explicit '确认这个计划' (not a bare ack) with no awaiting plan keeps the
+    helpful notice — only bare acknowledgements fall through (P0-6)."""
+    from app.api.feishu import _call_agent_llm
+
+    class _NoPlanService:
+        async def find_latest_awaiting_plan_for_session(self, **kwargs):
+            return None
+
+    monkeypatch.setattr("app.services.plan_mode_service.get_plan_mode_service", lambda: _NoPlanService())
+
+    agent = _agent()
+    db = _QueuedDB([agent])
+
+    reply = await _call_agent_llm(
+        db,
+        agent.id,
+        "确认这个计划",
+        user_id=uuid4(),
+        session_id="sess-1",
+        session_source="feishu",
+        session_channel="feishu",
+        allow_bare_plan_confirmation=True,
+    )
+
+    assert "没有找到" in reply  # explicit confirmation intent keeps the helpful notice

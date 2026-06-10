@@ -75,6 +75,11 @@ _TOOL_RESULTS_AGGREGATE_BUDGET = 200000  # chars per round
 # Time-based microcompact: clear old tool results to delay heavy compaction.
 _MICROCOMPACT_GAP_SECONDS = 3600  # 60 minutes — tool results older than this get cleared
 _MICROCOMPACT_KEEP_RECENT = 5  # always keep the N most recent tool results
+# Below this window utilization there is no pressure justification to destroy
+# aging tool results — keep the evidence (audit-l1 #5: time-based microcompact
+# cleared results at 0% pressure, starving long heartbeat/DR sessions).
+_MICROCOMPACT_MIN_UTILIZATION = 0.5
+_MICROCOMPACT_NEVER_GAP_SECONDS = 10**12  # effectively "never clear"
 _MICROCOMPACT_CLEARED_MARKER = "[Old tool result cleared to save context space]"
 
 
@@ -86,11 +91,17 @@ def _compute_microcompact_gap(used_tokens: int, model_window: int | None) -> int
     otherwise the default `_MICROCOMPACT_GAP_SECONDS` (60min).
 
     `model_window` may be unknown — in that case we keep the conservative
-    60min default rather than guessing.
+    60min default rather than guessing. Below `_MICROCOMPACT_MIN_UTILIZATION`
+    (50%) the window has room, so we never clear (return an effectively-infinite
+    gap) — destroying aging tool results under no pressure was the audit-l1 #5
+    violation.
     """
     if not isinstance(model_window, int) or model_window <= 0:
         return _MICROCOMPACT_GAP_SECONDS
-    if used_tokens / model_window >= _MICROCOMPACT_PRESSURE_THRESHOLD:
+    _utilization = used_tokens / model_window
+    if _utilization < _MICROCOMPACT_MIN_UTILIZATION:
+        return _MICROCOMPACT_NEVER_GAP_SECONDS
+    if _utilization >= _MICROCOMPACT_PRESSURE_THRESHOLD:
         return _MICROCOMPACT_GAP_UNDER_PRESSURE_SECONDS
     return _MICROCOMPACT_GAP_SECONDS
 

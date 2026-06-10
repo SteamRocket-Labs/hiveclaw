@@ -69,7 +69,18 @@ def test_unknown_model_window_returns_default_gap() -> None:
     assert _compute_microcompact_gap(used_tokens=50_000, model_window=-100) == _MICROCOMPACT_GAP_SECONDS
 
 
-def test_zero_used_tokens_returns_default_gap() -> None:
-    """Empty conversation — no pressure."""
+def test_low_utilization_never_clears() -> None:
+    """Below 50% window utilization, microcompact is exempt — aging tool results
+    are kept instead of destroyed under no pressure (audit-l1 #5)."""
+    from app.kernel.engine import _MICROCOMPACT_NEVER_GAP_SECONDS
+
+    gap = _compute_microcompact_gap(used_tokens=30_000, model_window=100_000)  # 30%
+    assert gap == _MICROCOMPACT_NEVER_GAP_SECONDS
+
+
+def test_zero_used_tokens_never_clears() -> None:
+    """Empty conversation — the window has all the room; keep the evidence."""
+    from app.kernel.engine import _MICROCOMPACT_NEVER_GAP_SECONDS
+
     gap = _compute_microcompact_gap(used_tokens=0, model_window=100_000)
-    assert gap == _MICROCOMPACT_GAP_SECONDS
+    assert gap == _MICROCOMPACT_NEVER_GAP_SECONDS

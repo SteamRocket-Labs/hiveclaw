@@ -16,8 +16,18 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+def _normalize_async_url(url: str) -> str:
+    """Coerce a bare ``postgresql://`` URL (e.g. a Railway ``${{Postgres.DATABASE_URL}}``
+    reference) to the ``+asyncpg`` driver the async engine requires. Both the app
+    engine and the schema engine must use it — entrypoint runs schema steps with
+    DATABASE_URL set to the (possibly bare) SCHEMA_URL."""
+    if url.startswith("postgresql://"):
+        return "postgresql+asyncpg://" + url[len("postgresql://") :]
+    return url
+
+
 engine = create_async_engine(
-    settings.DATABASE_URL,
+    _normalize_async_url(settings.DATABASE_URL),
     echo=settings.DEBUG,
     pool_size=20,
     max_overflow=10,
@@ -30,15 +40,10 @@ async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit
 # pool). After the stage-3 role flip the app engine connects as the non-owner
 # app_rls role (NOSUPERUSER — cannot run DDL), so schema ops route through this
 # owner connection instead.
-_schema_url = settings.SCHEMA_DATABASE_URL or settings.DATABASE_URL
-# Normalize a bare ``postgresql://`` URL (e.g. a Railway ``${{Postgres.DATABASE_URL}}``
-# reference resolves to the psycopg-style scheme) to the ``+asyncpg`` driver the
-# async engine requires — otherwise create_async_engine raises on the owner URL.
-if _schema_url.startswith("postgresql://"):
-    _schema_url = "postgresql+asyncpg://" + _schema_url[len("postgresql://") :]
+_schema_url = _normalize_async_url(settings.SCHEMA_DATABASE_URL or settings.DATABASE_URL)
 schema_engine = (
     engine
-    if _schema_url == settings.DATABASE_URL
+    if _schema_url == _normalize_async_url(settings.DATABASE_URL)
     else create_async_engine(_schema_url, echo=settings.DEBUG, pool_size=2, max_overflow=2)
 )
 

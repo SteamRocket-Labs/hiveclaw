@@ -39,9 +39,10 @@ _GRANTS = (
 # safely into the DDL. No f-string, no concatenation of the secret into SQL.
 _CREATE_ROLE_FMT = (
     "SELECT format("
-    "'CREATE ROLE app_rls LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE', :pw)"
+    "'CREATE ROLE app_rls LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE', "
+    "cast(:pw AS text))"
 )
-_ALTER_ROLE_FMT = "SELECT format('ALTER ROLE app_rls LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS', :pw)"
+_ALTER_ROLE_FMT = "SELECT format('ALTER ROLE app_rls LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS', cast(:pw AS text))"
 
 
 async def grant_rls_app_role() -> None:

@@ -158,8 +158,17 @@ echo "[entrypoint] Step 2.5: Running data migrations..."
 # Safely migrate old AgentSchedules to the new AgentTriggers system (owner connection)
 DATABASE_URL="$SCHEMA_URL" python -m app.scripts.migrate_schedules_to_triggers
 
-echo "[entrypoint] Step 2.6: Granting the non-owner RLS role (stage-3 prep; no-op until the role exists)..."
+echo "[entrypoint] Step 2.6: Bootstrapping + granting the non-owner RLS role (stage-3 prep; creates app_rls when RLS_APP_PASSWORD is set)..."
 DATABASE_URL="$SCHEMA_URL" python -m app.scripts.grant_rls_app_role || echo "[entrypoint] WARNING: grant_rls_app_role failed (non-fatal)"
+
+# Stage-2b tenant_id backfill — gated so it only runs the deploy the owner opts in
+# (RLS_BACKFILL_ON_DEPLOY=1), on the owner connection (SCHEMA_URL). Idempotent
+# (fills only tenant_id IS NULL rows from the owning agent); logs the per-table
+# report incl. orphan residue. Run this on the flip deploy, before app_rls serves.
+if [ "$RLS_BACKFILL_ON_DEPLOY" = "1" ]; then
+    echo "[entrypoint] Step 2.7: Stage-2b tenant_id backfill (RLS_BACKFILL_ON_DEPLOY=1)..."
+    DATABASE_URL="$SCHEMA_URL" python -m app.scripts.backfill_stage2b_tenant_id --apply --confirm || echo "[entrypoint] WARNING: stage-2b backfill failed (non-fatal)"
+fi
 
 # Step 2.7: Auto-authenticate lark-cli if Feishu app credentials are available
 if [ -n "$FEISHU_APP_ID" ] && [ -n "$FEISHU_APP_SECRET" ] && command -v lark-cli >/dev/null 2>&1; then

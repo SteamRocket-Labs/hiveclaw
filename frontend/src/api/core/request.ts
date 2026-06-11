@@ -25,13 +25,14 @@ function authHeaders(): Record<string, string> {
   return headers;
 }
 
-function handleUnauthorized(url: string): never {
-  const isAuthEndpoint = url.startsWith('/auth/login') || url.startsWith('/auth/register');
-  if (!isAuthEndpoint) {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    window.location.href = '/login';
-  }
+function isAuthEndpoint(url: string): boolean {
+  return url.startsWith('/auth/login') || url.startsWith('/auth/register');
+}
+
+function handleUnauthorized(): never {
+  localStorage.removeItem('token');
+  localStorage.removeItem('user');
+  window.location.href = '/login';
   throw new ApiError(401, 'Session expired');
 }
 
@@ -78,7 +79,7 @@ export async function request<T>(
   });
 
   if (!res.ok) {
-    if (res.status === 401) handleUnauthorized(path);
+    if (res.status === 401 && !isAuthEndpoint(path)) handleUnauthorized();
     const { message, data } = await parseErrorDetail(res);
     throw new ApiError(res.status, message, data);
   }
@@ -105,7 +106,7 @@ export async function getBlob(path: string, options?: RequestOptions): Promise<B
   });
 
   if (!res.ok) {
-    if (res.status === 401) handleUnauthorized(path);
+    if (res.status === 401 && !isAuthEndpoint(path)) handleUnauthorized();
     const { message, data } = await parseErrorDetail(res);
     throw new ApiError(res.status, message, data);
   }
@@ -136,7 +137,7 @@ export async function upload<T = unknown>(
   });
 
   if (!res.ok) {
-    if (res.status === 401) handleUnauthorized(path);
+    if (res.status === 401 && !isAuthEndpoint(path)) handleUnauthorized();
     const { message, data } = await parseErrorDetail(res);
     throw new ApiError(res.status, message, data);
   }

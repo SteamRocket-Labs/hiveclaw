@@ -31,6 +31,11 @@ async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit
 # app_rls role (NOSUPERUSER — cannot run DDL), so schema ops route through this
 # owner connection instead.
 _schema_url = settings.SCHEMA_DATABASE_URL or settings.DATABASE_URL
+# Normalize a bare ``postgresql://`` URL (e.g. a Railway ``${{Postgres.DATABASE_URL}}``
+# reference resolves to the psycopg-style scheme) to the ``+asyncpg`` driver the
+# async engine requires — otherwise create_async_engine raises on the owner URL.
+if _schema_url.startswith("postgresql://"):
+    _schema_url = "postgresql+asyncpg://" + _schema_url[len("postgresql://") :]
 schema_engine = (
     engine
     if _schema_url == settings.DATABASE_URL

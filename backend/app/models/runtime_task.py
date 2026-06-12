@@ -11,7 +11,7 @@ agent execution machinery.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -22,6 +22,26 @@ class RuntimeTask(Base):
     """Persistent record of a subagent delegation task."""
 
     __tablename__ = "runtime_tasks"
+    __table_args__ = (
+        Index(
+            "uq_runtime_tasks_active_web_chat_session",
+            "parent_agent_id",
+            "parent_session_id",
+            unique=True,
+            postgresql_where=text(
+                "task_type = 'web_chat_turn' "
+                "AND status IN ('pending', 'running') "
+                "AND parent_agent_id IS NOT NULL "
+                "AND parent_session_id IS NOT NULL"
+            ),
+            sqlite_where=text(
+                "task_type = 'web_chat_turn' "
+                "AND status IN ('pending', 'running') "
+                "AND parent_agent_id IS NOT NULL "
+                "AND parent_session_id IS NOT NULL"
+            ),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,

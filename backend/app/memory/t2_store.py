@@ -306,6 +306,7 @@ def parse_t2_entry_line(
         "feedback_source",
         "rationale_from_owner",
         "decision_ref",
+        "open_loop",
         "absorbed_at",
     ):
         if metadata.get(key):

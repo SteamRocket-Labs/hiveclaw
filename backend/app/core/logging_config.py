@@ -1,16 +1,18 @@
 """Centralized logging configuration using loguru."""
 
 import logging
+import os
 import re
 import sys
 from contextvars import ContextVar
+from typing import Any
+from uuid import uuid4
 
 from loguru import logger as _logger
 
 # Context variable for trace ID
-from uuid import uuid4
-
 trace_id_var: ContextVar[str] = ContextVar("trace_id", default=None)
+_PROCESS_TRACE_ID = "process-" + uuid4().hex[:12]
 NOISY_SUCCESS_LOGGER_PREFIXES = ("httpx", "httpcore", "uvicorn.access", "websockets.server", "websockets.legacy.server")
 _WEBSOCKET_QUERY_RE = re.compile(r'("WebSocket [^"?]+)\?[^"]+(")')
 _SENSITIVE_QUERY_PARAM_RE = re.compile(r"([?&](?:access_key|ticket|token|session_id|app_secret)=)[^&\s\"']+")
@@ -26,21 +28,49 @@ def set_trace_id(trace_id: str) -> None:
     trace_id_var.set(trace_id)
 
 
-def configure_logging():
+def clear_trace_id() -> None:
+    """Clear the current request/task trace ID."""
+    trace_id_var.set(None)
+
+
+def _fallback_trace_id() -> str:
+    return get_trace_id() or _PROCESS_TRACE_ID
+
+
+def enrich_log_record(record: dict[str, Any]) -> bool:
+    """Attach a stable trace_id to every loguru record."""
+    record["extra"].setdefault("trace_id", _fallback_trace_id())
+    return True
+
+
+def configure_logging(*, sink: Any = sys.stdout, enqueue: bool = True):
     """Configure loguru with custom format including trace ID."""
     # Remove default handler
     _logger.remove()
 
-    # Add stdout handler with custom format and filter to ensure trace_id exists
-    _logger.add(
-        sys.stdout,
-        level="INFO",
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{extra[trace_id]:-<12}</cyan> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-        enqueue=True,
-        backtrace=True,
-        diagnose=True,
-        filter=lambda record: (record["extra"].setdefault("trace_id", get_trace_id() or str(uuid4())) is not None)
-    )
+    log_format = os.getenv("HIVE_LOG_FORMAT", "json").strip().lower()
+    common = {
+        "level": "INFO",
+        "enqueue": enqueue,
+        "backtrace": True,
+        "diagnose": False,
+        "filter": enrich_log_record,
+    }
+    if log_format in {"text", "pretty", "plain"}:
+        _logger.add(
+            sink,
+            format=(
+                "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {extra[trace_id]:-<20} | "
+                "{name}:{function}:{line} - {message}"
+            ),
+            **common,
+        )
+    else:
+        _logger.add(
+            sink,
+            serialize=True,
+            **common,
+        )
 
     return _logger
 

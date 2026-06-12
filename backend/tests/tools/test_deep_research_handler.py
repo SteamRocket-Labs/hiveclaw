@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from pathlib import Path
@@ -111,7 +112,94 @@ async def test_deep_research_start_schedules_background_workflow(tmp_path, monke
     assert "at most once" in next_action
     assert "loop guard" in next_action.lower()
     assert "Do not create triggers" in next_action
-    handler._INFLIGHT_DEEP_RESEARCH.pop((str(req.context.agent_id), "rwa adoption"), None)
+    for key in list(handler._INFLIGHT_DEEP_RESEARCH):
+        if key[0] == str(req.context.agent_id):
+            handler._INFLIGHT_DEEP_RESEARCH.pop(key, None)
+
+
+@pytest.mark.asyncio
+async def test_deep_research_start_dedups_against_persisted_active_runtime_task(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.deep_research.plan_mode import deep_research_plan_signature
+    from app.services.deep_research.schemas import ResearchRequest
+    from app.tools.handlers import deep_research as handler
+
+    req = _request(tmp_path, session_id="session-work-ledger")
+    args = {"question": "RWA adoption", "max_rounds": 2, "plan_confirmed": True}
+    req.arguments.update(args)
+    research_request = ResearchRequest.from_arguments(args)
+    signature = deep_research_plan_signature(research_request, worker_topics=research_request.worker_topics)
+    existing_task_id = str(uuid.uuid4())
+    scheduled: dict = {}
+
+    async def fake_list_active_runtime_task_records(*_args, **_kwargs):
+        return [
+            {
+                "task_id": existing_task_id,
+                "task_type": "workflow",
+                "status": "running",
+                "parent_agent_id": str(req.context.agent_id),
+                "metadata": {"deep_research_signature": signature},
+            }
+        ]
+
+    def fake_schedule(**kwargs):
+        scheduled.update(kwargs)
+
+    monkeypatch.setattr(handler, "list_active_runtime_task_records", fake_list_active_runtime_task_records, raising=False)
+    monkeypatch.setattr(handler, "_schedule_deep_research_workflow_background", fake_schedule)
+
+    payload = json.loads(await handler.deep_research_start(req))
+
+    assert payload["ok"] is True
+    assert payload["deduped"] is True
+    assert payload["task_id"] == existing_task_id
+    assert scheduled == {}
+
+
+@pytest.mark.asyncio
+async def test_deep_research_background_metadata_records_signature(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.deep_research.plan_mode import deep_research_plan_signature
+    from app.services.deep_research.schemas import ResearchRequest
+    from app.tools.handlers import deep_research as handler
+
+    agent_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    research_request = ResearchRequest.from_arguments(
+        {"question": "RWA adoption", "max_rounds": 2, "plan_confirmed": True}
+    )
+    signature = deep_research_plan_signature(research_request, worker_topics=research_request.worker_topics)
+    updates: list[tuple[str, dict]] = []
+
+    async def fake_workflow_run(**_kwargs):
+        return {"status": "completed", "workflow_run_id": str(run_id)}
+
+    async def fake_update_runtime_task_record(task_id, **fields):
+        updates.append((task_id, fields))
+        return True
+
+    monkeypatch.setattr(handler, "start_deep_research_workflow_run", fake_workflow_run)
+    monkeypatch.setattr(handler, "update_runtime_task_record", fake_update_runtime_task_record)
+
+    handler._schedule_deep_research_workflow_background(
+        research_request=research_request,
+        run_id=run_id,
+        agent_id=agent_id,
+        user_id=user_id,
+        workspace=tmp_path,
+    )
+    await asyncio.sleep(0)
+
+    assert updates
+    assert updates[0][0] == run_id.hex
+    assert updates[0][1]["metadata_json"]["deep_research_signature"] == signature
+    assert updates[0][1]["metadata_json"]["deep_research_question"] == "RWA adoption"
 
 
 @pytest.mark.asyncio

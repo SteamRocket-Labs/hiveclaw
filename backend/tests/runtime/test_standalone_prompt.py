@@ -49,9 +49,9 @@ async def test_resolve_memory_context_standalone_skips_host_memory(monkeypatch):
     from app.runtime import invoker
 
     async def _boom(*args, **kwargs):
-        raise AssertionError("host memory snapshot must not be built for standalone prompts")
+        raise AssertionError("host memory context must not be built for standalone prompts")
 
-    monkeypatch.setattr(invoker, "build_memory_snapshot", _boom)
+    monkeypatch.setattr(invoker, "build_memory_context", _boom)
 
     assert await invoker._resolve_memory_context(_standalone_request(), uuid4()) == ""
 

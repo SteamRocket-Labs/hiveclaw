@@ -187,6 +187,46 @@ async def test_reconcile_orphaned_runtime_tasks_marks_running_records_failed(mon
 
 
 @pytest.mark.asyncio
+async def test_reconcile_orphaned_runtime_tasks_preserves_workflow_runs(monkeypatch):
+    from app.services.runtime_task_service import reconcile_orphaned_runtime_tasks
+
+    workflow_task = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            "id": uuid4(),
+            "task_type": "workflow",
+            "status": "running",
+            "result_summary": None,
+            "completed_at": None,
+            "metadata_json": {},
+        },
+    )()
+    web_chat_task = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            "id": uuid4(),
+            "task_type": "web_chat_turn",
+            "status": "running",
+            "result_summary": None,
+            "completed_at": None,
+            "metadata_json": {},
+        },
+    )()
+    fake_session = _ReconcileSession([workflow_task, web_chat_task])
+    monkeypatch.setattr("app.services.runtime_task_service.async_session", lambda: fake_session)
+
+    updated = await reconcile_orphaned_runtime_tasks()
+
+    assert updated == 1
+    assert workflow_task.status == "running"
+    assert workflow_task.completed_at is None
+    assert web_chat_task.status == "failed"
+    assert fake_session.commit_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_reconcile_orphaned_runtime_tasks_skips_excluded_ids(monkeypatch):
     from app.services.runtime_task_service import reconcile_orphaned_runtime_tasks
 

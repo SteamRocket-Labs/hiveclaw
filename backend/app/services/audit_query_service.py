@@ -6,7 +6,6 @@ Provides filtered queries, CSV export, and hash-chain verification.
 from __future__ import annotations
 
 import csv
-import hashlib
 import io
 import json
 import logging
@@ -15,6 +14,7 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.policy import compute_audit_event_hash
 from app.models.security_audit import SecurityAuditEvent
 from app.schemas.audit_schemas import AuditQueryParams
 
@@ -153,25 +153,31 @@ async def verify_chain(
     if not event:
         return {"valid": False, "event_hash": "", "computed_hash": "", "predecessor_id": None}
 
-    # Recompute hash using the same algorithm as write_audit_event in policy.py
-    hash_input = json.dumps(
-        {
-            "event_type": event.event_type,
-            "actor_type": event.actor_type,
-            "actor_id": str(event.actor_id),
-            "tenant_id": str(event.tenant_id),
-            "action": event.action,
-            "prev_hash": event.prev_hash,
-        },
-        sort_keys=True,
+    computed_hash = compute_audit_event_hash(
+        event_type=event.event_type,
+        severity=event.severity,
+        actor_type=event.actor_type,
+        actor_id=event.actor_id,
+        tenant_id=event.tenant_id,
+        action=event.action,
+        resource_type=event.resource_type,
+        resource_id=event.resource_id,
+        details=event.details,
+        ip_address=str(event.ip_address) if event.ip_address else None,
+        request_id=event.request_id,
+        prev_hash=event.prev_hash,
     )
-    computed_hash = hashlib.sha256(hash_input.encode()).hexdigest()
 
     # Find predecessor by matching prev_hash
     predecessor_id: uuid.UUID | None = None
     if event.prev_hash and event.prev_hash != "genesis":
         pred_result = await db.execute(
-            select(SecurityAuditEvent.id).where(SecurityAuditEvent.event_hash == event.prev_hash).limit(1)
+            select(SecurityAuditEvent.id)
+            .where(
+                SecurityAuditEvent.tenant_id == tenant_id,
+                SecurityAuditEvent.event_hash == event.prev_hash,
+            )
+            .limit(1)
         )
         predecessor_id = pred_result.scalar_one_or_none()
 

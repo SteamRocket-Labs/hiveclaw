@@ -53,6 +53,12 @@ export interface AgentChatMessage {
 
 export type ChatRuntimeSummary = SessionRuntimeSummary;
 
+export type StreamingChunkEvent = {
+  type: 'chunk';
+  content?: string;
+  reset?: boolean;
+};
+
 export interface SessionRunState {
   runId: string;
   status: string;
@@ -84,6 +90,24 @@ export function applySessionActiveRunState(
 
 export function buildChatSocketKeepaliveMessage(): { type: 'ping' } {
   return { type: 'ping' };
+}
+
+export function applyStreamingChunkEvent(
+  messages: AgentChatMessage[],
+  event: StreamingChunkEvent,
+): AgentChatMessage[] {
+  const last = messages[messages.length - 1];
+  if (event.reset) {
+    if (last && last.role === 'assistant' && (last as any)._streaming) {
+      return [...messages.slice(0, -1), { ...last, content: '' } as any];
+    }
+    return messages;
+  }
+  const content = event.content ?? '';
+  if (last && last.role === 'assistant' && (last as any)._streaming) {
+    return [...messages.slice(0, -1), { ...last, content: last.content + content } as any];
+  }
+  return [...messages, { role: 'assistant', content, _streaming: true } as any];
 }
 
 type ActiveModelSummary = {

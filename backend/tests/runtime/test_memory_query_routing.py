@@ -9,21 +9,22 @@ from app.runtime.session import SessionContext
 
 
 @pytest.mark.asyncio
-async def test_resolve_memory_context_uses_snapshot_only_before_prefix_exists(monkeypatch):
+async def test_resolve_memory_context_uses_single_query_scoped_retrieval(monkeypatch):
     from app.runtime import invoker
     from app.runtime.invoker import AgentInvocationRequest
 
-    snapshot_calls: list[str] = []
+    memory_calls: list[tuple[str | None, str]] = []
 
-    async def fake_build_memory_snapshot(agent_id, tenant_id, session_id=None):
-        snapshot_calls.append(str(session_id))
-        return "SNAPSHOT"
+    async def fake_build_memory_context(agent_id, tenant_id, *, session_id=None, query="", **kwargs):
+        del agent_id, tenant_id, kwargs
+        memory_calls.append((str(session_id), query))
+        return "QUERY_SCOPED_MEMORY" if query else "SNAPSHOT_MEMORY"
 
-    monkeypatch.setattr(invoker, "build_memory_snapshot", fake_build_memory_snapshot)
+    monkeypatch.setattr(invoker, "build_memory_context", fake_build_memory_context)
 
     request = AgentInvocationRequest(
         model=SimpleNamespace(provider="openai", model="gpt-4.1"),
-        messages=[{"role": "user", "content": "hello"}],
+        messages=[{"role": "user", "content": "latest question"}],
         agent_name="Agent",
         role_description="desc",
         agent_id=uuid4(),
@@ -31,17 +32,18 @@ async def test_resolve_memory_context_uses_snapshot_only_before_prefix_exists(mo
     )
 
     result = await invoker._resolve_memory_context(request, uuid4())
-    assert "SNAPSHOT" in result
-    assert '<context_block kind="memory_snapshot" source="memory_provider:snapshot">' in result
-    assert snapshot_calls == ["s-1"]
-    assert request.session_context.metadata["context_artifacts"][0]["kind"] == "memory_snapshot"
+    assert "QUERY_SCOPED_MEMORY" in result
+    assert "SNAPSHOT_MEMORY" not in result
+    assert '<context_block kind="memory_context" source="memory_provider:context">' in result
+    assert memory_calls == [("s-1", "latest question")]
+    assert request.session_context.metadata["context_artifacts"][0]["kind"] == "memory_context"
 
     # After prefix is cached, memory context should STILL be loaded (not skipped)
     # This ensures the engine's hash-based cache invalidation works correctly.
     request.session_context.prompt_prefix = "CACHED_PREFIX"
     result = await invoker._resolve_memory_context(request, uuid4())
-    assert "SNAPSHOT" in result  # Memory always loaded, even with cached prefix
-    assert len(snapshot_calls) == 2  # Called twice — once per invocation
+    assert "QUERY_SCOPED_MEMORY" in result  # Memory always loaded, even with cached prefix
+    assert memory_calls == [("s-1", "latest question"), ("s-1", "latest question")]
 
 
 @pytest.mark.asyncio
@@ -49,27 +51,22 @@ async def test_resolve_retrieval_context_routes_last_user_query(monkeypatch):
     from app.runtime import invoker
     from app.runtime.invoker import AgentInvocationRequest
 
-    calls: list[tuple[str, str | None]] = []
-
-    async def fake_build_memory_context(agent_id, tenant_id, *, session_id=None, query=""):
-        del agent_id, tenant_id
-        calls.append(("memory", query))
-        assert session_id == "s-2"
-        return "MEMORY_RECALL"
+    calls: list[tuple[str, str]] = []
 
     async def fake_fetch_relevant_knowledge(query, tenant_id):
         del tenant_id
         calls.append(("knowledge", query))
         return "KNOWLEDGE_RECALL"
 
-    async def fake_build_agent_runtime_context(agent_id, *, current_user_name=None):
-        del agent_id, current_user_name
-        calls.append(("runtime", None))
-        return "RUNTIME_HINTS"
+    async def fail_build_memory_context(*_args, **_kwargs):
+        raise AssertionError("memory retrieval must not run in _resolve_retrieval_context")
 
-    monkeypatch.setattr(invoker, "build_memory_context", fake_build_memory_context)
+    async def fail_build_agent_runtime_context(*_args, **_kwargs):
+        raise AssertionError("runtime metadata must not run in _resolve_retrieval_context")
+
+    monkeypatch.setattr(invoker, "build_memory_context", fail_build_memory_context)
     monkeypatch.setattr(invoker, "fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
-    monkeypatch.setattr(invoker, "build_agent_runtime_context", fake_build_agent_runtime_context)
+    monkeypatch.setattr(invoker, "build_agent_runtime_context", fail_build_agent_runtime_context)
 
     request = AgentInvocationRequest(
         model=SimpleNamespace(provider="openai", model="gpt-4.1"),
@@ -85,26 +82,88 @@ async def test_resolve_retrieval_context_routes_last_user_query(monkeypatch):
     )
 
     result = await invoker._resolve_retrieval_context(request, uuid4())
-    assert "RUNTIME_HINTS" in result
-    assert "MEMORY_RECALL" in result
     assert "KNOWLEDGE_RECALL" in result
-    assert '<context_block kind="agent_runtime_context" source="runtime_context:agent">' in result
-    assert '<context_block kind="memory_recall" source="memory_provider:recall">' in result
     assert '<context_block kind="knowledge_relevant" source="knowledge_provider:relevant">' in result
-    assert calls == [
-        ("runtime", None),
-        ("memory", "latest question"),
-        ("knowledge", "latest question"),
-    ]
-    assert [item["kind"] for item in request.session_context.metadata["context_artifacts"]] == [
-        "agent_runtime_context",
-        "memory_recall",
-        "knowledge_relevant",
-    ]
+    assert calls == [("knowledge", "latest question")]
+    assert [item["kind"] for item in request.session_context.metadata["context_artifacts"]] == ["knowledge_relevant"]
 
 
 @pytest.mark.asyncio
-async def test_resolve_retrieval_context_passes_current_user_to_memory(monkeypatch):
+async def test_resolve_runtime_metadata_context_routes_runtime_hints(monkeypatch):
+    from app.runtime import invoker
+    from app.runtime.invoker import AgentInvocationRequest
+
+    calls: list[tuple[str, str | None]] = []
+
+    async def fake_build_agent_runtime_context(agent_id, *, current_user_name=None, budget_profile=None):
+        del agent_id, budget_profile
+        calls.append(("runtime", current_user_name))
+        return "RUNTIME_HINTS"
+
+    async def fake_resolve_current_user_name(_user_id):
+        return "Rocky"
+
+    monkeypatch.setattr(invoker, "build_agent_runtime_context", fake_build_agent_runtime_context)
+    monkeypatch.setattr(invoker, "_resolve_current_user_name", fake_resolve_current_user_name)
+
+    request = AgentInvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "latest question"}],
+        agent_name="Agent",
+        role_description="desc",
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        session_context=SessionContext(session_id="s-runtime"),
+    )
+
+    result = await invoker._resolve_runtime_metadata_context(request, uuid4())
+
+    assert "RUNTIME_HINTS" in result
+    assert '<context_block kind="agent_runtime_context" source="runtime_context:agent">' in result
+    assert calls == [("runtime", "Rocky")]
+    assert request.session_context.metadata["context_artifacts"][0]["kind"] == "agent_runtime_context"
+
+
+@pytest.mark.asyncio
+async def test_resolve_retrieval_context_excludes_memory_and_runtime_metadata(monkeypatch):
+    from app.runtime import invoker
+    from app.runtime.invoker import AgentInvocationRequest
+
+    async def fail_build_memory_context(*_args, **_kwargs):
+        raise AssertionError("memory context belongs to _resolve_memory_context, not retrieval context")
+
+    async def fail_build_agent_runtime_context(*_args, **_kwargs):
+        raise AssertionError("runtime metadata belongs to _resolve_runtime_metadata_context, not retrieval context")
+
+    async def fake_fetch_relevant_knowledge(query, tenant_id, **kwargs):
+        del tenant_id, kwargs
+        assert query == "latest question"
+        return "KNOWLEDGE_RECALL"
+
+    monkeypatch.setattr(invoker, "build_memory_context", fail_build_memory_context)
+    monkeypatch.setattr(invoker, "build_agent_runtime_context", fail_build_agent_runtime_context)
+    monkeypatch.setattr(invoker, "fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
+
+    request = AgentInvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "latest question"}],
+        agent_name="Agent",
+        role_description="desc",
+        agent_id=uuid4(),
+        session_context=SessionContext(session_id="s-knowledge"),
+    )
+
+    result = await invoker._resolve_retrieval_context(request, uuid4())
+
+    assert "KNOWLEDGE_RECALL" in result
+    assert "memory_recall" not in result
+    assert "agent_runtime_context" not in result
+    assert '<context_block kind="knowledge_relevant" source="knowledge_provider:relevant">' in result
+    assert request.session_context.metadata["context_artifacts"][0]["kind"] == "knowledge_relevant"
+
+
+@pytest.mark.asyncio
+async def test_resolve_memory_context_passes_current_user_to_memory(monkeypatch):
     from app.runtime import invoker
     from app.runtime.invoker import AgentInvocationRequest
 
@@ -129,16 +188,8 @@ async def test_resolve_retrieval_context_passes_current_user_to_memory(monkeypat
         captured["current_user_name"] = current_user_name
         return ""
 
-    async def fake_fetch_relevant_knowledge(*_args, **_kwargs):
-        return ""
-
-    async def fake_build_agent_runtime_context(*_args, **_kwargs):
-        return ""
-
     monkeypatch.setattr(invoker, "_resolve_current_user_name", fake_resolve_current_user_name)
     monkeypatch.setattr(invoker, "build_memory_context", fake_build_memory_context)
-    monkeypatch.setattr(invoker, "fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
-    monkeypatch.setattr(invoker, "build_agent_runtime_context", fake_build_agent_runtime_context)
 
     request = AgentInvocationRequest(
         model=SimpleNamespace(provider="openai", model="gpt-4.1"),
@@ -150,7 +201,7 @@ async def test_resolve_retrieval_context_passes_current_user_to_memory(monkeypat
         session_context=SessionContext(session_id="s-3"),
     )
 
-    await invoker._resolve_retrieval_context(request, uuid4())
+    await invoker._resolve_memory_context(request, uuid4())
 
     assert captured == {
         "current_user_id": user_id,

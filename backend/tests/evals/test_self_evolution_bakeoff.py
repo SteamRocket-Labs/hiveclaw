@@ -16,7 +16,8 @@ def test_self_evolution_bakeoff_dataset_covers_foundation_scenarios() -> None:
         "safety_tenant_policy",
     }
     assert all(case["prompt"] for case in dataset)
-    assert all(case["deterministic_checks"] for case in dataset)
+    assert all(case["behavior_assertions"] for case in dataset)
+    assert all("deterministic_checks" not in case for case in dataset)
 
 
 def test_self_evolution_bakeoff_scores_hive_against_hermes_baseline() -> None:
@@ -35,10 +36,14 @@ def test_self_evolution_bakeoff_scores_hive_against_hermes_baseline() -> None:
 
     assert report["schema"] == "self_evolution_bakeoff.v1"
     assert report["passed"] is True
+    assert report["hive"]["source"] == "local_behavior_scenarios"
+    assert report["hive"]["behavior_complete"] is True
     next_turn = report["comparisons"]["next_turn_adaptation"]
     safety = report["comparisons"]["safety_tenant_policy"]
     assert next_turn["hive_score"] >= next_turn["hermes_score"]
     assert safety["hive_score"] > safety["hermes_score"]
+    assert all("contains" not in check for check in next_turn["hive_evidence"])
+    assert "Session Learning" in report["hive"]["scenarios"]["next_turn_adaptation"]["transcript"]
     assert report["cost_latency"]["visible"] is True
     assert report["cost_latency"]["bounded"] is True
 

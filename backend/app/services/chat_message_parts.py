@@ -236,7 +236,14 @@ def split_inline_tools(content: str, sender_name: str | None = None) -> list[dic
     return entries
 
 
-def build_chunk_event(text: str) -> dict[str, Any]:
+def build_chunk_event(text: str, *, reset: bool = False) -> dict[str, Any]:
+    if reset:
+        return {
+            "type": "chunk",
+            "content": "",
+            "reset": True,
+            "part": {"type": "stream_reset"},
+        }
     return {
         "type": "chunk",
         "content": text,

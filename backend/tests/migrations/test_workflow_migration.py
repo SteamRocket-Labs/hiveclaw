@@ -55,7 +55,7 @@ def test_alembic_single_head_is_current_closure_head():
     assert result.returncode == 0, result.stderr[-500:]
     heads = [line for line in result.stdout.strip().splitlines() if line.strip()]
     assert len(heads) == 1, f"expected single head, got: {heads}"
-    assert "rls_stage2b_agent_scoped_0610" in heads[0]
+    assert "web_chat_active_run_unique_0612" in heads[0]
 
 
 async def _assert_workflow_tables_forced_rls(database_url: str) -> None:

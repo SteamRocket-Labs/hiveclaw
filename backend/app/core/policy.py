@@ -9,12 +9,76 @@ import logging
 import uuid
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.security_audit import ResourcePermission
 
 logger = logging.getLogger(__name__)
+
+
+def compute_audit_event_hash(
+    *,
+    event_type: str,
+    severity: str,
+    actor_type: str,
+    actor_id: uuid.UUID | None,
+    tenant_id: uuid.UUID,
+    action: str,
+    resource_type: str | None = None,
+    resource_id: uuid.UUID | None = None,
+    details: dict | None = None,
+    ip_address: str | None = None,
+    request_id: uuid.UUID | None = None,
+    prev_hash: str,
+) -> str:
+    """Compute the canonical tamper-evident hash for an audit event."""
+    import hashlib
+    import json
+
+    hash_input = json.dumps(
+        {
+            "event_type": event_type,
+            "severity": severity,
+            "actor_type": actor_type,
+            "actor_id": str(actor_id) if actor_id is not None else None,
+            "tenant_id": str(tenant_id),
+            "action": action,
+            "resource_type": resource_type,
+            "resource_id": str(resource_id) if resource_id is not None else None,
+            "details": details or {},
+            "ip_address": str(ip_address) if ip_address else None,
+            "request_id": str(request_id) if request_id is not None else None,
+            "prev_hash": prev_hash,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(hash_input.encode()).hexdigest()
+
+
+def _audit_chain_lock_key(tenant_id: uuid.UUID) -> int:
+    import hashlib
+
+    return int(hashlib.sha256(str(tenant_id).encode("ascii")).hexdigest()[:16], 16) & ((1 << 63) - 1)
+
+
+def _db_dialect_name(db: AsyncSession) -> str:
+    try:
+        bind = db.get_bind()
+    except Exception:
+        bind = getattr(db, "bind", None)
+    return str(getattr(getattr(bind, "dialect", None), "name", "") or "")
+
+
+async def _lock_audit_chain(db: AsyncSession, tenant_id: uuid.UUID) -> None:
+    if _db_dialect_name(db) != "postgresql":
+        return
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(:lock_key)"),
+        {"lock_key": _audit_chain_lock_key(tenant_id)},
+    )
 
 
 async def check_permission(
@@ -123,9 +187,6 @@ async def write_audit_event(
     request_id: uuid.UUID | None = None,
 ) -> None:
     """Write a tamper-evident audit event with hash chain."""
-    import hashlib
-    import json
-
     from app.models.security_audit import SecurityAuditEvent
 
     if tenant_id is None or tenant_id == uuid.UUID(int=0):
@@ -135,24 +196,36 @@ async def write_audit_event(
         )
         return
 
-    # Get previous hash for chain
+    await _lock_audit_chain(db, tenant_id)
+
+    # Get previous hash for this tenant's chain. PostgreSQL deployments take a
+    # transaction advisory lock above so concurrent writers cannot fork prev_hash.
     result = await db.execute(
         select(SecurityAuditEvent.event_hash)
-        .order_by(SecurityAuditEvent.created_at.desc())
+        .where(SecurityAuditEvent.tenant_id == tenant_id)
+        .order_by(
+            SecurityAuditEvent.sequence_num.desc().nullslast(),
+            SecurityAuditEvent.created_at.desc(),
+            SecurityAuditEvent.id.desc(),
+        )
         .limit(1)
     )
     prev_hash = result.scalar_one_or_none() or "genesis"
 
-    # Compute event hash
-    hash_input = json.dumps({
-        "event_type": event_type,
-        "actor_type": actor_type,
-        "actor_id": str(actor_id),
-        "tenant_id": str(tenant_id),
-        "action": action,
-        "prev_hash": prev_hash,
-    }, sort_keys=True)
-    event_hash = hashlib.sha256(hash_input.encode()).hexdigest()
+    event_hash = compute_audit_event_hash(
+        event_type=event_type,
+        severity=severity,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        tenant_id=tenant_id,
+        action=action,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        details=details,
+        ip_address=ip_address,
+        request_id=request_id,
+        prev_hash=prev_hash,
+    )
 
     # Read execution identity from ContextVar (set by channel handlers / trigger daemon)
     exec_identity_type = None

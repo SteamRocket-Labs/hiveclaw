@@ -23,6 +23,7 @@ from app.services.llm_client import (
     PROVIDER_REGISTRY,
     ProviderSpec,
     PROVIDER_URLS,
+    STREAM_RETRY_TOMBSTONE,
     TOOL_CHOICE_PROVIDERS,
     chat_complete,
     chat_stream,
@@ -82,6 +83,7 @@ __all__ = [
     "PROVIDER_ALIASES",
     "PROVIDER_REGISTRY",
     "PROVIDER_URLS",
+    "STREAM_RETRY_TOMBSTONE",
     "ANTHROPIC_API_PROVIDERS",
     "TOOL_CHOICE_PROVIDERS",
     # Registry helpers

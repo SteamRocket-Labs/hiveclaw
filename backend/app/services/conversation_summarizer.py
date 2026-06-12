@@ -585,13 +585,21 @@ def _resolve_summary_max_tokens(provider: str, model: str) -> int:
     return _SUMMARY_MAX_OUTPUT_TOKENS
 
 
-async def _llm_summarize(messages: list[dict], model_config: dict) -> str | None:
+async def _llm_summarize(
+    messages: list[dict],
+    model_config: dict,
+    *,
+    usage_source: str | None = None,
+    agent_id=None,
+    tenant_id=None,
+    user_id=None,
+) -> str | None:
     """Use LLM to create a detailed summary of old messages.
 
     Uses <analysis>/<summary> scratchpad pattern: LLM reasons in <analysis>
     tags (stripped before persistence), outputs clean summary in <summary> tags.
     """
-    from app.services.llm_client import LLMMessage, create_llm_client_from_config
+    from app.services.llm_client import LLMMessage, create_llm_client_from_config, with_llm_usage_context
 
     provider = model_config.get("provider", "")
     model_name = model_config.get("model", "")
@@ -603,6 +611,14 @@ async def _llm_summarize(messages: list[dict], model_config: dict) -> str | None
     if not text:
         return None
 
+    if usage_source:
+        model_config = with_llm_usage_context(
+            model_config,
+            source=usage_source,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
     client = create_llm_client_from_config(model_config)
     try:
         response = await client.stream(

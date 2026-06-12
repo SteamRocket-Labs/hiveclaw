@@ -62,6 +62,12 @@ class TestTasksSection:
     def test_has_faithful_reporting(self) -> None:
         assert "faithfully" in build_tasks_section()
 
+    def test_three_strike_rule_is_not_duplicated_here(self) -> None:
+        section = build_tasks_section()
+        assert "Use the three-strike rule" in section
+        assert "same fix fails three times" not in section
+        assert "3 attempts with" not in section
+
 
 class TestToolsSection:
     def test_has_header(self) -> None:
@@ -152,6 +158,17 @@ class TestEnvironmentSection:
     def test_includes_agent_name(self) -> None:
         section = build_environment_section(agent_name="PM-Bot")
         assert "PM-Bot" in section
+
+    def test_dynamic_suffix_omits_utc_environment_time_when_runtime_time_exists(self) -> None:
+        suffix = build_dynamic_prompt_suffix(
+            runtime_metadata_context="## Current Time\n2026-06-12 09:30:00 (Asia/Shanghai)",
+            user_name="Rocky",
+            channel="web",
+        )
+
+        assert "## Current Time" in suffix
+        assert "Asia/Shanghai" in suffix
+        assert "Current time:" not in suffix
 
 
 class TestKnowledgeSection:

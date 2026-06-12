@@ -75,8 +75,29 @@ _MIN_HOURS_BETWEEN_SOFT_DREAMS = 6  # 1/4 of the full-dream cadence
 _last_dream_time: dict[str, datetime] = {}
 _sessions_since_dream: dict[str, int] = {}
 
-# Prompt contract kept for tests/docs. Runtime dream path is programmatic md-only.
-_AUTO_DREAM_SYSTEM_PROMPT = """\
+# DREAM.md template path
+_DREAM_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "DREAM.md"
+
+
+def _load_dream_protocol_instruction() -> str:
+    """Load the dream SOP while preserving the runtime JSON output contract."""
+    try:
+        template = _DREAM_TEMPLATE_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        return (
+            "# Dream — Memory Consolidation Protocol\n\n"
+            "Memory consolidation proposals must preserve source evidence, avoid wake-policy promotion, "
+            "and leave durable writes to the Memory Control Plane."
+        )
+
+    # The historical template ended with a worker-style `[DREAM:complete]`
+    # tag. The production consolidator is JSON-only, so that legacy output
+    # section is not injected into the runtime system message.
+    return template.split("## Required Output Format", 1)[0].strip()
+
+
+# Prompt contract kept for tests/docs and now backed by DREAM.md protocol text.
+_AUTO_DREAM_SYSTEM_PROMPT = f"""\
 <role>
 You are the dream sub-agent: the **Reconsolidator + IdentityPromoter**. You
 run about once a day. Your job:
@@ -119,6 +140,10 @@ evidence belong in workspace artifacts, not long-term memory or soul.md.
 Return EXACTLY ONE JSON object matching the schema in the user message.
 No prose, no markdown, no code fences — just raw JSON.
 </output_contract>
+
+<dream_protocol>
+{_load_dream_protocol_instruction()}
+</dream_protocol>
 """
 
 
@@ -445,7 +470,7 @@ async def _dream_llm_consolidate(
         return None
 
     try:
-        from app.services.llm_client import LLMMessage, create_llm_client_from_config
+        from app.services.llm_client import LLMMessage, create_llm_client_from_config, with_llm_usage_context
     except ImportError as exc:
         logger.debug("[Dream] llm_client import unavailable: %s", exc)
         return None
@@ -485,7 +510,15 @@ async def _dream_llm_consolidate(
 
     client = None
     try:
-        client = create_llm_client_from_config(model_config)
+        client = create_llm_client_from_config(
+            with_llm_usage_context(
+                model_config,
+                source="dream",
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                metadata={"phase": "consolidation"},
+            )
+        )
         response = await client.stream(
             messages=[
                 LLMMessage(role="system", content=_AUTO_DREAM_SYSTEM_PROMPT),
@@ -556,7 +589,7 @@ Return EXACTLY one JSON object, no prose, no code fences:
 
 
 async def _judge_frozen_mission_contradiction(
-    model_config: dict,
+    metered_model_config: dict,
     frozen_charter: str,
     content: str,
 ) -> dict | None:
@@ -578,7 +611,8 @@ async def _judge_frozen_mission_contradiction(
     )
     client = None
     try:
-        client = create_llm_client_from_config(model_config)
+        # Caller passes a usage-aware config via with_llm_usage_context().
+        client = create_llm_client_from_config(metered_model_config)
         response = await client.stream(
             messages=[
                 LLMMessage(role="system", content=_FROZEN_MISSION_JUDGE_SYSTEM_PROMPT),
@@ -634,6 +668,7 @@ async def _build_frozen_mission_judge(
         return None
 
     try:
+        from app.services.llm_client import with_llm_usage_context
         from app.services.memory_service import _get_summary_model_config
 
         model_config = await _get_summary_model_config(tenant_id)
@@ -645,7 +680,17 @@ async def _build_frozen_mission_judge(
 
     verdicts: dict[str, dict] = {}
     for content in contents:
-        verdict = await _judge_frozen_mission_contradiction(model_config, frozen_charter, content)
+        verdict = await _judge_frozen_mission_contradiction(
+            with_llm_usage_context(
+                model_config,
+                source="dream_frozen_mission_judge",
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                metadata={"phase": "frozen_mission_judge"},
+            ),
+            frozen_charter,
+            content,
+        )
         if verdict is not None:
             verdicts[content] = verdict
 
@@ -1095,9 +1140,6 @@ def _apply_dream_decisions_unlocked(
 MIN_HEARTBEAT_TICKS_SINCE_DREAM = 2
 _heartbeat_ticks_since_dream: dict[str, int] = {}
 
-# DREAM.md template path
-_DREAM_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "DREAM.md"
-
 # ── T3 MD read/write/dedup functions (Phase 6) ──
 
 _T3_FILES = ["feedback.md", "knowledge.md", "strategies.md", "blocked.md", "user.md"]
@@ -1264,16 +1306,12 @@ def _count_t3_entries(agent_id: uuid.UUID) -> int:
     return total
 
 
-def _promote_repeated_feedback_to_soul(agent_id: uuid.UUID, feedback_content: str) -> dict:
-    """Promote repeated feedback patterns to soul.md without LLM.
+def _empty_feedback_promotion_result() -> dict:
+    return {"count": 0, "decisions": [], "held": 0, "soul_contradicted_frozen": 0}
 
-    Returns:
-        {"count": int, "decisions": list[dict]}
-        decisions[i] = {soul_excerpt, source_t3_file, repetition_count, reason}
 
-    Callers may treat the return as int via dict["count"] or via the
-    isinstance() guard in run_dream() for backwards-compat.
-    """
+def _cluster_repeated_feedback(feedback_content: str) -> list[dict[str, object]]:
+    """Find repeated feedback clusters that are eligible for soul promotion."""
     from difflib import SequenceMatcher
 
     from app.memory.md_store import extract_entry_lines, parse_entry_line
@@ -1286,7 +1324,7 @@ def _promote_repeated_feedback_to_soul(agent_id: uuid.UUID, feedback_content: st
         for line in extract_entry_lines(feedback_content)
     ]
     if len(raw_entries) < 3:
-        return {"count": 0, "decisions": []}
+        return []
 
     clusters: list[dict[str, object]] = []
     for raw_entry in raw_entries:
@@ -1318,19 +1356,62 @@ def _promote_repeated_feedback_to_soul(agent_id: uuid.UUID, feedback_content: st
                 }
             )
 
-    promotable_clusters = [c for c in clusters if int(c["count"]) >= 3]
+    return [c for c in clusters if int(c["count"]) >= 3]
+
+
+def _build_repeated_feedback_promotion_decision(feedback_content: str) -> dict:
+    """Build a synthetic dream decision for the repeated-feedback promotion lane.
+
+    This lets the async dream runner reuse `_build_frozen_mission_judge()` so
+    the repeated-feedback safety net receives the same LLM-first contradiction
+    gate as structured LLM dream promotions.
+    """
+    return {
+        "soul_promotions": [
+            {
+                "content": str(cluster["content"]),
+                "source_file": "feedback.md",
+                "source_refs": list(cluster.get("source_refs") or [])[:5],
+                "evidence": "system_observed",
+                "section": "Learned Behaviors",
+                "reason": "feedback repeated 3+ times → promoted to soul",
+            }
+            for cluster in _cluster_repeated_feedback(feedback_content)
+        ]
+    }
+
+
+def _promote_repeated_feedback_to_soul(
+    agent_id: uuid.UUID,
+    feedback_content: str,
+    *,
+    contradiction_judge: Callable[[str, str], dict | None] | None = None,
+) -> dict:
+    """Promote repeated feedback patterns to soul.md via the governed dream gate.
+
+    Returns:
+        {"count": int, "decisions": list[dict], "held": int, "soul_contradicted_frozen": int}
+        decisions[i] = {soul_excerpt, source_t3_file, repetition_count, reason}
+
+    Callers may treat the return as int via dict["count"] or via the
+    isinstance() guard in run_dream() for backwards-compat.
+    """
+    promotable_clusters = _cluster_repeated_feedback(feedback_content)
     if not promotable_clusters:
-        return {"count": 0, "decisions": []}
+        return _empty_feedback_promotion_result()
 
     soul_path = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "soul.md"
     existing = soul_path.read_text(encoding="utf-8", errors="replace") if soul_path.exists() else "# Soul\n\n"
     existing_lower = existing.lower()
     new_clusters = [c for c in promotable_clusters if str(c["content"]).lower() not in existing_lower]
     if not new_clusters:
-        return {"count": 0, "decisions": []}
+        return _empty_feedback_promotion_result()
 
     workspace = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
     approved_clusters: list[dict[str, object]] = []
+    held = 0
+    soul_contradicted_frozen = 0
+    frozen_charter = _extract_frozen_charter(existing)
     for cluster in new_clusters:
         content = str(cluster["content"])
         try:
@@ -1358,15 +1439,28 @@ def _promote_repeated_feedback_to_soul(agent_id: uuid.UUID, feedback_content: st
             )
             decision = decide_memory_promotion(candidate)
             if decision["decision"] == "promote":
-                record_memory_promotion_decision(
-                    workspace,
-                    candidate_id=candidate["candidate_id"],
-                    decision="promote",
-                    reason=decision["reason"],
-                    rollback_ref=f"soul.md@before-pattern-promotion:{datetime.now(timezone.utc).isoformat()}",
-                )
-                approved_clusters.append(cluster)
+                contradicts, contra_reason = _promotion_contradicts_frozen(frozen_charter, content, contradiction_judge)
+                if contradicts:
+                    held += 1
+                    soul_contradicted_frozen += 1
+                    record_memory_promotion_decision(
+                        workspace,
+                        candidate_id=candidate["candidate_id"],
+                        decision="hold",
+                        reason=f"contradicts frozen Mission/charter: {contra_reason}",
+                        metadata={"section": "Learned Behaviors", "gate": "frozen_mission"},
+                    )
+                else:
+                    record_memory_promotion_decision(
+                        workspace,
+                        candidate_id=candidate["candidate_id"],
+                        decision="promote",
+                        reason=decision["reason"],
+                        rollback_ref=f"soul.md@before-pattern-promotion:{datetime.now(timezone.utc).isoformat()}",
+                    )
+                    approved_clusters.append(cluster)
             else:
+                held += 1
                 record_memory_promotion_decision(
                     workspace,
                     candidate_id=candidate["candidate_id"],
@@ -1377,7 +1471,12 @@ def _promote_repeated_feedback_to_soul(agent_id: uuid.UUID, feedback_content: st
             logger.warning("[Dream] Feedback promotion ledger failed for %s: %s", agent_id, exc)
 
     if not approved_clusters:
-        return {"count": 0, "decisions": []}
+        return {
+            "count": 0,
+            "decisions": [],
+            "held": held,
+            "soul_contradicted_frozen": soul_contradicted_frozen,
+        }
 
     new_behaviors = [str(c["content"]) for c in approved_clusters]
     header = "## Learned Behaviors"
@@ -1399,7 +1498,12 @@ def _promote_repeated_feedback_to_soul(agent_id: uuid.UUID, feedback_content: st
         }
         for c in approved_clusters
     ]
-    return {"count": len(new_behaviors), "decisions": decisions}
+    return {
+        "count": len(new_behaviors),
+        "decisions": decisions,
+        "held": held,
+        "soul_contradicted_frozen": soul_contradicted_frozen,
+    }
 
 
 def propose_charter_calibrations_from_feedback(decision_store) -> list[dict[str, str]]:
@@ -1682,13 +1786,26 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
         t3_files = _read_all_t3(agent_id)
 
     # Step 2: pattern-based feedback promotion (always runs as safety net).
-    promotion_result = _promote_repeated_feedback_to_soul(agent_id, t3_files.get("feedback.md", ""))
+    # D6: this mechanical lane still proposes candidates, but the actual soul
+    # writeback shares the same frozen-Mission gate as LLM dream promotions.
+    feedback_content = t3_files.get("feedback.md", "")
+    feedback_promotion_decision = _build_repeated_feedback_promotion_decision(feedback_content)
+    feedback_mission_judge = await _build_frozen_mission_judge(agent_id, tenant_id, feedback_promotion_decision)
+    promotion_result = _promote_repeated_feedback_to_soul(
+        agent_id,
+        feedback_content,
+        contradiction_judge=feedback_mission_judge,
+    )
     if isinstance(promotion_result, dict):
         promoted_to_soul = int(promotion_result.get("count", 0))
         promotion_decisions = promotion_result.get("decisions") or []
+        repeated_feedback_held = int(promotion_result.get("held", 0))
+        repeated_feedback_contradicted = int(promotion_result.get("soul_contradicted_frozen", 0))
     else:
         promoted_to_soul = int(promotion_result)
         promotion_decisions = []
+        repeated_feedback_held = 0
+        repeated_feedback_contradicted = 0
     t3_stats = _consolidate_t3_files(agent_id)
     t3_removed = sum(t3_stats.values())
     dedup_decisions = [
@@ -1746,6 +1863,9 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
         "t2_truncated": t2_removed,
         "t0_recent_files": t0_audit["recent_files"],
         "t0_backfilled": t0_backfill["written"],
+        "repeated_feedback_held": repeated_feedback_held,
+        "soul_contradicted_frozen": int(llm_apply_report.get("soul_contradicted_frozen", 0) or 0)
+        + repeated_feedback_contradicted,
     }
 
     # Emit DREAM_END hook → T0 log + heartbeat session reset
@@ -1764,6 +1884,8 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
                 "t2_truncated": t2_removed,
                 "dedup_decisions": dedup_decisions,
                 "promotion_decisions": promotion_decisions,
+                "repeated_feedback_held": repeated_feedback_held,
+                "repeated_feedback_soul_contradicted_frozen": repeated_feedback_contradicted,
                 "dream_reasoning": dream_reasoning,
                 "llm_apply_report": llm_apply_report,
                 "cleanup_summary": (f"focus cleaned + blocklist reviewed; T2 truncated {t2_removed}"),

@@ -65,6 +65,18 @@ def test_discovered_tools_are_tracked_and_mirrored_to_metadata() -> None:
     assert s.metadata["discovered_tools"] == ["web_search", "web_fetch"]
 
 
+def test_file_tracking_records_version_snapshots() -> None:
+    s = SessionContext()
+
+    s.track_file_read("workspace/report.md", snapshot={"exists": True, "size": 12, "mtime_ns": 100})
+    s.track_file_write("workspace/report.md", snapshot={"exists": True, "size": 20, "mtime_ns": 200})
+
+    assert s.recent_files == ["workspace/report.md"]
+    assert s.recent_writes == ["workspace/report.md"]
+    assert s.file_snapshots["workspace/report.md"]["size"] == 20
+    assert s.file_snapshots["workspace/report.md"]["mtime_ns"] == 200
+
+
 # ── Unload ────────────────────────────────────────────────────
 
 

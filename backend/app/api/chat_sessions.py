@@ -5,6 +5,7 @@ from datetime import datetime, timezone as tz
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -324,7 +325,7 @@ async def start_session_run(
             plan_mode_requested=body.plan_mode_requested,
         )
     except ActiveWebChatRunExists as exc:
-        raise HTTPException(status_code=409, detail=exc.run) from exc
+        return JSONResponse(status_code=202, content={"status": "queued", **exc.run})
 
 
 @router.get("/{agent_id}/sessions/{session_id}/runs/active")

@@ -10,6 +10,7 @@ Phase 2: Extractor for RESPONSE_COMPLETE, PRE_COMPACTION, SESSION_CLOSE drain.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from pathlib import Path
@@ -106,6 +107,121 @@ def _agent_data_root() -> Path:
     return Path(get_settings().AGENT_DATA_DIR)
 
 
+def _parse_fast_reflection_classifier_json(raw_text: str) -> dict[str, object] | None:
+    text = (raw_text or "").strip()
+    if not text:
+        return None
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        payload = json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    signal_type = str(payload.get("signal_type") or payload.get("type") or "").strip()
+    if signal_type not in {
+        "low_signal",
+        "user_preference_correction",
+        "workflow_correction",
+        "verification_failure",
+        "repeated_task_pattern",
+    }:
+        return None
+    lesson = str(payload.get("lesson") or "").strip()
+    confidence_raw = payload.get("confidence", 0.0)
+    try:
+        confidence = float(confidence_raw)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if signal_type != "low_signal" and not lesson:
+        return None
+    return {
+        "method": "llm_classifier",
+        "signal_type": signal_type,
+        "lesson": lesson[:1000],
+        "confidence": max(0.0, min(confidence, 1.0)),
+    }
+
+
+async def _classify_fast_reflection_signal_with_llm(
+    *,
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID | None,
+    messages: list[dict],
+    metadata: dict,
+) -> dict[str, object] | None:
+    """Use the tenant summary model for fast-reflection signal routing.
+
+    Failure returns None so the synchronous service can use its observable
+    mechanical fallback. This hook runs after RESPONSE_COMPLETE in a background
+    task, so it does not add latency to the user response.
+    """
+    if not tenant_id or metadata.get("fast_reflection_classification"):
+        return None
+
+    try:
+        from app.services.llm_client import LLMMessage, create_llm_client_from_config, with_llm_usage_context
+        from app.services.memory_service import _get_summary_model_config
+
+        model_config = await _get_summary_model_config(tenant_id)
+        if not model_config:
+            return None
+
+        digest_lines: list[str] = []
+        for message in messages[-8:]:
+            role = str(message.get("role") or "unknown")
+            content = str(message.get("content") or "").strip().replace("\n", " ")[:500]
+            if content:
+                digest_lines.append(f"{role}: {content}")
+        if not digest_lines:
+            return None
+
+        client = create_llm_client_from_config(
+            with_llm_usage_context(
+                model_config,
+                source="fast_reflection_classifier",
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+            )
+        )
+        try:
+            response = await client.complete(
+                messages=[
+                    LLMMessage(
+                        role="system",
+                        content=(
+                            "Classify whether the completed turn contains a reusable learning signal. "
+                            "Return raw JSON only with keys signal_type, lesson, confidence. "
+                            "Allowed signal_type values: low_signal, user_preference_correction, "
+                            "workflow_correction, verification_failure, repeated_task_pattern. "
+                            "Use low_signal for one-off context, politeness, or ambiguous corrections."
+                        ),
+                    ),
+                    LLMMessage(
+                        role="user",
+                        content=(
+                            "recent_messages:\n"
+                            f"{chr(10).join(digest_lines)}\n\n"
+                            f"metadata_error: {str(metadata.get('error') or '')[:500]}\n"
+                            f"metadata_test_artifacts: {str(metadata.get('test_artifacts') or '')[:500]}\n"
+                            f"final_response: {str(metadata.get('last_response') or metadata.get('final_response') or '')[:800]}"
+                        ),
+                    ),
+                ],
+                temperature=0.0,
+                max_tokens=600,
+            )
+        finally:
+            await client.close()
+        return _parse_fast_reflection_classifier_json(response.content or "")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[FastReflection] LLM classifier unavailable; using fallback: %s", exc)
+        return None
+
+
 def schedule_fast_reflection_candidate(
     *,
     data_root: Path,
@@ -141,12 +257,22 @@ async def _fast_reflection_on_response(ctx: HookContext) -> None:
     messages = ctx.messages or []
     if not messages:
         return
+    metadata = dict(ctx.metadata or {})
+    tenant_id = metadata.get("tenant_id")
+    classification = await _classify_fast_reflection_signal_with_llm(
+        agent_id=agent_id,
+        tenant_id=uuid.UUID(str(tenant_id)) if tenant_id else None,
+        messages=messages,
+        metadata=metadata,
+    )
+    if classification is not None:
+        metadata["fast_reflection_classification"] = classification
     schedule_fast_reflection_candidate(
         data_root=_agent_data_root(),
         agent_id=agent_id,
         session_id=str(ctx.session_id or ""),
         messages=messages,
-        metadata=ctx.metadata,
+        metadata=metadata,
     )
 
 

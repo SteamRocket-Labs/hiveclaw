@@ -13,6 +13,7 @@ from app.memory.metrics import (
     consecutive_failures,
     record_recall,
     record_recall_error,
+    record_prompt_cache_metrics,
     record_sync,
     record_sync_failure,
     reset_all,
@@ -91,6 +92,33 @@ def test_reset_all_clears_everything() -> None:
     assert snap["recall_error_total"] == {}
     assert snap["sync_items_total"] == {}
     assert consecutive_failures("t1") == 0
+
+
+def test_prompt_cache_metrics_snapshot_and_prometheus_export() -> None:
+    from app.memory.metrics import render_prometheus
+    from app.services.prompt_cache import extract_cache_metrics
+
+    record_prompt_cache_metrics(
+        extract_cache_metrics(
+            {
+                "input_tokens": 1000,
+                "cache_read_input_tokens": 800,
+                "cache_creation_input_tokens": 50,
+            },
+            provider="anthropic",
+        )
+    )
+
+    snap = snapshot()
+    assert snap["prompt_cache_observations_total"]["anthropic:hit"] == 1
+    assert snap["prompt_cache_read_tokens_total"]["anthropic"] == 800
+    assert snap["prompt_cache_write_tokens_total"]["anthropic"] == 50
+    assert snap["prompt_cache_input_tokens_total"]["anthropic"] == 1000
+    assert snap["prompt_cache_hit_rate"]["anthropic"] == 0.8
+
+    text = render_prometheus()
+    assert 'hive_prompt_cache_read_tokens_total{provider="anthropic"} 800' in text
+    assert 'hive_prompt_cache_hit_rate{provider="anthropic"} 0.8' in text
 
 
 # ── LatencyWindow ─────────────────────────────────────────────
@@ -348,3 +376,57 @@ class TestFrozenPrefixMetrics:
         assert snap["frozen_prefix_tokens"] == {"count": 0}
         assert snap["frozen_prefix_warn_total"] == 0
         assert snap["frozen_prefix_overrun_total"] == 0
+
+
+class TestPrometheusExport:
+    def test_snapshot_and_prometheus_include_hook_failures(self):
+        from app.memory.metrics import record_hook_failure, render_prometheus, snapshot
+
+        record_hook_failure(event="response_complete", source="kernel", reason="RuntimeError")
+        record_hook_failure(event="response_complete", source="kernel", reason="RuntimeError")
+        record_hook_failure(event="post_tool_use", source="registry", reason="ValueError")
+
+        snap = snapshot()
+        assert snap["hook_failure_total"] == {
+            "response_complete:kernel:RuntimeError": 2,
+            "post_tool_use:registry:ValueError": 1,
+        }
+
+        text = render_prometheus()
+        assert (
+            'hive_memory_hook_failure_total{event="response_complete",source="kernel",reason="RuntimeError"} 2'
+            in text
+        )
+        assert (
+            'hive_memory_hook_failure_total{event="post_tool_use",source="registry",reason="ValueError"} 1'
+            in text
+        )
+
+    def test_prometheus_export_includes_extract_failure_ratio_and_alert(self):
+        from app.memory.metrics import (
+            record_extract_task_failure,
+            record_extract_task_success,
+            render_prometheus,
+        )
+
+        for _ in range(4):
+            record_extract_task_success("web")
+        record_extract_task_failure("web", "RuntimeError")
+
+        text = render_prometheus()
+
+        assert "# HELP hive_memory_extract_task_failure_total" in text
+        assert '# TYPE hive_memory_extract_failure_ratio gauge' in text
+        assert 'hive_memory_extract_task_success_total{source="web"} 4' in text
+        assert 'hive_memory_extract_task_failure_total{source="web",reason="RuntimeError"} 1' in text
+        assert 'hive_memory_extract_failure_ratio{source="web"} 0.2' in text
+        assert 'hive_memory_extract_failure_ratio_high{source="web"} 1' in text
+
+    def test_prometheus_export_escapes_label_values(self):
+        from app.memory.metrics import record_recall_error, render_prometheus
+
+        record_recall_error('hi"nd\\sight', "tenant-a", "ConnectError")
+
+        text = render_prometheus()
+
+        assert 'hive_memory_recall_error_total{backend="hi\\"nd\\\\sight",tenant_id="tenant-a",reason="ConnectError"} 1' in text

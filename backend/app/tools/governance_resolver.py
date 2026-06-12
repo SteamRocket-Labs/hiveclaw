@@ -36,6 +36,7 @@ class ToolGovernanceResolver:
             tenant_id=runtime_context.tenant_id,
             tool_name=tool_name,
             arguments=arguments,
+            session_id=runtime_context.session_id,
             delegation_token=delegation_token,
         )
 
@@ -82,6 +83,7 @@ class ToolGovernanceResolver:
             arguments: dict,
             capability: str,
             reason: str | None = None,
+            session_id: str | None = None,
         ) -> dict:
             async with async_session() as db, enter_rls_bypass(db, reason=f"approval request for agent {agent_id}"):
                 result = await db.execute(select(Agent).where(Agent.id == agent_id))
@@ -97,6 +99,11 @@ class ToolGovernanceResolver:
                         "args": arguments,
                         "requested_by": str(user_id),
                         "reason": reason,
+                        "session_id": session_id,
+                        "origin": {
+                            "type": "agent_session" if session_id else "approval_request",
+                            "session_id": session_id,
+                        },
                     },
                 )
                 await db.commit()

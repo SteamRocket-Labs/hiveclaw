@@ -217,6 +217,13 @@ async def start_ephemeral_workflow_for_agent(
     )
     service = WorkflowRuntimeService(session_factory=session_factory)
     executor = build_subagent_leaf_executor(ctx, spawn=spawn)
+    delivery_target = None
+    try:
+        from app.services.channel_delivery_service import channel_delivery_target
+
+        delivery_target = channel_delivery_target.get(None)
+    except Exception:
+        delivery_target = None
 
     handle = await service.start_run(
         tenant_id=tenant_id,
@@ -227,6 +234,7 @@ async def start_ephemeral_workflow_for_agent(
         agent_id=agent.id,
         confirmed_plan_id=confirmed_plan_id,
         run_id=run_id,
+        delivery_target=delivery_target,
     )
 
     if ledger_todo_id:

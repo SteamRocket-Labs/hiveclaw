@@ -563,6 +563,37 @@ class TestDreamFrozenMissionGate:
         assert report["soul_added"] == 0
         assert report["soul_contradicted_frozen"] == 1
 
+    def test_repeated_feedback_promotion_contradicting_frozen_mission_is_held(self, tmp_path: Path) -> None:
+        from app.services.auto_dream import _promote_repeated_feedback_to_soul
+
+        agent_id = self._scaffold(tmp_path)
+        feedback = (
+            "# Feedback\n\n"
+            "- [2026-06-01] Disable the three-times-daily scan; scan only once per week on Friday.\n"
+            "- [2026-06-02] Disable the three-times-daily scan; scan only once per week on Friday.\n"
+            "- [2026-06-03] Disable the three-times-daily scan; scan only once per week on Friday.\n"
+        )
+        seen: dict[str, str] = {}
+
+        def judge(frozen_charter: str, content: str) -> dict:
+            seen["frozen_charter"] = frozen_charter
+            seen["content"] = content
+            return {"contradicts": True, "reason": "candidate disables the mandated three-times-daily scan"}
+
+        with patch("app.services.auto_dream.get_settings") as mock_settings:
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
+            result = _promote_repeated_feedback_to_soul(agent_id, feedback, contradiction_judge=judge)
+
+        soul = (tmp_path / str(agent_id) / "soul.md").read_text(encoding="utf-8")
+        assert "once per week on Friday" not in soul
+        assert result["count"] == 0
+        assert result["held"] == 1
+        assert result["soul_contradicted_frozen"] == 1
+        assert "three times daily" in seen["frozen_charter"].lower()
+        ledger = (tmp_path / str(agent_id) / "evolution" / "evolution_ledger.jsonl").read_text(encoding="utf-8")
+        assert "contradicts frozen Mission/charter" in ledger
+        assert '"gate": "frozen_mission"' in ledger
+
     @pytest.mark.asyncio
     async def test_production_llm_judge_is_built_and_applied(self, tmp_path: Path) -> None:
         # Proves the AI-Native L1 path is wired: _build_frozen_mission_judge runs
@@ -724,6 +755,47 @@ class TestRunDreamIntegration:
         assert "## Learned Behaviors" in soul
         assert "- always prefer concise output" in soul
 
+    async def test_run_dream_builds_frozen_judge_for_repeated_feedback_lane(self, tmp_path: Path) -> None:
+        from app.services.auto_dream import run_dream
+
+        agent_id = uuid.uuid4()
+        tenant_id = uuid.uuid4()
+        agent_dir = tmp_path / str(agent_id)
+        mem_dir = agent_dir / "memory"
+        mem_dir.mkdir(parents=True)
+        (agent_dir / "soul.md").write_text(TestDreamFrozenMissionGate._MISSION_SOUL, encoding="utf-8")
+        feedback = (
+            "# Feedback\n\n"
+            "- [2026-06-01] Disable the three-times-daily scan; scan only once per week on Friday.\n"
+            "- [2026-06-02] Disable the three-times-daily scan; scan only once per week on Friday.\n"
+            "- [2026-06-03] Disable the three-times-daily scan; scan only once per week on Friday.\n"
+        )
+        (mem_dir / "feedback.md").write_text(feedback, encoding="utf-8")
+        captured: dict[str, dict] = {}
+
+        async def fake_build_judge(_agent_id, _tenant_id, decision):
+            captured["decision"] = decision
+
+            def judge(_frozen_charter: str, _content: str) -> dict:
+                return {"contradicts": True, "reason": "candidate disables the mandated three-times-daily scan"}
+
+            return judge
+
+        with (
+            patch("app.services.auto_dream.get_settings") as mock_settings,
+            patch("app.services.auto_dream._dream_llm_consolidate", return_value=None),
+            patch("app.services.auto_dream._build_frozen_mission_judge", side_effect=fake_build_judge),
+        ):
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
+            result = await run_dream(agent_id, tenant_id)
+
+        assert captured["decision"]["soul_promotions"][0]["source_file"] == "feedback.md"
+        assert "once per week on Friday" in captured["decision"]["soul_promotions"][0]["content"]
+        soul = (tmp_path / str(agent_id) / "soul.md").read_text(encoding="utf-8")
+        assert "once per week on Friday" not in soul
+        assert result["repeated_feedback_held"] == 1
+        assert result["soul_contradicted_frozen"] == 1
+
 
 # ── PR-13: dream prompt best-practices (XML + few-shot + anti-patterns) ──
 
@@ -746,6 +818,15 @@ class TestDreamSystemPromptStructure:
         assert (
             "no code fences" in _AUTO_DREAM_SYSTEM_PROMPT.lower() or "no markdown" in _AUTO_DREAM_SYSTEM_PROMPT.lower()
         )
+
+    def test_system_prompt_loads_dream_protocol_template(self) -> None:
+        assert "Dream — Memory Consolidation Protocol" in _AUTO_DREAM_SYSTEM_PROMPT
+        assert "procedural file-maintenance side" in _AUTO_DREAM_SYSTEM_PROMPT
+        assert "Memory Control Plane" in _AUTO_DREAM_SYSTEM_PROMPT
+
+    def test_system_prompt_excludes_legacy_worker_output_tag(self) -> None:
+        assert "[DREAM:complete]" not in _AUTO_DREAM_SYSTEM_PROMPT
+        assert "[DREAM:noop]" not in _AUTO_DREAM_SYSTEM_PROMPT
 
 
 class TestDreamUserPromptTemplateStructure:

@@ -14,7 +14,17 @@ async def test_response_complete_fast_reflection_hook_schedules_non_blocking(mon
         scheduled.append(kwargs)
         return {"status": "scheduled"}
 
+    async def fake_classify(**kwargs):
+        assert kwargs["agent_id"] == agent_id
+        return {
+            "method": "llm_classifier",
+            "signal_type": "user_preference_correction",
+            "lesson": "Use npm for this repository.",
+            "confidence": 0.87,
+        }
+
     monkeypatch.setattr("app.runtime.hooks_setup.schedule_fast_reflection_candidate", fake_schedule)
+    monkeypatch.setattr("app.runtime.hooks_setup._classify_fast_reflection_signal_with_llm", fake_classify)
     monkeypatch.setattr("app.runtime.hooks_setup._agent_data_root", lambda: tmp_path)
 
     agent_id = uuid.uuid4()
@@ -33,6 +43,8 @@ async def test_response_complete_fast_reflection_hook_schedules_non_blocking(mon
     assert scheduled[0]["data_root"] == tmp_path
     assert scheduled[0]["agent_id"] == agent_id
     assert scheduled[0]["session_id"] == "session-1"
+    assert scheduled[0]["metadata"]["fast_reflection_classification"]["method"] == "llm_classifier"
+    assert scheduled[0]["metadata"]["fast_reflection_classification"]["lesson"] == "Use npm for this repository."
 
 
 def test_memory_hook_plan_registers_fast_reflection_handler() -> None:

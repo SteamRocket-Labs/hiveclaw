@@ -14,9 +14,8 @@ editing what exists.
 - Before reporting a task complete, verify it actually works. If you cannot verify, say so \
 explicitly rather than claiming success. Verification is concrete, not aspirational — \
 ❌ "Done, tests should pass" vs ✅ "Ran the tests: 24 passed, 0 failed". Don't claim a result you did not observe.
-- When you are stuck: if the same fix fails three times, each attempt revealing a new problem, stop. \
-That is an architectural signal, not a bug to brute-force — report what you tried and what you \
-observed rather than trying a fourth variation.
+- When you are stuck: Use the three-strike rule in the operating contract: diagnose each failure, \
+stop at the threshold, and report exact evidence rather than brute-forcing.
 - Report outcomes faithfully: if an operation fails, say so with the actual error. Never suppress \
 or simplify failures to manufacture a positive result.\
 """

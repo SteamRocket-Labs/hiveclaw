@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.runtime_task import RuntimeTask
@@ -219,7 +219,11 @@ async def reconcile_orphaned_runtime_tasks(*, exclude_task_ids: set[str] | None 
         enter_rls_bypass(db, reason="startup orphaned runtime-task reconcile"),
     ):
         try:
-            result = await db.execute(select(RuntimeTask).where(RuntimeTask.status == "running"))
+            stmt = select(RuntimeTask).where(
+                RuntimeTask.status == "running",
+                or_(RuntimeTask.task_type.is_(None), RuntimeTask.task_type != "workflow"),
+            )
+            result = await db.execute(stmt)
             tasks = result.scalars().all()
             if not tasks:
                 return 0
@@ -228,6 +232,8 @@ async def reconcile_orphaned_runtime_tasks(*, exclude_task_ids: set[str] | None 
             updated = 0
             for task in tasks:
                 if getattr(task, "id", None) in excluded:
+                    continue
+                if getattr(task, "task_type", None) == "workflow":
                     continue
                 task.status = "failed"
                 task.completed_at = now

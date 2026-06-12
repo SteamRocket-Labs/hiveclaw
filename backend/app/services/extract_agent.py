@@ -557,7 +557,13 @@ def _is_transient_error(exc: Exception) -> bool:
     return bool(_TRANSIENT_PATTERN.search(str(exc)))
 
 
-async def _llm_extract(messages: list[dict], tenant_id: uuid.UUID, agent_name: str) -> list[dict[str, str]] | None:
+async def _llm_extract(
+    messages: list[dict],
+    tenant_id: uuid.UUID,
+    agent_name: str,
+    *,
+    agent_id: uuid.UUID | None = None,
+) -> list[dict[str, str]] | None:
     """Run LLM extraction with one retry on transient errors (429/529).
 
     Returns None on failure (caller should fallback to pattern extraction).
@@ -565,7 +571,7 @@ async def _llm_extract(messages: list[dict], tenant_id: uuid.UUID, agent_name: s
     is about to be lost — without it, transient LLM hiccups silently drop
     all memory extraction for the session.
     """
-    from app.services.llm_client import LLMMessage, create_llm_client_from_config
+    from app.services.llm_client import LLMMessage, create_llm_client_from_config, with_llm_usage_context
     from app.services.memory_service import _get_summary_model_config
 
     model_config = await _get_summary_model_config(tenant_id)
@@ -596,7 +602,15 @@ async def _llm_extract(messages: list[dict], tenant_id: uuid.UUID, agent_name: s
 
     last_exc: Exception | None = None
     for attempt in range(2):
-        client = create_llm_client_from_config(model_config)
+        client = create_llm_client_from_config(
+            with_llm_usage_context(
+                model_config,
+                source="extract_agent",
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                metadata={"attempt": attempt + 1},
+            )
+        )
         try:
             response = await client.stream(
                 messages=[LLMMessage(role="user", content=prompt)],
@@ -901,7 +915,7 @@ class ExtractAgent:
 
         # LLM primary path
         if tenant_id:
-            extractions = await _llm_extract(messages, tenant_id, agent_name)
+            extractions = await _llm_extract(messages, tenant_id, agent_name, agent_id=agent_id)
             if extractions is not None:
                 extraction_source = "llm"
                 logger.info("[Extractor] LLM extracted %d items for %s", len(extractions), agent_id)

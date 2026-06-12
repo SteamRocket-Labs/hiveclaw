@@ -343,6 +343,7 @@ async def _summarize_recall_hits(
     query: str,
     hits: list[dict],
     tenant_id: uuid.UUID | None,
+    agent_id: uuid.UUID | None = None,
 ) -> list[dict]:
     """Optionally enrich recall hits with a focused summary model.
 
@@ -355,14 +356,21 @@ async def _summarize_recall_hits(
         return hits
 
     try:
-        from app.services.llm_client import LLMMessage, create_llm_client_from_config
+        from app.services.llm_client import LLMMessage, create_llm_client_from_config, with_llm_usage_context
         from app.services.memory_service import _get_summary_model_config
 
         model_config = await _get_summary_model_config(tenant_id)
         if not model_config:
             return hits
 
-        client = create_llm_client_from_config(model_config)
+        client = create_llm_client_from_config(
+            with_llm_usage_context(
+                model_config,
+                source="session_recall",
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+            )
+        )
         try:
             for hit in hits:
                 evidence = hit.get("context_snippets") or hit.get("snippets") or []
@@ -688,7 +696,7 @@ async def search_session_history(
         snippet_limit=snippet_limit,
     )
     if log_hits:
-        return await _summarize_recall_hits(needle, log_hits, tenant_id)
+        return await _summarize_recall_hits(needle, log_hits, tenant_id, agent_id)
 
     db_hits = await _search_session_history_db(
         agent_id,
@@ -697,4 +705,4 @@ async def search_session_history(
         snippet_limit=snippet_limit,
         tenant_id=tenant_id,
     )
-    return await _summarize_recall_hits(needle, db_hits, tenant_id)
+    return await _summarize_recall_hits(needle, db_hits, tenant_id, agent_id)

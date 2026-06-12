@@ -242,6 +242,106 @@ async def test_search_memory_reads_saved_t3_shadow_index(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_update_memory_supersedes_old_entry_through_write_gate(tmp_path: Path) -> None:
+    from app.memory.lifecycle_store import LifecycleStatus, MemoryLifecycleStore
+    from app.memory.md_store import parse_entry_record
+    from app.tools.handlers.memory import save_memory, update_memory
+
+    agent_id = uuid.uuid4()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "app.config.get_settings",
+            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+        )
+        await save_memory(
+            agent_id,
+            {
+                "content": "User prefers short replies without lists",
+                "category": "feedback",
+            },
+        )
+        feedback_path = tmp_path / str(agent_id) / "memory" / "feedback.md"
+        old_line = next(line for line in feedback_path.read_text(encoding="utf-8").splitlines() if line.startswith("- ["))
+        old_entry_id = parse_entry_record(old_line).metadata["entry_id"]
+
+        result = await update_memory(
+            agent_id,
+            {
+                "memory_id": old_entry_id,
+                "content": "User prefers short replies without lists, but include concrete examples when useful",
+                "category": "feedback",
+                "reason": "explicit user correction",
+            },
+        )
+
+    body = feedback_path.read_text(encoding="utf-8")
+    archive = (tmp_path / str(agent_id) / "memory" / "archive.md").read_text(encoding="utf-8")
+    new_line = next(line for line in body.splitlines() if line.startswith("- ["))
+    new_entry_id = parse_entry_record(new_line).metadata["entry_id"]
+    lifecycle = MemoryLifecycleStore(tmp_path / str(agent_id) / "memory" / "lifecycle.json")
+
+    assert result.startswith("Updated memory")
+    assert old_entry_id not in body
+    assert "include concrete examples when useful" in body
+    assert "User prefers short replies without lists" in archive
+    assert f"[superseded_by={new_entry_id}]" in archive
+    old_lifecycle = lifecycle.get(old_entry_id)
+    new_lifecycle = lifecycle.get(new_entry_id)
+    assert old_lifecycle.status == LifecycleStatus.SUPERSEDED
+    assert old_lifecycle.superseded_by == new_entry_id
+    assert new_lifecycle.status == LifecycleStatus.ACTIVE
+    assert new_lifecycle.parent_id == old_entry_id
+    assert new_lifecycle.supersedes == [old_entry_id]
+    assert new_lifecycle.metadata["supersedes"] == old_entry_id
+
+
+@pytest.mark.asyncio
+async def test_retire_memory_archives_entry_without_deleting_evidence(tmp_path: Path) -> None:
+    from app.memory.lifecycle_store import LifecycleStatus, MemoryLifecycleStore
+    from app.memory.md_store import parse_entry_record
+    from app.tools.handlers.memory import retire_memory, save_memory, search_memory
+
+    agent_id = uuid.uuid4()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "app.config.get_settings",
+            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+        )
+        await save_memory(
+            agent_id,
+            {
+                "content": "Temporary preference for blue buttons during prototype review",
+                "category": "feedback",
+            },
+        )
+        feedback_path = tmp_path / str(agent_id) / "memory" / "feedback.md"
+        entry_line = next(line for line in feedback_path.read_text(encoding="utf-8").splitlines() if line.startswith("- ["))
+        entry_id = parse_entry_record(entry_line).metadata["entry_id"]
+
+        result = await retire_memory(
+            agent_id,
+            {
+                "memory_id": entry_id,
+                "reason": "obsolete",
+            },
+        )
+        search_result = await search_memory(agent_id, {"query": "blue buttons", "scope": "facts"})
+
+    body = feedback_path.read_text(encoding="utf-8")
+    archive = (tmp_path / str(agent_id) / "memory" / "archive.md").read_text(encoding="utf-8")
+    lifecycle = MemoryLifecycleStore(tmp_path / str(agent_id) / "memory" / "lifecycle.json")
+
+    assert result.startswith("Retired memory")
+    assert "blue buttons" not in body
+    assert "blue buttons" in archive
+    assert "[reason=obsolete]" in archive
+    assert lifecycle.get(entry_id).status == LifecycleStatus.ARCHIVED
+    assert "No memory found" in search_result
+
+
+@pytest.mark.asyncio
 async def test_search_memory_reads_t3_markdown_without_shadow_index(tmp_path: Path) -> None:
     from app.memory.md_store import ensure_t3_layout
     from app.tools.handlers.memory import search_memory

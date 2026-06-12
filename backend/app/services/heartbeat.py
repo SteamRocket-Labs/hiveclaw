@@ -480,8 +480,8 @@ async def _try_acquire_heartbeat_lease_async(
             _heartbeat_leases[agent_id] = now or datetime.now(timezone.utc)
         return bool(acquired)
     except Exception as exc:
-        logger.debug("[Heartbeat] Redis lease unavailable, falling back to local lease: {}", exc)
-        return _try_acquire_heartbeat_lease(agent_id, now=now, ttl_seconds=ttl_seconds)
+        logger.warning("[Heartbeat] Redis lease unavailable; heartbeat lease fails closed for {}: {}", agent_id, exc)
+        return False
 
 
 async def _release_heartbeat_lease_async(agent_id: uuid.UUID) -> None:
@@ -566,13 +566,13 @@ def _parse_heartbeat_outcome(reply: str | None) -> tuple[str, int | None]:
 
     if outcome_match:
         outcome = outcome_match.group(1).lower()
-        if outcome == "curated":
-            outcome = "action_taken"
     else:
         # Fallback heuristics — only when structured tags are absent
         # Default to noop (not action_taken) to avoid inflating success rate
-        is_action = any(kw in reply.upper() for kw in ("WROTE", "CREATED", "UPDATED", "POSTED", "SENT", "FIXED"))
-        if is_action:
+        upper_reply = reply.upper()
+        if "CURATED" in upper_reply:
+            outcome = "curated"
+        elif any(kw in upper_reply for kw in ("WROTE", "CREATED", "UPDATED", "POSTED", "SENT", "FIXED")):
             outcome = "action_taken"
         else:
             outcome = "noop"
@@ -586,6 +586,28 @@ def _parse_heartbeat_outcome(reply: str | None) -> tuple[str, int | None]:
         score = _OUTCOME_FALLBACK_SCORES.get(outcome, 0)
 
     return outcome, score
+
+
+def _heartbeat_outcome_lane(outcome_type: str) -> str:
+    normalized = (outcome_type or "").strip().lower()
+    return {
+        "curated": "memory_curation",
+        "action_taken": "agent_action",
+        "noop": "idle",
+        "failure": "failure",
+        "crash": "failure",
+    }.get(normalized, "unknown")
+
+
+def _heartbeat_counts_as_useful(outcome_type: str, score: int | None) -> bool:
+    return (outcome_type or "").strip().lower() in {"action_taken", "curated"} and (score is None or score >= 5)
+
+
+def _heartbeat_action_label(outcome_type: str, summary: str) -> str:
+    lane = _heartbeat_outcome_lane(outcome_type)
+    if lane in {"agent_action", "memory_curation"}:
+        return summary[:100]
+    return "none"
 
 
 _SKILL_OPPORTUNITY_COOLDOWN_TICKS = 5  # ~3.75 hours at 45-minute ticks
@@ -1008,11 +1030,11 @@ def _update_evolution_files(
 
             if source == "heartbeat":
                 counters["total_heartbeats"] += 1
-                if outcome_type == "action_taken" and (score is None or score >= 5):
+                if _heartbeat_counts_as_useful(outcome_type, score):
                     counters["useful_heartbeats"] += 1
             elif source == "trigger":
                 counters["total_trigger_runs"] += 1
-                if outcome_type == "action_taken" and (score is None or score >= 5):
+                if _heartbeat_counts_as_useful(outcome_type, score):
                     counters["useful_trigger_runs"] += 1
 
             if outcome_type in ("failure", "crash"):
@@ -1062,6 +1084,7 @@ def _update_evolution_files(
                 entry = (
                     f"### {entry_marker}\n"
                     f"- Source: {source}\n"
+                    f"- Lane: {_heartbeat_outcome_lane(outcome_type)}\n"
                     f"- Outcome: {outcome_type}{score_str}\n"
                     f"- Summary: {summary}\n\n"
                 )
@@ -1710,6 +1733,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
 
             # Parse structured outcome from LLM reply
             outcome_type, heartbeat_score = _parse_heartbeat_outcome(reply)
+            outcome_lane = _heartbeat_outcome_lane(outcome_type)
 
             # Update last_heartbeat_at BEFORE activity logging (optimistic lock)
             # to prevent timestamp storm: if execution/logging takes long, the agent
@@ -1733,6 +1757,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
                 detail={
                     "reply": reply[:500] if reply else "",
                     "outcome_type": outcome_type,
+                    "outcome_lane": outcome_lane,
                     "score": heartbeat_score,
                     "session_id": str(session_id),
                 },
@@ -1884,9 +1909,10 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
                     metadata={
                         "tick": tick_count,
                         "outcome": outcome_type,
+                        "outcome_lane": outcome_lane,
                         "score": heartbeat_score,
                         "summary": summary[:200] if summary else "",
-                        "action": summary[:100] if outcome_type == "action_taken" else "none",
+                        "action": _heartbeat_action_label(outcome_type, summary),
                         "reasoning": reasoning_text,
                         "t3_normalization": normalization_report,
                     },
@@ -1905,7 +1931,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
                 status="completed",
                 result_summary=f"Heartbeat [{outcome_type}]: {summary}",
                 session_id=heartbeat_session_id,
-                metadata_json={"outcome": outcome_type, "score": heartbeat_score},
+                metadata_json={"outcome": outcome_type, "outcome_lane": outcome_lane, "score": heartbeat_score},
             )
 
     except Exception as e:

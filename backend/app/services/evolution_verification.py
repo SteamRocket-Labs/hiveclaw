@@ -111,12 +111,36 @@ def _run_tool_call_check(grader: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _run_skill_guard_check(workspace: Path, grader: dict[str, Any]) -> dict[str, Any]:
+    content = grader.get("content")
+    relative_path = str(grader.get("path") or "SKILL.md").strip() or "SKILL.md"
+    if content is None:
+        path = workspace / relative_path
+        if not path.exists() or not path.is_file():
+            return _check_result(
+                check_type="skill_guard",
+                passed=False,
+                message="skill_guard requires content or an existing file path",
+                evidence={"path": relative_path},
+            )
+        content = path.read_text(encoding="utf-8", errors="replace")
+
+    from app.services.skill_guard import scan_skill_files
+
+    guard = scan_skill_files([{"path": relative_path, "content": str(content)}], source="evolution_verification")
+    return _check_result(
+        check_type="skill_guard",
+        passed=guard.allowed,
+        message="skill guard passed" if guard.allowed else "skill guard blocked candidate",
+        evidence={"guard": guard.to_dict()},
+    )
+
+
 def _run_llm_rubric_check(grader: dict[str, Any]) -> dict[str, Any]:
-    passed = bool(grader.get("passed"))
     return _check_result(
         check_type="llm_rubric",
-        passed=passed,
-        message="LLM rubric accepted" if passed else "LLM rubric rejected",
+        passed=False,
+        message="llm_rubric is not an executable verifier; use deterministic, skill_guard, tool_call, or human checks",
         evidence={"rubric": grader.get("rubric", ""), "score": grader.get("score")},
     )
 
@@ -146,6 +170,8 @@ def run_evolution_verification(
             checks.append(_run_state_check(workspace, grader))
         elif grader_type == "tool_call_check":
             checks.append(_run_tool_call_check(grader))
+        elif grader_type == "skill_guard":
+            checks.append(_run_skill_guard_check(workspace, grader))
         elif grader_type == "llm_rubric":
             checks.append(_run_llm_rubric_check(grader))
         elif grader_type == "human_confirmation":

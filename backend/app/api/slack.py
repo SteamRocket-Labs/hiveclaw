@@ -286,6 +286,13 @@ async def slack_event_webhook(
         _platform_user.display_name = _slack_real_name
         await db.flush()
     platform_user_id = _platform_user.id
+    user_label = _platform_user.display_name or _slack_real_name or f"Slack User {sender_id[:8]}"
+    delivery_target = {
+        "channel": "slack",
+        "channel_id": channel_id,
+        "sender_id": sender_id,
+        "user_label": user_label,
+    }
 
     # Find-or-create session for this Slack conversation
     sess = await find_or_create_channel_session(
@@ -295,8 +302,11 @@ async def slack_event_webhook(
         external_conv_id=conv_id,
         source_channel="slack",
         first_message_title=user_text,
+        delivery_target=delivery_target,
     )
     session_conv_id = str(sess.id)
+    delivery_target["session_id"] = session_conv_id
+    sess.delivery_target_json = delivery_target
 
     history_r = await db.execute(
         select(ChatMessage)
@@ -377,6 +387,8 @@ async def slack_event_webhook(
 
     # Set channel_file_sender contextvar for agent → user file delivery
     from app.services.agent_tools import channel_file_sender as _cfs_s
+    from app.services.channel_delivery_service import channel_delivery_target as _cdt_s
+
     async def _slack_file_sender(file_path, msg: str = ""):
         from pathlib import Path as _P
         _fp = _P(file_path)
@@ -404,21 +416,28 @@ async def slack_event_webhook(
             if not _complete.json().get("ok"):
                 raise RuntimeError(f"Slack upload complete error: {_complete.json()}")
     _cfs_s_token = _cfs_s.set(_slack_file_sender)
+    _cdt_s_token = _cdt_s.set(delivery_target)
 
     # Call LLM
     from app.api.feishu import _call_agent_llm
-    reply_text = await _call_agent_llm(
-        db,
-        agent_id,
-        user_text,
-        history=history,
-        user_id=platform_user_id,
-        session_id=session_conv_id,
-        session_source="slack",
-        session_channel="slack",
-        allow_bare_plan_confirmation=True,
-    )
-    _cfs_s.reset(_cfs_s_token)
+    try:
+        reply_text = await _call_agent_llm(
+            db,
+            agent_id,
+            user_text,
+            history=history,
+            user_id=platform_user_id,
+            session_id=session_conv_id,
+            session_source="slack",
+            session_channel="slack",
+            allow_bare_plan_confirmation=True,
+            durable_run=True,
+            durable_session=sess,
+            durable_user=_platform_user,
+        )
+    finally:
+        _cdt_s.reset(_cdt_s_token)
+        _cfs_s.reset(_cfs_s_token)
     logger.info(f"[Slack] LLM reply: {reply_text[:80]}")
 
     # Save reply

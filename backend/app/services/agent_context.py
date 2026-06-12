@@ -215,7 +215,7 @@ async def build_agent_context(
     current_user_name: str | None = None,
     *,
     include_memory_file: bool = True,  # deprecated: memory flows via 4-layer retriever
-    include_runtime_metadata: bool = True,
+    include_runtime_metadata: bool = False,
     include_focus: bool = True,  # deprecated: no longer projected into the prompt
     budget_profile: ContextBudget | None = None,
     invocation_scope: str = "conversation",

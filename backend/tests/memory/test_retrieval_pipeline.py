@@ -95,6 +95,78 @@ async def test_retrieve_returns_t3_direct_layer(
 
 
 @pytest.mark.asyncio
+async def test_retrieve_includes_high_priority_t2_feedback(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    retriever: MemoryRetriever,
+) -> None:
+    from app.memory.t2_store import ensure_t2_layout, format_t2_entry
+
+    root = ensure_t2_layout(data_root, agent_id)
+    (root / "insights.md").write_text(
+        "# Insights\n"
+        + format_t2_entry(
+            category="feedback",
+            content="User wants salary planning answers to include owner approval constraints.",
+            source="web",
+            weight=0.95,
+            metadata={"entry_id": "t2-feedback-1", "sensitivity": "PL1_public"},
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    items = await retriever.retrieve(agent_id, "salary planning", session_id=None, tenant_id=None)
+
+    t2_items = [item for item in items if item.metadata.get("lane") == "t2_high_priority"]
+    assert len(t2_items) == 1
+    assert t2_items[0].kind == MemoryKind.SEMANTIC
+    assert t2_items[0].metadata["entry_id"] == "t2-feedback-1"
+
+
+@pytest.mark.asyncio
+async def test_high_priority_t2_preserves_activation_metadata(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    retriever: MemoryRetriever,
+) -> None:
+    from app.memory.t2_store import ensure_t2_layout, format_t2_entry
+
+    root = ensure_t2_layout(data_root, agent_id)
+    (root / "insights.md").write_text(
+        "# Insights\n"
+        + format_t2_entry(
+            category="feedback",
+            content="Owner has an open loop to follow up on Railway incident summaries.",
+            source="web",
+            weight=0.95,
+            confidence=0.91,
+            metadata={
+                "entry_id": "t2-feedback-activation",
+                "sensitivity": "PL1_public",
+                "open_loop": "true",
+                "retention_score": "0.80",
+            },
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    items = await retriever.retrieve(
+        agent_id,
+        "Railway incident summaries",
+        session_id=None,
+        tenant_id=None,
+        activation_context=_activation_context(),
+    )
+
+    t2_item = next(item for item in items if item.metadata.get("lane") == "t2_high_priority")
+    assert {"open_loop_pressure", "retention_score", "confidence_weight"} <= set(
+        t2_item.metadata["activation_reasons"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_retrieve_uses_semantic_limit_for_semantic_backend(
     monkeypatch,
     data_root: Path,
@@ -341,6 +413,44 @@ async def test_retrieve_includes_relationship_understandings(
     assert item.metadata["category"] == "understanding"
     assert item.metadata["evidence_refs"] == "decision/abc123"
     assert item.metadata["confidence"] == "0.9"
+
+
+def _setup_wiki_page(data_root: Path, agent_id: uuid.UUID, slug: str, body: str) -> None:
+    page_dir = data_root / str(agent_id) / "memory" / "wiki"
+    page_dir.mkdir(parents=True, exist_ok=True)
+    (page_dir / f"{slug}.md").write_text(body, encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_retrieve_includes_ppr_wiki_pages_in_prompt_memory(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    retriever: MemoryRetriever,
+) -> None:
+    _setup_wiki_page(
+        data_root,
+        agent_id,
+        "deployment-pipeline",
+        "---\ntitle: Deployment Pipeline\ntype: concept\ntags: [deploy]\nstatus: active\n---\n\n"
+        "## Current Claim\n\nCanary release rollout goes through staged gates.\n\n"
+        "## Relations\n\n- depends_on [[Rollback Procedure]]\n",
+    )
+    _setup_wiki_page(
+        data_root,
+        agent_id,
+        "rollback-procedure",
+        "---\ntitle: Rollback Procedure\ntype: concept\ntags: [ops]\nstatus: active\n---\n\n"
+        "## Current Claim\n\nRe-pin the previous image digest during failed deployments.\n",
+    )
+
+    items = await retriever.retrieve(agent_id, "canary release rollout", session_id=None, tenant_id=None)
+
+    ppr_items = [item for item in items if item.metadata.get("source_type") == "wiki_ppr"]
+    assert any(item.source == "memory/wiki/rollback-procedure.md" for item in ppr_items)
+    rollback = next(item for item in ppr_items if item.source == "memory/wiki/rollback-procedure.md")
+    assert rollback.kind == MemoryKind.SEMANTIC
+    assert rollback.metadata["page_id"] == "wiki/rollback-procedure"
+    assert rollback.metadata["method"] == "ppr"
 
 
 def test_semantic_scoring_relevant_higher() -> None:

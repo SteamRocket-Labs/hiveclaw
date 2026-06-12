@@ -376,6 +376,9 @@ async def _process_wecom_stream_message(
                 session_source="wecom",
                 session_channel="wecom",
                 allow_bare_plan_confirmation=True,
+                durable_run=True,
+                durable_session=sess,
+                durable_user=platform_user,
             )
         finally:
             _cdt.reset(_cdt_token)

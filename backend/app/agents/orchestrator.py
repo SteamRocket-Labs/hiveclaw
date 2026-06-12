@@ -14,6 +14,7 @@ from typing import Any, Awaitable, Callable
 from app.agents.coordination_gateway import CoordinationGateway
 from app.agents.coordination_wiring import gateway_scope
 from app.agents.delegation_token import DEFAULT_DELEGATION_TTL_SECONDS, issue_delegation_token
+from app.kernel.contracts import ExecutionIdentityRef
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
 from app.services.agent_tools import CORE_TOOL_NAMES
@@ -67,7 +68,8 @@ _DELEGATION_TOOL_PROFILES: dict[str, DelegationToolProfile] = {
         name="worker_safe",
         core_tools_only=True,
         allowed_tools=(),
-        excluded_tools=_DELEGATION_BASE_EXCLUDED_TOOLS + ("save_skill", "save_memory", "search_memory", "load_memory"),
+        excluded_tools=_DELEGATION_BASE_EXCLUDED_TOOLS
+        + ("save_skill", "save_memory", "update_memory", "retire_memory", "search_memory", "load_memory"),
         tool_policy="worker_safe",
         tool_rule=(
             "Your tool surface is worker-safe: do the delegated work, but do not schedule triggers, "
@@ -84,7 +86,7 @@ _DELEGATION_TOOL_PROFILES: dict[str, DelegationToolProfile] = {
         name="memory_readonly",
         core_tools_only=True,
         allowed_tools=(),
-        excluded_tools=_DELEGATION_BASE_EXCLUDED_TOOLS + ("save_skill", "save_memory"),
+        excluded_tools=_DELEGATION_BASE_EXCLUDED_TOOLS + ("save_skill", "save_memory", "update_memory", "retire_memory"),
         tool_policy="worker_memory_readonly",
         tool_rule=(
             "Your tool surface is worker-safe, and you may use read-only recall tools when they materially help the delegated task."
@@ -265,6 +267,45 @@ def _maybe_uuid(value: str | uuid.UUID | None) -> uuid.UUID | None:
         return None
 
 
+def _capture_execution_identity_ref() -> ExecutionIdentityRef | None:
+    try:
+        from app.core.execution_context import get_execution_identity
+
+        current_identity = get_execution_identity()
+    except Exception:
+        return None
+    if current_identity is None:
+        return None
+    return ExecutionIdentityRef(
+        identity_type=current_identity.identity_type,
+        identity_id=current_identity.identity_id,
+        label=current_identity.label,
+    )
+
+
+def _execution_identity_to_metadata(identity: ExecutionIdentityRef | None) -> dict[str, str | None] | None:
+    if identity is None:
+        return None
+    return {
+        "identity_type": identity.identity_type,
+        "identity_id": str(identity.identity_id) if identity.identity_id is not None else None,
+        "label": identity.label,
+    }
+
+
+def _execution_identity_from_metadata(value: Any) -> ExecutionIdentityRef | None:
+    if not isinstance(value, dict):
+        return None
+    identity_type = str(value.get("identity_type") or "").strip()
+    if not identity_type:
+        return None
+    return ExecutionIdentityRef(
+        identity_type=identity_type,
+        identity_id=_maybe_uuid(value.get("identity_id")),
+        label=str(value.get("label")) if value.get("label") is not None else None,
+    )
+
+
 async def _persist_delegation_event(
     *,
     task_id: str,
@@ -338,6 +379,7 @@ class AgentDelegationRequest:
     depth: int = 1
     policy: OrchestrationPolicy = field(default_factory=OrchestrationPolicy)
     interaction_type: str = "delegation"
+    execution_identity: ExecutionIdentityRef | None = None
     confirmed_plan_id: str | uuid.UUID | None = None
     confirmed_plan_version: int | None = None
     confirmed_plan_hash: str | None = None
@@ -441,6 +483,9 @@ def _build_runtime_task_metadata(request: AgentDelegationRequest) -> dict[str, A
         )
     if request.plan_exempt_reason:
         metadata["plan_exempt_reason"] = request.plan_exempt_reason
+    execution_identity = _execution_identity_to_metadata(request.execution_identity)
+    if execution_identity:
+        metadata["execution_identity"] = execution_identity
     resumable = request.tool_executor is None
     if resumable:
         try:
@@ -545,6 +590,7 @@ async def delegate_to_agent(
     depth: int = 1,
     policy: OrchestrationPolicy | None = None,
     interaction_type: str = "delegation",
+    execution_identity: ExecutionIdentityRef | None = None,
     tenant_id: uuid.UUID | str | None = None,
     ledger_todo_id: str | None = None,
 ) -> str:
@@ -565,6 +611,7 @@ async def delegate_to_agent(
         depth=depth,
         policy=policy or OrchestrationPolicy(),
         interaction_type=interaction_type,
+        execution_identity=execution_identity or _capture_execution_identity_ref(),
         tenant_id=tenant_id,
         ledger_todo_id=ledger_todo_id,
     )
@@ -797,6 +844,7 @@ async def _delegate_after_cycle_check(
         role_description=request.target.role_description or "",
         agent_id=request.target.id,
         user_id=request.owner_id,
+        execution_identity=request.execution_identity or _capture_execution_identity_ref(),
         system_prompt_suffix=combined_suffix,
         tool_executor=request.tool_executor,
         core_tools_only=tool_profile.core_tools_only,
@@ -1003,6 +1051,7 @@ async def delegate_async(
     depth: int = 1,
     policy: OrchestrationPolicy | None = None,
     interaction_type: str = "delegation",
+    execution_identity: ExecutionIdentityRef | None = None,
     coordination_gateway: CoordinationGateway | None = None,
     tenant_id: uuid.UUID | str | None = None,
     confirmed_plan_id: str | uuid.UUID | None = None,
@@ -1038,6 +1087,7 @@ async def delegate_async(
         depth=depth,
         policy=policy or OrchestrationPolicy(timeout_seconds=120.0),
         interaction_type=interaction_type,
+        execution_identity=execution_identity or _capture_execution_identity_ref(),
         confirmed_plan_id=confirmed_plan_id,
         confirmed_plan_version=confirmed_plan_version,
         confirmed_plan_hash=confirmed_plan_hash,
@@ -1367,6 +1417,7 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
                 timeout_seconds=float(metadata.get("timeout_seconds") or 120.0),
                 tool_profile=str(metadata.get("tool_profile") or "worker_safe"),
             ),
+            execution_identity=_execution_identity_from_metadata(metadata.get("execution_identity")),
             confirmed_plan_id=metadata.get("plan_id"),
             confirmed_plan_version=metadata.get("plan_version"),
             confirmed_plan_hash=metadata.get("plan_hash"),

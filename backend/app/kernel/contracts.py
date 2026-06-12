@@ -15,6 +15,7 @@ ThinkingCallback = Callable[[str], Awaitable[None] | None]
 ToolCallback = Callable[[dict], Awaitable[None] | None]
 EventCallback = Callable[[dict], Awaitable[None] | None]
 ToolExecutor = Callable[..., Awaitable[str] | str]
+MidRunMessageDrain = Callable[[], Awaitable[list[dict]] | list[dict]]
 MessagePart = dict[str, Any]
 
 
@@ -50,6 +51,7 @@ class InvocationRequest:
     # skills, tasks) around it. Read by the prompt/memory dependency callbacks.
     standalone_system_prompt: str = ""
     tool_executor: ToolExecutor | None = None
+    mid_run_message_drain: MidRunMessageDrain | None = None
     cancel_event: asyncio.Event | None = None
     initial_tools: list[dict] | None = None
     core_tools_only: bool = True
@@ -76,6 +78,7 @@ class RuntimeConfig:
     tenant_id: uuid.UUID | None
     max_tool_rounds: int
     quota_message: str | None = None
+    turn_token_budget: int | None = None
     execution_mode: str | None = None
     runtime_continuity_enabled: bool = False
     skill_candidate_loop_enabled: bool = False

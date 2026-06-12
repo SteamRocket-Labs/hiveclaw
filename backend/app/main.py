@@ -39,6 +39,7 @@ from app.api.agent_subagents import enterprise_router as enterprise_subagents_ro
 from app.api.agent_subagents import router as agent_subagents_router
 from app.api.llm_proxy import router as llm_proxy_router
 from app.api.memory import router as memory_router
+from app.api.metrics import router as metrics_router
 from app.api.messages import router as messages_router
 from app.api.notification import router as notification_router
 from app.api.oidc import router as oidc_router
@@ -170,8 +171,9 @@ async def lifespan(app: FastAPI):
             )
 
     # ── Step 0b: Initialize secrets provider ──
-    from app.services.secrets_provider import init_secrets_provider
+    from app.services.secrets_provider import init_secrets_provider, validate_secrets_provider_config
 
+    validate_secrets_provider_config(settings.SECRETS_MASTER_KEY or None, debug=settings.DEBUG)
     init_secrets_provider(settings.SECRETS_MASTER_KEY or None)
 
     # ── Step 0c: Ensure all DB tables exist (idempotent, safe to run on every startup) ──
@@ -213,6 +215,7 @@ async def lifespan(app: FastAPI):
         import app.models.config_revision  # noqa  (§9 P0 gap C: was missing → fresh DBs lacked the table)
         import app.models.workflow  # noqa  (§9 P1: workflow journal + definition tables)
         import app.models.coordination  # noqa  (§9 P11: PG-backed Signal/Lease/Checkpoint persistence)
+        import app.models.token_usage_event  # noqa  (O3: append-only token event ledger)
 
         # Schema bootstrap runs on the owner connection (schema_engine): after the
         # stage-3 role flip the app engine is the non-owner app_rls role, which
@@ -345,8 +348,11 @@ async def lifespan(app: FastAPI):
     try:
         from app.agents.orchestrator import resume_persisted_async_delegations
         from app.services.runtime_task_service import reconcile_orphaned_runtime_tasks
+        from app.services.web_chat_runtime import resume_persisted_web_chat_runs
 
         resumed_task_ids = await resume_persisted_async_delegations(limit=50)
+        resumed_web_chat_ids = await resume_persisted_web_chat_runs(limit=50)
+        resumed_task_ids = [*resumed_task_ids, *resumed_web_chat_ids]
         if resumed_task_ids:
             logger.info("[startup] Resumed %d persisted async runtime task(s)", len(resumed_task_ids))
         reconciled = await reconcile_orphaned_runtime_tasks(exclude_task_ids=set(resumed_task_ids))
@@ -459,10 +465,18 @@ async def lifespan(app: FastAPI):
                 logger.debug(f"[startup] Background task {t.get_name()} cancelled (expected during shutdown)")
                 return
             if exc:
+                from app.services.daemon_liveness import mark_daemon_crashed
+
+                mark_daemon_crashed(t.get_name(), exc)
                 logger.error(f"[startup] Background task {t.get_name()} CRASHED: {exc}")
                 import traceback
 
                 traceback.print_exception(type(exc), exc, exc.__traceback__)
+                return
+            if t.get_name() in {"trigger_daemon", "workflow_daemon", "evolution_daemon"}:
+                from app.services.daemon_liveness import mark_daemon_stopped
+
+                mark_daemon_stopped(t.get_name(), "background task exited")
 
         # DR-4: register the Deep Research leaf presets BEFORE the workflow
         # daemon starts — a resumed deep_research.v1 run resolves its presets
@@ -483,6 +497,10 @@ async def lifespan(app: FastAPI):
             ("wecom_stream", wecom_stream_manager.start_all()),
             ("wechat_personal_stream", wechat_personal_stream_manager.start_all()),
         ]:
+            if name in {"trigger_daemon", "workflow_daemon", "evolution_daemon"}:
+                from app.services.daemon_liveness import register_daemon
+
+                register_daemon(name)
             task = asyncio.create_task(coro, name=name)
             task.add_done_callback(_bg_task_error)
             logger.info(f"[startup] created bg task: {name}")
@@ -619,10 +637,17 @@ for _r in _api_routers:
 # Routers without /api prefix (WebSocket, webhooks, etc.)
 app.include_router(webhooks_router)  # Public endpoint, no API prefix
 app.include_router(ws_router)
+app.include_router(metrics_router)
 
 
 # Health check — unversioned (infrastructure)
 @app.get("/api/health", response_model=HealthResponse, tags=["health"])
 async def health_check():
     """Health check endpoint."""
-    return HealthResponse(status="ok", version=settings.APP_VERSION)
+    from app.services.daemon_liveness import daemon_health_status, daemon_liveness_snapshot
+
+    return HealthResponse(
+        status=daemon_health_status(),
+        version=settings.APP_VERSION,
+        components={"daemons": daemon_liveness_snapshot()},
+    )

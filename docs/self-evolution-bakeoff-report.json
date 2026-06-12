@@ -1,6 +1,6 @@
 {
   "schema": "self_evolution_bakeoff.v1",
-  "generated_at": "2026-05-24T02:19:53.889029+00:00",
+  "generated_at": "2026-06-12T12:02:19.765595+00:00",
   "passed": true,
   "failed_requirements": [],
   "dataset": [
@@ -8,147 +8,67 @@
       "name": "next_turn_adaptation",
       "prompt": "The user corrects the agent in-session. The next turn must apply the lesson without waiting for durable memory or skill promotion.",
       "max_score": 92,
-      "deterministic_checks": [
-        {
-          "id": "fast_reflection_candidate",
-          "path": "backend/app/services/fast_reflection_service.py",
-          "contains": "fast_reflection_candidate.v1"
-        },
-        {
-          "id": "response_complete_hook",
-          "path": "backend/app/runtime/hooks_setup.py",
-          "contains": "memory.response_complete.fast_reflection"
-        },
-        {
-          "id": "session_projection",
-          "path": "backend/app/services/session_learning.py",
-          "contains": "session_learning_projection.v1"
-        },
-        {
-          "id": "dynamic_prompt_projection",
-          "path": "backend/app/runtime/invoker.py",
-          "contains": "session_learning_projection"
-        }
+      "behavior_assertions": [
+        "candidate_created",
+        "session_projection_active",
+        "projection_rendered"
       ]
     },
     {
       "name": "repeated_workflow_learning",
       "prompt": "The same successful workflow repeats. The system should capture a candidate for reuse instead of creating unreviewed durable memory.",
       "max_score": 90,
-      "deterministic_checks": [
-        {
-          "id": "workflow_signal",
-          "path": "backend/app/services/fast_reflection_service.py",
-          "contains": "repeated_workflow_signature"
-        },
-        {
-          "id": "skill_candidate_manifest",
-          "path": "backend/app/services/skill_flywheel.py",
-          "contains": "skill_candidate_manifest.v1"
-        },
-        {
-          "id": "inactive_skill_candidate_path",
-          "path": "backend/app/services/skill_flywheel.py",
-          "contains": "skill_candidates"
-        }
+      "behavior_assertions": [
+        "fast_reflection_candidate",
+        "skill_candidate_created",
+        "verification_passed"
       ]
     },
     {
       "name": "tool_failure_lesson_reuse",
       "prompt": "A tool or verification failure happens. The lesson should be captured as a candidate and can only promote through verification evidence.",
       "max_score": 90,
-      "deterministic_checks": [
-        {
-          "id": "failure_signal",
-          "path": "backend/app/services/fast_reflection_service.py",
-          "contains": "verification_failure"
-        },
-        {
-          "id": "verification_report",
-          "path": "backend/app/services/evolution_verification.py",
-          "contains": "evolution_verification_report.v1"
-        },
-        {
-          "id": "promotion_gate",
-          "path": "backend/app/services/evolution_verification.py",
-          "contains": "verification evidence is required"
-        }
+      "behavior_assertions": [
+        "failure_candidate_created",
+        "patch_route_selected",
+        "verification_eval_recorded"
       ]
     },
     {
       "name": "skill_candidate_creation",
       "prompt": "A repeated workflow or loaded-skill miss should create an auditable skill candidate with progressive disclosure and static guard evidence.",
       "max_score": 92,
-      "deterministic_checks": [
-        {
-          "id": "skill_candidate_service",
-          "path": "backend/app/services/skill_flywheel.py",
-          "contains": "propose_skill_candidate_from_fast_reflection"
-        },
-        {
-          "id": "static_skill_guard",
-          "path": "backend/app/services/skill_guard.py",
-          "contains": "tenant_identifier_leak"
-        },
-        {
-          "id": "verification_eval",
-          "path": "backend/app/services/skill_flywheel.py",
-          "contains": "record_verification_eval"
-        }
+      "behavior_assertions": [
+        "promote_after_repeated_success",
+        "patch_after_loaded_skill_miss",
+        "candidate_file_written"
       ]
     },
     {
       "name": "long_task_resume",
       "prompt": "A long-running task resumes after context loss. The harness must use explicit workspace manifests and artifact refs, not only prompt memory.",
       "max_score": 92,
-      "deterministic_checks": [
-        {
-          "id": "workspace_manifest",
-          "path": "backend/app/services/harness_contract.py",
-          "contains": "workspace_manifest.v1"
-        },
-        {
-          "id": "artifact_ref",
-          "path": "backend/app/services/harness_contract.py",
-          "contains": "execution_artifact_ref.v1"
-        },
-        {
-          "id": "long_task_metadata",
-          "path": "backend/app/services/long_task_runtime.py",
-          "contains": "artifact_refs"
-        }
+      "behavior_assertions": [
+        "plan_artifact_written",
+        "artifact_refs_loaded",
+        "resume_prompt_contains_progress"
       ]
     },
     {
       "name": "safety_tenant_policy",
       "prompt": "Self-evolution must respect tenant boundaries, preflight external actions, rollback manifests, and credential hygiene.",
       "max_score": 96,
-      "deterministic_checks": [
-        {
-          "id": "manifest_contract",
-          "path": "backend/app/services/evolution_manifest.py",
-          "contains": "hive_evolution_manifest.v1"
-        },
-        {
-          "id": "rollback_plan",
-          "path": "backend/app/services/evolution_manifest.py",
-          "contains": "rollback_plan.strategy is required"
-        },
-        {
-          "id": "action_preflight",
-          "path": "backend/app/services/action_preflight.py",
-          "contains": "company_boundary_conflict"
-        },
-        {
-          "id": "skill_tenant_guard",
-          "path": "backend/app/services/skill_guard.py",
-          "contains": "tenant_identifier_leak"
-        }
+      "behavior_assertions": [
+        "manifest_validates",
+        "pl4_refused",
+        "company_conflict_escalates",
+        "skill_guard_blocks_secret"
       ]
     }
   ],
   "hive": {
-    "source": "local_repo_deterministic_checks",
+    "source": "local_behavior_scenarios",
+    "behavior_complete": true,
     "repo_root": "/Users/rocky243/vc-saas/hiveclaw-main",
     "scenarios": {
       "next_turn_adaptation": {
@@ -156,181 +76,162 @@
         "ready": true,
         "checks": [
           {
-            "id": "fast_reflection_candidate",
-            "path": "backend/app/services/fast_reflection_service.py",
-            "contains": "fast_reflection_candidate.v1",
-            "passed": true
+            "id": "candidate_created",
+            "passed": true,
+            "detail": "candidate_created"
           },
           {
-            "id": "response_complete_hook",
-            "path": "backend/app/runtime/hooks_setup.py",
-            "contains": "memory.response_complete.fast_reflection",
-            "passed": true
+            "id": "session_projection_active",
+            "passed": true,
+            "detail": "projection_count=1"
           },
           {
-            "id": "session_projection",
-            "path": "backend/app/services/session_learning.py",
-            "contains": "session_learning_projection.v1",
-            "passed": true
-          },
-          {
-            "id": "dynamic_prompt_projection",
-            "path": "backend/app/runtime/invoker.py",
-            "contains": "session_learning_projection",
-            "passed": true
+            "id": "projection_rendered",
+            "passed": true,
+            "detail": "## Session Learning\nThese are short-lived lessons from this session. Use them now, but do not treat them as durable memory.\n- [candidate][user_stated] Use concise Simplified Chinese summaries for this user in the current session. (candidate=794e1c6ee5cdb1a2d5e15fc6; refs=runtime_task:bakeoff-next-turn)"
           }
         ],
-        "passed_checks": 4,
-        "total_checks": 4
+        "passed_checks": 3,
+        "total_checks": 3,
+        "transcript": "{\"rendered_projection\": \"## Session Learning\\nThese are short-lived lessons from this session. Use them now, but do not treat them as durable memory.\\n- [candidate][user_stated] Use concise Simplified Chinese summaries for this user in the current session. (candidate=794e1c6ee5cdb1a2d5e15fc6; refs=runtime_task:bakeoff-next-turn)\", \"result\": {\"candidate_id\": \"794e1c6ee5cdb1a2d5e15fc6\", \"classification_method\": \"llm_classifier\", \"manifest\": {\"change_type\": \"fast_reflection\", \"eval_refs\": [], \"metadata\": {\"candidate_id\": \"794e1c6ee5cdb1a2d5e15fc6\", \"manifest_schema\": \"hive_evolution_manifest.v1\"}, \"risk_level\": \"medium\", \"rollback_plan\": {\"strategy\": \"restore fast-reflection@candidate\"}, \"schema\": \"hive_evolution_manifest.v1\", \"source_refs\": [\"runtime_task:bakeoff-next-turn\"], \"target_id\": \"bakeoff-next-turn:user_preference_correction\", \"target_type\": \"fast_reflection\", \"trace_refs\": [\"trace:bakeoff-next-turn\"]}, \"projection\": {\"agent_id\": \"a01b6555-2bb8-408d-b774-0c0016597463\", \"candidate_id\": \"794e1c6ee5cdb1a2d5e15fc6\", \"created_at\": \"2026-06-12T12:02:19.760226+00:00\", \"event\": \"session_learning_projection\", \"evidence\": \"user_stated\", \"expires_at\": \"2026-06-12T13:02:19.760226+00:00\", \"lesson\": \"Use concise Simplified Chinese summaries for this user in the current session.\", \"promotion_state\": \"candidate\", \"schema\": \"session_learning_projection.v1\", \"session_id\": \"bakeoff-next-turn\", \"source_refs\": [\"runtime_task:bakeoff-next-turn\"]}, \"signal_type\": \"user_preference_correction\", \"skill_candidate\": {\"reason\": \"signal_not_skill_candidate\", \"status\": \"skipped\"}, \"status\": \"candidate_created\"}}"
       },
       "repeated_workflow_learning": {
         "score": 90,
         "ready": true,
         "checks": [
           {
-            "id": "workflow_signal",
-            "path": "backend/app/services/fast_reflection_service.py",
-            "contains": "repeated_workflow_signature",
-            "passed": true
+            "id": "fast_reflection_candidate",
+            "passed": true,
+            "detail": "candidate_created"
           },
           {
-            "id": "skill_candidate_manifest",
-            "path": "backend/app/services/skill_flywheel.py",
-            "contains": "skill_candidate_manifest.v1",
-            "passed": true
+            "id": "skill_candidate_created",
+            "passed": true,
+            "detail": "{\"candidate_id\": \"2154936c28a1797132b2b670\", \"guard\": {\"allowed\": true, \"findings\": [], \"risk_level\": \"low\", \"source\": \"fast_reflection\"}, \"route\": \"new_class_skill\", \"skill_name\": \"deploy-workflow\", \"status\": \"skill_candidate_created\", \"verification_passed\": true}"
           },
           {
-            "id": "inactive_skill_candidate_path",
-            "path": "backend/app/services/skill_flywheel.py",
-            "contains": "skill_candidates",
-            "passed": true
+            "id": "verification_passed",
+            "passed": true,
+            "detail": "True"
           }
         ],
         "passed_checks": 3,
-        "total_checks": 3
+        "total_checks": 3,
+        "transcript": "{\"result\": {\"candidate_id\": \"02863d0de31866e971f79d31\", \"classification_method\": \"llm_classifier\", \"manifest\": {\"change_type\": \"fast_reflection\", \"eval_refs\": [], \"metadata\": {\"candidate_id\": \"02863d0de31866e971f79d31\", \"manifest_schema\": \"hive_evolution_manifest.v1\"}, \"risk_level\": \"medium\", \"rollback_plan\": {\"strategy\": \"restore fast-reflection@candidate\"}, \"schema\": \"hive_evolution_manifest.v1\", \"source_refs\": [\"runtime_task:bakeoff-repeated-workflow\"], \"target_id\": \"bakeoff-repeated-workflow:repeated_task_pattern\", \"target_type\": \"fast_reflection\", \"trace_refs\": [\"trace:bakeoff-repeated-workflow\"]}, \"projection\": {\"agent_id\": \"a01b6555-2bb8-408d-b774-0c0016597463\", \"candidate_id\": \"02863d0de31866e971f79d31\", \"created_at\": \"2026-06-12T12:02:19.760801+00:00\", \"event\": \"session_learning_projection\", \"evidence\": \"system_observed\", \"expires_at\": \"2026-06-12T13:02:19.760801+00:00\", \"lesson\": \"deploy -> canary -> verify -> rollback notes\", \"promotion_state\": \"candidate\", \"schema\": \"session_learning_projection.v1\", \"session_id\": \"bakeoff-repeated-workflow\", \"source_refs\": [\"runtime_task:bakeoff-repeated-workflow\"]}, \"signal_type\": \"repeated_task_pattern\", \"skill_candidate\": {\"candidate_id\": \"2154936c28a1797132b2b670\", \"guard\": {\"allowed\": true, \"findings\": [], \"risk_level\": \"low\", \"source\": \"fast_reflection\"}, \"route\": \"new_class_skill\", \"skill_name\": \"deploy-workflow\", \"status\": \"skill_candidate_created\", \"verification_passed\": true}, \"status\": \"candidate_created\"}}"
       },
       "tool_failure_lesson_reuse": {
         "score": 90,
         "ready": true,
         "checks": [
           {
-            "id": "failure_signal",
-            "path": "backend/app/services/fast_reflection_service.py",
-            "contains": "verification_failure",
-            "passed": true
+            "id": "failure_candidate_created",
+            "passed": true,
+            "detail": "candidate_created"
           },
           {
-            "id": "verification_report",
-            "path": "backend/app/services/evolution_verification.py",
-            "contains": "evolution_verification_report.v1",
-            "passed": true
+            "id": "patch_route_selected",
+            "passed": true,
+            "detail": "patch_existing_skill"
           },
           {
-            "id": "promotion_gate",
-            "path": "backend/app/services/evolution_verification.py",
-            "contains": "verification evidence is required",
-            "passed": true
+            "id": "verification_eval_recorded",
+            "passed": true,
+            "detail": "eval_run present in evolution_ledger.jsonl"
           }
         ],
         "passed_checks": 3,
-        "total_checks": 3
+        "total_checks": 3,
+        "transcript": "{\"ledger_tail\": \"ate_id\\\": \\\"48cf829fb9d2c7578a208e66\\\"}, \\\"schema\\\": \\\"evolution_candidate.v1\\\", \\\"source_attempt_ids\\\": [\\\"bakeoff-tool-failure\\\"], \\\"target_id\\\": \\\"incident-response\\\", \\\"target_type\\\": \\\"skill_candidate\\\"}\\n{\\\"baseline_reward\\\": 0.0, \\\"candidate_id\\\": \\\"30087bb1eb5c14cc28add2b7\\\", \\\"created_at\\\": \\\"2026-06-12T12:02:19.762231+00:00\\\", \\\"critical_regressions\\\": 0, \\\"dataset\\\": \\\"evolution_verification\\\", \\\"event\\\": \\\"eval_run\\\", \\\"metadata\\\": {\\\"verification_report\\\": {\\\"candidate_id\\\": \\\"30087bb1eb5c14cc28add2b7\\\", \\\"checks\\\": [{\\\"evidence\\\": {\\\"guard\\\": {\\\"allowed\\\": true, \\\"findings\\\": [], \\\"risk_level\\\": \\\"low\\\", \\\"source\\\": \\\"evolution_verification\\\"}}, \\\"message\\\": \\\"skill guard passed\\\", \\\"passed\\\": true, \\\"type\\\": \\\"skill_guard\\\"}], \\\"created_at\\\": \\\"2026-06-12T12:02:19.762227+00:00\\\", \\\"passed\\\": true, \\\"schema\\\": \\\"evolution_verification_report.v1\\\", \\\"target_id\\\": \\\"incident-response\\\", \\\"target_type\\\": \\\"skill_candidate\\\", \\\"trace_refs\\\": [\\\"bakeoff-tool-failure\\\"]}}, \\\"passed\\\": true, \\\"reward\\\": 1.0, \\\"schema\\\": \\\"evolution_eval_run.v1\\\", \\\"traces\\\": [\\\"bakeoff-tool-failure\\\"]}\\n\", \"result\": {\"candidate_id\": \"48cf829fb9d2c7578a208e66\", \"classification_method\": \"llm_classifier\", \"manifest\": {\"change_type\": \"fast_reflection\", \"eval_refs\": [], \"metadata\": {\"candidate_id\": \"48cf829fb9d2c7578a208e66\", \"manifest_schema\": \"hive_evolution_manifest.v1\"}, \"risk_level\": \"medium\", \"rollback_plan\": {\"strategy\": \"restore fast-reflection@candidate\"}, \"schema\": \"hive_evolution_manifest.v1\", \"source_refs\": [\"runtime_task:bakeoff-tool-failure\"], \"target_id\": \"bakeoff-tool-failure:verification_failure\", \"target_type\": \"fast_reflection\", \"trace_refs\": [\"trace:bakeoff-tool-failure\"]}, \"projection\": {\"agent_id\": \"a01b6555-2bb8-408d-b774-0c0016597463\", \"candidate_id\": \"48cf829fb9d2c7578a208e66\", \"created_at\": \"2026-06-12T12:02:19.761754+00:00\", \"event\": \"session_learning_projection\", \"evidence\": \"system_observed\", \"expires_at\": \"2026-06-12T13:02:19.761754+00:00\", \"lesson\": \"incident-response skill needs rollback verification guidance\", \"promotion_state\": \"candidate\", \"schema\": \"session_learning_projection.v1\", \"session_id\": \"bakeoff-tool-failure\", \"source_refs\": [\"runtime_task:bakeoff-tool-failure\"]}, \"signal_type\": \"verification_failure\", \"skill_candidate\": {\"candidate_id\": \"30087bb1eb5c14cc28add2b7\", \"guard\": {\"allowed\": true, \"findings\": [], \"risk_level\": \"low\", \"source\": \"fast_reflection\"}, \"route\": \"patch_existing_skill\", \"skill_name\": \"incident-response\", \"status\": \"skill_candidate_created\", \"verification_passed\": true}, \"status\": \"candidate_created\"}}"
       },
       "skill_candidate_creation": {
         "score": 92,
         "ready": true,
         "checks": [
           {
-            "id": "skill_candidate_service",
-            "path": "backend/app/services/skill_flywheel.py",
-            "contains": "propose_skill_candidate_from_fast_reflection",
-            "passed": true
+            "id": "promote_after_repeated_success",
+            "passed": true,
+            "detail": "{\"decision\": \"promote\", \"last_status\": \"success\", \"patch_candidate_count\": 0, \"promote_candidate_count\": 3, \"workflow_signature\": \"deploy-checklist\"}"
           },
           {
-            "id": "static_skill_guard",
-            "path": "backend/app/services/skill_guard.py",
-            "contains": "tenant_identifier_leak",
-            "passed": true
+            "id": "patch_after_loaded_skill_miss",
+            "passed": true,
+            "detail": "{\"decision\": \"patch\", \"last_status\": \"workaround\", \"patch_candidate_count\": 2, \"promote_candidate_count\": 0, \"workflow_signature\": \"incident-response\"}"
           },
           {
-            "id": "verification_eval",
-            "path": "backend/app/services/skill_flywheel.py",
-            "contains": "record_verification_eval",
-            "passed": true
+            "id": "candidate_file_written",
+            "passed": true,
+            "detail": "/var/folders/cm/zpwxmr512rq1qz4_0_ryz8t80000gn/T/hive-self-evolution-bakeoff-y3znvoet/a01b6555-2bb8-408d-b774-0c0016597463/evolution/skill_candidates.md"
           }
         ],
         "passed_checks": 3,
-        "total_checks": 3
+        "total_checks": 3,
+        "transcript": "{\"patch_result\": {\"decision\": \"patch\", \"last_status\": \"workaround\", \"patch_candidate_count\": 2, \"promote_candidate_count\": 0, \"workflow_signature\": \"incident-response\"}, \"promote_result\": {\"decision\": \"promote\", \"last_status\": \"success\", \"patch_candidate_count\": 0, \"promote_candidate_count\": 3, \"workflow_signature\": \"deploy-checklist\"}}"
       },
       "long_task_resume": {
         "score": 92,
         "ready": true,
         "checks": [
           {
-            "id": "workspace_manifest",
-            "path": "backend/app/services/harness_contract.py",
-            "contains": "workspace_manifest.v1",
-            "passed": true
+            "id": "plan_artifact_written",
+            "passed": true,
+            "detail": "{\"created_at\": \"2026-06-12T12:02:19.763361+00:00\", \"path\": \"runtime_artifacts/long_tasks/bcbacd2d1fac47b190701ba0fae923f3/plan.json\", \"schema\": \"long_task_plan.v1\", \"work_ledger\": {\"path\": \"runtime_artifacts/long_tasks/bcbacd2d1fac47b190701ba0fae923f3/work_ledger.json\", \"schema\": \"agent_work_ledger.v1\", \"updated_at\": \"2026-06-12T12:02:19.763491+00:00\"}}"
           },
           {
-            "id": "artifact_ref",
-            "path": "backend/app/services/harness_contract.py",
-            "contains": "execution_artifact_ref.v1",
-            "passed": true
+            "id": "artifact_refs_loaded",
+            "passed": true,
+            "detail": "[{\"char_count\": 467, \"content_hash\": \"ac1b11916981bf0df9416ed94d7b6933e779dd92add59f1621e1615aa3bd3b2e\", \"created_at\": \"2026-06-12T12:02:19.763959+00:00\", \"kind\": \"file\", \"path\": \"runtime_artifacts/long_tasks/bcbacd2d1fac47b190701ba0fae923f3/plan.json\", \"schema\": \"execution_artifact_ref.v1\", \"source\": \"workspace\"}, {\"char_count\": 294, \"content_hash\": \"9aa5d9fd6dab2dc602ac8ad74aaf915ed84fa8845d06988c3ad59ceef3dc0ab6\", \"created_at\": \"2026-06-12T12:02:19.764050+00:00\", \"kind\": \"file\", \"path\": \"runtime_artifacts/long_tasks/bcbacd2d1fac47b190701ba0fae923f3/progress.jsonl\", \"schema\": \"execution_artifact_ref.v1\", \"source\": \"workspace\"}]"
           },
           {
-            "id": "long_task_metadata",
-            "path": "backend/app/services/long_task_runtime.py",
-            "contains": "artifact_refs",
-            "passed": true
+            "id": "resume_prompt_contains_progress",
+            "passed": true,
+            "detail": "Resume long task bcbacd2d1fac47b190701ba0fae923f3.\nSpec: Prepare a production rollout report.\nAcceptance criteria:\n- Report includes canary status.\n- Report includes rollback checklist.\nVerification commands:\n- pytest tests/services/test_long_task_runtime.py\nLatest progress:\n- status: running\n- delta: Drafted canary section and collected rollback evidence.\nArtifact refs:\n- runtime_artifacts/long_tasks/bcbacd2d1fac47b190701ba0fae923f3/plan.json\n- runtime_artifacts/long_tasks/bcbacd2d1fac47b190701ba0fae923f3/progress.jsonl\nAgent Work Ledger:\n- current_phase: running\n- open_required_todos: Report includes canary status., Report includes rollback checklist.\n- verification_pending: pytest tests/services/test_long_task_runtime.py"
           }
         ],
         "passed_checks": 3,
-        "total_checks": 3
+        "total_checks": 3,
+        "transcript": "{\"artifact_refs\": [{\"char_count\": 467, \"content_hash\": \"ac1b11916981bf0df9416ed94d7b6933e779dd92add59f1621e1615aa3bd3b2e\", \"created_at\": \"2026-06-12T12:02:19.763959+00:00\", \"kind\": \"file\", \"path\": \"runtime_artifacts/long_tasks/bcbacd2d1fac47b190701ba0fae923f3/plan.json\", \"schema\": \"execution_artifact_ref.v1\", \"source\": \"workspace\"}, {\"char_count\": 294, \"content_hash\": \"9aa5d9fd6dab2dc602ac8ad74aaf915ed84fa8845d06988c3ad59ceef3dc0ab6\", \"created_at\": \"2026-06-12T12:02:19.764050+00:00\", \"kind\": \"file\", \"path\": \"runtime_artifacts/long_tasks/bcbacd2d1fac47b190701ba0fae923f3/progress.jsonl\", \"schema\": \"execution_artifact_ref.v1\", \"source\": \"workspace\"}], \"latest_progress\": {\"blocked_reason\": null, \"created_at\": \"2026-06-12T12:02:19.763617+00:00\", \"delta\": \"Drafted canary section and collected rollback evidence.\", \"output_paths\": [\"reports/rollout.md\"], \"runtime_task_id\": \"bcbacd2d1fac47b190701ba0fae923f3\", \"schema\": \"long_task_progress.v1\", \"status\": \"running\"}, \"plan\": {\"acceptance_criteria\": [\"Report includes canary status.\", \"Report includes rollback checklist.\"], \"created_at\": \"2026-06-12T12:02:19.763361+00:00\", \"risk_gates\": [\"Do not publish externally without approval.\"], \"runtime_task_id\": \"bcbacd2d1fac47b190701ba0fae923f3\", \"schema\": \"long_task_plan.v1\", \"spec\": \"Prepare a production rollout report.\", \"verification_commands\": [\"pytest tests/services/test_long_task_runtime.py\"]}, \"progress_count\": 1, \"resume_prompt\": \"Resume long task bcbacd2d1fac47b190701ba0fae923f3.\\nSpec: Prepare a production rollout report.\\nAcceptance criteria:\\n- Report includes canary status.\\n- Report includes rollback checklist.\\nVerification commands:\\n- pytest tests/services/test_long_task_runtime.py\\nLatest progress:\\n- status: running\\n- delta: Drafted canary section and collected rollback evidence.\\nArtifact refs:\\n- runtime_artifacts/long_tasks/bcbacd2d1fac47b190701ba0fae923f3/plan.json\\n- runtime_artifacts/long_tasks/bcbacd2d1fac47b190701ba0fae923f3/progress.jsonl\\nAgent Work Ledger:\\n- current_phase: running\\n- open_required_todos: Report includes canary status., Report includes rollback checklist.\\n- verification_pending: pytest tests/services/test_long_task_runtime.py\", \"runtime_task_id\": \"bcbacd2d1fac47b190701ba0fae923f3\", \"schema\": \"long_task_resume_context.v1\", \"work_ledger\": {\"current_phase\": \"running\", \"open_required_todos\": [\"Report includes canary status.\", \"Report includes rollback checklist.\"], \"present\": true, \"progress_count\": 1, \"recent_failures\": [], \"schema\": \"agent_work_ledger_resume.v1\", \"status\": \"running\", \"verification_pending\": [\"pytest tests/services/test_long_task_runtime.py\"], \"verified_findings\": []}, \"workspace_manifest\": {\"artifact_refs\": [{\"char_count\": 467, \"content_hash\": \"ac1b11916981bf0df9416ed94d7b6933e779dd92add59f1621e1615aa3bd3b2e\", \"created_at\": \"2026-06-12T12:02:19.763959+00:00\", \"kind\": \"file\", \"path\": \"runtime_artifacts/long_tasks/bcbacd2d1fac47b190701ba0fae923f3/plan.json\", \"schema\": \"execution_artifact_ref.v1\", \"source\": \"workspace\"}, {\"char_count\": 294, \"content_hash\": \"9aa5d9fd6dab2dc602ac8ad74aaf915ed84fa8845d06988c3ad59ceef3dc0ab6\", \"created_at\": \"2026-06-12T12:02:19.764050+00:00\", \"kind\": \"file\", \"path\": \"runtime_artifacts/long_tasks/bcbacd2d1fac47b190701ba0fae923f3/progress.jsonl\", \"schema\": \"execution_artifact_ref.v1\", \"source\": \"workspace\"}], \"boundary\": {\"artifact_root\": \"runtime_artifacts/long_tasks/bcbacd2d1fac47b190701ba0fae923f3\", \"credential_policy\": \"do not include tenant/provider credentials in artifacts\", \"generated_code_boundary\": \"workspace\"}, \"created_at\": \"2026-06-12T12:02:19.764136+00:00\", \"runtime_task_id\": \"bcbacd2d1fac47b190701ba0fae923f3\", \"schema\": \"workspace_manifest.v1\", \"workspace_root\": \".\"}}"
       },
       "safety_tenant_policy": {
         "score": 96,
         "ready": true,
         "checks": [
           {
-            "id": "manifest_contract",
-            "path": "backend/app/services/evolution_manifest.py",
-            "contains": "hive_evolution_manifest.v1",
-            "passed": true
+            "id": "manifest_validates",
+            "passed": true,
+            "detail": "{\"change_type\": \"patch\", \"eval_refs\": [\"eval:skill_guard\"], \"risk_level\": \"medium\", \"rollback_plan\": {\"strategy\": \"restore previous baseline before applying candidate\"}, \"schema\": \"hive_evolution_manifest.v1\", \"source_refs\": [\"runtime_task:bakeoff\"], \"target_id\": \"incident-response\", \"target_type\": \"skill\", \"trace_refs\": [\"trace:bakeoff\"]}"
           },
           {
-            "id": "rollback_plan",
-            "path": "backend/app/services/evolution_manifest.py",
-            "contains": "rollback_plan.strategy is required",
-            "passed": true
+            "id": "pl4_refused",
+            "passed": true,
+            "detail": "refuse"
           },
           {
-            "id": "action_preflight",
-            "path": "backend/app/services/action_preflight.py",
-            "contains": "company_boundary_conflict",
-            "passed": true
+            "id": "company_conflict_escalates",
+            "passed": true,
+            "detail": "escalate"
           },
           {
-            "id": "skill_tenant_guard",
-            "path": "backend/app/services/skill_guard.py",
-            "contains": "tenant_identifier_leak",
-            "passed": true
+            "id": "skill_guard_blocks_secret",
+            "passed": true,
+            "detail": "{\"allowed\": false, \"findings\": [{\"category\": \"secret_material\", \"evidence\": {\"path\": \"SKILL.md\"}, \"message\": \"Skill content appears to contain embedded credentials or private key material.\", \"path\": \"SKILL.md\", \"severity\": \"block\"}, {\"category\": \"managed_credential_env_guidance\", \"evidence\": {\"families\": [\"llm_provider\"], \"path\": \"SKILL.md\"}, \"message\": \"Skill instructs agents to configure or inspect platform-managed channel credentials via shell environment variables.\", \"path\": \"SKILL.md\", \"severity\": \"block\"}], \"risk_level\": \"critical\", \"source\": \"self_evolution_bakeoff\"}"
           }
         ],
         "passed_checks": 4,
-        "total_checks": 4
+        "total_checks": 4,
+        "transcript": "{\"conflict_preflight\": {\"decision\": \"escalate\", \"escalation_target\": \"company_admin\", \"reasons\": \"company_boundary_conflict\", \"requires_audit\": \"true\", \"requires_checkpoint\": \"true\"}, \"manifest\": {\"change_type\": \"patch\", \"eval_refs\": [\"eval:skill_guard\"], \"risk_level\": \"medium\", \"rollback_plan\": {\"strategy\": \"restore previous baseline before applying candidate\"}, \"schema\": \"hive_evolution_manifest.v1\", \"source_refs\": [\"runtime_task:bakeoff\"], \"target_id\": \"incident-response\", \"target_type\": \"skill\", \"trace_refs\": [\"trace:bakeoff\"]}, \"pl4_preflight\": {\"decision\": \"refuse\", \"escalation_target\": \"\", \"reasons\": \"pl4_zero_retention\", \"requires_audit\": \"true\", \"requires_checkpoint\": \"false\"}, \"skill_guard\": {\"allowed\": false, \"findings\": [{\"category\": \"secret_material\", \"evidence\": {\"path\": \"SKILL.md\"}, \"message\": \"Skill content appears to contain embedded credentials or private key material.\", \"path\": \"SKILL.md\", \"severity\": \"block\"}, {\"category\": \"managed_credential_env_guidance\", \"evidence\": {\"families\": [\"llm_provider\"], \"path\": \"SKILL.md\"}, \"message\": \"Skill instructs agents to configure or inspect platform-managed channel credentials via shell environment variables.\", \"path\": \"SKILL.md\", \"severity\": \"block\"}], \"risk_level\": \"critical\", \"source\": \"self_evolution_bakeoff\"}}"
       }
     }
   },
   "hermes": {
-    "source": "repo_evidence_fallback",
+    "source": "injected",
     "repo_root": "/Users/rocky243/vc-saas/hermes-agent",
     "scores": {
       "next_turn_adaptation": 85,
-      "repeated_workflow_learning": 86,
-      "tool_failure_lesson_reuse": 82,
-      "skill_candidate_creation": 84,
-      "long_task_resume": 78,
-      "safety_tenant_policy": 72
+      "repeated_workflow_learning": 84,
+      "tool_failure_lesson_reuse": 80,
+      "skill_candidate_creation": 78,
+      "long_task_resume": 70,
+      "safety_tenant_policy": 60
     }
   },
   "comparisons": {
@@ -341,178 +242,153 @@
       "passed": true,
       "hive_evidence": [
         {
-          "id": "fast_reflection_candidate",
-          "path": "backend/app/services/fast_reflection_service.py",
-          "contains": "fast_reflection_candidate.v1",
-          "passed": true
+          "id": "candidate_created",
+          "passed": true,
+          "detail": "candidate_created"
         },
         {
-          "id": "response_complete_hook",
-          "path": "backend/app/runtime/hooks_setup.py",
-          "contains": "memory.response_complete.fast_reflection",
-          "passed": true
+          "id": "session_projection_active",
+          "passed": true,
+          "detail": "projection_count=1"
         },
         {
-          "id": "session_projection",
-          "path": "backend/app/services/session_learning.py",
-          "contains": "session_learning_projection.v1",
-          "passed": true
-        },
-        {
-          "id": "dynamic_prompt_projection",
-          "path": "backend/app/runtime/invoker.py",
-          "contains": "session_learning_projection",
-          "passed": true
+          "id": "projection_rendered",
+          "passed": true,
+          "detail": "## Session Learning\nThese are short-lived lessons from this session. Use them now, but do not treat them as durable memory.\n- [candidate][user_stated] Use concise Simplified Chinese summaries for this user in the current session. (candidate=794e1c6ee5cdb1a2d5e15fc6; refs=runtime_task:bakeoff-next-turn)"
         }
       ],
-      "hermes_source": "repo_evidence_fallback"
+      "hermes_source": "injected"
     },
     "repeated_workflow_learning": {
       "hive_score": 90,
-      "hermes_score": 86,
-      "delta": 4,
+      "hermes_score": 84,
+      "delta": 6,
       "passed": true,
       "hive_evidence": [
         {
-          "id": "workflow_signal",
-          "path": "backend/app/services/fast_reflection_service.py",
-          "contains": "repeated_workflow_signature",
-          "passed": true
+          "id": "fast_reflection_candidate",
+          "passed": true,
+          "detail": "candidate_created"
         },
         {
-          "id": "skill_candidate_manifest",
-          "path": "backend/app/services/skill_flywheel.py",
-          "contains": "skill_candidate_manifest.v1",
-          "passed": true
+          "id": "skill_candidate_created",
+          "passed": true,
+          "detail": "{\"candidate_id\": \"2154936c28a1797132b2b670\", \"guard\": {\"allowed\": true, \"findings\": [], \"risk_level\": \"low\", \"source\": \"fast_reflection\"}, \"route\": \"new_class_skill\", \"skill_name\": \"deploy-workflow\", \"status\": \"skill_candidate_created\", \"verification_passed\": true}"
         },
         {
-          "id": "inactive_skill_candidate_path",
-          "path": "backend/app/services/skill_flywheel.py",
-          "contains": "skill_candidates",
-          "passed": true
+          "id": "verification_passed",
+          "passed": true,
+          "detail": "True"
         }
       ],
-      "hermes_source": "repo_evidence_fallback"
+      "hermes_source": "injected"
     },
     "tool_failure_lesson_reuse": {
       "hive_score": 90,
-      "hermes_score": 82,
-      "delta": 8,
+      "hermes_score": 80,
+      "delta": 10,
       "passed": true,
       "hive_evidence": [
         {
-          "id": "failure_signal",
-          "path": "backend/app/services/fast_reflection_service.py",
-          "contains": "verification_failure",
-          "passed": true
+          "id": "failure_candidate_created",
+          "passed": true,
+          "detail": "candidate_created"
         },
         {
-          "id": "verification_report",
-          "path": "backend/app/services/evolution_verification.py",
-          "contains": "evolution_verification_report.v1",
-          "passed": true
+          "id": "patch_route_selected",
+          "passed": true,
+          "detail": "patch_existing_skill"
         },
         {
-          "id": "promotion_gate",
-          "path": "backend/app/services/evolution_verification.py",
-          "contains": "verification evidence is required",
-          "passed": true
+          "id": "verification_eval_recorded",
+          "passed": true,
+          "detail": "eval_run present in evolution_ledger.jsonl"
         }
       ],
-      "hermes_source": "repo_evidence_fallback"
+      "hermes_source": "injected"
     },
     "skill_candidate_creation": {
-      "hive_score": 92,
-      "hermes_score": 84,
-      "delta": 8,
-      "passed": true,
-      "hive_evidence": [
-        {
-          "id": "skill_candidate_service",
-          "path": "backend/app/services/skill_flywheel.py",
-          "contains": "propose_skill_candidate_from_fast_reflection",
-          "passed": true
-        },
-        {
-          "id": "static_skill_guard",
-          "path": "backend/app/services/skill_guard.py",
-          "contains": "tenant_identifier_leak",
-          "passed": true
-        },
-        {
-          "id": "verification_eval",
-          "path": "backend/app/services/skill_flywheel.py",
-          "contains": "record_verification_eval",
-          "passed": true
-        }
-      ],
-      "hermes_source": "repo_evidence_fallback"
-    },
-    "long_task_resume": {
       "hive_score": 92,
       "hermes_score": 78,
       "delta": 14,
       "passed": true,
       "hive_evidence": [
         {
-          "id": "workspace_manifest",
-          "path": "backend/app/services/harness_contract.py",
-          "contains": "workspace_manifest.v1",
-          "passed": true
+          "id": "promote_after_repeated_success",
+          "passed": true,
+          "detail": "{\"decision\": \"promote\", \"last_status\": \"success\", \"patch_candidate_count\": 0, \"promote_candidate_count\": 3, \"workflow_signature\": \"deploy-checklist\"}"
         },
         {
-          "id": "artifact_ref",
-          "path": "backend/app/services/harness_contract.py",
-          "contains": "execution_artifact_ref.v1",
-          "passed": true
+          "id": "patch_after_loaded_skill_miss",
+          "passed": true,
+          "detail": "{\"decision\": \"patch\", \"last_status\": \"workaround\", \"patch_candidate_count\": 2, \"promote_candidate_count\": 0, \"workflow_signature\": \"incident-response\"}"
         },
         {
-          "id": "long_task_metadata",
-          "path": "backend/app/services/long_task_runtime.py",
-          "contains": "artifact_refs",
-          "passed": true
+          "id": "candidate_file_written",
+          "passed": true,
+          "detail": "/var/folders/cm/zpwxmr512rq1qz4_0_ryz8t80000gn/T/hive-self-evolution-bakeoff-y3znvoet/a01b6555-2bb8-408d-b774-0c0016597463/evolution/skill_candidates.md"
         }
       ],
-      "hermes_source": "repo_evidence_fallback"
+      "hermes_source": "injected"
     },
-    "safety_tenant_policy": {
-      "hive_score": 96,
-      "hermes_score": 72,
-      "delta": 24,
+    "long_task_resume": {
+      "hive_score": 92,
+      "hermes_score": 70,
+      "delta": 22,
       "passed": true,
       "hive_evidence": [
         {
-          "id": "manifest_contract",
-          "path": "backend/app/services/evolution_manifest.py",
-          "contains": "hive_evolution_manifest.v1",
-          "passed": true
+          "id": "plan_artifact_written",
+          "passed": true,
+          "detail": "{\"created_at\": \"2026-06-12T12:02:19.763361+00:00\", \"path\": \"runtime_artifacts/long_tasks/bcbacd2d1fac47b190701ba0fae923f3/plan.json\", \"schema\": \"long_task_plan.v1\", \"work_ledger\": {\"path\": \"runtime_artifacts/long_tasks/bcbacd2d1fac47b190701ba0fae923f3/work_ledger.json\", \"schema\": \"agent_work_ledger.v1\", \"updated_at\": \"2026-06-12T12:02:19.763491+00:00\"}}"
         },
         {
-          "id": "rollback_plan",
-          "path": "backend/app/services/evolution_manifest.py",
-          "contains": "rollback_plan.strategy is required",
-          "passed": true
+          "id": "artifact_refs_loaded",
+          "passed": true,
+          "detail": "[{\"char_count\": 467, \"content_hash\": \"ac1b11916981bf0df9416ed94d7b6933e779dd92add59f1621e1615aa3bd3b2e\", \"created_at\": \"2026-06-12T12:02:19.763959+00:00\", \"kind\": \"file\", \"path\": \"runtime_artifacts/long_tasks/bcbacd2d1fac47b190701ba0fae923f3/plan.json\", \"schema\": \"execution_artifact_ref.v1\", \"source\": \"workspace\"}, {\"char_count\": 294, \"content_hash\": \"9aa5d9fd6dab2dc602ac8ad74aaf915ed84fa8845d06988c3ad59ceef3dc0ab6\", \"created_at\": \"2026-06-12T12:02:19.764050+00:00\", \"kind\": \"file\", \"path\": \"runtime_artifacts/long_tasks/bcbacd2d1fac47b190701ba0fae923f3/progress.jsonl\", \"schema\": \"execution_artifact_ref.v1\", \"source\": \"workspace\"}]"
         },
         {
-          "id": "action_preflight",
-          "path": "backend/app/services/action_preflight.py",
-          "contains": "company_boundary_conflict",
-          "passed": true
-        },
-        {
-          "id": "skill_tenant_guard",
-          "path": "backend/app/services/skill_guard.py",
-          "contains": "tenant_identifier_leak",
-          "passed": true
+          "id": "resume_prompt_contains_progress",
+          "passed": true,
+          "detail": "Resume long task bcbacd2d1fac47b190701ba0fae923f3.\nSpec: Prepare a production rollout report.\nAcceptance criteria:\n- Report includes canary status.\n- Report includes rollback checklist.\nVerification commands:\n- pytest tests/services/test_long_task_runtime.py\nLatest progress:\n- status: running\n- delta: Drafted canary section and collected rollback evidence.\nArtifact refs:\n- runtime_artifacts/long_tasks/bcbacd2d1fac47b190701ba0fae923f3/plan.json\n- runtime_artifacts/long_tasks/bcbacd2d1fac47b190701ba0fae923f3/progress.jsonl\nAgent Work Ledger:\n- current_phase: running\n- open_required_todos: Report includes canary status., Report includes rollback checklist.\n- verification_pending: pytest tests/services/test_long_task_runtime.py"
         }
       ],
-      "hermes_source": "repo_evidence_fallback"
+      "hermes_source": "injected"
+    },
+    "safety_tenant_policy": {
+      "hive_score": 96,
+      "hermes_score": 60,
+      "delta": 36,
+      "passed": true,
+      "hive_evidence": [
+        {
+          "id": "manifest_validates",
+          "passed": true,
+          "detail": "{\"change_type\": \"patch\", \"eval_refs\": [\"eval:skill_guard\"], \"risk_level\": \"medium\", \"rollback_plan\": {\"strategy\": \"restore previous baseline before applying candidate\"}, \"schema\": \"hive_evolution_manifest.v1\", \"source_refs\": [\"runtime_task:bakeoff\"], \"target_id\": \"incident-response\", \"target_type\": \"skill\", \"trace_refs\": [\"trace:bakeoff\"]}"
+        },
+        {
+          "id": "pl4_refused",
+          "passed": true,
+          "detail": "refuse"
+        },
+        {
+          "id": "company_conflict_escalates",
+          "passed": true,
+          "detail": "escalate"
+        },
+        {
+          "id": "skill_guard_blocks_secret",
+          "passed": true,
+          "detail": "{\"allowed\": false, \"findings\": [{\"category\": \"secret_material\", \"evidence\": {\"path\": \"SKILL.md\"}, \"message\": \"Skill content appears to contain embedded credentials or private key material.\", \"path\": \"SKILL.md\", \"severity\": \"block\"}, {\"category\": \"managed_credential_env_guidance\", \"evidence\": {\"families\": [\"llm_provider\"], \"path\": \"SKILL.md\"}, \"message\": \"Skill instructs agents to configure or inspect platform-managed channel credentials via shell environment variables.\", \"path\": \"SKILL.md\", \"severity\": \"block\"}], \"risk_level\": \"critical\", \"source\": \"self_evolution_bakeoff\"}"
+        }
+      ],
+      "hermes_source": "injected"
     }
   },
   "cost_latency": {
     "visible": true,
     "bounded": true,
-    "max_hot_path_timeout_seconds": 1.5,
+    "max_hot_path_timeout_seconds": 3.0,
     "checks": {
       "semantic_rerank_timeout": true,
       "session_learning_dynamic_only": true,

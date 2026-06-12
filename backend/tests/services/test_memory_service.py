@@ -161,7 +161,7 @@ async def _compress_once(monkeypatch, tenant_id, llm_calls: list, *, fail: bool)
     async def fake_get_summary_model_config(_tenant_id, **_kwargs):
         return {"provider": "openai", "model": "m", "api_key": "k"}
 
-    async def fake_llm_summarize(_messages, _model_config):
+    async def fake_llm_summarize(_messages, _model_config, **_kwargs):
         llm_calls.append(1)
         if fail:
             raise RuntimeError("llm down")
@@ -178,6 +178,43 @@ async def _compress_once(monkeypatch, tenant_id, llm_calls: list, *, fail: bool)
         1000,  # max_input_tokens_override → tiny window, forces compression
         tenant_id,
     )
+
+
+@pytest.mark.asyncio
+async def test_maybe_compress_uses_real_usage_anchor_when_estimate_is_too_low(monkeypatch):
+    import app.services.conversation_summarizer as summarizer_mod
+    from app.services import memory_service
+
+    tenant_id = uuid4()
+    llm_calls: list = []
+
+    async def fake_get_memory_config(_tenant_id):
+        return {}
+
+    async def fake_get_summary_model_config(_tenant_id, **_kwargs):
+        return {"provider": "openai", "model": "m", "api_key": "k"}
+
+    async def fake_llm_summarize(_messages, _model_config, **_kwargs):
+        llm_calls.append(1)
+        return "usage anchored summary"
+
+    monkeypatch.setattr(memory_service, "_get_memory_config", fake_get_memory_config)
+    monkeypatch.setattr(memory_service, "_get_summary_model_config", fake_get_summary_model_config)
+    monkeypatch.setattr(memory_service, "estimate_tokens", lambda *_args, **_kwargs: 100)
+    monkeypatch.setattr(summarizer_mod, "_llm_summarize", fake_llm_summarize)
+
+    result = await memory_service.maybe_compress_messages(
+        [{"role": "user", "content": "中文内容"} for _ in range(15)],
+        "openai",
+        "m",
+        1000,
+        tenant_id,
+        usage_anchor_tokens=700,
+    )
+
+    assert llm_calls == [1]
+    assert result[0]["role"] == "system"
+    assert "usage anchored summary" in result[0]["content"]
 
 
 @pytest.mark.asyncio
@@ -306,7 +343,7 @@ async def test_persist_runtime_memory_persists_summary_without_direct_semantic_w
     fake_session = _FakeSession([chat_session])
     update_called = False
 
-    async def fake_generate_session_summary(messages, _tenant_id):
+    async def fake_generate_session_summary(messages, _tenant_id, **_kwargs):
         assert len(messages) == 2
         return "rolled summary"
 
@@ -347,7 +384,7 @@ async def test_persist_runtime_memory_strips_null_bytes_from_summary(monkeypatch
     chat_session = SimpleNamespace(summary=None)
     fake_session = _FakeSession([chat_session])
 
-    async def fake_generate_session_summary(messages, _tenant_id):
+    async def fake_generate_session_summary(messages, _tenant_id, **_kwargs):
         assert len(messages) == 2
         return "safe\x00summary"
 

@@ -27,6 +27,7 @@ from app.kernel import (
     RuntimeConfig,
     ToolExpansionResult,
 )
+from app.kernel.contracts import MidRunMessageDrain
 from app.models.agent import Agent
 from app.models.feature_flag import FeatureFlag
 from app.models.user import User
@@ -53,11 +54,11 @@ from app.services.feature_flags import is_enabled as is_feature_enabled
 from app.services.knowledge_inject import fetch_relevant_knowledge
 from app.services.llm_utils import LLMMessage, create_llm_client, get_max_tokens
 from app.services.memory_service import (
-    build_memory_snapshot,
     build_memory_context,
     maybe_compress_messages,
     persist_runtime_memory,
 )
+from app.services.quota_guard import QuotaExceeded, check_user_token_quota
 from app.services.token_tracker import (
     estimate_tokens_from_chars,
     extract_usage_tokens,
@@ -131,6 +132,7 @@ class AgentInvocationRequest:
     # system_prompt_suffix, whose layered semantics are unchanged.
     standalone_system_prompt: str = ""
     tool_executor: ToolExecutor | None = None
+    mid_run_message_drain: MidRunMessageDrain | None = None
     cancel_event: asyncio.Event | None = None
     initial_tools: list[dict] | None = None
     core_tools_only: bool = True
@@ -363,7 +365,7 @@ async def _resolve_memory_context(
     request: AgentInvocationRequest,
     tenant_id: uuid.UUID | None,
 ) -> str:
-    # ALWAYS load memory — even when prompt_prefix is cached.
+    # ALWAYS load memory context — even when prompt_prefix is cached.
     # The engine injects memory as a dynamic suffix outside the frozen prefix,
     # so fresh memory can vary without invalidating the stable system prompt cache.
     # CC subagent semantics: a standalone-prompt invocation is a clean specialist —
@@ -377,28 +379,32 @@ async def _resolve_memory_context(
         session_id = request.session_context.session_id
     budget_profile = _resolve_context_budget(request)
     context_window_tokens = getattr(request.model, "max_input_tokens", None) if request.model else None
+    query = _last_user_query(request.messages)
 
     if request.agent_id and tenant_id:
-        _snapshot_kwargs = {"session_id": session_id}
-        _snapshot_sig = inspect.signature(build_memory_snapshot).parameters
+        _memory_kwargs = {
+            "session_id": session_id,
+            "query": query,
+        }
+        _memory_sig = inspect.signature(build_memory_context).parameters
         current_user_name = None
-        if request.user_id and ("current_user_id" in _snapshot_sig or "current_user_name" in _snapshot_sig):
+        if request.user_id and ("current_user_id" in _memory_sig or "current_user_name" in _memory_sig):
             current_user_name = await _resolve_current_user_name(request.user_id)
-        if "context_window_tokens" in _snapshot_sig:
-            _snapshot_kwargs["context_window_tokens"] = context_window_tokens
-        if "budget_profile" in _snapshot_sig:
-            _snapshot_kwargs["budget_profile"] = budget_profile
-        if "current_user_id" in _snapshot_sig:
-            _snapshot_kwargs["current_user_id"] = request.user_id
-        if "current_user_name" in _snapshot_sig:
-            _snapshot_kwargs["current_user_name"] = current_user_name
-        runtime_memory_context = await build_memory_snapshot(request.agent_id, tenant_id, **_snapshot_kwargs)
+        if "context_window_tokens" in _memory_sig:
+            _memory_kwargs["context_window_tokens"] = context_window_tokens
+        if "budget_profile" in _memory_sig:
+            _memory_kwargs["budget_profile"] = budget_profile
+        if "current_user_id" in _memory_sig:
+            _memory_kwargs["current_user_id"] = request.user_id
+        if "current_user_name" in _memory_sig:
+            _memory_kwargs["current_user_name"] = current_user_name
+        runtime_memory_context = await build_memory_context(request.agent_id, tenant_id, **_memory_kwargs)
         if runtime_memory_context:
             parts.append(
                 _context_engine().inject(
                     request.session_context,
-                    kind="memory_snapshot",
-                    source="memory_provider:snapshot",
+                    kind="memory_context",
+                    source="memory_provider:context",
                     content=runtime_memory_context,
                 )
             )
@@ -498,6 +504,33 @@ async def _resolve_memory_navigation_context(
         return ""
 
 
+async def _resolve_runtime_metadata_context(
+    request: AgentInvocationRequest,
+    tenant_id: uuid.UUID | None,
+) -> str:
+    del tenant_id
+    if (request.standalone_system_prompt or "").strip():
+        return ""  # CC subagent semantics: no host runtime metadata
+    if not request.agent_id:
+        return ""
+
+    budget_profile = _resolve_context_budget(request)
+    current_user_name = await _resolve_current_user_name(request.user_id) if request.user_id else None
+    _runtime_kwargs = {"current_user_name": current_user_name}
+    _runtime_sig = inspect.signature(build_agent_runtime_context).parameters
+    if "budget_profile" in _runtime_sig:
+        _runtime_kwargs["budget_profile"] = budget_profile
+    runtime_context = await build_agent_runtime_context(request.agent_id, **_runtime_kwargs)
+    if not runtime_context:
+        return ""
+    return _context_engine().inject(
+        request.session_context,
+        kind="agent_runtime_context",
+        source="runtime_context:agent",
+        content=runtime_context,
+    )
+
+
 async def _resolve_retrieval_context(
     request: AgentInvocationRequest,
     tenant_id: uuid.UUID | None,
@@ -510,51 +543,6 @@ async def _resolve_retrieval_context(
 
     parts: list[str] = []
     budget_profile = _resolve_context_budget(request)
-    context_window_tokens = getattr(request.model, "max_input_tokens", None) if request.model else None
-    session_id = request.memory_session_id
-    if not session_id and request.session_context:
-        session_id = request.session_context.session_id
-
-    if request.agent_id and tenant_id:
-        current_user_name = await _resolve_current_user_name(request.user_id)
-        _runtime_kwargs = {"current_user_name": current_user_name}
-        _runtime_sig = inspect.signature(build_agent_runtime_context).parameters
-        if "budget_profile" in _runtime_sig:
-            _runtime_kwargs["budget_profile"] = budget_profile
-        runtime_context = await build_agent_runtime_context(request.agent_id, **_runtime_kwargs)
-        if runtime_context:
-            parts.append(
-                _context_engine().inject(
-                    request.session_context,
-                    kind="agent_runtime_context",
-                    source="runtime_context:agent",
-                    content=runtime_context,
-                )
-            )
-
-        _memory_kwargs = {
-            "session_id": session_id,
-            "query": query,
-        }
-        _memory_sig = inspect.signature(build_memory_context).parameters
-        if "context_window_tokens" in _memory_sig:
-            _memory_kwargs["context_window_tokens"] = context_window_tokens
-        if "budget_profile" in _memory_sig:
-            _memory_kwargs["budget_profile"] = budget_profile
-        if "current_user_id" in _memory_sig:
-            _memory_kwargs["current_user_id"] = request.user_id
-        if "current_user_name" in _memory_sig:
-            _memory_kwargs["current_user_name"] = current_user_name
-        memory_recall = await build_memory_context(request.agent_id, tenant_id, **_memory_kwargs)
-        if memory_recall:
-            parts.append(
-                _context_engine().inject(
-                    request.session_context,
-                    kind="memory_recall",
-                    source="memory_provider:recall",
-                    content=memory_recall,
-                )
-            )
 
     _knowledge_kwargs = {}
     _knowledge_sig = inspect.signature(fetch_relevant_knowledge).parameters
@@ -807,6 +795,12 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
     ) -> str:
         return await _resolve_memory_context(request, tenant_id)  # type: ignore[arg-type]
 
+    async def _kernel_resolve_runtime_metadata_context(
+        request: InvocationRequest,
+        tenant_id: uuid.UUID | None,
+    ) -> str:
+        return await _resolve_runtime_metadata_context(request, tenant_id)  # type: ignore[arg-type]
+
     async def _kernel_resolve_retrieval_context(
         request: InvocationRequest,
         tenant_id: uuid.UUID | None,
@@ -878,6 +872,7 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
             resolve_current_user_name=_resolve_current_user_name,
             build_system_prompt=_kernel_build_system_prompt,
             resolve_memory_context=_kernel_resolve_memory_context,
+            resolve_runtime_metadata_context=_kernel_resolve_runtime_metadata_context,
             resolve_retrieval_context=_kernel_resolve_retrieval_context,
             resolve_memory_navigation_context=_kernel_resolve_memory_navigation_context,
             get_tools=_kernel_get_tools,
@@ -911,6 +906,49 @@ def _resolve_kernel_for_request(request: AgentInvocationRequest) -> AgentKernel:
     if inspect.signature(factory).parameters:
         return factory(request)
     return factory()
+
+
+async def _resolve_quota_user_id(request: AgentInvocationRequest) -> uuid.UUID | None:
+    if request.user_id is not None:
+        return request.user_id
+    if request.agent_id is None:
+        return None
+
+    async with async_session() as db, enter_rls_bypass(
+        db,
+        reason=f"quota user resolution for agent {request.agent_id}",
+    ):
+        result = await db.execute(select(Agent).where(Agent.id == request.agent_id))
+        agent = result.scalar_one_or_none()
+        if agent is None:
+            return None
+        return agent.owner_user_id or agent.creator_id
+
+
+async def _enforce_invocation_quota(request: AgentInvocationRequest) -> AgentInvocationResult | None:
+    try:
+        quota_user_id = await _resolve_quota_user_id(request)
+        if quota_user_id is None:
+            return None
+        await check_user_token_quota(quota_user_id)
+        return None
+    except QuotaExceeded as exc:
+        event = {
+            "type": "quota",
+            "status": "denied",
+            "quota_type": exc.quota_type,
+            "message": exc.message,
+        }
+        if request.on_event:
+            await _maybe_await(request.on_event(event))
+        logger.warning("[Invoker] Token quota denied: %s", exc.message)
+        return AgentInvocationResult(content=exc.message, tokens_used=0)
+    except Exception as exc:  # noqa: BLE001 — quota check is a hard admission gate
+        logger.exception("[Invoker] Token quota check failed — blocking invocation")
+        return AgentInvocationResult(
+            content=f"Unable to verify token quota; request blocked ({type(exc).__name__}).",
+            tokens_used=0,
+        )
 
 
 async def _resolve_agent_smart_model_routing(agent_id: uuid.UUID | None) -> dict[str, Any] | None:
@@ -974,6 +1012,9 @@ def _resolve_effective_turn_route(
 
 async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult:
     _normalize_invocation_session_context(request)
+    quota_result = await _enforce_invocation_quota(request)
+    if quota_result is not None:
+        return quota_result
 
     routing_config = request.smart_model_routing
     if routing_config is None and request.agent_id is not None and request.fallback_model is not None:
@@ -1021,6 +1062,7 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
         system_prompt_suffix=request.system_prompt_suffix,
         standalone_system_prompt=request.standalone_system_prompt,
         tool_executor=request.tool_executor,
+        mid_run_message_drain=request.mid_run_message_drain,
         cancel_event=request.cancel_event,
         initial_tools=request.initial_tools or (get_combined_openai_tools() if request.agent_id is None else None),
         core_tools_only=request.core_tools_only,

@@ -173,6 +173,8 @@ async def draft_improvement(
     definition_body: str,
     active_memory: str,
     model_config: dict,
+    agent_id: object | None = None,
+    tenant_id: object | None = None,
 ) -> dict | None:
     """LLM-draft a revised body absorbing mature craft. Fail-soft: None on any
     unusable response (the nomination simply retries on a later distillation)."""
@@ -191,6 +193,9 @@ async def draft_improvement(
             temperature=0.3,
             max_tokens=8192,  # CC-standard auxiliary-call floor
             timeout=90.0,
+            usage_source="subagent_evolution",
+            usage_agent_id=agent_id,
+            usage_tenant_id=tenant_id,
         )
         content = str(response.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
         if content.startswith("```"):
@@ -431,10 +436,18 @@ async def maybe_nominate(
             return None
 
         active_memory = memory_store.load(spec_name, active_only=True)
+        try:
+            from app.services.tenant_resolver import resolve_tenant_for_agent
+
+            tenant_id = await resolve_tenant_for_agent(agent_id)
+        except Exception:  # noqa: BLE001 — metering context must not block nomination
+            tenant_id = None
         draft = await draft_improvement(
             definition_body=spec.system_prompt,
             active_memory=active_memory,
             model_config=model_config,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
         )
         if draft is None:
             return None

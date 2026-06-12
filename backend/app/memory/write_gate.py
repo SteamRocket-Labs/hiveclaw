@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Iterable
@@ -23,6 +24,22 @@ class MemoryWriteDecision:
     placeholders: dict[str, str] = field(default_factory=dict)
 
 
+_MEMORY_THREAT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"ignore\s+(previous|all|above|prior)\s+instructions", re.IGNORECASE), "prompt_injection"),
+    (re.compile(r"do\s+not\s+tell\s+the\s+user", re.IGNORECASE), "deception_hide"),
+    (re.compile(r"system\s+prompt\s+override", re.IGNORECASE), "sys_prompt_override"),
+    (re.compile(r"disregard\s+(your|all|any)\s+(instructions|rules|guidelines)", re.IGNORECASE), "disregard_rules"),
+    (
+        re.compile(
+            r"act\s+as\s+(if|though)\s+you\s+(have\s+no|don't\s+have)\s+(restrictions|limits|rules)",
+            re.IGNORECASE,
+        ),
+        "bypass_restrictions",
+    ),
+    (re.compile(r"reveal\s+(the\s+)?(hidden\s+)?system\s+prompt", re.IGNORECASE), "prompt_exfiltration"),
+)
+
+
 def prepare_memory_write(
     content: str,
     *,
@@ -35,10 +52,35 @@ def prepare_memory_write(
     superseded_by: str | None = None,
     expires_at: datetime | str | None = None,
     privacy_layer: PrivacyLayer | None = None,
+    enforce_form: bool = True,
 ) -> MemoryWriteDecision:
     """Apply privacy, form, and lifecycle metadata before durable persistence."""
     original = (content or "").strip()
     normalized_category = (category or "general").strip().lower() or "general"
+    threats = _detect_memory_threats(original)
+    if threats:
+        metadata = _base_metadata(
+            sensitivity="PL3_prompt_injection",
+            status="rejected",
+            version=version,
+            evidence_refs=evidence_refs,
+            parent_id=parent_id,
+            supersedes=supersedes,
+            superseded_by=superseded_by,
+            expires_at=expires_at,
+        )
+        reason = "prompt_injection:" + ",".join(threats)
+        metadata["reason"] = _sanitize_meta_value(reason)
+        return MemoryWriteDecision(
+            original_content=original,
+            content=original,
+            category=normalized_category,
+            sensitivity="PL3_prompt_injection",
+            metadata=metadata,
+            rejected=True,
+            reason=reason,
+        )
+
     layer = privacy_layer or PrivacyLayer()
     privacy_decision = layer.classify_and_mask(original)
     metadata = _base_metadata(
@@ -66,21 +108,22 @@ def prepare_memory_write(
             placeholders=privacy_decision.placeholders,
         )
 
-    try:
-        enforce_memory_form(privacy_decision.sanitized_text)
-    except ValueError as exc:
-        metadata["status"] = "rejected"
-        metadata["reason"] = _sanitize_meta_value(str(exc))
-        return MemoryWriteDecision(
-            original_content=original,
-            content=privacy_decision.sanitized_text,
-            category=normalized_category,
-            sensitivity=privacy_decision.sensitivity.value,
-            metadata=metadata,
-            rejected=True,
-            reason=str(exc),
-            placeholders=privacy_decision.placeholders,
-        )
+    if enforce_form:
+        try:
+            enforce_memory_form(privacy_decision.sanitized_text)
+        except ValueError as exc:
+            metadata["status"] = "rejected"
+            metadata["reason"] = _sanitize_meta_value(str(exc))
+            return MemoryWriteDecision(
+                original_content=original,
+                content=privacy_decision.sanitized_text,
+                category=normalized_category,
+                sensitivity=privacy_decision.sensitivity.value,
+                metadata=metadata,
+                rejected=True,
+                reason=str(exc),
+                placeholders=privacy_decision.placeholders,
+            )
 
     return MemoryWriteDecision(
         original_content=original,
@@ -90,6 +133,10 @@ def prepare_memory_write(
         metadata=metadata,
         placeholders=privacy_decision.placeholders,
     )
+
+
+def _detect_memory_threats(text: str) -> list[str]:
+    return [label for pattern, label in _MEMORY_THREAT_PATTERNS if pattern.search(text or "")]
 
 
 def _base_metadata(

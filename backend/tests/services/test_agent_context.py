@@ -118,3 +118,30 @@ async def test_build_agent_context_keeps_confirmation_rule_for_coordinator_mode(
 
     assert "Confirm with the user BEFORE" in coordinator_prompt
     assert "operating in coordinator mode" in coordinator_prompt
+
+
+@pytest.mark.asyncio
+async def test_build_agent_context_default_excludes_runtime_time_from_frozen_prefix(monkeypatch, tmp_path):
+    import app.services.agent_context as agent_context
+
+    agent_id = uuid4()
+    sessions = [_FakeSession([[]]), _FakeSession([None])]
+
+    async def fake_runtime_metadata(*_args, **_kwargs):
+        return ["\n## Current Time\n2026-06-12 09:30:00 (Asia/Shanghai)"]
+
+    monkeypatch.setattr("app.database.async_session", lambda: sessions.pop(0))
+    monkeypatch.setattr("app.services.agent_context.TOOL_WORKSPACE", tmp_path)
+    monkeypatch.setattr("app.services.agent_context.PERSISTENT_DATA", tmp_path)
+    monkeypatch.setattr("app.services.agent_context._load_skills_index", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(agent_context, "_build_runtime_metadata_sections", fake_runtime_metadata)
+
+    prompt = await agent_context.build_agent_context(
+        agent_id,
+        "Ops Agent",
+        include_focus=False,
+        invocation_scope="conversation",
+    )
+
+    assert "Current Time" not in prompt
+    assert "Asia/Shanghai" not in prompt

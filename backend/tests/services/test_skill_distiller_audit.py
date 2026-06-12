@@ -85,7 +85,7 @@ async def test_successful_draft_records_success_metric_and_audit(
         async def close(self):
             pass
 
-    monkeypatch.setattr(skill_distiller, "create_llm_client", lambda **_kw: _StubClient())
+    monkeypatch.setattr(skill_distiller, "create_llm_client_from_config", lambda *_args, **_kw: _StubClient())
 
     ws = _make_workspace(tmp_path)
     draft = await skill_distiller._draft_skill_with_llm(
@@ -124,7 +124,7 @@ async def test_llm_exception_records_failure_and_reraises(
         async def close(self):
             pass
 
-    monkeypatch.setattr(skill_distiller, "create_llm_client", lambda **_kw: _BoomClient())
+    monkeypatch.setattr(skill_distiller, "create_llm_client_from_config", lambda *_args, **_kw: _BoomClient())
 
     ws = _make_workspace(tmp_path)
     with pytest.raises(TimeoutError):
@@ -156,7 +156,7 @@ async def test_unparseable_json_records_failure_and_reraises(
         async def close(self):
             pass
 
-    monkeypatch.setattr(skill_distiller, "create_llm_client", lambda **_kw: _GarbageClient())
+    monkeypatch.setattr(skill_distiller, "create_llm_client_from_config", lambda *_args, **_kw: _GarbageClient())
 
     ws = _make_workspace(tmp_path)
     with pytest.raises(Exception):

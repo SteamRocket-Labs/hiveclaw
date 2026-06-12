@@ -17,7 +17,9 @@ return structured reports in the prompt_eval/task_eval house style.
 
 from __future__ import annotations
 
+import argparse
 import json
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -281,3 +283,58 @@ def evaluate_retirement_safety(*, data_root: Path) -> dict:
     )
 
     return {"passed": all(check["passed"] for check in checks), "checks": checks}
+
+
+def run_memory_eval_suite(*, data_root: Path) -> dict:
+    """Run the deterministic memory retrieval gates used by CI."""
+    from app.memory.wiki_retrieval import DEFAULT_WIKI_METHOD
+
+    retrieval_report = evaluate_memory_retrieval(data_root=data_root)
+    retirement_report = evaluate_retirement_safety(data_root=data_root)
+    default_matches_eval = retrieval_report["default_method"] == DEFAULT_WIKI_METHOD
+    checks = [
+        {
+            "name": "default_method_matches_eval_verdict",
+            "passed": default_matches_eval,
+            "detail": (
+                f"configured={DEFAULT_WIKI_METHOD}, "
+                f"eval_verdict={retrieval_report['default_method']}"
+            ),
+        },
+        {
+            "name": "retirement_safety_passes",
+            "passed": bool(retirement_report["passed"]),
+            "detail": "protected/promoted entries survive and retired entries are archived",
+        },
+    ]
+    return {
+        "passed": all(check["passed"] for check in checks),
+        "checks": checks,
+        "memory_retrieval": retrieval_report,
+        "retirement_safety": retirement_report,
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run deterministic memory retrieval and retirement evals.")
+    parser.add_argument(
+        "--data-root",
+        type=Path,
+        default=None,
+        help="Scratch AGENT_DATA_DIR root for fixture corpora. Defaults to a temporary directory.",
+    )
+    args = parser.parse_args(argv)
+
+    if args.data_root is None:
+        with tempfile.TemporaryDirectory(prefix="hive-memory-eval-") as tmp:
+            report = run_memory_eval_suite(data_root=Path(tmp))
+    else:
+        args.data_root.mkdir(parents=True, exist_ok=True)
+        report = run_memory_eval_suite(data_root=args.data_root)
+
+    print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0 if report["passed"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

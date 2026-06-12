@@ -75,6 +75,13 @@ def is_encrypted(value: str) -> bool:
 _provider: SecretsProvider | None = None
 
 
+def validate_secrets_provider_config(master_key: str | None, *, debug: bool) -> None:
+    """Fail closed before a production process can store secrets in plaintext."""
+    if master_key or debug:
+        return
+    raise RuntimeError("SECRETS_MASTER_KEY is required when DEBUG=false; refusing plaintext secret storage")
+
+
 def init_secrets_provider(master_key: str | None = None) -> SecretsProvider:
     """Initialize the global secrets provider. Called once at app startup."""
     global _provider

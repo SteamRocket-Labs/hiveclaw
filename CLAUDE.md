@@ -212,7 +212,7 @@ The pyramid is the storage and distillation path. Runtime behavior is governed b
 | `services/t0_logger.py` | Write T0 MD logs (chat, trigger, delegation, heartbeat, dream) |
 | `services/extract_agent.py` | LLM extraction T0→T2 (cursor-based, per-response via RESPONSE_COMPLETE hook). T2 entries carry `[w=][src=][cat=]` metadata; source bucket weights live in `memory/t2_store.py`. |
 | `services/heartbeat.py` | T2→T3 curation (KAIROS persistent session, 45min ticks). Loads `templates/HEARTBEAT.md`; per-agent `workspace/HEARTBEAT.md` overrides via `_load_heartbeat_instruction` — **already SOP-driven** |
-| `services/auto_dream.py` | T3→soul consolidation (4h + 3 sessions gate). `templates/DREAM.md` covers procedural file maintenance; structured soul-promotion decisions still run through `_DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE`. |
+| `services/auto_dream.py` | T3→soul consolidation (24h + 3 sessions gate). Runtime system prompt now loads `templates/DREAM.md` as dream protocol guidance while preserving the JSON-only consolidator contract; durable memory/soul writeback is applied by the Memory Control Plane/internal dream service, not by direct `write_file` under `memory/`. |
 | `services/evolution_ledger.py` | `evolution_ledger.jsonl` — candidate → eval (with `traces`) → promotion audit chain for automatic prompt/skill/policy changes. Distinct from per-invocation runtime trace (not yet implemented) |
 | `memory/retriever.py` | Read T3 into prompt. High-priority files are injected directly where policy allows; knowledge/strategy/user entries are scored against query. |
 | `memory/md_store.py` | Maintains Markdown T3 stores and `memory/INDEX.md`; the index is still a shadow artifact and not the primary retriever route. |

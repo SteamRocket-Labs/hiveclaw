@@ -7,7 +7,8 @@ Two contracts:
   1. The dream completion path now syncs to Hindsight (it didn't before
      this audit; recall would see stale data until the next heartbeat).
   2. The set of files that import `sync_t3_to_hindsight` matches the
-     three sanctioned trigger points: heartbeat, dream, admin rebuild.
+     sanctioned trigger points: heartbeat, dream, admin rebuild, governed
+     T3 append, and governed memory mutation tools.
 """
 
 from __future__ import annotations
@@ -55,7 +56,7 @@ async def test_dream_runs_hindsight_sync_after_apply(monkeypatch, tmp_path) -> N
     monkeypatch.setattr(
         auto_dream,
         "_promote_repeated_feedback_to_soul",
-        lambda _aid, _txt: {"count": 0, "decisions": []},
+        lambda _aid, _txt, **_kwargs: {"count": 0, "decisions": []},
     )
     monkeypatch.setattr(auto_dream, "_truncate_t2", lambda _aid, keep=10: 0)
     monkeypatch.setattr(auto_dream, "_count_t3_entries", lambda _aid: 1)
@@ -95,7 +96,7 @@ async def test_dream_swallows_hindsight_sync_errors(monkeypatch, tmp_path) -> No
     monkeypatch.setattr(
         auto_dream,
         "_promote_repeated_feedback_to_soul",
-        lambda _aid, _txt: {"count": 0, "decisions": []},
+        lambda _aid, _txt, **_kwargs: {"count": 0, "decisions": []},
     )
     monkeypatch.setattr(auto_dream, "_truncate_t2", lambda _aid, keep=10: 0)
     monkeypatch.setattr(auto_dream, "_count_t3_entries", lambda _aid: 1)
@@ -122,9 +123,11 @@ def test_sanctioned_callers_only() -> None:
         Path("app/services/heartbeat.py"),
         # Dream: post-consolidation propagation (P1-W3-8).
         Path("app/services/auto_dream.py"),
-        # Admin: manual rebuild after migrations.
-        Path("app/admin/rebuild_hindsight.py"),
-    }
+            # Admin: manual rebuild after migrations.
+            Path("app/admin/rebuild_hindsight.py"),
+            # Governed memory mutation tools: update/retire T3 entries.
+            Path("app/tools/handlers/memory.py"),
+        }
 
     importer_re = re.compile(r"\bsync_t3_to_hindsight\b")
     callers: set[Path] = set()
@@ -143,7 +146,7 @@ def test_sanctioned_callers_only() -> None:
     assert not missing, f"Sanctioned trigger missing its call: {missing}"
 
 
-def test_hindsight_module_docstring_lists_three_triggers() -> None:
+def test_hindsight_module_docstring_lists_sanctioned_triggers() -> None:
     """The module docstring is the contract surface — drift between code
     and docs is what got us here. Pin the trigger headings."""
     from app.memory import hindsight_sync
@@ -152,3 +155,4 @@ def test_hindsight_module_docstring_lists_three_triggers() -> None:
     assert "Heartbeat tick" in doc
     assert "Dream completion" in doc
     assert "Admin rebuild" in doc
+    assert "Governed memory mutation tools" in doc

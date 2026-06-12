@@ -13,6 +13,7 @@ class ToolCatalog:
     CATEGORY_ORDER = [
         "File System",
         "Skills",
+        "Memory",
         "Scheduled",
         "IM Channel",
         "Web Search",

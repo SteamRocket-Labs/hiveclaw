@@ -470,6 +470,9 @@ class HookRegistry:
                         )
                         return blocked
             except Exception as exc:
+                from app.memory.metrics import record_hook_failure
+
+                record_hook_failure(event=ctx.event.value, source="registry", reason=type(exc).__name__)
                 logger.warning(
                     "[Hooks] Handler failed for %s: %s",
                     ctx.event, exc,

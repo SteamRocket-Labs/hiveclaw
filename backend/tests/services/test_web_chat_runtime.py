@@ -177,8 +177,65 @@ async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_start_web_chat_run_rejects_duplicate_active_run():
+async def test_start_channel_chat_run_from_saved_turn_creates_runtime_task_without_duplicate_user_message(monkeypatch):
     import app.services.web_chat_runtime as runtime
+    from app.models.audit import ChatMessage
+    from app.models.runtime_task import RuntimeTask
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=uuid4())
+    user = SimpleNamespace(id=user_id, username="feishu_u", display_name="Feishu User")
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        user_id=user_id,
+        title="Feishu Session",
+        last_message_at=None,
+        delivery_target_json={"channel": "feishu", "receive_id": "ou_1"},
+    )
+    db = _FakeDB(active_run=None)
+    scheduled = []
+
+    def fake_create_task(coro):
+        scheduled.append(coro)
+        coro.close()
+        return SimpleNamespace(done=lambda: False, add_done_callback=lambda _cb: None)
+
+    monkeypatch.setattr(runtime.asyncio, "create_task", fake_create_task)
+
+    async def fake_broadcast(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+
+    result = await runtime.start_channel_chat_run_from_saved_turn(
+        db=db,
+        agent=agent,
+        user=user,
+        session=session,
+        content="处理这条飞书消息",
+        source_channel="feishu",
+    )
+
+    assert result["run_id"]
+    assert result["status"] == "running"
+    assert not any(isinstance(item, ChatMessage) for item in db.added)
+    task = next(item for item in db.added if isinstance(item, RuntimeTask))
+    assert task.task_type == "web_chat_turn"
+    assert task.parent_session_id == str(session_id)
+    assert task.prompt == "处理这条飞书消息"
+    assert task.metadata_json["source"] == "feishu"
+    assert task.metadata_json["channel"] == "feishu"
+    assert task.metadata_json["delivery_target_json"] == session.delivery_target_json
+    assert scheduled
+
+
+@pytest.mark.asyncio
+async def test_start_web_chat_run_queues_user_message_when_run_is_active():
+    import app.services.web_chat_runtime as runtime
+    from app.models.audit import ChatMessage
 
     agent_id = uuid4()
     user_id = uuid4()
@@ -194,6 +251,7 @@ async def test_start_web_chat_run_rejects_duplicate_active_run():
         started_at=None,
         completed_at=None,
         result_summary=None,
+        metadata_json={},
     )
     db = _FakeDB(active_run=active_run)
 
@@ -208,8 +266,88 @@ async def test_start_web_chat_run_rejects_duplicate_active_run():
 
     assert exc_info.value.run["run_id"] == existing_run_id.hex
     assert exc_info.value.run["status"] == "running"
-    assert db.added == []
-    assert db.commits == 0
+    assert exc_info.value.run["queued_user_message"]["content"] == "second message"
+    assert any(isinstance(item, ChatMessage) and item.role == "user" for item in db.added)
+    assert active_run.metadata_json["pending_user_messages"][0]["content"] == "second message"
+    assert db.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_start_web_chat_run_queues_when_active_run_unique_index_conflicts(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+    from app.models.audit import ChatMessage
+    from sqlalchemy.exc import IntegrityError
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    existing_run_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=uuid4())
+    user = SimpleNamespace(id=user_id, username="rocky", display_name="Rocky")
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        user_id=user_id,
+        title="Session 06-12",
+        last_message_at=None,
+    )
+    active_run = SimpleNamespace(
+        id=existing_run_id,
+        status="running",
+        created_at=None,
+        started_at=None,
+        completed_at=None,
+        result_summary=None,
+        metadata_json={},
+    )
+
+    class _Orig:
+        diag = SimpleNamespace(constraint_name="uq_runtime_tasks_active_web_chat_session")
+
+    class _ConflictThenActiveDB(_FakeDB):
+        def __init__(self):
+            super().__init__(active_run=None)
+            self.execute_calls = 0
+            self.rollbacks = 0
+
+        async def execute(self, _stmt):
+            self.execute_calls += 1
+            return _ScalarResult(None if self.execute_calls == 1 else active_run)
+
+        async def commit(self):
+            self.commits += 1
+            if self.commits == 1:
+                raise IntegrityError("insert runtime_tasks", {}, _Orig())
+
+        async def rollback(self):
+            self.rollbacks += 1
+            self.added.clear()
+
+    db = _ConflictThenActiveDB()
+    broadcasts = []
+
+    async def fake_broadcast(_agent_id, _session_id, event):
+        broadcasts.append(event)
+
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+
+    with pytest.raises(runtime.ActiveWebChatRunExists) as exc_info:
+        await runtime.start_web_chat_run(
+            db=db,
+            agent=agent,
+            user=user,
+            session=session,
+            content="race message",
+        )
+
+    assert exc_info.value.run["run_id"] == existing_run_id.hex
+    assert exc_info.value.run["status"] == "running"
+    assert exc_info.value.run["queued_user_message"]["content"] == "race message"
+    assert db.rollbacks == 1
+    assert db.commits == 2
+    assert any(isinstance(item, ChatMessage) and item.role == "user" for item in db.added)
+    assert active_run.metadata_json["pending_user_messages"][0]["content"] == "race message"
+    assert broadcasts[-1]["type"] == "user_message_queued"
 
 
 @pytest.mark.asyncio
@@ -321,6 +459,116 @@ async def test_execute_web_chat_run_resumes_queued_plan_handoffs_on_terminal_exi
     await runtime.execute_web_chat_run(run_id)
 
     assert resumed == [{"agent_id": agent_id, "session_id": session_id, "completed_run_id": run_id.hex}]
+
+
+@pytest.mark.asyncio
+async def test_resume_persisted_web_chat_runs_schedules_running_turns_with_resume_context(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    task = SimpleNamespace(
+        id=run_id,
+        task_type="web_chat_turn",
+        status="running",
+        parent_agent_id=agent_id,
+        metadata_json={},
+    )
+
+    class _Rows:
+        def scalars(self):
+            return SimpleNamespace(all=lambda: [task])
+
+    class _DB:
+        commits = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return False
+
+        async def execute(self, _stmt):
+            return _Rows()
+
+        async def commit(self):
+            self.commits += 1
+
+    scheduled: list[str] = []
+
+    def fake_create_task(coro, *args, **kwargs):
+        scheduled.append(coro.cr_frame.f_locals["run_id"].hex)
+        coro.close()
+        return SimpleNamespace(add_done_callback=lambda _cb: None)
+
+    monkeypatch.setattr(runtime, "_async_session", lambda: _DB())
+    monkeypatch.setattr(runtime, "build_long_task_resume_context", lambda **_kwargs: {"resume_prompt": "resume now"})
+    monkeypatch.setattr(runtime.asyncio, "create_task", fake_create_task)
+
+    resumed = await runtime.resume_persisted_web_chat_runs(limit=10)
+
+    assert resumed == [run_id.hex]
+    assert scheduled == [run_id.hex]
+    assert task.metadata_json["resumed_after_restart"] is True
+    assert task.metadata_json["restart_resume_context"]["resume_prompt"] == "resume now"
+
+
+@pytest.mark.asyncio
+async def test_execute_web_chat_run_injects_restart_resume_context(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = "sess-resume"
+    runtime_task = SimpleNamespace(
+        id=run_id,
+        parent_agent_id=agent_id,
+        parent_session_id=session_id,
+        prompt="continue",
+        metadata_json={
+            "user_id": str(user_id),
+            "session_id": session_id,
+            "restart_resume_context": {"resume_prompt": "Resume long task with artifact refs."},
+        },
+    )
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Agent",
+        role_description="",
+        primary_model_id=uuid4(),
+        fallback_model_id=None,
+        tenant_id=uuid4(),
+        agent_type="standard",
+    )
+    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
+    captured = {}
+
+    async def fake_load_context(_run_uuid):
+        return runtime_task, agent, user, llm_model, None, []
+
+    async def fake_invoke(request):
+        captured["system_prompt_suffix"] = request.system_prompt_suffix
+        return SimpleNamespace(content="done")
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "_load_runtime_context", fake_load_context)
+    monkeypatch.setattr(runtime, "_maybe_handle_plan_mode_entry", noop_async)
+    monkeypatch.setattr(runtime, "invoke_agent", fake_invoke)
+    monkeypatch.setattr(runtime, "_persist_assistant_message", noop_async)
+    monkeypatch.setattr(runtime, "_persist_runtime_event", noop_async)
+    monkeypatch.setattr(runtime, "_persist_tool_call", noop_async)
+    monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", noop_async)
+    monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
+    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
+
+    await runtime.execute_web_chat_run(run_id)
+
+    assert "Resume long task with artifact refs." in captured["system_prompt_suffix"]
 
 
 # ---------------------------------------------------------------------------

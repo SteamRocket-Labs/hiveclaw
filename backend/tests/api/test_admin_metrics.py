@@ -40,8 +40,10 @@ class _FakeDB:
     def __init__(self, results: list):
         self._results = list(results)
         self._call_index = 0
+        self.statements = []
 
     async def execute(self, _stmt):
+        self.statements.append(_stmt)
         if self._call_index < len(self._results):
             result = self._results[self._call_index]
             self._call_index += 1
@@ -75,7 +77,9 @@ def _build_client(db_results: list):
 
     app.dependency_overrides[get_current_user] = override_user
     app.dependency_overrides[get_db] = override_db
-    return TestClient(app)
+    client = TestClient(app)
+    client.fake_db = fake_db
+    return client
 
 
 def _non_admin_client(db_results: list | None = None):
@@ -98,7 +102,7 @@ def _non_admin_client(db_results: list | None = None):
 # The timeseries endpoint runs 7 SQL queries:
 #   1. GROUP BY date new tenants in range
 #   2. GROUP BY date new users in range
-#   3. GROUP BY date new tokens (by agent created_at) in range
+#   3. GROUP BY date new tokens (by token_usage_events.created_at) in range
 #   4. COUNT tenants before start (cumulative base)
 #   5. COUNT users before start (cumulative base)
 #   6. SUM tokens before start (cumulative base)
@@ -110,7 +114,7 @@ def test_timeseries_returns_daily_cumulative_all_metrics():
         [SimpleNamespace(d=dt_date(2026, 3, 31), cnt=1), SimpleNamespace(d=dt_date(2026, 4, 1), cnt=1)],
         # q2: new users by day
         [SimpleNamespace(d=dt_date(2026, 4, 1), cnt=1)],
-        # q3: new tokens by agent creation day
+        # q3: new tokens by usage event day
         [SimpleNamespace(d=dt_date(2026, 4, 1), tokens=5000000)],
         # q4: cumulative tenants before start
         [0],
@@ -128,6 +132,9 @@ def test_timeseries_returns_daily_cumulative_all_metrics():
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 2
+    token_queries = [str(client.fake_db.statements[2]), str(client.fake_db.statements[5])]
+    assert all("token_usage_events" in stmt for stmt in token_queries)
+    assert all("agents.created_at" not in stmt.lower() for stmt in token_queries)
 
     mar31 = data[0]
     assert mar31["date"] == "2026-03-31"
@@ -168,7 +175,7 @@ def test_timeseries_includes_cumulative_base_from_before_range():
     client = _build_client([
         [],        # no new tenants in range
         [],        # no new users in range
-        [],        # no new tokens in range
+        [],        # no new token events in range
         [5],       # 5 tenants existed before start
         [10],      # 10 users existed before start
         [2000000], # 2M tokens before start

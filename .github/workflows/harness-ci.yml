@@ -1,0 +1,60 @@
+name: Harness CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  backend-harness:
+    name: Backend harness gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      SECRET_KEY: harness-ci-secret
+      JWT_SECRET_KEY: harness-ci-jwt-secret
+      SECRETS_MASTER_KEY: harness-ci-master-secret
+      AGENT_DATA_DIR: /tmp/hive-agent-data
+      DATABASE_URL: sqlite+aiosqlite:///tmp/hive-ci.db
+      REDIS_URL: redis://localhost:6379/0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Ruff
+        run: ruff check app tests
+
+      - name: Pytest eval and harness suites
+        run: |
+          pytest tests/evals tests/runtime/test_prompt_cache.py tests/runtime/test_prompt_eval.py \
+            tests/services/test_prompt_contracts.py -q
+
+      - name: Memory retrieval and retirement eval
+        run: python -m app.memory.retrieval_eval --data-root /tmp/hive-memory-eval
+
+      - name: Prompt contract eval
+        run: python -m app.runtime.prompt_eval --fail-severity=critical,high
+
+      - name: Internal harness eval
+        run: python -m app.evals.run --suite core_v1 --target clawith --mode internal
+
+      - name: Self-evolution behavior bakeoff
+        run: |
+          python -m app.evals.self_evolution_bakeoff \
+            --hermes-scores-json '{"next_turn_adaptation":85,"repeated_workflow_learning":84,"tool_failure_lesson_reuse":80,"skill_candidate_creation":78,"long_task_resume":70,"safety_tenant_policy":60}'

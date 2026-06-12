@@ -43,6 +43,33 @@ FallbackExecutor = Callable[[str, dict, ToolExecutionContext], Awaitable[str] | 
 ActivityLogger = Callable[..., Awaitable[None] | None]
 EnsureRegistry = Callable[[], None]
 
+TOOL_TIMEOUTS: dict[str, float] = {
+    "execute_code": 120.0,
+    "run_command": 120.0,
+    "create_digital_employee": 120.0,
+    # Long-running harness primitives wrap agent/workflow/DR execution and
+    # must not fall back to the generic 30s timeout.
+    "spawn_subagent": 180.0,
+    "start_workflow": 180.0,
+    "deep_research_run": 180.0,
+    # Synchronous A2A: wraps the target's full LLM turn (incl. its own tool
+    # calls like feishu_wiki_list) + the reply write-back. Must exceed the
+    # inner OrchestrationPolicy timeout (120s) so the write-back isn't
+    # cancelled mid-flight (the "timed out, no final reply persisted" bug).
+    "send_message_to_agent": 180.0,
+    "web_fetch": 60.0,
+    "web_search": 60.0,
+    "firecrawl_fetch": 60.0,
+    "xcrawl_scrape": 60.0,
+    "read_document": 60.0,
+    "send_feishu_message": 45.0,
+    "feishu_doc_read": 45.0,
+    "feishu_url_resolve": 45.0,
+    "feishu_url_read": 90.0,
+    "feishu_drive_file_read": 90.0,
+    "feishu_wiki_read": 45.0,
+}
+
 _TOOL_ERROR_PAYLOAD_RE = re.compile(r"<tool_error>(.*?)</tool_error>", re.DOTALL)
 _EXTERNAL_VISIBLE_TOOLS = frozenset(
     {
@@ -231,7 +258,7 @@ class ToolRuntimeService:
         if self.preflight_service is None:
             self.preflight_service = ActionPreflightService()
         if self.decision_trace_store is None:
-            self.decision_trace_store = DecisionTraceStore()
+            self.decision_trace_store = DecisionTraceStore.persistent_default()
         if self.coordination_runtime is None:
             self.coordination_runtime = coordination_runtime
         if self.coordination_gateway is None:
@@ -301,35 +328,14 @@ class ToolRuntimeService:
         if preflight_block:
             return preflight_block
 
-        _TOOL_TIMEOUTS: dict[str, float] = {
-            "execute_code": 120.0,
-            "run_command": 120.0,
-            "create_digital_employee": 120.0,
-            # Synchronous A2A: wraps the target's full LLM turn (incl. its own tool
-            # calls like feishu_wiki_list) + the reply write-back. Must exceed the
-            # inner OrchestrationPolicy timeout (120s) so the write-back isn't
-            # cancelled mid-flight (the "timed out, no final reply persisted" bug).
-            "send_message_to_agent": 180.0,
-            "web_fetch": 60.0,
-            "web_search": 60.0,
-            "firecrawl_fetch": 60.0,
-            "xcrawl_scrape": 60.0,
-            "read_document": 60.0,
-            "send_feishu_message": 45.0,
-            "feishu_doc_read": 45.0,
-            "feishu_url_resolve": 45.0,
-            "feishu_url_read": 90.0,
-            "feishu_drive_file_read": 90.0,
-            "feishu_wiki_read": 45.0,
-        }
-        timeout_seconds = _TOOL_TIMEOUTS.get(tool_name, 30.0)
+        timeout_seconds = TOOL_TIMEOUTS.get(tool_name, 30.0)
         try:
             result = await asyncio.wait_for(
                 self.execute_with_context(tool_name, arguments, runtime_context),
                 timeout=timeout_seconds,
             )
             tool_error_payload = _extract_tool_error_payload(result)
-            if self.activity_logger and tool_name not in ("list_files", "read_file", "read_document"):
+            if self.activity_logger:
                 await _maybe_await(
                     self.activity_logger(
                         agent_id,
@@ -361,7 +367,7 @@ class ToolRuntimeService:
                     )
             return result
         except asyncio.TimeoutError:
-            if self.activity_logger and tool_name not in ("list_files", "read_file", "read_document"):
+            if self.activity_logger:
                 await _maybe_await(
                     self.activity_logger(
                         agent_id,
@@ -385,7 +391,7 @@ class ToolRuntimeService:
             )
         except Exception as exc:
             traceback.print_exc()
-            if self.activity_logger and tool_name not in ("list_files", "read_file", "read_document"):
+            if self.activity_logger:
                 await _maybe_await(
                     self.activity_logger(
                         agent_id,
@@ -512,7 +518,7 @@ class ToolRuntimeService:
 
             result = await self.backend.execute(request, _execute_approved_request)
             # Activity log for audit trail (mirrors execute() behavior)
-            if self.activity_logger and tool_name not in ("list_files", "read_file", "read_document"):
+            if self.activity_logger:
                 try:
                     detail = {
                         "tool": tool_name,

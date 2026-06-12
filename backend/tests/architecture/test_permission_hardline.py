@@ -17,7 +17,7 @@ def test_governance_uses_canonical_approval_dependency_without_compat_wrapper() 
     assert "async def _request_approval_compat" not in source
     assert "_request_approval_compat(" not in source
     assert "deps.request_approval(" in source
-    assert "reason=dangerous_reason" in source
+    assert '"reason": dangerous_reason or _approval_reason' in source
 
 
 @pytest.mark.asyncio

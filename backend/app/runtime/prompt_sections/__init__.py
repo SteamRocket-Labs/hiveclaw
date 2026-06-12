@@ -13,10 +13,11 @@ FROZEN PREFIX (session-stable):
   § Relationships — colleagues, org structure (relationships.py)
 
 DYNAMIC SUFFIX (per-round):
-  § Memory — 4-layer pyramid + current T3 snapshot (memory.py)
+  § Memory — 4-layer pyramid + current query-scoped memory context (memory.py)
   § Task Playbook — task-aware scenario addenda (scenario.py)
   § Active Runtime Tool Groups — tool groups in session (active_tool_groups.py)
-  § Knowledge — external knowledge retrieval (knowledge.py)
+  § Runtime Metadata — active triggers/current conversation context (prompt_builder.py wrapper)
+  § Knowledge — external knowledge retrieval only (knowledge.py)
   § Environment — user, channel, timestamp (environment.py)
   § Triggers — active triggers (triggers.py)
 """

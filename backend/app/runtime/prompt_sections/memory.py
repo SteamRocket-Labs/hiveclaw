@@ -26,9 +26,14 @@ bypassing the heartbeat curation that normally filters low-signal content. Use O
   * You must override something heartbeat would otherwise drop
   Everything else flows automatically: conversation → T0 logs → extractor picks salient bits \
 into T2 → heartbeat curates T2 into T3. Do not pre-empt that pipeline.
+- `update_memory(memory_id, content, category?)` — Use when a loaded T3 fact is wrong or stale \
+and the user gives an explicit correction. The replacement is write-gated, and the old entry is \
+archived with a supersession edge.
+- `retire_memory(memory_id, reason)` — Use when a loaded T3 fact should leave active recall \
+without replacement. This archives evidence; it does not delete history.
 
 **For category routing (8 categories → 5 T3 files), worked examples, and anti-patterns, \
-load the `memory-guide` system skill before your first `save_memory` call.**
+load the `memory-guide` system skill before your first memory write/update/retire call.**
 
 ### What's Worth Remembering
 - User corrections and preferences (highest value)
@@ -52,6 +57,6 @@ def build_memory_section(memory_snapshot: str = "", *, budget_chars: int | None 
     snapshot = memory_snapshot.strip() if memory_snapshot else "(no memory loaded)"
     if budget_chars is not None and budget_chars > 0 and len(snapshot) > budget_chars:
         snapshot = snapshot[:budget_chars].rstrip() + (
-            "\n...(memory snapshot trimmed to fit budget — use search_memory to retrieve more)"
+            "\n...(memory context trimmed to fit budget — use search_memory to retrieve more)"
         )
     return _MEMORY_SECTION_TEMPLATE.format(memory_snapshot=snapshot)

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import shutil
 import tempfile
@@ -18,6 +17,7 @@ from app.api.skills import _fetch_github_directory, _get_github_token, _parse_gi
 from app.config import get_settings
 from app.services.capability_reuse_service import reuse_existing_skill_for_agent
 from app.services import plan_mode_core
+from app.services.subprocess_env import build_agent_subprocess_env
 from app.services.skill_seeder import BUILTIN_SKILLS
 from app.tools.decorator import ToolMeta, tool
 from app.tools.runtime import ToolExecutionRequest
@@ -367,6 +367,8 @@ async def _refine_soul_inputs(
     primary_users: list[str],
     core_outputs: list[str],
     model_config: dict,
+    usage_agent_id: uuid.UUID | None = None,
+    usage_tenant_id: uuid.UUID | None = None,
 ) -> dict:
     """Use LLM to refine raw HR inputs into rich soul contract content.
 
@@ -410,6 +412,9 @@ async def _refine_soul_inputs(
             temperature=0.4,
             max_tokens=8192,  # CC-standard auxiliary-call floor
             timeout=45.0,
+            usage_source="hr_soul_refine",
+            usage_agent_id=usage_agent_id,
+            usage_tenant_id=usage_tenant_id,
         )
         content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
         if not content or not content.strip():
@@ -670,9 +675,7 @@ async def _install_external_skill_from_skills_ref(
     work_dir.mkdir(parents=True, exist_ok=True)
 
     exec_home = Path(tempfile.mkdtemp(prefix=f"hr_skill_ref_{agent_id}_"))
-    safe_env = dict(os.environ)
-    safe_env["HOME"] = str(exec_home)
-    safe_env["PYTHONDONTWRITEBYTECODE"] = "1"
+    safe_env = build_agent_subprocess_env(home=exec_home)
 
     proc = await asyncio.create_subprocess_exec(
         "bash",
@@ -1243,6 +1246,8 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                 primary_users=_parse_list(args.get("primary_users")),
                 core_outputs=_parse_list(args.get("core_outputs")),
                 model_config=_model_cfg,
+                usage_agent_id=_hr_agent.id if _hr_agent else None,
+                usage_tenant_id=tenant_id,
             )
             role_description = _refined["role_description"]
             personality = _refined.get("personality", personality)

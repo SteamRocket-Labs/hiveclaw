@@ -36,5 +36,5 @@ def test_skill_distiller_promotion_records_evolution_ledger() -> None:
     source = (APP_ROOT / "services" / "skill_distiller.py").read_text(encoding="utf-8")
 
     assert "record_evolution_candidate" in source
-    assert "record_eval_run" in source
+    assert "record_verification_eval" in source
     assert "record_promotion_decision" in source

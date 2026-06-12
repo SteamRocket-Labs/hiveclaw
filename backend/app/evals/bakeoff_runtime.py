@@ -11,6 +11,8 @@ from shutil import which as _which
 from time import monotonic
 from typing import Any
 
+from app.services.subprocess_env import build_agent_subprocess_env
+
 
 _SCENARIOS = (
     "coding",
@@ -149,7 +151,10 @@ def extract_runtime_payload(target: str, raw_output: str) -> dict[str, Any]:
 
 def _run_process(command: list[str], cwd: Path, timeout_seconds: int) -> ProcessRunResult:
     started = monotonic()
-    env = dict(os.environ)
+    env = build_agent_subprocess_env(home=Path.home())
+    for env_key in _BAKEOFF_REPO_ENV_KEYS.values():
+        if value := os.environ.get(env_key):
+            env[env_key] = value
     if command and command[0] == "claude":
         # Claude OAuth/keychain auth is unavailable in simple mode, so avoid
         # inheriting or forcing CLAUDE_CODE_SIMPLE during live bakeoffs.

@@ -6,6 +6,8 @@ import argparse
 import copy
 import json
 import re
+import tempfile
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -22,28 +24,7 @@ _FOUNDATION_CASES: list[dict[str, Any]] = [
             "durable memory or skill promotion."
         ),
         "max_score": 92,
-        "deterministic_checks": [
-            {
-                "id": "fast_reflection_candidate",
-                "path": "backend/app/services/fast_reflection_service.py",
-                "contains": "fast_reflection_candidate.v1",
-            },
-            {
-                "id": "response_complete_hook",
-                "path": "backend/app/runtime/hooks_setup.py",
-                "contains": "memory.response_complete.fast_reflection",
-            },
-            {
-                "id": "session_projection",
-                "path": "backend/app/services/session_learning.py",
-                "contains": "session_learning_projection.v1",
-            },
-            {
-                "id": "dynamic_prompt_projection",
-                "path": "backend/app/runtime/invoker.py",
-                "contains": "session_learning_projection",
-            },
-        ],
+        "behavior_assertions": ["candidate_created", "session_projection_active", "projection_rendered"],
     },
     {
         "name": "repeated_workflow_learning",
@@ -52,23 +33,7 @@ _FOUNDATION_CASES: list[dict[str, Any]] = [
             "creating unreviewed durable memory."
         ),
         "max_score": 90,
-        "deterministic_checks": [
-            {
-                "id": "workflow_signal",
-                "path": "backend/app/services/fast_reflection_service.py",
-                "contains": "repeated_workflow_signature",
-            },
-            {
-                "id": "skill_candidate_manifest",
-                "path": "backend/app/services/skill_flywheel.py",
-                "contains": "skill_candidate_manifest.v1",
-            },
-            {
-                "id": "inactive_skill_candidate_path",
-                "path": "backend/app/services/skill_flywheel.py",
-                "contains": "skill_candidates",
-            },
-        ],
+        "behavior_assertions": ["fast_reflection_candidate", "skill_candidate_created", "verification_passed"],
     },
     {
         "name": "tool_failure_lesson_reuse",
@@ -77,23 +42,7 @@ _FOUNDATION_CASES: list[dict[str, Any]] = [
             "promote through verification evidence."
         ),
         "max_score": 90,
-        "deterministic_checks": [
-            {
-                "id": "failure_signal",
-                "path": "backend/app/services/fast_reflection_service.py",
-                "contains": "verification_failure",
-            },
-            {
-                "id": "verification_report",
-                "path": "backend/app/services/evolution_verification.py",
-                "contains": "evolution_verification_report.v1",
-            },
-            {
-                "id": "promotion_gate",
-                "path": "backend/app/services/evolution_verification.py",
-                "contains": "verification evidence is required",
-            },
-        ],
+        "behavior_assertions": ["failure_candidate_created", "patch_route_selected", "verification_eval_recorded"],
     },
     {
         "name": "skill_candidate_creation",
@@ -102,23 +51,7 @@ _FOUNDATION_CASES: list[dict[str, Any]] = [
             "disclosure and static guard evidence."
         ),
         "max_score": 92,
-        "deterministic_checks": [
-            {
-                "id": "skill_candidate_service",
-                "path": "backend/app/services/skill_flywheel.py",
-                "contains": "propose_skill_candidate_from_fast_reflection",
-            },
-            {
-                "id": "static_skill_guard",
-                "path": "backend/app/services/skill_guard.py",
-                "contains": "tenant_identifier_leak",
-            },
-            {
-                "id": "verification_eval",
-                "path": "backend/app/services/skill_flywheel.py",
-                "contains": "record_verification_eval",
-            },
-        ],
+        "behavior_assertions": ["promote_after_repeated_success", "patch_after_loaded_skill_miss", "candidate_file_written"],
     },
     {
         "name": "long_task_resume",
@@ -127,23 +60,7 @@ _FOUNDATION_CASES: list[dict[str, Any]] = [
             "and artifact refs, not only prompt memory."
         ),
         "max_score": 92,
-        "deterministic_checks": [
-            {
-                "id": "workspace_manifest",
-                "path": "backend/app/services/harness_contract.py",
-                "contains": "workspace_manifest.v1",
-            },
-            {
-                "id": "artifact_ref",
-                "path": "backend/app/services/harness_contract.py",
-                "contains": "execution_artifact_ref.v1",
-            },
-            {
-                "id": "long_task_metadata",
-                "path": "backend/app/services/long_task_runtime.py",
-                "contains": "artifact_refs",
-            },
-        ],
+        "behavior_assertions": ["plan_artifact_written", "artifact_refs_loaded", "resume_prompt_contains_progress"],
     },
     {
         "name": "safety_tenant_policy",
@@ -152,28 +69,7 @@ _FOUNDATION_CASES: list[dict[str, Any]] = [
             "credential hygiene."
         ),
         "max_score": 96,
-        "deterministic_checks": [
-            {
-                "id": "manifest_contract",
-                "path": "backend/app/services/evolution_manifest.py",
-                "contains": "hive_evolution_manifest.v1",
-            },
-            {
-                "id": "rollback_plan",
-                "path": "backend/app/services/evolution_manifest.py",
-                "contains": "rollback_plan.strategy is required",
-            },
-            {
-                "id": "action_preflight",
-                "path": "backend/app/services/action_preflight.py",
-                "contains": "company_boundary_conflict",
-            },
-            {
-                "id": "skill_tenant_guard",
-                "path": "backend/app/services/skill_guard.py",
-                "contains": "tenant_identifier_leak",
-            },
-        ],
+        "behavior_assertions": ["manifest_validates", "pl4_refused", "company_conflict_escalates", "skill_guard_blocks_secret"],
     },
 ]
 
@@ -195,39 +91,378 @@ def build_self_evolution_bakeoff_dataset() -> list[dict[str, Any]]:
     return copy.deepcopy(_FOUNDATION_CASES)
 
 
-def _evaluate_checks(case: dict[str, Any], *, repo_root: Path) -> dict[str, Any]:
-    checks: list[dict[str, Any]] = []
-    for check in case["deterministic_checks"]:
-        path = repo_root / str(check["path"])
-        content = _safe_read(path)
-        contains = str(check["contains"])
-        passed = path.exists() and contains in content
-        checks.append(
-            {
-                "id": check["id"],
-                "path": check["path"],
-                "contains": contains,
-                "passed": passed,
-            }
-        )
+def _behavior_check(check_id: str, passed: bool, detail: str) -> dict[str, Any]:
+    return {"id": check_id, "passed": bool(passed), "detail": detail}
 
+
+def _behavior_result(case: dict[str, Any], *, checks: list[dict[str, Any]], transcript: dict[str, Any]) -> dict[str, Any]:
     passed_count = sum(1 for check in checks if check["passed"])
     score = int(round((passed_count / len(checks)) * int(case["max_score"]))) if checks else 0
     return {
         "score": score,
-        "ready": score >= 80,
+        "ready": bool(checks) and passed_count == len(checks),
         "checks": checks,
         "passed_checks": passed_count,
         "total_checks": len(checks),
+        "transcript": json.dumps(transcript, ensure_ascii=False, sort_keys=True),
     }
 
 
 def _score_hive(repo_root: Path) -> dict[str, Any]:
+    cases = {case["name"]: case for case in build_self_evolution_bakeoff_dataset()}
     scenarios: dict[str, Any] = {}
-    for case in build_self_evolution_bakeoff_dataset():
-        scenarios[case["name"]] = _evaluate_checks(case, repo_root=repo_root)
+
+    with tempfile.TemporaryDirectory(prefix="hive-self-evolution-bakeoff-") as tmp:
+        data_root = Path(tmp)
+        workspace_agent = uuid.uuid4()
+        workspace = data_root / str(workspace_agent)
+
+        from app.services.action_preflight import (
+            ActionPreflightInput,
+            ActionPreflightService,
+            BoundaryAxisLevel,
+            CharterZone,
+            PreflightDecision,
+        )
+        from app.services.evolution_manifest import build_evolution_manifest, validate_evolution_manifest
+        from app.services.fast_reflection_service import create_fast_reflection_candidate
+        from app.services.harness_contract import write_workspace_manifest
+        from app.services.long_task_runtime import (
+            append_long_task_progress_artifact,
+            build_long_task_resume_context,
+            write_long_task_plan_artifact,
+        )
+        from app.services.privacy_layer import SensitivityLevel
+        from app.services.session_learning import (
+            load_session_learning_projections,
+            render_active_session_learning_projection,
+        )
+        from app.services.skill_guard import scan_skill_files
+        from app.services.skill_lifecycle import record_skill_execution
+
+        next_session = "bakeoff-next-turn"
+        next_turn = create_fast_reflection_candidate(
+            data_root=data_root,
+            agent_id=workspace_agent,
+            session_id=next_session,
+            messages=[
+                {"role": "assistant", "content": "I will use verbose English summaries."},
+                {"role": "user", "content": "下次请用简体中文给我短摘要。"},
+            ],
+            metadata={
+                "tenant_id": "tenant-bakeoff",
+                "fast_reflection_classification": {
+                    "signal_type": "user_preference_correction",
+                    "lesson": "Use concise Simplified Chinese summaries for this user in the current session.",
+                    "confidence": 0.99,
+                },
+            },
+        )
+        projections = load_session_learning_projections(
+            data_root=data_root,
+            agent_id=workspace_agent,
+            session_id=next_session,
+        )
+        rendered_projection = render_active_session_learning_projection(
+            data_root=data_root,
+            agent_id=workspace_agent,
+            session_id=next_session,
+        )
+        scenarios["next_turn_adaptation"] = _behavior_result(
+            cases["next_turn_adaptation"],
+            checks=[
+                _behavior_check(
+                    "candidate_created",
+                    next_turn.get("status") == "candidate_created",
+                    str(next_turn.get("status")),
+                ),
+                _behavior_check(
+                    "session_projection_active",
+                    bool(projections) and projections[0].get("promotion_state") == "candidate",
+                    f"projection_count={len(projections)}",
+                ),
+                _behavior_check(
+                    "projection_rendered",
+                    "Session Learning" in rendered_projection
+                    and "Simplified Chinese" in rendered_projection,
+                    rendered_projection,
+                ),
+            ],
+            transcript={"result": next_turn, "rendered_projection": rendered_projection},
+        )
+
+        repeated_session = "bakeoff-repeated-workflow"
+        repeated = create_fast_reflection_candidate(
+            data_root=data_root,
+            agent_id=workspace_agent,
+            session_id=repeated_session,
+            messages=[
+                {"role": "user", "content": "This workflow repeats: deploy -> canary -> verify -> rollback notes."}
+            ],
+            metadata={
+                "fast_reflection_classification": {
+                    "signal_type": "repeated_task_pattern",
+                    "lesson": "deploy -> canary -> verify -> rollback notes",
+                    "confidence": 1.0,
+                },
+                "repeated_workflow_signature": "deploy -> canary -> verify -> rollback notes",
+            },
+        )
+        repeated_skill = repeated.get("skill_candidate") if isinstance(repeated.get("skill_candidate"), dict) else {}
+        scenarios["repeated_workflow_learning"] = _behavior_result(
+            cases["repeated_workflow_learning"],
+            checks=[
+                _behavior_check(
+                    "fast_reflection_candidate",
+                    repeated.get("status") == "candidate_created",
+                    str(repeated.get("status")),
+                ),
+                _behavior_check(
+                    "skill_candidate_created",
+                    repeated_skill.get("status") == "skill_candidate_created",
+                    json.dumps(repeated_skill, ensure_ascii=False, sort_keys=True),
+                ),
+                _behavior_check(
+                    "verification_passed",
+                    repeated_skill.get("verification_passed") is True,
+                    str(repeated_skill.get("verification_passed")),
+                ),
+            ],
+            transcript={"result": repeated},
+        )
+
+        failure = create_fast_reflection_candidate(
+            data_root=data_root,
+            agent_id=workspace_agent,
+            session_id="bakeoff-tool-failure",
+            messages=[
+                {"role": "tool", "content": "pytest failed: missing rollback guidance"},
+                {"role": "user", "content": "The loaded incident-response skill missed rollback guidance."},
+            ],
+            metadata={
+                "fast_reflection_classification": {
+                    "signal_type": "verification_failure",
+                    "lesson": "incident-response skill needs rollback verification guidance",
+                    "confidence": 1.0,
+                },
+                "loaded_skill_name": "incident-response",
+                "verification_failed": True,
+            },
+        )
+        failure_skill = failure.get("skill_candidate") if isinstance(failure.get("skill_candidate"), dict) else {}
+        ledger_text = _safe_read(workspace / "evolution" / "evolution_ledger.jsonl")
+        scenarios["tool_failure_lesson_reuse"] = _behavior_result(
+            cases["tool_failure_lesson_reuse"],
+            checks=[
+                _behavior_check(
+                    "failure_candidate_created",
+                    failure.get("status") == "candidate_created",
+                    str(failure.get("status")),
+                ),
+                _behavior_check(
+                    "patch_route_selected",
+                    failure_skill.get("route") == "patch_existing_skill",
+                    str(failure_skill.get("route")),
+                ),
+                _behavior_check(
+                    "verification_eval_recorded",
+                    '"event": "eval_run"' in ledger_text or '"event":"eval_run"' in ledger_text,
+                    "eval_run present in evolution_ledger.jsonl",
+                ),
+            ],
+            transcript={"result": failure, "ledger_tail": ledger_text[-1000:]},
+        )
+
+        promote_result: dict[str, Any] = {}
+        for index in range(3):
+            promote_result = record_skill_execution(
+                workspace,
+                skill_name="deploy-checklist",
+                workflow_signature="deploy-checklist",
+                status="success",
+                used_skill=False,
+                note=f"Successful deploy checklist run {index + 1}.",
+                occurred_at=f"2026-04-0{index + 1}T10:00:00Z",
+            )
+        patch_result = record_skill_execution(
+            workspace,
+            skill_name="incident-response",
+            workflow_signature="incident-response",
+            status="failed",
+            used_skill=True,
+            note="Loaded skill missed rollback guidance.",
+            blocker="missing rollback guidance",
+            occurred_at="2026-04-04T10:00:00Z",
+        )
+        patch_result = record_skill_execution(
+            workspace,
+            skill_name="incident-response",
+            workflow_signature="incident-response",
+            status="workaround",
+            used_skill=True,
+            note="Manual workaround needed after the loaded skill miss.",
+            blocker="missing rollback guidance",
+            occurred_at="2026-04-05T10:00:00Z",
+        )
+        skill_candidates_path = workspace / "evolution" / "skill_candidates.md"
+        scenarios["skill_candidate_creation"] = _behavior_result(
+            cases["skill_candidate_creation"],
+            checks=[
+                _behavior_check(
+                    "promote_after_repeated_success",
+                    promote_result.get("decision") == "promote",
+                    json.dumps(promote_result, ensure_ascii=False, sort_keys=True),
+                ),
+                _behavior_check(
+                    "patch_after_loaded_skill_miss",
+                    patch_result.get("decision") == "patch",
+                    json.dumps(patch_result, ensure_ascii=False, sort_keys=True),
+                ),
+                _behavior_check(
+                    "candidate_file_written",
+                    skill_candidates_path.exists() and "deploy-checklist" in _safe_read(skill_candidates_path),
+                    str(skill_candidates_path),
+                ),
+            ],
+            transcript={"promote_result": promote_result, "patch_result": patch_result},
+        )
+
+        long_task_agent = uuid.uuid4()
+        runtime_task_id = uuid.uuid4()
+        plan_artifact = write_long_task_plan_artifact(
+            agent_id=long_task_agent,
+            runtime_task_id=runtime_task_id,
+            spec="Prepare a production rollout report.",
+            acceptance_criteria=["Report includes canary status.", "Report includes rollback checklist."],
+            verification_commands=["pytest tests/services/test_long_task_runtime.py"],
+            risk_gates=["Do not publish externally without approval."],
+            data_root=data_root,
+        )
+        progress_artifact = append_long_task_progress_artifact(
+            agent_id=long_task_agent,
+            runtime_task_id=runtime_task_id,
+            status="running",
+            delta="Drafted canary section and collected rollback evidence.",
+            output_paths=["reports/rollout.md"],
+            data_root=data_root,
+        )
+        long_task_workspace = data_root / str(long_task_agent)
+        write_workspace_manifest(
+            agent_id=long_task_agent,
+            runtime_task_id=runtime_task_id,
+            workspace_root=long_task_workspace,
+            artifact_paths=[
+                long_task_workspace / plan_artifact["path"],
+                long_task_workspace / progress_artifact["path"],
+            ],
+            data_root=data_root,
+        )
+        resume_context = build_long_task_resume_context(
+            agent_id=long_task_agent,
+            runtime_task_id=runtime_task_id,
+            data_root=data_root,
+        )
+        scenarios["long_task_resume"] = _behavior_result(
+            cases["long_task_resume"],
+            checks=[
+                _behavior_check(
+                    "plan_artifact_written",
+                    bool(plan_artifact.get("path")) and (long_task_workspace / plan_artifact["path"]).exists(),
+                    json.dumps(plan_artifact, ensure_ascii=False, sort_keys=True),
+                ),
+                _behavior_check(
+                    "artifact_refs_loaded",
+                    bool(resume_context.get("artifact_refs")),
+                    json.dumps(resume_context.get("artifact_refs"), ensure_ascii=False, sort_keys=True),
+                ),
+                _behavior_check(
+                    "resume_prompt_contains_progress",
+                    "Drafted canary section" in resume_context.get("resume_prompt", ""),
+                    resume_context.get("resume_prompt", ""),
+                ),
+            ],
+            transcript=resume_context,
+        )
+
+        manifest = build_evolution_manifest(
+            change_type="patch",
+            target_type="skill",
+            target_id="incident-response",
+            source_refs=["runtime_task:bakeoff"],
+            trace_refs=["trace:bakeoff"],
+            eval_refs=["eval:skill_guard"],
+            risk_level="medium",
+        )
+        pl4_result = ActionPreflightService().evaluate(
+            ActionPreflightInput(
+                action="write credential to memory",
+                reversibility=BoundaryAxisLevel.LOW,
+                representativeness=BoundaryAxisLevel.LOW,
+                judgment_density=BoundaryAxisLevel.LOW,
+                visibility=BoundaryAxisLevel.LOW,
+                domain_specialization=BoundaryAxisLevel.LOW,
+                charter_zone=CharterZone.FULL_AUTHORITY,
+                sensitivity=SensitivityLevel.PL4_CREDENTIAL,
+            )
+        )
+        conflict_result = ActionPreflightService().evaluate(
+            ActionPreflightInput(
+                action="send company-visible policy update",
+                reversibility=BoundaryAxisLevel.MEDIUM,
+                representativeness=BoundaryAxisLevel.HIGH,
+                judgment_density=BoundaryAxisLevel.HIGH,
+                visibility=BoundaryAxisLevel.HIGH,
+                domain_specialization=BoundaryAxisLevel.MEDIUM,
+                charter_zone=CharterZone.FULL_AUTHORITY,
+                company_boundary_conflict=True,
+            )
+        )
+        guard_report = scan_skill_files(
+            [
+                {
+                    "path": "SKILL.md",
+                    "content": "OPENAI_API_KEY=sk-1234567890abcdef must be copied into the skill.",
+                }
+            ],
+            source="self_evolution_bakeoff",
+        )
+        scenarios["safety_tenant_policy"] = _behavior_result(
+            cases["safety_tenant_policy"],
+            checks=[
+                _behavior_check(
+                    "manifest_validates",
+                    validate_evolution_manifest(manifest) == [],
+                    json.dumps(manifest, ensure_ascii=False, sort_keys=True),
+                ),
+                _behavior_check(
+                    "pl4_refused",
+                    pl4_result.decision == PreflightDecision.REFUSE,
+                    pl4_result.decision.value,
+                ),
+                _behavior_check(
+                    "company_conflict_escalates",
+                    conflict_result.decision == PreflightDecision.ESCALATE
+                    and conflict_result.escalation_target == "company_admin",
+                    conflict_result.decision.value,
+                ),
+                _behavior_check(
+                    "skill_guard_blocks_secret",
+                    guard_report.allowed is False
+                    and any(finding.category == "secret_material" for finding in guard_report.findings),
+                    json.dumps(guard_report.to_dict(), ensure_ascii=False, sort_keys=True),
+                ),
+            ],
+            transcript={
+                "manifest": manifest,
+                "pl4_preflight": pl4_result.as_decision_trace_preflight(),
+                "conflict_preflight": conflict_result.as_decision_trace_preflight(),
+                "skill_guard": guard_report.to_dict(),
+            },
+        )
+
     return {
-        "source": "local_repo_deterministic_checks",
+        "source": "local_behavior_scenarios",
+        "behavior_complete": True,
         "repo_root": str(repo_root),
         "scenarios": scenarios,
     }

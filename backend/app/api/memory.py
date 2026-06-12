@@ -294,6 +294,7 @@ async def upsert_team_memory(
         SecretScanError,
         TeamMemoryConflictError,
         TeamMemoryStore,
+        TeamMemoryWriteRejectedError,
     )
 
     target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
@@ -311,6 +312,8 @@ async def upsert_team_memory(
             sync_token=data.sync_token,
         )
     except SecretScanError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TeamMemoryWriteRejectedError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except InvalidTeamMemoryModeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

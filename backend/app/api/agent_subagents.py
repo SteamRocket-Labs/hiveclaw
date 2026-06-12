@@ -106,7 +106,13 @@ async def _generate_definition_response(
         raise HTTPException(status_code=422, detail="description is required")
     existing = [row["name"] for row in list_subagent_definitions(agent_id=agent_id, tenant_id=tenant_id)]
     try:
-        definition = await generate_subagent_definition(value, model_config=model_config, existing_names=existing)
+        definition = await generate_subagent_definition(
+            value,
+            model_config=model_config,
+            existing_names=existing,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+        )
     except SubagentGenerationError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"definition": definition}

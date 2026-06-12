@@ -54,6 +54,7 @@ _FILE_SYSTEM = {
 }
 _SKILLS = {"load_skill", "save_skill", "pin_skill", "tool_search", "discover_resources", "import_mcp_server"}
 _SCHEDULED = {"set_trigger", "update_trigger", "cancel_trigger", "list_triggers"}
+_MEMORY = {"search_memory", "load_memory", "save_memory", "update_memory", "retire_memory"}
 _CHANNEL = {
     "send_feishu_message",
     "send_web_message",
@@ -177,6 +178,8 @@ def infer_category(tool_name: str) -> str:
         return "Skills"
     if tool_name in _SCHEDULED:
         return "Scheduled"
+    if tool_name in _MEMORY:
+        return "Memory"
     if tool_name in _CHANNEL:
         return "IM Channel"
     if tool_name in _WEB:

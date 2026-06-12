@@ -4,6 +4,7 @@ import {
   CHAT_SOCKET_KEEPALIVE_INTERVAL_MS,
   buildChatSocketKeepaliveMessage,
   buildRuntimeSummary,
+  applyStreamingChunkEvent,
   computeComposerHeight,
   getCompactionDisplayContent,
   getRuntimeEventMessage,
@@ -41,6 +42,16 @@ describe('chatRuntime helpers', () => {
 
     expect(result.activeRuns).toEqual({ 'agent-1:session-1': { runId: 'run-1', status: 'running' } });
     expect(result.uiStates).toEqual({ 'agent-1:session-1': { isWaiting: true, isStreaming: false } });
+  });
+
+  it('resets the streaming assistant when a chunk tombstone arrives', () => {
+    const current = [{ role: 'assistant' as const, content: 'partial ', _streaming: true } as any];
+
+    const reset = applyStreamingChunkEvent(current, { type: 'chunk', content: '', reset: true });
+    const retried = applyStreamingChunkEvent(reset, { type: 'chunk', content: 'partial answer' });
+
+    expect(reset).toEqual([{ role: 'assistant', content: '', _streaming: true }]);
+    expect(retried).toEqual([{ role: 'assistant', content: 'partial answer', _streaming: true }]);
   });
 
   it('maps compaction runtime events into event messages', () => {

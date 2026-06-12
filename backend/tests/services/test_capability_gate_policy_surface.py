@@ -90,6 +90,12 @@ def test_capability_map_covers_subagent_spawn_tool():
     assert CAPABILITY_MAP.get("spawn_subagent") == "agent.subagent.spawn"
 
 
+def test_capability_map_covers_memory_write_controls():
+    assert CAPABILITY_MAP.get("save_memory") == "agent.memory.write"
+    assert CAPABILITY_MAP.get("update_memory") == "agent.memory.write"
+    assert CAPABILITY_MAP.get("retire_memory") == "agent.memory.write"
+
+
 def test_capability_definitions_expose_policy_capabilities_for_frontend():
     definitions = {item["capability"]: set(item["tools"]) for item in get_all_capabilities()}
 

@@ -107,16 +107,70 @@ async def test_kernel_reuses_frozen_prefix_but_refreshes_dynamic_retrieval():
     assert session_ctx.prompt_prefix == "FROZEN"
     assert session_ctx.prompt_fingerprint
 
-    first_prompt = fake_client.calls[0]["messages"][0].content
-    second_prompt = fake_client.calls[1]["messages"][0].content
+    first_system = fake_client.calls[0]["messages"][0].content
+    second_system = fake_client.calls[1]["messages"][0].content
+    first_dynamic = fake_client.calls[0]["messages"][-1].content
+    second_dynamic = fake_client.calls[1]["messages"][-1].content
 
-    assert "SNAPSHOT_BLOCK" in first_prompt
-    assert "## Your Memory System" in first_prompt
-    assert second_prompt.count("SNAPSHOT_BLOCK") == 1
-    assert "RETRIEVAL_1" in first_prompt
-    assert "RETRIEVAL_2" in second_prompt
-    assert "## Memory Navigation" in first_prompt
-    assert "mem_safe" in second_prompt
+    assert "SNAPSHOT_BLOCK" not in first_system
+    assert "RETRIEVAL_1" not in first_system
+    assert "SNAPSHOT_BLOCK" not in second_system
+    assert "SNAPSHOT_BLOCK" in first_dynamic
+    assert "## Your Memory System" in first_dynamic
+    assert second_dynamic.count("SNAPSHOT_BLOCK") == 1
+    assert "RETRIEVAL_1" in first_dynamic
+    assert "RETRIEVAL_2" in second_dynamic
+    assert "## Memory Navigation" in first_dynamic
+    assert "mem_safe" in second_dynamic
+
+
+@pytest.mark.asyncio
+async def test_kernel_routes_runtime_metadata_outside_knowledge_section():
+    from app.kernel.contracts import InvocationRequest, RuntimeConfig
+    from app.kernel.engine import AgentKernel, KernelDependencies
+
+    tenant_id = uuid4()
+    session_ctx = SessionContext(session_id="s-runtime", source="chat")
+    fake_client = _FakeClient(
+        [SimpleNamespace(content="done", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3})]
+    )
+
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=tenant_id, max_tool_rounds=3),
+            resolve_current_user_name=lambda _user_id: "Rocky",
+            build_system_prompt=lambda *_args, **_kwargs: "FROZEN",
+            resolve_memory_context=lambda *_args, **_kwargs: "MEMORY_CONTEXT",
+            resolve_runtime_metadata_context=lambda *_args, **_kwargs: "## Runtime Metadata\nACTIVE_TRIGGER",
+            resolve_retrieval_context=lambda *_args, **_kwargs: "EXTERNAL_KNOWLEDGE",
+            get_tools=lambda *_args, **_kwargs: [],
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda _model: fake_client,
+            execute_tool=lambda *_args, **_kwargs: "OK",
+            persist_memory=lambda **_kwargs: None,
+            record_token_usage=lambda *_args, **_kwargs: None,
+            get_max_tokens=lambda *_args, **_kwargs: 1024,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens"),
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    await kernel.handle(
+        InvocationRequest(
+            model=_make_model(),
+            messages=[{"role": "user", "content": "hello"}],
+            agent_name="Agent",
+            role_description="desc",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            session_context=session_ctx,
+        )
+    )
+
+    dynamic_prompt = fake_client.calls[0]["messages"][-1].content
+    assert "## Runtime Metadata\nACTIVE_TRIGGER" in dynamic_prompt
+    assert "## Knowledge" in dynamic_prompt
+    assert dynamic_prompt.index("## Runtime Metadata") < dynamic_prompt.index("## Knowledge")
 
 
 @pytest.mark.asyncio
@@ -262,11 +316,14 @@ async def test_tool_expansion_rebuild_preserves_dynamic_memory_and_effective_suf
     assert fake_client.calls[1]["tools"][0]["function"]["name"] == "delegate_to_agent"
     assert len(fake_client.calls[1]["tools"]) == 1
 
-    expanded_prompt = fake_client.calls[1]["messages"][0].content
-    assert "SNAPSHOT_BLOCK" in expanded_prompt
-    assert "RETRIEVAL_BLOCK" in expanded_prompt
-    assert "web_pack" in expanded_prompt
-    assert "coordinator mode" in expanded_prompt.lower()
+    expanded_system = fake_client.calls[1]["messages"][0].content
+    expanded_dynamic = fake_client.calls[1]["messages"][-1].content
+    assert "SNAPSHOT_BLOCK" not in expanded_system
+    assert "RETRIEVAL_BLOCK" not in expanded_system
+    assert "SNAPSHOT_BLOCK" in expanded_dynamic
+    assert "RETRIEVAL_BLOCK" in expanded_dynamic
+    assert "web_pack" in expanded_dynamic
+    assert "coordinator mode" in expanded_dynamic.lower()
 
 
 @pytest.mark.asyncio
@@ -317,9 +374,12 @@ async def test_coordinator_and_delegation_suffixes_have_independent_budgets(monk
         )
     )
 
-    prompt = fake_client.calls[0]["messages"][0].content
-    assert "DELEGATION_SUFFIX_START" in prompt
-    assert "COORDINATOR_SUFFIX_START" in prompt
+    system_prompt = fake_client.calls[0]["messages"][0].content
+    dynamic_prompt = fake_client.calls[0]["messages"][-1].content
+    assert "DELEGATION_SUFFIX_START" not in system_prompt
+    assert "COORDINATOR_SUFFIX_START" not in system_prompt
+    assert "DELEGATION_SUFFIX_START" in dynamic_prompt
+    assert "COORDINATOR_SUFFIX_START" in dynamic_prompt
 
 
 @pytest.mark.asyncio
@@ -373,10 +433,13 @@ async def test_prompt_too_long_retry_preserves_dynamic_context_blocks():
     )
 
     assert result.content == "done"
-    retry_prompt = fake_client.calls[1]["messages"][0].content
-    assert "SNAPSHOT_BLOCK" in retry_prompt
-    assert "RETRIEVAL_BLOCK" in retry_prompt
-    assert "Rocky" in retry_prompt
+    retry_system = fake_client.calls[1]["messages"][0].content
+    retry_dynamic = fake_client.calls[1]["messages"][-1].content
+    assert "SNAPSHOT_BLOCK" not in retry_system
+    assert "RETRIEVAL_BLOCK" not in retry_system
+    assert "SNAPSHOT_BLOCK" in retry_dynamic
+    assert "RETRIEVAL_BLOCK" in retry_dynamic
+    assert "Rocky" in retry_dynamic
 
 
 # ── P1-1a: cache key purity (no user_name / context_window pollution) ──────

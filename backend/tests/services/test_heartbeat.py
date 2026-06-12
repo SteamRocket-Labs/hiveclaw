@@ -74,8 +74,32 @@ def test_parse_heartbeat_outcome_accepts_curated_alias():
     from app.services.heartbeat import _parse_heartbeat_outcome
 
     outcome, score = _parse_heartbeat_outcome("Curated 3 learnings into feedback.md.\n\n[OUTCOME:curated] [SCORE:7]")
-    assert outcome == "action_taken"
+    assert outcome == "curated"
     assert score == 7
+
+
+def test_update_evolution_files_counts_curated_as_useful_lane(monkeypatch, tmp_path):
+    from app.services import heartbeat
+
+    agent_id = uuid4()
+    workspace = tmp_path / str(agent_id)
+    (workspace / "evolution").mkdir(parents=True)
+    monkeypatch.setattr(heartbeat, "_get_canonical_workspace", lambda _agent_id: workspace)
+
+    heartbeat._update_evolution_files(
+        agent_id,
+        "curated",
+        7,
+        "Curated three learnings into memory candidates.",
+        source="heartbeat",
+    )
+
+    scorecard = (workspace / "evolution" / "scorecard.md").read_text(encoding="utf-8")
+    lineage = (workspace / "evolution" / "lineage.md").read_text(encoding="utf-8")
+
+    assert "- total_heartbeats: 1" in scorecard
+    assert "- useful_heartbeats: 1" in scorecard
+    assert "- Outcome: curated, score=7" in lineage
 
 
 def test_compose_heartbeat_instruction_adds_strategy_boundary() -> None:
@@ -276,6 +300,24 @@ async def test_heartbeat_distributed_lease_uses_redis(monkeypatch):
     assert calls[0][0] == "set"
     assert calls[0][1] == f"heartbeat_lease:{agent_id}"
     assert calls[1] == ("delete", f"heartbeat_lease:{agent_id}")
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_distributed_lease_failure_fails_closed(monkeypatch):
+    from app.services import heartbeat
+
+    agent_id = uuid4()
+    heartbeat._heartbeat_leases.clear()
+
+    async def fake_get_redis():
+        raise RuntimeError("redis unavailable")
+
+    monkeypatch.setattr(heartbeat, "get_redis", fake_get_redis)
+
+    acquired = await heartbeat._try_acquire_heartbeat_lease_async(agent_id)
+
+    assert acquired is False
+    assert agent_id not in heartbeat._heartbeat_leases
 
 
 # ─── _build_evolution_context ───────────────────────────────────
@@ -516,9 +558,13 @@ async def test_execute_heartbeat_uses_correct_settings(monkeypatch):
         captured["request"] = request
         return SimpleNamespace(content="Did work\n[OUTCOME:action_taken] [SCORE:5]")
 
+    async def fake_try_acquire_heartbeat_lease(_agent_id):
+        return True
+
     monkeypatch.setattr("app.database.async_session", lambda: fake_session)
     monkeypatch.setattr("app.services.heartbeat.invoke_agent", fake_invoke_agent)
     monkeypatch.setattr("app.services.heartbeat._load_heartbeat_instruction", lambda _id: "HB")
+    monkeypatch.setattr("app.services.heartbeat._try_acquire_heartbeat_lease_async", fake_try_acquire_heartbeat_lease)
 
     # Stub activity logger and execution context
     async def _noop_log(*args, **kwargs):

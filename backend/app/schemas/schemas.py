@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, EmailStr, Field, model_validator
 
@@ -492,6 +492,7 @@ class PaginatedResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str = "ok"
     version: str
+    components: dict[str, Any] = Field(default_factory=dict)
 
 
 # ─── Gateway (OpenClaw) ─────────────────────────────────

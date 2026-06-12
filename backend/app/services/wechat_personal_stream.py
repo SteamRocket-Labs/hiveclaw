@@ -577,10 +577,13 @@ async def _process_wechat_message(
                 history=history,
                 user_id=platform_user_id,
                 session_id=session_conv_id,
-                session_source="wechat_personal",
-                session_channel="wechat_personal",
-                allow_bare_plan_confirmation=True,
-            )
+                    session_source="wechat_personal",
+                    session_channel="wechat_personal",
+                    allow_bare_plan_confirmation=True,
+                    durable_run=True,
+                    durable_session=sess,
+                    durable_user=platform_user,
+                )
         finally:
             _cdt.reset(_cdt_token)
         logger.info(f"[WeChatPersonal Stream] LLM reply: {reply_text[:100]}")

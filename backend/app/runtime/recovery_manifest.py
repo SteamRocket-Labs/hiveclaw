@@ -26,6 +26,7 @@ class RecoveryManifest:
     # Files the agent recently read or wrote
     recent_reads: list[str] = field(default_factory=list)
     recent_writes: list[str] = field(default_factory=list)
+    file_snapshots: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     # Tool execution outcomes worth preserving
     recent_tool_outcomes: list[dict[str, str]] = field(default_factory=list)
@@ -65,8 +66,17 @@ class RecoveryManifest:
                 sections.append(block)
                 total += len(block)
 
-        _add("Recent Reads", self.recent_reads[-5:])
-        _add("Recent Writes", self.recent_writes[-5:])
+        def _format_file_item(path: str) -> str:
+            snapshot = self.file_snapshots.get(path, {})
+            version = ""
+            if snapshot.get("exists") is True:
+                version = f" [size={snapshot.get('size')}, mtime_ns={snapshot.get('mtime_ns')}]"
+            elif snapshot.get("exists") is False:
+                version = " [missing at last snapshot]"
+            return f'{path}{version} — reload with read_file("{path}")'
+
+        _add("Recent Reads", [_format_file_item(path) for path in self.recent_reads[-5:]])
+        _add("Recent Writes", [_format_file_item(path) for path in self.recent_writes[-5:]])
         _add("Recent Tool Results", [
             f"{o.get('tool', '?')}: {o.get('summary', '')}"
             for o in self.recent_tool_outcomes[-5:]
@@ -96,6 +106,7 @@ def build_recovery_manifest(session_context: Any) -> RecoveryManifest:
         session_id=getattr(session_context, "session_id", None),
         recent_reads=list(getattr(session_context, "recent_files", [])),
         recent_writes=list(getattr(session_context, "recent_writes", [])),
+        file_snapshots=dict(getattr(session_context, "file_snapshots", {}) or {}),
         recent_tool_outcomes=list(getattr(session_context, "recent_tool_outcomes", [])),
         active_skills=list(getattr(session_context, "active_skills", [])),
         active_tool_groups=tool_group_names,

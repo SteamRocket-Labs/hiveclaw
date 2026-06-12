@@ -13,6 +13,8 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
+import pytest
+
 AGENT = uuid.uuid4()
 
 
@@ -231,6 +233,18 @@ def test_retirement_safety_eval_protects_critical_memory(tmp_path: Path) -> None
     assert checks["protected_entries_never_candidates"]["passed"] is True
     assert checks["promoted_entries_never_candidates"]["passed"] is True
     assert checks["cap_eviction_archives_everything"]["passed"] is True
+
+
+def test_retrieval_eval_cli_runs_both_suites(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from app.memory.retrieval_eval import main
+
+    exit_code = main(["--data-root", str(tmp_path)])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert '"memory_retrieval"' in captured.out
+    assert '"retirement_safety"' in captured.out
+    assert '"passed": true' in captured.out
 
 
 # ── B. Navigation consumers ──

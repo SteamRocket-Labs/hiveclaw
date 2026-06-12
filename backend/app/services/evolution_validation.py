@@ -11,7 +11,7 @@ from app.services.evolution_ledger import load_evolution_ledger
 from app.services.evolution_manifest import validate_evolution_manifest
 
 
-PROMOTE_DECISIONS = {"promote", "promoted"}
+PROMOTE_DECISIONS = {"promote", "promoted", "patch", "patched"}
 HOLD_DECISIONS = {"hold", "held", "defer", "deferred"}
 REJECT_DECISIONS = {"reject", "rejected"}
 

@@ -29,6 +29,7 @@ from app.memory.lifecycle_store import (
 )
 from app.memory.md_store import (
     MEMORY_DEDUP_THRESHOLD,
+    T3_FILE_SPECS,
     _stable_entry_id,
     append_t3_entry,
     find_similar_t3_entries,
@@ -97,6 +98,10 @@ async def append_t3_memory_candidate(
     container_candidate: str | None = None,
     tenant_id: uuid.UUID | None = None,
     data_root: Path | None = None,
+    parent_id: str | None = None,
+    supersedes: list[str] | tuple[str, ...] | str | None = None,
+    superseded_by: str | None = None,
+    dedup_exclude_entry_ids: list[str] | tuple[str, ...] | set[str] | None = None,
 ) -> T3AppendResult:
     """Append one memory candidate to T3 through the full write gate.
 
@@ -120,7 +125,14 @@ async def append_t3_memory_candidate(
 
     # 1. Write gate: privacy classification (PL4 rejection), form lint,
     #    lifecycle metadata (entry_id, sensitivity, status, version).
-    decision = prepare_memory_write(trimmed, category=normalized_category, evidence_refs=source_refs)
+    decision = prepare_memory_write(
+        trimmed,
+        category=normalized_category,
+        evidence_refs=source_refs,
+        parent_id=parent_id,
+        supersedes=supersedes,
+        superseded_by=superseded_by,
+    )
     if decision.rejected:
         logger.info(
             "[T3Store] write rejected for agent=%s category=%s by=%s: %s",
@@ -162,6 +174,9 @@ async def append_t3_memory_candidate(
         threshold=MEMORY_DEDUP_THRESHOLD,
         limit=1,
     )
+    excluded_ids = {str(entry_id).strip() for entry_id in (dedup_exclude_entry_ids or []) if str(entry_id).strip()}
+    if excluded_ids:
+        similar = [hit for hit in similar if str(hit.get("id") or "").strip() not in excluded_ids]
     if similar:
         return T3AppendResult(
             status="duplicate",
@@ -442,6 +457,67 @@ def retire_t3_entries(
     )
     rebuild_index(data_root, agent_id)
     return archived if archived else len(dropped_lines)
+
+
+def retire_t3_entries_by_id(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    *,
+    entry_ids: list[str] | tuple[str, ...] | set[str],
+    reason: str,
+    superseded_by: str = "",
+) -> int:
+    """Remove active T3 entries by stable entry_id and archive evidence.
+
+    This is the tool/API retirement path: unlike dream consolidation's
+    substring-based ``retire_t3_entries``, it only matches exact entry ids and
+    never synthesizes a kept line. The old prose leaves active recall
+    immediately; ``archive.md`` + ``lifecycle.json`` keep the reversible audit
+    trail.
+    """
+    targets = {str(entry_id).strip() for entry_id in entry_ids if str(entry_id).strip()}
+    if not targets:
+        return 0
+
+    mem_dir = memory_dir(data_root, agent_id)
+    if not mem_dir.exists():
+        return 0
+
+    total_archived = 0
+    for spec in T3_FILE_SPECS:
+        path = mem_dir / spec["filename"]
+        if not path.exists():
+            continue
+        kept_lines: list[str] = []
+        dropped_lines: list[str] = []
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            record = parse_entry_record(line)
+            if not line.strip().startswith("-") or not record.content:
+                kept_lines.append(line)
+                continue
+            entry_id = record.metadata.get("entry_id") or _stable_entry_id(spec["filename"], record.content)
+            if entry_id in targets:
+                dropped_lines.append(line)
+                continue
+            kept_lines.append(line)
+
+        if not dropped_lines:
+            continue
+
+        path.write_text("\n".join(kept_lines).rstrip() + "\n", encoding="utf-8")
+        archived = archive_t3_lines(
+            data_root,
+            agent_id,
+            filename=spec["filename"],
+            lines=dropped_lines,
+            reason=reason,
+            superseded_by=superseded_by,
+        )
+        total_archived += archived if archived else len(dropped_lines)
+
+    if total_archived:
+        rebuild_index(data_root, agent_id)
+    return total_archived
 
 
 def _sanitize_archive_meta(value: str) -> str:

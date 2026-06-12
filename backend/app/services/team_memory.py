@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.config import get_settings
+from app.memory.write_gate import MemoryWriteDecision, prepare_memory_write
 
 
 _SECRET_PATTERNS = (
@@ -19,7 +20,15 @@ _SECRET_PATTERNS = (
 )
 
 
-class SecretScanError(ValueError):
+class TeamMemoryWriteRejectedError(ValueError):
+    """Raised when the Memory Control Plane rejects a team-memory write."""
+
+    def __init__(self, decision: MemoryWriteDecision) -> None:
+        super().__init__(f"{decision.sensitivity}: {decision.reason}")
+        self.decision = decision
+
+
+class SecretScanError(TeamMemoryWriteRejectedError):
     """Raised when team memory content appears to contain a secret."""
 
 
@@ -157,7 +166,39 @@ class TeamMemoryStore:
     def _scan_for_secrets(self, text: str) -> None:
         for pattern in _SECRET_PATTERNS:
             if pattern.search(text):
-                raise SecretScanError("Team memory content appears to contain secret material.")
+                decision = MemoryWriteDecision(
+                    original_content=text,
+                    content=text,
+                    category="team_memory",
+                    sensitivity="PL4_credential",
+                    rejected=True,
+                    reason="Team memory content appears to contain secret material.",
+                )
+                raise SecretScanError(decision)
+
+    def _prepare_content_for_write(
+        self,
+        *,
+        tenant_id: str,
+        workspace_key: str,
+        key: str,
+        content: str,
+        updated_by: str,
+    ) -> str:
+        decision = prepare_memory_write(
+            content,
+            category="team_memory",
+            evidence_refs=[
+                f"team_memory:{tenant_id}/{workspace_key}/{_slugify(key)}",
+                f"updated_by:{updated_by}",
+            ],
+            enforce_form=False,
+        )
+        if decision.rejected:
+            if decision.sensitivity == "PL4_credential":
+                raise SecretScanError(decision)
+            raise TeamMemoryWriteRejectedError(decision)
+        return decision.content
 
     def upsert_entry(
         self,
@@ -175,6 +216,13 @@ class TeamMemoryStore:
         if mode not in {"replace", "append"}:
             raise InvalidTeamMemoryModeError(f"Unsupported team memory mode: {mode}")
         self._scan_for_secrets(f"{title}\n{content}")
+        prepared_content = self._prepare_content_for_write(
+            tenant_id=tenant_id,
+            workspace_key=workspace_key,
+            key=key,
+            content=content,
+            updated_by=updated_by,
+        )
         path = self._entry_path(tenant_id, workspace_key, key)
         existing_body = ""
         existing_metadata: dict[str, str] = {}
@@ -208,9 +256,9 @@ class TeamMemoryStore:
                 )
             raise TeamMemoryConflictError(current_entry)
         if mode == "append" and existing_body.strip():
-            body = f"{existing_body.strip()}\n\n---\n\n{content.strip()}"
+            body = f"{existing_body.strip()}\n\n---\n\n{prepared_content.strip()}"
         else:
-            body = content.strip()
+            body = prepared_content.strip()
         updated_at = datetime.now(timezone.utc).isoformat()
         revision = existing_revision + 1 if path.exists() else 1
         checksum = _compute_checksum(body)

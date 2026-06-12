@@ -105,6 +105,54 @@ async def test_tool_runtime_service_executes_through_registry_and_logs():
 
 
 @pytest.mark.asyncio
+async def test_tool_runtime_service_logs_readonly_tool_calls():
+    from app.tools.governance import ToolGovernanceContext
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id="tenant-1",
+        workspace=Path("/tmp/ws"),
+    )
+    governance_context = ToolGovernanceContext(
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        tenant_id=context.tenant_id,
+        tool_name="read_file",
+        arguments={"path": "focus.md"},
+    )
+    logged = []
+
+    async def fake_log_activity(*args, **kwargs):
+        logged.append((args, kwargs))
+
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(governance_context, SimpleNamespace()),
+        registry=_FakeRegistry("file contents"),
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=fake_log_activity,
+    )
+
+    result = await service.execute(
+        "read_file",
+        {"path": "focus.md"},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+    )
+
+    assert result == "file contents"
+    assert logged
+    assert logged[0][0][1] == "tool_call"
+    assert logged[0][1]["detail"]["tool"] == "read_file"
+
+
+@pytest.mark.asyncio
 async def test_tool_runtime_service_returns_governance_block_without_registry_call():
     from app.tools.governance import ToolGovernanceContext
     from app.tools.runtime import ToolExecutionContext
@@ -242,6 +290,48 @@ async def test_tool_runtime_service_execute_approved_logs_approval_metadata():
     assert logged[0][1]["detail"]["approved"] is True
     assert logged[0][1]["detail"]["approved_by_user_id"] == str(approved_by)
     assert logged[0][1]["detail"]["approval_id"] == str(approval_id)
+
+
+@pytest.mark.asyncio
+async def test_tool_runtime_service_execute_approved_logs_readonly_tools():
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    agent_id = uuid4()
+    approved_by = uuid4()
+    context = ToolExecutionContext(
+        agent_id=agent_id,
+        user_id=approved_by,
+        tenant_id="tenant-1",
+        workspace=Path("/tmp/ws"),
+    )
+    logged = []
+
+    async def fake_log_activity(*args, **kwargs):
+        logged.append((args, kwargs))
+
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(SimpleNamespace(), SimpleNamespace()),
+        registry=_FakeRegistry("read result"),
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=fake_log_activity,
+    )
+
+    result = await service.execute_approved(
+        "read_file",
+        {"path": "focus.md"},
+        agent_id=agent_id,
+        approved_by_user_id=approved_by,
+    )
+
+    assert result == "read result"
+    assert logged
+    assert logged[0][0][1] == "tool_call_approved"
+    assert logged[0][1]["detail"]["tool"] == "read_file"
 
 
 def _extract_tool_error_payload(result: str) -> dict:
@@ -432,6 +522,75 @@ async def test_tool_runtime_service_timeout_returns_structured_error():
     assert payload["tool_name"] == "web_search"
     assert payload["error_class"] == "timeout"
     assert payload["retryable"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "expected_min_timeout"),
+    [
+        ("spawn_subagent", 180.0),
+        ("start_workflow", 180.0),
+        ("deep_research_run", 180.0),
+    ],
+)
+async def test_tool_runtime_service_long_running_tools_have_explicit_timeout(monkeypatch, tool_name, expected_min_timeout):
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id="tenant-1",
+        workspace=Path("/tmp/ws"),
+    )
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(SimpleNamespace(), SimpleNamespace()),
+        registry=_FakeRegistry(None),
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+    )
+    seen = {}
+    arguments = {"task": "long running"}
+    if tool_name == "start_workflow":
+        arguments = {
+            "definition": {
+                "name": "read-probe",
+                "args_schema": {},
+                "steps": [
+                    {
+                        "id": "scan",
+                        "type": "agent_step",
+                        "leaf": {"name": "scanner", "type": "explorer"},
+                        "task": "Scan the workspace",
+                    }
+                ],
+            },
+            "args": {},
+        }
+
+    async def fake_execute_with_context(self, *_args, **_kwargs):
+        return "ok"
+
+    async def fake_wait_for(awaitable, *, timeout):
+        seen["timeout"] = timeout
+        return await awaitable
+
+    monkeypatch.setattr(ToolRuntimeService, "execute_with_context", fake_execute_with_context)
+    monkeypatch.setattr("app.tools.service.asyncio.wait_for", fake_wait_for)
+
+    result = await service.execute(
+        tool_name,
+        arguments,
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+    )
+
+    assert result == "ok"
+    assert seen["timeout"] >= expected_min_timeout
 
 
 @pytest.mark.asyncio

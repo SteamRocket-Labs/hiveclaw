@@ -149,6 +149,222 @@ async def save_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID
     return f"Saved to long-term memory [{result.category}]: {saved}{'...' if len(content) > 80 else ''}"
 
 
+# -- update_memory / retire_memory -------------------------------------------
+
+
+async def _sync_hindsight_after_memory_mutation(
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID | str | None,
+    *,
+    data_root: Path,
+) -> None:
+    try:
+        from app.memory import hindsight_sync
+
+        await hindsight_sync.sync_t3_to_hindsight(agent_id, _coerce_tenant_uuid(tenant_id), data_root=data_root)
+    except Exception:
+        # Hindsight is a derived accelerator. T3 markdown + lifecycle sidecar
+        # remain the durable source of truth.
+        return
+
+
+def _load_visible_t3_entry(data_root: Path, agent_id: uuid.UUID, entry_id: str):
+    from app.memory.md_store import load_t3_entries_by_ids
+
+    entries = load_t3_entries_by_ids(data_root, agent_id, [entry_id])
+    if not entries:
+        return None
+    entry = entries[0]
+    return entry if _memory_metadata_visible(entry.metadata) else None
+
+
+@tool(
+    ToolMeta(
+        name="update_memory",
+        description=(
+            "Replace an existing long-term memory entry by ID when the user gives an explicit correction. "
+            "This writes the replacement through the Memory Control Plane, then archives the old entry with "
+            "a supersedes/superseded_by audit edge. Use search_memory/load_memory first to get the memory_id."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "memory_id": {
+                    "type": "string",
+                    "description": "Stable id= value returned by search_memory/load_memory for the entry to replace.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Corrected durable fact. Keep one fact per call.",
+                },
+                "category": {
+                    "type": "string",
+                    "enum": [
+                        "user",
+                        "feedback",
+                        "project",
+                        "reference",
+                        "constraint",
+                        "strategy",
+                        "blocked_pattern",
+                        "general",
+                    ],
+                    "description": "Optional replacement category. Defaults to the old entry category.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Short evidence-backed reason, e.g. explicit user correction.",
+                },
+                "source_refs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional evidence pointers supporting the correction.",
+                },
+            },
+            "required": ["memory_id", "content"],
+        },
+        category="memory",
+        display_name="Update Memory",
+        icon="\U0001f9e0",
+        read_only=False,
+        parallel_safe=False,
+        governance="sensitive",
+        adapter="agent_args",
+    )
+)
+async def update_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID | str | None = None) -> str:
+    from app.config import get_settings
+    from app.memory.t3_store import append_t3_memory_candidate, retire_t3_entries_by_id
+
+    memory_id = (arguments.get("memory_id") or arguments.get("id") or "").strip()
+    content = (arguments.get("content") or "").strip()
+    if not memory_id:
+        return "[Error] memory_id is required."
+    if not content:
+        return "[Error] content is required and cannot be empty."
+
+    data_root = Path(get_settings().AGENT_DATA_DIR)
+    old_entry = _load_visible_t3_entry(data_root, agent_id, memory_id)
+    if old_entry is None:
+        return f"[Error] Memory entry not found or not visible: {memory_id}"
+
+    raw_refs = arguments.get("source_refs")
+    source_refs = [str(ref).strip() for ref in raw_refs if str(ref).strip()] if isinstance(raw_refs, list) else []
+    source_refs.extend([f"memory:{memory_id}", "tool:update_memory"])
+    reason = (arguments.get("reason") or "explicit correction").strip()
+    if reason:
+        source_refs.append(f"reason:{reason[:80]}")
+
+    result = await append_t3_memory_candidate(
+        agent_id,
+        category=arguments.get("category") or old_entry.category or "general",
+        content=content,
+        source_refs=source_refs,
+        proposed_by="agent_tool",
+        tenant_id=_coerce_tenant_uuid(tenant_id),
+        data_root=data_root,
+        parent_id=memory_id,
+        supersedes=[memory_id],
+        dedup_exclude_entry_ids=[memory_id],
+    )
+    if result.status == "episodic":
+        return f"[Skipped] {result.reason}"
+    if result.status == "rejected":
+        return f"[Rejected] {result.sensitivity}: {result.reason}"
+    if result.status == "duplicate" and result.similar:
+        hit = result.similar
+        return (
+            f"[Skipped] Replacement is still similar to another memory "
+            f"(similarity={hit['similarity']:.2f}): {hit['content']}"
+        )
+    if result.status != "accepted" or not result.entry_id:
+        return f"[Error] Replacement was not accepted: {result.reason or result.status}"
+
+    retired = retire_t3_entries_by_id(
+        data_root,
+        agent_id,
+        entry_ids=[memory_id],
+        reason="superseded",
+        superseded_by=result.entry_id,
+    )
+    if retired == 0:
+        retire_t3_entries_by_id(
+            data_root,
+            agent_id,
+            entry_ids=[result.entry_id],
+            reason="discarded_update_rollback",
+        )
+        await _sync_hindsight_after_memory_mutation(agent_id, tenant_id, data_root=data_root)
+        return f"[Error] Replacement written but old memory could not be retired; rolled back replacement {result.entry_id}."
+
+    await _sync_hindsight_after_memory_mutation(agent_id, tenant_id, data_root=data_root)
+    saved = content[:80]
+    return (
+        f"Updated memory {memory_id} -> {result.entry_id} [{result.category}]: "
+        f"{saved}{'...' if len(content) > 80 else ''}"
+    )
+
+
+@tool(
+    ToolMeta(
+        name="retire_memory",
+        description=(
+            "Retire an obsolete or incorrect long-term memory entry by ID. The entry is removed from active "
+            "recall and preserved in memory/archive.md plus lifecycle.json; it is never physically deleted."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "memory_id": {
+                    "type": "string",
+                    "description": "Stable id= value returned by search_memory/load_memory for the entry to retire.",
+                },
+                "reason": {
+                    "type": "string",
+                    "enum": ["obsolete", "incorrect", "user_requested", "privacy", "superseded", "archived"],
+                    "description": "Why the entry should leave active recall.",
+                },
+            },
+            "required": ["memory_id", "reason"],
+        },
+        category="memory",
+        display_name="Retire Memory",
+        icon="\U0001f5c4",
+        read_only=False,
+        parallel_safe=False,
+        governance="sensitive",
+        adapter="agent_args",
+    )
+)
+async def retire_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID | str | None = None) -> str:
+    from app.config import get_settings
+    from app.memory.t3_store import retire_t3_entries_by_id
+
+    memory_id = (arguments.get("memory_id") or arguments.get("id") or "").strip()
+    reason = (arguments.get("reason") or "").strip().lower()
+    if not memory_id:
+        return "[Error] memory_id is required."
+    if not reason:
+        return "[Error] reason is required."
+
+    data_root = Path(get_settings().AGENT_DATA_DIR)
+    old_entry = _load_visible_t3_entry(data_root, agent_id, memory_id)
+    if old_entry is None:
+        return f"[Error] Memory entry not found or not visible: {memory_id}"
+
+    retired = retire_t3_entries_by_id(
+        data_root,
+        agent_id,
+        entry_ids=[memory_id],
+        reason=reason,
+    )
+    if retired == 0:
+        return f"[Error] Memory entry could not be retired: {memory_id}"
+
+    await _sync_hindsight_after_memory_mutation(agent_id, tenant_id, data_root=data_root)
+    return f"Retired memory {memory_id}: {reason}"
+
+
 # -- load_memory ---------------------------------------------------------------
 
 

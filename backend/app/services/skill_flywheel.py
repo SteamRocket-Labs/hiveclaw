@@ -122,9 +122,8 @@ def propose_skill_candidate_from_fast_reflection(
         candidate=candidate,
         graders=[
             {
-                "type": "state_check",
+                "type": "skill_guard",
                 "path": str(draft_path.relative_to(workspace)),
-                "contains": "status: candidate only",
             }
         ],
     )

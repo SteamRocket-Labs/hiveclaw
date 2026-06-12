@@ -99,6 +99,17 @@ class TestResolveCapabilities:
         assert caps["capabilities"]["on_message_current_sender"] is True
         assert caps["capabilities"]["on_message_by_name"] is False
 
+    def test_microsoft_teams_matrix(self) -> None:
+        caps = ChannelDeliveryService.resolve_capabilities(
+            "microsoft_teams",
+            SimpleNamespace(channel_type="microsoft_teams", is_configured=True, is_connected=True, extra_config={}),
+        )
+        assert caps["official_api"] is True
+        assert caps["capabilities"]["live_text"] is True
+        assert caps["capabilities"]["deferred_text"] is True
+        assert caps["capabilities"]["on_message_current_sender"] is True
+        assert caps["capabilities"]["on_message_by_name"] is False
+
 
 class TestIdentityFromDeliveryTarget:
     def test_wecom_identity_uses_user_id(self) -> None:
@@ -108,6 +119,12 @@ class TestIdentityFromDeliveryTarget:
     def test_web_identity_uses_username(self) -> None:
         identity = ChannelDeliveryService.identity_from_delivery_target({"channel": "web", "username": "alice"})
         assert identity == "web:alice"
+
+    def test_microsoft_teams_identity_uses_conversation_and_sender(self) -> None:
+        identity = ChannelDeliveryService.identity_from_delivery_target(
+            {"channel": "microsoft_teams", "conversation_id": "conv-1", "sender_id": "user-1"}
+        )
+        assert identity == "microsoft_teams:conv-1:user-1"
 
 
 class TestSendText:
@@ -147,6 +164,167 @@ class TestSendText:
             "bot_token": "bot-token",
             "chat_id": 99887766,
             "text": "hello from deferred",
+        }
+
+    @pytest.mark.asyncio
+    async def test_send_text_slack_uses_channel_id(self, monkeypatch) -> None:
+        import app.api.slack as slack_mod
+
+        called: dict[str, object] = {}
+
+        async def fake_send(bot_token: str, channel: str, text: str):
+            called["bot_token"] = bot_token
+            called["channel"] = channel
+            called["text"] = text
+
+        monkeypatch.setattr(slack_mod, "_send_slack_messages", fake_send)
+        config = SimpleNamespace(
+            channel_type="slack",
+            app_secret="xoxb-token",
+            app_id="slack",
+            is_configured=True,
+            is_connected=True,
+            extra_config={},
+        )
+
+        result = await ChannelDeliveryService.send_text(
+            db=_FakeDB(config),
+            agent_id=uuid4(),
+            reply_target={"channel": "slack", "channel_id": "C123", "sender_id": "U123"},
+            text="done",
+            delivery_mode="deferred",
+        )
+
+        assert result.ok is True
+        assert called == {"bot_token": "xoxb-token", "channel": "C123", "text": "done"}
+
+    @pytest.mark.asyncio
+    async def test_send_text_dingtalk_uses_session_webhook(self, monkeypatch) -> None:
+        import httpx
+
+        posted: dict[str, object] = {}
+
+        class _Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def post(self, url, json):
+                posted["url"] = url
+                posted["json"] = json
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client)
+        config = SimpleNamespace(
+            channel_type="dingtalk",
+            app_secret="secret",
+            app_id="app",
+            is_configured=True,
+            is_connected=True,
+            extra_config={},
+        )
+
+        result = await ChannelDeliveryService.send_text(
+            db=_FakeDB(config),
+            agent_id=uuid4(),
+            reply_target={"channel": "dingtalk", "session_webhook": "https://oapi.dingtalk.com/robot/send"},
+            text="done",
+            delivery_mode="deferred",
+        )
+
+        assert result.ok is True
+        assert posted["url"] == "https://oapi.dingtalk.com/robot/send"
+        assert posted["json"]["msgtype"] == "markdown"
+        assert posted["json"]["markdown"]["text"] == "done"
+
+    @pytest.mark.asyncio
+    async def test_send_text_discord_uses_interaction_followup(self, monkeypatch) -> None:
+        import app.api.discord_bot as discord_mod
+
+        called: dict[str, object] = {}
+
+        async def fake_send(application_id: str, bot_token: str, interaction_token: str, text: str):
+            called["application_id"] = application_id
+            called["bot_token"] = bot_token
+            called["interaction_token"] = interaction_token
+            called["text"] = text
+
+        monkeypatch.setattr(discord_mod, "_send_discord_followup", fake_send)
+        config = SimpleNamespace(
+            channel_type="discord",
+            app_secret="bot-token",
+            app_id="app-123",
+            is_configured=True,
+            is_connected=True,
+            extra_config={},
+        )
+
+        result = await ChannelDeliveryService.send_text(
+            db=_FakeDB(config),
+            agent_id=uuid4(),
+            reply_target={"channel": "discord", "interaction_token": "interaction-token"},
+            text="done",
+            delivery_mode="deferred",
+        )
+
+        assert result.ok is True
+        assert called == {
+            "application_id": "app-123",
+            "bot_token": "bot-token",
+            "interaction_token": "interaction-token",
+            "text": "done",
+        }
+
+    @pytest.mark.asyncio
+    async def test_send_text_microsoft_teams_uses_saved_conversation(self, monkeypatch) -> None:
+        import app.api.teams as teams_mod
+
+        called: dict[str, object] = {}
+
+        async def fake_send(config, conversation_id: str, activity: dict):
+            called["config"] = config
+            called["conversation_id"] = conversation_id
+            called["activity"] = activity
+
+        monkeypatch.setattr(teams_mod, "_send_teams_message", fake_send)
+        config = SimpleNamespace(
+            channel_type="microsoft_teams",
+            app_secret="bot-secret",
+            app_id="bot-app",
+            is_configured=True,
+            is_connected=True,
+            extra_config={"service_url": "https://smba.trafficmanager.net/amer/"},
+        )
+
+        result = await ChannelDeliveryService.send_text(
+            db=_FakeDB(config),
+            agent_id=uuid4(),
+            reply_target={
+                "channel": "microsoft_teams",
+                "conversation_id": "conv-1",
+                "reply_to_id": "activity-1",
+                "recipient_id": "user-1",
+                "recipient_name": "Ada",
+                "bot_id": "bot-1",
+            },
+            text="done",
+            delivery_mode="deferred",
+        )
+
+        assert result.ok is True
+        assert called["config"] is config
+        assert called["conversation_id"] == "conv-1"
+        assert called["activity"] == {
+            "type": "message",
+            "from": {"id": "bot-1"},
+            "conversation": {"id": "conv-1"},
+            "recipient": {"id": "user-1", "name": "Ada"},
+            "replyToId": "activity-1",
+            "text": "done",
         }
 
     @pytest.mark.asyncio

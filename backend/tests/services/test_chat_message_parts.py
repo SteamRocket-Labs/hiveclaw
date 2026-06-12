@@ -100,6 +100,12 @@ def test_stream_event_builders_include_structured_parts():
         "content": "hello",
         "part": {"type": "text_delta", "text": "hello"},
     }
+    assert build_chunk_event("", reset=True) == {
+        "type": "chunk",
+        "content": "",
+        "reset": True,
+        "part": {"type": "stream_reset"},
+    }
     assert build_thinking_event("plan") == {
         "type": "thinking",
         "content": "plan",

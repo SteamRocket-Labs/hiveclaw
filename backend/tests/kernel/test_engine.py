@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -30,6 +31,336 @@ def test_split_concatenated_json_returns_single_object_when_valid():
 
     assert _split_concatenated_json('{"query":"a"}') == ['{"query":"a"}']
     assert _split_concatenated_json('  {"query":"a"}  ') == ['{"query":"a"}']
+
+
+@pytest.mark.asyncio
+async def test_kernel_continues_streaming_output_after_output_cap() -> None:
+    from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
+
+    model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None)
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="part one ",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 10},
+                finish_reason="length",
+            ),
+            SimpleNamespace(
+                content="part two",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 6},
+                finish_reason="stop",
+            ),
+        ]
+    )
+
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda *_args, **_kwargs: RuntimeConfig(
+                tenant_id=uuid4(),
+                max_tool_rounds=3,
+                quota_message=None,
+            ),
+            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
+            resolve_memory_context=lambda *_args, **_kwargs: "",
+            get_tools=lambda *_args, **_kwargs: [],
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda _model: fake_client,
+            execute_tool=lambda *_args, **_kwargs: "",
+            persist_memory=lambda **_kwargs: None,
+            record_token_usage=lambda *_args, **_kwargs: None,
+            get_max_tokens=lambda _provider, _model, override=None: override or 2048,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens"),
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=model,
+            messages=[{"role": "user", "content": "write a long report"}],
+            agent_name="Writer",
+            role_description="Writes reports",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+        )
+    )
+
+    assert result.content == "part one part two"
+    assert result.tokens_used == 16
+    assert [call["max_tokens"] for call in fake_client.calls] == [2048, 65536]
+    continuation_messages = fake_client.calls[1]["messages"]
+    assert any(message.role == "assistant" and message.content == "part one " for message in continuation_messages)
+    assert "Continue the previous answer" in continuation_messages[-1].content
+
+
+@pytest.mark.asyncio
+async def test_kernel_converts_stream_retry_tombstone_to_runtime_event() -> None:
+    from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
+    from app.services.llm_utils import STREAM_RETRY_TOMBSTONE
+
+    class _TombstoneClient:
+        async def stream(self, **kwargs):
+            await kwargs["on_chunk"]("partial ")
+            await kwargs["on_chunk"](STREAM_RETRY_TOMBSTONE)
+            await kwargs["on_chunk"]("final")
+            return SimpleNamespace(
+                content="final",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+                finish_reason="stop",
+            )
+
+        async def close(self) -> None:
+            return None
+
+    chunks: list[str] = []
+    runtime_events: list[dict] = []
+    model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None)
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda *_args, **_kwargs: RuntimeConfig(
+                tenant_id=uuid4(),
+                max_tool_rounds=3,
+                quota_message=None,
+            ),
+            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
+            resolve_memory_context=lambda *_args, **_kwargs: "",
+            get_tools=lambda *_args, **_kwargs: [],
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda _model: _TombstoneClient(),
+            execute_tool=lambda *_args, **_kwargs: "",
+            persist_memory=lambda **_kwargs: None,
+            record_token_usage=lambda *_args, **_kwargs: None,
+            get_max_tokens=lambda _provider, _model, override=None: override or 2048,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens"),
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=model,
+            messages=[{"role": "user", "content": "hello"}],
+            agent_name="Agent",
+            role_description="desc",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            on_chunk=chunks.append,
+            on_event=runtime_events.append,
+        )
+    )
+
+    assert result.content == "final"
+    assert chunks == ["partial ", "final"]
+    assert {"type": "stream_retry_tombstone"} in runtime_events
+
+
+@pytest.mark.asyncio
+async def test_kernel_records_prompt_cache_metrics_from_response_usage() -> None:
+    from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
+    from app.memory.metrics import reset_all, snapshot
+
+    reset_all()
+    model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None)
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="cached answer",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"prompt_tokens": 1000, "prompt_tokens_details": {"cached_tokens": 750}},
+                finish_reason="stop",
+            ),
+        ]
+    )
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda *_args, **_kwargs: RuntimeConfig(
+                tenant_id=uuid4(),
+                max_tool_rounds=3,
+                quota_message=None,
+            ),
+            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
+            resolve_memory_context=lambda *_args, **_kwargs: "",
+            get_tools=lambda *_args, **_kwargs: [],
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda _model: fake_client,
+            execute_tool=lambda *_args, **_kwargs: "",
+            persist_memory=lambda **_kwargs: None,
+            record_token_usage=lambda *_args, **_kwargs: None,
+            get_max_tokens=lambda _provider, _model, override=None: override or 2048,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens") or usage.get("prompt_tokens"),
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=model,
+            messages=[{"role": "user", "content": "hello"}],
+            agent_name="Agent",
+            role_description="desc",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+        )
+    )
+
+    snap = snapshot()
+    assert result.content == "cached answer"
+    assert snap["prompt_cache_observations_total"]["openai:hit"] == 1
+    assert snap["prompt_cache_read_tokens_total"]["openai"] == 750
+    assert snap["prompt_cache_hit_rate"]["openai"] == 0.75
+
+
+@pytest.mark.asyncio
+async def test_response_complete_hook_failure_is_counted_without_failing_invocation(monkeypatch) -> None:
+    from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
+    from app.memory.metrics import reset_all, snapshot
+
+    reset_all()
+
+    async def raising_emit_hook(*_args, **_kwargs):
+        raise RuntimeError("hook bus down")
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", raising_emit_hook)
+
+    model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None)
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 3},
+                finish_reason="stop",
+            )
+        ]
+    )
+
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda *_args, **_kwargs: RuntimeConfig(
+                tenant_id=uuid4(),
+                max_tool_rounds=3,
+                quota_message=None,
+            ),
+            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
+            resolve_memory_context=lambda *_args, **_kwargs: "",
+            get_tools=lambda *_args, **_kwargs: [],
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda _model: fake_client,
+            execute_tool=lambda *_args, **_kwargs: "",
+            persist_memory=lambda **_kwargs: None,
+            record_token_usage=lambda *_args, **_kwargs: None,
+            get_max_tokens=lambda _provider, _model, override=None: override or 2048,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens"),
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=model,
+            messages=[{"role": "user", "content": "hello"}],
+            agent_name="Agent",
+            role_description="Answers",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+        )
+    )
+
+    assert result.content == "done"
+    for _ in range(10):
+        if "response_complete:kernel:RuntimeError" in snapshot()["hook_failure_total"]:
+            break
+        await asyncio.sleep(0.01)
+    assert snapshot()["hook_failure_total"]["response_complete:kernel:RuntimeError"] == 1
+
+
+@pytest.mark.asyncio
+async def test_kernel_drains_mid_run_user_messages_between_tool_rounds() -> None:
+    from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
+
+    model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None)
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[{"id": "call_1", "function": {"name": "list_files", "arguments": "{}"}}],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            ),
+            SimpleNamespace(
+                content="noted",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 7},
+            ),
+        ]
+    )
+    drain_calls = 0
+
+    async def drain_mid_run_messages():
+        nonlocal drain_calls
+        drain_calls += 1
+        if drain_calls == 2:
+            return [{"role": "user", "content": "Actually focus on the security boundary."}]
+        return []
+
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda *_args, **_kwargs: RuntimeConfig(
+                tenant_id=uuid4(),
+                max_tool_rounds=3,
+                quota_message=None,
+            ),
+            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
+            resolve_memory_context=lambda *_args, **_kwargs: "",
+            get_tools=lambda *_args, **_kwargs: [
+                {
+                    "type": "function",
+                    "function": {"name": "list_files", "description": "", "parameters": {"type": "object"}},
+                }
+            ],
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda _model: fake_client,
+            execute_tool=lambda *_args, **_kwargs: "files",
+            persist_memory=lambda **_kwargs: None,
+            record_token_usage=lambda *_args, **_kwargs: None,
+            get_max_tokens=lambda _provider, _model, override=None: override or 2048,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens"),
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=model,
+            messages=[{"role": "user", "content": "Inspect the project"}],
+            agent_name="Engineer",
+            role_description="Investigates repositories",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            mid_run_message_drain=drain_mid_run_messages,
+        )
+    )
+
+    assert result.content == "noted"
+    second_round_messages = fake_client.calls[1]["messages"]
+    assert any(
+        message.role == "user" and message.content == "Actually focus on the security boundary."
+        for message in second_round_messages
+    )
 
 
 def test_split_concatenated_json_splits_double_object():
@@ -161,6 +492,30 @@ def test_build_restoration_context_prefers_newest_recent_files(tmp_path, monkeyp
     assert e_idx < d_idx < c_idx
 
 
+def test_build_restoration_context_resolves_relative_recent_file_paths(tmp_path, monkeypatch):
+    from app.kernel.engine import _build_restoration_context
+    from app.runtime.session import SessionContext
+
+    agent_id = uuid4()
+    agent_root = tmp_path / str(agent_id)
+    workspace_dir = agent_root / "workspace"
+    workspace_dir.mkdir(parents=True)
+    (workspace_dir / "report.md").write_text("relative path content", encoding="utf-8")
+
+    session = SessionContext()
+    session.track_file_read("workspace/report.md")
+
+    monkeypatch.setattr(
+        "app.config.get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+    )
+
+    restored = _build_restoration_context(agent_id, session_context=session)
+
+    assert "### Recent File: workspace/report.md" in restored
+    assert "relative path content" in restored
+
+
 def test_build_restoration_context_restores_five_recent_files(tmp_path, monkeypatch):
     """P2-1 (docs/compaction-cc-alignment.md): restore the working set after compaction —
     up to 5 recent files (CC restores ≤5), not 3."""
@@ -216,6 +571,38 @@ def test_build_restoration_context_file_budget_uses_per_file_cap(tmp_path, monke
 
     assert len(marker_tail) < _POST_COMPACT_PER_FILE_CAP  # sanity
     assert marker_tail in restored  # old cap//2 (4K) would have cut this off
+
+
+def test_runtime_attachment_sections_report_tool_refresh_and_external_file_changes(tmp_path, monkeypatch):
+    from app.kernel.engine import (
+        _build_runtime_attachment_sections,
+        _snapshot_session_file,
+    )
+    from app.runtime.session import SessionContext
+
+    agent_id = uuid4()
+    agent_root = tmp_path / str(agent_id)
+    workspace_dir = agent_root / "workspace"
+    workspace_dir.mkdir(parents=True)
+    report = workspace_dir / "report.md"
+    report.write_text("old content", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "app.config.get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+    )
+
+    session = SessionContext()
+    session.track_discovered_tools(["web_search"])
+    session.track_file_read("workspace/report.md", snapshot=_snapshot_session_file(agent_id, "workspace/report.md"))
+    report.write_text("new content with different size", encoding="utf-8")
+
+    text = "\n\n".join(_build_runtime_attachment_sections(agent_id, session))
+
+    assert "Runtime Tool Refresh" in text
+    assert "web_search" in text
+    assert "Runtime File Change Notice" in text
+    assert 'read_file("workspace/report.md")' in text
 
 
 def test_build_persisted_memory_messages_includes_runtime_events():
@@ -654,6 +1041,11 @@ async def test_runtime_invoker_delegates_to_agent_kernel(monkeypatch):
 
     monkeypatch.setattr("app.runtime.invoker.get_agent_kernel", lambda: _FakeKernel())
 
+    async def allow_quota(_user_id):
+        return None
+
+    monkeypatch.setattr("app.runtime.invoker.check_user_token_quota", allow_quota)
+
     model = SimpleNamespace(
         provider="openai",
         model="gpt-4.1",
@@ -682,7 +1074,7 @@ async def test_runtime_invoker_delegates_to_agent_kernel(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_agent_kernel_emits_ptl_round_group_retry_event():
+async def test_agent_kernel_emits_ptl_full_compress_before_round_group_retry_event():
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
     from app.services.llm_utils import LLMError
@@ -709,6 +1101,17 @@ async def test_agent_kernel_emits_ptl_round_group_retry_event():
         ]
     )
 
+    compress_calls: list[list[dict]] = []
+
+    async def maybe_compress_messages(messages, **kwargs):
+        compress_calls.append(messages)
+        if len(compress_calls) == 1:
+            return messages
+        return [
+            {"role": "system", "content": "compressed summary"},
+            messages[-1],
+        ]
+
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=5),
@@ -717,7 +1120,7 @@ async def test_agent_kernel_emits_ptl_round_group_retry_event():
             resolve_memory_context=lambda *_args, **_kwargs: "",
             resolve_retrieval_context=lambda *_args, **_kwargs: "",
             get_tools=lambda *_args, **_kwargs: [],
-            maybe_compress_messages=lambda messages, **kwargs: messages,
+            maybe_compress_messages=maybe_compress_messages,
             create_client=lambda _model: fake_client,
             execute_tool=lambda *_args, **_kwargs: "unused",
             persist_memory=lambda **kwargs: None,
@@ -747,15 +1150,16 @@ async def test_agent_kernel_emits_ptl_round_group_retry_event():
     )
 
     assert result.content == "recovered after ptl retry"
+    assert len(compress_calls) >= 2
     assert len(fake_client.calls) == 2
     assert len(fake_client.calls[1]["messages"]) < len(fake_client.calls[0]["messages"])
     assert runtime_events[0] == {
         "type": "session_compact",
-        "summary": "Prompt too long; dropped oldest round groups before retry.",
+        "summary": "Prompt too long; compressed conversation before retry.",
         "original_message_count": 6,
-        "kept_message_count": 4,
+        "kept_message_count": 3,
         "reason": "prompt_too_long_retry",
-        "strategy": "round_group",
+        "strategy": "full_compress",
         "attempt": 1,
     }
 
@@ -1324,6 +1728,29 @@ def test_maybe_evict_writes_file_when_eviction_dir_provided(tmp_path):
     assert len(evicted) < len(large)
 
 
+def test_force_evict_writes_exempt_tool_result_for_round_aggregate_overflow(tmp_path):
+    from app.kernel.engine import _maybe_evict_tool_result
+
+    large = "READ_FILE_RESULT\n" * 5000
+    eviction_dir = tmp_path / "tool_results"
+
+    evicted = _maybe_evict_tool_result(
+        "read_file",
+        "call_force",
+        large,
+        eviction_dir=eviction_dir,
+        force=True,
+        reason="round aggregate budget",
+    )
+
+    written_file = eviction_dir / "call_force.txt"
+    assert written_file.exists()
+    assert written_file.read_text(encoding="utf-8") == large
+    assert "workspace/tool_results/call_force.txt" in evicted
+    assert "round aggregate budget" in evicted
+    assert len(evicted) < len(large)
+
+
 @pytest.mark.asyncio
 async def test_large_tool_result_evicted_in_kernel_loop():
     """Kernel evicts large tool results inline during the LLM loop."""
@@ -1405,6 +1832,61 @@ async def test_large_tool_result_evicted_in_kernel_loop():
 
 
 @pytest.mark.asyncio
+async def test_empty_tool_result_is_wrapped_with_actionable_message():
+    from app.kernel.contracts import InvocationRequest
+    from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
+
+    model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None)
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[{"id": "c1", "function": {"name": "read_file", "arguments": '{"path":"empty.txt"}'}}],
+                reasoning_content=None,
+                usage={"total_tokens": 3},
+            ),
+            SimpleNamespace(content="handled empty", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
+        ]
+    )
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda *_a, **_kw: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
+            resolve_current_user_name=lambda *_a, **_kw: "Rocky",
+            build_system_prompt=lambda *_a, **_kw: "SYSTEM",
+            resolve_memory_context=lambda *_a, **_kw: "",
+            get_tools=lambda *_a, **_kw: [
+                {"type": "function", "function": {"name": "read_file", "description": "", "parameters": {}}}
+            ],
+            maybe_compress_messages=lambda messages, **kw: messages,
+            create_client=lambda _m: fake_client,
+            execute_tool=lambda *_a, **_kw: "",
+            persist_memory=lambda **kw: None,
+            record_token_usage=lambda *a, **kw: None,
+            get_max_tokens=lambda *a, **kw: 2048,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens"),
+            estimate_tokens_from_chars=lambda c: c // 4,
+        )
+    )
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=model,
+            messages=[{"role": "user", "content": "read empty file"}],
+            agent_name="Agent",
+            role_description="test",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+        )
+    )
+
+    assert result.content == "handled empty"
+    tool_msg = [m for m in fake_client.calls[1]["messages"] if m.role == "tool"][0]
+    assert "[Tool returned empty result]" in tool_msg.content
+    tool_part = [p for p in result.parts if p.get("type") == "tool_call"][0]
+    assert "[Tool returned empty result]" in tool_part["result"]
+
+
+@pytest.mark.asyncio
 async def test_persist_memory_called_on_max_rounds_exceeded():
     """persist_memory must be called even when max tool rounds exhausted."""
     from app.kernel.contracts import InvocationRequest
@@ -1474,9 +1956,72 @@ async def test_persist_memory_called_on_max_rounds_exceeded():
         )
     )
 
-    assert "Too many tool call rounds" in result.content
+    assert "tool-round limit" in result.content
+    assert "continue" in result.content.lower()
     assert len(persist_calls) == 1, f"Expected 1 persist call, got {len(persist_calls)}"
     assert persist_calls[0]["session_id"] == "sess-max"
+
+
+@pytest.mark.asyncio
+async def test_turn_token_budget_stops_before_next_tool_round():
+    from app.kernel.contracts import InvocationRequest
+    from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
+
+    model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None)
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[{"id": "c1", "function": {"name": "read_file", "arguments": '{"path":"a.txt"}'}}],
+                reasoning_content=None,
+                usage={"total_tokens": 50},
+            ),
+            SimpleNamespace(content="must not run", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
+        ]
+    )
+    executed: list[str] = []
+    persist_calls: list[dict] = []
+
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda *_a, **_kw: RuntimeConfig(
+                tenant_id=uuid4(),
+                max_tool_rounds=3,
+                turn_token_budget=40,
+            ),
+            resolve_current_user_name=lambda *_a, **_kw: "Rocky",
+            build_system_prompt=lambda *_a, **_kw: "SYSTEM",
+            resolve_memory_context=lambda *_a, **_kw: "",
+            get_tools=lambda *_a, **_kw: [
+                {"type": "function", "function": {"name": "read_file", "description": "", "parameters": {}}}
+            ],
+            maybe_compress_messages=lambda messages, **kw: messages,
+            create_client=lambda _m: fake_client,
+            execute_tool=lambda tool_name, *_a, **_kw: executed.append(tool_name) or "tool result",
+            persist_memory=lambda **kw: persist_calls.append(kw),
+            record_token_usage=lambda *a, **kw: None,
+            get_max_tokens=lambda *a, **kw: 2048,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens"),
+            estimate_tokens_from_chars=lambda c: c // 4,
+        )
+    )
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=model,
+            messages=[{"role": "user", "content": "respect budget"}],
+            agent_name="Agent",
+            role_description="test",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            memory_session_id="sess-budget",
+        )
+    )
+
+    assert "token budget" in result.content.lower()
+    assert executed == []
+    assert len(fake_client.calls) == 1
+    assert persist_calls[0]["session_id"] == "sess-budget"
 
 
 @pytest.mark.asyncio

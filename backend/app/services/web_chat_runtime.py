@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import HTTPException
 from loguru import logger
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -34,11 +35,14 @@ from app.services.chat_message_parts import (
     build_tool_group_activation_event,
 )
 from app.services.llm_error_policy import is_llm_error_message
+from app.services.llm_utils import STREAM_RETRY_TOMBSTONE
 from app.services import plan_mode_core
+from app.services.long_task_runtime import build_long_task_resume_context
 from app.services.web_chat_broker import web_chat_broker
 
 
 WEB_CHAT_TURN_TASK_TYPE = "web_chat_turn"
+_ACTIVE_WEB_CHAT_UNIQUE_INDEX_NAME = "uq_runtime_tasks_active_web_chat_session"
 _ACTIVE_STATUSES = ("pending", "running")
 _CANCEL_EVENTS: dict[str, asyncio.Event] = {}
 _TASKS: dict[str, asyncio.Task] = {}
@@ -66,6 +70,73 @@ def _runtime_task_to_run(task: RuntimeTask) -> dict[str, Any]:
         "completed_at": completed_at.isoformat() if completed_at else None,
         "result_summary": getattr(task, "result_summary", None),
     }
+
+
+def _saved_user_content(*, content: str, display_content: str = "", file_name: str = "") -> str:
+    saved_content = display_content if display_content else content
+    if file_name:
+        saved_content = f"[file:{file_name}]\n{saved_content}"
+    return saved_content
+
+
+async def _queue_mid_run_user_message(
+    *,
+    db: AsyncSession,
+    active_run: RuntimeTask,
+    agent: Agent,
+    user: User,
+    session: ChatSession,
+    content: str,
+    display_content: str = "",
+    file_name: str = "",
+) -> dict[str, Any]:
+    message_id = uuid.uuid4()
+    saved_content = _saved_user_content(content=content, display_content=display_content, file_name=file_name)
+    db.add(
+        ChatMessage(
+            id=message_id,
+            agent_id=agent.id,
+            tenant_id=getattr(agent, "tenant_id", None),
+            user_id=user.id,
+            role="user",
+            content=saved_content,
+            conversation_id=str(session.id),
+        )
+    )
+    session.last_message_at = datetime.now(timezone.utc)
+    metadata = dict(getattr(active_run, "metadata_json", None) or {})
+    pending = list(metadata.get("pending_user_messages") or [])
+    queued = {
+        "id": message_id.hex,
+        "content": saved_content,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    pending.append(queued)
+    metadata["pending_user_messages"] = pending
+    metadata["pending_user_message_count"] = len(pending)
+    active_run.metadata_json = metadata
+    await db.commit()
+    return queued
+
+
+async def _claim_pending_mid_run_user_messages(run_id: str | uuid.UUID) -> list[dict[str, str]]:
+    run_uuid = _run_id(run_id)
+    async with _async_session() as db, enter_rls_bypass(
+        db, reason=f"durable web-run mid-run user message drain for run {run_uuid}"
+    ):
+        result = await db.execute(select(RuntimeTask).where(RuntimeTask.id == run_uuid))
+        task = result.scalar_one_or_none()
+        if task is None:
+            return []
+        metadata = dict(task.metadata_json or {})
+        pending = [item for item in metadata.get("pending_user_messages") or [] if isinstance(item, dict)]
+        if not pending:
+            return []
+        metadata["pending_user_messages"] = []
+        metadata["pending_user_message_count"] = 0
+        task.metadata_json = metadata
+        await db.commit()
+    return [{"role": "user", "content": str(item.get("content") or "")} for item in pending if item.get("content")]
 
 
 def conversation_from_history_messages(history_messages) -> list[dict]:
@@ -150,6 +221,15 @@ async def _find_active_run(db: AsyncSession, *, agent_id: uuid.UUID, session_id:
     return result.scalars().first()
 
 
+def _is_active_web_chat_unique_violation(exc: IntegrityError) -> bool:
+    orig = getattr(exc, "orig", None)
+    diag = getattr(orig, "diag", None)
+    constraint_name = getattr(diag, "constraint_name", None)
+    if constraint_name == _ACTIVE_WEB_CHAT_UNIQUE_INDEX_NAME:
+        return True
+    return _ACTIVE_WEB_CHAT_UNIQUE_INDEX_NAME in str(exc)
+
+
 async def get_active_web_chat_run(
     *,
     db: AsyncSession,
@@ -179,17 +259,29 @@ async def start_web_chat_run(
 
     active = await _find_active_run(db, agent_id=agent.id, session_id=session.id)
     if active:
-        raise ActiveWebChatRunExists(_runtime_task_to_run(active))
+        queued = await _queue_mid_run_user_message(
+            db=db,
+            active_run=active,
+            agent=agent,
+            user=user,
+            session=session,
+            content=content,
+            display_content=display_content,
+            file_name=file_name,
+        )
+        payload = _runtime_task_to_run(active)
+        payload["queued_user_message"] = queued
+        await broadcast_web_chat_event(agent.id, session.id, {"type": "user_message_queued", **payload})
+        raise ActiveWebChatRunExists(payload)
 
     run_uuid = uuid.uuid4()
     now = datetime.now(timezone.utc)
-    saved_content = display_content if display_content else content
-    if file_name:
-        saved_content = f"[file:{file_name}]\n{saved_content}"
+    saved_content = _saved_user_content(content=content, display_content=display_content, file_name=file_name)
 
     db.add(
         ChatMessage(
             agent_id=agent.id,
+            tenant_id=getattr(agent, "tenant_id", None),
             user_id=user.id,
             role="user",
             content=saved_content,
@@ -231,7 +323,165 @@ async def start_web_chat_run(
         },
     )
     db.add(runtime_task)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        if not _is_active_web_chat_unique_violation(exc):
+            raise
+        active_after_conflict = await _find_active_run(db, agent_id=agent.id, session_id=session.id)
+        if active_after_conflict is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Web chat run already exists, but the active run could not be loaded. Retry the request.",
+            ) from exc
+        queued = await _queue_mid_run_user_message(
+            db=db,
+            active_run=active_after_conflict,
+            agent=agent,
+            user=user,
+            session=session,
+            content=content,
+            display_content=display_content,
+            file_name=file_name,
+        )
+        payload = _runtime_task_to_run(active_after_conflict)
+        payload["queued_user_message"] = queued
+        await broadcast_web_chat_event(agent.id, session.id, {"type": "user_message_queued", **payload})
+        raise ActiveWebChatRunExists(payload) from exc
+
+    cancel_event = asyncio.Event()
+    _CANCEL_EVENTS[run_uuid.hex] = cancel_event
+    task = asyncio.create_task(execute_web_chat_run(run_uuid, cancel_event=cancel_event))
+    _TASKS[run_uuid.hex] = task
+    task.add_done_callback(lambda _task, run_id=run_uuid.hex: _TASKS.pop(run_id, None))
+
+    payload = _runtime_task_to_run(runtime_task)
+    await broadcast_web_chat_event(agent.id, session.id, {"type": "run_started", **payload})
+    return payload
+
+
+async def _queue_saved_mid_run_user_message(
+    *,
+    db: AsyncSession,
+    active_run: RuntimeTask,
+    agent: Agent,
+    session: ChatSession,
+    content: str,
+    display_content: str = "",
+    file_name: str = "",
+) -> dict[str, Any]:
+    saved_content = _saved_user_content(content=content, display_content=display_content, file_name=file_name)
+    metadata = dict(getattr(active_run, "metadata_json", None) or {})
+    pending = list(metadata.get("pending_user_messages") or [])
+    queued = {
+        "id": uuid.uuid4().hex,
+        "content": saved_content,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    pending.append(queued)
+    metadata["pending_user_messages"] = pending
+    metadata["pending_user_message_count"] = len(pending)
+    active_run.metadata_json = metadata
+    session.last_message_at = datetime.now(timezone.utc)
     await db.commit()
+    payload = _runtime_task_to_run(active_run)
+    payload["queued_user_message"] = queued
+    await broadcast_web_chat_event(agent.id, session.id, {"type": "user_message_queued", **payload})
+    return payload
+
+
+async def start_channel_chat_run_from_saved_turn(
+    *,
+    db: AsyncSession,
+    agent: Agent,
+    user: User,
+    session: ChatSession,
+    content: str,
+    source_channel: str,
+    display_content: str = "",
+    file_name: str = "",
+    plan_mode_requested: bool = False,
+    extra_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Start a durable runtime for an IM turn whose ChatMessage is already saved.
+
+    Channel handlers historically persisted the inbound user message before
+    invoking the model. This helper preserves that write path and adds the same
+    durable RuntimeTask envelope used by web chat, without duplicating the user
+    message row.
+    """
+    if is_agent_expired(agent):
+        raise HTTPException(status_code=403, detail="Agent has expired")
+    if not content:
+        raise HTTPException(status_code=400, detail="content is required")
+
+    active = await _find_active_run(db, agent_id=agent.id, session_id=session.id)
+    if active:
+        return await _queue_saved_mid_run_user_message(
+            db=db,
+            active_run=active,
+            agent=agent,
+            session=session,
+            content=content,
+            display_content=display_content,
+            file_name=file_name,
+        )
+
+    run_uuid = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    metadata = {
+        "user_id": str(user.id),
+        "session_id": str(session.id),
+        "display_content": display_content,
+        "file_name": file_name,
+        "source": source_channel,
+        "channel": source_channel,
+        "delivery_target_json": getattr(session, "delivery_target_json", None),
+        "cancelled_by_user": False,
+        "plan_mode_requested": bool(plan_mode_requested),
+        "existing_user_message_saved": True,
+        "latest_user_prompt_overrides_history": True,
+        **(extra_metadata or {}),
+    }
+    runtime_task = RuntimeTask(
+        id=run_uuid,
+        task_type=WEB_CHAT_TURN_TASK_TYPE,
+        status="running",
+        parent_agent_id=agent.id,
+        child_agent_id=agent.id,
+        child_agent_name=getattr(agent, "name", None),
+        prompt=content,
+        trace_id=f"{source_channel}-chat:{run_uuid.hex}",
+        parent_session_id=str(session.id),
+        child_session_id=str(session.id),
+        depth=1,
+        started_at=now,
+        tenant_id=getattr(agent, "tenant_id", None),
+        metadata_json=metadata,
+    )
+    db.add(runtime_task)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        if not _is_active_web_chat_unique_violation(exc):
+            raise
+        active_after_conflict = await _find_active_run(db, agent_id=agent.id, session_id=session.id)
+        if active_after_conflict is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Channel run already exists, but the active run could not be loaded. Retry the request.",
+            ) from exc
+        return await _queue_saved_mid_run_user_message(
+            db=db,
+            active_run=active_after_conflict,
+            agent=agent,
+            session=session,
+            content=content,
+            display_content=display_content,
+            file_name=file_name,
+        )
 
     cancel_event = asyncio.Event()
     _CANCEL_EVENTS[run_uuid.hex] = cancel_event
@@ -281,6 +531,52 @@ async def cancel_web_chat_run(
     payload = _runtime_task_to_run(task)
     await broadcast_web_chat_event(agent_id, session_id, {"type": "run_cancelled", **payload})
     return payload
+
+
+async def resume_persisted_web_chat_runs(*, limit: int = 50) -> list[str]:
+    """Restart durable web-chat runs left active by a worker restart."""
+    async with _async_session() as db, enter_rls_bypass(db, reason="startup resume persisted web-chat runs"):
+        result = await db.execute(
+            select(RuntimeTask)
+            .where(
+                RuntimeTask.task_type == WEB_CHAT_TURN_TASK_TYPE,
+                RuntimeTask.status.in_(_ACTIVE_STATUSES),
+            )
+            .order_by(RuntimeTask.started_at.asc().nulls_last(), RuntimeTask.created_at.asc())
+            .limit(limit)
+        )
+        tasks = result.scalars().all()
+        resumed: list[RuntimeTask] = []
+        for task in tasks:
+            run_key = task.id.hex
+            if run_key in _TASKS:
+                continue
+            metadata = dict(task.metadata_json or {})
+            if task.parent_agent_id:
+                try:
+                    metadata["restart_resume_context"] = build_long_task_resume_context(
+                        agent_id=task.parent_agent_id,
+                        runtime_task_id=task.id,
+                    )
+                except Exception as exc:
+                    metadata["restart_resume_context_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+            metadata["resumed_after_restart"] = True
+            metadata["resumed_at"] = datetime.now(timezone.utc).isoformat()
+            task.metadata_json = metadata
+            resumed.append(task)
+        if resumed:
+            await db.commit()
+
+    resumed_ids: list[str] = []
+    for task in resumed:
+        run_key = task.id.hex
+        cancel_event = asyncio.Event()
+        _CANCEL_EVENTS[run_key] = cancel_event
+        bg_task = asyncio.create_task(execute_web_chat_run(task.id, cancel_event=cancel_event))
+        _TASKS[run_key] = bg_task
+        bg_task.add_done_callback(lambda _task, run_id=run_key: _TASKS.pop(run_id, None))
+        resumed_ids.append(run_key)
+    return resumed_ids
 
 
 async def _claim_pending_reply_suffix_for_session(
@@ -794,6 +1090,13 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         conversation = conversation_from_history_messages(history_messages)
         prompt = runtime_task.prompt or ""
         metadata = runtime_task.metadata_json if isinstance(runtime_task.metadata_json, dict) else {}
+        if metadata.get("latest_user_prompt_overrides_history") and prompt:
+            for idx in range(len(conversation) - 1, -1, -1):
+                if conversation[idx].get("role") == "user":
+                    conversation[idx]["content"] = prompt
+                    break
+            else:
+                conversation.append({"role": "user", "content": prompt})
 
         if getattr(agent, "agent_type", None) == "openclaw":
             async with tenant_scoped_session(agent.tenant_id) as db:
@@ -821,6 +1124,8 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             return
 
         runtime_session_context = await web_chat_broker.get_or_create_runtime_session(str(agent.id), session_id)
+        runtime_session_context.source = str(metadata.get("source") or runtime_session_context.source or "web")
+        runtime_session_context.channel = str(metadata.get("channel") or runtime_session_context.channel or "web")
 
         plan_mode_response = await _maybe_handle_plan_mode_entry(
             agent_id=agent.id,
@@ -856,6 +1161,10 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             return
 
         async def stream_to_ws(text: str) -> None:
+            if text == STREAM_RETRY_TOMBSTONE:
+                streamed_chunks.clear()
+                await broadcast_web_chat_event(agent.id, session_id, build_chunk_event("", reset=True))
+                return
             streamed_chunks.append(text)
             await broadcast_web_chat_event(agent.id, session_id, build_chunk_event(text))
 
@@ -864,6 +1173,10 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             await broadcast_web_chat_event(agent.id, session_id, build_thinking_event(text))
 
         async def runtime_event_to_ws(data: dict[str, Any]) -> None:
+            if data.get("type") == "stream_retry_tombstone":
+                streamed_chunks.clear()
+                await broadcast_web_chat_event(agent.id, session_id, build_chunk_event("", reset=True))
+                return
             if data.get("type") == "permission":
                 event_payload = build_permission_event(data)
             elif data.get("type") == "session_compact":
@@ -888,6 +1201,19 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 )
         except Exception as exc:
             logger.warning("[WebChatRun] Pending reply injection failed (non-fatal): {}", exc)
+
+        restart_resume_context = metadata.get("restart_resume_context")
+        if isinstance(restart_resume_context, dict):
+            resume_prompt = str(restart_resume_context.get("resume_prompt") or "").strip()
+            if resume_prompt:
+                restart_suffix = (
+                    "Restart recovery context: this run was active before the worker restarted. "
+                    "Use the following durable resume context to continue from the saved artifacts instead of "
+                    f"starting over.\n{resume_prompt}"
+                )
+                pending_reply_suffix = "\n\n".join(
+                    part for part in (pending_reply_suffix, restart_suffix) if part
+                )
 
         trusted_decline = plan_mode_core.trusted_decline_metadata(
             content=prompt,
@@ -969,7 +1295,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                     execution_identity=ExecutionIdentityRef(
                         identity_type="delegated_user",
                         identity_id=user.id,
-                        label=f"{user.display_name or user.username} via web",
+                        label=f"{user.display_name or user.username} via {runtime_session_context.channel or 'web'}",
                     ),
                     on_chunk=stream_to_ws,
                     on_tool_call=tool_call_to_ws,
@@ -981,6 +1307,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                     cancel_event=cancel_event,
                     session_context=runtime_session_context,
                     system_prompt_suffix=pending_reply_suffix,
+                    mid_run_message_drain=lambda: _claim_pending_mid_run_user_messages(run_uuid),
                 )
             )
         finally:

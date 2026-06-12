@@ -9,9 +9,9 @@ def build_environment_section(
     user_name: str = "",
     channel: str = "",
     agent_name: str = "",
+    include_time: bool = True,
 ) -> str:
     """Build the environment info section with runtime context."""
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines = ["## Environment"]
 
     if agent_name:
@@ -20,6 +20,8 @@ def build_environment_section(
         lines.append(f"- Current user: {user_name}")
     if channel:
         lines.append(f"- Channel: {channel}")
-    lines.append(f"- Current time: {now}")
+    if include_time:
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        lines.append(f"- Current time: {now}")
 
     return "\n".join(lines)

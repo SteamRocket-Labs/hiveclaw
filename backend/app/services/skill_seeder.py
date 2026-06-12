@@ -392,7 +392,7 @@ Plan would be:
     },
     {
         "name": "Memory Guide",
-        "description": "Authoritative rules for save_memory / search_memory — categories, T3 routing, escape-hatch conditions",
+        "description": "Authoritative rules for save/update/retire/search memory — categories, T3 routing, correction paths",
         "category": "system",
         "icon": "🧠",
         "folder_name": "memory-guide",

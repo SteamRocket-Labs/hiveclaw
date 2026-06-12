@@ -34,6 +34,36 @@ def test_activation_includes_reasons_for_goal_owner_and_open_loop() -> None:
     assert {"goal_relevance", "principal_relevance", "open_loop_pressure", "retention_score"} <= set(decision.reasons)
 
 
+def test_activation_accepts_conf_alias_for_confidence_weight() -> None:
+    item = MemoryItem(
+        kind=MemoryKind.SEMANTIC,
+        content="Owner prefers concise Railway incident summaries.",
+        score=0.5,
+        source="test",
+        metadata={"conf": "0.91"},
+    )
+    context = ActivationContext(query="incident summaries", principal_stack=_stack(), owner_terms=["owner"])
+
+    decision = ActivationScorer().score(item, context)
+
+    assert "confidence_weight" in decision.reasons
+
+
+def test_activation_open_loop_false_string_does_not_score() -> None:
+    item = MemoryItem(
+        kind=MemoryKind.SEMANTIC,
+        content="Owner prefers concise Railway incident summaries.",
+        score=0.5,
+        source="test",
+        metadata={"open_loop": "false"},
+    )
+    context = ActivationContext(query="incident summaries", principal_stack=_stack(), owner_terms=["owner"])
+
+    decision = ActivationScorer().score(item, context)
+
+    assert "open_loop_pressure" not in decision.reasons
+
+
 def test_activation_suppresses_pl3_when_current_user_is_not_owner() -> None:
     item = MemoryItem(
         kind=MemoryKind.SEMANTIC,
@@ -49,4 +79,3 @@ def test_activation_suppresses_pl3_when_current_user_is_not_owner() -> None:
     assert decision.suppressed
     assert decision.score == 0.0
     assert "sensitivity_strip" in decision.reasons
-

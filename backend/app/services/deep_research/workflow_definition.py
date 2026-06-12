@@ -11,7 +11,7 @@ from sqlalchemy import select, text
 from app.database import tenant_scoped_session
 from app.models.workflow import WorkflowDefinitionRecord
 from app.runtime.workflow_definition import compute_definition_hash
-from app.services.deep_research.plan_mode import normalize_deep_research_output_format
+from app.services.deep_research.plan_mode import deep_research_plan_signature, normalize_deep_research_output_format
 from app.services.deep_research.schemas import ResearchRequest, to_jsonable
 from app.services.workflow_definitions import WorkflowDefinitionService
 from app.services.workflow_launch import resolve_agent_runtime, start_ephemeral_workflow_for_agent
@@ -45,6 +45,7 @@ def build_deep_research_workflow_definition() -> dict[str, Any]:
             "time_window": {"type": "string", "required": False},
             "output_format": {"type": "string", "required": False},
             "output_language": {"type": "string", "required": False},
+            "deep_research_signature": {"type": "string", "required": False},
         },
         "default_budget": {"max_total_tokens": 500_000, "max_wall_clock_seconds": 7_200},
         "steps": [
@@ -113,6 +114,7 @@ def deep_research_workflow_args(request: ResearchRequest) -> dict[str, Any]:
         "time_window": request.time_window or "not specified",
         "output_format": normalize_deep_research_output_format(request.output_format),
         "output_language": request.output_language or "not specified",
+        "deep_research_signature": deep_research_plan_signature(request, worker_topics=worker_topics),
     }
 
 

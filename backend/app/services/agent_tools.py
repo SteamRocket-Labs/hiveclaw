@@ -150,6 +150,8 @@ CORE_TOOL_NAMES = {
     "search_memory",
     "load_memory",
     "save_memory",
+    "update_memory",
+    "retire_memory",
     "set_trigger",
     "update_trigger",
     "cancel_trigger",

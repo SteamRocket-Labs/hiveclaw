@@ -23,6 +23,7 @@ import AgentWorkspaceSection from './agent-detail/AgentWorkspaceSection';
 import {
     CHAT_SOCKET_KEEPALIVE_INTERVAL_MS,
     applySessionActiveRunState,
+    applyStreamingChunkEvent,
     buildChatSocketKeepaliveMessage,
     buildRuntimeSummary,
     getRuntimeEventMessage,
@@ -746,11 +747,7 @@ function AgentDetailInner() {
                     setCreatedAgentId(normalizedResult.createdAgentId);
                 }
             } else if (d.type === 'chunk') {
-                setChatMessages(prev => {
-                    const last = prev[prev.length - 1];
-                    if (last && last.role === 'assistant' && (last as any)._streaming) return [...prev.slice(0, -1), { ...last, content: last.content + d.content } as any];
-                    return [...prev, { role: 'assistant', content: d.content, _streaming: true } as any];
-                });
+                setChatMessages(prev => applyStreamingChunkEvent(prev, d));
             } else if (d.type === 'done') {
                 setChatMessages(prev => {
                     const last = prev[prev.length - 1];

@@ -313,6 +313,13 @@ async def discord_interaction_webhook(
                     bg_db.add(_platform_user)
                     await bg_db.flush()
                 platform_user_id = _platform_user.id
+                delivery_target = {
+                    "channel": "discord",
+                    "interaction_token": interaction_token,
+                    "channel_id": channel_id,
+                    "sender_id": sender_id,
+                    "user_label": _platform_user.display_name or f"Discord User {sender_id[:8]}",
+                }
 
                 # Find-or-create ChatSession for this Discord conversation
                 sess = await find_or_create_channel_session(
@@ -322,8 +329,11 @@ async def discord_interaction_webhook(
                     external_conv_id=conv_id,
                     source_channel="discord",
                     first_message_title=user_text,
+                    delivery_target=delivery_target,
                 )
                 session_conv_id = str(sess.id)
+                delivery_target["session_id"] = session_conv_id
+                sess.delivery_target_json = delivery_target
 
                 # Load history from session
                 history_r = await bg_db.execute(
@@ -348,17 +358,26 @@ async def discord_interaction_webhook(
                 await bg_db.commit()
 
                 # Call LLM
-                reply_text = await _call_agent_llm(
-                    bg_db,
-                    agent_id,
-                    user_text,
-                    history=history,
-                    user_id=platform_user_id,
-                    session_id=session_conv_id,
-                    session_source="discord",
-                    session_channel="discord",
-                    allow_bare_plan_confirmation=True,
-                )
+                from app.services.channel_delivery_service import channel_delivery_target as _cdt
+
+                _cdt_token = _cdt.set(delivery_target)
+                try:
+                    reply_text = await _call_agent_llm(
+                        bg_db,
+                        agent_id,
+                        user_text,
+                        history=history,
+                        user_id=platform_user_id,
+                        session_id=session_conv_id,
+                        session_source="discord",
+                        session_channel="discord",
+                        allow_bare_plan_confirmation=True,
+                        durable_run=True,
+                        durable_session=sess,
+                        durable_user=_platform_user,
+                    )
+                finally:
+                    _cdt.reset(_cdt_token)
                 logger.info(f"[Discord] LLM reply: {reply_text[:80]}")
 
                 # Save reply

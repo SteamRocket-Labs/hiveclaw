@@ -76,7 +76,7 @@ def _is_retryable_hold(status: str, reason: str) -> bool:
     return any(marker in normalized for marker in _RETRYABLE_HOLD_MARKERS)
 
 
-async def _build_llm_caller(tenant_id: uuid.UUID | None) -> LlmFn | None:
+async def _build_llm_caller(tenant_id: uuid.UUID | None, agent_id: uuid.UUID | None = None) -> LlmFn | None:
     """Wrap the tenant summary model as the curators' injected LLM."""
     if tenant_id is None:
         return None
@@ -92,9 +92,16 @@ async def _build_llm_caller(tenant_id: uuid.UUID | None) -> LlmFn | None:
 
     async def caller(system: str, user: str) -> str:
         from app.memory.metrics import record_autonomous_llm_call
-        from app.services.llm_client import LLMMessage, create_llm_client_from_config
+        from app.services.llm_client import LLMMessage, create_llm_client_from_config, with_llm_usage_context
 
-        client = create_llm_client_from_config(model_config)
+        client = create_llm_client_from_config(
+            with_llm_usage_context(
+                model_config,
+                source="memory_curation",
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+            )
+        )
         try:
             response = await client.stream(
                 messages=[LLMMessage(role="system", content=system), LLMMessage(role="user", content=user)],
@@ -137,7 +144,7 @@ async def run_scene_wiki_curation_tick(
             return {"status": "skipped", "new_entries": len(new_entries)}
         batch = new_entries[:_MAX_BATCH]
 
-        llm = await _build_llm_caller(tenant_id)
+        llm = await _build_llm_caller(tenant_id, agent_id=agent_id)
         atoms = [{"content": entry.content, "source_ref": f"t3:{entry.source}#{entry.entry_id}"} for entry in batch]
 
         scene_candidate = await curate_scene(data_root, agent_id, atoms=atoms, llm=llm)

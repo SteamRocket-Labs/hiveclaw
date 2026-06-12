@@ -1,6 +1,38 @@
 import logging
+import json
+from io import StringIO
 
 from app.core.logging_config import intercept_standard_logging
+
+
+def test_log_record_enrichment_uses_stable_process_trace_without_context() -> None:
+    from app.core.logging_config import clear_trace_id, enrich_log_record
+
+    clear_trace_id()
+    first = {"extra": {}}
+    second = {"extra": {}}
+
+    assert enrich_log_record(first) is True
+    assert enrich_log_record(second) is True
+    assert first["extra"]["trace_id"] == second["extra"]["trace_id"]
+    assert first["extra"]["trace_id"].startswith("process-")
+
+
+def test_configure_logging_defaults_to_json(monkeypatch) -> None:
+    from loguru import logger
+
+    from app.core.logging_config import clear_trace_id, configure_logging
+
+    monkeypatch.delenv("HIVE_LOG_FORMAT", raising=False)
+    sink = StringIO()
+    clear_trace_id()
+    configure_logging(sink=sink, enqueue=False)
+
+    logger.info("structured log probe")
+
+    payload = json.loads(sink.getvalue().strip())
+    assert payload["record"]["message"] == "structured log probe"
+    assert payload["record"]["extra"]["trace_id"].startswith("process-")
 
 
 def test_intercept_standard_logging_raises_noisy_success_loggers_to_warning() -> None:

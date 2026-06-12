@@ -160,7 +160,7 @@ def _patch_generation(monkeypatch, *, definition: str = "GENERATED-MD", capture:
     async def fake_resolve_model(*args, **kwargs):
         return {"provider": "openai", "api_key": "k", "model": "m", "base_url": None}
 
-    async def fake_generate(request, *, model_config, existing_names=None):
+    async def fake_generate(request, *, model_config, existing_names=None, **_kwargs):
         if capture is not None:
             capture.update(request=request, model_config=model_config, existing_names=existing_names)
         return definition
@@ -217,7 +217,7 @@ def test_generate_surfaces_generation_failure(monkeypatch, data_root):
     async def fake_resolve_model(*args, **kwargs):
         return {"provider": "openai", "api_key": "k", "model": "m", "base_url": None}
 
-    async def fake_generate(request, *, model_config, existing_names=None):
+    async def fake_generate(request, *, model_config, existing_names=None, **_kwargs):
         raise SubagentGenerationError("model returned an empty response")
 
     monkeypatch.setattr(subagents_mod, "_resolve_generation_model_config", fake_resolve_model)

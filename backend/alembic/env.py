@@ -50,6 +50,7 @@ from app.models.tenant_channel_config import TenantChannelConfig  # noqa: F401
 from app.models.runtime_task import RuntimeTask  # noqa: F401
 from app.models.plan_request import AgentPlanRequest  # noqa: F401
 from app.models.plan_recommendation import AgentPlanRecommendation  # noqa: F401
+from app.models.token_usage_event import TokenUsageEvent  # noqa: F401
 from app.models.mcp_server import (  # noqa: F401
     AgentMCPServerAssignment,
     AgentMCPToolOverride,

@@ -170,6 +170,8 @@ def test_collect_real_handlers_include_memory_tools():
     assert "save_memory" in names
     assert "search_memory" in names
     assert "load_memory" in names
+    assert "update_memory" in names
+    assert "retire_memory" in names
     # F-2 single-board convergence: the agent-facing DB-Task tools are retired
     # from the LLM tool face (agent board is Work Ledger only).
     assert not ({"list_tasks", "get_task", "manage_tasks"} & names)

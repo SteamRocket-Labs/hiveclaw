@@ -86,6 +86,8 @@ def test_minimal_kernel_tool_set_stays_small_and_explicit():
         "search_memory",
         "load_memory",
         "save_memory",
+        "update_memory",
+        "retire_memory",
         "set_trigger",
         "update_trigger",
         "cancel_trigger",

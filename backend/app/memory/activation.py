@@ -60,14 +60,14 @@ class ActivationScorer:
         if _overlap(set(context.company_terms), content):
             score += policy.company_weight
             reasons.append("company_relevance")
-        if item.metadata.get("open_loop"):
+        if _bool_meta(item, "open_loop"):
             score += policy.open_loop_weight
             reasons.append("open_loop_pressure")
         retention_score = _float_meta(item, "retention_score")
         if retention_score > 0:
             score += retention_score * policy.retention_weight
             reasons.append("retention_score")
-        if _float_meta(item, "confidence", default=0.0) >= 0.8:
+        if _float_meta_any(item, ("confidence", "conf"), default=0.0) >= 0.8:
             score += policy.confidence_weight
             reasons.append("confidence_weight")
 
@@ -90,3 +90,20 @@ def _float_meta(item: MemoryItem, key: str, default: float = 0.0) -> float:
         return float(item.metadata.get(key, default))
     except (TypeError, ValueError):
         return default
+
+
+def _float_meta_any(item: MemoryItem, keys: tuple[str, ...], default: float = 0.0) -> float:
+    for key in keys:
+        if key in item.metadata:
+            return _float_meta(item, key, default=default)
+    return default
+
+
+def _bool_meta(item: MemoryItem, key: str) -> bool:
+    value = item.metadata.get(key)
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    normalized = str(value).strip().lower()
+    return normalized in {"1", "true", "yes", "y", "on"}

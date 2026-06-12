@@ -114,12 +114,14 @@ async def test_tool_governance_resolver_dependencies_wrap_services(monkeypatch):
         arguments={"path": "focus.md"},
         capability="workspace.write",
         reason="manual escalation",
+        session_id="session-approval",
     )
     assert result == {"allowed": False, "approval_id": "approval-1"}
     assert approval_calls[0][2] == "workspace.write"
     assert approval_calls[0][3]["tool"] == "write_file"
     assert approval_calls[0][3]["args"] == {"path": "focus.md"}
     assert approval_calls[0][3]["reason"] == "manual escalation"
+    assert approval_calls[0][3]["session_id"] == "session-approval"
 
 
 @pytest.mark.asyncio

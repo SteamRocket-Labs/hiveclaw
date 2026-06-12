@@ -1139,7 +1139,7 @@ async def test_llm_extract_truncates_conversation_to_window_hint(monkeypatch):
     captured = {}
 
     class _Client:
-        async def stream(self, *, messages, max_tokens, temperature):
+        async def stream(self, *, messages, max_tokens, temperature, **_kwargs):
             captured["prompt"] = messages[0].content
             from types import SimpleNamespace
 

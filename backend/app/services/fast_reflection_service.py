@@ -33,6 +33,12 @@ _CORRECTION_MARKERS = (
 )
 _WORKFLOW_MARKERS = ("workflow", "流程", "步骤", "procedure", "sop")
 _TOOL_FAILURE_MARKERS = ("tool failed", "工具失败", "traceback", "exception", "pytest", "ruff", "failed")
+_SIGNAL_TYPES = {
+    "user_preference_correction",
+    "workflow_correction",
+    "verification_failure",
+    "repeated_task_pattern",
+}
 
 
 def _latest_user_content(messages: list[dict[str, Any]]) -> str:
@@ -52,21 +58,73 @@ def _message_digest(messages: list[dict[str, Any]]) -> str:
     return "\n".join(snippets)
 
 
-def _classify_signal(messages: list[dict[str, Any]], metadata: dict[str, Any]) -> tuple[str, str] | None:
+def _classification_from_metadata(metadata: dict[str, Any]) -> dict[str, Any] | None:
+    raw = metadata.get("fast_reflection_classification")
+    if not isinstance(raw, dict):
+        return None
+
+    signal_type = str(raw.get("signal_type") or raw.get("type") or "").strip()
+    if signal_type in {"", "none", "low_signal", "no_signal", "skipped"}:
+        return {
+            "signal_type": "low_signal",
+            "lesson": "",
+            "method": str(raw.get("method") or "llm_classifier").strip() or "llm_classifier",
+            "confidence": float(raw.get("confidence") or 0.0),
+        }
+    if signal_type not in _SIGNAL_TYPES:
+        return None
+    lesson = str(raw.get("lesson") or raw.get("signal") or "").strip()
+    if not lesson:
+        return None
+    return {
+        "signal_type": signal_type,
+        "lesson": lesson[:1000],
+        "method": str(raw.get("method") or "llm_classifier").strip() or "llm_classifier",
+        "confidence": float(raw.get("confidence") or 0.0),
+    }
+
+
+def _classify_signal(messages: list[dict[str, Any]], metadata: dict[str, Any]) -> dict[str, Any] | None:
+    classifier_result = _classification_from_metadata(metadata)
+    if classifier_result is not None:
+        if classifier_result["signal_type"] == "low_signal":
+            return None
+        return classifier_result
+
     explicit = str(metadata.get("fast_reflection_signal") or metadata.get("user_correction") or "").strip()
     latest_user = _latest_user_content(messages)
     haystack = "\n".join([explicit, latest_user, str(metadata.get("error") or ""), str(metadata.get("test_artifacts") or "")])
     lowered = haystack.lower()
 
     if explicit:
-        return "user_preference_correction", explicit[:1000]
+        return {
+            "signal_type": "user_preference_correction",
+            "lesson": explicit[:1000],
+            "method": "explicit_metadata",
+            "confidence": 1.0,
+        }
     if any(marker in lowered for marker in _CORRECTION_MARKERS):
         signal = "workflow_correction" if any(marker in lowered for marker in _WORKFLOW_MARKERS) else "user_preference_correction"
-        return signal, latest_user[:1000]
+        return {
+            "signal_type": signal,
+            "lesson": latest_user[:1000],
+            "method": "mechanical_fallback",
+            "confidence": 0.0,
+        }
     if metadata.get("verification_failed") or any(marker in lowered for marker in _TOOL_FAILURE_MARKERS):
-        return "verification_failure", haystack[:1000]
+        return {
+            "signal_type": "verification_failure",
+            "lesson": haystack[:1000],
+            "method": "mechanical_fallback",
+            "confidence": 0.0,
+        }
     if metadata.get("repeated_workflow_signature"):
-        return "repeated_task_pattern", str(metadata["repeated_workflow_signature"])[:1000]
+        return {
+            "signal_type": "repeated_task_pattern",
+            "lesson": str(metadata["repeated_workflow_signature"])[:1000],
+            "method": "structured_metadata",
+            "confidence": 1.0,
+        }
     return None
 
 
@@ -97,7 +155,9 @@ def create_fast_reflection_candidate(
     if signal is None:
         return {"status": "skipped", "reason": "low_signal"}
 
-    signal_type, lesson = signal
+    signal_type = str(signal["signal_type"])
+    lesson = str(signal["lesson"])
+    classification_method = str(signal.get("method") or "unknown")
     workspace = Path(data_root) / str(agent_id)
     normalized_session_id = str(session_id or metadata.get("session_id") or "unknown-session")
     source_attempt_ids = [normalized_session_id]
@@ -110,6 +170,8 @@ def create_fast_reflection_candidate(
         "session_id": normalized_session_id,
         "signal_type": signal_type,
         "lesson": lesson,
+        "classification_method": classification_method,
+        "classification_confidence": float(signal.get("confidence") or 0.0),
         "message_digest": _message_digest(messages),
         "final_response": str(metadata.get("final_response") or "")[:1000],
         "promotion_state": "candidate",
@@ -140,6 +202,7 @@ def create_fast_reflection_candidate(
         "status": "candidate_created",
         "candidate_id": candidate["candidate_id"],
         "signal_type": signal_type,
+        "classification_method": classification_method,
         "manifest": candidate["manifest"],
         "projection": projection,
     }

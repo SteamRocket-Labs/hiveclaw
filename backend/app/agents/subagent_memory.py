@@ -187,7 +187,13 @@ Return ONLY a JSON array, no other text: [{"category": "...", "lesson": "..."}, 
 """
 
 
-async def llm_distill_how(run_log: str, *, model_config: dict) -> list[tuple[str, str]]:
+async def llm_distill_how(
+    run_log: str,
+    *,
+    model_config: dict,
+    agent_id: object | None = None,
+    tenant_id: object | None = None,
+) -> list[tuple[str, str]]:
     """LLM-distill How-craft lessons from a run log.
 
     Fail-soft by design: distillation is a bonus path layered on a completed
@@ -209,6 +215,9 @@ async def llm_distill_how(run_log: str, *, model_config: dict) -> list[tuple[str
             temperature=0.2,
             max_tokens=8192,  # CC-standard auxiliary-call floor
             timeout=45.0,
+            usage_source="subagent_memory",
+            usage_agent_id=agent_id,
+            usage_tenant_id=tenant_id,
         )
         content = str(response.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
         if content.startswith("```"):
@@ -230,11 +239,16 @@ async def llm_distill_how(run_log: str, *, model_config: dict) -> list[tuple[str
         return []
 
 
-def make_llm_how_distiller(model_config: dict) -> Callable[[str], Awaitable[list[tuple[str, str]]]]:
+def make_llm_how_distiller(
+    model_config: dict,
+    *,
+    agent_id: object | None = None,
+    tenant_id: object | None = None,
+) -> Callable[[str], Awaitable[list[tuple[str, str]]]]:
     """Bind a model config into an async HowDistiller for the spawn context."""
 
     async def _distill(run_log: str) -> list[tuple[str, str]]:
-        return await llm_distill_how(run_log, model_config=model_config)
+        return await llm_distill_how(run_log, model_config=model_config, agent_id=agent_id, tenant_id=tenant_id)
 
     return _distill
 

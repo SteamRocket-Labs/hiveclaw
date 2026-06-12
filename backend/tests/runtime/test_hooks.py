@@ -76,6 +76,9 @@ class TestHookRegistry:
 
     @pytest.mark.asyncio
     async def test_handler_exception_does_not_crash(self, registry) -> None:
+        from app.memory.metrics import reset_all, snapshot
+
+        reset_all()
         calls = []
 
         def crasher(ctx):
@@ -88,6 +91,7 @@ class TestHookRegistry:
         registry.register(HookEvent.POST_TOOL_USE, survivor)
         await registry.emit(HookContext(event=HookEvent.POST_TOOL_USE))
         assert calls == ["survived"]
+        assert snapshot()["hook_failure_total"]["post_tool_use:registry:ValueError"] == 1
 
     @pytest.mark.asyncio
     async def test_matcher_filters_hook_execution(self, registry) -> None:

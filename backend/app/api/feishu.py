@@ -1646,6 +1646,9 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     session_source="feishu",
                     session_channel="feishu",
                     allow_bare_plan_confirmation=True,
+                    durable_run=True,
+                    durable_session=_sess,
+                    durable_user=resolved_user,
                 )
             except Exception as _llm_err:
                 logger.error(f"[Feishu] LLM invocation failed for agent {agent_id}: {_llm_err}")
@@ -2030,6 +2033,9 @@ async def _handle_feishu_file(
                     session_source="feishu",
                     session_channel="feishu",
                     allow_bare_plan_confirmation=True,
+                    durable_run=True,
+                    durable_session=_sess,
+                    durable_user=resolved_user,
                 )
             finally:
                 _cdt_img.reset(_cdt_img_token)
@@ -2156,6 +2162,9 @@ async def _call_agent_llm(
     session_source: str = "feishu",
     session_channel: str = "feishu",
     allow_bare_plan_confirmation: bool = False,
+    durable_run: bool = False,
+    durable_session=None,
+    durable_user=None,
 ) -> str:
     """Call the agent's configured LLM model with conversation history.
 
@@ -2176,6 +2185,34 @@ async def _call_agent_llm(
         return "This Agent has expired and is off duty. Please contact your admin to extend its service."
 
     effective_user_id = user_id or agent_id
+    if durable_run:
+        from types import SimpleNamespace
+
+        from app.services.web_chat_runtime import start_channel_chat_run_from_saved_turn
+
+        if durable_session is None:
+            return "⚠️ 无法启动后台任务: missing channel session"
+        durable_user = durable_user or SimpleNamespace(
+            id=effective_user_id,
+            username=str(effective_user_id),
+            display_name="",
+        )
+        try:
+            run = await start_channel_chat_run_from_saved_turn(
+                db=db,
+                agent=agent,
+                user=durable_user,
+                session=durable_session,
+                content=user_text,
+                source_channel=session_channel or session_source or "channel",
+            )
+        except Exception as exc:
+            logger.error("[ChannelRuntime] Failed to start durable channel run: %s", exc, exc_info=True)
+            return f"⚠️ 后台任务启动失败: {type(exc).__name__}"
+        if run.get("queued_user_message"):
+            return f"已接收补充消息，并排队到当前任务（run_id={run.get('run_id')}）。完成后我会回到当前会话。"
+        return f"已接收，正在后台处理（run_id={run.get('run_id')}）。完成后我会回到当前会话。"
+
     plan_confirmation_reply = await _try_confirm_channel_plan_from_text(
         agent_id=agent_id,
         user_id=user_id,

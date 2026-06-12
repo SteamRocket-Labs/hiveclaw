@@ -229,16 +229,22 @@ async def test_parallel_batch_preserves_result_order():
 
 
 @pytest.mark.asyncio
-async def test_mixed_batch_falls_back_to_sequential():
-    """If batch contains write_file, all tools run sequentially."""
+async def test_mixed_batch_parallelizes_read_only_segment_before_write():
+    """Mixed batches should parallelize contiguous read-only segments, then serialize writes."""
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel
 
-    execution_order: list[str] = []
+    started: list[str] = []
+    both_reads_started = asyncio.Event()
 
     async def execute_tool(tool_name, args, request, emit_event):
-        execution_order.append(tool_name)
-        return "ok"
+        del request, emit_event
+        started.append(tool_name)
+        if tool_name in {"read_file", "list_files"}:
+            if sum(1 for name in started if name in {"read_file", "list_files"}) == 2:
+                both_reads_started.set()
+            await asyncio.wait_for(both_reads_started.wait(), timeout=0.1)
+        return f"ok:{tool_name}:{args.get('path', '')}"
 
     fake_client = _FakeClient([
         SimpleNamespace(
@@ -250,6 +256,10 @@ async def test_mixed_batch_falls_back_to_sequential():
                 },
                 {
                     "id": "call_2",
+                    "function": {"name": "list_files", "arguments": '{"path":"."}'},
+                },
+                {
+                    "id": "call_3",
                     "function": {"name": "write_file", "arguments": '{"path":"b.txt","content":"x"}'},
                 },
             ],
@@ -281,8 +291,14 @@ async def test_mixed_batch_falls_back_to_sequential():
     )
 
     assert result.content == "done"
-    # Sequential: read_file executed first, then write_file
-    assert execution_order == ["read_file", "write_file"]
+    assert started[:2] == ["read_file", "list_files"]
+    assert started[2:] == ["write_file"]
+    tool_parts = [p for p in result.parts if p.get("type") == "tool_call"]
+    assert [p["result"] for p in tool_parts] == [
+        "ok:read_file:a.txt",
+        "ok:list_files:.",
+        "ok:write_file:b.txt",
+    ]
 
 
 @pytest.mark.asyncio

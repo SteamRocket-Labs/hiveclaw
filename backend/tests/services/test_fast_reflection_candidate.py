@@ -54,6 +54,60 @@ def test_fast_reflection_skips_low_signal_chatter(tmp_path) -> None:
     assert not (tmp_path / str(agent_id) / "evolution" / "evolution_ledger.jsonl").exists()
 
 
+def test_fast_reflection_prefers_llm_classification_over_marker_fallback(tmp_path) -> None:
+    from app.services.evolution_ledger import load_evolution_ledger
+    from app.services.fast_reflection_service import create_fast_reflection_candidate
+
+    agent_id = uuid.uuid4()
+    result = create_fast_reflection_candidate(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        session_id="session-smart",
+        messages=[{"role": "user", "content": "不是，我只是说这个 deploy checklist 以后重复执行。"}],
+        metadata={
+            "skill_candidate_loop_enabled": False,
+            "fast_reflection_classification": {
+                "method": "llm_classifier",
+                "signal_type": "repeated_task_pattern",
+                "lesson": "Reusable deploy checklist: build, migrate, restart, then verify.",
+                "confidence": 0.86,
+            },
+        },
+    )
+
+    workspace = tmp_path / str(agent_id)
+    candidate = load_evolution_ledger(workspace)[0]
+
+    assert result["status"] == "candidate_created"
+    assert result["signal_type"] == "repeated_task_pattern"
+    assert result["classification_method"] == "llm_classifier"
+    assert candidate["metadata"]["classification_method"] == "llm_classifier"
+    assert candidate["metadata"]["lesson"] == "Reusable deploy checklist: build, migrate, restart, then verify."
+
+
+def test_fast_reflection_llm_low_signal_suppresses_marker_fallback(tmp_path) -> None:
+    from app.services.fast_reflection_service import create_fast_reflection_candidate
+
+    agent_id = uuid.uuid4()
+    result = create_fast_reflection_candidate(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        session_id="session-low",
+        messages=[{"role": "user", "content": "不是，这句话不是长期偏好，只是当前上下文。"}],
+        metadata={
+            "fast_reflection_classification": {
+                "method": "llm_classifier",
+                "signal_type": "low_signal",
+                "lesson": "",
+                "confidence": 0.91,
+            },
+        },
+    )
+
+    assert result == {"status": "skipped", "reason": "low_signal"}
+    assert not (tmp_path / str(agent_id) / "evolution" / "evolution_ledger.jsonl").exists()
+
+
 def test_repeated_workflow_signal_bridges_to_skill_candidate(tmp_path) -> None:
     from app.services.evolution_ledger import load_evolution_ledger
     from app.services.fast_reflection_service import create_fast_reflection_candidate

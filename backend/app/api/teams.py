@@ -474,6 +474,20 @@ async def teams_event_webhook(
             _platform_user.display_name = sender_name
             await db.flush()
         platform_user_id = _platform_user.id
+        bot_channel_account = activity.get("recipient", {}) or {}
+        if not bot_channel_account.get("id") and config.app_id:
+            bot_channel_account = {"id": config.app_id}
+        user_account = activity.get("from", {}) or {"id": sender_id, "name": sender_name}
+        delivery_target = {
+            "channel": "microsoft_teams",
+            "conversation_id": conversation_id,
+            "reply_to_id": reply_to_id,
+            "sender_id": sender_id,
+            "recipient_id": user_account.get("id") or sender_id,
+            "recipient_name": user_account.get("name") or sender_name,
+            "bot_id": bot_channel_account.get("id") or config.app_id,
+            "user_label": _platform_user.display_name or sender_name,
+        }
 
         # Find-or-create session for this Teams conversation
         sess = await find_or_create_channel_session(
@@ -483,8 +497,11 @@ async def teams_event_webhook(
             external_conv_id=conversation_id,
             source_channel="microsoft_teams",
             first_message_title=user_text,
+            delivery_target=delivery_target,
         )
         session_conv_id = str(sess.id)
+        delivery_target["session_id"] = session_conv_id
+        sess.delivery_target_json = delivery_target
 
         # Load history
         from app.services.memory_service import compute_history_limit_for_agent
@@ -520,6 +537,9 @@ async def teams_event_webhook(
             await _send_teams_message(config, conversation_id, file_msg_activity)
 
         _cfs_s_token = _cfs_s.set(_teams_file_sender)
+        from app.services.channel_delivery_service import channel_delivery_target as _cdt_s
+
+        _cdt_s_token = _cdt_s.set(delivery_target)
 
         # Call LLM
         try:
@@ -530,15 +550,19 @@ async def teams_event_webhook(
                 history=history,
                 user_id=platform_user_id,
                 session_id=session_conv_id,
-                session_source="teams",
-                session_channel="teams",
+                session_source="microsoft_teams",
+                session_channel="microsoft_teams",
                 allow_bare_plan_confirmation=True,
+                durable_run=True,
+                durable_session=sess,
+                durable_user=_platform_user,
             )
-            _cfs_s.reset(_cfs_s_token)
             logger.info(f"Teams: LLM reply generated: {reply_text[:80]}")
         except Exception as e:
             logger.error(f"Teams: Failed to call LLM for agent {agent_id}: {e}", exc_info=True)
             reply_text = "Sorry, I encountered an error processing your message."
+        finally:
+            _cdt_s.reset(_cdt_s_token)
             _cfs_s.reset(_cfs_s_token)
 
         # Save reply
@@ -556,22 +580,6 @@ async def teams_event_webhook(
         has_credentials = (config.app_id and config.app_secret) or use_managed_identity
         if has_credentials and conversation_id:
             try:
-                # Get bot's channel account ID from the incoming activity's recipient field
-                # The recipient in the incoming message is the bot itself
-                bot_channel_account = activity.get("recipient", {})
-                if not bot_channel_account.get("id"):
-                    # Fallback: use app_id if recipient not available
-                    if config.app_id:
-                        bot_channel_account = {"id": config.app_id}
-                    else:
-                        logger.error("Teams: Cannot determine bot channel account ID - no recipient in activity and no app_id configured")
-                        raise ValueError("Cannot determine bot channel account ID")
-                
-                # Get the user (sender) from the incoming activity's from field
-                user_account = activity.get("from", {})
-                if not user_account.get("id"):
-                    user_account = {"id": sender_id, "name": sender_name}
-                
                 reply_activity = {
                     "type": "message",
                     "from": bot_channel_account,  # Required: Bot's channel account ID (from incoming activity's recipient)

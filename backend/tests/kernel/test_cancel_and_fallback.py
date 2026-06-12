@@ -273,3 +273,82 @@ async def test_agent_kernel_returns_stopped_result_when_cancel_event_fires():
     assert result.content == "*[Generation stopped]*"
     assert result.parts[-1] == {"type": "text", "text": "*[Generation stopped]*"}
     assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_agent_kernel_cancels_running_tool_when_cancel_event_fires():
+    from app.kernel.contracts import InvocationRequest
+    from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
+
+    cancel_event = asyncio.Event()
+    tool_started = asyncio.Event()
+    tool_cancelled = asyncio.Event()
+    model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1",
+        api_key="key",
+        base_url=None,
+        max_output_tokens=None,
+        supports_vision=False,
+    )
+    client = _SwitchableClient(
+        responses=[
+            SimpleNamespace(
+                content="",
+                tool_calls=[{"id": "call_1", "function": {"name": "read_file", "arguments": '{"path":"slow.txt"}'}}],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            )
+        ]
+    )
+
+    async def execute_tool(_tool_name, _args, _request, _emit_event):
+        tool_started.set()
+        try:
+            await asyncio.sleep(0.5)
+        except asyncio.CancelledError:
+            tool_cancelled.set()
+            raise
+        return "late result"
+
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=2),
+            resolve_current_user_name=lambda _user_id: "Rocky",
+            build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
+            resolve_memory_context=lambda *_args, **_kwargs: "",
+            resolve_retrieval_context=lambda *_args, **_kwargs: "",
+            get_tools=lambda *_args, **_kwargs: [
+                {"type": "function", "function": {"name": "read_file", "description": "", "parameters": {}}}
+            ],
+            maybe_compress_messages=lambda messages, **kwargs: messages,
+            create_client=lambda _model: client,
+            execute_tool=execute_tool,
+            persist_memory=lambda **kwargs: None,
+            record_token_usage=lambda *args, **kwargs: None,
+            get_max_tokens=lambda provider, model, override=None: 2048,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens") if usage else None,
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    task = asyncio.create_task(
+        kernel.handle(
+            InvocationRequest(
+                model=model,
+                messages=[{"role": "user", "content": "stop tool"}],
+                agent_name="Agent",
+                role_description="desc",
+                agent_id=uuid4(),
+                user_id=uuid4(),
+                cancel_event=cancel_event,
+            )
+        )
+    )
+    await asyncio.wait_for(tool_started.wait(), timeout=0.2)
+    cancel_event.set()
+    result = await asyncio.wait_for(task, timeout=0.2)
+
+    assert result.content == "*[Generation stopped]*"
+    assert tool_cancelled.is_set()
+    assert client.closed is True

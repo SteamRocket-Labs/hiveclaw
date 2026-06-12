@@ -23,6 +23,7 @@ def _stub_activity_logger(monkeypatch):
 @pytest.mark.asyncio
 async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
     from app.agents.orchestrator import delegate_to_agent
+    from app.core.execution_context import ExecutionIdentity, clear_execution_identity, set_execution_identity
 
     target = SimpleNamespace(
         id=uuid4(),
@@ -46,16 +47,21 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
 
     monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke_agent)
 
-    reply = await delegate_to_agent(
-        target=target,
-        target_model=target_model,
-        conversation_messages=[{"role": "user", "content": "hello"}],
-        owner_id=owner_id,
-        session_id="session-1",
-        tool_executor=tool_executor,
-        system_prompt_suffix="A2A_SUFFIX",
-        max_tool_rounds=7,
-    )
+    user_id = uuid4()
+    set_execution_identity(ExecutionIdentity(identity_type="delegated_user", identity_id=user_id, label="User via web"))
+    try:
+        reply = await delegate_to_agent(
+            target=target,
+            target_model=target_model,
+            conversation_messages=[{"role": "user", "content": "hello"}],
+            owner_id=owner_id,
+            session_id="session-1",
+            tool_executor=tool_executor,
+            system_prompt_suffix="A2A_SUFFIX",
+            max_tool_rounds=7,
+        )
+    finally:
+        clear_execution_identity()
 
     request = captured["request"]
     assert reply == "delegated reply"
@@ -93,6 +99,8 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
         "list_async_tasks",
         "save_skill",
         "save_memory",
+        "update_memory",
+        "retire_memory",
         "search_memory",
         "load_memory",
     )
@@ -115,6 +123,10 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
     assert "workspace.file.read" in request.delegation_token.granted_capabilities
     assert "workspace.file.write" in request.delegation_token.granted_capabilities
     assert "agent.memory.write" not in request.delegation_token.granted_capabilities
+    assert request.execution_identity is not None
+    assert request.execution_identity.identity_type == "delegated_user"
+    assert request.execution_identity.identity_id == user_id
+    assert request.execution_identity.label == "User via web"
     assert request.session_context.metadata["delegation_token_id"] == request.delegation_token.delegation_id
     assert "agent.memory.write" not in request.session_context.metadata["delegation_token_capabilities"]
 
@@ -160,6 +172,55 @@ async def test_delegate_async_serializes_duplicate_work_with_coordination_lease(
     assert second.status == "blocked_by_lease"
     assert second.blocked_by_lease_id == first.coordination_lease_id
     assert coordination_runtime.read_signals(str(target.id), thread_id=first.signal_thread_id)
+
+
+@pytest.mark.asyncio
+async def test_delegate_async_captures_execution_identity_before_background_spawn(monkeypatch):
+    from app.agents.orchestrator import delegate_async
+    from app.core.execution_context import ExecutionIdentity, clear_execution_identity, set_execution_identity
+
+    target = SimpleNamespace(id=uuid4(), name="Target Agent", role_description="Helpful")
+    target_model = SimpleNamespace(provider="openai", model="gpt-4.1")
+    captured = {}
+
+    async def fake_create_runtime_task_record(**_kwargs):
+        return None
+
+    async def fake_update_runtime_task_record(*_args, **_kwargs):
+        return None
+
+    async def fake_persist_delegation_event(**_kwargs):
+        return None
+
+    def fake_spawn_async_delegation_task(*, task_id, request, trace_id):
+        captured["task_id"] = task_id
+        captured["request"] = request
+        captured["trace_id"] = trace_id
+
+    monkeypatch.setattr("app.agents.orchestrator.create_runtime_task_record", fake_create_runtime_task_record)
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr("app.agents.orchestrator._persist_delegation_event", fake_persist_delegation_event)
+    monkeypatch.setattr("app.agents.orchestrator._spawn_async_delegation_task", fake_spawn_async_delegation_task)
+
+    user_id = uuid4()
+    set_execution_identity(ExecutionIdentity(identity_type="delegated_user", identity_id=user_id, label="User via Feishu"))
+    try:
+        handle = await delegate_async(
+            target=target,
+            target_model=target_model,
+            conversation_messages=[{"role": "user", "content": "Prepare the market map"}],
+            owner_id=uuid4(),
+            session_id="session-identity",
+            parent_agent_id=uuid4(),
+        )
+    finally:
+        clear_execution_identity()
+
+    assert handle.status == "running"
+    assert captured["request"].execution_identity is not None
+    assert captured["request"].execution_identity.identity_type == "delegated_user"
+    assert captured["request"].execution_identity.identity_id == user_id
+    assert captured["request"].execution_identity.label == "User via Feishu"
 
 
 @pytest.mark.asyncio
@@ -536,6 +597,7 @@ async def test_resume_persisted_async_delegations_rehydrates_tasks(monkeypatch):
     task_id = uuid4().hex
     parent_agent_id = uuid4()
     owner_id = uuid4()
+    delegated_user_id = uuid4()
     target = SimpleNamespace(id=uuid4(), name="Worker", role_description="helper")
     model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None)
     updates: list[tuple[str, dict]] = []
@@ -562,6 +624,11 @@ async def test_resume_persisted_async_delegations_rehydrates_tasks(monkeypatch):
                     "system_prompt_suffix": "",
                     "max_tool_rounds": 9,
                     "timeout_seconds": 120.0,
+                    "execution_identity": {
+                        "identity_type": "delegated_user",
+                        "identity_id": str(delegated_user_id),
+                        "label": "User via recovered session",
+                    },
                 },
             }
         ]
@@ -570,7 +637,11 @@ async def test_resume_persisted_async_delegations_rehydrates_tasks(monkeypatch):
         assert child_agent_id == target.id
         return target, model
 
-    async def fake_invoke(_invocation):
+    async def fake_invoke(invocation):
+        assert invocation.execution_identity is not None
+        assert invocation.execution_identity.identity_type == "delegated_user"
+        assert invocation.execution_identity.identity_id == delegated_user_id
+        assert invocation.execution_identity.label == "User via recovered session"
         return SimpleNamespace(content="resumed async result")
 
     async def fake_update_runtime_task_record(task_id_arg, **kwargs):

@@ -21,7 +21,7 @@ def test_runtime_invoker_is_the_prompt_memory_ingress() -> None:
     websocket = (APP_ROOT / "api/websocket.py").read_text(encoding="utf-8")
     kernel_contracts = (APP_ROOT / "kernel/contracts.py").read_text(encoding="utf-8")
 
-    assert "build_memory_snapshot" in invoker
+    assert "build_memory_context" in invoker
     assert "resolve_memory_context=" in invoker
     assert "memory_context=memory_context" not in websocket
     assert 'memory_context: str = ""' in kernel_contracts

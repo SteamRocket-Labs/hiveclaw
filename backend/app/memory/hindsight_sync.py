@@ -24,9 +24,14 @@ P1-W3-8 — Sync trigger points (canonical list):
      `append_t3_memory_candidate` lands a new durable entry (spec §12
      P2). Every write-gate-approved T3 mutation propagates immediately
      instead of waiting for the next heartbeat window.
+  5. **Governed memory mutation tools** (`tools/handlers/memory.py`) —
+     fires after `update_memory` or `retire_memory` changes active T3
+     recall state. These are user/tool-governed mutations, not background
+     scans, so Hindsight must see the new active/archive boundary without
+     waiting for heartbeat.
 
 Anywhere else syncing T3→Hindsight is a regression — those are the only
-four windows where the upstream MD has actually changed. Adding new
+five windows where the upstream MD has actually changed. Adding new
 trigger points should require a comment here so the policy stays clear.
 """
 

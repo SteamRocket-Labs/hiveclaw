@@ -141,6 +141,8 @@ async def generate_subagent_definition(
     *,
     model_config: dict,
     existing_names: list[str] | None = None,
+    agent_id=None,
+    tenant_id=None,
 ) -> str:
     """Generate a complete 定义.md from a natural-language description.
 
@@ -167,6 +169,9 @@ async def generate_subagent_definition(
         temperature=0.4,
         max_tokens=8192,  # CC-standard auxiliary-call floor
         timeout=90.0,
+        usage_source="subagent_generator",
+        usage_agent_id=agent_id,
+        usage_tenant_id=tenant_id,
     )
     content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
     if not content or not content.strip():

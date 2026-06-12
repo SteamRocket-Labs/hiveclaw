@@ -4,6 +4,7 @@ All LLM call paths (web chat, heartbeat, triggers, A2A) go through this module.
 """
 
 import uuid
+from typing import Any
 from datetime import datetime, timezone
 
 from loguru import logger
@@ -29,7 +30,66 @@ def extract_usage_tokens(usage: dict | None) -> int | None:
     return None
 
 
-async def record_token_usage(agent_id: uuid.UUID, tokens: int, user_id: uuid.UUID | None = None) -> None:
+def _coerce_uuid(value: uuid.UUID | str | None) -> uuid.UUID | None:
+    if value is None:
+        return None
+    if isinstance(value, uuid.UUID):
+        return value
+    try:
+        return uuid.UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+async def _record_token_usage_event(
+    *,
+    tenant_id: uuid.UUID | None,
+    agent_id: uuid.UUID | None,
+    user_id: uuid.UUID | None,
+    source: str,
+    provider: str | None,
+    model: str | None,
+    tokens: int,
+    usage: dict | None,
+    details: dict | None,
+) -> None:
+    if tokens <= 0:
+        return
+    try:
+        from app.database import tenant_scoped_session
+        from app.models.token_usage_event import TokenUsageEvent
+
+        async with tenant_scoped_session(tenant_id) as db:
+            db.add(
+                TokenUsageEvent(
+                    tenant_id=tenant_id,
+                    agent_id=agent_id,
+                    user_id=user_id,
+                    source=source or "unknown",
+                    provider=provider,
+                    model=model,
+                    tokens=tokens,
+                    usage=usage,
+                    details=details,
+                )
+            )
+            await db.commit()
+    except Exception as e:
+        logger.warning(f"Failed to record token usage event: {e}")
+
+
+async def record_token_usage(
+    agent_id: uuid.UUID,
+    tokens: int,
+    user_id: uuid.UUID | None = None,
+    *,
+    source: str = "kernel",
+    provider: str | None = None,
+    model: str | None = None,
+    tenant_id: uuid.UUID | None = None,
+    usage: dict | None = None,
+    details: dict | None = None,
+) -> None:
     """Record token consumption for an agent and its owner user.
 
     Updates Agent stats (tokens_used_today/month/total) and
@@ -51,7 +111,7 @@ async def record_token_usage(agent_id: uuid.UUID, tokens: int, user_id: uuid.UUI
         # so the billing/quota counters would silently stop. Resolve the owning
         # tenant from the agent and pin the GUC — agent and its owner user share
         # the same tenant.
-        tenant_id = await resolve_tenant_for_agent(agent_id)
+        tenant_id = tenant_id or await resolve_tenant_for_agent(agent_id)
         async with tenant_scoped_session(tenant_id) as db:
             # Agent stats (tracking only)
             result = await db.execute(select(Agent).where(Agent.id == agent_id))
@@ -85,7 +145,73 @@ async def record_token_usage(agent_id: uuid.UUID, tokens: int, user_id: uuid.UUI
                     user.tokens_used_total = (user.tokens_used_total or 0) + tokens
                     user.tokens_reset_at = now
 
+            from app.models.token_usage_event import TokenUsageEvent
+
+            db.add(
+                TokenUsageEvent(
+                    tenant_id=tenant_id,
+                    agent_id=agent_id,
+                    user_id=user_id,
+                    source=source or "kernel",
+                    provider=provider,
+                    model=model,
+                    tokens=tokens,
+                    usage=usage,
+                    details=details,
+                )
+            )
             await db.commit()
             logger.debug(f"Recorded {tokens:,} tokens for agent {agent_id}" + (f" / user {user_id}" if user_id else ""))
     except Exception as e:
         logger.warning(f"Failed to record token usage: {e}")
+
+
+async def record_autonomous_llm_token_usage(
+    *,
+    source: str,
+    usage: dict | None,
+    provider: str | None = None,
+    model: str | None = None,
+    agent_id: uuid.UUID | str | None = None,
+    tenant_id: uuid.UUID | str | None = None,
+    user_id: uuid.UUID | str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Record usage for LLM calls that bypass AgentKernel.invoke_agent().
+
+    When an agent_id is available, this updates the same Agent/User counters as
+    the kernel path and appends a source-attributed event. Tenant-only calls
+    still append an event, so platform cost charts do not lose background spend.
+    """
+    tokens = extract_usage_tokens(usage)
+    if not tokens:
+        return
+
+    coerced_agent_id = _coerce_uuid(agent_id)
+    coerced_tenant_id = _coerce_uuid(tenant_id)
+    coerced_user_id = _coerce_uuid(user_id)
+    if coerced_agent_id:
+        await record_token_usage(
+            coerced_agent_id,
+            tokens,
+            coerced_user_id,
+            source=source,
+            provider=provider,
+            model=model,
+            tenant_id=coerced_tenant_id,
+            usage=usage,
+            details=metadata,
+        )
+        return
+
+    await _record_token_usage_event(
+        tenant_id=coerced_tenant_id,
+        agent_id=None,
+        user_id=coerced_user_id,
+        source=source,
+        provider=provider,
+        model=model,
+        tokens=tokens,
+        usage=usage,
+        details=metadata,
+    )

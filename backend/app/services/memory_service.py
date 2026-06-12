@@ -382,6 +382,9 @@ async def maybe_compress_messages(
     compress_threshold: float | None = None,
     keep_recent: int | None = None,
     on_compaction: CompactionCallback | None = None,
+    usage_anchor_tokens: int | None = None,
+    agent_id: uuid.UUID | None = None,
+    user_id: uuid.UUID | None = None,
 ) -> list[dict]:
     """Compress old messages when approaching model context window.
 
@@ -399,7 +402,8 @@ async def maybe_compress_messages(
     effective_limit = max(context_limit - _SUMMARY_OUTPUT_RESERVE, context_limit // 2)
     trigger_tokens = int(effective_limit * threshold)
 
-    current_tokens = estimate_tokens(messages, provider=model_provider)
+    estimated_tokens = estimate_tokens(messages, provider=model_provider)
+    current_tokens = max(estimated_tokens, int(usage_anchor_tokens or 0))
     if current_tokens <= trigger_tokens:
         return messages
 
@@ -437,7 +441,14 @@ async def maybe_compress_messages(
         try:
             import app.services.conversation_summarizer as _summarizer
 
-            summary = await _summarizer._llm_summarize(old_messages, summary_model)
+            summary = await _summarizer._llm_summarize(
+                old_messages,
+                summary_model,
+                usage_source="compaction_summary",
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+            )
             if summary:
                 if tenant_id is not None:
                     _summary_breaker_record_success(tenant_id)
@@ -546,7 +557,7 @@ async def persist_runtime_memory(
 
     for attempt in range(_MAX_RETRIES + 1):
         try:
-            summary = await _generate_session_summary(messages, tenant_id)
+            summary = await _generate_session_summary(messages, tenant_id, agent_id=agent_id)
             if summary and session_id:
                 await _save_session_summary(session_id, summary, tenant_id)
 
@@ -760,14 +771,27 @@ async def _get_rerank_model_config(tenant_id: uuid.UUID) -> dict | None:
     return await _get_memory_model_config(tenant_id, config.get("rerank_model_id"), "rerank")
 
 
-async def _generate_session_summary(messages: list[dict], tenant_id: uuid.UUID) -> str | None:
+async def _generate_session_summary(
+    messages: list[dict],
+    tenant_id: uuid.UUID,
+    *,
+    agent_id: uuid.UUID | None = None,
+    user_id: uuid.UUID | None = None,
+) -> str | None:
     """Generate a summary for the session using LLM or fallback extraction."""
     summary_model = await _get_summary_model_config(tenant_id)
     if summary_model:
         try:
             from app.services.conversation_summarizer import _llm_summarize
 
-            return await _llm_summarize(messages, summary_model)
+            return await _llm_summarize(
+                messages,
+                summary_model,
+                usage_source="session_summary",
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+            )
         except Exception as e:
             logger.warning("LLM session summary failed, using extraction: %s", e)
 

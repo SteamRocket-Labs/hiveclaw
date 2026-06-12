@@ -73,8 +73,8 @@ class TestMemorySectionRegressionAgainstOldWording:
 # ── C3: trims must signpost the retrieval path (docs/agent-lifecycle-cc-alignment.md 主题 C) ──
 
 
-def test_memory_snapshot_trim_signposts_retrieval() -> None:
-    """A trimmed memory snapshot must tell the model HOW to get the rest
+def test_memory_context_trim_signposts_retrieval() -> None:
+    """A trimmed memory context must tell the model HOW to get the rest
     (search_memory), not just that something was cut."""
     from app.runtime.prompt_sections.memory import build_memory_section
 

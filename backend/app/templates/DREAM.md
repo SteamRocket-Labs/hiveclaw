@@ -79,9 +79,12 @@ or over-cap), apply three steps in order:
 - Remove entries that are now outdated or contradicted by newer entries.
   If contradicted, prefer the newer entry.
 
-Use `read_file` then `write_file` for each file you modify. Append new
-entries; never rewrite the file top-to-bottom unless you are collapsing
-duplicates.
+The production runtime applies these lifecycle decisions through the Memory Control Plane
+and internal dream writeback service. Do not instruct an agent
+to call `write_file` / `edit_file` under `memory/`; those tool paths are
+refused by runtime policy. Proposed changes must preserve source evidence,
+append new entries when needed, and avoid rewriting files top-to-bottom unless
+collapsing duplicates.
 </phase_2_consolidate>
 
 <good_consolidation_examples>

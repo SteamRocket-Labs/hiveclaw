@@ -44,3 +44,37 @@ def test_unclear_feedback_does_not_create_calibration_candidate() -> None:
 
     assert store.calibration_candidates() == []
 
+
+def test_decision_trace_store_persists_decisions_and_feedback(tmp_path) -> None:
+    trace_path = tmp_path / "decision_traces.jsonl"
+    first = DecisionTraceStore(path=trace_path)
+    decision = first.record_decision(
+        action="external_reply",
+        chosen="ask",
+        reasoning="External-visible action.",
+        alternatives_considered=["send", "refuse"],
+        situational_factors=["vendor"],
+        charter_zone="confirm_first",
+        preflight={"decision": "ask"},
+        sensitivity="PL2_pii",
+    )
+
+    second = DecisionTraceStore(path=trace_path)
+    assert [item.id for item in second.decisions()] == [decision.id]
+    second.record_feedback(
+        decision_id=decision.id,
+        reaction="too cautious",
+        polarity="negative",
+        source="direct_owner",
+    )
+
+    third = DecisionTraceStore(path=trace_path)
+    assert third.feedback_for_decision(decision.id)[0].reaction == "too cautious"
+    assert third.calibration_candidates() == [
+        {
+            "decision_id": decision.id,
+            "action": "external_reply",
+            "reaction": "too cautious",
+            "charter_zone": "confirm_first",
+        }
+    ]

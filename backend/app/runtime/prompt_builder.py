@@ -29,11 +29,11 @@ _ACTIVE_PACKS_CHAR_BUDGET = 1200
 _RETRIEVAL_CHAR_BUDGET = 3000
 _CONTINUITY_CHAR_BUDGET = 2500
 # P1-W2-2: Per-section caps in the dynamic suffix.
-# Memory body gets 60% of the memory budget; the remainder is for
-# continuity_context (which is also memory-flavored). System prompt suffix
-# is user-supplied — fixed ceiling stops a runaway upstream caller from
-# pushing the suffix past sensible round-trip cost.
-_MEMORY_SNAPSHOT_BUDGET_RATIO = 0.6
+# Memory context is already selected by MemoryAssembler using score-aware
+# trimming at memory_budget_chars. The prompt builder must not apply a smaller
+# ratio cap afterwards; that would overwrite the assembler's ranking. System
+# prompt suffix is user-supplied — fixed ceiling stops a runaway upstream caller
+# from pushing the suffix past sensible round-trip cost.
 _DEFAULT_MEMORY_SNAPSHOT_BUDGET = 8000
 _SYSTEM_PROMPT_SUFFIX_CHAR_CAP = 5000
 
@@ -492,8 +492,9 @@ def build_dynamic_prompt_suffix(
 ) -> str:
     """Build the per-round dynamic suffix.
 
-    Contains: § Memory, § Memory Navigation, active runtime tool groups,
-    knowledge retrieval results, § Environment, and request-specific suffix.
+    Contains: § Memory, § Memory Navigation, runtime metadata,
+    active runtime tool groups, external knowledge retrieval results,
+    § Environment, and request-specific suffix.
     These CAN change between rounds within the same session.
     """
     from app.runtime.prompt_sections import (
@@ -521,11 +522,11 @@ def build_dynamic_prompt_suffix(
 
     memory_budget_chars = getattr(budget_profile, "memory_budget_chars", _DEFAULT_MEMORY_SNAPSHOT_BUDGET)
 
-    # § Memory (4-layer pyramid + current T3 snapshot) — body capped to 60%
-    # of the memory budget so continuity_context has room to breathe in the
-    # remaining 40%.
+    # § Memory (4-layer pyramid + current query-scoped memory context) — the
+    # resolver/assembler already ranks and trims to memory_budget_chars, so this
+    # layer uses the same cap only as a hard safety guard for rogue callers.
     if memory_snapshot:
-        snapshot_cap = max(int(memory_budget_chars * _MEMORY_SNAPSHOT_BUDGET_RATIO), 1500)
+        snapshot_cap = max(int(memory_budget_chars), 1500)
         parts.append(build_memory_section(memory_snapshot, budget_chars=snapshot_cap))
 
     # § Memory Navigation (spec §8 / §12 P6) — heat-ordered entry index as
@@ -584,7 +585,12 @@ def build_dynamic_prompt_suffix(
         parts.append(_trim_block("\n".join(hint_lines), budget_chars=packs_budget))
 
     # § Environment (user, channel, time)
-    env_section = build_environment_section(user_name=user_name, channel=channel, agent_name=agent_name)
+    env_section = build_environment_section(
+        user_name=user_name,
+        channel=channel,
+        agent_name=agent_name,
+        include_time="## Current Time" not in runtime_metadata_context,
+    )
     if env_section:
         parts.append(env_section)
 

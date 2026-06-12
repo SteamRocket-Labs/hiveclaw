@@ -273,7 +273,9 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
                 "api_key": model.api_key,
                 "model": model.model,
                 "base_url": getattr(model, "base_url", None),
-            }
+            },
+            agent_id=agent_id,
+            tenant_id=tenant_id,
         )
     ctx = SubagentSpawnContext(
         parent_agent_id=agent_id,

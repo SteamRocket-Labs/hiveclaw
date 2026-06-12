@@ -574,7 +574,12 @@ async def websocket_chat(
                                 from app.services.memory_service import _generate_session_summary, _save_session_summary
 
                                 _idle_summary = await _aio_idle.wait_for(
-                                    _generate_session_summary(conversation, agent.tenant_id),
+                                    _generate_session_summary(
+                                        conversation,
+                                        agent.tenant_id,
+                                        agent_id=agent_id,
+                                        user_id=user_id,
+                                    ),
                                     timeout=10.0,
                                 )
                                 if _idle_summary:
@@ -670,7 +675,7 @@ async def websocket_chat(
                     )
                 await websocket.send_json({"type": "run_started", **payload})
             except ActiveWebChatRunExists as active_err:
-                await websocket.send_json({"type": "run_started", **active_err.run})
+                await websocket.send_json({"type": "user_message_queued", **active_err.run})
             except Exception as run_err:
                 logger.error("[WS] Failed to start durable web chat run: {}", run_err)
                 await websocket.send_json({"type": "error", "content": "Failed to start run"})

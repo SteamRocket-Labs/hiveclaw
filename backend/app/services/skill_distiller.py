@@ -4,7 +4,7 @@ Conservative automation only:
 - detect repeated internal workflows from structured session data
 - ask an LLM for a draft only after thresholds are met
 - validate and dedupe before saving a new skill
-- patch recommendations are review-only, never auto-applied
+- apply verified patches to existing skills through the same evolution ledger
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import json
 import logging
 import re
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -34,7 +34,7 @@ from app.services.skill_lifecycle import (
 from app.skills import SkillParser, WorkspaceSkillLoader
 from app.tools.collector import collect_tools
 from app.tools.runtime_tool_groups import RUNTIME_TOOL_GROUPS, infer_static_runtime_tool_group_names
-from app.services.llm_client import LLMMessage, create_llm_client
+from app.services.llm_client import LLMMessage, create_llm_client_from_config, with_llm_usage_context
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +164,30 @@ def load_memory_skill_candidates(data_root: Path, agent_id: uuid.UUID) -> list[d
 def load_memory_workflow_candidates(data_root: Path, agent_id: uuid.UUID) -> list[dict[str, str]]:
     """Unpromoted T3 entries marked `[container=workflow_candidate]`."""
     return _load_memory_container_candidates(data_root, agent_id, container="workflow_candidate")
+
+
+def load_flywheel_skill_candidate_drafts(workspace: Path, *, limit: int = 10) -> list[dict[str, str]]:
+    """Read inactive skill draft files produced by the fast-reflection flywheel."""
+    root = workspace / "evolution" / "skill_candidates"
+    if not root.exists():
+        return []
+
+    drafts: list[dict[str, str]] = []
+    for skill_path in sorted(root.glob("*/SKILL.md"), key=lambda path: path.stat().st_mtime, reverse=True):
+        try:
+            content = skill_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        drafts.append(
+            {
+                "candidate_id": skill_path.parent.name,
+                "path": str(skill_path.relative_to(workspace)),
+                "content": content[:4000],
+            }
+        )
+        if len(drafts) >= limit:
+            break
+    return drafts
 
 
 def record_workflow_candidates_from_memory(
@@ -363,6 +387,17 @@ def resolve_existing_skill_conflict(*, workspace: Path, draft: DistilledSkillDra
     return SkillConflictResolution(final_decision=draft.decision or "defer")
 
 
+def _resolve_patch_target_skill(*, workspace: Path, draft: DistilledSkillDraft, conflict: SkillConflictResolution):
+    candidate_names = [conflict.existing_skill_name, draft.name]
+    normalized_names = {str(name).strip().lower() for name in candidate_names if str(name or "").strip()}
+    if not normalized_names:
+        return None
+    for skill in _existing_skills(workspace):
+        if skill.metadata.name.strip().lower() in normalized_names:
+            return skill
+    return None
+
+
 def _cursor_value(occurred_at: str, session_id: str) -> tuple[datetime, str]:
     try:
         return (datetime.fromisoformat(occurred_at.replace("Z", "+00:00")), session_id)
@@ -535,6 +570,9 @@ async def _draft_skill_with_llm(
     declared_packs: tuple[str, ...],
     workspace: Path,
     memory_candidates: list[dict[str, str]] | None = None,
+    skill_candidate_drafts: list[dict[str, str]] | None = None,
+    agent_id: uuid.UUID | None = None,
+    tenant_id: uuid.UUID | None = None,
 ) -> DistilledSkillDraft:
     system_prompt = (
         "<role>\n"
@@ -611,6 +649,16 @@ async def _draft_skill_with_llm(
         if memory_lines
         else ""
     )
+    draft_lines = [
+        f"- id={candidate['candidate_id']} path={candidate['path']}\n{candidate['content']}"
+        for candidate in (skill_candidate_drafts or [])[:3]
+    ]
+    draft_block = (
+        "flywheel_skill_candidate_drafts (inactive SKILL.md drafts; use as evidence, not as activated skills):\n"
+        f"{chr(10).join(draft_lines)}\n\n"
+        if draft_lines
+        else ""
+    )
     prompt = (
         "Draft a reusable internal skill.\n\n"
         f"workflow_signature: {workflow_signature}\n"
@@ -621,6 +669,7 @@ async def _draft_skill_with_llm(
         "recent_evidence:\n"
         f"{chr(10).join(evidence_lines)}\n\n"
         f"{memory_block}"
+        f"{draft_block}"
         "Respond with JSON only using:\n"
         "{"
         '"decision":"promote|patch|defer|reject",'
@@ -640,11 +689,19 @@ async def _draft_skill_with_llm(
     # invoke_agent governance.
     from app.memory.metrics import record_autonomous_llm_call
 
-    client = create_llm_client(
-        provider=getattr(model, "provider"),
-        model=getattr(model, "model"),
-        api_key=getattr(model, "api_key"),
-        base_url=getattr(model, "base_url", None),
+    client = create_llm_client_from_config(
+        with_llm_usage_context(
+            {
+                "provider": getattr(model, "provider"),
+                "model": getattr(model, "model"),
+                "api_key": getattr(model, "api_key"),
+                "base_url": getattr(model, "base_url", None),
+            },
+            source="skill_distiller",
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            metadata={"workflow_signature": workflow_signature},
+        )
     )
     try:
         response = await client.complete(
@@ -752,7 +809,6 @@ async def run_skill_distillation_cycle(
     model: Any | None = None,
     current_session_id: str | None = None,
 ) -> dict[str, Any]:
-    del tenant_id  # reserved for future tenant-aware pack filtering
     if not getattr(runtime_config, "skill_candidate_loop_enabled", False):
         return {"status": "disabled", "processed_sessions": 0}
 
@@ -763,6 +819,7 @@ async def run_skill_distillation_cycle(
     data_root = Path(get_settings().AGENT_DATA_DIR)
     workflow_candidates_recorded = 0
     memory_skill_candidates: list[dict[str, str]] = []
+    flywheel_skill_candidate_drafts = load_flywheel_skill_candidate_drafts(workspace)
     try:
         workflow_candidates_recorded = record_workflow_candidates_from_memory(data_root, agent_id, workspace=workspace)
         memory_skill_candidates = load_memory_skill_candidates(data_root, agent_id)
@@ -860,27 +917,36 @@ async def run_skill_distillation_cycle(
         else (),
         workspace=workspace,
         memory_candidates=memory_skill_candidates,
+        skill_candidate_drafts=flywheel_skill_candidate_drafts,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
     )
 
     conflict = resolve_existing_skill_conflict(workspace=workspace, draft=draft)
     final_decision = conflict.final_decision
     if draft.decision == "patch":
         final_decision = "patch"
+    effective_draft = (
+        replace(draft, name=conflict.existing_skill_name)
+        if final_decision == "patch" and conflict.existing_skill_name
+        else draft
+    )
 
     rendered = _render_skill_markdown(
-        name=draft.name,
-        description=draft.description,
-        instructions=draft.instructions_markdown,
-        declared_tools=draft.declared_tools,
-        declared_packs=draft.declared_packs or infer_static_runtime_tool_group_names(list(draft.declared_tools)),
+        name=effective_draft.name,
+        description=effective_draft.description,
+        instructions=effective_draft.instructions_markdown,
+        declared_tools=effective_draft.declared_tools,
+        declared_packs=effective_draft.declared_packs
+        or infer_static_runtime_tool_group_names(list(effective_draft.declared_tools)),
     )
-    validation_errors = validate_distilled_skill(workspace=workspace, draft=draft, rendered_markdown=rendered)
+    validation_errors = validate_distilled_skill(workspace=workspace, draft=effective_draft, rendered_markdown=rendered)
     if validation_errors:
         note = "; ".join(validation_errors)
         update_skill_candidate_record(
             workspace,
             workflow_signature=record.workflow_signature,
-            skill_name=draft.name or record.skill_name,
+            skill_name=effective_draft.name or record.skill_name,
             blocker="validation_failed",
             last_status="defer",
             last_note=note,
@@ -888,30 +954,183 @@ async def run_skill_distillation_cycle(
         )
         record_skill_lifecycle_event(
             workspace,
-            skill_name=draft.name or record.skill_name,
+            skill_name=effective_draft.name or record.skill_name,
             status="defer",
             note=note,
         )
         return {"status": "deferred", "processed_sessions": processed, "errors": validation_errors}
 
     if final_decision == "patch":
-        note = draft.reason or conflict.reason or "Existing skill should be reviewed and patched manually."
+        patch_target = _resolve_patch_target_skill(workspace=workspace, draft=effective_draft, conflict=conflict)
+        if patch_target is None:
+            note = conflict.reason or effective_draft.reason or "Patch decision had no existing skill target."
+            update_skill_candidate_record(
+                workspace,
+                workflow_signature=record.workflow_signature,
+                skill_name=effective_draft.name or record.skill_name,
+                blocker="patch_target_missing",
+                last_status="defer",
+                last_note=note,
+                last_updated_at=datetime.now(timezone.utc).isoformat(),
+            )
+            record_skill_lifecycle_event(
+                workspace,
+                skill_name=effective_draft.name or record.skill_name,
+                status="defer",
+                note=note,
+            )
+            return {"status": "deferred", "processed_sessions": processed, "reason": note}
+
+        from app.services.evolution_ledger import (
+            record_evolution_candidate,
+            record_promotion_decision,
+        )
+        from app.services.evolution_verification import (
+            decide_verified_promotion,
+            record_verification_eval,
+            run_evolution_verification,
+        )
+
+        patch_relative_path = patch_target.relative_path
+        candidate = record_evolution_candidate(
+            workspace,
+            target_type="skill_patch",
+            target_id=patch_relative_path,
+            diff=rendered,
+            source_attempt_ids=[item.session_id for item in evidence_for_candidate],
+            baseline_version=patch_relative_path,
+            metadata={
+                "workflow_signature": record.workflow_signature,
+                "confidence": effective_draft.confidence,
+                "declared_tools": list(effective_draft.declared_tools),
+                "declared_packs": list(effective_draft.declared_packs),
+                "existing_skill_name": patch_target.metadata.name,
+                "reason": effective_draft.reason or conflict.reason,
+            },
+        )
+        verification_report = run_evolution_verification(
+            workspace=workspace,
+            candidate=candidate,
+            graders=[
+                {
+                    "type": "skill_guard",
+                    "content": rendered,
+                    "path": patch_relative_path,
+                }
+            ],
+        )
+        record_verification_eval(
+            workspace,
+            candidate=candidate,
+            verification_report=verification_report,
+            dataset="skill_distiller.verified_skill_guard",
+        )
+        promotion_decision = decide_verified_promotion(candidate, verification_report=verification_report)
+        if promotion_decision["decision"] != "promote":
+            record_promotion_decision(
+                workspace,
+                candidate_id=candidate["candidate_id"],
+                decision="held",
+                reason=promotion_decision["reason"],
+                rollback_ref=patch_relative_path,
+                metadata={"verification_passed": verification_report["passed"]},
+            )
+            update_skill_candidate_record(
+                workspace,
+                workflow_signature=record.workflow_signature,
+                skill_name=effective_draft.name,
+                blocker="verification_failed",
+                last_status="defer",
+                last_note=promotion_decision["reason"],
+                last_updated_at=datetime.now(timezone.utc).isoformat(),
+            )
+            record_skill_lifecycle_event(
+                workspace,
+                skill_name=effective_draft.name,
+                status="defer",
+                note=promotion_decision["reason"],
+            )
+            return {
+                "status": "deferred",
+                "processed_sessions": processed,
+                "reason": promotion_decision["reason"],
+                "verification_report": verification_report,
+            }
+
+        save_result = _save_skill(
+            workspace,
+            name=effective_draft.name,
+            description=effective_draft.description,
+            instructions=effective_draft.instructions_markdown,
+            declared_tools=effective_draft.declared_tools,
+            declared_packs=effective_draft.declared_packs
+            or infer_static_runtime_tool_group_names(list(effective_draft.declared_tools)),
+            overwrite=True,
+        )
+        if "✅" not in save_result:
+            record_promotion_decision(
+                workspace,
+                candidate_id=candidate["candidate_id"],
+                decision="held",
+                reason="patch save failed after verification",
+                rollback_ref=patch_relative_path,
+                metadata={"save_result": save_result[:500], "verification_passed": verification_report["passed"]},
+            )
+            update_skill_candidate_record(
+                workspace,
+                workflow_signature=record.workflow_signature,
+                skill_name=effective_draft.name,
+                blocker="save_failed",
+                last_status="defer",
+                last_note=save_result,
+                last_updated_at=datetime.now(timezone.utc).isoformat(),
+            )
+            return {
+                "status": "deferred",
+                "processed_sessions": processed,
+                "save_result": save_result,
+                "verification_report": verification_report,
+            }
+
+        record_promotion_decision(
+            workspace,
+            candidate_id=candidate["candidate_id"],
+            decision="patched",
+            reason=promotion_decision["reason"],
+            rollback_ref=patch_relative_path,
+            metadata={"save_result": save_result[:500], "verification_passed": verification_report["passed"]},
+        )
+        from app.services.evolution_validation import validate_evolution_ledger
+
+        evolution_validation = validate_evolution_ledger(workspace, write_report=True)
+        patched_at = datetime.now(timezone.utc).isoformat()
         update_skill_candidate_record(
             workspace,
             workflow_signature=record.workflow_signature,
-            skill_name=conflict.existing_skill_name or draft.name or record.skill_name,
-            blocker="patch_recommended",
-            last_status="patch",
-            last_note=note,
-            last_updated_at=datetime.now(timezone.utc).isoformat(),
+            skill_name=effective_draft.name,
+            blocker="patched",
+            last_status="patched",
+            last_note=effective_draft.reason or "Patched existing skill after verification.",
+            last_updated_at=patched_at,
         )
         record_skill_lifecycle_event(
             workspace,
-            skill_name=conflict.existing_skill_name or draft.name or record.skill_name,
-            status="patch-recommended",
-            note=note,
+            skill_name=effective_draft.name,
+            status="patched",
+            note=effective_draft.reason or "Patched existing skill after verification.",
         )
-        return {"status": "patch_recommended", "processed_sessions": processed}
+        state.last_promotion_at = patched_at
+        save_distiller_state(workspace, state)
+        return {
+            "status": "patched",
+            "processed_sessions": processed,
+            "skill_name": effective_draft.name,
+            "workflow_signature": record.workflow_signature,
+            "evolution_validation_passed": evolution_validation["passed"],
+            "evolution_validation": evolution_validation.get("report_artifact"),
+            "verification_report": verification_report,
+            "workflow_candidates_recorded": workflow_candidates_recorded,
+        }
 
     if draft.decision != "promote" or draft.confidence < _MIN_CONFIDENCE:
         note = draft.reason or "LLM confidence was below the promotion threshold."
@@ -932,32 +1151,14 @@ async def run_skill_distillation_cycle(
         )
         return {"status": "deferred", "processed_sessions": processed}
 
-    save_result = _save_skill(
-        workspace,
-        name=draft.name,
-        description=draft.description,
-        instructions=draft.instructions_markdown,
-        declared_tools=draft.declared_tools,
-        declared_packs=draft.declared_packs or infer_static_runtime_tool_group_names(list(draft.declared_tools)),
-        overwrite=False,
-    )
-    if "✅" not in save_result:
-        update_skill_candidate_record(
-            workspace,
-            workflow_signature=record.workflow_signature,
-            skill_name=draft.name,
-            blocker="save_failed",
-            last_status="defer",
-            last_note=save_result,
-            last_updated_at=datetime.now(timezone.utc).isoformat(),
-        )
-        return {"status": "deferred", "processed_sessions": processed, "save_result": save_result}
-
     from app.services.evolution_ledger import (
-        decide_promotion,
-        record_eval_run,
         record_evolution_candidate,
         record_promotion_decision,
+    )
+    from app.services.evolution_verification import (
+        decide_verified_promotion,
+        record_verification_eval,
+        run_evolution_verification,
     )
 
     candidate = record_evolution_candidate(
@@ -974,26 +1175,95 @@ async def run_skill_distillation_cycle(
             "declared_packs": list(draft.declared_packs),
         },
     )
-    eval_run = record_eval_run(
-        workspace,
-        candidate_id=candidate["candidate_id"],
-        dataset="skill_distiller.internal_workflow_repeats",
-        reward=float(draft.confidence),
-        baseline_reward=float(_MIN_CONFIDENCE),
-        passed=True,
-        traces=[item.session_id for item in evidence_for_candidate],
-        critical_regressions=0,
-        metadata={"reason": draft.reason or ""},
+    verification_report = run_evolution_verification(
+        workspace=workspace,
+        candidate=candidate,
+        graders=[
+            {
+                "type": "skill_guard",
+                "content": rendered,
+                "path": "SKILL.md",
+            }
+        ],
     )
-    promotion_decision = decide_promotion(eval_run, min_reward_delta=0.0)
+    record_verification_eval(
+        workspace,
+        candidate=candidate,
+        verification_report=verification_report,
+        dataset="skill_distiller.verified_skill_guard",
+    )
+    promotion_decision = decide_verified_promotion(candidate, verification_report=verification_report)
     rollback_ref = f"skills/{_normalize_skill_folder_name(draft.name)}/SKILL.md"
+    if promotion_decision["decision"] != "promote":
+        record_promotion_decision(
+            workspace,
+            candidate_id=candidate["candidate_id"],
+            decision="held",
+            reason=promotion_decision["reason"],
+            metadata={"verification_passed": verification_report["passed"]},
+        )
+        update_skill_candidate_record(
+            workspace,
+            workflow_signature=record.workflow_signature,
+            skill_name=draft.name,
+            blocker="verification_failed",
+            last_status="defer",
+            last_note=promotion_decision["reason"],
+            last_updated_at=datetime.now(timezone.utc).isoformat(),
+        )
+        record_skill_lifecycle_event(
+            workspace,
+            skill_name=draft.name,
+            status="defer",
+            note=promotion_decision["reason"],
+        )
+        return {
+            "status": "deferred",
+            "processed_sessions": processed,
+            "reason": promotion_decision["reason"],
+            "verification_report": verification_report,
+        }
+
+    save_result = _save_skill(
+        workspace,
+        name=draft.name,
+        description=draft.description,
+        instructions=draft.instructions_markdown,
+        declared_tools=draft.declared_tools,
+        declared_packs=draft.declared_packs or infer_static_runtime_tool_group_names(list(draft.declared_tools)),
+        overwrite=False,
+    )
+    if "✅" not in save_result:
+        record_promotion_decision(
+            workspace,
+            candidate_id=candidate["candidate_id"],
+            decision="held",
+            reason="save failed after verification",
+            metadata={"save_result": save_result[:500], "verification_passed": verification_report["passed"]},
+        )
+        update_skill_candidate_record(
+            workspace,
+            workflow_signature=record.workflow_signature,
+            skill_name=draft.name,
+            blocker="save_failed",
+            last_status="defer",
+            last_note=save_result,
+            last_updated_at=datetime.now(timezone.utc).isoformat(),
+        )
+        return {
+            "status": "deferred",
+            "processed_sessions": processed,
+            "save_result": save_result,
+            "verification_report": verification_report,
+        }
+
     record_promotion_decision(
         workspace,
         candidate_id=candidate["candidate_id"],
-        decision="promoted" if promotion_decision["decision"] == "promote" else "held",
+        decision="promoted",
         reason=promotion_decision["reason"],
         rollback_ref=rollback_ref,
-        metadata={"save_result": save_result[:500]},
+        metadata={"save_result": save_result[:500], "verification_passed": verification_report["passed"]},
     )
     from app.services.evolution_validation import validate_evolution_ledger
 

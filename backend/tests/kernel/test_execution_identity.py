@@ -118,12 +118,16 @@ async def test_runtime_invoker_captures_current_execution_identity(monkeypatch):
 
     captured = {}
 
+    async def allow_quota(_user_id):
+        return None
+
     class _FakeKernel:
         async def handle(self, request):
             captured["request"] = request
             return SimpleNamespace(content="ok", tokens_used=0, final_tools=None, parts=[])
 
     monkeypatch.setattr("app.runtime.invoker.get_agent_kernel", lambda: _FakeKernel())
+    monkeypatch.setattr("app.runtime.invoker.check_user_token_quota", allow_quota, raising=False)
 
     identity_id = uuid4()
     set_execution_identity(ExecutionIdentity("delegated_user", identity_id, "Rocky via web"))

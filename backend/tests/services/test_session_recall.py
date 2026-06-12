@@ -327,9 +327,10 @@ async def test_search_session_history_uses_tenant_aware_summary_enrichment(monke
         ),
     ]
 
-    async def _fake_summarize(query, hits, tenant):
+    async def _fake_summarize(query, hits, tenant, agent=None):
         assert query == "priority matrix"
         assert tenant == tenant_id
+        assert agent == agent_id
         assert hits[0]["summary"]
         hits[0]["summary"] = "模型聚焦摘要：我们把 priority matrix 整理成了决策摘要。"
         return hits

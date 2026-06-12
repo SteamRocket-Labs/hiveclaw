@@ -27,10 +27,12 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.agents.coordination_wiring import gateway_scope
 from app.config import get_settings
 from app.database import tenant_scoped_session
 from app.models.runtime_task import RuntimeTask
 from app.models.workflow import WorkflowQuota, WorkflowStep
+from app.services.channel_delivery_service import ChannelDeliveryService
 from app.runtime.workflow_admission import AdmissionLimits, WorkflowAdmissionError, admit_workflow
 from app.runtime.workflow_compiler import CompiledWorkflow, compile_workflow
 from app.runtime.workflow_definition import compute_definition_hash
@@ -612,6 +614,7 @@ class WorkflowRuntimeService:
         confirmed_plan_id: uuid.UUID | str | None = None,
         allowed_leaves: set[str] | None = None,
         run_id: uuid.UUID | None = None,
+        delivery_target: dict[str, Any] | None = None,
     ) -> WorkflowRunHandle:
         if not get_settings().WORKFLOW_RUNTIME_ENABLED:
             raise WorkflowAdmissionError("workflow runtime disabled by feature flag WORKFLOW_RUNTIME_ENABLED")
@@ -635,6 +638,7 @@ class WorkflowRuntimeService:
                     "args_hash": args_hash,
                     "confirmed_plan_id": str(confirmed_plan_id) if confirmed_plan_id else None,
                     "tenant_id": str(tenant_id),
+                    "delivery_target_json": delivery_target,
                     # Ephemeral archive (§3.1): the run must be replayable
                     # without the original conversation.
                     "definition_json": compiled.definition.canonical_dict()
@@ -942,23 +946,60 @@ class WorkflowRuntimeService:
             logger.warning("[Workflow] audit write %s failed (non-fatal): %s", action, exc)
 
     @staticmethod
-    def _emit_completion_signal(run_id: uuid.UUID, agent_id: uuid.UUID | None, status: str) -> None:
+    async def _emit_completion_signal(
+        run_id: uuid.UUID,
+        agent_id: uuid.UUID | None,
+        status: str,
+        *,
+        tenant_id: uuid.UUID,
+    ) -> None:
         """``workflow_completed`` Signal — NOTIFICATION ONLY (§3.3): read-once
         consumption, never a wait_signal resume promise (that is P11)."""
         if agent_id is None:
             return
         try:
-            from app.agents.coordination import coordination_runtime
-
-            coordination_runtime.send_signal(
+            async with gateway_scope(tenant_id=tenant_id) as gateway:
+                await gateway.send_signal(
                 from_agent_id=f"workflow:{run_id}",
                 to_agent_id=str(agent_id),
                 content=f"workflow run {run_id} finished: {status}",
                 signal_type="workflow_completed",
                 thread_id=str(run_id),
-            )
+                )
         except Exception as exc:
             logger.warning("[Workflow] completion signal failed (non-fatal): %s", exc)
+
+    async def _deliver_completion_notification(
+        self,
+        *,
+        run_id: uuid.UUID,
+        agent_id: uuid.UUID | None,
+        status: str,
+        tenant_id: uuid.UUID,
+        metadata: dict[str, Any],
+    ) -> None:
+        if agent_id is None:
+            return
+        reply_target = (
+            metadata.get("delivery_target_json")
+            or metadata.get("reply_target")
+            or metadata.get("delivery_target")
+        )
+        if not isinstance(reply_target, dict) or not reply_target.get("channel"):
+            return
+        text = f"Workflow run {run_id} finished: {status}."
+        try:
+            async with self._session(tenant_id) as session:
+                await ChannelDeliveryService.send_text(
+                    db=session,
+                    agent_id=agent_id,
+                    reply_target=reply_target,
+                    text=text,
+                    delivery_mode="async_completion",
+                    extra_detail={"runtime_task_id": str(run_id), "status": status},
+                )
+        except Exception as exc:
+            logger.warning("[Workflow] completion delivery failed (non-fatal): %s", exc)
 
     # ── internals ────────────────────────────────────────────────
 
@@ -1068,6 +1109,7 @@ class WorkflowRuntimeService:
 
         agent_for_signal: uuid.UUID | None = None
         definition_hash: str | None = None
+        task_metadata: dict[str, Any] = {}
         async with self._session(tenant_id) as session:
             task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
             if outcome.status == "killed" and task.status == "suspended":
@@ -1090,7 +1132,8 @@ class WorkflowRuntimeService:
                 metadata["last_outcome_reason"] = outcome.reason
                 task.metadata_json = metadata
             agent_for_signal = task.parent_agent_id
-            definition_hash = (task.metadata_json or {}).get("definition_hash")
+            task_metadata = dict(task.metadata_json or {})
+            definition_hash = task_metadata.get("definition_hash")
 
         await self._audit(
             f"workflow_run_{outcome.status}",
@@ -1104,5 +1147,12 @@ class WorkflowRuntimeService:
 
         record_workflow_run_finished(outcome.status)
         if outcome.status == "completed":
-            self._emit_completion_signal(run_id, agent_for_signal, outcome.status)
+            await self._emit_completion_signal(run_id, agent_for_signal, outcome.status, tenant_id=tenant_id)
+            await self._deliver_completion_notification(
+                run_id=run_id,
+                agent_id=agent_for_signal,
+                status=outcome.status,
+                tenant_id=tenant_id,
+                metadata=task_metadata,
+            )
         return outcome

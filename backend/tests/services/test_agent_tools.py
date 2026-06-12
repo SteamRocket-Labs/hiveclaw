@@ -212,6 +212,8 @@ async def test_get_agent_tools_for_llm_core_only_matches_first_round_surface(mon
     assert "search_memory" in names
     assert "load_memory" in names
     assert "save_memory" in names
+    assert "update_memory" in names
+    assert "retire_memory" in names
     assert "list_triggers" in names
     assert "update_trigger" in names
     assert "cancel_trigger" in names

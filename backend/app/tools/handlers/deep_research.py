@@ -27,6 +27,7 @@ from app.services.office_document_service import OfficeDocumentService
 from app.services.plan_mode_service import get_plan_mode_service
 from app.services.runtime_task_service import (
     get_runtime_task_record,
+    list_active_runtime_task_records,
     update_runtime_task_record,
 )
 from app.tools.decorator import ToolMeta, tool
@@ -76,9 +77,65 @@ _REQUEST_PROPERTIES: dict[str, Any] = {
 }
 
 
-# P3: best-effort in-process guard so the same question is not run twice concurrently
-# (e.g. a stray deep_research_run + deep_research_start for the same ask).
+# Fast in-process guard backed by persisted RuntimeTask signature scans, so
+# restart/resume does not start the same Deep Research workflow twice.
 _INFLIGHT_DEEP_RESEARCH: dict[tuple[str, str], str] = {}
+_ACTIVE_DEEP_RESEARCH_STATUSES = ("pending", "running")
+
+
+def _deep_research_signature(research_request: ResearchRequest) -> str:
+    return deep_research_plan_signature(research_request, worker_topics=research_request.worker_topics)
+
+
+def _canonical_task_id(value: Any) -> str:
+    try:
+        return str(uuid.UUID(str(value)))
+    except (TypeError, ValueError, AttributeError):
+        return str(value)
+
+
+def _metadata_deep_research_signature(metadata: dict[str, Any]) -> str:
+    direct = str(metadata.get("deep_research_signature") or "").strip()
+    if direct:
+        return direct
+    args = metadata.get("args")
+    if isinstance(args, dict):
+        return str(args.get("deep_research_signature") or "").strip()
+    return ""
+
+
+async def _find_active_deep_research_task(agent_id: uuid.UUID, signature: str) -> str | None:
+    try:
+        records = await list_active_runtime_task_records(statuses=_ACTIVE_DEEP_RESEARCH_STATUSES, limit=200)
+    except Exception:
+        logger.warning("[DeepResearch] active-task dedup scan failed", exc_info=True)
+        return None
+    for record in records:
+        if str(record.get("parent_agent_id") or "") != str(agent_id):
+            continue
+        metadata = record.get("metadata") or {}
+        if not isinstance(metadata, dict):
+            continue
+        if _metadata_deep_research_signature(metadata) != signature:
+            continue
+        task_id = record.get("task_id")
+        if task_id:
+            return _canonical_task_id(task_id)
+    return None
+
+
+def _deep_research_dedup_payload(task_id: str) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "workflow_run_id": task_id,
+        "status": "running",
+        "deduped": True,
+        "next_action": (
+            f"A deep research run for this question is already in progress (task {task_id}). "
+            "Use deep_research_check instead of starting another."
+        ),
+    }
 
 
 def _clarifying_questions(research_request: ResearchRequest) -> list[str]:
@@ -292,21 +349,13 @@ async def deep_research_start(request: ToolExecutionRequest) -> str:
         preview = await _plan_preview(research_request)
         return _json(await _materialize_plan_card_payload(request, research_request, preview))
 
-    dedup_key = (str(request.context.agent_id), research_request.question.casefold())
+    signature = _deep_research_signature(research_request)
+    dedup_key = (str(request.context.agent_id), signature)
     existing_task = _INFLIGHT_DEEP_RESEARCH.get(dedup_key)
+    if not existing_task:
+        existing_task = await _find_active_deep_research_task(request.context.agent_id, signature)
     if existing_task:
-        return _json(
-            {
-                "ok": True,
-                "task_id": existing_task,
-                "status": "running",
-                "deduped": True,
-                "next_action": (
-                    f"A deep research run for this question is already in progress (task {existing_task}). "
-                    "Use deep_research_check instead of starting another."
-                ),
-            }
-        )
+        return _json(_deep_research_dedup_payload(existing_task))
 
     # DR-6b single path: pre-generate the workflow run id, schedule the run in
     # the background, and hand the caller a checkable task id immediately —
@@ -319,6 +368,8 @@ async def deep_research_start(request: ToolExecutionRequest) -> str:
         agent_id=request.context.agent_id,
         user_id=request.context.user_id,
         workspace=request.context.workspace,
+        dedup_signature=signature,
+        dedup_key=dedup_key,
     )
     from app.services.deep_research.leaf_presets import run_artifact_dir
 
@@ -493,8 +544,19 @@ async def start_deep_research_background_run(
     background, return a checkable id immediately — confirmation must never
     block on a multi-minute research run.
     """
+    signature = _deep_research_signature(request)
+    dedup_key = (str(agent_id), signature)
+    existing_task = _INFLIGHT_DEEP_RESEARCH.get(dedup_key)
+    if not existing_task:
+        existing_task = await _find_active_deep_research_task(agent_id, signature)
+    if existing_task:
+        payload = _deep_research_dedup_payload(existing_task)
+        payload["created_workflow_run_id"] = existing_task
+        payload["output_format"] = normalize_deep_research_output_format(request.output_format)
+        return payload
+
     run_id = uuid.uuid4()
-    _INFLIGHT_DEEP_RESEARCH[(str(agent_id), request.question.casefold())] = str(run_id)
+    _INFLIGHT_DEEP_RESEARCH[dedup_key] = str(run_id)
     _schedule_deep_research_workflow_background(
         research_request=request,
         run_id=run_id,
@@ -502,6 +564,8 @@ async def start_deep_research_background_run(
         user_id=user_id,
         workspace=workspace,
         plan_id=plan_id,
+        dedup_signature=signature,
+        dedup_key=dedup_key,
     )
     from app.services.deep_research.leaf_presets import run_artifact_dir
 
@@ -523,6 +587,8 @@ def _schedule_deep_research_workflow_background(
     user_id: uuid.UUID,
     workspace: Path,
     plan_id: uuid.UUID | str | None = None,
+    dedup_signature: str | None = None,
+    dedup_key: tuple[str, str] | None = None,
 ) -> None:
     """Run the deep_research.v1 workflow in the background.
 
@@ -543,7 +609,11 @@ def _schedule_deep_research_workflow_background(
             await update_runtime_task_record(
                 run_id.hex,
                 result_summary=f"Deep research workflow {payload.get('status')}",
-                metadata_json={"deep_research_result": payload},
+                metadata_json={
+                    "deep_research_signature": dedup_signature or _deep_research_signature(research_request),
+                    "deep_research_question": research_request.question,
+                    "deep_research_result": payload,
+                },
             )
         except Exception as exc:
             logger.warning("[DeepResearch] background workflow run %s failed: %s", run_id, exc)
@@ -554,7 +624,7 @@ def _schedule_deep_research_workflow_background(
             except Exception:
                 logger.warning("[DeepResearch] failed to annotate failure on run %s", run_id, exc_info=True)
         finally:
-            _INFLIGHT_DEEP_RESEARCH.pop((str(agent_id), research_request.question.casefold()), None)
+            _INFLIGHT_DEEP_RESEARCH.pop(dedup_key or (str(agent_id), _deep_research_signature(research_request)), None)
 
     asyncio.create_task(runner())
 

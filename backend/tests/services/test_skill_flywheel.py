@@ -29,10 +29,13 @@ def test_skill_flywheel_creates_candidate_draft_from_repeated_fast_reflection(tm
 
     entries = load_evolution_ledger(workspace)
     skill_candidate = [entry for entry in entries if entry.get("target_type") == "skill_candidate"][-1]
+    eval_run = [entry for entry in entries if entry.get("event") == "eval_run" and entry.get("candidate_id") == result["candidate_id"]][-1]
     assert skill_candidate["metadata"]["schema"] == "skill_candidate_manifest.v1"
     assert skill_candidate["metadata"]["guard"]["allowed"] is True
     assert skill_candidate["metadata"]["progressive_disclosure"]["kind"] == "candidate_summary"
-    assert any(entry.get("event") == "eval_run" and entry.get("candidate_id") == result["candidate_id"] for entry in entries)
+    report = eval_run["metadata"]["verification_report"]
+    assert [check["type"] for check in report["checks"]] == ["skill_guard"]
+    assert report["checks"][0]["evidence"]["guard"]["allowed"] is True
 
 
 def test_skill_flywheel_prefers_loaded_skill_patch_route(tmp_path) -> None:

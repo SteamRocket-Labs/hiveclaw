@@ -114,6 +114,7 @@ class ToolGovernanceContext:
     tenant_id: str | None
     tool_name: str
     arguments: dict[str, Any]
+    session_id: str | None = None
     # P1-W3-3: when this invocation is a child delegation, the parent's
     # token narrows the child's capability set and carries an expiry.
     # `None` means "not a delegated invocation" (web chat, trigger, etc.).
@@ -364,15 +365,18 @@ async def _run_governance_inner(
             return message
         if mcp_mode == "approval":
             try:
+                approval_kwargs = {
+                    "agent_id": context.agent_id,
+                    "user_id": context.user_id,
+                    "tool_name": context.tool_name,
+                    "arguments": context.arguments,
+                    "capability": "mcp_tool_call",
+                    "reason": "MCP server policy requires approval for this tool",
+                }
+                if context.session_id:
+                    approval_kwargs["session_id"] = context.session_id
                 result_check = await _maybe_await(
-                    deps.request_approval(
-                        agent_id=context.agent_id,
-                        user_id=context.user_id,
-                        tool_name=context.tool_name,
-                        arguments=context.arguments,
-                        capability="mcp_tool_call",
-                        reason="MCP server policy requires approval for this tool",
-                    )
+                    deps.request_approval(**approval_kwargs)
                 )
                 message = (
                     f"⏳ Tool '{context.tool_name}' requires approval"
@@ -674,15 +678,18 @@ async def _run_governance_inner(
 
     if _escalated_capability:
         try:
+            approval_kwargs = {
+                "agent_id": context.agent_id,
+                "user_id": context.user_id,
+                "tool_name": context.tool_name,
+                "arguments": context.arguments,
+                "capability": _escalated_capability,
+                "reason": dangerous_reason or _approval_reason,
+            }
+            if context.session_id:
+                approval_kwargs["session_id"] = context.session_id
             result_check = await _maybe_await(
-                deps.request_approval(
-                    agent_id=context.agent_id,
-                    user_id=context.user_id,
-                    tool_name=context.tool_name,
-                    arguments=context.arguments,
-                    capability=_escalated_capability,
-                    reason=dangerous_reason or _approval_reason,
-                )
+                deps.request_approval(**approval_kwargs)
             )
             message = (
                 f"⏳ Tool '{context.tool_name}' requires approval"

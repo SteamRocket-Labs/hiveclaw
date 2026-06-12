@@ -44,6 +44,7 @@ MAX_AGENT_CHAIN_DEPTH = 5  # A→B→A→B→A max depth before stopping
 MIN_POLL_INTERVAL_MINUTES = 5  # align with tenant/agent min_poll_interval_floor defaults
 MAX_FIRES_PER_HOUR = 6  # hard cap: ~10 min minimum interval between fires
 _TRIGGER_FIRE_LEASE_TTL_SECONDS = 600
+_TRIGGER_FIRE_INFLIGHT_STALE_SECONDS = 6 * 60 * 60
 
 # Track last invocation time per agent to enforce dedup window
 _last_invoke: dict[uuid.UUID, datetime] = {}
@@ -367,11 +368,29 @@ def _is_trigger_in_active_hours(active_hours: str, now: datetime, tz_name: str =
 # ── Trigger Evaluation ──────────────────────────────────────────────
 
 
+def _inflight_fire_is_active(config: dict, now: datetime) -> bool:
+    inflight = config.get("_fire_inflight")
+    if not isinstance(inflight, dict):
+        return False
+    started_at = inflight.get("started_at")
+    if not started_at:
+        return True
+    try:
+        parsed = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return True
+    return (now - parsed) < timedelta(seconds=_TRIGGER_FIRE_INFLIGHT_STALE_SECONDS)
+
+
 async def _evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
     """Return True if this trigger should fire right now."""
     if not trigger.is_enabled:
         return False
     cfg = trigger.config or {}
+    if _inflight_fire_is_active(cfg, now):
+        return False
     backoff_until = cfg.get("backoff_until")
     if backoff_until:
         try:
@@ -804,7 +823,7 @@ async def _acquire_trigger_fire_lease(
         return bool(acquired)
     except Exception as exc:
         logger.warning("[TriggerDaemon] Failed to acquire trigger fire lease for {}: {}", trigger_id, exc)
-        return True
+        return False
 
 
 async def _preflight_trigger_group(
@@ -847,8 +866,58 @@ async def _record_trigger_success_state(agent_id: uuid.UUID, trigger_ids: list[u
         for trigger_id in trigger_ids:
             result = await db.execute(select(AgentTrigger).where(AgentTrigger.id == trigger_id))
             trigger = result.scalar_one_or_none()
-            if trigger and reset_trigger_failure_policy(trigger):
-                changed = True
+            if not trigger:
+                continue
+            cfg = dict(trigger.config or {})
+            cfg.pop("_fire_inflight", None)
+            if trigger.type == "webhook":
+                cfg["_webhook_pending"] = False
+                cfg["_webhook_payload"] = None
+            trigger.config = cfg
+            trigger.last_fired_at = datetime.now(timezone.utc)
+            trigger.fire_count = int(trigger.fire_count or 0) + 1
+            if trigger.type == "once":
+                trigger.is_enabled = False
+            if trigger.max_fires is not None and trigger.fire_count >= trigger.max_fires:
+                trigger.is_enabled = False
+            if reset_trigger_failure_policy(trigger):
+                cfg = dict(trigger.config or {})
+                cfg.pop("_fire_inflight", None)
+                trigger.config = cfg
+            changed = True
+        if changed:
+            await db.commit()
+
+
+async def _mark_trigger_fire_started(
+    agent_id: uuid.UUID,
+    triggers: list[AgentTrigger],
+    *,
+    now: datetime,
+    runtime_task_id: str | uuid.UUID | None,
+    event_keys: dict[uuid.UUID, str],
+) -> None:
+    if not triggers:
+        return
+    tid = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tid) as db:
+        changed = False
+        for detached in triggers:
+            trigger_id = getattr(detached, "id", None)
+            if trigger_id is None:
+                continue
+            result = await db.execute(select(AgentTrigger).where(AgentTrigger.id == trigger_id))
+            trigger = result.scalar_one_or_none()
+            if not trigger:
+                continue
+            cfg = dict(trigger.config or {})
+            cfg["_fire_inflight"] = {
+                "event_key": event_keys.get(trigger_id) or _default_trigger_event_key(trigger, now),
+                "runtime_task_id": str(runtime_task_id) if runtime_task_id else None,
+                "started_at": now.isoformat(),
+            }
+            trigger.config = cfg
+            changed = True
         if changed:
             await db.commit()
 
@@ -865,6 +934,9 @@ async def _record_trigger_failure_state(agent_id: uuid.UUID, triggers: list[Agen
             if not trigger:
                 continue
             failure_meta = apply_trigger_failure_policy(trigger, error=error)
+            cfg = dict(trigger.config or {})
+            cfg.pop("_fire_inflight", None)
+            trigger.config = cfg
             metadata["failure_backoff"].append(
                 {
                     "trigger_id": str(trigger.id),
@@ -1486,6 +1558,7 @@ async def _tick():
     # Evaluate and group fired triggers by agent. A schedule is just a trigger,
     # so all of an agent's fired triggers collapse into one wake invocation.
     fired_by_group: dict[uuid.UUID, list[AgentTrigger]] = {}
+    fire_event_keys: dict[uuid.UUID, str] = {}
     for trigger in all_triggers:
         # Auto-disable expired triggers — single-agent write, scope to its tenant.
         if trigger.expires_at and now >= trigger.expires_at:
@@ -1506,6 +1579,7 @@ async def _tick():
             if not await _acquire_trigger_fire_lease(trigger.id, event_key):
                 logger.debug("[TriggerDaemon] Duplicate fire lease rejected for {} ({})", trigger.name, event_key)
                 continue
+            fire_event_keys[trigger.id] = event_key
             fired_by_group.setdefault(trigger.agent_id, []).append(trigger)
         except Exception as e:
             logger.warning(f"Error evaluating trigger {trigger.name}: {e}")
@@ -1533,33 +1607,23 @@ async def _tick():
                 )
                 continue
 
-            # ── Immediately update trigger state BEFORE launching async task ──
-            # All triggers in this group belong to one agent → scope to its tenant.
             try:
-                fire_state_tid = await resolve_tenant_for_agent(agent_id)
-                async with tenant_scoped_session(fire_state_tid) as db:
-                    for t in agent_triggers:
-                        result = await db.execute(select(AgentTrigger).where(AgentTrigger.id == t.id))
-                        trigger = result.scalar_one_or_none()
-                        if trigger:
-                            trigger.last_fired_at = now
-                            trigger.fire_count += 1
-                            if trigger.type == "once":
-                                trigger.is_enabled = False
-                            if trigger.type == "webhook" and trigger.config:
-                                trigger.config = {
-                                    **trigger.config,
-                                    "_webhook_pending": False,
-                                    "_webhook_payload": None,
-                                }
-                            if trigger.max_fires and trigger.fire_count >= trigger.max_fires:
-                                trigger.is_enabled = False
-                    # IMPORTANT: commit() MUST complete before create_task() below
-                    # to ensure trigger state (last_fired_at, fire_count) is persisted
-                    # before the async invocation reads it — prevents duplicate fires.
-                    await db.commit()
+                await _mark_trigger_fire_started(
+                    agent_id,
+                    agent_triggers,
+                    now=now,
+                    runtime_task_id=runtime_task_id,
+                    event_keys=fire_event_keys,
+                )
             except Exception as e:
-                logger.warning(f"Failed to pre-update trigger state: {e}")
+                logger.warning(f"Failed to mark trigger fire in-flight: {e}")
+                await _update_trigger_runtime_task(
+                    runtime_task_id,
+                    status="failed",
+                    result_summary=f"Trigger fire could not be marked in-flight: {str(e)[:500]}",
+                    metadata_json={"error": str(e)[:1000], "stage": "mark_inflight"},
+                )
+                continue
 
             asyncio.create_task(
                 _invoke_agent_for_triggers(
@@ -1579,12 +1643,17 @@ async def start_trigger_daemon():
     slow heartbeat tick or workspace volume I/O can't push trigger schedule
     jitter past TICK_INTERVAL. This loop is now single-purpose.
     """
+    from app.services.daemon_liveness import mark_daemon_error, mark_daemon_started, mark_daemon_tick
+
+    mark_daemon_started("trigger_daemon")
     logger.info(f"⚡ Trigger Daemon started ({TICK_INTERVAL}s tick)")
 
     while True:
         try:
             await _tick()
+            mark_daemon_tick("trigger_daemon")
         except Exception as e:
+            mark_daemon_error("trigger_daemon", e)
             logger.error(f"Trigger Daemon error: {e}")
             import traceback
 

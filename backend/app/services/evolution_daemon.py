@@ -33,13 +33,17 @@ async def _heartbeat_loop() -> None:
     cadence (it has no independent timer).
     """
     from app.database import async_session, enter_rls_bypass
+    from app.services.daemon_liveness import mark_daemon_error, mark_daemon_tick
     from app.services.heartbeat import _heartbeat_tick
     from app.services.pending_reply_service import cleanup_expired_replies
 
     while True:
+        heartbeat_ok = True
         try:
             await _heartbeat_tick()
         except Exception as e:
+            heartbeat_ok = False
+            mark_daemon_error("evolution_daemon", e)
             logger.error(f"[EvolutionDaemon] heartbeat tick error: {e}")
 
         try:
@@ -52,6 +56,8 @@ async def _heartbeat_loop() -> None:
         except Exception as e:
             logger.debug(f"[EvolutionDaemon] PendingReply cleanup error (non-fatal): {e}")
 
+        if heartbeat_ok:
+            mark_daemon_tick("evolution_daemon")
         await asyncio.sleep(_HEARTBEAT_INTERVAL_SECONDS)
 
 
@@ -64,6 +70,9 @@ async def start_evolution_daemon() -> None:
     starting (workspace sync is best-effort persistence; heartbeat is the
     primary self-evolution path).
     """
+    from app.services.daemon_liveness import mark_daemon_started
+
+    mark_daemon_started("evolution_daemon")
     logger.info(
         "🌱 Evolution Daemon started (heartbeat every {}s, workspace sync continuous)",
         _HEARTBEAT_INTERVAL_SECONDS,

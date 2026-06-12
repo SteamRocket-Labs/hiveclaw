@@ -20,6 +20,7 @@ from app.models.agent import Agent
 from app.models.invitation_code import InvitationCode
 from app.models.system_settings import SystemSetting
 from app.models.tenant import Tenant
+from app.models.token_usage_event import TokenUsageEvent
 from app.models.user import User
 from app.services.autonomous_audit import build_autonomous_audit_report
 from app.services.harness_canary import run_harness_canary
@@ -562,8 +563,8 @@ async def get_metrics_timeseries(
     """Daily time series for companies and users.
 
     Accepts ISO datetime (e.g. 2026-04-01T00:00:00Z) or date (2026-04-01).
-    Token time series requires a daily usage log table (not yet implemented),
-    so token fields return 0 for now.
+    Token time series is sourced from append-only token_usage_events, not agent
+    creation-date proxies.
     """
     start = start_date.date() if isinstance(start_date, datetime) else start_date
     end = end_date.date() if isinstance(end_date, datetime) else end_date
@@ -593,14 +594,14 @@ async def get_metrics_timeseries(
     )
     new_users_map: dict[str, int] = {str(r.d): r.cnt for r in new_usr_rows}
 
-    # Token usage by agent creation date (proxy — no daily log table yet)
+    # Token usage by actual usage event date.
     new_tok_rows = await db.execute(
         select(
-            sqla_func.date(Agent.created_at).label("d"),
-            sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_total), 0).label("tokens"),
+            sqla_func.date(TokenUsageEvent.created_at).label("d"),
+            sqla_func.coalesce(sqla_func.sum(TokenUsageEvent.tokens), 0).label("tokens"),
         )
-        .where(sqla_func.date(Agent.created_at).between(start, end))
-        .group_by(sqla_func.date(Agent.created_at))
+        .where(sqla_func.date(TokenUsageEvent.created_at).between(start, end))
+        .group_by(sqla_func.date(TokenUsageEvent.created_at))
     )
     new_tokens_map: dict[str, int] = {str(r.d): int(r.tokens) for r in new_tok_rows}
 
@@ -616,8 +617,8 @@ async def get_metrics_timeseries(
     cum_users = pre_usr.scalar() or 0
 
     pre_tok = await db.execute(
-        select(sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_total), 0))
-        .where(sqla_func.date(Agent.created_at) < start)
+        select(sqla_func.coalesce(sqla_func.sum(TokenUsageEvent.tokens), 0))
+        .where(sqla_func.date(TokenUsageEvent.created_at) < start)
     )
     cum_tokens = int(pre_tok.scalar() or 0)
 

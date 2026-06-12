@@ -3,6 +3,8 @@ name: Memory Guide
 description: "Use when you need to decide whether information should become durable memory, save explicit user preferences, avoid transient memory pollution, and route memory updates safely."
 tools:
   - save_memory
+  - update_memory
+  - retire_memory
   - search_memory
   - load_memory
 is_system: true
@@ -21,6 +23,7 @@ perform it. Writing to memory without these rules corrupts the pipeline.
 <when_to_use>
 - The user issues a direct imperative: "记住", "remember this", "never do X again", "from now on always Y".
 - The user delivers a critical correction you must not lose even if the heartbeat later deems it low-signal.
+- A loaded memory entry is wrong, stale, or contradicted by a newer explicit correction.
 - You need to recall a fact, decision, or past session — call `search_memory` first, then `load_memory(ids=[...])` for any fact preview you will rely on.
 - You are starting a task and a past session likely contains the exact answer ("last time we did X…", "resuming yesterday's work").
 </when_to_use>
@@ -56,10 +59,10 @@ soul.md
 ```
 
 **You never write to T0, T2, or `soul.md`.** The pipeline owns them.
-**You may write to T3** — but **only** through `save_memory`, and **only**
-under the rules below. `save_memory` is the escape hatch around heartbeat
-filtering: use it when you must override what heartbeat would otherwise
-drop.
+**You may change T3** — but **only** through `save_memory`, `update_memory`,
+or `retire_memory`, and **only** under the rules below. `save_memory` is the
+escape hatch around heartbeat filtering; `update_memory` and `retire_memory`
+are the governed correction paths that preserve archive/lifecycle evidence.
 </pyramid>
 
 ## Tool Reference
@@ -101,6 +104,31 @@ Content rules:
 - **Include the why** when the fact is a rule: "避免用 Feishu 长消息 — 超过 1k 字被截断（2026-03 用户反馈）"。
 - **Use absolute dates**, never relative ("yesterday", "last week" rot).
 
+### `update_memory(memory_id, content, category?, reason?)`
+
+Replaces an existing T3 entry by stable id. This is for explicit corrections,
+not routine edits. Always `search_memory`/`load_memory` first so you know the
+exact entry you are replacing.
+
+The replacement runs through the same write gate as `save_memory`; the old
+entry leaves active recall and is preserved in `memory/archive.md` with a
+superseded-by lifecycle edge.
+
+Use when:
+- The user corrects a stored preference or project fact.
+- A loaded memory is now stale but should be replaced by a newer durable fact.
+- A previous memory is too broad and the user gives a narrower standing rule.
+
+### `retire_memory(memory_id, reason)`
+
+Archives an existing T3 entry without replacement. It removes the entry from
+active recall, but does not delete evidence.
+
+Use when:
+- The user says a remembered preference/rule no longer applies.
+- A loaded fact is obsolete, incorrect, private, or should not influence future work.
+- You cannot write a correct replacement yet, but the old entry is unsafe to keep active.
+
 ### `search_memory(query, scope?, limit?)`
 
 Searches T3 markdown files and past ChatSession transcripts.
@@ -131,6 +159,17 @@ User: "以后别再用 delete_file 自动清理工作区了，我上次丢了三
     subject="workspace-hygiene"
   )
 → Also update the relevant work ledger item or workspace artifact if this correction changes active work.
+```
+
+If `search_memory`/`load_memory` reveals an older conflicting entry, replace it:
+
+```
+→ update_memory(
+    memory_id="mem_...",
+    category="feedback",
+    content="禁止自动用 delete_file 清理 workspace — 曾丢失用户 3 小时工作 (2026-04-15)",
+    reason="explicit user correction"
+  )
 ```
 
 ### B — Recalling Past Work Before Starting a Task
@@ -215,6 +254,8 @@ User: "我们之前怎么处理的并发登录？"
 <anti_patterns>
 
 - ❌ **Calling `save_memory` for every interesting thing** → the automated pipeline already handles salient extraction; manual save for everything bypasses heartbeat's low-signal filter and bloats T3. Save only escape-hatch facts.
+- ❌ **Saving a correction as a second fact when the old fact is known** → use `update_memory(memory_id, ...)` so the old entry leaves active recall and gets a supersession edge.
+- ❌ **Physically editing or deleting `memory/*.md`** → use `update_memory` or `retire_memory`; archive/lifecycle evidence must survive.
 - ❌ **Writing multiple unrelated facts in one `content`** → makes `search_memory` retrieval imprecise and cannot route to one category file cleanly.
 - ❌ **Using relative dates** ("yesterday", "next Friday") → after the session ends, the anchor is lost. Always convert to absolute ISO dates.
 - ❌ **Picking `category="general"` by default** → routes to `knowledge.md`, load priority P1 on-demand, may not inject into the prompt when most needed. Choose the most specific category that matches retrieval intent.

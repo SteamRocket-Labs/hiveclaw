@@ -22,6 +22,6 @@ def test_invoker_routes_memory_and_knowledge_through_context_engine() -> None:
 
     assert "DefaultContextEngine" in source
     assert "_context_engine().inject(" in source
-    assert "memory_provider:snapshot" in source
-    assert "memory_provider:recall" in source
+    assert "memory_provider:context" in source
+    assert "runtime_context:agent" in source
     assert "knowledge_provider:relevant" in source

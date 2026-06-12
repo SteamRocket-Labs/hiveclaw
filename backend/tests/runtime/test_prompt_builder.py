@@ -368,11 +368,34 @@ class TestDynamicSuffixCaps:
     enforce per-section budgets so a runaway upstream caller can't push the
     dynamic block past round-trip-cost-sensible size."""
 
-    def test_memory_snapshot_trimmed_to_60pct_of_memory_budget(self) -> None:
+    def test_memory_context_within_memory_budget_is_not_second_trimmed_to_ratio(self) -> None:
+        from app.runtime.context_budget import TaskProfile
         from app.runtime.prompt_builder import build_dynamic_prompt_suffix
 
-        # 50K-char memory snapshot; default profile gives ~12K memory budget,
-        # so 60% = ~7200 chars. Body must be capped + trim notice present.
+        budget_profile = type(
+            "Budget",
+            (),
+            {
+                "memory_budget_chars": 2000,
+                "active_tool_groups_budget_chars": 1200,
+                "retrieval_budget_chars": 3000,
+                "runtime_triggers_budget_chars": 3000,
+                "task_profile": TaskProfile(name="general", complexity="medium"),
+            },
+        )()
+        memory_context = "[Semantic Memory]\n- " + ("ranked memory evidence " * 70) + "\n- SCORE_AWARE_TAIL_SENTINEL"
+        assert len(memory_context) < budget_profile.memory_budget_chars
+
+        suffix = build_dynamic_prompt_suffix(memory_snapshot=memory_context, budget_profile=budget_profile)
+
+        assert "SCORE_AWARE_TAIL_SENTINEL" in suffix
+        assert "memory context trimmed" not in suffix
+
+    def test_oversized_memory_context_trimmed_to_memory_budget(self) -> None:
+        from app.runtime.prompt_builder import build_dynamic_prompt_suffix
+
+        # 50K-char memory context; default profile gives an 8K memory budget.
+        # Body must be capped + trim notice present.
         bloated_memory = "MEMORY-LINE\n" * 5000  # ~60K chars
         suffix = build_dynamic_prompt_suffix(
             memory_snapshot=bloated_memory,
@@ -380,7 +403,7 @@ class TestDynamicSuffixCaps:
 
         assert "## Your Memory System" in suffix  # template still present
         assert "MEMORY-LINE" in suffix  # body partially preserved
-        assert "memory snapshot trimmed" in suffix  # trim notice fired
+        assert "memory context trimmed" in suffix  # trim notice fired
 
     def test_system_prompt_suffix_trimmed_to_5k_cap(self) -> None:
         from app.runtime.prompt_builder import (
@@ -404,7 +427,7 @@ class TestDynamicSuffixCaps:
         suffix = build_dynamic_prompt_suffix(memory_snapshot="just one line")
 
         assert "just one line" in suffix
-        assert "memory snapshot trimmed" not in suffix
+        assert "memory context trimmed" not in suffix
 
     def test_short_system_suffix_passes_through_unchanged(self) -> None:
         from app.runtime.prompt_builder import build_dynamic_prompt_suffix

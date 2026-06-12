@@ -137,6 +137,12 @@ class SessionContext:
     # C1/T3a: tools discovered through tool_search become callable for this
     # session, and the list is mirrored into metadata for compaction/recovery.
     discovered_tools: list[str] = field(default_factory=list)
+    # Version snapshots for files touched by the session. Keys are the tool
+    # path strings the model used (for example workspace/report.md); values
+    # contain exists/size/mtime_ns captured after the read/write. The kernel
+    # compares these against live stat data before later rounds so external
+    # file edits can be surfaced as runtime attachments.
+    file_snapshots: dict[str, dict[str, Any]] = field(default_factory=dict)
     # P1-W2-7: per-skill bookkeeping (refcount + last_used_at_ts) parallel
     # to active_skills. The list is the public read surface (kept as
     # `list[str]` for backwards compat); this dict drives unload + prune.
@@ -153,11 +159,13 @@ class SessionContext:
         elif self.discovered_tools:
             self.metadata["discovered_tools"] = list(self.discovered_tools)
 
-    def track_file_read(self, path: str) -> None:
+    def track_file_read(self, path: str, *, snapshot: dict[str, Any] | None = None) -> None:
         """Record a file read for post-compact restoration. Keeps last 10 unique paths."""
         if path in self.recent_files:
             self.recent_files.remove(path)
         self.recent_files.append(path)
+        if snapshot is not None:
+            self.file_snapshots[path] = dict(snapshot)
         if len(self.recent_files) > 10:
             self.recent_files.pop(0)
 
@@ -229,11 +237,13 @@ class SessionContext:
         self.metadata["discovered_tools"] = list(self.discovered_tools)
         return added
 
-    def track_file_write(self, path: str) -> None:
+    def track_file_write(self, path: str, *, snapshot: dict[str, Any] | None = None) -> None:
         """Record a file write for post-compact restoration. Keeps last 5."""
         if path in self.recent_writes:
             self.recent_writes.remove(path)
         self.recent_writes.append(path)
+        if snapshot is not None:
+            self.file_snapshots[path] = dict(snapshot)
         if len(self.recent_writes) > 10:
             self.recent_writes.pop(0)
 

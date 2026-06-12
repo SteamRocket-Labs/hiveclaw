@@ -31,6 +31,51 @@ class _FakeScalarResult:
         return self._value
 
 
+@pytest.fixture(autouse=True)
+def _allow_invocation_quota(monkeypatch):
+    async def allow(_user_id):
+        return None
+
+    monkeypatch.setattr("app.runtime.invoker.check_user_token_quota", allow, raising=False)
+
+
+@pytest.mark.asyncio
+async def test_invoke_agent_enforces_user_token_quota_before_kernel(monkeypatch):
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+    from app.services.quota_guard import QuotaExceeded
+
+    user_id = uuid4()
+    kernel_called = False
+
+    async def fake_check_user_token_quota(checked_user_id):
+        assert checked_user_id == user_id
+        raise QuotaExceeded("Daily token limit reached (10/10).", quota_type="tokens_daily")
+
+    class FakeKernel:
+        async def handle(self, _request):
+            nonlocal kernel_called
+            kernel_called = True
+            raise AssertionError("kernel must not run after quota denial")
+
+    monkeypatch.setattr("app.runtime.invoker.check_user_token_quota", fake_check_user_token_quota, raising=False)
+    monkeypatch.setattr("app.runtime.invoker._resolve_kernel_for_request", lambda _request: FakeKernel())
+
+    result = await invoke_agent(
+        AgentInvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None),
+            messages=[{"role": "user", "content": "hello"}],
+            agent_name="Agent",
+            role_description="desc",
+            agent_id=uuid4(),
+            user_id=user_id,
+        )
+    )
+
+    assert kernel_called is False
+    assert result.tokens_used == 0
+    assert "Daily token limit reached" in result.content
+
+
 @pytest.mark.asyncio
 async def test_build_system_prompt_uses_static_agent_context_only(monkeypatch):
     from app.runtime.invoker import AgentInvocationRequest, _build_system_prompt
@@ -69,14 +114,14 @@ async def test_build_system_prompt_uses_static_agent_context_only(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_resolve_retrieval_context_appends_runtime_hints(monkeypatch):
+async def test_resolve_retrieval_context_appends_knowledge_only(monkeypatch):
     from app.runtime.invoker import AgentInvocationRequest, _resolve_retrieval_context
 
     async def fake_build_memory_context(*args, **kwargs):
-        return "MEMORY_RECALL"
+        raise AssertionError("memory context belongs to _resolve_memory_context")
 
     async def fake_build_agent_runtime_context(*args, **kwargs):
-        return "RUNTIME_HINTS"
+        raise AssertionError("runtime metadata belongs to _resolve_runtime_metadata_context")
 
     monkeypatch.setattr("app.runtime.invoker.build_memory_context", fake_build_memory_context)
     monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", lambda *_args, **_kwargs: "KNOWLEDGE")
@@ -94,17 +139,9 @@ async def test_resolve_retrieval_context_appends_runtime_hints(monkeypatch):
 
     result = await _resolve_retrieval_context(request, tenant_id=uuid4())
 
-    assert "RUNTIME_HINTS" in result
-    assert "MEMORY_RECALL" in result
     assert "KNOWLEDGE" in result
-    assert '<context_block kind="agent_runtime_context" source="runtime_context:agent">' in result
-    assert '<context_block kind="memory_recall" source="memory_provider:recall">' in result
     assert '<context_block kind="knowledge_relevant" source="knowledge_provider:relevant">' in result
-    assert [item["kind"] for item in request.session_context.metadata["context_artifacts"]] == [
-        "agent_runtime_context",
-        "memory_recall",
-        "knowledge_relevant",
-    ]
+    assert [item["kind"] for item in request.session_context.metadata["context_artifacts"]] == ["knowledge_relevant"]
 
 
 @pytest.mark.asyncio
@@ -236,7 +273,6 @@ async def test_invoke_agent_applies_model_temperature_and_reasoning_kwargs(monke
 
     monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
     monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_empty_context)
-    monkeypatch.setattr("app.runtime.invoker.build_memory_snapshot", fake_empty_context)
     monkeypatch.setattr("app.runtime.invoker.build_agent_runtime_context", fake_empty_context)
     monkeypatch.setattr("app.runtime.invoker.build_memory_context", fake_empty_context)
     monkeypatch.setattr("app.runtime.invoker._resolve_runtime_config", fake_resolve_runtime_config)
@@ -329,7 +365,6 @@ async def test_invoke_agent_forwards_delegation_token_to_tool_governance(monkeyp
 
     monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
     monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
-    monkeypatch.setattr("app.runtime.invoker.build_memory_snapshot", fake_empty_context)
     monkeypatch.setattr("app.runtime.invoker.build_agent_runtime_context", fake_empty_context)
     monkeypatch.setattr("app.runtime.invoker.build_memory_context", fake_empty_context)
     monkeypatch.setattr("app.runtime.invoker._resolve_runtime_config", fake_resolve_runtime_config)
@@ -1002,10 +1037,15 @@ async def test_invoke_agent_composes_system_prompt_once(monkeypatch):
     async def fake_fetch_relevant_knowledge(*args, **kwargs):
         return "KB_CONTEXT"
 
+    async def fake_empty_context(*args, **kwargs):
+        return ""
+
     async def fake_compress(messages, **kwargs):
         return messages
 
     monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
+    monkeypatch.setattr("app.runtime.invoker.build_agent_runtime_context", fake_empty_context)
+    monkeypatch.setattr("app.runtime.invoker.build_memory_context", fake_empty_context)
     monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
     monkeypatch.setattr("app.runtime.invoker.maybe_compress_messages", fake_compress)
     monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", lambda *args, **kwargs: [])
@@ -1027,17 +1067,21 @@ async def test_invoke_agent_composes_system_prompt_once(monkeypatch):
 
     assert result.content == "done"
     system_prompt = fake_client.calls[0]["messages"][0].content
-    # Frozen prefix includes agent context + stable sections; dynamic suffix adds memory + knowledge.
+    # Frozen prefix stays in the first system message; dynamic suffix is a transient
+    # tail notice so provider prompt-cache prefixes are not invalidated every turn.
     assert "BASE_PROMPT" in system_prompt
     assert "## System" in system_prompt
-    assert "__PROMPT_DYNAMIC_BOUNDARY__" in system_prompt
-    frozen_prefix, dynamic_suffix = system_prompt.split("__PROMPT_DYNAMIC_BOUNDARY__", 1)
-    assert "MEMORY_CONTEXT" not in frozen_prefix
-    assert "## Your Memory System" in dynamic_suffix
-    assert "MEMORY_CONTEXT" in dynamic_suffix
-    assert "search_memory" in dynamic_suffix
-    assert "recall" not in dynamic_suffix
-    assert "KB_CONTEXT" in system_prompt
+    assert "__PROMPT_DYNAMIC_BOUNDARY__" not in system_prompt
+    assert "MEMORY_CONTEXT" not in system_prompt
+    dynamic_notice = fake_client.calls[0]["messages"][-1]
+    assert dynamic_notice.role == "user"
+    assert "[System Notice]" in dynamic_notice.content
+    assert "## Your Memory System" in dynamic_notice.content
+    assert "MEMORY_CONTEXT" in dynamic_notice.content
+    assert "search_memory" in dynamic_notice.content
+    assert "memory_provider:recall" not in dynamic_notice.content
+    assert 'kind="memory_recall"' not in dynamic_notice.content
+    assert "KB_CONTEXT" in dynamic_notice.content
 
 
 @pytest.mark.asyncio
@@ -1375,7 +1419,12 @@ async def test_invoke_agent_loads_and_persists_runtime_memory(monkeypatch):
     captured = {}
 
     async def fake_resolve_runtime_config(_agent_id):
-        return SimpleNamespace(tenant_id=tenant_id, max_tool_rounds=50, quota_message=None)
+        return SimpleNamespace(
+            tenant_id=tenant_id,
+            max_tool_rounds=50,
+            quota_message=None,
+            skill_candidate_loop_enabled=True,
+        )
 
     async def fake_build_agent_context(*args, **kwargs):
         return "BASE_PROMPT"
@@ -1383,12 +1432,9 @@ async def test_invoke_agent_loads_and_persists_runtime_memory(monkeypatch):
     async def fake_fetch_relevant_knowledge(*args, **kwargs):
         return ""
 
-    async def fake_build_memory_snapshot(_agent_id, _tenant_id, session_id=None):
-        captured["loaded"] = (_agent_id, _tenant_id, session_id)
+    async def fake_build_memory_context(_agent_id, _tenant_id, *, session_id=None, query="", **_kwargs):
+        captured["loaded"] = (_agent_id, _tenant_id, session_id, query)
         return "RUNTIME_MEMORY"
-
-    async def fake_build_memory_context(*args, **kwargs):
-        return ""
 
     async def fake_build_agent_runtime_context(*args, **kwargs):
         return ""
@@ -1409,7 +1455,6 @@ async def test_invoke_agent_loads_and_persists_runtime_memory(monkeypatch):
     monkeypatch.setattr("app.runtime.invoker.build_agent_runtime_context", fake_build_agent_runtime_context)
     monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
     monkeypatch.setattr("app.runtime.invoker.build_memory_context", fake_build_memory_context)
-    monkeypatch.setattr("app.runtime.invoker.build_memory_snapshot", fake_build_memory_snapshot)
     monkeypatch.setattr("app.runtime.invoker.persist_runtime_memory", fake_persist_runtime_memory)
     monkeypatch.setattr("app.runtime.invoker.maybe_compress_messages", fake_compress)
     monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", lambda *args, **kwargs: [])
@@ -1432,11 +1477,13 @@ async def test_invoke_agent_loads_and_persists_runtime_memory(monkeypatch):
     )
 
     assert result.content == "done"
-    assert captured["loaded"] == (agent_id, tenant_id, "session-1")
+    assert captured["loaded"] == (agent_id, tenant_id, "session-1", "hello")
     _sys_prompt = fake_client.calls[0]["messages"][0].content
     assert "BASE_PROMPT" in _sys_prompt
-    assert "RUNTIME_MEMORY" in _sys_prompt
-    assert "MANUAL_MEMORY" in _sys_prompt
+    assert "RUNTIME_MEMORY" not in _sys_prompt
+    assert any("RUNTIME_MEMORY" in (getattr(message, "content", "") or "") for message in fake_client.calls[0]["messages"])
+    assert "MANUAL_MEMORY" not in _sys_prompt
+    assert any("MANUAL_MEMORY" in (getattr(message, "content", "") or "") for message in fake_client.calls[0]["messages"])
     assert "## System" in _sys_prompt
     assert captured["persisted"] == {
         "agent_id": agent_id,

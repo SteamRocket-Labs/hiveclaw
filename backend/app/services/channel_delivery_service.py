@@ -102,6 +102,62 @@ class ChannelDeliveryService:
                 }
             )
             base["limitations"].append("WeCom 当前仅承诺文本闭环；文件回发仍显式标记为 unsupported。")
+        elif channel == "slack":
+            base["official_api"] = True
+            base["capabilities"].update(
+                {
+                    "live_text": True,
+                    "inbound_file": True,
+                    "outbound_file": True,
+                    "deferred_text": True,
+                    "deferred_file": False,
+                    "on_message_current_sender": True,
+                    "on_message_by_name": False,
+                }
+            )
+            base["limitations"].append("Slack 延迟回投使用保存的 channel_id，仅承诺当前会话文本闭环。")
+        elif channel == "dingtalk":
+            base["official_api"] = True
+            base["capabilities"].update(
+                {
+                    "live_text": True,
+                    "inbound_file": False,
+                    "outbound_file": False,
+                    "deferred_text": True,
+                    "deferred_file": False,
+                    "on_message_current_sender": True,
+                    "on_message_by_name": False,
+                }
+            )
+            base["limitations"].append("DingTalk 延迟回投依赖保存的 session_webhook。")
+        elif channel == "discord":
+            base["official_api"] = True
+            base["capabilities"].update(
+                {
+                    "live_text": True,
+                    "inbound_file": False,
+                    "outbound_file": False,
+                    "deferred_text": True,
+                    "deferred_file": False,
+                    "on_message_current_sender": True,
+                    "on_message_by_name": False,
+                }
+            )
+            base["limitations"].append("Discord 延迟回投使用 interaction follow-up token。")
+        elif channel == "microsoft_teams":
+            base["official_api"] = True
+            base["capabilities"].update(
+                {
+                    "live_text": True,
+                    "inbound_file": False,
+                    "outbound_file": False,
+                    "deferred_text": True,
+                    "deferred_file": False,
+                    "on_message_current_sender": True,
+                    "on_message_by_name": False,
+                }
+            )
+            base["limitations"].append("Microsoft Teams 延迟回投使用保存的 conversation_id 和 reply activity。")
         elif channel == "wechat_personal":
             base["official_api"] = False
             base["third_party_transport"] = "ilink"
@@ -147,6 +203,8 @@ class ChannelDeliveryService:
         channel = str(reply_target.get("channel") or "").strip()
         if not channel:
             return None
+        if channel == "teams":
+            channel = "microsoft_teams"
         normalized = dict(reply_target)
         normalized["channel"] = channel
         return normalized
@@ -167,6 +225,32 @@ class ChannelDeliveryService:
         if channel == "wecom":
             user_id = str(target.get("user_id") or "").strip()
             return f"wecom:{user_id}" if user_id else ""
+        if channel == "slack":
+            channel_id = str(target.get("channel_id") or "").strip()
+            sender_id = str(target.get("sender_id") or "").strip()
+            if channel_id and sender_id:
+                return f"slack:{channel_id}:{sender_id}"
+            return f"slack:{channel_id}" if channel_id else ""
+        if channel == "dingtalk":
+            conversation_id = str(target.get("conversation_id") or "").strip()
+            sender_staff_id = str(target.get("sender_staff_id") or "").strip()
+            if conversation_id and sender_staff_id:
+                return f"dingtalk:{conversation_id}:{sender_staff_id}"
+            webhook = str(target.get("session_webhook") or "").strip()
+            return f"dingtalk:{webhook}" if webhook else ""
+        if channel == "discord":
+            channel_id = str(target.get("channel_id") or "").strip()
+            sender_id = str(target.get("sender_id") or "").strip()
+            if channel_id and sender_id:
+                return f"discord:{channel_id}:{sender_id}"
+            interaction_token = str(target.get("interaction_token") or "").strip()
+            return f"discord:{interaction_token}" if interaction_token else ""
+        if channel == "microsoft_teams":
+            conversation_id = str(target.get("conversation_id") or "").strip()
+            sender_id = str(target.get("sender_id") or target.get("recipient_id") or "").strip()
+            if conversation_id and sender_id:
+                return f"microsoft_teams:{conversation_id}:{sender_id}"
+            return f"microsoft_teams:{conversation_id}" if conversation_id else ""
         if channel == "wechat_personal":
             to_user_id = str(target.get("to_user_id") or "").strip()
             return f"wechat_personal:{to_user_id}" if to_user_id else ""
@@ -368,6 +452,61 @@ class ChannelDeliveryService:
                     raise ValueError("missing chat_id")
                 await _send_telegram_message(config.app_secret, chat_id, text)
                 result = ChannelDeliveryService._success(channel, "Telegram message delivered.", chat_id=chat_id)
+            elif channel == "slack":
+                from app.api.slack import _send_slack_messages
+
+                channel_id = str(target.get("channel_id") or "").strip()
+                if not channel_id:
+                    raise ValueError("missing channel_id")
+                await _send_slack_messages(str(config.app_secret or ""), channel_id, text)
+                result = ChannelDeliveryService._success(channel, "Slack message delivered.", channel_id=channel_id)
+            elif channel == "dingtalk":
+                import httpx
+
+                session_webhook = str(target.get("session_webhook") or "").strip()
+                if not session_webhook:
+                    raise ValueError("missing session_webhook")
+                async with httpx.AsyncClient(timeout=10) as client:
+                    await client.post(
+                        session_webhook,
+                        json={"msgtype": "markdown", "markdown": {"title": "AI Reply", "text": text}},
+                    )
+                result = ChannelDeliveryService._success(
+                    channel, "DingTalk message delivered.", session_webhook=session_webhook
+                )
+            elif channel == "discord":
+                from app.api.discord_bot import _send_discord_followup
+
+                interaction_token = str(target.get("interaction_token") or "").strip()
+                if not interaction_token:
+                    raise ValueError("missing interaction_token")
+                await _send_discord_followup(str(config.app_id or ""), str(config.app_secret or ""), interaction_token, text)
+                result = ChannelDeliveryService._success(
+                    channel, "Discord message delivered.", interaction_token=interaction_token
+                )
+            elif channel == "microsoft_teams":
+                from app.api.teams import _send_teams_message
+
+                conversation_id = str(target.get("conversation_id") or "").strip()
+                if not conversation_id:
+                    raise ValueError("missing conversation_id")
+                reply_to_id = str(target.get("reply_to_id") or target.get("activity_id") or "").strip()
+                recipient_id = str(target.get("recipient_id") or target.get("sender_id") or "").strip()
+                recipient_name = str(target.get("recipient_name") or target.get("user_label") or "").strip()
+                bot_id = str(target.get("bot_id") or target.get("recipient_bot_id") or config.app_id or "").strip()
+                activity = {
+                    "type": "message",
+                    "from": {"id": bot_id} if bot_id else {},
+                    "conversation": {"id": conversation_id},
+                    "recipient": {"id": recipient_id, "name": recipient_name} if recipient_id else {},
+                    "text": text,
+                }
+                if reply_to_id:
+                    activity["replyToId"] = reply_to_id
+                await _send_teams_message(config, conversation_id, activity)
+                result = ChannelDeliveryService._success(
+                    channel, "Microsoft Teams message delivered.", conversation_id=conversation_id
+                )
             elif channel == "wechat_personal":
                 from app.services.wechat_ilink_client import ILinkClient
                 from app.services.wechat_personal_service import get_channel_credentials, get_context_token

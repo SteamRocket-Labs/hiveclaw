@@ -3,7 +3,12 @@
 import asyncio
 import logging
 import os
+import platform
+import shutil
+import tempfile
 from pathlib import Path
+
+from app.services.subprocess_env import build_agent_subprocess_env
 
 logger = logging.getLogger(__name__)
 
@@ -98,10 +103,107 @@ def _prepare_execution_environment(ws: Path) -> tuple[Path, dict[str, str]]:
 
     exec_home = Path(f"/tmp/exec_home_{ws.name}")
     exec_home.mkdir(parents=True, exist_ok=True)
-    safe_env = dict(os.environ)
-    safe_env["HOME"] = str(exec_home)
-    safe_env["PYTHONDONTWRITEBYTECODE"] = "1"
+    safe_env = build_agent_subprocess_env(home=exec_home)
     return work_dir, safe_env
+
+
+def _allow_unsandboxed_code_exec() -> bool:
+    return os.environ.get("HIVE_ALLOW_UNSANDBOXED_CODE_EXEC", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _sandbox_unavailable_message(mode: str) -> str:
+    return (
+        "❌ Execution sandbox unavailable "
+        f"(mode={mode}). Configure Linux bubblewrap (`bwrap`) or macOS `sandbox-exec`, "
+        "or set HIVE_ALLOW_UNSANDBOXED_CODE_EXEC=1 for explicit local-development bypass."
+    )
+
+
+def _escape_sandbox_string(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _darwin_sandbox_command(command: list[str], *, work_dir: Path, home: Path) -> tuple[list[str], list[Path]]:
+    sandbox_exec = shutil.which("sandbox-exec")
+    if not sandbox_exec:
+        return [], []
+
+    fd, profile_path_str = tempfile.mkstemp(prefix="hive-sandbox-", suffix=".sb")
+    profile_path = Path(profile_path_str)
+    os.close(fd)
+    work = _escape_sandbox_string(str(work_dir))
+    home_s = _escape_sandbox_string(str(home))
+    profile = f"""(version 1)
+(allow default)
+(deny network*)
+(deny file-read* (subpath "/Users"))
+(deny file-write* (subpath "/Users"))
+(allow file-read* (subpath "{work}") (subpath "{home_s}"))
+(allow file-write* (subpath "{work}") (subpath "{home_s}"))
+"""
+    profile_path.write_text(profile, encoding="utf-8")
+    return [sandbox_exec, "-f", str(profile_path), *command], [profile_path]
+
+
+def _linux_bwrap_command(command: list[str], *, work_dir: Path, home: Path) -> tuple[list[str], list[Path]]:
+    bwrap = shutil.which("bwrap")
+    if not bwrap:
+        return [], []
+
+    args = [
+        bwrap,
+        "--die-with-parent",
+        "--unshare-all",
+        "--new-session",
+        "--dev",
+        "/dev",
+        "--proc",
+        "/proc",
+        "--tmpfs",
+        "/tmp",
+        "--bind",
+        str(work_dir),
+        str(work_dir),
+        "--bind",
+        str(home),
+        str(home),
+        "--setenv",
+        "HOME",
+        str(home),
+        "--chdir",
+        str(work_dir),
+    ]
+    for path in ("/bin", "/usr", "/lib", "/lib64", "/opt/homebrew"):
+        if Path(path).exists():
+            args.extend(["--ro-bind", path, path])
+    return [*args, *command], []
+
+
+def _sandbox_command(command: list[str], *, work_dir: Path, env: dict[str, str]) -> tuple[list[str] | None, list[Path], str | None]:
+    mode = os.environ.get("HIVE_CODE_SANDBOX_MODE", "auto").strip().lower() or "auto"
+    if mode in {"none", "off", "disabled"}:
+        if _allow_unsandboxed_code_exec():
+            return command, [], None
+        return None, [], _sandbox_unavailable_message(mode)
+
+    home = Path(env["HOME"]).resolve()
+    if mode in {"auto", "darwin", "sandbox-exec"} and platform.system() == "Darwin":
+        sandboxed, cleanup = _darwin_sandbox_command(command, work_dir=work_dir, home=home)
+        if sandboxed:
+            return sandboxed, cleanup, None
+        if mode != "auto":
+            return None, [], _sandbox_unavailable_message(mode)
+
+    if mode in {"auto", "bwrap", "bubblewrap", "linux"}:
+        sandboxed, cleanup = _linux_bwrap_command(command, work_dir=work_dir, home=home)
+        if sandboxed:
+            return sandboxed, cleanup, None
+        if mode != "auto":
+            return None, [], _sandbox_unavailable_message(mode)
+
+    if _allow_unsandboxed_code_exec():
+        return command, [], None
+    return None, [], _sandbox_unavailable_message(mode)
 
 
 async def _execute_code(ws: Path, arguments: dict) -> str:
@@ -141,8 +243,16 @@ async def _execute_code(ws: Path, arguments: dict) -> str:
     try:
         script_path.write_text(code, encoding="utf-8")
 
+        sandboxed_cmd, cleanup_paths, sandbox_error = _sandbox_command(
+            [*cmd_prefix, str(script_path)],
+            work_dir=work_dir,
+            env=safe_env,
+        )
+        if sandbox_error:
+            return sandbox_error
+
         proc = await asyncio.create_subprocess_exec(
-            *cmd_prefix, str(script_path),
+            *(sandboxed_cmd or []),
             cwd=str(work_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -198,6 +308,11 @@ async def _execute_code(ws: Path, arguments: dict) -> str:
     except Exception as e:
         return f"❌ Execution error: {str(e)[:200]}"
     finally:
+        for cleanup_path in locals().get("cleanup_paths", []):
+            try:
+                cleanup_path.unlink(missing_ok=True)
+            except Exception as e:
+                logger.debug("Suppressed sandbox cleanup error: %s", e)
         # Clean up temp script
         try:
             script_path.unlink(missing_ok=True)
@@ -218,22 +333,35 @@ async def _run_command(ws: Path, arguments: dict) -> str:
         return safety_error
 
     work_dir, safe_env = _prepare_execution_environment(ws)
-    proc = await asyncio.create_subprocess_exec(
-        "bash",
-        "-lc",
-        command,
-        cwd=str(work_dir),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    sandboxed_cmd, cleanup_paths, sandbox_error = _sandbox_command(
+        ["bash", "-lc", command],
+        work_dir=work_dir,
         env=safe_env,
     )
+    if sandbox_error:
+        return sandbox_error
 
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.communicate()
-        return f"❌ Command timed out after {timeout}s"
+        proc = await asyncio.create_subprocess_exec(
+            *(sandboxed_cmd or []),
+            cwd=str(work_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=safe_env,
+        )
+
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            return f"❌ Command timed out after {timeout}s"
+    finally:
+        for cleanup_path in cleanup_paths:
+            try:
+                cleanup_path.unlink(missing_ok=True)
+            except Exception as e:
+                logger.debug("Suppressed sandbox cleanup error: %s", e)
 
     stdout_str = stdout.decode("utf-8", errors="replace")[:12000]
     stderr_str = stderr.decode("utf-8", errors="replace")[:6000]

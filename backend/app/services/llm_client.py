@@ -10,12 +10,17 @@ import asyncio
 import json
 import re
 import time
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Callable, Coroutine, Literal
 
 import httpx
 from loguru import logger
+
+from app.services.token_tracker import record_autonomous_llm_token_usage
+
+STREAM_RETRY_TOMBSTONE = "[[HIVE_STREAM_RETRY_TOMBSTONE]]"
 
 
 # ============================================================================
@@ -69,12 +74,15 @@ class LLMMessage:
             
         content_blocks = []
         
-        # Add reasoning/thinking content if present
-        if self.role == "assistant" and self.reasoning_content:
+        # Anthropic thinking signatures are model-issued and model-bound. If
+        # the signature is missing, omit the thinking block instead of
+        # inventing one; a synthetic signature causes native Anthropic follow-up
+        # calls to fail.
+        if self.role == "assistant" and self.reasoning_content and self.reasoning_signature:
             content_blocks.append({
                 "type": "thinking",
                 "thinking": self.reasoning_content,
-                "signature": self.reasoning_signature or "synthetic_signature" 
+                "signature": self.reasoning_signature,
             })
 
         if self.content:
@@ -209,6 +217,106 @@ class LLMClient(ABC):
         pass
 
 
+@dataclass(frozen=True)
+class _LLMUsageContext:
+    source: str
+    provider: str | None = None
+    model: str | None = None
+    agent_id: uuid.UUID | None = None
+    tenant_id: uuid.UUID | None = None
+    user_id: uuid.UUID | None = None
+    metadata: dict[str, Any] | None = None
+
+
+def _coerce_uuid(value: Any) -> uuid.UUID | None:
+    if value is None:
+        return None
+    if isinstance(value, uuid.UUID):
+        return value
+    try:
+        return uuid.UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+class _MeteredLLMClient(LLMClient):
+    """Delegating client that records usage for autonomous non-kernel calls."""
+
+    def __init__(self, inner: LLMClient, usage_context: _LLMUsageContext):
+        super().__init__(
+            api_key=getattr(inner, "api_key", ""),
+            base_url=getattr(inner, "base_url", None),
+            model=getattr(inner, "model", None),
+            timeout=getattr(inner, "timeout", 120.0),
+        )
+        self._inner = inner
+        self._usage_context = usage_context
+
+    async def _record_usage(self, response: LLMResponse) -> None:
+        usage = getattr(response, "usage", None)
+        if not usage:
+            return
+        try:
+            await record_autonomous_llm_token_usage(
+                source=self._usage_context.source,
+                usage=usage,
+                provider=self._usage_context.provider,
+                model=getattr(response, "model", None) or self._usage_context.model,
+                agent_id=self._usage_context.agent_id,
+                tenant_id=self._usage_context.tenant_id,
+                user_id=self._usage_context.user_id,
+                metadata=self._usage_context.metadata,
+            )
+        except Exception as exc:  # noqa: BLE001 — metering must not break the LLM call path
+            logger.warning("Autonomous LLM usage metering failed: %s", exc)
+
+    async def complete(
+        self,
+        messages: list[LLMMessage],
+        tools: list[dict] | None = None,
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        response = await self._inner.complete(
+            messages=messages,
+            tools=tools,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            **kwargs,
+        )
+        await self._record_usage(response)
+        return response
+
+    async def stream(
+        self,
+        messages: list[LLMMessage],
+        tools: list[dict] | None = None,
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+        on_chunk: ChunkCallback | None = None,
+        on_thinking: ThinkingCallback | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        response = await self._inner.stream(
+            messages=messages,
+            tools=tools,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            on_chunk=on_chunk,
+            on_thinking=on_thinking,
+            **kwargs,
+        )
+        await self._record_usage(response)
+        return response
+
+    def _get_headers(self) -> dict[str, str]:
+        return self._inner._get_headers()
+
+    async def close(self) -> None:
+        await self._inner.close()
+
+
 _OUTPUT_CAP_FINISH_REASONS = {"length", "max_tokens"}
 _OUTPUT_TRUNCATED_MARKER = "\n\n[Output truncated: model stopped at max output tokens after escalation.]"
 
@@ -241,6 +349,51 @@ def _record_output_cap_hit(
         mode,
         phase,
     )
+
+
+def _is_retryable_http_status(status_code: int) -> bool:
+    return status_code in {408, 409, 425, 429, 500, 502, 503, 504, 529}
+
+
+def _retry_after_seconds(headers: dict | httpx.Headers, *, fallback: float, cap: float = 30.0) -> float:
+    retry_after = None
+    for header_name in ("retry-after", "anthropic-ratelimit-unified-reset"):
+        raw = headers.get(header_name)
+        if raw is None:
+            continue
+        try:
+            retry_after = float(raw)
+            break
+        except (TypeError, ValueError):
+            continue
+    wait = retry_after if retry_after is not None else fallback
+    return max(0.0, min(float(wait), cap))
+
+
+async def _post_with_status_retries(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    payload: dict[str, Any],
+    headers: dict[str, str],
+    max_retries: int = 3,
+) -> httpx.Response:
+    for attempt in range(max_retries):
+        response = await client.post(url, json=payload, headers=headers)
+        if response.status_code < 400:
+            return response
+        if not _is_retryable_http_status(response.status_code) or attempt >= max_retries - 1:
+            return response
+        wait = _retry_after_seconds(response.headers, fallback=(attempt + 1) * 2)
+        logger.warning(
+            "HTTP {} from LLM provider, retrying request attempt {}/{} in {}s...",
+            response.status_code,
+            attempt + 2,
+            max_retries,
+            wait,
+        )
+        await asyncio.sleep(wait)
+    return response
 
 
 class _CapAwareLLMClient(LLMClient):
@@ -575,7 +728,7 @@ class OpenAICompatibleClient(LLMClient):
         payload = self._build_payload(messages, tools, temperature, max_tokens, stream=False, **kwargs)
 
         client = await self._get_client()
-        response = await client.post(url, json=payload, headers=self._get_headers())
+        response = await _post_with_status_retries(client, url, payload=payload, headers=self._get_headers())
 
         if response.status_code >= 400:
             error_text = response.text[:500]
@@ -623,6 +776,19 @@ class OpenAICompatibleClient(LLMClient):
         max_retries = 3
         client = await self._get_client()
 
+        async def reset_partial_stream_for_retry() -> None:
+            nonlocal full_content, full_reasoning, tool_calls_data, last_finish_reason, final_usage, in_think, tag_buffer
+            had_partial = bool(full_content or full_reasoning or tool_calls_data or last_finish_reason or final_usage)
+            full_content = ""
+            full_reasoning = ""
+            tool_calls_data = []
+            last_finish_reason = None
+            final_usage = None
+            in_think = False
+            tag_buffer = ""
+            if had_partial and on_chunk:
+                await on_chunk(STREAM_RETRY_TOMBSTONE)
+
         for attempt in range(max_retries):
             try:
                 async with client.stream("POST", url, json=payload, headers=self._get_headers()) as resp:
@@ -630,6 +796,18 @@ class OpenAICompatibleClient(LLMClient):
                         error_body = ""
                         async for chunk in resp.aiter_bytes():
                             error_body += chunk.decode(errors="replace")
+                        if _is_retryable_http_status(resp.status_code) and attempt < max_retries - 1:
+                            wait = _retry_after_seconds(resp.headers, fallback=(attempt + 1) * 2)
+                            logger.warning(
+                                "Stream HTTP {} from provider, retrying attempt {}/{} in {}s...",
+                                resp.status_code,
+                                attempt + 2,
+                                max_retries,
+                                wait,
+                            )
+                            await asyncio.sleep(wait)
+                            await reset_partial_stream_for_retry()
+                            continue
                         raise LLMError(f"HTTP {resp.status_code}: {error_body[:500]}")
 
                     async for line in resp.aiter_lines():
@@ -692,7 +870,7 @@ class OpenAICompatibleClient(LLMClient):
                         wait = min(retry_after, 30)
                         logger.warning(f"Rate limited (429), waiting {wait}s before retry...")
                         await asyncio.sleep(wait)
-                        tag_buffer = ""
+                        await reset_partial_stream_for_retry()
                     else:
                         raise LLMError(f"Rate limited after {max_retries} attempts: {e}")
                 else:
@@ -702,11 +880,7 @@ class OpenAICompatibleClient(LLMClient):
                     wait = (attempt + 1) * 1
                     logger.warning(f"Stream attempt {attempt + 1} failed ({type(e).__name__}), retrying in {wait}s...")
                     await asyncio.sleep(wait)
-                    # Preserve already-streamed content for client consistency.
-                    # Only reset partial tag buffer, not accumulated content.
-                    # Preserve in_think state across retries to avoid leaking
-                    # think content into regular output (H-13)
-                    tag_buffer = ""
+                    await reset_partial_stream_for_retry()
                 else:
                     raise LLMError(f"Connection failed after {max_retries} attempts: {e}")
 
@@ -976,7 +1150,7 @@ class OpenAIResponsesClient(LLMClient):
         payload = self._build_payload(messages, tools, temperature, max_tokens, stream=False, **kwargs)
 
         client = await self._get_client()
-        response = await client.post(url, json=payload, headers=self._get_headers())
+        response = await _post_with_status_retries(client, url, payload=payload, headers=self._get_headers())
 
         if response.status_code >= 400:
             error_text = response.text[:500]
@@ -1382,7 +1556,7 @@ class GeminiClient(LLMClient):
         payload = self._build_payload(messages, tools, temperature, max_tokens, **kwargs)
 
         client = await self._get_client()
-        response = await client.post(url, json=payload, headers=self._get_headers())
+        response = await _post_with_status_retries(client, url, payload=payload, headers=self._get_headers())
 
         if response.status_code >= 400:
             error_text = response.text[:500]
@@ -1429,73 +1603,100 @@ class GeminiClient(LLMClient):
         final_finish_reason: str | None = None
 
         client = await self._get_client()
+        max_retries = 3
 
-        try:
-            async with client.stream(
-                "POST",
-                url,
-                params={"alt": "sse"},
-                json=payload,
-                headers=self._get_headers(),
-            ) as resp:
-                if resp.status_code >= 400:
-                    error_body = ""
-                    async for chunk in resp.aiter_bytes():
-                        error_body += chunk.decode(errors="replace")
-                    raise LLMError(f"HTTP {resp.status_code}: {error_body[:500]}")
+        for attempt in range(max_retries):
+            try:
+                async with client.stream(
+                    "POST",
+                    url,
+                    params={"alt": "sse"},
+                    json=payload,
+                    headers=self._get_headers(),
+                ) as resp:
+                    if resp.status_code >= 400:
+                        error_body = ""
+                        async for chunk in resp.aiter_bytes():
+                            error_body += chunk.decode(errors="replace")
+                        if _is_retryable_http_status(resp.status_code) and attempt < max_retries - 1:
+                            wait = _retry_after_seconds(resp.headers, fallback=(attempt + 1) * 2)
+                            logger.warning(
+                                "[Gemini] Stream HTTP {} retrying attempt {}/{} in {}s...",
+                                resp.status_code,
+                                attempt + 2,
+                                max_retries,
+                                wait,
+                            )
+                            await asyncio.sleep(wait)
+                            full_text = ""
+                            tool_calls = []
+                            seen_tool_calls = set()
+                            final_usage = None
+                            final_finish_reason = None
+                            continue
+                        raise LLMError(f"HTTP {resp.status_code}: {error_body[:500]}")
 
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    data_str = line[len("data:"):].strip()
-                    if not data_str or data_str == "[DONE]":
-                        continue
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        data_str = line[len("data:"):].strip()
+                        if not data_str or data_str == "[DONE]":
+                            continue
 
-                    try:
-                        data = json.loads(data_str)
-                    except json.JSONDecodeError:
-                        continue
+                        try:
+                            data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
 
-                    if isinstance(data, dict) and data.get("error"):
-                        raise LLMError(f"API error: {data['error']}")
+                        if isinstance(data, dict) and data.get("error"):
+                            raise LLMError(f"API error: {data['error']}")
 
-                    usage = self._normalize_usage(data.get("usageMetadata"))
-                    if usage:
-                        final_usage = usage
+                        usage = self._normalize_usage(data.get("usageMetadata"))
+                        if usage:
+                            final_usage = usage
 
-                    candidates = data.get("candidates") or []
-                    if not candidates:
-                        continue
-                    candidate = candidates[0]
-                    final_finish_reason = candidate.get("finishReason") or final_finish_reason
-                    content_obj = candidate.get("content", {}) or {}
-                    for part in content_obj.get("parts", []) or []:
-                        text = part.get("text")
-                        if text:
-                            full_text += text
-                            if on_chunk:
-                                await on_chunk(text)
+                        candidates = data.get("candidates") or []
+                        if not candidates:
+                            continue
+                        candidate = candidates[0]
+                        final_finish_reason = candidate.get("finishReason") or final_finish_reason
+                        content_obj = candidate.get("content", {}) or {}
+                        for part in content_obj.get("parts", []) or []:
+                            text = part.get("text")
+                            if text:
+                                full_text += text
+                                if on_chunk:
+                                    await on_chunk(text)
 
-                        function_call = part.get("functionCall")
-                        if function_call:
-                            name = function_call.get("name", "")
-                            args = function_call.get("args", {})
-                            args_str = json.dumps(args if isinstance(args, dict) else {}, ensure_ascii=False)
-                            dedup_key = f"{name}:{args_str}"
-                            if dedup_key in seen_tool_calls:
-                                continue
-                            seen_tool_calls.add(dedup_key)
-                            tool_calls.append({
-                                "id": f"call_{len(tool_calls) + 1}",
-                                "type": "function",
-                                "function": {
-                                    "name": name,
-                                    "arguments": args_str,
-                                },
-                            })
+                            function_call = part.get("functionCall")
+                            if function_call:
+                                name = function_call.get("name", "")
+                                args = function_call.get("args", {})
+                                args_str = json.dumps(args if isinstance(args, dict) else {}, ensure_ascii=False)
+                                dedup_key = f"{name}:{args_str}"
+                                if dedup_key in seen_tool_calls:
+                                    continue
+                                seen_tool_calls.add(dedup_key)
+                                tool_calls.append({
+                                    "id": f"call_{len(tool_calls) + 1}",
+                                    "type": "function",
+                                    "function": {
+                                        "name": name,
+                                        "arguments": args_str,
+                                    },
+                                })
+                break
 
-        except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout) as e:
-            raise LLMError(f"Connection failed: {e}")
+            except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout) as e:
+                if attempt < max_retries - 1:
+                    await asyncio.sleep((attempt + 1) * 1)
+                    full_text = ""
+                    tool_calls = []
+                    seen_tool_calls = set()
+                    final_usage = None
+                    final_finish_reason = None
+                    continue
+                raise LLMError(f"Connection failed after {max_retries} attempts: {e}") from e
 
         return LLMResponse(
             content=full_text,
@@ -1641,7 +1842,7 @@ class AnthropicClient(LLMClient):
         payload = self._build_payload(messages, tools, temperature, max_tokens, stream=False, **kwargs)
 
         client = await self._get_client()
-        response = await client.post(url, json=payload, headers=self._get_headers())
+        response = await _post_with_status_retries(client, url, payload=payload, headers=self._get_headers())
 
         if response.status_code >= 400:
             error_text = response.text[:500]
@@ -1723,6 +1924,25 @@ class AnthropicClient(LLMClient):
                         error_body = ""
                         async for chunk in resp.aiter_bytes():
                             error_body += chunk.decode(errors="replace")
+                        if _is_retryable_http_status(resp.status_code) and attempt < max_retries - 1:
+                            wait = _retry_after_seconds(resp.headers, fallback=(attempt + 1) * 2)
+                            logger.warning(
+                                "[Anthropic] Stream HTTP {} retrying attempt {}/{} in {}s...",
+                                resp.status_code,
+                                attempt + 2,
+                                max_retries,
+                                wait,
+                            )
+                            await asyncio.sleep(wait)
+                            full_content = ""
+                            full_reasoning = ""
+                            full_signature = None
+                            tool_calls_data = []
+                            tool_call_index_map = {}
+                            last_finish_reason = None
+                            final_usage = None
+                            final_model = self.model
+                            continue
                         raise LLMError(f"HTTP {resp.status_code}: {error_body[:500]}")
 
                     current_event = None
@@ -2359,6 +2579,43 @@ def create_llm_client(
 
 # Parameters create_llm_client actually accepts — used by the config-dict factory.
 _CLIENT_FACTORY_PARAMS = frozenset({"provider", "api_key", "model", "base_url", "timeout"})
+def _usage_context_from_config(model_config: dict) -> _LLMUsageContext | None:
+    source = str(model_config.get("_usage_source") or "").strip()
+    if not source:
+        return None
+    metadata = model_config.get("_usage_metadata")
+    return _LLMUsageContext(
+        source=source,
+        provider=str(model_config.get("provider") or "") or None,
+        model=str(model_config.get("model") or "") or None,
+        agent_id=_coerce_uuid(model_config.get("_usage_agent_id")),
+        tenant_id=_coerce_uuid(model_config.get("_usage_tenant_id")),
+        user_id=_coerce_uuid(model_config.get("_usage_user_id")),
+        metadata=metadata if isinstance(metadata, dict) else None,
+    )
+
+
+def with_llm_usage_context(
+    model_config: dict,
+    *,
+    source: str,
+    agent_id: uuid.UUID | str | None = None,
+    tenant_id: uuid.UUID | str | None = None,
+    user_id: uuid.UUID | str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict:
+    """Return a model config that asks the factory to meter this autonomous call."""
+    enriched = dict(model_config)
+    enriched["_usage_source"] = source
+    if agent_id is not None:
+        enriched["_usage_agent_id"] = str(agent_id)
+    if tenant_id is not None:
+        enriched["_usage_tenant_id"] = str(tenant_id)
+    if user_id is not None:
+        enriched["_usage_user_id"] = str(user_id)
+    if metadata is not None:
+        enriched["_usage_metadata"] = metadata
+    return enriched
 
 
 def create_llm_client_from_config(model_config: dict) -> LLMClient:
@@ -2372,7 +2629,11 @@ def create_llm_client_from_config(model_config: dict) -> LLMClient:
     explicit: every config-dict consumer goes through here.
     """
 
-    return create_llm_client(**{k: v for k, v in model_config.items() if k in _CLIENT_FACTORY_PARAMS})
+    client = create_llm_client(**{k: v for k, v in model_config.items() if k in _CLIENT_FACTORY_PARAMS})
+    usage_context = _usage_context_from_config(model_config)
+    if usage_context is None:
+        return client
+    return _MeteredLLMClient(client, usage_context)
 
 
 # ============================================================================
@@ -2389,12 +2650,33 @@ async def chat_complete(
     temperature: float = 0.7,
     max_tokens: int | None = None,
     timeout: float = 120.0,
+    usage_source: str | None = None,
+    usage_agent_id: uuid.UUID | str | None = None,
+    usage_tenant_id: uuid.UUID | str | None = None,
+    usage_user_id: uuid.UUID | str | None = None,
+    usage_metadata: dict[str, Any] | None = None,
 ) -> dict:
     """High-level function for non-streaming chat completion.
 
     Returns response in OpenAI-compatible format for backward compatibility.
     """
-    client = create_llm_client(provider, api_key, model, base_url, timeout)
+    model_config = {
+        "provider": provider,
+        "api_key": api_key,
+        "model": model,
+        "base_url": base_url,
+        "timeout": timeout,
+    }
+    if usage_source:
+        model_config = with_llm_usage_context(
+            model_config,
+            source=usage_source,
+            agent_id=usage_agent_id,
+            tenant_id=usage_tenant_id,
+            user_id=usage_user_id,
+            metadata=usage_metadata,
+        )
+    client = create_llm_client_from_config(model_config)
 
     try:
         llm_messages = [LLMMessage(**m) for m in messages]
@@ -2433,12 +2715,33 @@ async def chat_stream(
     timeout: float = 120.0,
     on_chunk: ChunkCallback | None = None,
     on_thinking: ThinkingCallback | None = None,
+    usage_source: str | None = None,
+    usage_agent_id: uuid.UUID | str | None = None,
+    usage_tenant_id: uuid.UUID | str | None = None,
+    usage_user_id: uuid.UUID | str | None = None,
+    usage_metadata: dict[str, Any] | None = None,
 ) -> dict:
     """High-level function for streaming chat completion.
 
     Returns aggregated response in OpenAI-compatible format.
     """
-    client = create_llm_client(provider, api_key, model, base_url, timeout)
+    model_config = {
+        "provider": provider,
+        "api_key": api_key,
+        "model": model,
+        "base_url": base_url,
+        "timeout": timeout,
+    }
+    if usage_source:
+        model_config = with_llm_usage_context(
+            model_config,
+            source=usage_source,
+            agent_id=usage_agent_id,
+            tenant_id=usage_tenant_id,
+            user_id=usage_user_id,
+            metadata=usage_metadata,
+        )
+    client = create_llm_client_from_config(model_config)
 
     try:
         llm_messages = [LLMMessage(**m) for m in messages]

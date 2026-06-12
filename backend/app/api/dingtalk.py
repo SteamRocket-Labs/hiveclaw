@@ -170,6 +170,14 @@ async def process_dingtalk_message(
             # P2P / single chat
             conv_id = f"dingtalk_p2p_{sender_staff_id}"
 
+        delivery_target = {
+            "channel": "dingtalk",
+            "session_webhook": session_webhook,
+            "conversation_id": conversation_id,
+            "conversation_type": conversation_type,
+            "sender_staff_id": sender_staff_id,
+        }
+
         # Find or create platform user
         dt_username = f"dingtalk_{sender_staff_id}"
         u_r = await db.execute(_select(UserModel).where(UserModel.username == dt_username))
@@ -197,8 +205,11 @@ async def process_dingtalk_message(
             external_conv_id=conv_id,
             source_channel="dingtalk",
             first_message_title=user_text,
+            delivery_target=delivery_target,
         )
         session_conv_id = str(sess.id)
+        delivery_target["session_id"] = session_conv_id
+        sess.delivery_target_json = delivery_target
 
         # Load history
         history_r = await db.execute(
@@ -223,17 +234,26 @@ async def process_dingtalk_message(
         await db.commit()
 
         # Call LLM
-        reply_text = await _call_agent_llm(
-            db,
-            agent_id,
-            user_text,
-            history=history,
-            user_id=platform_user_id,
-            session_id=session_conv_id,
-            session_source="dingtalk",
-            session_channel="dingtalk",
-            allow_bare_plan_confirmation=True,
-        )
+        from app.services.channel_delivery_service import channel_delivery_target as _cdt
+
+        _cdt_token = _cdt.set(delivery_target)
+        try:
+            reply_text = await _call_agent_llm(
+                db,
+                agent_id,
+                user_text,
+                history=history,
+                user_id=platform_user_id,
+                session_id=session_conv_id,
+                session_source="dingtalk",
+                session_channel="dingtalk",
+                allow_bare_plan_confirmation=True,
+                durable_run=True,
+                durable_session=sess,
+                durable_user=platform_user,
+            )
+        finally:
+            _cdt.reset(_cdt_token)
         logger.info(f"[DingTalk] LLM reply: {reply_text[:100]}")
 
         # Reply via session webhook (markdown)

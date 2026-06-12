@@ -16,6 +16,7 @@ from typing import Any
 
 from app.memory.activation import ActivationContext, ActivationScorer
 from app.memory.md_store import build_t3_entry_manifest
+from app.memory.t2_store import HIGH_PRIORITY_THRESHOLD, load_t2_entries
 from app.memory.types import MemoryItem, MemoryKind
 from app.runtime.context_budget import ContextBudget
 
@@ -88,6 +89,8 @@ async def _rerank_semantic_items(
     query: str,
     model_config: dict | None = None,
     *,
+    agent_id: uuid.UUID | None = None,
+    tenant_id: str | uuid.UUID | None = None,
     max_select: int = _RERANK_MAX_SELECT,
     timeout_seconds: float = 3.0,
 ) -> list[MemoryItem]:
@@ -104,7 +107,7 @@ async def _rerank_semantic_items(
         return items[:max_select]
 
     try:
-        from app.services.llm_client import LLMMessage, create_llm_client_from_config
+        from app.services.llm_client import LLMMessage, create_llm_client_from_config, with_llm_usage_context
     except ImportError:
         return items[:max_select]
 
@@ -152,7 +155,14 @@ async def _rerank_semantic_items(
     )
     client = None
     try:
-        client = create_llm_client_from_config(model_config)
+        client = create_llm_client_from_config(
+            with_llm_usage_context(
+                model_config,
+                source="memory_rerank",
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+            )
+        )
         response = await asyncio.wait_for(
             client.stream(
                 messages=[
@@ -228,10 +238,12 @@ class MemoryRetriever:
         else:
             items.extend(self._retrieve_t3_direct(agent_id, query=query) or [])
         items.extend(self._retrieve_understandings(agent_id, query=query) or [])
+        items.extend(self._retrieve_high_priority_t2(agent_id, query=query) or [])
         episodic_limit = retrieval_profile.episodic_limit if retrieval_profile else 3
         external_limit = retrieval_profile.external_limit if retrieval_profile else 5
         semantic_limit = retrieval_profile.semantic_limit if retrieval_profile else 5
         del limit  # prompt memory is sourced entirely from T3 markdown files.
+        items.extend(self._retrieve_wiki_pages(agent_id, query=query, limit=semantic_limit) or [])
 
         items.extend(await self._retrieve_episodic(agent_id, session_id, previous_limit=episodic_limit) or [])
 
@@ -259,11 +271,112 @@ class MemoryRetriever:
         if rerank_model_config and query:
             semantic_pool = [item for item in items if item.kind == MemoryKind.SEMANTIC]
             if len(semantic_pool) > _RERANK_THRESHOLD:
-                reranked = await _rerank_semantic_items(semantic_pool, query, rerank_model_config)
+                reranked = await _rerank_semantic_items(
+                    semantic_pool,
+                    query,
+                    rerank_model_config,
+                    agent_id=agent_id,
+                    tenant_id=tenant_id,
+                )
                 items = [item for item in items if item.kind != MemoryKind.SEMANTIC] + list(reranked)
 
         if activation_context:
             return self._apply_activation(items, activation_context, agent_id=agent_id)
+        return items
+
+    def _retrieve_high_priority_t2(self, agent_id: uuid.UUID, *, query: str = "") -> list[MemoryItem]:
+        entries, _mtimes = load_t2_entries(self.data_root, agent_id)
+        items: list[MemoryItem] = []
+        for entry in entries:
+            category = str(entry.get("category") or "").lower()
+            if category not in {"feedback", "constraint"}:
+                continue
+            if str(entry.get("status") or "active").lower() not in {"", "active"}:
+                continue
+            weight = float(entry.get("weight") or 0.0)
+            if weight < HIGH_PRIORITY_THRESHOLD:
+                continue
+            content = str(entry.get("content") or "").strip()
+            if not content:
+                continue
+            relevance = _score_relevance(content, query) if query else 1.0
+            if query and relevance <= 0:
+                continue
+            source_file = str(entry.get("file") or "insights.md")
+            metadata = {
+                "entry_id": str(entry.get("entry_id") or ""),
+                "category": category,
+                "source_type": "t2_high_priority",
+                "lane": "t2_high_priority",
+                "weight": str(weight),
+                "sensitivity": str(entry.get("sensitivity") or "PL1_public"),
+            }
+            for key in ("confidence", "conf", "retention_score", "open_loop", "reaction", "polarity", "decision_ref"):
+                value = entry.get(key)
+                if value is not None and str(value).strip():
+                    metadata[key] = str(value)
+            items.append(
+                MemoryItem(
+                    kind=MemoryKind.SEMANTIC,
+                    content=f"[t2:{category}] {content}",
+                    score=round(min(1.0, max(weight, 0.75 + (0.2 * relevance))), 4),
+                    source=f"memory/learnings/{source_file}",
+                    metadata=metadata,
+                )
+            )
+        return sorted(items, key=lambda item: item.score, reverse=True)[:5]
+
+    def _retrieve_wiki_pages(self, agent_id: uuid.UUID, *, query: str = "", limit: int = 5) -> list[MemoryItem]:
+        """Retrieve wiki/scene pages through the PPR-backed Markdown graph.
+
+        Wiki and scene pages are T3/T9 Markdown truth sources, but they live
+        under memory/wiki and memory/scenes rather than the legacy flat T3
+        files. They must therefore join the main prompt-memory retrieval path
+        explicitly; otherwise the PPR graph remains an offline experiment.
+        """
+        if not query:
+            return []
+        try:
+            from app.memory.wiki_retrieval import DEFAULT_WIKI_METHOD, search_wiki_pages
+
+            hits = search_wiki_pages(
+                self.data_root,
+                agent_id,
+                query,
+                method=DEFAULT_WIKI_METHOD,
+                limit=limit,
+            )
+        except Exception as exc:
+            logger.debug("[Retriever] wiki PPR retrieval failed: %s", exc)
+            return []
+
+        items: list[MemoryItem] = []
+        for index, hit in enumerate(hits):
+            page_id = str(hit.get("page_id") or "")
+            title = str(hit.get("title") or page_id.rsplit("/", 1)[-1].replace("-", " ").title())
+            page_kind = str(hit.get("kind") or "wiki")
+            method = str(hit.get("method") or "ppr")
+            source_ref = str(hit.get("source_ref") or f"memory/{page_id}.md")
+            preview = str(hit.get("preview") or "").strip()
+            raw_score = float(hit.get("score") or 0.0)
+            score = round(max(0.5, min(0.9, 0.5 + raw_score - (index * 0.02))), 4)
+            items.append(
+                MemoryItem(
+                    kind=MemoryKind.SEMANTIC,
+                    content=f"[{page_kind}:{title}] {preview}".strip(),
+                    score=score,
+                    source=source_ref,
+                    metadata={
+                        "page_id": page_id,
+                        "title": title,
+                        "page_kind": page_kind,
+                        "source_ref": source_ref,
+                        "source_type": f"wiki_{method}",
+                        "method": method,
+                        "sensitivity": "PL1_public",
+                    },
+                )
+            )
         return items
 
     def _retrieve_understandings(self, agent_id: uuid.UUID, *, query: str = "") -> list[MemoryItem]:

@@ -155,6 +155,50 @@ async def test_evaluate_trigger_respects_backoff_until():
 
 
 @pytest.mark.asyncio
+async def test_evaluate_trigger_skips_fresh_inflight_fire():
+    import app.services.trigger_daemon as trigger_daemon
+
+    now = datetime.now(timezone.utc)
+    trigger = SimpleNamespace(
+        id=uuid4(),
+        agent_id=uuid4(),
+        name="one_shot",
+        type="once",
+        config={
+            "at": (now - timedelta(minutes=1)).isoformat(),
+            "_fire_inflight": {
+                "event_key": "once:event",
+                "runtime_task_id": "runtime-task-1",
+                "started_at": now.isoformat(),
+            },
+        },
+        is_enabled=True,
+        expires_at=None,
+        max_fires=None,
+        fire_count=0,
+        last_fired_at=None,
+        cooldown_seconds=0,
+        created_at=now - timedelta(minutes=5),
+    )
+
+    assert await trigger_daemon._evaluate_trigger(trigger, now) is False
+
+
+@pytest.mark.asyncio
+async def test_trigger_fire_lease_failure_fails_closed(monkeypatch):
+    import app.services.trigger_daemon as trigger_daemon
+
+    async def fake_get_redis():
+        raise RuntimeError("redis unavailable")
+
+    monkeypatch.setattr(trigger_daemon, "get_redis", fake_get_redis)
+
+    acquired = await trigger_daemon._acquire_trigger_fire_lease(uuid4(), "event-1")
+
+    assert acquired is False
+
+
+@pytest.mark.asyncio
 async def test_poll_trigger_respects_five_minute_configured_interval(monkeypatch):
     import app.services.trigger_daemon as trigger_daemon
 
@@ -359,6 +403,9 @@ async def test_tick_does_not_apply_agent_level_dedup_window(monkeypatch):
     async def fake_create_runtime_task_record(**_kwargs):
         return "runtime-task"
 
+    async def fake_acquire_trigger_fire_lease(_trigger_id, _event_key):
+        return True
+
     def fake_create_task(coro, *args, **kwargs):
         scheduled.append(coro.cr_code.co_name)
         coro.close()
@@ -374,6 +421,7 @@ async def test_tick_does_not_apply_agent_level_dedup_window(monkeypatch):
 
     monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", _fake_resolve_tenant)
     monkeypatch.setattr(trigger_daemon, "_evaluate_trigger", fake_evaluate_trigger)
+    monkeypatch.setattr(trigger_daemon, "_acquire_trigger_fire_lease", fake_acquire_trigger_fire_lease)
     monkeypatch.setattr(trigger_daemon, "create_runtime_task_record", fake_create_runtime_task_record)
     monkeypatch.setattr(trigger_daemon.asyncio, "create_task", fake_create_task)
     _disable_completed_focus_reconciler(monkeypatch, trigger_daemon)
@@ -427,6 +475,9 @@ async def test_tick_creates_trigger_runtime_task_before_invocation(monkeypatch):
         created.append(kwargs)
         return "runtime-task-1"
 
+    async def fake_acquire_trigger_fire_lease(_trigger_id, _event_key):
+        return True
+
     scheduled_runtime_ids = []
 
     def fake_create_task(coro, *args, **kwargs):
@@ -444,6 +495,7 @@ async def test_tick_creates_trigger_runtime_task_before_invocation(monkeypatch):
 
     monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", _fake_resolve_tenant)
     monkeypatch.setattr(trigger_daemon, "_evaluate_trigger", fake_evaluate_trigger)
+    monkeypatch.setattr(trigger_daemon, "_acquire_trigger_fire_lease", fake_acquire_trigger_fire_lease)
     monkeypatch.setattr(trigger_daemon, "create_runtime_task_record", fake_create_runtime_task_record)
     monkeypatch.setattr(trigger_daemon.asyncio, "create_task", fake_create_task)
     _disable_completed_focus_reconciler(monkeypatch, trigger_daemon)
@@ -457,6 +509,104 @@ async def test_tick_creates_trigger_runtime_task_before_invocation(monkeypatch):
     assert created[0]["parent_agent_id"] == agent_id
     assert created[0]["metadata_json"]["trigger_ids"] == [str(trigger.id)]
     assert scheduled_runtime_ids == ["runtime-task-1"]
+
+
+@pytest.mark.asyncio
+async def test_tick_marks_once_trigger_inflight_without_disabling_before_ack(monkeypatch):
+    import app.services.trigger_daemon as trigger_daemon
+
+    agent_id = uuid4()
+    trigger = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        name="one_shot",
+        type="once",
+        config={"at": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()},
+        is_enabled=True,
+        fire_count=0,
+        max_fires=None,
+        last_fired_at=None,
+        created_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+        expires_at=None,
+        cooldown_seconds=0,
+        focus_ref=None,
+        reason="Run once",
+    )
+    trigger_db = SimpleNamespace(**trigger.__dict__)
+    sessions = [
+        _SequenceSession([_RowsResult([trigger])]),
+        _SequenceSession([_ScalarResult(trigger_db)]),
+    ]
+
+    def fake_async_session():
+        if not sessions:
+            raise AssertionError("Unexpected async_session() call")
+        return sessions.pop(0)
+
+    async def fake_evaluate_trigger(_trigger, _now):
+        return {"event_key": "once:event"}
+
+    async def fake_create_runtime_task_record(**_kwargs):
+        return "runtime-task-1"
+
+    async def fake_acquire_trigger_fire_lease(_trigger_id, _event_key):
+        return True
+
+    def fake_create_task(coro, *args, **kwargs):
+        coro.close()
+        return SimpleNamespace()
+
+    monkeypatch.setattr(trigger_daemon, "async_session", fake_async_session)
+    monkeypatch.setattr(trigger_daemon, "tenant_scoped_session", lambda *a, **k: fake_async_session())
+
+    async def _fake_resolve_tenant(_agent_id, *_a, **_k):
+        return None
+
+    monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", _fake_resolve_tenant)
+    monkeypatch.setattr(trigger_daemon, "_evaluate_trigger", fake_evaluate_trigger)
+    monkeypatch.setattr(trigger_daemon, "_acquire_trigger_fire_lease", fake_acquire_trigger_fire_lease)
+    monkeypatch.setattr(trigger_daemon, "create_runtime_task_record", fake_create_runtime_task_record)
+    monkeypatch.setattr(trigger_daemon.asyncio, "create_task", fake_create_task)
+    _disable_completed_focus_reconciler(monkeypatch, trigger_daemon)
+    trigger_daemon._last_invoke.clear()
+    trigger_daemon._fire_history.clear()
+
+    await trigger_daemon._tick()
+
+    assert trigger_db.is_enabled is True
+    assert trigger_db.fire_count == 0
+    assert trigger_db.last_fired_at is None
+    assert trigger_db.config["_fire_inflight"]["runtime_task_id"] == "runtime-task-1"
+
+
+@pytest.mark.asyncio
+async def test_record_trigger_success_ack_disables_once_trigger(monkeypatch):
+    import app.services.trigger_daemon as trigger_daemon
+
+    agent_id = uuid4()
+    trigger_id = uuid4()
+    trigger = SimpleNamespace(
+        id=trigger_id,
+        agent_id=agent_id,
+        name="one_shot",
+        type="once",
+        config={"_fire_inflight": {"event_key": "once:event"}},
+        is_enabled=True,
+        fire_count=0,
+        max_fires=None,
+        last_fired_at=None,
+    )
+    session = _SequenceSession([_ScalarResult(trigger)])
+
+    _route_scoped_session(monkeypatch, trigger_daemon, session, tenant_id=None)
+
+    await trigger_daemon._record_trigger_success_state(agent_id, [trigger_id])
+
+    assert trigger.fire_count == 1
+    assert trigger.is_enabled is False
+    assert trigger.last_fired_at is not None
+    assert "_fire_inflight" not in trigger.config
+    assert session.commits == 1
 
 
 @pytest.mark.asyncio

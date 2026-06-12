@@ -64,8 +64,25 @@ class MemoryLifecycleStore:
         *,
         entry_id: str | None = None,
         metadata: dict[str, str] | None = None,
+        version: int = 1,
+        parent_id: str | None = None,
+        supersedes: list[str] | None = None,
+        superseded_by: str | None = None,
     ) -> MemoryLifecycleEntry:
-        return self._create(content, LifecycleStatus.ACTIVE, entry_id=entry_id, metadata=metadata)
+        entry = self._create(
+            content,
+            LifecycleStatus.ACTIVE,
+            entry_id=entry_id,
+            version=version,
+            parent_id=parent_id,
+            supersedes=supersedes,
+            metadata=metadata,
+        )
+        if superseded_by:
+            entry.superseded_by = superseded_by
+            entry.updated_at = datetime.now(UTC)
+            self._flush()
+        return entry
 
     def promote(self, entry_id: str, *, approved_by: str) -> MemoryLifecycleEntry:
         entry = self.get(entry_id)
@@ -257,10 +274,19 @@ def record_active_memory_lifecycle(
     metadata: dict[str, str],
 ) -> MemoryLifecycleEntry:
     store = MemoryLifecycleStore(lifecycle_path(data_root, agent_id))
+    try:
+        version = int(str(metadata.get("version") or "1").strip())
+    except (TypeError, ValueError):
+        version = 1
+    supersedes = [item.strip() for item in str(metadata.get("supersedes") or "").split(",") if item.strip()]
     return store.create_active(
         content,
         entry_id=metadata.get("entry_id") or None,
         metadata={str(key): str(value) for key, value in metadata.items()},
+        version=version,
+        parent_id=metadata.get("parent_id") or None,
+        supersedes=supersedes,
+        superseded_by=metadata.get("superseded_by") or None,
     )
 
 

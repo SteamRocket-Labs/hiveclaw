@@ -245,15 +245,19 @@ def find_similar_t3_entries(
             continue
         body = path.read_text(encoding="utf-8", errors="replace")
         for line in extract_entry_lines(body):
-            existing_content, timestamp = parse_entry_line(line)
+            record = parse_entry_record(line)
+            existing_content = record.content
+            timestamp = record.timestamp
             if not existing_content:
                 continue
             sim = jaccard_similarity(content, existing_content)
             if sim >= threshold:
+                entry_id = record.metadata.get("entry_id") or _stable_entry_id(spec["filename"], existing_content)
                 hits.append(
                     (
                         sim,
                         {
+                            "id": entry_id,
                             "content": existing_content,
                             "category": spec["shadow_category"],
                             "timestamp": timestamp or "",
@@ -509,18 +513,25 @@ def build_t3_entry_manifest(data_root: Path, agent_id: uuid.UUID) -> list[T3Memo
             entry_id = record.metadata.get("entry_id") or _stable_entry_id(spec["filename"], record.content)
             timestamp = record.timestamp or ""
             source = f"memory/{spec['filename']}"
+            joined_metadata = {
+                **record.metadata,
+                **sidecar_meta.get(entry_id, {}),
+                "entry_id": entry_id,
+                **telemetry.get(entry_id, {}),
+            }
+            if "confidence" not in joined_metadata and joined_metadata.get("conf"):
+                joined_metadata["confidence"] = joined_metadata["conf"]
+            if "retention_score" not in joined_metadata:
+                heat = compute_entry_heat(joined_metadata)
+                if heat > 0:
+                    joined_metadata["retention_score"] = f"{min(1.0, heat / 5.0):.2f}"
             entries.append(
                 T3MemoryEntry(
                     entry_id=entry_id,
                     content=record.content,
                     category=spec["shadow_category"],
                     timestamp=timestamp,
-                    metadata={
-                        **record.metadata,
-                        **sidecar_meta.get(entry_id, {}),
-                        "entry_id": entry_id,
-                        **telemetry.get(entry_id, {}),
-                    },
+                    metadata=joined_metadata,
                     source=source,
                     filename=spec["filename"],
                     load=spec["load"],

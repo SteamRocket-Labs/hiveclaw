@@ -71,19 +71,29 @@ async def start_workflow_daemon(
     interval_seconds: float | None = None,
     subagent_wake_invoker: ParentWakeInvoker | None = None,
 ) -> None:
+    from app.services.daemon_liveness import mark_daemon_error, mark_daemon_started, mark_daemon_tick
+
     runtime_service = service or get_default_workflow_service()
     runtime_service.clear_drain()
     executor = leaf_executor or build_resumable_workflow_leaf_executor()
     interval = interval_seconds
     if interval is None:
         interval = float(getattr(get_settings(), "WORKFLOW_DAEMON_INTERVAL_SECONDS", 15))
+    mark_daemon_started("workflow_daemon")
 
     try:
         while True:
             tick_kwargs: dict[str, Any] = {"service": runtime_service, "leaf_executor": executor}
             if subagent_wake_invoker is not None:
                 tick_kwargs["subagent_wake_invoker"] = subagent_wake_invoker
-            result = await workflow_daemon_tick(**tick_kwargs)
+            try:
+                result = await workflow_daemon_tick(**tick_kwargs)
+            except Exception as exc:
+                mark_daemon_error("workflow_daemon", exc)
+                logger.exception("[WorkflowDaemon] tick failed")
+                await asyncio.sleep(max(interval, 0.1))
+                continue
+            mark_daemon_tick("workflow_daemon")
             if result["resumed_runs"] or result["signal_resumed_runs"] or result["subagent_woken_parents"]:
                 logger.info("[WorkflowDaemon] tick: %s", result)
             await asyncio.sleep(max(interval, 0.1))

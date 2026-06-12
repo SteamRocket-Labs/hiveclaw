@@ -172,6 +172,11 @@ class TestConstraints:
         assert "When in doubt, KEEP entries" in template_text
         assert "false positive" in template_text.lower()
 
+    def test_memory_edits_go_through_control_plane(self, template_text: str) -> None:
+        assert "Memory Control Plane" in template_text
+        assert "`write_file` / `edit_file` under `memory/`" in template_text
+        assert "refused by runtime policy" in template_text
+
 
 class TestRequiredOutput:
     def test_output_tag_format(self, template_text: str) -> None:
